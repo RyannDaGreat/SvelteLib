@@ -254,6 +254,10 @@
     worldToScreen(wx, wy) {
       return worldToScreenPure(wx, wy, viewport());
     },
+
+    setViewport(vp) {
+      applyState(vp);
+    },
   };
 
   // -- Event handlers --

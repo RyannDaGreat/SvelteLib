@@ -35,6 +35,8 @@
     state,
     /** @type {import('./SyncPlayer.svelte').SyncActions} */
     actions,
+    /** Optional snippet for extra transport controls (rendered inside button row) */
+    extra,
   } = $props();
 
   /* Track whether user was playing before scrub, to resume after */
@@ -87,6 +89,7 @@
         height="20"
       ></iconify-icon>
     </button>
+    {#if extra}{@render extra()}{/if}
   </div>
 
   <input
@@ -121,12 +124,30 @@
 
 <style>
   .scrub-bar {
+    /* -- Themeable custom properties -- */
+    --scrub-bg: rgba(0, 0, 0, 0.6);
+    --scrub-radius: 8px;
+    --scrub-gap: 8px;
+    --scrub-padding: 8px 12px;
+    --scrub-btn-size: 32px;
+    --scrub-btn-color: #e0e0e0;
+    --scrub-btn-hover-bg: rgba(255, 255, 255, 0.15);
+    --scrub-btn-active-color: #7aa2f7;
+    --scrub-btn-radius: 4px;
+    --scrub-accent: #7aa2f7;
+    --scrub-track-bg: rgba(255, 255, 255, 0.15);
+    --scrub-track-height: 4px;
+    --scrub-thumb-color: #e0e0e0;
+    --scrub-thumb-size: 12px;
+    --scrub-time-color: #888;
+    --scrub-font-size: 0.75rem;
+
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    background: rgba(0, 0, 0, 0.6);
-    border-radius: 8px;
+    gap: var(--scrub-gap);
+    padding: var(--scrub-padding);
+    background: var(--scrub-bg);
+    border-radius: var(--scrub-radius);
     user-select: none;
   }
 
@@ -135,24 +156,26 @@
     gap: 2px;
   }
 
-  .transport button {
+  /* :global so snippet-injected buttons get styled too.
+     Scoped under .transport so it won't leak outside the bar. */
+  .transport :global(button) {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: var(--scrub-btn-size);
+    height: var(--scrub-btn-size);
     padding: 0;
     background: transparent;
     border: none;
-    color: #e0e0e0;
+    color: var(--scrub-btn-color);
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: var(--scrub-btn-radius);
   }
-  .transport button:hover {
-    background: rgba(255, 255, 255, 0.15);
+  .transport :global(button:hover) {
+    background: var(--scrub-btn-hover-bg);
   }
-  .transport button.active {
-    color: #7aa2f7;
+  .transport :global(button.active) {
+    color: var(--scrub-btn-active-color);
   }
 
   /* -- Timeline range input -- */
@@ -165,63 +188,63 @@
   }
 
   .timeline::-webkit-slider-runnable-track {
-    height: 4px;
-    border-radius: 2px;
+    height: var(--scrub-track-height);
+    border-radius: calc(var(--scrub-track-height) / 2);
     background: linear-gradient(
       to right,
-      #7aa2f7 0%,
-      #7aa2f7 var(--fill),
-      rgba(255, 255, 255, 0.15) var(--fill),
-      rgba(255, 255, 255, 0.15) 100%
+      var(--scrub-accent) 0%,
+      var(--scrub-accent) var(--fill),
+      var(--scrub-track-bg) var(--fill),
+      var(--scrub-track-bg) 100%
     );
   }
   .timeline::-moz-range-track {
-    height: 4px;
-    border-radius: 2px;
+    height: var(--scrub-track-height);
+    border-radius: calc(var(--scrub-track-height) / 2);
     background: linear-gradient(
       to right,
-      #7aa2f7 0%,
-      #7aa2f7 var(--fill),
-      rgba(255, 255, 255, 0.15) var(--fill),
-      rgba(255, 255, 255, 0.15) 100%
+      var(--scrub-accent) 0%,
+      var(--scrub-accent) var(--fill),
+      var(--scrub-track-bg) var(--fill),
+      var(--scrub-track-bg) 100%
     );
   }
 
   .timeline::-webkit-slider-thumb {
     appearance: none;
-    width: 12px;
-    height: 12px;
+    width: var(--scrub-thumb-size);
+    height: var(--scrub-thumb-size);
     border-radius: 50%;
-    background: #e0e0e0;
-    margin-top: -4px;
+    background: var(--scrub-thumb-color);
+    margin-top: calc((var(--scrub-thumb-size) - var(--scrub-track-height)) / -2);
   }
   .timeline::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
+    width: var(--scrub-thumb-size);
+    height: var(--scrub-thumb-size);
     border-radius: 50%;
-    background: #e0e0e0;
+    background: var(--scrub-thumb-color);
     border: none;
   }
 
   .right {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--scrub-gap);
   }
 
   .speed {
-    background: rgba(255, 255, 255, 0.1);
-    color: #e0e0e0;
+    background: var(--scrub-track-bg);
+    color: var(--scrub-btn-color);
     border: none;
-    border-radius: 4px;
+    border-radius: var(--scrub-btn-radius);
     padding: 2px 6px;
-    font-size: 0.75rem;
+    font-size: var(--scrub-font-size);
     cursor: pointer;
   }
 
   .time {
-    color: #888;
-    font-size: 0.75rem;
+    color: var(--scrub-time-color);
+    font-size: var(--scrub-font-size);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
