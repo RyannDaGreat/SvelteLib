@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.claude_logs/
+.claude_todo.md
