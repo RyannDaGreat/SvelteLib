@@ -324,6 +324,7 @@
 
 <style>
   .panzoom-container {
+    position: relative; /* Containing block for absolutely-positioned children (e.g. minimap) */
     width: 100%;
     height: 100%;
     overflow: hidden; /* Clip panned content that extends beyond the viewport */

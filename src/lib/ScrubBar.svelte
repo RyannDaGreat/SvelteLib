@@ -177,11 +177,15 @@
   .transport :global(button.active) {
     color: var(--scrub-btn-active-color);
   }
+  .transport :global(button:disabled) {
+    opacity: 0.25;
+    cursor: default;
+  }
 
   /* -- Timeline range input -- */
   .timeline {
     flex: 1;
-    height: 6px;
+    height: 24px; /* Large hit target; track is visually thin inside */
     appearance: none;
     background: transparent;
     cursor: pointer;
