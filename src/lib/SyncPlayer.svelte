@@ -175,7 +175,7 @@
 
   // -- Public API -------------------------------------------------------------
 
-  function state() {
+  function snapshot() {
     return { currentTime, duration, playing, looped, playbackRate };
   }
 
@@ -214,4 +214,4 @@
   };
 </script>
 
-{@render children(state(), actions)}
+{@render children(snapshot(), actions)}

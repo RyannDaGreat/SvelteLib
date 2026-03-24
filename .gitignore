@@ -5,6 +5,7 @@ package-lock.json
 .claude_todo.md
 .claude_diffs/
 scratchpad*.py
+public/videos/
 
 
 #<RP Default Gitignore Start>
