@@ -1,5 +1,9 @@
 <script>
   import PanZoom from "../../lib/PanZoom.svelte";
+  import MiniMap from "../../lib/MiniMap.svelte";
+
+  let frameWidth = $state(0);
+  let frameHeight = $state(0);
 </script>
 
 <main>
@@ -7,7 +11,7 @@
   <p class="hint">Trackpad: two-finger pan, pinch zoom.</p>
   <a class="back" href="/">&#8592; All Components</a>
 
-  <div class="canvas-frame">
+  <div class="canvas-frame" bind:clientWidth={frameWidth} bind:clientHeight={frameHeight}>
     <PanZoom>
       {#snippet children(viewport, actions)}
         <svg width="100%" height="100%">
@@ -35,6 +39,26 @@
           <button onclick={() => actions.zoomTo(0.5)}>0.5x</button>
           <button onclick={() => actions.zoomToFit({x: 100, y: 100, w: 200, h: 200})}>Fit Rect</button>
           <span class="zoom-label">{(viewport.zoom * 100).toFixed(0)}%</span>
+        </div>
+
+        <div class="minimap-container">
+          <MiniMap
+            {viewport}
+            containerWidth={frameWidth}
+            containerHeight={frameHeight}
+            worldBounds={{ x: 0, y: 0, w: 1000, h: 1000 }}
+          >
+            {#snippet children()}
+              <!-- Mirror the same scene content -->
+              {#each Array(21) as _, i}
+                <line x1={i * 50} y1="0" x2={i * 50} y2="1000" stroke="rgba(255,255,255,0.08)" />
+                <line x1="0" y1={i * 50} x2="1000" y2={i * 50} stroke="rgba(255,255,255,0.08)" />
+              {/each}
+              <rect x="100" y="100" width="200" height="200" rx="12" fill="#e94560" opacity="0.8" />
+              <circle cx="550" cy="300" r="80" fill="#6c9bcf" opacity="0.8" />
+              <polygon points="400,50 450,150 350,150" fill="#45d2b0" opacity="0.8" />
+            {/snippet}
+          </MiniMap>
         </div>
       {/snippet}
     </PanZoom>
@@ -117,5 +141,11 @@
     font-size: 0.8rem;
     margin-left: 8px;
     font-variant-numeric: tabular-nums;
+  }
+
+  .minimap-container {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
   }
 </style>

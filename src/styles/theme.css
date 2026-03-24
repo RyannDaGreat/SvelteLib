@@ -1,0 +1,125 @@
+/* Unified dark theme for all component demos.
+   Imported by each demo's entry JS — not used by the components themselves. */
+
+:root {
+  --bg: #1a1a2e;
+  --bg-surface: rgba(255, 255, 255, 0.05);
+  --fg: #e0e0e0;
+  --fg-dim: #888;
+  --accent: #7aa2f7;
+  --border: rgba(255, 255, 255, 0.1);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --control-bg: rgba(0, 0, 0, 0.5);
+  --control-pad: 8px 14px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* -- Demo page layout -- */
+
+.demo-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2rem;
+}
+
+.demo-page h1 {
+  margin-bottom: 0.25rem;
+}
+
+.demo-hint {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.demo-back {
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+/* Bordered viewport area for interactive demos */
+.demo-frame {
+  width: 80vw;
+  height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  position: relative;
+}
+
+/* -- Hub page -- */
+
+.hub-page {
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.hub-page h1 {
+  margin-bottom: 1rem;
+}
+
+.hub-page ul {
+  list-style: none;
+  padding: 0;
+}
+
+.hub-page li {
+  margin: 0.5rem 0;
+  font-size: 1.1rem;
+}
+
+.hub-page a {
+  font-weight: 600;
+}
+
+/* -- Common control styles -- */
+
+.demo-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.demo-controls button {
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--control-pad);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.demo-controls button:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.demo-label {
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
