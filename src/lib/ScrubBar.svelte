@@ -1,5 +1,5 @@
 <!--
-  ScrubBar — video transport controls with timeline scrubber.
+  ScrubBar [visual, general] — video transport controls with timeline scrubber.
 
   Reads state and calls actions from a SyncPlayer (or anything with
   the same interface). Icons via iconify-icon web component.

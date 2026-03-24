@@ -1,5 +1,5 @@
 <!--
-  SyncPlayer — headless synchronized multi-video controller.
+  SyncPlayer [headless, general] — synchronized multi-video controller.
 
   Owns playback state (time, playing, loop, rate). Keeps registered
   <video> elements in sync via a master clock + drift correction.
@@ -70,6 +70,24 @@
     return entry.start + masterTime;
   }
 
+  /**
+   * Pure function, general. Compute the native playbackRate a video needs
+   * so its clip range finishes in syncDuration at a given master rate.
+   *
+   * Without syncDuration (syncDur <= 0): just the master rate.
+   * With syncDuration: scales by (clipRange / syncDuration).
+   *
+   * @example localRate(1, { range: 6 }, 3) // 2 (6s clip in 3s = 2x)
+   * @example localRate(2, { range: 6 }, 3) // 4 (2x master * 2x stretch)
+   * @example localRate(1, { range: 6 }, 0) // 1 (no sync, natural)
+   */
+  function localRate(masterRate, entry, syncDur) {
+    if (syncDur > 0 && entry.range > 0) {
+      return masterRate * (entry.range / syncDur);
+    }
+    return masterRate;
+  }
+
   // -- Component --------------------------------------------------------------
 
   let {
@@ -106,19 +124,33 @@
     return syncDuration != null ? syncDuration : 0;
   }
 
+  /** Set each video's native playbackRate to match sync scaling.
+      If the rate exceeds the browser's limit, caps at the last
+      accepted value — drift correction covers the rest. */
+  function applyRates() {
+    const sd = effectiveSyncDur();
+    for (const entry of entries) {
+      try {
+        entry.node.playbackRate = localRate(playbackRate, entry, sd);
+      } catch {
+        /* Browser rejected the rate — leave it at whatever it was last set to */
+      }
+    }
+  }
+
   // -- Registration -----------------------------------------------------------
 
   /** Svelte action — use:actions.register on <video> elements. */
   function register(node, config = {}) {
     const entry = { node, start: 0, end: 0, range: 0, lastSeekMs: 0, seekLatencyMs: 16 };
     entries.push(entry);
-    node.playbackRate = playbackRate;
 
     function onMeta() {
       entry.start = config.start ?? 0;
       entry.end = config.end ?? node.duration;
       entry.range = entry.end - entry.start;
       node.currentTime = entry.start;
+      node.playbackRate = localRate(playbackRate, entry, effectiveSyncDur());
       recomputeDuration();
     }
     node.addEventListener("loadedmetadata", onMeta);
@@ -159,7 +191,11 @@
     for (const entry of entries) {
       const target = masterToLocal(currentTime, entry, sd);
       const clamped = clamp(target, entry.start, entry.end);
-      if (Math.abs(entry.node.currentTime - clamped) > MAX_DRIFT_S) {
+      /* Scale drift threshold by effective rate — fast playback needs more slack
+         to avoid fighting the decoder with corrective seeks every frame. */
+      const effectiveRate = localRate(playbackRate, entry, sd);
+      const driftThreshold = MAX_DRIFT_S * Math.max(1, effectiveRate);
+      if (Math.abs(entry.node.currentTime - clamped) > driftThreshold) {
         entry.node.currentTime = clamped;
       }
     }
@@ -196,6 +232,7 @@
     }));
 
     startClock(0);
+    applyRates();
     for (const { node } of entries) {
       node.play().catch((err) => {
         if (err.name !== "AbortError") {
@@ -218,6 +255,7 @@
     if (currentTime >= duration) seekAll(0);
     playing = true;
     startClock(currentTime);
+    applyRates();
     for (const { node } of entries) {
       node.play().catch((err) => {
         if (err.name !== "AbortError") {
@@ -304,7 +342,7 @@
     setPlaybackRate(rate) {
       if (playing) startClock(currentTime);
       playbackRate = rate;
-      for (const { node } of entries) node.playbackRate = rate;
+      applyRates();
     },
   };
 </script>

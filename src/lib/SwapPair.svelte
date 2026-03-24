@@ -1,5 +1,5 @@
 <!--
-  SwapPair — swap the visual order of two elements via CSS order.
+  SwapPair [visual, general] — swap the visual order of two elements via CSS order.
 
   Wraps each element in a div with CSS `order`, so both stay mounted
   (no DOM destruction — safe for stateful elements like video).

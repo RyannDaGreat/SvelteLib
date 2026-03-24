@@ -1,5 +1,5 @@
 <!--
-  PanZoom — headless viewport controller component.
+  PanZoom [headless, general] — viewport controller.
 
   Owns pan/zoom transform state. Handles wheel (trackpad pinch + two-finger pan),
   touch pinch-to-zoom, and animated transitions.
@@ -168,6 +168,7 @@
     /** @type {number} */ zoomSensitivity = 0.01,
     /** @type {number} */ animationDuration = 300,
     /** @type {boolean} */ enableTouch = true,
+    /** @type {boolean} */ active = true,
     /** @type {(vp: Viewport) => void} */ onviewport = undefined,
     children,
   } = $props();
@@ -263,6 +264,7 @@
   // -- Event handlers --
 
   function handleWheel(e) {
+    if (!active) return;
     e.preventDefault();
     const rect = containerEl.getBoundingClientRect();
     const sx = e.clientX - rect.left;
@@ -281,7 +283,7 @@
   }
 
   function handleTouchStart(e) {
-    if (!enableTouch || e.touches.length < 2) return;
+    if (!active || !enableTouch || e.touches.length < 2) return;
     e.preventDefault();
     const rect = containerEl.getBoundingClientRect();
     const mid = touchMidpoint(e.touches[0], e.touches[1], rect);

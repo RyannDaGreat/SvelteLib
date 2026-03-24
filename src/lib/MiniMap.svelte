@@ -1,5 +1,5 @@
 <!--
-  MiniMap — viewport overview indicator.
+  MiniMap [visual, general] — viewport overview indicator.
 
   Displays a miniature overview of a pan/zoom world, showing the visible
   viewport as a highlighted rectangle within the total world bounds.
