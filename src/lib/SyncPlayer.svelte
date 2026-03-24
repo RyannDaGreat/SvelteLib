@@ -110,7 +110,7 @@
 
   /** Svelte action — use:actions.register on <video> elements. */
   function register(node, config = {}) {
-    const entry = { node, start: 0, end: 0, range: 0 };
+    const entry = { node, start: 0, end: 0, range: 0, lastSeekMs: 0, seekLatencyMs: 16 };
     entries.push(entry);
     node.playbackRate = playbackRate;
 
@@ -270,6 +270,28 @@
       playing ? pauseAll() : playAll();
     },
     seek: seekAll,
+    /** Scrub: update master time immediately, seek each video independently
+        throttled by its own measured seek latency. Call on every input event. */
+    scrubSeek(timeS) {
+      const t = clamp(timeS, 0, duration || 0);
+      currentTime = t;
+      const now = performance.now();
+      const sd = effectiveSyncDur();
+
+      for (const entry of entries) {
+        if (now - entry.lastSeekMs < entry.seekLatencyMs * 2) continue;
+        entry.lastSeekMs = now;
+        const target = clamp(masterToLocal(t, entry, sd), entry.start, entry.end);
+        const seekStart = now;
+        entry.node.currentTime = target;
+
+        function onSeeked() {
+          entry.node.removeEventListener("seeked", onSeeked);
+          entry.seekLatencyMs = performance.now() - seekStart;
+        }
+        entry.node.addEventListener("seeked", onSeeked);
+      }
+    },
     seekToStart() {
       seekAll(0);
     },

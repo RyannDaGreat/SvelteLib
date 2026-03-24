@@ -46,10 +46,11 @@
   }
 
   function handleScrubInput(e) {
-    actions.seek(+e.target.value);
+    actions.scrubSeek(+e.target.value);
   }
 
-  function handleScrubEnd() {
+  function handleScrubEnd(e) {
+    actions.seek(+e.target.value);
     if (wasPlaying) actions.play();
   }
 
