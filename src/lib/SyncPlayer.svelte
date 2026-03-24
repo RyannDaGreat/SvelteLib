@@ -5,11 +5,15 @@
   <video> elements in sync via a master clock + drift correction.
   Renders nothing itself — passes state and actions to children.
 
+  Each video can specify a clip range (start/end in seconds).
+  Without syncDuration, master timeline = longest range, natural speed.
+  With syncDuration, all ranges stretch/squish to fit that duration.
+
   Usage:
     <SyncPlayer>
       {#snippet children(state, actions)}
         <video use:actions.register src="a.mp4" muted />
-        <video use:actions.register src="b.mp4" muted />
+        <video use:actions.register={{ start: 2, end: 8 }} src="b.mp4" muted />
         <ScrubBar {state} {actions} />
       {/snippet}
     </SyncPlayer>
@@ -17,26 +21,25 @@
 <script>
   /**
    * @typedef {Object} SyncState
-   * @property {number} currentTime
-   * @property {number} duration
+   * @property {number} currentTime - Master timeline position in seconds
+   * @property {number} duration - Master timeline duration in seconds
    * @property {boolean} playing
    * @property {boolean} looped
    * @property {number} playbackRate
    */
 
   /**
-   * @typedef {Object} SyncActions
-   * @property {(node: HTMLVideoElement) => {destroy: () => void}} register - Svelte action for video elements
-   * @property {() => void} play
-   * @property {() => void} pause
-   * @property {() => void} toggle
-   * @property {(time: number) => void} seek
-   * @property {() => void} seekToStart
-   * @property {() => void} seekToEnd
-   * @property {() => void} nextFrame
-   * @property {() => void} prevFrame
-   * @property {() => void} toggleLoop
-   * @property {(rate: number) => void} setPlaybackRate
+   * @typedef {Object} VideoConfig
+   * @property {number} [start] - Clip start in seconds (default: 0)
+   * @property {number} [end] - Clip end in seconds (default: video duration)
+   */
+
+  /**
+   * @typedef {Object} VideoEntry
+   * @property {HTMLVideoElement} node
+   * @property {number} start
+   * @property {number} end
+   * @property {number} range - end - start
    */
 
   // -- Pure functions (general) -----------------------------------------------
@@ -51,18 +54,32 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  /**
+   * Pure function, general. Map master time to a video's local time.
+   *
+   * Without syncDuration (syncDur <= 0): 1:1 offset by clip start.
+   * With syncDuration: scales master time so the clip range fills syncDuration.
+   *
+   * @example masterToLocal(2, { start: 5, range: 10 }, 0) // 7
+   * @example masterToLocal(5, { start: 0, range: 3 }, 10) // 1.5
+   */
+  function masterToLocal(masterTime, entry, syncDur) {
+    if (syncDur > 0 && entry.range > 0) {
+      return entry.start + (masterTime / syncDur) * entry.range;
+    }
+    return entry.start + masterTime;
+  }
+
   // -- Component --------------------------------------------------------------
 
-  const DEFAULT_FRAME_DURATION_S = 1 / 30;
-
   let {
-    /** @type {number} Seconds per frame, for nextFrame/prevFrame */
-    frameDuration = DEFAULT_FRAME_DURATION_S,
+    /** @type {number|undefined} Force all clips to this duration (stretch/squish) */
+    syncDuration = undefined,
     children,
   } = $props();
 
-  /** @type {HTMLVideoElement[]} */
-  let videos = [];
+  /** @type {VideoEntry[]} */
+  let entries = [];
 
   let playing = $state(false);
   let looped = $state(false);
@@ -75,36 +92,53 @@
   let clockStartMs = 0;
   let clockOffsetS = 0;
 
+  function recomputeDuration() {
+    if (syncDuration != null) {
+      duration = syncDuration;
+      return;
+    }
+    if (entries.length === 0) { duration = 0; return; }
+    duration = Math.max(...entries.map(e => e.range));
+  }
+
+  /** Effective syncDur for masterToLocal (0 = natural mode) */
+  function effectiveSyncDur() {
+    return syncDuration != null ? syncDuration : 0;
+  }
+
   // -- Registration -----------------------------------------------------------
 
   /** Svelte action — use:actions.register on <video> elements. */
-  function register(node) {
-    videos.push(node);
+  function register(node, config = {}) {
+    const entry = { node, start: 0, end: 0, range: 0 };
+    entries.push(entry);
     node.playbackRate = playbackRate;
 
     function onMeta() {
-      const durations = videos.map(v => v.duration).filter(Number.isFinite);
-      duration = durations.length ? Math.max(...durations) : 0;
+      entry.start = config.start ?? 0;
+      entry.end = config.end ?? node.duration;
+      entry.range = entry.end - entry.start;
+      node.currentTime = entry.start;
+      recomputeDuration();
     }
     node.addEventListener("loadedmetadata", onMeta);
     if (node.readyState >= 1) onMeta();
 
     return {
       destroy() {
-        videos = videos.filter(v => v !== node);
+        entries = entries.filter(e => e !== entry);
         node.removeEventListener("loadedmetadata", onMeta);
-        const durations = videos.map(v => v.duration).filter(Number.isFinite);
-        duration = durations.length ? Math.max(...durations) : 0;
+        recomputeDuration();
       },
     };
   }
 
   // -- Master clock -----------------------------------------------------------
 
-  const DRIFT_THRESHOLD_S = 0.05;
+  const MAX_DRIFT_S = 0.001;
 
   function syncTick() {
-    if (!playing || videos.length === 0) return;
+    if (!playing || entries.length === 0) return;
 
     const elapsedS =
       ((performance.now() - clockStartMs) / 1000) * playbackRate;
@@ -121,9 +155,12 @@
       }
     }
 
-    for (const v of videos) {
-      if (Math.abs(v.currentTime - currentTime) > DRIFT_THRESHOLD_S) {
-        v.currentTime = currentTime;
+    const sd = effectiveSyncDur();
+    for (const entry of entries) {
+      const target = masterToLocal(currentTime, entry, sd);
+      const clamped = clamp(target, entry.start, entry.end);
+      if (Math.abs(entry.node.currentTime - clamped) > MAX_DRIFT_S) {
+        entry.node.currentTime = clamped;
       }
     }
 
@@ -138,13 +175,16 @@
   // -- Playback controls ------------------------------------------------------
 
   function playAll() {
-    if (videos.length === 0) return;
+    if (entries.length === 0) return;
+    if (currentTime >= duration) seekAll(0);
     playing = true;
     startClock(currentTime);
-    for (const v of videos) {
-      v.play().catch((err) =>
-        console.error("SyncPlayer: video play failed:", err),
-      );
+    for (const { node } of entries) {
+      node.play().catch((err) => {
+        if (err.name !== "AbortError") {
+          console.error("SyncPlayer: video play failed:", err);
+        }
+      });
     }
     rafId = requestAnimationFrame(syncTick);
   }
@@ -155,12 +195,16 @@
       cancelAnimationFrame(rafId);
       rafId = null;
     }
-    for (const v of videos) v.pause();
+    for (const { node } of entries) node.pause();
   }
 
   function seekAll(timeS) {
     const t = clamp(timeS, 0, duration || 0);
-    for (const v of videos) v.currentTime = t;
+    const sd = effectiveSyncDur();
+    for (const entry of entries) {
+      const target = masterToLocal(t, entry, sd);
+      entry.node.currentTime = clamp(target, entry.start, entry.end);
+    }
     currentTime = t;
     if (playing) startClock(t);
   }
@@ -179,7 +223,6 @@
     return { currentTime, duration, playing, looped, playbackRate };
   }
 
-  /** @type {SyncActions} */
   const actions = {
     register,
     play: playAll,
@@ -194,22 +237,13 @@
     seekToEnd() {
       seekAll(duration);
     },
-    nextFrame() {
-      pauseAll();
-      seekAll(currentTime + frameDuration);
-    },
-    prevFrame() {
-      pauseAll();
-      seekAll(currentTime - frameDuration);
-    },
     toggleLoop() {
       looped = !looped;
     },
     setPlaybackRate(rate) {
-      /* Restart clock so elapsed calculation stays correct */
       if (playing) startClock(currentTime);
       playbackRate = rate;
-      for (const v of videos) v.playbackRate = rate;
+      for (const { node } of entries) node.playbackRate = rate;
     },
   };
 </script>

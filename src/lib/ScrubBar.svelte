@@ -65,18 +65,12 @@
     <button onclick={actions.seekToStart} title="Rewind to start">
       <iconify-icon icon="mdi:skip-previous" width="20" height="20"></iconify-icon>
     </button>
-    <button onclick={actions.prevFrame} title="Previous frame">
-      <iconify-icon icon="mdi:step-backward" width="20" height="20"></iconify-icon>
-    </button>
     <button onclick={actions.toggle} title={state.playing ? "Pause" : "Play"}>
       <iconify-icon
         icon={state.playing ? "mdi:pause" : "mdi:play"}
         width="22"
         height="22"
       ></iconify-icon>
-    </button>
-    <button onclick={actions.nextFrame} title="Next frame">
-      <iconify-icon icon="mdi:step-forward" width="20" height="20"></iconify-icon>
     </button>
     <button onclick={actions.seekToEnd} title="Skip to end">
       <iconify-icon icon="mdi:skip-next" width="20" height="20"></iconify-icon>
