@@ -135,7 +135,7 @@
 
   // -- Master clock -----------------------------------------------------------
 
-  const MAX_DRIFT_S = 0.001;
+  const MAX_DRIFT_S = 0.05;
 
   function syncTick() {
     if (!playing || entries.length === 0) return;
@@ -146,8 +146,8 @@
 
     if (currentTime >= duration) {
       if (looped) {
-        seekAll(0);
-        startClock(0);
+        loopRestart();
+        return;
       } else {
         pauseAll();
         currentTime = duration;
@@ -164,6 +164,45 @@
       }
     }
 
+    rafId = requestAnimationFrame(syncTick);
+  }
+
+  /**
+   * Query, general. Seek a video and resolve when the seek completes.
+   *
+   * @example await seekAndWait(videoEl, 2.5)
+   */
+  function seekAndWait(video, timeS) {
+    return new Promise((resolve) => {
+      function onSeeked() {
+        video.removeEventListener("seeked", onSeeked);
+        resolve();
+      }
+      video.addEventListener("seeked", onSeeked);
+      video.currentTime = timeS;
+    });
+  }
+
+  /** Pause clock, seek all to 0, wait for all seeks to land, then resume. */
+  async function loopRestart() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    for (const { node } of entries) node.pause();
+    currentTime = 0;
+
+    const sd = effectiveSyncDur();
+    await Promise.all(entries.map((entry) => {
+      const target = clamp(masterToLocal(0, entry, sd), entry.start, entry.end);
+      return seekAndWait(entry.node, target);
+    }));
+
+    startClock(0);
+    for (const { node } of entries) {
+      node.play().catch((err) => {
+        if (err.name !== "AbortError") {
+          console.error("SyncPlayer: video play failed:", err);
+        }
+      });
+    }
     rafId = requestAnimationFrame(syncTick);
   }
 

@@ -11,8 +11,8 @@
   <SyncPlayer>
     {#snippet children(state, actions)}
       <div class="video-row">
-        <video use:actions.register src="/videos/sample_48fps.mp4" muted></video>
         <video use:actions.register src="/videos/sample_24fps.mp4" muted></video>
+        <video use:actions.register src="/videos/sample_48fps.mp4" muted></video>
       </div>
       <div class="controls-row">
         <ScrubBar {state} {actions} />
