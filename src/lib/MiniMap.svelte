@@ -40,20 +40,6 @@
 
   // -- Pure functions (general) -----------------------------------------------
 
-  /**
-   * Pure function, general. Check if viewport is at default (no pan, no zoom).
-   *
-   * @param {{zoom: number, panX: number, panY: number}} vp
-   * @returns {boolean}
-   *
-   * @example isDefaultViewport({zoom:1, panX:0, panY:0}) // true
-   * @example isDefaultViewport({zoom:2, panX:0, panY:0}) // false
-   * @example isDefaultViewport({zoom:1, panX:5, panY:0}) // false
-   */
-  function isDefaultViewport(vp) {
-    return vp.zoom === 1 && vp.panX === 0 && vp.panY === 0;
-  }
-
   // -- Component --------------------------------------------------------------
 
   let {
@@ -67,6 +53,8 @@
     worldBounds = { x: 0, y: 0, w: 1000, h: 1000 },
     /** @type {number} Max pixel dimension of the minimap */
     maxSize = 150,
+    /** @type {boolean} Controls visibility (opacity fade). Consumer decides when to show/hide. */
+    visible = true,
     children = undefined,
   } = $props();
 
@@ -102,7 +90,7 @@
 
 <svg
   class="minimap"
-  class:hidden={isDefaultViewport(viewport)}
+  class:hidden={!visible}
   {width}
   {height}
   viewBox="{unionX} {unionY} {unionW} {unionH}"

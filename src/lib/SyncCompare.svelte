@@ -106,6 +106,7 @@
                     containerWidth={vidClientW.a}
                     containerHeight={vidClientH.a}
                     worldBounds={{ x: 0, y: 0, w: vidClientW.a, h: vidClientH.a }}
+                    visible={focused && !isDefaultVp}
                   />
                 </div>
               {/snippet}
@@ -129,6 +130,7 @@
                     containerWidth={vidClientW.b}
                     containerHeight={vidClientH.b}
                     worldBounds={{ x: 0, y: 0, w: vidClientW.b, h: vidClientH.b }}
+                    visible={focused && !isDefaultVp}
                   />
                 </div>
               {/snippet}

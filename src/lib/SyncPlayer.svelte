@@ -125,16 +125,13 @@
   }
 
   /** Set each video's native playbackRate to match sync scaling.
-      If the rate exceeds the browser's limit, caps at the last
-      accepted value — drift correction covers the rest. */
+      Browsers silently ignore or throw for unsupported rates (no query API exists).
+      Drift correction covers any gap between desired and actual rate. */
   function applyRates() {
     const sd = effectiveSyncDur();
     for (const entry of entries) {
-      try {
-        entry.node.playbackRate = localRate(playbackRate, entry, sd);
-      } catch {
-        /* Browser rejected the rate — leave it at whatever it was last set to */
-      }
+      const desired = localRate(playbackRate, entry, sd);
+      try { entry.node.playbackRate = desired; } catch { /* browser rejected */ }
     }
   }
 
