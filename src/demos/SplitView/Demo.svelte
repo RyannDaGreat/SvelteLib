@@ -1,5 +1,5 @@
 <script>
-  import SplitView from "../../lib/SplitView.svelte";
+  import SplitPane from "../../lib/SplitPane.svelte";
 
   let outerSplits = $state([0.12, 0.38, 0.62, 0.82]);
   let editorSplits = $state([0.55, 0.8]);
@@ -29,11 +29,11 @@
   </div>
 
   <div class="demo-frame">
-    <SplitView orientation="horizontal" bind:splits={outerSplits} minPaneSize={0.06}>
+    <SplitPane orientation="horizontal" bind:splits={outerSplits} minPaneSize={0.06}>
       {#snippet children(paneIdx)}
         {#if paneIdx === 0}
           <!-- Sidebar: vertical split — file tree / bookmarks -->
-          <SplitView orientation="vertical" bind:splits={navSplits} minPaneSize={0.15}>
+          <SplitPane orientation="vertical" bind:splits={navSplits} minPaneSize={0.15}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel nav">Explorer</div>
@@ -41,10 +41,10 @@
                 <div class="panel bookmarks">Bookmarks</div>
               {/if}
             {/snippet}
-          </SplitView>
+          </SplitPane>
         {:else if paneIdx === 1}
           <!-- Editor area: vertical 3-way — source / preview / console -->
-          <SplitView orientation="vertical" bind:splits={editorSplits} minPaneSize={0.08}>
+          <SplitPane orientation="vertical" bind:splits={editorSplits} minPaneSize={0.08}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel editor">Source</div>
@@ -54,10 +54,10 @@
                 <div class="panel terminal">Console</div>
               {/if}
             {/snippet}
-          </SplitView>
+          </SplitPane>
         {:else if paneIdx === 2}
           <!-- Middle: vertical 2-way — diff / merge -->
-          <SplitView orientation="vertical" bind:splits={midSplits} minPaneSize={0.15}>
+          <SplitPane orientation="vertical" bind:splits={midSplits} minPaneSize={0.15}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel diff">Diff</div>
@@ -65,10 +65,10 @@
                 <div class="panel merge">Merge</div>
               {/if}
             {/snippet}
-          </SplitView>
+          </SplitPane>
         {:else if paneIdx === 3}
           <!-- Properties: vertical 3-way — props / inspector / outline -->
-          <SplitView orientation="vertical" bind:splits={propSplits} minPaneSize={0.1}>
+          <SplitPane orientation="vertical" bind:splits={propSplits} minPaneSize={0.1}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel properties">Properties</div>
@@ -78,12 +78,12 @@
                 <div class="panel outline">Outline</div>
               {/if}
             {/snippet}
-          </SplitView>
+          </SplitPane>
         {:else}
           <div class="panel minimap">Minimap</div>
         {/if}
       {/snippet}
-    </SplitView>
+    </SplitPane>
   </div>
 </main>
 

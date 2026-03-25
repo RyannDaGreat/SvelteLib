@@ -1,23 +1,30 @@
 <!--
-  SplitView [container, general] — resizable split pane layout.
+  SplitView [headless, general] — split position controller.
 
-  Manages an array of split positions (floats in 0–1) with constraint
-  resolution: handles push neighbors when dragged, and neighbors spring
-  back when released. Supports horizontal and vertical orientation,
-  nesting, and customization via CSS custom properties.
+  Owns an array of split positions (floats in 0–1) and drag interaction
+  state. Handles constraint resolution: dragged handles push neighbors,
+  and neighbors spring back when released (snapshot-based — no tmux bug).
+  Renders nothing visual — passes state and actions to children.
 
   Usage:
     <SplitView orientation="horizontal" bind:splits={mySplits} minPaneSize={0.05}>
-      {#snippet children(paneIndex, paneCount)}
-        <div>Pane {paneIndex} of {paneCount}</div>
+      {#snippet children(state, actions)}
+        {#each Array(state.paneCount) as _, i}
+          <div style={myPaneStyle(state, i)}>Pane {i}</div>
+        {/each}
+        {#each state.splits as _, i}
+          <div onmousedown={(e) => actions.beginDrag(i, e)}>handle</div>
+        {/each}
       {/snippet}
     </SplitView>
 
-  CSS custom properties (set on the SplitView or any ancestor):
-    --sv-handle-size     Handle thickness (default: 4px)
-    --sv-handle-color    Handle resting color (default: #444)
-    --sv-handle-hover    Handle hover/active color (default: #007acc)
-    --sv-handle-hit-pad  Extra hit-area padding around handle (default: 4px)
+  State shape:
+    { splits: number[], paneCount: number, orientation: string,
+      dragging: boolean, dragIndex: number }
+
+  Actions:
+    beginDrag(handleIndex, mouseEvent) — start dragging a handle
+    setSplits(number[])               — programmatic update (ignored mid-drag)
 -->
 <script>
   import { onDestroy } from "svelte";
@@ -68,6 +75,21 @@
 
   // -- Component state --------------------------------------------------------
 
+  /**
+   * @typedef {Object} SplitState
+   * @property {number[]} splits - Current split positions
+   * @property {number} paneCount - splits.length + 1
+   * @property {"horizontal"|"vertical"} orientation
+   * @property {boolean} dragging - Whether a handle is being dragged
+   * @property {number} dragIndex - Index of dragged handle (-1 if none)
+   */
+
+  /**
+   * @typedef {Object} SplitActions
+   * @property {(index: number, e: MouseEvent) => void} beginDrag - Start dragging handle
+   * @property {(newSplits: number[]) => void} setSplits - Programmatic update (ignored mid-drag)
+   */
+
   let {
     /** @type {"horizontal"|"vertical"} */
     orientation = "horizontal",
@@ -89,48 +111,13 @@
   let startClientPos = 0;
 
   const isHoriz = $derived(orientation === "horizontal");
-  const paneCount = $derived(splits.length + 1);
-
-  // -- Layout helpers ---------------------------------------------------------
-
-  /**
-   * Pure function, specific. CSS string positioning pane `index` within the split layout.
-   *
-   * @param {number} index - Pane index
-   * @returns {string} Inline CSS
-   *
-   * @example // paneStyle(0) with splits=[0.5], horizontal
-   * @example // => "left:0%;width:50%;top:0;bottom:0;"
-   */
-  function paneStyle(index) {
-    const start = index === 0 ? 0 : splits[index - 1];
-    const end = index === splits.length ? 1 : splits[index];
-    const pos = (start * 100).toFixed(4);
-    const size = ((end - start) * 100).toFixed(4);
-    return isHoriz
-      ? `left:${pos}%;width:${size}%;top:0;bottom:0;`
-      : `top:${pos}%;height:${size}%;left:0;right:0;`;
-  }
-
-  /**
-   * Pure function, specific. CSS string positioning handle `index`.
-   *
-   * @param {number} index - Handle index
-   * @returns {string} Inline CSS
-   *
-   * @example // handleStyle(0) with splits=[0.5], horizontal => "left:50%"
-   */
-  function handleStyle(index) {
-    const pos = (splits[index] * 100).toFixed(4);
-    return isHoriz ? `left:${pos}%` : `top:${pos}%`;
-  }
 
   // -- Drag handlers ----------------------------------------------------------
 
   /** Command, specific. Begins handle drag, captures snapshot for spring-back. */
-  function onMouseDown(e, idx) {
+  function beginDrag(index, e) {
     e.preventDefault();
-    dragIdx = idx;
+    dragIdx = index;
     startClientPos = isHoriz ? e.clientX : e.clientY;
     snapshot = [...splits];
     window.addEventListener("mousemove", onMouseMove);
@@ -157,93 +144,43 @@
     if (wasDragging) onchange?.(splits);
   }
 
+  /** Command, specific. Programmatic split update (ignored mid-drag). */
+  function setSplits(newSplits) {
+    if (dragIdx < 0) splits = [...newSplits];
+  }
+
   onDestroy(() => {
     window.removeEventListener("mousemove", onMouseMove);
     window.removeEventListener("mouseup", onMouseUp);
   });
+
+  /**
+   * Query, specific. Current state snapshot for children.
+   * @returns {SplitState}
+   */
+  function getState() {
+    return {
+      splits,
+      paneCount: splits.length + 1,
+      orientation,
+      dragging: dragIdx >= 0,
+      dragIndex: dragIdx,
+    };
+  }
+
+  /** @type {SplitActions} */
+  const actions = { beginDrag, setSplits };
 </script>
 
-<div
-  class="sv-root"
-  class:sv-horizontal={isHoriz}
-  class:sv-vertical={!isHoriz}
-  class:sv-dragging={dragIdx >= 0}
-  bind:this={containerEl}
->
-  {#each Array(paneCount) as _, i}
-    <div class="sv-pane" style={paneStyle(i)}>
-      {@render children(i, paneCount)}
-    </div>
-  {/each}
-
-  {#each splits as _, i}
-    <div
-      class="sv-handle"
-      class:sv-active={dragIdx === i}
-      style={handleStyle(i)}
-      onmousedown={(e) => onMouseDown(e, i)}
-      role="separator"
-      aria-orientation={orientation}
-    ></div>
-  {/each}
+<div class="sv-root" bind:this={containerEl}>
+  {@render children(getState(), actions)}
 </div>
 
 <style>
   .sv-root {
-    --sv-handle-size: 4px;
-    --sv-handle-color: #444;
-    --sv-handle-hover: #007acc;
-    --sv-handle-hit-pad: 4px;
-
     position: relative;
     width: 100%;
     height: 100%;
     overflow: hidden;
-  }
-
-  .sv-root.sv-dragging {
-    user-select: none;
-  }
-  .sv-root.sv-dragging .sv-pane {
-    pointer-events: none;
-  }
-
-  .sv-pane {
-    position: absolute;
-    overflow: hidden;
-  }
-
-  .sv-handle {
-    position: absolute;
-    z-index: 10;
-    transition: background-color 0.15s;
-    background: var(--sv-handle-color);
-  }
-
-  .sv-handle::before {
-    content: "";
-    position: absolute;
-    inset: calc(-1 * var(--sv-handle-hit-pad));
-  }
-
-  .sv-horizontal > .sv-handle {
-    top: 0;
-    bottom: 0;
-    width: var(--sv-handle-size);
-    margin-left: calc(-1 * var(--sv-handle-size) / 2);
-    cursor: col-resize;
-  }
-
-  .sv-vertical > .sv-handle {
-    left: 0;
-    right: 0;
-    height: var(--sv-handle-size);
-    margin-top: calc(-1 * var(--sv-handle-size) / 2);
-    cursor: row-resize;
-  }
-
-  .sv-handle:hover,
-  .sv-handle.sv-active {
-    background: var(--sv-handle-hover);
   }
 </style>
