@@ -126,6 +126,7 @@
       {/each}
 
       {#each state.splits as _, i}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
           class="sp-handle"
           class:sp-active={state.dragIndex === i}
