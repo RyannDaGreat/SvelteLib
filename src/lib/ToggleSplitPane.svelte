@@ -134,5 +134,19 @@
     {/snippet}
   </SplitPane>
 {:else if activeKeys.length === 1}
-  {@render paneContent(activeKeys[0], 0)}
+  <div class="sp-solo">
+    {@render paneContent(activeKeys[0], 0)}
+  </div>
 {/if}
+
+<style>
+  /* Match SplitPane's .sp-layout when only one pane is visible.
+     min-height:0 is critical — without it, flex parents let this
+     element expand to content height instead of constraining it. */
+  .sp-solo {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+  }
+</style>

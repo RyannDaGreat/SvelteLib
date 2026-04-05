@@ -102,8 +102,10 @@
     orientation = "horizontal",
     /** @type {number[]} Split positions, each in (0, 1) */
     splits = $bindable([0.5]),
-    /** @type {number} Minimum fractional pane size */
+    /** @type {number} Minimum fractional pane size (ignored if minPanePx is set) */
     minPaneSize = 0.05,
+    /** @type {number|null} Minimum pane size in pixels (overrides minPaneSize) */
+    minPanePx = null,
     /** @type {(splits: number[]) => void} Called after drag ends */
     onchange = undefined,
     /** Snippet receiving (paneIndex, paneCount) for each pane */
@@ -111,7 +113,7 @@
   } = $props();
 </script>
 
-<SplitView {orientation} bind:splits {minPaneSize} {onchange}>
+<SplitView {orientation} bind:splits {minPaneSize} {minPanePx} {onchange}>
   {#snippet children(state, actions)}
     <div
       class="sp-layout"
@@ -142,11 +144,6 @@
 
 <style>
   .sp-layout {
-    --sp-handle-size: 4px;
-    --sp-handle-color: #444;
-    --sp-handle-hover: #007acc;
-    --sp-handle-hit-pad: 4px;
-
     position: relative;
     width: 100%;
     height: 100%;
@@ -161,7 +158,7 @@
 
   .sp-pane {
     position: absolute;
-    overflow: hidden;
+    overflow: auto;
   }
 
   .sp-handle {
