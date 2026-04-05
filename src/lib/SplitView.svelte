@@ -95,8 +95,10 @@
     orientation = "horizontal",
     /** @type {number[]} Split positions, each in (0, 1) */
     splits = $bindable([0.5]),
-    /** @type {number} Minimum fractional pane size */
+    /** @type {number} Minimum fractional pane size (ignored if minPanePx is set) */
     minPaneSize = 0.05,
+    /** @type {number|null} Minimum pane size in pixels (overrides minPaneSize) */
+    minPanePx = null,
     /** @type {(splits: number[]) => void} Called after drag ends with final positions */
     onchange = undefined,
     children,
@@ -124,6 +126,22 @@
     window.addEventListener("mouseup", onMouseUp);
   }
 
+  /**
+   * Query, specific. Read effective minimum pane size as a fraction.
+   * Priority: --sp-min-pane CSS variable > minPanePx prop > minPaneSize prop.
+   */
+  function getEffectiveMin(containerSize) {
+    if (containerEl) {
+      const cssVal = getComputedStyle(containerEl).getPropertyValue('--sp-min-pane').trim();
+      if (cssVal) {
+        const px = parseFloat(cssVal);
+        if (!isNaN(px) && px > 0) return px / containerSize;
+      }
+    }
+    if (minPanePx != null) return minPanePx / containerSize;
+    return minPaneSize;
+  }
+
   /** Command, specific. Resolves constraints from snapshot on each move. */
   function onMouseMove(e) {
     if (dragIdx < 0) return;
@@ -132,7 +150,7 @@
       : containerEl.clientHeight;
     const clientPos = isHoriz ? e.clientX : e.clientY;
     const delta = (clientPos - startClientPos) / containerSize;
-    splits = resolveSplits(snapshot, dragIdx, delta, minPaneSize);
+    splits = resolveSplits(snapshot, dragIdx, delta, getEffectiveMin(containerSize));
   }
 
   /** Command, specific. Ends drag, cleans up window listeners. */
