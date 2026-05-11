@@ -9,6 +9,16 @@
 -->
 <script>
   import "iconify-icon";
+  import Dropdown from "./Dropdown.svelte";
+
+  /**
+   * Pure function. Build dropdown items from a list of speed multipliers.
+   *
+   * @example speedItems([1, 2]) // [{value:1,label:"1x"},{value:2,label:"2x"}]
+   */
+  function speedItems(speeds) {
+    return speeds.map((s) => ({ value: s, label: `${s}x` }));
+  }
 
   // -- Pure functions (general) -----------------------------------------------
 
@@ -106,15 +116,11 @@
   />
 
   <div class="right">
-    <select
-      class="speed"
+    <Dropdown
+      items={speedItems(SPEEDS)}
       value={state.playbackRate}
-      onchange={(e) => actions.setPlaybackRate(+e.target.value)}
-    >
-      {#each SPEEDS as speed}
-        <option value={speed}>{speed}x</option>
-      {/each}
-    </select>
+      onchange={actions.setPlaybackRate}
+    />
 
     <span class="time">
       {formatTime(state.currentTime)} / {formatTime(state.duration)}
@@ -234,16 +240,6 @@
     display: flex;
     align-items: center;
     gap: var(--scrub-gap);
-  }
-
-  .speed {
-    background: var(--scrub-track-bg);
-    color: var(--scrub-btn-color);
-    border: none;
-    border-radius: var(--scrub-btn-radius);
-    padding: 2px 6px;
-    font-size: var(--scrub-font-size);
-    cursor: pointer;
   }
 
   .time {
