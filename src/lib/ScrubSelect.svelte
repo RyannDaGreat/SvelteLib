@@ -215,7 +215,7 @@
   let rafId = null;
 
   // Paint-stroke bookkeeping (not reactive). A stroke applies against a stable
-  // base snapshot, so the bar can change `mode` mid-stroke (e.g. force-erase).
+  // base snapshot; the bar passes the mode with each update.
   let paintBase = [];
   let wasPlaying = false;
 

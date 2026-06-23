@@ -18,9 +18,9 @@
   <h1>ScrubSelect Demo</h1>
   <p class="demo-hint">
     Scrub & annotate a video. Left-drag paints <span class="g">good</span>,
-    right-drag paints <span class="b">bad</span>, middle / alt-drag (or
-    force-press in Safari) erases. Two-finger pan scrolls the timeline; pinch
-    zooms (min = whole clip). Green ▶ plays only good regions, red ▶ only bad
+    right-drag paints <span class="b">bad</span>, middle / alt-drag erases.
+    Scroll wheel zooms; two-finger horizontal pans the timeline (pinch zooms
+    too; min = whole clip). Green ▶ plays only good regions, red ▶ only bad
     ones.
   </p>
   <a class="demo-back" href="/">&larr; All Components</a>
