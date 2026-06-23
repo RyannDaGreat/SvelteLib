@@ -7,15 +7,24 @@
   owns its own zoom/pan window. It holds NO annotation model and no video;
   the parent owns those and feeds segments down + applies edits on callback.
 
+  Terms:
+    - timeline cursor — the white playhead bar marking the displayed frame.
+    - capture mode    — Pointer Lock scrub mode (cursor pinned to the bar's
+                        mid-line, hidden OS cursor); horizontal motion scrubs.
+    - proposed selection — the striped range under an active paint drag.
+
   Gestures:
-    - left-drag           paint "good"  (and scrub to cursor)
-    - right-drag          paint "bad"   (and scrub to cursor)
-    - left+right drag     erase         (and scrub to cursor)
-    - middle-drag         pan the timeline
-    - left click (no drag) capture scrub mode (cursor pinned to bar mid-line; Esc exits)
-    - vertical wheel      zoom about the cursor (mouse wheel or two-finger vertical)
-    - horizontal scroll   pan the timeline
-    - pinch               zoom; min = whole clip visible (100%), zoom in for finer scrubbing
+    - left-drag            paint "good"  (and scrub to cursor)
+    - right-drag           paint "bad"   (and scrub to cursor)
+    - left+right drag      erase         (and scrub to cursor)
+    - middle-drag          pan the timeline
+    - left click (no drag) enter capture mode (Esc exits)
+    - vertical wheel       zoom toward the timeline cursor (mouse wheel or two-finger vertical)
+    - horizontal scroll    pan the timeline
+    - pinch                zoom; min = whole clip visible (100%), zoom in for finer scrubbing
+
+  In capture mode all the same buttons work against the pinned cursor, and
+  pushing past the bar's edge pans the view (no scrub boundary).
 
   The paint mode tracks the live button chord — changing buttons mid-drag
   re-applies the whole stroke in the new mode (retroactive), since the parent
@@ -227,6 +236,10 @@
   const CLICK_SLOP_PX = 4;
   let captured = $state(false);
   let captureX = 0; // virtual clientX accumulated from movementX (plain)
+  let captureCursorX = $state(0); // bar-relative x of the captured timeline cursor
+
+  // Proposed selection (the range under an active paint drag) — shown striped.
+  let proposed = $state(null); // { lo, hi } in seconds, or null
 
   $effect(() => {
     // Initialise / re-fit the window when a clip's duration first arrives.
@@ -271,16 +284,19 @@
     if (horizontalPan) {
       view = panView(view, e.deltaX, width, duration);
     } else {
-      const rect = barEl.getBoundingClientRect();
-      const focalFrac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+      // Zoom anchored to the timeline cursor (playhead), NOT the mouse — keeps
+      // the current frame fixed on screen instead of drifting toward the bar
+      // centre (which is where an over-the-video mouse maps to).
+      const focalFrac = clamp((currentTime - view.start) / visible, 0, 1);
       view = zoomView(view, focalFrac, expZoomFactor(e.deltaY), duration);
     }
-    // Panning/zooming slides the timeline under the cursor, so the time it
-    // covers changes even when the mouse is still. Re-emit so the preview /
-    // active paint follows the cursor's new time, not just on mouse movement.
+    // Panning slides the timeline under a still cursor, so the time it covers
+    // changes — re-emit so the active paint / preview follows. Zoom keeps the
+    // focal time fixed, so it needs no re-seek (re-seeking caused a "jump to
+    // centre" glitch).
     if (drag?.kind === "paint") {
       applyPaint(e.clientX);
-    } else if (!drag) {
+    } else if (!drag && horizontalPan) {
       const r = barEl.getBoundingClientRect();
       const overBar =
         e.clientX >= r.left && e.clientX <= r.right &&
@@ -311,6 +327,7 @@
     const t = timeAt(clientX);
     drag.lastClientX = clientX;
     if (Math.abs(clientX - drag.downClientX) > CLICK_SLOP_PX) drag.moved = true;
+    proposed = { lo: Math.min(drag.startTime, t), hi: Math.max(drag.startTime, t) };
     onseek(t);
     onpaint(drag.mode, drag.startTime, t);
   }
@@ -318,20 +335,48 @@
   /** Recompute a paint drag's mode from the live button chord, then re-apply the
       whole stroke against the parent's stable base — so changing buttons
       mid-drag is retroactive, as if that mode had been used from the start. */
-  function repaint(e) {
-    const mode = paintModeFromButtons(e.buttons);
+  function repaint(buttons, x) {
+    const mode = paintModeFromButtons(buttons);
     if (mode) {
       drag.mode = mode;
       if (mode !== "good") drag.everNonGood = true;
     }
-    applyPaint(e.clientX);
+    applyPaint(x);
   }
 
-  function panDrag(clientX) {
-    // Grab-style: dragging right reveals earlier content (view start decreases).
-    view = panView(view, -(clientX - drag.lastClientX), width, duration);
-    drag.lastClientX = clientX;
+  /** Grab-style pan by a pixel delta — dragging right reveals earlier content. */
+  function panBy(dxPx) {
+    view = panView(view, -dxPx, width, duration);
   }
+
+  function startPaint(x, buttons) {
+    drag = {
+      kind: "paint",
+      mode: paintModeFromButtons(buttons) ?? "good",
+      startTime: timeAt(x),
+      downClientX: x,
+      lastClientX: x,
+      moved: false,
+      everNonGood: false,
+    };
+    onpaintstart();
+    repaint(buttons, x);
+  }
+
+  function endPaintDrag() {
+    proposed = null;
+    if (drag?.kind === "paint") onpaintend();
+    drag = null;
+  }
+
+  function enterCapture(clientX) {
+    const rect = barEl.getBoundingClientRect();
+    captureX = clamp(clientX, rect.left, rect.right);
+    captureCursorX = captureX - rect.left;
+    barEl.requestPointerLock?.();
+  }
+
+  // -- Normal pointer handlers (clientX-driven) --
 
   function onPointerDown(e) {
     if (duration <= 0 || captured || drag) return;
@@ -348,19 +393,8 @@
       drag = { kind: "pan", lastClientX: e.clientX }; // middle button → pan
       return;
     }
-    const startTime = timeAt(e.clientX);
-    drag = {
-      kind: "paint",
-      mode: paintModeFromButtons(e.buttons) ?? "good",
-      startTime,
-      downClientX: e.clientX,
-      lastClientX: e.clientX,
-      moved: false,
-      everNonGood: false,
-    };
-    onpaintstart();
-    repaint(e);
-    onhover(startTime, e.clientX);
+    startPaint(e.clientX, e.buttons);
+    onhover(drag.startTime, e.clientX);
   }
 
   function onPointerMove(e) {
@@ -368,65 +402,96 @@
     if (!drag) {
       onhover(timeAt(e.clientX), e.clientX); // preview the frame under the cursor
     } else if (drag.kind === "pan") {
-      panDrag(e.clientX);
+      panBy(e.clientX - drag.lastClientX);
+      drag.lastClientX = e.clientX;
     } else {
-      repaint(e);
+      repaint(e.buttons, e.clientX);
     }
   }
 
   function onPointerUp(e) {
-    if (!drag) return;
+    if (!drag || captured) return;
     // Per the spec, pointerup fires when the LAST button is released (buttons→0).
     // If a button of this drag is still held (a chord release), keep going so the
     // mode change re-applies retroactively rather than ending the stroke.
-    if (drag.kind === "paint" && e.buttons & 3) return repaint(e);
-    if (drag.kind === "pan" && e.buttons & 4) return panDrag(e.clientX);
-
+    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, e.clientX);
+    if (drag.kind === "pan" && e.buttons & 4) {
+      panBy(e.clientX - drag.lastClientX);
+      drag.lastClientX = e.clientX;
+      return;
+    }
     barEl.releasePointerCapture?.(e.pointerId);
     const wasPaint = drag.kind === "paint";
     // A plain left click (no drag, only ever "good") enters capture scrub mode.
     const click = wasPaint && !drag.moved && !drag.everNonGood;
     const upX = e.clientX;
-    drag = null;
-    if (wasPaint) onpaintend();
-    if (click) {
-      captureX = upX;
-      barEl.requestPointerLock?.();
-    } else if (wasPaint) {
-      onhover(timeAt(upX), upX);
-    }
+    endPaintDrag();
+    if (click) enterCapture(upX);
+    else if (wasPaint) onhover(timeAt(upX), upX);
   }
 
   function onPointerLeave() {
     if (!drag && !captured) onhoverleave();
   }
 
-  // -- Capture scrub mode (Pointer Lock) --------------------------------------
+  // -- Capture scrub mode (Pointer Lock), driven by movementX -----------------
+
+  /** All buttons work while captured, against the virtual (pinned) cursor. */
+  function onCaptureDown(e) {
+    if (!captured || drag) return;
+    if (e.button === 1) drag = { kind: "pan", lastClientX: captureX };
+    else startPaint(captureX, e.buttons);
+  }
+
+  function onCaptureMove(e) {
+    if (!captured || !barEl) return;
+    if (drag?.kind === "pan") { panBy(e.movementX); return; }
+    // Move the virtual cursor; at the bar's edge, push past it by panning the
+    // view instead of stopping — pointer lock keeps movementX coming even at the
+    // screen edge, so there's no boundary.
+    const rect = barEl.getBoundingClientRect();
+    const next = captureX + e.movementX;
+    if (next < rect.left) {
+      view = panView(view, next - rect.left, width, duration); // pan earlier
+      captureX = rect.left;
+    } else if (next > rect.right) {
+      view = panView(view, next - rect.right, width, duration); // pan later
+      captureX = rect.right;
+    } else {
+      captureX = next;
+    }
+    captureCursorX = captureX - rect.left;
+    if (drag) repaint(e.buttons, captureX);
+    else onseek(timeAt(captureX));
+  }
+
+  function onCaptureUp(e) {
+    if (!captured || !drag) return;
+    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, captureX);
+    if (drag.kind === "pan" && e.buttons & 4) return;
+    endPaintDrag();
+  }
 
   $effect(() => {
     function onLockChange() {
       captured = document.pointerLockElement === barEl;
-      if (!captured) onhoverleave();
+      if (!captured) { endPaintDrag(); onhoverleave(); }
     }
     function onLockError() {
       // Browsers reject re-locking too soon after an Esc exit — expected; surface it.
       console.warn("AnnotateBar: pointer lock request was rejected");
     }
-    function onCaptureMove(e) {
-      if (!captured || !barEl) return;
-      // Constrain to the bar's x-range using its live rect (survives the bar
-      // being moved); y is implicitly pinned to the mid-line we render the cursor on.
-      const rect = barEl.getBoundingClientRect();
-      captureX = clamp(captureX + e.movementX, rect.left, rect.right);
-      onseek(timeAt(captureX));
-    }
     document.addEventListener("pointerlockchange", onLockChange);
     document.addEventListener("pointerlockerror", onLockError);
+    document.addEventListener("mousedown", onCaptureDown);
     document.addEventListener("mousemove", onCaptureMove);
+    document.addEventListener("mouseup", onCaptureUp);
     return () => {
       document.removeEventListener("pointerlockchange", onLockChange);
       document.removeEventListener("pointerlockerror", onLockError);
+      document.removeEventListener("mousedown", onCaptureDown);
       document.removeEventListener("mousemove", onCaptureMove);
+      document.removeEventListener("mouseup", onCaptureUp);
     };
   });
 </script>
@@ -451,6 +516,12 @@
       ></div>
     {/each}
 
+    {#if proposed}
+      {@const px = xOf(proposed.lo)}
+      <!-- Proposed selection under an active drag: striped diagonal hatch. -->
+      <div class="proposed" style="left: {px}px; width: {xOf(proposed.hi) - px}px"></div>
+    {/if}
+
     <div class="ticks">
       {#each tickData.ticks as tick}
         <div
@@ -466,7 +537,7 @@
 
   {#if captured}
     <!-- Captured cursor pinned to the bar's mid-line; tracks the scrub position. -->
-    <div class="capture-cursor" style="left: {playheadX}px"></div>
+    <div class="capture-cursor" style="left: {captureCursorX}px"></div>
     <div class="capture-hint">scrub — Esc to exit</div>
   {/if}
 
@@ -495,6 +566,7 @@
     --playhead-cap: 6px;
     --label-color: #999;
     --label-size: 0.7rem;
+    --proposed-stripe: 8px; /* diagonal hatch period on a proposed selection */
 
     position: relative;
     width: 100%;
@@ -523,6 +595,21 @@
   }
   .seg-bad {
     background: var(--seg-bad);
+  }
+
+  /* Proposed selection (active drag): 1px 45° black/white hatch at 20% opacity. */
+  .proposed {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgba(0, 0, 0, 0.2) 0 1px,
+      transparent 1px calc(var(--proposed-stripe) / 2),
+      rgba(255, 255, 255, 0.2) calc(var(--proposed-stripe) / 2) calc(var(--proposed-stripe) / 2 + 1px),
+      transparent calc(var(--proposed-stripe) / 2 + 1px) var(--proposed-stripe)
+    );
   }
 
   /* -- Tick lines (drawn on the bar, anchored to its bottom edge) -- */
