@@ -1,41 +1,29 @@
 <!--
-  Dropdown [visual, general] — themable single-select dropdown.
+  Dropdown [visual, general] — themable single-select.
 
   Drop-in replacement for native <select>: pass `items` and bind `value`.
+  The menu is constrained to the trigger's width so the two pieces share
+  the same silhouette and meld via squared seam corners — no SVG, no
+  flare math. Items longer than the trigger truncate with ellipsis;
+  size your trigger (e.g. `min-width` on the wrapper) to fit.
+
   Extensibility hooks:
     - `trigger` snippet — override the closed-state button rendering
-    - `item`    snippet — override per-row rendering (icons, multi-line, etc.)
+    - `item`    snippet — override per-row rendering
     - `header`  snippet — content above the list (search box, etc.)
     - `footer`  snippet — content below the list (action buttons, etc.)
 
   Behavior: click trigger to open, click item to select, click outside or
   ESC to close. ↑/↓ to navigate, Enter to select, Home/End to jump.
 
-  Usage:
-    <Dropdown items={[{value:1,label:"One"},{value:2,label:"Two"}]} bind:value />
-
-  CSS custom properties (set on Dropdown or any ancestor):
-    --dd-bg              Trigger and menu background
-    --dd-fg              Text color
-    --dd-fg-dim          Dim text (e.g. placeholder)
-    --dd-border          Border color
-    --dd-radius          Corner radius
-    --dd-padding         Trigger inner padding
-    --dd-font-size       Text size
-    --dd-hover-bg        Item hover background
-    --dd-active-bg       Selected item background
-    --dd-active-fg       Selected item text color
-    --dd-menu-shadow     Menu drop shadow
-    --dd-menu-max-height Max scrollable height of menu
-    --dd-menu-gap        Vertical gap between trigger and menu (default 0)
+  CSS custom properties:
+    --dd-bg, --dd-fg, --dd-fg-dim, --dd-border, --dd-radius, --dd-padding,
+    --dd-font-size, --dd-hover-bg, --dd-active-bg, --dd-active-fg,
+    --dd-menu-shadow, --dd-menu-max-height
 -->
 <script>
   /**
    * Pure function. Index of the item whose value === `value`, or -1.
-   *
-   * @param {{value:any}[]} items
-   * @param {any} value
-   * @returns {number}
    *
    * @example findIndex([{value:"a"},{value:"b"}], "b") // 1
    * @example findIndex([{value:"a"}], "x") // -1
@@ -58,20 +46,15 @@
   let {
     /** @type {{value:any,label:string,disabled?:boolean}[]} */
     items = [],
-    /** @type {any} Selected value (bindable, like native <select>) */
+    /** @type {any} */
     value = $bindable(undefined),
-    /** @type {string} Shown when no item matches `value` */
     placeholder = "Select…",
-    /** @type {(value:any)=>void} Called after selection */
+    /** @type {(value:any)=>void} */
     onchange = undefined,
 
-    /** Snippet(currentItem | undefined): override the trigger inner content */
     trigger,
-    /** Snippet(item, isActive): override per-row rendering */
     item: itemSnippet,
-    /** Snippet(): content above the item list */
     header,
-    /** Snippet(): content below the item list */
     footer,
   } = $props();
 
@@ -83,7 +66,6 @@
 
   function openMenu() {
     open = true;
-    /* When opening, focus the currently selected row (or first) for keyboard nav */
     activeIndex = Math.max(0, findIndex(items, value));
   }
 
@@ -107,7 +89,6 @@
   function moveActive(delta) {
     if (!items.length) return;
     let i = activeIndex < 0 ? 0 : wrap(activeIndex + delta, items.length);
-    /* Skip disabled rows; bail after a full lap to avoid infinite loop */
     for (let n = 0; n < items.length; n++) {
       if (!items[i].disabled) {
         activeIndex = i;
@@ -223,20 +204,18 @@
 
 <style>
   .dd {
-    /* -- Themeable custom properties -- */
-    --dd-bg: rgba(0, 0, 0, 0.5);
+    --dd-bg: rgba(20, 20, 30, 0.92);
     --dd-fg: #e0e0e0;
     --dd-fg-dim: #888;
-    --dd-border: rgba(255, 255, 255, 0.15);
+    --dd-border: rgba(255, 255, 255, 0.18);
     --dd-radius: 6px;
-    --dd-padding: 4px 8px;
+    --dd-padding: 4px 10px;
     --dd-font-size: 0.85rem;
     --dd-hover-bg: rgba(255, 255, 255, 0.08);
-    --dd-active-bg: rgba(122, 162, 247, 0.2);
+    --dd-active-bg: rgba(122, 162, 247, 0.25);
     --dd-active-fg: #e0e0e0;
-    --dd-menu-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --dd-menu-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
     --dd-menu-max-height: 240px;
-    --dd-menu-gap: 0px;
 
     position: relative;
     display: inline-block;
@@ -248,6 +227,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    width: 100%;
     background: var(--dd-bg);
     color: inherit;
     border: 1px solid var(--dd-border);
@@ -256,51 +236,55 @@
     font: inherit;
     cursor: pointer;
   }
-  .dd-trigger:hover,
-  .dd-trigger.dd-open {
+  .dd-trigger:hover {
     background: var(--dd-hover-bg);
   }
-  /* While open, square off the bottom corners and drop the bottom border
-     so the trigger melds into the menu as one continuous shape. */
+  /* Open state: square the bottom corners and drop the bottom border so
+     the trigger melds into the menu as one continuous shape. */
   .dd-trigger.dd-open {
+    background: var(--dd-hover-bg);
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
     border-bottom-color: transparent;
   }
 
+  .dd-trigger-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .dd-trigger-label.dd-placeholder {
     color: var(--dd-fg-dim);
   }
-
   .dd-caret {
     font-size: 0.7em;
     opacity: 0.7;
+    margin-left: auto;
   }
 
+  /* Menu spans exactly the trigger's width via `right: 0`, so no width
+     mismatch and no flare needed. */
   .dd-menu {
     position: absolute;
-    top: calc(100% + var(--dd-menu-gap));
+    top: 100%;
     left: 0;
-    min-width: 100%;
+    right: 0;
     z-index: 1000;
     background: var(--dd-bg);
     color: var(--dd-fg);
     border: 1px solid var(--dd-border);
+    border-top: none;
     border-radius: 0 0 var(--dd-radius) var(--dd-radius);
     box-shadow: var(--dd-menu-shadow);
     overflow: hidden;
-    backdrop-filter: blur(8px);
   }
 
-  .dd-header,
-  .dd-footer {
-    padding: 6px 8px;
-    border-color: var(--dd-border);
-  }
   .dd-header {
+    padding: 6px 8px;
     border-bottom: 1px solid var(--dd-border);
   }
   .dd-footer {
+    padding: 6px 8px;
     border-top: 1px solid var(--dd-border);
   }
 
@@ -316,6 +300,8 @@
     padding: var(--dd-padding);
     cursor: pointer;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .dd-item.dd-active {
     background: var(--dd-hover-bg);

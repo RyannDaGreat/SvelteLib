@@ -91,7 +91,7 @@
 
     <div class="card themed">
       <h2>Re-themed via CSS custom properties</h2>
-      <p class="note">Same component, different vars on the wrapper.</p>
+      <p class="note">Same component, just different vars on the wrapper.</p>
       <Dropdown items={fruits} bind:value={fruit} />
     </div>
   </section>
@@ -165,6 +165,12 @@
     text-decoration: underline;
   }
 
+  /* Demos with longer menu labels need a wider trigger so items don't
+     truncate (the menu is constrained to the trigger's width). */
+  .grid :global(.dd) {
+    min-width: 160px;
+  }
+
   /* Re-skin via custom properties — no component changes required. */
   .themed :global(.dd) {
     --dd-bg: #fdf6e3;
@@ -174,6 +180,6 @@
     --dd-active-bg: #b58900;
     --dd-active-fg: #fdf6e3;
     --dd-radius: 12px;
-    --dd-padding: 6px 12px;
+    --dd-padding: 6px 14px;
   }
 </style>
