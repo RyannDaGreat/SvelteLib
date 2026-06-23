@@ -370,7 +370,7 @@
 <style>
   .annotate {
     /* -- Themeable custom properties -- */
-    --bar-height: 50px;
+    --bar-height: 100px;
     --bar-bg: #2b2b3a;
     --bar-radius: 6px;
     --seg-good: #3fb950;
