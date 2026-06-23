@@ -179,7 +179,7 @@
 
   // -- Component --------------------------------------------------------------
 
-  const SPEEDS = [0.25, 0.5, 1, 1.5, 2, 4];
+  const SPEEDS = [0.25, 0.5, 1, 1.5, 2, 4, 8, 16];
 
   let {
     /** @type {string} Video source URL */
@@ -223,9 +223,29 @@
     return mode === "all" ? [] : segments.filter((s) => s.label === mode);
   }
 
-  /** Command. rAF loop: mirror video time, enforce label-restricted playback. */
+  /** Command. Jump to a region boundary and keep playback alive. A big forward
+      seek can briefly drop the element out of the playing state; re-issue play. */
+  function jumpTo(t) {
+    seekTo(t);
+    if (playing && videoEl?.paused) {
+      videoEl.play().catch((err) => {
+        if (err.name !== "AbortError") console.error("ScrubSelect: resume failed:", err);
+      });
+    }
+  }
+
+  /** Command. rAF loop: mirror video time, enforce label-restricted playback.
+      Region playback condenses the timeline — at the end of one allowed region
+      it seeks straight to the start of the next, skipping the gaps. */
   function tick() {
     if (!videoEl) return;
+    // While a seek is in flight, currentTime reports the *target*, not the real
+    // decoded position — re-evaluating now would fire a fresh seek every frame
+    // and the original seek would never land. Wait for it to settle.
+    if (videoEl.seeking) {
+      rafId = requestAnimationFrame(tick);
+      return;
+    }
     currentTime = videoEl.currentTime;
 
     if (playMode !== "all") {
@@ -233,10 +253,10 @@
       const target = segmentToPlay(allowed, currentTime);
       if (!target) {
         // Past the last allowed region: loop to first or stop.
-        if (looped && allowed.length) seekTo(allowed[0].start);
+        if (looped && allowed.length) jumpTo(allowed[0].start);
         else return pause();
-      } else if (currentTime < target.start) {
-        seekTo(target.start);
+      } else if (currentTime < target.start - 1e-3) {
+        jumpTo(target.start);
       }
     } else if (currentTime >= duration) {
       if (looped) seekTo(0);
@@ -270,10 +290,14 @@
     videoEl?.pause();
   }
 
-  function seekTo(t) {
+  /** Command. Seek the main video. `fast` uses fastSeek (nearest keyframe) for
+      snappy scrubbing; programmatic jumps need exact landings so leave it off. */
+  function seekTo(t, fast = false) {
     const clamped = clamp(t, 0, duration || 0);
     currentTime = clamped;
-    if (videoEl) videoEl.currentTime = clamped;
+    if (!videoEl) return;
+    if (fast && videoEl.fastSeek) videoEl.fastSeek(clamped);
+    else videoEl.currentTime = clamped;
   }
 
   /** Command. Begin playback restricted to `mode`, seeking into the first
@@ -328,6 +352,16 @@
     if (wasPlaying) play();
   }
 
+  // -- Hover preview ----------------------------------------------------------
+
+  /** Command. Hovering the timeline scrubs the main video to that frame so the
+      big picture previews the cursor position (whether or not a drag is active).
+      Skipped while playing so it doesn't fight the play loop. */
+  function onHover(t) {
+    if (playing) return;
+    seekTo(t, true);
+  }
+
   function clearAll() {
     pause();
     commit([]);
@@ -336,9 +370,11 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="scrub-select" onwheel={(e) => bar?.handleWheel(e)}>
-  <div class="stage" class:glow-good={currentLabel === "good"} class:glow-bad={currentLabel === "bad"}>
+  <div class="stage">
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
+      class:glow-good={currentLabel === "good"}
+      class:glow-bad={currentLabel === "bad"}
       bind:this={videoEl}
       {src}
       muted
@@ -394,10 +430,11 @@
     {duration}
     {currentTime}
     {segments}
-    onseek={seekTo}
+    onseek={(t) => seekTo(t, true)}
     onpaintstart={onPaintStart}
     onpaint={onPaint}
     onpaintend={onPaintEnd}
+    onhover={onHover}
   />
 </div>
 
@@ -418,6 +455,9 @@
     --ss-bad: #e5534b;
     --ss-accent: #7aa2f7;
     --ss-time-color: #888;
+    /* Cap the video so a tall/portrait clip never runs off-screen — only its
+       displayed height changes, width follows from the aspect ratio. */
+    --ss-video-max-h: 55vh;
 
     display: flex;
     flex-direction: column;
@@ -427,22 +467,29 @@
     user-select: none;
   }
 
-  /* Video stage — colored glow reflects the region under the playhead. */
+  /* Video stage — centers the height-bounded frame in the full-width row. */
   .stage {
-    border-radius: var(--ss-radius);
-    transition: box-shadow 0.2s ease;
-  }
-  .stage.glow-good {
-    box-shadow: 0 0 var(--ss-glow-spread) 4px var(--ss-glow-good);
-  }
-  .stage.glow-bad {
-    box-shadow: 0 0 var(--ss-glow-spread) 4px var(--ss-glow-bad);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    max-height: var(--ss-video-max-h);
   }
   video {
     display: block;
-    width: 100%;
+    max-width: 100%;
+    max-height: var(--ss-video-max-h);
+    width: auto;
+    height: auto;
     border-radius: var(--ss-radius);
     background: #000;
+    transition: box-shadow 0.2s ease;
+  }
+  /* Glow hugs the actual frame and reflects the region under the playhead. */
+  video.glow-good {
+    box-shadow: 0 0 var(--ss-glow-spread) 4px var(--ss-glow-good);
+  }
+  video.glow-bad {
+    box-shadow: 0 0 var(--ss-glow-spread) 4px var(--ss-glow-bad);
   }
 
   /* -- Transport row (shares the look of ScrubBar) -- */
@@ -474,22 +521,29 @@
     opacity: 0.25;
     cursor: default;
   }
-  /* Tinted region-play buttons */
-  .play-good {
-    color: var(--ss-good);
-  }
-  .play-bad {
-    color: var(--ss-bad);
-  }
-  .play-all.active,
-  .transport button.active {
+  /* Distinct per-mode icon colors. Selectors are scoped under .transport so
+     they out-specify the base `.transport button { color }` rule. */
+  .transport .play-all {
     color: var(--ss-accent);
   }
-  .play-good.active {
-    background: color-mix(in srgb, var(--ss-good) 25%, transparent);
+  .transport .play-good {
+    color: var(--ss-good);
   }
-  .play-bad.active {
-    background: color-mix(in srgb, var(--ss-bad) 25%, transparent);
+  .transport .play-bad {
+    color: var(--ss-bad);
+  }
+  /* Active = filled background in the button's own hue (icon keeps its color). */
+  .transport button.active {
+    background: var(--ss-btn-hover-bg);
+  }
+  .transport .play-all.active {
+    background: color-mix(in srgb, var(--ss-accent) 30%, transparent);
+  }
+  .transport .play-good.active {
+    background: color-mix(in srgb, var(--ss-good) 30%, transparent);
+  }
+  .transport .play-bad.active {
+    background: color-mix(in srgb, var(--ss-bad) 30%, transparent);
   }
 
   .spacer {

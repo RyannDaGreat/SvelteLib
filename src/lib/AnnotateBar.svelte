@@ -295,11 +295,13 @@
     drag = { mode, startTime, lastClientX: e.clientX };
     onpaintstart(mode);
     applyDrag(e.clientX);
+    onhover(startTime, e.clientX);
   }
 
   function onPointerMove(e) {
-    if (!drag) return;
-    applyDrag(e.clientX);
+    if (drag) applyDrag(e.clientX);
+    // Preview the frame under the cursor whether or not a drag is in progress.
+    onhover(timeAt(e.clientX), e.clientX);
   }
 
   function onPointerUp(e) {
@@ -307,6 +309,11 @@
     barEl.releasePointerCapture?.(e.pointerId);
     drag = null;
     onpaintend();
+    onhover(timeAt(e.clientX), e.clientX);
+  }
+
+  function onPointerLeave() {
+    if (!drag) onhoverleave();
   }
 </script>
 
@@ -319,6 +326,7 @@
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
+    onpointerleave={onPointerLeave}
     oncontextmenu={(e) => e.preventDefault()}
   >
     {#each segments as seg}
