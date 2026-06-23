@@ -32,3 +32,8 @@ scratchpad*.py
 # Test video assets (large, not checked in)
 public/videos/
 .claude/
+
+# editor junk
+*~
+.*.un~
+*.swp
