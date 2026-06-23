@@ -232,7 +232,7 @@
   let inited = false;
   let viewAnimId = null;
   let viewAnimLastMs = 0;
-  const VIEW_SMOOTH_TAU_MS = 70; // exponential time constant for wheel easing
+  const VIEW_SMOOTH_TAU_MS = 32; // EMA time constant for wheel easing (snappy)
   const DISCRETE_WHEEL_PX = 40; // |delta| at/above this ⇒ a discrete wheel notch
 
   // Active drag stroke (not reactive — pointer bookkeeping).
@@ -281,7 +281,10 @@
     const k = 1 - Math.exp(-dt / VIEW_SMOOTH_TAU_MS); // frame-rate independent
     const start = view.start + (targetView.start - view.start) * k;
     const end = view.end + (targetView.end - view.end) * k;
-    const settled = Math.abs(targetView.start - start) < 1e-3 && Math.abs(targetView.end - end) < 1e-3;
+    // Snap once the remaining move is sub-pixel — kills the slow asymptotic tail
+    // so it stops crisply instead of creeping.
+    const eps = (0.5 / Math.max(width, 1)) * (end - start || 1);
+    const settled = Math.abs(targetView.start - start) < eps && Math.abs(targetView.end - end) < eps;
     view = settled ? { ...targetView } : { start, end };
     if (captured) syncCaptureToPlayhead();
     viewAnimId = settled ? null : requestAnimationFrame(viewAnimTick);
