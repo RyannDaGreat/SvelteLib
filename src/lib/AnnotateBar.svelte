@@ -224,8 +224,16 @@
   let width = $state(0);
 
   // Zoom/pan window over the clip (seconds). Initialised to full clip.
+  // `view` is what's rendered; `targetView` is where wheel input is steering it.
+  // Wheel changes ease view → targetView (smooths chunky discrete-scroll notches);
+  // direct manipulation (drag/capture) jumps both at once.
   let view = $state({ start: 0, end: 0 });
+  let targetView = { start: 0, end: 0 };
   let inited = false;
+  let viewAnimId = null;
+  let viewAnimLastMs = 0;
+  const VIEW_SMOOTH_TAU_MS = 70; // exponential time constant for wheel easing
+  const DISCRETE_WHEEL_PX = 40; // |delta| at/above this ⇒ a discrete wheel notch
 
   // Active drag stroke (not reactive — pointer bookkeeping).
   let drag = null; // { mode, startTime, lastClientX, downClientX, moved }
@@ -243,10 +251,41 @@
   $effect(() => {
     // Initialise / re-fit the window when a clip's duration first arrives.
     if (duration > 0 && (!inited || view.end === 0)) {
-      view = { start: 0, end: duration };
+      setViewNow({ start: 0, end: duration });
       inited = true;
     }
   });
+
+  $effect(() => () => { if (viewAnimId != null) cancelAnimationFrame(viewAnimId); });
+
+  /** Command. Jump the window immediately (direct manipulation: drag, capture). */
+  function setViewNow(v) {
+    if (viewAnimId != null) { cancelAnimationFrame(viewAnimId); viewAnimId = null; }
+    targetView = v;
+    view = v;
+  }
+
+  /** Command. Steer the window toward `v`, easing there over a few frames so a
+      discrete mouse-wheel notch animates smoothly instead of snapping. */
+  function animateViewTo(v) {
+    targetView = v;
+    if (viewAnimId == null) {
+      viewAnimLastMs = performance.now();
+      viewAnimId = requestAnimationFrame(viewAnimTick);
+    }
+  }
+
+  function viewAnimTick(now) {
+    const dt = now - viewAnimLastMs;
+    viewAnimLastMs = now;
+    const k = 1 - Math.exp(-dt / VIEW_SMOOTH_TAU_MS); // frame-rate independent
+    const start = view.start + (targetView.start - view.start) * k;
+    const end = view.end + (targetView.end - view.end) * k;
+    const settled = Math.abs(targetView.start - start) < 1e-3 && Math.abs(targetView.end - end) < 1e-3;
+    view = settled ? { ...targetView } : { start, end };
+    if (captured) syncCaptureToPlayhead();
+    viewAnimId = settled ? null : requestAnimationFrame(viewAnimTick);
+  }
 
   let visible = $derived(view.end - view.start || duration || 1);
 
@@ -280,14 +319,24 @@
     if (!barEl || duration <= 0) return;
     e.preventDefault();
     const horizontalPan = !e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    // A discrete mouse wheel arrives as sparse, chunky notches (line mode, or
+    // big pixel deltas) — ease those for a smooth zoom. A trackpad streams tiny
+    // continuous deltas that are already smooth, so apply those instantly.
+    const discrete =
+      e.deltaMode !== 0 ||
+      Math.abs(e.deltaY) >= DISCRETE_WHEEL_PX ||
+      Math.abs(e.deltaX) >= DISCRETE_WHEEL_PX;
+    const apply = discrete ? animateViewTo : setViewNow;
+    // Steer the *target* (so rapid notches accumulate) and ease the view there.
     if (horizontalPan) {
-      view = panView(view, e.deltaX, width, duration);
+      apply(panView(targetView, e.deltaX, width, duration));
     } else {
       // Zoom anchored to the timeline cursor (playhead), NOT the mouse — keeps
       // the current frame fixed on screen instead of drifting toward the bar
       // centre (which is where an over-the-video mouse maps to).
-      const focalFrac = clamp((currentTime - view.start) / visible, 0, 1);
-      view = zoomView(view, focalFrac, expZoomFactor(e.deltaY), duration);
+      const targetVisible = targetView.end - targetView.start;
+      const focalFrac = clamp((currentTime - targetView.start) / targetVisible, 0, 1);
+      apply(zoomView(targetView, focalFrac, expZoomFactor(e.deltaY), duration));
     }
     // Panning slides the timeline under a still cursor, so the time it covers
     // changes — re-emit so the active paint / preview follows. Zoom keeps the
@@ -347,9 +396,10 @@
     applyPaint(x);
   }
 
-  /** Grab-style pan by a pixel delta — dragging right reveals earlier content. */
+  /** Grab-style pan by a pixel delta — dragging right reveals earlier content.
+      Direct manipulation, so it jumps immediately (no easing). */
   function panBy(dxPx) {
-    view = panView(view, -dxPx, width, duration);
+    setViewNow(panView(view, -dxPx, width, duration));
   }
 
   function startPaint(x, buttons) {
@@ -462,10 +512,10 @@
     const rect = barEl.getBoundingClientRect();
     const next = captureX + e.movementX;
     if (next < rect.left) {
-      view = panView(view, next - rect.left, width, duration); // pan earlier
+      setViewNow(panView(view, next - rect.left, width, duration)); // pan earlier
       captureX = rect.left;
     } else if (next > rect.right) {
-      view = panView(view, next - rect.right, width, duration); // pan later
+      setViewNow(panView(view, next - rect.right, width, duration)); // pan later
       captureX = rect.right;
     } else {
       captureX = next;
