@@ -31,12 +31,15 @@ until curl -s -o /dev/null "http://localhost:${BACKEND_PORT}/api/videos" 2>/dev/
 done
 echo
 
-# Frontend deps (vite, svelte, vite-plugin-svelte): on a fresh machine there's no
-# node_modules. Install non-interactively (no npx "Ok to proceed?" prompt) BEFORE
-# we advertise the URL, then run the LOCAL vite binary so it never prompts again.
-if [ ! -x "${ROOT}/node_modules/.bin/vite" ]; then
-  echo "Installing frontend deps (first run on this machine)…"
-  npm install --prefix "${ROOT}" --no-fund --no-audit
+# Frontend deps (vite, svelte, @sveltejs/vite-plugin-svelte): a fresh — OR PARTIAL
+# — node_modules breaks Vite. Install non-interactively whenever the local vite
+# binary OR the svelte plugin is missing (a half-populated node_modules left by an
+# aborted `npx vite` is exactly what bit us). Run from the repo root (cd, not
+# --prefix, which some npm versions ignore for the install target).
+if [ ! -x "${ROOT}/node_modules/.bin/vite" ] \
+   || [ ! -d "${ROOT}/node_modules/@sveltejs/vite-plugin-svelte" ]; then
+  echo "Installing frontend deps (npm install in ${ROOT}) …"
+  ( cd "${ROOT}" && npm install --no-fund --no-audit )
 fi
 
 LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)
