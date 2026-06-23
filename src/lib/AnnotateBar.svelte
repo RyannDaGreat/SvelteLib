@@ -236,7 +236,6 @@
   const CLICK_SLOP_PX = 4;
   let captured = $state(false);
   let captureX = 0; // virtual clientX accumulated from movementX (plain)
-  let captureCursorX = $state(0); // bar-relative x of the captured timeline cursor
 
   // Proposed selection (the range under an active paint drag) — shown striped.
   let proposed = $state(null); // { lo, hi } in seconds, or null
@@ -303,6 +302,10 @@
         e.clientY >= r.top && e.clientY <= r.bottom;
       if (overBar) onhover(timeAt(e.clientX), e.clientX);
     }
+    // In capture mode the view just moved under the locked cursor — pull the
+    // virtual cursor back onto the timeline cursor so they stay locked and the
+    // next movementX continues from the right place.
+    if (captured) syncCaptureToPlayhead();
   }
 
   // -- Pointer: scrub + paint/erase + pan --
@@ -372,8 +375,15 @@
   function enterCapture(clientX) {
     const rect = barEl.getBoundingClientRect();
     captureX = clamp(clientX, rect.left, rect.right);
-    captureCursorX = captureX - rect.left;
     barEl.requestPointerLock?.();
+  }
+
+  /** Snap the virtual cursor onto the timeline cursor (playhead) so the capture
+      circle and playhead are the same position by construction — keeps them
+      locked through zoom/pan, and keeps movementX continuing from the right x. */
+  function syncCaptureToPlayhead() {
+    if (!barEl) return;
+    captureX = barEl.getBoundingClientRect().left + clamp(playheadX, 0, width);
   }
 
   // -- Normal pointer handlers (clientX-driven) --
@@ -445,7 +455,7 @@
 
   function onCaptureMove(e) {
     if (!captured || !barEl) return;
-    if (drag?.kind === "pan") { panBy(e.movementX); return; }
+    if (drag?.kind === "pan") { panBy(e.movementX); syncCaptureToPlayhead(); return; }
     // Move the virtual cursor; at the bar's edge, push past it by panning the
     // view instead of stopping — pointer lock keeps movementX coming even at the
     // screen edge, so there's no boundary.
@@ -460,7 +470,8 @@
     } else {
       captureX = next;
     }
-    captureCursorX = captureX - rect.left;
+    // onseek/repaint set currentTime = timeAt(captureX), so the playhead lands at
+    // captureX − left — i.e. exactly where the capture circle renders. Locked.
     if (drag) repaint(e.buttons, captureX);
     else onseek(timeAt(captureX));
   }
@@ -536,9 +547,8 @@
   <div class="playhead"><span class="cap cap-top"></span><span class="cap cap-bottom"></span></div>
 
   {#if captured}
-    <!-- Captured cursor pinned to the bar's mid-line; tracks the scrub position. -->
-    <div class="capture-cursor" style="left: {captureCursorX}px"></div>
-    <div class="capture-hint">scrub — Esc to exit</div>
+    <!-- Capture cursor: rendered AT the playhead so the two are locked by construction. -->
+    <div class="capture-cursor" style="left: {playheadX}px"></div>
   {/if}
 
   <div class="labels">
@@ -606,6 +616,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
+    z-index: 1;
     pointer-events: none;
     background-image: repeating-linear-gradient(
       45deg,
@@ -619,6 +630,7 @@
   .ticks {
     position: absolute;
     inset: 0;
+    z-index: 2; /* above the proposed-selection hatch */
     pointer-events: none;
   }
   .tick {
@@ -673,15 +685,6 @@
     box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6);
     pointer-events: none;
     z-index: 3;
-  }
-  .capture-hint {
-    position: absolute;
-    top: calc(-1 * var(--playhead-overhang) - 1.1rem);
-    right: 0;
-    color: var(--label-color);
-    font-size: var(--label-size);
-    letter-spacing: 0.02em;
-    pointer-events: none;
   }
 
   /* -- Timestamp labels under the bar -- */
