@@ -12,6 +12,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Repo root (where package.json + node_modules live), relative to this script so
+# the dump stays portable. The frontend deps resolve from here.
+ROOT="$(cd ../../.. && pwd)"
+
 read -r APP_PORT BACKEND_PORT < <(uv run server.py ports)
 APP_URL="http://localhost:${APP_PORT}"
 
@@ -27,6 +31,14 @@ until curl -s -o /dev/null "http://localhost:${BACKEND_PORT}/api/videos" 2>/dev/
 done
 echo
 
+# Frontend deps (vite, svelte, vite-plugin-svelte): on a fresh machine there's no
+# node_modules. Install non-interactively (no npx "Ok to proceed?" prompt) BEFORE
+# we advertise the URL, then run the LOCAL vite binary so it never prompts again.
+if [ ! -x "${ROOT}/node_modules/.bin/vite" ]; then
+  echo "Installing frontend deps (first run on this machine)…"
+  npm install --prefix "${ROOT}" --no-fund --no-audit
+fi
+
 LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)
 echo "=================================================="
 echo "  Video Slice Annotator   (live / HMR)"
@@ -37,4 +49,4 @@ echo "=================================================="
 
 # Frontend with HMR, exposed to the LAN, proxying API/media to the backend.
 cd web
-BACKEND_URL="http://localhost:${BACKEND_PORT}" npx vite dev --port "${APP_PORT}" --strictPort
+BACKEND_URL="http://localhost:${BACKEND_PORT}" "${ROOT}/node_modules/.bin/vite" dev --port "${APP_PORT}" --strictPort
