@@ -566,7 +566,9 @@
     --playhead-cap: 6px;
     --label-color: #999;
     --label-size: 0.7rem;
-    --proposed-stripe: 8px; /* diagonal hatch period on a proposed selection */
+    /* Proposed-selection diagonal hatch: solid 5px white + 1px black, no gaps. */
+    --proposed-white: 5px;
+    --proposed-black: 1px;
 
     position: relative;
     width: 100%;
@@ -597,7 +599,9 @@
     background: var(--seg-bad);
   }
 
-  /* Proposed selection (active drag): 1px 45° black/white hatch at 20% opacity. */
+  /* Proposed selection (active drag): solid 45° white/black hatch at 20% opacity,
+     no gaps. background-attachment: fixed anchors the pattern to the viewport so
+     it stays put globally while the selection slides over it like a window. */
   .proposed {
     position: absolute;
     top: 0;
@@ -605,11 +609,10 @@
     pointer-events: none;
     background-image: repeating-linear-gradient(
       45deg,
-      rgba(0, 0, 0, 0.2) 0 1px,
-      transparent 1px calc(var(--proposed-stripe) / 2),
-      rgba(255, 255, 255, 0.2) calc(var(--proposed-stripe) / 2) calc(var(--proposed-stripe) / 2 + 1px),
-      transparent calc(var(--proposed-stripe) / 2 + 1px) var(--proposed-stripe)
+      rgba(255, 255, 255, 0.2) 0 var(--proposed-white),
+      rgba(0, 0, 0, 0.2) var(--proposed-white) calc(var(--proposed-white) + var(--proposed-black))
     );
+    background-attachment: fixed;
   }
 
   /* -- Tick lines (drawn on the bar, anchored to its bottom edge) -- */
