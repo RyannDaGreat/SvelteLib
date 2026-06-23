@@ -456,15 +456,14 @@
       drag = { kind: "pan", lastClientX: e.clientX }; // middle button → pan
       return;
     }
-    startPaint(e.clientX, e.buttons);
-    onhover(drag.startTime, e.clientX);
+    startPaint(e.clientX, e.buttons); // already seeks to the press point via onseek
   }
 
   function onPointerMove(e) {
-    if (captured) return; // capture mode is driven by movementX, not clientX
-    if (!drag) {
-      onhover(timeAt(e.clientX), e.clientX); // preview the frame under the cursor
-    } else if (drag.kind === "pan") {
+    // Plain hover does nothing — scrubbing only happens in capture mode or while
+    // actively dragging. (Capture is driven by movementX, not clientX.)
+    if (captured || !drag) return;
+    if (drag.kind === "pan") {
       panBy(e.clientX - drag.lastClientX);
       drag.lastClientX = e.clientX;
     } else {
