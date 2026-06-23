@@ -45,6 +45,7 @@
 -->
 <script>
   import "iconify-icon";
+  import { makeStripeCanvas } from "./stripes.js";
 
   // -- Pure functions (general) -----------------------------------------------
 
@@ -253,6 +254,12 @@
   // live element rect so it keeps working if the bar gets moved on the page.
   const CLICK_SLOP_PX = 4;
   const SLOW_SCRUB_FACTOR = 0.25; // Shift in capture mode → 4× slower scrubbing
+  const EDGE_LEAD_FRAC = 0.1; // capture edge-scroll keeps 10% lead ahead of cursor
+  // Releasing one button of an L+R (erase) chord starts this window: if the other
+  // releases within it, the two count as released TOGETHER → the erase commits.
+  // If it expires with one still held, we fall to that button's mode (good/bad).
+  const CHORD_RELEASE_MS = 100;
+  let chordTimer = null;
   // `captured` is a bindable prop (declared above) so the app can read it.
   let captureX = 0; // virtual clientX accumulated from movementX (plain)
 
@@ -274,7 +281,10 @@
     }
   });
 
-  $effect(() => () => { if (viewAnimId != null) cancelAnimationFrame(viewAnimId); });
+  $effect(() => () => {
+    if (viewAnimId != null) cancelAnimationFrame(viewAnimId);
+    clearChordTimeout();
+  });
 
   /** Command. Jump the window immediately (direct manipulation: drag, capture). */
   function setViewNow(v) {
@@ -325,6 +335,32 @@
   let playheadX = $derived(xOf(currentTime));
   let tickData = $derived(computeTicks(view.start, view.end, width));
   let majorTicks = $derived(tickData.ticks.filter((t) => t.major));
+
+  // Proposed-selection hatch: a crisp 45° canvas tile (5px white + 1px black,
+  // both at 20%) built with the SAME makeStripeCanvas() the video backdrop uses.
+  // Recomputed on dpr change; exposed on the root as --proposed-bg.
+  const PROPOSED_WHITE = "rgba(255, 255, 255, 0.2)";
+  const PROPOSED_BLACK = "rgba(0, 0, 0, 0.2)";
+  const PROPOSED_WHITE_PX = 5;
+  const PROPOSED_BLACK_PX = 1;
+  let proposedBg = $state("");
+  $effect(() => {
+    const dpr = window.devicePixelRatio || 1;
+    const { url, cssSize } = makeStripeCanvas(
+      [
+        { color: PROPOSED_WHITE, width: PROPOSED_WHITE_PX },
+        { color: PROPOSED_BLACK, width: PROPOSED_BLACK_PX },
+      ],
+      dpr,
+    );
+    proposedBg = `--proposed-bg: url('${url}'); --proposed-bg-size: ${cssSize}px ${cssSize}px;`;
+  });
+
+  // Scroll affordance: chevrons fade in when the window hides clip content to a
+  // side (you can pan/zoom there, you just can't see it yet).
+  const EDGE_EPS = 1e-3;
+  let moreLeft = $derived(view.start > EDGE_EPS);
+  let moreRight = $derived(duration > 0 && view.end < duration - EDGE_EPS);
 
   /** Pure. Pixel rect for a segment within the current window. */
   function segRect(seg) {
@@ -411,12 +447,30 @@
       re-apply the whole stroke against the parent's stable base — so changing
       buttons/modifiers mid-drag is retroactive, as if used from the start. */
   function repaint(buttons, x, alt = false) {
+    clearChordTimeout(); // any deliberate re-apply resolves a pending chord window
     const mode = paintModeFromButtons(buttons, alt);
     if (mode) {
       drag.mode = mode;
       if (mode !== "good") drag.everNonGood = true;
     }
     applyPaint(x);
+  }
+
+  function clearChordTimeout() {
+    if (chordTimer != null) {
+      clearTimeout(chordTimer);
+      chordTimer = null;
+    }
+  }
+  /** After a partial chord release (one button up, one still held), wait
+      CHORD_RELEASE_MS. If the stroke is still alive when it fires — i.e. the
+      other button did NOT come up together — fall to the held button's mode. */
+  function scheduleChordRelease(buttons, alt) {
+    clearChordTimeout();
+    chordTimer = setTimeout(() => {
+      chordTimer = null;
+      if (drag?.kind === "paint") repaint(buttons, drag.lastClientX, alt);
+    }, CHORD_RELEASE_MS);
   }
 
   /** Grab-style pan by a pixel delta — dragging right reveals earlier content.
@@ -432,6 +486,7 @@
       startTime: timeAt(x),
       downClientX: x,
       lastClientX: x,
+      lastButtons: buttons,
       moved: false,
       everNonGood: false,
     };
@@ -439,7 +494,19 @@
     repaint(buttons, x, alt);
   }
 
+  /** Update a paint stroke. The mode is recomputed only when the cursor MOVES or
+      a NEW button is pressed — NOT when a button is released. Otherwise lifting
+      off an L+R (erase) chord would momentarily revert to L (good) and commit
+      "good" instead of the erase. On a release-only event the current mode and
+      stroke are kept as-is. */
+  function paintMove(buttons, x, alt) {
+    const pressedNew = (buttons & ~drag.lastButtons) !== 0;
+    drag.lastButtons = buttons;
+    if (x !== drag.lastClientX || pressedNew) repaint(buttons, x, alt);
+  }
+
   function endPaintDrag() {
+    clearChordTimeout(); // full release commits the stroke as-is (e.g. erase)
     proposed = null;
     if (drag?.kind === "paint") onpaintend();
     drag = null;
@@ -462,7 +529,16 @@
   // -- Normal pointer handlers (clientX-driven) --
 
   function onPointerDown(e) {
-    if (duration <= 0 || captured || drag) return;
+    if (duration <= 0 || captured) return;
+    // A button pressed mid-drag is a CHORD change (e.g. adding right to a held
+    // left = erase). Browsers fire a fresh pointerdown for it; without this it
+    // was swallowed by the `drag` guard, so the chord only took effect once you
+    // MOVED — unlike alt, which is read on the first press. Route it through
+    // paintMove so a static L+R click erases exactly like alt+click.
+    if (drag) {
+      if (drag.kind === "paint") paintMove(e.buttons, e.clientX, e.altKey);
+      return;
+    }
     e.preventDefault();
     /* Best-effort capture so a drag keeps tracking past the bar's edges.
        Expected to reject when there's no active pointer (e.g. synthetic
@@ -487,16 +563,20 @@
       panBy(e.clientX - drag.lastClientX);
       drag.lastClientX = e.clientX;
     } else {
-      repaint(e.buttons, e.clientX, e.altKey);
+      paintMove(e.buttons, e.clientX, e.altKey);
     }
   }
 
   function onPointerUp(e) {
     if (!drag || captured) return;
-    // Per the spec, pointerup fires when the LAST button is released (buttons→0).
-    // If a button of this drag is still held (a chord release), keep going so the
-    // mode change re-applies retroactively rather than ending the stroke.
-    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, e.clientX, e.altKey);
+    // pointerup fires when the LAST button is released (buttons→0). If a button
+    // of this drag is still held (a chord release), keep the current mode — do
+    // NOT recompute (paintMove won't, since this is a release without a move).
+    if (drag.kind === "paint" && e.buttons & 3) {
+      paintMove(e.buttons, e.clientX, e.altKey); // keep mode (no revert on release)
+      scheduleChordRelease(e.buttons, e.altKey); // …unless the window expires still held
+      return;
+    }
     if (drag.kind === "pan" && e.buttons & 4) {
       panBy(e.clientX - drag.lastClientX);
       drag.lastClientX = e.clientX;
@@ -553,19 +633,47 @@
       Math.abs(xOf(currentTime) - xOf(c.time)) < ON_TIMECODE_PX
     );
   }
+  /** Query. The "highlighted" comment: the hovered one, else the one under the
+      playhead (on its timecode). Null if none — used by the X delete hotkey. */
+  function highlightedComment() {
+    return (
+      comments.find((c) => c.id === hoverCommentId) ||
+      comments.find((c) => Math.abs(xOf(currentTime) - xOf(c.time)) < ON_TIMECODE_PX) ||
+      null
+    );
+  }
   /** Svelte action: focus a freshly-mounted comment textarea. */
   function autofocus(node) {
     node.focus();
   }
 
-  // Press C while hovering the timeline → add a comment at the playhead.
+  // Hotkeys: C adds a comment (while hovering the timeline), X deletes the
+  // highlighted one, T toggles scrub-capture from ANYWHERE (even over the video).
   $effect(() => {
     function onKey(e) {
-      if ((e.key !== "c" && e.key !== "C") || editingId != null || !hovered) return;
       const el = document.activeElement;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
-      e.preventDefault();
-      addCommentAt(currentTime);
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+      if (typing || editingId != null) return;
+      const k = e.key.toLowerCase();
+      if (k === "c" && hovered) {
+        e.preventDefault();
+        addCommentAt(currentTime);
+      } else if (k === "x") {
+        const target = highlightedComment();
+        if (target) {
+          e.preventDefault();
+          deleteComment(target.id);
+        }
+      } else if (k === "t" && duration > 0 && barEl) {
+        // Toggle capture. Entering from anywhere locks the pointer; on exit the
+        // browser restores the OS cursor to where it was (Pointer Lock default).
+        e.preventDefault();
+        if (captured) document.exitPointerLock?.();
+        else {
+          syncCaptureToPlayhead();
+          barEl.requestPointerLock?.();
+        }
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -575,7 +683,12 @@
 
   /** All buttons work while captured, against the virtual (pinned) cursor. */
   function onCaptureDown(e) {
-    if (!captured || drag) return;
+    if (!captured) return;
+    // Same chord handling as onPointerDown: a 2nd button mid-drag updates the mode.
+    if (drag) {
+      if (drag.kind === "paint") paintMove(e.buttons, captureX, e.altKey);
+      return;
+    }
     if (e.button === 1) drag = { kind: "pan", lastClientX: captureX };
     else startPaint(captureX, e.buttons, e.altKey);
   }
@@ -585,31 +698,58 @@
     // Hold Shift for fine scrubbing — 4× slower than the raw mouse movement.
     const mv = e.shiftKey ? e.movementX * SLOW_SCRUB_FACTOR : e.movementX;
     if (drag?.kind === "pan") { panBy(mv); syncCaptureToPlayhead(); return; }
-    // Move the virtual cursor; at the bar's edge, push past it by panning the
-    // view instead of stopping — pointer lock keeps movementX coming even at the
-    // screen edge, so there's no boundary.
+    // Move the virtual cursor; near an edge, push past it by panning the view.
+    // Keep a LEAD gap (10% of the bar) between the cursor and the edge while
+    // there's more clip that way — so you can see a little ahead of the playhead
+    // instead of jamming it under the edge chevron. At the true clip start/end
+    // (nothing more to reveal, no chevron) the cursor reaches the real edge.
     const rect = barEl.getBoundingClientRect();
+    const lead = EDGE_LEAD_FRAC * width;
+    const loBound = rect.left + lead;
+    const hiBound = rect.right - lead;
     const next = captureX + mv;
-    if (next < rect.left) {
-      setViewNow(panView(view, next - rect.left, width, duration)); // pan earlier
-      captureX = rect.left;
-    } else if (next > rect.right) {
-      setViewNow(panView(view, next - rect.right, width, duration)); // pan later
-      captureX = rect.right;
+    let panned = false;
+    if (next < loBound) {
+      const v = panView(view, next - loBound, width, duration);
+      if (v.start !== view.start) { setViewNow(v); captureX = loBound; panned = true; }
+      else captureX = Math.max(next, rect.left);
+    } else if (next > hiBound) {
+      const v = panView(view, next - hiBound, width, duration);
+      if (v.start !== view.start) { setViewNow(v); captureX = hiBound; panned = true; }
+      else captureX = Math.min(next, rect.right);
     } else {
       captureX = next;
     }
-    // onseek/repaint set currentTime = timeAt(captureX), so the playhead lands at
-    // captureX − left — i.e. exactly where the capture circle renders. Locked.
-    if (drag) repaint(e.buttons, captureX, e.altKey);
-    else onseek(timeAt(captureX));
+    // Always reflect the time under captureX. While edge-scrolling captureX is
+    // pinned but the VIEW slid, so the time (hence selection + playhead) changed —
+    // paintMove's "x unchanged" guard would skip it, so force applyPaint when we
+    // panned. Recompute the paint mode from the live button chord each move.
+    if (drag) {
+      if (panned) {
+        const mode = paintModeFromButtons(e.buttons, e.altKey);
+        if (mode) { drag.mode = mode; if (mode !== "good") drag.everNonGood = true; }
+        drag.lastButtons = e.buttons;
+        applyPaint(captureX);
+      } else {
+        paintMove(e.buttons, captureX, e.altKey);
+      }
+    } else {
+      onseek(timeAt(captureX));
+    }
   }
 
   function onCaptureUp(e) {
     if (!captured || !drag) return;
-    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, captureX, e.altKey);
+    if (drag.kind === "paint" && e.buttons & 3) {
+      scheduleChordRelease(e.buttons, e.altKey); // keep erase unless held past the window
+      return;
+    }
     if (drag.kind === "pan" && e.buttons & 4) return;
+    // A plain click (no drag, only ever "good") while captured EXITS capture mode
+    // — the mirror of click-to-enter.
+    const wasClick = drag.kind === "paint" && !drag.moved && !drag.everNonGood;
     endPaintDrag();
+    if (wasClick) document.exitPointerLock?.();
   }
 
   $effect(() => {
@@ -639,7 +779,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="annotate"
-  style="--playhead-x: {playheadX}px"
+  style="--playhead-x: {playheadX}px; {proposedBg}"
   onwheel={handleWheel}
   onpointerenter={() => (hovered = true)}
   onpointerleave={() => (hovered = false)}
@@ -724,6 +864,15 @@
         ></div>
       {/each}
     </div>
+
+    <!-- Scroll affordance: double-chevrons that fade in when clip content is
+         hidden beyond the visible window on that side. -->
+    <div class="scroll-hint left" class:visible={moreLeft}>
+      <iconify-icon icon="mdi:chevron-double-left" width="22" height="22"></iconify-icon>
+    </div>
+    <div class="scroll-hint right" class:visible={moreRight}>
+      <iconify-icon icon="mdi:chevron-double-right" width="22" height="22"></iconify-icon>
+    </div>
   </div>
 
   <div class="playhead"><span class="cap cap-top"></span><span class="cap cap-bottom"></span></div>
@@ -745,7 +894,7 @@
     /* -- Themeable custom properties -- */
     --bar-height: 100px;
     --bar-bg: #2b2b3a;
-    --bar-radius: 6px;
+    /* --bar-radius is read with a fallback below so an ancestor can override it. */
     --seg-good: #3fb950;
     --seg-bad: #e5534b;
     --tick-color: rgba(255, 255, 255, 0.35);
@@ -758,9 +907,6 @@
     --playhead-cap: 6px;
     --label-color: #999;
     --label-size: 0.7rem;
-    /* Proposed-selection diagonal hatch: solid 5px white + 1px black, no gaps. */
-    --proposed-white: 5px;
-    --proposed-black: 1px;
     --comment-color: #e3b341; /* yellow — comment markers */
     --comment-max-w: 512px;
     --comment-bg: #20232e;
@@ -861,7 +1007,7 @@
     width: 100%;
     height: var(--bar-height);
     background: var(--bar-bg);
-    border-radius: var(--bar-radius);
+    border-radius: var(--bar-radius, 6px);
     overflow: hidden;
     cursor: crosshair;
   }
@@ -879,21 +1025,47 @@
     background: var(--seg-bad);
   }
 
-  /* Proposed selection (active drag): solid 45° white/black hatch at 20% opacity,
-     no gaps. background-attachment: fixed anchors the pattern to the viewport so
-     it stays put globally while the selection slides over it like a window. */
+  /* Proposed selection (active drag): a crisp 45° white/black hatch rendered by
+     makeStripeCanvas() (exposed on the root as --proposed-bg). background-
+     attachment: fixed anchors the pattern to the viewport so it stays put
+     globally while the selection slides over it like a window. */
   .proposed {
     position: absolute;
     top: 0;
     bottom: 0;
     z-index: 1;
     pointer-events: none;
-    background-image: repeating-linear-gradient(
-      45deg,
-      rgba(255, 255, 255, 0.2) 0 var(--proposed-white),
-      rgba(0, 0, 0, 0.2) var(--proposed-white) calc(var(--proposed-white) + var(--proposed-black))
-    );
+    background-image: var(--proposed-bg);
+    background-size: var(--proposed-bg-size);
     background-attachment: fixed;
+  }
+
+  /* -- Scroll-affordance chevrons: fade in when content is hidden off-screen.
+        Themeable: --chevron-fade (transition), --chevron-blur (backdrop), and
+        --chevron-opacity (visible level). -- */
+  .scroll-hint {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--playhead-cap);
+    color: var(--playhead-color);
+    opacity: 0;
+    transition: opacity var(--chevron-fade, 0.2s) ease;
+    backdrop-filter: blur(var(--chevron-blur, 20px));
+    -webkit-backdrop-filter: blur(var(--chevron-blur, 20px));
+    pointer-events: none;
+    z-index: 3; /* above segments + hatch, below the playhead caps */
+  }
+  .scroll-hint.left {
+    left: 0;
+  }
+  .scroll-hint.right {
+    right: 0;
+  }
+  .scroll-hint.visible {
+    opacity: var(--chevron-opacity, 0.5);
   }
 
   /* -- Tick lines (drawn on the bar, anchored to its bottom edge) -- */

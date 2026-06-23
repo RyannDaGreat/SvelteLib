@@ -30,6 +30,9 @@ export class Player {
   playMode = $state("all");
   /** True while the main video is resolving a seek (no current frame yet). */
   mainSeeking = $state(false);
+  /** Natural pixel size of the source video (0 until metadata loads). */
+  videoW = $state(0);
+  videoH = $state(0);
 
   #getSegments;
   #video = null;
@@ -57,6 +60,8 @@ export class Player {
     const onMeta = () => {
       this.duration = node.duration;
       this.currentTime = node.currentTime;
+      this.videoW = node.videoWidth;
+      this.videoH = node.videoHeight;
     };
     const onSeeking = () => { this.mainSeeking = true; };
     const onSeeked = () => { this.mainSeeking = false; };

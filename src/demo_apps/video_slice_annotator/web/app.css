@@ -13,14 +13,37 @@
 
 :root {
   /* -- Palette -- */
+  /* Grayscale theme overrides (professional, neutral) — these REPLACE the
+     dark-blue theme.css values for the app only (app.css loads after it). */
+  --bg: #1b1b1b;
+  --bg-surface: rgba(255, 255, 255, 0.05);
+  --fg: #e6e6e6;
+  --fg-dim: #8c8c8c;
+  --accent: #9a9a9a; /* neutral gray accent (selection highlights) */
+  --border: rgba(255, 255, 255, 0.1);
+  --control-bg: #242424;
+
   --a-good: #3fb950;
   --a-bad: #e5534b;
   --a-comment: #e3b341;
-  --a-handle: #2e7d46;
-  --a-handle-hover: var(--a-good);
+  --a-current: #00ffff; /* pure cyan — the currently-open clip */
+  --a-handle: #5a5a5a; /* gray separator */
+  --a-handle-hover: #8f8f8f; /* slightly brighter on hover */
+  /* Video backdrop base: a darker gray (swapped with the panel), faint 1px 45°
+     stripes every 10px (~3% brighter — subtle, so the AA is invisible). */
+  --a-video-base: #141414;
+  --a-video-stripe: #1c1c1c;
+  --a-video-stripe-w: 1px;
+  --a-video-stripe-period: 10px;
+  --a-video-bg: repeating-linear-gradient(
+    45deg,
+    var(--a-video-stripe) 0 var(--a-video-stripe-w),
+    var(--a-video-base) var(--a-video-stripe-w) var(--a-video-stripe-period)
+  );
 
   /* -- Surfaces / overlays -- */
-  --a-panel-bg: rgba(0, 0, 0, 0.25);
+  /* Panel gray — shared by the thumbnail pane AND the timeline pane. */
+  --a-panel-bg: #1a1a1a;
   --a-overlay-bg: rgba(0, 0, 0, 0.55);
   --a-badge-bg: rgba(0, 0, 0, 0.75);
   --a-hover-bg: rgba(255, 255, 255, 0.12);
@@ -42,7 +65,7 @@
   --a-sep-height: 22px;
   --a-thumb-min: 120px;
   --a-control-min: 120px;
-  --a-handle-size: 1px;
+  --a-handle-size: 2px;
   --a-handle-hit: 6px;
   --a-glow-blur: 28px;
   --a-glow-spread: 4px;
@@ -55,7 +78,15 @@
   --a-radius-sm: 3px;
 
   /* -- Aspect -- */
-  --a-thumb-aspect: 16 / 9;
+  --a-thumb-aspect: 1 / 1;
+
+  /* -- Transitions -- */
+  --a-fade: 0.2s; /* default fade for hints / overlays */
+  --a-glow-fade: 0.05s; /* clip glow snaps almost immediately (≈1/20 s) */
+
+  /* -- Timeline scroll-hint chevrons (themes AnnotateBar's --chevron-*) -- */
+  --a-chevron-blur: 20px;
+  --a-chevron-opacity: 0.5;
 }
 
 /* ===== Fill the viewport so the split panes have a fixed frame =========== */
@@ -65,6 +96,10 @@ body,
 #app {
   height: 100%;
   margin: 0;
+  /* The page itself never scrolls or rubber-band bounces — only specific
+     regions (e.g. the thumbnail pane) opt into scrolling. */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 #app {
   display: flex;
@@ -88,38 +123,54 @@ body,
   min-height: 0;
   position: relative;
 }
+.video-col {
+  width: 100%;
+  height: 100%;
+}
 .placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
   color: var(--fg-dim);
-  background: black;
+  /* Same canvas stripe backdrop as the loaded video pane (App sets --a-video-bg
+     on .app, so the texture matches before AND after a clip loads). */
+  background-color: var(--a-video-base);
+  background-image: var(--a-video-bg);
+  background-size: var(--a-video-bg-size, auto);
 }
 
 /* ===== Timeline pane + transport ======================================== */
 
+/* Full-width bottom pane: a square transport bar on top, the timeline bar
+   bottom-aligned, with the gap between them giving comments room to float. */
 .timeline-pane {
   display: flex;
   flex-direction: column;
   height: 100%;
   box-sizing: border-box;
-  padding: var(--a-sp-room) var(--a-sp-8) var(--a-sp-6);
-  background: var(--bg);
+  background: var(--a-panel-bg); /* same gray as the thumbnail pane */
 }
 .timeline-pane > .annotate {
   flex: 0 0 auto;
+  margin-top: auto; /* push the timeline to the bottom */
+  /* NO horizontal padding — the bar (and its playhead, positioned relative to
+     this element) must both be exactly 100% of the container, or they misalign. */
+  margin-bottom: var(--a-sp-6);
+  /* Square the timeline bar, and theme its scroll-hint chevrons. */
+  --bar-radius: 0;
+  --chevron-fade: var(--a-fade);
+  --chevron-blur: var(--a-chevron-blur);
+  --chevron-opacity: var(--a-chevron-opacity);
 }
 
 .transport {
   display: flex;
   align-items: center;
   gap: var(--a-sp-1);
-  margin-top: var(--a-sp-6);
   padding: var(--a-sp-3) var(--a-sp-5);
   background: var(--control-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-bottom: 1px solid var(--border);
 }
 .transport button {
   display: flex;
@@ -185,47 +236,66 @@ body,
   background: var(--a-panel-bg);
   border-right: 1px solid var(--border);
 }
+/* Toolbar: filter + sort side by side, then the scroll-to-current button. */
 .thumblist .controls {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: var(--a-sp-3);
-  padding: var(--a-sp-5);
+  padding: var(--a-sp-4);
   border-bottom: 1px solid var(--border);
 }
-.thumblist .controls label {
+.thumblist .controls .dd {
+  flex: 1;
+  min-width: 0;
+}
+.thumblist .controls .scrollto {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--a-sp-4);
-  font-size: var(--a-fs-sm);
-  color: var(--fg-dim);
+  justify-content: center;
+  width: var(--a-btn-size);
+  height: var(--a-btn-size);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--a-sp-2);
+  color: var(--fg);
+  cursor: pointer;
 }
-.thumblist .controls .dd {
-  min-width: var(--a-control-min);
+.thumblist .controls .scrollto:hover {
+  background: var(--a-hover-bg);
 }
+.thumblist .controls .scrollto:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+/* Near-fixed square thumbnails that wrap and scroll automatically. */
 .thumblist .scroll {
   flex: 1;
+  min-height: 0; /* let the flex child shrink so it actually scrolls */
   overflow-y: auto;
+  overscroll-behavior: contain; /* don't bubble scroll to the (locked) page */
   padding: var(--a-sp-5);
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--a-thumb-min), 1fr));
+  grid-template-columns: repeat(auto-fill, var(--a-thumb-min));
+  justify-content: space-between;
   gap: var(--a-sp-5);
   align-content: start;
 }
 .thumblist .thumb {
   padding: 0;
-  border: var(--a-thumb-border) solid transparent;
+  border: none; /* unannotated thumbnails carry NO border */
   border-radius: var(--radius);
   background: black;
   cursor: pointer;
   overflow: hidden;
 }
+/* Annotated / current get a ring via box-shadow (no border = no layout shift). */
 .thumblist .thumb.annotated {
-  border-color: var(--a-comment);
+  box-shadow: 0 0 0 var(--a-thumb-border) var(--a-comment);
 }
 .thumblist .thumb.current {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 var(--a-focus-ring) var(--accent);
+  box-shadow: 0 0 0 var(--a-thumb-border) var(--a-current);
 }
 .thumblist .thumb-img {
   position: relative;
@@ -259,53 +329,55 @@ body,
 .videopane {
   width: 100%;
   height: 100%;
-  background: black;
+  /* Backdrop: VideoPane sets --a-video-bg to a crisp canvas stripe tile (with
+     --a-video-bg-size); the :root gradient is the fallback. */
+  background-color: var(--a-video-base);
+  background-image: var(--a-video-bg);
+  background-size: var(--a-video-bg-size, auto);
   position: relative;
+  overflow: hidden;
 }
-.videopane .world {
+/* The stage fills the pane and is what pan/zoom transforms (origin 0,0, inline). */
+.videopane .vp-stage {
+  position: absolute;
+  inset: 0;
+}
+/* The frame is sized + positioned EXACTLY to the video (left/top/w/h inline),
+   so the glow hugs the real picture and there's no letterbox guessing. */
+.videopane .vp-frame {
+  position: absolute;
+  transition: box-shadow var(--a-glow-fade) ease; /* glow tracks good/bad almost instantly */
+}
+.videopane .vp-frame > video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.videopane .frame {
-  display: grid;
-  max-width: 100%;
-  max-height: 100%;
-  transition: box-shadow 0.2s ease;
-}
-.videopane .frame > video {
-  grid-area: 1 / 1;
+  object-fit: fill; /* frame already matches the video's aspect → no distortion */
   display: block;
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
 }
-.videopane .frame > .proxy {
+.videopane .vp-frame > .proxy {
   z-index: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: fill;
 }
-.videopane .frame > .main {
+.videopane .vp-frame > .main {
   z-index: 1;
 }
-.videopane .frame > .main.revealing {
+.videopane .vp-frame > .main.revealing {
   opacity: 0;
 }
-.videopane .frame.glow-good {
+.videopane .vp-frame.glow-good {
   box-shadow: 0 0 var(--a-glow-blur) var(--a-glow-spread) var(--a-good);
 }
-.videopane .frame.glow-bad {
+.videopane .vp-frame.glow-bad {
   box-shadow: 0 0 var(--a-glow-blur) var(--a-glow-spread) var(--a-bad);
 }
+/* Minimap (the reusable MiniMap component sizes itself; the current-frame JPEG
+   is drawn in world space via its children snippet). */
 .videopane .minimap {
   position: absolute;
   right: var(--a-sp-4);
   bottom: var(--a-sp-4);
-  transition: opacity 0.2s;
+  transition: opacity var(--a-fade);
 }
 .videopane .minimap.hidden {
   opacity: 0;

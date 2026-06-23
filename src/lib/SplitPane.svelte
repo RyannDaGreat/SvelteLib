@@ -7,7 +7,7 @@
   via CSS custom properties.
 
   Usage:
-    <SplitPane orientation="horizontal" splits={[0.3, 0.7]} minPaneSize={0.05}>
+    <SplitPane orientation="horizontal" splits={[0.3, 0.7]}>
       {#snippet children(paneIndex, paneCount)}
         <div>Pane {paneIndex} of {paneCount}</div>
       {/snippet}
@@ -102,8 +102,6 @@
     orientation = "horizontal",
     /** @type {number[]} Split positions, each in (0, 1) */
     splits = $bindable([0.5]),
-    /** @type {number} Minimum fractional pane size */
-    minPaneSize = 0.05,
     /** @type {(splits: number[]) => void} Called after drag ends */
     onchange = undefined,
     /** Snippet receiving (paneIndex, paneCount) for each pane */
@@ -111,7 +109,7 @@
   } = $props();
 </script>
 
-<SplitView {orientation} bind:splits {minPaneSize} {onchange}>
+<SplitView {orientation} bind:splits {onchange}>
   {#snippet children(state, actions)}
     <div
       class="sp-layout"
@@ -140,12 +138,10 @@
 </SplitView>
 
 <style>
+  /* Handle look is themeable via --sp-* set on ANY ancestor. Defaults live in
+     the var() fallbacks below (not declared here) so an ancestor's value wins —
+     declaring them on .sp-layout would block inherited overrides. */
   .sp-layout {
-    --sp-handle-size: 4px;
-    --sp-handle-color: #444;
-    --sp-handle-hover: #007acc;
-    --sp-handle-hit-pad: 4px;
-
     position: relative;
     width: 100%;
     height: 100%;
@@ -167,33 +163,33 @@
     position: absolute;
     z-index: 10;
     transition: background-color 0.15s;
-    background: var(--sp-handle-color);
+    background: var(--sp-handle-color, #444);
   }
 
   .sp-handle::before {
     content: "";
     position: absolute;
-    inset: calc(-1 * var(--sp-handle-hit-pad));
+    inset: calc(-1 * var(--sp-handle-hit-pad, 4px));
   }
 
   .sp-horizontal > .sp-handle {
     top: 0;
     bottom: 0;
-    width: var(--sp-handle-size);
-    margin-left: calc(-1 * var(--sp-handle-size) / 2);
+    width: var(--sp-handle-size, 4px);
+    margin-left: calc(-1 * var(--sp-handle-size, 4px) / 2);
     cursor: col-resize;
   }
 
   .sp-vertical > .sp-handle {
     left: 0;
     right: 0;
-    height: var(--sp-handle-size);
-    margin-top: calc(-1 * var(--sp-handle-size) / 2);
+    height: var(--sp-handle-size, 4px);
+    margin-top: calc(-1 * var(--sp-handle-size, 4px) / 2);
     cursor: row-resize;
   }
 
   .sp-handle:hover,
   .sp-handle.sp-active {
-    background: var(--sp-handle-hover);
+    background: var(--sp-handle-hover, #007acc);
   }
 </style>

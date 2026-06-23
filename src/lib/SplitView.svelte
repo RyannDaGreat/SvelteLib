@@ -7,7 +7,7 @@
   Renders nothing visual — passes state and actions to children.
 
   Usage:
-    <SplitView orientation="horizontal" bind:splits={mySplits} minPaneSize={0.05}>
+    <SplitView orientation="horizontal" bind:splits={mySplits}>
       {#snippet children(state, actions)}
         {#each Array(state.paneCount) as _, i}
           <div style={myPaneStyle(state, i)}>Pane {i}</div>
@@ -90,13 +90,16 @@
    * @property {(newSplits: number[]) => void} setSplits - Programmatic update (ignored mid-drag)
    */
 
+  // Minimum size of any pane, in PIXELS. A pane never shrinks below this, but the
+  // user can resize it as freely as they like above it. Pixel-based (not a
+  // fraction) so the floor is the same regardless of the container's size.
+  const MIN_PANE_PX = 30;
+
   let {
     /** @type {"horizontal"|"vertical"} */
     orientation = "horizontal",
     /** @type {number[]} Split positions, each in (0, 1) */
     splits = $bindable([0.5]),
-    /** @type {number} Minimum fractional pane size */
-    minPaneSize = 0.05,
     /** @type {(splits: number[]) => void} Called after drag ends with final positions */
     onchange = undefined,
     children,
@@ -132,7 +135,9 @@
       : containerEl.clientHeight;
     const clientPos = isHoriz ? e.clientX : e.clientY;
     const delta = (clientPos - startClientPos) / containerSize;
-    splits = resolveSplits(snapshot, dragIdx, delta, minPaneSize);
+    // Convert the pixel floor to the fractional gap resolveSplits expects.
+    const minGap = MIN_PANE_PX / containerSize;
+    splits = resolveSplits(snapshot, dragIdx, delta, minGap);
   }
 
   /** Command, specific. Ends drag, cleans up window listeners. */

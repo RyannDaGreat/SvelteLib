@@ -29,11 +29,11 @@
   </div>
 
   <div class="demo-frame">
-    <SplitPane orientation="horizontal" bind:splits={outerSplits} minPaneSize={0.06}>
+    <SplitPane orientation="horizontal" bind:splits={outerSplits}>
       {#snippet children(paneIdx)}
         {#if paneIdx === 0}
           <!-- Sidebar: vertical split — file tree / bookmarks -->
-          <SplitPane orientation="vertical" bind:splits={navSplits} minPaneSize={0.15}>
+          <SplitPane orientation="vertical" bind:splits={navSplits}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel nav">Explorer</div>
@@ -44,7 +44,7 @@
           </SplitPane>
         {:else if paneIdx === 1}
           <!-- Editor area: vertical 3-way — source / preview / console -->
-          <SplitPane orientation="vertical" bind:splits={editorSplits} minPaneSize={0.08}>
+          <SplitPane orientation="vertical" bind:splits={editorSplits}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel editor">Source</div>
@@ -57,7 +57,7 @@
           </SplitPane>
         {:else if paneIdx === 2}
           <!-- Middle: vertical 2-way — diff / merge -->
-          <SplitPane orientation="vertical" bind:splits={midSplits} minPaneSize={0.15}>
+          <SplitPane orientation="vertical" bind:splits={midSplits}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel diff">Diff</div>
@@ -68,7 +68,7 @@
           </SplitPane>
         {:else if paneIdx === 3}
           <!-- Properties: vertical 3-way — props / inspector / outline -->
-          <SplitPane orientation="vertical" bind:splits={propSplits} minPaneSize={0.1}>
+          <SplitPane orientation="vertical" bind:splits={propSplits}>
             {#snippet children(innerIdx)}
               {#if innerIdx === 0}
                 <div class="panel properties">Properties</div>

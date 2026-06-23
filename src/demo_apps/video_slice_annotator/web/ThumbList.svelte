@@ -1,10 +1,12 @@
 <!--
-  ThumbList — left pane: filter + sort dropdowns over a scrollable list of video
-  thumbnails. Each thumbnail is the clip's middle-frame JPEG (from the backend),
-  its duration, and a yellow outline when it already has annotations/comments.
-  Clicking a thumbnail loads that clip.
+  ThumbList — left pane: a toolbar (filter + sort + scroll-to-current) over a
+  scrollable grid of square video thumbnails. Each thumbnail is the clip's
+  middle-frame JPEG (from the backend), its duration, and a yellow outline when
+  it has annotations/comments. Clicking a thumbnail loads that clip. The current
+  clip is always shown even if the filter would exclude it.
 -->
 <script>
+  import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import { frameUrl } from "./api.js";
   import { formatTimeMinSec } from "../../../lib/format.js";
@@ -33,9 +35,11 @@
   let sort = $state("name");
 
   let shown = $derived.by(() => {
+    // The current clip is always kept, regardless of the filter.
+    const keep = (v) => v.name === currentName;
     let list = videos;
-    if (filter === "annotated") list = list.filter((v) => v.hasAnnotations);
-    else if (filter === "unannotated") list = list.filter((v) => !v.hasAnnotations);
+    if (filter === "annotated") list = list.filter((v) => v.hasAnnotations || keep(v));
+    else if (filter === "unannotated") list = list.filter((v) => !v.hasAnnotations || keep(v));
     const by = {
       name: (a, b) => a.name.localeCompare(b.name),
       duration: (a, b) => (a.duration ?? 0) - (b.duration ?? 0),
@@ -43,12 +47,19 @@
     }[sort];
     return [...list].sort(by);
   });
+
+  function scrollToCurrent() {
+    document.querySelector(".thumb.current")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 </script>
 
 <div class="thumblist">
   <div class="controls">
-    <label>Filter <Dropdown items={FILTERS} bind:value={filter} /></label>
-    <label>Sort <Dropdown items={SORTS} bind:value={sort} /></label>
+    <Dropdown items={FILTERS} bind:value={filter} />
+    <Dropdown items={SORTS} bind:value={sort} />
+    <button class="scrollto" onclick={scrollToCurrent} disabled={!currentName} title="Scroll to current clip">
+      <iconify-icon icon="mdi:target" width="18" height="18"></iconify-icon>
+    </button>
   </div>
 
   <div class="scroll">
@@ -71,4 +82,3 @@
     {/if}
   </div>
 </div>
-

@@ -17,6 +17,7 @@
   import { Player } from "../../../lib/player.svelte.js";
   import { paintSegments } from "../../../lib/segments.js";
   import { formatTimeMinSec, speedItems } from "../../../lib/format.js";
+  import { makeStripeCanvas } from "../../../lib/stripes.js";
   import * as api from "./api.js";
   import ThumbList from "./ThumbList.svelte";
   import VideoPane from "./VideoPane.svelte";
@@ -28,9 +29,10 @@
   let segments = $state([]);
   let comments = $state([]);
   let captured = $state(false);
+  let hoverCtx = $state("timeline"); // "video" | "timeline" — drives the HintBar
 
-  let hSplits = $state([0.2]); // [thumbnails | main]
-  let vSplits = $state([0.62]); // [video | timeline]
+  let hSplits = $state([0.22]); // top row: [thumbnails | video]
+  let vSplits = $state([0.66]); // outer: [top row | full-width timeline]
 
   const player = new Player(() => segments);
   /** @type {ReturnType<typeof AnnotateBar>|undefined} */
@@ -153,6 +155,7 @@
 
   // -- Context hints ----------------------------------------------------------
 
+  // Hints change with where the mouse is (and capture mode).
   let hints = $derived(
     captured
       ? [
@@ -164,52 +167,75 @@
           [["mouse_middle"], "Pan"],
           [["Esc"], "Exit"],
         ]
+      : hoverCtx === "video"
+      ? [
+          [["mouse_scroll"], "Pan"],
+          [["Ctrl", "mouse_scroll"], "Zoom"],
+          [["R"], "Reset view"],
+          [["T"], "Timeline scrub"],
+        ]
       : [
           [["mouse_left"], "Good"],
           [["mouse_right"], "Bad"],
           [["alt", "mouse_left"], "Erase"],
+          [["mouse_left", "mouse_right"], "Erase"],
           [["mouse_middle"], "Pan"],
           [["mouse_scroll"], "Zoom"],
           [["mouse_left"], "Scrub-lock"],
           [["C"], "Comment"],
+          [["X"], "Del comment"],
           [["Ctrl", "Z"], "Undo"],
         ],
   );
+
+  // Backdrop stripe texture: a crisp, uniform 1px-line-every-10px 45° canvas tile
+  // (a CSS gradient drifts/blurs at 45°). Generated once here at app level — so
+  // the placeholder and the loaded video pane match exactly — using the SAME
+  // makeStripeCanvas() the timeline hatch uses. Sets only the --a-video-bg token
+  // value; the rules that consume it live in app.css.
+  const STRIPE_LINE_PX = 1; // the bright hairline
+  const STRIPE_GAP_PX = 9; // base fill between lines (→ 10px period)
+  let videoBgStyle = $state("");
+  $effect(() => {
+    const dpr = window.devicePixelRatio || 1;
+    const root = getComputedStyle(document.documentElement);
+    const base = root.getPropertyValue("--a-video-base").trim() || "#141414";
+    const stripe = root.getPropertyValue("--a-video-stripe").trim() || "#1c1c1c";
+    const { url, cssSize } = makeStripeCanvas(
+      [{ color: stripe, width: STRIPE_LINE_PX }, { color: base, width: STRIPE_GAP_PX }],
+      dpr,
+    );
+    videoBgStyle = `--a-video-bg: url('${url}'); --a-video-bg-size: ${cssSize}px ${cssSize}px;`;
+  });
 </script>
 
-<div class="app">
+<div class="app" style={videoBgStyle}>
   <div class="main-split">
-    <SplitPane orientation="horizontal" bind:splits={hSplits} minPaneSize={0.12}>
-      {#snippet children(i)}
-        {#if i === 0}
-          <ThumbList {videos} {currentName} onselect={loadVideo} />
-        {:else}
-          <SplitPane orientation="vertical" bind:splits={vSplits} minPaneSize={0.18}>
-            {#snippet children(j)}
-              {#if j === 0}
-                {#if currentName}
-                  <VideoPane {player} src={api.videoUrl(currentName)} proxySrc={api.lowresUrl(currentName)} />
-                {:else}
-                  <div class="placeholder">Pick a clip from the list →… ←</div>
-                {/if}
+    <!-- Outer split is VERTICAL: [ top row | full-width timeline ]. -->
+    <SplitPane orientation="vertical" bind:splits={vSplits}>
+      {#snippet children(row)}
+        {#if row === 0}
+          <!-- Top row: [ thumbnails | video ]. -->
+          <SplitPane orientation="horizontal" bind:splits={hSplits}>
+            {#snippet children(col)}
+              {#if col === 0}
+                <ThumbList {videos} {currentName} onselect={loadVideo} />
               {:else}
-                <div class="timeline-pane">
-                  <AnnotateBar
-                    bind:this={bar}
-                    bind:captured
-                    duration={player.duration}
-                    currentTime={player.currentTime}
-                    {segments}
-                    bind:comments
-                    onseek={onScrub}
-                    onpaintstart={onPaintStart}
-                    onpaint={onPaint}
-                    onpaintend={onPaintEnd}
-                    onhover={onHover}
-                    oncommentjump={(t) => player.animateSeekTo(t)}
-                    oncommentschange={commitTx}
-                  />
-
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div class="video-col" onpointerenter={() => (hoverCtx = "video")}>
+                  {#if currentName}
+                    <VideoPane {player} name={currentName} src={api.videoUrl(currentName)} proxySrc={api.lowresUrl(currentName)} />
+                  {:else}
+                    <div class="placeholder">Pick a clip from the list…</div>
+                  {/if}
+                </div>
+              {/if}
+            {/snippet}
+          </SplitPane>
+        {:else}
+          <!-- Bottom: full-width timeline (transport on top, bar bottom-aligned). -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="timeline-pane" onpointerenter={() => (hoverCtx = "timeline")}>
                   <div class="transport">
                     <button onclick={() => player.seekTo(0)} title="Rewind to start">
                       <iconify-icon icon="mdi:skip-previous" width="20" height="20"></iconify-icon>
@@ -242,10 +268,23 @@
                     <Dropdown items={speedItems(SPEEDS)} value={player.playbackRate} onchange={player.setRate} />
                     <span class="time">{formatTimeMinSec(player.currentTime)} / {formatTimeMinSec(player.duration)}</span>
                   </div>
-                </div>
-              {/if}
-            {/snippet}
-          </SplitPane>
+
+                  <AnnotateBar
+                    bind:this={bar}
+                    bind:captured
+                    duration={player.duration}
+                    currentTime={player.currentTime}
+                    {segments}
+                    bind:comments
+                    onseek={onScrub}
+                    onpaintstart={onPaintStart}
+                    onpaint={onPaint}
+                    onpaintend={onPaintEnd}
+                    onhover={onHover}
+                    oncommentjump={(t) => player.animateSeekTo(t)}
+                    oncommentschange={commitTx}
+                  />
+          </div>
         {/if}
       {/snippet}
     </SplitPane>
