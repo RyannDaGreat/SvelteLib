@@ -214,9 +214,9 @@
 
   let rafId = null;
 
-  // Paint-stroke bookkeeping (not reactive).
+  // Paint-stroke bookkeeping (not reactive). A stroke applies against a stable
+  // base snapshot, so the bar can change `mode` mid-stroke (e.g. force-erase).
   let paintBase = [];
-  let paintMode = "good";
   let wasPlaying = false;
 
   let currentLabel = $derived(labelAt(segments, currentTime));
@@ -354,14 +354,13 @@
 
   // -- Bar callbacks ----------------------------------------------------------
 
-  function onPaintStart(mode) {
-    paintMode = mode;
+  function onPaintStart() {
     paintBase = segments;
     wasPlaying = playing;
     if (playing) pause();
   }
-  function onPaint(t0, t1) {
-    commit(paintSegments(paintBase, paintMode, t0, t1));
+  function onPaint(mode, t0, t1) {
+    commit(paintSegments(paintBase, mode, t0, t1));
   }
   function onPaintEnd() {
     if (wasPlaying) play();

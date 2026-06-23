@@ -8,11 +8,14 @@
   the parent owns those and feeds segments down + applies edits on callback.
 
   Gestures:
-    - left-drag           paint "good"  (and scrub to cursor)
-    - right-drag          paint "bad"   (and scrub to cursor)
-    - middle / alt+left   erase         (and scrub to cursor)
-    - two-finger pan      scroll the timeline (wheel deltaX/deltaY)
-    - pinch               zoom; min = whole clip visible (100%), zoom in for finer scrubbing
+    - left-drag                 paint "good"  (and scrub to cursor)
+    - right-drag                paint "bad"   (and scrub to cursor)
+    - middle / alt+left / force erase         (and scrub to cursor)
+    - two-finger pan            scroll the timeline (wheel deltaX/deltaY)
+    - pinch                     zoom; min = whole clip visible (100%), zoom in for finer scrubbing
+
+  "force" = a macOS Force Touch deep-press (Safari/WebKit only); it acts as a
+  live erase modifier, an alternative to holding alt. No-op in other browsers.
 
   The parent forwards wheel events from anywhere in the widget via the
   exported handleWheel(e) so pinch/pan work over the video too.
@@ -190,9 +193,11 @@
     segments = [],
     /** @type {(t:number) => void} Seek request (paint drag also seeks) */
     onseek = () => {},
-    /** @type {(mode:'good'|'bad'|'erase') => void} Begin a paint stroke */
+    /** @type {() => void} Begin a paint stroke (parent snapshots a stable base) */
     onpaintstart = () => {},
-    /** @type {(t0:number, t1:number) => void} Update the active stroke's range */
+    /** @type {(mode:'good'|'bad'|'erase', t0:number, t1:number) => void}
+        Apply the stroke: parent recomputes from its base each call, so `mode`
+        may change mid-stroke (e.g. a force-press flips it to erase). */
     onpaint = () => {},
     /** @type {() => void} Commit the active stroke */
     onpaintend = () => {},
@@ -211,7 +216,9 @@
   let inited = false;
 
   // Active drag stroke (not reactive — pointer bookkeeping).
-  let drag = null; // { mode, startTime, lastClientX }
+  let drag = null; // { baseMode, startTime, lastClientX }
+  // Force Touch (Safari) deep-press held → erase, overriding the button mode.
+  let forceErase = false;
 
   $effect(() => {
     // Initialise / re-fit the window when a clip's duration first arrives.
@@ -275,18 +282,23 @@
 
   // -- Pointer: scrub + paint/erase --
 
-  /** Pure. Pick a paint mode from mouse button + modifiers. */
+  /** Pure. Pick the button-driven paint mode from mouse button + modifiers. */
   function modeFor(e) {
     if (e.button === 1 || (e.button === 0 && e.altKey)) return "erase";
     if (e.button === 2) return "bad";
     return "good";
   }
 
+  /** Query. Effective mode for the active drag — a held force-press forces erase. */
+  function effectiveMode() {
+    return forceErase ? "erase" : drag.baseMode;
+  }
+
   function applyDrag(clientX) {
     const t = timeAt(clientX);
     drag.lastClientX = clientX;
     onseek(t);
-    onpaint(drag.startTime, t);
+    onpaint(effectiveMode(), drag.startTime, t);
   }
 
   function onPointerDown(e) {
@@ -300,13 +312,30 @@
     } catch (err) {
       if (err.name !== "InvalidStateError" && err.name !== "NotFoundError") throw err;
     }
-    const mode = modeFor(e);
     const startTime = timeAt(e.clientX);
-    drag = { mode, startTime, lastClientX: e.clientX };
-    onpaintstart(mode);
+    drag = { baseMode: modeFor(e), startTime, lastClientX: e.clientX };
+    onpaintstart();
     applyDrag(e.clientX);
     onhover(startTime, e.clientX);
   }
+
+  // -- Force Touch (Safari/WebKit only) — held deep-press = erase modifier -----
+
+  $effect(() => {
+    if (!barEl) return;
+    // Suppress the OS force-click default (Look Up / data detectors).
+    const onWillBegin = (e) => e.preventDefault();
+    const onForceDown = () => { forceErase = true; if (drag) applyDrag(drag.lastClientX); };
+    const onForceUp = () => { forceErase = false; if (drag) applyDrag(drag.lastClientX); };
+    barEl.addEventListener("webkitmouseforcewillbegin", onWillBegin);
+    barEl.addEventListener("webkitmouseforcedown", onForceDown);
+    barEl.addEventListener("webkitmouseforceup", onForceUp);
+    return () => {
+      barEl.removeEventListener("webkitmouseforcewillbegin", onWillBegin);
+      barEl.removeEventListener("webkitmouseforcedown", onForceDown);
+      barEl.removeEventListener("webkitmouseforceup", onForceUp);
+    };
+  });
 
   function onPointerMove(e) {
     if (drag) applyDrag(e.clientX);
@@ -318,6 +347,7 @@
     if (!drag) return;
     barEl.releasePointerCapture?.(e.pointerId);
     drag = null;
+    forceErase = false;
     onpaintend();
     onhover(timeAt(e.clientX), e.clientX);
   }
