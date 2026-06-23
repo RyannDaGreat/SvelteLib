@@ -10,10 +10,16 @@
   Gestures:
     - left-drag           paint "good"  (and scrub to cursor)
     - right-drag          paint "bad"   (and scrub to cursor)
-    - middle / alt+left   erase         (and scrub to cursor)
-    - vertical wheel       zoom about the cursor (mouse wheel or two-finger vertical)
+    - left+right drag     erase         (and scrub to cursor)
+    - middle-drag         pan the timeline
+    - left click (no drag) capture scrub mode (cursor pinned to bar mid-line; Esc exits)
+    - vertical wheel      zoom about the cursor (mouse wheel or two-finger vertical)
     - horizontal scroll   pan the timeline
     - pinch               zoom; min = whole clip visible (100%), zoom in for finer scrubbing
+
+  The paint mode tracks the live button chord — changing buttons mid-drag
+  re-applies the whole stroke in the new mode (retroactive), since the parent
+  recomputes from a stable base each onpaint call.
 
   The parent forwards wheel events from anywhere in the widget via the
   exported handleWheel(e) so pinch/pan work over the video too.
@@ -213,7 +219,14 @@
   let inited = false;
 
   // Active drag stroke (not reactive — pointer bookkeeping).
-  let drag = null; // { mode, startTime, lastClientX }
+  let drag = null; // { mode, startTime, lastClientX, downClientX, moved }
+
+  // Pointer-lock "capture" scrub mode: a plain left click (no drag) locks the
+  // cursor to the bar's mid-line; horizontal motion scrubs; Esc exits. Uses the
+  // live element rect so it keeps working if the bar gets moved on the page.
+  const CLICK_SLOP_PX = 4;
+  let captured = $state(false);
+  let captureX = 0; // virtual clientX accumulated from movementX (plain)
 
   $effect(() => {
     // Initialise / re-fit the window when a clip's duration first arrives.
@@ -265,9 +278,9 @@
     // Panning/zooming slides the timeline under the cursor, so the time it
     // covers changes even when the mouse is still. Re-emit so the preview /
     // active paint follows the cursor's new time, not just on mouse movement.
-    if (drag) {
-      applyDrag(e.clientX);
-    } else {
+    if (drag?.kind === "paint") {
+      applyPaint(e.clientX);
+    } else if (!drag) {
       const r = barEl.getBoundingClientRect();
       const overBar =
         e.clientX >= r.left && e.clientX <= r.right &&
@@ -276,24 +289,52 @@
     }
   }
 
-  // -- Pointer: scrub + paint/erase --
+  // -- Pointer: scrub + paint/erase + pan --
 
-  /** Pure. Pick the paint mode from mouse button + modifiers. */
-  function modeFor(e) {
-    if (e.button === 1 || (e.button === 0 && e.altKey)) return "erase";
-    if (e.button === 2) return "bad";
-    return "good";
+  /** Pure. Paint mode from the pressed-button bitmask (1=left, 2=right, 4=middle).
+      Left+Right held together = erase. Null when no paint button is down.
+
+      @example paintModeFromButtons(1) // 'good'
+      @example paintModeFromButtons(2) // 'bad'
+      @example paintModeFromButtons(3) // 'erase' (left+right)
+      @example paintModeFromButtons(4) // null (middle only) */
+  function paintModeFromButtons(buttons) {
+    const left = buttons & 1;
+    const right = buttons & 2;
+    if (left && right) return "erase";
+    if (right) return "bad";
+    if (left) return "good";
+    return null;
   }
 
-  function applyDrag(clientX) {
+  function applyPaint(clientX) {
     const t = timeAt(clientX);
     drag.lastClientX = clientX;
+    if (Math.abs(clientX - drag.downClientX) > CLICK_SLOP_PX) drag.moved = true;
     onseek(t);
     onpaint(drag.mode, drag.startTime, t);
   }
 
+  /** Recompute a paint drag's mode from the live button chord, then re-apply the
+      whole stroke against the parent's stable base — so changing buttons
+      mid-drag is retroactive, as if that mode had been used from the start. */
+  function repaint(e) {
+    const mode = paintModeFromButtons(e.buttons);
+    if (mode) {
+      drag.mode = mode;
+      if (mode !== "good") drag.everNonGood = true;
+    }
+    applyPaint(e.clientX);
+  }
+
+  function panDrag(clientX) {
+    // Grab-style: dragging right reveals earlier content (view start decreases).
+    view = panView(view, -(clientX - drag.lastClientX), width, duration);
+    drag.lastClientX = clientX;
+  }
+
   function onPointerDown(e) {
-    if (duration <= 0) return;
+    if (duration <= 0 || captured || drag) return;
     e.preventDefault();
     /* Best-effort capture so a drag keeps tracking past the bar's edges.
        Expected to reject when there's no active pointer (e.g. synthetic
@@ -303,30 +344,91 @@
     } catch (err) {
       if (err.name !== "InvalidStateError" && err.name !== "NotFoundError") throw err;
     }
+    if (e.button === 1) {
+      drag = { kind: "pan", lastClientX: e.clientX }; // middle button → pan
+      return;
+    }
     const startTime = timeAt(e.clientX);
-    drag = { mode: modeFor(e), startTime, lastClientX: e.clientX };
+    drag = {
+      kind: "paint",
+      mode: paintModeFromButtons(e.buttons) ?? "good",
+      startTime,
+      downClientX: e.clientX,
+      lastClientX: e.clientX,
+      moved: false,
+      everNonGood: false,
+    };
     onpaintstart();
-    applyDrag(e.clientX);
+    repaint(e);
     onhover(startTime, e.clientX);
   }
 
   function onPointerMove(e) {
-    if (drag) applyDrag(e.clientX);
-    // Preview the frame under the cursor whether or not a drag is in progress.
-    onhover(timeAt(e.clientX), e.clientX);
+    if (captured) return; // capture mode is driven by movementX, not clientX
+    if (!drag) {
+      onhover(timeAt(e.clientX), e.clientX); // preview the frame under the cursor
+    } else if (drag.kind === "pan") {
+      panDrag(e.clientX);
+    } else {
+      repaint(e);
+    }
   }
 
   function onPointerUp(e) {
     if (!drag) return;
+    // Per the spec, pointerup fires when the LAST button is released (buttons→0).
+    // If a button of this drag is still held (a chord release), keep going so the
+    // mode change re-applies retroactively rather than ending the stroke.
+    if (drag.kind === "paint" && e.buttons & 3) return repaint(e);
+    if (drag.kind === "pan" && e.buttons & 4) return panDrag(e.clientX);
+
     barEl.releasePointerCapture?.(e.pointerId);
+    const wasPaint = drag.kind === "paint";
+    // A plain left click (no drag, only ever "good") enters capture scrub mode.
+    const click = wasPaint && !drag.moved && !drag.everNonGood;
+    const upX = e.clientX;
     drag = null;
-    onpaintend();
-    onhover(timeAt(e.clientX), e.clientX);
+    if (wasPaint) onpaintend();
+    if (click) {
+      captureX = upX;
+      barEl.requestPointerLock?.();
+    } else if (wasPaint) {
+      onhover(timeAt(upX), upX);
+    }
   }
 
   function onPointerLeave() {
-    if (!drag) onhoverleave();
+    if (!drag && !captured) onhoverleave();
   }
+
+  // -- Capture scrub mode (Pointer Lock) --------------------------------------
+
+  $effect(() => {
+    function onLockChange() {
+      captured = document.pointerLockElement === barEl;
+      if (!captured) onhoverleave();
+    }
+    function onLockError() {
+      // Browsers reject re-locking too soon after an Esc exit — expected; surface it.
+      console.warn("AnnotateBar: pointer lock request was rejected");
+    }
+    function onCaptureMove(e) {
+      if (!captured || !barEl) return;
+      // Constrain to the bar's x-range using its live rect (survives the bar
+      // being moved); y is implicitly pinned to the mid-line we render the cursor on.
+      const rect = barEl.getBoundingClientRect();
+      captureX = clamp(captureX + e.movementX, rect.left, rect.right);
+      onseek(timeAt(captureX));
+    }
+    document.addEventListener("pointerlockchange", onLockChange);
+    document.addEventListener("pointerlockerror", onLockError);
+    document.addEventListener("mousemove", onCaptureMove);
+    return () => {
+      document.removeEventListener("pointerlockchange", onLockChange);
+      document.removeEventListener("pointerlockerror", onLockError);
+      document.removeEventListener("mousemove", onCaptureMove);
+    };
+  });
 </script>
 
 <div class="annotate" style="--playhead-x: {playheadX}px">
@@ -361,6 +463,12 @@
   </div>
 
   <div class="playhead"><span class="cap cap-top"></span><span class="cap cap-bottom"></span></div>
+
+  {#if captured}
+    <!-- Captured cursor pinned to the bar's mid-line; tracks the scrub position. -->
+    <div class="capture-cursor" style="left: {playheadX}px"></div>
+    <div class="capture-hint">scrub — Esc to exit</div>
+  {/if}
 
   <div class="labels">
     {#each majorTicks as tick}
@@ -460,6 +568,30 @@
   }
   .cap-bottom {
     bottom: calc(-1 * var(--playhead-cap) / 2);
+  }
+
+  /* -- Capture (pointer-lock) scrub mode -- */
+  .capture-cursor {
+    position: absolute;
+    top: calc(var(--bar-height) / 2);
+    width: var(--capture-cursor-size, 14px);
+    height: var(--capture-cursor-size, 14px);
+    margin-top: calc(var(--capture-cursor-size, 14px) / -2);
+    margin-left: calc(var(--capture-cursor-size, 14px) / -2);
+    border-radius: 50%;
+    background: var(--playhead-color);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+    z-index: 3;
+  }
+  .capture-hint {
+    position: absolute;
+    top: calc(-1 * var(--playhead-overhang) - 1.1rem);
+    right: 0;
+    color: var(--label-color);
+    font-size: var(--label-size);
+    letter-spacing: 0.02em;
+    pointer-events: none;
   }
 
   /* -- Timestamp labels under the bar -- */

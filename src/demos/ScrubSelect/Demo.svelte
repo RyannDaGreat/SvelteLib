@@ -18,10 +18,11 @@
   <h1>ScrubSelect Demo</h1>
   <p class="demo-hint">
     Scrub & annotate a video. Left-drag paints <span class="g">good</span>,
-    right-drag paints <span class="b">bad</span>, middle / alt-drag erases.
-    Scroll wheel zooms; two-finger horizontal pans the timeline (pinch zooms
-    too; min = whole clip). Green ▶ plays only good regions, red ▶ only bad
-    ones.
+    right-drag paints <span class="b">bad</span>, left+right drag erases;
+    changing buttons mid-drag re-applies retroactively. Middle-drag or
+    horizontal scroll pans; scroll wheel / pinch zooms. Click (no drag) locks
+    a scrub cursor to the bar (Esc exits). Green ▶ plays only good regions,
+    red ▶ only bad ones.
   </p>
   <a class="demo-back" href="/">&larr; All Components</a>
 
