@@ -9,6 +9,7 @@
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import Thumbnail from "../../../lib/Thumbnail.svelte";
+  import ThumbnailContainer from "../../../lib/ThumbnailContainer.svelte";
   import { frameUrl } from "./api.js";
   import { formatTimeMinSec } from "../../../lib/format.js";
 
@@ -22,6 +23,9 @@
   } = $props();
 
   const THUMB_SIZE_PX = 480; // thumbnails are small — fetch a downscaled JPEG
+  const THUMB_MIN_PX = 120; // smallest square tile; tiles grow past this to fill
+  const THUMB_GAP_PX = 10;
+  const THUMB_PAD_PX = 10;
 
   const FILTERS = [
     { value: "all", label: "All clips" },
@@ -54,33 +58,6 @@
   function scrollToCurrent() {
     document.querySelector(".thumb.ring-current")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
-
-  /** Svelte action (Command). Keeps the grid filled with the LARGEST square tiles
-      that fit: columns balloon to fill the width (no leftover gap) while staying
-      square, because pure CSS can't do fill-to-width + square + scroll together
-      (the aspect/1fr cycle collapses the rows). Sets --thumb-tile so app.css can
-      use definite columns AND a matching definite row height. */
-  function fitTiles(el) {
-    const cs = getComputedStyle(el);
-    const update = () => {
-      const gap = parseFloat(cs.gap) || 0;
-      const min = parseFloat(cs.getPropertyValue("--a-thumb-min")) || 120;
-      const avail = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
-      if (avail <= 0) return;
-      // Most columns of >= min that fit, then divide the width evenly among them.
-      // Set the EXACT column count (repeat(n, 1fr)) — auto-fill leaves a leftover
-      // empty track at some widths (sub-pixel rounding). The row height is the
-      // resulting tile width, so cells stay square; 1fr fills with no gap.
-      const cols = Math.max(1, Math.floor((avail + gap) / (min + gap)));
-      const tile = (avail - (cols - 1) * gap) / cols;
-      el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-      el.style.setProperty("--thumb-tile", `${tile}px`);
-    };
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    update();
-    return { destroy: () => ro.disconnect() };
-  }
 </script>
 
 <div class="thumblist">
@@ -92,18 +69,19 @@
     </button>
   </div>
 
-  <div class="scroll" use:fitTiles>
-    {#each shown as v (v.name)}
-      <Thumbnail
-        src={frameUrl(v.name, (v.duration ?? 0) / 2, THUMB_SIZE_PX)}
-        badge={formatTimeMinSec(v.duration)}
-        ring={v.name === currentName ? "current" : v.hasAnnotations ? "comment" : "none"}
-        title={v.name}
-        onclick={() => onselect(v.name)}
-      />
-    {/each}
-    {#if shown.length === 0}
-      <p class="empty">No clips.</p>
-    {/if}
-  </div>
+  {#if shown.length === 0}
+    <p class="empty">No clips.</p>
+  {:else}
+    <ThumbnailContainer class="scroll" minSize={THUMB_MIN_PX} gap={THUMB_GAP_PX} padding={THUMB_PAD_PX}>
+      {#each shown as v (v.name)}
+        <Thumbnail
+          src={frameUrl(v.name, (v.duration ?? 0) / 2, THUMB_SIZE_PX)}
+          badge={formatTimeMinSec(v.duration)}
+          ring={v.name === currentName ? "current" : v.hasAnnotations ? "comment" : "none"}
+          title={v.name}
+          onclick={() => onselect(v.name)}
+        />
+      {/each}
+    </ThumbnailContainer>
+  {/if}
 </div>

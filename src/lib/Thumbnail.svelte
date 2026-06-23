@@ -60,13 +60,22 @@
     height: 100%;
     object-fit: cover; /* crop the (landscape) frame to fill the cell */
   }
-  /* Ring drawn with an inset box-shadow so it never affects layout or bleeds into
-     the grid gap (and survives the tile's overflow: hidden). */
+  /* Ring drawn on a ::after overlay so it sits ON TOP of the image (an inset
+     box-shadow on .thumb itself paints UNDER the child <img> and is invisible).
+     Inset, so it never affects layout or bleeds into the grid gap. */
+  .thumb::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 var(--thumb-ring-width, 2px) var(--thumb-ring, transparent);
+    pointer-events: none;
+  }
   .ring-comment {
-    box-shadow: inset 0 0 0 var(--thumb-ring-width, 2px) var(--thumb-ring-comment, #e3b341);
+    --thumb-ring: var(--thumb-ring-comment, #e3b341);
   }
   .ring-current {
-    box-shadow: inset 0 0 0 var(--thumb-ring-width, 2px) var(--thumb-ring-current, #00ffff);
+    --thumb-ring: var(--thumb-ring-current, #00ffff);
   }
   .badge {
     position: absolute;

@@ -38,6 +38,11 @@ export class Player {
   #video = null;
   #proxy = null;
   #rafId = null;
+  /** @type {{t:number,fast:boolean}|null} Latest target requested while the
+      element was still resolving a prior seek — re-issued on its `seeked`
+      (seek coalescing; see seekTo). One slot per element. */
+  #mainPending = null;
+  #proxyPending = null;
 
   /** @param {() => {start:number,end:number,label:string}[]} getSegments */
   constructor(getSegments = () => []) {
@@ -64,7 +69,10 @@ export class Player {
       this.videoH = node.videoHeight;
     };
     const onSeeking = () => { this.mainSeeking = true; };
-    const onSeeked = () => { this.mainSeeking = false; };
+    const onSeeked = () => {
+      this.mainSeeking = false;
+      this.#flushPending("main");
+    };
     node.addEventListener("loadedmetadata", onMeta);
     node.addEventListener("seeking", onSeeking);
     node.addEventListener("seeked", onSeeked);
@@ -82,25 +90,59 @@ export class Player {
 
   attachProxy = (node) => {
     this.#proxy = node;
-    return { destroy: () => { this.#proxy = null; } };
+    const onSeeked = () => this.#flushPending("proxy");
+    node.addEventListener("seeked", onSeeked);
+    return {
+      destroy: () => {
+        node.removeEventListener("seeked", onSeeked);
+        this.#proxy = null;
+      },
+    };
   };
 
   // -- seeking --
 
   /** Command. Seek main (and proxy) to t. `fast` uses fastSeek (nearest
-      keyframe) for snappy scrubbing; programmatic jumps need exact landings. */
+      keyframe) for snappy scrubbing; programmatic jumps need exact landings.
+
+      Coalesces under rapid scrubbing: while an element is still resolving a
+      seek, only the most recent target is kept (#mainPending/#proxyPending) and
+      re-issued once that seek lands (#flushPending). A burst of scrub events
+      therefore can't queue up behind the decoder and stall it — each element
+      chases the latest target at its own pace, and the final position always
+      lands exactly. currentTime is updated synchronously regardless so the UI
+      stays responsive. */
   seekTo = (t, fast = false) => {
     const clamped = clamp(t, 0, this.duration || 0);
     this.currentTime = clamped;
-    if (this.#video) {
-      if (fast && this.#video.fastSeek) this.#video.fastSeek(clamped);
-      else this.#video.currentTime = clamped;
-    }
-    if (this.#proxy) {
-      if (this.#proxy.fastSeek) this.#proxy.fastSeek(clamped);
-      else this.#proxy.currentTime = clamped;
-    }
+    this.#seekElement("main", this.#video, clamped, fast);
+    this.#seekElement("proxy", this.#proxy, clamped, true);
   };
+
+  /** Command. Issue a seek on one element, or stash it as that element's
+      pending target if it is still mid-seek. `which` is "main" or "proxy". */
+  #seekElement(which, el, t, fast) {
+    if (!el) return;
+    if (el.seeking) {
+      if (which === "main") this.#mainPending = { t, fast };
+      else this.#proxyPending = { t, fast };
+      return;
+    }
+    if (fast && el.fastSeek) el.fastSeek(t);
+    else el.currentTime = t;
+  }
+
+  /** Command. On an element's `seeked`, issue its stashed target if one arrived
+      while it was busy. Only fires when a newer target was actually requested,
+      so it converges (no re-seek loop) once scrubbing stops. */
+  #flushPending(which) {
+    const pending = which === "main" ? this.#mainPending : this.#proxyPending;
+    if (!pending) return;
+    if (which === "main") this.#mainPending = null;
+    else this.#proxyPending = null;
+    const el = which === "main" ? this.#video : this.#proxy;
+    this.#seekElement(which, el, pending.t, pending.fast);
+  }
 
   /** Command. Jump to a region boundary and keep playback alive (a big forward
       seek can briefly drop the element out of the playing state). */

@@ -63,7 +63,6 @@
   --a-btn-size: 32px;
   --a-reset-size: 30px;
   --a-sep-height: 22px;
-  --a-thumb-min: 120px;
   --a-control-min: 120px;
   --a-handle-size: 2px;
   --a-handle-hit: 6px;
@@ -276,35 +275,12 @@ body,
   opacity: 0.3;
   cursor: default;
 }
-/* Responsive thumbnail grid. The exact tile size is computed in JS (the fitTiles
-   action sets --thumb-tile) so columns BALLOON to fill the width with no leftover
-   gap while staying square — pure CSS can't do fill-to-width + square + scroll at
-   once (the 1fr/aspect cycle collapses the rows). Both the column width AND the
-   row height are that one definite --thumb-tile, so tiles are always square and an
-   overflowing list scrolls. The lone column shrinks evenly in a tiny pane.
-   The scrollbar is hidden — the pane still scrolls (wheel / drag / trackpad). */
+/* The responsive square grid + scroll + hidden scrollbar all live in the
+   ThumbnailContainer lib component; here we only make it fill the pane. The tiles
+   are Thumbnail components, themed by the --thumb-* tokens set on .thumblist. */
 .thumblist .scroll {
   flex: 1;
-  min-height: 0; /* let the flex child shrink so it actually scrolls */
-  overflow-y: auto;
-  overscroll-behavior: contain; /* don't bubble scroll to the (locked) page */
-  padding: var(--a-sp-5);
-  display: grid;
-  /* grid-template-columns is set inline by the fitTiles action (repeat(n, 1fr));
-     this is just the pre-JS fallback. Rows match the computed tile → square. */
-  grid-template-columns: repeat(auto-fill, var(--a-thumb-min));
-  grid-auto-rows: var(--thumb-tile, var(--a-thumb-min));
-  gap: var(--a-sp-5);
-  align-content: start;
-  scrollbar-width: none; /* Firefox — hidden but scrollable */
 }
-.thumblist .scroll::-webkit-scrollbar {
-  display: none; /* WebKit — hidden but scrollable */
-}
-/* The tiles themselves are the Thumbnail lib component (src/lib/Thumbnail.svelte),
-   styled by the --thumb-* tokens set on .thumblist above. Each <Thumbnail> is a
-   plain block grid item whose in-flow aspect box gives it height — so rows align
-   and the grid actually overflows-and-scrolls. */
 .thumblist .empty {
   color: var(--fg-dim);
   font-size: var(--a-fs-sm);
