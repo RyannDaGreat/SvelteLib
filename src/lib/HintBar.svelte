@@ -21,6 +21,8 @@
   let {
     /** @type {[string[], string][]} List of [keys, label] hints. */
     hints = [],
+    /** @type {import('svelte').Snippet} Optional right-aligned content (e.g. a toggle). */
+    trailing = undefined,
   } = $props();
 
   // Mouse tokens → icons; anything else renders as a key chip.
@@ -53,15 +55,20 @@
       <span class="label">{label}</span>
     </span>
   {/each}
+  {#if trailing}
+    <span class="trailing">{@render trailing()}</span>
+  {/if}
 </div>
 
 <style>
   .hintbar {
     /* -- Themeable custom properties -- */
     --hint-gap: 16px;
-    --hint-bg: rgba(0, 0, 0, 0.4);
-    --hint-fg: #aaa;
-    --hint-key-fg: #e0e0e0;
+    /* Default to the host's theme tokens so the bar follows light/dark; the
+       literals are the standalone fallback. */
+    --hint-bg: var(--control-bg, rgba(0, 0, 0, 0.4));
+    --hint-fg: var(--fg-dim, #aaa);
+    --hint-key-fg: var(--fg, #e0e0e0);
     --hint-font-size: 0.72rem;
     --hint-pad: 4px 12px;
 
@@ -102,5 +109,11 @@
   }
   .label {
     white-space: nowrap;
+  }
+  /* Right-aligned trailing content (e.g. a theme toggle). */
+  .trailing {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
   }
 </style>

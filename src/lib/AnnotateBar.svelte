@@ -717,6 +717,7 @@
       const el = document.activeElement;
       const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
       if (typing || editingId != null) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // leave Cmd/Ctrl shortcuts to the browser
       const k = e.key.toLowerCase();
       if (k === "c" && hovered) {
         e.preventDefault();
@@ -961,23 +962,25 @@
   .annotate {
     /* -- Themeable custom properties -- */
     --bar-height: 100px;
-    --bar-bg: #2b2b3a;
+    /* Default to the host's theme tokens so the timeline follows light/dark; the
+       literals are the standalone fallback. */
+    --bar-bg: var(--control-bg, #2b2b3a);
     /* --bar-radius is read with a fallback below so an ancestor can override it. */
     --seg-good: #3fb950;
     --seg-bad: #e5534b;
-    --tick-color: rgba(255, 255, 255, 0.35);
-    --tick-major-color: rgba(255, 255, 255, 0.6);
+    --tick-color: color-mix(in srgb, var(--fg, #ffffff) 35%, transparent);
+    --tick-major-color: color-mix(in srgb, var(--fg, #ffffff) 60%, transparent);
     --tick-minor-height: 8px;
     --tick-major-height: 14px;
-    --playhead-color: #ffffff;
+    --playhead-color: var(--fg, #ffffff);
     --playhead-width: 2px;
     --playhead-overhang: 6px;
     --playhead-cap: 6px;
-    --label-color: #999;
+    --label-color: var(--fg-dim, #999);
     --label-size: 0.7rem;
     --comment-color: #e3b341; /* yellow — comment markers */
     --comment-max-w: 512px;
-    --comment-bg: #20232e;
+    --comment-bg: var(--control-bg, #20232e);
 
     position: relative;
     width: 100%;
@@ -1027,7 +1030,7 @@
     width: max-content;
     padding: 6px 8px;
     background: var(--comment-bg);
-    color: #e0e0e0;
+    color: var(--fg, #e0e0e0);
     border: 1px solid var(--comment-color);
     border-radius: 6px;
     font-size: 0.8rem;

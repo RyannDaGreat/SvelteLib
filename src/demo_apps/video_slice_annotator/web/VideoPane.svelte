@@ -44,6 +44,7 @@
   $effect(() => {
     function onKey(e) {
       if (e.key !== "r" && e.key !== "R") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // let Cmd/Ctrl+R reload the page
       const el = document.activeElement;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
       e.preventDefault();

@@ -70,6 +70,7 @@
   --a-glow-spread: 4px;
   --a-focus-ring: 2px;
   --a-thumb-border: 2px;
+  --a-toggle-size: 22px;
 
   /* -- Type -- */
   --a-fs-sm: 0.75rem;
@@ -83,6 +84,23 @@
   /* -- Timeline scroll-hint chevrons (themes AnnotateBar's --chevron-*) -- */
   --a-chevron-blur: 20px;
   --a-chevron-opacity: 0.5;
+}
+
+/* Light theme — toggled by adding `.light` to <html> (App.svelte). Overrides the
+   surface/text tokens; the accent colors (good/bad/comment/current) stay the same.
+   Badge/overlay backgrounds stay dark — they sit over images either way. */
+:root.light {
+  --bg: #f4f4f4;
+  --bg-surface: rgba(0, 0, 0, 0.04);
+  --fg: #1a1a1a;
+  --fg-dim: #666666;
+  --accent: #5a5a5a;
+  --border: rgba(0, 0, 0, 0.14);
+  --control-bg: #e6e6e6;
+  --a-panel-bg: #e9e9e9;
+  --a-video-base: #d6d6d6;
+  --a-video-stripe: #c8c8c8;
+  --a-hover-bg: rgba(0, 0, 0, 0.08);
 }
 
 /* ===== Fill the viewport so the split panes have a fixed frame =========== */
@@ -363,4 +381,23 @@ body,
 .videopane .reset:disabled {
   opacity: 0.3;
   cursor: default;
+}
+
+/* ===== Theme toggle (lives in the HintBar's trailing slot) =============== */
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-toggle-size);
+  height: var(--a-toggle-size);
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--a-sp-2);
+  color: var(--hint-key-fg, var(--fg)); /* light, for the always-dark hint bar */
+  cursor: pointer;
+}
+.theme-toggle:hover {
+  background: var(--a-hover-bg);
 }

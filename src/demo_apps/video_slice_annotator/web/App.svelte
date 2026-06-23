@@ -31,6 +31,14 @@
   let captured = $state(false);
   let hoverCtx = $state("timeline"); // "thumbnails" | "video" | "timeline" — drives the HintBar
 
+  // Light / dark theme. Applied as a class on <html> (app.css has :root.light
+  // overrides); persisted across reloads.
+  let theme = $state(localStorage.getItem("vsa-theme") || "dark");
+  $effect(() => {
+    document.documentElement.classList.toggle("light", theme === "light");
+    localStorage.setItem("vsa-theme", theme);
+  });
+
   let hSplits = $state([0.22]); // top row: [thumbnails | video]
   let vSplits = $state([0.66]); // outer: [top row | full-width timeline]
 
@@ -134,7 +142,13 @@
     if (!player.playing) player.seekTo(t, true);
   }
 
-  // -- Keyboard: undo / redo --------------------------------------------------
+  /** Command. Step the playback rate through the SPEEDS presets by `dir` (±1). */
+  function stepSpeed(dir) {
+    const i = Math.max(0, SPEEDS.indexOf(player.playbackRate));
+    player.setRate(SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, i + dir))]);
+  }
+
+  // -- Keyboard: undo / redo, transport ---------------------------------------
 
   $effect(() => {
     function onKey(e) {
@@ -147,6 +161,12 @@
       } else if (mod && e.key.toLowerCase() === "y") {
         e.preventDefault();
         redo();
+      } else if (!mod && e.key === " ") {
+        e.preventDefault(); // spacebar toggles play/pause
+        player.playing ? player.pause() : player.startMode(player.playMode);
+      } else if (!mod && (e.key === ">" || e.key === "<")) {
+        e.preventDefault(); // > / < step playback speed through the preset list
+        stepSpeed(e.key === ">" ? 1 : -1);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -210,6 +230,7 @@
   const STRIPE_GAP_PX = 9; // base fill between lines (→ 10px period)
   let videoBgStyle = $state("");
   $effect(() => {
+    theme; // regenerate the stripe tile when the theme (token colors) changes
     const dpr = window.devicePixelRatio || 1;
     const root = getComputedStyle(document.documentElement);
     const base = root.getPropertyValue("--a-video-base").trim() || "#141414";
@@ -308,6 +329,15 @@
     </SplitPane>
   </div>
 
-  <HintBar {hints} />
+  {#snippet themeToggle()}
+    <button
+      class="theme-toggle"
+      onclick={() => (theme = theme === "dark" ? "light" : "dark")}
+      title="Toggle light / dark theme"
+    >
+      <iconify-icon icon={theme === "dark" ? "mdi:weather-sunny" : "mdi:weather-night"} width="16" height="16"></iconify-icon>
+    </button>
+  {/snippet}
+  <HintBar {hints} trailing={themeToggle} />
 </div>
 

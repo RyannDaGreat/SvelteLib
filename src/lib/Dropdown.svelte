@@ -204,16 +204,18 @@
 
 <style>
   .dd {
-    --dd-bg: rgba(20, 20, 30, 0.92);
-    --dd-fg: #e0e0e0;
-    --dd-fg-dim: #888;
-    --dd-border: rgba(255, 255, 255, 0.18);
+    /* Default to the host's theme tokens so the control follows light/dark; the
+       literals are the standalone fallback. */
+    --dd-bg: var(--control-bg, rgba(20, 20, 30, 0.92));
+    --dd-fg: var(--fg, #e0e0e0);
+    --dd-fg-dim: var(--fg-dim, #888);
+    --dd-border: var(--border, rgba(255, 255, 255, 0.18));
     --dd-radius: 6px;
     --dd-padding: 4px 10px;
     --dd-font-size: 0.85rem;
-    --dd-hover-bg: rgba(255, 255, 255, 0.08);
-    --dd-active-bg: rgba(122, 162, 247, 0.25);
-    --dd-active-fg: #e0e0e0;
+    --dd-hover-bg: var(--a-hover-bg, rgba(255, 255, 255, 0.08));
+    --dd-active-bg: color-mix(in srgb, var(--accent, #7aa2f7) 25%, transparent);
+    --dd-active-fg: var(--fg, #e0e0e0);
     --dd-menu-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
     --dd-menu-max-height: 240px;
 
