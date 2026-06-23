@@ -67,8 +67,13 @@
       const min = parseFloat(cs.getPropertyValue("--a-thumb-min")) || 120;
       const avail = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
       if (avail <= 0) return;
+      // Most columns of >= min that fit, then divide the width evenly among them.
+      // Set the EXACT column count (repeat(n, 1fr)) — auto-fill leaves a leftover
+      // empty track at some widths (sub-pixel rounding). The row height is the
+      // resulting tile width, so cells stay square; 1fr fills with no gap.
       const cols = Math.max(1, Math.floor((avail + gap) / (min + gap)));
       const tile = (avail - (cols - 1) * gap) / cols;
+      el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
       el.style.setProperty("--thumb-tile", `${tile}px`);
     };
     const ro = new ResizeObserver(update);

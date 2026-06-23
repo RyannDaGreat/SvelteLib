@@ -290,7 +290,9 @@ body,
   overscroll-behavior: contain; /* don't bubble scroll to the (locked) page */
   padding: var(--a-sp-5);
   display: grid;
-  grid-template-columns: repeat(auto-fill, var(--thumb-tile, var(--a-thumb-min)));
+  /* grid-template-columns is set inline by the fitTiles action (repeat(n, 1fr));
+     this is just the pre-JS fallback. Rows match the computed tile → square. */
+  grid-template-columns: repeat(auto-fill, var(--a-thumb-min));
   grid-auto-rows: var(--thumb-tile, var(--a-thumb-min));
   gap: var(--a-sp-5);
   align-content: start;
