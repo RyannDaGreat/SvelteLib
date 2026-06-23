@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["rp", "fire", "numpy", "pillow", "video-reader-rs", "easydict", "opencv-python-headless", "moviepy"]
+# dependencies = ["rp==0.1.1421", "fire==0.7.1", "numpy==2.5.0", "pillow==11.3.0", "video-reader-rs==0.4.3", "easydict==1.13", "opencv-python-headless==4.13.0.92", "moviepy==2.2.1"]
 # ///
 """
 Video Slice Annotator — backend.
@@ -17,6 +17,10 @@ Run:
 See README.md for the full contract (endpoints, JSON shape, assumptions).
 """
 
+import ctypes
+import functools
+import glob
+import importlib.util
 import json
 import os
 import subprocess
@@ -146,6 +150,30 @@ def ensure_lowres(stem):
     return out
 
 
+@functools.cache
+def _preload_video_reader_libs():
+    """
+    Command (runs once; functools.cache makes repeat calls no-ops). dlopen
+    video_reader's bundled libsharpyuv and libogg into the global symbol namespace
+    so its native decoder can import on this machine.
+
+    video-reader-rs ships every codec .so in `video_reader_rs.libs/`, but two are
+    reachable only through a build-time RUNPATH (`/tmp/vendor/lib`) baked into the
+    libs that need them — libwebp NEEDs libsharpyuv, libvorbis NEEDs libogg — and
+    RUNPATH is not transitive. So off the build box those files sit in the wheel
+    yet aren't on the loader's search path, and `import video_reader` dies with
+    "libsharpyuv-…so.0: cannot open shared object file". Pre-loading them
+    RTLD_GLOBAL pre-satisfies the NEEDED-by-soname lookups. The orphaned set is
+    exactly these two for the pinned video-reader-rs; the glob tolerates the
+    wheel's per-build hash suffix. Mutates the process dynamic-linker global scope.
+    """
+    spec = importlib.util.find_spec("video_reader")  # locate the wheel without running its native ext
+    libs_dir = os.path.join(os.path.dirname(spec.origin), "..", "video_reader_rs.libs")
+    for pattern in ("libsharpyuv*.so*", "libogg*.so*"):
+        for so in glob.glob(os.path.join(libs_dir, pattern)):
+            ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
+
+
 def frame_jpeg_bytes(stem, t_seconds, max_dim=0):
     """
     Command. JPEG bytes of the frame nearest t_seconds, caching to disk. Encodes
@@ -166,6 +194,7 @@ def frame_jpeg_bytes(stem, t_seconds, max_dim=0):
     if os.path.exists(out) and os.path.getsize(out) > 0:
         with open(out, "rb") as f:
             return f.read()
+    _preload_video_reader_libs()  # nudge video_reader's bundled native libs onto the loader path
     frames = rp.load_video_via_rs(src, [idx])  # (1, H, W, C) uint8 RGB
     if len(frames) == 0:
         raise RuntimeError(f"no frame at index {idx} (t={t_seconds}s) in {stem}")
