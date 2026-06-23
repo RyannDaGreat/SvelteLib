@@ -259,8 +259,18 @@
       const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
       view = panView(view, dx, width, duration);
     }
-    // A pan/zoom under a held drag changes which time the cursor covers.
-    if (drag) applyDrag(drag.lastClientX);
+    // Panning/zooming slides the timeline under the cursor, so the time it
+    // covers changes even when the mouse is still. Re-emit so the preview /
+    // active paint follows the cursor's new time, not just on mouse movement.
+    if (drag) {
+      applyDrag(e.clientX);
+    } else {
+      const r = barEl.getBoundingClientRect();
+      const overBar =
+        e.clientX >= r.left && e.clientX <= r.right &&
+        e.clientY >= r.top && e.clientY <= r.bottom;
+      if (overBar) onhover(timeAt(e.clientX), e.clientX);
+    }
   }
 
   // -- Pointer: scrub + paint/erase --
