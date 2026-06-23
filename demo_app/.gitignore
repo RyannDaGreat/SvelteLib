@@ -1,0 +1,8 @@
+# Lazily-built proxies + frame JPEGs — regenerated on demand, never committed.
+cache/*
+!cache/.gitkeep
+# Annotation data is user output, not source. Keep the folder, ignore the JSONs.
+outputs/*.json
+# Python / uv
+__pycache__/
+.venv/
