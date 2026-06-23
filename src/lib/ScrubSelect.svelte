@@ -184,6 +184,11 @@
   let {
     /** @type {string} Video source URL */
     src,
+    /** @type {string} [proxySrc] Optional tiny low-res proxy of the same clip.
+        Seeked in lockstep behind the main video; shown through while the main
+        video is still resolving a seek, so scrubbing previews instantly even
+        before the heavy stream has the frame. Omit when no proxy is available. */
+    proxySrc = undefined,
     /** @type {Segment[]} Bindable annotation model */
     segments = $bindable([]),
     /** @type {(segments: Segment[]) => void} Fired whenever segments change */
@@ -192,6 +197,10 @@
 
   /** @type {HTMLVideoElement|undefined} */
   let videoEl = $state(undefined);
+  /** @type {HTMLVideoElement|undefined} Low-res proxy element (when proxySrc set) */
+  let proxyEl = $state(undefined);
+  /** True while the main video is resolving a seek (no current frame yet). */
+  let mainSeeking = $state(false);
   /** @type {ReturnType<typeof AnnotateBar>|undefined} */
   let bar = $state(undefined);
 
@@ -295,9 +304,15 @@
   function seekTo(t, fast = false) {
     const clamped = clamp(t, 0, duration || 0);
     currentTime = clamped;
-    if (!videoEl) return;
-    if (fast && videoEl.fastSeek) videoEl.fastSeek(clamped);
-    else videoEl.currentTime = clamped;
+    if (videoEl) {
+      if (fast && videoEl.fastSeek) videoEl.fastSeek(clamped);
+      else videoEl.currentTime = clamped;
+    }
+    // Keep the proxy in lockstep so it can stand in while the main video seeks.
+    if (proxyEl) {
+      if (proxyEl.fastSeek) proxyEl.fastSeek(clamped);
+      else proxyEl.currentTime = clamped;
+    }
   }
 
   /** Command. Begin playback restricted to `mode`, seeking into the first
@@ -371,17 +386,31 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="scrub-select" onwheel={(e) => bar?.handleWheel(e)}>
   <div class="stage">
-    <!-- svelte-ignore a11y_media_has_caption -->
-    <video
+    <!-- Frame carries the glow so it persists even while the main video is
+         transparent mid-seek. Proxy sits behind; main on top. -->
+    <div
+      class="frame"
       class:glow-good={currentLabel === "good"}
       class:glow-bad={currentLabel === "bad"}
-      bind:this={videoEl}
-      {src}
-      muted
-      playsinline
-      preload="metadata"
-      onloadedmetadata={onMeta}
-    ></video>
+    >
+      {#if proxySrc}
+        <!-- svelte-ignore a11y_media_has_caption -->
+        <video class="proxy" bind:this={proxyEl} src={proxySrc} muted playsinline preload="auto"></video>
+      {/if}
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video
+        class="main"
+        class:revealing={proxySrc && mainSeeking}
+        bind:this={videoEl}
+        {src}
+        muted
+        playsinline
+        preload="metadata"
+        onloadedmetadata={onMeta}
+        onseeking={() => (mainSeeking = true)}
+        onseeked={() => (mainSeeking = false)}
+      ></video>
+    </div>
   </div>
 
   <div class="transport">
@@ -474,21 +503,46 @@
     align-items: center;
     max-height: var(--ss-video-max-h);
   }
-  video {
+  /* Frame stacks main + proxy in one grid cell so they overlap exactly. It
+     shrinks to the video size, and carries the glow + rounded corners. */
+  .frame {
+    display: grid;
+    border-radius: var(--ss-radius);
+    background: #000;
+    transition: box-shadow 0.2s ease;
+  }
+  .frame > video {
+    grid-area: 1 / 1;
     display: block;
     max-width: 100%;
     max-height: var(--ss-video-max-h);
     width: auto;
     height: auto;
     border-radius: var(--ss-radius);
-    background: #000;
-    transition: box-shadow 0.2s ease;
   }
-  /* Glow hugs the actual frame and reflects the region under the playhead. */
-  video.glow-good {
+  /* The main video (auto-sized) defines the cell; the proxy stretches to fill
+     it so the two stay pixel-aligned regardless of intrinsic sizes. Same aspect
+     ratio means `fill` introduces no distortion. */
+  .frame > .proxy {
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    object-fit: fill;
+  }
+  .frame > .main {
+    z-index: 1;
+  }
+  /* While the heavy stream resolves a seek it has no frame to show — fade it
+     out to reveal the already-seeked proxy behind it (instant scrub preview). */
+  .frame > .main.revealing {
+    opacity: 0;
+  }
+  /* Glow hugs the frame and reflects the region under the playhead. */
+  .frame.glow-good {
     box-shadow: 0 0 var(--ss-glow-spread) 4px var(--ss-glow-good);
   }
-  video.glow-bad {
+  .frame.glow-bad {
     box-shadow: 0 0 var(--ss-glow-spread) 4px var(--ss-glow-bad);
   }
 

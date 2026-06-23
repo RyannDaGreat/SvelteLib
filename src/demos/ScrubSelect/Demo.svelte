@@ -1,3 +1,13 @@
+<!--
+  Demo videos live in public/videos/ (gitignored). The optional low-res proxy
+  (~1/30 the size, shown through while the main stream resolves a seek) was made
+  with:
+    ffmpeg -i sample.mp4 -an -vf "scale=-2:180,fps=12" -c:v libx264 \
+      -preset veryfast -crf 32 -g 12 -keyint_min 12 -sc_threshold 0 \
+      -movflags +faststart sample.proxy.mp4
+  (small frame + frequent keyframes = fast scrubbing). proxySrc is optional;
+  drop it and ScrubSelect runs on the main stream alone.
+-->
 <script>
   import ScrubSelect from "../../lib/ScrubSelect.svelte";
 
@@ -15,7 +25,11 @@
   <a class="demo-back" href="/">&larr; All Components</a>
 
   <div class="widget">
-    <ScrubSelect src="/videos/sample.mp4" bind:segments />
+    <ScrubSelect
+      src="/videos/sample.mp4"
+      proxySrc="/videos/sample.proxy.mp4"
+      bind:segments
+    />
   </div>
 
   <details class="state">
