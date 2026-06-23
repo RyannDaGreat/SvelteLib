@@ -242,6 +242,12 @@
     gap: var(--scrub-gap);
   }
 
+  /* Width-fix: trigger sizes to its current label, but the menu is
+     constrained to that width — set min-width to fit the widest option. */
+  .right :global(.dd) {
+    min-width: 56px;
+  }
+
   .time {
     color: var(--scrub-time-color);
     font-size: var(--scrub-font-size);
