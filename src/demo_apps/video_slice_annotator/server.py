@@ -39,10 +39,12 @@ WEB_DIR = os.path.join(HERE, "web")
 # Local-only default; always overridable with --videos_dir. See README "Portability".
 DEFAULT_VIDEOS_DIR = "/Users/rburgert/Downloads/compressed_pairs copy"
 
-# Low-res proxy encode: 1/3-scale SVT-AV1 at a tight bitrate = small files.
+# Low-res proxy encode: small frame (360p) + frequent keyframes = fast scrubbing.
+# CRF-driven so quality stays consistent; keyframe every 6 frames (~0.5s) for snappy seeks.
 LOWRES_FFMPEG_ARGS = [
-    "-an", "-vf", "scale=iw/3:ih/3,fps=12",
-    "-c:v", "libsvtav1", "-preset", "4", "-b:v", "300k",
+    "-an", "-vf", "scale=-2:360,fps=12",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "34",
+    "-g", "6", "-keyint_min", "6", "-sc_threshold", "0",
     "-movflags", "+faststart",
 ]
 FRAME_JPEG_QUALITY = 80

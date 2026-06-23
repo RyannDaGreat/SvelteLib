@@ -54,6 +54,28 @@
   function scrollToCurrent() {
     document.querySelector(".thumb.ring-current")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
+
+  /** Svelte action (Command). Keeps the grid filled with the LARGEST square tiles
+      that fit: columns balloon to fill the width (no leftover gap) while staying
+      square, because pure CSS can't do fill-to-width + square + scroll together
+      (the aspect/1fr cycle collapses the rows). Sets --thumb-tile so app.css can
+      use definite columns AND a matching definite row height. */
+  function fitTiles(el) {
+    const cs = getComputedStyle(el);
+    const update = () => {
+      const gap = parseFloat(cs.gap) || 0;
+      const min = parseFloat(cs.getPropertyValue("--a-thumb-min")) || 120;
+      const avail = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      if (avail <= 0) return;
+      const cols = Math.max(1, Math.floor((avail + gap) / (min + gap)));
+      const tile = (avail - (cols - 1) * gap) / cols;
+      el.style.setProperty("--thumb-tile", `${tile}px`);
+    };
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    update();
+    return { destroy: () => ro.disconnect() };
+  }
 </script>
 
 <div class="thumblist">
@@ -65,7 +87,7 @@
     </button>
   </div>
 
-  <div class="scroll">
+  <div class="scroll" use:fitTiles>
     {#each shown as v (v.name)}
       <Thumbnail
         src={frameUrl(v.name, (v.duration ?? 0) / 2, THUMB_SIZE_PX)}

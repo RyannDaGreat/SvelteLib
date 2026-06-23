@@ -276,13 +276,13 @@ body,
   opacity: 0.3;
   cursor: default;
 }
-/* Responsive thumbnail grid. Columns are a DEFINITE width (~--a-thumb-min), NOT
-   `1fr`: a flexible track makes the square tiles' height depend on a width that
-   depends back on the row, a cycle the browser breaks by collapsing the row (so
-   tiles shrink to ~0 and the list never scrolls). A definite max keeps the
-   aspect height real. `min(--a-thumb-min, 100%)` still lets the lone column
-   shrink evenly in an impossibly-narrow pane instead of overflowing.
-   Leftover horizontal space is shared as even gaps (space-between). */
+/* Responsive thumbnail grid. The exact tile size is computed in JS (the fitTiles
+   action sets --thumb-tile) so columns BALLOON to fill the width with no leftover
+   gap while staying square — pure CSS can't do fill-to-width + square + scroll at
+   once (the 1fr/aspect cycle collapses the rows). Both the column width AND the
+   row height are that one definite --thumb-tile, so tiles are always square and an
+   overflowing list scrolls. The lone column shrinks evenly in a tiny pane.
+   The scrollbar is hidden — the pane still scrolls (wheel / drag / trackpad). */
 .thumblist .scroll {
   flex: 1;
   min-height: 0; /* let the flex child shrink so it actually scrolls */
@@ -290,16 +290,14 @@ body,
   overscroll-behavior: contain; /* don't bubble scroll to the (locked) page */
   padding: var(--a-sp-5);
   display: grid;
-  grid-template-columns: repeat(
-    auto-fill,
-    minmax(min(var(--a-thumb-min), 100%), var(--a-thumb-min))
-  );
-  /* Definite square rows (= column width). Definite rows are essential: `auto`
-     rows collapse the aspect tiles to ~0 when content overflows. */
-  grid-auto-rows: var(--a-thumb-min);
-  justify-content: space-between;
+  grid-template-columns: repeat(auto-fill, var(--thumb-tile, var(--a-thumb-min)));
+  grid-auto-rows: var(--thumb-tile, var(--a-thumb-min));
   gap: var(--a-sp-5);
   align-content: start;
+  scrollbar-width: none; /* Firefox — hidden but scrollable */
+}
+.thumblist .scroll::-webkit-scrollbar {
+  display: none; /* WebKit — hidden but scrollable */
 }
 /* The tiles themselves are the Thumbnail lib component (src/lib/Thumbnail.svelte),
    styled by the --thumb-* tokens set on .thumblist above. Each <Thumbnail> is a
