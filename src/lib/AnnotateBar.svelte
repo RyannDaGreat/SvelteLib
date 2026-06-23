@@ -460,10 +460,10 @@
   }
 
   function onPointerMove(e) {
-    // Plain hover does nothing — scrubbing only happens in capture mode or while
-    // actively dragging. (Capture is driven by movementX, not clientX.)
-    if (captured || !drag) return;
-    if (drag.kind === "pan") {
+    if (captured) return; // capture mode is driven by movementX, not clientX
+    if (!drag) {
+      onhover(timeAt(e.clientX), e.clientX); // scrub-preview the frame under the cursor
+    } else if (drag.kind === "pan") {
       panBy(e.clientX - drag.lastClientX);
       drag.lastClientX = e.clientX;
     } else {
