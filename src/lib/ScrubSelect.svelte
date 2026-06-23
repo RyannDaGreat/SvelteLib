@@ -22,7 +22,7 @@
   import AnnotateBar from "./AnnotateBar.svelte";
   import { Player } from "./player.svelte.js";
   import { paintSegments } from "./segments.js";
-  import { formatTime, speedItems } from "./format.js";
+  import { formatTimeMinSec, speedItems } from "./format.js";
 
   const SPEEDS = [0.25, 0.5, 1, 1.5, 2, 4, 8, 16];
 
@@ -87,7 +87,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="scrub-select" onwheel={(e) => bar?.handleWheel(e)}>
+<div class="scrub-select">
   <div class="stage">
     <!-- Frame carries the glow so it persists even while the main video is
          transparent mid-seek. Proxy sits behind; main on top. -->
@@ -154,7 +154,7 @@
       <iconify-icon icon="mdi:delete-sweep" width="20" height="20"></iconify-icon>
     </button>
     <Dropdown items={speedItems(SPEEDS)} value={player.playbackRate} onchange={player.setRate} />
-    <span class="time">{formatTime(player.currentTime)} / {formatTime(player.duration)}</span>
+    <span class="time">{formatTimeMinSec(player.currentTime)} / {formatTimeMinSec(player.duration)}</span>
   </div>
 
   <AnnotateBar

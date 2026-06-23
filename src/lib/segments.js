@@ -1,9 +1,11 @@
 /**
  * segments.js — pure interval algebra for labelled time ranges.
  *
- * A "segment" is { start, end, label } in seconds, with label 'good' | 'bad'.
- * A segment list is kept sorted and disjoint (normalised) by these helpers.
- * No I/O, no state — all functions here are pure and reusable.
+ * A "segment" is { start, end, label } in seconds. `label` is an ARBITRARY
+ * string — these helpers never assume specific values; they only group/merge by
+ * equality. (The annotator UI currently uses 'good'/'bad', but the model is
+ * label-agnostic, so adding more labels needs no change here.) A segment list is
+ * kept sorted and disjoint (normalised). No I/O, no state — all pure & reusable.
  */
 
 const EPS = 1e-6;

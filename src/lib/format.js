@@ -3,11 +3,11 @@
 /**
  * Pure function, general. Format seconds as M:SS.
  *
- * @example formatTime(0) // "0:00"
- * @example formatTime(65.4) // "1:05"
- * @example formatTime(3661) // "61:01"
+ * @example formatTimeMinSec(0) // "0:00"
+ * @example formatTimeMinSec(65.4) // "1:05"
+ * @example formatTimeMinSec(3661) // "61:01"
  */
-export function formatTime(seconds) {
+export function formatTimeMinSec(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);

@@ -265,7 +265,22 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[0] == "frame":
                 q = urllib.parse.parse_qs(parsed.query)
                 return self._serve_frame(parts[1], float(q.get("t", ["0"])[0]))
-            return self._serve_static(parsed.path)
+            # This process is the API/media backend only; the app is the Vite
+            # dev server. If APP_URL is set (start_server.sh does), bounce stray
+            # visitors straight to it so a wrong-port open still lands on the app.
+            app_url = os.environ.get("APP_URL")
+            if app_url:
+                self.send_response(302)
+                self.send_header("Location", app_url)
+                self._cors()
+                self.end_headers()
+                return
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<h2>Video Slice Annotator API backend</h2>"
+                             b"<p>Open the app (the Vite dev server URL printed by start_server.sh).</p>")
         except Exception as exc:  # report loudly, never crash the server
             traceback.print_exc()
             self._error(500, f"{type(exc).__name__}: {exc}")
@@ -371,5 +386,19 @@ def pre_compute_small_videos(videos_dir=DEFAULT_VIDEOS_DIR, ffmpeg="ffmpeg"):
             print(f"  [{i}/{len(stems)}] {stem} FAILED: {exc}", file=sys.stderr)
 
 
+def ports(start=3635):
+    """
+    Command. Print two free ports ("<app> <backend>") for start_server.sh, found
+    via rp.get_next_free_ports so concurrent runs never collide.
+    """
+    import rp
+    app_port, backend_port = rp.get_next_free_ports(start, 2)
+    print(app_port, backend_port)
+
+
 if __name__ == "__main__":
-    fire.Fire({"serve": serve, "pre_compute_small_videos": pre_compute_small_videos})
+    fire.Fire({
+        "serve": serve,
+        "pre_compute_small_videos": pre_compute_small_videos,
+        "ports": ports,
+    })

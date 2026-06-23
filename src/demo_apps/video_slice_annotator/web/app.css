@@ -1,0 +1,332 @@
+/*
+  app.css — the SINGLE, centralized stylesheet for the Video Slice Annotator
+  frontend (demo_app/web). See demo_app/web/CLAUDE.md for the rules:
+    - All app CSS lives here (the demo_app/web components carry NO <style>).
+    - Every value is a named token in :root — no magic numbers/colors. Only
+      truly degenerate values (0, 1, 100%, white, black, transparent) may be bare.
+    - Reuse tokens; never copy-paste values.
+  Library components under src/lib keep their own scoped styles; this file styles
+  only the app shell (App / ThumbList / VideoPane). It reuses theme.css tokens
+  (--bg, --fg, --fg-dim, --border, --radius, --accent, --control-bg) where they
+  exist and adds app-specific ones below.
+*/
+
+:root {
+  /* -- Palette -- */
+  --a-good: #3fb950;
+  --a-bad: #e5534b;
+  --a-comment: #e3b341;
+  --a-handle: #2e7d46;
+  --a-handle-hover: var(--a-good);
+
+  /* -- Surfaces / overlays -- */
+  --a-panel-bg: rgba(0, 0, 0, 0.25);
+  --a-overlay-bg: rgba(0, 0, 0, 0.55);
+  --a-badge-bg: rgba(0, 0, 0, 0.75);
+  --a-hover-bg: rgba(255, 255, 255, 0.12);
+  --a-active-mix: 30%; /* tint strength for an active transport button */
+
+  /* -- Spacing scale -- */
+  --a-sp-1: 2px;
+  --a-sp-2: 4px;
+  --a-sp-3: 6px;
+  --a-sp-4: 8px;
+  --a-sp-5: 10px;
+  --a-sp-6: 12px;
+  --a-sp-8: 16px;
+  --a-sp-room: 84px; /* headroom above the timeline for floating comments */
+
+  /* -- Sizes -- */
+  --a-btn-size: 32px;
+  --a-reset-size: 30px;
+  --a-sep-height: 22px;
+  --a-thumb-min: 120px;
+  --a-control-min: 120px;
+  --a-handle-size: 1px;
+  --a-handle-hit: 6px;
+  --a-glow-blur: 28px;
+  --a-glow-spread: 4px;
+  --a-focus-ring: 2px;
+  --a-thumb-border: 2px;
+
+  /* -- Type -- */
+  --a-fs-sm: 0.75rem;
+  --a-fs-xs: 0.7rem;
+  --a-radius-sm: 3px;
+
+  /* -- Aspect -- */
+  --a-thumb-aspect: 16 / 9;
+}
+
+/* ===== Fill the viewport so the split panes have a fixed frame =========== */
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+#app {
+  display: flex;
+}
+
+/* ===== App shell ========================================================= */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  /* Thin green resizable-pane handles (SplitPane reads these). */
+  --sp-handle-color: var(--a-handle);
+  --sp-handle-hover: var(--a-handle-hover);
+  --sp-handle-size: var(--a-handle-size);
+  --sp-handle-hit-pad: var(--a-handle-hit);
+}
+.main-split {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--fg-dim);
+  background: black;
+}
+
+/* ===== Timeline pane + transport ======================================== */
+
+.timeline-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
+  padding: var(--a-sp-room) var(--a-sp-8) var(--a-sp-6);
+  background: var(--bg);
+}
+.timeline-pane > .annotate {
+  flex: 0 0 auto;
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  margin-top: var(--a-sp-6);
+  padding: var(--a-sp-3) var(--a-sp-5);
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.transport button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-btn-size);
+  height: var(--a-btn-size);
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  border-radius: var(--a-sp-2);
+}
+.transport button:hover {
+  background: var(--a-hover-bg);
+}
+.transport button:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.transport .play-good {
+  color: var(--a-good);
+}
+.transport .play-bad {
+  color: var(--a-bad);
+}
+.transport .play-all.active {
+  background: color-mix(in srgb, var(--accent) var(--a-active-mix), transparent);
+}
+.transport .play-good.active {
+  background: color-mix(in srgb, var(--a-good) var(--a-active-mix), transparent);
+}
+.transport .play-bad.active {
+  background: color-mix(in srgb, var(--a-bad) var(--a-active-mix), transparent);
+}
+.transport .sep {
+  width: 1px;
+  height: var(--a-sep-height);
+  margin: 0 var(--a-sp-3);
+  background: var(--border);
+}
+.transport .spacer {
+  flex: 1;
+}
+.transport .dd {
+  min-width: var(--control-min, 56px);
+}
+.transport .time {
+  color: var(--fg-dim);
+  font-size: var(--a-fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: var(--a-sp-5);
+}
+
+/* ===== Thumbnail list (left pane) ======================================= */
+
+.thumblist {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--a-panel-bg);
+  border-right: 1px solid var(--border);
+}
+.thumblist .controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+  padding: var(--a-sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.thumblist .controls label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--a-sp-4);
+  font-size: var(--a-fs-sm);
+  color: var(--fg-dim);
+}
+.thumblist .controls .dd {
+  min-width: var(--a-control-min);
+}
+.thumblist .scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--a-sp-5);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--a-thumb-min), 1fr));
+  gap: var(--a-sp-5);
+  align-content: start;
+}
+.thumblist .thumb {
+  padding: 0;
+  border: var(--a-thumb-border) solid transparent;
+  border-radius: var(--radius);
+  background: black;
+  cursor: pointer;
+  overflow: hidden;
+}
+.thumblist .thumb.annotated {
+  border-color: var(--a-comment);
+}
+.thumblist .thumb.current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 var(--a-focus-ring) var(--accent);
+}
+.thumblist .thumb-img {
+  position: relative;
+  aspect-ratio: var(--a-thumb-aspect);
+  display: block;
+}
+.thumblist .thumb-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.thumblist .dur {
+  position: absolute;
+  right: var(--a-sp-2);
+  bottom: var(--a-sp-2);
+  padding: 1px var(--a-sp-2);
+  background: var(--a-badge-bg);
+  color: white;
+  font-size: var(--a-fs-xs);
+  border-radius: var(--a-radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+.thumblist .empty {
+  color: var(--fg-dim);
+  font-size: var(--a-fs-sm);
+}
+
+/* ===== Video pane ======================================================= */
+
+.videopane {
+  width: 100%;
+  height: 100%;
+  background: black;
+  position: relative;
+}
+.videopane .world {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.videopane .frame {
+  display: grid;
+  max-width: 100%;
+  max-height: 100%;
+  transition: box-shadow 0.2s ease;
+}
+.videopane .frame > video {
+  grid-area: 1 / 1;
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+}
+.videopane .frame > .proxy {
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.videopane .frame > .main {
+  z-index: 1;
+}
+.videopane .frame > .main.revealing {
+  opacity: 0;
+}
+.videopane .frame.glow-good {
+  box-shadow: 0 0 var(--a-glow-blur) var(--a-glow-spread) var(--a-good);
+}
+.videopane .frame.glow-bad {
+  box-shadow: 0 0 var(--a-glow-blur) var(--a-glow-spread) var(--a-bad);
+}
+.videopane .minimap {
+  position: absolute;
+  right: var(--a-sp-4);
+  bottom: var(--a-sp-4);
+  transition: opacity 0.2s;
+}
+.videopane .minimap.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.videopane .reset {
+  position: absolute;
+  right: var(--a-sp-4);
+  top: var(--a-sp-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-reset-size);
+  height: var(--a-reset-size);
+  background: var(--a-overlay-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.videopane .reset:disabled {
+  opacity: 0.3;
+  cursor: default;
+}

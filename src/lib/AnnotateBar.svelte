@@ -225,6 +225,8 @@
     oncommentjump = () => {},
     /** @type {() => void} Comments changed (added/edited/deleted) — for save/undo */
     oncommentschange = () => {},
+    /** @type {boolean} Bindable — true while in pointer-lock capture scrub mode */
+    captured = $bindable(false),
   } = $props();
 
   /** @type {HTMLDivElement|undefined} */
@@ -251,7 +253,7 @@
   // live element rect so it keeps working if the bar gets moved on the page.
   const CLICK_SLOP_PX = 4;
   const SLOW_SCRUB_FACTOR = 0.25; // Shift in capture mode → 4× slower scrubbing
-  let captured = $state(false);
+  // `captured` is a bindable prop (declared above) so the app can read it.
   let captureX = 0; // virtual clientX accumulated from movementX (plain)
 
   // Proposed selection (the range under an active paint drag) — shown striped.
@@ -638,6 +640,7 @@
 <div
   class="annotate"
   style="--playhead-x: {playheadX}px"
+  onwheel={handleWheel}
   onpointerenter={() => (hovered = true)}
   onpointerleave={() => (hovered = false)}
 >

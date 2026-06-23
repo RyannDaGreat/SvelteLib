@@ -100,12 +100,13 @@
     {@render children()}
   {/if}
 
-  <!-- World bounds outline (inset so stroke stays inside) -->
+  <!-- World bounds outline (inset so stroke stays inside; never negative when
+       the inset exceeds a tiny rect at high zoom) -->
   <rect
     x={worldBounds.x + strokeHalf}
     y={worldBounds.y + strokeHalf}
-    width={worldBounds.w - strokeW}
-    height={worldBounds.h - strokeW}
+    width={Math.max(0, worldBounds.w - strokeW)}
+    height={Math.max(0, worldBounds.h - strokeW)}
     class="minimap-world"
     stroke-width={strokeW}
   />
@@ -114,8 +115,8 @@
   <rect
     x={visibleX + strokeHalf}
     y={visibleY + strokeHalf}
-    width={visibleW - strokeW}
-    height={visibleH - strokeW}
+    width={Math.max(0, visibleW - strokeW)}
+    height={Math.max(0, visibleH - strokeW)}
     class="minimap-viewport"
     stroke-width={strokeW}
   />

@@ -57,13 +57,17 @@ frontend built from the reusable components in this repo's `src/lib/`
 
 ## Running
 
-Backend (resolves deps via `uv` + the PEP-723 block in `server.py`):
-
 ```bash
-./start_server.sh                          # default videos dir, port 8000
+./start_server.sh                          # default videos dir
 ./start_server.sh --videos_dir=/my/clips   # any flat folder of .mp4
-./start_server.sh --port=9000
 ```
+
+This picks two free ports (via `rp.get_next_free_ports`), starts the Python
+API/media backend on one and the **Vite dev server (the app, with HMR) on the
+other**, and opens the app. Vite proxies the API/media routes to the backend, so
+there's a single URL — `http://<host>:<APP_PORT>` — printed on startup along with
+the **LAN IP** (the app + backend bind `0.0.0.0`, so any device on the network
+can reach it). Live reload + visible errors; there is no production build.
 
 Optionally pre-build every proxy up front (the server also builds them lazily on
 first request):
@@ -71,9 +75,6 @@ first request):
 ```bash
 uv run server.py pre_compute_small_videos --videos_dir=/my/clips
 ```
-
-Frontend: run the repo's Vite dev server (`npm run dev`) and open the app; it
-talks to the backend at `http://localhost:8000` (CORS-enabled).
 
 ## HTTP API
 

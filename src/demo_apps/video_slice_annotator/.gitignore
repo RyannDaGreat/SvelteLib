@@ -3,6 +3,8 @@ cache/*
 !cache/.gitkeep
 # Annotation data is user output, not source. Keep the folder, ignore the JSONs.
 outputs/*.json
-# Python / uv
+# Build / deps
+web/dist/
+node_modules/
 __pycache__/
 .venv/
