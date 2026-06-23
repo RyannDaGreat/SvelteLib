@@ -199,4 +199,35 @@ export class Player {
   toggleLoop = () => {
     this.looped = !this.looped;
   };
+
+  // -- eased seek (e.g. clicking a comment jumps there smoothly) --
+
+  #seekAnimId = null;
+
+  /** Command. Ease the playhead to `target` seconds — exponential, so it
+      decelerates into place (no acceleration). Used for comment jumps. While
+      playing, just seeks instantly (no point animating against the play loop). */
+  animateSeekTo = (target, tauMs = 45) => {
+    const dest = clamp(target, 0, this.duration || 0);
+    if (this.#seekAnimId != null) cancelAnimationFrame(this.#seekAnimId);
+    if (this.playing || !this.#video) {
+      this.seekTo(dest, true);
+      return;
+    }
+    let last = performance.now();
+    const step = (now) => {
+      const dt = now - last;
+      last = now;
+      const k = 1 - Math.exp(-dt / tauMs);
+      const next = this.currentTime + (dest - this.currentTime) * k;
+      if (Math.abs(dest - next) < 0.01) {
+        this.#seekAnimId = null;
+        this.seekTo(dest, true);
+      } else {
+        this.seekTo(next, true);
+        this.#seekAnimId = requestAnimationFrame(step);
+      }
+    };
+    this.#seekAnimId = requestAnimationFrame(step);
+  };
 }

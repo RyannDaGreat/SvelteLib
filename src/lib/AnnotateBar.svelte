@@ -44,6 +44,8 @@
     />
 -->
 <script>
+  import "iconify-icon";
+
   // -- Pure functions (general) -----------------------------------------------
 
   /**
@@ -217,6 +219,12 @@
     onhover = () => {},
     /** @type {() => void} Cursor left the bar */
     onhoverleave = () => {},
+    /** @type {{id:string,time:number,text:string}[]} Comment markers (bindable) */
+    comments = $bindable([]),
+    /** @type {(time:number) => void} A comment was clicked — jump the playhead there */
+    oncommentjump = () => {},
+    /** @type {() => void} Comments changed (added/edited/deleted) — for save/undo */
+    oncommentschange = () => {},
   } = $props();
 
   /** @type {HTMLDivElement|undefined} */
@@ -242,11 +250,19 @@
   // cursor to the bar's mid-line; horizontal motion scrubs; Esc exits. Uses the
   // live element rect so it keeps working if the bar gets moved on the page.
   const CLICK_SLOP_PX = 4;
+  const SLOW_SCRUB_FACTOR = 0.25; // Shift in capture mode → 4× slower scrubbing
   let captured = $state(false);
   let captureX = 0; // virtual clientX accumulated from movementX (plain)
 
   // Proposed selection (the range under an active paint drag) — shown striped.
   let proposed = $state(null); // { lo, hi } in seconds, or null
+
+  // Comments: time-positioned markers floating above the bar.
+  let hovered = $state(false); // pointer is over the timeline (for the C hotkey)
+  let editingId = $state(null); // id of the comment being typed, or null
+  let hoverCommentId = $state(null); // comment under the pointer → expand it
+  let draft = $state(""); // text being typed for editingId
+  const ON_TIMECODE_PX = 9; // playhead within this many px of a comment expands it
 
   $effect(() => {
     // Initialise / re-fit the window when a clip's duration first arrives.
@@ -362,17 +378,19 @@
 
   // -- Pointer: scrub + paint/erase + pan --
 
-  /** Pure. Paint mode from the pressed-button bitmask (1=left, 2=right, 4=middle).
-      Left+Right held together = erase. Null when no paint button is down.
+  /** Pure. Paint mode from the pressed-button bitmask (1=left, 2=right, 4=middle)
+      plus the alt modifier. Left+Right together OR alt+Left = erase. Null when no
+      paint button is down.
 
       @example paintModeFromButtons(1) // 'good'
       @example paintModeFromButtons(2) // 'bad'
       @example paintModeFromButtons(3) // 'erase' (left+right)
+      @example paintModeFromButtons(1, true) // 'erase' (alt+left)
       @example paintModeFromButtons(4) // null (middle only) */
-  function paintModeFromButtons(buttons) {
+  function paintModeFromButtons(buttons, alt = false) {
     const left = buttons & 1;
     const right = buttons & 2;
-    if (left && right) return "erase";
+    if ((left && right) || (alt && left)) return "erase";
     if (right) return "bad";
     if (left) return "good";
     return null;
@@ -387,11 +405,11 @@
     onpaint(drag.mode, drag.startTime, t);
   }
 
-  /** Recompute a paint drag's mode from the live button chord, then re-apply the
-      whole stroke against the parent's stable base — so changing buttons
-      mid-drag is retroactive, as if that mode had been used from the start. */
-  function repaint(buttons, x) {
-    const mode = paintModeFromButtons(buttons);
+  /** Recompute a paint drag's mode from the live button chord (+ alt), then
+      re-apply the whole stroke against the parent's stable base — so changing
+      buttons/modifiers mid-drag is retroactive, as if used from the start. */
+  function repaint(buttons, x, alt = false) {
+    const mode = paintModeFromButtons(buttons, alt);
     if (mode) {
       drag.mode = mode;
       if (mode !== "good") drag.everNonGood = true;
@@ -405,10 +423,10 @@
     setViewNow(panView(view, -dxPx, width, duration));
   }
 
-  function startPaint(x, buttons) {
+  function startPaint(x, buttons, alt = false) {
     drag = {
       kind: "paint",
-      mode: paintModeFromButtons(buttons) ?? "good",
+      mode: paintModeFromButtons(buttons, alt) ?? "good",
       startTime: timeAt(x),
       downClientX: x,
       lastClientX: x,
@@ -416,7 +434,7 @@
       everNonGood: false,
     };
     onpaintstart();
-    repaint(buttons, x);
+    repaint(buttons, x, alt);
   }
 
   function endPaintDrag() {
@@ -456,7 +474,7 @@
       drag = { kind: "pan", lastClientX: e.clientX }; // middle button → pan
       return;
     }
-    startPaint(e.clientX, e.buttons); // already seeks to the press point via onseek
+    startPaint(e.clientX, e.buttons, e.altKey); // already seeks to the press point via onseek
   }
 
   function onPointerMove(e) {
@@ -467,7 +485,7 @@
       panBy(e.clientX - drag.lastClientX);
       drag.lastClientX = e.clientX;
     } else {
-      repaint(e.buttons, e.clientX);
+      repaint(e.buttons, e.clientX, e.altKey);
     }
   }
 
@@ -476,7 +494,7 @@
     // Per the spec, pointerup fires when the LAST button is released (buttons→0).
     // If a button of this drag is still held (a chord release), keep going so the
     // mode change re-applies retroactively rather than ending the stroke.
-    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, e.clientX);
+    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, e.clientX, e.altKey);
     if (drag.kind === "pan" && e.buttons & 4) {
       panBy(e.clientX - drag.lastClientX);
       drag.lastClientX = e.clientX;
@@ -496,23 +514,80 @@
     if (!drag && !captured) onhoverleave();
   }
 
+  // -- Comments ---------------------------------------------------------------
+
+  /** Command. Add a comment at `time` and immediately put it in edit mode. */
+  export function addCommentAt(time) {
+    const id = crypto.randomUUID();
+    comments = [...comments, { id, time, text: "" }];
+    editingId = id;
+    draft = "";
+  }
+  function startEdit(c) {
+    editingId = c.id;
+    draft = c.text;
+  }
+  /** Command. Commit the active edit; an empty comment is discarded. */
+  function commitEdit() {
+    if (editingId == null) return;
+    const id = editingId;
+    const text = draft.trim();
+    comments = text
+      ? comments.map((c) => (c.id === id ? { ...c, text } : c))
+      : comments.filter((c) => c.id !== id);
+    editingId = null;
+    oncommentschange();
+  }
+  function deleteComment(id) {
+    comments = comments.filter((c) => c.id !== id);
+    if (editingId === id) editingId = null;
+    oncommentschange();
+  }
+  /** Query. A comment expands when edited, hovered, or the playhead sits on it. */
+  function commentExpanded(c) {
+    return (
+      editingId === c.id ||
+      hoverCommentId === c.id ||
+      Math.abs(xOf(currentTime) - xOf(c.time)) < ON_TIMECODE_PX
+    );
+  }
+  /** Svelte action: focus a freshly-mounted comment textarea. */
+  function autofocus(node) {
+    node.focus();
+  }
+
+  // Press C while hovering the timeline → add a comment at the playhead.
+  $effect(() => {
+    function onKey(e) {
+      if ((e.key !== "c" && e.key !== "C") || editingId != null || !hovered) return;
+      const el = document.activeElement;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      addCommentAt(currentTime);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   // -- Capture scrub mode (Pointer Lock), driven by movementX -----------------
 
   /** All buttons work while captured, against the virtual (pinned) cursor. */
   function onCaptureDown(e) {
     if (!captured || drag) return;
     if (e.button === 1) drag = { kind: "pan", lastClientX: captureX };
-    else startPaint(captureX, e.buttons);
+    else startPaint(captureX, e.buttons, e.altKey);
   }
 
   function onCaptureMove(e) {
     if (!captured || !barEl) return;
-    if (drag?.kind === "pan") { panBy(e.movementX); syncCaptureToPlayhead(); return; }
+    // Hold Shift for fine scrubbing — 4× slower than the raw mouse movement.
+    const mv = e.shiftKey ? e.movementX * SLOW_SCRUB_FACTOR : e.movementX;
+    if (drag?.kind === "pan") { panBy(mv); syncCaptureToPlayhead(); return; }
     // Move the virtual cursor; at the bar's edge, push past it by panning the
     // view instead of stopping — pointer lock keeps movementX coming even at the
     // screen edge, so there's no boundary.
     const rect = barEl.getBoundingClientRect();
-    const next = captureX + e.movementX;
+    const next = captureX + mv;
     if (next < rect.left) {
       setViewNow(panView(view, next - rect.left, width, duration)); // pan earlier
       captureX = rect.left;
@@ -524,13 +599,13 @@
     }
     // onseek/repaint set currentTime = timeAt(captureX), so the playhead lands at
     // captureX − left — i.e. exactly where the capture circle renders. Locked.
-    if (drag) repaint(e.buttons, captureX);
+    if (drag) repaint(e.buttons, captureX, e.altKey);
     else onseek(timeAt(captureX));
   }
 
   function onCaptureUp(e) {
     if (!captured || !drag) return;
-    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, captureX);
+    if (drag.kind === "paint" && e.buttons & 3) return repaint(e.buttons, captureX, e.altKey);
     if (drag.kind === "pan" && e.buttons & 4) return;
     endPaintDrag();
   }
@@ -559,7 +634,59 @@
   });
 </script>
 
-<div class="annotate" style="--playhead-x: {playheadX}px">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="annotate"
+  style="--playhead-x: {playheadX}px"
+  onpointerenter={() => (hovered = true)}
+  onpointerleave={() => (hovered = false)}
+>
+  <!-- Comments float ABOVE the bar so nothing is needed below the timeline. -->
+  <div class="comments">
+    {#each comments as c (c.id)}
+      {@const x = xOf(c.time)}
+      {#if x >= -600 && x <= width + 600}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="comment"
+          class:expanded={commentExpanded(c)}
+          class:editing={editingId === c.id}
+          style="left: {x}px"
+          onpointerenter={() => (hoverCommentId = c.id)}
+          onpointerleave={() => (hoverCommentId = null)}
+        >
+          {#if editingId === c.id}
+            <textarea
+              class="comment-box"
+              use:autofocus
+              bind:value={draft}
+              placeholder="comment…"
+              onkeydown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitEdit(); }
+                else if (e.key === "Escape") { e.preventDefault(); commitEdit(); }
+              }}
+              onblur={commitEdit}
+            ></textarea>
+          {:else}
+            <button
+              class="comment-box"
+              onclick={() => oncommentjump(c.time)}
+              ondblclick={() => startEdit(c)}
+              title="Click to jump · double-click to edit"
+            >
+              <span class="comment-text">{c.text}</span>
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <span class="comment-del" role="button" tabindex="-1" onclick={(e) => { e.stopPropagation(); deleteComment(c.id); }}>×</span>
+            </button>
+          {/if}
+          <span class="comment-dot">
+            <iconify-icon icon="mdi:comment-text" width="12" height="12"></iconify-icon>
+          </span>
+        </div>
+      {/if}
+    {/each}
+  </div>
+
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="bar"
@@ -631,11 +758,99 @@
     /* Proposed-selection diagonal hatch: solid 5px white + 1px black, no gaps. */
     --proposed-white: 5px;
     --proposed-black: 1px;
+    --comment-color: #e3b341; /* yellow — comment markers */
+    --comment-max-w: 512px;
+    --comment-bg: #20232e;
 
     position: relative;
     width: 100%;
     user-select: none;
     touch-action: none;
+    /* Fill the parent (e.g. a resizable pane) and clip timeline content beyond
+       its width. overflow-x: clip lets comments still float above (y visible). */
+    overflow-x: clip;
+  }
+
+  /* -- Comments: markers floating above the bar (no layout space taken) -- */
+  .comments {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 0;
+    z-index: 20;
+    pointer-events: none;
+  }
+  .comment {
+    position: absolute;
+    bottom: 3px; /* sits just above the bar's top edge */
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    pointer-events: auto;
+  }
+  .comment-dot {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--comment-color);
+    color: #1a1a2e;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+  }
+  /* The text bubble: hidden until the comment is expanded (hover / on-timecode / editing). */
+  .comment-box {
+    display: none;
+    max-width: var(--comment-max-w);
+    width: max-content;
+    padding: 6px 8px;
+    background: var(--comment-bg);
+    color: #e0e0e0;
+    border: 1px solid var(--comment-color);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+  }
+  .comment.expanded .comment-box {
+    display: block;
+  }
+  button.comment-box {
+    position: relative;
+    font-family: inherit;
+  }
+  .comment-text {
+    display: block;
+    min-width: 1ch;
+    min-height: 1em;
+  }
+  .comment-del {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    color: var(--label-color);
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .comment-del:hover {
+    color: var(--seg-bad);
+  }
+  textarea.comment-box {
+    width: var(--comment-max-w);
+    min-height: 3.2em;
+    resize: none;
+    outline: none;
+    font-family: inherit;
   }
 
   .bar {

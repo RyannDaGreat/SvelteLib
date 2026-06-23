@@ -34,6 +34,8 @@
     proxySrc = undefined,
     /** @type {{start:number,end:number,label:'good'|'bad'}[]} Bindable model */
     segments = $bindable([]),
+    /** @type {{id:string,time:number,text:string}[]} Bindable comments */
+    comments = $bindable([]),
     /** @type {(segments) => void} Fired whenever segments change */
     onchange = undefined,
   } = $props();
@@ -145,6 +147,9 @@
 
     <span class="spacer"></span>
 
+    <button class="comment-btn" onclick={() => bar?.addCommentAt(player.currentTime)} title="Add comment at playhead (C)">
+      <iconify-icon icon="mdi:comment-plus" width="20" height="20"></iconify-icon>
+    </button>
     <button onclick={clearAll} title="Clear all regions" disabled={segments.length === 0}>
       <iconify-icon icon="mdi:delete-sweep" width="20" height="20"></iconify-icon>
     </button>
@@ -157,11 +162,13 @@
     duration={player.duration}
     currentTime={player.currentTime}
     {segments}
+    bind:comments
     onseek={onScrub}
     onpaintstart={onPaintStart}
     onpaint={onPaint}
     onpaintend={onPaintEnd}
     onhover={onHover}
+    oncommentjump={(t) => player.animateSeekTo(t)}
   />
 </div>
 
