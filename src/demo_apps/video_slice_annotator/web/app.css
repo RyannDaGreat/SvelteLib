@@ -77,9 +77,6 @@
   --a-fs-xs: 0.7rem;
   --a-radius-sm: 3px;
 
-  /* -- Aspect -- */
-  --a-thumb-aspect: 1 / 1;
-
   /* -- Transitions -- */
   --a-fade: 0.2s; /* default fade for hints / overlays */
   --a-glow-fade: 0.05s; /* clip glow snaps almost immediately (≈1/20 s) */
@@ -123,7 +120,8 @@ body,
   min-height: 0;
   position: relative;
 }
-.video-col {
+.video-col,
+.pane-fill {
   width: 100%;
   height: 100%;
 }
@@ -235,6 +233,15 @@ body,
   height: 100%;
   background: var(--a-panel-bg);
   border-right: 1px solid var(--border);
+  /* Theme the Thumbnail lib component (it reads these --thumb-* properties). */
+  --thumb-radius: var(--radius);
+  --thumb-ring-width: var(--a-thumb-border);
+  --thumb-ring-comment: var(--a-comment);
+  --thumb-ring-current: var(--a-current);
+  --thumb-badge-pad: var(--a-sp-2);
+  --thumb-badge-bg: var(--a-badge-bg);
+  --thumb-badge-fs: var(--a-fs-xs);
+  --thumb-badge-radius: var(--a-radius-sm);
 }
 /* Toolbar: filter + sort side by side, then the scroll-to-current button. */
 .thumblist .controls {
@@ -269,7 +276,13 @@ body,
   opacity: 0.3;
   cursor: default;
 }
-/* Near-fixed square thumbnails that wrap and scroll automatically. */
+/* Responsive thumbnail grid. Columns are a DEFINITE width (~--a-thumb-min), NOT
+   `1fr`: a flexible track makes the square tiles' height depend on a width that
+   depends back on the row, a cycle the browser breaks by collapsing the row (so
+   tiles shrink to ~0 and the list never scrolls). A definite max keeps the
+   aspect height real. `min(--a-thumb-min, 100%)` still lets the lone column
+   shrink evenly in an impossibly-narrow pane instead of overflowing.
+   Leftover horizontal space is shared as even gaps (space-between). */
 .thumblist .scroll {
   flex: 1;
   min-height: 0; /* let the flex child shrink so it actually scrolls */
@@ -277,48 +290,21 @@ body,
   overscroll-behavior: contain; /* don't bubble scroll to the (locked) page */
   padding: var(--a-sp-5);
   display: grid;
-  grid-template-columns: repeat(auto-fill, var(--a-thumb-min));
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(var(--a-thumb-min), 100%), var(--a-thumb-min))
+  );
+  /* Definite square rows (= column width). Definite rows are essential: `auto`
+     rows collapse the aspect tiles to ~0 when content overflows. */
+  grid-auto-rows: var(--a-thumb-min);
   justify-content: space-between;
   gap: var(--a-sp-5);
   align-content: start;
 }
-.thumblist .thumb {
-  padding: 0;
-  border: none; /* unannotated thumbnails carry NO border */
-  border-radius: var(--radius);
-  background: black;
-  cursor: pointer;
-  overflow: hidden;
-}
-/* Annotated / current get a ring via box-shadow (no border = no layout shift). */
-.thumblist .thumb.annotated {
-  box-shadow: 0 0 0 var(--a-thumb-border) var(--a-comment);
-}
-.thumblist .thumb.current {
-  box-shadow: 0 0 0 var(--a-thumb-border) var(--a-current);
-}
-.thumblist .thumb-img {
-  position: relative;
-  aspect-ratio: var(--a-thumb-aspect);
-  display: block;
-}
-.thumblist .thumb-img img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.thumblist .dur {
-  position: absolute;
-  right: var(--a-sp-2);
-  bottom: var(--a-sp-2);
-  padding: 1px var(--a-sp-2);
-  background: var(--a-badge-bg);
-  color: white;
-  font-size: var(--a-fs-xs);
-  border-radius: var(--a-radius-sm);
-  font-variant-numeric: tabular-nums;
-}
+/* The tiles themselves are the Thumbnail lib component (src/lib/Thumbnail.svelte),
+   styled by the --thumb-* tokens set on .thumblist above. Each <Thumbnail> is a
+   plain block grid item whose in-flow aspect box gives it height — so rows align
+   and the grid actually overflows-and-scrolls. */
 .thumblist .empty {
   color: var(--fg-dim);
   font-size: var(--a-fs-sm);

@@ -445,15 +445,45 @@
 
   /** Recompute a paint drag's mode from the live button chord (+ alt), then
       re-apply the whole stroke against the parent's stable base — so changing
-      buttons/modifiers mid-drag is retroactive, as if used from the start. */
+      buttons/modifiers mid-drag is retroactive, as if used from the start.
+
+      Erase is STICKY for the rest of the stroke once an L+R chord has been seen
+      (drag.everChord): the two buttons rarely release on the exact same event,
+      so without this, dropping one would momentarily recompute the held button's
+      mode (good/bad) and commit that instead of the erase. The chord-release
+      window (scheduleChordRelease) is what later clears everChord to fall to a
+      single button's mode when one is deliberately held past CHORD_RELEASE_MS. */
   function repaint(buttons, x, alt = false) {
     clearChordTimeout(); // any deliberate re-apply resolves a pending chord window
-    const mode = paintModeFromButtons(buttons, alt);
+    const mode = drag.everChord ? "erase" : paintModeFromButtons(buttons, alt);
     if (mode) {
       drag.mode = mode;
       if (mode !== "good") drag.everNonGood = true;
     }
     applyPaint(x);
+  }
+
+  /** Command. Fold an event's live button bitmask into the active paint stroke:
+      latch drag.everChord once both left+right are down together, then update
+      drag.lastButtons. Returns { pressedNew, releasedOld } — which paint buttons
+      (1|2) appeared / disappeared since the last event.
+
+      This is the heart of the chord fix. Empirically (verified by Puppeteer):
+        - Pressing a 2nd mouse button while the first is held does NOT fire a
+          fresh pointerdown — it arrives as a pointermove with buttons & 3 === 3.
+        - RELEASING one button of an L+R chord while the other stays held also
+          arrives as a pointermove (buttons drops 3→1 or 3→2), NOT a pointerup.
+      So both the chord press AND the partial chord release surface through the
+      move handler, and every pointer handler (down/move/up + capture equivalents)
+      routes its buttons through here — the chord is detected from whatever event
+      actually carries the change, never relying on a specific event type firing. */
+  function noteButtons(buttons) {
+    const prev = drag.lastButtons;
+    const pressedNew = buttons & ~prev & 3;
+    const releasedOld = prev & ~buttons & 3;
+    drag.lastButtons = buttons;
+    if ((buttons & 3) === 3) drag.everChord = true;
+    return { pressedNew, releasedOld };
   }
 
   function clearChordTimeout() {
@@ -464,12 +494,17 @@
   }
   /** After a partial chord release (one button up, one still held), wait
       CHORD_RELEASE_MS. If the stroke is still alive when it fires — i.e. the
-      other button did NOT come up together — fall to the held button's mode. */
+      other button did NOT come up together — drop the sticky-erase latch and
+      fall to the held button's mode (the erase was abandoned, not committed). */
   function scheduleChordRelease(buttons, alt) {
     clearChordTimeout();
     chordTimer = setTimeout(() => {
       chordTimer = null;
-      if (drag?.kind === "paint") repaint(buttons, drag.lastClientX, alt);
+      if (drag?.kind === "paint") {
+        drag.everChord = false; // window expired with one held → no longer an erase
+        drag.lastButtons = buttons;
+        repaint(buttons, drag.lastClientX, alt);
+      }
     }, CHORD_RELEASE_MS);
   }
 
@@ -486,22 +521,40 @@
       startTime: timeAt(x),
       downClientX: x,
       lastClientX: x,
-      lastButtons: buttons,
+      lastButtons: 0,
       moved: false,
       everNonGood: false,
+      everChord: false, // sticky once an L+R chord is seen (see noteButtons)
     };
+    noteButtons(buttons); // latch everChord if the press already starts chorded
     onpaintstart();
     repaint(buttons, x, alt);
   }
 
-  /** Update a paint stroke. The mode is recomputed only when the cursor MOVES or
-      a NEW button is pressed — NOT when a button is released. Otherwise lifting
-      off an L+R (erase) chord would momentarily revert to L (good) and commit
-      "good" instead of the erase. On a release-only event the current mode and
-      stroke are kept as-is. */
+  /** Update a paint stroke from a move/chord event. Folds the live buttons in,
+      then:
+        - If a paint button was RELEASED while erase is latched and one paint
+          button is still held, this is a partial chord release (it arrives as a
+          pointermove, not a pointerup). Keep erase and start the chord-release
+          window — do NOT recompute, or it would revert to the held button's mode
+          and commit good/bad instead of the erase.
+        - Otherwise repaint when the cursor MOVED or a NEW button was pressed.
+      A release with no paint button left is the stroke's end, handled by *Up. */
   function paintMove(buttons, x, alt) {
-    const pressedNew = (buttons & ~drag.lastButtons) !== 0;
-    drag.lastButtons = buttons;
+    const { pressedNew, releasedOld } = noteButtons(buttons);
+    // A partial chord release (erase latched, one paint button still held).
+    if (drag.everChord && releasedOld && buttons & 3) {
+      if (chordTimer == null) scheduleChordRelease(buttons, alt);
+      applyPaint(x); // keep erasing under the cursor while the window decides
+      return;
+    }
+    // While the chord-release window is pending, a new press re-commits to the
+    // chord; anything else just keeps the current (erase) mode under the cursor —
+    // applyPaint, NOT repaint, so the pending window is not cleared.
+    if (chordTimer != null && !pressedNew) {
+      if (x !== drag.lastClientX) applyPaint(x);
+      return;
+    }
     if (x !== drag.lastClientX || pressedNew) repaint(buttons, x, alt);
   }
 
@@ -531,10 +584,11 @@
   function onPointerDown(e) {
     if (duration <= 0 || captured) return;
     // A button pressed mid-drag is a CHORD change (e.g. adding right to a held
-    // left = erase). Browsers fire a fresh pointerdown for it; without this it
-    // was swallowed by the `drag` guard, so the chord only took effect once you
-    // MOVED — unlike alt, which is read on the first press. Route it through
-    // paintMove so a static L+R click erases exactly like alt+click.
+    // left = erase). Empirically the browser does NOT fire a fresh pointerdown
+    // for the 2nd button — it surfaces as a pointermove (and sometimes only via
+    // the later pointerup) with an updated e.buttons. So chord detection lives in
+    // paintMove/noteButtons and runs on every event; this branch just forwards a
+    // pointerdown if one ever does arrive mid-drag (harmless, and keeps parity).
     if (drag) {
       if (drag.kind === "paint") paintMove(e.buttons, e.clientX, e.altKey);
       return;
@@ -569,6 +623,15 @@
 
   function onPointerUp(e) {
     if (!drag || captured) return;
+    // A pointerup releasing ONE paint button while the OTHER is still held is the
+    // tail of an L+R chord — and on some platforms it's the FIRST event that ever
+    // reveals the chord (the buttons=3 pointermove having been suppressed). The
+    // released button is e.button (0=left, 2=right); if the opposite paint button
+    // is still in e.buttons, both were down → latch erase retroactively.
+    if (drag.kind === "paint") {
+      const opposite = e.button === 0 ? 2 : e.button === 2 ? 1 : 0;
+      if (opposite && e.buttons & opposite) drag.everChord = true;
+    }
     // pointerup fires when the LAST button is released (buttons→0). If a button
     // of this drag is still held (a chord release), keep the current mode — do
     // NOT recompute (paintMove won't, since this is a release without a move).
@@ -722,14 +785,13 @@
     }
     // Always reflect the time under captureX. While edge-scrolling captureX is
     // pinned but the VIEW slid, so the time (hence selection + playhead) changed —
-    // paintMove's "x unchanged" guard would skip it, so force applyPaint when we
-    // panned. Recompute the paint mode from the live button chord each move.
+    // paintMove's "x unchanged" guard would skip it, so force a repaint when we
+    // panned. Either path folds the live button chord in via noteButtons, so the
+    // L+R erase latch (drag.everChord) is honoured here exactly as in plain mode.
     if (drag) {
       if (panned) {
-        const mode = paintModeFromButtons(e.buttons, e.altKey);
-        if (mode) { drag.mode = mode; if (mode !== "good") drag.everNonGood = true; }
-        drag.lastButtons = e.buttons;
-        applyPaint(captureX);
+        noteButtons(e.buttons);
+        repaint(e.buttons, captureX, e.altKey);
       } else {
         paintMove(e.buttons, captureX, e.altKey);
       }
@@ -740,6 +802,12 @@
 
   function onCaptureUp(e) {
     if (!captured || !drag) return;
+    // Releasing one paint button with the other still held = chord tail; latch
+    // erase even if the buttons=3 move never arrived (same as onPointerUp).
+    if (drag.kind === "paint") {
+      const opposite = e.button === 0 ? 2 : e.button === 2 ? 1 : 0;
+      if (opposite && e.buttons & opposite) drag.everChord = true;
+    }
     if (drag.kind === "paint" && e.buttons & 3) {
       scheduleChordRelease(e.buttons, e.altKey); // keep erase unless held past the window
       return;

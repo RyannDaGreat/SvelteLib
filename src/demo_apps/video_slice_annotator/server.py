@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["rp", "fire", "numpy", "pillow", "video-reader-rs", "easydict", "opencv-python-headless"]
+# dependencies = ["rp", "fire", "numpy", "pillow", "video-reader-rs", "easydict", "opencv-python-headless", "moviepy"]
 # ///
 """
 Video Slice Annotator — backend.
@@ -39,12 +39,10 @@ WEB_DIR = os.path.join(HERE, "web")
 # Local-only default; always overridable with --videos_dir. See README "Portability".
 DEFAULT_VIDEOS_DIR = "/Users/rburgert/Downloads/compressed_pairs copy"
 
-# Low-res proxy encode: tiny frame + frequent keyframes = fast scrubbing.
-# (Same settings the ScrubSelect proxy used: ~1/30 the source size.)
+# Low-res proxy encode: 1/3-scale SVT-AV1 at a tight bitrate = small files.
 LOWRES_FFMPEG_ARGS = [
-    "-an", "-vf", "scale=-2:180,fps=12",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "32",
-    "-g", "12", "-keyint_min", "12", "-sc_threshold", "0",
+    "-an", "-vf", "scale=iw/3:ih/3,fps=12",
+    "-c:v", "libsvtav1", "-preset", "4", "-b:v", "300k",
     "-movflags", "+faststart",
 ]
 FRAME_JPEG_QUALITY = 80
@@ -137,21 +135,23 @@ def ensure_lowres(stem):
     tmp = out + ".tmp.mp4"
     cmd = [CONFIG["ffmpeg"], "-y", "-i", src, *LOWRES_FFMPEG_ARGS, tmp]
     print(f"[lowres] encoding {stem} …", file=sys.stderr)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd)  # ffmpeg progress streams straight to the terminal
     if proc.returncode != 0:
         if os.path.exists(tmp):
             os.remove(tmp)
-        raise RuntimeError(f"ffmpeg lowres failed for {stem}:\n{proc.stderr[-2000:]}")
+        raise RuntimeError(f"ffmpeg lowres failed for {stem} (exit {proc.returncode}); see ffmpeg output above")
     os.replace(tmp, out)
     return out
 
 
-def frame_jpeg_bytes(stem, t_seconds):
+def frame_jpeg_bytes(stem, t_seconds, max_dim=0):
     """
     Command. JPEG bytes of the frame nearest t_seconds, caching to disk. Encodes
     once with rp.encode_image_to_bytes and serves those same bytes (a cache hit
     just reads the file back). Frames come from rp.load_video_via_rs (fast
-    Rust+FFmpeg decoder). Raises on failure (caller logs + returns 500).
+    Rust+FFmpeg decoder). When max_dim > 0 the frame is downscaled so its longest
+    side is max_dim px, aspect preserved (small thumbnails don't need full res).
+    Cached per (frame index, max_dim). Raises on failure (caller logs → 500).
     """
     import rp
     src = video_path(stem)
@@ -159,14 +159,21 @@ def frame_jpeg_bytes(stem, t_seconds):
         raise FileNotFoundError(f"source video missing: {src}")
     fps = rp.get_video_file_framerate(src)
     idx = max(0, round(float(t_seconds) * fps))
-    out = os.path.join(FRAMES_DIR, stem, f"{idx}.jpg")
+    name = f"{idx}-{max_dim}" if max_dim else str(idx)
+    out = os.path.join(FRAMES_DIR, stem, f"{name}.jpg")
     if os.path.exists(out) and os.path.getsize(out) > 0:
         with open(out, "rb") as f:
             return f.read()
     frames = rp.load_video_via_rs(src, [idx])  # (1, H, W, C) uint8 RGB
     if len(frames) == 0:
         raise RuntimeError(f"no frame at index {idx} (t={t_seconds}s) in {stem}")
-    jpeg = rp.encode_image_to_bytes(frames[0], "jpg", quality=FRAME_JPEG_QUALITY)
+    frame = frames[0]  # (H, W, C) uint8 RGB
+    h, w = frame.shape[:2]
+    if max_dim and max(h, w) > max_dim:
+        import cv2
+        scale = max_dim / max(h, w)
+        frame = cv2.resize(frame, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    jpeg = rp.encode_image_to_bytes(frame, "jpg", quality=FRAME_JPEG_QUALITY)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "wb") as f:
         f.write(jpeg)
@@ -264,7 +271,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_video(parts[1], lowres=True)
             if len(parts) == 2 and parts[0] == "frame":
                 q = urllib.parse.parse_qs(parsed.query)
-                return self._serve_frame(parts[1], float(q.get("t", ["0"])[0]))
+                t = float(q.get("t", ["0"])[0])
+                size = int(q.get("size", ["0"])[0])
+                return self._serve_frame(parts[1], t, size)
             # This process is the API/media backend only; the app is the Vite
             # dev server. If APP_URL is set (start_server.sh does), bounce stray
             # visitors straight to it so a wrong-port open still lands on the app.
@@ -328,8 +337,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, f"video not found: {stem}")
         self._serve_file(path, "video/mp4")
 
-    def _serve_frame(self, stem, t_seconds):
-        self._send_bytes(frame_jpeg_bytes(stem, t_seconds), "image/jpeg")
+    def _serve_frame(self, stem, t_seconds, max_dim=0):
+        self._send_bytes(frame_jpeg_bytes(stem, t_seconds, max_dim), "image/jpeg")
 
     def _serve_static(self, path):
         rel = path.lstrip("/") or "index.html"

@@ -17,8 +17,10 @@ export const videoUrl = (name) => `${BACKEND}/video/${enc(name)}`;
 /** Query. URL of the low-res proxy (built on first request, server-side). */
 export const lowresUrl = (name) => `${BACKEND}/lowres/${enc(name)}`;
 
-/** Query. URL of a JPEG of the frame nearest `t` seconds. */
-export const frameUrl = (name, t) => `${BACKEND}/frame/${enc(name)}?t=${t}`;
+/** Query. URL of a JPEG of the frame nearest `t` seconds. `size` (px, optional)
+    downscales the longest side server-side — use it for small thumbnails. */
+export const frameUrl = (name, t, size = 0) =>
+  `${BACKEND}/frame/${enc(name)}?t=${t}${size ? `&size=${size}` : ""}`;
 
 /** Query. List every clip: [{name, duration, hasAnnotations}]. */
 export async function listVideos() {

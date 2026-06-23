@@ -8,6 +8,7 @@
 <script>
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
+  import Thumbnail from "../../../lib/Thumbnail.svelte";
   import { frameUrl } from "./api.js";
   import { formatTimeMinSec } from "../../../lib/format.js";
 
@@ -19,6 +20,8 @@
     /** @type {(name:string)=>void} */
     onselect = () => {},
   } = $props();
+
+  const THUMB_SIZE_PX = 480; // thumbnails are small — fetch a downscaled JPEG
 
   const FILTERS = [
     { value: "all", label: "All clips" },
@@ -49,7 +52,7 @@
   });
 
   function scrollToCurrent() {
-    document.querySelector(".thumb.current")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.querySelector(".thumb.ring-current")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 </script>
 
@@ -64,18 +67,13 @@
 
   <div class="scroll">
     {#each shown as v (v.name)}
-      <button
-        class="thumb"
-        class:annotated={v.hasAnnotations}
-        class:current={v.name === currentName}
-        onclick={() => onselect(v.name)}
+      <Thumbnail
+        src={frameUrl(v.name, (v.duration ?? 0) / 2, THUMB_SIZE_PX)}
+        badge={formatTimeMinSec(v.duration)}
+        ring={v.name === currentName ? "current" : v.hasAnnotations ? "comment" : "none"}
         title={v.name}
-      >
-        <div class="thumb-img">
-          <img src={frameUrl(v.name, (v.duration ?? 0) / 2)} alt="" loading="lazy" />
-          <span class="dur">{formatTimeMinSec(v.duration)}</span>
-        </div>
-      </button>
+        onclick={() => onselect(v.name)}
+      />
     {/each}
     {#if shown.length === 0}
       <p class="empty">No clips.</p>

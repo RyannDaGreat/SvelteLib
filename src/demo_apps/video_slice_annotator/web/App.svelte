@@ -29,7 +29,7 @@
   let segments = $state([]);
   let comments = $state([]);
   let captured = $state(false);
-  let hoverCtx = $state("timeline"); // "video" | "timeline" — drives the HintBar
+  let hoverCtx = $state("timeline"); // "thumbnails" | "video" | "timeline" — drives the HintBar
 
   let hSplits = $state([0.22]); // top row: [thumbnails | video]
   let vSplits = $state([0.66]); // outer: [top row | full-width timeline]
@@ -155,26 +155,39 @@
 
   // -- Context hints ----------------------------------------------------------
 
-  // Hints change with where the mouse is (and capture mode).
+  // Hints change with where the mouse is (and capture mode). Capture mode (the
+  // pointer-lock scrub) takes precedence over hoverCtx — the locked cursor only
+  // drives the timeline. Each entry is a [keys, label] pair; see HintBar.
   let hints = $derived(
     captured
       ? [
+          // In capture, motion scrubs and the buttons paint against the pinned
+          // cursor; a plain click, T, or Esc all exit capture (AnnotateBar).
           [["mouse_left"], "Scrub"],
           [["Shift"], "Fine 4×"],
           [["mouse_left"], "Good"],
           [["mouse_right"], "Bad"],
           [["alt", "mouse_left"], "Erase"],
+          [["mouse_left", "mouse_right"], "Erase"],
           [["mouse_middle"], "Pan"],
+          [["T"], "Exit scrub"],
           [["Esc"], "Exit"],
+        ]
+      : hoverCtx === "thumbnails"
+      ? [
+          // The thumbnail list: pick a clip; nothing paints/zooms here.
+          [["mouse_left"], "Open clip"],
+          [["mouse_scroll"], "Scroll list"],
         ]
       : hoverCtx === "video"
       ? [
           [["mouse_scroll"], "Pan"],
           [["Ctrl", "mouse_scroll"], "Zoom"],
           [["R"], "Reset view"],
-          [["T"], "Timeline scrub"],
+          [["T"], "Scrub timeline"],
         ]
       : [
+          // Timeline (not captured): paint/erase, pan, zoom, click to scrub-lock.
           [["mouse_left"], "Good"],
           [["mouse_right"], "Bad"],
           [["alt", "mouse_left"], "Erase"],
@@ -219,7 +232,12 @@
           <SplitPane orientation="horizontal" bind:splits={hSplits}>
             {#snippet children(col)}
               {#if col === 0}
-                <ThumbList {videos} {currentName} onselect={loadVideo} />
+                <!-- Wrapper carries the hover context for the HintBar; sized to
+                     fill the pane so ThumbList (height:100%) lays out correctly.
+                     svelte-ignore a11y_no_static_element_interactions -->
+                <div class="pane-fill" onpointerenter={() => (hoverCtx = "thumbnails")}>
+                  <ThumbList {videos} {currentName} onselect={loadVideo} />
+                </div>
               {:else}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div class="video-col" onpointerenter={() => (hoverCtx = "video")}>
