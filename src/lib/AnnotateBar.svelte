@@ -240,7 +240,7 @@
   // direct manipulation (drag/capture) jumps both at once.
   let view = $state({ start: 0, end: 0 });
   let targetView = { start: 0, end: 0 };
-  let inited = false;
+  let lastFitDuration = -1; // the duration we last fit the window to (per-clip)
   let viewAnimId = null;
   let viewAnimLastMs = 0;
   const VIEW_SMOOTH_TAU_MS = 32; // EMA time constant for wheel easing (snappy)
@@ -274,10 +274,13 @@
   const ON_TIMECODE_PX = 9; // playhead within this many px of a comment expands it
 
   $effect(() => {
-    // Initialise / re-fit the window when a clip's duration first arrives.
-    if (duration > 0 && (!inited || view.end === 0)) {
+    // Fit the window to the whole clip whenever a NEW clip arrives (its duration
+    // differs) — so selecting a clip RESETS the timeline's zoom/pan. A repeat of
+    // the same duration is left alone, preserving a manual zoom. (view.end === 0
+    // also re-fits, covering a collapsed/uninitialised window.)
+    if (duration > 0 && (duration !== lastFitDuration || view.end === 0)) {
       setViewNow({ start: 0, end: duration });
-      inited = true;
+      lastFitDuration = duration;
     }
   });
 
@@ -400,8 +403,14 @@
     // focal time fixed, so it needs no re-seek (re-seeking caused a "jump to
     // centre" glitch).
     if (drag?.kind === "paint") {
-      applyPaint(e.clientX);
-    } else if (!drag && horizontalPan) {
+      // In capture mode the OS cursor is locked, so e.clientX is frozen at the
+      // lock-entry point — using it would teleport the playhead there. Paint at
+      // the virtual captureX instead; in normal mode e.clientX is the real cursor.
+      applyPaint(captured ? captureX : e.clientX);
+    } else if (!drag && !captured && horizontalPan) {
+      // Hover-preview only in normal mode — in capture the cursor is locked, so
+      // e.clientX is frozen and would teleport the playhead. The playhead stays
+      // put under the locked cursor (synced below).
       const r = barEl.getBoundingClientRect();
       const overBar =
         e.clientX >= r.left && e.clientX <= r.right &&
