@@ -272,6 +272,7 @@
   let hoverCommentId = $state(null); // comment under the pointer → expand it
   let draft = $state(""); // text being typed for editingId
   const ON_TIMECODE_PX = 9; // playhead within this many px of a comment expands it
+  const COMMENT_BOX_HALF_PX = 256; // half of --comment-max-w — for edge-clamping the box
 
   $effect(() => {
     // Fit the window to the whole clip whenever a NEW clip arrives (its duration
@@ -866,13 +867,19 @@
   <div class="comments">
     {#each comments as c (c.id)}
       {@const x = xOf(c.time)}
+      {@const boxShift =
+        x - COMMENT_BOX_HALF_PX < 0
+          ? COMMENT_BOX_HALF_PX - x
+          : x + COMMENT_BOX_HALF_PX > width
+          ? width - COMMENT_BOX_HALF_PX - x
+          : 0}
       {#if x >= -600 && x <= width + 600}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="comment"
           class:expanded={commentExpanded(c)}
           class:editing={editingId === c.id}
-          style="left: {x}px"
+          style="left: {x}px; --box-shift: {boxShift}px"
           onpointerenter={() => (hoverCommentId = c.id)}
           onpointerleave={() => (hoverCommentId = null)}
         >
@@ -1037,6 +1044,8 @@
     display: none;
     max-width: var(--comment-max-w);
     width: max-content;
+    /* Shift the box (not the dot) so it stays on-screen near the timeline edges. */
+    transform: translateX(var(--box-shift, 0));
     padding: 6px 8px;
     background: var(--comment-bg);
     color: var(--fg, #e0e0e0);
