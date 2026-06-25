@@ -36,10 +36,20 @@
     { value: "name", label: "Name" },
     { value: "duration", label: "Duration" },
     { value: "annotated", label: "Annotated first" },
+    { value: "random", label: "Random" },
   ];
 
   let filter = $state("all");
   let sort = $state("name");
+
+  // Random sort: give each clip a stable random rank, re-rolled when Random is
+  // (re-)selected or the clip list changes — so the order doesn't reshuffle on
+  // every unrelated re-render.
+  let randomRank = $state(new Map());
+  $effect(() => {
+    if (sort !== "random") return;
+    randomRank = new Map(videos.map((v) => [v.name, Math.random()]));
+  });
 
   let shown = $derived.by(() => {
     // The current clip is always kept, regardless of the filter.
@@ -51,6 +61,7 @@
       name: (a, b) => a.name.localeCompare(b.name),
       duration: (a, b) => (a.duration ?? 0) - (b.duration ?? 0),
       annotated: (a, b) => Number(b.hasAnnotations) - Number(a.hasAnnotations),
+      random: (a, b) => (randomRank.get(a.name) ?? 0) - (randomRank.get(b.name) ?? 0),
     }[sort];
     return [...list].sort(by);
   });
