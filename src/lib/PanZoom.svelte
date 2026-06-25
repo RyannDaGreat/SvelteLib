@@ -259,6 +259,12 @@
     setViewport(vp) {
       applyState(vp);
     },
+
+    /** Grab-pan by a screen-pixel delta (content follows the cursor). Reads the
+        live viewport, so feeding it drag increments never goes stale. */
+    panBy(dx, dy) {
+      applyState(pan(viewport(), -dx, -dy));
+    },
   };
 
   // -- Event handlers --

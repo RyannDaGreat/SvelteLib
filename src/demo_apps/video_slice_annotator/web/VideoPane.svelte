@@ -9,6 +9,7 @@
   import "iconify-icon";
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
+  import { drag } from "../../../lib/drag.js";
   import { frameUrl } from "./api.js";
 
   let {
@@ -60,7 +61,9 @@
     {#snippet children(viewport, actions)}
       <div
         class="vp-stage"
-        style="transform: translate({viewport.panX}px, {viewport.panY}px) scale({viewport.zoom}); transform-origin: 0 0"
+        use:drag={{ onMove: ({ mx, my }) => actions.panBy(mx, my) }}
+        style:transform="translate({viewport.panX}px, {viewport.panY}px) scale({viewport.zoom})"
+        style:transform-origin="0 0"
       >
         <div
           class="vp-frame"
