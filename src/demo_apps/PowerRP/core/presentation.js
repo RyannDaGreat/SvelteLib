@@ -1,0 +1,108 @@
+/**
+ * Presentation playback. The ONLY state tracked while presenting is the
+ * ordered list of [slideId, alpha] pairs (per the manifest); since V1 decks
+ * are linear that reduces to {index, alpha} — slides 0..index-1 at alpha 1,
+ * slide `index` at `alpha`, later slides at 0. playbackPairs() materializes
+ * the canonical list form.
+ *
+ * Transition triggers (user question, 2026-07-14): V1 = arrow keys, plus an
+ * optional per-slide `autoAdvance` (seconds to linger AFTER the tween into
+ * that slide completes before self-advancing — the linear-deck version of
+ * Lab-In-A-Cube's `transitions.auto` chaining). Conditional/interactive
+ * triggers are V2+.
+ */
+
+import { ease } from "./interpolators.js";
+
+export function createPresenter(getDoc, onFrame) {
+  let index = 0;
+  let alpha = 1;
+  let raf = null;
+  let autoTimer = null;
+
+  function cancel() {
+    if (raf) cancelAnimationFrame(raf);
+    if (autoTimer) clearTimeout(autoTimer);
+    raf = autoTimer = null;
+  }
+
+  function emit() {
+    onFrame({ index, alpha });
+  }
+
+  function armAutoAdvance() {
+    const doc = getDoc();
+    const secs = doc.slides[index].autoAdvance;
+    if (typeof secs === "number" && index < doc.slides.length - 1)
+      autoTimer = setTimeout(() => api.next(), secs * 1000);
+  }
+
+  /** Command. Animates alpha 0→1 into slide `to` over its duration. */
+  function transitionTo(to) {
+    cancel();
+    const doc = getDoc();
+    index = to;
+    const duration = (doc.slides[to].duration ?? 0.5) * 1000;
+    const easeFn = ease("cubic");
+    if (duration <= 0 || to === 0) {
+      alpha = 1;
+      emit();
+      armAutoAdvance();
+      return;
+    }
+    const start = performance.now();
+    function tick(now) {
+      const t = Math.min((now - start) / duration, 1);
+      alpha = easeFn(t);
+      emit();
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else armAutoAdvance();
+    }
+    alpha = 0;
+    emit();
+    raf = requestAnimationFrame(tick);
+  }
+
+  /** Pure-ish query. Next enabled slide index in `dir`, or null. */
+  function enabledNeighbor(from, dir) {
+    const doc = getDoc();
+    for (let i = from + dir; i >= 0 && i < doc.slides.length; i += dir)
+      if (doc.slides[i].enabled !== false) return i;
+    return null;
+  }
+
+  const api = {
+    get index() { return index; },
+    get alpha() { return alpha; },
+    /** Command. Advance to the next ENABLED slide (tweened); no-op at the end. */
+    next() {
+      const to = enabledNeighbor(index, +1);
+      if (to !== null) transitionTo(to);
+    },
+    /** Command. Back to the previous ENABLED slide (instant — matches PPT). */
+    prev() {
+      cancel();
+      const to = enabledNeighbor(index, -1);
+      if (to !== null) index = to;
+      alpha = 1;
+      emit();
+    },
+    /** Command. Jump straight to a slide, fully applied. */
+    goTo(i) {
+      cancel();
+      index = Math.max(0, Math.min(getDoc().slides.length - 1, i));
+      alpha = 1;
+      emit();
+      armAutoAdvance();
+    },
+    /** Command. Stops timers/animation (call when leaving present mode). */
+    stop: cancel,
+    /**
+     * Pure-ish query. The canonical [[slideId, alpha]] playback list.
+     */
+    playbackPairs() {
+      return getDoc().slides.map((s, i) => [s.id, i < index ? 1 : i === index ? alpha : 0]);
+    },
+  };
+  return api;
+}

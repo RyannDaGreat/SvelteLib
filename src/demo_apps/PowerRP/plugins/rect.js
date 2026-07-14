@@ -1,0 +1,48 @@
+/** Rectangle widget — the canonical bbox plugin. */
+
+import { standardBBoxAnchors } from "../core/derive.js";
+import { closestPointOnRectBorder } from "../core/geometry.js";
+import * as T from "../core/transform.js";
+
+export const rectPlugin = {
+  type: "rect",
+  title: "Rectangle",
+  capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  defaults: {
+    type: "rect", x: 100, y: 100, w: 240, h: 140, z: 0, rotation: 0, scale: 1,
+    fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 8, opacity: 1,
+  },
+  inspector: [
+    { key: "x", label: "X", kind: "number" },
+    { key: "y", label: "Y", kind: "number" },
+    { key: "w", label: "Width", kind: "number" },
+    { key: "h", label: "Height", kind: "number" },
+    { key: "rotation", label: "Rotation", kind: "number" },
+    { key: "z", label: "Z order", kind: "number" },
+    { key: "fill", label: "Fill", kind: "color" },
+    { key: "stroke", label: "Stroke", kind: "color" },
+    { key: "strokeWidth", label: "Stroke width", kind: "number" },
+    { key: "cornerRadius", label: "Corner radius", kind: "number" },
+    { key: "opacity", label: "Opacity", kind: "number" },
+  ],
+  paint(ctx, s) {
+    ctx.globalAlpha = s.opacity ?? 1;
+    ctx.beginPath();
+    ctx.roundRect(0, 0, s.w, s.h, s.cornerRadius ?? 0);
+    ctx.fillStyle = s.fill;
+    ctx.fill();
+    if ((s.strokeWidth ?? 0) > 0) {
+      ctx.strokeStyle = s.stroke;
+      ctx.lineWidth = s.strokeWidth;
+      ctx.stroke();
+    }
+  },
+  anchors: standardBBoxAnchors,
+  closestAnchor(state, wx, wy, world) {
+    const local = T.apply(T.invert(world), wx, wy);
+    return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
+  },
+  commands: [
+    { id: "add-rect", title: "Add Rectangle", run: (app) => app.addItem(rectPlugin.defaults) },
+  ],
+};

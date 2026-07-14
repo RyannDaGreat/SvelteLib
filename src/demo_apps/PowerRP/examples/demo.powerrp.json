@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "name": "PowerRP Demo",
+    "slideW": 1280,
+    "slideH": 720
+  },
+  "slides": [
+    {
+      "id": "ae4d1858",
+      "name": "Slide 1",
+      "duration": 0.5,
+      "delta": {
+        "items": {
+          "8ade3bd8": {
+            "type": "rect",
+            "x": 120,
+            "y": 160,
+            "w": 260,
+            "h": 160,
+            "z": 1,
+            "rotation": 0,
+            "scale": 1,
+            "fill": "#7aa2f7",
+            "stroke": "#1a1a2e",
+            "strokeWidth": 2,
+            "cornerRadius": 8,
+            "opacity": 1
+          },
+          "8b2c1516": {
+            "type": "circle",
+            "x": 760,
+            "y": 200,
+            "w": 180,
+            "h": 180,
+            "z": 2,
+            "rotation": 0,
+            "scale": 1,
+            "fill": "#f7768e",
+            "stroke": "#1a1a2e",
+            "strokeWidth": 2,
+            "opacity": 1
+          },
+          "69f8d06f": {
+            "type": "text",
+            "x": 120,
+            "y": 60,
+            "w": 260,
+            "h": 48,
+            "z": 3,
+            "rotation": 0,
+            "scale": 1,
+            "text": "PowerRP V1",
+            "size": 48,
+            "color": "#1a1a2e",
+            "bold": false,
+            "opacity": 1
+          },
+          "2e896891": {
+            "type": "arrow",
+            "z": 4,
+            "from": {
+              "item": "8ade3bd8",
+              "anchor": "mr"
+            },
+            "to": {
+              "item": "8b2c1516",
+              "anchor": "closest"
+            },
+            "color": "#1a1a2e",
+            "width": 3,
+            "headSize": 14,
+            "opacity": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "46ee18d7",
+      "name": "Slide 2",
+      "duration": 0.5,
+      "delta": {
+        "items": {
+          "8b2c1516": {
+            "x": 300,
+            "y": 420
+          },
+          "8ade3bd8": {
+            "fill": "#2ac3a2",
+            "rotation": 0.3
+          }
+        }
+      }
+    },
+    {
+      "id": "2f0f95c3",
+      "name": "Slide 3",
+      "duration": 0.5,
+      "delta": {
+        "items": {
+          "40716235": {
+            "type": "magnifier",
+            "x": 400,
+            "y": 380,
+            "z": 11,
+            "radius": 110,
+            "magnification": 2.2,
+            "rimColor": "#1a1a2e",
+            "rimWidth": 4
+          },
+          "69f8d06f": {
+            "active": false
+          },
+          "843fc190": {
+            "type": "blur",
+            "z": 10,
+            "blur": 5,
+            "opacity": 1
+          }
+        }
+      }
+    }
+  ]
+}

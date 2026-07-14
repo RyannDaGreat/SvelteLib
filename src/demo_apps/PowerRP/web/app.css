@@ -1,0 +1,526 @@
+/*
+  PowerRP app stylesheet — the ONE stylesheet for app components (they carry
+  no <style> blocks). Every non-degenerate value is an --a-* token; base
+  tokens (--bg, --fg, --fg-dim, --accent, --border, --radius, --control-bg)
+  come from src/styles/theme.css and are reused, not redefined.
+*/
+
+:root {
+  /* Spacing scale */
+  --a-sp-1: 2px;
+  --a-sp-2: 4px;
+  --a-sp-3: 8px;
+  --a-sp-4: 12px;
+  --a-sp-5: 16px;
+
+  /* Type */
+  --a-font-sm: 0.72rem;
+  --a-font-md: 0.85rem;
+
+  /* Toolbar */
+  --a-toolbar-h: 40px;
+  --a-toolbar-btn: 30px;
+
+  /* Canvas overlay */
+  --a-selection: var(--accent);
+  --a-selection-stroke: 1.5px;
+  --a-selection-dash: 5 3;
+  --a-guide: #ff4d97;
+  --a-guide-stroke: 1px;
+  --a-handle-fill: var(--accent);
+  --a-handle-rim: #ffffff;
+  --a-handle-stroke: 1.5px;
+  --a-endpoint: #ffb020;
+  --a-endpoint-rim: #ffffff;
+  --a-endpoint-stroke: 1.5px;
+  --a-anchor: #9aa5ce;
+  --a-anchor-stroke: 1.5px;
+  --a-anchor-opacity: 0.5; /* the spec's 50%-transparent X's */
+
+  /* Panels */
+  --a-panel-bg: rgba(0, 0, 0, 0.25);
+  --a-slide-disabled-opacity: 0.5;
+  --a-row-h: 26px;
+  --a-input-w: 90px;
+  --a-keyed: #ffb020;
+
+  /* Palette */
+  --a-palette-w: 480px;
+  --a-palette-top: 64px;
+  --a-palette-max-h: 50vh;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+
+  /* Present mode */
+  --a-present-pos-pad: 6px 12px;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: hidden;
+}
+
+.main {
+  flex: 1;
+  min-height: 0;
+}
+
+.right-col {
+  height: 100%;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+
+.toolbar {
+  height: var(--a-toolbar-h);
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  padding: 0 var(--a-sp-4);
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar button {
+  width: var(--a-toolbar-btn);
+  height: var(--a-toolbar-btn);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.toolbar button:hover {
+  background: var(--border);
+}
+
+.toolbar .doc-name {
+  font-size: var(--a-font-md);
+  color: var(--fg-dim);
+  margin-right: var(--a-sp-4);
+}
+
+.toolbar .sep {
+  width: 1px;
+  height: calc(var(--a-toolbar-btn) - var(--a-sp-3));
+  background: var(--border);
+  margin: 0 var(--a-sp-3);
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+.toolbar .palette-hint {
+  width: auto;
+  padding: 0 var(--a-sp-3);
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+}
+
+/* ── Canvas ──────────────────────────────────────────────────────────────── */
+
+.canvas-wrap {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.canvas-wrap .scene,
+.canvas-wrap .overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-wrap .overlay {
+  touch-action: none;
+}
+
+.overlay .selection {
+  fill: none;
+  stroke: var(--a-selection);
+  stroke-width: var(--a-selection-stroke);
+  stroke-dasharray: var(--a-selection-dash);
+  pointer-events: none;
+}
+
+.overlay .guide {
+  stroke: var(--a-guide);
+  stroke-width: var(--a-guide-stroke);
+  pointer-events: none;
+}
+
+.overlay .guide-point {
+  fill: var(--a-guide);
+  pointer-events: none;
+}
+
+.overlay .handle {
+  fill: var(--a-handle-fill);
+  stroke: var(--a-handle-rim);
+  stroke-width: var(--a-handle-stroke);
+}
+
+.overlay .endpoint {
+  fill: var(--a-endpoint);
+  stroke: var(--a-endpoint-rim);
+  stroke-width: var(--a-endpoint-stroke);
+  cursor: grab;
+}
+
+.overlay .anchor {
+  stroke: var(--a-anchor);
+  stroke-width: var(--a-anchor-stroke);
+  opacity: var(--a-anchor-opacity);
+  pointer-events: none;
+}
+
+/* ── Slide navigator ─────────────────────────────────────────────────────── */
+
+.slidenav {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--a-panel-bg);
+  border-right: 1px solid var(--border);
+}
+
+.slidenav .slides {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--a-sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+}
+
+.slidenav .slide {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+  padding: var(--a-sp-3);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: var(--a-font-md);
+  text-align: left;
+}
+
+.slidenav .slide.current {
+  border-color: var(--accent);
+}
+
+.slidenav .num {
+  color: var(--fg-dim);
+  min-width: var(--a-sp-5);
+}
+
+.slidenav .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slidenav .kfcount {
+  color: var(--a-keyed);
+  font-size: var(--a-font-sm);
+}
+
+/* Disabled slide: half-transparent, per spec. Eye toggle appears on hover
+   (always visible when disabled so it can be found again). */
+.slidenav .slide.disabled {
+  opacity: var(--a-slide-disabled-opacity);
+}
+
+.slidenav .eye {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-dim);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.slidenav .slide:hover .eye,
+.slidenav .slide.disabled .eye {
+  opacity: 1;
+}
+
+.slidenav .nav-actions {
+  display: flex;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.slidenav .nav-actions button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--a-sp-2);
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.slidenav .nav-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── Inspector ───────────────────────────────────────────────────────────── */
+
+.inspector {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--a-sp-3);
+  background: var(--a-panel-bg);
+  font-size: var(--a-font-md);
+}
+
+.inspector-head select {
+  width: 100%;
+  padding: var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.inspector .rows {
+  margin-top: var(--a-sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+}
+
+.inspector .row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  min-height: var(--a-row-h);
+}
+
+.inspector .label {
+  flex: 1;
+  color: var(--fg-dim);
+}
+
+.inspector input[type="number"],
+.inspector input[type="text"] {
+  width: var(--a-input-w);
+  padding: var(--a-sp-1) var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--a-font-md);
+}
+
+.inspector .keybtn,
+.inspector .jumpbtn {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  cursor: pointer;
+  padding: 0 var(--a-sp-1);
+  font-size: var(--a-font-md);
+}
+
+.inspector .keybtn.keyed {
+  color: var(--a-keyed);
+}
+
+.inspector .empty {
+  color: var(--fg-dim);
+  padding: var(--a-sp-4);
+  text-align: center;
+}
+
+/* ── Keyframe panel ──────────────────────────────────────────────────────── */
+
+.kfpanel {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--a-sp-3);
+  background: var(--a-panel-bg);
+  border-top: 1px solid var(--border);
+  font-size: var(--a-font-sm);
+}
+
+.kfslide {
+  margin-bottom: var(--a-sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.kfslide.current {
+  border-color: var(--accent);
+}
+
+.kfslide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--a-sp-2) var(--a-sp-3);
+  background: var(--control-bg);
+}
+
+.kfslide-head .goto {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--a-sp-1) var(--a-sp-3);
+  cursor: pointer;
+  font-size: var(--a-font-sm);
+}
+
+.kf {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+  padding: var(--a-sp-1) var(--a-sp-3);
+}
+
+.kf.selected .path {
+  color: var(--accent);
+}
+
+.kf .path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.kf .value {
+  color: var(--fg-dim);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kf .remove {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  cursor: pointer;
+}
+
+.kf .remove:hover {
+  color: var(--a-guide);
+}
+
+/* ── Command palette ─────────────────────────────────────────────────────── */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+
+.palette {
+  position: absolute;
+  top: var(--a-palette-top);
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--a-palette-w);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--a-palette-shadow);
+  overflow: hidden;
+}
+
+.palette input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--a-sp-4);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--a-font-md);
+  outline: none;
+}
+
+.palette-results {
+  max-height: var(--a-palette-max-h);
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: block;
+  width: 100%;
+  padding: var(--a-sp-3) var(--a-sp-4);
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--a-font-md);
+}
+
+.palette-item.highlighted {
+  background: var(--border);
+}
+
+.palette-none {
+  padding: var(--a-sp-4);
+  color: var(--fg-dim);
+  font-size: var(--a-font-md);
+}
+
+/* ── Present mode ────────────────────────────────────────────────────────── */
+
+.present {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: black;
+}
+
+.present canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.present-pos {
+  position: absolute;
+  right: var(--a-sp-5);
+  bottom: var(--a-sp-5);
+  padding: var(--a-present-pos-pad);
+  color: var(--fg-dim);
+  background: var(--control-bg);
+  border-radius: var(--radius);
+  font-size: var(--a-font-sm);
+  user-select: none;
+}
