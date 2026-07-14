@@ -910,3 +910,22 @@ body,
   stroke: var(--bg);
   stroke-width: 3px;
 }
+
+/* ── Panel title bar (optional; "Toggle Panel Names") ────────────────────────
+   ONE standardized style used by ALL THREE panels (Slide Navigator, Property
+   Panel, Keyframe Panel) — never three different styles. Square, hairline
+   bottom border, small dim label at the panel's top (manifest Round 7). */
+.panel-title {
+  flex: none;
+  /* Pin to the panel top: harmless in SlideNav (non-scrolling flex column),
+     keeps the title visible in the scrollable Inspector/Keyframe panels. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--a-sp-2) var(--a-sp-3);
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  background: var(--a-panel-bg);
+  border-bottom: var(--a-hairline) solid var(--border);
+  user-select: none;
+}

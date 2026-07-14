@@ -75,6 +75,9 @@
 </script>
 
 <div class="inspector">
+  {#if app.panelNames}
+    <div class="panel-title">Property Panel</div>
+  {/if}
   <div class="inspector-head">
     <Dropdown
       items={itemChoices}

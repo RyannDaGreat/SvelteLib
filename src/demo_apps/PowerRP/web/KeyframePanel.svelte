@@ -30,6 +30,9 @@
 </script>
 
 <div class="kfpanel">
+  {#if app.panelNames}
+    <div class="panel-title">Keyframe Panel</div>
+  {/if}
   {#each groups as [slideIndex, ks] (app.doc.slides[slideIndex].id)}
     <div class="kfslide" class:current={slideIndex === app.slideIndex}>
       <div class="kfslide-head" title={app.doc.slides[slideIndex].id}>

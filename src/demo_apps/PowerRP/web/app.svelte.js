@@ -45,6 +45,10 @@ export class PowerRPApp {
   previewDelta = $state(null);
   theme = $state("graphite");
   minimapVisible = $state(localStorage.getItem("powerrp.minimap") !== "off");
+  // BROWSER setting (viewer-local): optionally show each panel's canonical name
+  // (Slide Navigator / Property Panel / Keyframe Panel) as a title bar at its
+  // top. OFF by default (panels are not first-class — manifest Round 7).
+  panelNames = $state(localStorage.getItem("powerrp.panelNames") === "on");
   // BROWSER setting (viewer-local, travels with the browser not the file):
   // render raster surfaces at devicePixelRatio. Default ON (manifest).
   retina = $state(localStorage.getItem("powerrp.retina") !== "off");
@@ -65,6 +69,11 @@ export class PowerRPApp {
   toggleRetina() {
     this.retina = !this.retina;
     localStorage.setItem("powerrp.retina", this.retina ? "on" : "off");
+  }
+
+  togglePanelNames() {
+    this.panelNames = !this.panelNames;
+    localStorage.setItem("powerrp.panelNames", this.panelNames ? "on" : "off");
   }
 
   toggleSnap() {

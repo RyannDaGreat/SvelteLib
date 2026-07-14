@@ -10,7 +10,6 @@
 <script>
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
-  import Tooltip from "../../../lib/Tooltip.svelte";
   import Toolbar from "./Toolbar.svelte";
   import SlideNav from "./SlideNav.svelte";
   import CanvasView from "./CanvasView.svelte";
@@ -54,6 +53,7 @@
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },
     { id: "toggle-minimap", title: "Toggle Minimap", icon: "mdi:map-outline", run: (a) => a.toggleMinimap() },
+    { id: "toggle-panel-names", title: "Toggle Panel Names", icon: "mdi:format-title", run: (a) => a.togglePanelNames() },
     { id: "toggle-retina", title: "Toggle Retina Rendering (browser setting)", icon: "mdi:monitor-eye", run: (a) => a.toggleRetina() },
     { id: "new-slide", title: "New Slide", icon: "mdi:plus-box-outline", run: (a) => a.addSlide() },
     { id: "delete-slide", title: "Delete Slide", icon: "mdi:file-remove-outline", when: (a) => a.doc.slides.length > 1, run: (a) => a.deleteSlide() },
@@ -182,12 +182,12 @@
   <div class="main">
     <SplitPane orientation="horizontal" bind:splits={hSplits}>
       {#snippet children(col)}
-        <!-- Region names from the manifest glossary, revealed on mouse-over
-                          RATIFICATION). The Canvas is exempt — it's an interaction surface. -->
+        <!-- Panels OPTIONALLY show their canonical name (manifest glossary) as
+             a title bar at the top; toggled via the "Toggle Panel Names"
+             palette command (OFF by default). The Canvas is exempt — it's an
+             interaction surface, not a first-class named panel. -->
         {#if col === 0}
-          <Tooltip text="Slide Navigator" delay={500}>
-            <SlideNav {app} />
-          </Tooltip>
+          <SlideNav {app} />
         {:else if col === 1}
           <CanvasView {app} />
         {:else}
@@ -195,13 +195,9 @@
             <SplitPane orientation="vertical" bind:splits={rightSplits}>
               {#snippet children(row)}
                 {#if row === 0}
-                  <Tooltip text="Property Panel" delay={500}>
-                    <Inspector {app} />
-                  </Tooltip>
+                  <Inspector {app} />
                 {:else}
-                  <Tooltip text="Keyframe Panel" delay={500}>
-                    <KeyframePanel {app} />
-                  </Tooltip>
+                  <KeyframePanel {app} />
                 {/if}
               {/snippet}
             </SplitPane>
