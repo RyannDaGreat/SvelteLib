@@ -34,3 +34,22 @@ export const KEY_ICONS = {
 export function keyIcon(token) {
   return KEY_ICONS[token] ?? null;
 }
+
+/** Mouse tokens → icons (shared by KeyCombo/HintBar consumers). */
+export const MOUSE_ICONS = {
+  mouse_left: "mdi:mouse-left-click-outline",
+  mouse_right: "mdi:mouse-right-click-outline",
+  mouse_middle: "mdi:mouse",
+  mouse_scroll: "mdi:mouse-scroll-wheel",
+  mouse: "mdi:mouse-outline",
+};
+
+/**
+ * Pure function. Is this token a mouse gesture (renders as a mouse icon)?
+ *
+ * @example isMouseToken("mouse_left") // true
+ * @example isMouseToken("Cmd") // false
+ */
+export function isMouseToken(token) {
+  return token in MOUSE_ICONS;
+}

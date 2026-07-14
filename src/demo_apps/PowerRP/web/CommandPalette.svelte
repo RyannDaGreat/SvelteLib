@@ -8,7 +8,7 @@
 -->
 <script>
   import "iconify-icon";
-  import { keyIcon } from "../../../lib/keyicons.js";
+  import KeyCombo from "../../../lib/KeyCombo.svelte";
   import { rpFuzzyMatchIndices } from "../core/fuzzy.js";
 
   let { app } = $props();
@@ -131,14 +131,8 @@
               >{#each titleSegments(cmd.title, query) as seg}{#if seg.hit}<mark class="fuzzy-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span
             >
             {#if app.shortcuts.commandKeys(cmd.id)}
-              <!-- ONE box per combo (user spec) — glyphs/letters side by side
-                   inside a single standardized-height chip, no separators. -->
               <span class="shortcut">
-                <kbd class="combo">
-                  {#each app.shortcuts.commandKeys(cmd.id) as key}
-                    {#if keyIcon(key)}<iconify-icon icon={keyIcon(key)} width="11" height="11"></iconify-icon>{:else}<span>{key}</span>{/if}
-                  {/each}
-                </kbd>
+                <KeyCombo keys={app.shortcuts.commandKeys(cmd.id)} />
               </span>
             {/if}
             {#if cmd.children}<iconify-icon class="sub-arrow" icon="mdi:chevron-right" width="16" height="16"></iconify-icon>{/if}

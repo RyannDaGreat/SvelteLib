@@ -16,8 +16,7 @@
     ]} />
 -->
 <script>
-  import "iconify-icon";
-  import { keyIcon } from "./keyicons.js";
+  import KeyCombo from "./KeyCombo.svelte";
 
   let {
     /** @type {[string[], string][]} List of [keys, label] hints. */
@@ -25,35 +24,15 @@
     /** @type {import('svelte').Snippet} Optional right-aligned content (e.g. a toggle). */
     trailing = undefined,
   } = $props();
-
-  // Mouse tokens → icons; anything else renders as a key chip.
-  const MOUSE_ICONS = {
-    mouse_left: "mdi:mouse-left-click-outline",
-    mouse_right: "mdi:mouse-right-click-outline",
-    mouse_middle: "mdi:mouse",
-    mouse_scroll: "mdi:mouse-scroll-wheel",
-    mouse: "mdi:mouse-outline",
-  };
-
-  function isMouse(token) {
-    return token in MOUSE_ICONS;
-  }
 </script>
 
 <div class="hintbar">
   {#each hints as [keys, label]}
     <span class="hint">
+      <!-- ONE chip per combo (one box = pressed together; separate chips are
+           reserved for future chords) — the shared KeyCombo component. -->
       <span class="keys">
-        {#each keys as token, i}
-          {#if i > 0}<span class="plus">+</span>{/if}
-          {#if isMouse(token)}
-            <iconify-icon class="mouse" icon={MOUSE_ICONS[token]} width="16" height="16"></iconify-icon>
-          {:else if keyIcon(token)}
-            <kbd><iconify-icon icon={keyIcon(token)} width="11" height="11"></iconify-icon></kbd>
-          {:else}
-            <kbd>{token}</kbd>
-          {/if}
-        {/each}
+        <KeyCombo {keys} />
       </span>
       <span class="label">{label}</span>
     </span>
@@ -99,24 +78,9 @@
     gap: 3px;
     color: var(--hint-key-fg);
   }
-  kbd {
-    font-family: inherit;
-    font-size: 0.92em;
-    line-height: 1;
-    /* EXACTLY one chip height whether the content is a letter or a key-glyph
-       icon (letters and icons box differently — fixed dims equalize them). */
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    height: var(--hint-key-h, 18px);
-    min-width: var(--hint-key-h, 18px);
-    padding: 0 5px;
-    border: 1px solid currentColor;
-    border-radius: 4px;
-  }
-  .plus {
-    opacity: 0.5;
+  /* Chip styling lives in KeyCombo (--kc-*); HintBar forwards its height token. */
+  .keys {
+    --kc-h: var(--hint-key-h, 18px);
   }
   .label {
     white-space: nowrap;

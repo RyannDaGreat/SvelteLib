@@ -771,16 +771,10 @@ body,
   flex: none;
 }
 
-/* One chip per combo, standardized height (user spec). */
-.palette-item .shortcut kbd.combo {
-  font-family: inherit;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--a-sp-1);
-  height: var(--a-key-chip-h);
-  padding: 0 var(--a-sp-2);
-  border: var(--a-hairline) solid var(--fg-dim);
-  line-height: 1;
+/* Combo chips render via the shared KeyCombo component (--kc-* tokens). */
+.palette-item .shortcut {
+  --kc-h: var(--a-key-chip-h);
+  --kc-fg: var(--fg-dim);
 }
 
 .palette-item .sub-arrow {
