@@ -62,6 +62,20 @@ export function parseColor(color) {
     return [color[0], color[1], color[2], color[3] ?? 1];
   }
   if (typeof color !== "string") throw new Error(`parseColor: unsupported color ${JSON.stringify(color)}`);
+  // Memoized per string (near-pure: cache lookup, result copied so callers
+  // can't corrupt the cache). Scenes re-emit IR every frame; without this,
+  // 20k rects = 20k regex parses per frame — measured as a real bottleneck.
+  const cached = PARSE_COLOR_CACHE.get(color);
+  if (cached) return [cached[0], cached[1], cached[2], cached[3]];
+  const parsed = parseColorUncached(color);
+  PARSE_COLOR_CACHE.set(color, parsed);
+  return [parsed[0], parsed[1], parsed[2], parsed[3]];
+}
+
+const PARSE_COLOR_CACHE = new Map();
+
+/** Pure function. The actual string parsing behind parseColor's memo. */
+function parseColorUncached(color) {
   const hex = color.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
   if (hex) {
     const h = hex[1];

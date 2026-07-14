@@ -13,6 +13,7 @@ import {
 } from "../ir.js";
 import { rectIR, circleIR, arrowIR, textIR, videoIR, blurIR, magnifierIR, sceneIR } from "../ports.js";
 import { irToSVG, commandToSVG, svgTransform, xmlEscape } from "../svg_backend.js";
+import { benchScene, hash01 } from "../bench/scene.js";
 import { deriveRenderTree, resolveBinding } from "../../core/derive.js";
 import { createRegistry } from "../../core/registry.js";
 import { registerAll } from "../../plugins/index.js";
@@ -188,6 +189,25 @@ test("irToSVG: full scene document", () => {
   assert.match(svg, /Hello &lt;svg&gt;/);
   assert.match(svg, /font-weight="bold"/);
   assert.match(svg, /<\/svg>$/);
+});
+
+// ── benchmark scene (must stay DOM-free + deterministic) ───────────────────
+test("hash01: deterministic, in [0,1)", () => {
+  assert.equal(hash01(7, 3), hash01(7, 3));
+  assert.notEqual(hash01(7, 3), hash01(8, 3));
+  for (let i = 0; i < 50; i++) {
+    const v = hash01(i, i % 5);
+    assert.ok(v >= 0 && v < 1, `${v} out of range`);
+  }
+});
+test("benchScene: structure is stable, flattens + serializes", () => {
+  const ir = benchScene(1.25, { n: 10, effects: true });
+  assert.equal(ir.filter((c) => c.op === "rect").length, 10);
+  assert.equal(ir.filter((c) => c.op === "blurBackdrop").length, 1);
+  assert.equal(ir.filter((c) => c.op === "magnifyBackdrop").length, 1);
+  assert.equal(flattenIR(ir).length > 0, true); // balanced transform stack
+  const svg = irToSVG(ir, { width: 800, height: 450, view: { zoom: 0.5, panX: 0, panY: 0 } });
+  assert.match(svg, /<polygon/); // arrowheads made it through the vector backend
 });
 
 console.log(`\nrender_gpu tests: ${passed} passed`);
