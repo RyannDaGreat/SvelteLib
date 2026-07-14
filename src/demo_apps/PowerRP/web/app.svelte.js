@@ -356,9 +356,13 @@ export class PowerRPApp {
   }
 
   runCommand(id) {
+    const cmd = this.commands.get(id);
+    // Disabled-command semantics: a failing `when` means "not runnable here"
+    // (guards e.g. deleting the non-purgeable camera via the Delete key).
+    if (cmd.when && !cmd.when(this)) return;
     this.commands.markUsed(id);
     localStorage.setItem("powerrp.mru", JSON.stringify(this.commands.usageList()));
-    this.commands.get(id).run(this);
+    cmd.run(this);
   }
 
   loadMru() {

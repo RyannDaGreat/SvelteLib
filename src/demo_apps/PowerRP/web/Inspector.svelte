@@ -69,14 +69,16 @@
   </div>
 
   {#if sel}
-    <div class="item-actions">
-      <Tooltip text="Deactivate on this slide (item survives on earlier slides)">
-        <button class="btn" onclick={() => app.runCommand("delete-item")}>Delete here</button>
-      </Tooltip>
-      <Tooltip text="Remove from existence (all keyframes, all slides)">
-        <button class="btn danger" onclick={() => app.runCommand("purge-item")}>Purge</button>
-      </Tooltip>
-    </div>
+    {#if sel.plugin.capabilities.purgeable !== false}
+      <div class="item-actions">
+        <Tooltip text="Deactivate on this slide (item survives on earlier slides)">
+          <button class="btn" onclick={() => app.runCommand("delete-item")}>Delete here</button>
+        </Tooltip>
+        <Tooltip text="Remove from existence (all keyframes, all slides)">
+          <button class="btn danger" onclick={() => app.runCommand("purge-item")}>Purge</button>
+        </Tooltip>
+      </div>
+    {/if}
     <div class="row name-row">
       <span class="label">Name</span>
       <input

@@ -33,9 +33,11 @@
 
   // ── Core commands (plugins added theirs at registration) ──────────────────
   const needsSelection = (a) => a.selection !== null;
+  // purgeable:false widgets (the camera) can be neither deleted nor purged.
+  const needsPurgeable = (a) => a.selectedNode()?.plugin.capabilities.purgeable !== false && a.selection !== null;
   const coreCommands = [
-    { id: "delete-item", title: "Delete (deactivate on this slide)", when: needsSelection, run: (a) => a.deleteSelection() },
-    { id: "purge-item", title: "Purge Item (remove everywhere from here)", when: needsSelection, run: (a) => a.purgeSelection() },
+    { id: "delete-item", title: "Delete (deactivate on this slide)", when: needsPurgeable, run: (a) => a.deleteSelection() },
+    { id: "purge-item", title: "Purge Item (remove from existence)", when: needsPurgeable, run: (a) => a.purgeSelection() },
     { id: "bring-forward", title: "Bring Forward", when: needsSelection, run: (a) => a.reorderSelection(+1) },
     { id: "send-backward", title: "Send Backward", when: needsSelection, run: (a) => a.reorderSelection(-1) },
     { id: "put-on-top", title: "Put on Top", when: needsSelection, run: (a) => a.sendToExtreme(+1) },
@@ -164,10 +166,9 @@
     <SplitPane orientation="horizontal" bind:splits={hSplits}>
       {#snippet children(col)}
         <!-- Region names from the manifest glossary, revealed on mouse-over
-             (long delay so they don't spam; delay value PENDING USER
-             RATIFICATION). The Canvas is exempt — it's an interaction surface. -->
+                          RATIFICATION). The Canvas is exempt — it's an interaction surface. -->
         {#if col === 0}
-          <Tooltip text="Slide Navigator" delay={1000}>
+          <Tooltip text="Slide Navigator" delay={500}>
             <SlideNav {app} />
           </Tooltip>
         {:else if col === 1}
@@ -177,11 +178,11 @@
             <SplitPane orientation="vertical" bind:splits={rightSplits}>
               {#snippet children(row)}
                 {#if row === 0}
-                  <Tooltip text="Property Panel" delay={1000}>
+                  <Tooltip text="Property Panel" delay={500}>
                     <Inspector {app} />
                   </Tooltip>
                 {:else}
-                  <Tooltip text="Keyframe Panel" delay={1000}>
+                  <Tooltip text="Keyframe Panel" delay={500}>
                     <KeyframePanel {app} />
                   </Tooltip>
                 {/if}

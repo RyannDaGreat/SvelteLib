@@ -16,7 +16,9 @@ const ACTIVE_CAMERA_COLOR = "#00ffff"; // user spec: active camera marked cyan
 export const cameraPlugin = {
   type: "camera",
   title: "Camera",
-  capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // purgeable:false — the camera is mandatory: exactly one, cannot be deleted
+  // or purged (capability-based, not type special-cased; manifest rule).
+  capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, purgeable: false },
   defaults: {
     type: "camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1,
     background: "#ffffff", // the view's background comes FROM the camera
