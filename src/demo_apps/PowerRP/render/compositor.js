@@ -61,6 +61,7 @@ export function paintScene(ctx, doc, opts) {
     slideIndex, alpha = 1, registry, view, drawBackground = true,
     anchorsVisible = false, stateOverride = null, editorChrome = false,
     zBelow = Infinity, noCulling = false, allowNesting = true,
+    hoveredId = null, selectedId = null, chromeColor = null,
   } = opts;
   let state = foldState(doc, slideIndex, alpha);
   if (stateOverride) state = blendApplied(state, stateOverride, 1);
@@ -82,6 +83,9 @@ export function paintScene(ctx, doc, opts) {
     canvasH: canvas.height,
     anchorsVisible,
     editorChrome, // editor-only widgets (the camera's dashed bbox) check this
+    hoveredId, // item under the pointer — hover-only chrome (camera border)
+    selectedId, // current selection — same purpose
+    chromeColor, // THEME-derived editor chrome color (never hardcode; user rule)
   };
   // renderRegion lets a backdrop sampler re-render a sub-view at higher
   // resolution (magnifier supersampling). Only offered at depth 1 — the

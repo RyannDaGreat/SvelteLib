@@ -39,12 +39,14 @@
   // spanning each object whose width/height matches the resizing item's.
   // {axis: "w"|"h", x, y, w, h} — the AABB the arrow is drawn across.
   let sizeIndicators = $state([]);
+  let hoverItemId = $state(null); // item under the pointer (hover-only chrome)
   let drag = null; // non-reactive drag bookkeeping
 
   // Repaint whenever anything visible changes — INCLUDING the container size
   // (wrapW/wrapH), so pane resizes re-render instead of stretching the bitmap.
   $effect(() => {
     app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH;
+    app.selection; hoverItemId; app.theme; // hover/selected chrome + theme color
     paint();
   });
 
@@ -88,6 +90,10 @@
       anchorsVisible: app.anchorsVisible,
       stateOverride: app.previewDelta,
       editorChrome: true, // camera bbox etc. draw only here
+      hoveredId: hoverItemId,
+      selectedId: app.selection,
+      // Editor chrome color comes from the THEME (user rule — no hardcoded cyan).
+      chromeColor: getComputedStyle(containerEl).getPropertyValue("--a-selection").trim() || null,
     });
   }
 
@@ -130,8 +136,12 @@
   }
 
   function onPointerMove(e) {
-    if (!drag) return;
     const w = worldPoint(e);
+    if (!drag) {
+      // Hover tracking for hover-only chrome (the camera's border).
+      hoverItemId = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom)?.itemId ?? null;
+      return;
+    }
     if (drag.kind === "move") moveDrag(e, w);
     else if (drag.kind === "resize") resizeDrag(w);
     else if (drag.kind === "endpoint") endpointDrag(w);
