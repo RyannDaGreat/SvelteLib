@@ -44,9 +44,10 @@ export const cameraPlugin = {
     ctx.fillText("Camera", 4 / env.view.zoom, -6 / env.view.zoom);
   },
   // Hit only near the border, not the interior — the camera frames content;
-  // clicks inside should select the content, not the camera.
-  hitTest(s, lx, ly) {
-    const m = 6; // world-units border grab margin (matches handle feel)
+  // clicks inside should select the content, not the camera. `tol` is the
+  // editor's world-unit grab tolerance (constant screen-space feel).
+  hitTest(s, lx, ly, tol = 6) {
+    const m = tol;
     const inOuter = lx >= -m && lx <= s.w + m && ly >= -m && ly <= s.h + m;
     const inInner = lx >= m && lx <= s.w - m && ly >= m && ly <= s.h - m;
     return inOuter && !inInner;

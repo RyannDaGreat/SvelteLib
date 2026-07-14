@@ -18,7 +18,7 @@
   $effect(() => {
     app.doc;
     if (app.previewDelta) return;
-    const dpr = window.devicePixelRatio || 1; // always develop for Retina (manifest)
+    const dpr = app.dpr(); // retina browser setting (manifest)
     thumbs = app.doc.slides.map((_, i) => {
       const rect = cameraRect(foldState(app.doc, i, 1), app.doc.meta);
       if (rect.w <= 0 || rect.h <= 0) return "";
@@ -70,22 +70,22 @@
   </div>
   <div class="nav-actions">
     <Tooltip text="New slide after current">
-      <button class="btn-icon" onclick={() => app.runCommand("new-slide")}>
+      <button class="btn-icon" aria-label="New slide" onclick={() => app.runCommand("new-slide")}>
         <iconify-icon icon="mdi:plus" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
     <Tooltip text="Move slide up">
-      <button class="btn-icon" onclick={() => app.runCommand("move-slide-up")}>
+      <button class="btn-icon" aria-label="Move slide up" onclick={() => app.runCommand("move-slide-up")}>
         <iconify-icon icon="mdi:arrow-up" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
     <Tooltip text="Move slide down">
-      <button class="btn-icon" onclick={() => app.runCommand("move-slide-down")}>
+      <button class="btn-icon" aria-label="Move slide down" onclick={() => app.runCommand("move-slide-down")}>
         <iconify-icon icon="mdi:arrow-down" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
     <Tooltip text="Delete slide">
-      <button class="btn-icon" onclick={() => app.runCommand("delete-slide")} disabled={app.doc.slides.length <= 1}>
+      <button class="btn-icon" aria-label="Delete slide" onclick={() => app.runCommand("delete-slide")} disabled={app.doc.slides.length <= 1}>
         <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>

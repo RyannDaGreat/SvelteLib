@@ -40,22 +40,47 @@ async function tipState(page) {
   return page.evaluate(() => {
     const el = document.querySelector(".tt-tip");
     if (!el) return { present: false };
+    const r = el.getBoundingClientRect();
     return {
       present: true,
       text: el.textContent.trim(),
       top: el.classList.contains("tt-top"),
       bottom: el.classList.contains("tt-bottom"),
-      rectTop: el.getBoundingClientRect().top,
+      rectTop: r.top,
+      // Tip box geometry, used to check proximity to the cursor.
+      left: r.left,
+      right: r.right,
+      bottom_px: r.bottom,
+      centerX: r.left + r.width / 2,
     };
   });
 }
 
-// Dispatch a pointerenter (immediate-show trigger) on a target by testid.
-async function hover(page, testid) {
-  await page.evaluate((id) => {
-    const el = document.querySelector(`[data-testid="${id}"]`);
-    el.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+// Center point (viewport coords) of a target by testid.
+async function centerOf(page, testid) {
+  return page.evaluate((id) => {
+    const r = document.querySelector(`[data-testid="${id}"]`).getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } };
   }, testid);
+}
+
+// Dispatch pointerenter on a target at explicit viewport coords (the cursor
+// position the tooltip should anchor near). Defaults to the target's center.
+async function hover(page, testid, at = null) {
+  const p = at || (await centerOf(page, testid));
+  await page.evaluate(({ id, x, y }) => {
+    const el = document.querySelector(`[data-testid="${id}"]`);
+    el.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true, clientX: x, clientY: y }));
+  }, { id: testid, x: p.x, y: p.y });
+  return p;
+}
+
+// Dispatch pointermove on a target at explicit coords (cursor tracking).
+async function move(page, testid, x, y) {
+  await page.evaluate(({ id, x, y }) => {
+    const el = document.querySelector(`[data-testid="${id}"]`);
+    el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x, clientY: y }));
+  }, { id: testid, x, y });
 }
 
 // Dispatch pointerleave (hide + cancel pending) on a target by testid.
@@ -133,14 +158,66 @@ try {
   await leave(page, "rich");
   await sleep(20);
 
-  // 8. Edge flip: a "top" target pinned to the viewport top flips to bottom.
-  await hover(page, "edge-top");
+  // 8. Edge flip: hovering near the very top of the viewport (small clientY)
+  //    with placement="top" has no room above, so it flips to bottom.
+  await hover(page, "edge-top", { x: 500, y: 6 });
   await sleep(30);
   {
     const s = await tipState(page);
-    check("top placement flips to bottom at viewport top edge", s.present && s.bottom && !s.top, JSON.stringify(s));
+    check("top placement flips to bottom near viewport top edge", s.present && s.bottom && !s.top, JSON.stringify(s));
   }
   await leave(page, "edge-top");
+  await sleep(20);
+
+  // 8b. NEAR-CURSOR anchoring on a LARGE panel: the tip must appear next to the
+  //     dispatched pointer coords, NOT centered on the (huge) panel element.
+  //     This is the core fix — pick a cursor point well away from the panel's
+  //     center and assert the tip lands near it, and far from the element center.
+  const MAX_CURSOR_DIST = 40; // px: tip should hug the cursor (gap + half-clamp)
+  {
+    const panel = await centerOf(page, "panel");
+    // Cursor near the panel's left edge, far from its center.
+    const cx = Math.round(panel.rect.left + 30);
+    const cy = Math.round(panel.rect.top + 30);
+    await hover(page, "panel", { x: cx, y: cy });
+    await sleep(30);
+    const s = await tipState(page);
+    // Horizontal: tip is centered on the cursor X (within half its own width +
+    // margin); crucially it is NOT centered on the panel's center X.
+    const dxCursor = Math.abs(s.centerX - cx);
+    const dxPanelCenter = Math.abs(s.centerX - panel.x);
+    check(
+      "tip appears near cursor X on large panel",
+      s.present && dxCursor <= s.right - s.left, // within its own width of the cursor
+      `centerX=${s.centerX.toFixed(0)} cursorX=${cx} dx=${dxCursor.toFixed(0)}`,
+    );
+    check(
+      "tip is NOT centered on the large panel element",
+      s.present && dxPanelCenter > dxCursor,
+      `dxPanelCenter=${dxPanelCenter.toFixed(0)} vs dxCursor=${dxCursor.toFixed(0)}`,
+    );
+    // Vertical: default placement="top" → tip sits just above the cursor Y.
+    const dyCursor = cy - s.bottom_px; // gap between tip bottom and cursor
+    check(
+      "tip sits just above the cursor (within gap distance)",
+      s.present && dyCursor >= 0 && dyCursor <= MAX_CURSOR_DIST,
+      `cursorY=${cy} tipBottom=${s.bottom_px.toFixed(0)} gap=${dyCursor.toFixed(0)}`,
+    );
+
+    // 8c. TRACKING: moving the cursor within the panel re-anchors the tip.
+    const beforeX = s.centerX;
+    const nx = Math.round(panel.rect.right - 30);
+    const ny = Math.round(panel.rect.top + 60);
+    await move(page, "panel", nx, ny);
+    await sleep(30);
+    const s2 = await tipState(page);
+    check(
+      "tip follows the cursor on pointermove",
+      s2.present && Math.abs(s2.centerX - nx) <= s2.right - s2.left && s2.centerX > beforeX,
+      `movedTo=${nx} newCenterX=${s2.centerX.toFixed(0)} (was ${beforeX.toFixed(0)})`,
+    );
+  }
+  await leave(page, "panel");
   await sleep(20);
 
   // 9. Escape hides a shown tooltip.
@@ -151,13 +228,25 @@ try {
   check("Escape hides the tooltip", !(await tipState(page)).present);
   await leave(page, "immediate");
 
-  // 10. Focus shows, blur hides (keyboard accessibility).
+  // 10. Focus shows, blur hides (keyboard accessibility). The focus path has no
+  //     cursor, so the tip must anchor to the ELEMENT rect (centered on the
+  //     button's X), not to any stale/zero cursor coordinate.
   await page.evaluate(() => {
     const el = document.querySelector('[data-testid="immediate"]');
     el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
   });
   await sleep(30);
-  check("focus shows the tooltip", (await tipState(page)).present);
+  {
+    const s = await tipState(page);
+    check("focus shows the tooltip", s.present);
+    const btn = await centerOf(page, "immediate");
+    const dx = Math.abs(s.centerX - btn.x);
+    check(
+      "focus path anchors the tip to the element (centered on button X)",
+      s.present && dx <= s.right - s.left,
+      `tipCenterX=${s.centerX?.toFixed(0)} btnX=${btn.x.toFixed(0)} dx=${dx.toFixed(0)}`,
+    );
+  }
   await page.evaluate(() => {
     const el = document.querySelector('[data-testid="immediate"]');
     el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));

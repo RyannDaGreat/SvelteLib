@@ -1,18 +1,27 @@
 <!--
   Tooltip [visual, general] — immediate hover/focus tooltip wrapper.
 
-  Wraps its children and shows a small floating label near them. Unlike native
-  `title` tooltips (which wait ~1s), this appears IMMEDIATELY on hover/focus by
-  default. An optional `delay` (ms) reintroduces a hover-time threshold: the
-  pointer must rest on the target that long before the tip shows.
+  Wraps its children and shows a small floating label. Unlike native `title`
+  tooltips (which wait ~1s), this appears IMMEDIATELY on hover/focus by default.
+  An optional `delay` (ms) reintroduces a hover-time threshold: the pointer must
+  rest on the target that long before the tip shows.
 
-  Positioned with fixed coordinates measured from the wrapped element's
-  getBoundingClientRect — no dependency on scroll containers or transforms.
-  Placement is "top" or "bottom"; it flips automatically when the chosen side
-  would clip the viewport. Hides on pointerleave, blur, Escape, and pointerdown
-  (a click dismisses).
+  Anchoring differs by how it was triggered:
+    - POINTER (hover): the tip is positioned NEAR THE MOUSE CURSOR, offset a
+      small gap so it never sits under the pointer, and it tracks pointermove so
+      it follows the cursor while hovered. This matters for large wrapped targets
+      (e.g. a whole panel): anchoring to the element's bounding box would put the
+      tip far from what you're pointing at.
+    - FOCUS (keyboard): there is no cursor, so the tip anchors to the wrapped
+      element's getBoundingClientRect instead.
 
-  Usage (immediate — default):
+  Positioned with fixed coordinates — no dependency on scroll containers or
+  transforms. Placement is "top" or "bottom" (relative to the cursor or element);
+  it flips automatically when the chosen side would clip the viewport, and is
+  clamped horizontally so it never overflows. Hides on pointerleave, blur,
+  Escape, and pointerdown (a click dismisses).
+
+  Usage (immediate — default; tip appears next to the cursor):
     <Tooltip text="Save file">
       <button>Save</button>
     </Tooltip>
@@ -37,18 +46,66 @@
     --tt-radius    corner radius      (2px — square-ish; keep minimal)
     --tt-pad       padding            (4px 8px)
     --tt-font-size font size          (0.75rem)
-    --tt-gap       offset from target (6px)
+    --tt-gap       offset from anchor (6px)
     --tt-max-width max content width  (240px)
 -->
 <script module>
+  /**
+   * Pure function. Builds a zero-size DOMRect-like reference box at a cursor
+   * point, so the cursor path can reuse the same rect-based placement math as
+   * the element path (which passes a real getBoundingClientRect).
+   *
+   * @param {number} x Cursor X in viewport coords.
+   * @param {number} y Cursor Y in viewport coords.
+   * @returns {{left:number,right:number,top:number,bottom:number}} Degenerate rect at (x, y).
+   *
+   * @example
+   * // A cursor at (300, 200) becomes a zero-size box there.
+   * pointRect(300, 200)
+   * // => { left: 300, right: 300, top: 200, bottom: 200 }
+   */
+  export function pointRect(x, y) {
+    return { left: x, right: x, top: y, bottom: y };
+  }
+
+  /**
+   * Query. Returns the viewport rect of the anchor's real content, unioning its
+   * element children. The anchor <span> is `display:contents`, so its own
+   * getBoundingClientRect() is an empty box at (0,0) — useless for placement.
+   * The wrapped control(s) carry the real geometry, so we union their rects.
+   *
+   * @param {Element} span The `display:contents` anchor span.
+   * @returns {{left:number,right:number,top:number,bottom:number}|null} Union rect, or null if empty.
+   *
+   * @example
+   * // A span wrapping one button at x∈[117,198], y∈[40,66]:
+   * // anchorRect(span) // => { left: 117, right: 198, top: 40, bottom: 66 }
+   * @example
+   * // A span with no element children returns null (nothing to anchor to).
+   * // anchorRect(emptySpan) // => null
+   */
+  export function anchorRect(span) {
+    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (const child of span.children) {
+      const r = child.getBoundingClientRect();
+      left = Math.min(left, r.left);
+      top = Math.min(top, r.top);
+      right = Math.max(right, r.right);
+      bottom = Math.max(bottom, r.bottom);
+    }
+    if (left === Infinity) return null;
+    return { left, top, right, bottom };
+  }
+
   /**
    * Pure function. Chooses the final placement, flipping the requested side
    * when it would clip the viewport but the opposite side fits.
    *
    * @param {"top"|"bottom"} placement Requested side.
-   * @param {DOMRect} rect Target rectangle (viewport coords).
+   * @param {{top:number,bottom:number}} rect Reference rect (viewport coords); a
+   *   real element rect, or a degenerate cursor rect from `pointRect`.
    * @param {number} tipHeight Measured tooltip height in px.
-   * @param {number} gap Offset between target and tooltip in px.
+   * @param {number} gap Offset between anchor and tooltip in px.
    * @param {number} viewH Viewport height in px.
    * @returns {"top"|"bottom"} The side actually used.
    *
@@ -64,6 +121,10 @@
    * // "bottom" requested but clipped below, room above → flip to "top"
    * resolvePlacement("bottom", { top: 780, bottom: 796 }, 20, 6, 800)
    * // => "top"
+   * @example
+   * // Cursor near the top edge (degenerate rect): "top" flips to "bottom".
+   * resolvePlacement("top", pointRect(500, 10), 20, 6, 800)
+   * // => "bottom"
    */
   export function resolvePlacement(placement, rect, tipHeight, gap, viewH) {
     const fitsAbove = rect.top - gap - tipHeight >= 0;
@@ -75,14 +136,18 @@
 
   /**
    * Pure function. Computes the fixed top-left pixel position of the tooltip so
-   * it is horizontally centered on the target and offset to the chosen side,
-   * clamped to stay within the viewport (with a small margin).
+   * it is horizontally centered on the reference box and offset to the chosen
+   * side, clamped to stay within the viewport (with a small margin).
+   *
+   * Works uniformly for both anchoring modes: pass a real element rect to center
+   * on the element, or a degenerate cursor rect from `pointRect` to center on
+   * the pointer (a zero-width box centers the tip on the cursor's X).
    *
    * @param {"top"|"bottom"} side Resolved side to place on.
-   * @param {DOMRect} rect Target rectangle (viewport coords).
+   * @param {{left:number,right:number,top:number,bottom:number}} rect Reference rect (viewport coords).
    * @param {number} tipW Measured tooltip width in px.
    * @param {number} tipH Measured tooltip height in px.
-   * @param {number} gap Offset between target and tooltip in px.
+   * @param {number} gap Offset between anchor and tooltip in px.
    * @param {number} viewW Viewport width in px.
    * @param {number} viewH Viewport height in px.
    * @param {number} margin Min distance kept from each viewport edge in px.
@@ -92,6 +157,10 @@
    * // Centered horizontally on a target at x∈[100,140], above it.
    * computePosition("top", { left: 100, right: 140, top: 300, bottom: 320 }, 40, 20, 6, 1000, 800, 4)
    * // => { left: 100, top: 274 }
+   * @example
+   * // Centered on a cursor at (500, 300), placed below it with a 6px gap.
+   * computePosition("bottom", pointRect(500, 300), 40, 20, 6, 1000, 800, 4)
+   * // => { left: 480, top: 306 }
    */
   export function computePosition(side, rect, tipW, tipH, gap, viewW, viewH, margin) {
     const centerX = rect.left + (rect.right - rect.left) / 2;
@@ -118,7 +187,7 @@
     tip = undefined,
   } = $props();
 
-  const GAP = 6; // px between target and tooltip; also a CSS var default
+  const GAP = 6; // px between anchor and tooltip; also a CSS var default
   const EDGE_MARGIN = 4; // px kept from viewport edges when clamping
 
   let anchor = $state(null); // wrapping span (the hover/focus target)
@@ -129,16 +198,24 @@
   let side = $state("top");
   let pos = $state({ left: 0, top: 0 });
   let showTimer = 0;
+  // Last known cursor position (viewport coords) while hovering. Null means the
+  // tip was triggered by keyboard focus, which has no cursor → anchor to element.
+  let cursor = $state(null);
 
   const hasContent = $derived(!!tip || text.length > 0);
 
-  /** Command. Measures the target + tooltip and positions the tooltip. Mutates side/pos. */
+  /**
+   * Command. Measures the tooltip and positions it. Mutates side/pos.
+   * Anchors to the live cursor point when hovering, or to the wrapped element's
+   * bounding rect when triggered by keyboard focus (cursor === null).
+   */
   function place() {
-    if (!anchor || !tipEl) return;
-    const rect = anchor.getBoundingClientRect();
+    if (!tipEl) return;
+    const ref = cursor ? pointRect(cursor.x, cursor.y) : (anchor && anchorRect(anchor));
+    if (!ref) return;
     const { offsetWidth: tipW, offsetHeight: tipH } = tipEl;
-    side = resolvePlacement(placement, rect, tipH, GAP, window.innerHeight);
-    pos = computePosition(side, rect, tipW, tipH, GAP, window.innerWidth, window.innerHeight, EDGE_MARGIN);
+    side = resolvePlacement(placement, ref, tipH, GAP, window.innerHeight);
+    pos = computePosition(side, ref, tipW, tipH, GAP, window.innerWidth, window.innerHeight, EDGE_MARGIN);
   }
 
   /** Command. Shows the tooltip now (used after any delay elapses). Mutates shown. */
@@ -147,12 +224,37 @@
     shown = true;
   }
 
-  /** Command. Starts showing, honoring `delay`. Mutates a pending timer. */
+  /**
+   * Command. Starts showing on pointer hover, honoring `delay`. Records the
+   * cursor position so the tip anchors near it. Mutates cursor + pending timer.
+   */
+  function openFromPointer(e) {
+    cursor = { x: e.clientX, y: e.clientY };
+    open();
+  }
+
+  /**
+   * Command. Starts showing on keyboard focus. Clears any cursor so the tip
+   * anchors to the wrapped element's rect instead. Mutates cursor + timer.
+   */
+  function openFromFocus() {
+    cursor = null;
+    open();
+  }
+
+  /** Command. Shared show path; honors `delay`. Mutates a pending timer. */
   function open() {
     if (disabled || !hasContent || shown) return;
     clearTimeout(showTimer);
     if (delay > 0) showTimer = setTimeout(reveal, delay);
     else reveal();
+  }
+
+  /** Command. While hovering, follow the cursor. Mutates cursor and repositions. */
+  function track(e) {
+    if (!cursor) return; // focus-anchored tip: ignore stray pointermove
+    cursor = { x: e.clientX, y: e.clientY };
+    if (shown) place();
   }
 
   /** Command. Hides the tooltip and cancels any pending show. Mutates shown/timer. */
@@ -170,7 +272,9 @@
     if (shown && tipEl) place();
   });
 
-  // While shown, keep the tooltip glued to the target through scroll/resize.
+  // While shown, keep the tooltip anchored through scroll/resize. (Cursor-mode
+  // tips also update on pointermove via track(); this covers the element path
+  // and any layout shifts under the cursor.)
   $effect(() => {
     if (!shown) return;
     window.addEventListener("scroll", place, true);
@@ -191,10 +295,11 @@
 <span
   class="tt-anchor"
   bind:this={anchor}
-  onpointerenter={open}
+  onpointerenter={openFromPointer}
+  onpointermove={track}
   onpointerleave={close}
   onpointerdown={close}
-  onfocusin={open}
+  onfocusin={openFromFocus}
   onfocusout={close}
 >
   {@render children()}

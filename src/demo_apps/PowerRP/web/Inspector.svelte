@@ -126,7 +126,7 @@
           <!-- prev ◆ next — jumps hug the diamond (manifest spec); hollow =
                not keyed on this slide, filled = keyed. Iconify, never Unicode. -->
           <Tooltip text="Previous keyframe">
-            <button class="jumpbtn" onclick={() => app.jumpKeyframe(row.key, -1)}>
+            <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpKeyframe(row.key, -1)}>
               <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
             </button>
           </Tooltip>
@@ -134,13 +134,14 @@
             <button
               class="keybtn"
               class:keyed={app.hasKey(row.key)}
+              aria-label="Toggle keyframe on this slide"
               onclick={() => toggleKey(row.key)}
             >
               <iconify-icon icon={app.hasKey(row.key) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
             </button>
           </Tooltip>
           <Tooltip text="Next keyframe">
-            <button class="jumpbtn" onclick={() => app.jumpKeyframe(row.key, +1)}>
+            <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpKeyframe(row.key, +1)}>
               <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
             </button>
           </Tooltip>

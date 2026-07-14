@@ -22,7 +22,7 @@
 
   function paint() {
     if (!canvasEl) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = app.dpr(); // retina browser setting (manifest)
     canvasEl.width = Math.round(innerWidth * dpr);
     canvasEl.height = Math.round(innerHeight * dpr);
     const ctx = canvasEl.getContext("2d");

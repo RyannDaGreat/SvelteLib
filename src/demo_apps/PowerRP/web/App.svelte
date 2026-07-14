@@ -46,6 +46,7 @@
     { id: "distribute-v", title: "Distribute Vertically", run: (a) => distribute(a, "y", "h") },
     { id: "toggle-anchors", title: "Toggle Anchor Visibility", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
     { id: "toggle-minimap", title: "Toggle Minimap", run: (a) => a.toggleMinimap() },
+    { id: "toggle-retina", title: "Toggle Retina Rendering (browser setting)", run: (a) => a.toggleRetina() },
     { id: "new-slide", title: "New Slide", run: (a) => a.addSlide() },
     { id: "delete-slide", title: "Delete Slide", when: (a) => a.doc.slides.length > 1, run: (a) => a.deleteSlide() },
     { id: "toggle-slide", title: "Toggle Slide Visibility (enable/disable delta)", run: (a) => a.toggleSlide() },

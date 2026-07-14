@@ -57,6 +57,15 @@
     </div>
   </section>
 
+  <!-- Large wrapped target: the tip must appear NEAR THE CURSOR, not centered
+       on this big panel. Hovering anywhere inside anchors the tip to the pointer
+       so you can see what you're highlighting. -->
+  <Tooltip text="Follows your cursor">
+    <div class="big-panel" data-testid="panel">
+      Big panel — hover anywhere; the tooltip appears next to the cursor
+    </div>
+  </Tooltip>
+
   <!-- Edge target pinned to the very top of the viewport: "top" must flip to
        "bottom" here because there is no room above. -->
   <div class="edge-top">
@@ -95,6 +104,23 @@
   code {
     color: var(--accent);
     font-size: 0.85em;
+  }
+
+  /* Deliberately large so its bounding box is far from most cursor positions —
+     proves the tip anchors to the cursor, not the element center. */
+  .big-panel {
+    width: 80vw;
+    height: 260px;
+    margin-top: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg-surface);
+    color: var(--fg-dim);
+    font-size: 0.9rem;
+    cursor: default;
   }
 
   .card button {

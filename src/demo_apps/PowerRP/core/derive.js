@@ -136,11 +136,11 @@ export function standardBBoxAnchors(state) {
  * instead define hitTestWorld(node, wx, wy, nodesById) for widgets whose
  * geometry needs resolved bindings (arrows).
  */
-export function hitNode(node, wx, wy, nodesById) {
+export function hitNode(node, wx, wy, nodesById, tol = 0) {
   const { plugin, state } = node;
   if (plugin.hitTestWorld) return plugin.hitTestWorld(node, wx, wy, nodesById);
   const local = T.apply(T.invert(node.world), wx, wy);
-  if (plugin.hitTest) return plugin.hitTest(state, local.x, local.y);
+  if (plugin.hitTest) return plugin.hitTest(state, local.x, local.y, tol / node.world.scale);
   if (plugin.capabilities.bbox)
     return local.x >= 0 && local.x <= (state.w ?? 0) && local.y >= 0 && local.y <= (state.h ?? 0);
   return false;
@@ -148,12 +148,14 @@ export function hitNode(node, wx, wy, nodesById) {
 
 /**
  * Pure function. Topmost node hit by a world point (nodes are z-ascending,
- * so scan from the end), or null.
+ * so scan from the end), or null. `tol` is a WORLD-unit grab tolerance
+ * (screen px / zoom) forwarded to plugin hitTests — border-grab widgets like
+ * the camera keep a constant screen-space feel at any zoom.
  */
-export function pickNode(nodes, wx, wy) {
+export function pickNode(nodes, wx, wy, tol = 0) {
   const nodesById = Object.fromEntries(nodes.map((n) => [n.id, n]));
   for (let i = nodes.length - 1; i >= 0; i--)
-    if (hitNode(nodes[i], wx, wy, nodesById)) return nodes[i];
+    if (hitNode(nodes[i], wx, wy, nodesById, tol)) return nodes[i];
   return null;
 }
 

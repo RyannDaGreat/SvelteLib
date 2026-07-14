@@ -1,5 +1,5 @@
 <!--
-  Dropdown [visual, general] — themable single-select.
+  Dropdown [visual, general] — themable single- or multi-select.
 
   Drop-in replacement for native <select>: pass `items` and bind `value`.
   The menu is constrained to the trigger's width so the two pieces share
@@ -7,29 +7,76 @@
   flare math. Items longer than the trigger truncate with ellipsis;
   size your trigger (e.g. `min-width` on the wrapper) to fit.
 
+  Item shape:
+    - Selectable row:  { value:any, label:string, disabled?:boolean }
+    - Insert (decoration between rows, generic): { insert: Snippet | string }
+      Inserts render BETWEEN item rows without occupying a selectable slot:
+      arrow-key navigation skips them, they can't be selected, and they don't
+      affect item spacing. By default an insert renders as just its content
+      with no decoration (nearly invisible). Opt into a look via the `insert`
+      snippet and/or the --dd-insert-* custom properties (e.g. dotted rules).
+      The concept is generic; no particular separator style is baked in.
+
+  Multi-select (`multiple`):
+    - When false (default): `value` is a single value; clicking a row selects
+      it and closes the menu (unchanged legacy behavior).
+    - When true: `value` is an array ($bindable); clicking or Enter toggles a
+      row's membership WITHOUT closing the menu. The trigger shows a summary
+      (default: single label / "N selected" / placeholder when empty — override
+      via the `summary(values, items)` prop). Selected rows show a checkmark
+      (iconify mdi:check). Passing a non-array `value` with multiple:true throws.
+
+  Scroll-on-open (`scrollToValue`):
+    - When set, the row whose value === scrollToValue is scrolled into view
+      (centered if possible) as the menu opens. Default (unset): no auto-scroll.
+
   Extensibility hooks:
     - `trigger` snippet — override the closed-state button rendering
     - `item`    snippet — override per-row rendering
+    - `insert`  snippet — override per-insert rendering (receives the payload)
     - `header`  snippet — content above the list (search box, etc.)
     - `footer`  snippet — content below the list (action buttons, etc.)
 
-  Behavior: click trigger to open, click item to select, click outside or
-  ESC to close. ↑/↓ to navigate, Enter to select, Home/End to jump.
+  Behavior: click trigger to open, click item to select/toggle, click outside
+  or ESC to close. ↑/↓ to navigate (skipping inserts + disabled rows), Enter to
+  select/toggle, Home/End to jump.
 
   CSS custom properties:
     --dd-bg, --dd-fg, --dd-fg-dim, --dd-border, --dd-radius, --dd-padding,
     --dd-font-size, --dd-hover-bg, --dd-active-bg, --dd-active-fg,
-    --dd-menu-shadow, --dd-menu-max-height
+    --dd-menu-shadow, --dd-menu-max-height,
+    --dd-check-size          — checkmark icon size in multi-select rows
+    --dd-check-color         — checkmark color (defaults to --dd-active-fg)
+    --dd-insert-padding      — padding around an insert's content
+    --dd-insert-color        — insert content/border color
+    --dd-insert-border       — insert border shorthand (unset ⇒ no rule drawn)
 -->
 <script>
+  import "iconify-icon";
+
   /**
-   * Pure function. Index of the item whose value === `value`, or -1.
+   * Pure function. True if `it` is an insert entry (decoration between rows)
+   * rather than a selectable item. Inserts are discriminated by an `insert`
+   * key holding a Snippet or string.
    *
-   * @example findIndex([{value:"a"},{value:"b"}], "b") // 1
+   * @example isInsert({ insert: "—" }) // true
+   * @example isInsert({ value: "a", label: "A" }) // false
+   */
+  function isInsert(it) {
+    return it != null && Object.prototype.hasOwnProperty.call(it, "insert");
+  }
+
+  /**
+   * Pure function. Index of the first selectable item whose value === `value`,
+   * or -1. Insert entries are ignored.
+   *
+   * @example findIndex([{value:"a"},{insert:"-"},{value:"b"}], "b") // 2
    * @example findIndex([{value:"a"}], "x") // -1
    */
   function findIndex(items, value) {
-    for (let i = 0; i < items.length; i++) if (items[i].value === value) return i;
+    for (let i = 0; i < items.length; i++) {
+      if (!isInsert(items[i]) && items[i].value === value) return i;
+    }
     return -1;
   }
 
@@ -43,17 +90,78 @@
     return ((i % n) + n) % n;
   }
 
+  /**
+   * Pure function. True if the item at `i` is a landable navigation target
+   * (exists, is not an insert, is not disabled).
+   *
+   * @example isSelectable([{value:"a"}], 0) // true
+   * @example isSelectable([{value:"a",disabled:true}], 0) // false
+   * @example isSelectable([{insert:"-"}], 0) // false
+   */
+  function isSelectable(items, i) {
+    const it = items[i];
+    return !!it && !isInsert(it) && !it.disabled;
+  }
+
+  /**
+   * Pure function. True if `value` (an array of selected values) contains the
+   * value of the item at `i`. Safe on inserts (always false).
+   *
+   * @example isChecked([{value:"a"},{value:"b"}], ["b"], 1) // true
+   * @example isChecked([{value:"a"}], ["b"], 0) // false
+   */
+  function isChecked(items, value, i) {
+    const it = items[i];
+    if (!it || isInsert(it)) return false;
+    return Array.isArray(value) && value.includes(it.value);
+  }
+
+  /**
+   * Pure function. Toggle `v`'s membership in array `arr`, returning a new
+   * array (arr unmutated). Adds if absent, removes if present.
+   *
+   * @example toggleMembership(["a"], "b") // ["a", "b"]
+   * @example toggleMembership(["a","b"], "a") // ["b"]
+   */
+  function toggleMembership(arr, v) {
+    return arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v];
+  }
+
+  /**
+   * Pure function. Default multi-select trigger summary text.
+   * Empty ⇒ placeholder; one ⇒ that item's label; many ⇒ "N selected".
+   *
+   * @example defaultSummary([], [{value:"a",label:"A"}], "Pick") // "Pick"
+   * @example defaultSummary(["a"], [{value:"a",label:"A"}], "Pick") // "A"
+   * @example defaultSummary(["a","b"], [{value:"a",label:"A"},{value:"b",label:"B"}], "Pick") // "2 selected"
+   */
+  function defaultSummary(values, items, placeholder) {
+    if (!values.length) return placeholder;
+    if (values.length === 1) {
+      const idx = findIndex(items, values[0]);
+      return idx >= 0 ? items[idx].label : String(values[0]);
+    }
+    return `${values.length} selected`;
+  }
+
   let {
-    /** @type {{value:any,label:string,disabled?:boolean}[]} */
+    /** @type {({value:any,label:string,disabled?:boolean}|{insert:any})[]} */
     items = [],
-    /** @type {any} */
+    /** @type {any} single-select: any; multi-select: any[] */
     value = $bindable(undefined),
+    /** @type {boolean} when true, value is a $bindable array; rows toggle without closing */
+    multiple = false,
     placeholder = "Select…",
+    /** @type {any} multi-select only: scroll this value's row into view on open */
+    scrollToValue = undefined,
     /** @type {(value:any)=>void} */
     onchange = undefined,
+    /** @type {(values:any[], items:any[])=>string} multi-select trigger summary */
+    summary = undefined,
 
     trigger,
     item: itemSnippet,
+    insert: insertSnippet,
     header,
     footer,
   } = $props();
@@ -61,12 +169,36 @@
   let open = $state(false);
   let activeIndex = $state(-1);
   let rootEl;
+  let listEl = $state(null);
+
+  /* Loud guard: multi-select requires an array value so bindings stay sane. */
+  $effect(() => {
+    if (multiple && !Array.isArray(value)) {
+      throw new Error(
+        "Dropdown: multiple:true requires an array `value` (bind:value={[]}), got " +
+          (value === undefined ? "undefined" : typeof value),
+      );
+    }
+  });
 
   const currentItem = $derived(items[findIndex(items, value)]);
+  const summaryText = $derived(
+    multiple
+      ? (summary ?? defaultSummary)(Array.isArray(value) ? value : [], items, placeholder)
+      : (currentItem?.label ?? placeholder),
+  );
+
+  function firstSelectableFor(value) {
+    const idx = findIndex(items, multiple ? undefined : value);
+    if (idx >= 0) return idx;
+    for (let i = 0; i < items.length; i++) if (isSelectable(items, i)) return i;
+    return -1;
+  }
 
   function openMenu() {
     open = true;
-    activeIndex = Math.max(0, findIndex(items, value));
+    activeIndex = firstSelectableFor(value);
+    if (scrollToValue !== undefined) scrollTargetIntoView(scrollToValue);
   }
 
   function closeMenu() {
@@ -78,19 +210,36 @@
     open ? closeMenu() : openMenu();
   }
 
+  /* Command: scroll the row whose value === target into view, centered.
+     Waits a frame so the menu has laid out before measuring. */
+  function scrollTargetIntoView(target) {
+    const idx = findIndex(items, target);
+    if (idx < 0) return;
+    requestAnimationFrame(() => {
+      const row = listEl?.querySelector(`[data-dd-index="${idx}"]`);
+      row?.scrollIntoView({ block: "center" });
+    });
+  }
+
   function selectAt(i) {
-    const it = items[i];
-    if (!it || it.disabled) return;
-    value = it.value;
-    onchange?.(it.value);
-    closeMenu();
+    if (!isSelectable(items, i)) return;
+    const v = items[i].value;
+    if (multiple) {
+      value = toggleMembership(value, v);
+      onchange?.(value);
+      /* Stay open: multi-select toggles accumulate. */
+    } else {
+      value = v;
+      onchange?.(v);
+      closeMenu();
+    }
   }
 
   function moveActive(delta) {
     if (!items.length) return;
     let i = activeIndex < 0 ? 0 : wrap(activeIndex + delta, items.length);
     for (let n = 0; n < items.length; n++) {
-      if (!items[i].disabled) {
+      if (isSelectable(items, i)) {
         activeIndex = i;
         return;
       }
@@ -121,13 +270,13 @@
         break;
       case "Home":
         e.preventDefault();
-        activeIndex = 0;
-        moveActive(0);
+        activeIndex = -1;
+        moveActive(1);
         break;
       case "End":
         e.preventDefault();
-        activeIndex = items.length - 1;
-        moveActive(0);
+        activeIndex = items.length;
+        moveActive(-1);
         break;
       case "Enter":
         e.preventDefault();
@@ -158,40 +307,65 @@
     onclick={toggleMenu}
   >
     {#if trigger}
-      {@render trigger(currentItem)}
+      {@render trigger(multiple ? summaryText : currentItem)}
     {:else}
-      <span class="dd-trigger-label" class:dd-placeholder={!currentItem}>
-        {currentItem?.label ?? placeholder}
+      <span
+        class="dd-trigger-label"
+        class:dd-placeholder={multiple ? !value?.length : !currentItem}
+      >
+        {summaryText}
       </span>
       <span class="dd-caret" aria-hidden="true">▾</span>
     {/if}
   </button>
 
   {#if open}
-    <div class="dd-menu" role="listbox">
+    <div class="dd-menu" role="listbox" aria-multiselectable={multiple || undefined}>
       {#if header}
         <div class="dd-header">{@render header()}</div>
       {/if}
 
-      <ul class="dd-list">
+      <ul class="dd-list" bind:this={listEl}>
         {#each items as it, i}
-          <li
-            class="dd-item"
-            class:dd-active={i === activeIndex}
-            class:dd-selected={it.value === value}
-            class:dd-disabled={it.disabled}
-            role="option"
-            aria-selected={it.value === value}
-            aria-disabled={it.disabled || undefined}
-            onclick={() => selectAt(i)}
-            onpointerenter={() => !it.disabled && (activeIndex = i)}
-          >
-            {#if itemSnippet}
-              {@render itemSnippet(it, i === activeIndex)}
-            {:else}
-              {it.label}
-            {/if}
-          </li>
+          {#if isInsert(it)}
+            <li class="dd-insert" role="presentation" aria-hidden="true">
+              {#if insertSnippet}
+                {@render insertSnippet(it.insert)}
+              {:else if typeof it.insert === "function"}
+                {@render it.insert()}
+              {:else}
+                {it.insert}
+              {/if}
+            </li>
+          {:else}
+            <li
+              class="dd-item"
+              class:dd-active={i === activeIndex}
+              class:dd-selected={multiple ? isChecked(items, value, i) : it.value === value}
+              class:dd-disabled={it.disabled}
+              data-dd-index={i}
+              role="option"
+              aria-selected={multiple ? isChecked(items, value, i) : it.value === value}
+              aria-disabled={it.disabled || undefined}
+              onclick={() => selectAt(i)}
+              onpointerenter={() => isSelectable(items, i) && (activeIndex = i)}
+            >
+              {#if multiple}
+                <span class="dd-check" aria-hidden="true">
+                  {#if isChecked(items, value, i)}
+                    <iconify-icon icon="mdi:check"></iconify-icon>
+                  {/if}
+                </span>
+              {/if}
+              <span class="dd-item-body">
+                {#if itemSnippet}
+                  {@render itemSnippet(it, i === activeIndex)}
+                {:else}
+                  {it.label}
+                {/if}
+              </span>
+            </li>
+          {/if}
         {/each}
       </ul>
 
@@ -218,6 +392,16 @@
     --dd-active-fg: var(--fg, #e0e0e0);
     --dd-menu-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
     --dd-menu-max-height: 240px;
+
+    /* Multi-select checkmark. */
+    --dd-check-size: 1em;
+    --dd-check-color: var(--dd-active-fg);
+
+    /* Inserts: nearly invisible by default — content only, no decoration.
+       Consumers opt into a look (e.g. dotted rules) via these props. */
+    --dd-insert-padding: 0;
+    --dd-insert-color: var(--dd-fg-dim);
+    --dd-insert-border: none;
 
     position: relative;
     display: inline-block;
@@ -299,11 +483,18 @@
   }
 
   .dd-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     padding: var(--dd-padding);
     cursor: pointer;
-    white-space: nowrap;
+  }
+  .dd-item-body {
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .dd-item.dd-active {
     background: var(--dd-hover-bg);
@@ -315,5 +506,26 @@
   .dd-item.dd-disabled {
     color: var(--dd-fg-dim);
     cursor: default;
+  }
+
+  /* Checkmark gutter: reserves its box even when empty so labels stay aligned. */
+  .dd-check {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--dd-check-size);
+    height: var(--dd-check-size);
+    font-size: var(--dd-check-size);
+    color: var(--dd-check-color);
+  }
+
+  /* Insert row: content only by default. Decoration is opt-in via --dd-insert-*. */
+  .dd-insert {
+    padding: var(--dd-insert-padding);
+    color: var(--dd-insert-color);
+    border-top: var(--dd-insert-border);
+    pointer-events: none;
+    user-select: none;
   }
 </style>

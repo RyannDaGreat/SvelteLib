@@ -22,6 +22,7 @@
 
   const SNAP_TOL_PX = 8; // screen px within which features snap (PENDING USER RATIFICATION)
   const ANCHOR_BIND_PX = 12; // screen px within which an arrow endpoint binds (PENDING USER RATIFICATION)
+  const GRAB_PX = 8; // screen-px grab tolerance for border-hit widgets (camera); same value as SNAP_TOL_PX
   const MIN_SIZE = 0; // sizes are non-negative — a mathematical bound, not a design choice
 
   let containerEl = $state(null);
@@ -51,7 +52,7 @@
     app.doc; app.slideIndex; app.minimapVisible;
     if (!app.minimapVisible || app.previewDelta) return;
     const meta = app.doc.meta;
-    const dpr = window.devicePixelRatio || 1; // always develop for Retina (manifest)
+    const dpr = app.dpr(); // retina browser setting (manifest)
     const cssH = Math.round((THUMB_W * meta.slideH) / meta.slideW);
     const thumb = document.createElement("canvas");
     thumb.width = Math.round(THUMB_W * dpr);
@@ -68,7 +69,7 @@
 
   function paint() {
     if (!canvasEl || !containerEl) return;
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = app.dpr(); // retina browser setting (manifest)
     const rect = containerEl.getBoundingClientRect();
     if (canvasEl.width !== Math.round(rect.width * dpr) || canvasEl.height !== Math.round(rect.height * dpr)) {
       canvasEl.width = Math.round(rect.width * dpr);
@@ -111,7 +112,7 @@
     if (e.button !== 0 || app.mode !== "edit") return;
     const w = worldPoint(e);
     const nodes = app.nodes();
-    const hit = pickNode(nodes, w.x, w.y);
+    const hit = pickNode(nodes, w.x, w.y, GRAB_PX / viewport.zoom);
     app.selection = hit?.itemId ?? null;
     if (!hit || !hit.plugin.capabilities.transform) return;
     e.currentTarget.setPointerCapture(e.pointerId);

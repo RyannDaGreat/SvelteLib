@@ -7,12 +7,12 @@
   },
   "slides": [
     {
-      "id": "99594169",
+      "id": "d380f60b",
       "name": "Slide 1",
       "duration": 0.5,
       "delta": {
         "items": {
-          "b03d8554": {
+          "c336e87d": {
             "type": "camera",
             "name": "Camera",
             "x": 0,
@@ -20,9 +20,10 @@
             "w": 1280,
             "h": 720,
             "z": 1000,
-            "active": true
+            "active": true,
+            "background": "#ffffff"
           },
-          "f8ab5924": {
+          "a277c36a": {
             "type": "rect",
             "x": 120,
             "y": 160,
@@ -37,7 +38,7 @@
             "cornerRadius": 8,
             "opacity": 1
           },
-          "0740f675": {
+          "646e519b": {
             "type": "circle",
             "x": 760,
             "y": 200,
@@ -51,7 +52,7 @@
             "strokeWidth": 2,
             "opacity": 1
           },
-          "4c500ff5": {
+          "a55b004c": {
             "type": "text",
             "x": 120,
             "y": 60,
@@ -66,15 +67,15 @@
             "bold": false,
             "opacity": 1
           },
-          "27bffdd8": {
+          "60fefad9": {
             "type": "arrow",
             "z": 4,
             "from": {
-              "item": "f8ab5924",
+              "item": "a277c36a",
               "anchor": "mr"
             },
             "to": {
-              "item": "0740f675",
+              "item": "646e519b",
               "anchor": "closest"
             },
             "color": "#1a1a2e",
@@ -86,20 +87,20 @@
       }
     },
     {
-      "id": "ed2f9e68",
+      "id": "021252dd",
       "name": "Slide 2",
       "duration": 0.5,
       "delta": {
         "items": {
-          "0740f675": {
+          "646e519b": {
             "x": 300,
             "y": 420
           },
-          "f8ab5924": {
+          "a277c36a": {
             "fill": "#2ac3a2",
             "rotation": 0.3
           },
-          "b03d8554": {
+          "c336e87d": {
             "x": 100,
             "y": 150,
             "w": 800,
@@ -109,29 +110,31 @@
       }
     },
     {
-      "id": "ee5fa913",
+      "id": "628f8a61",
       "name": "Slide 3",
       "duration": 0.5,
       "delta": {
         "items": {
-          "4c500ff5": {
+          "a55b004c": {
             "active": false
           },
-          "0a3d9451": {
+          "2ee56684": {
             "type": "blur",
             "z": 10,
             "blur": 5,
             "opacity": 1
           },
-          "2fcb944a": {
+          "0457aeba": {
             "type": "magnifier",
             "x": 400,
             "y": 380,
+            "w": 160,
+            "h": 160,
             "z": 11,
-            "radius": 110,
             "magnification": 2.2,
             "rimColor": "#1a1a2e",
-            "rimWidth": 4
+            "rimWidth": 4,
+            "radius": 110
           }
         }
       }

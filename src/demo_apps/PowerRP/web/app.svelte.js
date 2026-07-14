@@ -44,10 +44,23 @@ export class PowerRPApp {
   previewDelta = $state(null);
   theme = $state("graphite");
   minimapVisible = $state(localStorage.getItem("powerrp.minimap") !== "off");
+  // BROWSER setting (viewer-local, travels with the browser not the file):
+  // render raster surfaces at devicePixelRatio. Default ON (manifest).
+  retina = $state(localStorage.getItem("powerrp.retina") !== "off");
 
   toggleMinimap() {
     this.minimapVisible = !this.minimapVisible;
     localStorage.setItem("powerrp.minimap", this.minimapVisible ? "on" : "off");
+  }
+
+  toggleRetina() {
+    this.retina = !this.retina;
+    localStorage.setItem("powerrp.retina", this.retina ? "on" : "off");
+  }
+
+  /** Query. The effective devicePixelRatio for all raster rendering. */
+  dpr() {
+    return this.retina ? window.devicePixelRatio || 1 : 1;
   }
 
   constructor() {

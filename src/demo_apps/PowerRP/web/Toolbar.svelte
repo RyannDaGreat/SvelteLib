@@ -53,6 +53,7 @@
       <Tooltip text={tip}>
         <button
           class="btn-icon"
+          aria-label={tip}
           disabled={app.commands.get(id).when && !app.commands.get(id).when(app)}
           onclick={() => app.runCommand(id)}
         >
@@ -63,12 +64,12 @@
   {/each}
   <span class="spacer"></span>
   <Tooltip text="Toggle light/dark — all themes: palette › Color Theme">
-    <button class="btn-icon" onclick={() => app.toggleLightDark()}>
+    <button class="btn-icon" aria-label="Toggle light/dark theme" onclick={() => app.toggleLightDark()}>
       <iconify-icon icon={app.theme === "light" ? "mdi:weather-night" : "mdi:weather-sunny"} width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
   <Tooltip text="Command palette (Cmd+Shift+P)">
-    <button class="btn-icon" onclick={() => app.runCommand("toggle-palette")}>
+    <button class="btn-icon" aria-label="Command palette" onclick={() => app.runCommand("toggle-palette")}>
       <iconify-icon icon="mdi:chevron-down-box-outline" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>

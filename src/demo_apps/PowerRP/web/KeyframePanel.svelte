@@ -41,7 +41,7 @@
           <span class="path" title={k.path.join(".")}>{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
           <span class="value">{fmt(k.value)}</span>
           <Tooltip text="Remove this keyframe">
-            <button class="remove" onclick={() => app.removeKey(slideIndex, k.path)}>
+            <button class="remove" aria-label="Remove keyframe" onclick={() => app.removeKey(slideIndex, k.path)}>
               <iconify-icon icon="mdi:close" width="13" height="13"></iconify-icon>
             </button>
           </Tooltip>

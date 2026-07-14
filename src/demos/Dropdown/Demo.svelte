@@ -23,14 +23,58 @@
     label: f,
   }));
 
+  /* Multi-select: plain items, value is an array. */
+  const toppings = [
+    { value: "cheese", label: "Cheese" },
+    { value: "mushroom", label: "Mushroom" },
+    { value: "pepperoni", label: "Pepperoni" },
+    { value: "olive", label: "Olive" },
+    { value: "pineapple", label: "Pineapple", disabled: true },
+    { value: "basil", label: "Basil" },
+  ];
+
+  /* Inserts: {insert} entries render BETWEEN rows. The dotted-line look here is
+     adapter-supplied (via --dd-insert-* on the .sectioned wrapper below); the
+     component bakes in no separator style. Section captions are inserts too. */
+  const sectioned = [
+    { insert: "Fruits" },
+    { value: "apple", label: "Apple" },
+    { value: "banana", label: "Banana" },
+    { insert: "Vegetables" },
+    { value: "carrot", label: "Carrot" },
+    { value: "potato", label: "Potato" },
+    { insert: "Grains" },
+    { value: "rice", label: "Rice" },
+    { value: "wheat", label: "Wheat" },
+  ];
+
+  /* Long list to demonstrate scroll-to-on-open. */
+  const cities = [
+    "Amsterdam", "Berlin", "Cairo", "Denver", "Edinburgh", "Florence",
+    "Geneva", "Helsinki", "Istanbul", "Jakarta", "Kyoto", "Lisbon",
+    "Madrid", "Nairobi", "Oslo", "Prague", "Quito", "Rome",
+    "Seoul", "Tokyo", "Utrecht", "Vienna", "Warsaw", "Zurich",
+  ].map((c) => ({ value: c.toLowerCase(), label: c }));
+
   let fruit = $state("banana");
   let theme = $state("tokyo-night");
   let font = $state("Inter");
   let query = $state("");
+  let picks = $state(["cheese", "basil"]);
+  let plant = $state("carrot");
+  let city = $state("rome");
 
   const filteredFonts = $derived(
     fonts.filter((f) => f.label.toLowerCase().includes(query.toLowerCase())),
   );
+
+  /* Custom summary override: list the labels instead of "N selected". */
+  function joinLabels(values, items) {
+    if (!values.length) return "Any toppings…";
+    return values
+      .map((v) => items.find((it) => it.value === v)?.label ?? v)
+      .join(", ");
+  }
 </script>
 
 <main class="demo-page">
@@ -93,6 +137,49 @@
       <h2>Re-themed via CSS custom properties</h2>
       <p class="note">Same component, just different vars on the wrapper.</p>
       <Dropdown items={fruits} bind:value={fruit} />
+    </div>
+
+    <div class="card">
+      <h2>Multi-select</h2>
+      <p class="note">
+        <code>multiple</code> + array <code>value</code>. Clicking toggles without closing;
+        checkmarks show membership. Selected: <code>[{picks.join(", ")}]</code>.
+      </p>
+      <Dropdown items={toppings} bind:value={picks} multiple placeholder="Pick toppings" />
+    </div>
+
+    <div class="card">
+      <h2>Multi-select + custom summary</h2>
+      <p class="note">
+        Same data, but a <code>summary(values, items)</code> prop lists the chosen labels
+        instead of the default "N selected".
+      </p>
+      <Dropdown
+        items={toppings}
+        bind:value={picks}
+        multiple
+        summary={joinLabels}
+        placeholder="Pick toppings"
+      />
+    </div>
+
+    <div class="card sectioned">
+      <h2>Inserts between items (sectioned)</h2>
+      <p class="note">
+        <code>{"{ insert: … }"}</code> entries render between rows. Arrow keys skip them; they
+        select nothing. The dotted separators here are <em>adapter</em>-supplied via
+        <code>--dd-insert-*</code> — the component bakes in no style. Selected: <code>{plant}</code>.
+      </p>
+      <Dropdown items={sectioned} bind:value={plant} placeholder="Pick produce" />
+    </div>
+
+    <div class="card">
+      <h2>Scroll-to-value on open</h2>
+      <p class="note">
+        Long list; <code>scrollToValue</code> centers the target row when the menu opens.
+        City: <code>{city}</code>.
+      </p>
+      <Dropdown items={cities} bind:value={city} scrollToValue={city} placeholder="Pick a city" />
     </div>
   </section>
 </main>
@@ -181,5 +268,19 @@
     --dd-active-fg: #fdf6e3;
     --dd-radius: 12px;
     --dd-padding: 6px 14px;
+  }
+
+  /* Adapter recipe for sectioned lists: opt into a dotted separator + caption
+     look purely via the insert custom properties. The component ships no
+     separator style; this is entirely consumer-side. */
+  .sectioned :global(.dd) {
+    --dd-insert-padding: 8px 10px 2px;
+    --dd-insert-color: var(--fg-dim);
+    --dd-insert-border: 1px dotted var(--border);
+  }
+  .sectioned :global(.dd-insert) {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
   }
 </style>
