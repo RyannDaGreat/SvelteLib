@@ -103,7 +103,15 @@
     font-family: inherit;
     font-size: 0.92em;
     line-height: 1;
-    padding: 2px 5px;
+    /* EXACTLY one chip height whether the content is a letter or a key-glyph
+       icon (letters and icons box differently — fixed dims equalize them). */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    height: var(--hint-key-h, 18px);
+    min-width: var(--hint-key-h, 18px);
+    padding: 0 5px;
     border: 1px solid currentColor;
     border-radius: 4px;
   }

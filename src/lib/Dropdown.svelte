@@ -315,7 +315,11 @@
       >
         {summaryText}
       </span>
-      <span class="dd-caret" aria-hidden="true">▾</span>
+      <!-- SVG caret (iconify), never a Unicode glyph — text carets size
+           unpredictably (user rule). Size via --dd-caret-size. -->
+      <span class="dd-caret" aria-hidden="true">
+        <iconify-icon icon="mdi:menu-down" style="font-size: var(--dd-caret-size, 18px)"></iconify-icon>
+      </span>
     {/if}
   </button>
 

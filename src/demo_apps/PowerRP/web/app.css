@@ -862,3 +862,9 @@ body,
   --tt-gap: 14px;
   --tt-bg: color-mix(in srgb, var(--control-bg) 82%, transparent);
 }
+
+/* Single source of truth for key-chip height: HintBar follows the same
+   standardized token as the palette combo chips. */
+.app {
+  --hint-key-h: var(--a-key-chip-h);
+}
