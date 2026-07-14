@@ -35,16 +35,16 @@
     {/each}
   </div>
   <div class="nav-actions">
-    <button onclick={() => app.runCommand("new-slide")} title="New slide after current">
+    <button class="btn-icon" onclick={() => app.runCommand("new-slide")} title="New slide after current">
       <iconify-icon icon="mdi:plus" width="16" height="16"></iconify-icon>
     </button>
-    <button onclick={() => app.runCommand("move-slide-up")} title="Move slide up">
+    <button class="btn-icon" onclick={() => app.runCommand("move-slide-up")} title="Move slide up">
       <iconify-icon icon="mdi:arrow-up" width="16" height="16"></iconify-icon>
     </button>
-    <button onclick={() => app.runCommand("move-slide-down")} title="Move slide down">
+    <button class="btn-icon" onclick={() => app.runCommand("move-slide-down")} title="Move slide down">
       <iconify-icon icon="mdi:arrow-down" width="16" height="16"></iconify-icon>
     </button>
-    <button onclick={() => app.runCommand("delete-slide")} title="Delete slide" disabled={app.doc.slides.length <= 1}>
+    <button class="btn-icon" onclick={() => app.runCommand("delete-slide")} title="Delete slide" disabled={app.doc.slides.length <= 1}>
       <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
     </button>
   </div>

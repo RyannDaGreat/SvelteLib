@@ -32,11 +32,11 @@
     <div class="kfslide" class:current={slideIndex === app.slideIndex}>
       <div class="kfslide-head" title={app.doc.slides[slideIndex].id}>
         <span class="num">Slide {slideIndex + 1}</span>
-        <button class="goto" onclick={() => (app.slideIndex = slideIndex)}>Go To</button>
+        <button class="btn goto" onclick={() => (app.slideIndex = slideIndex)}>Go To</button>
       </div>
       {#each ks as k}
         <div class="kf" class:selected={k.path[1] === app.selection}>
-          <span class="path" title={k.path.join(".")}>{k.path.slice(1).join(".")}</span>
+          <span class="path" title={k.path.join(".")}>{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
           <span class="value">{fmt(k.value)}</span>
           <button class="remove" title="Remove this keyframe" onclick={() => app.removeKey(slideIndex, k.path)}>✕</button>
         </div>

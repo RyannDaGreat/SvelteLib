@@ -125,6 +125,13 @@ export function withItemDeleted(doc, index, itemId) {
   return out;
 }
 
+/** Pure function. Removes an item FROM EXISTENCE: every keyframe of it on every slide. */
+export function withItemPurged(doc, itemId) {
+  let out = doc;
+  for (let i = 0; i < doc.slides.length; i++) out = unkeyframed(out, i, ["items", itemId]);
+  return out;
+}
+
 // ── Slide edits ──────────────────────────────────────────────────────────────
 
 /** Pure function. Inserts an empty slide after `index`. Returns [doc, newIndex]. */

@@ -17,11 +17,12 @@
   import KeyframePanel from "./KeyframePanel.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import PresentMode from "./PresentMode.svelte";
-  import { PowerRPApp } from "./app.svelte.js";
+  import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed } from "../core/document.js";
 
   const app = new PowerRPApp();
   app.loadAutosave();
+  app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
 
   // SplitPane splits are BOUNDARY positions: [0.16, 0.78] → 3 panes.
@@ -40,6 +41,7 @@
     { id: "distribute-h", title: "Distribute Horizontally", run: (a) => distribute(a, "x", "w") },
     { id: "distribute-v", title: "Distribute Vertically", run: (a) => distribute(a, "y", "h") },
     { id: "toggle-anchors", title: "Toggle Anchor Visibility", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
+    { id: "toggle-minimap", title: "Toggle Minimap", run: (a) => a.toggleMinimap() },
     { id: "new-slide", title: "New Slide", run: (a) => a.addSlide() },
     { id: "delete-slide", title: "Delete Slide", when: (a) => a.doc.slides.length > 1, run: (a) => a.deleteSlide() },
     { id: "toggle-slide", title: "Toggle Slide Visibility (enable/disable delta)", run: (a) => a.toggleSlide() },
@@ -53,6 +55,30 @@
     { id: "undo", title: "Undo", run: (a) => a.undo() },
     { id: "redo", title: "Redo", run: (a) => a.redo() },
     { id: "reset-view", title: "Zoom to Fit Slide", run: (a) => a.canvasActions?.zoomToFit({ x: 0, y: 0, w: a.doc.meta.slideW, h: a.doc.meta.slideH }) },
+    {
+      id: "color-theme",
+      title: "Color Theme",
+      children: THEMES.map((t) => ({
+        id: `theme-${t.id}`,
+        title: t.title,
+        run: (a) => a.setTheme(t.id),
+      })),
+    },
+    { id: "copy-item", title: "Copy Item", when: needsSelection, run: (a) => a.copySelection() },
+    { id: "paste", title: "Paste", run: (a) => a.pasteClipboard() },
+    {
+      id: "copy-property",
+      title: "Copy Property",
+      when: needsSelection,
+      children: [...new Map(
+        app.registry.all().flatMap((p) => (p.inspector ?? []).map((row) => [row.key, row.label])),
+      )].map(([key, label]) => ({
+        id: `copy-prop-${key}`,
+        title: `Copy ${label}`,
+        when: (a) => a.selectedNode() && key in a.selectedNode().state,
+        run: (a) => a.copyProperty(key),
+      })),
+    },
   ];
   for (const c of coreCommands) app.commands.add(c);
 
@@ -82,6 +108,8 @@
     { keys: ["Ctrl", "Shift", "Z"], label: "Redo", when: editMode, run: () => app.redo() },
     { keys: ["Backspace"], label: "Delete", when: (c) => editMode(c) && c.hasSelection, run: () => app.runCommand("delete-item") },
     { keys: ["Delete"], label: "Delete", hidden: true, when: (c) => editMode(c) && c.hasSelection, run: () => app.runCommand("delete-item") },
+    { keys: ["Ctrl", "C"], label: "Copy", when: (c) => editMode(c) && c.hasSelection, run: () => app.runCommand("copy-item") },
+    { keys: ["Ctrl", "V"], label: "Paste", hidden: true, when: editMode, run: () => app.runCommand("paste") },
     { keys: ["Left"], label: "Prev slide", when: editMode, run: () => app.runCommand("prev-slide") },
     { keys: ["Right"], label: "Next slide", when: editMode, run: () => app.runCommand("next-slide") },
     { keys: ["Escape"], label: "Deselect", when: (c) => editMode(c) && c.hasSelection, run: () => (app.selection = null) },

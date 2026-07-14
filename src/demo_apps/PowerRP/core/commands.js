@@ -2,21 +2,27 @@
  * Command registry + fuzzy matching — the command palette's backend.
  * Commands come from core AND from plugins (each plugin may contribute;
  * the palette is how "everything routes through the plugin system" surfaces
- * in the UI). Entry: {id, title, run(app), when?(app) → bool}.
+ * in the UI).
+ *
+ * Entry: {id, title, run?(app), when?(app) → bool, children?: [entry]}.
+ * A command has `run` XOR `children`: children make it a SUBMENU the palette
+ * drills into (e.g. "Color Theme →" listing themes). Child ids must still be
+ * globally unique (they're registered flat for `get()`/shortcut reuse).
  */
 
 export function createCommands() {
-  const commands = new Map();
+  const commands = new Map(); // flat: every id (incl. children) → entry
+  const topLevel = [];
   return {
-    /** Command. Registers a palette command; loud on id collision. */
+    /** Command. Registers a palette command (and its children); loud on problems. */
     add(cmd) {
-      if (!cmd.id || !cmd.title || !cmd.run) throw new Error(`Malformed command: ${JSON.stringify(cmd)}`);
-      if (commands.has(cmd.id)) throw new Error(`Duplicate command id "${cmd.id}"`);
-      commands.set(cmd.id, cmd);
+      registerFlat(commands, cmd);
+      topLevel.push(cmd);
     },
-    /** Query. Available commands ranked against `query` ("" = all, registration order). */
-    search(query, app) {
-      const available = [...commands.values()].filter((c) => !c.when || c.when(app));
+    /** Query. Entries under `parent` (null = top level) ranked against `query`. */
+    search(query, app, parent = null) {
+      const pool = parent ? parent.children : topLevel;
+      const available = pool.filter((c) => !c.when || c.when(app));
       if (!query) return available;
       return available
         .map((c) => ({ c, score: fuzzyScore(query, c.title) }))
@@ -24,13 +30,23 @@ export function createCommands() {
         .sort((a, b) => b.score - a.score)
         .map((x) => x.c);
     },
-    /** Query. Command by id (loud when missing). */
+    /** Query. Command by id, including submenu children (loud when missing). */
     get(id) {
       const c = commands.get(id);
       if (!c) throw new Error(`Unknown command "${id}"`);
       return c;
     },
   };
+}
+
+/** Command (mutates map). Validates and registers an entry + descendants. */
+function registerFlat(map, cmd) {
+  const isSubmenu = Array.isArray(cmd.children);
+  if (!cmd.id || !cmd.title || (isSubmenu ? cmd.run : !cmd.run))
+    throw new Error(`Malformed command (need id, title, and run XOR children): ${JSON.stringify(cmd).slice(0, 120)}`);
+  if (map.has(cmd.id)) throw new Error(`Duplicate command id "${cmd.id}"`);
+  map.set(cmd.id, cmd);
+  for (const child of cmd.children ?? []) registerFlat(map, child);
 }
 
 /**

@@ -8,7 +8,7 @@
 
 import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
-  withNewItem, withItemDeleted, withNewSlide, withSlideDeleted, withSlideMoved,
+  withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
 } from "../core/document.js";
 import { setPath, blendApplied } from "../core/deltas.js";
@@ -20,6 +20,16 @@ import { createUndo } from "../core/undo.js";
 import { registerAll } from "../plugins/index.js";
 
 const AUTOSAVE_KEY = "powerrp.autosave";
+const THEME_KEY = "powerrp.theme";
+
+/** Theme catalog — viewer preference (localStorage), NOT document state.
+ * Each id matches a `:root[data-theme="…"]` block in app.css. */
+export const THEMES = [
+  { id: "graphite", title: "Graphite (dark)" },
+  { id: "light", title: "Light" },
+  { id: "black", title: "Pure Black" },
+  { id: "warm", title: "Warm Gray (dark)" },
+];
 
 export class PowerRPApp {
   doc = $state(newDocument());
@@ -31,6 +41,13 @@ export class PowerRPApp {
   dragging = $state(false); // canvas sets this; drives HintBar context
   /** Preview overlay delta shown during drags — NOT committed/undoable. */
   previewDelta = $state(null);
+  theme = $state("graphite");
+  minimapVisible = $state(localStorage.getItem("powerrp.minimap") !== "off");
+
+  toggleMinimap() {
+    this.minimapVisible = !this.minimapVisible;
+    localStorage.setItem("powerrp.minimap", this.minimapVisible ? "on" : "off");
+  }
 
   constructor() {
     this.registry = createRegistry();
@@ -55,6 +72,31 @@ export class PowerRPApp {
 
   selectedNode() {
     return this.nodes().find((n) => n.itemId === this.selection) ?? null;
+  }
+
+  /** Display name for an item: its `name` state, else "<Type> (id-prefix)". */
+  displayName(itemId) {
+    const s = this.state().items?.[itemId];
+    if (!s) return itemId;
+    if (s.name) return s.name;
+    return `${this.registry.get(s.type).title} (${itemId.slice(0, 4)})`;
+  }
+
+  // ── Theme (viewer preference — not document state, not undoable) ──────────
+
+  setTheme(id) {
+    this.theme = id;
+    document.documentElement.dataset.theme = id;
+    localStorage.setItem(THEME_KEY, id);
+  }
+
+  loadTheme() {
+    this.setTheme(localStorage.getItem(THEME_KEY) ?? "graphite");
+  }
+
+  /** Quick light/dark flip (toolbar); full set lives in the palette submenu. */
+  toggleLightDark() {
+    this.setTheme(this.theme === "light" ? "graphite" : "light");
   }
 
   // ── Transactions (undo units) ──────────────────────────────────────────────
@@ -108,10 +150,52 @@ export class PowerRPApp {
 
   addItem(defaults) {
     const zs = this.nodes().map((n) => n.state.z ?? 0);
-    const state = { ...defaults, z: (zs.length ? Math.max(...zs) : 0) + 1 };
+    // active:true is keyframed explicitly ON the creation slide — the
+    // manifest's visibility model: everything defaults invisible; creation is
+    // where visibility switches on, so objects appear at their own slide.
+    const state = { ...defaults, active: true, z: (zs.length ? Math.max(...zs) : 0) + 1 };
     const [doc, id] = withNewItem(this.doc, this.slideIndex, state);
     this.commit(withNormalizedZ(doc));
     this.selection = id;
+  }
+
+  // ── Copy / paste ───────────────────────────────────────────────────────────
+  // Whole-object by default; single properties via the palette submenu.
+  // Clipboard payloads are tagged JSON: {powerrp_item: state} or
+  // {powerrp_props: {key: value}}.
+
+  async copySelection() {
+    const node = this.selectedNode();
+    if (!node) return;
+    await navigator.clipboard.writeText(JSON.stringify({ powerrp_item: node.state }));
+  }
+
+  async copyProperty(key) {
+    const node = this.selectedNode();
+    if (!node || !(key in node.state)) return;
+    await navigator.clipboard.writeText(JSON.stringify({ powerrp_props: { [key]: node.state[key] } }));
+  }
+
+  async pasteClipboard() {
+    let payload;
+    try {
+      payload = JSON.parse(await navigator.clipboard.readText());
+    } catch (e) {
+      console.warn("Paste: clipboard is not PowerRP JSON:", e.message);
+      return;
+    }
+    if (payload.powerrp_item) {
+      // Paste offset: one spacing step, same convention PowerPoint uses for
+      // paste-in-place collisions (precedent, not an invented constant).
+      const OFFSET = 16;
+      const s = payload.powerrp_item;
+      this.addItem({ ...s, x: (s.x ?? 0) + OFFSET, y: (s.y ?? 0) + OFFSET });
+    } else if (payload.powerrp_props && this.selection) {
+      let doc = this.doc;
+      for (const [key, value] of Object.entries(payload.powerrp_props))
+        doc = keyframed(doc, this.slideIndex, ["items", this.selection, key], value);
+      this.commit(doc);
+    }
   }
 
   /** "Delete": keyframe active:false here — identity survives (symlink-safe). */
@@ -121,16 +205,27 @@ export class PowerRPApp {
     this.selection = null;
   }
 
-  /** True removal: item and every keyframe of it from this slide onward. */
+  /** True removal FROM EXISTENCE: every keyframe of the item on every slide. */
   purgeSelection() {
     if (!this.selection) return;
-    this.commit(withItemDeleted(this.doc, this.slideIndex, this.selection));
+    this.commit(withItemPurged(this.doc, this.selection));
     this.selection = null;
   }
 
   keyframeSelected(key, value) {
     if (!this.selection) return;
     this.commit(keyframed(this.doc, this.slideIndex, ["items", this.selection, key], value));
+  }
+
+  /**
+   * Renames the selected item. Name is identity-flavored, so it's written on
+   * the item's CREATION slide (first slide keying its `type`), not the
+   * current one — a rename applies everywhere at once.
+   */
+  renameSelection(name) {
+    if (!this.selection) return;
+    const creation = keyframeIndices(this.doc, ["items", this.selection, "type"])[0] ?? this.slideIndex;
+    this.commit(keyframed(this.doc, creation, ["items", this.selection, "name"], name));
   }
 
   // ── Z-order (bisect + normalize; tweened z stays ephemeral) ───────────────

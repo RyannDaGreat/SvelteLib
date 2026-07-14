@@ -1,11 +1,38 @@
 /*
   PowerRP app stylesheet — the ONE stylesheet for app components (they carry
-  no <style> blocks). Every non-degenerate value is an --a-* token; base
-  tokens (--bg, --fg, --fg-dim, --accent, --border, --radius, --control-bg)
-  come from src/styles/theme.css and are reused, not redefined.
+  no <style> blocks). Every non-degenerate value is an --a-* token.
+
+  THEMES: neutral, professional — never theme.css's dark blue. The default
+  (:root) is Graphite; other themes override via :root[data-theme="…"],
+  selected in the palette (Color Theme →) and persisted as viewer preference.
+
+  CORNERS: square by default — "be sensible about using rounded edges."
+  Rounding is reserved for the few floating surfaces (palette, dropdown menu)
+  and capped at --radius: 4px, which also tones down lib components.
 */
 
 :root {
+  /* ── Graphite (default dark) — overrides theme.css's blue palette ── */
+  --bg: #1b1b1b;
+  --fg: #e6e6e6;
+  --fg-dim: #8c8c8c;
+  --accent: #9a9a9a;
+  --border: rgba(255, 255, 255, 0.1);
+  --control-bg: #242424;
+  --radius: 4px; /* cap for lib components; app chrome is square */
+  --radius-lg: 6px;
+
+  --a-panel-bg: #1a1a1a;
+  --a-canvas-bg: #141414;
+  --a-hover-bg: rgba(255, 255, 255, 0.12);
+  --a-selection: #3f9eff; /* selection/guides need chroma to read against art */
+  --a-guide: #ff4d97;
+  --a-keyed: #e3b341;
+  --a-endpoint: #e3b341;
+  --a-anchor: #9aa5ce;
+  --a-scrollbar: rgba(255, 255, 255, 0.18);
+  --a-scrollbar-hover: rgba(255, 255, 255, 0.32);
+
   /* Spacing scale */
   --a-sp-1: 2px;
   --a-sp-2: 4px;
@@ -21,28 +48,31 @@
   --a-toolbar-h: 40px;
   --a-toolbar-btn: 30px;
 
-  /* Canvas overlay */
-  --a-selection: var(--accent);
+  /* Canvas overlay strokes/sizes */
   --a-selection-stroke: 1.5px;
   --a-selection-dash: 5 3;
-  --a-guide: #ff4d97;
   --a-guide-stroke: 1px;
-  --a-handle-fill: var(--accent);
+  --a-handle-fill: var(--a-selection);
   --a-handle-rim: #ffffff;
   --a-handle-stroke: 1.5px;
-  --a-endpoint: #ffb020;
   --a-endpoint-rim: #ffffff;
   --a-endpoint-stroke: 1.5px;
-  --a-anchor: #9aa5ce;
   --a-anchor-stroke: 1.5px;
   --a-anchor-opacity: 0.5; /* the spec's 50%-transparent X's */
 
-  /* Panels */
-  --a-panel-bg: rgba(0, 0, 0, 0.25);
-  --a-slide-disabled-opacity: 0.5;
-  --a-row-h: 26px;
+  /* ── STANDARDIZED CONTROLS (manifest rule: a few standards, reused
+     everywhere — never invent one-off button styles) ── */
+  --a-control-h: 26px; /* THE control height: buttons, inputs, rows */
   --a-input-w: 90px;
-  --a-keyed: #ffb020;
+  --a-slide-disabled-opacity: 0.5;
+  --a-minimap-opacity: 0.5; /* user spec: minimap at 50% transparency */
+  --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
+
+  /* SplitPane handles — thin, per annotator reference */
+  --a-split-handle: #5a5a5a;
+  --a-split-handle-hover: #8f8f8f;
+  --a-split-handle-size: 2px;
+  --a-split-handle-hit: 6px;
 
   /* Palette */
   --a-palette-w: 480px;
@@ -52,6 +82,50 @@
 
   /* Present mode */
   --a-present-pos-pad: 6px 12px;
+
+  /* Scrollbars */
+  --a-scrollbar-w: 8px;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f4f4;
+  --fg: #1a1a1a;
+  --fg-dim: #666666;
+  --accent: #5a5a5a;
+  --border: rgba(0, 0, 0, 0.14);
+  --control-bg: #e6e6e6;
+  --a-panel-bg: #ececec;
+  --a-canvas-bg: #d9d9d9;
+  --a-hover-bg: rgba(0, 0, 0, 0.08);
+  --a-selection: #0b6bcb;
+  --a-guide: #d0246f;
+  --a-keyed: #9a6700;
+  --a-endpoint: #9a6700;
+  --a-anchor: #5a6486;
+  --a-scrollbar: rgba(0, 0, 0, 0.22);
+  --a-scrollbar-hover: rgba(0, 0, 0, 0.4);
+  --a-split-handle: #bdbdbd;
+  --a-split-handle-hover: #8f8f8f;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+:root[data-theme="black"] {
+  --bg: #000000;
+  --control-bg: #161616;
+  --a-panel-bg: #0a0a0a;
+  --a-canvas-bg: #000000;
+  --border: rgba(255, 255, 255, 0.14);
+}
+
+:root[data-theme="warm"] {
+  --bg: #201d1a;
+  --fg: #e8e2d9;
+  --fg-dim: #94897b;
+  --control-bg: #2a2622;
+  --border: rgba(255, 240, 220, 0.1);
+  --a-panel-bg: #1e1b18;
+  --a-canvas-bg: #171513;
+  --a-hover-bg: rgba(255, 240, 220, 0.1);
 }
 
 html,
@@ -59,6 +133,32 @@ body,
 #app {
   height: 100%;
   margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* ── Themed scrollbars (macOS defaults ignore the theme) ─────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--a-scrollbar) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: var(--a-scrollbar-w);
+  height: var(--a-scrollbar-w);
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--a-scrollbar);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--a-scrollbar-hover);
 }
 
 .app {
@@ -68,6 +168,61 @@ body,
   background: var(--bg);
   color: var(--fg);
   overflow: hidden;
+  /* Thin resizable-pane handles (SplitPane reads these). */
+  --sp-handle-color: var(--a-split-handle);
+  --sp-handle-hover: var(--a-split-handle-hover);
+  --sp-handle-size: var(--a-split-handle-size);
+  --sp-handle-hit-pad: var(--a-split-handle-hit);
+}
+
+/* ── THE standard controls — reuse these; do not invent new button styles ── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-3);
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: var(--a-font-md);
+}
+
+.btn:hover {
+  background: var(--a-hover-bg);
+}
+
+.btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.btn.danger {
+  color: var(--a-guide);
+  border-color: var(--a-guide);
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-control-h);
+  height: var(--a-control-h);
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  cursor: pointer;
+}
+
+.btn-icon:hover {
+  background: var(--a-hover-bg);
+}
+
+.btn-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .main {
@@ -91,21 +246,10 @@ body,
   border-bottom: 1px solid var(--border);
 }
 
-.toolbar button {
+.toolbar .btn-icon {
+  /* Toolbar icons run slightly larger than panel controls. */
   width: var(--a-toolbar-btn);
   height: var(--a-toolbar-btn);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--fg);
-  border: 0;
-  border-radius: var(--radius);
-  cursor: pointer;
-}
-
-.toolbar button:hover {
-  background: var(--border);
 }
 
 .toolbar .doc-name {
@@ -126,11 +270,8 @@ body,
 }
 
 .toolbar .palette-hint {
-  width: auto;
-  padding: 0 var(--a-sp-3);
   font-size: var(--a-font-sm);
   color: var(--fg-dim);
-  border: 1px solid var(--border);
 }
 
 /* ── Canvas ──────────────────────────────────────────────────────────────── */
@@ -139,6 +280,7 @@ body,
   width: 100%;
   height: 100%;
   position: relative;
+  background: var(--a-canvas-bg);
 }
 
 .canvas-wrap .scene,
@@ -219,14 +361,17 @@ body,
   background: var(--control-bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
   cursor: pointer;
   font-size: var(--a-font-md);
   text-align: left;
 }
 
 .slidenav .slide.current {
-  border-color: var(--accent);
+  border-color: var(--a-selection);
+}
+
+.slidenav .slide.disabled {
+  opacity: var(--a-slide-disabled-opacity);
 }
 
 .slidenav .num {
@@ -244,12 +389,6 @@ body,
 .slidenav .kfcount {
   color: var(--a-keyed);
   font-size: var(--a-font-sm);
-}
-
-/* Disabled slide: half-transparent, per spec. Eye toggle appears on hover
-   (always visible when disabled so it can be found again). */
-.slidenav .slide.disabled {
-  opacity: var(--a-slide-disabled-opacity);
 }
 
 .slidenav .eye {
@@ -272,22 +411,9 @@ body,
   border-top: 1px solid var(--border);
 }
 
-.slidenav .nav-actions button {
+.slidenav .nav-actions .btn-icon {
   flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--a-sp-2);
-  background: transparent;
-  color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-}
-
-.slidenav .nav-actions button:disabled {
-  opacity: 0.35;
-  cursor: default;
 }
 
 /* ── Inspector ───────────────────────────────────────────────────────────── */
@@ -300,13 +426,30 @@ body,
   font-size: var(--a-font-md);
 }
 
-.inspector-head select {
+.inspector-head {
+  /* Theme the SvelteLib Dropdown via its documented hooks. */
+  --dd-bg: var(--control-bg);
+  --dd-fg: var(--fg);
+  --dd-fg-dim: var(--fg-dim);
+  --dd-border: var(--border);
+  --dd-radius: 0px;
+  --dd-font-size: var(--a-font-md);
+  --dd-hover-bg: var(--a-hover-bg);
+}
+
+/* Dropdowns fill their container (manifest rule) — .dd is Dropdown's root. */
+.inspector-head .dd {
   width: 100%;
-  padding: var(--a-sp-2);
-  background: var(--control-bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+}
+
+.inspector .item-actions {
+  display: flex;
+  gap: var(--a-sp-2);
+  margin-top: var(--a-sp-3);
+}
+
+.inspector .item-actions .btn {
+  flex: 1;
 }
 
 .inspector .rows {
@@ -320,7 +463,11 @@ body,
   display: flex;
   align-items: center;
   gap: var(--a-sp-2);
-  min-height: var(--a-row-h);
+  min-height: var(--a-control-h);
+}
+
+.inspector .name-row {
+  margin-top: var(--a-sp-3);
 }
 
 .inspector .label {
@@ -331,11 +478,12 @@ body,
 .inspector input[type="number"],
 .inspector input[type="text"] {
   width: var(--a-input-w);
-  padding: var(--a-sp-1) var(--a-sp-2);
+  height: var(--a-control-h);
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-2);
   background: var(--control-bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
   font-size: var(--a-font-md);
 }
 
@@ -373,12 +521,10 @@ body,
 .kfslide {
   margin-bottom: var(--a-sp-3);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
 }
 
 .kfslide.current {
-  border-color: var(--accent);
+  border-color: var(--a-selection);
 }
 
 .kfslide-head {
@@ -390,12 +536,7 @@ body,
 }
 
 .kfslide-head .goto {
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--a-sp-1) var(--a-sp-3);
-  cursor: pointer;
+  color: var(--a-selection);
   font-size: var(--a-font-sm);
 }
 
@@ -407,7 +548,7 @@ body,
 }
 
 .kf.selected .path {
-  color: var(--accent);
+  color: var(--a-selection);
 }
 
 .kf .path {
@@ -453,9 +594,17 @@ body,
   width: var(--a-palette-w);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius);
   box-shadow: var(--a-palette-shadow);
   overflow: hidden;
+}
+
+.palette-crumbs {
+  padding: var(--a-sp-2) var(--a-sp-4);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--border);
 }
 
 .palette input {
@@ -476,7 +625,9 @@ body,
 }
 
 .palette-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
   padding: var(--a-sp-3) var(--a-sp-4);
   background: transparent;
@@ -488,13 +639,38 @@ body,
 }
 
 .palette-item.highlighted {
-  background: var(--border);
+  background: var(--a-hover-bg);
+}
+
+.palette-item .sub-arrow {
+  color: var(--fg-dim);
 }
 
 .palette-none {
   padding: var(--a-sp-4);
   color: var(--fg-dim);
   font-size: var(--a-font-md);
+}
+
+/* ── Minimap (bottom-right, ABOVE content, 50% transparent — user spec) ──── */
+
+.minimap-dock {
+  position: absolute;
+  right: var(--a-sp-4);
+  bottom: var(--a-sp-4);
+  z-index: 10;
+  opacity: var(--a-minimap-opacity);
+  pointer-events: none; /* overview only — never blocks canvas interaction */
+  /* Hairline border inside the same 50%-opacity dock, so the minimap stays
+     locatable even over same-colored content (user spec). The ONLY outline —
+     the world-bounds rect inside is deliberately not stroked. */
+  border: var(--a-hairline) solid var(--fg);
+  /* Theme the MiniMap component (its zoomed-out backdrop defaults near-black). */
+  --minimap-bg: var(--a-panel-bg);
+  --minimap-world-stroke: transparent;
+  --minimap-world-fill: transparent;
+  --minimap-viewport-stroke: var(--a-selection);
+  --minimap-viewport-fill: transparent;
 }
 
 /* ── Present mode ────────────────────────────────────────────────────────── */
@@ -520,7 +696,6 @@ body,
   padding: var(--a-present-pos-pad);
   color: var(--fg-dim);
   background: var(--control-bg);
-  border-radius: var(--radius);
   font-size: var(--a-font-sm);
   user-select: none;
 }

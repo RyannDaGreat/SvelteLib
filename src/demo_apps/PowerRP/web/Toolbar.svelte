@@ -42,13 +42,16 @@
   {#each groups as group, gi}
     {#if gi > 0}<span class="sep"></span>{/if}
     {#each group as [id, icon, tip]}
-      <button onclick={() => app.runCommand(id)} title={tip}>
+      <button class="btn-icon" onclick={() => app.runCommand(id)} title={tip}>
         <iconify-icon {icon} width="18" height="18"></iconify-icon>
       </button>
     {/each}
   {/each}
   <span class="spacer"></span>
-  <button class="palette-hint" onclick={() => (app.paletteOpen = true)} title="Command palette">
+  <button class="btn-icon" onclick={() => app.toggleLightDark()} title="Toggle light/dark (all themes: palette → Color Theme)">
+    <iconify-icon icon={app.theme === "light" ? "mdi:weather-night" : "mdi:weather-sunny"} width="18" height="18"></iconify-icon>
+  </button>
+  <button class="btn palette-hint" onclick={() => (app.paletteOpen = true)} title="Command palette">
     ⌘⇧P
   </button>
 </div>

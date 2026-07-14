@@ -10,6 +10,7 @@
 -->
 <script>
   import PanZoom from "../../../lib/PanZoom.svelte";
+  import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
   import { pickNode, nodeFeatures, nodeAnchors } from "../core/derive.js";
   import { solveSnap, axisLock } from "../core/snap.js";
@@ -19,12 +20,17 @@
 
   let { app } = $props();
 
-  const SNAP_TOL_PX = 8; // screen px within which features snap
-  const ANCHOR_BIND_PX = 12; // screen px within which an arrow endpoint binds
-  const MIN_SIZE = 8; // world units; smallest resizable w/h
+  const SNAP_TOL_PX = 8; // screen px within which features snap (PENDING USER RATIFICATION)
+  const ANCHOR_BIND_PX = 12; // screen px within which an arrow endpoint binds (PENDING USER RATIFICATION)
+  const MIN_SIZE = 0; // sizes are non-negative — a mathematical bound, not a design choice
+
+  const THUMB_W = 256; // minimap thumbnail render width (px)
 
   let containerEl = $state(null);
   let canvasEl = $state(null);
+  let wrapW = $state(0);
+  let wrapH = $state(0);
+  let minimapThumb = $state(""); // data URL of the current slide, for the minimap
   let viewport = $state({ zoom: 1, panX: 0, panY: 0 });
   // PanZoom actions — deliberately NOT $state: it's bound during template
   // render (mutating $state there is forbidden), and every overlay that needs
@@ -38,6 +44,25 @@
   $effect(() => {
     app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport;
     paint();
+  });
+
+  // Minimap thumbnail: the same compositor, rendered small. Skipped while
+  // dragging (previewDelta churn) — refreshed on commit.
+  $effect(() => {
+    app.doc; app.slideIndex; app.minimapVisible;
+    if (!app.minimapVisible || app.previewDelta) return;
+    const meta = app.doc.meta;
+    const thumb = document.createElement("canvas");
+    thumb.width = THUMB_W;
+    thumb.height = Math.round((THUMB_W * meta.slideH) / meta.slideW);
+    const view = { zoom: THUMB_W / meta.slideW, panX: 0, panY: 0, dpr: 1 };
+    paintScene(thumb.getContext("2d"), app.doc, {
+      slideIndex: app.slideIndex,
+      alpha: 1,
+      registry: app.registry,
+      view,
+    });
+    minimapThumb = thumb.toDataURL("image/png");
   });
 
   function paint() {
@@ -301,7 +326,7 @@
   });
 </script>
 
-<div class="canvas-wrap" bind:this={containerEl}>
+<div class="canvas-wrap" bind:this={containerEl} bind:clientWidth={wrapW} bind:clientHeight={wrapH}>
   <PanZoom {onviewport}>
     {#snippet children(vp, a)}
       {bindActions(a)}
@@ -340,6 +365,28 @@
           </g>
         {/each}
       </svg>
+      {#if app.minimapVisible}
+        <div class="minimap-dock">
+          <MiniMap
+            {viewport}
+            containerWidth={wrapW}
+            containerHeight={wrapH}
+            worldBounds={{ x: 0, y: 0, w: app.doc.meta.slideW, h: app.doc.meta.slideH }}
+          >
+            {#snippet children()}
+              {#if minimapThumb}
+                <image
+                  href={minimapThumb}
+                  x="0" y="0"
+                  width={app.doc.meta.slideW}
+                  height={app.doc.meta.slideH}
+                  preserveAspectRatio="none"
+                />
+              {/if}
+            {/snippet}
+          </MiniMap>
+        </div>
+      {/if}
     {/snippet}
   </PanZoom>
 </div>
