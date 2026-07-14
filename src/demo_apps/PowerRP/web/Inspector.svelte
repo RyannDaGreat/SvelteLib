@@ -26,6 +26,21 @@
     return kind === "number" ? Number(raw) : kind === "checkbox" ? Boolean(raw) : raw;
   }
 
+  /**
+   * Pure function. Normalizes a stored color to a lowercase #rrggbb string —
+   * the format <input type="color"> requires and the swatch/hex text display.
+   * Anything unparseable (missing/malformed) falls back to black.
+   *
+   * Examples:
+   *     >>> hexColor("#7AA2F7")
+   *     '#7aa2f7'
+   *     >>> hexColor(undefined)
+   *     '#000000'
+   */
+  function hexColor(value) {
+    return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : "#000000";
+  }
+
   /** Live preview while typing/dragging a field — viewport re-renders in real
    * time BEFORE commit (manifest rule); Enter/blur commits; Escape reverts. */
   function previewField(key, kind, raw) {
@@ -102,12 +117,23 @@
               onkeydown={fieldKeydown}
             />
           {:else if row.kind === "color"}
-            <input
-              type="color"
-              value={sel.state[row.key] ?? "#000000"}
-              oninput={(e) => previewField(row.key, row.kind, e.target.value)}
-              onchange={(e) => commitField(row.key, row.kind, e.target.value)}
-            />
+            <!-- A themed control shaped like the number/text inputs (same
+                 --a-input-w × --a-control-h, square, 1px border). The native
+                 <input type="color"> is stretched invisibly over the whole
+                 control so a click anywhere opens Chrome's picker; the visible
+                 swatch + hex text show the CURRENT folded (preview-inclusive)
+                 value. oninput/onchange keep the exact preview/commit wiring. -->
+            <label class="color-control">
+              <input
+                type="color"
+                class="color-native"
+                value={hexColor(sel.state[row.key])}
+                oninput={(e) => previewField(row.key, row.kind, e.target.value)}
+                onchange={(e) => commitField(row.key, row.kind, e.target.value)}
+              />
+              <span class="color-swatch" style:background={hexColor(sel.state[row.key])}></span>
+              <span class="color-hex">{hexColor(sel.state[row.key])}</span>
+            </label>
           {:else if row.kind === "checkbox"}
             <input
               type="checkbox"

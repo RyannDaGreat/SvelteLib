@@ -79,6 +79,6 @@ export const magnifierPlugin = {
   },
   anchors: standardBBoxAnchors,
   commands: [
-    { id: "add-magnifier", title: "Add Magnifier", run: (app) => app.addItem(magnifierPlugin.defaults) },
+    { id: "add-magnifier", title: "Add Magnifier", icon: "mdi:magnify", run: (app) => app.addItem(magnifierPlugin.defaults) },
   ],
 };

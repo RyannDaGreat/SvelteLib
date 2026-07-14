@@ -25,6 +25,6 @@ export const blurPlugin = {
     ctx.restore();
   },
   commands: [
-    { id: "add-blur", title: "Add Blur Layer", run: (app) => app.addItem(blurPlugin.defaults) },
+    { id: "add-blur", title: "Add Blur Layer", icon: "mdi:blur", run: (app) => app.addItem(blurPlugin.defaults) },
   ],
 };

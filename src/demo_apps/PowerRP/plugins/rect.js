@@ -43,6 +43,6 @@ export const rectPlugin = {
     return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
   },
   commands: [
-    { id: "add-rect", title: "Add Rectangle", run: (app) => app.addItem(rectPlugin.defaults) },
+    { id: "add-rect", title: "Add Rectangle", icon: "mdi:rectangle-outline", run: (app) => app.addItem(rectPlugin.defaults) },
   ],
 };

@@ -68,7 +68,7 @@ export const arrowPlugin = {
     ];
   },
   commands: [
-    { id: "add-arrow", title: "Add Arrow", run: (app) => app.addItem(arrowPlugin.defaults) },
+    { id: "add-arrow", title: "Add Arrow", icon: "mdi:arrow-top-right", run: (app) => app.addItem(arrowPlugin.defaults) },
   ],
 };
 

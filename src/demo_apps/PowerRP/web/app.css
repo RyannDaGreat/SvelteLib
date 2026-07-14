@@ -63,6 +63,7 @@
      everywhere — never invent one-off button styles) ── */
   --a-control-h: 26px; /* THE control height: buttons, inputs, rows */
   --a-input-w: 90px;
+  --a-color-swatch: 14px; /* swatch square inside the color control */
   --a-slide-disabled-opacity: 0.5;
   --a-minimap-opacity: 0.5; /* user spec: minimap at 50% transparency */
   --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
@@ -502,6 +503,61 @@ body,
   color: var(--fg);
   border: 1px solid var(--border);
   font-size: var(--a-font-md);
+}
+
+/* Color control: shaped IDENTICALLY to the number/text inputs (same width,
+   height, square corners, themed 1px border). The native color input is
+   stretched invisibly over the whole box so clicking anywhere opens Chrome's
+   picker; a small swatch square + the hex value sit on top. */
+.inspector .color-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  width: var(--a-input-w);
+  height: var(--a-control-h);
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+/* The real input: fills the control, invisible, still receives the click that
+   opens the picker (a click on the wrapping <label> also focuses it). */
+.inspector .color-control .color-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* Neutralize the UA swatch chrome (Chrome's white border + inner padding). */
+.inspector .color-control .color-native::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.inspector .color-control .color-native::-webkit-color-swatch {
+  border: none;
+}
+
+.inspector .color-control .color-swatch {
+  width: var(--a-color-swatch);
+  height: var(--a-color-swatch);
+  flex: none;
+  border: 1px solid var(--border);
+  pointer-events: none; /* clicks pass through to .color-native */
+}
+
+.inspector .color-control .color-hex {
+  color: var(--fg);
+  font-size: var(--a-font-md);
+  pointer-events: none;
 }
 
 .inspector .keybtn,

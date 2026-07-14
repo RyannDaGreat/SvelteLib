@@ -52,6 +52,6 @@ export const circlePlugin = {
     return { x: rx + rx * Math.cos(theta), y: ry + ry * Math.sin(theta) };
   },
   commands: [
-    { id: "add-circle", title: "Add Circle", run: (app) => app.addItem(circlePlugin.defaults) },
+    { id: "add-circle", title: "Add Circle", icon: "mdi:circle-outline", run: (app) => app.addItem(circlePlugin.defaults) },
   ],
 };

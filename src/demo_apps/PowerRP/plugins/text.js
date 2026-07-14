@@ -29,6 +29,6 @@ export const textPlugin = {
   },
   anchors: standardBBoxAnchors,
   commands: [
-    { id: "add-text", title: "Add Text", run: (app) => app.addItem(textPlugin.defaults) },
+    { id: "add-text", title: "Add Text", icon: "mdi:format-text", run: (app) => app.addItem(textPlugin.defaults) },
   ],
 };
