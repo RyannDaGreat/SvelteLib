@@ -17,6 +17,7 @@
   import KeyframePanel from "./KeyframePanel.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import PresentMode from "./PresentMode.svelte";
+  import Panel from "./Panel.svelte";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed } from "../core/document.js";
 
@@ -187,7 +188,9 @@
              palette command (OFF by default). The Canvas is exempt — it's an
              interaction surface, not a first-class named panel. -->
         {#if col === 0}
-          <SlideNav {app} />
+          <Panel {app} name="Slide Navigator">
+            <SlideNav {app} />
+          </Panel>
         {:else if col === 1}
           <CanvasView {app} />
         {:else}
@@ -195,9 +198,13 @@
             <SplitPane orientation="vertical" bind:splits={rightSplits}>
               {#snippet children(row)}
                 {#if row === 0}
-                  <Inspector {app} />
+                  <Panel {app} name="Property Panel">
+                    <Inspector {app} />
+                  </Panel>
                 {:else}
-                  <KeyframePanel {app} />
+                  <Panel {app} name="Keyframe Panel">
+                    <KeyframePanel {app} />
+                  </Panel>
                 {/if}
               {/snippet}
             </SplitPane>

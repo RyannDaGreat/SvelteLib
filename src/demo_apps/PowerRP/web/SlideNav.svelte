@@ -71,9 +71,6 @@
 </script>
 
 <div class="slidenav">
-  {#if app.panelNames}
-    <div class="panel-title">Slide Navigator</div>
-  {/if}
   <div class="slides">
     {#each app.doc.slides as slide, i (slide.id)}
       <button

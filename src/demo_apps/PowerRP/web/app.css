@@ -929,3 +929,24 @@ body,
   border-bottom: var(--a-hairline) solid var(--border);
   user-select: none;
 }
+
+/* ── First-class Panel (manifest ruling): owns chrome + title + hover region ── */
+.panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--a-panel-bg);
+}
+
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-body > * {
+  flex: 1;
+  min-height: 0;
+}

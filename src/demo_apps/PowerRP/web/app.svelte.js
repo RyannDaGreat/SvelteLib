@@ -41,6 +41,9 @@ export class PowerRPApp {
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
   dragging = $state(false); // canvas sets this; drives HintBar context
+  /** Canonical region name under the pointer (Panel sets it) — the substrate
+   * for region-aware hints (manifest: panels are first-class). */
+  hoverRegion = $state(null);
   /** Preview overlay delta shown during drags — NOT committed/undoable. */
   previewDelta = $state(null);
   theme = $state("graphite");
