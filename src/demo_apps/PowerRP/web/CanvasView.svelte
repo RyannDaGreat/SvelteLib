@@ -17,7 +17,7 @@
   import { clipLineToRect } from "../core/geometry.js";
   import { paintScene, THUMB_W } from "../render/compositor.js";
   import * as T from "../core/transform.js";
-  import { visibleLevels, ticksInRange, rulerLevel } from "../../../lib/ticks.js";
+  import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
 
   let { app } = $props();
 
@@ -32,35 +32,59 @@
   // Live mouse X in WORLD px, for the ruler's mouse marker. null when the
   // pointer is off-canvas. Fed by the existing pointermove handler.
   let mouseWorldX = $state(null);
+  let mouseWorldY = $state(null);
 
   // Ruler target spacing = the ONE control-height token so labels never crowd
   // (min gap between labelled ticks). Read once from CSS; falls back if unset.
   const RULER_TARGET_PX = 56; // ~2x the 26px control height — comfortable label gap
 
   /**
-   * Pure-ish query. The ruler model for the current viewport: the chosen decade
-   * level and its labelled tick positions (world x + screen x) spanning the
-   * visible width. Empty when there's no container yet.
+   * Pure function. Fading ruler ticks for one axis: the SAME partition-of-unity
+   * level fades as the grid (visibleLevels), so ticks/labels cross-fade with
+   * zoom instead of popping (user ruling). Each world position keeps the MAX
+   * opacity among the levels containing it (a coarse tick is also a fine tick).
+   *
+   * @example // rulerTicks(0, 100, 1, toS) → [{w, s, opacity}, ...]
    */
-  let ruler = $derived.by(() => {
+  function rulerTicks(worldLo, worldHi, zoom, toScreen) {
+    const byW = new Map();
+    for (const lvl of visibleLevels(zoom, RULER_TARGET_PX))
+      for (const w of ticksInRange(worldLo, worldHi, lvl.spacing)) {
+        const key = w.toFixed(6); // float-slack key only
+        const prev = byW.get(key);
+        if (!prev || lvl.opacity > prev.opacity) byW.set(key, { w, s: toScreen(w), opacity: lvl.opacity });
+      }
+    return [...byW.values()];
+  }
+
+  let rulerX = $derived.by(() => {
     viewport; wrapW;
-    if (!actions || !containerEl || !(viewport.zoom > 0)) return { ticks: [], spacing: 0 };
+    if (!actions || !containerEl || !(viewport.zoom > 0)) return [];
     const rect = containerEl.getBoundingClientRect();
-    const worldLo = (0 - viewport.panX) / viewport.zoom;
-    const worldHi = (rect.width - viewport.panX) / viewport.zoom;
-    const lvl = rulerLevel(viewport.zoom, RULER_TARGET_PX);
-    const ticks = ticksInRange(worldLo, worldHi, lvl.spacing).map((wx) => ({
-      wx,
-      sx: actions.worldToScreen(wx, 0).x,
-    }));
-    return { ticks, spacing: lvl.spacing };
+    const lo = (0 - viewport.panX) / viewport.zoom;
+    const hi = (rect.width - viewport.panX) / viewport.zoom;
+    return rulerTicks(lo, hi, viewport.zoom, (w) => actions.worldToScreen(w, 0).x);
   });
 
-  // Screen x of the live mouse marker on the ruler (null = off-canvas).
+  let rulerY = $derived.by(() => {
+    viewport; wrapH;
+    if (!actions || !containerEl || !(viewport.zoom > 0)) return [];
+    const rect = containerEl.getBoundingClientRect();
+    const lo = (0 - viewport.panY) / viewport.zoom;
+    const hi = (rect.height - viewport.panY) / viewport.zoom;
+    return rulerTicks(lo, hi, viewport.zoom, (w) => actions.worldToScreen(0, w).y);
+  });
+
+  // Screen positions of the live mouse marker on each ruler (null = off-canvas).
   let mouseMarkerX = $derived.by(() => {
     viewport; mouseWorldX;
     if (mouseWorldX == null || !actions) return null;
     return actions.worldToScreen(mouseWorldX, 0).x;
+  });
+  let mouseMarkerY = $derived.by(() => {
+    viewport; mouseWorldY;
+    if (mouseWorldY == null || !actions) return null;
+    return actions.worldToScreen(0, mouseWorldY).y;
   });
   let minimapThumb = $state(""); // data URL of the current slide, for the minimap
   let viewport = $state({ zoom: 1, panX: 0, panY: 0 });
@@ -226,7 +250,8 @@
 
   function onPointerMove(e) {
     const w = worldPoint(e);
-    mouseWorldX = w.x; // live ruler marker (world px); cleared on pointer leave
+    mouseWorldX = w.x; // live ruler markers (world px); cleared on pointer leave
+    mouseWorldY = w.y;
     if (!drag) {
       const nodes = app.nodes();
       // Anchor hover tooltip (immediate; only while anchors are shown).
@@ -492,7 +517,7 @@
   }
 
   function onPointerLeave() {
-    if (!drag) mouseWorldX = null; // hide the ruler marker when the pointer leaves
+    if (!drag) { mouseWorldX = null; mouseWorldY = null; } // hide ruler markers on leave
   }
 
   function onPointerUp() {
@@ -671,11 +696,14 @@
        fed by the canvas pointermove handler. Left ruler is intentionally
        omitted — the manifest records it as the open question. -->
   {#if app.rulerEnabled}
+    <!-- Top + left rulers joined by a corner square (user spec). Ticks/labels
+         cross-fade with zoom via the same partition-of-unity math as the grid.
+         Marker labels knock out underlying tick labels via paint-order stroke. -->
     <div class="ruler ruler-top">
       <svg class="ruler-svg" width="100%" height="100%">
-        {#each ruler.ticks as t}
-          <line class="ruler-tick" x1={t.sx} y1="0" x2={t.sx} y2="100%" />
-          <text class="ruler-label" x={t.sx + 3} y="10">{t.wx}</text>
+        {#each rulerX as t}
+          <line class="ruler-tick" x1={t.s} y1="0" x2={t.s} y2="100%" opacity={t.opacity} />
+          <text class="ruler-label" x={t.s + 3} y="10" opacity={t.opacity}>{t.w}</text>
         {/each}
         {#if mouseMarkerX != null}
           <line class="ruler-marker" x1={mouseMarkerX} y1="0" x2={mouseMarkerX} y2="100%" />
@@ -683,6 +711,19 @@
         {/if}
       </svg>
     </div>
+    <div class="ruler ruler-left">
+      <svg class="ruler-svg" width="100%" height="100%">
+        {#each rulerY as t}
+          <line class="ruler-tick" x1="0" y1={t.s} x2="100%" y2={t.s} opacity={t.opacity} />
+          <text class="ruler-label" x="2" y={t.s - 3} opacity={t.opacity}>{t.w}</text>
+        {/each}
+        {#if mouseMarkerY != null}
+          <line class="ruler-marker" x1="0" y1={mouseMarkerY} x2="100%" y2={mouseMarkerY} />
+          <text class="ruler-marker-label" x="2" y={mouseMarkerY - 3}>{Math.round(mouseWorldY)}</text>
+        {/if}
+      </svg>
+    </div>
+    <div class="ruler-corner"></div>
   {/if}
 </div>
 

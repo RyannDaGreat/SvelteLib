@@ -961,7 +961,7 @@ body,
 .canvas-wrap .ruler-top {
   position: absolute;
   top: 0;
-  left: 0;
+  left: var(--a-ruler-h); /* the corner square owns the junction */
   right: 0;
   height: var(--a-ruler-h);
   background: var(--a-ruler-bg);
@@ -996,4 +996,37 @@ body,
   fill: var(--a-ruler-marker);
   font-size: var(--a-ruler-font);
   font-family: inherit;
+}
+
+/* Left ruler + the corner square joining the two rulers (user spec). */
+.canvas-wrap .ruler-left {
+  position: absolute;
+  top: var(--a-ruler-h);
+  left: 0;
+  bottom: 0;
+  width: var(--a-ruler-h);
+  background: var(--a-ruler-bg);
+  border-right: var(--a-hairline) solid var(--border);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.canvas-wrap .ruler-corner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--a-ruler-h);
+  height: var(--a-ruler-h);
+  background: var(--a-ruler-bg);
+  border-right: var(--a-hairline) solid var(--border);
+  border-bottom: var(--a-hairline) solid var(--border);
+  pointer-events: none;
+}
+
+/* Marker readout knocks out overlapping tick labels (paint-order stroke in the
+   ruler background color — same trick as the anchor tooltip). */
+.ruler-marker-label {
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
 }
