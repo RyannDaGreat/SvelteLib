@@ -1,39 +1,72 @@
 <!--
   SlideNav — the left-hand slide navigator. Shows display NUMBERS (which
   shift on insert) while slides keep permanent UUIDs underneath.
+
+  Thumbnails use the generic DirtyImage widget (src/lib): each renders THROUGH
+  its slide's camera, at the size it's DISPLAYED (panel width × dpr) so it's
+  crisp, and only when it's on screen AND dirty. "Dirty" = the document changed
+  (app.doc identity flips on every commit) or the panel was resized. Editing
+  never re-renders every thumbnail — a commit marks them all dirty, but only the
+  ones scrolled into view repaint (scales to "5 million slides" — manifest).
 -->
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import DirtyImage from "../../../lib/DirtyImage.svelte";
   import { foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
-  import { paintScene, fitRectView, THUMB_W } from "../render/compositor.js";
+  import { paintScene, fitRectView } from "../render/compositor.js";
 
   let { app } = $props();
 
-  /** Per-slide thumbnails rendered THROUGH each slide's camera (the camera
-   * determines the thumbnails — manifest). Regenerated on commit, never at
-   * drag rate (previewDelta skips). */
-  let thumbs = $state([]);
-  $effect(() => {
-    app.doc;
-    if (app.previewDelta) return;
-    const dpr = app.dpr(); // retina browser setting (manifest)
-    thumbs = app.doc.slides.map((_, i) => {
-      const rect = cameraRect(foldState(app.doc, i, 1), app.doc.meta);
-      if (rect.w <= 0 || rect.h <= 0) return "";
-      const cssH = Math.max(1, Math.round((THUMB_W * rect.h) / rect.w));
+  /** Camera rect of slide `i` at full alpha (the thumbnail's view + aspect). */
+  function slideRect(i) {
+    return cameraRect(foldState(app.doc, i, 1), app.doc.meta);
+  }
+
+  /** Thumbnail aspect (h/w) for slide `i`, or null when the camera is degenerate
+      (no positive-area rect → no thumbnail). */
+  function thumbAspect(i) {
+    const rect = slideRect(i);
+    return rect.w > 0 && rect.h > 0 ? rect.h / rect.w : null;
+  }
+
+  /**
+   * render() for slide `i`'s thumbnail: paints the committed slide state through
+   * its camera at the REQUESTED device-pixel size — displayed-size × dpr, so it
+   * is exactly as crisp as the panel shows it (no fixed-256px upscale). Returns
+   * a canvas; DirtyImage turns it into the <img>. Renders committed state only
+   * (never the live drag preview), so a drag can't trigger thumbnail repaints.
+   */
+  function renderThumb(i) {
+    return (wPx, hPx) => {
+      const rect = slideRect(i);
       const c = document.createElement("canvas");
-      c.width = Math.round(THUMB_W * dpr);
-      c.height = Math.round(cssH * dpr);
+      c.width = wPx;
+      c.height = hPx;
       paintScene(c.getContext("2d"), app.doc, {
         slideIndex: i,
         alpha: 1,
         registry: app.registry,
-        view: fitRectView(rect, THUMB_W, cssH, dpr),
+        view: fitRectView(rect, wPx, hPx, 1), // wPx/hPx are already device px
       });
-      return c.toDataURL("image/png");
-    });
+      return c;
+    };
+  }
+
+  // The document identity (app.doc changes on every commit) is the dirty key —
+  // a NEW object reference per commit, so every mounted thumbnail goes dirty on
+  // any edit (only the visible ones repaint). Per-slide identity is handled by
+  // the {#each ... (slide.id)} key: each tile instance is bound to one slide, so
+  // committedDoc alone is a stable, meaningful key.
+  // While a drag preview is active we FREEZE it (keep the last committed doc) so
+  // thumbnails never re-render at drag rate — the preview lives in previewDelta,
+  // not app.doc, and thumbnails show committed state only.
+  // svelte-ignore state_referenced_locally — the initial value is immediately
+  // reconciled by the effect below (previewDelta is null at mount).
+  let committedDoc = $state(app.doc);
+  $effect(() => {
+    if (!app.previewDelta) committedDoc = app.doc;
   });
 </script>
 
@@ -45,7 +78,7 @@
         class:current={i === app.slideIndex}
         class:disabled={slide.enabled === false}
         onclick={() => (app.slideIndex = i)}
-        title={slide.id}
+
       >
         <span class="row-top">
           <span class="num">{i + 1}</span>
@@ -62,8 +95,14 @@
             </span>
           </Tooltip>
         </span>
-        {#if thumbs[i]}
-          <img class="thumb" src={thumbs[i]} alt="Slide {i + 1} preview" draggable="false" />
+        {#if thumbAspect(i)}
+          <DirtyImage
+            class="thumb"
+            render={renderThumb(i)}
+            dirtyKey={committedDoc}
+            aspect={thumbAspect(i)}
+            alt={`Slide ${i + 1} preview`}
+          />
         {/if}
       </button>
     {/each}

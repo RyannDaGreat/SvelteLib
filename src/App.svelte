@@ -8,6 +8,7 @@
     { name: "ScrubSelect", description: "Video scrub + region annotation widget (paint good/bad, zoomable timeline)", href: "/src/demos/ScrubSelect/demo.html" },
     { name: "SpeechToText", description: "Headless live dictation via the Web Speech API (interim streaming + finalized log)", href: "/src/demos/SpeechToText/demo.html" },
     { name: "Tooltip", description: "Immediate hover/focus tooltip wrapper (optional delay, auto-flip top/bottom, text or rich snippet)", href: "/src/demos/Tooltip/demo.html" },
+    { name: "DirtyImage", description: "Lazy, dirty-tracked raster tile — renders via a callback at displayed-size × dpr only when visible AND dirty (crisp thumbnails at scale)", href: "/src/demos/DirtyImage/demo.html" },
   ];
 </script>
 
