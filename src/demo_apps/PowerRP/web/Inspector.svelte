@@ -126,6 +126,8 @@
               <DraggableNumber
                 label={row.label}
                 value={Math.round((sel.state[row.key] ?? 0) * 1000) / 1000}
+                min={row.min ?? null}
+                max={row.max ?? null}
                 oninput={(v) => previewField(row.key, row.kind, v)}
                 onchange={(v) => commitField(row.key, row.kind, v)}
               />
