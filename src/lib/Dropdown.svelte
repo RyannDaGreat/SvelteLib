@@ -24,7 +24,8 @@
       row's membership WITHOUT closing the menu. The trigger shows a summary
       (default: single label / "N selected" / placeholder when empty — override
       via the `summary(values, items)` prop). Selected rows show a checkmark
-      (iconify mdi:check). Passing a non-array `value` with multiple:true throws.
+      (inline SVG, mdi:check glyph). Passing a non-array `value` with
+      multiple:true throws.
 
   Scroll-on-open (`scrollToValue`):
     - When set, the row whose value === scrollToValue is scrolled into view
@@ -45,6 +46,10 @@
     --dd-bg, --dd-fg, --dd-fg-dim, --dd-border, --dd-radius, --dd-padding,
     --dd-font-size, --dd-hover-bg, --dd-active-bg, --dd-active-fg,
     --dd-menu-shadow, --dd-menu-max-height,
+    --dd-caret-size          — trigger caret icon size (default 1.2em ⇒ tracks
+                               the trigger's text height; flips 180° on open)
+    --dd-caret-color         — caret color (default currentColor)
+    --dd-caret-opacity       — caret opacity (default 0.7)
     --dd-check-size          — checkmark icon size in multi-select rows
     --dd-check-color         — checkmark color (defaults to --dd-active-fg)
     --dd-insert-padding      — padding around an insert's content
@@ -52,7 +57,21 @@
     --dd-insert-border       — insert border shorthand (unset ⇒ no rule drawn)
 -->
 <script>
+  /* Registers the <iconify-icon> web component for consumer snippets (trigger /
+     item) that use it. Our own built-in glyphs below do NOT — see next note. */
   import "iconify-icon";
+
+  /* Built-in glyphs (caret, checkmark) render as inline <svg>, NOT via the
+     iconify-icon web component. Reason: iconify-icon's mutation observer
+     re-scans and re-renders all instances when the DOM changes; opening a
+     sibling dropdown's menu (which mounts icons) was intermittently blanking
+     the trigger caret's SVG. Inline SVG is synchronous, offline, and immune to
+     that churn — and still "SVG-only" (never a Unicode text glyph, which sizes
+     unpredictably). Paths mirror mdi:menu-down / mdi:check on a 24×24 viewBox;
+     `currentColor` lets CSS color them. Sized via font-size (1em = 24 units).
+     (Row content and consumer snippets may still use iconify-icon freely.) */
+  const CARET_PATH = "m7 10l5 5l5-5z"; // mdi:menu-down
+  const CHECK_PATH = "M21 7L9 19l-5.5-5.5l1.41-1.41L9 16.17L19.59 5.59z"; // mdi:check
 
   /**
    * Pure function. True if `it` is an insert entry (decoration between rows)
@@ -297,6 +316,14 @@
   });
 </script>
 
+<!-- Built-in glyph: inline <svg> on a 24×24 viewBox, colored by currentColor
+     and sized by the caller's font-size (1em ⇒ the full 24-unit box). -->
+{#snippet glyph(path)}
+  <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" aria-hidden="true">
+    <path d={path} />
+  </svg>
+{/snippet}
+
 <div class="dd" bind:this={rootEl} onkeydown={handleKeydown}>
   <button
     type="button"
@@ -315,10 +342,11 @@
       >
         {summaryText}
       </span>
-      <!-- SVG caret (iconify), never a Unicode glyph — text carets size
-           unpredictably (user rule). Size via --dd-caret-size. -->
+      <!-- SVG caret, never a Unicode glyph (text carets size unpredictably —
+           user rule). Inline <svg> for synchronous, churn-free render. Size via
+           --dd-caret-size; flips on open. -->
       <span class="dd-caret" aria-hidden="true">
-        <iconify-icon icon="mdi:menu-down" style="font-size: var(--dd-caret-size, 18px)"></iconify-icon>
+        {@render glyph(CARET_PATH)}
       </span>
     {/if}
   </button>
@@ -357,7 +385,7 @@
               {#if multiple}
                 <span class="dd-check" aria-hidden="true">
                   {#if isChecked(items, value, i)}
-                    <iconify-icon icon="mdi:check"></iconify-icon>
+                    {@render glyph(CHECK_PATH)}
                   {/if}
                 </span>
               {/if}
@@ -396,6 +424,12 @@
     --dd-active-fg: var(--fg, #e0e0e0);
     --dd-menu-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
     --dd-menu-max-height: 240px;
+
+    /* Trigger caret. Default size tracks the trigger's text height (1.2em of
+       --dd-font-size) so it reads as matched to the label; overridable. */
+    --dd-caret-size: 1.2em;
+    --dd-caret-color: currentColor;
+    --dd-caret-opacity: 0.7;
 
     /* Multi-select checkmark. */
     --dd-check-size: 1em;
@@ -446,10 +480,25 @@
   .dd-trigger-label.dd-placeholder {
     color: var(--dd-fg-dim);
   }
+  /* Caret: inline <svg>, sized by --dd-caret-size and vertically centered.
+     inline-flex collapses the line-box so the wrapper's height equals the
+     glyph's — the caret is never taller than its glyph, so it can't stretch the
+     trigger. font-size on the svg drives its 1em (width=height=1em) box. */
   .dd-caret {
-    font-size: 0.7em;
-    opacity: 0.7;
+    display: inline-flex;
+    align-items: center;
     margin-left: auto;
+    color: var(--dd-caret-color, currentColor);
+    opacity: var(--dd-caret-opacity, 0.7);
+  }
+  .dd-caret svg {
+    display: block;
+    font-size: var(--dd-caret-size, 1.2em);
+    transition: transform 120ms ease;
+  }
+  /* Open-state affordance: the down-caret flips to point up. */
+  .dd-trigger.dd-open .dd-caret svg {
+    transform: rotate(180deg);
   }
 
   /* Menu spans exactly the trigger's width via `right: 0`, so no width
@@ -522,6 +571,9 @@
     height: var(--dd-check-size);
     font-size: var(--dd-check-size);
     color: var(--dd-check-color);
+  }
+  .dd-check svg {
+    display: block;
   }
 
   /* Insert row: content only by default. Decoration is opt-in via --dd-insert-*. */

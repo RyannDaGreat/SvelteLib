@@ -9,6 +9,9 @@
  *   (b) multiple:true toggles rows without closing; array binds; summary updates
  *   (c) inserts render between rows, arrow keys skip them, clicking selects nothing
  *   (d) scrollToValue scrolls the target row into view on open (scrollTop > 0)
+ *   (e) the default trigger caret is an inline SVG (not a text glyph), sensibly
+ *       sized (box height in [14px, trigger height]), doesn't stretch the
+ *       trigger, and flips on open
  *
  * Run from the SvelteLib repo root:
  *   node src/demos/Dropdown/test_dropdown.js
@@ -130,7 +133,7 @@ try {
     ok("menu open for multi", await card.$(".dd-menu") !== null);
 
     // exactly two checkmarks rendered initially
-    const checks0 = await card.$$eval(".dd-item .dd-check iconify-icon", (els) => els.length);
+    const checks0 = await card.$$eval(".dd-item .dd-check svg", (els) => els.length);
     ok("initial checkmarks match selection", checks0 === 2, `checks=${checks0}`);
 
     // click "Pepperoni" (index 2) -> stays open, becomes 3 selected
@@ -140,7 +143,7 @@ try {
     ok("multi click keeps menu OPEN", await card.$(".dd-menu") !== null);
     const summ1 = await card.$eval(".dd-trigger-label", (el) => el.textContent.trim());
     ok("summary updates to 3 selected", summ1 === "3 selected", `summary=${summ1}`);
-    const checks1 = await card.$$eval(".dd-item .dd-check iconify-icon", (els) => els.length);
+    const checks1 = await card.$$eval(".dd-item .dd-check svg", (els) => els.length);
     ok("checkmark added on toggle-on", checks1 === 3, `checks=${checks1}`);
 
     // click "Pepperoni" again -> toggles off, back to 2
@@ -159,10 +162,10 @@ try {
     await page.keyboard.press("Home"); // active -> Cheese (idx 0, selected)
     await page.keyboard.press("ArrowDown"); // active -> Mushroom (idx 1, unselected)
     const activeBefore = await card.$eval(".dd-item.dd-active .dd-item-body", (el) => el.textContent.trim());
-    const checksBeforeEnter = await card.$$eval(".dd-item .dd-check iconify-icon", (els) => els.length);
+    const checksBeforeEnter = await card.$$eval(".dd-item .dd-check svg", (els) => els.length);
     await page.keyboard.press("Enter");
     await sleep(30);
-    const checksAfterEnter = await card.$$eval(".dd-item .dd-check iconify-icon", (els) => els.length);
+    const checksAfterEnter = await card.$$eval(".dd-item .dd-check svg", (els) => els.length);
     ok("Enter toggles active row membership ON",
       activeBefore === "Mushroom" && checksAfterEnter === checksBeforeEnter + 1,
       `active=${activeBefore} before=${checksBeforeEnter} after=${checksAfterEnter}`);
@@ -227,6 +230,51 @@ try {
       return rb.top >= lb.top - 1 && rb.bottom <= lb.bottom + 1;
     });
     ok("target row is within the visible list viewport", inView);
+
+    await page.keyboard.press("Escape");
+    await sleep(30);
+  }
+
+  /* ---------- (e) trigger caret ---------- */
+  console.log("\n(e) default trigger caret is an inline SVG, sensibly sized");
+  {
+    const MIN_CARET_H = 14; // px: below this the caret reads as a tiny speck
+    const card = await cardHandle(page, "Default");
+
+    const caretExists = (await card.$(".dd-caret")) !== null;
+    ok("caret element exists", caretExists);
+
+    // The caret is an inline <svg> (renders synchronously, no web-component /
+    // API round-trip, immune to iconify mutation-observer churn — see the
+    // component's header note). This is the "SVG-only, never a text glyph" rule.
+    const caretChild = await card.$eval(".dd-caret > *", (el) => el.tagName.toLowerCase());
+    ok("caret is an <svg> element (not a Unicode text glyph)",
+      caretChild === "svg", `tag=${caretChild}`);
+
+    // Inline SVG needs no async wait — measure straight away.
+    const box = await card.$eval(".dd-caret svg", (el) => {
+      const r = el.getBoundingClientRect();
+      return { w: r.width, h: r.height };
+    });
+    const triggerH = await card.$eval(".dd-trigger", (el) => el.getBoundingClientRect().height);
+    ok("caret box height >= 14px (not a tiny speck)",
+      box.h >= MIN_CARET_H, `h=${box.h}`);
+    ok("caret box height <= trigger height (doesn't overflow the trigger)",
+      box.h <= triggerH + 0.5, `caretH=${box.h} triggerH=${triggerH}`);
+
+    // Opening must not resize the trigger — the caret can't stretch it.
+    await card.$eval(".dd-trigger", (el) => el.click());
+    await sleep(60);
+    const triggerHOpen = await card.$eval(".dd-trigger", (el) => el.getBoundingClientRect().height);
+    ok("trigger height stable across open/close (caret doesn't stretch it)",
+      Math.abs(triggerHOpen - triggerH) < 0.5, `closed=${triggerH} open=${triggerHOpen}`);
+
+    // Open-state affordance: the caret is flipped (rotated) while open.
+    const flipped = await card.$eval(".dd-caret svg", (el) => {
+      const t = getComputedStyle(el).transform;
+      return t !== "none" && t !== "";
+    });
+    ok("caret flips on open (open-state affordance present)", flipped);
 
     await page.keyboard.press("Escape");
     await sleep(30);
