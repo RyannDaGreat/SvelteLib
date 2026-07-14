@@ -116,12 +116,15 @@ export const magnifierPlugin = {
       );
       ctx.restore();
     }
-    // Rim (local coords — save/restore put the widget transform back).
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = s.rimColor;
-    ctx.lineWidth = s.rimWidth;
-    ctx.stroke();
+    // Rim — skipped at width 0 (canvas treats lineWidth 0 as "keep previous",
+    // so an unguarded stroke still draws ~1px — user-reported bug).
+    if ((s.rimWidth ?? 0) > 0) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = s.rimColor;
+      ctx.lineWidth = s.rimWidth;
+      ctx.stroke();
+    }
   },
   hitTest(s, lx, ly) {
     const { cx, cy, r } = lensGeom(s);
