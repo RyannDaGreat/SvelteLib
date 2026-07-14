@@ -8,8 +8,35 @@
 -->
 <script>
   import "iconify-icon";
+  import { rpFuzzyMatchIndices } from "../core/fuzzy.js";
 
   let { app } = $props();
+
+  /**
+   * Pure function. Splits `title` into consecutive runs by whether each code
+   * point is a fuzzy match (per rpFuzzyMatchIndices for `query`) — for wrapping
+   * matched chars in <mark>. Empty/non-matching query → one unhit run of the
+   * whole title. Iterates Array.from(title) so indices align with the walk.
+   *
+   * @example titleSegments("Distribute Horizontally", "dh")
+   *   // [{text:"D",hit:true},{text:"istribute ",hit:false},
+   *   //  {text:"H",hit:true},{text:"orizontally",hit:false}]
+   * @example titleSegments("Group", "") // [{text:"Group",hit:false}]
+   */
+  function titleSegments(title, query) {
+    const indices = query ? rpFuzzyMatchIndices(query, title) : null;
+    if (!indices || !indices.length) return [{ text: title, hit: false }];
+    const hit = new Set(indices);
+    const chars = Array.from(title);
+    const runs = [];
+    for (let i = 0; i < chars.length; i += 1) {
+      const isHit = hit.has(i);
+      const last = runs[runs.length - 1];
+      if (last && last.hit === isHit) last.text += chars[i];
+      else runs.push({ text: chars[i], hit: isHit });
+    }
+    return runs;
+  }
 
   let query = $state("");
   let highlighted = $state(0);
@@ -95,7 +122,9 @@
                 <iconify-icon icon={cmd.icon} width="16" height="16"></iconify-icon>
               {/if}
             </span>
-            <span class="title">{cmd.title}</span>
+            <span class="title"
+              >{#each titleSegments(cmd.title, query) as seg}{#if seg.hit}<mark class="fuzzy-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span
+            >
             {#if app.shortcuts.commandKeys(cmd.id)}
               <span class="shortcut">
                 {#each app.shortcuts.commandKeys(cmd.id) as key, ki}

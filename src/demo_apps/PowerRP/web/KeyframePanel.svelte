@@ -6,6 +6,7 @@
 -->
 <script>
   import "iconify-icon";
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import { allKeyframes } from "../core/document.js";
 
   let { app } = $props();
@@ -39,9 +40,11 @@
         <div class="kf" class:selected={k.path[1] === app.selection}>
           <span class="path" title={k.path.join(".")}>{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
           <span class="value">{fmt(k.value)}</span>
-          <button class="remove" title="Remove this keyframe" onclick={() => app.removeKey(slideIndex, k.path)}>
-            <iconify-icon icon="mdi:close" width="13" height="13"></iconify-icon>
-          </button>
+          <Tooltip text="Remove this keyframe">
+            <button class="remove" onclick={() => app.removeKey(slideIndex, k.path)}>
+              <iconify-icon icon="mdi:close" width="13" height="13"></iconify-icon>
+            </button>
+          </Tooltip>
         </div>
       {/each}
     </div>

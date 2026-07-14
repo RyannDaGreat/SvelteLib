@@ -4,6 +4,7 @@
 -->
 <script>
   import "iconify-icon";
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import { foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
   import { paintScene, fitRectView, THUMB_W } from "../render/compositor.js";
@@ -49,16 +50,17 @@
         <span class="row-top">
           <span class="num">{i + 1}</span>
           <span class="name">{slide.name}</span>
-          <span
-            class="eye"
-            role="button"
-            tabindex="-1"
-            title={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}
-            onclick={(e) => { e.stopPropagation(); app.toggleSlide(i); }}
-            onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); app.toggleSlide(i); } }}
-          >
-            <iconify-icon icon={slide.enabled === false ? "mdi:eye-off" : "mdi:eye"} width="14" height="14"></iconify-icon>
-          </span>
+          <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
+            <span
+              class="eye"
+              role="button"
+              tabindex="-1"
+              onclick={(e) => { e.stopPropagation(); app.toggleSlide(i); }}
+              onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); app.toggleSlide(i); } }}
+            >
+              <iconify-icon icon={slide.enabled === false ? "mdi:eye-off" : "mdi:eye"} width="14" height="14"></iconify-icon>
+            </span>
+          </Tooltip>
         </span>
         {#if thumbs[i]}
           <img class="thumb" src={thumbs[i]} alt="Slide {i + 1} preview" draggable="false" />
@@ -67,17 +69,25 @@
     {/each}
   </div>
   <div class="nav-actions">
-    <button class="btn-icon" onclick={() => app.runCommand("new-slide")} title="New slide after current">
-      <iconify-icon icon="mdi:plus" width="16" height="16"></iconify-icon>
-    </button>
-    <button class="btn-icon" onclick={() => app.runCommand("move-slide-up")} title="Move slide up">
-      <iconify-icon icon="mdi:arrow-up" width="16" height="16"></iconify-icon>
-    </button>
-    <button class="btn-icon" onclick={() => app.runCommand("move-slide-down")} title="Move slide down">
-      <iconify-icon icon="mdi:arrow-down" width="16" height="16"></iconify-icon>
-    </button>
-    <button class="btn-icon" onclick={() => app.runCommand("delete-slide")} title="Delete slide" disabled={app.doc.slides.length <= 1}>
-      <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
-    </button>
+    <Tooltip text="New slide after current">
+      <button class="btn-icon" onclick={() => app.runCommand("new-slide")}>
+        <iconify-icon icon="mdi:plus" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
+    <Tooltip text="Move slide up">
+      <button class="btn-icon" onclick={() => app.runCommand("move-slide-up")}>
+        <iconify-icon icon="mdi:arrow-up" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
+    <Tooltip text="Move slide down">
+      <button class="btn-icon" onclick={() => app.runCommand("move-slide-down")}>
+        <iconify-icon icon="mdi:arrow-down" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
+    <Tooltip text="Delete slide">
+      <button class="btn-icon" onclick={() => app.runCommand("delete-slide")} disabled={app.doc.slides.length <= 1}>
+        <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
   </div>
 </div>

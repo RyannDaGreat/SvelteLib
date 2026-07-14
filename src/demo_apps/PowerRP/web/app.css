@@ -46,7 +46,6 @@
 
   /* Toolbar */
   --a-toolbar-h: 40px;
-  --a-toolbar-btn: 30px;
 
   /* Canvas overlay strokes/sizes */
   --a-selection-stroke: 1.5px;
@@ -255,11 +254,7 @@ body,
   border-bottom: var(--a-hairline) solid var(--border);
 }
 
-.toolbar .btn-icon {
-  /* Toolbar icons run slightly larger than panel controls. */
-  width: var(--a-toolbar-btn);
-  height: var(--a-toolbar-btn);
-}
+/* ONE control height everywhere — no toolbar exception (standardization rule). */
 
 .toolbar .doc-name {
   font-size: var(--a-font-md);
@@ -269,7 +264,7 @@ body,
 
 .toolbar .sep {
   width: 1px;
-  height: calc(var(--a-toolbar-btn) - var(--a-sp-3));
+  height: calc(var(--a-control-h) - var(--a-sp-3));
   background: var(--border);
   margin: 0 var(--a-sp-3);
 }
@@ -769,4 +764,14 @@ body,
   background: var(--control-bg);
   font-size: var(--a-font-sm);
   user-select: none;
+}
+
+/* Fuzzy-match highlight: emphasize the matched chars WITHOUT the browser's
+   default <mark> yellow highlight — bold + underline, transparent, inherited
+   color so it reads as the same text, just marked. */
+.palette-item .fuzzy-hit {
+  background: transparent;
+  color: inherit;
+  font-weight: bold;
+  text-decoration: underline;
 }

@@ -10,6 +10,7 @@
 <script>
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import Toolbar from "./Toolbar.svelte";
   import SlideNav from "./SlideNav.svelte";
   import CanvasView from "./CanvasView.svelte";
@@ -162,8 +163,13 @@
   <div class="main">
     <SplitPane orientation="horizontal" bind:splits={hSplits}>
       {#snippet children(col)}
+        <!-- Region names from the manifest glossary, revealed on mouse-over
+             (long delay so they don't spam; delay value PENDING USER
+             RATIFICATION). The Canvas is exempt — it's an interaction surface. -->
         {#if col === 0}
-          <SlideNav {app} />
+          <Tooltip text="Slide Navigator" delay={1000}>
+            <SlideNav {app} />
+          </Tooltip>
         {:else if col === 1}
           <CanvasView {app} />
         {:else}
@@ -171,9 +177,13 @@
             <SplitPane orientation="vertical" bind:splits={rightSplits}>
               {#snippet children(row)}
                 {#if row === 0}
-                  <Inspector {app} />
+                  <Tooltip text="Property Panel" delay={1000}>
+                    <Inspector {app} />
+                  </Tooltip>
                 {:else}
-                  <KeyframePanel {app} />
+                  <Tooltip text="Keyframe Panel" delay={1000}>
+                    <KeyframePanel {app} />
+                  </Tooltip>
                 {/if}
               {/snippet}
             </SplitPane>

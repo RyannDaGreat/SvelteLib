@@ -1,10 +1,12 @@
 <!--
   Toolbar — top bar. Buttons are surfacings of registry commands (same
   entries the palette and shortcuts run), so nothing here has behavior of
-  its own.
+  its own. Hover help uses SvelteLib's immediate Tooltip (never native
+  title= — manifest rule).
 -->
 <script>
   import "iconify-icon";
+  import Tooltip from "../../../lib/Tooltip.svelte";
 
   let { app } = $props();
 
@@ -21,6 +23,10 @@
     [
       ["undo", "mdi:undo", "Undo (Cmd+Z)"],
       ["redo", "mdi:redo", "Redo (Cmd+Shift+Z)"],
+    ],
+    [
+      ["copy-item", "mdi:content-copy", "Copy item (Cmd+C)"],
+      ["paste", "mdi:content-paste", "Paste (Cmd+V)"],
     ],
     [
       ["put-on-top", "mdi:arrange-bring-to-front", "Put on Top"],
@@ -42,16 +48,28 @@
   {#each groups as group, gi}
     {#if gi > 0}<span class="sep"></span>{/if}
     {#each group as [id, icon, tip]}
-      <button class="btn-icon" onclick={() => app.runCommand(id)} title={tip}>
-        <iconify-icon {icon} width="18" height="18"></iconify-icon>
-      </button>
+      <!-- Disabled state comes from the command's own `when` (grayed out when
+           it can't run — e.g. Copy with nothing selected). -->
+      <Tooltip text={tip}>
+        <button
+          class="btn-icon"
+          disabled={app.commands.get(id).when && !app.commands.get(id).when(app)}
+          onclick={() => app.runCommand(id)}
+        >
+          <iconify-icon {icon} width="18" height="18"></iconify-icon>
+        </button>
+      </Tooltip>
     {/each}
   {/each}
   <span class="spacer"></span>
-  <button class="btn-icon" onclick={() => app.toggleLightDark()} title="Toggle light/dark (all themes: palette → Color Theme)">
-    <iconify-icon icon={app.theme === "light" ? "mdi:weather-night" : "mdi:weather-sunny"} width="18" height="18"></iconify-icon>
-  </button>
-  <button class="btn palette-hint" onclick={() => (app.paletteOpen = true)} title="Command palette">
-    ⌘⇧P
-  </button>
+  <Tooltip text="Toggle light/dark — all themes: palette › Color Theme">
+    <button class="btn-icon" onclick={() => app.toggleLightDark()}>
+      <iconify-icon icon={app.theme === "light" ? "mdi:weather-night" : "mdi:weather-sunny"} width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
+  <Tooltip text="Command palette (Cmd+Shift+P)">
+    <button class="btn-icon" onclick={() => app.runCommand("toggle-palette")}>
+      <iconify-icon icon="mdi:chevron-down-box-outline" width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
 </div>

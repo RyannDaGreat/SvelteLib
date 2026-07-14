@@ -14,6 +14,7 @@
 <script>
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
+  import Tooltip from "../../../lib/Tooltip.svelte";
 
   let { app } = $props();
 
@@ -69,12 +70,12 @@
 
   {#if sel}
     <div class="item-actions">
-      <button class="btn" onclick={() => app.runCommand("delete-item")} title="Deactivate on this slide (item survives on earlier slides)">
-        Delete here
-      </button>
-      <button class="btn danger" onclick={() => app.runCommand("purge-item")} title="Remove from existence (all keyframes, all slides)">
-        Purge
-      </button>
+      <Tooltip text="Deactivate on this slide (item survives on earlier slides)">
+        <button class="btn" onclick={() => app.runCommand("delete-item")}>Delete here</button>
+      </Tooltip>
+      <Tooltip text="Remove from existence (all keyframes, all slides)">
+        <button class="btn danger" onclick={() => app.runCommand("purge-item")}>Purge</button>
+      </Tooltip>
     </div>
     <div class="row name-row">
       <span class="label">Name</span>
@@ -122,20 +123,25 @@
           {/if}
           <!-- prev ◆ next — jumps hug the diamond (manifest spec); hollow =
                not keyed on this slide, filled = keyed. Iconify, never Unicode. -->
-          <button class="jumpbtn" title="Previous keyframe" onclick={() => app.jumpKeyframe(row.key, -1)}>
-            <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
-          </button>
-          <button
-            class="keybtn"
-            class:keyed={app.hasKey(row.key)}
-            title={app.hasKey(row.key) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}
-            onclick={() => toggleKey(row.key)}
-          >
-            <iconify-icon icon={app.hasKey(row.key) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
-          </button>
-          <button class="jumpbtn" title="Next keyframe" onclick={() => app.jumpKeyframe(row.key, +1)}>
-            <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
-          </button>
+          <Tooltip text="Previous keyframe">
+            <button class="jumpbtn" onclick={() => app.jumpKeyframe(row.key, -1)}>
+              <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
+            </button>
+          </Tooltip>
+          <Tooltip text={app.hasKey(row.key) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}>
+            <button
+              class="keybtn"
+              class:keyed={app.hasKey(row.key)}
+              onclick={() => toggleKey(row.key)}
+            >
+              <iconify-icon icon={app.hasKey(row.key) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
+            </button>
+          </Tooltip>
+          <Tooltip text="Next keyframe">
+            <button class="jumpbtn" onclick={() => app.jumpKeyframe(row.key, +1)}>
+              <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
+            </button>
+          </Tooltip>
         </div>
       {/each}
     </div>

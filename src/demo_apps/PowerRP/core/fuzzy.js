@@ -56,3 +56,33 @@ export function rpFuzzyScore(query, candidate) {
   if (isPrefixMatch) score /= 1000;
   return queryChars.length ? null : score;
 }
+
+/**
+ * Pure function. Candidate character indices consumed by rpFuzzyScore's match.
+ *
+ * Mirrors rpFuzzyScore's greedy left→right walk EXACTLY (same case-insensitive
+ * comparison, same order): each query char is consumed by the first not-yet-used
+ * candidate char that matches it case-insensitively. Returns those candidate
+ * indices (into Array.from(candidate), i.e. code-point positions — the same unit
+ * rpFuzzyScore iterates, so multi-code-point graphemes count as their pieces),
+ * or null when the query does not fully match. This is the walk used to
+ * highlight the matched characters; scoring itself stays in rpFuzzyScore.
+ *
+ * @example rpFuzzyMatchIndices("dh", "Distribute Horizontally") // [0, 11]
+ * @example rpFuzzyMatchIndices("dict", "dict") // [0, 1, 2, 3]
+ * @example rpFuzzyMatchIndices("xyz", "abc") // null
+ * @example rpFuzzyMatchIndices("", "abc") // []
+ */
+export function rpFuzzyMatchIndices(query, candidate) {
+  const queryChars = Array.from(query);
+  const candidateChars = Array.from(candidate);
+  const indices = [];
+  let q = 0;
+  for (let i = 0; i < candidateChars.length && q < queryChars.length; i += 1) {
+    if (queryChars[q].toUpperCase() === candidateChars[i].toUpperCase()) {
+      indices.push(i);
+      q += 1;
+    }
+  }
+  return q < queryChars.length ? null : indices;
+}
