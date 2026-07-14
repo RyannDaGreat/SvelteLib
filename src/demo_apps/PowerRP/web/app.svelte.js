@@ -59,6 +59,11 @@ export class PowerRPApp {
   // snapping — move AND resize) and the snap-size / matching-dimension toggle.
   snapEnabled = $state(localStorage.getItem("powerrp.snap") !== "off");
   snapSizeEnabled = $state(localStorage.getItem("powerrp.snapSize") !== "off");
+  // BROWSER settings (viewer-local): editor-only Blender-style background grid
+  // and top ruler strip. Both are "options" defaulting OFF (manifest: Grid +
+  // Ruler). Persisted per-browser like the other viewer preferences above.
+  gridEnabled = $state(localStorage.getItem("powerrp.grid") === "on");
+  rulerEnabled = $state(localStorage.getItem("powerrp.ruler") === "on");
   // Reactive flag CanvasView raises while any snap correction is applied in the
   // current pointer-move; cleared on pointer-up. Drives the toolbar toggle
   // taking the guide color while a snap is actually engaged.
@@ -87,6 +92,16 @@ export class PowerRPApp {
   toggleSnapSize() {
     this.snapSizeEnabled = !this.snapSizeEnabled;
     localStorage.setItem("powerrp.snapSize", this.snapSizeEnabled ? "on" : "off");
+  }
+
+  toggleGrid() {
+    this.gridEnabled = !this.gridEnabled;
+    localStorage.setItem("powerrp.grid", this.gridEnabled ? "on" : "off");
+  }
+
+  toggleRuler() {
+    this.rulerEnabled = !this.rulerEnabled;
+    localStorage.setItem("powerrp.ruler", this.rulerEnabled ? "on" : "off");
   }
 
   /** Query. The effective devicePixelRatio for all raster rendering. */

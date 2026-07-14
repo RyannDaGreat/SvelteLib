@@ -19,7 +19,8 @@
   import PresentMode from "./PresentMode.svelte";
   import Panel from "./Panel.svelte";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
-  import { keyframed } from "../core/document.js";
+  import { keyframed, foldState } from "../core/document.js";
+  import { cameraRect } from "../core/derive.js";
 
   const app = new PowerRPApp();
   app.loadAutosave();
@@ -54,6 +55,8 @@
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },
     { id: "toggle-minimap", title: "Toggle Minimap", icon: "mdi:map-outline", run: (a) => a.toggleMinimap() },
+    { id: "toggle-grid", title: "Toggle Grid", icon: "mdi:grid", run: (a) => a.toggleGrid() },
+    { id: "toggle-ruler", title: "Toggle Ruler", icon: "mdi:ruler", run: (a) => a.toggleRuler() },
     { id: "toggle-panel-names", title: "Toggle Panel Names", icon: "mdi:format-title", run: (a) => a.togglePanelNames() },
     { id: "toggle-retina", title: "Toggle Retina Rendering (browser setting)", icon: "mdi:monitor-eye", run: (a) => a.toggleRetina() },
     { id: "new-slide", title: "New Slide", icon: "mdi:plus-box-outline", run: (a) => a.addSlide() },
@@ -70,7 +73,7 @@
     { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
     { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, run: (a) => (a.selection = null) },
     { id: "toggle-palette", title: "Toggle Command Palette", icon: "mdi:chevron-down-box-outline", run: (a) => (a.paletteOpen = !a.paletteOpen) },
-    { id: "reset-view", title: "Zoom to Fit Slide", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit({ x: 0, y: 0, w: a.doc.meta.slideW, h: a.doc.meta.slideH }) },
+    { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRect(foldState(a.doc, a.slideIndex, 1), a.doc.meta)) },
     {
       id: "color-theme",
       title: "Color Theme",

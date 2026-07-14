@@ -17,6 +17,7 @@
   import { clipLineToRect } from "../core/geometry.js";
   import { paintScene, THUMB_W } from "../render/compositor.js";
   import * as T from "../core/transform.js";
+  import { visibleLevels, ticksInRange, rulerLevel } from "../../../lib/ticks.js";
 
   let { app } = $props();
 
@@ -25,8 +26,42 @@
 
   let containerEl = $state(null);
   let canvasEl = $state(null);
+  let gridEl = $state(null); // underlay canvas for the Blender-style grid (beneath .scene)
   let wrapW = $state(0);
   let wrapH = $state(0);
+  // Live mouse X in WORLD px, for the ruler's mouse marker. null when the
+  // pointer is off-canvas. Fed by the existing pointermove handler.
+  let mouseWorldX = $state(null);
+
+  // Ruler target spacing = the ONE control-height token so labels never crowd
+  // (min gap between labelled ticks). Read once from CSS; falls back if unset.
+  const RULER_TARGET_PX = 56; // ~2x the 26px control height — comfortable label gap
+
+  /**
+   * Pure-ish query. The ruler model for the current viewport: the chosen decade
+   * level and its labelled tick positions (world x + screen x) spanning the
+   * visible width. Empty when there's no container yet.
+   */
+  let ruler = $derived.by(() => {
+    viewport; wrapW;
+    if (!actions || !containerEl || !(viewport.zoom > 0)) return { ticks: [], spacing: 0 };
+    const rect = containerEl.getBoundingClientRect();
+    const worldLo = (0 - viewport.panX) / viewport.zoom;
+    const worldHi = (rect.width - viewport.panX) / viewport.zoom;
+    const lvl = rulerLevel(viewport.zoom, RULER_TARGET_PX);
+    const ticks = ticksInRange(worldLo, worldHi, lvl.spacing).map((wx) => ({
+      wx,
+      sx: actions.worldToScreen(wx, 0).x,
+    }));
+    return { ticks, spacing: lvl.spacing };
+  });
+
+  // Screen x of the live mouse marker on the ruler (null = off-canvas).
+  let mouseMarkerX = $derived.by(() => {
+    viewport; mouseWorldX;
+    if (mouseWorldX == null || !actions) return null;
+    return actions.worldToScreen(mouseWorldX, 0).x;
+  });
   let minimapThumb = $state(""); // data URL of the current slide, for the minimap
   let viewport = $state({ zoom: 1, panX: 0, panY: 0 });
   // PanZoom actions — deliberately NOT $state: it's bound during template
@@ -100,6 +135,63 @@
     });
   }
 
+  // Blender-style background grid on a SEPARATE underlay canvas beneath .scene —
+  // editor-only chrome, never touching the compositor. Repaints on the same
+  // reactive deps as the scene (viewport, size, toggle, theme for line color).
+  $effect(() => {
+    viewport; wrapW; wrapH; app.gridEnabled; app.theme;
+    paintGrid();
+  });
+
+  /**
+   * Command (draws to the underlay canvas). Paints the multi-level decade grid:
+   * each visible decade level's lines at its per-level fade opacity, so the
+   * composite reads as one continuous grid at any zoom (ticks.js math). Cleared
+   * (and skipped) when the grid option is off. Line color derives from --fg at
+   * low alpha via CSS color-mix — theme-aware, no hardcoded color.
+   */
+  function paintGrid() {
+    if (!gridEl || !containerEl) return;
+    const dpr = app.dpr();
+    const rect = containerEl.getBoundingClientRect();
+    if (gridEl.width !== Math.round(rect.width * dpr) || gridEl.height !== Math.round(rect.height * dpr)) {
+      gridEl.width = Math.round(rect.width * dpr);
+      gridEl.height = Math.round(rect.height * dpr);
+    }
+    const ctx = gridEl.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    if (!app.gridEnabled || !(viewport.zoom > 0)) return;
+
+    const cs = getComputedStyle(containerEl);
+    const base = cs.getPropertyValue("--a-grid-line").trim() || cs.getPropertyValue("--fg").trim() || "#888";
+    const worldLoX = (0 - viewport.panX) / viewport.zoom;
+    const worldHiX = (rect.width - viewport.panX) / viewport.zoom;
+    const worldLoY = (0 - viewport.panY) / viewport.zoom;
+    const worldHiY = (rect.height - viewport.panY) / viewport.zoom;
+    ctx.lineWidth = 1; // hairline in CSS px (dpr scaling already applied via setTransform)
+
+    // Coarse levels drawn after fine ones so their (equal or stronger) lines sit
+    // on top; opacity handles the visual weighting either way.
+    for (const lvl of visibleLevels(viewport.zoom, RULER_TARGET_PX)) {
+      ctx.globalAlpha = lvl.opacity;
+      ctx.strokeStyle = base;
+      ctx.beginPath();
+      for (const wx of ticksInRange(worldLoX, worldHiX, lvl.spacing)) {
+        const sx = Math.round(wx * viewport.zoom + viewport.panX) + 0.5; // crisp 1px line
+        ctx.moveTo(sx, 0);
+        ctx.lineTo(sx, rect.height);
+      }
+      for (const wy of ticksInRange(worldLoY, worldHiY, lvl.spacing)) {
+        const sy = Math.round(wy * viewport.zoom + viewport.panY) + 0.5;
+        ctx.moveTo(0, sy);
+        ctx.lineTo(rect.width, sy);
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
   // PanZoom → our state (also parks actions on the app for commands like Reset
   // View, and the latest viewport so undo snapshots can restore the view).
   function onviewport(vp) {
@@ -140,6 +232,7 @@
 
   function onPointerMove(e) {
     const w = worldPoint(e);
+    mouseWorldX = w.x; // live ruler marker (world px); cleared on pointer leave
     if (!drag) {
       // Hover tracking for hover-only chrome (the camera's border).
       const nodes = app.nodes();
@@ -406,6 +499,10 @@
     app.setPreview([[["items", drag.itemId, drag.which], binding]]);
   }
 
+  function onPointerLeave() {
+    if (!drag) mouseWorldX = null; // hide the ruler marker when the pointer leaves
+  }
+
   function onPointerUp() {
     if (!drag) return;
     if (drag.kind === "endpoint") app.anchorsVisible = drag.anchorsWereVisible;
@@ -489,6 +586,9 @@
   <PanZoom {onviewport}>
     {#snippet children(vp, a)}
       {bindActions(a)}
+      <!-- Blender-style grid on its OWN underlay canvas, beneath .scene; the
+           compositor never sees it (editor-only chrome). -->
+      <canvas bind:this={gridEl} class="grid-underlay"></canvas>
       <canvas bind:this={canvasEl} class="scene"></canvas>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
@@ -497,6 +597,7 @@
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}
         onpointercancel={onPointerUp}
+        onpointerleave={onPointerLeave}
       >
         <defs>
           <!-- Two-way arrowheads for matching-dimension indicators; markers
@@ -572,6 +673,25 @@
       {/if}
     {/snippet}
   </PanZoom>
+
+  <!-- Top ruler strip: world-px tick labels (ticks.js) + a live mouse marker.
+       pointer-events:none so it never blocks canvas interaction; the marker is
+       fed by the canvas pointermove handler. Left ruler is intentionally
+       omitted — the manifest records it as the open question. -->
+  {#if app.rulerEnabled}
+    <div class="ruler ruler-top">
+      <svg class="ruler-svg" width="100%" height="100%">
+        {#each ruler.ticks as t}
+          <line class="ruler-tick" x1={t.sx} y1="0" x2={t.sx} y2="100%" />
+          <text class="ruler-label" x={t.sx + 3} y="10">{t.wx}</text>
+        {/each}
+        {#if mouseMarkerX != null}
+          <line class="ruler-marker" x1={mouseMarkerX} y1="0" x2={mouseMarkerX} y2="100%" />
+          <text class="ruler-marker-label" x={mouseMarkerX + 3} y="10">{Math.round(mouseWorldX)}</text>
+        {/if}
+      </svg>
+    </div>
+  {/if}
 </div>
 
 <!-- Styling lives in app.css (app convention: no <style> blocks in app components). -->

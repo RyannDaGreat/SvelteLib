@@ -950,3 +950,71 @@ body,
   flex: 1;
   min-height: 0;
 }
+
+/* ── Grid + Ruler (editor-only; toggled via the palette, browser settings) ──
+   The grid line color derives from --fg at a low alpha via color-mix, so it
+   auto-adapts to every theme (light/dark) with no per-theme override. Applied
+   per-level opacity happens IN the canvas (ticks.js fade math); this token is
+   the base ink. The ruler reuses --fg-dim (labels) and --a-selection (marker),
+   matching the rest of the chrome. */
+:root {
+  --a-grid-line: color-mix(in srgb, var(--fg) 12%, transparent);
+  --a-ruler-h: 18px; /* strip thickness; ~ the key-chip height standard */
+  --a-ruler-bg: color-mix(in srgb, var(--a-panel-bg) 88%, transparent);
+  --a-ruler-tick: color-mix(in srgb, var(--fg) 28%, transparent);
+  --a-ruler-label: var(--fg-dim);
+  --a-ruler-marker: var(--a-selection);
+  --a-ruler-font: 9px;
+}
+
+/* Grid underlay: a canvas BENEATH .scene, filling the panzoom container. It
+   shares .scene's absolute-fill box but sits first in DOM order (lower z). */
+.canvas-wrap .grid-underlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none; /* purely decorative; all input goes to .overlay */
+}
+
+/* Top ruler strip — absolutely positioned over the canvas top edge, does not
+   capture pointer events (the live marker is fed by the canvas handler). */
+.canvas-wrap .ruler-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--a-ruler-h);
+  background: var(--a-ruler-bg);
+  border-bottom: var(--a-hairline) solid var(--border);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ruler-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ruler-tick {
+  stroke: var(--a-ruler-tick);
+  stroke-width: var(--a-hairline);
+}
+
+.ruler-label {
+  fill: var(--a-ruler-label);
+  font-size: var(--a-ruler-font);
+  font-family: inherit;
+}
+
+.ruler-marker {
+  stroke: var(--a-ruler-marker);
+  stroke-width: 1px;
+}
+
+.ruler-marker-label {
+  fill: var(--a-ruler-marker);
+  font-size: var(--a-ruler-font);
+  font-family: inherit;
+}
