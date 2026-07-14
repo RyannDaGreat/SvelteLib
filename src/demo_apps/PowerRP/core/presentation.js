@@ -2,8 +2,7 @@
  * Presentation playback. The ONLY state tracked while presenting is the
  * ordered list of [slideId, alpha] pairs (per the manifest); since V1 decks
  * are linear that reduces to {index, alpha} — slides 0..index-1 at alpha 1,
- * slide `index` at `alpha`, later slides at 0. playbackPairs() materializes
- * the canonical list form.
+ * slide `index` at `alpha`, later slides at 0.
  *
  * Transition triggers (user question, 2026-07-14): V1 = arrow keys, plus an
  * optional per-slide `autoAdvance` (seconds to linger AFTER the tween into
@@ -106,12 +105,6 @@ export function createPresenter(getDoc, onFrame) {
     },
     /** Command. Stops timers/animation (call when leaving present mode). */
     stop: cancel,
-    /**
-     * Pure-ish query. The canonical [[slideId, alpha]] playback list.
-     */
-    playbackPairs() {
-      return getDoc().slides.map((s, i) => [s.id, i < index ? 1 : i === index ? alpha : 0]);
-    },
   };
   return api;
 }

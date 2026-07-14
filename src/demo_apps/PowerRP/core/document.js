@@ -2,7 +2,7 @@
  * The PowerRP document model.
  *
  * A document is ONLY:
- *   { meta: {name, slideW, slideH}, slides: [{id, name, duration, delta}] }
+ *   { meta: {name, slideW, slideH, fps}, slides: [{id, name, duration, delta}] }
  *
  * There is no separate items table — EVERYTHING is deltas (slide 0's delta
  * creates the initial items). Slide N's full state = fold of deltas 0..N over
@@ -18,7 +18,7 @@
  * (WeakMap keyed on document identity).
  */
 
-import { NONE, blendApplied, copied, getPath, setPath, deletePath, leaves } from "./deltas.js";
+import { blendApplied, copied, getPath, setPath, deletePath, leaves } from "./deltas.js";
 
 /** Query (reads crypto). Random 8-char id — short but collision-safe at presentation scale. */
 export function uuid() {
@@ -127,14 +127,6 @@ export function keyframeIndices(doc, path) {
 export function withNewItem(doc, index, state) {
   const id = uuid();
   return [keyframed(doc, index, ["items", id], copied(state)), id];
-}
-
-/** Pure function. Deletes an item as of slide `index` (NONE keyframe). Earlier slides keep it. */
-export function withItemDeleted(doc, index, itemId) {
-  let out = keyframed(doc, index, ["items", itemId], NONE);
-  // Later slides' keyframes for a dead item are meaningless — prune them.
-  for (let i = index + 1; i < out.slides.length; i++) out = unkeyframed(out, i, ["items", itemId]);
-  return out;
 }
 
 /** Pure function. Removes an item FROM EXISTENCE: every keyframe of it on every slide. */

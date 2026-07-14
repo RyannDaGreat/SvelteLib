@@ -1,9 +1,9 @@
 /**
  * Undo/redo as a document snapshot log (annotator pattern). Documents are
  * immutable plain-JSON trees, so a "snapshot" is just holding the reference —
- * no cloning needed. Receipts-based undo (deltas.js receipts) is a V2
- * consideration; for V1 documents are small and this is unbeatable for
- * simplicity.
+ * no cloning needed. Documents are immutable
+ * plain trees, so holding references is free; receipts-style undo was never
+ * ported from LIAC (a possible future optimization).
  */
 
 export function createUndo(initialDoc) {

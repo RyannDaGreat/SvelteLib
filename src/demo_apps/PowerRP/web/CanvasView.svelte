@@ -21,7 +21,7 @@
 
   let { app } = $props();
 
-      const SNAP_PX = 8; // THE one uniform snap threshold (user rule): drag snap, resize snap, anchor bind, border grab (value PENDING USER RATIFICATION)
+  const SNAP_PX = 8; // THE one uniform snap threshold (user rule): drag snap, resize snap, anchor bind, border grab (value PENDING USER RATIFICATION)
   const MIN_SIZE = 0; // sizes are non-negative — a mathematical bound, not a design choice
 
   let containerEl = $state(null);
@@ -74,7 +74,6 @@
   // spanning each object whose width/height matches the resizing item's.
   // {axis: "w"|"h", x, y, w, h} — the AABB the arrow is drawn across.
   let sizeIndicators = $state([]);
-  let hoverItemId = $state(null); // item under the pointer (hover-only chrome)
   // Anchor under the pointer → immediate SVG-native tooltip naming it
   // (HTML Tooltip can't nest inside <svg>). {label, x, y} in world coords.
   let hoverAnchor = $state(null);
@@ -84,7 +83,6 @@
   // (wrapW/wrapH), so pane resizes re-render instead of stretching the bitmap.
   $effect(() => {
     app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH;
-    app.selection; hoverItemId; app.theme; // hover/selected chrome + theme color
     paint();
   });
 
@@ -128,10 +126,6 @@
       anchorsVisible: app.anchorsVisible,
       stateOverride: app.previewDelta,
       editorChrome: true, // camera bbox etc. draw only here
-      hoveredId: hoverItemId,
-      selectedId: app.selection,
-      // Editor chrome color comes from the THEME (user rule — no hardcoded cyan).
-      chromeColor: getComputedStyle(containerEl).getPropertyValue("--a-selection").trim() || null,
     });
   }
 
@@ -234,9 +228,7 @@
     const w = worldPoint(e);
     mouseWorldX = w.x; // live ruler marker (world px); cleared on pointer leave
     if (!drag) {
-      // Hover tracking for hover-only chrome (the camera's border).
       const nodes = app.nodes();
-      hoverItemId = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom)?.itemId ?? null;
       // Anchor hover tooltip (immediate; only while anchors are shown).
       hoverAnchor = null;
       if (app.anchorsVisible) {

@@ -37,15 +37,15 @@ export function createShortcuts() {
     hints(ctx) {
       return entries.filter((e) => !e.hidden && e.when(ctx)).map((e) => [e.keys, e.label]);
     },
-    /**
-     * Command (runs the matched entry). Dispatches a KeyboardEvent against the
-     * registry. Returns true if an entry ran (caller preventDefaults).
-     */
     /** Query. Key tokens bound to a command id (first match), or null. */
     commandKeys(commandId) {
       const e = entries.find((en) => en.command === commandId);
       return e ? e.keys : null;
     },
+    /**
+     * Command (runs the matched entry). Dispatches a KeyboardEvent against the
+     * registry. Returns true if an entry ran (caller preventDefaults).
+     */
     dispatch(event, ctx) {
       const token = keyToken(event);
       for (const e of entries) {

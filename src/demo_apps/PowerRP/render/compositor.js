@@ -61,7 +61,6 @@ export function paintScene(ctx, doc, opts) {
     slideIndex, alpha = 1, registry, view, drawBackground = true,
     anchorsVisible = false, stateOverride = null, editorChrome = false,
     zBelow = Infinity, noCulling = false, allowNesting = true,
-    hoveredId = null, selectedId = null, chromeColor = null,
   } = opts;
   let state = foldState(doc, slideIndex, alpha);
   if (stateOverride) state = blendApplied(state, stateOverride, 1);
@@ -82,10 +81,7 @@ export function paintScene(ctx, doc, opts) {
     canvasW: canvas.width,
     canvasH: canvas.height,
     anchorsVisible,
-    editorChrome, // editor-only widgets (the camera's dashed bbox) check this
-    hoveredId, // item under the pointer — hover-only chrome (camera border)
-    selectedId, // current selection — same purpose
-    chromeColor, // THEME-derived editor chrome color (never hardcode; user rule)
+    editorChrome, // editor-only chrome gate (nothing consumes it today beyond gating)
   };
   // renderRegion lets a backdrop sampler re-render a sub-view at higher
   // resolution (magnifier supersampling). Only offered at depth 1 — the
@@ -242,7 +238,7 @@ export function canSkipNode(node, viewRectWorld) {
   return defaultCanSkip(node, viewRectWorld);
 }
 
-/** Thumbnail render width shared by the minimap and slide-nav thumbnails. */
+/** Minimap thumbnail render width (slide-nav thumbnails size themselves via DirtyImage). */
 export const THUMB_W = 256;
 
 /**
@@ -260,13 +256,4 @@ export function fitRectView(rect, w, h, dpr = 1) {
     panY: (h - rect.h * zoom) / 2 - rect.y * zoom,
     dpr,
   };
-}
-
-/**
- * Pure function. fitRectView for the meta slide rect (the no-camera fallback).
- *
- * @example fitSlideView({slideW: 1280, slideH: 720}, 640, 360, 1) // {zoom: 0.5, panX: 0, panY: 0, dpr: 1}
- */
-export function fitSlideView(meta, w, h, dpr = 1) {
-  return fitRectView({ x: 0, y: 0, w: meta.slideW, h: meta.slideH }, w, h, dpr);
 }

@@ -37,7 +37,7 @@
       ["load-file", "mdi:folder-open-outline", "Load"],
     ],
     [
-      ["reset-view", "mdi:fit-to-screen-outline", "Zoom to fit slide"],
+      ["reset-view", "mdi:fit-to-screen-outline", "Zoom to fit camera"],
       ["present", "mdi:play", "Present (fullscreen)"],
     ],
   ];

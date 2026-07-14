@@ -35,7 +35,6 @@
  *   }
  *
  * No plugin may import another plugin. Composition happens through
- * capabilities and document state only ("abhor bleeding" rule, enforced by
  * tests/conventions_test.js).
  */
 

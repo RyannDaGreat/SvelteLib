@@ -45,31 +45,6 @@ export function dist2(x1, y1, x2, y2) {
 }
 
 /**
- * Pure function. Is point inside rect {x,y,w,h}?
- *
- * @example pointInRect(5, 5, {x: 0, y: 0, w: 10, h: 10}) // true
- * @example pointInRect(15, 5, {x: 0, y: 0, w: 10, h: 10}) // false
- */
-export function pointInRect(px, py, rect) {
-  return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
-}
-
-/**
- * Pure function. Closest point on a circle's perimeter to an outside point —
- * the arrow's "closest" computed anchor on circles. Degenerate (point at
- * center) returns the rightmost perimeter point.
- *
- * @example closestPointOnCircle(0, 0, 10, 20, 0) // {x: 10, y: 0}
- * @example closestPointOnCircle(0, 0, 5, 0, -20) // {x: 0, y: -5}
- */
-export function closestPointOnCircle(cx, cy, r, px, py) {
-  const dx = px - cx, dy = py - cy;
-  const d = Math.hypot(dx, dy);
-  if (d === 0) return { x: cx + r, y: cy };
-  return { x: cx + (dx / d) * r, y: cy + (dy / d) * r };
-}
-
-/**
  * Pure function. Closest point on rect border to an outside point — the
  * "closest" computed anchor for bbox widgets. Clamps to border.
  *

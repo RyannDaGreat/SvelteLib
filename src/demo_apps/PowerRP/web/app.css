@@ -20,7 +20,6 @@
   --border: rgba(255, 255, 255, 0.1);
   --control-bg: #242424;
   --radius: 4px; /* cap for lib components; app chrome is square */
-  --radius-lg: 6px;
 
   --a-panel-bg: #1a1a1a;
   --a-canvas-bg: #141414;
@@ -275,11 +274,6 @@ body,
   flex: 1;
 }
 
-.toolbar .palette-hint {
-  font-size: var(--a-font-sm);
-  color: var(--fg-dim);
-}
-
 /* ── Canvas ──────────────────────────────────────────────────────────────── */
 
 .canvas-wrap {
@@ -403,11 +397,6 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.slidenav .kfcount {
-  color: var(--a-keyed);
-  font-size: var(--a-font-sm);
 }
 
 .slidenav .eye {
@@ -740,7 +729,8 @@ body,
 .palette-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: var(--a-sp-3);
   width: 100%;
   padding: var(--a-sp-3) var(--a-sp-4);
   background: transparent;
@@ -749,11 +739,6 @@ body,
   text-align: left;
   cursor: pointer;
   font-size: var(--a-font-md);
-}
-
-.palette-item {
-  gap: var(--a-sp-3);
-  justify-content: flex-start;
 }
 
 .palette-item.highlighted {

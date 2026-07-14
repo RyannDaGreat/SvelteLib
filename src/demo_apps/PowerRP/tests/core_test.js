@@ -9,10 +9,10 @@ import assert from "node:assert/strict";
 import { NONE, applied, blendApplied, contains, setPath, deletePath, getPath, leaves } from "../core/deltas.js";
 import { interpolate, ease } from "../core/interpolators.js";
 import * as T from "../core/transform.js";
-import { clipLineToRect, closestPointOnCircle, closestPointOnRectBorder } from "../core/geometry.js";
+import { clipLineToRect, closestPointOnRectBorder } from "../core/geometry.js";
 import {
   newDocument, foldState, slideState, keyframed, unkeyframed, keyframeIndices,
-  withNewItem, withItemDeleted, withNewSlide, withSlideDeleted, withSlideMoved,
+  withNewItem, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, serialize, deserialize, allKeyframes, withNormalizedZ, bisectedZ,
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
@@ -99,7 +99,6 @@ test("clipLineToRect", () => {
   assert.deepEqual(diag, [0, 0, 10, 10]);
 });
 test("closest points", () => {
-  assert.deepEqual(closestPointOnCircle(0, 0, 10, 20, 0), { x: 10, y: 0 });
   assert.deepEqual(closestPointOnRectBorder({ x: 0, y: 0, w: 10, h: 10 }, 25, 5), { x: 10, y: 5 });
   assert.deepEqual(closestPointOnRectBorder({ x: 0, y: 0, w: 10, h: 10 }, 5, 4), { x: 5, y: 0 });
 });
@@ -118,18 +117,6 @@ test("document fold + keyframes + symlink semantics", () => {
   assert.deepEqual(keyframeIndices(doc, ["items", id, "x"]), [0, 1]);
   doc = unkeyframed(doc, 1, ["items", id, "x"]);
   assert.equal(foldState(doc, 1).items[id].x, 0);
-});
-test("item deletion prunes later keyframes", () => {
-  let doc = newDocument();
-  let id;
-  [doc, id] = withNewItem(doc, 0, { type: "rect", x: 0, z: 0 });
-  [doc] = withNewSlide(doc, 0);
-  [doc] = withNewSlide(doc, 1);
-  doc = keyframed(doc, 2, ["items", id, "x"], 5);
-  doc = withItemDeleted(doc, 1, id);
-  assert.ok(foldState(doc, 0).items[id]);
-  assert.equal(foldState(doc, 1).items[id], undefined);
-  assert.deepEqual(allKeyframes(doc).filter((k) => k.slideIndex === 2), []);
 });
 test("slide insert shifts numbers, UUIDs stable; move/delete", () => {
   let doc = newDocument();
@@ -231,7 +218,7 @@ test("cameraRect: default camera in new docs, tweens, meta fallback", () => {
   const rect = cameraRect(foldState(doc, 0), doc.meta);
   assert.deepEqual(rect, { x: 0, y: 0, w: 1280, h: 720, background: "#ffffff" });
   const camId = Object.entries(foldState(doc, 0).items).find(([, s]) => s.type === "camera")[0];
-  let doc2 = newDocument();
+  let doc2;
   [doc2] = withNewSlide(doc, 0);
   doc2 = keyframed(doc2, 1, ["items", camId, "w"], 640);
   assert.equal(cameraRect(foldState(doc2, 1, 0.5), doc2.meta).w, 960); // camera tweens

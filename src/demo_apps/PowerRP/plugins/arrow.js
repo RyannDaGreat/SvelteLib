@@ -9,6 +9,8 @@
  * missing on the current slide the arrow simply doesn't draw that frame.
  */
 
+import { resolveBinding } from "../core/derive.js";
+
 export const arrowPlugin = {
   type: "arrow",
   title: "Arrow",
@@ -90,15 +92,8 @@ export function resolveEndpoints(s, resolveBinding) {
 
 /** Pure function. resolveEndpoints when all you have is a node + nodesById. */
 function resolveEndpointsForNode(node, nodesById) {
-  // Local import cycle avoidance: mirror env.resolveBinding via derive.js API.
-  const { resolveBinding } = nodeDeps;
   return resolveEndpoints(node.state, (b, tx, ty) => resolveBinding(b, nodesById, tx, ty));
 }
-
-// Injected once at registration time (plugins may import core, but this keeps
-// derive.js from being loaded twice under mixed static/dynamic import setups).
-import { resolveBinding as _resolveBinding } from "../core/derive.js";
-const nodeDeps = { resolveBinding: _resolveBinding };
 
 /**
  * Pure function. Distance from point to segment ab.
