@@ -67,6 +67,7 @@
   --a-slide-disabled-opacity: 0.5;
   --a-minimap-opacity: 0.5; /* user spec: minimap at 50% transparency */
   --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
+  --a-key-chip-h: 18px; /* THE key-chip height (one standard; value PENDING USER RATIFICATION) */
 
   /* SplitPane handles — thin, per annotator reference */
   --a-split-handle: #5a5a5a;
@@ -752,15 +753,16 @@ body,
   flex: none;
 }
 
-.palette-item .shortcut kbd {
+/* One chip per combo, standardized height (user spec). */
+.palette-item .shortcut kbd.combo {
   font-family: inherit;
-  padding: var(--a-sp-1) var(--a-sp-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  height: var(--a-key-chip-h);
+  padding: 0 var(--a-sp-2);
   border: var(--a-hairline) solid var(--fg-dim);
   line-height: 1;
-}
-
-.palette-item .shortcut .plus {
-  opacity: 0.5;
 }
 
 .palette-item .sub-arrow {
@@ -830,4 +832,33 @@ body,
   color: inherit;
   font-weight: bold;
   text-decoration: underline;
+}
+
+/* ── Snap toggles (Toolbar) ─────────────────────────────────────────────────
+   ACTIVE = the setting is on (accent); ENGAGED = a snap is applied THIS drag,
+   so the icon takes the guide color (same --a-guide as the guide lines). */
+/* Toggled-on state: ICON COLOR only — never a background fill (user rule:
+   "when you toggle a button, the background should not be gray... it should
+   be transparent the same way that it always was"). */
+.btn-icon.active {
+  color: var(--a-selection);
+}
+
+.btn-icon.snap-engaged {
+  color: var(--a-guide);
+}
+
+/* Matching-dimension two-way arrow (Figma-style): the guide color, no fill. */
+.overlay .size-arrow {
+  stroke: var(--a-guide);
+  stroke-width: var(--a-guide-stroke);
+  fill: none;
+  pointer-events: none;
+}
+
+/* Tooltips: a bit further below the cursor and slightly transparent (user
+   spec; exact values PENDING USER RATIFICATION). */
+.app {
+  --tt-gap: 14px;
+  --tt-bg: color-mix(in srgb, var(--control-bg) 82%, transparent);
 }

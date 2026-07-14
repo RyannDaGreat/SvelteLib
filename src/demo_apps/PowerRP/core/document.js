@@ -178,6 +178,24 @@ export function withSlideMoved(doc, index, offset) {
   return { ...doc, slides };
 }
 
+/**
+ * Pure function. Ensures the document has THE camera (docs saved before the
+ * camera existed lack one — loading such a doc injects the default camera
+ * into slide 0's delta, sized to the meta slide rect).
+ *
+ * @example // withCameraEnsured(preCameraDoc).slides[0].delta.items now has a camera
+ */
+export function withCameraEnsured(doc) {
+  for (const s of doc.slides)
+    for (const item of Object.values(s.delta.items ?? {}))
+      if (item && item.type === "camera") return doc;
+  const cameraId = uuid();
+  return keyframed(doc, 0, ["items", cameraId], {
+    type: "camera", name: "Camera", x: 0, y: 0,
+    w: doc.meta.slideW, h: doc.meta.slideH, z: 1000, active: true, background: "#ffffff",
+  });
+}
+
 // ── Z-order maintenance ──────────────────────────────────────────────────────
 // UI reorder ops set z to the midpoint between neighbors (bisect), then this
 // renormalizes every KEYFRAMED z document-wide to 1, 2, 3... (order-preserving

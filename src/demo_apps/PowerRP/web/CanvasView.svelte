@@ -13,16 +13,14 @@
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
   import { pickNode, nodeFeatures, nodeAnchors } from "../core/derive.js";
-  import { solveSnap, axisLock } from "../core/snap.js";
+  import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { paintScene, THUMB_W } from "../render/compositor.js";
   import * as T from "../core/transform.js";
 
   let { app } = $props();
 
-  const SNAP_TOL_PX = 8; // screen px within which features snap (PENDING USER RATIFICATION)
-  const ANCHOR_BIND_PX = 12; // screen px within which an arrow endpoint binds (PENDING USER RATIFICATION)
-  const GRAB_PX = 8; // screen-px grab tolerance for border-hit widgets (camera); same value as SNAP_TOL_PX
+      const SNAP_PX = 8; // THE one uniform snap threshold (user rule): drag snap, resize snap, anchor bind, border grab (value PENDING USER RATIFICATION)
   const MIN_SIZE = 0; // sizes are non-negative — a mathematical bound, not a design choice
 
   let containerEl = $state(null);
@@ -37,6 +35,10 @@
   // only change after actions is bound.
   let actions = null;
   let guides = $state([]); // world-space guide descriptors from snap/axis lock
+  // Matching-dimension indicators (Figma-style): world-space two-way arrows
+  // spanning each object whose width/height matches the resizing item's.
+  // {axis: "w"|"h", x, y, w, h} — the AABB the arrow is drawn across.
+  let sizeIndicators = $state([]);
   let drag = null; // non-reactive drag bookkeeping
 
   // Repaint whenever anything visible changes — INCLUDING the container size
@@ -112,7 +114,7 @@
     if (e.button !== 0 || app.mode !== "edit") return;
     const w = worldPoint(e);
     const nodes = app.nodes();
-    const hit = pickNode(nodes, w.x, w.y, GRAB_PX / viewport.zoom);
+    const hit = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom);
     app.selection = hit?.itemId ?? null;
     if (!hit || !hit.plugin.capabilities.transform) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -154,9 +156,10 @@
       drag.axis = null;
       // Snap: probe with the dragged item's own point features at the
       // proposed position; snap against every OTHER node's features.
+      // Gated on app.snapEnabled (master toggle — off = no snapping anywhere).
       const nodes = app.nodes();
       const me = nodes.find((n) => n.itemId === drag.itemId);
-      if (me) {
+      if (app.snapEnabled && me) {
         const shifted = {
           ...me,
           world: { ...me.world, x: drag.startX + dx, y: drag.startY + dy },
@@ -164,11 +167,12 @@
         };
         const probes = nodeFeatures(shifted).filter((f) => f.kind === "point");
         const features = nodes.filter((n) => n.itemId !== drag.itemId).flatMap(nodeFeatures);
-        const tol = SNAP_TOL_PX / viewport.zoom;
+        const tol = SNAP_PX / viewport.zoom;
         const snap = solveSnap(probes, features, tol);
         dx += snap.dx;
         dy += snap.dy;
         newGuides.push(...snap.guides);
+        if (snap.dx !== 0 || snap.dy !== 0) app.snapEngaged = true;
       }
     }
     guides = newGuides;
@@ -185,12 +189,18 @@
     if (!node) return;
     e.stopPropagation();
     containerEl.querySelector("svg").setPointerCapture(e.pointerId);
+    const h = handleId;
     drag = {
       kind: "resize",
       itemId: node.itemId,
       handleId,
       startState: { x: node.state.x, y: node.state.y, w: node.state.w, h: node.state.h },
       world: node.world,
+      // Which edges this handle moves — used by edge/size snapping. World-space
+      // edge snapping only makes sense for an axis-aligned box, so we flag
+      // rotation and skip snapping (not wrong math) for rotated items.
+      west: h.includes("l"), east: h.includes("r"), north: h.includes("t"), south: h.includes("b"),
+      rotated: Math.abs((node.state.rotation ?? 0) % (2 * Math.PI)) > 1e-9,
     };
     app.dragging = true;
   }
@@ -226,12 +236,103 @@
         y = s.y + (pc.y - T.apply(drag.world, 0, 0).y);
       }
     }
+
+    // Snapping (edge→line + size-match) operates in WORLD space on the
+    // axis-aligned case only. For rotated items the box edges aren't axis
+    // parallel, so we skip snapping rather than produce wrong math.
+    let newGuides = [], indicators = [];
+    if (!drag.rotated && app.snapEnabled) {
+      const r = applyResizeSnap({ x, y, ww, hh });
+      x = r.x; y = r.y; ww = r.ww; hh = r.hh;
+      newGuides = r.guides;
+      indicators = r.indicators;
+    }
+    guides = newGuides;
+    sizeIndicators = indicators;
+
     app.setPreview([
       [["items", drag.itemId, "x"], x],
       [["items", drag.itemId, "y"], y],
       [["items", drag.itemId, "w"], ww],
       [["items", drag.itemId, "h"], hh],
     ]);
+  }
+
+  /**
+   * Snaps an in-progress axis-aligned resize. Returns corrected {x,y,ww,hh},
+   * the aligned line `guides`, and matching-dimension `indicators`. The moving
+   * edges snap to other nodes' infinite lines (solveEdgeSnap); when the master
+   * item's width/height lands within tolerance of another VISIBLE bbox item's
+   * same dimension it snaps EXACTLY to it (sizeMatches, gated on snapSizeEnabled)
+   * and every matching object gets a two-way-arrow indicator across its span.
+   * Raises app.snapEngaged whenever any correction is applied.
+   *
+   * Near-pure (mutates app.snapEngaged and reads app scene state); geometry
+   * itself is world-space and deterministic.
+   */
+  function applyResizeSnap({ x, y, ww, hh }) {
+    const scale = drag.world.scale;
+    const tol = SNAP_PX / viewport.zoom;
+    const others = app.nodes().filter((n) => n.itemId !== drag.itemId);
+    const guides = [], indicators = [];
+    let engaged = false;
+
+    // ── Edge → line snapping (right/left in x, bottom/top in y) ──
+    const edges = [];
+    if (drag.east) edges.push({ axis: "x", pos: x + scale * ww });
+    if (drag.west) edges.push({ axis: "x", pos: x });
+    if (drag.south) edges.push({ axis: "y", pos: y + scale * hh });
+    if (drag.north) edges.push({ axis: "y", pos: y });
+    const features = others.flatMap(nodeFeatures);
+    const es = solveEdgeSnap(edges, features, tol);
+    // A moving right/bottom edge changes size; a moving left/top edge changes
+    // both origin and size (opposite edge stays put).
+    if (drag.east) ww += es.dx / scale;
+    if (drag.west) { x += es.dx; ww -= es.dx / scale; }
+    if (drag.south) hh += es.dy / scale;
+    if (drag.north) { y += es.dy; hh -= es.dy / scale; }
+    if (es.dx !== 0 || es.dy !== 0) engaged = true;
+    guides.push(...es.guides);
+
+    // ── Size matching (Figma-style matching-dimension indicator) ──
+    if (app.snapSizeEnabled) {
+      const bbox = others.filter((n) => n.plugin.capabilities.bbox);
+      // Width match when a horizontal edge (E/W) is moving; height when N/S.
+      if (drag.east || drag.west) {
+        const m = sizeMatches(ww * scale, bbox.map((n) => ({ id: n.itemId, size: (n.state.w ?? 0) * n.world.scale })), tol);
+        if (m) {
+          const target = m.value / scale; // exact width in the master's local units
+          if (drag.west) x += scale * (ww - target); // keep the fixed (right) edge put
+          ww = target;
+          engaged = true;
+          for (const id of m.ids) indicators.push({ axis: "w", ...worldAABB(others.find((n) => n.itemId === id)) });
+          indicators.push({ axis: "w", x, y, w: scale * ww, h: scale * hh });
+        }
+      }
+      if (drag.north || drag.south) {
+        const m = sizeMatches(hh * scale, bbox.map((n) => ({ id: n.itemId, size: (n.state.h ?? 0) * n.world.scale })), tol);
+        if (m) {
+          const target = m.value / scale;
+          if (drag.north) y += scale * (hh - target); // keep the fixed (bottom) edge put
+          hh = target;
+          engaged = true;
+          for (const id of m.ids) indicators.push({ axis: "h", ...worldAABB(others.find((n) => n.itemId === id)) });
+          indicators.push({ axis: "h", x, y, w: scale * ww, h: scale * hh });
+        }
+      }
+    }
+    if (engaged) app.snapEngaged = true;
+    return { x, y, ww, hh, guides, indicators };
+  }
+
+  /** Pure-ish. The world-space axis-aligned bbox {x,y,w,h} of a bbox node. */
+  function worldAABB(node) {
+    return {
+      x: node.world.x,
+      y: node.world.y,
+      w: (node.state.w ?? 0) * node.world.scale,
+      h: (node.state.h ?? 0) * node.world.scale,
+    };
   }
 
   // ── Arrow endpoint drag (anchor binding UX) ────────────────────────────────
@@ -241,36 +342,50 @@
     if (!node) return;
     e.stopPropagation();
     containerEl.querySelector("svg").setPointerCapture(e.pointerId);
-    drag = { kind: "endpoint", itemId: node.itemId, which };
+    // Remember whether the anchors toggle was already on: endpoint drags show
+    // anchors while they want them, but the TOGGLE (not the drag) decides
+    // whether binding happens — and we restore visibility on pointer-up.
+    drag = { kind: "endpoint", itemId: node.itemId, which, anchorsWereVisible: app.anchorsVisible };
     app.dragging = true;
-    app.anchorsVisible = true; // anchors appear as X's while an endpoint wants them
   }
 
   function endpointDrag(w) {
-    const tol = ANCHOR_BIND_PX / viewport.zoom;
-    const nodes = app.nodes().filter((n) => n.itemId !== drag.itemId);
+    const tol = SNAP_PX / viewport.zoom;
+    // Anchor binding is GATED on the anchors toggle, and only ever happens
+    // within the ONE uniform snap threshold — dragging past it DISCONNECTS
+    // (user rule; the old drop-anywhere-on-body "closest" rebinding was
+    // sticky and obnoxious).
     let binding = { x: w.x, y: w.y };
-    // Nearest anchor X within tolerance binds a preset anchor…
-    let best = null;
-    for (const n of nodes)
-      for (const a of nodeAnchors(n)) {
-        const d = Math.hypot(a.x - w.x, a.y - w.y);
-        if (d <= tol && (!best || d < best.d)) best = { d, binding: { item: n.itemId, anchor: a.id } };
+    if (app.anchorsVisible) {
+      const nodes = app.nodes().filter((n) => n.itemId !== drag.itemId);
+      let best = null;
+      for (const n of nodes)
+        for (const a of nodeAnchors(n)) {
+          const d = Math.hypot(a.x - w.x, a.y - w.y);
+          if (d <= tol && (!best || d < best.d)) best = { d, binding: { item: n.itemId, anchor: a.id } };
+        }
+      if (best) binding = best.binding;
+      else {
+        // "closest" computed anchor binds only when the pointer is within the
+        // SAME threshold of the perimeter point it would produce.
+        const hit = pickNode(nodes, w.x, w.y);
+        if (hit?.plugin.closestAnchor) {
+          const local = hit.plugin.closestAnchor(hit.state, w.x, w.y, hit.world);
+          const p = T.apply(hit.world, local.x, local.y);
+          if (Math.hypot(p.x - w.x, p.y - w.y) <= tol) binding = { item: hit.itemId, anchor: "closest" };
+        }
       }
-    if (best) binding = best.binding;
-    // …otherwise dropping on a widget's body binds its computed "closest" anchor.
-    else {
-      const hit = pickNode(nodes, w.x, w.y);
-      if (hit?.plugin.closestAnchor) binding = { item: hit.itemId, anchor: "closest" };
     }
     app.setPreview([[["items", drag.itemId, drag.which], binding]]);
   }
 
   function onPointerUp() {
     if (!drag) return;
-    if (drag.kind === "endpoint") app.anchorsVisible = false;
+    if (drag.kind === "endpoint") app.anchorsVisible = drag.anchorsWereVisible;
     drag = null;
     guides = [];
+    sizeIndicators = [];
+    app.snapEngaged = false; // cleared on pointer-up (per snap-round-2 spec)
     app.dragging = false;
     app.commitPreview();
   }
@@ -278,8 +393,8 @@
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.anchorsVisible;
-    if (!actions || !containerEl) return { outline: null, handles: [], anchors: [], guideSegs: [], endpoints: [] };
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.anchorsVisible; sizeIndicators;
+    if (!actions || !containerEl) return { outline: null, handles: [], anchors: [], guideSegs: [], endpoints: [], sizeArrows: [] };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -327,7 +442,19 @@
       return [{ kind: "line", x1: a.x, y1: a.y, x2: b.x, y2: b.y }];
     });
 
-    return { outline, handles, anchors, guideSegs, endpoints };
+    // Matching-dimension two-way arrows: a width match draws horizontally
+    // across the object's width at its vertical center; a height match draws
+    // vertically at its horizontal center. Both endpoints get arrowheads.
+    const sizeArrows = sizeIndicators.map((ind) => {
+      const [wx1, wy1, wx2, wy2] = ind.axis === "w"
+        ? [ind.x, ind.y + ind.h / 2, ind.x + ind.w, ind.y + ind.h / 2]
+        : [ind.x + ind.w / 2, ind.y, ind.x + ind.w / 2, ind.y + ind.h];
+      const a = actions.worldToScreen(wx1, wy1);
+      const b = actions.worldToScreen(wx2, wy2);
+      return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    });
+
+    return { outline, handles, anchors, guideSegs, endpoints, sizeArrows };
   });
 </script>
 
@@ -344,12 +471,30 @@
         onpointerup={onPointerUp}
         onpointercancel={onPointerUp}
       >
+        <defs>
+          <!-- Two-way arrowheads for matching-dimension indicators; markers
+               inherit the line's guide stroke via context-stroke. -->
+          <marker id="size-arrow-start" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+            <path d="M6,1 L1,4 L6,7" fill="none" stroke="context-stroke" stroke-width="1.5" />
+          </marker>
+          <marker id="size-arrow-end" markerWidth="8" markerHeight="8" refX="2" refY="4" orient="auto">
+            <path d="M2,1 L7,4 L2,7" fill="none" stroke="context-stroke" stroke-width="1.5" />
+          </marker>
+        </defs>
         {#each overlay.guideSegs as g}
           {#if g.kind === "line"}
             <line class="guide" x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} />
           {:else}
             <circle class="guide-point" cx={g.x} cy={g.y} r="4" />
           {/if}
+        {/each}
+        {#each overlay.sizeArrows as s}
+          <line
+            class="size-arrow"
+            x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}
+            marker-start="url(#size-arrow-start)"
+            marker-end="url(#size-arrow-end)"
+          />
         {/each}
         {#if overlay.outline}
           <polygon class="selection" points={overlay.outline} />

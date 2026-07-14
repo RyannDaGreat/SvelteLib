@@ -127,12 +127,14 @@
               >{#each titleSegments(cmd.title, query) as seg}{#if seg.hit}<mark class="fuzzy-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span
             >
             {#if app.shortcuts.commandKeys(cmd.id)}
+              <!-- ONE box per combo (user spec) — glyphs/letters side by side
+                   inside a single standardized-height chip, no separators. -->
               <span class="shortcut">
-                {#each app.shortcuts.commandKeys(cmd.id) as key, ki}
-                  {#if ki > 0}<span class="plus">+</span>{/if}<kbd>
-                    {#if keyIcon(key)}<iconify-icon icon={keyIcon(key)} width="11" height="11"></iconify-icon>{:else}{key}{/if}
-                  </kbd>
-                {/each}
+                <kbd class="combo">
+                  {#each app.shortcuts.commandKeys(cmd.id) as key}
+                    {#if keyIcon(key)}<iconify-icon icon={keyIcon(key)} width="11" height="11"></iconify-icon>{:else}<span>{key}</span>{/if}
+                  {/each}
+                </kbd>
               </span>
             {/if}
             {#if cmd.children}<iconify-icon class="sub-arrow" icon="mdi:chevron-right" width="16" height="16"></iconify-icon>{/if}

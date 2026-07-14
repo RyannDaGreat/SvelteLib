@@ -10,6 +10,7 @@ import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
+  withCameraEnsured,
 } from "../core/document.js";
 import { setPath, blendApplied } from "../core/deltas.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
@@ -47,6 +48,14 @@ export class PowerRPApp {
   // BROWSER setting (viewer-local, travels with the browser not the file):
   // render raster surfaces at devicePixelRatio. Default ON (manifest).
   retina = $state(localStorage.getItem("powerrp.retina") !== "off");
+  // BROWSER settings (viewer-local, default ON): master snap toggle (gates ALL
+  // snapping — move AND resize) and the snap-size / matching-dimension toggle.
+  snapEnabled = $state(localStorage.getItem("powerrp.snap") !== "off");
+  snapSizeEnabled = $state(localStorage.getItem("powerrp.snapSize") !== "off");
+  // Reactive flag CanvasView raises while any snap correction is applied in the
+  // current pointer-move; cleared on pointer-up. Drives the toolbar toggle
+  // taking the guide color while a snap is actually engaged.
+  snapEngaged = $state(false);
 
   toggleMinimap() {
     this.minimapVisible = !this.minimapVisible;
@@ -56,6 +65,16 @@ export class PowerRPApp {
   toggleRetina() {
     this.retina = !this.retina;
     localStorage.setItem("powerrp.retina", this.retina ? "on" : "off");
+  }
+
+  toggleSnap() {
+    this.snapEnabled = !this.snapEnabled;
+    localStorage.setItem("powerrp.snap", this.snapEnabled ? "on" : "off");
+  }
+
+  toggleSnapSize() {
+    this.snapSizeEnabled = !this.snapSizeEnabled;
+    localStorage.setItem("powerrp.snapSize", this.snapSizeEnabled ? "on" : "off");
   }
 
   /** Query. The effective devicePixelRatio for all raster rendering. */
@@ -355,7 +374,7 @@ export class PowerRPApp {
       input.click();
     });
     if (!file) return;
-    this.commit(deserialize(await file.text()));
+    this.commit(withCameraEnsured(deserialize(await file.text())));
     this.slideIndex = 0;
     this.selection = null;
   }
@@ -363,7 +382,9 @@ export class PowerRPApp {
   loadAutosave() {
     const json = localStorage.getItem(AUTOSAVE_KEY);
     if (json) {
-      this.doc = deserialize(json);
+      // withCameraEnsured migrates pre-camera documents (they lack the
+      // mandatory camera item; without it the picker shows no Camera).
+      this.doc = withCameraEnsured(deserialize(json));
       this.undoLog = createUndo(this.snapshot(this.doc));
     }
   }

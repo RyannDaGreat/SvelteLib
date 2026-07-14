@@ -62,6 +62,33 @@
       </Tooltip>
     {/each}
   {/each}
+  <span class="sep"></span>
+  <!-- Snap toggles: ACTIVE (accent) when the setting is on; while a snap is
+       actually ENGAGED mid-drag the icon takes the guide color (snap-engaged). -->
+  <Tooltip text="Toggle snapping (guides on move/resize)">
+    <button
+      class="btn-icon"
+      class:active={app.snapEnabled}
+      class:snap-engaged={app.snapEngaged}
+      aria-label="Toggle snapping"
+      aria-pressed={app.snapEnabled}
+      onclick={() => app.runCommand("toggle-snap")}
+    >
+      <iconify-icon icon="mdi:magnet" width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
+  <Tooltip text="Toggle snap to matching size (dimension indicators)">
+    <button
+      class="btn-icon"
+      class:active={app.snapSizeEnabled}
+      class:snap-engaged={app.snapEngaged}
+      aria-label="Toggle snap to matching size"
+      aria-pressed={app.snapSizeEnabled}
+      onclick={() => app.runCommand("toggle-snap-size")}
+    >
+      <iconify-icon icon="mdi:magnet-on" width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
   <span class="spacer"></span>
   <Tooltip text="Toggle light/dark — all themes: palette › Color Theme">
     <button class="btn-icon" aria-label="Toggle light/dark theme" onclick={() => app.toggleLightDark()}>

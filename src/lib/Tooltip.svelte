@@ -176,7 +176,7 @@
     /** @type {string} Plain-text tooltip content. Ignored if `tip` is given. */
     text = "",
     /** @type {"top"|"bottom"} Preferred side; flips when it would clip. */
-    placement = "top",
+    placement = "bottom", // default BELOW the pointer (PowerRP user spec)
     /** @type {number} Hover-time threshold in ms before showing (0 = immediate). */
     delay = 0,
     /** @type {boolean} When true, never show the tooltip. */

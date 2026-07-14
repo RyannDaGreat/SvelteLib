@@ -22,6 +22,15 @@
  *                                           // outline to a WORLD point (local out)
  *     snapFeatures?(state) → [...]          // extra snap features (LOCAL); bbox
  *                                           // widgets get standard ones for free
+ *     canSkip?(state, viewRectWorld) → bool // CULLING protocol: return true iff
+ *                                           // this widget contributes nothing to
+ *                                           // the given world-space view rect
+ *                                           // {x,y,w,h} and may be skipped when
+ *                                           // painting. Absent → the compositor's
+ *                                           // default rule (bbox AABB outside the
+ *                                           // view → skip; non-bbox never skips).
+ *                                           // Backdrop samplers are ALWAYS painted
+ *                                           // regardless of this hook.
  *     commands?: [{id, title, run(app)}]    // palette commands this plugin adds
  *   }
  *

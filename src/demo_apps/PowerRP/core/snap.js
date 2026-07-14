@@ -103,6 +103,131 @@ function pickLine(f) {
 }
 
 /**
+ * Pure function. 1D snap for a resize drag: the moving EDGES of a box snap to
+ * other nodes' infinite line features. Where solveSnap corrects a whole
+ * dragged item (point + line probes), this corrects an axis-aligned resize —
+ * each moving edge is a single coordinate on one axis, snapping only to lines
+ * perpendicular to it (a vertical left/right edge snaps in x to vertical
+ * lines; a horizontal top/bottom edge snaps in y to horizontal lines).
+ *
+ * Rotated boxes are NOT axis-aligned, so the caller skips this for them —
+ * edge-as-single-coordinate has no meaning under rotation (documented in
+ * CanvasView.resizeDrag).
+ *
+ * Args:
+ *   edges    — moving edges: [{axis: "x"|"y", pos}] in WORLD units.
+ *   features — world-space line features of every OTHER node (from
+ *              derive.nodeFeatures); non-line features are ignored.
+ *   tol      — snap distance in WORLD units (screen px / zoom).
+ *
+ * Returns {dx, dy, guides}: the world-space correction to add to the moving
+ * edge coordinates (dx for x-axis edges, dy for y-axis edges) and the guide
+ * descriptors that ended up aligned. Like solveSnap, once a correction is
+ * chosen EVERY line the corrected edges land on becomes a guide ("snap to
+ * BOTH" — top+bottom+middle light up together instead of flickering). EPS is
+ * float slack only: aligned distances are ~0 after correction.
+ *
+ * @example
+ * // A right edge 3px left of a vertical line at x=100 snaps onto it:
+ * // solveEdgeSnap([{axis:"x",pos:97}],
+ * //               [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e"}], 5)
+ * // → {dx: 3, dy: 0, guides: [{kind:"line",x:100,y:0,dx:0,dy:1}]}
+ * @example
+ * // Out of tolerance → no correction, no guides:
+ * // solveEdgeSnap([{axis:"x",pos:80}],
+ * //               [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e"}], 5)
+ * // → {dx: 0, dy: 0, guides: []}
+ */
+export function solveEdgeSnap(edges, features, tol) {
+  const best = { dx: 0, dy: 0, guides: [] };
+  let bestX = null, bestY = null; // {d, correction}
+  const EPS = 1e-6; // float slack only (see solveSnap): aligned dist ≈ 0.
+
+  for (const edge of edges) {
+    for (const f of features) {
+      if (f.kind !== "line") continue;
+      const len = Math.hypot(f.dx, f.dy);
+      if (len === 0) continue;
+      // A line is "vertical" when its direction has ~no x-component (its
+      // constant coordinate is x); "horizontal" when ~no y-component.
+      const vertical = Math.abs(f.dx) < EPS * len;
+      const horizontal = Math.abs(f.dy) < EPS * len;
+      if (edge.axis === "x" && vertical) {
+        const d = f.x - edge.pos;
+        if (Math.abs(d) <= tol && (!bestX || Math.abs(d) < bestX.d))
+          bestX = { d: Math.abs(d), correction: d };
+      } else if (edge.axis === "y" && horizontal) {
+        const d = f.y - edge.pos;
+        if (Math.abs(d) <= tol && (!bestY || Math.abs(d) < bestY.d))
+          bestY = { d: Math.abs(d), correction: d };
+      }
+    }
+  }
+  if (bestX) best.dx = bestX.correction;
+  if (bestY) best.dy = bestY.correction;
+
+  if (bestX || bestY) {
+    const seen = new Set();
+    for (const f of features) {
+      if (f.kind !== "line" || seen.has(f.id)) continue;
+      const len = Math.hypot(f.dx, f.dy);
+      if (len === 0) continue;
+      const vertical = Math.abs(f.dx) < EPS * len;
+      const horizontal = Math.abs(f.dy) < EPS * len;
+      for (const edge of edges) {
+        const corrected = edge.pos + (edge.axis === "x" ? best.dx : best.dy);
+        const dist = edge.axis === "x" && vertical ? corrected - f.x
+          : edge.axis === "y" && horizontal ? corrected - f.y : Infinity;
+        if (Math.abs(dist) < EPS) {
+          best.guides.push({ kind: "line", ...pickLine(f) });
+          seen.add(f.id);
+          break;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Pure function. Which candidate items' dimension MATCHES a given size, within
+ * tolerance (the Figma-style matching-dimension indicator query). Snap-size
+ * uses this: while resizing, an in-progress width that lands within `tol` of
+ * another visible item's width snaps EXACTLY to it and both get a two-way
+ * arrow. A single deterministic target (the nearest, then lowest-id) supplies
+ * the exact snapped value; all items sharing that value are returned so every
+ * match is indicated.
+ *
+ * Args:
+ *   size       — the in-progress dimension (world units).
+ *   candidates — [{id, size}] other visible items' same-axis dimension.
+ *   tol        — match tolerance in WORLD units (screen px / zoom) — the SAME
+ *                tolerance move/resize snapping uses (no new constant).
+ *
+ * Returns {value, ids} when a match exists (value = the exact size to snap to;
+ * ids = every candidate equal to it), else null.
+ *
+ * @example
+ * // Width 178 near a candidate of 180 (tol 5) snaps to 180; two items share it:
+ * // sizeMatches(178, [{id:"a",size:180},{id:"b",size:180},{id:"c",size:90}], 5)
+ * // → {value: 180, ids: ["a", "b"]}
+ * @example
+ * // Nothing within tolerance:
+ * // sizeMatches(150, [{id:"a",size:180}], 5) // → null
+ */
+export function sizeMatches(size, candidates, tol) {
+  let best = null; // {d, value}
+  for (const c of candidates) {
+    const d = Math.abs(c.size - size);
+    if (d <= tol && (!best || d < best.d || (d === best.d && c.size < best.value)))
+      best = { d, value: c.size };
+  }
+  if (!best) return null;
+  const ids = candidates.filter((c) => c.size === best.value).map((c) => c.id);
+  return { value: best.value, ids };
+}
+
+/**
  * Pure function. Shift-drag axis lock with hysteresis — the fix for
  * Pixel-Aligner's per-frame |dx|>|dy| flip-flop near 45°.
  *
