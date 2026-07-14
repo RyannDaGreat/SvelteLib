@@ -25,7 +25,7 @@ window.__powerrp_render = function (docJson, { slide = 0, alpha = 1, width = 128
   // The view is THE CAMERA's bbox at this (slide, alpha) — the camera tweens.
   const rect = cameraRect(foldState(doc, slide, alpha), doc.meta);
   const view = fitRectView(rect, width, height, 1);
-  ctx.fillStyle = doc.meta.background ?? "#ffffff";
+  ctx.fillStyle = rect.background; // camera background fills letterbox edges too
   ctx.fillRect(0, 0, width, height);
   paintScene(ctx, doc, { slideIndex: slide, alpha, registry, view });
   return canvas.toDataURL("image/png");

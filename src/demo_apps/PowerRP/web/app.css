@@ -666,12 +666,55 @@ body,
   font-size: var(--a-font-md);
 }
 
+.palette-item {
+  gap: var(--a-sp-3);
+  justify-content: flex-start;
+}
+
 .palette-item.highlighted {
   background: var(--a-hover-bg);
 }
 
+/* Fixed-width icon slot: identical whether filled or blank, so titles align. */
+.palette-item .icon-slot {
+  width: var(--a-sp-5);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+  flex: none;
+}
+
+.palette-item .title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-item .shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  flex: none;
+}
+
+.palette-item .shortcut kbd {
+  font-family: inherit;
+  padding: var(--a-sp-1) var(--a-sp-2);
+  border: var(--a-hairline) solid var(--fg-dim);
+  line-height: 1;
+}
+
+.palette-item .shortcut .plus {
+  opacity: 0.5;
+}
+
 .palette-item .sub-arrow {
   color: var(--fg-dim);
+  flex: none;
 }
 
 .palette-none {

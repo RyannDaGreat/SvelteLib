@@ -229,13 +229,13 @@ test("arrow: endpoints resolve; distToSegment", () => {
 test("cameraRect: default camera in new docs, tweens, meta fallback", () => {
   const doc = newDocument();
   const rect = cameraRect(foldState(doc, 0), doc.meta);
-  assert.deepEqual(rect, { x: 0, y: 0, w: 1280, h: 720 });
+  assert.deepEqual(rect, { x: 0, y: 0, w: 1280, h: 720, background: "#ffffff" });
   const camId = Object.entries(foldState(doc, 0).items).find(([, s]) => s.type === "camera")[0];
   let doc2 = newDocument();
   [doc2] = withNewSlide(doc, 0);
   doc2 = keyframed(doc2, 1, ["items", camId, "w"], 640);
   assert.equal(cameraRect(foldState(doc2, 1, 0.5), doc2.meta).w, 960); // camera tweens
-  assert.deepEqual(cameraRect({ items: {} }, { slideW: 10, slideH: 5 }), { x: 0, y: 0, w: 10, h: 5 });
+  assert.deepEqual(cameraRect({ items: {} }, { slideW: 10, slideH: 5 }), { x: 0, y: 0, w: 10, h: 5, background: "#ffffff" });
 });
 
 // ── snap ─────────────────────────────────────────────────────────────────────

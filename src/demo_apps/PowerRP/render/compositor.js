@@ -24,7 +24,7 @@
 
 import { foldState } from "../core/document.js";
 import { blendApplied } from "../core/deltas.js";
-import { deriveRenderTree, resolveBinding } from "../core/derive.js";
+import { deriveRenderTree, resolveBinding, cameraRect } from "../core/derive.js";
 
 /**
  * Command (draws on ctx). Renders doc at (slideIndex, alpha) through `view`.
@@ -57,10 +57,12 @@ export function paintScene(ctx, doc, opts) {
   };
 
   if (drawBackground) {
+    // The background comes from THE CAMERA (user spec) — its rect, its color.
+    const cam = cameraRect(state, doc.meta);
     ctx.save();
     applyViewTransform(ctx, view);
-    ctx.fillStyle = doc.meta.background ?? "#ffffff";
-    ctx.fillRect(0, 0, doc.meta.slideW, doc.meta.slideH);
+    ctx.fillStyle = cam.background;
+    ctx.fillRect(cam.x, cam.y, cam.w, cam.h);
     ctx.restore();
   }
 

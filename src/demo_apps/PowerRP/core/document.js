@@ -43,7 +43,7 @@ export function newDocument() {
       duration: 0.5,
       delta: {
         items: {
-          [cameraId]: { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, active: true },
+          [cameraId]: { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, active: true, background: "#ffffff" },
         },
       },
     }],

@@ -11,9 +11,14 @@
  *   { keys: ["Ctrl","Z"],        // key tokens; "mouse_left" etc. for mouse
  *     label: "Undo",             // HintBar text
  *     when: (ctx) => bool,       // availability in the current app context
- *     run?: (ctx) => void }      // omit for display-only hints (mouse gestures
- *                                //   handled by pointer code still REGISTER
- *                                //   here so they appear in the HintBar)
+ *     command?: "undo",          // command id to run — THE normal case: every
+ *                                //   shortcut routes through the command
+ *                                //   registry, which lets the palette display
+ *                                //   shortcuts automatically (commandKeys)
+ *     run?: (ctx) => void }      // escape hatch for non-command UI state;
+ *                                //   omit BOTH for display-only hints (mouse
+ *                                //   gestures handled by pointer code still
+ *                                //   REGISTER here for the HintBar)
  */
 
 const MOUSE_TOKENS = new Set(["mouse_left", "mouse_right", "mouse_middle", "mouse_scroll", "mouse"]);
@@ -36,10 +41,15 @@ export function createShortcuts() {
      * Command (runs the matched entry). Dispatches a KeyboardEvent against the
      * registry. Returns true if an entry ran (caller preventDefaults).
      */
+    /** Query. Key tokens bound to a command id (first match), or null. */
+    commandKeys(commandId) {
+      const e = entries.find((en) => en.command === commandId);
+      return e ? e.keys : null;
+    },
     dispatch(event, ctx) {
       const token = keyToken(event);
       for (const e of entries) {
-        if (!e.run || !e.when(ctx)) continue;
+        if ((!e.run && !e.command) || !e.when(ctx)) continue;
         const mods = e.keys.slice(0, -1).map((k) => k.toLowerCase());
         const main = e.keys[e.keys.length - 1];
         if (MOUSE_TOKENS.has(main)) continue;
@@ -50,7 +60,8 @@ export function createShortcuts() {
         if (wantCtrl !== (event.metaKey || event.ctrlKey)) continue;
         if (wantShift !== event.shiftKey) continue;
         if (wantAlt !== event.altKey) continue;
-        e.run(ctx);
+        if (e.command) ctx.app.runCommand(e.command);
+        else e.run(ctx);
         return true;
       }
       return false;

@@ -19,12 +19,14 @@ export const cameraPlugin = {
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {
     type: "camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1,
+    background: "#ffffff", // the view's background comes FROM the camera
   },
   inspector: [
     { key: "x", label: "X", kind: "number" },
     { key: "y", label: "Y", kind: "number" },
     { key: "w", label: "Width", kind: "number" },
     { key: "h", label: "Height", kind: "number" },
+    { key: "background", label: "Background", kind: "color" },
   ],
   paint(ctx, s, env) {
     if (!env.editorChrome) return;

@@ -53,20 +53,23 @@
     { id: "present", title: "Present (fullscreen)", run: (a) => (a.mode = "present") },
     { id: "save-file", title: "Save Presentation", run: (a) => a.saveFile() },
     { id: "load-file", title: "Load Presentation", run: (a) => a.loadFile() },
-    { id: "undo", title: "Undo", run: (a) => a.undo() },
-    { id: "redo", title: "Redo", run: (a) => a.redo() },
-    { id: "reset-view", title: "Zoom to Fit Slide", run: (a) => a.canvasActions?.zoomToFit({ x: 0, y: 0, w: a.doc.meta.slideW, h: a.doc.meta.slideH }) },
+    { id: "undo", title: "Undo", icon: "mdi:undo", run: (a) => a.undo() },
+    { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
+    { id: "deselect", title: "Deselect", when: needsSelection, run: (a) => (a.selection = null) },
+    { id: "toggle-palette", title: "Toggle Command Palette", run: (a) => (a.paletteOpen = !a.paletteOpen) },
+    { id: "reset-view", title: "Zoom to Fit Slide", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit({ x: 0, y: 0, w: a.doc.meta.slideW, h: a.doc.meta.slideH }) },
     {
       id: "color-theme",
       title: "Color Theme",
+      icon: "mdi:palette-outline",
       children: THEMES.map((t) => ({
         id: `theme-${t.id}`,
         title: t.title,
         run: (a) => a.setTheme(t.id),
       })),
     },
-    { id: "export-png", title: "Export Slide as PNG", run: (a) => a.exportPng() },
-    { id: "copy-item", title: "Copy Item", when: needsSelection, run: (a) => a.copySelection() },
+    { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", run: (a) => a.exportPng() },
+    { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, run: (a) => a.copySelection() },
     { id: "paste", title: "Paste", run: (a) => a.pasteClipboard() },
     {
       id: "copy-property",
@@ -104,17 +107,20 @@
 
   // ── Shortcuts (single registry → dispatch AND HintBar) ────────────────────
   const editMode = (c) => c.mode === "edit" && !c.paletteOpen;
+  // EVERYTHING routes through the command registry (user invariant): shortcut
+  // entries reference command ids, which is what lets the palette display each
+  // command's keys automatically.
   const entries = [
-    { keys: ["Cmd", "Shift", "P"], label: "Palette", when: (c) => c.mode === "edit", run: () => (app.paletteOpen = !app.paletteOpen) },
-    { keys: ["Ctrl", "Z"], label: "Undo", when: editMode, run: () => app.undo() },
-    { keys: ["Ctrl", "Shift", "Z"], label: "Redo", when: editMode, run: () => app.redo() },
-    { keys: ["Backspace"], label: "Delete", when: (c) => editMode(c) && c.hasSelection, run: () => app.runCommand("delete-item") },
-    { keys: ["Delete"], label: "Delete", hidden: true, when: (c) => editMode(c) && c.hasSelection, run: () => app.runCommand("delete-item") },
-    { keys: ["Ctrl", "C"], label: "Copy", when: (c) => editMode(c) && c.hasSelection, run: () => app.runCommand("copy-item") },
-    { keys: ["Ctrl", "V"], label: "Paste", hidden: true, when: editMode, run: () => app.runCommand("paste") },
-    { keys: ["Left"], label: "Prev slide", when: editMode, run: () => app.runCommand("prev-slide") },
-    { keys: ["Right"], label: "Next slide", when: editMode, run: () => app.runCommand("next-slide") },
-    { keys: ["Escape"], label: "Deselect", when: (c) => editMode(c) && c.hasSelection, run: () => (app.selection = null) },
+    { keys: ["Cmd", "Shift", "P"], label: "Palette", when: (c) => c.mode === "edit", command: "toggle-palette" },
+    { keys: ["Ctrl", "Z"], label: "Undo", when: editMode, command: "undo" },
+    { keys: ["Ctrl", "Shift", "Z"], label: "Redo", when: editMode, command: "redo" },
+    { keys: ["Backspace"], label: "Delete", when: (c) => editMode(c) && c.hasSelection, command: "delete-item" },
+    { keys: ["Delete"], label: "Delete", hidden: true, when: (c) => editMode(c) && c.hasSelection, command: "delete-item" },
+    { keys: ["Ctrl", "C"], label: "Copy", when: (c) => editMode(c) && c.hasSelection, command: "copy-item" },
+    { keys: ["Ctrl", "V"], label: "Paste", hidden: true, when: editMode, command: "paste" },
+    { keys: ["Left"], label: "Prev slide", when: editMode, command: "prev-slide" },
+    { keys: ["Right"], label: "Next slide", when: editMode, command: "next-slide" },
+    { keys: ["Escape"], label: "Deselect", when: (c) => editMode(c) && c.hasSelection, command: "deselect" },
     // Display-only hints (pointer gestures handled by CanvasView/PanZoom):
     { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging },
     { keys: ["Shift"], label: "Axis lock", when: (c) => editMode(c) && c.dragging },

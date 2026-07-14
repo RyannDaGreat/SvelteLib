@@ -88,7 +88,21 @@
             onpointerenter={() => (highlighted = i)}
             onclick={() => activate(cmd)}
           >
+            <!-- Fixed-width icon slot (same width whether filled or blank, so
+                 titles align — user spec). -->
+            <span class="icon-slot">
+              {#if cmd.icon}
+                <iconify-icon icon={cmd.icon} width="16" height="16"></iconify-icon>
+              {/if}
+            </span>
             <span class="title">{cmd.title}</span>
+            {#if app.shortcuts.commandKeys(cmd.id)}
+              <span class="shortcut">
+                {#each app.shortcuts.commandKeys(cmd.id) as key, ki}
+                  {#if ki > 0}<span class="plus">+</span>{/if}<kbd>{key}</kbd>
+                {/each}
+              </span>
+            {/if}
             {#if cmd.children}<iconify-icon class="sub-arrow" icon="mdi:chevron-right" width="16" height="16"></iconify-icon>{/if}
           </button>
         {/each}
