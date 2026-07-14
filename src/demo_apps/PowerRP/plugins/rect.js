@@ -15,20 +15,20 @@ export const rectPlugin = {
   inspector: [
     { key: "x", label: "X", kind: "number" },
     { key: "y", label: "Y", kind: "number" },
-    { key: "w", label: "Width", kind: "number" },
-    { key: "h", label: "Height", kind: "number" },
+    { key: "w", label: "Width", kind: "number", min: 0 },
+    { key: "h", label: "Height", kind: "number", min: 0 },
     { key: "rotation", label: "Rotation", kind: "number" },
     { key: "z", label: "Z order", kind: "number" },
     { key: "fill", label: "Fill", kind: "color" },
     { key: "stroke", label: "Stroke", kind: "color" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number" },
-    { key: "cornerRadius", label: "Corner radius", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number" },
+    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0 },
+    { key: "cornerRadius", label: "Corner radius", kind: "number", min: 0 },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
   ],
   paint(ctx, s) {
     ctx.globalAlpha = s.opacity ?? 1;
     ctx.beginPath();
-    ctx.roundRect(0, 0, s.w, s.h, s.cornerRadius ?? 0);
+    ctx.roundRect(0, 0, s.w, s.h, Math.max(0, s.cornerRadius ?? 0)); // negative radii throw — domain clamp, not a style choice
     ctx.fillStyle = s.fill;
     ctx.fill();
     if ((s.strokeWidth ?? 0) > 0) {

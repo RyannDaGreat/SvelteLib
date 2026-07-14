@@ -20,10 +20,10 @@ export const arrowPlugin = {
   },
   inspector: [
     { key: "color", label: "Color", kind: "color" },
-    { key: "width", label: "Width", kind: "number" },
-    { key: "headSize", label: "Head size", kind: "number" },
+    { key: "width", label: "Width", kind: "number", min: 0 },
+    { key: "headSize", label: "Head size", kind: "number", min: 0 },
     { key: "z", label: "Z order", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number" },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
   ],
   paint(ctx, s, env) {
     const pts = resolveEndpoints(s, env.resolveBinding);

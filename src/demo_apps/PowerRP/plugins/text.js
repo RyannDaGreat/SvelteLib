@@ -14,11 +14,11 @@ export const textPlugin = {
     { key: "text", label: "Text", kind: "text" },
     { key: "x", label: "X", kind: "number" },
     { key: "y", label: "Y", kind: "number" },
-    { key: "size", label: "Size", kind: "number" },
+    { key: "size", label: "Size", kind: "number", min: 0 },
     { key: "color", label: "Color", kind: "color" },
     { key: "bold", label: "Bold", kind: "checkbox" },
     { key: "z", label: "Z order", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number" },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
   ],
   paint(ctx, s) {
     ctx.globalAlpha = s.opacity ?? 1;

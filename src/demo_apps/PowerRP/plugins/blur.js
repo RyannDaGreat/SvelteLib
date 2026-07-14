@@ -14,8 +14,8 @@ export const blurPlugin = {
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: true },
   defaults: { type: "blur", z: 50, blur: 6, opacity: 1 },
   inspector: [
-    { key: "blur", label: "Blur (world px)", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number" },
+    { key: "blur", label: "Blur (world px)", kind: "number", min: 0 },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
     { key: "z", label: "Z order", kind: "number" },
   ],
   paint(ctx, s, env) {

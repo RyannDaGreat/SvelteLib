@@ -19,13 +19,13 @@ export const circlePlugin = {
   inspector: [
     { key: "x", label: "X", kind: "number" },
     { key: "y", label: "Y", kind: "number" },
-    { key: "w", label: "Width", kind: "number" },
-    { key: "h", label: "Height", kind: "number" },
+    { key: "w", label: "Width", kind: "number", min: 0 },
+    { key: "h", label: "Height", kind: "number", min: 0 },
     { key: "z", label: "Z order", kind: "number" },
     { key: "fill", label: "Fill", kind: "color" },
     { key: "stroke", label: "Stroke", kind: "color" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number" },
+    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0 },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
   ],
   paint(ctx, s) {
     ctx.globalAlpha = s.opacity ?? 1;

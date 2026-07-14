@@ -61,12 +61,12 @@ export const magnifierPlugin = {
   inspector: [
     { key: "x", label: "X", kind: "number" },
     { key: "y", label: "Y", kind: "number" },
-    { key: "w", label: "Width", kind: "number" },
-    { key: "h", label: "Height", kind: "number" },
-    { key: "magnification", label: "Magnification", kind: "number" },
+    { key: "w", label: "Width", kind: "number", min: 0 },
+    { key: "h", label: "Height", kind: "number", min: 0 },
+    { key: "magnification", label: "Magnification", kind: "number", min: 0.01 },
     { key: "supersample", label: "Supersample", kind: "checkbox" },
     { key: "rimColor", label: "Rim color", kind: "color" },
-    { key: "rimWidth", label: "Rim width", kind: "number" },
+    { key: "rimWidth", label: "Rim width", kind: "number", min: 0 },
     { key: "z", label: "Z order", kind: "number" },
   ],
   paint(ctx, s, env) {

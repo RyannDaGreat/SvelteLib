@@ -25,8 +25,8 @@ export const cameraPlugin = {
   inspector: [
     { key: "x", label: "X", kind: "number" },
     { key: "y", label: "Y", kind: "number" },
-    { key: "w", label: "Width", kind: "number" },
-    { key: "h", label: "Height", kind: "number" },
+    { key: "w", label: "Width", kind: "number", min: 0 },
+    { key: "h", label: "Height", kind: "number", min: 0 },
     { key: "background", label: "Background", kind: "color" },
   ],
   paint() {
