@@ -44,6 +44,14 @@ doc = keyframed(doc, 1, ["items", circle, "y"], 420);
 doc = keyframed(doc, 1, ["items", rect, "fill"], "#2ac3a2");
 doc = keyframed(doc, 1, ["items", rect, "rotation"], 0.3);
 
+// Slide 2 also tweens THE CAMERA (newDocument created it on slide 0): zoom
+// toward the circle's destination — a live demo of camera moves.
+const camId = Object.entries(doc.slides[0].delta.items).find(([, s]) => s.type === "camera")[0];
+doc = keyframed(doc, 1, ["items", camId, "x"], 100);
+doc = keyframed(doc, 1, ["items", camId, "y"], 150);
+doc = keyframed(doc, 1, ["items", camId, "w"], 800);
+doc = keyframed(doc, 1, ["items", camId, "h"], 450);
+
 // Slide 3: blur layer + magnifier stacked above it; text deactivates.
 [doc] = withNewSlide(doc, 1);
 doc = keyframed(doc, 2, ["items", text, "active"], false);

@@ -16,9 +16,10 @@ import {
   withSlideToggled, serialize, deserialize, allKeyframes, withNormalizedZ, bisectedZ,
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
-import { deriveRenderTree, nodeFeatures, nodeAnchors, resolveBinding, pickNode, standardBBoxAnchors } from "../core/derive.js";
+import { deriveRenderTree, nodeFeatures, nodeAnchors, resolveBinding, pickNode, standardBBoxAnchors, cameraRect } from "../core/derive.js";
 import { solveSnap, axisLock } from "../core/snap.js";
-import { createCommands, fuzzyScore } from "../core/commands.js";
+import { createCommands } from "../core/commands.js";
+import { rpFuzzyScore } from "../core/fuzzy.js";
 import { createShortcuts } from "../core/shortcuts.js";
 import { createUndo } from "../core/undo.js";
 import { rectPlugin } from "../plugins/rect.js";
@@ -225,6 +226,18 @@ test("arrow: endpoints resolve; distToSegment", () => {
   assert.equal(distToSegment(5, 3, { x: 0, y: 0 }, { x: 10, y: 0 }), 3);
 });
 
+test("cameraRect: default camera in new docs, tweens, meta fallback", () => {
+  const doc = newDocument();
+  const rect = cameraRect(foldState(doc, 0), doc.meta);
+  assert.deepEqual(rect, { x: 0, y: 0, w: 1280, h: 720 });
+  const camId = Object.entries(foldState(doc, 0).items).find(([, s]) => s.type === "camera")[0];
+  let doc2 = newDocument();
+  [doc2] = withNewSlide(doc, 0);
+  doc2 = keyframed(doc2, 1, ["items", camId, "w"], 640);
+  assert.equal(cameraRect(foldState(doc2, 1, 0.5), doc2.meta).w, 960); // camera tweens
+  assert.deepEqual(cameraRect({ items: {} }, { slideW: 10, slideH: 5 }), { x: 0, y: 0, w: 10, h: 5 });
+});
+
 // ── snap ─────────────────────────────────────────────────────────────────────
 test("snap: line align, point wins, axis hysteresis", () => {
   const line = { kind: "line", x: 100, y: 0, dx: 0, dy: 1, id: "e" };
@@ -244,13 +257,25 @@ test("snap: line align, point wins, axis hysteresis", () => {
 });
 
 // ── commands / shortcuts / undo ──────────────────────────────────────────────
-test("fuzzy + command registry", () => {
-  assert.ok(fuzzyScore("dh", "Distribute Horizontally") > 0);
-  assert.equal(fuzzyScore("xyz", "Distribute"), 0);
+test("rp fuzzy + command registry + MRU + submenus", () => {
+  // rp semantics: LOWER = better, null = no match, prefix beats non-prefix.
+  assert.ok(rpFuzzyScore("dh", "Distribute Horizontally") !== null);
+  assert.equal(rpFuzzyScore("xyz", "Distribute"), null);
+  assert.ok(rpFuzzyScore("d", "dict") < rpFuzzyScore("d", "add"));
   const cmds = createCommands();
   cmds.add({ id: "a", title: "Distribute Horizontally", run: () => {} });
   cmds.add({ id: "b", title: "Distribute Vertically", run: () => {} });
+  cmds.add({ id: "menu", title: "Sub Menu", children: [{ id: "child", title: "Child Thing", run: () => {} }] });
   assert.equal(cmds.search("dis h", null)[0].id, "a");
+  assert.equal(cmds.search("", null, cmds.get("menu"))[0].id, "child"); // submenu pool
+  cmds.markUsed("b");
+  assert.equal(cmds.search("", null)[0].id, "b"); // MRU first on empty query
+  const mru = cmds.usageList();
+  const cmds2 = createCommands();
+  cmds2.add({ id: "a", title: "A", run: () => {} });
+  cmds2.add({ id: "b", title: "B", run: () => {} });
+  cmds2.loadUsage(mru);
+  assert.equal(cmds2.search("", null)[0].id, "b"); // MRU survives persistence
   assert.throws(() => cmds.add({ id: "a", title: "dupe", run: () => {} }), /Duplicate/);
 });
 test("shortcuts: dispatch + context filtering + hints", () => {

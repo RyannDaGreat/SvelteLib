@@ -6,7 +6,9 @@
 <script>
   import { onMount } from "svelte";
   import { createPresenter } from "../core/presentation.js";
-  import { paintScene, fitSlideView } from "../render/compositor.js";
+  import { foldState } from "../core/document.js";
+  import { cameraRect } from "../core/derive.js";
+  import { paintScene, fitRectView } from "../render/compositor.js";
 
   let { app } = $props();
 
@@ -26,11 +28,18 @@
     const ctx = canvasEl.getContext("2d");
     ctx.fillStyle = "#000000";
     ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-    // Clip to the slide rect so out-of-slide scraps stay hidden while presenting.
-    const view = fitSlideView(app.doc.meta, innerWidth, innerHeight, dpr);
+    // The presentation views THE CAMERA's bbox at this (slide, alpha) — the
+    // camera tweens between slides. Letterbox: clip to the camera region.
+    const rect = cameraRect(foldState(app.doc, frame.index, frame.alpha), app.doc.meta);
+    const view = fitRectView(rect, innerWidth, innerHeight, dpr);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(view.panX * dpr, view.panY * dpr, app.doc.meta.slideW * view.zoom * dpr, app.doc.meta.slideH * view.zoom * dpr);
+    ctx.rect(
+      (rect.x * view.zoom + view.panX) * dpr,
+      (rect.y * view.zoom + view.panY) * dpr,
+      rect.w * view.zoom * dpr,
+      rect.h * view.zoom * dpr,
+    );
     ctx.clip();
     paintScene(ctx, app.doc, {
       slideIndex: frame.index,

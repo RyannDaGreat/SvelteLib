@@ -7,6 +7,7 @@
     { name: "DraggableNumber", description: "Click-drag numeric scrubber (pointer-lock, unbounded, optional grip wheel)", href: "/src/demos/DraggableNumber/demo.html" },
     { name: "ScrubSelect", description: "Video scrub + region annotation widget (paint good/bad, zoomable timeline)", href: "/src/demos/ScrubSelect/demo.html" },
     { name: "SpeechToText", description: "Headless live dictation via the Web Speech API (interim streaming + finalized log)", href: "/src/demos/SpeechToText/demo.html" },
+    { name: "Tooltip", description: "Immediate hover/focus tooltip wrapper (optional delay, auto-flip top/bottom, text or rich snippet)", href: "/src/demos/Tooltip/demo.html" },
   ];
 </script>
 

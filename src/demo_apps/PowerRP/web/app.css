@@ -137,6 +137,15 @@ body,
   overscroll-behavior: none;
 }
 
+/* Kill the browser's default focus ring app-wide (the giant blue/white
+   outline Chrome draws on shift+click and slide buttons — the same plague
+   BirdsEye fought). This is an app-like UI: focus is conveyed by our own
+   selection/highlight styles, never by the UA outline. */
+:focus,
+:focus-visible {
+  outline: none;
+}
+
 /* ── Themed scrollbars (macOS defaults ignore the theme) ─────────────────── */
 
 * {
@@ -243,7 +252,7 @@ body,
   gap: var(--a-sp-2);
   padding: 0 var(--a-sp-4);
   background: var(--control-bg);
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--a-hairline) solid var(--border);
 }
 
 .toolbar .btn-icon {
@@ -341,7 +350,7 @@ body,
   display: flex;
   flex-direction: column;
   background: var(--a-panel-bg);
-  border-right: 1px solid var(--border);
+  border-right: var(--a-hairline) solid var(--border);
 }
 
 .slidenav .slides {
@@ -355,8 +364,9 @@ body,
 
 .slidenav .slide {
   display: flex;
-  align-items: center;
-  gap: var(--a-sp-3);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--a-sp-2);
   padding: var(--a-sp-3);
   background: var(--control-bg);
   color: var(--fg);
@@ -364,6 +374,18 @@ body,
   cursor: pointer;
   font-size: var(--a-font-md);
   text-align: left;
+}
+
+.slidenav .row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+}
+
+.slidenav .thumb {
+  width: 100%;
+  display: block;
+  border: var(--a-hairline) solid var(--border);
 }
 
 .slidenav .slide.current {
@@ -408,7 +430,7 @@ body,
   display: flex;
   gap: var(--a-sp-2);
   padding: var(--a-sp-3);
-  border-top: 1px solid var(--border);
+  border-top: var(--a-hairline) solid var(--border);
 }
 
 .slidenav .nav-actions .btn-icon {
@@ -495,6 +517,12 @@ body,
   cursor: pointer;
   padding: 0 var(--a-sp-1);
   font-size: var(--a-font-md);
+  line-height: 1;
+}
+
+.inspector .keybtn {
+  /* "those should be bigger, maybe two times larger" — user spec. */
+  font-size: calc(var(--a-font-md) * 2);
 }
 
 .inspector .keybtn.keyed {
@@ -514,7 +542,7 @@ body,
   overflow-y: auto;
   padding: var(--a-sp-3);
   background: var(--a-panel-bg);
-  border-top: 1px solid var(--border);
+  border-top: var(--a-hairline) solid var(--border);
   font-size: var(--a-font-sm);
 }
 
@@ -604,7 +632,7 @@ body,
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
   background: var(--control-bg);
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--a-hairline) solid var(--border);
 }
 
 .palette input {
@@ -614,7 +642,7 @@ body,
   background: var(--control-bg);
   color: var(--fg);
   border: 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--a-hairline) solid var(--border);
   font-size: var(--a-font-md);
   outline: none;
 }

@@ -34,7 +34,7 @@ import { deriveRenderTree, resolveBinding } from "../core/derive.js";
  * for hit-testing/overlays).
  */
 export function paintScene(ctx, doc, opts) {
-  const { slideIndex, alpha = 1, registry, view, drawBackground = true, anchorsVisible = false, stateOverride = null } = opts;
+  const { slideIndex, alpha = 1, registry, view, drawBackground = true, anchorsVisible = false, stateOverride = null, editorChrome = false } = opts;
   let state = foldState(doc, slideIndex, alpha);
   if (stateOverride) state = blendApplied(state, stateOverride, 1);
   const nodes = deriveRenderTree(state, registry);
@@ -53,6 +53,7 @@ export function paintScene(ctx, doc, opts) {
     canvasW: canvas.width,
     canvasH: canvas.height,
     anchorsVisible,
+    editorChrome, // editor-only widgets (the camera's dashed bbox) check this
   };
 
   if (drawBackground) {
@@ -94,19 +95,31 @@ function snapshotCanvas(canvas) {
   return snap;
 }
 
+/** Thumbnail render width shared by the minimap and slide-nav thumbnails. */
+export const THUMB_W = 256;
+
 /**
- * Pure function. The view that fits the slide rect into a w×h output —
- * used by the CLI renderer and presentation mode.
+ * Pure function. The view that fits a world rect into a w×h output —
+ * THE camera mapping, used by export, presentation, thumbnails, and CLI.
  *
- * @example fitSlideView({slideW: 1280, slideH: 720}, 640, 360, 1) // {zoom: 0.5, panX: 0, panY: 0, dpr: 1}
- * @example fitSlideView({slideW: 100, slideH: 100}, 200, 100, 1) // {zoom: 1, panX: 50, panY: 0, dpr: 1}
+ * @example fitRectView({x: 0, y: 0, w: 1280, h: 720}, 640, 360, 1) // {zoom: 0.5, panX: 0, panY: 0, dpr: 1}
+ * @example fitRectView({x: 100, y: 0, w: 100, h: 100}, 200, 100, 1) // {zoom: 1, panX: -50, panY: 0, dpr: 1}
  */
-export function fitSlideView(meta, w, h, dpr = 1) {
-  const zoom = Math.min(w / meta.slideW, h / meta.slideH);
+export function fitRectView(rect, w, h, dpr = 1) {
+  const zoom = Math.min(w / rect.w, h / rect.h);
   return {
     zoom,
-    panX: (w - meta.slideW * zoom) / 2,
-    panY: (h - meta.slideH * zoom) / 2,
+    panX: (w - rect.w * zoom) / 2 - rect.x * zoom,
+    panY: (h - rect.h * zoom) / 2 - rect.y * zoom,
     dpr,
   };
+}
+
+/**
+ * Pure function. fitRectView for the meta slide rect (the no-camera fallback).
+ *
+ * @example fitSlideView({slideW: 1280, slideH: 720}, 640, 360, 1) // {zoom: 0.5, panX: 0, panY: 0, dpr: 1}
+ */
+export function fitSlideView(meta, w, h, dpr = 1) {
+  return fitRectView({ x: 0, y: 0, w: meta.slideW, h: meta.slideH }, w, h, dpr);
 }

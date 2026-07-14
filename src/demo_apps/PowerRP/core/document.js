@@ -32,9 +32,21 @@ export function uuid() {
  * @example // newDocument().slides.length === 1; newDocument().meta.slideW === 1280
  */
 export function newDocument() {
+  // Every document is born with THE camera (one per document, manifest spec):
+  // a bbox item covering the meta slide rect, tweenable like any other item.
+  const cameraId = uuid();
   return {
-    meta: { name: "Untitled", slideW: 1280, slideH: 720 },
-    slides: [{ id: uuid(), name: "Slide 1", duration: 0.5, delta: {} }],
+    meta: { name: "Untitled", slideW: 1280, slideH: 720, fps: 120 },
+    slides: [{
+      id: uuid(),
+      name: "Slide 1",
+      duration: 0.5,
+      delta: {
+        items: {
+          [cameraId]: { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, active: true },
+        },
+      },
+    }],
   };
 }
 

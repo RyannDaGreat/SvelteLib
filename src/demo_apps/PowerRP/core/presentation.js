@@ -50,9 +50,18 @@ export function createPresenter(getDoc, onFrame) {
       armAutoAdvance();
       return;
     }
+    // FPS is a presentation-level setting (meta.fps, default 120). rAF runs at
+    // the display's rate; frames are skipped only when the display outpaces it.
+    const minFrameMs = 1000 / (doc.meta.fps ?? 120);
     const start = performance.now();
+    let lastEmit = -Infinity;
     function tick(now) {
       const t = Math.min((now - start) / duration, 1);
+      if (t < 1 && now - lastEmit < minFrameMs) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      lastEmit = now;
       alpha = easeFn(t);
       emit();
       if (t < 1) raf = requestAnimationFrame(tick);

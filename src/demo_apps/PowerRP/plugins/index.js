@@ -9,8 +9,9 @@ import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
 import { magnifierPlugin } from "./magnifier.js";
 import { blurPlugin } from "./blur.js";
+import { cameraPlugin } from "./camera.js";
 
-export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, magnifierPlugin, blurPlugin];
+export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, magnifierPlugin, blurPlugin, cameraPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

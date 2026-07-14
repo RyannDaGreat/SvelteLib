@@ -4,8 +4,36 @@
 -->
 <script>
   import "iconify-icon";
+  import { foldState } from "../core/document.js";
+  import { cameraRect } from "../core/derive.js";
+  import { paintScene, fitRectView, THUMB_W } from "../render/compositor.js";
 
   let { app } = $props();
+
+  /** Per-slide thumbnails rendered THROUGH each slide's camera (the camera
+   * determines the thumbnails — manifest). Regenerated on commit, never at
+   * drag rate (previewDelta skips). */
+  let thumbs = $state([]);
+  $effect(() => {
+    app.doc;
+    if (app.previewDelta) return;
+    const dpr = window.devicePixelRatio || 1; // always develop for Retina (manifest)
+    thumbs = app.doc.slides.map((_, i) => {
+      const rect = cameraRect(foldState(app.doc, i, 1), app.doc.meta);
+      if (rect.w <= 0 || rect.h <= 0) return "";
+      const cssH = Math.max(1, Math.round((THUMB_W * rect.h) / rect.w));
+      const c = document.createElement("canvas");
+      c.width = Math.round(THUMB_W * dpr);
+      c.height = Math.round(cssH * dpr);
+      paintScene(c.getContext("2d"), app.doc, {
+        slideIndex: i,
+        alpha: 1,
+        registry: app.registry,
+        view: fitRectView(rect, THUMB_W, cssH, dpr),
+      });
+      return c.toDataURL("image/png");
+    });
+  });
 </script>
 
 <div class="slidenav">
@@ -18,19 +46,23 @@
         onclick={() => (app.slideIndex = i)}
         title={slide.id}
       >
-        <span class="num">{i + 1}</span>
-        <span class="name">{slide.name}</span>
-        <span class="kfcount">{Object.keys(slide.delta).length ? "◆" : ""}</span>
-        <span
-          class="eye"
-          role="button"
-          tabindex="-1"
-          title={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}
-          onclick={(e) => { e.stopPropagation(); app.toggleSlide(i); }}
-          onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); app.toggleSlide(i); } }}
-        >
-          <iconify-icon icon={slide.enabled === false ? "mdi:eye-off" : "mdi:eye"} width="14" height="14"></iconify-icon>
+        <span class="row-top">
+          <span class="num">{i + 1}</span>
+          <span class="name">{slide.name}</span>
+          <span
+            class="eye"
+            role="button"
+            tabindex="-1"
+            title={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}
+            onclick={(e) => { e.stopPropagation(); app.toggleSlide(i); }}
+            onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); app.toggleSlide(i); } }}
+          >
+            <iconify-icon icon={slide.enabled === false ? "mdi:eye-off" : "mdi:eye"} width="14" height="14"></iconify-icon>
+          </span>
         </span>
+        {#if thumbs[i]}
+          <img class="thumb" src={thumbs[i]} alt="Slide {i + 1} preview" draggable="false" />
+        {/if}
       </button>
     {/each}
   </div>

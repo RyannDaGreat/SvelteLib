@@ -12,6 +12,7 @@
   Delete = deactivate on this slide; Purge = remove from existence.
 -->
 <script>
+  import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
 
   let { app } = $props();
@@ -20,10 +21,34 @@
   let sel = $derived(app.selectedNode());
   let itemChoices = $derived(nodes.map((n) => ({ value: n.itemId, label: app.displayName(n.itemId) })));
 
-  function commitField(key, kind, raw) {
-    const value = kind === "number" ? Number(raw) : kind === "checkbox" ? Boolean(raw) : raw;
+  function coerce(kind, raw) {
+    return kind === "number" ? Number(raw) : kind === "checkbox" ? Boolean(raw) : raw;
+  }
+
+  /** Live preview while typing/dragging a field — viewport re-renders in real
+   * time BEFORE commit (manifest rule); Enter/blur commits; Escape reverts. */
+  function previewField(key, kind, raw) {
+    const value = coerce(kind, raw);
     if (kind === "number" && Number.isNaN(value)) return;
-    app.keyframeSelected(key, value);
+    app.setPreview([[["items", app.selection, key], value]]);
+  }
+
+  function commitField(key, kind, raw) {
+    const value = coerce(kind, raw);
+    if (kind === "number" && Number.isNaN(value)) {
+      app.cancelPreview();
+      return;
+    }
+    app.setPreview([[["items", app.selection, key], value]]);
+    app.commitPreview();
+  }
+
+  function fieldKeydown(e) {
+    if (e.key === "Escape") {
+      app.cancelPreview();
+      e.target.blur();
+      e.stopPropagation();
+    }
   }
 
   function toggleKey(key) {
@@ -69,12 +94,15 @@
               type="number"
               step="any"
               value={Math.round((sel.state[row.key] ?? 0) * 1000) / 1000}
+              oninput={(e) => previewField(row.key, row.kind, e.target.value)}
               onchange={(e) => commitField(row.key, row.kind, e.target.value)}
+              onkeydown={fieldKeydown}
             />
           {:else if row.kind === "color"}
             <input
               type="color"
               value={sel.state[row.key] ?? "#000000"}
+              oninput={(e) => previewField(row.key, row.kind, e.target.value)}
               onchange={(e) => commitField(row.key, row.kind, e.target.value)}
             />
           {:else if row.kind === "checkbox"}
@@ -87,17 +115,27 @@
             <input
               type="text"
               value={sel.state[row.key] ?? ""}
+              oninput={(e) => previewField(row.key, row.kind, e.target.value)}
               onchange={(e) => commitField(row.key, row.kind, e.target.value)}
+              onkeydown={fieldKeydown}
             />
           {/if}
+          <!-- prev ◆ next — jumps hug the diamond (manifest spec); hollow =
+               not keyed on this slide, filled = keyed. Iconify, never Unicode. -->
+          <button class="jumpbtn" title="Previous keyframe" onclick={() => app.jumpKeyframe(row.key, -1)}>
+            <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
+          </button>
           <button
             class="keybtn"
             class:keyed={app.hasKey(row.key)}
             title={app.hasKey(row.key) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}
             onclick={() => toggleKey(row.key)}
-          >◆</button>
-          <button class="jumpbtn" title="Previous keyframe" onclick={() => app.jumpKeyframe(row.key, -1)}>‹</button>
-          <button class="jumpbtn" title="Next keyframe" onclick={() => app.jumpKeyframe(row.key, +1)}>›</button>
+          >
+            <iconify-icon icon={app.hasKey(row.key) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
+          </button>
+          <button class="jumpbtn" title="Next keyframe" onclick={() => app.jumpKeyframe(row.key, +1)}>
+            <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
+          </button>
         </div>
       {/each}
     </div>

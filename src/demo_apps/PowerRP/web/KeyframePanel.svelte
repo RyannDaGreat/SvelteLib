@@ -5,6 +5,7 @@
   Slide numbers may shift on insert; UUIDs (shown on hover) never do.
 -->
 <script>
+  import "iconify-icon";
   import { allKeyframes } from "../core/document.js";
 
   let { app } = $props();
@@ -38,7 +39,9 @@
         <div class="kf" class:selected={k.path[1] === app.selection}>
           <span class="path" title={k.path.join(".")}>{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
           <span class="value">{fmt(k.value)}</span>
-          <button class="remove" title="Remove this keyframe" onclick={() => app.removeKey(slideIndex, k.path)}>✕</button>
+          <button class="remove" title="Remove this keyframe" onclick={() => app.removeKey(slideIndex, k.path)}>
+            <iconify-icon icon="mdi:close" width="13" height="13"></iconify-icon>
+          </button>
         </div>
       {/each}
     </div>

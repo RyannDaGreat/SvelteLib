@@ -68,13 +68,31 @@ export function solveSnap(probes, features, tol) {
       guides: [{ kind: "point", x: bestPoint.feature.x, y: bestPoint.feature.y }],
     };
   }
-  if (bestX) {
-    best.dx = bestX.correction;
-    best.guides.push({ kind: "line", ...pickLine(bestX.feature) });
-  }
-  if (bestY) {
-    best.dy = bestY.correction;
-    best.guides.push({ kind: "line", ...pickLine(bestY.feature) });
+  if (bestX) best.dx = bestX.correction;
+  if (bestY) best.dy = bestY.correction;
+
+  // "Snap to BOTH" (manifest): one deterministic correction, then EVERY line
+  // that the corrected probes land on becomes a guide — top+bottom+middle
+  // light up together instead of flickering between winners. EPS is float
+  // slack only: aligned distances are ~0 after correction, misaligned ones
+  // are real world-unit gaps.
+  if (bestX || bestY) {
+    const EPS = 1e-6;
+    const seen = new Set();
+    for (const f of features) {
+      if (f.kind !== "line" || seen.has(f.id)) continue;
+      const len = Math.hypot(f.dx, f.dy);
+      if (len === 0) continue;
+      const nx = -f.dy / len, ny = f.dx / len;
+      for (const probe of probes) {
+        const dist = (probe.x + best.dx - f.x) * nx + (probe.y + best.dy - f.y) * ny;
+        if (Math.abs(dist) < EPS) {
+          best.guides.push({ kind: "line", ...pickLine(f) });
+          seen.add(f.id);
+          break;
+        }
+      }
+    }
   }
   return best;
 }

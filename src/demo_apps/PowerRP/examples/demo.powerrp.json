@@ -2,16 +2,27 @@
   "meta": {
     "name": "PowerRP Demo",
     "slideW": 1280,
-    "slideH": 720
+    "slideH": 720,
+    "fps": 120
   },
   "slides": [
     {
-      "id": "ae4d1858",
+      "id": "99594169",
       "name": "Slide 1",
       "duration": 0.5,
       "delta": {
         "items": {
-          "8ade3bd8": {
+          "b03d8554": {
+            "type": "camera",
+            "name": "Camera",
+            "x": 0,
+            "y": 0,
+            "w": 1280,
+            "h": 720,
+            "z": 1000,
+            "active": true
+          },
+          "f8ab5924": {
             "type": "rect",
             "x": 120,
             "y": 160,
@@ -26,7 +37,7 @@
             "cornerRadius": 8,
             "opacity": 1
           },
-          "8b2c1516": {
+          "0740f675": {
             "type": "circle",
             "x": 760,
             "y": 200,
@@ -40,7 +51,7 @@
             "strokeWidth": 2,
             "opacity": 1
           },
-          "69f8d06f": {
+          "4c500ff5": {
             "type": "text",
             "x": 120,
             "y": 60,
@@ -55,15 +66,15 @@
             "bold": false,
             "opacity": 1
           },
-          "2e896891": {
+          "27bffdd8": {
             "type": "arrow",
             "z": 4,
             "from": {
-              "item": "8ade3bd8",
+              "item": "f8ab5924",
               "anchor": "mr"
             },
             "to": {
-              "item": "8b2c1516",
+              "item": "0740f675",
               "anchor": "closest"
             },
             "color": "#1a1a2e",
@@ -75,29 +86,44 @@
       }
     },
     {
-      "id": "46ee18d7",
+      "id": "ed2f9e68",
       "name": "Slide 2",
       "duration": 0.5,
       "delta": {
         "items": {
-          "8b2c1516": {
+          "0740f675": {
             "x": 300,
             "y": 420
           },
-          "8ade3bd8": {
+          "f8ab5924": {
             "fill": "#2ac3a2",
             "rotation": 0.3
+          },
+          "b03d8554": {
+            "x": 100,
+            "y": 150,
+            "w": 800,
+            "h": 450
           }
         }
       }
     },
     {
-      "id": "2f0f95c3",
+      "id": "ee5fa913",
       "name": "Slide 3",
       "duration": 0.5,
       "delta": {
         "items": {
-          "40716235": {
+          "4c500ff5": {
+            "active": false
+          },
+          "0a3d9451": {
+            "type": "blur",
+            "z": 10,
+            "blur": 5,
+            "opacity": 1
+          },
+          "2fcb944a": {
             "type": "magnifier",
             "x": 400,
             "y": 380,
@@ -106,15 +132,6 @@
             "magnification": 2.2,
             "rimColor": "#1a1a2e",
             "rimWidth": 4
-          },
-          "69f8d06f": {
-            "active": false
-          },
-          "843fc190": {
-            "type": "blur",
-            "z": 10,
-            "blur": 5,
-            "opacity": 1
           }
         }
       }

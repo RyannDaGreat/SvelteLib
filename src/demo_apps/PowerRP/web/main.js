@@ -3,10 +3,11 @@ import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { deserialize, foldState } from "../core/document.js";
+import { cameraRect } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
-import { paintScene, fitSlideView } from "../render/compositor.js";
+import { paintScene, fitRectView } from "../render/compositor.js";
 
 /**
  * Headless render hook for cli/render.js (puppeteer calls this): renders one
@@ -21,7 +22,9 @@ window.__powerrp_render = function (docJson, { slide = 0, alpha = 1, width = 128
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
-  const view = fitSlideView(doc.meta, width, height, 1);
+  // The view is THE CAMERA's bbox at this (slide, alpha) — the camera tweens.
+  const rect = cameraRect(foldState(doc, slide, alpha), doc.meta);
+  const view = fitRectView(rect, width, height, 1);
   ctx.fillStyle = doc.meta.background ?? "#ffffff";
   ctx.fillRect(0, 0, width, height);
   paintScene(ctx, doc, { slideIndex: slide, alpha, registry, view });

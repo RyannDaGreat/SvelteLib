@@ -7,6 +7,8 @@
   run the same entries.
 -->
 <script>
+  import "iconify-icon";
+
   let { app } = $props();
 
   let query = $state("");
@@ -34,7 +36,7 @@
       inputEl.focus();
     } else {
       app.paletteOpen = false;
-      cmd.run(app);
+      app.runCommand(cmd.id); // routes through MRU tracking
     }
   }
 
@@ -87,7 +89,7 @@
             onclick={() => activate(cmd)}
           >
             <span class="title">{cmd.title}</span>
-            {#if cmd.children}<span class="sub-arrow">›</span>{/if}
+            {#if cmd.children}<iconify-icon class="sub-arrow" icon="mdi:chevron-right" width="16" height="16"></iconify-icon>{/if}
           </button>
         {/each}
         {#if !results.length}

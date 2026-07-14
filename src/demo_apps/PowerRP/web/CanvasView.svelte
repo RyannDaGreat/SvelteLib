@@ -15,7 +15,7 @@
   import { pickNode, nodeFeatures, nodeAnchors } from "../core/derive.js";
   import { solveSnap, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
-  import { paintScene } from "../render/compositor.js";
+  import { paintScene, THUMB_W } from "../render/compositor.js";
   import * as T from "../core/transform.js";
 
   let { app } = $props();
@@ -23,8 +23,6 @@
   const SNAP_TOL_PX = 8; // screen px within which features snap (PENDING USER RATIFICATION)
   const ANCHOR_BIND_PX = 12; // screen px within which an arrow endpoint binds (PENDING USER RATIFICATION)
   const MIN_SIZE = 0; // sizes are non-negative — a mathematical bound, not a design choice
-
-  const THUMB_W = 256; // minimap thumbnail render width (px)
 
   let containerEl = $state(null);
   let canvasEl = $state(null);
@@ -40,9 +38,10 @@
   let guides = $state([]); // world-space guide descriptors from snap/axis lock
   let drag = null; // non-reactive drag bookkeeping
 
-  // Repaint whenever anything visible changes.
+  // Repaint whenever anything visible changes — INCLUDING the container size
+  // (wrapW/wrapH), so pane resizes re-render instead of stretching the bitmap.
   $effect(() => {
-    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport;
+    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH;
     paint();
   });
 
@@ -52,10 +51,12 @@
     app.doc; app.slideIndex; app.minimapVisible;
     if (!app.minimapVisible || app.previewDelta) return;
     const meta = app.doc.meta;
+    const dpr = window.devicePixelRatio || 1; // always develop for Retina (manifest)
+    const cssH = Math.round((THUMB_W * meta.slideH) / meta.slideW);
     const thumb = document.createElement("canvas");
-    thumb.width = THUMB_W;
-    thumb.height = Math.round((THUMB_W * meta.slideH) / meta.slideW);
-    const view = { zoom: THUMB_W / meta.slideW, panX: 0, panY: 0, dpr: 1 };
+    thumb.width = Math.round(THUMB_W * dpr);
+    thumb.height = Math.round(cssH * dpr);
+    const view = { zoom: THUMB_W / meta.slideW, panX: 0, panY: 0, dpr };
     paintScene(thumb.getContext("2d"), app.doc, {
       slideIndex: app.slideIndex,
       alpha: 1,
@@ -83,12 +84,15 @@
       view: { ...viewport, dpr },
       anchorsVisible: app.anchorsVisible,
       stateOverride: app.previewDelta,
+      editorChrome: true, // camera bbox etc. draw only here
     });
   }
 
-  // PanZoom → our state (also parks actions on the app for commands like Reset View).
+  // PanZoom → our state (also parks actions on the app for commands like Reset
+  // View, and the latest viewport so undo snapshots can restore the view).
   function onviewport(vp) {
     viewport = vp;
+    app.lastViewport = vp;
   }
   function bindActions(a) {
     actions = a;

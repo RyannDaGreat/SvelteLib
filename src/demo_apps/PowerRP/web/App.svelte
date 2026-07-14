@@ -23,6 +23,7 @@
   const app = new PowerRPApp();
   app.loadAutosave();
   app.loadTheme();
+  app.loadMru();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
 
   // SplitPane splits are BOUNDARY positions: [0.16, 0.78] → 3 panes.
@@ -64,6 +65,7 @@
         run: (a) => a.setTheme(t.id),
       })),
     },
+    { id: "export-png", title: "Export Slide as PNG", run: (a) => a.exportPng() },
     { id: "copy-item", title: "Copy Item", when: needsSelection, run: (a) => a.copySelection() },
     { id: "paste", title: "Paste", run: (a) => a.pasteClipboard() },
     {

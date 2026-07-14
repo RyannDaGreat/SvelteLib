@@ -12,7 +12,8 @@ import {
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
 } from "../core/document.js";
 import { setPath, blendApplied } from "../core/deltas.js";
-import { deriveRenderTree } from "../core/derive.js";
+import { deriveRenderTree, cameraRect } from "../core/derive.js";
+import { paintScene, fitRectView } from "../render/compositor.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
@@ -53,7 +54,7 @@ export class PowerRPApp {
     this.registry = createRegistry();
     this.commands = createCommands();
     this.shortcuts = createShortcuts();
-    this.undoLog = createUndo(this.doc);
+    this.undoLog = createUndo(this.snapshot(this.doc));
     this.canvasActions = null; // PanZoom actions, set by CanvasView
     registerAll(this.registry, this.commands);
   }
@@ -100,9 +101,25 @@ export class PowerRPApp {
   }
 
   // ── Transactions (undo units) ──────────────────────────────────────────────
+  // Snapshots carry UI state too (selection, slide, viewport) — undoing a
+  // purge reselects the item; undo/redo restores where you were looking.
+
+  lastViewport = null; // kept fresh by CanvasView's onviewport
+
+  snapshot(doc) {
+    return { doc, selection: this.selection, slideIndex: this.slideIndex, viewport: this.lastViewport };
+  }
+
+  applySnapshot(snap) {
+    this.doc = snap.doc;
+    this.selection = snap.selection;
+    this.slideIndex = Math.min(snap.slideIndex, snap.doc.slides.length - 1);
+    if (snap.viewport) this.canvasActions?.setViewport(snap.viewport);
+  }
 
   commit(doc) {
-    this.undoLog.commit(doc);
+    if (doc === this.doc) return;
+    this.undoLog.commit(this.snapshot(doc));
     this.doc = doc;
     try {
       localStorage.setItem(AUTOSAVE_KEY, serialize(doc));
@@ -112,11 +129,15 @@ export class PowerRPApp {
   }
 
   undo() {
-    this.doc = this.undoLog.undo();
+    // Restore the PREVIOUS document, but the UI state captured at the moment
+    // of the edit being undone — undoing a purge reselects the purged item.
+    const undone = this.undoLog.doc;
+    const prev = this.undoLog.undo();
+    this.applySnapshot({ ...undone, doc: prev.doc });
   }
 
   redo() {
-    this.doc = this.undoLog.redo();
+    this.applySnapshot(this.undoLog.redo());
   }
 
   // ── Preview (live drag without undo spam) ──────────────────────────────────
@@ -185,10 +206,22 @@ export class PowerRPApp {
       return;
     }
     if (payload.powerrp_item) {
+      const s = payload.powerrp_item;
+      // ONE camera per document: pasting a camera keyframes its ASPECTS onto
+      // the existing camera instead of duplicating it (user spec).
+      const existingCamera = s.type === "camera"
+        ? this.nodes().find((n) => n.type === "camera") : null;
+      if (existingCamera) {
+        let doc = this.doc;
+        for (const key of ["x", "y", "w", "h"])
+          doc = keyframed(doc, this.slideIndex, ["items", existingCamera.itemId, key], s[key]);
+        this.commit(doc);
+        this.selection = existingCamera.itemId;
+        return;
+      }
       // Paste offset: one spacing step, same convention PowerPoint uses for
       // paste-in-place collisions (precedent, not an invented constant).
       const OFFSET = 16;
-      const s = payload.powerrp_item;
       this.addItem({ ...s, x: (s.x ?? 0) + OFFSET, y: (s.y ?? 0) + OFFSET });
     } else if (payload.powerrp_props && this.selection) {
       let doc = this.doc;
@@ -318,11 +351,39 @@ export class PowerRPApp {
     const json = localStorage.getItem(AUTOSAVE_KEY);
     if (json) {
       this.doc = deserialize(json);
-      this.undoLog = createUndo(this.doc);
+      this.undoLog = createUndo(this.snapshot(this.doc));
     }
   }
 
   runCommand(id) {
+    this.commands.markUsed(id);
+    localStorage.setItem("powerrp.mru", JSON.stringify(this.commands.usageList()));
     this.commands.get(id).run(this);
+  }
+
+  loadMru() {
+    const json = localStorage.getItem("powerrp.mru");
+    if (json) this.commands.loadUsage(JSON.parse(json));
+  }
+
+  /**
+   * Renders the current slide THROUGH THE CAMERA and downloads a PNG.
+   * The camera determines the output size/aspect (manifest: THE CAMERA).
+   */
+  exportPng() {
+    const rect = cameraRect(foldState(this.doc, this.slideIndex, 1), this.doc.meta);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(rect.w);
+    canvas.height = Math.round(rect.h);
+    paintScene(canvas.getContext("2d"), this.doc, {
+      slideIndex: this.slideIndex,
+      alpha: 1,
+      registry: this.registry,
+      view: fitRectView(rect, canvas.width, canvas.height, 1),
+    });
+    const a = document.createElement("a");
+    a.href = canvas.toDataURL("image/png");
+    a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.png`;
+    a.click();
   }
 }

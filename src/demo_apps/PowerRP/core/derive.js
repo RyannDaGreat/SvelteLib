@@ -95,6 +95,24 @@ export function nodeAnchors(node) {
 }
 
 /**
+ * Pure function. THE camera rect for a folded state: the first active camera
+ * item (by id, deterministic), else the meta slide rect. The camera is a
+ * bounding box that determines every rendered view — export aspect, per-slide
+ * thumbnails, and the presentation viewport (manifest: THE CAMERA).
+ *
+ * @example cameraRect({items: {}}, {slideW: 1280, slideH: 720}) // {x: 0, y: 0, w: 1280, h: 720}
+ * @example cameraRect({items: {c: {type: "camera", x: 5, y: 6, w: 100, h: 50}}}, {}) // {x: 5, y: 6, w: 100, h: 50}
+ */
+export function cameraRect(state, meta) {
+  const cams = Object.entries(state.items ?? {})
+    .filter(([, s]) => s.type === "camera" && s.active !== false)
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+  if (cams.length === 0) return { x: 0, y: 0, w: meta.slideW ?? 0, h: meta.slideH ?? 0 };
+  const s = cams[0][1];
+  return { x: s.x ?? 0, y: s.y ?? 0, w: s.w ?? 0, h: s.h ?? 0 };
+}
+
+/**
  * Pure function. The 9 standard bbox anchor points in LOCAL coords for a
  * state with w/h. The shared implementation plugins declare as `anchors`.
  *
