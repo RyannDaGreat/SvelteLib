@@ -32,13 +32,17 @@
 <div class="kfpanel">
   {#each groups as [slideIndex, ks] (app.doc.slides[slideIndex].id)}
     <div class="kfslide" class:current={slideIndex === app.slideIndex}>
-      <div class="kfslide-head" title={app.doc.slides[slideIndex].id}>
-        <span class="num">Slide {slideIndex + 1}</span>
+      <div class="kfslide-head">
+        <Tooltip text={app.doc.slides[slideIndex].id}>
+          <span class="num">Slide {slideIndex + 1}</span>
+        </Tooltip>
         <button class="btn goto" onclick={() => (app.slideIndex = slideIndex)}>Go To</button>
       </div>
       {#each ks as k}
         <div class="kf" class:selected={k.path[1] === app.selection}>
-          <span class="path" title={k.path.join(".")}>{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
+          <Tooltip text={k.path.join(".")}>
+            <span class="path">{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
+          </Tooltip>
           <span class="value">{fmt(k.value)}</span>
           <Tooltip text="Remove this keyframe">
             <button class="remove" aria-label="Remove keyframe" onclick={() => app.removeKey(slideIndex, k.path)}>
