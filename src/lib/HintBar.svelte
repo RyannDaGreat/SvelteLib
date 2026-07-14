@@ -17,6 +17,7 @@
 -->
 <script>
   import "iconify-icon";
+  import { keyIcon } from "./keyicons.js";
 
   let {
     /** @type {[string[], string][]} List of [keys, label] hints. */
@@ -47,6 +48,8 @@
           {#if i > 0}<span class="plus">+</span>{/if}
           {#if isMouse(token)}
             <iconify-icon class="mouse" icon={MOUSE_ICONS[token]} width="16" height="16"></iconify-icon>
+          {:else if keyIcon(token)}
+            <kbd><iconify-icon icon={keyIcon(token)} width="11" height="11"></iconify-icon></kbd>
           {:else}
             <kbd>{token}</kbd>
           {/if}

@@ -8,6 +8,7 @@
 -->
 <script>
   import "iconify-icon";
+  import { keyIcon } from "../../../lib/keyicons.js";
   import { rpFuzzyMatchIndices } from "../core/fuzzy.js";
 
   let { app } = $props();
@@ -128,7 +129,9 @@
             {#if app.shortcuts.commandKeys(cmd.id)}
               <span class="shortcut">
                 {#each app.shortcuts.commandKeys(cmd.id) as key, ki}
-                  {#if ki > 0}<span class="plus">+</span>{/if}<kbd>{key}</kbd>
+                  {#if ki > 0}<span class="plus">+</span>{/if}<kbd>
+                    {#if keyIcon(key)}<iconify-icon icon={keyIcon(key)} width="11" height="11"></iconify-icon>{:else}{key}{/if}
+                  </kbd>
                 {/each}
               </span>
             {/if}
