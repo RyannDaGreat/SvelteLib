@@ -45,7 +45,11 @@
   let inputEl = $state(null);
 
   let parent = $derived(stack.length ? stack[stack.length - 1] : null);
-  let results = $derived(app.commands.search(query, app, parent));
+  // `used` inside the registry is a plain (non-reactive) Map, so markUsed() from
+  // runCommand can't dirty this derived. Read app.paletteOpen (flips on every
+  // open) so the empty-query MRU order is recomputed fresh each time the palette
+  // is shown — even when query/stack are unchanged from the prior open.
+  let results = $derived(app.paletteOpen ? app.commands.search(query, app, parent) : []);
 
   $effect(() => {
     if (app.paletteOpen && inputEl) {

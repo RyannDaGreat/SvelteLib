@@ -97,7 +97,10 @@
 
   const FINE_FACTOR = 0.1; // Shift-drag multiplier for fine adjustment
   const DEFAULT_DECIMALS = 4; // display precision when no step constrains it
-  const RIDGE_TRAVEL_PX = 48; // drag pixels that scroll the wheel by one ridge cycle
+  // The wheel surface moves 1:1 with the drag (like a real wheel under a
+  // finger); the translate wraps at one ridge period so the loop is SEAMLESS
+  // (the old 48px travel modulo made the pattern visibly "reset" mid-drag).
+  const RIDGE_PERIOD_PX = 4; // must equal --dn-ridge-gap (single ridge cycle)
 
   let {
     /** @type {number} The scrubbed value. Bindable. */
@@ -145,7 +148,7 @@
   // The wheel scrolls its ridge pattern by the accumulated drag. Modulo keeps
   // the offset small so the CSS repeat never has to cover a huge range; the
   // pattern is seamless so the wrap is invisible.
-  const wheelOffset = $derived(((accum % RIDGE_TRAVEL_PX) + RIDGE_TRAVEL_PX) % RIDGE_TRAVEL_PX);
+  const wheelOffset = $derived(((accum % RIDGE_PERIOD_PX) + RIDGE_PERIOD_PX) % RIDGE_PERIOD_PX);
 
   // -- Value application ------------------------------------------------------
 
@@ -346,17 +349,14 @@
     --dn-hover-bg: var(--a-hover-bg, rgba(255, 255, 255, 0.08));
     --dn-focus-ring: color-mix(in srgb, var(--dn-accent) 55%, transparent);
 
-    /* Grip wheel geometry + skin */
+    /* Grip wheel geometry. The wheel ships UNSKINNED (flat, transparent) —
+       look-and-feel belongs to the consumer's stylesheet via these hooks
+       (user rule: a lib component must not be opinionated about skin). */
     --dn-wheel-width: 12px;
     --dn-wheel-height: 20px;
-    --dn-wheel-bg: linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--dn-fg) 8%, transparent),
-      color-mix(in srgb, var(--dn-fg) 22%, transparent) 50%,
-      color-mix(in srgb, var(--dn-fg) 8%, transparent)
-    );
+    --dn-wheel-bg: transparent;
     --dn-ridge: color-mix(in srgb, var(--dn-fg) 45%, transparent);
-    --dn-ridge-gap: 4px; /* period of one ridge cycle; RIDGE_TRAVEL_PX = 48 = 12 cycles */
+    --dn-ridge-gap: 4px; /* period of one ridge cycle — MUST equal the ridgePeriod prop for a seamless loop */
     --dn-ridge-thickness: 1px;
 
     display: inline-flex;
@@ -420,21 +420,6 @@
     );
     will-change: transform;
   }
-  /* Cylinder shading: darken top/bottom edges so the barrel reads as round. */
-  .dn-wheel::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: linear-gradient(
-      0deg,
-      rgba(0, 0, 0, 0.35),
-      transparent 30%,
-      transparent 70%,
-      rgba(0, 0, 0, 0.35)
-    );
-  }
-
   .dn-text {
     display: inline-flex;
     align-items: baseline;

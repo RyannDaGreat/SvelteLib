@@ -250,11 +250,18 @@
     else reveal();
   }
 
-  /** Command. While hovering, follow the cursor. Mutates cursor and repositions. */
+  /**
+   * Command. STILL-MOUSE rule (user spec): pointer motion hides the tip and
+   * restarts the stillness timer — the tip (re)appears only once the pointer
+   * has been still for `delay` ms (next tick when delay=0). Mutates
+   * cursor/shown/timer.
+   */
   function track(e) {
     if (!cursor) return; // focus-anchored tip: ignore stray pointermove
     cursor = { x: e.clientX, y: e.clientY };
-    if (shown) place();
+    shown = false;
+    clearTimeout(showTimer);
+    showTimer = setTimeout(reveal, delay);
   }
 
   /** Command. Hides the tooltip and cancels any pending show. Mutates shown/timer. */

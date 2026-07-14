@@ -44,6 +44,15 @@ export function createCommands() {
     markUsed(id) {
       used.set(id, useCounter++);
     },
+    /**
+     * Query. The top-level submenu entry owning `id`, or null when `id` is
+     * itself top-level (or unknown). Lets a child run surface its PARENT in the
+     * top-level MRU — children aren't top-level entries, so they can never
+     * appear there, but the submenu they live under can.
+     */
+    parentOf(id) {
+      return topLevel.find((c) => c.children?.some((ch) => ch.id === id)) ?? null;
+    },
     /** Query. MRU state for persistence: ids, most recent LAST. */
     usageList() {
       return [...used.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);

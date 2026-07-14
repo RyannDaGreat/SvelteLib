@@ -394,7 +394,14 @@ export class PowerRPApp {
     // Disabled-command semantics: a failing `when` means "not runnable here"
     // (guards e.g. deleting the non-purgeable camera via the Delete key).
     if (cmd.when && !cmd.when(this)) return;
-    this.commands.markUsed(id);
+    // toggle-palette is excluded from MRU: keyboard-opening the palette IS a
+    // command run, and tracking it made it permanently #1 — pure noise.
+    if (id !== "toggle-palette") this.commands.markUsed(id);
+    // Running a submenu child (e.g. a theme under "Color Theme →") also bumps
+    // its parent: the child can't appear in the top-level list, so surfacing the
+    // parent is what makes "recently used" visible there.
+    const parent = this.commands.parentOf(id);
+    if (parent) this.commands.markUsed(parent.id);
     localStorage.setItem("powerrp.mru", JSON.stringify(this.commands.usageList()));
     cmd.run(this);
   }

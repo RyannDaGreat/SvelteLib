@@ -24,7 +24,6 @@
   const app = new PowerRPApp();
   app.loadAutosave();
   app.loadTheme();
-  app.loadMru();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
 
   // SplitPane splits are BOUNDARY positions: [0.16, 0.78] → 3 panes.
@@ -101,6 +100,10 @@
     },
   ];
   for (const c of coreCommands) app.commands.add(c);
+  // Restore MRU only AFTER every command (plugins from the constructor + the
+  // core commands above) is registered — loadUsage drops ids the registry
+  // doesn't yet know, so calling it earlier would silently lose core commands.
+  app.loadMru();
 
   /** Distributes all active bbox items on the current slide with equal center spacing. */
   function distribute(a, axis, sizeKey) {

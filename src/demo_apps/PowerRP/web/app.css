@@ -506,6 +506,39 @@ body,
   font-size: var(--a-font-md);
 }
 
+/* Number field: the SvelteLib DraggableNumber (drag-to-scrub), themed via its
+   documented --dn-* hooks (same pattern as the Dropdown's --dd-*). Shaped to
+   the standardized input box: same --a-input-w × --a-control-h, square corners,
+   1px themed border. The wheel stays visible (prop default) — its geometry is
+   tuned down via --dn-wheel-* so the grip + value fit the 90×26 box cleanly.
+   Set on .inspector so every row's control inherits the same theming. */
+.inspector {
+  --dn-bg: var(--control-bg);
+  --dn-fg: var(--fg);
+  --dn-fg-dim: var(--fg-dim);
+  --dn-border: var(--border);
+  --dn-accent: var(--a-selection);
+  --dn-radius: 0px; /* square, like the other inputs */
+  --dn-padding: 0 var(--a-sp-2) 0 var(--a-sp-1); /* wheel sits a little more left (user spec) */
+  --dn-font-size: var(--a-font-md);
+  --dn-hover-bg: var(--a-hover-bg);
+  --dn-wheel-width: 10px;
+  --dn-wheel-height: 18px; /* fits inside --a-control-h (26px) with 4px slack */
+}
+
+/* Force the component root to the standardized input box. The component is an
+   inline-flex; giving it the exact width/height + border-box makes it match a
+   sibling text input pixel-for-pixel. */
+.inspector .number-field {
+  display: contents;
+}
+
+.inspector .number-field .dn {
+  width: var(--a-input-w);
+  height: var(--a-control-h);
+  box-sizing: border-box;
+}
+
 /* Color control: shaped IDENTICALLY to the number/text inputs (same width,
    height, square corners, themed 1px border). The native color input is
    stretched invisibly over the whole box so clicking anywhere opens Chrome's
@@ -867,4 +900,13 @@ body,
    standardized token as the palette combo chips. */
 .app {
   --hint-key-h: var(--a-key-chip-h);
+}
+
+/* Anchor hover tooltip (SVG-native, immediate). */
+.overlay .anchor-tip text {
+  fill: var(--fg);
+  font-size: var(--a-font-sm);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
 }
