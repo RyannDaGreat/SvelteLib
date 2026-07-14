@@ -40,6 +40,9 @@
   // {axis: "w"|"h", x, y, w, h} — the AABB the arrow is drawn across.
   let sizeIndicators = $state([]);
   let hoverItemId = $state(null); // item under the pointer (hover-only chrome)
+  // Anchor under the pointer → immediate SVG-native tooltip naming it
+  // (HTML Tooltip can't nest inside <svg>). {label, x, y} in world coords.
+  let hoverAnchor = $state(null);
   let drag = null; // non-reactive drag bookkeeping
 
   // Repaint whenever anything visible changes — INCLUDING the container size
@@ -139,7 +142,21 @@
     const w = worldPoint(e);
     if (!drag) {
       // Hover tracking for hover-only chrome (the camera's border).
-      hoverItemId = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom)?.itemId ?? null;
+      const nodes = app.nodes();
+      hoverItemId = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom)?.itemId ?? null;
+      // Anchor hover tooltip (immediate; only while anchors are shown).
+      hoverAnchor = null;
+      if (app.anchorsVisible) {
+        const tol = SNAP_PX / viewport.zoom;
+        let best = null;
+        for (const n of nodes)
+          for (const a of nodeAnchors(n)) {
+            const d = Math.hypot(a.x - w.x, a.y - w.y);
+            if (d <= tol && (!best || d < best.d))
+              best = { d, label: `${app.displayName(n.itemId)} · ${a.id}`, x: a.x, y: a.y };
+          }
+        if (best) hoverAnchor = best;
+      }
       return;
     }
     if (drag.kind === "move") moveDrag(e, w);
@@ -524,6 +541,12 @@
             <line x1="-5" y1="5" x2="5" y2="-5" />
           </g>
         {/each}
+        {#if hoverAnchor && actions}
+          {@const tp = actions.worldToScreen(hoverAnchor.x, hoverAnchor.y)}
+          <g class="anchor-tip" transform={`translate(${tp.x} ${tp.y})`}>
+            <text x="10" y="18">{hoverAnchor.label}</text>
+          </g>
+        {/if}
       </svg>
       {#if app.minimapVisible}
         <div class="minimap-dock">

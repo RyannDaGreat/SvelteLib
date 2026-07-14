@@ -51,7 +51,7 @@
     { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, run: (a) => a.sendToExtreme(-1) },
     { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", run: (a) => distribute(a, "x", "w") },
     { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", run: (a) => distribute(a, "y", "h") },
-    { id: "toggle-anchors", title: "Toggle Anchor Visibility", icon: "mdi:vector-point", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
+    { id: "toggle-anchors", title: "Toggle Anchor Visibility", icon: "mdi:anchor", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },
     { id: "toggle-minimap", title: "Toggle Minimap", icon: "mdi:map-outline", run: (a) => a.toggleMinimap() },
