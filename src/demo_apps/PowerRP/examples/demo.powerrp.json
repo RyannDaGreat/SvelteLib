@@ -97,10 +97,11 @@
               "x": "@0f3d6775_closest.x",
               "y": "@0f3d6775_closest.y"
             },
-            "color": "#1a1a2e",
-            "width": 3,
+            "stroke": "#1a1a2e",
+            "strokeWidth": 3,
             "headLength": 14,
             "headWidth": 12,
+            "headMode": "end",
             "opacity": 1
           }
         }

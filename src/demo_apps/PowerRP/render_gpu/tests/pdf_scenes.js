@@ -23,6 +23,9 @@ import { STILL_VIDEO_MP4_DATA_URI, STILL_VIDEO_FRAME_DATA_URI } from "../../test
 import { filmstripLayout } from "../../plugins/filmstrip.js";
 import { donutPlugin } from "../../plugins/donut.js";
 import { cropboxPlugin } from "../../plugins/cropbox.js";
+import { arrowPlugin } from "../../plugins/arrow.js";
+import { elbowArrowPlugin } from "../../plugins/elbow_arrow.js";
+import { curvedArrowPlugin } from "../../plugins/curved_arrow.js";
 
 /** Standard parity canvas: small enough for fast suites, big enough for detail. */
 export const SCENE_W = 400;
@@ -339,5 +342,48 @@ export function scenes() {
         ...box({ ...cropboxPlugin.defaults, x: 60, y: 190, w: 110, h: 80, cornerRadius: 12, fill: "#f4e9d8", stroke: INK, strokeWidth: 2 }, null),
       ];
     })(), 20), // measured 23.38 dB (2026-07-15 live parity run, after the emitCrop rotation-double-apply fix above) — floor = measured − ~3.4 dB, matching the codebase's measured-minus-margin convention. PENDING USER RATIFICATION (the floor-setting convention itself is flagged app-wide, not specific to this scene). Same clip-edge-AA divergence class as the magnifier-lens scenes (floor 20, measured 23.46-23.94) — expected, since crop box reuses that machinery.
+
+    // ── ARROW VARIANTS parity (SB1 — manifest ARCHITECTURE PLAN #6) ───────────
+    // Built the SAME way as donut-basic/cropbox-basic above: real
+    // elbowArrowPlugin.emit()/curvedArrowPlugin.emit() calls (not hand-written
+    // IR), so this exercises actual widget glue — the route/bezier generators
+    // (core/outline.js elbowRoute/curvedArrowPolyline), the shared head
+    // geometry (core/endpoints.js headTriangle/shaftPullback), and the
+    // stroke/strokeWidth naming migration's post-migration property names, all
+    // through the exact same emit() the editor and CLI renderer call. Both new
+    // routes reduce to the render_gpu polyline op (any point count >= 2), so
+    // no backend changes were needed for either shape — this scene is what
+    // PROVES that (verified: pdf_backend.js's polyline case already handles
+    // an arbitrary-length cmd.points array via pointsPath).
+    s("elbow-curved-arrows", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      rect({ x: 30, y: 20, w: 90, h: 60, fill: "#7aa2f7" }),
+      ellipse({ cx: 330, cy: 240, rx: 50, ry: 35, fill: "#f7768e" }),
+      // Elbow arrow: H-V-H route, elbow at a non-0.5 proportion (proves the
+      // route generator's `t` parameter actually shapes the corner, not just
+      // its default) — headMode "end" (legacy default).
+      ...elbowArrowPlugin.emit({ ...elbowArrowPlugin.defaults, from: { x: 40, y: 90 }, to: { x: 200, y: 200 }, elbow: 0.7, stroke: INK, strokeWidth: 4 }),
+      // Curved arrow: positive bend (proves the sampled-polyline shaft
+      // actually bows off the straight line, not just connects the endpoints).
+      ...curvedArrowPlugin.emit({ ...curvedArrowPlugin.defaults, from: { x: 60, y: 260 }, to: { x: 260, y: 260 }, bend: 0.35, stroke: "#7a3a3a", strokeWidth: 4 }),
+      // Curved arrow: negative bend, crossing the first — proves the sign
+      // convention actually reverses which side the arc bows toward.
+      ...curvedArrowPlugin.emit({ ...curvedArrowPlugin.defaults, from: { x: 220, y: 40 }, to: { x: 380, y: 140 }, bend: -0.3, stroke: "#3a5a3a", strokeWidth: 3 }),
+    ], 38), // measured 43.82 dB (2026-07-15 live parity run) — floor = measured − ~5.4 dB, matching the codebase's measured-minus-margin convention (same margin as donut-basic/arrows-crossing). PENDING USER RATIFICATION (the floor-setting convention itself is flagged app-wide, not specific to this scene).
+
+    // headMode "both": basic arrow with a mirrored head at BOTH ends (manifest
+    // ARCHITECTURE PLAN #6: "Head options on ALL arrows... both"). Uses the
+    // BASIC arrow plugin (not a new variant) since headMode applies uniformly
+    // across straight/elbow/curved — this scene's job is proving the shared
+    // headEnds/headTriangle mirroring math, which elbow-curved-arrows above
+    // doesn't exercise (both its arrows use the legacy "end"-only default).
+    s("arrow-head-both", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      ...arrowPlugin.emit({ ...arrowPlugin.defaults, from: { x: 40, y: 80 }, to: { x: 360, y: 80 }, headMode: "both", stroke: INK, strokeWidth: 4 }),
+      // A steeper diagonal double-header at a different scale — proves the
+      // mirrored start-head triangle math is axis-covariant, not just correct
+      // for the horizontal case above.
+      ...arrowPlugin.emit({ ...arrowPlugin.defaults, from: { x: 60, y: 150 }, to: { x: 300, y: 260 }, headMode: "both", headLength: 22, headWidth: 18, stroke: "#7a3a3a", strokeWidth: 5 }),
+    ], 40), // measured 45.69 dB (2026-07-15 live parity run) — floor = measured − ~5.4 dB, matching the codebase's measured-minus-margin convention (same margin as donut-basic/arrows-crossing). PENDING USER RATIFICATION (the floor-setting convention itself is flagged app-wide, not specific to this scene).
   ];
 }

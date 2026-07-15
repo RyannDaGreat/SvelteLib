@@ -23,6 +23,17 @@ import { distToSegment } from "./outline.js";
 export const SHAFT_GRAB_PAD = 5;
 
 /**
+ * Fraction of a head's length the shaft stops short of the tip — the shaft
+ * end sits INSIDE the head triangle, so shaft and head always overlap
+ * seamlessly (and a round shaft cap never pokes past the tip). Originated in
+ * arrow.js as a local constant (0.6, same value/semantics preserved here
+ * verbatim) — promoted to this shared home now that elbow/curved arrows and
+ * headMode's mirrored start-head all need the identical pullback math
+ * (manifest ARCHITECTURE PLAN #6: headMode on ALL arrow kinds).
+ */
+export const SHAFT_PULLBACK = 0.6;
+
+/**
  * Pure function. Editable-point descriptors for the editor's draggable
  * endpoint handles: the generic editable-point interface (the editor writes
  * values into state[key].x/.y — numbers when free, equation strings when
@@ -105,4 +116,76 @@ export function endpointPairHooks(keys = ["from", "to"]) {
     moveBy: (state, dx, dy) => endpointMoveBy(state, dx, dy, keys),
     closestToward: (state, path) => endpointClosestToward(state, path, keys),
   };
+}
+
+/**
+ * Enum values for the shared `headMode` property (manifest ARCHITECTURE PLAN
+ * #6: "Head options on ALL arrows: headMode enum none|start|end|both (legacy
+ * = end)"). Exported as data (not just documented in a comment) so plugin
+ * `inspector` row declarations and tests reference the same list instead of
+ * repeating string literals.
+ *
+ * @example HEAD_MODES // ["none", "start", "end", "both"]
+ */
+export const HEAD_MODES = ["none", "start", "end", "both"];
+
+/**
+ * Pure function. Which ends of an endpoint-pair widget get an arrowhead, for
+ * a given `headMode` — the ONE place this enum's meaning is defined, so
+ * arrow/elbow/curved plugins can't drift on what "both" means.
+ *
+ * @example headEnds("end") // {start: false, end: true}
+ * @example headEnds("both") // {start: true, end: true}
+ * @example headEnds("none") // {start: false, end: false}
+ * @example headEnds(undefined) // {start: false, end: true} (legacy default)
+ */
+export function headEnds(headMode = "end") {
+  return { start: headMode === "start" || headMode === "both", end: headMode === "end" || headMode === "both" };
+}
+
+/**
+ * Pure function. A triangular arrowhead's 3 world-space vertices: tip at
+ * `tip`, base `len` back along the tip←from axis, base corners ±half across
+ * it — the SAME geometry arrow.js has always used for its single (end) head,
+ * generalized to be called once per active end (mirrored for `start`: the
+ * axis simply reverses, which the caller achieves by swapping which point is
+ * `tip` and which is `from`).
+ *
+ * Args:
+ *   tip ({x,y}): the point the head's point sits at (an endpoint)
+ *   from ({x,y}): the OTHER endpoint (defines the axis the head points along)
+ *   len (number): tip-to-base length along the axis
+ *   width (number): full base width across the axis
+ *
+ * Returns:
+ *   number[][]: [tip, baseCornerA, baseCornerB] — a triangle, ready for
+ *     render_gpu/ir.js's polygon()
+ *
+ * @example headTriangle({x: 100, y: 0}, {x: 0, y: 0}, 14, 12) // [[100, 0], [86, 6], [86, -6]]
+ * @example headTriangle({x: 0, y: 100}, {x: 0, y: 0}, 14, 12) // [[0, 100], [-6, 86], [6, 86]]
+ */
+export function headTriangle(tip, from, len, width) {
+  const dx = tip.x - from.x, dy = tip.y - from.y;
+  const axisLen = Math.hypot(dx, dy) || 1; // degenerate (coincident points): axis is arbitrary, triangle collapses to a point anyway
+  const ux = dx / axisLen, uy = dy / axisLen; // unit axis, from → tip
+  const nx = -uy, ny = ux; // unit normal
+  const half = width / 2;
+  return [
+    [tip.x, tip.y],
+    [tip.x - ux * len + nx * half, tip.y - uy * len + ny * half],
+    [tip.x - ux * len - nx * half, tip.y - uy * len - ny * half],
+  ];
+}
+
+/**
+ * Pure function. How far a shaft should stop short of an active head's tip
+ * (the shaft end sits INSIDE the head triangle so shaft and head always
+ * overlap seamlessly — same SHAFT_PULLBACK convention arrow.js originated).
+ * Returns 0 for an inactive end (no head there — shaft runs the full way).
+ *
+ * @example shaftPullback(true, 14) // 8.4
+ * @example shaftPullback(false, 14) // 0
+ */
+export function shaftPullback(active, headLength) {
+  return active ? headLength * SHAFT_PULLBACK : 0;
 }

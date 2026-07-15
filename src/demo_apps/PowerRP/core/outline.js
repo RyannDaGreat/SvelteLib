@@ -93,6 +93,55 @@ export function distToSegment(px, py, a, b) {
 }
 
 /**
+ * Pure function. The unit axis (a → b) and unit right-normal for a segment,
+ * plus its length — the SAME (ux, uy, nx, ny) decomposition fancyArrowOutline
+ * and bezierControlFromBend each derive inline; factored here so any
+ * axis-relative modifier point (a MODIFIER POINT constrained to slide along
+ * an endpoint-pair widget's own axis or perpendicular to it — manifest
+ * ARCHITECTURE PLAN #1/#6) can reuse ONE derivation instead of re-deriving
+ * the right-normal sign convention per caller. Degenerate (coincident) points
+ * fall back to the +x axis (an arbitrary but consistent choice — the same
+ * "axis is arbitrary, geometry collapses to a point anyway" territory as
+ * headTriangle's degenerate case).
+ *
+ * @example axisNormalFrame({x: 0, y: 0}, {x: 100, y: 0}) // {ux: 1, uy: 0, nx: -0, ny: 1, length: 100} (nx is IEEE -0 here: -uy where uy is +0 — mathematically 0, just not Object.is-identical to +0)
+ * @example axisNormalFrame({x: 0, y: 0}, {x: 0, y: 100}) // {ux: 0, uy: 1, nx: -1, ny: 0, length: 100}
+ */
+export function axisNormalFrame(a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return { ux: 1, uy: 0, nx: 0, ny: 1, length: 0 };
+  const ux = dx / length, uy = dy / length;
+  return { ux, uy, nx: -uy, ny: ux, length };
+}
+
+/**
+ * Pure function. Signed distance of point p along the axis from `a` (the
+ * component of (p−a) parallel to the unit axis (ux,uy) — from
+ * axisNormalFrame). Together with projectOntoNormal, decomposes any point
+ * into a segment's own (axial, normal) coordinate system — the inverse half
+ * of placing/reading a modifier point that's constrained to ONE of those two
+ * directions (donut's radial handle projects onto a radius; fancy_arrow's
+ * head handles project onto the shaft axis or its normal).
+ *
+ * @example projectOntoAxis({x: 0, y: 0}, {ux: 1, uy: 0}, {x: 30, y: 5}) // 30
+ */
+export function projectOntoAxis(a, frame, p) {
+  return (p.x - a.x) * frame.ux + (p.y - a.y) * frame.uy;
+}
+
+/**
+ * Pure function. Signed distance of point p along the normal from `a` (the
+ * component of (p−a) parallel to the unit normal (nx,ny) — from
+ * axisNormalFrame). See projectOntoAxis for the paired axial projection.
+ *
+ * @example projectOntoNormal({x: 0, y: 0}, {nx: 0, ny: 1}, {x: 30, y: 5}) // 5
+ */
+export function projectOntoNormal(a, frame, p) {
+  return (p.x - a.x) * frame.nx + (p.y - a.y) * frame.ny;
+}
+
+/**
  * Pure function. Closest point on the RIM of an axis-aligned ROUNDED rectangle
  * (top-left at 0,0, size w×h, uniform corner radius r) to a query point. The
  * rim is four straight edges plus four quarter-circle arcs — the SAME geometry
@@ -409,4 +458,132 @@ export function donutOutline({ cx, cy, outerR, inner }) {
     return pts;
   };
   return [...ring(outerR, 1), ...ring(r, -1)];
+}
+
+/**
+ * Pure function. GENERATOR #3: an orthogonal H-V-H route between two points
+ * (manifest ARCHITECTURE PLAN #6, ELBOW arrow — "PPT default H-V-H"): a
+ * horizontal run from the start, one vertical run at the elbow, then a
+ * horizontal run into the end. `elbow` (0..1) is the PROPORTION of the way
+ * along the horizontal SPAN (x1−x0) where the vertical segment sits — this is
+ * the single parameter the elbow's ONE modifier point scrubs (manifest: "an
+ * `elbow` parameter (0..1, position of the middle segment along the span)
+ * controlled by ONE MODIFIER POINT").
+ *
+ * At elbow=0 or elbow=1 the route degenerates to an L-shape (the vertical run
+ * sits flush against one end) rather than disappearing — still a valid
+ * 4-point polyline (two coincident points collapse to one edge of zero
+ * length, which polyline()/hitsShaft handle like any other short segment, no
+ * special-casing needed).
+ *
+ * Args:
+ *   x0, y0 (number): start point
+ *   x1, y1 (number): end point
+ *   elbow (number): 0..1, the mid-segment's position along the x-span
+ *
+ * Returns:
+ *   number[][]: [[x0,y0], [mx,y0], [mx,y1], [x1,y1]] — an OPEN polyline (not
+ *     a closed outline; pass directly to render_gpu/ir.js's polyline())
+ *
+ * @example elbowRoute({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5}) // [[0, 0], [50, 0], [50, 50], [100, 50]]
+ * @example elbowRoute({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0}) // [[0, 0], [0, 0], [0, 50], [100, 50]] (flush at the start — a valid degenerate L)
+ * @example elbowRoute({x0: 0, y0: 20, x1: 100, y1: 20, elbow: 0.5}) // [[0, 20], [50, 20], [50, 20], [100, 20]] (level span: the "vertical" run has zero length — still a straight line)
+ */
+export function elbowRoute({ x0, y0, x1, y1, elbow }) {
+  const t = Math.max(0, Math.min(elbow, 1));
+  const mx = x0 + (x1 - x0) * t;
+  return [[x0, y0], [mx, y0], [mx, y1], [x1, y1]];
+}
+
+/**
+ * Pure function. The midpoint of an H-V-H elbow route's VERTICAL segment (the
+ * elbow's ONE modifier point sits here — the manifest's "yellow square on the
+ * elbow"): the mid-segment's x (from elbowRoute) at the vertical run's own
+ * midpoint y, so the handle sits centered on the segment it controls
+ * regardless of how far apart y0/y1 are.
+ *
+ * @example elbowHandle({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5}) // {x: 50, y: 25}
+ */
+export function elbowHandle({ x0, y0, x1, y1, elbow }) {
+  const t = Math.max(0, Math.min(elbow, 1));
+  return { x: x0 + (x1 - x0) * t, y: (y0 + y1) / 2 };
+}
+
+/**
+ * Pure function. GENERATOR #4: a quadratic bezier's control point derived
+ * from a signed `bend` proportion (manifest ARCHITECTURE PLAN #6, CURVED
+ * arrow — "a `bend` parameter (signed, the control point's perpendicular
+ * offset as a proportion of span length)"): the control point sits at the
+ * segment's MIDPOINT, offset perpendicular to the start→end axis by
+ * `bend * span` (span = the straight-line distance between the endpoints) —
+ * so `bend` stays resolution-independent (scaling the whole arrow scales the
+ * offset with it, unlike a stored absolute pixel offset).
+ *
+ * Sign convention: positive `bend` offsets toward the RIGHT-hand normal of
+ * the start→end axis (same right-normal convention as
+ * fancyArrowOutline/arrow.js's head math: normal = (-uy, ux) for unit axis
+ * (ux, uy)) — arbitrary but consistent with the rest of this module, and the
+ * ONLY thing that matters for a symmetric curvature control.
+ *
+ * Zero-length span (coincident endpoints) has no defined axis; the control
+ * point falls back to the shared point (a degenerate zero-length curve, same
+ * "no geometry" territory as fancyArrowOutline's zero-length null).
+ *
+ * @example bezierControlFromBend({x0: 0, y0: 0, x1: 100, y1: 0, bend: 0.3}) // {x: 50, y: 30}
+ * @example bezierControlFromBend({x0: 0, y0: 0, x1: 100, y1: 0, bend: 0}) // {x: 50, y: 0} (bend 0 = the straight midpoint)
+ * @example bezierControlFromBend({x0: 5, y0: 5, x1: 5, y1: 5, bend: 0.5}) // {x: 5, y: 5} (coincident endpoints: no axis, falls back to the shared point)
+ */
+export function bezierControlFromBend({ x0, y0, x1, y1, bend }) {
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  const { nx, ny, length } = axisNormalFrame({ x: x0, y: y0 }, { x: x1, y: y1 });
+  if (length === 0) return { x: mx, y: my };
+  const offset = bend * length;
+  return { x: mx + nx * offset, y: my + ny * offset };
+}
+
+/**
+ * Pure function. Point on a quadratic bezier at parameter t (De Casteljau /
+ * the standard (1−t)²P0 + 2(1−t)t·C + t²P1 form).
+ *
+ * @example quadraticBezierPoint({x: 0, y: 0}, {x: 50, y: 100}, {x: 100, y: 0}, 0.5) // {x: 50, y: 50}
+ * @example quadraticBezierPoint({x: 0, y: 0}, {x: 50, y: 100}, {x: 100, y: 0}, 0) // {x: 0, y: 0}
+ * @example quadraticBezierPoint({x: 0, y: 0}, {x: 50, y: 100}, {x: 100, y: 0}, 1) // {x: 100, y: 0}
+ */
+export function quadraticBezierPoint(p0, c, p1, t) {
+  const u = 1 - t;
+  return {
+    x: u * u * p0.x + 2 * u * t * c.x + t * t * p1.x,
+    y: u * u * p0.y + 2 * u * t * c.y + t * t * p1.y,
+  };
+}
+
+// Sample count for a quadratic bezier's rendered/hit-tested polyline. No
+// existing curve-sampling precedent exists elsewhere in the codebase (the
+// only prior "approximate a smooth curve with N points" decision is
+// DONUT_SEGMENTS=64, immediately above in this file, chosen for the same
+// reason: visual smoothness at typical on-screen widget sizes, no stronger
+// numeric precedent available). A quadratic bezier has far less curvature
+// complexity than a full circle (at most one inflection-free bend), so it
+// needs fewer samples for the same visual smoothness — 32 is DONUT_SEGMENTS
+// halved, same "no numeric precedent exists" caveat. PENDING USER
+// RATIFICATION (same flag as DONUT_SEGMENTS).
+const CURVE_SEGMENTS = 32;
+
+/**
+ * Pure function. A quadratic bezier sampled into an OPEN polyline of
+ * CURVE_SEGMENTS+1 points — the bridge from the curved arrow's control-point
+ * math to render_gpu/ir.js's polyline() (manifest: "the polyline/capsule-
+ * chain path handles curves as a sampled polyline" — verified: neither
+ * backend has a native bezier stroke primitive, same "no native primitive"
+ * situation donutOutline/fancyArrowOutline already accept for their curves).
+ *
+ * @example curvedArrowPolyline({x0: 0, y0: 0, x1: 100, y1: 0, bend: 0}).length // 33
+ * @example curvedArrowPolyline({x0: 0, y0: 0, x1: 100, y1: 0, bend: 0})[16] // {x: 50, y: 0} (midpoint sample, straight bend=0)
+ */
+export function curvedArrowPolyline({ x0, y0, x1, y1, bend }) {
+  const p0 = { x: x0, y: y0 }, p1 = { x: x1, y: y1 };
+  const c = bezierControlFromBend({ x0, y0, x1, y1, bend });
+  const pts = [];
+  for (let i = 0; i <= CURVE_SEGMENTS; i++) pts.push(quadraticBezierPoint(p0, c, p1, i / CURVE_SEGMENTS));
+  return pts;
 }

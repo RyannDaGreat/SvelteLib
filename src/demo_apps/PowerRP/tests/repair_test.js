@@ -150,17 +150,25 @@ function legacyArrowDoc() {
   return [keyframed(d2, 1, ["items", id, "headSize"], 40), id];
 }
 
-test("legacy rename: headSize moves to headLength on EVERY slide, values verbatim", () => {
+test("legacy rename: headSize moves to headLength on EVERY slide, values verbatim (plus the arrow's OWN color/width→stroke/strokeWidth rename on slide 0 — manifest ARCHITECTURE PLAN #6, same declarative legacyKeys mechanism)", () => {
   const [doc, id] = legacyArrowDoc();
   const report = legacyKeyRenames(doc, registry);
-  assert.deepEqual(report.map((r) => [r.slideIndex, r.from, r.to, r.stale]),
-    [[0, "headSize", "headLength", false], [1, "headSize", "headLength", false]]);
+  assert.deepEqual(report.map((r) => [r.slideIndex, r.from, r.to, r.stale]), [
+    [0, "headSize", "headLength", false],
+    [0, "color", "stroke", false],
+    [0, "width", "strokeWidth", false],
+    [1, "headSize", "headLength", false],
+  ]);
   const { doc: fixed, renamed } = withLegacyKeysRenamed(doc, registry);
-  assert.equal(renamed.length, 2);
+  assert.equal(renamed.length, 4);
   assert.equal(fixed.slides[0].delta.items[id].headLength, 20);
   assert.equal(fixed.slides[1].delta.items[id].headLength, 40); // the ANIMATION survives
+  assert.equal(fixed.slides[0].delta.items[id].stroke, "#000");
+  assert.equal(fixed.slides[0].delta.items[id].strokeWidth, 3);
   assert.equal("headSize" in fixed.slides[0].delta.items[id], false);
   assert.equal("headSize" in fixed.slides[1].delta.items[id], false);
+  assert.equal("color" in fixed.slides[0].delta.items[id], false);
+  assert.equal("width" in fixed.slides[0].delta.items[id], false);
   assert.deepEqual(withLegacyKeysRenamed(fixed, registry).renamed, []); // idempotent
 });
 
@@ -208,9 +216,11 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
   const renamed = withLegacyKeysRenamed(doc, registry).doc;
   const { doc: filled, filled: fills } = withMissingDefaultsFilled(renamed, registry);
   assert.equal(filled.slides[0].delta.items[id].headLength, 20); // preserved
-  // Only the genuinely-new headWidth gets filled, not headLength.
+  // Only the genuinely-new headWidth/headMode get filled, not headLength
+  // (headMode is the arrow-variants task's new field — manifest ARCHITECTURE
+  // PLAN #6 — the fixture predates it, same "genuinely new" territory as headWidth).
   const arrowFill = fills.find((f) => f.id === id);
-  assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), ["headWidth"]);
+  assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), ["headWidth", "headMode"]);
   const state = evaluateState(foldState(filled, 1, 1), registry).state;
   assert.equal(state.items[id].headLength, 40);
   sceneIR(deriveRenderTree(state, registry)); // renders through the strict IR

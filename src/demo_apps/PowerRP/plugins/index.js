@@ -8,6 +8,8 @@ import { circlePlugin } from "./circle.js";
 import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
 import { fancyArrowPlugin } from "./fancy_arrow.js";
+import { elbowArrowPlugin } from "./elbow_arrow.js";
+import { curvedArrowPlugin } from "./curved_arrow.js";
 import { imagePlugin } from "./image.js";
 import { videoPlugin } from "./video.js";
 import { filmstripPlugin } from "./filmstrip.js";
@@ -17,7 +19,7 @@ import { cameraPlugin } from "./camera.js";
 import { cropboxPlugin } from "./cropbox.js";
 import { donutPlugin } from "./donut.js";
 
-export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin];
+export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {
