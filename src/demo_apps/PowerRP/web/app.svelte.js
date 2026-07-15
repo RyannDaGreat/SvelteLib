@@ -551,6 +551,19 @@ export class PowerRPApp {
     this.selection = null;
   }
 
+  /**
+   * Clears to a fresh document (round 11: "next to save and load I should be
+   * able to clear the current thing"). Goes through commit() so it lands in
+   * the UNDO log — undo restores everything, which is the safety net (no
+   * confirm dialog by design). newDocument() guarantees THE camera exists.
+   * UI resets mirror loadFile: slide 0, nothing selected.
+   */
+  clearDoc() {
+    this.commit(newDocument());
+    this.slideIndex = 0;
+    this.selection = null;
+  }
+
   loadAutosave() {
     const json = localStorage.getItem(AUTOSAVE_KEY);
     if (json) {

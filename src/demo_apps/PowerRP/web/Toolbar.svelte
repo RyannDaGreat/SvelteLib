@@ -35,6 +35,7 @@
     [
       ["save-file", "mdi:content-save-outline", "Save (.powerrp.json)"],
       ["load-file", "mdi:folder-open-outline", "Load"],
+      ["clear-doc", "mdi:broom", "Clear document (undoable)"],
     ],
     [
       ["reset-view", "mdi:fit-to-screen-outline", "Zoom to fit camera"],
