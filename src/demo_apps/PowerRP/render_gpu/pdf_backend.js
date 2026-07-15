@@ -650,7 +650,11 @@ async function emitLens(cmd, world, commands, rawIdx, region, out, ctx) {
   // coords under the box's transform) + its stroke color/width. A circle reads
   // rimColor/rimWidth; a box reads stroke/strokeWidth — both are one ring.
   const strokeColor = isBox ? cmd.stroke : cmd.rimColor;
-  const strokeW = (isBox ? cmd.strokeWidth : cmd.rimWidth) * world.scale;
+  // Pen width lives in the space its path is DRAWN in: the circle's path is in
+  // base coords (scale by world), but the box strokes inside cm(world) — the cm
+  // scales the pen at stroke time, so pre-multiplying by world.scale would
+  // SQUARE it under scaled worlds. (Identical output at lens worlds' scale=1.)
+  const strokeW = isBox ? cmd.strokeWidth : cmd.rimWidth * world.scale;
   const clipOps = () => isBox
     ? [cmSimilarity(world), rectPath({ x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2, cornerRadius: cmd.cornerRadius }), "W n", cmSimilarity(T.invert(world))]
     : [ellipsePath({ cx: center.x, cy: center.y, rx: cmd.r * world.scale, ry: cmd.r * world.scale }), "W n"];
