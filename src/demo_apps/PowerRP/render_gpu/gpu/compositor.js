@@ -125,6 +125,24 @@ const MAX_EFFECT_DEPTH = MAX_SUPERSAMPLE_DEPTH + 1;
  * texels, and throwing bricks the frame for a document the model allows.
  */
 const MAX_REENDER_DEPTH = 4;
+/**
+ * Effect source-region resolution FLOOR (manifest 15.3 "SHADOWS BROKEN UNDER
+ * ZOOM"). The effect substrate re-renders the widget + its halo band (blur
+ * reach + shadow offset) into a canvas-sized texture; at high zoom that region
+ * can exceed the canvas texture in device px. The OLD code `Math.min(w, texW)`
+ * silently CROPPED the far edge — the FORBIDDEN clamp class (the item's own
+ * fill was cut by a hard vertical cliff, the shadow a hard-clipped blob). The
+ * fix DOWNSCALES the effect re-render (effScale = min(1, texW/regionW,
+ * texH/regionH)) so the WHOLE region always fits — never crops. This floor
+ * stops a pathological region (a widget zoomed so far its halo dwarfs the
+ * canvas by >64× — never reachable from normal editing) from collapsing the
+ * effect to sub-pixel mush; below it the effect skips LOUDLY (reportOnce)
+ * rather than paint garbage. 1/64 mirrors the spirit of MAX_HALF_KERNEL (a
+ * finite cap on effect work); PENDING RATIFICATION (a new constant, derived
+ * not precedented). At effScale = 1 the whole path is byte-identical to the
+ * pre-15.3 no-downscale render.
+ */
+const MIN_EFFECT_RESOLUTION_SCALE = 1 / 64;
 /** Floats per instance — must match the WGSL attribute layouts. */
 const SHAPE_FLOATS = 24; // 6 × vec4
 const QUAD_FLOATS = 20;  // 5 × vec4 (tex, video, magnify, effect share this stride)
@@ -1198,16 +1216,39 @@ export class GpuCompositor {
             { x: Math.floor(cDevX - srcPadX), y: Math.floor(cDevY - srcPadY), w: Math.ceil(srcPadX * 2) + 1, h: Math.ceil(srcPadY * 2) + 1 },
             { x: -inflate, y: -inflate, w: cw + 2 * inflate, h: ch + 2 * inflate },
           );
-          // Cap at the texture size (the lens economics: a source region can
-          // never exceed one canvas of pixels; a truncated far edge only ever
-          // affects content already offscreen past the inflation band).
-          const srcVisible = { x: rawSrc.x, y: rawSrc.y, w: Math.min(rawSrc.w, this._texW), h: Math.min(rawSrc.h, this._texH) };
+          // 15.3 DOWNSCALE (never crop): srcVisible is the WHOLE region in
+          // outer-device px; when it exceeds the canvas texture, the effect
+          // re-renders at a reduced resolution (effScale) so ALL of it fits —
+          // the OLD `Math.min(w, texW)` cropped the far edge (the forbidden
+          // clamp: it cut the widget's own fill and hard-clipped the shadow).
+          // effScale = 1 whenever the region already fits (the common case) ⇒
+          // byte-identical to the pre-15.3 render.
+          const srcVisible = { x: rawSrc.x, y: rawSrc.y, w: rawSrc.w, h: rawSrc.h };
           if (srcVisible.w === 0 || srcVisible.h === 0) break; // widget itself fully out of reach
+          const effScale = Math.min(1, this._texW / srcVisible.w, this._texH / srcVisible.h);
+          if (effScale < MIN_EFFECT_RESOLUTION_SCALE) {
+            // Pathological: the halo dwarfs the canvas by >64× (unreachable
+            // from normal editing). Skip LOUDLY — painting at sub-1/64 res is
+            // mush, and cropping is the forbidden fallback.
+            reportOnce("effect-resolution-floor", `GpuCompositor: effect source ${Math.round(srcVisible.w)}x${Math.round(srcVisible.h)} needs scale ${effScale.toFixed(4)} < MIN_EFFECT_RESOLUTION_SCALE (${MIN_EFFECT_RESOLUTION_SCALE}) — skipping the effected widget (extreme zoom)`);
+            break;
+          }
+          // Rendered pixel dims of the (possibly downscaled) region.
+          const effW = Math.min(this._texW, Math.ceil(srcVisible.w * effScale));
+          const effH = Math.min(this._texH, Math.ceil(srcVisible.h * effScale));
+          // Blur sigmas run in the TEXTURE's device space — the content is
+          // rendered at effScale, so a world-blur that spans sigmaSDev outer-
+          // device px spans sigmaSDev·effScale texels (at effScale 1, unchanged).
+          const sigmaSTex = sigmaSDev * effScale;
+          const sigmaBTex = sigmaBDev * effScale;
           endPass();
-          // Content re-render at the OUTER view, shifted so srcVisible's
-          // origin lands at the texture corner (the crop-view trick, mag 1).
-          const effView = { zoom: view.zoom, panX: view.panX - srcVisible.x / view.dpr, panY: view.panY - srcVisible.y / view.dpr, dpr: view.dpr };
-          let subScissor = { x: 0, y: 0, w: srcVisible.w, h: srcVisible.h };
+          // Content re-render at the OUTER view, shifted so srcVisible's origin
+          // lands at the texture corner (the crop-view trick, mag 1), with dpr
+          // scaled by effScale so the whole region shrinks INTO the texture.
+          // panX/panY use the ORIGINAL dpr (the shift is in outer-device px);
+          // only dpr carries the downscale (derivation in MIN_EFFECT_RESOLUTION_SCALE).
+          const effView = { zoom: view.zoom, panX: view.panX - srcVisible.x / view.dpr, panY: view.panY - srcVisible.y / view.dpr, dpr: view.dpr * effScale };
+          let subScissor = { x: 0, y: 0, w: effW, h: effH };
           if (scissor) {
             // The incoming scissor is an OUTPUT bound (presenter letterbox, or
             // a lens replay's visible-intersection). The effect's SOURCE
@@ -1216,15 +1257,20 @@ export class GpuCompositor {
             // shadow/halo into it — so inflate before mapping onto the source
             // re-render (without this, a lens's carried scissor clipped the
             // source to a sliver and the lens showed a blank effect).
+            // deviceRectThroughViews uses effView.dpr, so the mapping already
+            // lands in the downscaled texture space.
             const inflated = { x: scissor.x - inflate, y: scissor.y - inflate, w: scissor.w + 2 * inflate, h: scissor.h + 2 * inflate };
             subScissor = intersectRects(subScissor, deviceRectThroughViews(inflated, view, effView));
           }
           const pool = this._effectTarget(depth);
           const use = this._effectUseEntry(this._effectOrdinal++, depth);
           this._writeView(use.viewBuf, effView);
-          d.queue.writeBuffer(use.rectBuf, 0, new Float32Array([srcVisible.x, srcVisible.y, this._texW, this._texH]));
+          // Sample-rect: the composite quad maps outer-device q → texel
+          // (q − srcVisible.origin)·effScale, i.e. uv = (q − origin)/(texSize/effScale).
+          // At effScale 1 this is the original (origin, texW, texH).
+          d.queue.writeBuffer(use.rectBuf, 0, new Float32Array([srcVisible.x, srcVisible.y, this._texW / effScale, this._texH / effScale]));
           this._encodeScene(encoder, batch.contentBatches, effView, use.viewBG,
-            { tex: pool.tex, view: pool.view, msaaView: pool.msaaView, contentW: srcVisible.w, contentH: srcVisible.h },
+            { tex: pool.tex, view: pool.view, msaaView: pool.msaaView, contentW: effW, contentH: effH },
             { background: [0, 0, 0, 0], scissor: subScissor }, depth + 1);
           const bgs = use.byDepth[depth];
           // Separable Gaussian A→TEMP→B at `sigma` (BLUR_WGSL, opacity 1 both
@@ -1237,7 +1283,10 @@ export class GpuCompositor {
             d.queue.writeBuffer(uboH, 0, new Float32Array([1, 0, sigma, 0, 1, 0, 0, 0]));
             d.queue.writeBuffer(uboV, 0, new Float32Array([0, 1, sigma, 0, 1, 0, 0, 0]));
             const r = Math.min(Math.ceil(sigma * 3), MAX_HALF_KERNEL);
-            const sw = Math.min(this._texW, srcVisible.w + 2 * r), sh = Math.min(this._texH, srcVisible.h + 2 * r);
+            // Blur covers the DOWNSCALED content region (effW/effH), padded by
+            // the tap reach — the source render occupies exactly effW×effH of
+            // the texture at effScale (at effScale 1, effW/effH === srcVisible.w/h).
+            const sw = Math.min(this._texW, effW + 2 * r), sh = Math.min(this._texH, effH + 2 * r);
             const runPass = (targetView, bg) => {
               const pass = encoder.beginRenderPass({
                 colorAttachments: [{ view: targetView, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }],
@@ -1260,13 +1309,13 @@ export class GpuCompositor {
             p.draw(6, 1, 0, first);
           };
           if (batch.firstShadow >= 0) {
-            blurAtoB(sigmaSDev, use.uboSH, use.uboSV, bgs.bgBlurSH, bgs.bgBlurSV);
+            blurAtoB(sigmaSTex, use.uboSH, use.uboSV, bgs.bgBlurSH, bgs.bgBlurSV);
             drawQuad(this.effectPipes.normal, bgs.bgB, batch.firstShadow); // shadow composites OVER, under the widget
           }
           if (!batch.shadowOnly) {
             drawQuad(this.effectPipes[batch.blend], bgs.bgA, batch.firstContent);
             if (batch.firstBloom >= 0) {
-              blurAtoB(sigmaBDev, use.uboBH, use.uboBV, bgs.bgBlurBH, bgs.bgBlurBV);
+              blurAtoB(sigmaBTex, use.uboBH, use.uboBV, bgs.bgBlurBH, bgs.bgBlurBV);
               drawQuad(this.effectPipes.add, bgs.bgB, batch.firstBloom); // ADD-composited own blur (Round 12D)
             }
           }
