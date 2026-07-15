@@ -281,7 +281,7 @@ export class GpuCompositor {
    * ({zoom, panX, panY, dpr}) with an opaque `background` (parsed rgba array
    * or [r,g,b,a] floats).
    */
-  render(commands, view, { background = [1, 1, 1, 1] } = {}) {
+  render(commands, view, { background = [1, 1, 1, 1], scissor = null } = {}) {
     if (this._fatal) throw this._fatal;
     const w = this.canvas.width, h = this.canvas.height;
     if (w === 0 || h === 0) throw new Error("GpuCompositor.render: zero-sized canvas");
@@ -327,6 +327,21 @@ export class GpuCompositor {
       });
       cleared = true;
       pass.setBindGroup(0, this.viewBG);
+      // Optional device-px scissor on CONTENT passes (the presenter's
+      // letterbox: clear paints the bars, scissored draws keep content inside
+      // the camera region — the canvas2D ctx.clip() equivalent). Effect
+      // passes (blur/magnify) run their own full-texture passes and stay
+      // unscissored, matching canvas2D where the backdrop snapshot already
+      // contains the clipped scene. Clamped: WebGPU throws on out-of-bounds.
+      if (scissor) {
+        const sx = Math.max(0, Math.min(w, Math.round(scissor.x)));
+        const sy = Math.max(0, Math.min(h, Math.round(scissor.y)));
+        pass.setScissorRect(
+          sx, sy,
+          Math.max(0, Math.min(w - sx, Math.round(scissor.w))),
+          Math.max(0, Math.min(h - sy, Math.round(scissor.h))),
+        );
+      }
       return pass;
     };
     const endPass = () => { pass?.end(); pass = null; };
