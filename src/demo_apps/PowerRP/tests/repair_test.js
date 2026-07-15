@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import {
   newDocument, withNewItem, withNewSlide, keyframed, unkeyframed, withSlideDeleted,
   withSlideToggled, foldState, orphanedItems, withOrphanedItemsDropped,
-  missingDefaults, withMissingDefaultsFilled,
+  missingDefaults, withMissingDefaultsFilled, legacyKeyRenames, withLegacyKeysRenamed,
 } from "../core/document.js";
 import { deriveRenderTree } from "../core/derive.js";
 import { sceneIR } from "../render_gpu/ports.js";
@@ -135,6 +135,91 @@ test("complete creations (the normal path) report nothing", () => {
   const rectDefaults = registry.get("rect").defaults;
   const [d1] = withNewItem(doc, 0, { ...rectDefaults, active: true });
   assert.deepEqual(missingDefaults(d1, registry), []);
+});
+
+// ── Legacy key renames (headSize → headLength, manifest Round 11) ───────────
+
+/** A pre-round-11 arrow doc: headSize keyframed at creation AND animated on slide 2. */
+function legacyArrowDoc() {
+  let doc = newDocument();
+  const [d1, id] = withNewItem(doc, 0, {
+    type: "arrow", z: 1, from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    color: "#000", width: 3, headSize: 20, opacity: 1, active: true,
+  });
+  const [d2] = withNewSlide(d1, 0);
+  return [keyframed(d2, 1, ["items", id, "headSize"], 40), id];
+}
+
+test("legacy rename: headSize moves to headLength on EVERY slide, values verbatim", () => {
+  const [doc, id] = legacyArrowDoc();
+  const report = legacyKeyRenames(doc, registry);
+  assert.deepEqual(report.map((r) => [r.slideIndex, r.from, r.to, r.stale]),
+    [[0, "headSize", "headLength", false], [1, "headSize", "headLength", false]]);
+  const { doc: fixed, renamed } = withLegacyKeysRenamed(doc, registry);
+  assert.equal(renamed.length, 2);
+  assert.equal(fixed.slides[0].delta.items[id].headLength, 20);
+  assert.equal(fixed.slides[1].delta.items[id].headLength, 40); // the ANIMATION survives
+  assert.equal("headSize" in fixed.slides[0].delta.items[id], false);
+  assert.equal("headSize" in fixed.slides[1].delta.items[id], false);
+  assert.deepEqual(withLegacyKeysRenamed(fixed, registry).renamed, []); // idempotent
+});
+
+test("legacy rename: an EQUATION-valued legacy key moves verbatim (still an equation)", () => {
+  let doc = newDocument();
+  const [d1, id] = withNewItem(doc, 0, {
+    type: "arrow", z: 1, from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    color: "#000", width: 3, headSize: "speed * 2", opacity: 1, active: true,
+  });
+  const withVar = keyframed(d1, 0, ["vars", "speed"], 10);
+  const { doc: fixed } = withLegacyKeysRenamed(withVar, registry);
+  assert.equal(fixed.slides[0].delta.items[id].headLength, "speed * 2");
+  // headLength has a NUMBER plugin default, so the moved string is still an
+  // equation slot — the derivation stage evaluates it.
+  const filled = withMissingDefaultsFilled(fixed, registry).doc;
+  const state = evaluateState(foldState(filled, 0, 1), registry).state;
+  assert.equal(state.items[id].headLength, 20);
+});
+
+test("legacy rename: when BOTH keys are written the new key wins, stale copy dropped", () => {
+  let doc = newDocument();
+  const [d1, id] = withNewItem(doc, 0, {
+    type: "arrow", z: 1, from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    color: "#000", width: 3, headSize: 20, headLength: 33, opacity: 1, active: true,
+  });
+  const report = legacyKeyRenames(d1, registry);
+  assert.equal(report[0].stale, true);
+  const { doc: fixed } = withLegacyKeysRenamed(d1, registry);
+  assert.equal(fixed.slides[0].delta.items[id].headLength, 33); // authoritative
+  assert.equal("headSize" in fixed.slides[0].delta.items[id], false);
+});
+
+test("legacy rename: a null (delete-sentinel) legacy write moves as a delete of the new key", () => {
+  const [doc, id] = legacyArrowDoc();
+  const nulled = keyframed(doc, 1, ["items", id, "headSize"], null);
+  const { doc: fixed } = withLegacyKeysRenamed(nulled, registry);
+  assert.equal(fixed.slides[1].delta.items[id].headLength, null);
+});
+
+test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the user's value", () => {
+  // The load-boundary chain must run withLegacyKeysRenamed first: filling
+  // first would write headLength = default(14) at the creation slide, and the
+  // rename would then drop the user's 20 as a stale duplicate.
+  const [doc, id] = legacyArrowDoc();
+  const renamed = withLegacyKeysRenamed(doc, registry).doc;
+  const { doc: filled, filled: fills } = withMissingDefaultsFilled(renamed, registry);
+  assert.equal(filled.slides[0].delta.items[id].headLength, 20); // preserved
+  // Only the genuinely-new headWidth gets filled, not headLength.
+  const arrowFill = fills.find((f) => f.id === id);
+  assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), ["headWidth"]);
+  const state = evaluateState(foldState(filled, 1, 1), registry).state;
+  assert.equal(state.items[id].headLength, 40);
+  sceneIR(deriveRenderTree(state, registry)); // renders through the strict IR
+});
+
+test("current documents report no legacy renames", () => {
+  let doc = newDocument();
+  const [d1] = withNewItem(doc, 0, { ...registry.get("arrow").defaults, active: true });
+  assert.deepEqual(legacyKeyRenames(d1, registry), []);
 });
 
 console.log(`\n${passed} repair tests passed`);

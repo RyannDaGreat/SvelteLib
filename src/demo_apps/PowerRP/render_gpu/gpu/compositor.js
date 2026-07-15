@@ -13,8 +13,18 @@
  *      command ends the pass, snapshots scene → BACKDROP via
  *      copyTextureToTexture (a GPU-GPU blit — this is what replaces the
  *      canvas2D full-canvas snapshotCanvas()), runs its shader pass(es), and
- *      drawing resumes on the scene. Blur ping-pongs through TEMP; the
- *      magnifier lens samples BACKDROP directly.
+ *      drawing resumes on the scene. Blur ping-pongs through TEMP; a
+ *      supersample:false magnifier lens samples BACKDROP directly (soft:
+ *      1/M of screen resolution); a supersample:true magnifier RE-RENDERS
+ *      the batches BELOW it (command order is z-order, so "before the lens
+ *      op" = "below the lens's z") into a LENS texture under a lens view
+ *      (magnification·zoom, pan recentered so the lens circle stays at the
+ *      same device pixels), scissored to the lens's device rect so the
+ *      re-render cost is bounded by the lens area — then the lens quad
+ *      samples THAT texture 1:1 (sharp: a true re-render at display
+ *      resolution). The encode loop is re-entrant (_encodeScene); recursion
+ *      is capped at MAX_SUPERSAMPLE_DEPTH — a lens replayed inside another
+ *      lens's re-render falls back to backdrop sampling.
  *   4. The scene is copied to the canvas swapchain texture.
  *
  * The `view` argument is the SAME camera mapping as the canvas compositor
@@ -28,11 +38,21 @@
 
 import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop } from "../ir.js";
 import * as T from "../../core/transform.js";
-import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, SHAPE_KIND, TEX_MODE } from "./shaders.js";
+import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
 
 /** Extra device px around each SDF quad so antialiased edges never clip. */
 const AA_MARGIN_DEVICE = 2;
+/**
+ * Lens re-render recursion cap: a magnifier replayed INSIDE another lens's
+ * re-render falls back to backdrop sampling (soft) instead of recursing —
+ * the same depth-1 guard the canvas2D renderRegion path used (see
+ * plugins/magnifier.js's nested-magnifier note). Each on-screen lens still
+ * supersamples ITSELF at depth 0. Raising this enables true recursive lenses
+ * (one full-canvas texture per extra depth; each level's fragment cost is
+ * already scissor-bounded to its lens rect) — a user decision, not a tweak.
+ */
+const MAX_SUPERSAMPLE_DEPTH = 1;
 /** Floats per instance — must match the WGSL attribute layouts. */
 const SHAPE_FLOATS = 24; // 6 × vec4
 const QUAD_FLOATS = 20;  // 5 × vec4 (tex, video, magnify share this stride)
@@ -59,6 +79,73 @@ export function packXform(world) {
  */
 export function nextPow2(n) {
   return Math.pow(2, Math.ceil(Math.log2(Math.max(n, 1))));
+}
+
+/**
+ * Pure function. The view a supersampling lens re-renders its sub-scene
+ * under: zoom scaled by `magnification`, pan recentered so the lens's WORLD
+ * center stays at the SAME device pixel as in `view`. Rendering into a
+ * canvas-sized texture under this view puts the magnified source region
+ * (plugins/magnifier.js lensSourceRect: the 2r/M square about the center)
+ * exactly over the lens's on-screen circle — the lens quad then samples the
+ * texture 1:1. This is the GPU form of the old canvas renderRegion's
+ * fitRectView(lensSourceRect(...), diam, diam) lens view.
+ *
+ * Args:
+ *   view (object): {zoom, panX, panY, dpr} outer view
+ *   centerWorld (object): {x, y} lens center in world space
+ *   magnification (number): the lens's M (> 0)
+ *
+ * Returns:
+ *   object: {zoom, panX, panY, dpr}
+ *
+ * @example lensRenderView({zoom: 1, panX: 0, panY: 0, dpr: 1}, {x: 100, y: 50}, 2) // {zoom: 2, panX: -100, panY: -50, dpr: 1}
+ * @example lensRenderView({zoom: 2, panX: 10, panY: 0, dpr: 2}, {x: 0, y: 0}, 3) // {zoom: 6, panX: 10, panY: 0, dpr: 2} (center at origin: pan unchanged)
+ */
+export function lensRenderView(view, centerWorld, magnification) {
+  return {
+    zoom: view.zoom * magnification,
+    panX: view.panX - centerWorld.x * view.zoom * (magnification - 1),
+    panY: view.panY - centerWorld.y * view.zoom * (magnification - 1),
+    dpr: view.dpr,
+  };
+}
+
+/**
+ * Pure function. Maps a device-px rect under `fromView` to the device-px rect
+ * covering the same WORLD region under `toView` (same-dpr views over
+ * same-sized textures). Carries an outer scissor (the presenter's letterbox)
+ * into a lens re-render, so a lens near the camera edge cannot leak
+ * outside-camera content.
+ *
+ * @example deviceRectThroughViews({x: 0, y: 0, w: 100, h: 100}, {zoom: 1, panX: 0, panY: 0, dpr: 1}, {zoom: 2, panX: 0, panY: 0, dpr: 1}) // {x: 0, y: 0, w: 200, h: 200}
+ * @example deviceRectThroughViews({x: 50, y: 0, w: 50, h: 50}, {zoom: 1, panX: 0, panY: 0, dpr: 1}, {zoom: 1, panX: -50, panY: 0, dpr: 1}) // {x: 0, y: 0, w: 50, h: 50}
+ */
+export function deviceRectThroughViews(rect, fromView, toView) {
+  const map = (dx, dy) => {
+    const wx = (dx / fromView.dpr - fromView.panX) / fromView.zoom;
+    const wy = (dy / fromView.dpr - fromView.panY) / fromView.zoom;
+    return [(wx * toView.zoom + toView.panX) * toView.dpr, (wy * toView.zoom + toView.panY) * toView.dpr];
+  };
+  const [x0, y0] = map(rect.x, rect.y);
+  const [x1, y1] = map(rect.x + rect.w, rect.y + rect.h);
+  return { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+}
+
+/**
+ * Pure function. Intersection of two rects (x,y,w,h); zero-area (w or h 0)
+ * when disjoint — a zero-area scissor legally draws nothing.
+ *
+ * @example intersectRects({x: 0, y: 0, w: 10, h: 10}, {x: 5, y: 5, w: 10, h: 10}) // {x: 5, y: 5, w: 5, h: 5}
+ * @example intersectRects({x: 0, y: 0, w: 4, h: 4}, {x: 8, y: 0, w: 2, h: 2}).w // 0
+ */
+export function intersectRects(a, b) {
+  const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
+  return {
+    x, y,
+    w: Math.max(0, Math.min(a.x + a.w, b.x + b.w) - x),
+    h: Math.max(0, Math.min(a.y + a.h, b.y + b.h) - y),
+  };
 }
 
 /** Growable Float32Array staging buffer, reused across frames. */
@@ -161,7 +248,9 @@ export class GpuCompositor {
     });
 
     this.imageTextures = new Map(); // ref → {texture, bindGroup}
-    this._blurPool = [];            // per-effect-ordinal {uboH, uboV, bgH, bgV}
+    this._blurPool = [];            // per-blur-use-ordinal {uboH, uboV, bgH, bgV}
+    this._lensPool = [];            // per-recursion-depth {tex, view} lens re-render targets (canvas-sized, lazy)
+    this._lensUsePool = [];         // per-lens-use-ordinal {viewBuf, viewBG, rectBuf, bgByDepth}
     this._texW = 0;
     this._texH = 0;
   }
@@ -184,6 +273,15 @@ export class GpuCompositor {
       ],
     });
     this.blurBGL = d.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: {} },
+      ],
+    });
+    // Magnify group(1): sampler + texture + the sample-rect uniform (which
+    // device-px region of the target the texture covers — see MAGNIFY_WGSL).
+    this.magnifyBGL = d.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
@@ -229,7 +327,7 @@ export class GpuCompositor {
     const quadInstLayout = { arrayStride: QUAD_FLOATS * 4, stepMode: "instance", attributes: vec4attrs([1, 2, 3, 4, 5]) };
     this.texPipe = make("ir-tex", TEX_WGSL, [this.viewBGL, this.texBGL], [cornerLayout, quadInstLayout]);
     this.videoPipe = make("ir-video", VIDEO_WGSL, [this.viewBGL, this.videoBGL], [cornerLayout, quadInstLayout]);
-    this.magnifyPipe = make("ir-magnify", MAGNIFY_WGSL, [this.viewBGL, this.texBGL], [cornerLayout, quadInstLayout]);
+    this.magnifyPipe = make("ir-magnify", MAGNIFY_WGSL, [this.viewBGL, this.magnifyBGL], [cornerLayout, quadInstLayout]);
     this.blurPipe = make("ir-blur", BLUR_WGSL, [this.blurBGL], []);
 
     // Static unit-quad corner buffer (two triangles)
@@ -245,10 +343,11 @@ export class GpuCompositor {
     });
   }
 
-  /** Command. (Re)creates the offscreen scene/backdrop/temp textures. */
+  /** Command. (Re)creates the offscreen scene/backdrop/temp/lens textures. */
   _ensureTargets(w, h) {
     if (this._texW === w && this._texH === h) return;
     for (const t of [this.sceneTex, this.backdropTex, this.tempTex]) t?.destroy();
+    for (const l of this._lensPool) l.tex.destroy();
     const mk = (label, usage) => this.device.createTexture({ label, size: [w, h], format: this.format, usage });
     const RT = GPUTextureUsage.RENDER_ATTACHMENT, TB = GPUTextureUsage.TEXTURE_BINDING;
     const CS = GPUTextureUsage.COPY_SRC, CD = GPUTextureUsage.COPY_DST;
@@ -258,16 +357,84 @@ export class GpuCompositor {
     this.sceneView = this.sceneTex.createView();
     this.backdropView = this.backdropTex.createView();
     this.tempView = this.tempTex.createView();
+    // Backdrop sampling covers the whole target: sample rect = (0, 0, w, h).
+    this.backdropRectBuf ??= this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.device.queue.writeBuffer(this.backdropRectBuf, 0, new Float32Array([0, 0, w, h]));
     this.backdropBG = this.device.createBindGroup({
-      layout: this.texBGL,
+      layout: this.magnifyBGL,
       entries: [
         { binding: 0, resource: this.sampler },
         { binding: 1, resource: this.backdropView },
+        { binding: 2, resource: { buffer: this.backdropRectBuf } },
       ],
     });
-    this._blurPool = []; // bind groups referenced the old texture views
+    this._blurPool = [];    // bind groups referenced the old texture views
+    this._lensPool = [];    // canvas-sized: recreated lazily at the new size
+    for (const u of this._lensUsePool) { u.viewBuf.destroy(); u.rectBuf.destroy(); }
+    this._lensUsePool = []; // bgByDepth entries referenced the old lens views
     this._texW = w;
     this._texH = h;
+  }
+
+  /**
+   * Query+Command (allocates on first use). The lens re-render target for a
+   * recursion depth: ONE canvas-sized texture per depth, allocated once per
+   * canvas size (no per-frame churn). Only the visible lens intersection is
+   * ever RENDERED into it (its top-left corner), so the supersample cost is
+   * ≤ one screen of pixels regardless of zoom — the canvas bound also keeps
+   * the size below device.limits.maxTextureDimension2D by construction
+   * (guarded loudly anyway: an unbounded size request is a bug, not a case).
+   */
+  _lensTarget(depth) {
+    if (!this._lensPool[depth]) {
+      const limit = this.device.limits.maxTextureDimension2D;
+      let w = this._texW, h = this._texH;
+      if (w > limit || h > limit) {
+        console.error(`GpuCompositor: lens texture ${w}x${h} exceeds maxTextureDimension2D ${limit} — clamping (this should be impossible: lens work is bounded by the canvas)`);
+        w = Math.min(w, limit);
+        h = Math.min(h, limit);
+      }
+      const tex = this.device.createTexture({
+        label: `ir-lens-${depth}`,
+        size: [w, h],
+        format: this.format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+      this._lensPool[depth] = { tex, view: tex.createView() };
+    }
+    return this._lensPool[depth];
+  }
+
+  /**
+   * Query+Command (allocates on first use). Per-lens-USE GPU resources for one
+   * frame: the sub-render's view uniform and the lens quad's sample-rect
+   * uniform + bind group. Pooled by use ordinal because every use needs its
+   * OWN buffers — queue writes all land before the encoder's passes execute,
+   * so one buffer written twice per frame would make the last write win for
+   * every pass. bgByDepth caches the bind group per lens texture (per depth).
+   */
+  _lensUseEntry(ordinal, depth) {
+    if (!this._lensUsePool[ordinal]) {
+      const viewBuf = this.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const viewBG = this.device.createBindGroup({
+        layout: this.viewBGL,
+        entries: [{ binding: 0, resource: { buffer: viewBuf } }],
+      });
+      const rectBuf = this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      this._lensUsePool[ordinal] = { viewBuf, viewBG, rectBuf, bgByDepth: [] };
+    }
+    const entry = this._lensUsePool[ordinal];
+    if (!entry.bgByDepth[depth]) {
+      entry.bgByDepth[depth] = this.device.createBindGroup({
+        layout: this.magnifyBGL,
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: this._lensTarget(depth).view },
+          { binding: 2, resource: { buffer: entry.rectBuf } },
+        ],
+      });
+    }
+    return entry;
   }
 
   /** Query+Command (uploads on first use). GPU texture for an image ref. */
@@ -309,11 +476,7 @@ export class GpuCompositor {
     this._ensureTargets(w, h);
 
     const d = this.device;
-    const scaleDev = view.zoom * view.dpr;
-    d.queue.writeBuffer(this.viewBuf, 0, new Float32Array([
-      scaleDev, view.panX * view.dpr, view.panY * view.dpr, 0,
-      w, h, 0, 0,
-    ]));
+    this._writeView(this.viewBuf, view);
 
     const { batches } = this._buildFrame(flattenIR(commands), view);
     this.atlas.flush();
@@ -332,7 +495,46 @@ export class GpuCompositor {
     this.quadBuf = upload(this.quadArr, this.quadBuf, "ir-quad-inst");
     this.meshBuf = upload(this.meshArr, this.meshBuf, "ir-mesh-verts");
 
+    // Per-frame effect-use ordinals, shared across lens re-renders: every
+    // blur/lens USE gets its own uniform buffers, because queue writes all
+    // land before the encoder's passes execute — one buffer written twice in
+    // a frame would make the last write win for every pass that reads it.
+    this._blurOrdinal = 0;
+    this._lensOrdinal = 0;
     const encoder = d.createCommandEncoder();
+    this._encodeScene(encoder, batches, view, this.viewBG,
+      { tex: this.sceneTex, view: this.sceneView, contentW: w, contentH: h },
+      { background, scissor }, 0);
+    encoder.copyTextureToTexture({ texture: this.sceneTex }, { texture: this.context.getCurrentTexture() }, [w, h]);
+    d.queue.submit([encoder.finish()]);
+  }
+
+  /** Command. Writes a view uniform buffer: world→device mapping + the device resolution of the (canvas-sized) render targets. */
+  _writeView(buf, view) {
+    this.device.queue.writeBuffer(buf, 0, new Float32Array([
+      view.zoom * view.dpr, view.panX * view.dpr, view.panY * view.dpr, 0,
+      this._texW, this._texH, 0, 0,
+    ]));
+  }
+
+  /**
+   * Command (encodes GPU passes). The batch-walking core of render(), made
+   * RE-ENTRANT so a supersampling magnifier can replay the batches below
+   * itself (batch order is z-order) into a lens texture under a lens view.
+   *
+   * `target` is {tex, view, contentW, contentH}: the scene texture at depth 0
+   * (content = whole canvas), a lens texture in re-renders (content = the
+   * visible lens intersection, rendered into the texture's top-left corner —
+   * the manifest rule "Magnifier renders only the VISIBLE lens intersection").
+   * All targets share the canvas's texture size, so a device px means the
+   * same thing at every depth; only the content rect shrinks.
+   *
+   * `viewBG` binds the uniform holding `view` — every re-render has its own
+   * (see render()'s ordinal note). `depth` caps lens recursion.
+   */
+  _encodeScene(encoder, batches, view, viewBG, target, { background, scissor }, depth) {
+    const d = this.device;
+    const cw = target.contentW, ch = target.contentH;
     let pass = null;
     let cleared = false;
     const [br, bg, bb, ba] = background;
@@ -340,27 +542,27 @@ export class GpuCompositor {
       if (pass) return pass;
       pass = encoder.beginRenderPass({
         colorAttachments: [{
-          view: this.sceneView,
+          view: target.view,
           loadOp: cleared ? "load" : "clear",
           clearValue: { r: br, g: bg, b: bb, a: ba },
           storeOp: "store",
         }],
       });
       cleared = true;
-      pass.setBindGroup(0, this.viewBG);
+      pass.setBindGroup(0, viewBG);
       // Optional device-px scissor on CONTENT passes (the presenter's
-      // letterbox: clear paints the bars, scissored draws keep content inside
-      // the camera region — the canvas2D ctx.clip() equivalent). Effect
-      // passes (blur/magnify) run their own full-texture passes and stay
-      // unscissored, matching canvas2D where the backdrop snapshot already
-      // contains the clipped scene. Clamped: WebGPU throws on out-of-bounds.
+      // letterbox; a lens re-render's visible intersection). Effect passes
+      // (blur) run their own full-texture passes and stay unscissored,
+      // matching canvas2D where the backdrop snapshot already contains the
+      // clipped scene. Clamped to the content rect: WebGPU throws on
+      // out-of-bounds scissors.
       if (scissor) {
-        const sx = Math.max(0, Math.min(w, Math.round(scissor.x)));
-        const sy = Math.max(0, Math.min(h, Math.round(scissor.y)));
+        const sx = Math.max(0, Math.min(cw, Math.round(scissor.x)));
+        const sy = Math.max(0, Math.min(ch, Math.round(scissor.y)));
         pass.setScissorRect(
           sx, sy,
-          Math.max(0, Math.min(w - sx, Math.round(scissor.w))),
-          Math.max(0, Math.min(h - sy, Math.round(scissor.h))),
+          Math.max(0, Math.min(cw - sx, Math.round(scissor.w))),
+          Math.max(0, Math.min(ch - sy, Math.round(scissor.h))),
         );
       }
       return pass;
@@ -369,11 +571,11 @@ export class GpuCompositor {
     const snapshotBackdrop = () => {
       endPass();
       if (!cleared) { ensurePass(); endPass(); } // effect before any draw: snapshot the cleared background
-      encoder.copyTextureToTexture({ texture: this.sceneTex }, { texture: this.backdropTex }, [w, h]);
+      encoder.copyTextureToTexture({ texture: target.tex }, { texture: this.backdropTex }, [this._texW, this._texH]);
     };
 
-    let blurOrdinal = 0;
-    for (const batch of batches) {
+    for (let idx = 0; idx < batches.length; idx++) {
+      const batch = batches[idx];
       switch (batch.type) {
         case "shape": {
           const p = ensurePass();
@@ -424,7 +626,8 @@ export class GpuCompositor {
         case "blur": {
           snapshotBackdrop();
           const pool = this._blurPool;
-          if (!pool[blurOrdinal]) {
+          const ordinal = this._blurOrdinal++;
+          if (!pool[ordinal]) {
             const mkUbo = () => d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             const uboH = mkUbo(), uboV = mkUbo();
             const mkBG = (srcView, ubo) => d.createBindGroup({
@@ -435,36 +638,104 @@ export class GpuCompositor {
                 { binding: 2, resource: { buffer: ubo } },
               ],
             });
-            pool[blurOrdinal] = { uboH, uboV, bgH: mkBG(this.backdropView, uboH), bgV: mkBG(this.tempView, uboV) };
+            pool[ordinal] = { uboH, uboV, bgH: mkBG(this.backdropView, uboH), bgV: mkBG(this.tempView, uboV) };
           }
-          const { uboH, uboV, bgH, bgV } = pool[blurOrdinal];
-          blurOrdinal++;
-          d.queue.writeBuffer(uboH, 0, new Float32Array([1, 0, batch.sigmaDevice, 0, 1, 0, 0, 0]));
-          d.queue.writeBuffer(uboV, 0, new Float32Array([0, 1, batch.sigmaDevice, 0, batch.opacity, 0, 0, 0]));
+          const { uboH, uboV, bgH, bgV } = pool[ordinal];
+          // Sigma is stored in WORLD units and scaled by the CURRENT view, so
+          // a blur replayed inside a lens re-render blurs M× more device px —
+          // magnified blur looks magnified, matching the old lens-view
+          // re-render semantics.
+          const sigmaDevice = batch.sigmaWorld * view.zoom * view.dpr;
+          d.queue.writeBuffer(uboH, 0, new Float32Array([1, 0, sigmaDevice, 0, 1, 0, 0, 0]));
+          d.queue.writeBuffer(uboV, 0, new Float32Array([0, 1, sigmaDevice, 0, batch.opacity, 0, 0, 0]));
+          // Blur output only matters inside the content rect, so both passes
+          // are scissored to it — at depth 0 that's the whole canvas (no
+          // change); inside a lens re-render it bounds the blur cost by the
+          // lens rect (the manifest visible-intersection rule; unbounded
+          // full-canvas sub-blurs were a measured 3× frame regression). The
+          // H pass pads by the kernel's tap reach so the V pass's vertical
+          // taps near the content edge read valid H-blurred texels.
+          const reach = Math.min(Math.ceil(sigmaDevice * 3), MAX_HALF_KERNEL);
+          const clampRect = (r) => {
+            const x = Math.max(0, Math.min(this._texW, Math.round(r.x)));
+            const y = Math.max(0, Math.min(this._texH, Math.round(r.y)));
+            return [x, y,
+              Math.max(0, Math.min(this._texW - x, Math.round(r.w))),
+              Math.max(0, Math.min(this._texH - y, Math.round(r.h)))];
+          };
           const hPass = encoder.beginRenderPass({
             colorAttachments: [{ view: this.tempView, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }],
           });
           hPass.setPipeline(this.blurPipe);
           hPass.setBindGroup(0, bgH);
+          hPass.setScissorRect(...clampRect({ x: -reach, y: -reach, w: cw + 2 * reach, h: ch + 2 * reach }));
           hPass.draw(3);
           hPass.end();
           const vPass = encoder.beginRenderPass({
-            colorAttachments: [{ view: this.sceneView, loadOp: "load", storeOp: "store" }],
+            colorAttachments: [{ view: target.view, loadOp: "load", storeOp: "store" }],
           });
           vPass.setPipeline(this.blurPipe);
           vPass.setBindGroup(0, bgV);
+          vPass.setScissorRect(...clampRect({ x: 0, y: 0, w: cw, h: ch }));
           vPass.draw(3);
           vPass.end();
           break;
         }
         case "magnify": {
-          snapshotBackdrop();
-          const p = ensurePass();
-          p.setPipeline(this.magnifyPipe);
-          p.setBindGroup(1, this.backdropBG);
-          p.setVertexBuffer(0, this.cornerBuf);
-          p.setVertexBuffer(1, this.quadBuf);
-          p.draw(6, 1, 0, batch.first);
+          // Everything the lens can SHOW is bounded by the intersection of
+          // its device rect with the content rect (manifest: "Magnifier
+          // renders only the VISIBLE lens intersection") — empty means the
+          // lens is offscreen: skip it entirely (free culling), soft or sharp.
+          const rDev = batch.rWorld * view.zoom * view.dpr;
+          const cDevX = (batch.centerWorld.x * view.zoom + view.panX) * view.dpr;
+          const cDevY = (batch.centerWorld.y * view.zoom + view.panY) * view.dpr;
+          const pad = rDev + AA_MARGIN_DEVICE;
+          const visible = intersectRects(
+            // Integer-aligned so the re-render's pixel grid lands exactly on
+            // the target's (crisp 1:1 sampling), floor/ceil = conservative.
+            {
+              x: Math.floor(cDevX - pad), y: Math.floor(cDevY - pad),
+              w: Math.ceil(pad * 2) + 1, h: Math.ceil(pad * 2) + 1,
+            },
+            { x: 0, y: 0, w: cw, h: ch },
+          );
+          if (visible.w === 0 || visible.h === 0) break;
+          if (batch.supersample && depth < MAX_SUPERSAMPLE_DEPTH) {
+            endPass();
+            // Lens view: magnified about the lens center, then shifted so
+            // the visible intersection's origin renders at the texture's
+            // top-left (device px shift ⇒ pan shift of rect.origin/dpr).
+            const lensView = lensRenderView(view, batch.centerWorld, batch.magnification);
+            lensView.panX -= visible.x / lensView.dpr;
+            lensView.panY -= visible.y / lensView.dpr;
+            // Carry an outer scissor (presenter letterbox) into the lens
+            // view so an edge lens can't leak outside-camera content.
+            let subScissor = { x: 0, y: 0, w: visible.w, h: visible.h };
+            if (scissor) subScissor = intersectRects(subScissor, deviceRectThroughViews(scissor, view, lensView));
+            const lens = this._lensTarget(depth);
+            const use = this._lensUseEntry(this._lensOrdinal++, depth);
+            this._writeView(use.viewBuf, lensView);
+            // Sample rect: fragment device px q maps to texel (q - origin) /
+            // textureSize — the re-render sits in the texture's corner.
+            d.queue.writeBuffer(use.rectBuf, 0, new Float32Array([visible.x, visible.y, this._texW, this._texH]));
+            this._encodeScene(encoder, batches.slice(0, idx), lensView, use.viewBG,
+              { tex: lens.tex, view: lens.view, contentW: visible.w, contentH: visible.h },
+              { background: [0, 0, 0, 0], scissor: subScissor }, depth + 1);
+            const p = ensurePass();
+            p.setPipeline(this.magnifyPipe);
+            p.setBindGroup(1, use.bgByDepth[depth]);
+            p.setVertexBuffer(0, this.cornerBuf);
+            p.setVertexBuffer(1, this.quadBuf);
+            p.draw(6, 1, 0, batch.firstSharp); // magnification-1 instance: 1:1 sample of the sharp re-render
+          } else {
+            snapshotBackdrop();
+            const p = ensurePass();
+            p.setPipeline(this.magnifyPipe);
+            p.setBindGroup(1, this.backdropBG);
+            p.setVertexBuffer(0, this.cornerBuf);
+            p.setVertexBuffer(1, this.quadBuf);
+            p.draw(6, 1, 0, batch.firstSoft); // contract-by-1/M instance over the backdrop snapshot
+          }
           break;
         }
         default:
@@ -473,8 +744,6 @@ export class GpuCompositor {
     }
     if (!cleared) ensurePass(); // empty scene still clears to background
     endPass();
-    encoder.copyTextureToTexture({ texture: this.sceneTex }, { texture: this.context.getCurrentTexture() }, [w, h]);
-    d.queue.submit([encoder.finish()]);
   }
 
   /**
@@ -498,7 +767,7 @@ export class GpuCompositor {
       return this.shapeArr.alloc(SHAPE_FLOATS);
     };
     const quadInstance = (type, ref) => {
-      if (!(current?.type === type && current?.ref === ref) || type === "video" || type === "magnify") {
+      if (!(current?.type === type && current?.ref === ref) || type === "video") {
         current = { type, ref, first: this.quadArr.used / QUAD_FLOATS, count: 0 };
         batches.push(current);
       }
@@ -611,25 +880,43 @@ export class GpuCompositor {
         }
         case "blurBackdrop": {
           current = null;
-          batches.push({ type: "blur", sigmaDevice: cmd.radius * world.scale * scaleDev, opacity: cmd.opacity });
+          // WORLD sigma: the device sigma is view-dependent, and the same
+          // batch replays under a lens view inside a lens re-render.
+          batches.push({ type: "blur", sigmaWorld: cmd.radius * world.scale, opacity: cmd.opacity });
           break;
         }
         case "magnifyBackdrop": {
-          const at = quadInstance("magnify", null);
-          const f = this.quadArr.f32;
+          // TWO instances per lens, identical except the magnification param:
+          // firstSharp carries 1 (a lens re-render is already magnified —
+          // sample it 1:1) and firstSoft carries M (contract the backdrop
+          // sample by 1/M). Which one draws is an ENCODE-time choice
+          // (supersample flag + recursion depth) — the same batch replays at
+          // different depths inside other lenses' re-renders, so both must
+          // exist. Instance params are WORLD units; MAGNIFY_WGSL's vertex
+          // shader converts through the bound view — view-independent
+          // instances are what make the replays correct.
           const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+          const rWorld = cmd.r * world.scale;
           const rimW = cmd.rimColor ? cmd.rimWidth : 0;
           const m = rimW / 2 + aaLocal;
-          f.set([cmd.cx - cmd.r - m, cmd.cy - cmd.r - m, 2 * (cmd.r + m), 2 * (cmd.r + m)], at);
-          f.set(xf, at + 4);
-          f.set([
-            centerWorld.x * scaleDev + view.panX * view.dpr,
-            centerWorld.y * scaleDev + view.panY * view.dpr,
-            cmd.r * world.scale * scaleDev,
-            cmd.magnification,
-          ], at + 8);
-          f.set(cmd.rimColor ?? NO_COLOR, at + 12);
-          f.set([rimW * world.scale * scaleDev, cmd.opacity, 0, 0], at + 16);
+          const packLens = (magnification) => {
+            const at = this.quadArr.alloc(QUAD_FLOATS);
+            const f = this.quadArr.f32;
+            f.set([cmd.cx - cmd.r - m, cmd.cy - cmd.r - m, 2 * (cmd.r + m), 2 * (cmd.r + m)], at);
+            f.set(xf, at + 4);
+            f.set([centerWorld.x, centerWorld.y, rWorld, magnification], at + 8);
+            f.set(cmd.rimColor ?? NO_COLOR, at + 12);
+            f.set([rimW * world.scale, cmd.opacity, 0, 0], at + 16);
+            return at / QUAD_FLOATS;
+          };
+          batches.push({
+            type: "magnify",
+            firstSharp: packLens(1),
+            firstSoft: packLens(cmd.magnification),
+            supersample: cmd.supersample ?? true, // ?? guards hand-built IR that bypassed the builder
+            magnification: cmd.magnification,
+            centerWorld, rWorld,
+          });
           current = null; // effects never merge with a following batch
           break;
         }
@@ -685,6 +972,8 @@ export class GpuCompositor {
   /** Command. Releases GPU resources. */
   destroy() {
     for (const t of [this.sceneTex, this.backdropTex, this.tempTex, this.atlas.texture]) t?.destroy();
+    for (const l of this._lensPool) l.tex.destroy();
+    for (const u of this._lensUsePool) { u.viewBuf.destroy(); u.rectBuf.destroy(); }
     for (const { texture } of this.imageTextures.values()) texture.destroy();
     this.device.destroy();
   }

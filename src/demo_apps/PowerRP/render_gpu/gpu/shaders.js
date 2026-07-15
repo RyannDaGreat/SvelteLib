@@ -236,6 +236,14 @@ fn fs(in: VideoOut) -> @location(0) vec4f {
 `;
 
 /**
+ * 3σ kernel support cap, each side: gigantic radii degrade (kernel truncates,
+ * still normalized) instead of stalling the GPU. ONE constant, interpolated
+ * into the WGSL and imported by the compositor (which pads blur scissors by
+ * the same tap reach so bounded blur passes stay artifact-free).
+ */
+export const MAX_HALF_KERNEL = 96;
+
+/**
  * Separable Gaussian blur pass (fullscreen triangle). Run twice: H over the
  * backdrop snapshot into temp, then V over temp back onto the scene with
  * opacity blending — mix(scene, blurred, opacity), the canvas2D
@@ -265,9 +273,8 @@ fn vs(@builtin(vertex_index) vi: u32) -> BlurOut {
   return out;
 }
 
-// 3σ kernel support, capped at 96 taps each side: gigantic radii degrade
-// (kernel truncates, still normalized) instead of stalling the GPU.
-const MAX_HALF_KERNEL: i32 = 96;
+// 3σ support, capped (see the exported MAX_HALF_KERNEL doc above).
+const MAX_HALF_KERNEL: i32 = ${MAX_HALF_KERNEL};
 
 @fragment
 fn fs(in: BlurOut) -> @location(0) vec4f {
@@ -288,13 +295,34 @@ fn fs(in: BlurOut) -> @location(0) vec4f {
 
 /**
  * Magnifier lens: an instanced quad (same layout family as SHAPE) whose
- * fragment samples the backdrop texture at UVs contracted about the lens
- * center by 1/magnification, masked by a circle SDF, plus a rim ring.
- * params are DEVICE px (computed CPU-side from the lens's world transform).
+ * fragment samples the bound texture at UVs contracted about the lens center
+ * by 1/magnification, masked by a circle SDF, plus a rim ring.
+ *
+ * TWO lens-fill paths share this ONE pipeline (no duplication):
+ *   backdrop sampling — bind the backdrop snapshot, magnification = M: the
+ *     contraction upscales the already-rasterized composite (soft).
+ *   supersample — bind the lens re-render texture (the sub-list below the
+ *     lens re-rendered at M·zoom, device-aligned so the lens circle sits at
+ *     the same device pixels), magnification = 1: uv = p, a straight sample
+ *     of the sharp re-render. M = 1 makes the contraction the identity, so
+ *     one shader serves both paths.
+ *
+ * Instance params are WORLD units (center, radius, rim width); the vertex
+ * shader converts to device px through the view uniform. View-independent
+ * instances are what make lens re-renders NESTABLE: the same instance replays
+ * correctly inside another lens's re-render, where the bound view differs.
  */
 export const MAGNIFY_WGSL = VIEW_WGSL + /* wgsl */ `
 @group(1) @binding(0) var samp: sampler;
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
+// The sample rect: which device-px region of the CURRENT target the bound
+// texture's texels cover, as (originX, originY, texW, texH). Backdrop
+// sampling binds (0, 0, canvasW, canvasH); a lens re-render binds its
+// visible-intersection origin + the lens texture size (the re-render fills
+// only the intersection's corner of the texture — the manifest rule
+// "Magnifier renders only the VISIBLE lens intersection").
+struct MagU { rect: vec4f };
+@group(1) @binding(2) var<uniform> u: MagU;
 
 struct MagOut {
   @builtin(position) pos: vec4f,
@@ -308,16 +336,18 @@ fn vs(
   @location(0) corner: vec2f,
   @location(1) i_quad: vec4f,
   @location(2) i_xform: vec4f,
-  @location(3) i_params: vec4f,
+  @location(3) i_params: vec4f, // (centerWorldX, centerWorldY, rWorld, magnification)
   @location(4) i_rim: vec4f,
-  @location(5) i_misc: vec4f,
+  @location(5) i_misc: vec4f,   // (rimWidthWorld, opacity, 0, 0)
 ) -> MagOut {
   let local = i_quad.xy + corner * i_quad.zw;
   var out: MagOut;
   out.pos = world_to_clip(apply_xform(i_xform, local));
-  out.params = i_params;
+  // world → device px, the same mapping as world_to_clip's first line.
+  let center_dev = i_params.xy * view.scale_pan.x + view.scale_pan.yz;
+  out.params = vec4f(center_dev, i_params.z * view.scale_pan.x, i_params.w);
   out.rim = i_rim;
-  out.misc = i_misc;
+  out.misc = vec4f(i_misc.x * view.scale_pan.x, i_misc.yzw);
   return out;
 }
 
@@ -329,7 +359,12 @@ fn fs(in: MagOut) -> @location(0) vec4f {
   let mag = max(in.params.w, 0.01);
   let d = length(p - center) - r;
 
-  let uv = (center + (p - center) / mag) / view.resolution.xy;
+  // q = the device-px point this fragment shows, contracted about the lens
+  // center by 1/mag. Backdrop path: mag = M upscales the composite (soft).
+  // Supersample path: mag = 1 so q = p — the re-render is already magnified,
+  // sampled 1:1 (sharp). u.rect maps q into the bound texture's UV space.
+  let q = center + (p - center) / mag;
+  let uv = (q - u.rect.xy) / u.rect.zw;
   let rim_w = in.misc.x;
   // Coverages before any branch — fwidth needs uniform control flow.
   let cov_lens = coverage(d);

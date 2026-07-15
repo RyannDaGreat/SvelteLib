@@ -15,9 +15,11 @@ import { videoIR, sceneIR } from "../ports.js";
 import { rectPlugin } from "../../plugins/rect.js";
 import { circlePlugin } from "../../plugins/circle.js";
 import { arrowPlugin } from "../../plugins/arrow.js";
+import { fancyArrowPlugin } from "../../plugins/fancy_arrow.js";
 import { blurPlugin } from "../../plugins/blur.js";
 import { magnifierPlugin } from "../../plugins/magnifier.js";
 import { irToSVG, commandToSVG, svgTransform, xmlEscape } from "../svg_backend.js";
+import { lensRenderView, deviceRectThroughViews, intersectRects } from "../gpu/compositor.js";
 import { benchScene, hash01 } from "../bench/scene.js";
 import { deriveRenderTree } from "../../core/derive.js";
 import { evaluateState } from "../../core/expressions.js";
@@ -109,12 +111,14 @@ test("rectIR/circleIR mirror plugin geometry", () => {
   assert.equal(c.rx, 70);
   assert.equal(c.ry, 50);
 });
-test("arrowIR: shaft pullback + head triangle", () => {
-  const cmds = arrowPlugin.emit({ from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, color: "#000", width: 3, headSize: 10 });
+test("arrowIR: shaft pullback + independent headLength/headWidth triangle", () => {
+  const cmds = arrowPlugin.emit({ from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, color: "#000", width: 3, headLength: 10, headWidth: 8 });
   assert.deepEqual(cmds.map((c) => c.op), ["polyline", "polygon"]);
-  approxArr(cmds[0].points[1], [100 - 10 * 0.6, 0]); // shaft stops 0.6*head short
+  approxArr(cmds[0].points[1], [100 - 10 * 0.6, 0]); // shaft stops 0.6*headLength short
   assert.equal(cmds[1].points.length, 3);
   approxArr(cmds[1].points[0], [100, 0]); // tip at the endpoint
+  approxArr(cmds[1].points[1], [90, 4]); // base corner: headLength back, +headWidth/2 across
+  approxArr(cmds[1].points[2], [90, -4]); // base corner: -headWidth/2 — width independent of length
 });
 test("arrowIR: dangling reference falls back loudly upstream, still draws", () => {
   // Post-UNIFICATION semantics: a reference to a missing item is an ERROR
@@ -122,11 +126,42 @@ test("arrowIR: dangling reference falls back loudly upstream, still draws", () =
   // skipped arrow and never NaN geometry reaching the IR.
   const registry = createRegistry();
   registerAll(registry, createCommands());
-  const state = { items: { c: { type: "arrow", from: { x: 0, y: 0 }, to: { x: "@gone.x", y: 5 }, color: "#000", width: 3, headSize: 10 } } };
+  const state = { items: { c: { type: "arrow", from: { x: 0, y: 0 }, to: { x: "@gone.x", y: 5 }, color: "#000", width: 3, headLength: 10, headWidth: 8 } } };
   const { state: evaluated, errors } = evaluateState(state, registry);
   assert.ok(errors.size > 0); // the unknown reference is REPORTED
   assert.equal(typeof evaluated.items.c.to.x, "number"); // fallback, not NaN
   assert.deepEqual(arrowPlugin.emit(evaluated.items.c).map((c) => c.op), ["polyline", "polygon"]);
+});
+test("fancyArrowIR: outline triangulates to convex polygons (the parameterized-geometry path)", () => {
+  // Reference params = the Figures-library defaults on a 100px arrow
+  // (core/outline.js fancyArrowOutline; area cross-checked in outline_test).
+  const s = {
+    from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
+    color: "#000", opacity: 0.5,
+  };
+  const cmds = fancyArrowPlugin.emit(s);
+  assert.equal(cmds.length, 5); // 7-vertex simple outline → n-2 triangles
+  assert.ok(cmds.every((c) => c.op === "polygon" && c.points.length === 3));
+  assert.ok(cmds.every((c) => c.opacity === 0.5));
+  // The tip vertex survives triangulation verbatim (watertight shared points).
+  assert.ok(cmds.some((c) => c.points.some(([x, y]) => x === 100 && y === 0)));
+});
+test("fancyArrowIR: zero-length arrow emits nothing (skia_draw_arrow precedent)", () => {
+  assert.deepEqual(fancyArrowPlugin.emit({
+    from: { x: 7, y: 7 }, to: { x: 7, y: 7 },
+    tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
+    color: "#000",
+  }), []);
+});
+test("fancyArrow hit test: concavity-aware (dimple notch is a miss, head is a hit)", () => {
+  const node = { state: {
+    from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
+  } };
+  assert.equal(fancyArrowPlugin.hitTestWorld(node, 86, 13), true); // inside the head
+  assert.equal(fancyArrowPlugin.hitTestWorld(node, 86, 8), false); // in the notch, past shaft grab
+  assert.equal(fancyArrowPlugin.hitTestWorld(node, 50, 6), true); // padded shaft grab (+5 slack)
 });
 test("videoIR: the future video plugin's emit body", () => {
   const v = videoIR({ ref: "clip1", w: 320, h: 180 })[0];
@@ -144,6 +179,43 @@ test("magnifierIR: lens geometry from bbox", () => {
   assert.equal(m.magnification, 2.5);
   assert.ok(m.rimColor);
 });
+test("magnifyBackdrop: supersample flag (default true, false honored)", () => {
+  assert.equal(magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2 }).supersample, true);
+  assert.equal(magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2, supersample: false }).supersample, false);
+  assert.equal(magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2, supersample: 1 }).supersample, true); // normalized to bool
+});
+test("magnifierIR: emit passes supersample through (state default true)", () => {
+  const base = { x: 0, y: 0, w: 160, h: 160, magnification: 2.5, rimColor: "#000", rimWidth: 4 };
+  assert.equal(magnifierPlugin.emit(base)[0].supersample, true); // absent → default true (plugin defaults)
+  assert.equal(magnifierPlugin.emit({ ...base, supersample: false })[0].supersample, false);
+  assert.equal(magnifierPlugin.emit({ ...base, supersample: true })[0].supersample, true);
+});
+test("lensRenderView: lens center is the fixed point of the magnified view", () => {
+  const view = { zoom: 1.5, panX: 40, panY: -12, dpr: 2 };
+  const center = { x: 123, y: 77 };
+  const lens = lensRenderView(view, center, 2.5);
+  assert.equal(lens.zoom, 1.5 * 2.5);
+  assert.equal(lens.dpr, view.dpr);
+  const dev = (v, w) => [(w.x * v.zoom + v.panX) * v.dpr, (w.y * v.zoom + v.panY) * v.dpr];
+  approxArr(dev(lens, center), dev(view, center)); // center pinned to the same device px
+  // A point r away from center lands M× farther from it (that IS magnification)
+  const off = { x: center.x + 10, y: center.y };
+  assert.ok(Math.abs((dev(lens, off)[0] - dev(lens, center)[0]) - 2.5 * (dev(view, off)[0] - dev(view, center)[0])) < 1e-9);
+});
+test("deviceRectThroughViews + intersectRects: scissor carry math", () => {
+  assert.deepEqual(
+    deviceRectThroughViews({ x: 0, y: 0, w: 100, h: 100 }, { zoom: 1, panX: 0, panY: 0, dpr: 1 }, { zoom: 2, panX: 0, panY: 0, dpr: 1 }),
+    { x: 0, y: 0, w: 200, h: 200 },
+  );
+  // Round-trip: mapping to a view and back is the identity
+  const from = { zoom: 1.25, panX: 7, panY: -3, dpr: 2 };
+  const to = { zoom: 5, panX: -100, panY: 40, dpr: 2 };
+  const rect = { x: 10, y: 20, w: 30, h: 40 };
+  const back = deviceRectThroughViews(deviceRectThroughViews(rect, from, to), to, from);
+  approxArr([back.x, back.y, back.w, back.h], [rect.x, rect.y, rect.w, rect.h], 1e-9);
+  assert.deepEqual(intersectRects({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }), { x: 5, y: 5, w: 5, h: 5 });
+  assert.equal(intersectRects({ x: 0, y: 0, w: 4, h: 4 }, { x: 8, y: 0, w: 2, h: 2 }).w, 0); // disjoint → zero-area
+});
 test("sceneIR: real registry render tree → z-ordered wrapped IR", () => {
   const registry = createRegistry();
   registerAll(registry, createCommands());
@@ -151,7 +223,7 @@ test("sceneIR: real registry render tree → z-ordered wrapped IR", () => {
     items: {
       a: { type: "rect", x: 10, y: 20, w: 100, h: 50, z: 1, fill: "#7aa2f7", stroke: "#000", strokeWidth: 2, cornerRadius: 4 },
       b: { type: "circle", x: 0, y: 0, w: 80, h: 80, z: 0, fill: "#f7768e", strokeWidth: 0 },
-      c: { type: "arrow", z: 2, from: { x: 0, y: 0 }, to: { x: "@a_cm.x", y: "@a_cm.y" }, color: "#000", width: 3, headSize: 14 },
+      c: { type: "arrow", z: 2, from: { x: 0, y: 0 }, to: { x: "@a_cm.x", y: "@a_cm.y" }, color: "#000", width: 3, headLength: 14, headWidth: 12 },
     },
   };
   // The real pipeline: fold → EVALUATE (equations become numbers) → derive → emit.

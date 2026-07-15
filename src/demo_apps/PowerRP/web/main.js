@@ -2,7 +2,7 @@ import "../../../styles/theme.css";
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
-import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled } from "../core/document.js";
+import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled, withLegacyKeysRenamed } from "../core/document.js";
 import { cameraRect, deriveRenderTree } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
@@ -29,7 +29,11 @@ window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width
   const raw = typeof docJson === "string" ? deserialize(docJson) : docJson;
   const { doc: droppedDoc, dropped } = withOrphanedItemsDropped(raw, new Set(registry.all().map((p) => p.type)));
   for (const { id, reason } of dropped) console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
-  const { doc: repairedDoc, filled } = withMissingDefaultsFilled(droppedDoc, registry);
+  // Rename BEFORE fill — order-critical (see app.svelte.js repaired()).
+  const { doc: renamedDoc, renamed } = withLegacyKeysRenamed(droppedDoc, registry);
+  for (const r of renamed)
+    console.error(`PowerRP repair: item "${r.id}" slide ${r.slideIndex}: legacy "${r.from}" → "${r.to}"${r.stale ? " (stale copy dropped)" : ""}`);
+  const { doc: repairedDoc, filled } = withMissingDefaultsFilled(renamedDoc, registry);
   for (const { id, missing } of filled)
     console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
   const doc = withBindingsMigrated(withCameraEnsured(repairedDoc));

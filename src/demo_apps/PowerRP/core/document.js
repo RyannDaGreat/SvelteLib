@@ -271,6 +271,75 @@ export function withMissingDefaultsFilled(doc, registry) {
   return { doc: out, filled };
 }
 
+/**
+ * Pure function. Legacy key renames the document needs: every slide-delta
+ * write at items.<id>.<oldKey> where the item's plugin declares
+ * `legacyKeys: {oldKey: newKey}` (a top-level-state-key rename map — the
+ * declarative, no-type-special-casing seam for schema renames; first user:
+ * the arrow's headSize → headLength, manifest Round 11). Runs at the load
+ * boundary BEFORE withMissingDefaultsFilled — the fill would otherwise write
+ * the new key's default at the creation slide and the user's legacy value
+ * would then read as a stale duplicate.
+ *
+ * `stale: true` marks a slide where BOTH keys are written — there the new
+ * key is authoritative and the legacy write is only dropped.
+ *
+ * Args:
+ *   doc (object): document
+ *   registry (object): plugin registry (.get(type) → plugin with .legacyKeys?)
+ *
+ * Returns:
+ *   {id, slideIndex, from, to, stale}[] (empty when nothing needs renaming)
+ *
+ * @example legacyKeyRenames({slides: [{delta: {items: {a: {type: "arrow", headSize: 20}}}}]}, reg) // [{id: "a", slideIndex: 0, from: "headSize", to: "headLength", stale: false}]
+ * @example legacyKeyRenames({slides: [{delta: {items: {a: {type: "arrow", headLength: 20}}}}]}, reg) // [] (already current)
+ */
+export function legacyKeyRenames(doc, registry) {
+  const typeOf = new Map(); // id → first type written anywhere (creation type)
+  for (const s of doc.slides)
+    for (const [id, item] of Object.entries(s.delta.items ?? {}))
+      if (item && typeof item === "object" && typeof item.type === "string" && !typeOf.has(id))
+        typeOf.set(id, item.type);
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!(item && typeof item === "object") || !typeOf.has(id)) continue;
+      let plugin;
+      try {
+        plugin = registry.get(typeOf.get(id));
+      } catch {
+        continue; // unknown type = the orphan case, repaired by orphanedItems
+      }
+      for (const [from, to] of Object.entries(plugin.legacyKeys ?? {}))
+        if (from in item) out.push({ id, slideIndex, from, to, stale: to in item });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every legacy key MOVED to its current name in
+ * place (same slide, same item, value verbatim — numbers, equation strings,
+ * and null delete-sentinels all survive, so keyframed ANIMATIONS of a renamed
+ * property survive too). Where the new key already exists on that slide the
+ * legacy write is dropped (the new one is authoritative). REPORTING IS THE
+ * CALLER'S JOB (console.error per entry at the load boundary — silent
+ * repairs are forbidden). Idempotent: a migrated document reports nothing.
+ *
+ * @example withLegacyKeysRenamed({slides: [{delta: {items: {a: {type: "arrow", headSize: 20}}}}]}, reg).doc.slides[0].delta.items.a.headLength // 20
+ * @example // withLegacyKeysRenamed(currentDoc, reg) → {doc: currentDoc, renamed: []}
+ */
+export function withLegacyKeysRenamed(doc, registry) {
+  const renamed = legacyKeyRenames(doc, registry);
+  let out = doc;
+  for (const { id, slideIndex, from, to, stale } of renamed) {
+    const value = getPath(out.slides[slideIndex].delta, ["items", id, from]);
+    out = unkeyframed(out, slideIndex, ["items", id, from]);
+    if (!stale) out = keyframed(out, slideIndex, ["items", id, to], value);
+  }
+  return { doc: out, renamed };
+}
+
 // ── Slide edits ──────────────────────────────────────────────────────────────
 
 /** Pure function. Inserts an empty slide after `index`. Returns [doc, newIndex]. */

@@ -11,6 +11,7 @@ import {
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
   withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled,
+  withLegacyKeysRenamed,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
@@ -598,9 +599,16 @@ export class PowerRPApp {
     const { doc: dropDoc, dropped } = withOrphanedItemsDropped(doc, known);
     for (const { id, reason } of dropped)
       console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
+    // Legacy key renames MUST run BEFORE the defaults fill (regression-tested:
+    // fill-first writes the new key's default and the rename then drops the
+    // user's legacy value as stale — data loss). Values move verbatim across
+    // every slide: numbers, equations, and null delete-sentinels alike.
+    const { doc: renamedDoc, renamed } = withLegacyKeysRenamed(dropDoc, this.registry);
+    for (const r of renamed)
+      console.error(`PowerRP repair: item "${r.id}" slide ${r.slideIndex}: legacy "${r.from}" → "${r.to}"${r.stale ? " (stale copy dropped)" : ""}`);
     // Typed-but-partial items (e.g. a rect that never got a w anywhere) fold
     // into states the strict IR builders reject — fill from plugin defaults.
-    let { doc: out, filled } = withMissingDefaultsFilled(dropDoc, this.registry);
+    let { doc: out, filled } = withMissingDefaultsFilled(renamedDoc, this.registry);
     for (const { id, missing } of filled)
       console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
     // Frame caps no longer exist (round 11: "No more optional caps, just keep

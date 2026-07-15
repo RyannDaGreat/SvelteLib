@@ -25,7 +25,8 @@ import { createShortcuts } from "../core/shortcuts.js";
 import { createUndo } from "../core/undo.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { circlePlugin } from "../plugins/circle.js";
-import { arrowPlugin, distToSegment } from "../plugins/arrow.js";
+import { arrowPlugin } from "../plugins/arrow.js";
+import { distToSegment } from "../core/outline.js";
 import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
 
 let passed = 0;
