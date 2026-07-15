@@ -17,6 +17,13 @@
 
   let { app } = $props();
 
+  // Averaging window. Was 1000ms (the literal per-second definition); the
+  // user ruled it too sluggish — "whatever averaging window needs to be much
+  // shorter" (round 11). 250ms is the common game-HUD cadence: responsive to
+  // real rate changes within a quarter second, still steady at 120Hz
+  // (~30 samples). Adjust here if the user wants snappier/steadier.
+  const WINDOW_MS = 250;
+
   let fps = $state(0);
 
   onMount(() => {
@@ -24,7 +31,7 @@
     let raf;
     const tick = (t) => {
       samples.push([t, app.renderFrameCount]);
-      while (samples.length && t - samples[0][0] > 1000) samples.shift();
+      while (samples.length && t - samples[0][0] > WINDOW_MS) samples.shift();
       const dt = (t - samples[0][0]) / 1000;
       fps = dt > 0 ? Math.round((app.renderFrameCount - samples[0][1]) / dt) : 0;
       raf = requestAnimationFrame(tick);
@@ -34,4 +41,6 @@
   });
 </script>
 
-<div class="fps-counter">FPS: {fps}</div>
+<!-- Right-justified in a 4-character field (user spec: room up to 1000 FPS
+     so only the digits change, the text never shifts — mono font + pre). -->
+<div class="fps-counter">FPS:{String(fps).padStart(5, " ")}</div>

@@ -349,6 +349,27 @@ body,
   pointer-events: none;
 }
 
+/* Rubber-band selection: the in-progress box uses the guide color (it is a
+   transient interaction affordance, like guides) with the selection dash;
+   candidate previews are the selection outline at the anchors' established
+   50%-transparency affordance opacity. All values from existing tokens. */
+.overlay .band-rect {
+  fill: none;
+  stroke: var(--a-guide);
+  stroke-width: var(--a-guide-stroke);
+  stroke-dasharray: var(--a-selection-dash);
+  pointer-events: none;
+}
+
+.overlay .band-candidate {
+  fill: none;
+  stroke: var(--a-selection);
+  stroke-width: var(--a-selection-stroke);
+  stroke-dasharray: var(--a-selection-dash);
+  opacity: var(--a-anchor-opacity);
+  pointer-events: none;
+}
+
 .overlay .guide-point {
   fill: var(--a-guide);
   pointer-events: none;
@@ -1323,6 +1344,7 @@ body,
   color: var(--a-fps-color);
   pointer-events: none;
   user-select: none;
+  white-space: pre; /* the padStart right-justification must render literally */
 }
 
 /* WebGPU init failure notice — loud, centered over the dead canvas (no render
