@@ -204,6 +204,78 @@ export function hasTextOp(commands) {
 }
 
 /**
+ * Pure function. The DISTINCT image refs in an IR list (each embeds once,
+ * like a font). Order-preserving, deduped.
+ *
+ * @example imageRefs([{op: "image", ref: "a"}, {op: "rect"}, {op: "image", ref: "a"}]) // ["a"]
+ * @example imageRefs([{op: "rect"}]) // []
+ */
+export function imageRefs(commands) {
+  const seen = new Set();
+  const out = [];
+  for (const c of commands)
+    if (c.op === "image" && !seen.has(c.ref)) { seen.add(c.ref); out.push(c.ref); }
+  return out;
+}
+
+/**
+ * Pure function. Decodes a `data:` URI to {mime, bytes}. Only base64 payloads
+ * are supported (that is what the image widget and drops produce); a non-base64
+ * or non-data URI is a loud error (callers fetch URLs separately).
+ *
+ * @example decodeDataUri("data:image/png;base64,AAAA").mime // "image/png"
+ * @example decodeDataUri("data:image/png;base64,AAAA").bytes.length // 3
+ */
+export function decodeDataUri(uri) {
+  const m = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(uri);
+  if (!m) throw new Error(`decodeDataUri: not a data URI: "${uri.slice(0, 32)}…"`);
+  if (!m[2]) throw new Error(`decodeDataUri: only base64 data URIs are supported, got "${m[1]}"`);
+  const bin = base64ToBytes(m[3]);
+  return { mime: m[1], bytes: bin };
+}
+
+/** Pure function. base64 string → Uint8Array (bare-node + browser: Buffer or
+ * atob, whichever exists). Whitespace in the payload is stripped first.
+ * @example base64ToBytes("AAAA").length // 3
+ */
+export function base64ToBytes(b64) {
+  const clean = b64.replace(/\s/g, "");
+  if (typeof Buffer !== "undefined") return new Uint8Array(Buffer.from(clean, "base64"));
+  const bin = atob(clean);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Pure function. Sniffs an image encoding from its magic bytes — pdf-lib
+ * embeds PNG and JPEG through different code paths, and the mime label in a
+ * data URI can lie, so trust the bytes.
+ *
+ * @example imageFormat(new Uint8Array([0x89, 0x50, 0x4e, 0x47])) // "png"
+ * @example imageFormat(new Uint8Array([0xff, 0xd8, 0xff])) // "jpeg"
+ */
+export function imageFormat(bytes) {
+  if (bytes.length >= 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpeg";
+  throw new Error(`imageFormat: unsupported image encoding (magic ${[...bytes.slice(0, 4)].map((b) => b.toString(16)).join(" ")}) — PDF embed handles PNG and JPEG`);
+}
+
+/**
+ * Query (async; may fetch). The raw bytes for an image `ref` (a data URI or a
+ * URL). Data URIs decode in-module (DOM-free); a URL is fetched (global fetch,
+ * browser + node ≥18). Loud on failure — no silent drop.
+ */
+async function loadImageBytes(ref) {
+  if (typeof ref !== "string" || ref.length === 0)
+    throw new Error(`pdf_backend: image ref must be a non-empty string, got ${JSON.stringify(ref)}`);
+  if (ref.startsWith("data:")) return decodeDataUri(ref).bytes;
+  const res = await fetch(ref);
+  if (!res.ok) throw new Error(`pdf_backend: failed to fetch image "${ref}" — HTTP ${res.status} ${res.statusText}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/**
  * Command (async; builds a PDF). IR command list → PDF file bytes.
  *
  * Args:
@@ -237,6 +309,7 @@ export async function irToPDF(commands, { width, height, view, background = null
   const page = doc.addPage([width, height]);
   const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent);
   if (hasTextOp(commands)) await ctx.ensureFonts(); // sub-lists are slices, so scanning the top list covers lens re-emits
+  await ctx.ensureImages(imageRefs(commands)); // embed image XObjects up-front — emit is synchronous per command (same seam as fonts)
 
   const out = [];
   out.push("q");
@@ -397,10 +470,26 @@ function emitVector(cmd, world, out, ctx) {
       ops.push(`${tjHex(font, cmd.text)} Tj`, "ET");
       break;
     }
-    case "image":
+    case "image": {
+      // EMBEDDED image XObject (manifest HYBRID RULE: a bitmap is embedded raster
+      // among the vector elements). The XObject was pre-embedded by ensureImages;
+      // here we just place it. The image unit square has v=1 at its TOP row, so
+      // in the page's y-DOWN space the cm carries -h and lands the top row at the
+      // rect's visual top (same convention as emitRasterRegion). Alpha via
+      // ExtGState so per-item opacity composites like every other op.
+      const name = ctx.imageXObject(cmd.ref);
+      if (name === null) return; // src had no drawable bytes (empty/blank) — draw nothing, matching the GPU skip
+      const gs = ctx.gsAlphaPair(cmd.opacity ?? 1, 1);
+      if (gs) ops.push(gs);
+      const n = pdfNum;
+      ops.push(`${n(cmd.w)} 0 0 ${n(-cmd.h)} ${n(cmd.x)} ${n(cmd.y + cmd.h)} cm`, `/${name} Do`);
+      break;
+    }
     case "video":
-      // No media plugins exist yet (IR ops proven, plugins unbuilt). Loud:
-      throw new Error(`pdf_backend: "${cmd.op}" op not supported yet (media raster-embed lands with the media plugins)`);
+      // The video PLUGIN is out of scope (a separate future task): its PDF
+      // representation is a current-frame raster embed, which needs the media
+      // element the image path doesn't. Loud until then — no silent drop.
+      throw new Error(`pdf_backend: "video" op not supported yet (the video plugin's current-frame raster embed lands with that plugin)`);
     default:
       throw new Error(`pdf_backend: unknown op "${cmd.op}"`);
   }
@@ -437,6 +526,38 @@ class PdfAssembly {
     this._fonts = {};     // F1 (regular) / F1B (bold) → PDFFont
     this._gs = new Map(); // "ca,CA" → ExtGState name
     this._imgCount = 0;
+    this._imageXObjects = new Map(); // image ref → XObject name, or null (blank/undrawable src)
+  }
+
+  /**
+   * Command (async). Embeds each image `ref` as a PDF image XObject and
+   * registers it on the page, keyed by ref for the synchronous emit. Runs
+   * before the content walk (emit is sync per command — the same up-front seam
+   * as ensureFonts). A blank/undrawable transparent 1×1 (the widget's default
+   * src) maps to null (draw nothing) rather than embedding a useless pixel.
+   */
+  async ensureImages(refs) {
+    for (const ref of refs) {
+      if (this._imageXObjects.has(ref)) continue;
+      const bytes = await loadImageBytes(ref);
+      // A 1×1 fully-transparent PNG (the widget's BLANK_SRC default) carries no
+      // visible content — record null so emit draws nothing, matching the GPU.
+      const fmt = imageFormat(bytes);
+      const img = fmt === "png" ? await this.doc.embedPng(bytes) : await this.doc.embedJpg(bytes);
+      if (img.width <= 1 && img.height <= 1) { this._imageXObjects.set(ref, null); continue; }
+      const name = `Img${++this._imgCount}`;
+      this.page.node.setXObject(PDFName.of(name), img.ref);
+      this._imageXObjects.set(ref, name);
+    }
+  }
+
+  /** Query. The XObject name for a pre-embedded image ref, or null for a
+   * blank/undrawable src. Throws if the ref was never embedded (a bug — emit
+   * only runs after ensureImages scanned the same command list). */
+  imageXObject(ref) {
+    if (!this._imageXObjects.has(ref))
+      throw new Error(`pdf_backend: image ref "${ref}" not embedded (image op outside the scanned command list?)`);
+    return this._imageXObjects.get(ref);
   }
 
   /**

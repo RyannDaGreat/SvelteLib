@@ -14,6 +14,8 @@ import {
 import { videoIR, sceneIR } from "../ports.js";
 import { rectPlugin } from "../../plugins/rect.js";
 import { circlePlugin } from "../../plugins/circle.js";
+import { imagePlugin, BLANK_SRC } from "../../plugins/image.js";
+import { getImage, imageStatus, truncate } from "../gpu/image_registry.js";
 import { arrowPlugin } from "../../plugins/arrow.js";
 import { fancyArrowPlugin } from "../../plugins/fancy_arrow.js";
 import { blurPlugin } from "../../plugins/blur.js";
@@ -111,6 +113,26 @@ test("rectIR/circleIR mirror plugin geometry", () => {
   assert.equal(c.op, "ellipse");
   assert.equal(c.rx, 70);
   assert.equal(c.ry, 50);
+});
+test("imageIR: emit is a textured quad by src ref; empty src emits nothing", () => {
+  const cmd = imagePlugin.emit({ src: "data:image/png;base64,AAAA", w: 200, h: 150, opacity: 0.5 })[0];
+  assert.equal(cmd.op, "image");
+  assert.equal(cmd.ref, "data:image/png;base64,AAAA"); // ref IS the source string (both backends resolve it)
+  assert.equal(cmd.w, 200);
+  assert.equal(cmd.opacity, 0.5);
+  assert.deepEqual(imagePlugin.emit({ src: "", w: 10, h: 10 }), []);     // broken widget → nothing
+  assert.deepEqual(imagePlugin.emit({ w: 10, h: 10 }), []);              // missing src → nothing
+  // Capabilities that make backdrop stacking + culling work for free.
+  assert.equal(imagePlugin.capabilities.bbox, true);
+  assert.equal(imagePlugin.capabilities.backdrop, false);
+  assert.ok(imagePlugin.defaults.src.startsWith("data:image/png")); // blank default = valid item
+  assert.equal(BLANK_SRC, imagePlugin.defaults.src);
+});
+test("image_registry: DOM-free queries (an undecoded src is quiet + null)", () => {
+  assert.equal(imageStatus("nope://never-requested"), "unloaded");
+  assert.equal(getImage("nope://never-requested"), null); // not ready → draw nothing (async rule)
+  assert.equal(truncate("short"), "short");
+  assert.match(truncate("data:image/png;base64," + "A".repeat(200)), /…\(\d+ chars\)$/);
 });
 test("arrowIR: shaft pullback + independent headLength/headWidth triangle", () => {
   const cmds = arrowPlugin.emit({ from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, color: "#000", width: 3, headLength: 10, headWidth: 8 });

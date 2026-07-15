@@ -13,9 +13,11 @@ import assert from "node:assert/strict";
 import {
   pdfNum, cmSimilarity, rectPath, ellipsePath, pointsPath, paintOp,
   balancedSlice, magnifiedView, hasTextOp, tjHex, irToPDF, MAX_LENS_DEPTH,
+  imageRefs, decodeDataUri, base64ToBytes, imageFormat,
 } from "../pdf_backend.js";
-import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image } from "../ir.js";
+import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video } from "../ir.js";
 import { scenes } from "./pdf_scenes.js";
+import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -86,6 +88,23 @@ test("hasTextOp", () => {
   assert.equal(hasTextOp([rect({ x: 0, y: 0, w: 1, h: 1, fill: "#fff" })]), false);
   assert.equal(hasTextOp([text({ text: "x", x: 0, y: 0, size: 10, color: "#000" })]), true);
 });
+test("imageRefs: distinct, order-preserving", () => {
+  assert.deepEqual(imageRefs([image({ ref: "a", x: 0, y: 0, w: 1, h: 1 }), rect({ x: 0, y: 0, w: 1, h: 1, fill: "#fff" }), image({ ref: "a", x: 0, y: 0, w: 1, h: 1 }), image({ ref: "b", x: 0, y: 0, w: 1, h: 1 })]), ["a", "b"]);
+  assert.deepEqual(imageRefs([rect({ x: 0, y: 0, w: 1, h: 1, fill: "#fff" })]), []);
+});
+test("base64ToBytes / decodeDataUri", () => {
+  assert.deepEqual([...base64ToBytes("AAAA")], [0, 0, 0]);
+  const d = decodeDataUri(CHECKER_PNG_DATA_URI);
+  assert.equal(d.mime, "image/png");
+  assert.ok(d.bytes.length > 100); // the real fixture, decoded
+  assert.throws(() => decodeDataUri("http://example.com/x.png"), /not a data URI/);
+  assert.throws(() => decodeDataUri("data:image/png,rawtext"), /only base64/);
+});
+test("imageFormat: PNG/JPEG magic, loud on else", () => {
+  assert.equal(imageFormat(decodeDataUri(CHECKER_PNG_DATA_URI).bytes), "png");
+  assert.equal(imageFormat(new Uint8Array([0xff, 0xd8, 0xff, 0x00])), "jpeg");
+  assert.throws(() => imageFormat(new Uint8Array([1, 2, 3, 4])), /unsupported image encoding/);
+});
 
 // ── full-document structural assertions ─────────────────────────────────────
 const OPTS = (scene) => ({
@@ -98,7 +117,8 @@ for (const scene of scenes()) {
     const bytes = await irToPDF(scene.commands, OPTS(scene));
     const s = latin1(bytes);
     assert.ok(s.startsWith("%PDF-"), "has %PDF header");
-    assert.ok(s.includes("re") || s.includes(" c\n"), "has vector path operators");
+    const hasVectorShape = scene.commands.some((c) => ["rect", "ellipse", "polyline", "polygon"].includes(c.op));
+    if (hasVectorShape) assert.ok(s.includes("re") || s.includes(" c\n"), "has vector path operators");
 
     assert.equal(s.includes("/Helvetica"), scene.hasText, `font object present iff text in the IR (${scene.name})`);
     // Text OPERATORS appear iff text reaches the vector layer (text below a
@@ -106,10 +126,10 @@ for (const scene of scenes()) {
     assert.equal(s.includes("Tj"), scene.vectorText, `vector text operators iff vectorText (${scene.name})`);
     if (scene.vectorText) assert.ok(s.includes("Tf"), "font selection operator");
 
-    // Hybrid rule: an image XObject exists iff the scene needs a raster
-    // region (any blur; a lens alone stays fully vector at depth 0).
-    const wantsImage = scene.commands.some((c) => c.op === "blurBackdrop");
-    assert.equal(s.includes("/Subtype /Image"), wantsImage, `raster region iff blur (${scene.name})`);
+    // An image XObject exists iff the scene needs a raster region (any blur —
+    // the hybrid rule) OR embeds an image widget (a non-blank image op).
+    const wantsImage = scene.commands.some((c) => c.op === "blurBackdrop" || c.op === "image");
+    assert.equal(s.includes("/Subtype /Image"), wantsImage, `image XObject iff blur or image op (${scene.name})`);
 
     const hasLens = scene.commands.some((c) => c.op === "magnifyBackdrop");
     if (hasLens) assert.ok(s.includes("W n"), "lens clip path present");
@@ -159,9 +179,28 @@ await atest("lens rim: rimWidth 0 draws NO rim stroke (manifest spec)", async ()
   assert.equal(strokes(withRim) - strokes(noRim), 1, "exactly one extra stroke = the rim ring");
 });
 
-await atest("image/video ops throw loudly (media plugins unbuilt)", async () => {
+await atest("image op embeds an image XObject (data-URI PNG)", async () => {
+  const bytes = await irToPDF(
+    [image({ ref: CHECKER_PNG_DATA_URI, x: 10, y: 10, w: 80, h: 60 })],
+    { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff" },
+  );
+  const s = latin1(bytes);
+  assert.ok(s.startsWith("%PDF-"));
+  assert.ok(s.includes("/Subtype /Image"), "image XObject present");
+  assert.ok(s.includes(" Do"), "XObject draw operator present");
+  assert.ok(!s.includes("not supported"), "no throw-seam text");
+});
+await atest("blank 1x1 transparent src draws nothing (no XObject)", async () => {
+  const { BLANK_SRC } = await import("../../plugins/image.js");
+  const bytes = await irToPDF(
+    [image({ ref: BLANK_SRC, x: 0, y: 0, w: 50, h: 50 })],
+    { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff" },
+  );
+  assert.ok(!latin1(bytes).includes(" Do"), "no XObject draw for a blank src");
+});
+await atest("video op still throws loudly (video plugin unbuilt)", async () => {
   await assert.rejects(
-    () => irToPDF([image({ ref: "x", x: 0, y: 0, w: 10, h: 10 })], { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } }),
+    () => irToPDF([video({ ref: "x", x: 0, y: 0, w: 10, h: 10 })], { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } }),
     /not supported yet/,
   );
 });

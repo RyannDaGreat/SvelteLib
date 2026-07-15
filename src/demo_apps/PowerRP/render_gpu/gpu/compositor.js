@@ -57,6 +57,7 @@ import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdr
 import * as T from "../../core/transform.js";
 import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
+import { ensureImage, getImage } from "./image_registry.js";
 
 /** Extra device px around each SDF quad so antialiased edges never clip. */
 const AA_MARGIN_DEVICE = 2;
@@ -492,12 +493,36 @@ export class GpuCompositor {
     return entry;
   }
 
-  /** Query+Command (uploads on first use). GPU texture for an image ref. */
+  /**
+   * Query+Command (near-pure: kicks an idempotent decode). The drawable image
+   * SOURCE for a ref, or null if it is not ready yet. Resolution order:
+   *   1. this.media[ref] — a source the web layer registered explicitly (a
+   *      <video>/<canvas> element, or an image a caller pre-registered).
+   *   2. the shared image_registry — a decoded ImageBitmap for a src string
+   *      (URL/data-URI), THE path an image widget uses: no web-layer media
+   *      plumbing needed. If the src isn't decoded yet, ensureImage kicks the
+   *      async decode and this returns null (draw nothing this frame; the
+   *      registry's onImageLoad wakes a repaint when the bitmap lands).
+   * Returns null instead of throwing on an un-decoded src (in-flight is normal,
+   * not an error — the manifest async rule); a genuine decode FAILURE is the
+   * registry's loud console.error, and stays null here.
+   */
+  _imageSource(ref) {
+    const explicit = this.media[ref];
+    if (explicit) return explicit;
+    const bitmap = getImage(ref);
+    if (bitmap) return bitmap;
+    ensureImage(ref); // idempotent; safe every frame
+    return null;
+  }
+
+  /** Query+Command (uploads on first use). GPU texture for a READY image ref
+   * (caller guarantees _imageSource(ref) was non-null this frame). */
   _imageBindGroup(ref) {
     const cached = this.imageTextures.get(ref);
     if (cached) return cached;
-    const src = this.media[ref];
-    if (!src) throw new Error(`GpuCompositor: no media registered for image ref "${ref}"`);
+    const src = this._imageSource(ref);
+    if (!src) throw new Error(`GpuCompositor: image ref "${ref}" packed but its source is not ready (should have been skipped in _buildFrame)`);
     const w = src.naturalWidth ?? src.videoWidth ?? src.width;
     const h = src.naturalHeight ?? src.videoHeight ?? src.height;
     const texture = this.device.createTexture({
@@ -987,9 +1012,26 @@ export class GpuCompositor {
           }
           break;
         }
-        case "image":
+        case "image": {
+          // A still image draws only once its bitmap is DECODED. An undecoded
+          // src → skip the instance entirely (nothing packed, no batch): the
+          // frame draws nothing for it, _imageSource has kicked the async
+          // decode, and image_registry.onImageLoad wakes a repaint when it
+          // lands (the manifest async rule — no silent placeholder graphic).
+          if (!this._imageSource(cmd.ref)) break;
+          const at = quadInstance("tex", cmd.ref);
+          const f = this.quadArr.f32;
+          f.set([cmd.x, cmd.y, cmd.w, cmd.h], at);
+          f.set(xf, at + 4);
+          f.set([0, 0, 1, 1], at + 8);
+          f.set([1, 1, 1, 1], at + 12);
+          f.set([TEX_MODE.image, cmd.opacity, 0, 0], at + 16);
+          break;
+        }
         case "video": {
-          const at = quadInstance(cmd.op === "image" ? "tex" : "video", cmd.ref);
+          // Video readiness is checked at ENCODE time (importExternalTexture
+          // needs a live decoded frame — see _encodeScene's "video" case).
+          const at = quadInstance("video", cmd.ref);
           const f = this.quadArr.f32;
           f.set([cmd.x, cmd.y, cmd.w, cmd.h], at);
           f.set(xf, at + 4);

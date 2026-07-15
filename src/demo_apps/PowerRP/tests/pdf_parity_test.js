@@ -132,6 +132,7 @@ try {
   await page.evaluate(async () => {
     window.__mods = {
       compositor: await import("/src/demo_apps/PowerRP/render_gpu/gpu/compositor.js"),
+      imageRegistry: await import("/src/demo_apps/PowerRP/render_gpu/gpu/image_registry.js"),
       pdf: await import("/src/demo_apps/PowerRP/render_gpu/pdf_backend.js"),
       ir: await import("/src/demo_apps/PowerRP/render_gpu/ir.js"),
       scenes: await import("/src/demo_apps/PowerRP/render_gpu/tests/pdf_scenes.js"),
@@ -199,6 +200,11 @@ try {
     const res = await page.evaluate(async (name, k) => {
       const { scenes } = window.__mods.scenes;
       const s = scenes().find((x) => x.name === name);
+      // Image scenes: decode every image ref into the shared registry BEFORE
+      // the sync GPU render (the compositor draws nothing for an undecoded src
+      // — the async rule — so a scene image must be loaded first to appear).
+      await Promise.all([...new Set(s.commands.filter((c) => c.op === "image").map((c) => c.ref))]
+        .map((ref) => window.__mods.imageRegistry.ensureImage(ref)));
       const view = { zoom: s.view.zoom * k, panX: s.view.panX * k, panY: s.view.panY * k, dpr: 1 };
       const raw = await window.__renderRaw(s.commands, view, s.width * k, s.height * k, s.background);
       const expectedPng = await window.__rasterizePng(s.commands, view, s.width * k, s.height * k, s.background);

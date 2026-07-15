@@ -17,7 +17,8 @@
  * impossible; the floors catch real geometry/color/placement flaws.
  */
 
-import { rect, ellipse, polyline, polygon, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "../ir.js";
+import { rect, ellipse, polyline, polygon, text, image, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "../ir.js";
+import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
 
 /** Standard parity canvas: small enough for fast suites, big enough for detail. */
 export const SCENE_W = 400;
@@ -134,5 +135,40 @@ export function scenes() {
       blurBackdrop({ radius: 5 }),
       magnifyBackdrop({ cx: 210, cy: 150, r: 75, magnification: 2, rimColor: "#7a3a3a", rimWidth: 4, supersample: true }),
     ], 23, { vectorText: false }), // measured 26.51 dB — raster base + vector lens replay of the raster
+
+    // ── IMAGE widget parity (Opus8) ──────────────────────────────────────────
+    // The image is a data-URI PNG fixture (checker_png.js): the GPU uploads it
+    // as a sampled-texture quad, the PDF embeds it as an image XObject. The
+    // fixture is a four-quadrant + white-diagonal pattern so any flip, rotation,
+    // or channel swap crushes the PSNR (it can't hide in a flat color).
+
+    // Image alone: an unrotated quad + a rotated one + a translucent overlap,
+    // to exercise the cm placement (y-flip), rotation cm, and opacity ExtGState.
+    s("image-basic", [
+      image({ ref: CHECKER_PNG_DATA_URI, x: 30, y: 40, w: 160, h: 120 }),
+      pushTransform({ x: 300, y: 90, rotation: 0.35 }),
+      image({ ref: CHECKER_PNG_DATA_URI, x: -60, y: -45, w: 120, h: 90 }),
+      popTransform(),
+      image({ ref: CHECKER_PNG_DATA_URI, x: 150, y: 120, w: 170, h: 130, opacity: 0.5 }),
+    ], 25), // measured 28.83 dB — geometry/color/rotation/opacity match exactly (VLM-verified); the gap is edge AA: the GPU bilinear-upsamples the 64x48 fixture, poppler steps it. floor PENDING USER RATIFICATION
+
+    // Image UNDER a backdrop blur → the image is inside the hybrid raster region
+    // (backdrop:false, so it composites into the scene the blur then reads); a
+    // vector rect sits above the blur. Proves image + hybrid-rule compositing.
+    s("image-under-blur", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      image({ ref: CHECKER_PNG_DATA_URI, x: 40, y: 40, w: 220, h: 165 }),
+      blurBackdrop({ radius: 5 }),
+      rect({ x: 250, y: 40, w: 120, h: 80, cornerRadius: 6, fill: "#9ece6a", stroke: INK, strokeWidth: 2 }),
+    ], 40), // measured 45.50 dB — hybrid raster base compares near-exactly (image is inside the embedded region). floor PENDING USER RATIFICATION
+
+    // Image UNDER a magnifier → the lens re-emits the image (a re-interpretable
+    // display-list command) at magnification, clipped to the lens circle. Proves
+    // the image participates in the vector lens replay, not just flat compositing.
+    s("image-under-magnifier", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      image({ ref: CHECKER_PNG_DATA_URI, x: 60, y: 40, w: 260, h: 200 }),
+      magnifyBackdrop({ cx: 200, cy: 150, r: 70, magnification: 2.2, rimColor: INK, rimWidth: 5, supersample: true }),
+    ], 22), // measured 26.07 dB — vector lens (Form-XObject clip + magnify) replays the image XObject; edge-AA divergence class as the other lens scenes. floor PENDING USER RATIFICATION
   ];
 }
