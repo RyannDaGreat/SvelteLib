@@ -479,13 +479,18 @@ body,
   --dd-hover-bg: var(--a-hover-bg);
 }
 
-/* Dropdowns fill their container (manifest rule) — .dd is Dropdown's root.
-   --dd-radius MUST be set ON .dd (not the ancestor): Dropdown declares
-   --dd-radius on its own .dd root, so an ancestor override is shadowed (same
-   root cause as DraggableNumber's --dn-radius). This wins on specificity so the
-   picker is square like every other field control. */
+/* Dropdowns fill their container (manifest rule) — .dd is Dropdown's root. */
 .inspector-head .dd {
   width: 100%;
+}
+
+/* SQUARE corners: --dd-radius MUST be set ON the .dd element AND out-specify
+   Dropdown's own scoped `.dd.svelte-hash` (0,2,0) rule that declares
+   --dd-radius: 6px on its root — same root cause as DraggableNumber's
+   --dn-radius (a bare literal that shadows ancestor overrides). The
+   `.inspector .inspector-head .dd` chain (0,3,0) wins so the picker is square
+   like every other field control. */
+.inspector .inspector-head .dd {
   --dd-radius: 0;
 }
 

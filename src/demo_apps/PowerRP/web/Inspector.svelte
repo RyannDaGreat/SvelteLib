@@ -106,11 +106,19 @@
         value={sel.state.name ?? ""}
         onchange={(e) => app.renameSelection(e.target.value)}
       />
+      <!-- The Name row has no keyframe controls, but reserves the trailing grid
+           column (empty) so its value input's RIGHT edge aligns with the
+           property rows below it. -->
+      <span class="kf-controls" aria-hidden="true"></span>
     </div>
     <div class="rows">
       {#each sel.plugin.inspector ?? [] as row (row.key)}
         <div class="row">
-          <span class="label">{row.label}</span>
+          <!-- Label truncates in its fixed column; the tooltip carries the full
+               text for the few long ones (never a native title= — manifest ban). -->
+          <Tooltip text={row.label}>
+            <span class="label">{row.label}</span>
+          </Tooltip>
           {#if row.kind === "number"}
             <!-- NumericField: equation-aware (THE UNIFICATION). A number
                  renders as the DraggableNumber scrubber; an equation renders
@@ -161,27 +169,32 @@
             />
           {/if}
           <!-- prev ◆ next — jumps hug the diamond (manifest spec); hollow =
-               not keyed on this slide, filled = keyed. Iconify, never Unicode. -->
-          <Tooltip text="Previous keyframe">
-            <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpKeyframe(row.key, -1)}>
-              <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
-            </button>
-          </Tooltip>
-          <Tooltip text={app.hasKey(row.key) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}>
-            <button
-              class="keybtn"
-              class:keyed={app.hasKey(row.key)}
-              aria-label="Toggle keyframe on this slide"
-              onclick={() => toggleKey(row.key)}
-            >
-              <iconify-icon icon={app.hasKey(row.key) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
-            </button>
-          </Tooltip>
-          <Tooltip text="Next keyframe">
-            <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpKeyframe(row.key, +1)}>
-              <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
-            </button>
-          </Tooltip>
+               not keyed on this slide, filled = keyed. Iconify, never Unicode.
+               Grouped in ONE .kf-controls span so they occupy a SINGLE grid
+               cell (the row grid's trailing auto column) — the value column
+               grows, these stay put and aligned across rows. -->
+          <span class="kf-controls">
+            <Tooltip text="Previous keyframe">
+              <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpKeyframe(row.key, -1)}>
+                <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
+              </button>
+            </Tooltip>
+            <Tooltip text={app.hasKey(row.key) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}>
+              <button
+                class="keybtn"
+                class:keyed={app.hasKey(row.key)}
+                aria-label="Toggle keyframe on this slide"
+                onclick={() => toggleKey(row.key)}
+              >
+                <iconify-icon icon={app.hasKey(row.key) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
+              </button>
+            </Tooltip>
+            <Tooltip text="Next keyframe">
+              <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpKeyframe(row.key, +1)}>
+                <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
+              </button>
+            </Tooltip>
+          </span>
         </div>
       {/each}
     </div>

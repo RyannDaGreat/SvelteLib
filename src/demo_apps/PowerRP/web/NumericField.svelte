@@ -216,6 +216,21 @@
       {/if}
     </span>
   {:else}
+    <!-- Equation affordance (round-11 ruling): on the LEFT of the value,
+         HOVER-ONLY (revealed by .row:hover in app.css; hidden at rest so the
+         resting field is just label + value). Clicking it opens the SAME
+         symmetric text-entry path a click-without-drag opens — it is NOT a
+         mode toggle (typed content still decides number vs equation); it's
+         the explicit "little equation button" the user relented on. -->
+    <Tooltip text="Enter an equation">
+      <button
+        class="eq-open"
+        aria-label={`${label}: enter an equation`}
+        onclick={beginTextEntry}
+      >
+        <iconify-icon icon="mdi:function-variant" width="14" height="14"></iconify-icon>
+      </button>
+    </Tooltip>
     <!-- `onedit` = DraggableNumber's click-without-drag hook (the generic lib
          capability). It DELEGATES text entry to beginTextEntry() so the ONE
          symmetric text path (number vs equation) lives here. The scrubber

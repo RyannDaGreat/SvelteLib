@@ -50,31 +50,36 @@
         onchange={(e) => renameVar(name, e)}
       />
       <NumericField {app} path={["vars", name]} label={name} />
-      <Tooltip text="Previous keyframe">
-        <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpKeyframePath(["vars", name], -1)}>
-          <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
-        </button>
-      </Tooltip>
-      <Tooltip text={app.hasKeyPath(["vars", name]) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}>
-        <button
-          class="keybtn"
-          class:keyed={app.hasKeyPath(["vars", name])}
-          aria-label="Toggle keyframe on this slide"
-          onclick={() => toggleKey(name)}
-        >
-          <iconify-icon icon={app.hasKeyPath(["vars", name]) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
-        </button>
-      </Tooltip>
-      <Tooltip text="Next keyframe">
-        <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpKeyframePath(["vars", name], +1)}>
-          <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
-        </button>
-      </Tooltip>
-      <Tooltip text="Delete variable (all keyframes, all slides)">
-        <button class="remove" aria-label="Delete variable" onclick={() => app.deleteVariable(name)}>
-          <iconify-icon icon="mdi:close" width="14" height="14"></iconify-icon>
-        </button>
-      </Tooltip>
+      <!-- Trailing controls grouped in ONE grid cell (matches the Property
+           Panel rows): ‹ ◆ › keyframe jumps + delete. Keeps the value column
+           growing while these stay aligned across both panels. -->
+      <span class="kf-controls">
+        <Tooltip text="Previous keyframe">
+          <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpKeyframePath(["vars", name], -1)}>
+            <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
+          </button>
+        </Tooltip>
+        <Tooltip text={app.hasKeyPath(["vars", name]) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}>
+          <button
+            class="keybtn"
+            class:keyed={app.hasKeyPath(["vars", name])}
+            aria-label="Toggle keyframe on this slide"
+            onclick={() => toggleKey(name)}
+          >
+            <iconify-icon icon={app.hasKeyPath(["vars", name]) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
+          </button>
+        </Tooltip>
+        <Tooltip text="Next keyframe">
+          <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpKeyframePath(["vars", name], +1)}>
+            <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
+          </button>
+        </Tooltip>
+        <Tooltip text="Delete variable (all keyframes, all slides)">
+          <button class="remove" aria-label="Delete variable" onclick={() => app.deleteVariable(name)}>
+            <iconify-icon icon="mdi:close" width="14" height="14"></iconify-icon>
+          </button>
+        </Tooltip>
+      </span>
     </div>
   {:else}
     <div class="empty">No variables — add one below, then reference it from any numeric property (e.g. "speed * 2")</div>

@@ -38,8 +38,8 @@
   standalone literal fallback):
     --dn-bg, --dn-fg, --dn-fg-dim, --dn-border, --dn-radius, --dn-padding,
     --dn-font-size, --dn-accent, --dn-hover-bg, --dn-focus-ring,
-    --dn-wheel-width, --dn-wheel-height, --dn-wheel-bg, --dn-ridge,
-    --dn-ridge-count, --dn-ridge-gap
+    --dn-wheel-width, --dn-wheel-height, --dn-wheel-bg, --dn-wheel-radius,
+    --dn-ridge, --dn-ridge-count, --dn-ridge-gap
 -->
 <script>
   // -- Pure helpers (general) -------------------------------------------------
@@ -528,7 +528,11 @@
     --dn-fg-dim: var(--fg-dim, #888);
     --dn-border: var(--border, rgba(255, 255, 255, 0.18));
     --dn-accent: var(--accent, #7aa2f7);
-    --dn-radius: 4px;
+    /* Chain to the host's ambient radius token (like --dn-bg → --control-bg
+       above), THEN a standalone literal. A bare 4px here would SHADOW any
+       ancestor override — the one token that didn't chain, which is exactly
+       why a consumer's square-corner theme couldn't reach the field. */
+    --dn-radius: var(--radius, 4px);
     --dn-padding: 4px 8px;
     --dn-font-size: 0.85rem;
     --dn-hover-bg: var(--a-hover-bg, rgba(255, 255, 255, 0.08));
@@ -540,6 +544,7 @@
     --dn-wheel-width: 12px;
     --dn-wheel-height: 20px;
     --dn-wheel-bg: transparent;
+    --dn-wheel-radius: var(--dn-radius); /* tracks the field radius so a square field has a square wheel; override alone to differ */
     --dn-ridge: color-mix(in srgb, var(--dn-fg) 45%, transparent);
     --dn-ridge-gap: 4px; /* period of one ridge cycle — MUST equal the ridgePeriod prop for a seamless loop */
     --dn-ridge-thickness: 1px;
@@ -611,7 +616,7 @@
     flex: none;
     overflow: hidden;
     border: 1px solid var(--dn-border);
-    border-radius: 2px;
+    border-radius: var(--dn-wheel-radius);
     background: var(--dn-wheel-bg);
   }
   /* A tall ridge strip translated by the drag; it's twice the viewport plus a
