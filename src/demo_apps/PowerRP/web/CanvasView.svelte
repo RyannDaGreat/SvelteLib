@@ -26,13 +26,16 @@
 
   let containerEl = $state(null);
   let canvasEl = $state(null);
+  let overlayEl = $state(null); // the pointer-capturing SVG; fills the PanZoom container (render-area frame origin)
   let gridEl = $state(null); // underlay canvas for the Blender-style grid (beneath .scene)
   let wrapW = $state(0);
   let wrapH = $state(0);
-  // Live mouse X in WORLD px, for the ruler's mouse marker. null when the
-  // pointer is off-canvas. Fed by the existing pointermove handler.
-  let mouseWorldX = $state(null);
-  let mouseWorldY = $state(null);
+  // THE ONLY stored mouse truth: the raw SCREEN-space pointer position in the
+  // PanZoom container's frame (px from its top-left), or null when off-canvas.
+  // Every world-space mouse value is a $derived over (screenMouse, viewport) —
+  // so zoom/pan under a stationary cursor updates the readout by construction
+  // (manifest "Zoom/pan mouse invalidation"), for this and all future consumers.
+  let screenMouse = $state(null); // {x, y} in PanZoom-container px, or null
 
   // Ruler target spacing = the ONE control-height token so labels never crowd
   // (min gap between labelled ticks). Read once from CSS; falls back if unset.
@@ -75,17 +78,19 @@
     return rulerTicks(lo, hi, viewport.zoom, (w) => actions.worldToScreen(0, w).y);
   });
 
+  // World point under the cursor — DERIVED from the stored screen position and
+  // the current view, so panning/zooming under a still cursor updates it.
+  let mouseWorld = $derived.by(() => {
+    viewport;
+    if (screenMouse == null || !actions) return null;
+    return actions.screenToWorld(screenMouse.x, screenMouse.y);
+  });
   // Screen positions of the live mouse marker on each ruler (null = off-canvas).
-  let mouseMarkerX = $derived.by(() => {
-    viewport; mouseWorldX;
-    if (mouseWorldX == null || !actions) return null;
-    return actions.worldToScreen(mouseWorldX, 0).x;
-  });
-  let mouseMarkerY = $derived.by(() => {
-    viewport; mouseWorldY;
-    if (mouseWorldY == null || !actions) return null;
-    return actions.worldToScreen(0, mouseWorldY).y;
-  });
+  // The marker sits at the SAME screen x/y the pointer is at — worldToScreen ∘
+  // screenToWorld is identity, so these equal screenMouse; expressed through the
+  // view transform to keep every ruler value in the one (world↔screen) frame.
+  let mouseMarkerX = $derived(mouseWorld == null ? null : actions.worldToScreen(mouseWorld.x, 0).x);
+  let mouseMarkerY = $derived(mouseWorld == null ? null : actions.worldToScreen(0, mouseWorld.y).y);
   let minimapThumb = $state(""); // data URL of the current slide, for the minimap
   let viewport = $state({ zoom: 1, panX: 0, panY: 0 });
   // PanZoom actions — deliberately NOT $state: it's bound during template
@@ -222,9 +227,19 @@
     return "";
   }
 
+  // Screen point in the PanZoom (render-area) frame — the SAME frame
+  // screenToWorld/worldToScreen and the ruler SVGs live in. Measured off the
+  // overlay, which fills the PanZoom container exactly (inset:0); when rulers
+  // are chrome OUTSIDE the render area, the overlay rect (not .canvas-wrap)
+  // is the render-area origin, so every mouse value stays in ONE frame.
+  function screenPoint(e) {
+    const rect = overlayEl.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
   function worldPoint(e) {
-    const rect = containerEl.getBoundingClientRect();
-    return actions.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+    const s = screenPoint(e);
+    return actions.screenToWorld(s.x, s.y);
   }
 
   // ── Selection + drag ────────────────────────────────────────────────────────
@@ -255,9 +270,10 @@
   }
 
   function onPointerMove(e) {
+    // Store ONLY the raw screen-space position (PanZoom render-area frame); the
+    // ruler markers/readout are $derived from it + the view (see screenMouse).
+    screenMouse = screenPoint(e);
     const w = worldPoint(e);
-    mouseWorldX = w.x; // live ruler markers (world px); cleared on pointer leave
-    mouseWorldY = w.y;
     if (!drag) {
       const nodes = app.nodes();
       // Anchor hover tooltip (immediate; only while anchors are shown).
@@ -349,7 +365,7 @@
     const node = app.selectedNode();
     if (!node) return;
     e.stopPropagation();
-    containerEl.querySelector("svg").setPointerCapture(e.pointerId);
+    overlayEl.setPointerCapture(e.pointerId);
     const h = handleId;
     drag = {
       kind: "resize",
@@ -502,7 +518,7 @@
     const node = app.selectedNode();
     if (!node) return;
     e.stopPropagation();
-    containerEl.querySelector("svg").setPointerCapture(e.pointerId);
+    overlayEl.setPointerCapture(e.pointerId);
     // Remember whether the anchors toggle was already on: endpoint drags show
     // anchors while they want them, but the TOGGLE (not the drag) decides
     // whether binding happens — and we restore visibility on pointer-up.
@@ -547,7 +563,7 @@
   }
 
   function onPointerLeave() {
-    if (!drag) { mouseWorldX = null; mouseWorldY = null; } // hide ruler markers on leave
+    if (!drag) screenMouse = null; // hide ruler markers on leave
   }
 
   function onPointerUp() {
@@ -629,7 +645,15 @@
   });
 </script>
 
-<div class="canvas-wrap" bind:this={containerEl} bind:clientWidth={wrapW} bind:clientHeight={wrapH}>
+<!-- Rulers are chrome OUTSIDE the render area (user's structural fix): when the
+     ruler is on, .canvas-wrap gains .with-rulers which insets .render-area by
+     the ruler thickness on top/left. The rulers occupy the freed gutter. Because
+     .render-area is the PanZoom's frame AND every mouse/tick measurement is made
+     against it, the ruler SVG's local origin coincides with the render origin —
+     so markers align EXACTLY with the cursor at every zoom/pan (no thickness
+     offset; the old bug came from the rulers overlapping the render area). -->
+<div class="canvas-wrap" class:with-rulers={app.rulerEnabled}>
+  <div class="render-area" bind:this={containerEl} bind:clientWidth={wrapW} bind:clientHeight={wrapH}>
   <PanZoom {onviewport}>
     {#snippet children(vp, a)}
       {bindActions(a)}
@@ -640,6 +664,7 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
         class="overlay"
+        bind:this={overlayEl}
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}
@@ -720,14 +745,17 @@
       {/if}
     {/snippet}
   </PanZoom>
+  </div>
 
-  <!-- Top ruler strip: world-px tick labels (ticks.js) + a live mouse marker.
-       pointer-events:none so it never blocks canvas interaction; the marker is
-       fed by the canvas pointermove handler. Left ruler is intentionally
-       omitted — the manifest records it as the open question. -->
+  <!-- Rulers: chrome in the gutter OUTSIDE .render-area. Each ruler SVG shares
+       .render-area's x/y origin (same left/top offset in .canvas-wrap), so tick
+       positions and the mouse marker — both in the render-area frame — land at
+       the same screen x/y as the cursor. World-px tick labels come from ticks.js
+       and cross-fade with zoom (same partition-of-unity math as the grid); the
+       marker readout is $derived from screenMouse + view (updates on pan/zoom).
+       pointer-events:none so a ruler never blocks canvas interaction. -->
   {#if app.rulerEnabled}
-    <!-- Top + left rulers joined by a corner square (user spec). Ticks/labels
-         cross-fade with zoom via the same partition-of-unity math as the grid.
+    <!-- Top + left rulers joined by a corner square (user spec).
          Marker labels knock out underlying tick labels via paint-order stroke. -->
     <div class="ruler ruler-top">
       <svg class="ruler-svg" width="100%" height="100%">
@@ -737,7 +765,7 @@
         {/each}
         {#if mouseMarkerX != null}
           <line class="ruler-marker" x1={mouseMarkerX} y1="0" x2={mouseMarkerX} y2="100%" />
-          <text class="ruler-marker-label" x={mouseMarkerX + 3} y="10">{Math.round(mouseWorldX)}</text>
+          <text class="ruler-marker-label" x={mouseMarkerX + 3} y="10">{Math.round(mouseWorld.x)}</text>
         {/if}
       </svg>
     </div>
@@ -749,7 +777,7 @@
         {/each}
         {#if mouseMarkerY != null}
           <line class="ruler-marker" x1="0" y1={mouseMarkerY} x2="100%" y2={mouseMarkerY} />
-          <text class="ruler-marker-label" x="2" y={mouseMarkerY - 3}>{Math.round(mouseWorldY)}</text>
+          <text class="ruler-marker-label" x="2" y={mouseMarkerY - 3}>{Math.round(mouseWorld.y)}</text>
         {/if}
       </svg>
     </div>

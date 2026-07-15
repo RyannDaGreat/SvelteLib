@@ -284,6 +284,21 @@ body,
   background: var(--a-canvas-bg);
 }
 
+/* The render area IS the PanZoom frame. Rulers are chrome OUTSIDE it: with
+   rulers on, it insets by the ruler thickness on top/left so the rulers own
+   the freed gutter. Every mouse/tick measurement is taken against THIS box, so
+   the ruler SVG origin coincides with the render origin (readout aligns to the
+   cursor with no thickness offset — the container-frame-mismatch fix). */
+.canvas-wrap .render-area {
+  position: absolute;
+  inset: 0;
+}
+
+.canvas-wrap.with-rulers .render-area {
+  top: var(--a-ruler-h);
+  left: var(--a-ruler-h);
+}
+
 .canvas-wrap .scene,
 .canvas-wrap .overlay {
   position: absolute;
@@ -1048,12 +1063,14 @@ body,
   pointer-events: none; /* purely decorative; all input goes to .overlay */
 }
 
-/* Top ruler strip — absolutely positioned over the canvas top edge, does not
-   capture pointer events (the live marker is fed by the canvas handler). */
+/* Top ruler strip — sits in the top gutter, exactly above .render-area (both
+   start at left:var(--a-ruler-h)), so the ruler SVG's x-origin coincides with
+   the render origin. Does not capture pointer events (the marker is fed by the
+   canvas handler; the readout is $derived from the stored screen mouse). */
 .canvas-wrap .ruler-top {
   position: absolute;
   top: 0;
-  left: var(--a-ruler-h); /* the corner square owns the junction */
+  left: var(--a-ruler-h); /* the corner square owns the junction; matches .render-area's inset */
   right: 0;
   height: var(--a-ruler-h);
   background: var(--a-ruler-bg);
