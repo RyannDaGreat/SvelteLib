@@ -9,6 +9,7 @@
     { name: "SpeechToText", description: "Headless live dictation via the Web Speech API (interim streaming + finalized log)", href: "/src/demos/SpeechToText/demo.html" },
     { name: "Tooltip", description: "Immediate hover/focus tooltip wrapper (optional delay, auto-flip top/bottom, text or rich snippet)", href: "/src/demos/Tooltip/demo.html" },
     { name: "DirtyImage", description: "Lazy, dirty-tracked raster tile — renders via a callback at displayed-size × dpr only when visible AND dirty (crisp thumbnails at scale)", href: "/src/demos/DirtyImage/demo.html" },
+    { name: "Modal", description: "Generic modal dialog — portal to body, focus trap + restore, scroll lock, Escape/backdrop dismissal, snippet content", href: "/src/demos/Modal/demo.html" },
   ];
 </script>
 
