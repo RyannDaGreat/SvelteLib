@@ -33,6 +33,7 @@
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import NumericField from "./NumericField.svelte";
   import BooleanField from "./BooleanField.svelte";
+  import ColorField from "./ColorField.svelte";
   import { allDocumentItems, keyframeIndices, foldState } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
 
@@ -168,7 +169,11 @@
     localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed));
   }
 
-  // ── Value coercion / color helpers (unchanged; color control keeps alpha) ────
+  // ── Value coercion / path read ───────────────────────────────────────────────
+  // Color hex parsing/normalization/composition now lives in ColorField.svelte
+  // (the SvelteLib ColorPicker owns the picking; ColorField owns the hex round-
+  // trip). The old normalizedHex/rgbHex/alphaOf/composedHex/commitHexField and
+  // the hexEditing/hexDraft draft state died with the native-input color row.
 
   function coerce(kind, raw) {
     return kind === "number" ? Number(raw) : kind === "checkbox" ? Boolean(raw) : raw;
@@ -189,102 +194,6 @@
    */
   function valueAt(state, key) {
     return key.split(".").reduce((o, k) => (o == null ? undefined : o[k]), state);
-  }
-
-  /**
-   * Pure function. Normalizes a stored color to lowercase long-form hex —
-   * "#rrggbb" or "#rrggbbaa" (Round 10: colors support ALPHA; plain #rrggbb
-   * stays legal = opaque; shorthand "#rgb"/"#rgba" digits double). Returns
-   * null for anything unparseable — the control then shows the RAW value in
-   * its hex field (visible + fixable), never a silent blacken.
-   *
-   * Examples:
-   *     >>> normalizedHex("#7AA2F7")
-   *     '#7aa2f7'
-   *     >>> normalizedHex("#7aa2f780")
-   *     '#7aa2f780'
-   *     >>> normalizedHex("#f08")
-   *     '#ff0088'
-   *     >>> normalizedHex("blue")
-   *     null
-   */
-  function normalizedHex(value) {
-    if (typeof value !== "string" || !/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value)) return null;
-    let h = value.slice(1).toLowerCase();
-    if (h.length <= 4) h = [...h].map((c) => c + c).join("");
-    return "#" + h;
-  }
-
-  /**
-   * Pure function. The opaque "#rrggbb" part of a normalized hex color — the
-   * only format the native RGB picker understands (it cannot carry alpha,
-   * which is exactly why the alpha scrub exists beside it). Null (unparseable
-   * stored value) reads as black in the picker, matching the pre-alpha
-   * control's fallback; the hex field still shows the raw string.
-   *
-   * Examples:
-   *     >>> rgbHex("#7aa2f780")
-   *     '#7aa2f7'
-   *     >>> rgbHex(null)
-   *     '#000000'
-   */
-  function rgbHex(normalized) {
-    return normalized ? normalized.slice(0, 7) : "#000000";
-  }
-
-  /**
-   * Pure function. The alpha of a normalized hex color in 0..1 (1 when there
-   * are no alpha digits — plain #rrggbb is opaque). Rounded to 3 decimals
-   * (NumericField's round3 precedent) so 8-bit alpha bytes display cleanly.
-   *
-   * Examples:
-   *     >>> alphaOf("#7aa2f780")
-   *     0.502
-   *     >>> alphaOf("#7aa2f7")
-   *     1
-   */
-  function alphaOf(normalized) {
-    if (!normalized || normalized.length !== 9) return 1;
-    return Math.round((parseInt(normalized.slice(7, 9), 16) / 255) * 1000) / 1000;
-  }
-
-  /**
-   * Pure function. Composes "#rrggbb" + alpha (0..1, clamped) into the stored
-   * color string: plain "#rrggbb" at alpha 1 — fully-opaque colors stay
-   * 6-digit, so documents that never touch alpha never change shape — and
-   * "#rrggbbaa" otherwise.
-   *
-   * Examples:
-   *     >>> composedHex("#7aa2f7", 1)
-   *     '#7aa2f7'
-   *     >>> composedHex("#7aa2f7", 0.5)
-   *     '#7aa2f780'
-   *     >>> composedHex("#7aa2f7", 0)
-   *     '#7aa2f700'
-   */
-  function composedHex(rgb, alpha) {
-    const a = Math.round(Math.max(0, Math.min(1, alpha)) * 255);
-    return a === 255 ? rgb : rgb + a.toString(16).padStart(2, "0");
-  }
-
-  // Hex-field draft while typing. Only one field is focused at a time, so a
-  // single (key, text) pair serves every color row. WITHOUT this, a mid-typing
-  // live preview re-renders the row and Svelte resets the input's value from
-  // state, splicing stored text into the user's draft.
-  let hexEditing = $state(null); // row.key of the hex field being typed in, or null
-  let hexDraft = $state("");
-
-  /** Commits a hex-field draft; unparseable text is rejected LOUDLY and the
-   * field reverts to the stored value (no silent fallback). */
-  function commitHexField(key, e) {
-    const n = normalizedHex(e.target.value.trim());
-    if (!n) {
-      console.error(`PowerRP: "${e.target.value}" is not a hex color (#rgb, #rgba, #rrggbb, or #rrggbbaa)`);
-      app.cancelPreview();
-      e.target.value = normalizedHex(sel.state[key]) ?? String(sel.state[key] ?? "");
-      return;
-    }
-    commitField(key, "color", n);
   }
 
   /** Live preview while typing/dragging a field — viewport re-renders in real
@@ -465,63 +374,24 @@
         onkeydown={fieldKeydown}
       />
     {:else if row.kind === "color"}
-      {@const norm = normalizedHex(state[row.key])}
-      <!-- Themed color control WITH ALPHA. Layout:
-           [swatch (native RGB picker)] [hex text] [alpha scrub]. The native
-           <input type=color> can't carry alpha, so it edits ONLY the rgb part;
-           alpha lives in the DraggableNumber scrub, full #rrggbbaa round-trips
-           through the hex text. Swatch shows color WITH alpha over a checker. -->
-      <div class="color-control" class:control-disabled={disabled}>
-        <label class="color-pick">
-          <input
-            type="color"
-            class="color-native"
-            aria-label={`${row.label} color picker`}
-            value={rgbHex(norm)}
-            {disabled}
-            oninput={(e) => onpreview(row.key, row.kind, composedHex(e.target.value, alphaOf(norm)))}
-            onchange={(e) => oncommit(row.key, row.kind, composedHex(e.target.value, alphaOf(norm)))}
-          />
-          <span class="color-swatch" style:--a-swatch-rgba={norm}></span>
-        </label>
-        <input
-          type="text"
-          class="color-hex"
-          spellcheck="false"
-          aria-label={`${row.label} hex`}
-          {disabled}
-          value={hexEditing === row.key ? hexDraft : (norm ?? String(state[row.key] ?? ""))}
-          onfocus={(e) => {
-            hexEditing = row.key;
-            hexDraft = e.target.value;
-          }}
-          oninput={(e) => {
-            hexDraft = e.target.value;
-            const n = normalizedHex(hexDraft.trim());
-            if (n) onpreview(row.key, row.kind, n);
-          }}
-          onchange={(e) => keyframes ? commitHexField(row.key, e) : oncommit(row.key, row.kind, normalizedHex(e.target.value.trim()) ?? state[row.key])}
-          onblur={() => (hexEditing = null)}
-          onkeydown={fieldKeydown}
-        />
-        <Tooltip text="Alpha (0 transparent – 1 opaque); drag to scrub, click to type">
-          <span class="color-alpha">
-            <!-- coefficient 0.01 for a [0,1]-bounded scrub: DraggableNumber's
-                 documented bounded-value usage (see its header example). -->
-            <DraggableNumber
-              label={`${row.label} alpha`}
-              value={alphaOf(norm)}
-              min={0}
-              max={1}
-              coefficient={0.01}
-              wheel={false}
-              disabled={disabled}
-              oninput={(a) => onpreview(row.key, row.kind, composedHex(rgbHex(norm), a))}
-              onchange={(a) => oncommit(row.key, row.kind, composedHex(rgbHex(norm), a))}
-            />
-          </span>
-        </Tooltip>
-      </div>
+      <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped
+           in ColorField — a compact swatch + hex readout that inline-expands the
+           full picker on click. Alpha is integral (not a bolted-on field); the
+           native <input type=color> is GONE. Live semantics: picker oninput →
+           preview (viewport re-renders mid-gesture, doc unchanged), onchange →
+           commit (one undo unit); Escape while open reverts + closes; no Enter.
+           Storage stays #rrggbbaa (opaque collapses to #rrggbb); legacy #rrggbb
+           loads as opaque. Only item rows are colors (no transition color rows),
+           so the path is always ["items", pickedItemId, …]; a grayed not-yet-
+           created item passes disabled to block interaction. Unlike a number a
+           color has no equation split, so itemMode/plain collapse to one call. -->
+      <ColorField
+        {app}
+        path={["items", pickedItemId, ...row.key.split(".")]}
+        label={row.label}
+        value={valueAt(state, row.key)}
+        disabled={disabled}
+      />
     {:else if row.kind === "checkbox" || row.kind === "boolean"}
       {#if itemMode}
         <!-- Standard boolean control (BooleanField): a square toggle whose state
