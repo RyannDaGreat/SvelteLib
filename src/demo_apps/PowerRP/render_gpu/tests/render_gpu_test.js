@@ -20,6 +20,7 @@ import { blurPlugin } from "../../plugins/blur.js";
 import { magnifierPlugin } from "../../plugins/magnifier.js";
 import { irToSVG, commandToSVG, svgTransform, xmlEscape } from "../svg_backend.js";
 import { lensRenderView, deviceRectThroughViews, intersectRects } from "../gpu/compositor.js";
+import { bucketFor } from "../gpu/glyph_atlas.js";
 import { benchScene, hash01 } from "../bench/scene.js";
 import { deriveRenderTree } from "../../core/derive.js";
 import { evaluateState } from "../../core/expressions.js";
@@ -297,6 +298,22 @@ test("benchScene: structure is stable, flattens + serializes", () => {
   assert.equal(flattenIR(ir).length > 0, true); // balanced transform stack
   const svg = irToSVG(ir, { width: 800, height: 450, view: { zoom: 0.5, panX: 0, panY: 0 } });
   assert.match(svg, /<polygon/); // arrowheads made it through the vector backend
+});
+
+test("bucketFor: ceil lattice below the exact regime, exact size above, capacity clamp", () => {
+  // Small text: half-octave lattice, CEILed — quads only ever minify (scale
+  // ∈ [0.707, 1]); magnification is what read as pixelation (text-crispness
+  // task, pixel-proofed vs native rasterization).
+  assert.equal(bucketFor(36), Math.pow(2, 5.5)); // 45.25... — next half-octave UP
+  assert.equal(bucketFor(37), Math.pow(2, 5.5)); // same bucket (that's the point)
+  assert.equal(bucketFor(32), 32); // exact lattice sizes stay put
+  assert.ok(bucketFor(100) >= 100); // ceil invariant: raster ≥ display, never below
+  // Large text: EXACT display size (0.1px-rounded) — scale-1.0 quads.
+  assert.equal(bucketFor(288.44), 288.4);
+  assert.equal(bucketFor(576), 576);
+  // Clamps: invisible floor, page-capacity ceiling.
+  assert.equal(bucketFor(1), 4);
+  assert.equal(bucketFor(9999), 724);
 });
 
 console.log(`\nrender_gpu tests: ${passed} passed`);

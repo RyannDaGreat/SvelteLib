@@ -533,7 +533,23 @@ export class GpuCompositor {
     const d = this.device;
     this._writeView(this.viewBuf, view);
 
-    const { batches } = this._buildFrame(flattenIR(commands), view);
+    const flat = flattenIR(commands);
+    let frame;
+    try {
+      frame = this._buildFrame(flat, view);
+    } catch (e) {
+      if (!e.atlasPageFull) throw e;
+      // Generation eviction: the shelf packer can't free single cells, so a
+      // full glyph page evicts ALL cached glyphs (LOUDLY — never silent) and
+      // the frame rebuilds against the empty page, re-rasterizing only the
+      // glyphs it actually draws (per-glyph culling keeps that set small at
+      // deep zoom). A frame that STILL overflows genuinely exceeds one page
+      // — that error stands and propagates.
+      console.warn(`PowerRP GlyphAtlas: ${e.message} — evicting all cached glyphs and rebuilding this frame`);
+      this.atlas.reset();
+      frame = this._buildFrame(flat, view);
+    }
+    const { batches } = frame;
     this.atlas.flush();
 
     // Upload staging arrays (grow GPU buffers as needed)
@@ -920,20 +936,54 @@ export class GpuCompositor {
           const devicePx = cmd.size * world.scale * scaleDev;
           const bucket = bucketFor(devicePx);
           const localScale = cmd.size / bucket;
+          // PER-GLYPH VISIBILITY CULLING: only glyphs whose quad touches the
+          // canvas rasterize and draw. This is what makes the raised
+          // MAX_BUCKET safe — a deep zoom shows only a handful of huge
+          // glyphs, so the atlas page holds exactly what's visible instead
+          // of entire runs. measure() supplies metrics WITHOUT allocating
+          // atlas space; advances accrue for culled glyphs so layout holds.
+          const [ma, mb, mtx, mty] = xf; // packXform: [s·cosθ, s·sinθ, tx, ty]
+          const panDx = view.panX * view.dpr, panDy = view.panY * view.dpr;
+          const cW = this.canvas.width, cH = this.canvas.height;
+          // Scale-1 quads (the exact-raster regime, unclamped) can be
+          // INTEGER-SNAPPED when unrotated: a 1:1 texture sampled at a
+          // fractional device offset loses edge contrast to bilinear blending
+          // (measured: top-decile gradient 208 vs 243 native at half-texel);
+          // the platform rasterizer handles subpixel coverage internally, a
+          // texture copy can't — so align it. Shift ≤ 0.5 device px.
+          const snap = mb === 0 && Math.abs(devicePx / bucket - 1) < 0.01;
           let pen = cmd.x;
           for (const ch of cmd.text) {
+            const m = this.atlas.measure(ch, bucket, cmd.bold);
+            let qx = pen - m.pad * localScale, qy = cmd.y - m.pad * localScale;
+            const qw = m.cellW * localScale, qh = m.cellH * localScale;
+            pen += m.advance * localScale;
+            if (snap) {
+              const dScale = ma * scaleDev; // local→device (uniform, unrotated)
+              const dx0 = (ma * qx + mtx) * scaleDev + panDx;
+              const dy0 = (ma * qy + mty) * scaleDev + panDy;
+              qx += (Math.round(dx0) - dx0) / dScale;
+              qy += (Math.round(dy0) - dy0) / dScale;
+            }
+            // Quad's device-space AABB (4 corners — the world may rotate).
+            let minDX = Infinity, minDY = Infinity, maxDX = -Infinity, maxDY = -Infinity;
+            for (const [lx, ly] of [[qx, qy], [qx + qw, qy], [qx, qy + qh], [qx + qw, qy + qh]]) {
+              const dx = (ma * lx - mb * ly + mtx) * scaleDev + panDx;
+              const dy = (mb * lx + ma * ly + mty) * scaleDev + panDy;
+              if (dx < minDX) minDX = dx;
+              if (dx > maxDX) maxDX = dx;
+              if (dy < minDY) minDY = dy;
+              if (dy > maxDY) maxDY = dy;
+            }
+            if (maxDX < 0 || minDX > cW || maxDY < 0 || minDY > cH) continue;
             const e = this.atlas.get(ch, bucket, cmd.bold);
             const at = quadInstance("tex", null);
             const f = this.quadArr.f32;
-            f.set([
-              pen - e.pad * localScale, cmd.y - e.pad * localScale,
-              e.cellW * localScale, e.cellH * localScale,
-            ], at);
+            f.set([qx, qy, qw, qh], at);
             f.set(xf, at + 4);
             f.set([e.u0, e.v0, e.du, e.dv], at + 8);
             f.set(cmd.color, at + 12);
             f.set([TEX_MODE.glyph, cmd.opacity, 0, 0], at + 16);
-            pen += e.advance * localScale;
           }
           break;
         }
