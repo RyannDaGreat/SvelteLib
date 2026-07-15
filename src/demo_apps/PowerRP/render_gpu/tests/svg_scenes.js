@@ -43,9 +43,11 @@ export const SVG_SCENE_NAMES = [
   "image-under-magnifier",  // image replays inside the vector lens
   "video-basic",            // video CURRENT-FRAME <image> embed
   "donut-basic",            // triangulated-polygon fill + stroke polylines
+  "filmstrip-look",         // 14.1 faithful look: triangulated perforation bands + per-cell rounded-clip <image> frames
   "cropbox-basic",          // rounded-rect <clipPath> + re-emit (incl. 45° rotated)
   "elbow-curved-arrows",    // arbitrary-length polyline routes
   "richtext-outline-highlight", // Round 13.4: the FIRST rich-text SVG scene (the rich path was ported here) — per-run outline (stroke+paint-order) + highlight (<rect>)
+  "latex-basic",            // Round 14.5: LaTeX equation as a rasterized-bitmap <image> data URI (bare + bordered/rounded + translucent) — the equation-raster region renders parity in the SVG backend
 ];
 
 /**
@@ -77,6 +79,14 @@ export const SVG_PSNR_FLOORS = {
   "image-under-magnifier": 46,  // measured 51.78 — image replays inside the vector lens
   "video-basic": 27,            // measured 32.06 — current-frame <image> embed
   "donut-basic": 32,            // measured 37.03 — triangulated polygon fill + stroke
+  // 14.1 filmstrip faithful look: triangulated perforation bands (donut class,
+  // 37.03) + per-cell rounded <clipPath> <image> frames (cropbox class, 23.50).
+  // The rounded-clip image cells dominate the delta, so it lands near the
+  // cropbox class. measured 31.07 dB (2026-07-15 live SVG parity run) — floor =
+  // measured − ~5, the SVG margin class (shapes 45.54→40, richtext 38.62→34).
+  // PENDING USER RATIFICATION (the measured-minus-margin convention is flagged
+  // app-wide, not per-scene).
+  "filmstrip-look": 26,         // measured 31.07 — perforation-band polygons + per-cell rounded <clipPath> <image> frames
   "cropbox-basic": 18,          // measured 23.50 — rounded <clipPath> re-emit incl. 45° rotation
   "elbow-curved-arrows": 38,    // measured 43.23 — arbitrary-length polyline routes
   // Round 13.4: FIRST rich-text SVG scene (the rich path was newly ported). SVG
@@ -87,6 +97,15 @@ export const SVG_PSNR_FLOORS = {
   // 29.63→25). SVG text is vector-exact (both sides rasterize real glyph
   // outlines), hence far above the PDF twin's 23.20. PENDING RATIFICATION.
   "richtext-outline-highlight": 34,
+  // Round 14.5: the LaTeX equation is a rasterized-bitmap <image> data URI —
+  // the same image-class parity as image-basic (measured 51.13): Chromium
+  // rasterizes the embedded PNG data URI natively and both sides are the same
+  // PNG bytes, so parity is tight; the bordered/rounded variant's rrect-clip
+  // edge AA pulls it a bit below image-basic's 51. measured 43.00 dB (2026-07-15
+  // live SVG parity run) — floor = measured − ~5, the SVG margin class (matching
+  // shapes-overlap-z 45.54→40, richtext-outline-highlight 38.62→34). PENDING
+  // USER RATIFICATION (the measured-minus-margin convention is flagged app-wide).
+  "latex-basic": 38,
 };
 
 /**

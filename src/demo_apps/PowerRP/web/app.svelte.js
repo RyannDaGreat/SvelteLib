@@ -29,6 +29,12 @@ import { registerAll } from "../plugins/index.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
 import { browserSetting } from "./settings.js";
+// untrack: read/write the transient filmstripStatus overlay from inside the
+// #wireFilmstripFrames $effect WITHOUT registering it as a dependency (else the
+// effect would re-run on its own write — effect_update_depth_exceeded). $state/
+// $effect are compiler globals in a .svelte.js file, but untrack is a real
+// import from "svelte" (main.js imports mount the same way).
+import { untrack } from "svelte";
 
 const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
@@ -152,6 +158,20 @@ export class PowerRPApp {
   hoverRegion = $state(null);
   /** Preview overlay delta shown during drags — NOT committed/undoable. */
   previewDelta = $state(null);
+  /** Transient FILMSTRIP FETCH STATUS overlay (manifest 14.2 / 14.4) — a
+   *  delta-shaped `{items: {id: {processing?, frameError?}}}` merged into the
+   *  render state but NEVER keyframed/committed/undoable (it is viewer-local
+   *  derived UI state, like a spinner). The filmstrip plugin's emit() reads
+   *  `processing` (renders the in-widget "sampling frames…" indicator instead of
+   *  the ghost) and `frameError` (renders an in-widget error strip instead of a
+   *  console-only failure). Cleared when frames land or the widget changes. */
+  filmstripStatus = $state({ items: {} });
+  /** ITEM ID whose asset (video) picker should AUTO-OPEN (manifest 14.3: placing
+   *  a new filmstrip immediately opens the video-picker modal). Set by addItem
+   *  for a fresh filmstrip; the Inspector's AssetField for that item's `src` row
+   *  reads it and opens its picker, then clears it (on pick OR cancel — cancel
+   *  leaves the empty ghost widget, per 14.3). null = no pending auto-open. */
+  pendingVideoPickFor = $state(null);
   /** WYSIWYG RICH-TEXT EDITING (Round 13.4). While a text box is being edited
    * in place, `textEditing` = { itemId } (null otherwise). Drives: the
    * TextEditOverlay (an in-canvas contenteditable that IS the visual — a real
@@ -295,7 +315,7 @@ export class PowerRPApp {
   // memo, so each consumer paid its own full O(items) equation pass per mouse
   // move — the profiled drag-lag cliff (concerns 2026-07-15, Opus4 risk (b)).
   // One stable object per (base, preview) pair = ONE evaluation per move.
-  #blendCache = { base: null, preview: null, state: null };
+  #blendCache = { base: null, preview: null, status: null, state: null };
 
   /**
    * Folded state of the current slide, with any live drag preview applied —
@@ -309,14 +329,28 @@ export class PowerRPApp {
   rawState() {
     const base = foldState(this.doc, this.slideIndex, 1);
     const preview = this.previewDelta;
-    if (!preview) return base;
+    // The filmstrip status overlay (14.2/14.4) is a transient delta merged like
+    // the preview but never committed. Empty (no filmstrip fetching/errored) →
+    // its `items` map is {}, and it drops out of the blend key so the common
+    // no-status path is byte-identical to before.
+    const status = this.#nonEmptyStatus();
+    if (!preview && !status) return base;
     const c = this.#blendCache;
-    if (c.base !== base || c.preview !== preview) {
+    if (c.base !== base || c.preview !== preview || c.status !== status) {
       c.base = base;
       c.preview = preview;
-      c.state = blendApplied(base, preview, 1);
+      c.status = status;
+      let s = preview ? blendApplied(base, preview, 1) : base;
+      if (status) s = blendApplied(s, status, 1);
+      c.state = s;
     }
     return c.state;
+  }
+
+  /** Query. The filmstrip status overlay iff it has any entries, else null (so
+   *  the no-status render path stays identity-stable and byte-identical). */
+  #nonEmptyStatus() {
+    return Object.keys(this.filmstripStatus.items).length > 0 ? this.filmstripStatus : null;
   }
 
   /** The derivation-stage expression pass over rawState(): {state, errors}.
@@ -715,6 +749,12 @@ export class PowerRPApp {
     const [doc, id] = withNewItem(this.doc, this.slideIndex, state);
     this.commit(withNormalizedZ(doc));
     this.selection = id;
+    // 14.3: placing a NEW filmstrip with no video yet auto-opens its video
+    // picker (the Inspector's AssetField for `src` reads pendingVideoPickFor).
+    // Covers BOTH the crosshair placement flow and the palette "Add Filmstrip"
+    // — any fresh empty filmstrip prompts for a video. Cancel leaves the empty
+    // ghost as-is (the AssetField clears the signal on cancel too).
+    if (state.type === "filmstrip" && !state.src) this.pendingVideoPickFor = id;
   }
 
   // ── Groups (manifest "GROUPS", rough draft — the armature-shaped parent) ────
@@ -1384,15 +1424,17 @@ export class PowerRPApp {
   }
 
   // ── Filmstrip frames wiring (grep handles: fetchFrames / frameUrls). The
-  // filmstrip plugin stores only (src, frames); frameUrls is server-derived
-  // data this effect fills in (plugins/filmstrip.js documents the contract:
-  // "an app-side effect requests them whenever src/frames changes"). ─────────
+  // filmstrip plugin stores only (src, frames, frameH, frameW); frameUrls is
+  // server-derived data this effect fills in (plugins/filmstrip.js documents the
+  // contract: "an app-side effect requests them whenever src/frames/frameH/
+  // frameW changes"). While a fetch is in flight it sets a transient
+  // `processing` status (14.2 in-widget indicator); a failure sets a transient
+  // `frameError` (14.4 — an in-widget affordance, never console-only). ─────────
 
-  /** (item|project|src|frames) combos already attempted this session — ONE
-   *  fetch per combo, so a FAILURE (server down, bad video) is console.error'd
-   *  once and cannot hot-loop the effect; editing src/frames retries naturally
-   *  (new combo). A discarded stale fetch un-registers itself (see below).
-   *  Not $state: nothing renders it. */
+  /** (item|project|src|frames|frameH|frameW) combos already attempted this
+   *  session — ONE fetch per combo, so a FAILURE cannot hot-loop the effect;
+   *  editing any of them retries naturally (new combo). A discarded stale fetch
+   *  un-registers itself. Not $state: nothing renders it. */
   #framesAttempted = new Set();
 
   /** Runs during field initialization — i.e. at construction, which happens in
@@ -1402,54 +1444,108 @@ export class PowerRPApp {
    *  post-mount, after the constructor finishes (this.registry is set). */
   #filmstripWiring = this.#wireFilmstripFrames();
 
+  /** Query. The frame-cache path the endpoint serves for (project, src, frames,
+   *  frameH, frameW) — the STALENESS KEY. Resolution folds into the path exactly
+   *  as the server folds it into the cache dir (server.py frames_cache_dir): a
+   *  native-size request has no resolution segment; an H×W request appends one.
+   *  Decoding-independent (the effect decodes stored URLs before comparing). */
+  #framesCachePath(project, src, frames, frameH, frameW) {
+    const h = frameH > 0 ? Math.round(frameH) : null;
+    const w = frameW > 0 ? Math.round(frameW) : null;
+    const res = h || w ? `${w ?? "native"}x${h ?? "native"}/` : "";
+    return `/asset/${project}/frames/${src}/${frames}/${res}`;
+  }
+
+  /** Command. Set/clear a filmstrip item's transient fetch status (processing /
+   *  frameError) — reassigns filmstripStatus wholesale so the $state overlay
+   *  re-blends (rawState merges it, plugins/filmstrip.js emit reads it). Passing
+   *  null clears the item's entry entirely (back to the ghost/normal path).
+   *
+   *  Called FROM the reactive #wireFilmstripFrames effect. Reading (and writing)
+   *  filmstripStatus there would make the effect depend on its OWN write → an
+   *  infinite update loop (effect_update_depth_exceeded). `untrack` reads the
+   *  current value WITHOUT registering a dependency, and the write is a no-op
+   *  when the value is unchanged (idempotent), so a status write never re-runs
+   *  the effect that produced it. */
+  #setFilmstripStatus(id, status) {
+    untrack(() => {
+      const cur = this.filmstripStatus.items[id];
+      // Idempotent: skip the reassign when the status is already what we'd set
+      // (same-shape compare — processing/frameError are the only fields).
+      const same = (a, b) => (!a && !b) || (a && b && a.processing === b.processing && a.frameError === b.frameError);
+      if (status == null ? cur == null : same(cur, status)) return;
+      const items = { ...this.filmstripStatus.items };
+      if (status == null) delete items[id];
+      else items[id] = status;
+      this.filmstripStatus = { items };
+    });
+  }
+
   #wireFilmstripFrames() {
     // Command (registers a reactive effect). Whenever the CURRENT slide's
-    // folded state shows a filmstrip whose (src, frames) has no matching
-    // frameUrls, fetch the frame URLs and keyframe them (ONE undo unit).
-    // Cheap per run: one evaluated-state read (memoized) + a scan that only
-    // inspects filmstrip items.
+    // folded state shows a filmstrip whose (src, frames, frameH, frameW) has no
+    // matching frameUrls, fetch the frame URLs and keyframe them (ONE undo unit).
     $effect(() => {
       const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
       const project = this.projectName();
       for (const [id, s] of Object.entries(state.items ?? {})) {
         if (s.type !== "filmstrip" || typeof s.src !== "string" || !s.src || !(s.frames >= 1)) continue;
+        // A src stored as a URL/path (not a bare filename) can NEVER resolve —
+        // the frames endpoint takes a bare basename (server safe_name rejects a
+        // slash). Surface it IN THE WIDGET (14.4 candidate b was console-only).
+        if (s.src.includes("/")) {
+          this.#setFilmstripStatus(id, { frameError: `video must be a project asset filename, not a path ("${s.src}")` });
+          continue;
+        }
         const frames = Math.round(s.frames);
+        const frameH = Number(s.frameH) || 0, frameW = Number(s.frameW) || 0;
         // Staleness test: the stored URLs' DECODED cache path must name this
-        // exact (project, src, frames). Decoding makes the test independent of
-        // server-vs-JS percent-encoding differences.
-        const want = `/asset/${project}/frames/${s.src}/${frames}/`;
+        // exact (project, src, frames, resolution).
+        const want = this.#framesCachePath(project, s.src, frames, frameH, frameW);
         const urls = Array.isArray(s.frameUrls) ? s.frameUrls : [];
-        if (urls.length > 0 && decodeURIComponent(urls[0]).includes(want)) continue; // resolved + current
+        if (urls.length > 0 && decodeURIComponent(urls[0]).includes(want)) {
+          this.#setFilmstripStatus(id, null); // resolved + current → clear any status
+          continue;
+        }
         const key = `${id}|${want}`;
         if (this.#framesAttempted.has(key)) continue;
         this.#framesAttempted.add(key);
-        this.#fillFilmstripFrames(id, s.src, frames, project, want, key);
+        this.#setFilmstripStatus(id, { processing: true }); // 14.2 in-flight indicator
+        this.#fillFilmstripFrames(id, s.src, frames, frameH, frameW, project, want, key);
       }
     });
   }
 
   /** Command (async). One filmstrip frames fetch → ONE undo-unit frameUrls
-   *  keyframe. A result that no longer matches the widget (src/frames retyped,
-   *  item purged, slide switched mid-fetch) is DISCARDED and its attempt key
-   *  released so the effect can refetch when the combo shows again (the server
-   *  cache makes that retry cheap). Fetch failures console.error loudly. */
-  async #fillFilmstripFrames(id, src, frames, project, want, key) {
+   *  keyframe, with an in-widget processing indicator while it runs and an
+   *  in-widget error on failure (manifest 14.2 / 14.4). A result that no longer
+   *  matches the widget (any of src/frames/frameH/frameW retyped, item purged,
+   *  slide switched mid-fetch) is DISCARDED and its attempt key released so the
+   *  effect can refetch when the combo shows again. */
+  async #fillFilmstripFrames(id, src, frames, frameH, frameW, project, want, key) {
     try {
-      const res = await projectApi.fetchFrames(project, src, frames);
+      const res = await projectApi.fetchFrames(project, src, frames, frameH || null, frameW || null);
       // Re-check against the FRESH doc before writing (no stale writes).
       const s = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state.items?.[id];
-      if (!s || s.type !== "filmstrip" || `/asset/${project}/frames/${s.src}/${Math.round(s.frames)}/` !== want) {
+      const stillWants = s && s.type === "filmstrip"
+        && this.#framesCachePath(project, s.src, Math.round(s.frames), Number(s.frameH) || 0, Number(s.frameW) || 0) === want;
+      if (!stillWants) {
         this.#framesAttempted.delete(key); // let the live combo refetch later
+        this.#setFilmstripStatus(id, null); // the current combo drives its own status
         console.warn(`PowerRP filmstrip: discarded a stale frames fetch for "${src}" × ${frames} (widget changed mid-fetch)`);
         return;
       }
-      // Keyframe on the slide where the current src/frames combo was AUTHORED
-      // (its last keyframe at or before the current slide) so every later
-      // slide inherits the resolved strip from the same place the user set it.
-      const authoredAt = Math.max(0, ...["src", "frames"].map((k) =>
+      // Keyframe on the slide where the current combo was AUTHORED (its last
+      // keyframe at or before the current slide) so every later slide inherits
+      // the resolved strip from the same place the user set it.
+      const authoredAt = Math.max(0, ...["src", "frames", "frameH", "frameW"].map((k) =>
         Math.max(-1, ...keyframeIndices(this.doc, ["items", id, k]).filter((i) => i <= this.slideIndex))));
       this.commit(keyframed(this.doc, authoredAt, ["items", id, "frameUrls"], res.frames));
+      this.#setFilmstripStatus(id, null); // done — clear the processing indicator
     } catch (e) {
+      // 14.4: an in-widget error affordance, not a console-only failure.
+      const msg = String(e?.message ?? e).replace(/^fetchFrames\([^)]*\):\s*/, "");
+      this.#setFilmstripStatus(id, { frameError: msg });
       console.error(`PowerRP filmstrip: frames fetch failed for "${src}" × ${frames}:`, e);
     }
   }

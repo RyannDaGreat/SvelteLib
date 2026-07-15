@@ -139,6 +139,43 @@ def main():
         assert os.path.isdir(server.frames_cache_dir(proj, video, n2))
         print(f"[6] DISTINCT N ok: N={n2} cached independently of N={n}")
 
+        # 6b. RESOLUTION (manifest 14.1 frameH/frameW): ?h=&w= extracts at a set
+        # per-frame size into its OWN cache (a resolution change re-extracts),
+        # and the returned URLs point at the <WxH> segment. The extracted PNGs
+        # are the requested size (verified via the PNG IHDR width/height).
+        import struct
+        def _png_size(png_bytes):
+            # IHDR is the first chunk: 8-byte sig, 4 len, "IHDR", then W,H (BE u32).
+            w, h = struct.unpack(">II", png_bytes[16:24])
+            return w, h
+        rh, rw = 12, 16  # half the fixture's native 32x24 — distinct from native
+        s_res, b_res = _get(conn, f"/api/frames/{proj}/{video}/{n}/?h={rh}&w={rw}")
+        assert s_res == 200, f"res extract status {s_res}: {b_res!r}"
+        res_r = json.loads(b_res)
+        assert res_r["count"] == n and len(res_r["frames"]) == n, res_r
+        # The URL path carries the resolution segment, distinct from the native cache.
+        assert f"/{rw}x{rh}/" in res_r["frames"][0], res_r["frames"][0]
+        res_cache = server.frames_cache_dir(proj, video, n, rh, rw)
+        assert os.path.isdir(res_cache), f"resolution cache dir missing: {res_cache}"
+        assert res_cache != server.frames_cache_dir(proj, video, n), "res cache must differ from native cache"
+        # Fetch one frame's bytes and check its pixel size == requested.
+        s_px, png = _get(conn, res_r["frames"][0])
+        assert s_px == 200 and png[:8] == b"\x89PNG\r\n\x1a\n", f"res frame not a PNG: {s_px}"
+        pw, ph = _png_size(png)
+        assert (pw, ph) == (rw, rh), f"extracted frame is {pw}x{ph}, expected {rw}x{rh}"
+        # A NATIVE request for the same (video, N) is a SEPARATE, larger frame.
+        _, native_png = _get(conn, res["frames"][0])
+        nw, nh = _png_size(native_png)
+        assert (nw, nh) != (rw, rh), f"native frame unexpectedly matched res size: {nw}x{nh}"
+        # A bad resolution (h=0) is a LOUD 400, not a silent native fallback.
+        s_bad, b_bad = _get(conn, f"/api/frames/{proj}/{video}/{n}/?h=0&w={rw}")
+        assert s_bad == 400 and "error" in json.loads(b_bad), (s_bad, b_bad)
+        print(f"[6b] RESOLUTION ok: {rw}x{rh} extracted to its own cache; native stays {nw}x{nh}; h=0 -> 400")
+
+        # 6c. res_segment / cache-dir helpers (pure) round-trip the URL segment.
+        assert server.res_segment(None, None) == "" and server.res_segment(rh, rw) == f"{rw}x{rh}", "res_segment"
+        print("[6c] res_segment helper ok")
+
         # 7. DELETE a plain (non-video) asset: removed from disk AND the list
         # (manifest "ASSET UX ROUND 2": deleteAsset previously 501'd — this
         # proves the DELETE endpoint works end-to-end against a live server).

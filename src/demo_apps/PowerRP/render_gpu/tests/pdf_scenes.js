@@ -21,7 +21,8 @@ import { rect, ellipse, polyline, polygon, text, image, video, pushTransform, po
 import { normalizeRichText } from "../../core/richtext.js";
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
 import { STILL_VIDEO_MP4_DATA_URI, STILL_VIDEO_FRAME_DATA_URI } from "../../tests/fixtures/still_video.js";
-import { filmstripLayout } from "../../plugins/filmstrip.js";
+import { LATEX_EQUATION_PNG_DATA_URI, LATEX_EQUATION_W, LATEX_EQUATION_H } from "../../tests/fixtures/latex_equation_png.js";
+import { filmstripLayout, filmstripPlugin } from "../../plugins/filmstrip.js";
 import { rectPlugin } from "../../plugins/rect.js";
 import { circlePlugin } from "../../plugins/circle.js";
 import { donutPlugin } from "../../plugins/donut.js";
@@ -308,6 +309,32 @@ export function scenes() {
         popTransform(),
       ];
     })(), 25), // image-class parity: same edge-AA divergence as image-basic (GPU bilinear vs poppler step). floor PENDING USER RATIFICATION
+
+    // ── FILMSTRIP FAITHFUL LOOK parity (manifest 14.1) ─────────────────────────
+    // The REAL filmstripPlugin.emit() — perforation bands (triangulated polygon
+    // ops around round holes, the donut technique), a filmColor content strip,
+    // and per-frame rounded corners + gray outlines (per-cell decorateStrokedBox
+    // → cropSubtree). Built exactly like donut-basic/cropbox-basic (real emit(),
+    // not hand IR) so it exercises the actual widget glue through BOTH backends.
+    // emit() takes (state, null, world) — filmColor is a NON-BLACK gray here so
+    // the perforation holes read as WHITE page (transparent) against it, exactly
+    // the demo's "dots visible over a non-black background" check. The bands' many
+    // polygon tris are the same parity class as donut-basic (triangulated fill).
+    s("filmstrip-look", (() => {
+      const W = 320, H = 96;
+      const world = { x: 40, y: 100, rotation: 0, scale: 1 };
+      const state = {
+        ...filmstripPlugin.defaults, w: W, h: H, frames: 4,
+        src: "clip.mp4", frameUrls: [CHECKER_PNG_DATA_URI, CHECKER_PNG_DATA_URI, CHECKER_PNG_DATA_URI, CHECKER_PNG_DATA_URI],
+        filmColor: "#303038", stroke: "#808080", strokeWidth: 0, opacity: 1,
+      };
+      return [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        pushTransform(world),
+        ...filmstripPlugin.emit(state, null, world),
+        popTransform(),
+      ];
+    })(), 28), // measured 32.43 dB (2026-07-15 run) — triangulated-polygon bands + per-cell rounded-clip images (donut/cropbox parity class); floor = measured − ~4.4 dB (the image/cropbox measured-to-floor margin) for AA headroom. PENDING USER RATIFICATION
 
     // ── DONUT widget parity (SA1 — modifier-point substrate's first consumer) ─
     // Neither backend has a native ring/even-odd primitive (see
@@ -679,6 +706,54 @@ export function scenes() {
         // a vector shape ABOVE the split proves the region above stays vector
         ellipse({ cx: 330, cy: 60, rx: 40, ry: 30, fill: "#9ece6a", stroke: INK, strokeWidth: 2 }),
       ], 38, {}); // measured 41.67 dB (2026-07-15 live run) — everything-below raster (blur-split class, exact GPU add); floor = measured − ~3.7. PENDING USER RATIFICATION.
+    })(),
+
+    // ── LATEX EQUATION widget parity (Round 14.5 — OpusI) ─────────────────────
+    // A typeset equation IS a bitmap: the latex WIDGET emits an image() op whose
+    // ref is a synthetic key resolved by a browser-only MathJax typeset
+    // (render_gpu/gpu/latex_raster.js), so like the FILMSTRIP scene (which uses
+    // CHECKER_PNG_DATA_URI for its browser-only frame source) this scene
+    // references a DETERMINISTIC, OFFLINE fixture — a rasterized quadratic
+    // formula captured from the REAL runtime path (tests/latex_equation_png.js).
+    // The widget's own emit→MathJax→raster path is covered end-to-end by
+    // tests/latex_probe.js (a real browser); THIS scene proves the equation
+    // BITMAP renders identically through the GPU compositor AND the PDF backend
+    // (the render-parity cornerstone — a rasterized equation is a bitmap,
+    // exactly like a rasterized PDF page). Three placements exercise the emit
+    // shape: bare equation quad, a bordered+rounded equation (the SHARED
+    // STROKED-BOX bundle the widget composes — the same cropSubtree decoration
+    // the bordered-rounded-image scene parity-tests), and a translucent one.
+    (() => {
+      // The latex widget composes the SAME box bundles image.js does — its emit()
+      // is byte-for-byte the image path (an image() op wrapped by
+      // decorateStrokedBox), just with a MathJax-raster ref instead of a photo
+      // ref. So this scene drives the REAL imagePlugin.emit() with the equation
+      // fixture as `src` (the sceneIR node() wrap idiom, identical to the
+      // bordered-rounded-image scene) — which exercises the EXACT emit shape a
+      // latex widget produces (bare quad, bordered+rounded via the shared
+      // cropSubtree decoration, translucent), proving the equation bitmap
+      // renders identically through the GPU compositor and the PDF backend.
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      // Draw the equation at its natural aspect (LATEX_EQUATION_W×_H) so no
+      // squash distorts the glyphs — exactly what the widget's aspect-driven
+      // w/h achieve.
+      const aspect = LATEX_EQUATION_W / LATEX_EQUATION_H;
+      const eqH = 70, eqW = Math.round(eqH * aspect); // ~274 wide
+      return s("latex-basic", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        // 1. bare equation quad (undecorated — a plain image op, the common case)
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: LATEX_EQUATION_PNG_DATA_URI, x: 20, y: 20, w: eqW, h: eqH }),
+        // 2. bordered + rounded equation (the SHARED STROKED-BOX bundle the latex
+        //    widget composes — the same cropSubtree decoration as a bordered image)
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: LATEX_EQUATION_PNG_DATA_URI, x: 20, y: 120, w: eqW, h: eqH, cornerRadius: 14, stroke: INK, strokeWidth: 4 }),
+        // 3. translucent equation (opacity rides on the image op — the parity-safe
+        //    opacity contract, decorate.js)
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: LATEX_EQUATION_PNG_DATA_URI, x: 200, y: 200, w: Math.round(eqW * 0.6), h: Math.round(eqH * 0.6), opacity: 0.5 }),
+      ], 18, {}); // measured 21.98 dB (2026-07-15 live parity run) — the equation raster's fine anti-aliased glyph strokes are GPU-bilinear-upsampled but poppler-stepped, and the bordered/rounded variant adds rrect-clip edge AA: the SAME edge-AA divergence class as bordered-rounded-image (measured 21.32, floor 18). floor = measured − ~4, matching that sibling's margin. PENDING USER RATIFICATION (the measured-minus-margin convention is flagged app-wide).
     })(),
   ];
 }

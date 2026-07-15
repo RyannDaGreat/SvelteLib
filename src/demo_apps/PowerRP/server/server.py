@@ -127,13 +127,43 @@ def assets_dir(name):
     return os.path.join(project_dir(name), ASSETS_SUBDIR)
 
 
-def frames_cache_dir(name, video, n):
+def res_segment(frame_h, frame_w):
     """
-    Query. Absolute path of the frame-cache folder for (project, video, N):
-    assets/frames/<video>/<N>/. `video` is validated as a single safe component
-    (it is a filename, never a path); `n` is an int folder name.
+    Pure function. The cache-folder RESOLUTION segment for a per-frame extraction
+    size (manifest 14.1 frameH/frameW). Native (both None/0) → "" (no segment, so
+    a native-size cache is byte-compatible with the pre-14.1 layout). A set size →
+    "<w>x<h>" with "native" for an unset axis (ffmpeg's -1 keeps aspect for that
+    axis). The value is a single safe path component (digits + 'x' + 'native').
+
+    Examples:
+        >>> res_segment(None, None)
+        ''
+        >>> res_segment(240, None)
+        'nativex240'
+        >>> res_segment(240, 320)
+        '320x240'
+        >>> res_segment(0, 0)
+        ''
     """
-    return os.path.join(assets_dir(name), FRAMES_SUBDIR, safe_name(video), str(int(n)))
+    h = int(frame_h) if frame_h else 0
+    w = int(frame_w) if frame_w else 0
+    if not h and not w:
+        return ""
+    return f"{w or 'native'}x{h or 'native'}"
+
+
+def frames_cache_dir(name, video, n, frame_h=None, frame_w=None):
+    """
+    Query. Absolute path of the frame-cache folder for (project, video, N) at an
+    optional per-frame resolution: assets/frames/<video>/<N>/[<WxH>/]. `video` is
+    validated as a single safe component (it is a filename, never a path); `n` is
+    an int folder name; a non-native (frame_h/frame_w) request adds a resolution
+    subfolder so a resolution change re-extracts into its own cache (a native
+    request keeps the original two-level layout, unchanged).
+    """
+    base = os.path.join(assets_dir(name), FRAMES_SUBDIR, safe_name(video), str(int(n)))
+    seg = res_segment(frame_h, frame_w)
+    return os.path.join(base, seg) if seg else base
 
 
 # -- Filmstrip frame extraction ----------------------------------------------
@@ -199,21 +229,28 @@ def video_frame_count(video_path):
     return int(out)
 
 
-def _extract_indices(video_path, indices, out_dir):
+def _extract_indices(video_path, indices, out_dir, frame_h=None, frame_w=None):
     """
     Command. Extract the given frame INDICES from a video to
-    out_dir/frame_000.png … in the SAME order as `indices` (ascending). Uses one
-    ffmpeg `select` pass (validated: outputs sequential files in select order).
-    Mutates the filesystem; raises loudly on ffmpeg failure.
+    out_dir/frame_000.png … in the SAME order as `indices` (ascending), optionally
+    RESIZED to (frame_w × frame_h) pixels (manifest 14.1). Uses one ffmpeg
+    `select` pass (validated: outputs sequential files in select order). A set
+    resolution appends a `scale` filter; an unset axis is -1 (keep aspect,
+    rounded to an even number ffmpeg's PNG encoder accepts). Mutates the
+    filesystem; raises loudly on ffmpeg failure.
     """
     os.makedirs(out_dir, exist_ok=True)
     # select='eq(n,i0)+eq(n,i1)+...' keeps exactly those frames; -vsync 0 (a.k.a.
     # -fps_mode passthrough) prevents duplication so N frames -> N files.
-    select = "+".join(f"eq(n\\,{i})" for i in indices)
+    terms = "+".join("eq(n\\,{})".format(i) for i in indices)
+    select = "select='{}'".format(terms)
+    h = int(frame_h) if frame_h else 0
+    w = int(frame_w) if frame_w else 0
+    vf = select if not (h or w) else f"{select},scale={w or -2}:{h or -2}"
     tmpl = os.path.join(out_dir, "frame_%0{}d.png".format(FRAME_INDEX_PAD))
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path, "-vf", f"select='{select}'",
+            ["ffmpeg", "-y", "-i", video_path, "-vf", vf,
              "-vsync", "0", tmpl],
             capture_output=True, text=True, check=True,
         )
@@ -223,39 +260,50 @@ def _extract_indices(video_path, indices, out_dir):
         raise RuntimeError(f"ffmpeg frame extraction failed: {exc.stderr.strip()[-500:]}")
 
 
-def _frame_urls(name, video, dir_n, count):
+def _frame_urls(name, video, dir_n, count, frame_h=None, frame_w=None):
     """
-    Query. The served URLs for the cached frames of (project, video, N), in
-    order. ffmpeg writes 1-based frame_001.png … frame_00N.png; the URL path
-    goes through the /asset seam under assets/frames/<video>/<N>/.
+    Query. The served URLs for the cached frames of (project, video, N) at an
+    optional per-frame resolution, in order. ffmpeg writes 1-based
+    frame_001.png … frame_00N.png; the URL path goes through the /asset seam
+    under assets/frames/<video>/<N>/[<WxH>/].
 
     `dir_n` is the REQUESTED frame count (the cache FOLDER name — always the
     request's N so a repeat request is a cache hit); `count` is how many frames
     actually exist there (== dir_n normally, fewer for a video shorter than N
-    frames). Splitting the two fixes the short-video bug where URLs pointed at
-    a frames/<n_eff>/ folder that extraction never wrote (files land in
-    frames/<requested-N>/).
+    frames). A non-native resolution adds the same <WxH> segment the cache dir
+    uses (res_segment), so the URLs point at the resolution-specific cache.
     """
     q = urllib.parse.quote
-    sub = f"{FRAMES_SUBDIR}/{video}/{int(dir_n)}"
+    seg = res_segment(frame_h, frame_w)
+    sub = f"{FRAMES_SUBDIR}/{video}/{int(dir_n)}" + (f"/{seg}" if seg else "")
     return [
         f"/asset/{q(name)}/{q(sub, safe='/')}/frame_{i + 1:0{FRAME_INDEX_PAD}d}.png"
         for i in range(count)
     ]
 
 
-def extract_frames(name, video, n):
+def _cached_pngs(cache):
+    """Query. Sorted PNG filenames directly in `cache` (skips subdirs, e.g. a
+    native cache's resolution subfolders), or [] if the folder is absent."""
+    return sorted(f for f in os.listdir(cache) if f.endswith(".png")) if os.path.isdir(cache) else []
+
+
+def extract_frames(name, video, n, frame_h=None, frame_w=None):
     """
     Command (idempotent — cache-first). Ensure N evenly-spread frames of a
-    project video are cached under assets/frames/<video>/<N>/, and return
+    project video at an optional per-frame resolution (frame_h/frame_w, manifest
+    14.1) are cached under assets/frames/<video>/<N>/[<WxH>/], and return
     {count, frames: [url,...]}. A cache HIT (the folder already holds exactly N
-    PNGs) does NO re-extraction. Raises loudly for a bad N, a missing video, or
-    an ffmpeg/ffprobe failure. Mutates the filesystem on a cache miss.
+    PNGs) does NO re-extraction. Native (both None) keeps the original two-level
+    cache; a set resolution caches independently so switching resolution
+    re-extracts. Raises loudly for a bad N, a missing video, or an ffmpeg/ffprobe
+    failure. Mutates the filesystem on a cache miss.
 
     Args:
         name (str): project name
         video (str): a video asset filename inside the project's assets/ folder
         n (int): number of frames (1..1000)
+        frame_h, frame_w (int|None): per-frame pixel size; None/0 = native
     """
     if n < 1 or n > 1000:
         raise ValueError(f"frame count out of range (1..1000): {n}")
@@ -263,10 +311,11 @@ def extract_frames(name, video, n):
     if not os.path.isfile(video_file):
         raise FileNotFoundError(f"video asset not found: {name}/{video}")
 
-    cache = frames_cache_dir(name, video, n)
-    cached = sorted(f for f in os.listdir(cache)) if os.path.isdir(cache) else []
+    cache = frames_cache_dir(name, video, n, frame_h, frame_w)
+    urls = lambda count: _frame_urls(name, video, n, count, frame_h, frame_w)
+    cached = _cached_pngs(cache)
     if len(cached) == n:  # full cache hit — no ffprobe, no re-extraction
-        return {"count": n, "frames": _frame_urls(name, video, n, n)}
+        return {"count": n, "frames": urls(n)}
 
     # The cache folder is keyed by the REQUESTED n; a video with fewer than n
     # frames legitimately holds total-frames files there. ffprobe tells us
@@ -274,20 +323,20 @@ def extract_frames(name, video, n):
     total = video_frame_count(video_file)
     n_eff = min(n, total)  # a video shorter than N frames yields total frames
     if cached and len(cached) == n_eff:  # short-video cache hit — complete
-        return {"count": n_eff, "frames": _frame_urls(name, video, n, n_eff)}
+        return {"count": n_eff, "frames": urls(n_eff)}
 
     # Cache miss (or partial/corrupt cache): rebuild from scratch so a crashed
     # prior run never yields a short strip. total>=1 guaranteed by ffprobe check.
     if os.path.isdir(cache):
         shutil.rmtree(cache)
     indices = evenly_spread_indices(total, n_eff)
-    _extract_indices(video_file, indices, cache)
-    produced = sorted(f for f in os.listdir(cache) if f.endswith(".png"))
+    _extract_indices(video_file, indices, cache, frame_h, frame_w)
+    produced = _cached_pngs(cache)
     if len(produced) != n_eff:
         raise RuntimeError(
             f"frame extraction produced {len(produced)} files, expected {n_eff} "
             f"(video {video}, total {total} frames)")
-    return {"count": n_eff, "frames": _frame_urls(name, video, n, n_eff)}
+    return {"count": n_eff, "frames": urls(n_eff)}
 
 
 def asset_kind(filename):
@@ -576,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[:2] == ["api", "download"]:
                 return self._handle_download(parts[2])
             if len(parts) == 5 and parts[:2] == ["api", "frames"]:
-                return self._handle_frames(parts[2], parts[3], parts[4])
+                return self._handle_frames(parts[2], parts[3], parts[4], parsed.query)
             if len(parts) >= 3 and parts[0] == "asset":
                 # parts[1] = project, parts[2:] = a file path inside assets/
                 # (a plain file, or a frames/<video>/<N>/frame_NNN.png subpath).
@@ -685,15 +734,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _handle_frames(self, name, video, n_str):
+    def _handle_frames(self, name, video, n_str, query=""):
         # Filmstrip: N evenly-spread frames of a project video, cached under
-        # assets/frames/<video>/<N>/ (cache hit = no re-extraction). Errors
-        # (bad N, missing video, ffmpeg/ffprobe failure) surface loudly.
+        # assets/frames/<video>/<N>/[<WxH>/] (cache hit = no re-extraction).
+        # Optional ?h=&w= per-frame extraction resolution (manifest 14.1; absent
+        # = native). Errors (bad N/H/W, missing video, ffmpeg/ffprobe failure)
+        # surface loudly.
         try:
             n = int(n_str)
         except ValueError:
             return self._error(400, f"frame count must be an integer: {n_str!r}")
-        self._json(extract_frames(name, video, n))
+        qs = urllib.parse.parse_qs(query)
+        try:
+            frame_h = int(qs["h"][0]) if "h" in qs else None
+            frame_w = int(qs["w"][0]) if "w" in qs else None
+        except ValueError:
+            return self._error(400, f"frame h/w must be integers: {query!r}")
+        if (frame_h is not None and frame_h <= 0) or (frame_w is not None and frame_w <= 0):
+            return self._error(400, f"frame h/w must be positive: {query!r}")
+        self._json(extract_frames(name, video, n, frame_h, frame_w))
 
     def _serve_asset(self, name, filename):
         # `filename` may be a plain asset OR a frames/<video>/<N>/frame_NNN.png

@@ -115,6 +115,15 @@
     nullable = false,
     disabled = false,
     oncommit,
+    // PROGRAMMATIC PICKER OPEN (manifest 14.3): when `autoOpen` flips to true the
+    // field opens its picker modal by itself (a fresh filmstrip prompts for a
+    // video the moment it is placed). `onpickerclose` fires when the modal
+    // closes for ANY reason (pick / cancel / backdrop) so the caller can clear
+    // its one-shot signal — cancel then leaves the widget exactly as it was
+    // (the empty ghost). Both default to a no-op so every other consumer
+    // (image/sound rows) is unaffected.
+    autoOpen = false,
+    onpickerclose = () => {},
   } = $props();
 
   let displayName = $derived(assetDisplayName(value));
@@ -128,6 +137,25 @@
 
   /** Query. The library assets matching this field's accepted kinds. */
   let filteredAssets = $derived((assets ?? []).filter((a) => assetKinds.includes(a.kind)));
+
+  // 14.3 AUTO-OPEN: when the caller raises `autoOpen`, open the picker once.
+  // `autoOpenedFor` guards against re-opening every effect run (the signal stays
+  // true until the modal closes and the caller clears it). A closed modal that
+  // was auto-opened notifies the caller (onpickerclose) so it can clear its
+  // one-shot signal — on pick OR cancel, so a cancel leaves the widget untouched.
+  let autoOpenedFor = $state(false);
+  $effect(() => {
+    if (autoOpen && !autoOpenedFor && !disabled) {
+      autoOpenedFor = true;
+      openPicker();
+    } else if (!autoOpen) {
+      autoOpenedFor = false;
+    }
+  });
+  $effect(() => {
+    // Fire onpickerclose exactly when a modal we auto-opened has closed.
+    if (autoOpenedFor && !pickerOpen) onpickerclose();
+  });
 
   /** Command. Fetches the project's asset list for the picker (once per open;
    *  the Asset Explorer pane owns the authoritative live list — this is a

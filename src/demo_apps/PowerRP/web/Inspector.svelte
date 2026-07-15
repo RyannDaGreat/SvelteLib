@@ -500,6 +500,8 @@
         nullable={row.nullable ?? false}
         {disabled}
         oncommit={(v) => oncommit(row.key, "asset", v)}
+        autoOpen={row.key === "src" && app.pendingVideoPickFor === pickedItemId}
+        onpickerclose={() => { if (app.pendingVideoPickFor === pickedItemId) app.pendingVideoPickFor = null; }}
       />
     {:else if row.kind === "color"}
       <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped

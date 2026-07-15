@@ -242,6 +242,21 @@ export const PROPS = {
   particleFade: { label: "Fade", kind: "number", min: 0, max: 1, category: "particles", default: 1, help: "How much a particle fades out over its life, from 0 (stays solid then vanishes) to 1 (fades all the way to transparent by the end)." },
   particleShrink: { label: "Shrink", kind: "number", min: 0, max: 1, category: "particles", default: 0, help: "How much a particle shrinks over its life, from 0 (keeps its birth size) to 1 (shrinks down to nothing by the end)." },
   particleSeed: { label: "Seed", kind: "number", category: "particles", default: 1, help: "The randomness seed. The same seed always produces the exact same particle pattern (so renders reproduce); change it to reshuffle." },
+
+  // ── filmstrip: the FULL film_strip API (manifest ROUND 14.1) ──────────────────
+  // These four give the filmstrip widget the rest of the original Python
+  // film_strip(video, length, height, width, vertical, film_color) signature
+  // (frames == length; src == video). Filmstrip-specific, so they live as plain
+  // rows here rather than a bundle. `vertical` flips orientation; `filmColor` is
+  // the strip's film color (default black, matching the Python default);
+  // `frameW`/`frameH` are the PER-FRAME extraction/cell resolution in pixels
+  // (empty = the video's native size — feeds BOTH the server extraction
+  // resolution and the on-canvas cell layout). min 1 so a set resolution is a
+  // real pixel size; no default value → an empty field means "native".
+  vertical: { label: "Vertical", kind: "boolean", category: "formatting", default: false, help: "Lay the frames top-to-bottom in a vertical strip instead of left-to-right. The frames stay upright either way." },
+  filmColor: { label: "Film color", kind: "color", category: "formatting", default: "#000000", help: "The color of the film base the frames sit on — the strip and its sprocket-hole bands. Classic film is black." },
+  frameW: { label: "Frame width", kind: "number", min: 1, category: "formatting", help: "The pixel width to extract and lay out each frame at. Leave empty to use the video's native width." },
+  frameH: { label: "Frame height", kind: "number", min: 1, category: "formatting", help: "The pixel height to extract and lay out each frame at. Leave empty to use the video's native height." },
 };
 
 /**
