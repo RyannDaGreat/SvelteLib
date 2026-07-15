@@ -1,66 +1,141 @@
 /**
- * VECTOR backend stub: IR → SVG string.
+ * VECTOR backend: IR → a standalone, self-contained SVG document, directly from
+ * the display list (the same flattened commands the WebGPU compositor
+ * rasterizes and the PDF backend serializes — manifest "RENDER MODES DECISION").
+ * This is the PDF backend's SIBLING (render_gpu/pdf_backend.js): same design,
+ * different syntax. Read that file's header first — every architectural choice
+ * here mirrors one there, and the shared, backend-agnostic helpers
+ * (balancedSlice, magnifiedView) are IMPORTED from it, not re-derived.
  *
- * Proves the seam: the same flattened display list the WebGPU compositor
- * rasterizes serializes losslessly to vector primitives. PDF export follows
- * the same shape (walk flattened commands, emit PDF content-stream operators
- * from the IR DIRECTLY — not by converting this SVG).
+ * THE HYBRID RULE (user, applies to SVG too — the manifest's SVG spec): every
+ * op that CAN be vector IS vector; only content that must be pixelated (backdrop
+ * blur) renders at pixel resolution and is embedded as a raster <image> region
+ * UNDER the subsequent vector elements. The split algorithm is the SAME "split
+ * at the region's LAST blurBackdrop" as pdf_backend.emitRegion (mirrored below,
+ * with a comment linking the two — the split is one `flat.forEach` line, too
+ * trivial to hoist into a shared helper without obscuring both backends).
  *
- * The `view` is the same camera mapping every backend uses (fitRectView
- * output): world → output px via  out = world * zoom + pan.  dpr is 1 for
- * vector output (vectors have no device pixels).
+ * TEXT IS TEXT: real <text> elements (SELECTABLE + searchable in a viewer), in
+ * the COMMITTED fonts (fonts.js) embedded as @font-face data: URIs inside
+ * <defs><style> so the document is fully OFFLINE (manifest OFFLINE RULE: no
+ * external refs). Per-run font/bold is honored (the IR text op is already
+ * per-run-shaped — rich text drops in unchanged). `system` text uses the OS
+ * system-ui stack (no committed file — the pre-fonts-task behavior).
  *
- * STUB SCOPE (documented, loud where unfinished):
- *   rect / ellipse / polyline / polygon / text  — fully serialized
- *   image / video — placeholder <rect> + comment (real impl: <image href>,
- *                   poster frame for video)
- *   blurBackdrop / magnifyBackdrop — SKIPPED with an SVG comment; the vector
- *                   story for backdrop effects is an <feGaussianBlur> filter
- *                   over a group of the preceding commands (blur) and a
- *                   <clipPath>-ed re-render of the sub-list (magnifier —
- *                   trivially expressible because the IR is re-interpretable)
+ * Coordinates: SVG user space is y-DOWN, the SAME as the world/IR space every
+ * backend uses, so — unlike the PDF backend's y-flip cm — no global flip is
+ * needed. The camera view maps world → output px (out = world·zoom + pan) via a
+ * root <g> transform; each drawable adds its own similarity world transform.
+ * The camera region IS the viewBox (1 world px = 1 SVG user unit at zoom 1).
  *
- * DOM-free pure JS (string building only; bare-node testable).
+ * Effects:
+ *   blurBackdrop    — cannot be vector: the region's LAST blur splits it,
+ *                     everything at/below renders through the injected
+ *                     `rasterize` callback (the GPU pipeline, blur applied) and
+ *                     embeds as ONE <image> covering the region; above = vector.
+ *   magnifyBackdrop — VECTOR lens: a <clipPath> circle + a magnify-about-center
+ *                     <g transform> re-emit of the commands below the lens (the
+ *                     display list is re-interpretable — the SAME trick as the
+ *                     GPU supersample and the PDF Form-XObject lens). Recursion
+ *                     capped at MAX_LENS_DEPTH (pdf_backend's bound); a lens
+ *                     beyond it embeds as a raster region (pixelated — user OK).
+ *   cropSubtree     — rounded-rect <clipPath> + re-emit of the target's OWN
+ *                     content (the vector-lens precedent generalized to a
+ *                     rounded rect and ONE named subtree — manifest ARCH #3).
+ *
+ * DOM-free: the backend builds strings only (bare-node testable, doctested).
+ * All environment-specific work (GPU rasterization, image/video bytes, font
+ * bytes) is injected as callbacks, exactly like irToPDF — a browser passes the
+ * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
 import { flattenIR, parseColor, rgbaToCss } from "./ir.js";
+import * as T from "../core/transform.js";
+import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri } from "./pdf_backend.js";
+import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 
 /**
- * Pure function. Escapes text for XML content.
+ * Lens re-emit recursion cap — the SAME bound as pdf_backend.MAX_LENS_DEPTH
+ * (and the GPU compositor's MAX_SUPERSAMPLE_DEPTH): one level of true vector
+ * lens re-interpretation; a lens inside a lens falls back to a raster embed.
+ */
+export const MAX_LENS_DEPTH = 1;
+
+/** Raster <image> px per output user-unit for hybrid regions — mirrors
+ * pdf_backend's rasterScale default (the retina-dpr 2× supersample precedent),
+ * so a PDF and an SVG of the same scene embed equal-resolution raster regions. */
+export const RASTER_SCALE = 2;
+
+/**
+ * Pure function. Escapes text for XML content (and, with the double-quote rule,
+ * attribute values).
  *
  * @example xmlEscape("a<b&c") // "a&lt;b&amp;c"
+ * @example xmlEscape(`say "hi" <b>`) // "say &quot;hi&quot; &lt;b&gt;"
  */
 export function xmlEscape(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/**
- * Pure function. A similarity transform + camera view → SVG transform attr.
- * Output-space = ((world ∘ local) * zoom + pan); SVG composes right-to-left,
- * so: translate(pan) scale(zoom) translate(x,y) rotate(deg) scale(s).
- *
- * @example svgTransform({x: 10, y: 0, rotation: 0, scale: 2}, {zoom: 1, panX: 0, panY: 0}) // "translate(10 0) scale(2)"
- * @example svgTransform({x: 0, y: 0, rotation: 0, scale: 1}, {zoom: 2, panX: 5, panY: 0}) // "translate(5 0) scale(2)"
+/** Pure function. Compact number formatting for SVG attrs (4 decimals, trimmed).
+ * @example fmt(1.230000001) // "1.23"
+ * @example fmt(-0.5) // "-0.5"
  */
-export function svgTransform(world, view) {
+export function fmt(n) {
+  return String(+n.toFixed(4));
+}
+
+/**
+ * Pure function. A similarity transform → SVG transform attr value. SVG composes
+ * transforms LEFT-to-right (the opposite reading order of PDF's cm stack), so a
+ * point maps as translate(x,y)·rotate(θ)·scale(s) — read left to right, that is
+ * "translate, then rotate, then scale the local geometry", which is exactly the
+ * core/transform.js similarity T.apply order. Omits identity components so the
+ * output stays compact and the doctests read cleanly.
+ *
+ * @example similarityTransform({x: 10, y: 0, rotation: 0, scale: 2}) // "translate(10 0) scale(2)"
+ * @example similarityTransform({x: 0, y: 0, rotation: Math.PI / 2, scale: 1}) // "rotate(90)"
+ * @example similarityTransform({x: 0, y: 0, rotation: 0, scale: 1}) // ""
+ */
+export function similarityTransform(world) {
   const parts = [];
-  if (view.panX !== 0 || view.panY !== 0) parts.push(`translate(${fmt(view.panX)} ${fmt(view.panY)})`);
-  if (view.zoom !== 1) parts.push(`scale(${fmt(view.zoom)})`);
   if (world.x !== 0 || world.y !== 0) parts.push(`translate(${fmt(world.x)} ${fmt(world.y)})`);
   if (world.rotation !== 0) parts.push(`rotate(${fmt((world.rotation * 180) / Math.PI)})`);
   if (world.scale !== 1) parts.push(`scale(${fmt(world.scale)})`);
   return parts.join(" ");
 }
 
-/** Pure function. Compact number formatting for SVG attrs.
- * @example fmt(1.230000001) // "1.23"
+/**
+ * Pure function. A camera view {zoom, panX, panY} → SVG transform attr value
+ * (out = world·zoom + pan, read left to right: translate(pan) then scale(zoom)).
+ *
+ * @example viewTransform({zoom: 1, panX: 0, panY: 0}) // ""
+ * @example viewTransform({zoom: 2, panX: 5, panY: 6}) // "translate(5 6) scale(2)"
  */
-export function fmt(n) {
-  return String(+n.toFixed(4));
+export function viewTransform(view) {
+  const parts = [];
+  if (view.panX !== 0 || view.panY !== 0) parts.push(`translate(${fmt(view.panX)} ${fmt(view.panY)})`);
+  if (view.zoom !== 1) parts.push(`scale(${fmt(view.zoom)})`);
+  return parts.join(" ");
 }
 
-/** Pure function. fill/stroke/opacity attrs shared by shape serializers.
+/** Pure function. Wraps SVG fragment `inner` in a <g transform> iff `t` is
+ * non-empty (avoids a redundant identity group).
+ * @example groupWrap("", "<rect/>") // "<rect/>"
+ * @example groupWrap("scale(2)", "<rect/>") // '<g transform="scale(2)"><rect/></g>'
+ */
+export function groupWrap(t, inner) {
+  return t ? `<g transform="${t}">${inner}</g>` : inner;
+}
+
+/**
+ * Pure function. fill / stroke / opacity presentation attrs shared by the shape
+ * serializers. A per-command `opacity` maps to SVG `opacity` (group alpha),
+ * matching the IR's per-item opacity semantics (the GPU multiplies it into every
+ * channel; SVG group opacity is the vector equivalent).
+ *
  * @example paintAttrs({fill: [1, 0, 0, 1], stroke: null, strokeWidth: 0, opacity: 1}) // 'fill="rgba(255,0,0,1)"'
+ * @example paintAttrs({fill: null, stroke: [0, 0, 0, 1], strokeWidth: 2, opacity: 0.5}) // 'fill="none" stroke="rgba(0,0,0,1)" stroke-width="2" opacity="0.5"'
  */
 export function paintAttrs(cmd) {
   const a = [];
@@ -72,63 +147,556 @@ export function paintAttrs(cmd) {
 }
 
 /**
- * Pure function. Serializes one flattened command to an SVG fragment.
- * Unknown ops throw (a backend must never silently drop geometry).
+ * Pure function. A rounded-rect path `d` string (used for crop-box clip regions,
+ * where a <rect rx> can't be a <clipPath> child as cleanly across the rotation
+ * wrap). Radius clamps to the half-extents like the GPU shader's sdRoundBox and
+ * pdf_backend.rectPath. Uses arcs (A) — the compact SVG rounded-corner idiom.
+ *
+ * @example roundedRectPathD({x: 0, y: 0, w: 10, h: 5, cornerRadius: 0}) // "M0 0 H10 V5 H0 Z"
+ * @example roundedRectPathD({x: 0, y: 0, w: 10, h: 6, cornerRadius: 2}).startsWith("M2 0") // true
  */
-export function commandToSVG({ cmd, world }, view) {
-  const g = (inner) => {
-    const t = svgTransform(world, view);
-    return t ? `<g transform="${t}">${inner}</g>` : inner;
-  };
+export function roundedRectPathD({ x, y, w, h, cornerRadius = 0 }) {
+  const r = Math.min(cornerRadius, w / 2, h / 2);
+  const n = fmt;
+  if (r <= 0) return `M${n(x)} ${n(y)} H${n(x + w)} V${n(y + h)} H${n(x)} Z`;
+  const arc = (ex, ey) => `A${n(r)} ${n(r)} 0 0 1 ${n(ex)} ${n(ey)}`;
+  return [
+    `M${n(x + r)} ${n(y)}`,
+    `H${n(x + w - r)}`, arc(x + w, y + r),
+    `V${n(y + h - r)}`, arc(x + w - r, y + h),
+    `H${n(x + r)}`, arc(x, y + h - r),
+    `V${n(y + r)}`, arc(x + r, y),
+    "Z",
+  ].join(" ");
+}
+
+/**
+ * Pure function. Serializes one PLAIN VECTOR drawable command (no effects) to an
+ * SVG fragment, positioned by its world transform. Effect ops (blur / magnify /
+ * crop) are handled by the walker (emitRegionSVG), never here. Image and video
+ * consult `ctx` for the resolved href (pre-loaded, like pdf_backend's XObjects).
+ * Unknown ops throw — a backend must NEVER silently drop geometry (manifest: no
+ * silent fallbacks).
+ */
+export function vectorCommandToSVG(cmd, world, ctx) {
+  const g = (inner) => groupWrap(similarityTransform(world), inner);
   switch (cmd.op) {
     case "rect":
+      if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
       return g(`<rect x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"` +
         (cmd.cornerRadius > 0 ? ` rx="${fmt(cmd.cornerRadius)}"` : "") + ` ${paintAttrs(cmd)}/>`);
     case "ellipse":
+      if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
       return g(`<ellipse cx="${fmt(cmd.cx)}" cy="${fmt(cmd.cy)}" rx="${fmt(cmd.rx)}" ry="${fmt(cmd.ry)}" ${paintAttrs(cmd)}/>`);
     case "polyline":
-      return g(`<polyline points="${cmd.points.map(([x, y]) => `${fmt(x)},${fmt(y)}`).join(" ")}" fill="none" ` +
+      return g(`<polyline points="${pointsAttr(cmd.points)}" fill="none" ` +
         `stroke="${rgbaToCss(cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="round" stroke-linejoin="round"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "polygon":
-      return g(`<polygon points="${cmd.points.map(([x, y]) => `${fmt(x)},${fmt(y)}`).join(" ")}" ` +
-        `fill="${rgbaToCss(cmd.fill)}"` + ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
+      return g(`<polygon points="${pointsAttr(cmd.points)}" fill="${rgbaToCss(cmd.fill)}"` +
+        ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "text":
-      // dominant-baseline can't express canvas's textBaseline="top" portably;
-      // dy≈0.8em approximates ascent (real impl: measured font metrics).
-      return g(`<text x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" dy="0.8em" font-size="${fmt(cmd.size)}"` +
-        ` font-family="system-ui, sans-serif"` + (cmd.bold ? ` font-weight="bold"` : "") +
-        ` fill="${rgbaToCss(cmd.color)}"` + ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") +
-        `>${xmlEscape(cmd.text)}</text>`);
+      return g(textToSVG(cmd, ctx));
     case "image":
-    case "video":
-      return g(`<!-- ${cmd.op} ref=${xmlEscape(cmd.ref)} (stub: real impl embeds href/poster) -->` +
-        `<rect x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}" fill="#888888"/>`);
-    case "blurBackdrop":
-      return `<!-- blurBackdrop radius=${fmt(cmd.radius)} (stub: feGaussianBlur over preceding group) -->`;
-    case "magnifyBackdrop":
-      return `<!-- magnifyBackdrop (stub: clipPath circle + re-serialized sub-list under lens view) -->`;
+    case "video": {
+      // A bitmap is embedded as an <image> with a data-URI href (manifest: the
+      // SVG must be SELF-CONTAINED — no external asset refs). Image = the source
+      // pixels; video = the grabbed CURRENT FRAME (the PDF precedent). Both were
+      // pre-resolved to a data URI by ctx; a null href = blank/undrawable src
+      // (draw nothing, matching the GPU skip and pdf_backend's null XObject).
+      const href = cmd.op === "image" ? ctx.imageHref(cmd.ref) : ctx.videoHref(cmd.ref);
+      if (href === null) return "";
+      return g(`<image x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"` +
+        ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") +
+        ` preserveAspectRatio="none" href="${href}"/>`);
+    }
     default:
-      throw new Error(`commandToSVG: unknown op "${cmd.op}"`);
+      throw new Error(`svg_backend: unknown op "${cmd.op}"`);
+  }
+}
+
+/** Pure function. IR point list → an SVG points="x,y x,y …" attribute value.
+ * @example pointsAttr([[0, 0], [10, 5]]) // "0,0 10,5"
+ */
+export function pointsAttr(points) {
+  return points.map(([x, y]) => `${fmt(x)},${fmt(y)}`).join(" ");
+}
+
+/**
+ * Pure function. One text op → a <text> element (SELECTABLE). The IR text origin
+ * is TOP-LEFT (canvas textBaseline="top"); SVG <text> y is the BASELINE, so the
+ * baseline sits at top + ascentFraction·size — the SAME per-font metric the PDF
+ * backend and glyph atlas use (ctx.ascentFraction, measured from the committed
+ * face). Font family comes from fonts.js (cssFamilyFor); a bold run adds
+ * font-weight. `xml:space="preserve"` keeps leading/interior spaces (SVG would
+ * otherwise collapse them, unlike the raster layout).
+ *
+ * @example // textToSVG(text({text:"Hi",x:2,y:4,size:36,color:"#000"}), {ascentFraction:()=>0.8}) → '<text x="2" y="32.8" ...>Hi</text>'
+ */
+export function textToSVG(cmd, ctx) {
+  const fontId = cmd.font || DEFAULT_FONT;
+  const baseline = cmd.y + ctx.ascentFraction(fontId, cmd.bold) * cmd.size;
+  const attrs = [
+    `x="${fmt(cmd.x)}"`, `y="${fmt(baseline)}"`,
+    `font-family="${xmlEscape(cssFamilyFor(fontId))}"`,
+    `font-size="${fmt(cmd.size)}"`,
+  ];
+  if (cmd.bold) attrs.push(`font-weight="bold"`);
+  attrs.push(`fill="${rgbaToCss(cmd.color)}"`);
+  if ((cmd.opacity ?? 1) !== 1) attrs.push(`opacity="${fmt(cmd.opacity)}"`);
+  attrs.push(`xml:space="preserve"`);
+  return `<text ${attrs.join(" ")}>${xmlEscape(cmd.text)}</text>`;
+}
+
+/**
+ * Command (async; appends SVG fragments to `out`, registers resources via ctx).
+ * The hybrid-rule walker for ONE region (the page, or a lens's source square) —
+ * the SVG twin of pdf_backend.emitRegion, with the IDENTICAL split algorithm:
+ * split at the region's LAST blurBackdrop (everything at/below it becomes one
+ * raster <image> covering the region), emit everything above as vector, and
+ * re-enter per magnifier lens / crop box.
+ *
+ * region: {view: world→output-px mapping incl. lens magnifications,
+ *          worldRect: the region's visible world AABB,
+ *          depth: lens recursion depth, background}
+ */
+export async function emitRegionSVG(commands, region, out, ctx) {
+  const flat = flattenIR(commands);
+  // Map each flattened drawable back to its RAW index — effect ops slice the
+  // raw list (rasterize + lens re-emits consume raw commands). Same bookkeeping
+  // as pdf_backend.emitRegion.
+  const rawIndexOf = [];
+  {
+    let f = 0;
+    commands.forEach((c, i) => {
+      if (c.op !== "pushTransform" && c.op !== "popTransform") rawIndexOf[f++] = i;
+    });
+  }
+
+  // HYBRID RULE split — IDENTICAL to pdf_backend.emitRegion's `lastBlurFlat`.
+  let lastBlurFlat = -1;
+  flat.forEach((fc, i) => { if (fc.cmd.op === "blurBackdrop") lastBlurFlat = i; });
+
+  if (lastBlurFlat >= 0) {
+    const below = balancedSlice(commands, rawIndexOf[lastBlurFlat] + 1);
+    out.push(await ctx.rasterRegion(below, {
+      placeRect: region.worldRect,
+      srcView: region.view,
+      background: region.background,
+    }));
+  }
+
+  for (let i = lastBlurFlat + 1; i < flat.length; i++) {
+    const { cmd, world } = flat[i];
+    if (cmd.op === "magnifyBackdrop") {
+      out.push(await emitLensSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
+    } else if (cmd.op === "cropSubtree") {
+      out.push(await emitCropSVG(cmd, world, region, ctx));
+    } else {
+      out.push(vectorCommandToSVG(cmd, world, ctx));
+    }
   }
 }
 
 /**
- * Pure function. Full IR command list → standalone SVG document string.
+ * Command (async; returns an SVG fragment). One magnifier lens — the SVG twin of
+ * pdf_backend.emitLens: a circle <clipPath> + a magnify-about-center <g
+ * transform> re-emit of the commands below the lens (depth-capped → raster
+ * embed), then the vector rim ring. All geometry is in WORLD coordinates; the
+ * enclosing view <g> maps them to output px. The magnify transform is
+ * `translate(C·(1−M)) scale(M)` (fixed point C: page' = C + M·(page − C), the
+ * same algebra as magnifiedView / the GPU lensRenderView), read left-to-right.
+ */
+export async function emitLensSVG(cmd, world, commands, rawIdx, region, ctx) {
+  const center = T.apply(world, cmd.cx, cmd.cy);
+  const rWorld = cmd.r * world.scale;
+  const m = Math.max(cmd.magnification, 0.01);
+  const below = balancedSlice(commands, rawIdx);
+  const half = rWorld / m;
+  const sub = {
+    view: magnifiedView(region.view, center, m),
+    worldRect: { x: center.x - half, y: center.y - half, w: half * 2, h: half * 2 },
+    depth: region.depth + 1,
+    background: region.background,
+  };
+
+  const clipId = ctx.nextId("lensclip");
+  const clip = `<clipPath id="${clipId}"><circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(rWorld)}"/></clipPath>`;
+  ctx.addDef(clip);
+
+  let inner;
+  if (region.depth < MAX_LENS_DEPTH) {
+    // VECTOR lens: magnify about the center, re-emit the display list below.
+    const sub2 = [];
+    await emitRegionSVG(below, sub, sub2, ctx);
+    const magnify = `translate(${fmt(center.x * (1 - m))} ${fmt(center.y * (1 - m))}) scale(${fmt(m)})`;
+    inner = `<g transform="${magnify}">${sub2.join("")}</g>`;
+  } else {
+    // Depth cap (the GPU / PDF recursion bound): a lens inside a lens embeds as
+    // raster — the user-ratified pixelated fallback. Sample the SOURCE square,
+    // place it over the lens bbox (that placement IS the magnification).
+    inner = await ctx.rasterRegion(below, {
+      placeRect: { x: center.x - rWorld, y: center.y - rWorld, w: rWorld * 2, h: rWorld * 2 },
+      srcRect: sub.worldRect,
+      srcView: region.view,
+      background: region.background,
+    });
+  }
+
+  let rim = "";
+  const rimW = cmd.rimColor ? cmd.rimWidth * world.scale : 0;
+  if (rimW > 0) { // rimWidth 0 = NO rim (manifest spec)
+    const rimColor = [...cmd.rimColor.slice(0, 3), cmd.rimColor[3] * cmd.opacity];
+    rim = `<circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(rWorld)}" fill="none" ` +
+      `stroke="${rgbaToCss(rimColor)}" stroke-width="${fmt(rimW)}"/>`;
+  }
+  return `<g clip-path="url(#${clipId})">${inner}</g>${rim}`;
+}
+
+/**
+ * Command (async; returns an SVG fragment). One crop box — the SVG twin of
+ * pdf_backend.emitCrop (manifest ARCHITECTURE PLAN #3): fill the rounded-rect
+ * region, clip to it, re-emit `cmd.content` (the target's OWN commands, already
+ * wrapped in their ABSOLUTE world transform by sceneIR — a SELF-CONTAINED IR
+ * list, so no balancedSlice/rawIdx), then stroke the border on top.
+ *
+ * ROTATION: the fill/clip/stroke GEOMETRY is emitted in LOCAL coordinates under
+ * the crop box's own world transform (a <g transform="similarity(world)">), the
+ * same convention vectorCommandToSVG uses for a rect. But `content` carries its
+ * OWN absolute world transforms, so it must NOT sit inside the box's transform
+ * group (that would double-apply the box's rotation/translation — the exact bug
+ * pdf_backend.emitCrop documents). The clip-path reference works across that
+ * separation: an SVG clip-path clips whatever element carries the `clip-path`
+ * attribute, in the USER space of that element — so we clip a group that holds
+ * the content in its absolute space, referencing a clipPath whose geometry is
+ * pre-baked into the box's world space via `clipPathUnits="userSpaceOnUse"` and
+ * a transform on the clip child. (Equivalent to the PDF's "clip fixed in device
+ * space, then reset the CTM before content" — the clip region is established
+ * once, in world space, and content re-emits in that same world space.)
+ */
+export async function emitCropSVG(cmd, world, region, ctx) {
+  const local = { x: 0, y: 0, w: cmd.w, h: cmd.h, cornerRadius: cmd.cornerRadius };
+  const boxT = similarityTransform(world);
+  const parts = [];
+
+  if (cmd.fill) {
+    const fill = [...cmd.fill.slice(0, 3), cmd.fill[3] * cmd.opacity];
+    parts.push(groupWrap(boxT, `<path d="${roundedRectPathD(local)}" fill="${rgbaToCss(fill)}"/>`));
+  }
+
+  // Clip region in WORLD space: the rounded rect's path under the box's world
+  // transform, baked in via a transform on the clip child (userSpaceOnUse). This
+  // lets the clipped group hold content in ABSOLUTE world space (content's own
+  // transforms) without composing the box's transform onto it.
+  const clipId = ctx.nextId("cropclip");
+  const clipChildT = boxT ? ` transform="${boxT}"` : "";
+  ctx.addDef(`<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse"><path d="${roundedRectPathD(local)}"${clipChildT}/></clipPath>`);
+
+  const sub = { view: region.view, worldRect: region.worldRect, depth: region.depth + 1, background: region.background };
+  const contentOut = [];
+  await emitRegionSVG(cmd.content, sub, contentOut, ctx);
+  parts.push(`<g clip-path="url(#${clipId})">${contentOut.join("")}</g>`);
+
+  const strokeW = cmd.strokeWidth ?? 0;
+  if (cmd.stroke && strokeW > 0) {
+    const stroke = [...cmd.stroke.slice(0, 3), cmd.stroke[3] * cmd.opacity];
+    parts.push(groupWrap(boxT, `<path d="${roundedRectPathD(local)}" fill="none" stroke="${rgbaToCss(stroke)}" stroke-width="${fmt(strokeW)}"/>`));
+  }
+  return parts.join("");
+}
+
+/**
+ * Command (async; builds an SVG document string). IR command list → a standalone,
+ * self-contained SVG document. The SVG sibling of irToPDF — same options shape,
+ * same injected seams (DOM-free backend).
  *
  * Args:
- *   commands (object[]): raw IR (transforms still nested)
- *   opts.width/opts.height (number): output size in px
- *   opts.view (object): {zoom, panX, panY} camera mapping (fitRectView, dpr-free)
- *   opts.background (string|number[]|null): optional page fill
+ *   commands (object[]): raw IR (transforms nested), z-ordered
+ *   opts.width/opts.height (number): output size in px (camera rect dims — the
+ *     camera region IS the viewBox)
+ *   opts.view (object): {zoom, panX, panY} world → output-px mapping
+ *     (fitRectView(cameraRect, width, height, 1))
+ *   opts.background (string|number[]|null): page fill; also the clear color
+ *     handed to `rasterize` so raster regions composite seamlessly
+ *   opts.rasterize (async fn|null): (rawCmds, {zoom, panX, panY, dpr: 1}, wPx,
+ *     hPx, background) → PNG bytes (Uint8Array). The GPU pixel service in
+ *     browsers, a stub in node tests. null → scenes needing raster regions THROW.
+ *   opts.rasterScale (number): raster-region px per output px. Default 2 (the
+ *     retina-dpr precedent; matches pdf_backend so PDF/SVG raster regions agree).
+ *   opts.textAscent (number|fn|null): baseline offset as a FRACTION of font size
+ *     (IR text is top-anchored; baseline = top + fraction·size). PER-FONT: pass
+ *     a (fontId, bold) → fraction fn (the browser measures each committed face's
+ *     canvas fontBoundingBoxAscent/size so SVG baselines land where the GPU atlas
+ *     top-anchors them — pdfFonts.measureTextAscent, SHARED with the PDF path). A
+ *     bare number applies to every face; null → a conservative 0.8 default (a
+ *     loud one-time console.warn — the metric should come from measurement).
+ *   opts.loadFontBytes (async fn|null): (basename) → Uint8Array of a committed
+ *     TTF (../fonts/<basename>). Needed to embed the committed fonts as
+ *     @font-face data: URIs (the OFFLINE rule — no external font refs). null →
+ *     committed fonts are NAMED in font-family but not embedded (a loud warning;
+ *     the viewer falls back to a system face for them). `system` never needs it.
+ *   opts.resolveImageHref (async fn|null): (ref) → a data: URI for an image ref
+ *     (the SVG must be self-contained). A ref that is ALREADY a data URI is used
+ *     as-is with no resolver; a URL ref needs this to fetch+inline it. null + a
+ *     URL image ref → THROWS (no external ref allowed; no silent drop).
+ *   opts.videoFrame (async fn|null): (ref) → {mime, bytes} of the video's CURRENT
+ *     FRAME (the manifest rule: a video exports as its current frame — a raster
+ *     embed). null → a scene with a video op THROWS loudly.
  *
- * @example irToSVG([], {width: 10, height: 10, view: {zoom: 1, panX: 0, panY: 0}}).startsWith("<svg") // true
- * @example // irToSVG(sceneIR(nodes, rb), {width: 1280, height: 720, view: fitRectView(cameraRect(...), 1280, 720)}) → full document
+ * Returns:
+ *   Promise<string>: the SVG document text
+ *
+ * @example // await irToSVG(sceneIR(nodes), {width: 1280, height: 720, view: fitRectView(camRect, 1280, 720, 1), background: "#fff"}) → "<svg …>…</svg>"
+ * @example (await irToSVG([], {width: 10, height: 10, view: {zoom: 1, panX: 0, panY: 0}})).startsWith("<svg") // true
  */
-export function irToSVG(commands, { width, height, view, background = null }) {
-  const body = flattenIR(commands).map((fc) => commandToSVG(fc, view));
-  if (background !== null)
-    body.unshift(`<rect width="${fmt(width)}" height="${fmt(height)}" fill="${rgbaToCss(parseColor(background))}"/>`);
+export async function irToSVG(commands, {
+  width, height, view, background = null, rasterize = null, rasterScale = RASTER_SCALE,
+  textAscent = null, loadFontBytes = null, resolveImageHref = null, videoFrame = null,
+}) {
+  const ctx = new SvgAssembly({ rasterize, rasterScale, textAscent, loadFontBytes, resolveImageHref, videoFrame, background });
+  await ctx.ensureFonts(textFaces(commands)); // embed each distinct committed face as @font-face
+  await ctx.ensureImages(imageRefs(commands)); // resolve each image ref to a data URI up-front
+  await ctx.ensureVideoFrames(videoRefs(commands)); // grab + inline each video's current frame
+
+  const pageWorldRect = {
+    x: -view.panX / view.zoom,
+    y: -view.panY / view.zoom,
+    w: width / view.zoom,
+    h: height / view.zoom,
+  };
+  const body = [];
+  await emitRegionSVG(commands, { view, worldRect: pageWorldRect, depth: 0, background }, body, ctx);
+
+  const bgRect = background !== null
+    ? `<rect width="${fmt(width)}" height="${fmt(height)}" fill="${rgbaToCss(Array.isArray(background) ? background : parseColor(background))}"/>`
+    : "";
+  const content = groupWrap(viewTransform(view), body.join(""));
+
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(width)}" height="${fmt(height)}" viewBox="0 0 ${fmt(width)} ${fmt(height)}">\n` +
-    body.join("\n") + `\n</svg>`;
+    `<defs>${ctx.defsString()}</defs>\n` +
+    bgRect + (bgRect ? "\n" : "") +
+    content + `\n</svg>`;
+}
+
+/**
+ * The SVG assembly context — the DOM-free string builder's resource registry
+ * (mirrors pdf_backend's PdfAssembly): owns embedded fonts (@font-face rules),
+ * resolved image/video hrefs, <defs> (clip paths + font styles), and unique id
+ * minting. Command object (accumulates state as the walk proceeds).
+ */
+class SvgAssembly {
+  constructor({ rasterize, rasterScale, textAscent, loadFontBytes, resolveImageHref, videoFrame, background }) {
+    this.rasterize = rasterize;
+    this.rasterScale = rasterScale;
+    this.textAscent = textAscent; // number | (fontId, bold)=>fraction | null
+    this.loadFontBytes = loadFontBytes;
+    this.resolveImageHref = resolveImageHref;
+    this.videoFrame = videoFrame;
+    this.background = background;
+    this._defs = [];          // clipPath / other <defs> fragments (order-preserving)
+    this._fontFaces = [];      // @font-face CSS blocks
+    this._imageHrefs = new Map(); // image ref → data URI, or null (blank/undrawable)
+    this._videoHrefs = new Map(); // video ref → data URI, or null
+    this._idCount = 0;
+    this._warnedAscent = false;
+  }
+
+  /** Command. Mints a document-unique id with a readable prefix. */
+  nextId(prefix) {
+    return `${prefix}${++this._idCount}`;
+  }
+
+  /** Command. Registers a <defs> child (clipPath, etc.). */
+  addDef(fragment) {
+    this._defs.push(fragment);
+  }
+
+  /** Query. The full <defs> inner string: embedded @font-face styles first
+   * (so text resolves the faces), then clip paths in registration order. */
+  defsString() {
+    const style = this._fontFaces.length ? `<style>${this._fontFaces.join("\n")}</style>` : "";
+    return style + this._defs.join("");
+  }
+
+  /**
+   * Command (async). Embeds each distinct committed (fontId, bold) face the
+   * scene uses as an @font-face rule with a base64 data: URI (the OFFLINE rule:
+   * no external font ref). The family name is the committed face's UNIQUE family
+   * (fonts.js cssFamily), so <text font-family> resolves the embedded face and
+   * never a same-named OS font. `system` (no file) needs no rule — it uses the OS
+   * system-ui stack. A committed font with no loadFontBytes seam is NAMED but not
+   * embedded (a loud warning — the viewer substitutes; a reported degradation).
+   */
+  async ensureFonts(faces) {
+    for (const { font: fontId, bold } of faces) {
+      if (!hasEmbeddableFile(fontId)) continue; // system — OS stack, nothing to embed
+      const basename = fontFileFor(fontId, bold);
+      if (!this.loadFontBytes) {
+        console.warn(`svg_backend: font "${fontId}" (${bold ? "bold" : "regular"}) has a committed file (${basename}) but no loadFontBytes seam was provided — the family is named but NOT embedded, so a viewer substitutes it (not offline-clean). Pass irToSVG opts.loadFontBytes.`);
+        continue;
+      }
+      const bytes = await this.loadFontBytes(basename);
+      const b64 = bytesToBase64(bytes);
+      // Unique family per fonts.js (cssFamily), so no OS-font collision.
+      const family = FAMILY_BARE(fontId);
+      this._fontFaces.push(
+        `@font-face{font-family:"${family}";font-weight:${bold ? "700" : "400"};font-style:normal;` +
+        `src:url("data:font/ttf;base64,${b64}") format("truetype");}`,
+      );
+    }
+  }
+
+  /**
+   * Command (async). Resolves each distinct image `ref` to a self-contained
+   * data: URI (the SVG must inline every asset — OFFLINE rule). A ref that is
+   * ALREADY a data URI is used verbatim (no resolver needed); any other ref (a
+   * URL) requires the injected resolveImageHref to fetch + inline it. A 1×1
+   * fully-transparent blank (the widget's default src) maps to null → draw
+   * nothing (matching the GPU skip / pdf_backend's null XObject). No resolver +
+   * a URL ref = a loud error (no external ref, no silent drop).
+   */
+  async ensureImages(refs) {
+    for (const ref of refs) {
+      if (this._imageHrefs.has(ref)) continue;
+      this._imageHrefs.set(ref, await this._resolveHref(ref, "image"));
+    }
+  }
+
+  /**
+   * Command (async). Grabs each distinct video `ref`'s CURRENT FRAME (via the
+   * injected videoFrame resolver) and inlines it as a data: URI (manifest: a
+   * video exports as its current frame — a raster embed). A blank/undrawable
+   * frame maps to null. No videoFrame resolver + a video op = a loud error.
+   */
+  async ensureVideoFrames(refs) {
+    if (refs.length === 0) return;
+    if (!this.videoFrame)
+      throw new Error(`svg_backend: scene has a video op but no videoFrame resolver was provided (a video exports as its current frame — pass irToSVG opts.videoFrame)`);
+    for (const ref of refs) {
+      if (this._videoHrefs.has(ref)) continue;
+      const frame = await this.videoFrame(ref); // {mime, bytes} | null
+      if (!frame || !frame.bytes || frame.bytes.length === 0) { this._videoHrefs.set(ref, null); continue; }
+      this._videoHrefs.set(ref, `data:${frame.mime};base64,${bytesToBase64(frame.bytes)}`);
+    }
+  }
+
+  /** Query (async). One image ref → data URI or null (blank). A data-URI ref is
+   * checked for the 1×1 blank marker in-module; a URL ref uses the resolver. */
+  async _resolveHref(ref, kind) {
+    if (typeof ref !== "string" || ref.length === 0)
+      throw new Error(`svg_backend: ${kind} ref must be a non-empty string, got ${JSON.stringify(ref)}`);
+    if (ref.startsWith("data:")) {
+      // The widget's BLANK_SRC default is a 1×1 transparent PNG — inline it, the
+      // viewer draws a 1×1 nothing; matching pdf_backend, treat a byte-tiny PNG
+      // as blank so it draws nothing. Cheap heuristic (decode length) — a real
+      // image is far larger than a 1×1.
+      const { bytes } = decodeDataUri(ref);
+      if (bytes.length <= BLANK_PNG_MAX_BYTES) return null;
+      return ref;
+    }
+    if (!this.resolveImageHref)
+      throw new Error(`svg_backend: ${kind} ref "${truncateRef(ref)}" is a URL, but no resolveImageHref seam was provided — the SVG must be self-contained (inline every asset). Pass irToSVG opts.resolveImageHref.`);
+    const href = await this.resolveImageHref(ref);
+    if (typeof href !== "string" || !href.startsWith("data:"))
+      throw new Error(`svg_backend: resolveImageHref("${truncateRef(ref)}") must return a data: URI (the SVG must be self-contained), got ${JSON.stringify(truncateRef(String(href)))}`);
+    return href;
+  }
+
+  /** Query. The resolved data-URI href for a pre-loaded image ref, or null for a
+   * blank/undrawable src. Throws if the ref was never loaded (a bug — emit runs
+   * only after ensureImages scanned the same list). */
+  imageHref(ref) {
+    if (!this._imageHrefs.has(ref))
+      throw new Error(`svg_backend: image ref "${truncateRef(ref)}" not resolved (image op outside the scanned command list?)`);
+    return this._imageHrefs.get(ref);
+  }
+
+  /** Query. The resolved data-URI href for a pre-loaded video current frame, or
+   * null. Throws if the ref was never loaded. */
+  videoHref(ref) {
+    if (!this._videoHrefs.has(ref))
+      throw new Error(`svg_backend: video ref "${truncateRef(ref)}" not resolved (video op outside the scanned command list?)`);
+    return this._videoHrefs.get(ref);
+  }
+
+  /** Query. Baseline offset as a fraction of font size for (fontId, bold): the
+   * caller-measured canvas ascent when provided (GPU-atlas parity — see irToSVG
+   * textAscent), else a conservative default with a one-time loud warning. */
+  ascentFraction(fontId, bold) {
+    if (typeof this.textAscent === "function") return this.textAscent(fontId, bold);
+    if (this.textAscent !== null) return this.textAscent;
+    if (!this._warnedAscent) {
+      console.warn(`svg_backend: no textAscent measure provided — using the ${DEFAULT_ASCENT_FRACTION} default baseline fraction, which will NOT match the GPU atlas per-font baselines. Pass irToSVG opts.textAscent (pdfFonts.measureTextAscent).`);
+      this._warnedAscent = true;
+    }
+    return DEFAULT_ASCENT_FRACTION;
+  }
+
+  /**
+   * Command (async; returns an SVG <image> fragment). Rasterizes `rawCmds`
+   * through the injected callback and returns an <image> embedding the PNG as a
+   * data URI — the SVG twin of pdf_backend.emitRasterRegion. `placeRect` (WORLD
+   * coords in the current view <g> frame) is where the image lands; `srcRect`
+   * (default placeRect) is the world region the pixels sample (they differ only
+   * for the deep-lens fallback). Resolution: placeRect at the region view's px
+   * density × rasterScale. Unlike PDF's y-up flip, SVG <image> is already y-down,
+   * so the placeRect maps 1:1 (top-left origin, no flip).
+   */
+  async rasterRegion(rawCmds, { placeRect, srcRect = placeRect, srcView, background }) {
+    if (!this.rasterize)
+      throw new Error("svg_backend: scene needs a raster region (blur / deep lens) but no rasterize callback was provided");
+    const density = srcView.zoom * this.rasterScale; // px per world unit at the placed location
+    const wPx = Math.max(1, Math.round(placeRect.w * density));
+    const hPx = Math.max(1, Math.round(placeRect.h * density));
+    const rasterView = {
+      zoom: wPx / srcRect.w,
+      panX: -srcRect.x * (wPx / srcRect.w),
+      panY: -srcRect.y * (hPx / srcRect.h),
+      dpr: 1,
+    };
+    const png = await this.rasterize(rawCmds, rasterView, wPx, hPx, background);
+    const href = `data:image/png;base64,${bytesToBase64(png)}`;
+    return `<image x="${fmt(placeRect.x)}" y="${fmt(placeRect.y)}" width="${fmt(placeRect.w)}" height="${fmt(placeRect.h)}"` +
+      ` preserveAspectRatio="none" href="${href}"/>`;
+  }
+}
+
+/** The @font-face `font-family` value for a committed id (fonts.js cssFamily,
+ * bare — cssFamilyFor adds the generic fallback for <text>, but @font-face names
+ * exactly the face). */
+function FAMILY_BARE(fontId) {
+  // cssFamilyFor returns `"Family", generic`; @font-face wants just `Family`.
+  return cssFamilyFor(fontId).replace(/^"([^"]*)".*/, "$1");
+}
+
+/** Conservative top→baseline fraction when no measure is available. ~0.8em is
+ * the usual cap-plus-ascent fraction for a Latin sans face; a real export always
+ * passes a measured per-font value (pdfFonts.measureTextAscent). */
+const DEFAULT_ASCENT_FRACTION = 0.8;
+
+/** A data-URI PNG at or below this many bytes is treated as the widget's 1×1
+ * blank default (draw nothing) — the same "no visible content" skip as
+ * pdf_backend's 1×1 XObject check, applied to the encoded size (a 1×1 PNG is
+ * ~70 bytes; any real image is far larger). */
+const BLANK_PNG_MAX_BYTES = 128;
+
+/** Pure function. Uint8Array → base64 (Buffer in node, btoa in the browser).
+ * Chunked so a large image can't blow the call stack on the spread.
+ * @example bytesToBase64(new Uint8Array([0, 0, 0])) // "AAAA"
+ */
+export function bytesToBase64(bytes) {
+  if (typeof Buffer !== "undefined") return Buffer.from(bytes).toString("base64");
+  let s = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  return btoa(s);
+}
+
+/** Pure function. Shortens a long ref (a data URI) for an error message: the
+ * first 40 chars plus a "…(N chars)" suffix; short refs pass through unchanged.
+ * @example truncateRef("short") // "short"
+ * @example truncateRef("data:image/png;base64," + "A".repeat(40)) // "data:image/png;base64,AAAAAAAAAAAAAAAAAA…(62 chars)"
+ */
+export function truncateRef(ref) {
+  return ref.length <= 40 ? ref : `${ref.slice(0, 40)}…(${ref.length} chars)`;
 }

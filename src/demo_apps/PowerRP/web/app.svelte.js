@@ -1321,6 +1321,73 @@ export class PowerRPApp {
     URL.revokeObjectURL(a.href);
   }
 
+  /**
+   * Exports the current slide as a standalone, SELF-CONTAINED VECTOR SVG
+   * (manifest "SVG export", the PDF backend's sibling): shapes/text stay vector
+   * (text SELECTABLE), fonts embed as @font-face data: URIs, images/video-frames
+   * inline as data: URIs, and blur regions embed as raster per the HYBRID RULE.
+   * The camera rect IS the viewBox. The output opens in any browser with NO
+   * network (OFFLINE RULE) — every asset is inlined.
+   *
+   * Seams mirror exportPdf's, plus two SVG-specific inliners (the SVG must
+   * embed every asset, unlike a PDF which could in principle fetch): a
+   * resolveImageHref that fetches a URL image → data URI, and a videoFrame that
+   * grabs the <video> element's CURRENT frame → PNG (the manifest video rule).
+   */
+  async exportSvg() {
+    const { irToSVG } = await import("../render_gpu/svg_backend.js");
+    const { loadFontBytes, measureTextAscent } = await import("./pdfFonts.js");
+    const { getVideo } = await import("../render_gpu/gpu/video_registry.js");
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const rect = cameraRect(state, this.doc.meta);
+
+    // Any image src that is a URL (asset-server case) must be inlined for a
+    // self-contained SVG. A data-URI src is used as-is by the backend (no
+    // resolver call); this only fires for URL refs. Loud on a failed fetch.
+    const resolveImageHref = async (ref) => {
+      const res = await fetch(ref);
+      if (!res.ok) throw new Error(`exportSvg: failed to fetch image "${ref}" for inlining — HTTP ${res.status} ${res.statusText}`);
+      const blob = await res.blob();
+      return await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result); // a data: URI
+        fr.onerror = () => reject(new Error(`exportSvg: could not read image "${ref}" as a data URI`));
+        fr.readAsDataURL(blob);
+      });
+    };
+    // Grab the video's CURRENT frame as a PNG (manifest: a video exports as its
+    // current frame). The <video> element lives in the shared registry; if it
+    // isn't decoded yet there is no drawable frame → return null (draw nothing,
+    // loud is unnecessary — the compositor skips an undecoded video too).
+    const videoFrame = async (ref) => {
+      const el = getVideo(ref);
+      if (!el || !el.videoWidth || !el.videoHeight) return null;
+      const c = document.createElement("canvas");
+      c.width = el.videoWidth;
+      c.height = el.videoHeight;
+      c.getContext("2d").drawImage(el, 0, 0);
+      const blob = await new Promise((res) => c.toBlob(res, "image/png"));
+      return { mime: "image/png", bytes: new Uint8Array(await blob.arrayBuffer()) };
+    };
+
+    const svg = await irToSVG(sceneIR(deriveRenderTree(state, this.registry)), {
+      width: rect.w,
+      height: rect.h,
+      view: fitRectView(rect, rect.w, rect.h, 1),
+      background: rect.background,
+      rasterize: rasterizeIrPng,
+      textAscent: measureTextAscent(),
+      loadFontBytes,
+      resolveImageHref,
+      videoFrame,
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.svg`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   // ── Copy selection as PNG/PDF (manifest Round 12B "Palette / selection
   // commands"): render ONLY the selected items, cropped to their collective
   // world AABB, onto the SYSTEM clipboard. Distinct from exportPng/exportPdf

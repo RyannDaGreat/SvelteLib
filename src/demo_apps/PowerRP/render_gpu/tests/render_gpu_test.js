@@ -20,7 +20,10 @@ import { arrowPlugin } from "../../plugins/arrow.js";
 import { fancyArrowPlugin } from "../../plugins/fancy_arrow.js";
 import { blurPlugin } from "../../plugins/blur.js";
 import { magnifierPlugin } from "../../plugins/magnifier.js";
-import { irToSVG, commandToSVG, svgTransform, xmlEscape } from "../svg_backend.js";
+import {
+  irToSVG, vectorCommandToSVG, similarityTransform, viewTransform, xmlEscape,
+  roundedRectPathD, pointsAttr, textToSVG, bytesToBase64, groupWrap,
+} from "../svg_backend.js";
 import { lensRenderView, deviceRectThroughViews, intersectRects } from "../gpu/compositor.js";
 import { bucketFor } from "../gpu/glyph_atlas.js";
 import { benchScene, hash01 } from "../bench/scene.js";
@@ -31,8 +34,11 @@ import { registerAll } from "../../plugins/index.js";
 import { createCommands } from "../../core/commands.js";
 
 let passed = 0;
-function test(name, fn) {
-  fn();
+// Awaits fn if it returns a promise (the SVG backend is async — irToSVG embeds
+// fonts/images through injected seams); sync tests are unaffected. Call sites
+// for async tests use `await test(...)` so ordering + the pass count stay exact.
+async function test(name, fn) {
+  await fn();
   passed++;
   console.log(`  ok  ${name}`);
 }
@@ -269,21 +275,61 @@ test("sceneIR: loud on a plugin without emit()", () => {
 });
 
 // ── SVG backend ─────────────────────────────────────────────────────────────
-test("svgTransform: composes view + world", () => {
-  assert.equal(svgTransform({ x: 10, y: 0, rotation: 0, scale: 2 }, { zoom: 1, panX: 0, panY: 0 }), "translate(10 0) scale(2)");
-  assert.equal(svgTransform({ x: 0, y: 0, rotation: Math.PI / 2, scale: 1 }, { zoom: 1, panX: 0, panY: 0 }), "rotate(90)");
-  assert.equal(svgTransform({ x: 0, y: 0, rotation: 0, scale: 1 }, { zoom: 2, panX: 5, panY: 6 }), "translate(5 6) scale(2)");
+// A minimal assembly-context stub for the pure per-command serializers (the real
+// SvgAssembly is exercised end-to-end by irToSVG below + the parity suite). It
+// gives a fixed ascent fraction and echoes image/video refs as hrefs.
+const stubCtx = {
+  ascentFraction: () => 0.8,
+  imageHref: (ref) => (ref === "__blank__" ? null : `data:image/png;base64,${ref}`),
+  videoHref: (ref) => (ref === "__blank__" ? null : `data:image/png;base64,${ref}`),
+};
+
+test("similarityTransform / viewTransform: SVG left-to-right composition", () => {
+  assert.equal(similarityTransform({ x: 10, y: 0, rotation: 0, scale: 2 }), "translate(10 0) scale(2)");
+  assert.equal(similarityTransform({ x: 0, y: 0, rotation: Math.PI / 2, scale: 1 }), "rotate(90)");
+  assert.equal(similarityTransform({ x: 0, y: 0, rotation: 0, scale: 1 }), ""); // identity → no group
+  assert.equal(viewTransform({ zoom: 2, panX: 5, panY: 6 }), "translate(5 6) scale(2)");
+  assert.equal(viewTransform({ zoom: 1, panX: 0, panY: 0 }), "");
 });
 test("xmlEscape", () => {
   assert.equal(xmlEscape(`<a & "b">`), "&lt;a &amp; &quot;b&quot;&gt;");
 });
-test("commandToSVG: shapes serialize, unknown op throws", () => {
-  const view = { zoom: 1, panX: 0, panY: 0 };
-  const r = commandToSVG({ cmd: rect({ x: 0, y: 0, w: 10, h: 5, fill: "#f00", cornerRadius: 2 }), world: { x: 0, y: 0, rotation: 0, scale: 1 } }, view);
-  assert.match(r, /<rect .*rx="2".*fill="rgba\(255,0,0,1\)"/);
-  assert.throws(() => commandToSVG({ cmd: { op: "warp" }, world: { x: 0, y: 0, rotation: 0, scale: 1 } }, view), /unknown op/);
+test("roundedRectPathD: square vs rounded", () => {
+  assert.equal(roundedRectPathD({ x: 0, y: 0, w: 10, h: 5, cornerRadius: 0 }), "M0 0 H10 V5 H0 Z");
+  const r = roundedRectPathD({ x: 0, y: 0, w: 10, h: 6, cornerRadius: 2 });
+  assert.ok(r.startsWith("M2 0"), r);
+  assert.equal((r.match(/A/g) || []).length, 4); // four corner arcs
 });
-test("irToSVG: full scene document", () => {
+test("pointsAttr / groupWrap", () => {
+  assert.equal(pointsAttr([[0, 0], [10, 5]]), "0,0 10,5");
+  assert.equal(groupWrap("", "<rect/>"), "<rect/>");
+  assert.equal(groupWrap("scale(2)", "<rect/>"), '<g transform="scale(2)"><rect/></g>');
+});
+test("bytesToBase64: round-trips", () => {
+  assert.equal(bytesToBase64(new Uint8Array([0, 0, 0])), "AAAA");
+  assert.equal(bytesToBase64(new Uint8Array([77, 97, 110])), "TWFu");
+});
+test("textToSVG: real selectable <text>, baseline from ascent, family from fonts.js", () => {
+  const el = textToSVG(text({ text: "Hi <you>", x: 2, y: 4, size: 40, color: "#000" }), stubCtx);
+  assert.match(el, /<text /);
+  assert.match(el, /y="36"/);              // 4 + 0.8*40
+  assert.match(el, /Hi &lt;you&gt;<\/text>$/); // escaped, selectable content
+  assert.match(el, /font-family="system-ui, sans-serif"/); // system default
+  const inter = textToSVG(text({ text: "x", x: 0, y: 0, size: 10, color: "#000", font: "inter", bold: true }), stubCtx);
+  assert.match(inter, /font-family="&quot;PowerRP Inter&quot;, sans-serif"/);
+  assert.match(inter, /font-weight="bold"/);
+});
+test("vectorCommandToSVG: shapes/image serialize, blank image draws nothing, unknown op throws", () => {
+  const W = { x: 0, y: 0, rotation: 0, scale: 1 };
+  assert.match(vectorCommandToSVG(rect({ x: 0, y: 0, w: 10, h: 5, fill: "#f00", cornerRadius: 2 }), W, stubCtx),
+    /<rect .*rx="2".*fill="rgba\(255,0,0,1\)"/);
+  assert.match(vectorCommandToSVG(image({ ref: "PNGB", x: 1, y: 2, w: 3, h: 4 }), W, stubCtx),
+    /<image .*href="data:image\/png;base64,PNGB"/);
+  assert.equal(vectorCommandToSVG(image({ ref: "__blank__", x: 0, y: 0, w: 1, h: 1 }), W, stubCtx), ""); // blank → nothing
+  assert.equal(vectorCommandToSVG(rect({ x: 0, y: 0, w: 1, h: 1 }), W, stubCtx), ""); // no fill/stroke → nothing
+  assert.throws(() => vectorCommandToSVG({ op: "warp" }, W, stubCtx), /unknown op/);
+});
+await test("irToSVG: full scene document (async, self-contained)", async () => {
   const registry = createRegistry();
   registerAll(registry, createCommands());
   const state = {
@@ -294,13 +340,58 @@ test("irToSVG: full scene document", () => {
   };
   const nodes = deriveRenderTree(state, registry);
   const ir = sceneIR(nodes);
-  const svg = irToSVG(ir, { width: 640, height: 360, view: { zoom: 0.5, panX: 0, panY: 0 }, background: "#ffffff" });
+  const svg = await irToSVG(ir, { width: 640, height: 360, view: { zoom: 0.5, panX: 0, panY: 0 }, background: "#ffffff", textAscent: 0.8 });
   assert.ok(svg.startsWith("<svg xmlns"));
+  assert.match(svg, /<defs>/);                                       // has a defs block
   assert.match(svg, /<rect x="0" y="0" width="100" height="50" rx="4"/);
-  assert.match(svg, /rotate\(28.6479\)/); // 0.5 rad
-  assert.match(svg, /Hello &lt;svg&gt;/);
+  assert.match(svg, /rotate\(28.6479\)/);                            // 0.5 rad
+  assert.match(svg, /<text /);                                       // TEXT IS TEXT
+  assert.match(svg, /Hello &lt;svg&gt;<\/text>/);                    // selectable + escaped
   assert.match(svg, /font-weight="bold"/);
+  assert.match(svg, /<g transform="translate\(0 0\) scale\(0.5\)"|scale\(0.5\)/); // view group (pan 0 collapses)
   assert.match(svg, /<\/svg>$/);
+});
+await test("irToSVG: image ref that is a URL without a resolver THROWS (no external ref)", async () => {
+  await assert.rejects(
+    irToSVG([image({ ref: "https://example.com/x.png", x: 0, y: 0, w: 4, h: 4 })],
+      { width: 10, height: 10, view: { zoom: 1, panX: 0, panY: 0 } }),
+    /self-contained/,
+  );
+});
+await test("irToSVG: video op with no videoFrame resolver THROWS (no silent drop)", async () => {
+  await assert.rejects(
+    irToSVG([video({ ref: "clip", x: 0, y: 0, w: 4, h: 4 })],
+      { width: 10, height: 10, view: { zoom: 1, panX: 0, panY: 0 } }),
+    /videoFrame resolver/,
+  );
+});
+await test("irToSVG: blur scene needs a rasterize callback (hybrid rule) — THROWS without one", async () => {
+  await assert.rejects(
+    irToSVG([rect({ x: 0, y: 0, w: 10, h: 10, fill: "#000" }), blurBackdrop({ radius: 4 })],
+      { width: 10, height: 10, view: { zoom: 1, panX: 0, panY: 0 } }),
+    /raster region/,
+  );
+});
+await test("irToSVG: hybrid rule embeds ONE <image> for the blur region, vector above", async () => {
+  const stubRaster = async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]); // fake PNG bytes
+  const svg = await irToSVG(
+    [rect({ x: 0, y: 0, w: 40, h: 30, fill: "#7aa2f7" }), blurBackdrop({ radius: 3 }),
+      rect({ x: 5, y: 5, w: 10, h: 10, fill: "#0f0" })],
+    { width: 40, height: 30, view: { zoom: 1, panX: 0, panY: 0 }, background: "#fff", rasterize: stubRaster },
+  );
+  assert.equal((svg.match(/<image /g) || []).length, 1); // exactly one raster region
+  assert.match(svg, /<rect x="5" y="5" width="10" height="10" fill="rgba\(0,255,0,1\)"/); // the above-blur rect stays vector
+});
+await test("irToSVG: magnifier lens = clipPath circle + magnify group (vector lens)", async () => {
+  const svg = await irToSVG(
+    [rect({ x: 0, y: 0, w: 100, h: 100, fill: "#7aa2f7" }),
+      magnifyBackdrop({ cx: 50, cy: 50, r: 30, magnification: 2, rimColor: "#000", rimWidth: 4 })],
+    { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } },
+  );
+  assert.match(svg, /<clipPath id="lensclip1"><circle cx="50" cy="50" r="30"\/><\/clipPath>/);
+  assert.match(svg, /clip-path="url\(#lensclip1\)"/);
+  assert.match(svg, /scale\(2\)/);                          // the magnify transform
+  assert.match(svg, /<circle cx="50" cy="50" r="30" fill="none" stroke="rgba\(0,0,0,1\)" stroke-width="4"\/>/); // rim
 });
 
 // ── benchmark scene (must stay DOM-free + deterministic) ───────────────────
@@ -312,14 +403,25 @@ test("hash01: deterministic, in [0,1)", () => {
     assert.ok(v >= 0 && v < 1, `${v} out of range`);
   }
 });
-test("benchScene: structure is stable, flattens + serializes", () => {
+await test("benchScene: structure is stable, flattens + serializes", async () => {
   const ir = benchScene(1.25, { n: 10, effects: true });
   assert.equal(ir.filter((c) => c.op === "rect").length, 10);
   assert.equal(ir.filter((c) => c.op === "blurBackdrop").length, 1);
   assert.equal(ir.filter((c) => c.op === "magnifyBackdrop").length, 1);
   assert.equal(flattenIR(ir).length > 0, true); // balanced transform stack
-  const svg = irToSVG(ir, { width: 800, height: 450, view: { zoom: 0.5, panX: 0, panY: 0 } });
-  assert.match(svg, /<polygon/); // arrowheads made it through the vector backend
+  const stubRaster = async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
+  // effects:true → the arrowhead polygons sit BELOW the blur, so the HYBRID RULE
+  // rasterizes them into the embedded <image> region (they must NOT survive as
+  // vector — that would mean the blur was skipped). The lens interior, being
+  // below the same blur, is raster too. So the vector layer is the above-blur
+  // text + lens clip + rim; the raster region is the <image>.
+  const withFx = await irToSVG(ir, { width: 800, height: 450, view: { zoom: 0.5, panX: 0, panY: 0 }, rasterize: stubRaster });
+  assert.match(withFx, /<image /);           // the blur region embedded as raster
+  assert.doesNotMatch(withFx, /<polygon/);   // arrowheads are below the blur → rasterized, not vector
+  // effects:false → no blur, so the arrowhead polygons DO survive as vector.
+  const noFx = await irToSVG(benchScene(1.25, { n: 10, effects: false }),
+    { width: 800, height: 450, view: { zoom: 0.5, panX: 0, panY: 0 } });
+  assert.match(noFx, /<polygon/);            // arrowheads made it through the vector backend
 });
 
 test("bucketFor: ceil lattice below the exact regime, exact size above, capacity clamp", () => {
