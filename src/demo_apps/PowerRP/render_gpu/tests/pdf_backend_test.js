@@ -14,9 +14,10 @@ import {
   pdfNum, cmSimilarity, rectPath, ellipsePath, pointsPath, paintOp,
   balancedSlice, magnifiedView, hasTextOp, tjHex, irToPDF, MAX_LENS_DEPTH,
   imageRefs, videoRefs, decodeDataUri, base64ToBytes, imageFormat,
-  textFaces, fontResName,
+  textFaces, fontResName, groupedTextDraws,
 } from "../pdf_backend.js";
 import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video } from "../ir.js";
+import { normalizeRichText } from "../../core/richtext.js";
 import { fontFileFor } from "../fonts.js";
 import { scenes } from "./pdf_scenes.js";
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
@@ -349,6 +350,61 @@ test("fontFileFor resolves committed basenames the loader reads", () => {
     const bytes = nodeLoadFontBytes(file);
     assert.ok(bytes.length > 1000, `${file} is a real TTF (${bytes.length} bytes)`);
   }
+});
+
+test("groupedTextDraws: same line+style clusters; style or line change splits", () => {
+  const d = (over) => ({ text: "a", x: 0, baselineY: 10, size: 12, font: "system", bold: false, italic: false, color: "#000", opacity: 1, ...over });
+  assert.equal(groupedTextDraws([d({}), d({ text: " ", x: 8 }), d({ text: "b", x: 12 })]).length, 1); // one cluster: word+space+word
+  assert.equal(groupedTextDraws([d({}), d({ bold: true, x: 8 })]).length, 2);        // bold change splits
+  assert.equal(groupedTextDraws([d({}), d({ baselineY: 30 })]).length, 2);           // new line splits
+  assert.equal(groupedTextDraws([d({}), d({ color: "#f00", x: 8 })]).length, 2);     // color change splits
+  assert.deepEqual(groupedTextDraws([]), []);
+});
+
+await atest("RICH TEXT EXTRACTION FIDELITY: verbatim text (spaces included) survives metric mismatch", async () => {
+  // THE REGRESSION (coordinator re-task, 2026-07-15): the `system` font is laid
+  // out with canvas SF Pro metrics but DRAWN as standard-14 Helvetica (no
+  // embeddable file). Helvetica is wider — an unscaled word's ink overran the
+  // next piece's position and poppler's geometric word-builder merged them:
+  // pdftotext read "PowerRPV1". The fix fits every piece's drawn ink to the
+  // LAYOUT width (per-piece Tz) inside ONE text object per line cluster.
+  // This test reproduces the mismatch with a deliberately NARROW measure
+  // (0.7 × the em — narrower than Helvetica for any word) and asserts:
+  //   1. STRUCTURE (poppler-free): one BT text object for the line; the space
+  //      is IN the show stream between the words; Tz fitting engaged.
+  //   2. EXTRACTION (pdftotext, poppler): the visible text VERBATIM including
+  //      the space. Reported-skip when poppler is absent (the in-file
+  //      precedent above; the parity suite hard-requires poppler regardless).
+  const narrowMeasure = (str, { size }) => ({ width: [...str].length * size * 0.35, ascent: 0.8 * size, descent: 0.2 * size });
+  const rich = normalizeRichText("PowerRP V1", { font: "system", size: 48, color: "#101018", bold: false });
+  const bytes = await irToPDF([
+    rect({ x: 0, y: 0, w: 640, h: 200, fill: "#ffffff" }),
+    text({ text: "PowerRP V1", x: 40, y: 40, size: 48, color: "#101018", font: "system",
+           rich, boxW: 560, boxH: 120, boxStyle: { align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 } }),
+  ], { width: 640, height: 200, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff", measureText: narrowMeasure, textAscent: 0.8 });
+  const s = latin1(bytes);
+
+  // 1. Structure: ONE text object for the one-line cluster; word+space+word
+  //    shown in stream order inside it; Tz fitting engaged for the mismatch.
+  const bt = s.match(/BT[\s\S]*?ET/g).filter((b) => b.includes("Tj"));
+  assert.equal(bt.length, 1, "one text object for the single line cluster");
+  const shows = [...bt[0].matchAll(/<([0-9A-Fa-f]+)> Tj/g)].map((m) =>
+    m[1].match(/../g).map((h) => String.fromCharCode(parseInt(h, 16))).join(""));
+  assert.deepEqual(shows, ["PowerRP", " ", "V1"], "pieces (incl. the SPACE) shown verbatim in stream order");
+  assert.ok(/[\d.]+ Tz/.test(bt[0]), "Tz geometric fit engaged under metric mismatch");
+
+  // 2. Extraction: pdftotext reproduces the visible text verbatim.
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "powerrp-richtext-"));
+  const pdfPath = join(dir, "extract.pdf");
+  writeFileSync(pdfPath, Buffer.from(bytes));
+  let txt = "";
+  try { txt = execFileSync("pdftotext", [pdfPath, "-"]).toString(); }
+  catch { console.log("    (pdftotext not on PATH — skipping the extraction assertion; install poppler)"); return; }
+  assert.ok(txt.includes("PowerRP V1"), `pdftotext reproduces "PowerRP V1" verbatim incl. the space (got ${JSON.stringify(txt.trim().slice(0, 40))})`);
 });
 
 console.log(`\npdf_backend tests: ${passed} passed`);

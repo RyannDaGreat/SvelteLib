@@ -188,8 +188,23 @@ export function magnifiedView(view, centerWorld, m, originWorld = centerWorld) {
  * @example // tjHex(helvetica, "Hi") → "<4869>"
  */
 export function tjHex(font, text) {
+  return font.encodeText(encodableText(font, text)).toString();
+}
+
+/**
+ * Near-pure function (console.error on unencodable text — reported, then
+ * degraded to "?"). The exact string a font can show. Shared by tjHex (the
+ * hex it encodes) and textGroupOps (the width the next piece is positioned
+ * by), so the shown glyphs and the advance computed for them can never
+ * disagree.
+ *
+ * @example // encodableText(helvetica, "Hi") → "Hi"
+ * @example // encodableText(helvetica, "Hi\u{1F600}") → "Hi?" (+ console.error)
+ */
+function encodableText(font, text) {
   try {
-    return font.encodeText(text).toString();
+    font.encodeText(text);
+    return text;
   } catch (e) {
     const kept = [...text].map((ch) => {
       try {
@@ -200,7 +215,7 @@ export function tjHex(font, text) {
       }
     }).join("");
     console.error(`pdf_backend: text "${text}" has characters outside the font encoding — substituted "?" (${e.message})`);
-    return font.encodeText(kept).toString();
+    return kept;
   }
 }
 
@@ -778,11 +793,15 @@ function emitVector(cmd, world, out, ctx) {
       if (cmd.rich && ctx.measureText) {
         // RICH TEXT: run the SHARED pure layout (core/richtext) with the PDF's
         // OWN measure seam (the SAME canvas-backed metrics the GPU atlas uses —
-        // the parity lever), then emit per-run Tf/Tj at the laid-out baselines
-        // and underline/strike as filled rects. ONE layout, two backends.
+        // the parity lever), then emit each same-style LINE CLUSTER as ONE text
+        // object with a TJ array (groupedTextDraws/textGroupOps): pieces (words
+        // AND their spaces) verbatim and contiguous in one show sequence so
+        // pdftotext reproduces the visible text EXACTLY — spaces included —
+        // while TJ adjustments pin every piece to the layout's x (GPU parity).
+        // Underline/strike follow as filled rects.
         const draws = richTextDraws(cmd, ctx.richMeasure());
-        for (const d of draws.textDraws) {
-          ops.push(...textRunOps(d.text, d.x, d.baselineY, d.size, d.bold, d.italic, parseColor(d.color), d.opacity, d.font, ctx));
+        for (const g of groupedTextDraws(draws.textDraws)) {
+          ops.push(...textGroupOps(g, ctx));
         }
         for (const ln of draws.lines) {
           // Decoration bar: a filled rect in local space (crisp, rotates/scales
@@ -895,6 +914,99 @@ export function imagePlacementOps(cmd, name) {
  * real italic (canvas2D uses it on the GPU) will differ from this fixed oblique
  * — a documented italic parity delta for those faces. */
 const PDF_OBLIQUE_SHEAR = 0.2126; // tan(12°)
+
+/**
+ * Pure function. Groups CONSECUTIVE rich-text draws (core/richtext.richTextDraws
+ * output — already ordered line-by-line, left-to-right) that sit on the SAME
+ * baseline with the SAME style into clusters a single TJ array can show.
+ *
+ * WHY (the text-EXTRACTION cornerstone): emitting each laid-out piece (word /
+ * space) as its own absolutely-positioned Tj block breaks pdftotext whenever
+ * canvas metrics ≠ the PDF font's metrics (the `system` font measures SF Pro
+ * but draws Helvetica): the wider drawn word overruns the next piece's
+ * position, poppler's GEOMETRIC word-builder sees overlapping clusters, and the
+ * isolated space fragment is eaten → "PowerRPV1". Inside ONE text object the
+ * space CHARACTER itself separates the words in stream order — extraction is
+ * verbatim by construction, immune to metric drift.
+ *
+ * Args:
+ *   textDraws (object[]): [{text, x, baselineY, size, color, bold, italic,
+ *     font, opacity}] in layout order
+ *
+ * Returns:
+ *   object[][]: clusters of consecutive same-line same-style draws
+ *
+ * @example groupedTextDraws([{text: "a", baselineY: 10, size: 12, font: "system", bold: false, italic: false, color: "#000", opacity: 1, x: 0}, {text: " ", baselineY: 10, size: 12, font: "system", bold: false, italic: false, color: "#000", opacity: 1, x: 8}]).length // 1 (same line+style → one cluster)
+ * @example groupedTextDraws([{text: "a", baselineY: 10, size: 12, font: "system", bold: false, italic: false, color: "#000", opacity: 1, x: 0}, {text: "b", baselineY: 10, size: 12, font: "system", bold: true, italic: false, color: "#000", opacity: 1, x: 8}]).length // 2 (bold change splits)
+ * @example groupedTextDraws([{text: "a", baselineY: 10, size: 12, font: "system", bold: false, italic: false, color: "#000", opacity: 1, x: 0}, {text: "b", baselineY: 30, size: 12, font: "system", bold: false, italic: false, color: "#000", opacity: 1, x: 0}]).length // 2 (new line splits)
+ * @example groupedTextDraws([]) // []
+ */
+export function groupedTextDraws(textDraws) {
+  const groups = [];
+  let key = null;
+  for (const d of textDraws) {
+    const k = `${d.baselineY}|${d.size}|${d.font}|${d.bold ? 1 : 0}|${d.italic ? 1 : 0}|${d.color}|${d.opacity}`;
+    if (key !== k) { groups.push([]); key = k; }
+    groups[groups.length - 1].push(d);
+  }
+  return groups;
+}
+
+/**
+ * Command (may register an ExtGState via ctx). Operators drawing ONE same-style
+ * line cluster of rich-text pieces as a SINGLE text object: BT / Tf / color,
+ * then per piece [Tz] + Tm (y-flip + oblique skew when italic) + Tj, then ET.
+ *
+ * TWO guarantees, both required by the extraction cornerstone ("pdftotext
+ * reproduces the visible text VERBATIM including spaces"):
+ *   1. STREAM CONTIGUITY — all of a line-cluster's characters (words AND their
+ *      space pieces) are shown in order inside ONE text object, so stream-order
+ *      extractors read them verbatim.
+ *   2. GEOMETRIC FIDELITY — each piece's drawn ink spans EXACTLY the layout's
+ *      width: `Tz` (horizontal scaling) is set per piece to layoutWidth /
+ *      naturalWidth, and an absolute `Tm` positions the piece at the layout's
+ *      x. poppler's DEFAULT extractor rebuilds words purely from glyph
+ *      geometry — when canvas metrics ≠ the PDF face's metrics (the `system`
+ *      font measures SF Pro but draws Helvetica), an unscaled word's ink
+ *      overruns the next word's position and poppler merges them
+ *      ("PowerRPV1"); Tz pins both ENDS of every piece so the inter-word gaps
+ *      the extractor sees ARE the layout's gaps. (Rejected alternatives: TJ
+ *      pen adjustments — pin only piece STARTS, the overrunning ink still
+ *      merges words, reproduced; Tw word-spacing — only applies to single-byte
+ *      code 32, dead on Identity-H CID-embedded TTFs.)
+ * For committed fonts canvas and PDF share the TTF, so Tz ≈ 100 (a no-op
+ * emitted only when it differs after pdfNum rounding).
+ */
+function textGroupOps(group, ctx) {
+  const d0 = group[0];
+  const font = ctx.font(d0.font, d0.bold);
+  const [r, g, b, a] = parseColor(d0.color);
+  const ops = [];
+  const gs = ctx.gsAlphaPair(a * (d0.opacity ?? 1), 1);
+  if (gs) ops.push(gs);
+  ops.push(`${pdfNum(r)} ${pdfNum(g)} ${pdfNum(b)} rg`);
+  ops.push("BT", `${ctx.fontName(d0.font, d0.bold)} ${pdfNum(d0.size)} Tf`);
+  // Italic skews via the Tm `c` slot (see textRunOps); y-flip keeps glyphs
+  // upright in the page's y-down space.
+  const c = d0.italic ? -PDF_OBLIQUE_SHEAR : 0;
+  const style = { size: d0.size, bold: d0.bold, font: d0.font, italic: d0.italic };
+  let lastTz = "100"; // PDF default horizontal scaling
+  for (const d of group) {
+    const shown = encodableText(font, d.text);
+    // Fit the piece's drawn ink to the LAYOUT width (the same measure the GPU
+    // laid out with — ctx.measureText is the shared seam). measure the ORIGINAL
+    // text (that width is where the layout put the next piece) but the PDF
+    // font's natural width of what is SHOWN (encodableText substitution).
+    const layoutW = ctx.measureText(d.text, style).width;
+    const naturalW = font.widthOfTextAtSize(shown, d0.size);
+    const tz = naturalW > 0 ? pdfNum((layoutW / naturalW) * 100) : "100";
+    if (tz !== lastTz) { ops.push(`${tz} Tz`); lastTz = tz; }
+    ops.push(`1 0 ${pdfNum(c)} -1 ${pdfNum(d.x)} ${pdfNum(d.baselineY)} Tm`);
+    ops.push(`${font.encodeText(shown).toString()} Tj`);
+  }
+  ops.push("ET");
+  return ops;
+}
 
 /** Command (may register an ExtGState via ctx). Operators drawing ONE text run's
  * glyphs: BT / Tf / color / Tm (y-flip, + oblique skew when italic) / Tj / ET.
