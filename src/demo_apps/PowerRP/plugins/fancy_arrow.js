@@ -53,19 +53,22 @@ export const fancyArrowPlugin = {
     tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
     color: "#1a1a2e", opacity: 1,
   },
+  // `category` groups rows into the Inspector's collapsible accordion regions
+  // (manifest Round 12 "PROPERTY CATEGORIES"). Endpoints/z → positioning;
+  // color/opacity → formatting; tip/shaft geometry → an "arrow" extras category.
   inspector: [
-    { key: "from.x", label: "From X", kind: "number" },
-    { key: "from.y", label: "From Y", kind: "number" },
-    { key: "to.x", label: "To X", kind: "number" },
-    { key: "to.y", label: "To Y", kind: "number" },
-    { key: "tipLength", label: "Tip length", kind: "number", min: 0 },
-    { key: "tipWidth", label: "Tip width", kind: "number", min: 0 },
-    { key: "tipDimple", label: "Tip dimple", kind: "number", min: 0 },
-    { key: "startWidth", label: "Start width", kind: "number", min: 0 },
-    { key: "endWidth", label: "End width", kind: "number", min: 0 },
-    { key: "color", label: "Color", kind: "color" },
-    { key: "z", label: "Z order", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
+    { key: "from.x", label: "From X", kind: "number", category: "positioning" },
+    { key: "from.y", label: "From Y", kind: "number", category: "positioning" },
+    { key: "to.x", label: "To X", kind: "number", category: "positioning" },
+    { key: "to.y", label: "To Y", kind: "number", category: "positioning" },
+    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "color", label: "Color", kind: "color", category: "formatting" },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    { key: "tipLength", label: "Tip length", kind: "number", min: 0, category: "arrow" },
+    { key: "tipWidth", label: "Tip width", kind: "number", min: 0, category: "arrow" },
+    { key: "tipDimple", label: "Tip dimple", kind: "number", min: 0, category: "arrow" },
+    { key: "startWidth", label: "Start width", kind: "number", min: 0, category: "arrow" },
+    { key: "endWidth", label: "End width", kind: "number", min: 0, category: "arrow" },
   ],
   /**
    * Near-pure function (console.errors ONCE per unique degenerate-geometry

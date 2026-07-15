@@ -58,16 +58,19 @@ export const magnifierPlugin = {
     type: "magnifier", x: 270, y: 170, w: 160, h: 160, z: 100,
     magnification: 2.5, rimColor: "#1a1a2e", rimWidth: 4, supersample: true,
   },
+  // `category` groups rows into the Inspector's collapsible accordion regions
+  // (manifest Round 12 "PROPERTY CATEGORIES"). The lens's optics/rim group into
+  // a "lens" category; position/z into "positioning".
   inspector: [
-    { key: "x", label: "X", kind: "number" },
-    { key: "y", label: "Y", kind: "number" },
-    { key: "w", label: "Width", kind: "number", min: 0 },
-    { key: "h", label: "Height", kind: "number", min: 0 },
-    { key: "magnification", label: "Magnification", kind: "number", min: 0.01 },
-    { key: "supersample", label: "Supersample", kind: "checkbox" },
-    { key: "rimColor", label: "Rim color", kind: "color" },
-    { key: "rimWidth", label: "Rim width", kind: "number", min: 0 },
-    { key: "z", label: "Z order", kind: "number" },
+    { key: "x", label: "X", kind: "number", category: "positioning" },
+    { key: "y", label: "Y", kind: "number", category: "positioning" },
+    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
+    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
+    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "magnification", label: "Magnification", kind: "number", min: 0.01, category: "lens" },
+    { key: "supersample", label: "Supersample", kind: "checkbox", category: "lens" },
+    { key: "rimColor", label: "Rim color", kind: "color", category: "lens" },
+    { key: "rimWidth", label: "Rim width", kind: "number", min: 0, category: "lens" },
   ],
   /** Pure function. One lens op — the backend samples or re-renders its own backdrop per `supersample`. */
   emit(s) {

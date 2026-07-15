@@ -20,19 +20,21 @@ export const circlePlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     fill: "#f7768e", stroke: "#1a1a2e", strokeWidth: 2, opacity: 1,
   },
+  // `category` groups rows into the Inspector's collapsible accordion regions
+  // (manifest Round 12 "PROPERTY CATEGORIES").
   inspector: [
-    { key: "x", label: "X", kind: "number" },
-    { key: "y", label: "Y", kind: "number" },
-    { key: "w", label: "Width", kind: "number", min: 0 },
-    { key: "h", label: "Height", kind: "number", min: 0 },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees" }, // core stores radians; field shows degrees (round-10 ruling)
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number" }, // world pivot; default self.anchors.center
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number" },
-    { key: "z", label: "Z order", kind: "number" },
-    { key: "fill", label: "Fill", kind: "color" },
-    { key: "stroke", label: "Stroke", kind: "color" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0 },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
+    { key: "x", label: "X", kind: "number", category: "positioning" },
+    { key: "y", label: "Y", kind: "number", category: "positioning" },
+    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
+    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
+    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" }, // core stores radians; field shows degrees (round-10 ruling)
+    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" }, // world pivot; default self.anchors.center
+    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
+    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "fill", label: "Fill", kind: "color", category: "formatting" },
+    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
+    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
   ],
   /** Pure function. State → display-list commands (local space) — THE render API. */
   emit(s) {

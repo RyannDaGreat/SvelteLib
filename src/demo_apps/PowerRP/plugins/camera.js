@@ -22,12 +22,14 @@ export const cameraPlugin = {
     type: "camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1,
     background: "#ffffff", // the view's background comes FROM the camera
   },
+  // `category` groups rows into the Inspector's collapsible accordion regions
+  // (manifest Round 12 "PROPERTY CATEGORIES").
   inspector: [
-    { key: "x", label: "X", kind: "number" },
-    { key: "y", label: "Y", kind: "number" },
-    { key: "w", label: "Width", kind: "number", min: 0 },
-    { key: "h", label: "Height", kind: "number", min: 0 },
-    { key: "background", label: "Background", kind: "color" },
+    { key: "x", label: "X", kind: "number", category: "positioning" },
+    { key: "y", label: "Y", kind: "number", category: "positioning" },
+    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
+    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
+    { key: "background", label: "Background", kind: "color", category: "formatting" },
   ],
   emit() {
     // The camera renders NOTHING (user ruling: its own dashed border doubled

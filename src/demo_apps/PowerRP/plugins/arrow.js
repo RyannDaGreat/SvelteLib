@@ -44,19 +44,22 @@ export const arrowPlugin = {
   // the head LENGTH — manifest Round 11). Applied document-wide at the load
   // boundary by core/document.withLegacyKeysRenamed; reported loudly there.
   legacyKeys: { headSize: "headLength" },
+  // `category` groups rows into the Inspector's collapsible accordion regions
+  // (manifest Round 12 "PROPERTY CATEGORIES"). Endpoints/z → positioning;
+  // stroke/opacity → formatting; head geometry → an "arrow" extras category.
   inspector: [
     // Endpoint rows are equation-aware number fields (dotted keys = nested
     // paths) — the Property Panel shows "@…" bindings as editable equations.
-    { key: "from.x", label: "From X", kind: "number" },
-    { key: "from.y", label: "From Y", kind: "number" },
-    { key: "to.x", label: "To X", kind: "number" },
-    { key: "to.y", label: "To Y", kind: "number" },
-    { key: "color", label: "Color", kind: "color" },
-    { key: "width", label: "Width", kind: "number", min: 0 },
-    { key: "headLength", label: "Head length", kind: "number", min: 0 },
-    { key: "headWidth", label: "Head width", kind: "number", min: 0 },
-    { key: "z", label: "Z order", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
+    { key: "from.x", label: "From X", kind: "number", category: "positioning" },
+    { key: "from.y", label: "From Y", kind: "number", category: "positioning" },
+    { key: "to.x", label: "To X", kind: "number", category: "positioning" },
+    { key: "to.y", label: "To Y", kind: "number", category: "positioning" },
+    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "color", label: "Color", kind: "color", category: "formatting" },
+    { key: "width", label: "Width", kind: "number", min: 0, category: "formatting" },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow" },
+    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow" },
   ],
   /**
    * Pure function. State → display-list commands. Endpoints are evaluated

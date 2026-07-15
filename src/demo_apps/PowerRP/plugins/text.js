@@ -14,15 +14,18 @@ export const textPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     text: "Text", size: 36, color: "#1a1a2e", bold: false, opacity: 1,
   },
+  // `category` groups rows into the Inspector's collapsible accordion regions
+  // (manifest Round 12 "PROPERTY CATEGORIES"). The "text" category holds the
+  // content/typography; position lives in "positioning", the rest in "formatting".
   inspector: [
-    { key: "text", label: "Text", kind: "text" },
-    { key: "x", label: "X", kind: "number" },
-    { key: "y", label: "Y", kind: "number" },
-    { key: "size", label: "Size", kind: "number", min: 0 },
-    { key: "color", label: "Color", kind: "color" },
-    { key: "bold", label: "Bold", kind: "checkbox" },
-    { key: "z", label: "Z order", kind: "number" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
+    { key: "text", label: "Text", kind: "text", category: "text" },
+    { key: "x", label: "X", kind: "number", category: "positioning" },
+    { key: "y", label: "Y", kind: "number", category: "positioning" },
+    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "size", label: "Size", kind: "number", min: 0, category: "text" },
+    { key: "bold", label: "Bold", kind: "checkbox", category: "text" },
+    { key: "color", label: "Color", kind: "color", category: "formatting" },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
   ],
   /** Pure function. State → display-list commands (local space, top-left text origin). */
   emit(s) {

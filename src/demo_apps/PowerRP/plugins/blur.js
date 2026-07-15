@@ -15,10 +15,12 @@ export const blurPlugin = {
   // blur needs no canSkip hook of its own (see compositor.js canSkipNode).
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: true },
   defaults: { type: "blur", z: 50, blur: 6, opacity: 1 },
+  // `category` groups rows into the Inspector's collapsible accordion regions
+  // (manifest Round 12 "PROPERTY CATEGORIES").
   inspector: [
-    { key: "blur", label: "Blur (world px)", kind: "number", min: 0 },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
-    { key: "z", label: "Z order", kind: "number" },
+    { key: "blur", label: "Blur (world px)", kind: "number", min: 0, category: "blur" },
+    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    { key: "z", label: "Z order", kind: "number", category: "positioning" },
   ],
   /** Pure function. A backdrop-blur op (no geometry — blurs the composite below this z). */
   emit(s) {

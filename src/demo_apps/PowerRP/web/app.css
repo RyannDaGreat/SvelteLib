@@ -598,6 +598,15 @@ body,
 
 .inspector .item-actions .btn {
   flex: 1;
+  gap: var(--a-sp-1); /* icon + label sit side by side (Hide all) */
+}
+
+/* The set-Purge button is icon-only — it shrinks to a square instead of
+   stretching like the labeled Hide-all button beside it. */
+.inspector .item-actions .btn.danger {
+  flex: none;
+  width: var(--a-control-h);
+  padding: 0;
 }
 
 /* Multi-select placeholder (minimal — the full intersection Property Panel is
@@ -963,6 +972,147 @@ body,
   color: var(--fg-dim);
   padding: var(--a-sp-4);
   text-align: center;
+}
+
+/* The not-created-yet note under grayed rows reads as an inline caption, not a
+   centered empty state. */
+.inspector .not-created-note {
+  padding: var(--a-sp-2) 0 0;
+  text-align: left;
+}
+
+/* ── Name row + Purge trash-can (manifest Round 12) ────────────────────────
+   The Purge action is a trash-can .btn-icon living in the NAME row's trailing
+   keyframe-controls column (the column every row reserves for alignment), so
+   the name + destructive action share ONE row, kept apart from the property
+   rows. Danger color from the .btn.danger / --a-guide precedent. The kf-controls
+   group is left-aligned by default; the trash hugs the value's right edge. */
+.inspector .name-actions {
+  justify-content: flex-start;
+}
+
+.inspector .name-actions .btn-icon.danger {
+  color: var(--a-guide);
+}
+
+/* ── Property categories (collapsible accordion; manifest Round 12) ─────────
+   Each category is a header button + its rows. The header spans the full panel
+   width, square, transparent (chrome, not a control) with a hover wash; the
+   chevron + title read as a section label. Collapsed categories render no rows. */
+.inspector .prop-category {
+  margin-top: var(--a-sp-2);
+}
+
+.inspector .cat-header {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  width: 100%;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-1);
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  border-bottom: var(--a-hairline) solid var(--border); /* section seam, hairline like the panel seams */
+  cursor: pointer;
+  font-size: var(--a-font-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.inspector .cat-header:hover {
+  background: var(--a-hover-bg);
+  color: var(--fg);
+}
+
+.inspector .cat-title {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.inspector .cat-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  margin-top: var(--a-sp-1);
+}
+
+/* ── BooleanField (the boolean row control; manifest Round 12 visibility) ───
+   A single square toggle at the standardized control size. The ON/OFF STATE is
+   shown by the ICON only — never a background fill (the toggle-buttons ruling).
+   It sits at the left of the value column like every other value control. */
+.inspector .boolfield,
+.varspanel .boolfield {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.inspector .boolbtn,
+.varspanel .boolbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-control-h);
+  height: var(--a-control-h);
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  cursor: pointer;
+}
+
+/* ON = the icon takes the full foreground; OFF stays dim. No fill either way. */
+.inspector .boolbtn.on,
+.varspanel .boolbtn.on {
+  color: var(--fg);
+}
+
+.inspector .boolbtn:hover:not(:disabled),
+.varspanel .boolbtn:hover:not(:disabled) {
+  background: var(--a-hover-bg);
+}
+
+.inspector .boolbtn:disabled,
+.varspanel .boolbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── Disabled (grayed) rows — a not-yet-created item's display (Round 12B) ──
+   The whole row dims; its controls are non-interactive. The visibility row is
+   NOT rendered through this (it stays actionable, per the ruling — it renders as
+   its own always-enabled row above the categories). */
+.inspector .row-disabled {
+  opacity: 0.5;
+}
+
+.inspector .row-disabled .disabled-val {
+  width: 100%;
+  min-width: 0;
+  height: var(--a-control-h);
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font-size: var(--a-font-md);
+}
+
+.inspector .color-control.control-disabled {
+  pointer-events: none;
+}
+
+/* ── Transition target rows (manifest Round 12; the type + enum dropdowns) ──
+   The type row + any `select` (enum) rows reuse the shared row grid; the
+   dropdown fills the value column like the item picker does. Transition rows
+   carry NO keyframe diamonds (config, not keyframable), so the trailing column
+   is empty but reserved for alignment. */
+.inspector .transition-type-row .dd,
+.inspector .row .dd {
+  width: 100%;
+  --dd-radius: 0;
 }
 
 /* ── Variables Panel rows ─────────────────────────────────────────────────
