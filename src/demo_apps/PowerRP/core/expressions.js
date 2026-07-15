@@ -46,10 +46,15 @@
  * pure(Document, [[delta, alpha]]) — evaluation is deterministic.
  *
  * The "closest" computed anchor needs a toward-point (closest to WHAT?), so
- * it is resolved in a two-pass fixpoint exactly like V1's resolveEndpoints:
- * pass 1 evaluates everything (closest refs use the owner plugin's
- * closestToward() with still-unevaluated coords roughed to 0), pass 2
- * re-evaluates only the closest-bearing slots with final numbers.
+ * after the main pass (closest refs use the owner plugin's closestToward()
+ * with still-unevaluated coords roughed to 0) the closest-bearing slots are
+ * re-evaluated in Gauss-Seidel sweeps UNTIL the estimated residual error
+ * drops under CLOSEST_EPS_PX. Mutual-closest pairs (both endpoints computed,
+ * each aiming at the other) converge geometrically, and the contraction
+ * weakens as the two shapes approach tangency — probe-measured: a 1px gap
+ * needs ~82 sweeps where ordinary layouts need 2-4 — so a FIXED sweep count
+ * cannot hold the tolerance (the original two fixed sweeps left a visible
+ * ~10px error at a 1px gap).
  */
 
 import { isTree, copied, getPath, setPath, leaves } from "./deltas.js";
@@ -469,6 +474,16 @@ const loggedErrors = new Set(); // messages already console.error'd (once each)
 // The geometry a base-frame self anchor (rotation pivot) reads — never
 // rotation or rotationAnchor, so the pivot is a stable fixed point.
 const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
+// Mutual-closest fixpoint tolerance: the residual-error bound the sweeps
+// converge to. LINKED PRECEDENT: the manifest's own convergence claim
+// ("mutual-closest converges to <0.01px") — now enforced, not assumed.
+const CLOSEST_EPS_PX = 0.01;
+// Sweep cap. Probe-measured: the worst legitimate geometry (two circles
+// 0.1px from tangent) settles in ~130 sweeps; ordinary layouts take 2-4.
+// 1000 gives order-of-magnitude headroom at negligible cost (a sweep is a
+// few trig evals per closest slot). Hitting the cap is REPORTED, never
+// silent. (Safety bound, not tuned behavior — PENDING USER RATIFICATION.)
+const MAX_CLOSEST_SWEEPS = 1000;
 
 /**
  * Near-pure function (memoized on state identity; console.errors each NEW
@@ -487,9 +502,11 @@ const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
  *   - property ref  → that item-property slot (if it is an equation)
  *   - anchor ref    → ALL equation slots of the referenced item
  *     (conservative: anchors read the item's transform + bbox)
- *   - "closest" anchors additionally resolve in a two-pass fixpoint using
- *     the owner plugin's closestToward(state, pathWithinItem) hook — the
- *     arrow supplies its other endpoint (V1 resolveEndpoints semantics).
+ *   - "closest" anchors additionally resolve by fixpoint sweeps to a
+ *     < CLOSEST_EPS_PX residual (V1 resolveEndpoints semantics, now
+ *     convergence-gated) using the owner plugin's
+ *     closestToward(state, pathWithinItem) hook — the arrow supplies its
+ *     other endpoint.
  *
  * @example evaluateState({vars: {speed: 5}, items: {a1: {type: "rect", x: "speed * 2"}}}, registry).state.items.a1.x // 10
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
@@ -685,12 +702,41 @@ function computeEvaluatedState(state, registry) {
     }
   }
 
-  // 6. Closest fixpoint passes (see module docs). Two sweeps after the rough
-  //    pass — one more than V1's resolveEndpoints, so mutual-closest pairs
-  //    converge tightly instead of carrying pass-1 roughness.
-  for (let sweep = 0; sweep < 2; sweep++)
-    for (const slot of slots.values())
-      if (slot.hasClosest && !errors.has(slot.key)) evalSlot(slot);
+  // 6. Closest fixpoint sweeps (see module docs). Gauss-Seidel: each sweep
+  //    re-evaluates every closest-bearing slot against ever-fresher numbers.
+  //    STOP RULE: successive sweep movements shrink geometrically (ratio r),
+  //    so the remaining error is ≈ moved·r/(1−r) — movement ALONE understates
+  //    the residual exactly when contraction is weak (nearly tangent shapes),
+  //    which is why the estimate, not the raw movement, is compared against
+  //    CLOSEST_EPS_PX. Ordinary layouts stop after 2 sweeps (same cost as the
+  //    old fixed-two); near-tangency runs as long as it needs under the cap.
+  let prevMoved = null;
+  for (let sweep = 0; sweep < MAX_CLOSEST_SWEEPS; sweep++) {
+    let moved = 0;
+    for (const slot of slots.values()) {
+      if (!slot.hasClosest || errors.has(slot.key)) continue;
+      const before = getPath(out, slot.path);
+      evalSlot(slot);
+      const after = getPath(out, slot.path);
+      if (typeof before === "number" && typeof after === "number")
+        moved = Math.max(moved, Math.abs(after - before));
+    }
+    if (moved === 0) break; // exact fixpoint (or no closest slots at all)
+    if (prevMoved !== null) {
+      const r = Math.min(moved / prevMoved, 0.999); // clamp: early transients can overshoot
+      if ((moved * r) / (1 - r) < CLOSEST_EPS_PX) break;
+    }
+    prevMoved = moved;
+    if (sweep === MAX_CLOSEST_SWEEPS - 1) {
+      // Degenerate geometry (e.g. exactly tangent circles) may never meet the
+      // tolerance: keep the best iterate, but NEVER silently — report once.
+      const message = `closest-anchor fixpoint still moving after ${MAX_CLOSEST_SWEEPS} sweeps — keeping the last iterate (near-degenerate geometry?)`;
+      if (!loggedErrors.has(message)) {
+        loggedErrors.add(message);
+        console.error(`PowerRP expression warning: ${message}`);
+      }
+    }
+  }
 
   return { state: out, errors };
 }

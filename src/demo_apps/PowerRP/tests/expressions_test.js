@@ -284,13 +284,63 @@ test("evaluateState: mutual closest (both endpoints computed) converges", () => 
   };
   const { state: s, errors } = evaluateState(state, registry);
   assert.equal(errors.size, 0);
-  // The two-pass fixpoint (V1 resolveEndpoints semantics) converges
-  // geometrically, not exactly — tolerance reflects one remaining iteration.
+  // Convergence-gated sweeps (residual estimate < CLOSEST_EPS_PX) — the
+  // fixed-two-sweep version met this only by luck of the easy geometry.
   const EPS = 0.01;
   approx(s.items.ar.from.x, 20, EPS); // right edge of c1, facing c2
   approx(s.items.ar.to.x, 200, EPS); // left edge of c2, facing c1
   approx(s.items.ar.from.y, 10, EPS);
   approx(s.items.ar.to.y, 10, EPS);
+});
+test("evaluateState: NEARLY-TANGENT mutual closest converges (weak contraction)", () => {
+  // Two 100px circles 1px apart. The closest-point mapping loses contraction
+  // near tangency (~82 sweeps needed — probe-measured); the old FIXED two
+  // sweeps left a visible ~10px error here. Analytic fixpoint: both points
+  // on the center line — from = right of c1 (100, 50), to = left of c2
+  // (101, 50).
+  const state = {
+    items: {
+      c1: { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100 },
+      c2: { ...circlePlugin.defaults, x: 101, y: 0, w: 100, h: 100 },
+      ar: {
+        ...arrowPlugin.defaults,
+        from: { x: "@c1_closest.x", y: "@c1_closest.y" },
+        to: { x: "@c2_closest.x", y: "@c2_closest.y" },
+      },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  const EPS = 0.02; // enforced residual bound 0.01 + estimator slack
+  approx(s.items.ar.from.x, 100, EPS);
+  approx(s.items.ar.from.y, 50, EPS);
+  approx(s.items.ar.to.x, 101, EPS);
+  approx(s.items.ar.to.y, 50, EPS);
+});
+test("evaluateState: DEGENERATE tangency hits the sweep cap LOUDLY, result stays sane", () => {
+  // 0.1px gap: asymptotic contraction ~0.996/sweep — certifying 0.01px would
+  // take thousands of sweeps, so the cap fires (reported, never silent) and
+  // the best iterate is kept. The residual is sub-visual (< 0.1px).
+  const state = {
+    items: {
+      c1: { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100 },
+      c2: { ...circlePlugin.defaults, x: 100.1, y: 0, w: 100, h: 100 },
+      ar: {
+        ...arrowPlugin.defaults,
+        from: { x: "@c1_closest.x", y: "@c1_closest.y" },
+        to: { x: "@c2_closest.x", y: "@c2_closest.y" },
+      },
+    },
+  };
+  let result;
+  const logged = capturedErrors(() => { result = evaluateState(state, registry); });
+  assert.equal(result.errors.size, 0); // a slow fixpoint is not a slot error
+  assert.ok(logged.some((m) => m.includes("closest-anchor fixpoint still moving")),
+    `expected the loud sweep-cap warning, got: ${JSON.stringify(logged)}`);
+  approx(result.state.items.ar.from.x, 100, 0.1);
+  approx(result.state.items.ar.from.y, 50, 0.1);
+  approx(result.state.items.ar.to.x, 100.1, 0.1);
+  approx(result.state.items.ar.to.y, 50, 0.1);
 });
 test("evaluateState: cycles are LOUD (errors + console + fallback, no NaN)", () => {
   const state = {

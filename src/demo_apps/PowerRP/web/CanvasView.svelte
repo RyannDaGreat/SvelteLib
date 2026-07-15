@@ -112,7 +112,14 @@
   let sizeIndicators = $state([]);
   // Anchor under the pointer → immediate SVG-native tooltip naming it
   // (HTML Tooltip can't nest inside <svg>). {label, x, y} in world coords.
+  // During an ENDPOINT drag this is the live bind candidate (manifest Anchor
+  // UX: the nearest bindable anchor shows its referencable name mid-drag).
   let hoverAnchor = $state(null);
+  // Computed ("dynamic") anchor candidate during an endpoint drag — a point
+  // that is a live FUNCTION (the closest-point-on-perimeter tracking the
+  // dragged endpoint), not a fixed preset: rendered as a # glyph, vs the
+  // preset anchors' X. {x, y} world coords, or null.
+  let dynamicAnchor = $state(null);
   let drag = null; // non-reactive drag bookkeeping
 
   // Repaint whenever anything visible changes — INCLUDING the container size
@@ -294,6 +301,7 @@
       startY: hit.state.y ?? 0,
       axis: null,
     };
+    hoverAnchor = null; // a hover tip must not linger frozen through the drag
     app.dragging = true;
   }
 
@@ -408,6 +416,7 @@
       west: h.includes("l"), east: h.includes("r"), north: h.includes("t"), south: h.includes("b"),
       rotated: Math.abs((node.state.rotation ?? 0) % (2 * Math.PI)) > 1e-9,
     };
+    hoverAnchor = null; // a hover tip must not linger frozen through the drag
     app.dragging = true;
   }
 
@@ -548,10 +557,12 @@
     if (!node) return;
     e.stopPropagation();
     overlayEl.setPointerCapture(e.pointerId);
-    // Remember whether the anchors toggle was already on: endpoint drags show
-    // anchors while they want them, but the TOGGLE (not the drag) decides
-    // whether binding happens — and we restore visibility on pointer-up.
-    drag = { kind: "endpoint", itemId: node.itemId, which, anchorsWereVisible: app.anchorsVisible };
+    // The anchors TOGGLE alone decides glyph visibility and binding — an
+    // endpoint drag never touches it ("toggle anchors means toggle anchors
+    // PERIOD", manifest Anchor UX). Live bind feedback flows through
+    // hoverAnchor + dynamicAnchor, set per-move in endpointDrag.
+    hoverAnchor = null; // pre-drag hover tip must not linger stale
+    drag = { kind: "endpoint", itemId: node.itemId, which };
     app.dragging = true;
   }
 
@@ -564,24 +575,36 @@
     // THE UNIFICATION: binding WRITES EQUATIONS — dropping on an anchor sets
     // from/to x/y to "@<itemId>_<anchorId>.x"/".y" (anchors are variables).
     let xy = { x: w.x, y: w.y };
+    // Live bind feedback (manifest Anchor UX): every move re-decides the
+    // candidate; the tooltip names EXACTLY what a drop right now would bind
+    // (or clears when the drop would write plain numbers).
+    hoverAnchor = null;
+    dynamicAnchor = null;
     if (app.anchorsVisible) {
       const nodes = app.nodes().filter((n) => n.itemId !== drag.itemId);
       let best = null;
       for (const n of nodes)
         for (const a of nodeAnchors(n)) {
           const d = Math.hypot(a.x - w.x, a.y - w.y);
-          if (d <= tol && (!best || d < best.d)) best = { d, ref: `@${n.itemId}_${a.id}` };
+          if (d <= tol && (!best || d < best.d)) best = { d, itemId: n.itemId, anchorId: a.id, x: a.x, y: a.y };
         }
-      if (best) xy = { x: `${best.ref}.x`, y: `${best.ref}.y` };
-      else {
+      if (best) {
+        xy = { x: `@${best.itemId}_${best.anchorId}.x`, y: `@${best.itemId}_${best.anchorId}.y` };
+        hoverAnchor = { label: app.anchorName(best.itemId, best.anchorId), x: best.x, y: best.y };
+      } else {
         // "closest" computed anchor binds only when the pointer is within the
         // SAME threshold of the perimeter point it would produce.
         const hit = pickNode(nodes, w.x, w.y);
         if (hit?.plugin.closestAnchor) {
           const local = hit.plugin.closestAnchor(hit.state, w.x, w.y, hit.world);
           const p = T.apply(hit.world, local.x, local.y);
-          if (Math.hypot(p.x - w.x, p.y - w.y) <= tol)
+          if (Math.hypot(p.x - w.x, p.y - w.y) <= tol) {
             xy = { x: `@${hit.itemId}_closest.x`, y: `@${hit.itemId}_closest.y` };
+            // A DYNAMIC anchor (a live function of the drag, not a preset
+            // point): named like any anchor, marked with the # glyph.
+            hoverAnchor = { label: app.anchorName(hit.itemId, "closest"), x: p.x, y: p.y };
+            dynamicAnchor = { x: p.x, y: p.y };
+          }
         }
       }
     }
@@ -597,10 +620,11 @@
 
   function onPointerUp() {
     if (!drag) return;
-    if (drag.kind === "endpoint") app.anchorsVisible = drag.anchorsWereVisible;
     drag = null;
     guides = [];
     sizeIndicators = [];
+    hoverAnchor = null; // drag-time bind feedback ends with the gesture
+    dynamicAnchor = null;
     app.snapEngaged = false; // cleared on pointer-up (per snap-round-2 spec)
     app.dragging = false;
     app.commitPreview();
@@ -748,6 +772,19 @@
             <line x1="-5" y1="5" x2="5" y2="-5" />
           </g>
         {/each}
+        {#if dynamicAnchor && actions}
+          {@const dp = actions.worldToScreen(dynamicAnchor.x, dynamicAnchor.y)}
+          <!-- # marks a COMPUTED anchor (its position is a live function — the
+               closest-point-on-perimeter tracking the dragged endpoint), vs
+               the preset anchors' X. Same .anchor stroke/opacity styling and
+               the same 10px glyph box as the X's. -->
+          <g class="anchor" transform={`translate(${dp.x} ${dp.y})`}>
+            <line x1="-2" y1="-5" x2="-2" y2="5" />
+            <line x1="2" y1="-5" x2="2" y2="5" />
+            <line x1="-5" y1="-2" x2="5" y2="-2" />
+            <line x1="-5" y1="2" x2="5" y2="2" />
+          </g>
+        {/if}
         {#if hoverAnchor && actions}
           {@const tp = actions.worldToScreen(hoverAnchor.x, hoverAnchor.y)}
           <g class="anchor-tip" transform={`translate(${tp.x} ${tp.y})`}>
