@@ -13,8 +13,7 @@
  * special cases.
  *
  * Callers pass a render tree derived from an EVALUATED state
- * (core/expressions.evaluateState) — equations are already numbers — exactly
- * like render/compositor.js.
+ * (core/expressions.evaluateState) — equations are already numbers.
  *
  * DOM-free pure JS (bare-node testable).
  */

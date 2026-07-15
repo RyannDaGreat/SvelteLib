@@ -31,19 +31,7 @@ export const rectPlugin = {
     { key: "cornerRadius", label: "Corner radius", kind: "number", min: 0 },
     { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
   ],
-  paint(ctx, s) {
-    ctx.globalAlpha = s.opacity ?? 1;
-    ctx.beginPath();
-    ctx.roundRect(0, 0, s.w, s.h, Math.max(0, s.cornerRadius ?? 0)); // negative radii throw — domain clamp, not a style choice
-    ctx.fillStyle = s.fill;
-    ctx.fill();
-    if ((s.strokeWidth ?? 0) > 0) {
-      ctx.strokeStyle = s.stroke;
-      ctx.lineWidth = s.strokeWidth;
-      ctx.stroke();
-    }
-  },
-  /** Pure function. paint()'s IR twin: state → display-list commands (local space). */
+  /** Pure function. State → display-list commands (local space) — THE render API. */
   emit(s) {
     return [rect({
       x: 0, y: 0, w: s.w, h: s.h,

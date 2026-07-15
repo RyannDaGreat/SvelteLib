@@ -16,7 +16,7 @@
 
 import { GpuCompositor } from "../gpu/compositor.js";
 import { rect, text, video, pushTransform, popTransform, magnifyBackdrop } from "../ir.js";
-import { fitRectView } from "../../render/compositor.js";
+import { fitRectView } from "../../core/view.js";
 
 const WORLD_W = 1600, WORLD_H = 900;
 const VIDEO_W = 640, VIDEO_H = 360; // source stream resolution

@@ -34,19 +34,7 @@ export const circlePlugin = {
     { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0 },
     { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
   ],
-  paint(ctx, s) {
-    ctx.globalAlpha = s.opacity ?? 1;
-    ctx.beginPath();
-    ctx.ellipse(s.w / 2, s.h / 2, s.w / 2, s.h / 2, 0, 0, Math.PI * 2);
-    ctx.fillStyle = s.fill;
-    ctx.fill();
-    if ((s.strokeWidth ?? 0) > 0) {
-      ctx.strokeStyle = s.stroke;
-      ctx.lineWidth = s.strokeWidth;
-      ctx.stroke();
-    }
-  },
-  /** Pure function. paint()'s IR twin: state → display-list commands (local space). */
+  /** Pure function. State → display-list commands (local space) — THE render API. */
   emit(s) {
     return [ellipse({
       cx: s.w / 2, cy: s.h / 2, rx: s.w / 2, ry: s.h / 2,

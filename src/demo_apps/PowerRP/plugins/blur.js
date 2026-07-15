@@ -20,16 +20,7 @@ export const blurPlugin = {
     { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
     { key: "z", label: "Z order", kind: "number" },
   ],
-  paint(ctx, s, env) {
-    if (!env.backdrop || (s.blur ?? 0) <= 0) return;
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // device pixels
-    ctx.globalAlpha = s.opacity ?? 1;
-    ctx.filter = `blur(${s.blur * env.deviceScale}px)`;
-    ctx.drawImage(env.backdrop, 0, 0);
-    ctx.restore();
-  },
-  /** Pure function. paint()'s IR twin: a backdrop-blur op (no geometry — blurs the composite below this z). */
+  /** Pure function. A backdrop-blur op (no geometry — blurs the composite below this z). */
   emit(s) {
     if ((s.blur ?? 0) <= 0) return [];
     return [blurBackdrop({ radius: s.blur, opacity: s.opacity ?? 1 })];

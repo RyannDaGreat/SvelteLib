@@ -22,7 +22,6 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { fitRectView } from "../render/compositor.js";
 import { magnifyBackdrop } from "../render_gpu/ir.js";
 
 /**
@@ -70,64 +69,7 @@ export const magnifierPlugin = {
     { key: "rimWidth", label: "Rim width", kind: "number", min: 0 },
     { key: "z", label: "Z order", kind: "number" },
   ],
-  paint(ctx, s, env) {
-    const { cx, cy, r } = lensGeom(s);
-    // Lens center in device px: local center through the widget's world
-    // transform (world.x/y is the box's top-left, cx/cy are local offsets).
-    const c = env.worldToDevice(env.node.world.x + cx, env.node.world.y + cy);
-    const rDev = r * env.deviceScale;
-
-    // Supersample when enabled AND a region re-render is available. renderRegion
-    // is absent for a nested magnifier (compositor caps nesting at depth 1), so
-    // a magnifier-under-a-magnifier gracefully falls back to sampling.
-    const useSupersample = (s.supersample ?? true) && env.renderRegion;
-    if (useSupersample) {
-      const cwx = env.node.world.x + cx, cwy = env.node.world.y + cy;
-      const src = lensSourceRect(cwx, cwy, r, s.magnification);
-      // Offscreen at the lens's DISPLAY diameter (2*rDev device px): rendering
-      // the source square at exactly the resolution it will be shown at caps
-      // the supersample at the current view's device scale (dpr already baked
-      // into env.deviceScale) — sharp but never finer than the screen shows.
-      const diam = Math.max(1, Math.round(rDev * 2));
-      const region = env.renderRegion({
-        view: fitRectView(src, diam, diam, 1),
-        width: diam, height: diam,
-        zBelow: s.z ?? 0, // only what sits below this magnifier's z
-        drawBackground: true, // camera background fills the region
-      });
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0); // device pixels
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, rDev, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.drawImage(region, c.x - rDev, c.y - rDev, diam, diam);
-      ctx.restore();
-    } else {
-      if (!env.backdrop) return;
-      const srcR = rDev / Math.max(s.magnification, 0.01);
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0); // device pixels
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, rDev, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.drawImage(
-        env.backdrop,
-        c.x - srcR, c.y - srcR, srcR * 2, srcR * 2,
-        c.x - rDev, c.y - rDev, rDev * 2, rDev * 2,
-      );
-      ctx.restore();
-    }
-    // Rim — skipped at width 0 (canvas treats lineWidth 0 as "keep previous",
-    // so an unguarded stroke still draws ~1px — user-reported bug).
-    if ((s.rimWidth ?? 0) > 0) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.strokeStyle = s.rimColor;
-      ctx.lineWidth = s.rimWidth;
-      ctx.stroke();
-    }
-  },
-  /** Pure function. paint()'s IR twin: one lens op (the backend samples/re-renders its own backdrop). */
+  /** Pure function. One lens op — the backend samples or re-renders its own backdrop per `supersample`. */
   emit(s) {
     const { cx, cy, r } = lensGeom(s);
     return [magnifyBackdrop({
@@ -136,6 +78,7 @@ export const magnifierPlugin = {
       rimColor: (s.rimWidth ?? 0) > 0 ? s.rimColor : null, // rimWidth 0 = NO rim (manifest spec)
       rimWidth: s.rimWidth ?? 0,
       opacity: s.opacity ?? 1,
+      supersample: s.supersample ?? true, // re-render below the lens at display res (sharp); false = backdrop sampling (soft)
     })];
   },
   hitTest(s, lx, ly) {

@@ -15,7 +15,7 @@
   import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect, worldTransform } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
-  import { THUMB_W, worldViewRect, canSkipNode } from "../render/compositor.js";
+  import { THUMB_W, worldViewRect, canSkipNode } from "../core/view.js";
   import { foldState } from "../core/document.js";
   import { blendApplied } from "../core/deltas.js";
   import { evaluateState } from "../core/expressions.js";
@@ -165,8 +165,7 @@
       canvasEl.width = Math.round(rect.width * dpr);
       canvasEl.height = Math.round(rect.height * dpr);
     }
-    // The canvas2D compositor's pipeline, IR-ified (render/compositor.js is
-    // the reference semantics): fold → preview override → EVALUATE → derive →
+    // THE render pipeline: fold → preview override → EVALUATE → derive →
     // cull → emit → GPU. Anchors/selection/guides stay on the SVG overlay.
     let state = foldState(app.doc, app.slideIndex, 1);
     if (app.previewDelta) state = blendApplied(state, app.previewDelta, 1);

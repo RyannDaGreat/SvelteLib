@@ -9,7 +9,7 @@
   import { foldState } from "../core/document.js";
   import { cameraRect, deriveRenderTree } from "../core/derive.js";
   import { evaluateState } from "../core/expressions.js";
-  import { fitRectView, canSkipNode } from "../render/compositor.js";
+  import { fitRectView, canSkipNode } from "../core/view.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";

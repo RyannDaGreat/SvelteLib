@@ -10,13 +10,14 @@
  *       bbox: true,        // state has x,y,w,h (w/h in LOCAL units, pre-transform)
  *       transform: true,   // state has x,y (+optional rotation, scale)
  *       resizable: true,   // resize handles allowed
- *       backdrop: false,   // paint() receives the composite-so-far snapshot
+ *       backdrop: false,   // emits backdrop ops (blur/magnify) — the renderer
+ *                          // gives them the composite-so-far; never culled
  *     },
  *     defaults: { ... },                    // initial state for a new instance
  *     inspector: [{key, label, kind}],      // kind: "number"|"color"|"text"|"checkbox"
- *     paint(ctx, state, env) { ... },       // draw in LOCAL coords; compositor
- *                                           // has already applied the similarity
- *                                           // transform. env: see compositor.js
+ *     emit(state) → commands                // THE render API: display-list IR in
+ *                                           // LOCAL coords (render_gpu/ir.js);
+ *                                           // sceneIR wraps in the world transform
  *     anchors(state) → [{id, x, y}]         // preset anchor points, LOCAL coords
  *     closestAnchor?(state, wx, wy)         // computed anchor: closest point on
  *                                           // outline to a WORLD point (local out)
@@ -43,7 +44,7 @@ export function createRegistry() {
   return {
     /** Command. Registers a plugin; loud on collision or malformed plugin. */
     register(plugin) {
-      for (const field of ["type", "title", "capabilities", "defaults", "paint"])
+      for (const field of ["type", "title", "capabilities", "defaults", "emit"])
         if (!(field in plugin)) throw new Error(`Plugin missing "${field}": ${plugin.type ?? "?"}`);
       if (plugins.has(plugin.type)) throw new Error(`Duplicate plugin type "${plugin.type}"`);
       plugins.set(plugin.type, plugin);

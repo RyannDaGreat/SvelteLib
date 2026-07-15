@@ -26,16 +26,23 @@ it; Purge actually removes.
   derive (state → render tree; anchors; hit tests), snap solver, shortcut
   registry, command registry, undo, presentation playback.
 - `plugins/` — one file per widget type. Declarative: capabilities,
-  defaults, inspector rows, paint(ctx, state, env), anchors, snapFeatures,
-  editPoints, commands. **No plugin may import another plugin** — composition
-  happens through capabilities and document state only.
-- `render/compositor.js` — bottom-up z-order painter shared by editor,
-  presenter, and CLI. Backdrop-sampling widgets (magnifier, blur) receive the
-  composite-so-far snapshot via env.backdrop.
+  defaults, inspector rows, emit(state) → display-list commands, anchors,
+  snapFeatures, editPoints, commands. **No plugin may import another
+  plugin** — composition happens through capabilities and document state.
+- `render_gpu/` — THE renderer (manifest RENDER MODES DECISION: WebGPU
+  raster + vector export only; canvas2D was deleted). ir.js = the
+  device-independent display-list builders; ports.js sceneIR walks a derived
+  tree through plugin emit(); gpu/ = the WebGPU compositor (instanced SDF
+  shapes, glyph-atlas text, blur/magnifier as shader passes, readPixels
+  readback); svg_backend.js = the vector serializer (growing).
+- `core/view.js` — view math (fitRectView = THE camera mapping,
+  worldViewRect) + the culling protocol (canSkipNode).
 - `web/` — Svelte 5 app shell. App components carry NO <style> blocks; all
   styling in `app.css` via `--a-*` tokens (annotator convention).
-- `cli/render.js` — headless PNG renderer (programmatic Vite + puppeteer,
-  same compositor as the editor).
+  gpuService.js = shared offscreen compositor for pixel consumers
+  (thumbnails, minimap, PNG export).
+- `cli/render.js` — headless PNG renderer (programmatic Vite + puppeteer;
+  the page hook renders through the SAME GPU pipeline as the editor).
 - `examples/make_demo.js` — builds `demo.powerrp.json` via the core API.
 - `tests/` — `core_test.js` (node assert, no framework) and
   `editor_smoke.js` (puppeteer boot + drag/palette/slide interactions with
@@ -57,9 +64,13 @@ a shortcut that isn't registered there does not exist.
 - CLI render: `node src/demo_apps/PowerRP/cli/render.js <doc.json> <out.png>
   [--slide N] [--alpha A] [--width W] [--height H]`
 
-## V1 known bounds (deliberate)
+## Known bounds (deliberate)
 
 Single selection only; no parent widgets/replicators yet (the derivation
 stage in core/derive.js is where they will land — see the dump manifest's
-design bounds before touching it); no video widgets; no camera (backburner);
-z-order UI = bisect then document-wide normalize (core/document.js).
+design bounds before touching it); no video widgets yet (the IR video op and
+GPU external-texture pipeline are proven, the plugin isn't built); z-order
+UI = bisect then document-wide normalize (core/document.js). THE CAMERA is
+built and mandatory (exactly one, purgeable:false, owns the background and
+every view). Presentations are UNCAPPED — no frame caps exist (meta.fps is
+dead; one frame per rAF tick).

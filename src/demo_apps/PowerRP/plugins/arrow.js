@@ -40,31 +40,10 @@ export const arrowPlugin = {
     { key: "z", label: "Z order", kind: "number" },
     { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1 },
   ],
-  paint(ctx, s) {
-    const { from, to } = s;
-    ctx.globalAlpha = s.opacity ?? 1;
-    ctx.strokeStyle = s.color;
-    ctx.fillStyle = s.color;
-    ctx.lineWidth = s.width;
-    ctx.lineCap = "round";
-    const angle = Math.atan2(to.y - from.y, to.x - from.x);
-    const head = s.headSize;
-    const shaftEnd = { x: to.x - Math.cos(angle) * head * SHAFT_PULLBACK, y: to.y - Math.sin(angle) * head * SHAFT_PULLBACK };
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(shaftEnd.x, shaftEnd.y);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(to.x, to.y);
-    ctx.lineTo(to.x - Math.cos(angle - ARROWHEAD_FLARE) * head, to.y - Math.sin(angle - ARROWHEAD_FLARE) * head);
-    ctx.lineTo(to.x - Math.cos(angle + ARROWHEAD_FLARE) * head, to.y - Math.sin(angle + ARROWHEAD_FLARE) * head);
-    ctx.closePath();
-    ctx.fill();
-  },
   /**
-   * Pure function. paint()'s IR twin. Endpoints are evaluated numbers, and
-   * the arrow's world transform is IDENTITY (no x/y/rotation/scale state),
-   * so these local commands are world coordinates as well.
+   * Pure function. State → display-list commands. Endpoints are evaluated
+   * numbers, and the arrow's world transform is IDENTITY (no
+   * x/y/rotation/scale state), so these local commands are world coordinates.
    */
   emit(s) {
     const { from, to } = s;

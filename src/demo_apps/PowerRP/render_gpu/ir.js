@@ -24,7 +24,7 @@
  *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
- *   {op:"magnifyBackdrop", cx, cy, r, magnification, rimColor, rimWidth, opacity}
+ *   {op:"magnifyBackdrop", cx, cy, r, magnification, rimColor, rimWidth, opacity, supersample}
  *
  * Backdrop-effect nodes consume the composite-so-far (everything already
  * emitted), replacing the canvas2D full-canvas snapshot with a GPU texture
@@ -237,21 +237,29 @@ export function blurBackdrop({ radius, opacity = 1 }) {
 }
 
 /**
- * Pure function. Magnifier effect node: composites a magnified circular sample
- * of the composite-so-far, centered at local (cx, cy) with local radius r,
- * plus a rim ring. This is the magnifier plugin's backdrop-sampling path; the
- * supersampling path (re-render the sub-list under a lens view) is a backend
- * capability layered on the same command later.
+ * Pure function. Magnifier effect node: composites a magnified circular view of
+ * the scene below the lens, centered at local (cx, cy) with local radius r, plus
+ * a rim ring. Two lens-fill paths, chosen by `supersample`:
+ *   supersample:false — sample the composite-so-far backdrop texture with UVs
+ *     contracted by 1/magnification (soft: the lens content is a rasterized
+ *     backdrop upscaled, effectively 1/M of screen resolution).
+ *   supersample:true (default) — the backend RE-RENDERS the sub-list emitted
+ *     BELOW this op (command order is z-order, so everything before the lens is
+ *     below it) under a lens view at magnification·zoom, then samples that sharp
+ *     re-render. The re-render is depth-capped: a magnifier inside a re-render
+ *     falls back to backdrop sampling (see the compositor's recursion guard).
  *
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).rimWidth // 0
+ * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).supersample // true
+ * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, supersample: false}).supersample // false
  */
-export function magnifyBackdrop({ cx, cy, r, magnification, rimColor = null, rimWidth = 0, opacity = 1 }) {
+export function magnifyBackdrop({ cx, cy, r, magnification, rimColor = null, rimWidth = 0, opacity = 1, supersample = true }) {
   requireFinite("magnifyBackdrop", { cx, cy, r, magnification, rimWidth, opacity });
   if (magnification <= 0) throw new Error(`magnifyBackdrop: magnification must be > 0, got ${magnification}`);
   return {
     op: "magnifyBackdrop", cx, cy, r, magnification,
     rimColor: rimColor === null ? null : parseColor(rimColor),
-    rimWidth, opacity,
+    rimWidth, opacity, supersample: !!supersample,
   };
 }
 

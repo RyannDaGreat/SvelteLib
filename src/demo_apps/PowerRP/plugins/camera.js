@@ -29,13 +29,10 @@ export const cameraPlugin = {
     { key: "h", label: "Height", kind: "number", min: 0 },
     { key: "background", label: "Background", kind: "color" },
   ],
-  paint() {
-    // The camera paints NOTHING (user ruling: its own dashed border doubled up
-    // with the selection outline and "looked chaotic as fuck"). Selection uses
-    // the standard outline; discovery is border hit-testing + the item picker.
-  },
-  /** Pure function. paint()'s IR twin — nothing, for the same reason. */
   emit() {
+    // The camera renders NOTHING (user ruling: its own dashed border doubled
+    // up with the selection outline and "looked chaotic as fuck"). Selection
+    // uses the standard outline; discovery is border hit-testing + the picker.
     return [];
   },
   // Hit only near the border, not the interior — the camera frames content;

@@ -19,7 +19,7 @@
 import { GpuCompositor } from "../gpu/compositor.js";
 import { paintIR } from "./ir_canvas2d.js";
 import { benchScene, WORLD_W, WORLD_H } from "./scene.js";
-import { fitRectView } from "../../render/compositor.js";
+import { fitRectView } from "../../core/view.js";
 
 const params = new URLSearchParams(location.search);
 const mode = params.get("mode") ?? "webgpu";

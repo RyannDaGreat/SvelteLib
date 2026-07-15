@@ -8,7 +8,7 @@ import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
-import { fitRectView } from "../render/compositor.js";
+import { fitRectView } from "../core/view.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { GpuCompositor } from "../render_gpu/gpu/compositor.js";

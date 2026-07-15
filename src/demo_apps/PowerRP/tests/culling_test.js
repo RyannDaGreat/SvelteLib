@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import {
   worldViewRect, rotatedBBoxAABB, rectsIntersect, defaultCanSkip, canSkipNode,
-} from "../render/compositor.js";
+} from "../core/view.js";
 import { lensSourceRect } from "../plugins/magnifier.js";
 
 let passed = 0;
