@@ -16,7 +16,7 @@ import {
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated, withVariableRenamed, anchorRefName } from "../core/expressions.js";
-import { renderCameraFrame } from "./gpuService.js";
+import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
@@ -454,6 +454,12 @@ export class PowerRPApp {
    * slide in one undo unit. purgeable:false items (the camera) are skipped
    * (the command `when` already excludes a lone camera; in a mixed set the
    * camera stays put rather than erroring).
+   *
+   * KEEPS the selection (user ruling, round 11: "you shouldn't deselect
+   * something when it's not visible anymore, that doesn't help anybody") —
+   * a hidden item stays selected so the Inspector's visibility toggle can
+   * flip it right back. Purge still deselects: a purged item no longer
+   * exists to be selected.
    */
   deleteSelection() {
     const ids = this.selectedIds().filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
@@ -461,7 +467,6 @@ export class PowerRPApp {
     let doc = this.doc;
     for (const id of ids) doc = keyframed(doc, this.slideIndex, ["items", id, "active"], false);
     this.commit(doc);
-    this.selection = null;
   }
 
   /** True removal FROM EXISTENCE: every keyframe of each selected item on every
@@ -740,5 +745,37 @@ export class PowerRPApp {
     a.href = canvas.toDataURL("image/png");
     a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.png`;
     a.click();
+  }
+
+  /**
+   * Exports the current slide as a VECTOR PDF (manifest "PDF export, round
+   * 11"): shapes/text stay vector (text selectable), blur regions embed as
+   * raster per the hybrid rule. The camera rect IS the page (pt = world px).
+   */
+  async exportPdf() {
+    const { irToPDF } = await import("../render_gpu/pdf_backend.js");
+    const { sceneIR } = await import("../render_gpu/ports.js");
+    const { fitRectView } = await import("../core/view.js");
+    const { fontString } = await import("../render_gpu/gpu/glyph_atlas.js");
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const rect = cameraRect(state, this.doc.meta);
+    // Baseline parity with the GPU glyph atlas: measure ITS font stack's
+    // canvas ascent and hand the fraction to the backend (irToPDF textAscent).
+    const mctx = document.createElement("canvas").getContext("2d");
+    const REF_SIZE = 100; // any size — the fraction is size-relative
+    mctx.font = fontString(REF_SIZE, false);
+    const bytes = await irToPDF(sceneIR(deriveRenderTree(state, this.registry)), {
+      width: rect.w,
+      height: rect.h,
+      view: fitRectView(rect, rect.w, rect.h, 1),
+      background: rect.background,
+      rasterize: rasterizeIrPng,
+      textAscent: mctx.measureText("Mg").fontBoundingBoxAscent / REF_SIZE,
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.pdf`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 }

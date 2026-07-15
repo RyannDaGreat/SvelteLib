@@ -78,6 +78,22 @@ export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width,
 }
 
 /**
+ * Command (async). Rasterizes an arbitrary IR command list at an explicit
+ * view into PNG bytes — the PDF exporter's raster-region callback (the
+ * HYBRID RULE: blur regions embed as images among the vector elements;
+ * signature per render_gpu/pdf_backend.js irToPDF `rasterize`).
+ *
+ * @example // rasterizeIrPng(cmds, {zoom: 2, panX: 0, panY: 0, dpr: 1}, 800, 600, "#ffffff") → Promise<Uint8Array PNG>
+ */
+export async function rasterizeIrPng(ir, view, width, height, background = null) {
+  const bg = background == null ? [0, 0, 0, 0]
+    : Array.isArray(background) ? background : parseColor(background);
+  const out = await renderJob(width, height, () => ({ ir, view, background: bg }));
+  const blob = await new Promise((res) => out.toBlob(res, "image/png"));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+/**
  * Command (async). One document frame at an EXPLICIT view (world mapping) —
  * the minimap's overview semantics. Transparent clear unless `background`
  * (a parsed [r,g,b,a]) is given.
