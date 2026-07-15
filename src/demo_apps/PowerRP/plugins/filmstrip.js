@@ -97,9 +97,12 @@ export const filmstripPlugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    // The video asset filename — the registry `src` row, relabeled "Video"
-    // (the asset-picker control lands with the asset explorer, Opus14).
-    ...props("src", { src: { label: "Video" } }),
+    // The video asset filename — the registry `src` row, relabeled "Video",
+    // filtered to VIDEO assets, and assetForm "filename": the filmstrip stores
+    // the bare basename (not a full served URL) because the frames endpoint
+    // resolves it against the project's assets/ server-side (app.svelte.js's
+    // filmstrip-frames effect keys its cache on that filename).
+    ...props("src", { src: { label: "Video", assetKinds: ["video"], assetForm: "filename" } }),
     // THE one control (manifest: "just the number") — the registry `frames` row.
     // >=1; app clamps to the video's frame count server-side.
     ...props("frames"),

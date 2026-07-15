@@ -3,7 +3,8 @@
 # dependencies = ["rp==0.1.1421", "fire==0.7.1"]
 # ///
 """
-Filmstrip frames-endpoint round-trip test (W2c).
+Filmstrip frames-endpoint + asset-DELETE round-trip test (W2c + manifest
+"ASSET UX ROUND 2" DELETE coverage).
 
 Exercises the server's frame-extraction seam end to end:
   1. EXTRACT  — first request for (video, N) extracts N evenly-spread frames,
@@ -14,6 +15,13 @@ Exercises the server's frame-extraction seam end to end:
   4. EVENLY SPREAD — the extracted frames match evenly_spread_indices exactly.
   5. LOUD ERRORS — a missing video and a bad N both return a JSON {error},
                 not a silent empty strip.
+  6. DISTINCT N — a different frame count is cached independently.
+  7. DELETE (plain asset) — DELETE /api/asset/<proj>/<file>/ removes the file
+                from disk AND from a subsequent GET /api/assets/<proj>/ list.
+  8. DELETE (video + its frame cache) — deleting a video asset also removes
+                its cached assets/frames/<video>/ directory (no orphaned cache).
+  9. DELETE (missing asset) — a 404 JSON {error}, not a silent no-op or crash
+                (delete_asset raises FileNotFoundError, mapped to 404).
 
 Deterministic fixture: tests/fixtures/tiny_video.mp4 (a committed 12-frame
 32x24 clip — a binary fixture like checker.png, so the test needs no live
@@ -44,6 +52,14 @@ import server  # noqa: E402
 def _get(conn, path):
     """Query. GET path over an open connection → (status, body_bytes)."""
     conn.request("GET", path)
+    resp = conn.getresponse()
+    body = resp.read()
+    return resp.status, body
+
+
+def _delete(conn, path):
+    """Command. DELETE path over an open connection → (status, body_bytes)."""
+    conn.request("DELETE", path)
     resp = conn.getresponse()
     body = resp.read()
     return resp.status, body
@@ -123,7 +139,41 @@ def main():
         assert os.path.isdir(server.frames_cache_dir(proj, video, n2))
         print(f"[6] DISTINCT N ok: N={n2} cached independently of N={n}")
 
-        print("\nALL FRAMES-ENDPOINT CHECKS PASSED")
+        # 7. DELETE a plain (non-video) asset: removed from disk AND the list
+        # (manifest "ASSET UX ROUND 2": deleteAsset previously 501'd — this
+        # proves the DELETE endpoint works end-to-end against a live server).
+        plain = "note.txt"
+        plain_path = os.path.join(server.assets_dir(proj), plain)
+        with open(plain_path, "w") as f:
+            f.write("not a video")
+        s_del, b_del = _delete(conn, f"/api/asset/{proj}/{plain}/")
+        assert s_del == 200, f"delete status {s_del}: {b_del!r}"
+        res_del = json.loads(b_del)
+        assert res_del == {"ok": True, "name": plain}, res_del
+        assert not os.path.exists(plain_path), "deleted asset still on disk"
+        _, b_list = _get(conn, f"/api/assets/{proj}/")
+        names = {a["name"] for a in json.loads(b_list)}
+        assert plain not in names, f"deleted asset still listed: {names}"
+        print(f"[7] DELETE (plain asset) ok: {plain!r} removed from disk and the listing")
+
+        # 8. DELETE the video asset ALSO removes its frame cache (both N=4 and
+        # N=7 directories cached above) — no orphaned frames/<video>/ left behind.
+        video_cache_root = os.path.join(server.assets_dir(proj), "frames", video)
+        assert os.path.isdir(video_cache_root), "precondition: frame cache should exist before delete"
+        s_del2, b_del2 = _delete(conn, f"/api/asset/{proj}/{video}/")
+        assert s_del2 == 200, f"delete status {s_del2}: {b_del2!r}"
+        assert not os.path.isfile(os.path.join(server.assets_dir(proj), video)), "video still on disk"
+        assert not os.path.isdir(video_cache_root), "orphaned frame cache survived the video's deletion"
+        print(f"[8] DELETE (video + frame cache) ok: {video!r} and its frames/ cache both removed")
+
+        # 9. DELETE a missing asset is a LOUD 404 {error} — never a silent
+        # no-op, never a crash (manifest error-handling rule).
+        s_missing_del, b_missing_del = _delete(conn, f"/api/asset/{proj}/nope.png/")
+        assert s_missing_del == 404, f"missing-asset delete should 404, got {s_missing_del}: {b_missing_del!r}"
+        assert "error" in json.loads(b_missing_del), b_missing_del
+        print("[9] DELETE (missing asset) ok: 404 JSON {error}, not a silent no-op")
+
+        print("\nALL FRAMES-ENDPOINT + DELETE CHECKS PASSED")
     finally:
         httpd.shutdown()
         shutil.rmtree(tmp_root, ignore_errors=True)

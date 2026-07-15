@@ -71,17 +71,17 @@ export const TRANSITION_CURVES = ["linear", "smooth"];
  * state; the Inspector suppresses diamonds for kind:"transition" targets).
  *
  * `curve` uses kind "select" with an `options` list — a NEW control kind
- * (enum dropdown). FLAGGED FOR OPUS10: the generic row machinery needs a
- * "select" renderer (SvelteLib Dropdown over `options`); until it lands, curve
- * still round-trips via setTransitionProp. `sound` is kind "asset" (nullable
- * asset-ref string) — ALSO a new kind; the asset picker is a later wave (the
- * assets server is parallel work), so a plain nullable text/asset field is the
- * placeholder. Both are flagged, not silently invented.
+ * (enum dropdown). `sound` is kind "asset" (nullable asset-ref string) — the
+ * REAL AssetField control (manifest "ASSET UX ROUND 2"): picker modal filtered
+ * to `assetKinds`, upload button, drag-and-drop from the Asset Explorer AND
+ * from Finder. `assetKinds` names which library kinds the picker/drop accept
+ * (core/properties.js ASSET_KIND row aspect — the same shape the src rows use,
+ * so AssetField is one component for both media widgets and transition sound).
  */
 export const TRANSITION_BASE_INSPECTOR = [
   { key: "seconds", label: "Seconds", kind: "number", min: 0, scrub: 0.1, category: "transition" },
   { key: "curve", label: "Curve", kind: "select", options: TRANSITION_CURVES, category: "transition" },
-  { key: "sound", label: "Sound", kind: "asset", assetKind: "sound", nullable: true, category: "transition" },
+  { key: "sound", label: "Sound", kind: "asset", assetKinds: ["sound"], nullable: true, category: "transition" },
 ];
 
 /**

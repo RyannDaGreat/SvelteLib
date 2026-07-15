@@ -73,6 +73,7 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import Thumbnail from "../../../lib/Thumbnail.svelte";
   import Modal from "../../../lib/Modal.svelte";
+  import VideoThumbnail from "./VideoThumbnail.svelte";
   import { assetUrl, ASSET_DRAG_MIME } from "./projectApi.js";
 
   let { app } = $props();
@@ -92,12 +93,6 @@
   let confirmDelete = $state(null);
   let confirmOpen = $state(false);
   let fileInput; // hidden <input type=file> for the Upload button
-  // Whether the pane has ever successfully listed (or been asked to). Gates the
-  // project-name effect: a fresh boot does NOT auto-fetch (an unsaved "Untitled"
-  // project has no server folder yet — listing it would fail against a possibly-
-  // down backend and is pointless). The user's first Refresh, or a Save/Open,
-  // activates the pane; from then on a project switch re-lists automatically.
-  let activated = false;
 
   // Per-kind fallback icon for assets with no still image (video/sound), and
   // the small corner badge marking the kind. iconify only (manifest rule).
@@ -110,16 +105,15 @@
 
   /**
    * Command. (Re)loads the current project's asset list from the server.
-   * A failure (server down / no project) is reported LOUDLY IN THE PANE — the
-   * visible `error` notice is the user-facing report (never a silently-empty
-   * pane). Console severity depends on WHO asked: an explicit user action
-   * (Refresh/Upload) logs console.error; the background auto-load at boot logs
-   * console.warn, because "the server isn't up yet" is an expected condition
-   * for this pane (manifest: "server down / no project loaded"), and the pane
-   * notice already surfaces it — spamming console.error at boot would be noise.
+   * A failure is reported LOUDLY IN THE PANE — the visible `error` notice is
+   * the user-facing report (never a silently-empty pane) — AND to the console.
+   * Listing a project that has never been saved is NOT a failure: the server's
+   * list_assets() returns `[]` (200 OK) for a folder that doesn't exist yet
+   * (server/server.py), so an unsaved "Untitled" project boots straight to the
+   * empty-state notice, never the red error — only a genuine network/backend
+   * failure (the server not running at all) reaches the catch below.
    */
   async function refresh() {
-    activated = true;
     loading = true;
     error = null;
     try {
@@ -133,14 +127,12 @@
     }
   }
 
-  // Re-list when the PROJECT IDENTITY changes (Open/Load/Clear swaps the
-  // folder) or when ANY asset lands/leaves (app.assetsVersion bumps on every
-  // upload/delete — including a canvas OS-file drop, which must appear here
-  // without a manual Refresh) — but ONLY once the pane is active: a fresh boot
-  // does not fetch, because an unsaved "Untitled" project has no server folder
-  // and the backend may not even be up (manifest: "server down / no project
-  // loaded" → the pane shows a caption, not an error). The first Refresh — or
-  // the first asset action anywhere (version > 0) — activates it.
+  // Re-list on MOUNT (manifest "ASSET UX ROUND 2": "the asset browser should
+  // refresh on page load of course" — no stale "Couldn't load assets" until a
+  // manual action), whenever the PROJECT IDENTITY changes (Open/Load/Clear
+  // swaps the folder), and whenever ANY asset lands/leaves (app.assetsVersion
+  // bumps on every upload/delete — including a canvas OS-file drop, which must
+  // appear here without a manual Refresh).
   //
   // Keyed on the VALUE pair, not reactive identity: projectName() reads
   // app.doc, whose object identity flips on EVERY commit (any canvas edit) —
@@ -149,11 +141,7 @@
   let lastListedKey = null;
   $effect(() => {
     const key = `${app.projectName()}|${app.assetsVersion}`;
-    const armed = activated || app.assetsVersion > 0;
-    if (key === lastListedKey || !armed) {
-      lastListedKey = key; // record silently (pre-activation and no-op runs)
-      return;
-    }
+    if (key === lastListedKey) return;
     lastListedKey = key;
     refresh();
   });
@@ -224,6 +212,23 @@
   function onTileDragStart(e, a) {
     e.dataTransfer.setData(ASSET_DRAG_MIME, JSON.stringify({ name: a.name, kind: a.kind, url: a.url }));
     e.dataTransfer.effectAllowed = "copy";
+  }
+
+  /** Command. Copies an asset's served path (the project-relative URL every
+   *  widget stores as `src`, e.g. "/asset/MyTalk/clip.mp4") to the system
+   *  clipboard (manifest "ASSET UX ROUND 2": "there should be a copy path
+   *  option on the assets"). Plain text, best-effort — same precedent as the
+   *  Inspector's row-label copyPath (web/Inspector.svelte): a write failure is
+   *  REPORTED loudly (console.error) rather than silently swallowed; no in-app
+   *  clipboard fallback is needed here (nothing pastes a path back into
+   *  document state — it's read-only, paste-into-Finder/browser discoverability,
+   *  unlike app.svelte.js's #writeClipboard which backs an in-app Paste). */
+  async function copyAssetPath(a) {
+    try {
+      await navigator.clipboard.writeText(a.url);
+    } catch (e) {
+      console.error(`AssetExplorer: copy path failed for "${a.url}":`, e.message);
+    }
   }
 
   /** Display label for a using item — the Inspector picker's convention:
@@ -300,10 +305,9 @@
     {:else if loading}
       <div class="ae-notice">Loading assets…</div>
     {:else if assets === null}
-      <div class="ae-notice">
-        Assets for “{app.projectName()}” load on Refresh (or when you Save/Open a
-        project). Upload a file or drop one onto this pane to add it.
-      </div>
+      <!-- Transient: the mount/project-switch effect's refresh() hasn't resolved
+           yet (assets load automatically — see the $effect above). -->
+      <div class="ae-notice">Loading assets for “{app.projectName()}”…</div>
     {:else if assets.length === 0}
       <div class="ae-notice">
         No assets yet — Upload, or drop a file onto this pane.
@@ -315,12 +319,16 @@
             <Tooltip text={`${a.name} (${a.kind}) — drag onto the canvas to insert at a point`}>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="ae-tile" draggable="true" ondragstart={(e) => onTileDragStart(e, a)}>
-                <Thumbnail
-                  src={a.kind === "image" ? urlOf(a) : ""}
-                  title=""
-                  onclick={() => {}}
-                />
-                {#if a.kind !== "image"}
+                {#if a.kind === "image"}
+                  <Thumbnail src={urlOf(a)} title="" onclick={() => {}} />
+                {:else if a.kind === "video"}
+                  <!-- REAL frame thumbnail (manifest "the MOV doesnt have proper
+                       thumbnails") — client-side <video>+canvas capture, cached
+                       per src (web/VideoThumbnail.svelte). Its own onclick is a
+                       no-op here (double-click below owns the preview open,
+                       matching the image Thumbnail's onclick={() => {}}). -->
+                  <VideoThumbnail src={urlOf(a)} onclick={() => {}} />
+                {:else}
                   <div class="ae-kind" aria-hidden="true">
                     <iconify-icon icon={KIND_ICON[a.kind] ?? "mdi:file-outline"} width="28" height="28"></iconify-icon>
                   </div>
@@ -342,6 +350,15 @@
                     </button>
                   </Tooltip>
                 {/if}
+                <Tooltip text="Copy served path to clipboard">
+                  <button
+                    class="btn-icon ae-copy-path"
+                    aria-label={`Copy path for ${a.name}`}
+                    onclick={() => copyAssetPath(a)}
+                  >
+                    <iconify-icon icon="mdi:content-copy" width="14" height="14"></iconify-icon>
+                  </button>
+                </Tooltip>
                 <Tooltip text="Delete asset from the project">
                   <button
                     class="btn-icon ae-trash"

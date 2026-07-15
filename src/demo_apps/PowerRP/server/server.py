@@ -84,6 +84,7 @@ ASSET_CONTENT_TYPES = {
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
 VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 SOUND_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
+PDF_EXTS = {".pdf"}
 
 # A project/asset name component: no path separators, no traversal. Enforced on
 # every write path so a crafted name can never escape PROJECTS_DIR.
@@ -300,6 +301,8 @@ def asset_kind(filename):
         'video'
         >>> asset_kind("ding.wav")
         'sound'
+        >>> asset_kind("paper.pdf")
+        'pdf'
         >>> asset_kind("notes.txt")
         'other'
     """
@@ -310,6 +313,8 @@ def asset_kind(filename):
         return "video"
     if ext in SOUND_EXTS:
         return "sound"
+    if ext in PDF_EXTS:
+        return "pdf"
     return "other"
 
 

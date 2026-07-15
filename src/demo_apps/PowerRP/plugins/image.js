@@ -74,8 +74,9 @@ export const imagePlugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    // The image source (data URI / URL) — the registry `src` row (a generic
-    // string today; the asset-picker control lands with the asset server).
+    // The image source (data URI / URL) — the registry `src` row. Default
+    // assetKinds (["image"]) and assetForm ("url") match this widget exactly,
+    // so no override is needed here (unlike video/filmstrip).
     ...props("src"),
     // The stroked-BORDER bundle (manifest "SHARED STYLE BUNDLES — images and
     // videos inherit stroke/rounding at once"). No `fill` row: an image's own

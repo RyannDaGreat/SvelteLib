@@ -862,6 +862,26 @@ body,
   color: var(--a-guide);
 }
 
+/* Copy-path, bottom-LEFT of every tile on hover (manifest "ASSET UX ROUND 2":
+   "there should be a copy path option on the assets"). Same hover-reveal
+   overlay chrome as .ae-insert/.ae-trash, opposite corner from the trash can. */
+.asset-explorer .ae-copy-path {
+  position: absolute;
+  bottom: var(--a-sp-1);
+  left: var(--a-sp-1);
+  width: auto;
+  height: auto;
+  padding: var(--a-sp-1);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+  opacity: 0;
+}
+
+.asset-explorer .ae-tile:hover .ae-copy-path,
+.asset-explorer .ae-copy-path:focus-visible {
+  opacity: 1;
+}
+
 .asset-explorer .ae-name {
   font-size: var(--a-font-sm);
   color: var(--fg-dim);
@@ -915,6 +935,134 @@ audio.ae-preview-media {
   display: flex;
   gap: var(--a-sp-2);
   justify-content: flex-end;
+}
+
+/* ── VideoThumbnail (manifest "ASSET UX ROUND 2": real video frame thumbnails,
+   not the generic play tile). Mirrors src/lib/Thumbnail.svelte's .thumb box
+   model exactly (definite size, cover-fit) so it drops into the SAME
+   .ae-grid/.ae-cell layout as image Thumbnails with zero grid changes — see
+   VideoThumbnail.svelte's file header for the row-sizing-cycle rationale. ── */
+.vidthumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  background: black;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.vidthumb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vidthumb-loading,
+.vidthumb-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.vidthumb-error {
+  color: var(--a-guide);
+}
+
+.vidthumb-badge {
+  position: absolute;
+  left: var(--a-sp-2);
+  bottom: var(--a-sp-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  pointer-events: none;
+}
+
+/* ── AssetField (manifest "ASSET property kind" + "ASSET UX ROUND 2") — the
+   real source-property control: current-asset name + Browse/Upload buttons,
+   drag-and-drop from the Asset Explorer AND Finder. Fills the row's value
+   cell like every other field control (--a-control-h height). The picker
+   Modal's grid reuses .ae-grid/.ae-cell/.ae-tile/.ae-name (declared above, no
+   redeclaration). ── */
+.assetfield {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  width: 100%;
+  min-width: 0;
+}
+
+.assetfield.disabled {
+  opacity: 0.5;
+}
+
+.assetfield-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  width: 100%;
+  min-width: 0;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+}
+
+/* Drop-target feedback — same selection-color tint idiom as
+   .asset-explorer.dragging, scoped to just this one field. */
+.assetfield-row.dragging {
+  background: var(--a-asset-dropzone);
+  outline: var(--a-selection-stroke) dashed var(--a-selection);
+  outline-offset: calc(-1 * var(--a-selection-stroke));
+}
+
+.assetfield-row.drag-rejected {
+  outline-color: var(--a-guide);
+}
+
+.assetfield-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--a-font-md);
+}
+
+.assetfield-name.empty {
+  color: var(--fg-dim);
+}
+
+.assetfield-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  flex: none;
+}
+
+.assetfield-actions .btn-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.assetfield-file {
+  display: none;
+}
+
+.assetfield-error {
+  font-size: var(--a-font-sm);
+  color: var(--a-guide);
+  word-break: break-word;
 }
 
 /* ── Inspector + Variables Panel ─────────────────────────────────────────

@@ -108,10 +108,20 @@ export const PROPS = {
 
   // ── media: source + playback ────────────────────────────────────────────────
   // `src` is the media asset reference (image data URI / URL, video filename).
-  // A plain text row today; the AssetField (upload/pick/drag) supersedes it in a
-  // later wave (manifest "ASSET property kind"). Per-widget label override
-  // ("Source" for image, "Video" for filmstrip) via the trailing override map.
-  src: { label: "Source", kind: "text", category: "formatting", help: "The image or video this widget shows — a file from the project's assets (or a pasted data/URL). The asset picker lands in a later update." },
+  // A first-class ASSET row kind (manifest "ASSET property kind" + "ASSET UX
+  // ROUND 2"): the AssetField control (web/AssetField.svelte) renders a
+  // picker-modal button (filtered to `assetKinds`, reusing the Asset Explorer's
+  // tile grid), an upload button, and drag-and-drop acceptance from BOTH the
+  // Asset Explorer pane (the ASSET_DRAG_MIME payload) and Finder (raw OS
+  // Files — uploads then sets the property). `assetKinds` names which asset
+  // KINDS (server asset_kind(): image|video|sound) the field accepts; default
+  // ["image"] here, overridden per consumer (video.js/filmstrip.js pass
+  // {assetKinds:["video"]}). `assetForm` says what STRING FORM the field writes
+  // on pick: "url" (the served /asset/<project>/<file> path — image/video's
+  // storage) or "filename" (the bare basename — filmstrip's storage, resolved
+  // against the project's assets/ server-side by the frames endpoint). Default
+  // "url" (the more common case); filmstrip overrides to "filename".
+  src: { label: "Source", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The image or video this widget shows — pick from the project's assets, upload a file, or drag one in from the Asset Explorer or Finder." },
   frames: { label: "Frames", kind: "number", min: 1, category: "formatting", help: "How many evenly-spaced frames to sample across the whole clip and lay out left to right." },
   autoplay: { label: "Autoplay", kind: "boolean", category: "formatting", default: true, help: "Start playing as soon as the slide loads. Requires Muted on — browsers block autoplay with sound." },
   loop: { label: "Loop", kind: "boolean", category: "formatting", default: true, help: "Restart the clip from the beginning each time it reaches the end, so it plays forever." },

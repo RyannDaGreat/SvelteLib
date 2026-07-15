@@ -96,8 +96,11 @@ export const videoPlugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    // The video source (data URI / URL) — the registry `src` row.
-    ...props("src"),
+    // The video source (data URI / URL) — the registry `src` row, filtered to
+    // VIDEO assets in the AssetField picker/drop (assetForm stays "url", the
+    // registry default: video.src stores the served /asset/<project>/<file>
+    // path, unlike filmstrip's bare-filename form).
+    ...props("src", { src: { assetKinds: ["video"] } }),
     // Boolean playback rows + the animated flag (BooleanField — the keyframeable
     // boolean control), all from the registry so their help texts are shared.
     ...props("autoplay", "loop", "muted", "animated"),

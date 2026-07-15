@@ -34,6 +34,7 @@
   import NumericField from "./NumericField.svelte";
   import BooleanField from "./BooleanField.svelte";
   import ColorField from "./ColorField.svelte";
+  import AssetField from "./AssetField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
@@ -470,17 +471,25 @@
         onchange={(v) => oncommit(row.key, "select", v)}
       />
     {:else if row.kind === "asset"}
-      <!-- Nullable asset reference (transition `sound`; new control kind, flagged
-           by Opus9). The asset PICKER is a later wave (assets server is parallel
-           work), so this is a plain nullable text field placeholder — empty text
-           commits null. It round-trips the stored ref meanwhile. -->
-      <input
-        type="text"
-        placeholder="(none)"
-        value={valueAt(state, row.key) ?? ""}
+      <!-- THE asset control (manifest "ASSET UX ROUND 2"): AssetField — current
+           name + Browse (picker modal, Asset Explorer's tile grid, filtered to
+           row.assetKinds) + Upload, drag-and-drop from the Asset Explorer AND
+           Finder. ONE commit per pick/upload/drop (an asset pick is atomic —
+           no live-preview gesture, unlike a numeric drag) via the row's
+           `oncommit(key, kind, value)` — the SAME call every other plain-mode
+           kind (select) uses, so item rows write a keyframe and transition
+           rows write transition config with zero branching here (oncommit IS
+           commitField for items, commitTransition for transitions — both
+           already perform exactly one write). -->
+      <AssetField
+        {app}
+        value={valueAt(state, row.key)}
+        label={row.label}
+        assetKinds={row.assetKinds ?? ["image"]}
+        assetForm={row.assetForm ?? "url"}
+        nullable={row.nullable ?? false}
         {disabled}
-        onchange={(e) => oncommit(row.key, "asset", e.target.value.trim() === "" ? null : e.target.value.trim())}
-        onkeydown={fieldKeydown}
+        oncommit={(v) => oncommit(row.key, "asset", v)}
       />
     {:else if row.kind === "color"}
       <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped
