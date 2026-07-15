@@ -193,9 +193,19 @@ export function withOrphanedItemsDropped(doc, knownTypes) {
  * in ANY slide delta. Such partial items fold into states missing required
  * geometry ("w: undefined"); the canvas2D painter silently drew nothing for
  * them, but the strict IR builders throw and brick the app — so they must be
- * repaired at the load boundary. `type` itself is exempt (that's the orphan
- * case — see orphanedItems); a null (delete-sentinel) write does NOT count as
- * coverage, since it folds to the same missing key.
+ * repaired at the load boundary.
+ *
+ * WHEN THIS FIRES: routinely, on VERSION SKEW — whenever PowerRP's plugin
+ * defaults GROW (e.g. rotationAnchor was added in round 11), every document
+ * saved by an older version is missing the new keys and gets them filled on
+ * load; this is how edits are preserved across versions. Exceptionally, on
+ * DAMAGED or HAND-WRITTEN documents (hand-authored save files are legal) and
+ * on explicit null deletes of required keys. A doc created and edited purely
+ * by the current version reports nothing.
+ *
+ * `type` itself is exempt (that's the orphan case — see orphanedItems); a
+ * null (delete-sentinel) write does NOT count as coverage, since it folds to
+ * the same missing key.
  *
  * Args:
  *   doc (object): document

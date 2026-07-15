@@ -96,6 +96,10 @@
   /* Present mode */
   --a-present-pos-pad: 6px 12px;
 
+  /* FPS counter (user spec: green numbers; shows above present mode's z 200) */
+  --a-fps-color: #35d07f;
+  --a-fps-z: 300;
+
   /* Scrollbars */
   --a-scrollbar-w: 8px;
 }
@@ -1203,6 +1207,23 @@ body,
   width: 100%;
   height: 100%;
   pointer-events: none; /* purely decorative; all input goes to .overlay */
+}
+
+/* FPS counter — browser setting, OFF by default; bottom-LEFT always,
+   including present mode (user spec: "little box with some green numbers").
+   Sits above .present (z 200). */
+.fps-counter {
+  position: fixed;
+  left: var(--a-sp-3);
+  bottom: var(--a-sp-3);
+  z-index: var(--a-fps-z);
+  padding: var(--a-sp-1) var(--a-sp-3);
+  background: rgba(0, 0, 0, 0.7);
+  font-family: var(--a-mono);
+  font-size: var(--a-font-md);
+  color: var(--a-fps-color);
+  pointer-events: none;
+  user-select: none;
 }
 
 /* WebGPU init failure notice — loud, centered over the dead canvas (no render

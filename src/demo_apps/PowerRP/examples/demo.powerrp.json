@@ -7,12 +7,12 @@
   },
   "slides": [
     {
-      "id": "5ebad0cc",
+      "id": "a3b62dd0",
       "name": "Slide 1",
       "duration": 0.5,
       "delta": {
         "items": {
-          "975f1c72": {
+          "6273783c": {
             "type": "camera",
             "name": "Camera",
             "x": 0,
@@ -20,10 +20,12 @@
             "w": 1280,
             "h": 720,
             "z": 1000,
+            "rotation": 0,
+            "scale": 1,
             "active": true,
             "background": "#ffffff"
           },
-          "2779cadf": {
+          "e0dc420c": {
             "type": "rect",
             "x": 120,
             "y": 160,
@@ -32,13 +34,17 @@
             "z": 1,
             "rotation": 0,
             "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
             "fill": "#7aa2f7",
             "stroke": "#1a1a2e",
             "strokeWidth": 2,
             "cornerRadius": 8,
             "opacity": 1
           },
-          "2566d163": {
+          "db3a5bb4": {
             "type": "circle",
             "x": 760,
             "y": 200,
@@ -47,12 +53,16 @@
             "z": 2,
             "rotation": 0,
             "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
             "fill": "#f7768e",
             "stroke": "#1a1a2e",
             "strokeWidth": 2,
             "opacity": 1
           },
-          "c8fdebc4": {
+          "0f18821b": {
             "type": "text",
             "x": 120,
             "y": 60,
@@ -61,22 +71,26 @@
             "z": 3,
             "rotation": 0,
             "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
             "text": "PowerRP V1",
             "size": 48,
             "color": "#1a1a2e",
             "bold": false,
             "opacity": 1
           },
-          "d6acac8e": {
+          "3febebd6": {
             "type": "arrow",
             "z": 4,
             "from": {
-              "x": "@2779cadf_mr.x",
-              "y": "@2779cadf_mr.y"
+              "x": "@e0dc420c_mr.x",
+              "y": "@e0dc420c_mr.y"
             },
             "to": {
-              "x": "@2566d163_closest.x",
-              "y": "@2566d163_closest.y"
+              "x": "@db3a5bb4_closest.x",
+              "y": "@db3a5bb4_closest.y"
             },
             "color": "#1a1a2e",
             "width": 3,
@@ -87,20 +101,20 @@
       }
     },
     {
-      "id": "f4399bd9",
+      "id": "f34991db",
       "name": "Slide 2",
       "duration": 0.5,
       "delta": {
         "items": {
-          "2566d163": {
+          "db3a5bb4": {
             "x": 300,
             "y": 420
           },
-          "2779cadf": {
+          "e0dc420c": {
             "fill": "#2ac3a2",
             "rotation": 0.3
           },
-          "975f1c72": {
+          "6273783c": {
             "x": 100,
             "y": 150,
             "w": 800,
@@ -110,21 +124,21 @@
       }
     },
     {
-      "id": "68a1e825",
+      "id": "f12d7ca0",
       "name": "Slide 3",
       "duration": 0.5,
       "delta": {
         "items": {
-          "c8fdebc4": {
+          "0f18821b": {
             "active": false
           },
-          "7c8d9c52": {
+          "f7741b72": {
             "type": "blur",
             "z": 10,
             "blur": 5,
             "opacity": 1
           },
-          "745dfe76": {
+          "5d90cb12": {
             "type": "magnifier",
             "x": 400,
             "y": 380,

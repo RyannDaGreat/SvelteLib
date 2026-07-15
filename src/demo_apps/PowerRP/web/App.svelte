@@ -16,6 +16,7 @@
   import Inspector from "./Inspector.svelte";
   import KeyframePanel from "./KeyframePanel.svelte";
   import VariablesPanel from "./VariablesPanel.svelte";
+  import FpsCounter from "./FpsCounter.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import PresentMode from "./PresentMode.svelte";
   import Panel from "./Panel.svelte";
@@ -60,6 +61,7 @@
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },
     { id: "toggle-minimap", title: "Toggle Minimap", icon: "mdi:map-outline", run: (a) => a.toggleMinimap() },
+    { id: "toggle-fps", title: "Toggle FPS Counter", icon: "mdi:speedometer", run: (a) => a.toggleFps() },
     { id: "toggle-grid", title: "Toggle Grid", icon: "mdi:grid", run: (a) => a.toggleGrid() },
     { id: "toggle-ruler", title: "Toggle Ruler", icon: "mdi:ruler", run: (a) => a.toggleRuler() },
     { id: "toggle-panel-names", title: "Toggle Panel Names", icon: "mdi:format-title", run: (a) => a.togglePanelNames() },
@@ -268,5 +270,8 @@
   <CommandPalette {app} />
   {#if app.mode === "present"}
     <PresentMode {app} />
+  {/if}
+  {#if app.fpsVisible}
+    <FpsCounter />
   {/if}
 </div>

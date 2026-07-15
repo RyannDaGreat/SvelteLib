@@ -65,6 +65,9 @@ export class PowerRPApp {
   // Ruler). Persisted per-browser like the other viewer preferences above.
   gridEnabled = $state(localStorage.getItem("powerrp.grid") === "on");
   rulerEnabled = $state(localStorage.getItem("powerrp.ruler") === "on");
+  // BROWSER setting (viewer-local, default OFF): the bottom-left FPS counter
+  // (shows in the editor AND present mode — user spec, round 11).
+  fpsVisible = $state(localStorage.getItem("powerrp.fps") === "on");
   // Reactive flag CanvasView raises while any snap correction is applied in the
   // current pointer-move; cleared on pointer-up. Drives the toolbar toggle
   // taking the guide color while a snap is actually engaged.
@@ -77,6 +80,11 @@ export class PowerRPApp {
   toggleMinimap() {
     this.minimapVisible = !this.minimapVisible;
     localStorage.setItem("powerrp.minimap", this.minimapVisible ? "on" : "off");
+  }
+
+  toggleFps() {
+    this.fpsVisible = !this.fpsVisible;
+    localStorage.setItem("powerrp.fps", this.fpsVisible ? "on" : "off");
   }
 
   toggleRetina() {
