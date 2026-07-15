@@ -633,6 +633,49 @@ export class PowerRPApp {
     this.commit(doc);
   }
 
+  /**
+   * Command. The inverse of deleteSelection: keyframe active:true on this
+   * slide for every selected item — the "Show all" set-action (user ruling:
+   * BOTH explicit buttons, never a mixed-state guessing toggle). An item NOT
+   * YET CREATED on this slide follows the ratified pre-creation semantics:
+   * its FOLDED CREATION-SLIDE STATE is copied here + active:true, making
+   * this slide the effective creation slide (it appears looking like
+   * itself). One undo unit for the whole set. Keeps the selection.
+   */
+  showSelection() {
+    const ids = this.selectedIds().filter((id) => this.registry.get(this.rawState().items?.[id]?.type ?? this.#creationState(id)?.type)?.capabilities.purgeable !== false);
+    if (ids.length === 0) return;
+    let doc = this.doc;
+    for (const id of ids) {
+      if (this.rawState().items?.[id]) {
+        doc = keyframed(doc, this.slideIndex, ["items", id, "active"], true);
+      } else {
+        const creation = this.#creationState(id);
+        if (!creation) {
+          console.error(`Show all: item "${id}" has no creation state anywhere — skipped (loudly).`);
+          continue;
+        }
+        // Leaf-wise keyframes (the commitPreview walk pattern) — nested
+        // subtrees like rotationAnchor keyframe per-leaf, never as blobs.
+        const walk = (tree, prefix) => {
+          for (const [k, v] of Object.entries(tree)) {
+            if (v !== null && typeof v === "object" && !Array.isArray(v)) walk(v, [...prefix, k]);
+            else doc = keyframed(doc, this.slideIndex, [...prefix, k], v);
+          }
+        };
+        walk({ ...creation, active: true }, ["items", id]);
+      }
+    }
+    this.commit(doc);
+  }
+
+  /** Query. An item's folded state as of its ORIGINAL creation slide (the
+   * first slide keying its type), or null if it is keyed nowhere. */
+  #creationState(id) {
+    const idx = keyframeIndices(this.doc, ["items", id, "type"])[0];
+    return idx === undefined ? null : foldState(this.doc, idx, 1).items?.[id] ?? null;
+  }
+
   /** True removal FROM EXISTENCE: every keyframe of each selected item on every
    * slide (multi-select falls out naturally). Skips purgeable:false (camera). */
   purgeSelection() {

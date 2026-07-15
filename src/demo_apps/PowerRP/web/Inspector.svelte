@@ -524,6 +524,16 @@
             Hide all
           </button>
         </Tooltip>
+        <!-- BOTH explicit set-actions, never a mixed-state guessing toggle
+             (user ruling: "hide all... didn't turn into show all"). Show all
+             activates every selected item here; not-yet-created items follow
+             the ratified creation-state-copy semantics. -->
+        <Tooltip text="Keyframe active: true here for every selected item (not-yet-created items are created here)">
+          <button class="btn" onclick={() => app.runCommand("show-item")}>
+            <iconify-icon icon="mdi:eye" width="16" height="16"></iconify-icon>
+            Show all
+          </button>
+        </Tooltip>
         <Tooltip text="Remove every selected item from existence (all slides)">
           <button class="btn danger" aria-label="Purge selected" onclick={() => app.runCommand("purge-item")}>
             <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>

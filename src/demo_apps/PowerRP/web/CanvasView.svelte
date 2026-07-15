@@ -21,6 +21,7 @@
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
+  import { onVideoFrame } from "../render_gpu/gpu/video_registry.js";
   import { renderViewFrame } from "./gpuService.js";
   import * as T from "../core/transform.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
@@ -141,6 +142,9 @@
   // unsubscriber, which $effect uses as its cleanup.
   let imageEpoch = $state(0);
   $effect(() => onImageLoad(() => (imageEpoch += 1)));
+  // Playing videos repaint per decoded frame (requestVideoFrameCallback via
+  // the registry) — same epoch, same reason (reactive paint, async frames).
+  $effect(() => onVideoFrame(() => (imageEpoch += 1)));
   // Active Blender-style modal transform bookkeeping (non-reactive, like drag).
   // {kind: "grab"|"scale", startWorld, members, center, guides?}. Started when
   // app.modalXform is set (G/S shortcut) and captured by the effect below; the
