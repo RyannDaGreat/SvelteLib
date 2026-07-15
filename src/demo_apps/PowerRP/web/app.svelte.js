@@ -29,10 +29,6 @@ const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
 const BAND_MODE_KEY = "powerrp.bandMode";
 
-/** Rubber-band selection modes. "regular" resolves to the DEFAULT setting
- * (bandMode) at drag time — a browser preference, localStorage like snap. */
-export const BAND_MODES = ["inner", "outer"];
-
 /** Theme catalog — viewer preference (localStorage), NOT document state.
  * Each id matches a `:root[data-theme="…"]` block in app.css. */
 export const THEMES = [
@@ -645,12 +641,6 @@ export class PowerRPApp {
     for (const id of ids) doc = withItemPurged(doc, id);
     this.commit(doc);
     this.selection = null;
-  }
-
-  /** Keyframes a (dotted) key of the selected item on the current slide. */
-  keyframeSelected(key, value) {
-    if (!this.selection) return;
-    this.keyframePath(["items", this.selection, ...key.split(".")], value);
   }
 
   /**
