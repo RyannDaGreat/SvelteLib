@@ -23,10 +23,7 @@
 import { polygon } from "../render_gpu/ir.js";
 import { fancyArrowOutline, triangulated, pointInPolygon } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
-
-// Degenerate-geometry reports, once per unique message (the expressions.js
-// loggedErrors pattern) — emit runs every frame and must not spam.
-const loggedDegenerate = new Set();
+import { reportOnce } from "../core/report.js";
 
 /** Pure function. The generator params for a state (evaluated OR raw — only
  * the caller knows; emit/hit-test pass evaluated states).
@@ -90,11 +87,9 @@ export const fancyArrowPlugin = {
     try {
       tris = triangulated(outline);
     } catch (e) {
-      const message = `PowerRP fancy_arrow: geometry not rendered — ${e.message} (tipLength ${s.tipLength}, tipWidth ${s.tipWidth}, tipDimple ${s.tipDimple}, startWidth ${s.startWidth}, endWidth ${s.endWidth})`;
-      if (!loggedDegenerate.has(message)) {
-        loggedDegenerate.add(message);
-        console.error(message);
-      }
+      // Once per unique message (core/report.js throttle semantics) — emit
+      // runs every frame and must not spam.
+      reportOnce(`PowerRP fancy_arrow: geometry not rendered — ${e.message} (tipLength ${s.tipLength}, tipWidth ${s.tipWidth}, tipDimple ${s.tipDimple}, startWidth ${s.startWidth}, endWidth ${s.endWidth})`);
       return [];
     }
     const opacity = s.opacity ?? 1;

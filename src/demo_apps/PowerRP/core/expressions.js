@@ -59,6 +59,7 @@
 
 import { isTree, copied, getPath, setPath, leaves } from "./deltas.js";
 import * as T from "./transform.js";
+import { reportOnce } from "./report.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
 
@@ -474,7 +475,6 @@ function mutSetPath(tree, path, value) {
 // ── Evaluation (the derivation-stage expression pass) ────────────────────────
 
 const evalMemo = new WeakMap(); // state object → {registry, result}
-const loggedErrors = new Set(); // messages already console.error'd (once each)
 // The geometry a base-frame self anchor (rotation pivot) reads — never
 // rotation or rotationAnchor, so the pivot is a stable fixed point.
 const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
@@ -538,10 +538,9 @@ function computeEvaluatedState(state, registry) {
   const fail = (slot, message) => {
     errors.set(slot.key, message);
     mutSetPath(out, slot.path, fallbackFor(slot.path));
-    if (!loggedErrors.has(message)) {
-      loggedErrors.add(message);
-      console.error(`PowerRP expression error at ${slot.key}: ${message}`);
-    }
+    // Dedupe on the message, print the slot-prefixed line (core/report.js
+    // documents the once-per-session throttle semantics).
+    reportOnce(message, `PowerRP expression error at ${slot.key}: ${message}`);
   };
 
   // 1. Collect equation slots (string-valued numeric leaves).
@@ -741,10 +740,7 @@ function computeEvaluatedState(state, registry) {
       // Degenerate geometry (e.g. exactly tangent circles) may never meet the
       // tolerance: keep the best iterate, but NEVER silently — report once.
       const message = `closest-anchor fixpoint still moving after ${MAX_CLOSEST_SWEEPS} sweeps — keeping the last iterate (near-degenerate geometry?)`;
-      if (!loggedErrors.has(message)) {
-        loggedErrors.add(message);
-        console.error(`PowerRP expression warning: ${message}`);
-      }
+      reportOnce(message, `PowerRP expression warning: ${message}`);
     }
   }
 
