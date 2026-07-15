@@ -37,3 +37,7 @@ public/videos/
 *~
 .*.un~
 *.swp
+
+# Stray probe-artifact dirs (must go to .claude_logs or scratch, never repo tree)
+.claude_shots/
+.probe_*/
