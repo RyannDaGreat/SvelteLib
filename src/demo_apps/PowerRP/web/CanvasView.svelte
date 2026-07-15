@@ -235,11 +235,17 @@
     const nodes = app.nodes();
     const hit = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom);
     app.selection = hit?.itemId ?? null;
-    if (!hit || !hit.plugin.capabilities.transform) return;
+    // Draggable = has a transform (x/y) OR a moveBy hook (arrow shaft drag
+    // translates its endpoints — manifest round 5: "Both must work").
+    if (!hit || !(hit.plugin.capabilities.transform || hit.plugin.moveBy)) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     drag = {
       kind: "move",
       itemId: hit.itemId,
+      plugin: hit.plugin,
+      // moveBy needs the RAW stored state: equation-bound coordinates must be
+      // recognized (strings) so they stay anchored instead of translating.
+      rawItem: app.rawState().items?.[hit.itemId],
       startWorld: w,
       startX: hit.state.x ?? 0,
       startY: hit.state.y ?? 0,
@@ -255,6 +261,8 @@
     if (!drag) {
       const nodes = app.nodes();
       // Anchor hover tooltip (immediate; only while anchors are shown).
+      // Shows the anchor's REFERENCABLE name ("circle_tm") — exactly what an
+      // equation types before .x/.y (THE UNIFICATION: anchors are variables).
       hoverAnchor = null;
       if (app.anchorsVisible) {
         const tol = SNAP_PX / viewport.zoom;
@@ -263,7 +271,7 @@
           for (const a of nodeAnchors(n)) {
             const d = Math.hypot(a.x - w.x, a.y - w.y);
             if (d <= tol && (!best || d < best.d))
-              best = { d, label: `${app.displayName(n.itemId)} · ${a.id}`, x: a.x, y: a.y };
+              best = { d, label: app.anchorName(n.itemId, a.id), x: a.x, y: a.y };
           }
         if (best) hoverAnchor = best;
       }
@@ -278,18 +286,22 @@
     let dx = w.x - drag.startWorld.x;
     let dy = w.y - drag.startWorld.y;
     const newGuides = [];
+    // moveBy widgets (arrows) have no bbox/point features to probe, so they
+    // get axis lock but no feature snapping.
+    const custom = !!drag.plugin.moveBy;
     if (e.shiftKey) {
       // Axis lock with hysteresis; guide is an INFINITE line through the
       // drag origin (clipped to the viewport at render time).
       drag.axis = axisLock(dx, dy, drag.axis);
       if (drag.axis === "x") dy = 0;
       else dx = 0;
+      const origin = custom ? drag.startWorld : { x: drag.startX, y: drag.startY };
       newGuides.push({
         kind: "line",
-        x: drag.startX, y: drag.startY,
+        x: origin.x, y: origin.y,
         dx: drag.axis === "x" ? 1 : 0, dy: drag.axis === "x" ? 0 : 1,
       });
-    } else {
+    } else if (!custom) {
       drag.axis = null;
       // Snap: probe with the dragged item's own point features at the
       // proposed position; snap against every OTHER node's features.
@@ -311,8 +323,20 @@
         newGuides.push(...snap.guides);
         if (snap.dx !== 0 || snap.dy !== 0) app.snapEngaged = true;
       }
+    } else {
+      drag.axis = null;
     }
     guides = newGuides;
+    if (custom) {
+      // Plugin-defined translation (arrow shaft): only FREE (numeric)
+      // coordinates move; equation-bound ones stay anchored (see arrow.js).
+      const pairs = drag.plugin.moveBy(drag.rawItem, dx, dy);
+      if (pairs.length) app.setPreview(pairs.map(([p, v]) => [["items", drag.itemId, ...p], v]));
+      return;
+    }
+    // Body-dragging writes plain numeric keyframes: direct manipulation
+    // replaces an equation on x/y outright (only ENDPOINT drags have the
+    // bind/detach threshold semantics — see endpointDrag).
     app.setPreview([
       [["items", drag.itemId, "x"], drag.startX + dx],
       [["items", drag.itemId, "y"], drag.startY + dy],
@@ -489,19 +513,21 @@
   function endpointDrag(w) {
     const tol = SNAP_PX / viewport.zoom;
     // Anchor binding is GATED on the anchors toggle, and only ever happens
-    // within the ONE uniform snap threshold — dragging past it DISCONNECTS
-    // (user rule; the old drop-anywhere-on-body "closest" rebinding was
-    // sticky and obnoxious).
-    let binding = { x: w.x, y: w.y };
+    // within the ONE uniform snap threshold — dragging past it DETACHES the
+    // endpoint back to plain numbers (user rule; the old drop-anywhere-on-body
+    // "closest" rebinding was sticky and obnoxious).
+    // THE UNIFICATION: binding WRITES EQUATIONS — dropping on an anchor sets
+    // from/to x/y to "@<itemId>_<anchorId>.x"/".y" (anchors are variables).
+    let xy = { x: w.x, y: w.y };
     if (app.anchorsVisible) {
       const nodes = app.nodes().filter((n) => n.itemId !== drag.itemId);
       let best = null;
       for (const n of nodes)
         for (const a of nodeAnchors(n)) {
           const d = Math.hypot(a.x - w.x, a.y - w.y);
-          if (d <= tol && (!best || d < best.d)) best = { d, binding: { item: n.itemId, anchor: a.id } };
+          if (d <= tol && (!best || d < best.d)) best = { d, ref: `@${n.itemId}_${a.id}` };
         }
-      if (best) binding = best.binding;
+      if (best) xy = { x: `${best.ref}.x`, y: `${best.ref}.y` };
       else {
         // "closest" computed anchor binds only when the pointer is within the
         // SAME threshold of the perimeter point it would produce.
@@ -509,11 +535,15 @@
         if (hit?.plugin.closestAnchor) {
           const local = hit.plugin.closestAnchor(hit.state, w.x, w.y, hit.world);
           const p = T.apply(hit.world, local.x, local.y);
-          if (Math.hypot(p.x - w.x, p.y - w.y) <= tol) binding = { item: hit.itemId, anchor: "closest" };
+          if (Math.hypot(p.x - w.x, p.y - w.y) <= tol)
+            xy = { x: `@${hit.itemId}_closest.x`, y: `@${hit.itemId}_closest.y` };
         }
       }
     }
-    app.setPreview([[["items", drag.itemId, drag.which], binding]]);
+    app.setPreview([
+      [["items", drag.itemId, drag.which, "x"], xy.x],
+      [["items", drag.itemId, drag.which, "y"], xy.y],
+    ]);
   }
 
   function onPointerLeave() {

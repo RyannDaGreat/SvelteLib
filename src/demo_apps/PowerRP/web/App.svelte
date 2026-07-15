@@ -15,12 +15,16 @@
   import CanvasView from "./CanvasView.svelte";
   import Inspector from "./Inspector.svelte";
   import KeyframePanel from "./KeyframePanel.svelte";
+  import VariablesPanel from "./VariablesPanel.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import PresentMode from "./PresentMode.svelte";
   import Panel from "./Panel.svelte";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed, foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
+  import { evaluateState } from "../core/expressions.js";
+  import { createKeybindings } from "../core/keybindings.js";
+  import { createShortcuts } from "../core/shortcuts.js";
 
   const app = new PowerRPApp();
   app.loadAutosave();
@@ -29,7 +33,8 @@
 
   // SplitPane splits are BOUNDARY positions: [0.16, 0.78] → 3 panes.
   let hSplits = $state([0.16, 0.78]);
-  let rightSplits = $state([0.5]);
+  // Right column: Property Panel / Variables Panel / Keyframe Panel.
+  let rightSplits = $state([0.45, 0.7]);
 
   // ── Core commands (plugins added theirs at registration) ──────────────────
   const needsSelection = (a) => a.selection !== null;
@@ -73,7 +78,8 @@
     { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
     { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, run: (a) => (a.selection = null) },
     { id: "toggle-palette", title: "Toggle Command Palette", icon: "mdi:chevron-down-box-outline", run: (a) => (a.paletteOpen = !a.paletteOpen) },
-    { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRect(foldState(a.doc, a.slideIndex, 1), a.doc.meta)) },
+    // Evaluated state: the camera's own properties may be equations.
+    { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRect(evaluateState(foldState(a.doc, a.slideIndex, 1), a.registry).state, a.doc.meta)) },
     {
       id: "color-theme",
       title: "Color Theme",
@@ -127,25 +133,42 @@
     a.commit(doc);
   }
 
-  // ── Shortcuts (single registry → dispatch AND HintBar) ────────────────────
+  // ── Shortcuts: keybinding registry → shortcut registry (dispatch + HintBar)
+  // Command-bound key combos live in core/keybindings.js (an EDITOR setting:
+  // defaults in code, user overrides persisted in localStorage). The bridge
+  // (toShortcutEntries) turns them into shortcut-registry entries, so
+  // EVERYTHING still routes through the command registry (user invariant) and
+  // the palette still displays each command's keys automatically.
+  const KEYBINDINGS_KEY = "powerrp.keybindings";
+  const editAny = (c) => c.mode === "edit";
   const editMode = (c) => c.mode === "edit" && !c.paletteOpen;
-  // EVERYTHING routes through the command registry (user invariant): shortcut
-  // entries reference command ids, which is what lets the palette display each
-  // command's keys automatically.
-  const entries = [
-    { keys: ["Cmd", "Shift", "P"], label: "Palette", when: (c) => c.mode === "edit", command: "toggle-palette" },
-    { keys: ["Ctrl", "Z"], label: "Undo", when: editMode, command: "undo" },
-    { keys: ["Ctrl", "Shift", "Z"], label: "Redo", when: editMode, command: "redo" },
-    { keys: ["Backspace"], label: "Delete", when: (c) => editMode(c) && c.hasSelection, command: "delete-item" },
-    { keys: ["Delete"], label: "Delete", hidden: true, when: (c) => editMode(c) && c.hasSelection, command: "delete-item" },
-    { keys: ["Ctrl", "C"], label: "Copy", when: (c) => editMode(c) && c.hasSelection, command: "copy-item" },
-    { keys: ["Ctrl", "V"], label: "Paste", hidden: true, when: editMode, command: "paste" },
-    { keys: ["Cmd", "Shift", "F"], label: "To front", when: (c) => editMode(c) && c.hasSelection, command: "put-on-top" },
-    { keys: ["Cmd", "Shift", "B"], label: "To back", when: (c) => editMode(c) && c.hasSelection, command: "put-on-bottom" },
-    { keys: ["Left"], label: "Prev slide", when: editMode, command: "prev-slide" },
-    { keys: ["Right"], label: "Next slide", when: editMode, command: "next-slide" },
-    { keys: ["Escape"], label: "Deselect", when: (c) => editMode(c) && c.hasSelection, command: "deselect" },
-    // Display-only hints (pointer gestures handled by CanvasView/PanZoom):
+  const editSelection = (c) => editMode(c) && c.hasSelection;
+  const kb = createKeybindings([
+    { command: "toggle-palette", keys: ["Cmd", "Shift", "P"], when: "editAny" },
+    { command: "undo", keys: ["Ctrl", "Z"], when: "editMode" },
+    { command: "redo", keys: ["Ctrl", "Shift", "Z"], when: "editMode" },
+    { command: "delete-item", keys: ["Backspace"], when: "editSelection" },
+    { command: "copy-item", keys: ["Ctrl", "C"], when: "editSelection" },
+    { command: "paste", keys: ["Ctrl", "V"], when: "editMode" },
+    { command: "put-on-top", keys: ["Cmd", "Shift", "F"], when: "editSelection" },
+    { command: "put-on-bottom", keys: ["Cmd", "Shift", "B"], when: "editSelection" },
+    { command: "prev-slide", keys: ["Left"], when: "editMode" },
+    { command: "next-slide", keys: ["Right"], when: "editMode" },
+    { command: "deselect", keys: ["Escape"], when: "editSelection" },
+  ]);
+  const storedOverrides = localStorage.getItem(KEYBINDINGS_KEY);
+  if (storedOverrides) kb.loadOverrides(JSON.parse(storedOverrides));
+  const KEYBINDING_LABELS = {
+    "toggle-palette": "Palette", undo: "Undo", redo: "Redo",
+    "delete-item": "Delete", "copy-item": "Copy", paste: "Paste",
+    "put-on-top": "To front", "put-on-bottom": "To back",
+    "prev-slide": "Prev slide", "next-slide": "Next slide", deselect: "Deselect",
+  };
+  const WHEN_RESOLVERS = { editAny, editMode, editSelection };
+  // Hidden key aliases + display-only pointer hints stay hand-registered
+  // (core/keybindings.js scope: ONE binding per command; gestures aren't keys).
+  const handEntries = [
+    { keys: ["Delete"], label: "Delete", hidden: true, when: editSelection, command: "delete-item" },
     { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging },
     { keys: ["Shift"], label: "Axis lock", when: (c) => editMode(c) && c.dragging },
     { keys: ["mouse_scroll"], label: "Pan", when: editMode },
@@ -153,7 +176,28 @@
     { keys: ["Left", "Right"], label: "Step slides", when: (c) => c.mode === "present" },
     { keys: ["Esc"], label: "Exit", when: (c) => c.mode === "present" },
   ];
-  for (const e of entries) app.shortcuts.add(e);
+  /** Command. (Re)builds the shortcut registry from the keybinding registry +
+   * hand entries — also how a rebind takes effect (createShortcuts has no
+   * remove; rebuilding is the documented pattern). */
+  function wireShortcuts() {
+    const shortcuts = createShortcuts();
+    for (const e of kb.toShortcutEntries(KEYBINDING_LABELS, WHEN_RESOLVERS))
+      // Ctrl+V dispatches but is kept out of the HintBar (pre-existing
+      // choice: paste is discoverable via the palette; the bar stays lean).
+      shortcuts.add(e.command === "paste" ? { ...e, hidden: true } : e);
+    for (const e of handEntries) shortcuts.add(e);
+    app.shortcuts = shortcuts;
+  }
+  wireShortcuts();
+  app.keybindings = kb; // future keybinding-editing UI reaches it here
+  /** Command. Rebinds a command, persists overrides, rewires dispatch/HintBar.
+   * Returns the conflicting command id (see keybindings.bind) or null. */
+  app.rebindCommand = (command, keys, opts) => {
+    const conflict = kb.bind(command, keys, opts);
+    localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(kb.serializeOverrides()));
+    wireShortcuts();
+    return conflict;
+  };
 
   function shortcutCtx() {
     return {
@@ -203,6 +247,10 @@
                 {#if row === 0}
                   <Panel {app} name="Property Panel">
                     <Inspector {app} />
+                  </Panel>
+                {:else if row === 1}
+                  <Panel {app} name="Variables Panel">
+                    <VariablesPanel {app} />
                   </Panel>
                 {:else}
                   <Panel {app} name="Keyframe Panel">

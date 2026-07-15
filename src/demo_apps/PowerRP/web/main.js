@@ -2,8 +2,9 @@ import "../../../styles/theme.css";
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
-import { deserialize, foldState } from "../core/document.js";
+import { deserialize, foldState, withCameraEnsured } from "../core/document.js";
 import { cameraRect } from "../core/derive.js";
+import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
@@ -15,15 +16,19 @@ import { paintScene, fitRectView } from "../render/compositor.js";
  * data URL. Same compositor code path as the live editor — no divergence.
  */
 window.__powerrp_render = function (docJson, { slide = 0, alpha = 1, width = 1280, height = 720 } = {}) {
-  const doc = typeof docJson === "string" ? deserialize(docJson) : docJson;
+  // Same load-time migrations as the editor: inject THE camera into
+  // pre-camera docs, convert legacy {item, anchor} bindings to equations.
+  const doc = withBindingsMigrated(withCameraEnsured(
+    typeof docJson === "string" ? deserialize(docJson) : docJson));
   const registry = createRegistry();
   registerAll(registry, createCommands());
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
-  // The view is THE CAMERA's bbox at this (slide, alpha) — the camera tweens.
-  const rect = cameraRect(foldState(doc, slide, alpha), doc.meta);
+  // The view is THE CAMERA's bbox at this (slide, alpha) — the camera tweens
+  // (evaluated state: the camera's own properties may be equations).
+  const rect = cameraRect(evaluateState(foldState(doc, slide, alpha), registry).state, doc.meta);
   const view = fitRectView(rect, width, height, 1);
   ctx.fillStyle = rect.background; // camera background fills letterbox edges too
   ctx.fillRect(0, 0, width, height);

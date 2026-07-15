@@ -16,7 +16,8 @@ import {
   withSlideToggled, serialize, deserialize, allKeyframes, withNormalizedZ, bisectedZ,
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
-import { deriveRenderTree, nodeFeatures, nodeAnchors, resolveBinding, pickNode, standardBBoxAnchors, cameraRect } from "../core/derive.js";
+import { deriveRenderTree, nodeFeatures, nodeAnchors, pickNode, standardBBoxAnchors, cameraRect } from "../core/derive.js";
+import { evaluateState } from "../core/expressions.js";
 import { solveSnap, axisLock } from "../core/snap.js";
 import { createCommands } from "../core/commands.js";
 import { rpFuzzyScore } from "../core/fuzzy.js";
@@ -24,7 +25,7 @@ import { createShortcuts } from "../core/shortcuts.js";
 import { createUndo } from "../core/undo.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { circlePlugin } from "../plugins/circle.js";
-import { arrowPlugin, distToSegment, resolveEndpoints } from "../plugins/arrow.js";
+import { arrowPlugin, distToSegment } from "../plugins/arrow.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -193,23 +194,41 @@ test("derive: z-sort, anchors, features, pick", () => {
   assert.equal(pickNode(nodes, 5, 5).id, "r1"); // topmost wins
   assert.equal(pickNode(nodes, 500, 500), null);
 });
-test("resolveBinding: free, preset, circle-closest, missing item", () => {
-  const state = { items: { c1: { ...circlePlugin.defaults, x: 100, y: 100, w: 20, h: 20, z: 0 } } };
-  const nodes = deriveRenderTree(state, registry);
-  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
-  assert.deepEqual(resolveBinding({ x: 3, y: 4 }, byId, 0, 0), { x: 3, y: 4 });
-  assert.deepEqual(resolveBinding({ item: "c1", anchor: "cm" }, byId, 0, 0), { x: 110, y: 110 });
-  const closest = resolveBinding({ item: "c1", anchor: "closest" }, byId, 110, 0);
-  approx(closest.x, 110);
-  approx(closest.y, 100); // top of the circle, toward the target above
-  assert.equal(resolveBinding({ item: "ghost", anchor: "cm" }, byId, 0, 0), null);
+// ADAPTATION (THE UNIFICATION): {item, anchor} binding objects and
+// resolveBinding/resolveEndpoints no longer exist — anchor bindings are now
+// equation strings evaluated in the derivation stage (core/expressions.js,
+// where the full behavior is tested). This test keeps the same scenario
+// (free point, preset anchor, circle closest-point, missing item) through
+// the new mechanism.
+test("arrow endpoints as equations: free, preset, closest, missing item", () => {
+  const state = {
+    items: {
+      c1: { ...circlePlugin.defaults, x: 100, y: 100, w: 20, h: 20, z: 0 },
+      a1: { ...arrowPlugin.defaults, from: { x: 110, y: 0 }, to: { x: "@c1_closest.x", y: "@c1_closest.y" } },
+      a2: { ...arrowPlugin.defaults, from: { x: 3, y: 4 }, to: { x: "@c1_cm.x", y: "@c1_cm.y" } },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  assert.deepEqual(s.items.a2.from, { x: 3, y: 4 }); // free point untouched
+  assert.deepEqual(s.items.a2.to, { x: 110, y: 110 }); // preset anchor (center)
+  approx(s.items.a1.to.x, 110);
+  approx(s.items.a1.to.y, 100); // closest: top of the circle, toward the point above
+  // Missing item: loud error + plugin-default fallback (never a silent NaN).
+  const ghost = { items: { a1: { ...arrowPlugin.defaults, to: { x: "@dead0000_cm.x", y: 5 } } } };
+  const originalError = console.error;
+  console.error = () => {}; // the loud report is asserted in expressions_test.js
+  const r = evaluateState(ghost, registry);
+  console.error = originalError;
+  assert.match(r.errors.get("items.a1.to.x"), /Unknown item/);
+  assert.equal(r.state.items.a1.to.x, arrowPlugin.defaults.to.x);
 });
-test("arrow: endpoints resolve; distToSegment", () => {
-  const pts = resolveEndpoints(
-    { from: { x: 0, y: 0 }, to: { x: 10, y: 0 } },
-    (b) => ({ x: b.x, y: b.y }),
-  );
-  assert.deepEqual(pts, { from: { x: 0, y: 0 }, to: { x: 10, y: 0 } });
+test("arrow: editPoints on evaluated state; distToSegment", () => {
+  const node = { state: { ...arrowPlugin.defaults, from: { x: 0, y: 0 }, to: { x: 10, y: 0 } } };
+  assert.deepEqual(arrowPlugin.editPoints(node), [
+    { key: "from", x: 0, y: 0 },
+    { key: "to", x: 10, y: 0 },
+  ]);
   assert.equal(distToSegment(5, 3, { x: 0, y: 0 }, { x: 10, y: 0 }), 3);
 });
 

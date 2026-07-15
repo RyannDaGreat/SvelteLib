@@ -21,6 +21,8 @@ import * as T from "./transform.js";
 /**
  * Pure function. Derives the z-sorted render tree from a folded state.
  * Sort: ascending z (default 0), ties broken by id for determinism.
+ * Callers pass an EVALUATED state (core/expressions.evaluateState — the
+ * derivation-stage expression pass), so every numeric property is a number.
  */
 export function deriveRenderTree(state, registry) {
   const items = state.items ?? {};
@@ -134,7 +136,7 @@ export function standardBBoxAnchors(state) {
  * Pure function. Does a world point hit this node? Converts to local space
  * and asks the plugin's hitTest, falling back to the bbox. Plugins may
  * instead define hitTestWorld(node, wx, wy, nodesById) for widgets whose
- * geometry needs resolved bindings (arrows).
+ * geometry lives in world space (arrows).
  */
 export function hitNode(node, wx, wy, nodesById, tol = 0) {
   const { plugin, state } = node;
@@ -159,25 +161,7 @@ export function pickNode(nodes, wx, wy, tol = 0) {
   return null;
 }
 
-/**
- * Pure function. Resolves an arrow-endpoint binding to a world point.
- * Binding forms:
- *   {x, y}                      → free point
- *   {item, anchor: "<presetId>"} → that anchor on that item
- *   {item, anchor: "closest"}    → plugin's computed closest-point anchor
- *     toward `towardX/Y` (e.g. the arrow's other endpoint) — the circle
- *     closest-point case from the requirements.
- * Returns {x, y} or null when the bound item is absent on this slide.
- */
-export function resolveBinding(binding, nodesById, towardX, towardY) {
-  if (binding == null) return null;
-  if (binding.item === undefined) return { x: binding.x, y: binding.y };
-  const node = nodesById[binding.item];
-  if (!node) return null;
-  if (binding.anchor === "closest" && node.plugin.closestAnchor) {
-    const local = node.plugin.closestAnchor(node.state, towardX, towardY, node.world);
-    return T.apply(node.world, local.x, local.y);
-  }
-  const anchor = nodeAnchors(node).find((a) => a.id === binding.anchor);
-  return anchor ? { x: anchor.x, y: anchor.y } : null;
-}
+// NOTE: resolveBinding ({item, anchor} endpoint bindings) lived here until
+// THE UNIFICATION replaced binding objects with equation strings evaluated in
+// the derivation stage — see core/expressions.js (withBindingsMigrated
+// converts legacy documents on load).

@@ -8,6 +8,7 @@
   import { createPresenter } from "../core/presentation.js";
   import { foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
+  import { evaluateState } from "../core/expressions.js";
   import { paintScene, fitRectView } from "../render/compositor.js";
 
   let { app } = $props();
@@ -30,7 +31,8 @@
     ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
     // The presentation views THE CAMERA's bbox at this (slide, alpha) — the
     // camera tweens between slides. Letterbox: clip to the camera region.
-    const rect = cameraRect(foldState(app.doc, frame.index, frame.alpha), app.doc.meta);
+    // Evaluated state: the camera's own properties may be equations.
+    const rect = cameraRect(evaluateState(foldState(app.doc, frame.index, frame.alpha), app.registry).state, app.doc.meta);
     const view = fitRectView(rect, innerWidth, innerHeight, dpr);
     ctx.save();
     ctx.beginPath();

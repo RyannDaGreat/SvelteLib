@@ -22,8 +22,7 @@
  *   deviceScale   — device px per world unit (zoom * dpr)
  *   worldToDevice(wx, wy) → {x, y} in device pixels
  *   backdrop      — composite-so-far snapshot (only for backdrop plugins)
- *   nodesById     — all render nodes keyed by id (for bindings)
- *   resolveBinding(binding, towardX, towardY) → world point or null
+ *   nodesById     — all render nodes keyed by id
  *   canvasW/H     — canvas size in device pixels
  *   anchorsVisible— editor toggle, lets plugins hint anchor drawing
  *   renderRegion(regionOpts) → offscreen canvas — re-render a sub-view of the
@@ -33,7 +32,8 @@
 
 import { foldState } from "../core/document.js";
 import { blendApplied } from "../core/deltas.js";
-import { deriveRenderTree, resolveBinding, cameraRect } from "../core/derive.js";
+import { deriveRenderTree, cameraRect } from "../core/derive.js";
+import { evaluateState } from "../core/expressions.js";
 import * as T from "../core/transform.js";
 
 /**
@@ -64,6 +64,9 @@ export function paintScene(ctx, doc, opts) {
   } = opts;
   let state = foldState(doc, slideIndex, alpha);
   if (stateOverride) state = blendApplied(state, stateOverride, 1);
+  // Derivation-stage expression pass (THE UNIFICATION): every equation slot
+  // becomes its evaluated number before anything downstream sees the state.
+  state = evaluateState(state, registry).state;
   const nodes = deriveRenderTree(state, registry).filter((n) => (n.state.z ?? 0) < zBelow);
   const nodesById = Object.fromEntries(nodes.map((n) => [n.id, n]));
   const canvas = ctx.canvas;
@@ -77,7 +80,6 @@ export function paintScene(ctx, doc, opts) {
       y: (wy * view.zoom + view.panY) * view.dpr,
     }),
     nodesById,
-    resolveBinding: (binding, tx, ty) => resolveBinding(binding, nodesById, tx, ty),
     canvasW: canvas.width,
     canvasH: canvas.height,
     anchorsVisible,

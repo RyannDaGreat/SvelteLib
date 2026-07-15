@@ -15,13 +15,15 @@
   import DirtyImage from "../../../lib/DirtyImage.svelte";
   import { foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
+  import { evaluateState } from "../core/expressions.js";
   import { paintScene, fitRectView } from "../render/compositor.js";
 
   let { app } = $props();
 
-  /** Camera rect of slide `i` at full alpha (the thumbnail's view + aspect). */
+  /** Camera rect of slide `i` at full alpha (the thumbnail's view + aspect).
+      Evaluated state: the camera's own properties may be equations. */
   function slideRect(i) {
-    return cameraRect(foldState(app.doc, i, 1), app.doc.meta);
+    return cameraRect(evaluateState(foldState(app.doc, i, 1), app.registry).state, app.doc.meta);
   }
 
   /** Thumbnail aspect (h/w) for slide `i`, or null when the camera is degenerate

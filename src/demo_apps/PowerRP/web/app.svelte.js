@@ -12,8 +12,9 @@ import {
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
   withCameraEnsured,
 } from "../core/document.js";
-import { setPath, blendApplied } from "../core/deltas.js";
+import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
+import { evaluateState, withBindingsMigrated, withVariableRenamed, anchorRefName } from "../core/expressions.js";
 import { paintScene, fitRectView } from "../render/compositor.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -68,6 +69,10 @@ export class PowerRPApp {
   // current pointer-move; cleared on pointer-up. Drives the toolbar toggle
   // taking the guide color while a snap is actually engaged.
   snapEngaged = $state(false);
+  // The shortcut registry is $state so App.svelte can REBUILD it after a
+  // keybinding rebind (createShortcuts has no remove — see core/keybindings.js
+  // scope note) and the HintBar picks up the swap reactively.
+  shortcuts = $state(null);
 
   toggleMinimap() {
     this.minimapVisible = !this.minimapVisible;
@@ -112,7 +117,7 @@ export class PowerRPApp {
   constructor() {
     this.registry = createRegistry();
     this.commands = createCommands();
-    this.shortcuts = createShortcuts();
+    this.shortcuts = createShortcuts(); // App.svelte rebuilds this from the keybinding registry
     this.undoLog = createUndo(this.snapshot(this.doc));
     this.canvasActions = null; // PanZoom actions, set by CanvasView
     registerAll(this.registry, this.commands);
@@ -120,10 +125,43 @@ export class PowerRPApp {
 
   // ── State queries ──────────────────────────────────────────────────────────
 
-  /** Folded state of the current slide, with any live drag preview applied. */
-  state() {
+  /**
+   * Folded state of the current slide, with any live drag preview applied —
+   * RAW: equation slots still hold their stored strings. The Property Panel
+   * and Variables Panel read THIS to display/edit equations.
+   */
+  rawState() {
     const base = foldState(this.doc, this.slideIndex, 1);
     return this.previewDelta ? blendApplied(base, this.previewDelta, 1) : base;
+  }
+
+  /** The derivation-stage expression pass over rawState(): {state, errors}.
+   * Memoized on state identity inside evaluateState. */
+  evalInfo() {
+    return evaluateState(this.rawState(), this.registry);
+  }
+
+  /** Folded + EVALUATED state — every numeric property is a number. All
+   * geometry (canvas, snapping, anchors, hit tests) reads this. */
+  state() {
+    return this.evalInfo().state;
+  }
+
+  /** Expression error message for a full state path (e.g. ["items", id, "x"]
+   * or ["vars", name]), or null. Drives the equation-field error affordance. */
+  exprErrorAt(path) {
+    return this.evalInfo().errors.get(path.join(".")) ?? null;
+  }
+
+  /** RAW stored value at a path within an item (equation string or number). */
+  storedItemValue(itemId, path) {
+    return getPath(this.rawState().items?.[itemId] ?? {}, path);
+  }
+
+  /** The referencable display name of an anchor ("circle_tm") — what the
+   * hover tooltip shows and what equations type before .x/.y. */
+  anchorName(itemId, anchorId) {
+    return anchorRefName(this.rawState(), itemId, anchorId);
   }
 
   nodes() {
@@ -245,15 +283,18 @@ export class PowerRPApp {
   // {powerrp_props: {key: value}}.
 
   async copySelection() {
-    const node = this.selectedNode();
-    if (!node) return;
-    await navigator.clipboard.writeText(JSON.stringify({ powerrp_item: node.state }));
+    if (!this.selection) return;
+    // RAW state: equations copy as equations, not their evaluated snapshots.
+    const state = this.rawState().items?.[this.selection];
+    if (!state) return;
+    await navigator.clipboard.writeText(JSON.stringify({ powerrp_item: state }));
   }
 
   async copyProperty(key) {
-    const node = this.selectedNode();
-    if (!node || !(key in node.state)) return;
-    await navigator.clipboard.writeText(JSON.stringify({ powerrp_props: { [key]: node.state[key] } }));
+    if (!this.selection) return;
+    const value = this.storedItemValue(this.selection, key.split(".")); // dotted keys = nested paths
+    if (value === undefined) return;
+    await navigator.clipboard.writeText(JSON.stringify({ powerrp_props: { [key]: value } }));
   }
 
   async pasteClipboard() {
@@ -285,7 +326,7 @@ export class PowerRPApp {
     } else if (payload.powerrp_props && this.selection) {
       let doc = this.doc;
       for (const [key, value] of Object.entries(payload.powerrp_props))
-        doc = keyframed(doc, this.slideIndex, ["items", this.selection, key], value);
+        doc = keyframed(doc, this.slideIndex, ["items", this.selection, ...key.split(".")], value);
       this.commit(doc);
     }
   }
@@ -304,9 +345,10 @@ export class PowerRPApp {
     this.selection = null;
   }
 
+  /** Keyframes a (dotted) key of the selected item on the current slide. */
   keyframeSelected(key, value) {
     if (!this.selection) return;
-    this.commit(keyframed(this.doc, this.slideIndex, ["items", this.selection, key], value));
+    this.keyframePath(["items", this.selection, ...key.split(".")], value);
   }
 
   /**
@@ -341,21 +383,81 @@ export class PowerRPApp {
   }
 
   // ── Keyframe panel operations ──────────────────────────────────────────────
+  // Path-based versions serve BOTH item properties (["items", id, ...keyPath],
+  // dotted inspector keys like "from.x" split into path segments) and
+  // variables (["vars", name]) — the Variables Panel reuses the same
+  // diamond/jump controls as the Property Panel.
+
+  hasKeyPath(path) {
+    return hasKeyframe(this.doc, this.slideIndex, path);
+  }
+
+  keyframePath(path, value) {
+    this.commit(keyframed(this.doc, this.slideIndex, path, value));
+  }
+
+  /** Jump to the prev/next slide holding a keyframe for a full state path. */
+  jumpKeyframePath(path, direction) {
+    const idxs = keyframeIndices(this.doc, path);
+    const next = direction > 0 ? idxs.find((i) => i > this.slideIndex) : [...idxs].reverse().find((i) => i < this.slideIndex);
+    if (next !== undefined) this.slideIndex = next;
+  }
 
   hasKey(key) {
-    return this.selection ? hasKeyframe(this.doc, this.slideIndex, ["items", this.selection, key]) : false;
+    return this.selection ? this.hasKeyPath(["items", this.selection, ...key.split(".")]) : false;
   }
 
   removeKey(slideIndex, path) {
     this.commit(unkeyframed(this.doc, slideIndex, path));
   }
 
-  /** Jump to the prev/next slide holding a keyframe for the selected item's key. */
+  /** Jump to the prev/next slide keyframing the selected item's (dotted) key. */
   jumpKeyframe(key, direction) {
     if (!this.selection) return;
-    const idxs = keyframeIndices(this.doc, ["items", this.selection, key]);
-    const next = direction > 0 ? idxs.find((i) => i > this.slideIndex) : [...idxs].reverse().find((i) => i < this.slideIndex);
-    if (next !== undefined) this.slideIndex = next;
+    this.jumpKeyframePath(["items", this.selection, ...key.split(".")], direction);
+  }
+
+  // ── Variables (keyframable state.vars subtree — the Variables Panel) ──────
+
+  /** RAW variables of the current slide: {name: number | equation string}. */
+  varsState() {
+    return this.rawState().vars ?? {};
+  }
+
+  /** Creates a variable (value 0, keyframed on the CURRENT slide, like item
+   * creation). Loud on invalid names/duplicates; returns success. */
+  addVariable(name) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      console.error(`PowerRP: "${name}" is not a valid variable name (letters, digits, _; not starting with a digit)`);
+      return false;
+    }
+    if (name in this.varsState()) {
+      console.error(`PowerRP: a variable named "${name}" already exists`);
+      return false;
+    }
+    this.commit(keyframed(this.doc, this.slideIndex, ["vars", name], 0));
+    return true;
+  }
+
+  /** Removes a variable FROM EXISTENCE: every keyframe on every slide (the
+   * variables' Purge — equations referencing it will error loudly). */
+  deleteVariable(name) {
+    let doc = this.doc;
+    for (let i = 0; i < doc.slides.length; i++) doc = unkeyframed(doc, i, ["vars", name]);
+    this.commit(doc);
+  }
+
+  /** Renames a variable document-wide, rewriting equation references (names
+   * ARE variable identity — see core/expressions.js). Loud on conflicts. */
+  renameVariable(oldName, newName) {
+    if (newName === oldName) return true;
+    try {
+      this.commit(withVariableRenamed(this.doc, oldName, newName, this.registry));
+      return true;
+    } catch (e) {
+      console.error(`PowerRP: rename variable failed: ${e.message}`);
+      return false;
+    }
   }
 
   // ── Slides ─────────────────────────────────────────────────────────────────
@@ -401,7 +503,7 @@ export class PowerRPApp {
       input.click();
     });
     if (!file) return;
-    this.commit(withCameraEnsured(deserialize(await file.text())));
+    this.commit(withBindingsMigrated(withCameraEnsured(deserialize(await file.text()))));
     this.slideIndex = 0;
     this.selection = null;
   }
@@ -409,9 +511,10 @@ export class PowerRPApp {
   loadAutosave() {
     const json = localStorage.getItem(AUTOSAVE_KEY);
     if (json) {
-      // withCameraEnsured migrates pre-camera documents (they lack the
-      // mandatory camera item; without it the picker shows no Camera).
-      this.doc = withCameraEnsured(deserialize(json));
+      // Load-time migrations: withCameraEnsured injects THE camera into
+      // pre-camera documents; withBindingsMigrated converts legacy
+      // {item, anchor} arrow bindings to equation pairs (THE UNIFICATION).
+      this.doc = withBindingsMigrated(withCameraEnsured(deserialize(json)));
       this.undoLog = createUndo(this.snapshot(this.doc));
     }
   }
@@ -443,7 +546,8 @@ export class PowerRPApp {
    * The camera determines the output size/aspect (manifest: THE CAMERA).
    */
   exportPng() {
-    const rect = cameraRect(foldState(this.doc, this.slideIndex, 1), this.doc.meta);
+    // Evaluated state: the camera's own properties may be equations.
+    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state, this.doc.meta);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(rect.w);
     canvas.height = Math.round(rect.h);

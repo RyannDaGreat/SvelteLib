@@ -3,10 +3,12 @@
  * for the CLI renderer and a worked example of authoring a document in code.
  *
  * The deck: slide 1 lays out shapes with an arrow bound to the circle's
- * computed "closest" anchor; slide 2 tweens positions/colors (the arrow
- * follows its bound circle automatically); slide 3 drops a blur layer with a
- * magnifier above it (backdrop-sampler stacking) and deactivates the text
- * (the `active` mechanism: same item lives on slides 1-2 but not 3).
+ * computed "closest" anchor via EQUATION endpoints (THE UNIFICATION:
+ * "@<itemId>_<anchorId>.x" strings — the idiom the editor writes when an
+ * endpoint is dropped on an anchor); slide 2 tweens positions/colors (the
+ * arrow follows its bound circle automatically); slide 3 drops a blur layer
+ * with a magnifier above it (backdrop-sampler stacking) and deactivates the
+ * text (the `active` mechanism: same item lives on slides 1-2 but not 3).
  *
  * Run: node src/demo_apps/PowerRP/examples/make_demo.js
  */
@@ -31,8 +33,8 @@ let rect, circle, text, arrow, magnifier, blur;
 [doc, text] = withNewItem(doc, 0, { ...textPlugin.defaults, x: 120, y: 60, text: "PowerRP V1", size: 48, z: 3 });
 [doc, arrow] = withNewItem(doc, 0, {
   ...arrowPlugin.defaults,
-  from: { item: rect, anchor: "mr" },
-  to: { item: circle, anchor: "closest" },
+  from: { x: `@${rect}_mr.x`, y: `@${rect}_mr.y` },
+  to: { x: `@${circle}_closest.x`, y: `@${circle}_closest.y` },
   z: 4,
 });
 

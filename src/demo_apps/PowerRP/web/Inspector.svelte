@@ -14,8 +14,8 @@
 <script>
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
-  import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import NumericField from "./NumericField.svelte";
 
   let { app } = $props();
 
@@ -69,8 +69,11 @@
   }
 
   function toggleKey(key) {
-    if (app.hasKey(key)) app.removeKey(app.slideIndex, ["items", app.selection, key]);
-    else app.keyframeSelected(key, sel.state[key]);
+    // Dotted keys are nested paths (arrow "from.x"). Inserting a keyframe
+    // copies the RAW stored value — an equation keyframes as the equation.
+    const path = key.split(".");
+    if (app.hasKey(key)) app.removeKey(app.slideIndex, ["items", app.selection, ...path]);
+    else app.keyframePath(["items", app.selection, ...path], app.storedItemValue(app.selection, path));
   }
 </script>
 
@@ -109,26 +112,18 @@
         <div class="row">
           <span class="label">{row.label}</span>
           {#if row.kind === "number"}
-            <!-- DraggableNumber: drag up/down to scrub (pointer-lock), Arrow
-                 keys to nudge. Shaped like the other inputs (--a-input-w ×
-                 --a-control-h, square) via the --dn-* hooks set on .inspector.
-                 The component emits NUMBERS (not events) to oninput/onchange,
-                 so we pass them straight through the same coercion path. The
-                 Escape→cancelPreview keydown lives on the wrapper (fieldKeydown
-                 reads e.target.blur/stopPropagation) since the component owns
-                 its own root; Escape bubbles up from it.
-                 GAP: no direct type-in-a-value editing — the lib component is
-                 scrub + keyboard-nudge only (belongs to another workstream). -->
-            <div class="number-field" role="none" onkeydown={fieldKeydown}>
-              <DraggableNumber
-                label={row.label}
-                value={Math.round((sel.state[row.key] ?? 0) * 1000) / 1000}
-                min={row.min ?? null}
-                max={row.max ?? null}
-                oninput={(v) => previewField(row.key, row.kind, v)}
-                onchange={(v) => commitField(row.key, row.kind, v)}
-              />
-            </div>
+            <!-- NumericField: equation-aware (THE UNIFICATION). A number
+                 renders as the DraggableNumber scrubber; an equation renders
+                 as a monospace expression editor with live evaluation and the
+                 error affordance; the ƒ/№ toggle converts between them.
+                 Dotted keys ("from.x") address nested state. -->
+            <NumericField
+              {app}
+              path={["items", app.selection, ...row.key.split(".")]}
+              label={row.label}
+              min={row.min ?? null}
+              max={row.max ?? null}
+            />
           {:else if row.kind === "color"}
             <!-- A themed control shaped like the number/text inputs (same
                  --a-input-w × --a-control-h, square, 1px border). The native

@@ -61,7 +61,8 @@
   /* ── STANDARDIZED CONTROLS (manifest rule: a few standards, reused
      everywhere — never invent one-off button styles) ── */
   --a-control-h: 26px; /* THE control height: buttons, inputs, rows */
-  --a-input-w: 90px;
+  --a-input-w: 90px; /* THE value-field width: number, text, color, equation */
+  --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
   --a-color-swatch: 14px; /* swatch square inside the color control */
   --a-slide-disabled-opacity: 0.5;
   --a-minimap-opacity: 0.5; /* user spec: minimap at 50% transparency */
@@ -424,14 +425,21 @@ body,
   border: 1px solid var(--border);
 }
 
-/* ── Inspector ───────────────────────────────────────────────────────────── */
+/* ── Inspector + Variables Panel ─────────────────────────────────────────
+   The Variables Panel shares the Property Panel's chrome, field standards,
+   and keyframe controls — grouped selectors, never re-declared. */
 
-.inspector {
-  height: 100%;
-  overflow-y: auto;
+/* NO height/overflow here — the Panel body is the ONLY scroller (round-10
+   ruling; see the .panel-body exception list). */
+.inspector,
+.varspanel {
   padding: var(--a-sp-3);
   background: var(--a-panel-bg);
   font-size: var(--a-font-md);
+}
+
+.varspanel {
+  border-top: var(--a-hairline) solid var(--border); /* pane seam, same as .kfpanel */
 }
 
 .inspector-head {
@@ -484,7 +492,8 @@ body,
 }
 
 .inspector input[type="number"],
-.inspector input[type="text"] {
+.inspector input[type="text"],
+.varspanel input[type="text"] {
   width: var(--a-input-w);
   height: var(--a-control-h);
   box-sizing: border-box;
@@ -500,8 +509,10 @@ body,
    the standardized input box: same --a-input-w × --a-control-h, square corners,
    1px themed border. The wheel stays visible (prop default) — its geometry is
    tuned down via --dn-wheel-* so the grip + value fit the 90×26 box cleanly.
-   Set on .inspector so every row's control inherits the same theming. */
-.inspector {
+   Set on .inspector AND .varspanel so every equation-aware row (NumericField
+   is shared by both panels) inherits the same theming. */
+.inspector,
+.varspanel {
   --dn-bg: var(--control-bg);
   --dn-fg: var(--fg);
   --dn-fg-dim: var(--fg-dim);
@@ -515,17 +526,57 @@ body,
   --dn-wheel-height: 18px; /* fits inside --a-control-h (26px) with 4px slack */
 }
 
-/* Force the component root to the standardized input box. The component is an
-   inline-flex; giving it the exact width/height + border-box makes it match a
-   sibling text input pixel-for-pixel. */
-.inspector .number-field {
-  display: contents;
+/* ── NumericField (equation-aware number field, THE UNIFICATION) ──────────
+   Shared by the Property Panel and the Variables Panel. Number mode is the
+   DraggableNumber scrubber forced to the standardized input box; equation
+   mode is a monospace expression input in the SAME standardized box
+   (--a-input-w × --a-control-h — one width standard, no per-row inventions)
+   with an inline evaluated badge. The mode toggle reuses .jumpbtn. */
+.numfield {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
 }
 
-.inspector .number-field .dn {
+.numfield .dn {
   width: var(--a-input-w);
   height: var(--a-control-h);
   box-sizing: border-box;
+}
+
+.numfield .eq-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.numfield .eq-input {
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm); /* mono runs wide; small keeps expressions readable in the box */
+}
+
+/* Invalid draft (won't parse/resolve) and evaluation errors (cycles, unknown
+   refs) share the danger color — same precedent as .btn.danger. */
+.numfield .eq-input.invalid,
+.numfield .eq-input.error {
+  border-color: var(--a-guide);
+}
+
+/* Inline evaluated value ("= 42") pinned inside the input's right edge. */
+.numfield .eq-badge {
+  position: absolute;
+  right: var(--a-sp-2);
+  pointer-events: none;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  background: var(--control-bg); /* legible over long expressions */
+  padding-left: var(--a-sp-1);
+}
+
+.numfield .eq-badge-error {
+  color: var(--a-guide);
+  pointer-events: auto; /* hoverable: the tooltip carries the error message */
+  display: inline-flex;
 }
 
 /* Color control: shaped IDENTICALLY to the number/text inputs (same width,
@@ -584,7 +635,9 @@ body,
 }
 
 .inspector .keybtn,
-.inspector .jumpbtn {
+.inspector .jumpbtn,
+.varspanel .keybtn,
+.varspanel .jumpbtn {
   background: transparent;
   color: var(--fg-dim);
   border: 0;
@@ -594,26 +647,49 @@ body,
   line-height: 1;
 }
 
-.inspector .keybtn {
+.inspector .keybtn,
+.varspanel .keybtn {
   /* "those should be bigger, maybe two times larger" — user spec. */
   font-size: calc(var(--a-font-md) * 2);
 }
 
-.inspector .keybtn.keyed {
+.inspector .keybtn.keyed,
+.varspanel .keybtn.keyed {
   color: var(--a-keyed);
 }
 
-.inspector .empty {
+.inspector .empty,
+.varspanel .empty {
   color: var(--fg-dim);
   padding: var(--a-sp-4);
   text-align: center;
 }
 
+/* ── Variables Panel rows ─────────────────────────────────────────────────
+   (chrome/hooks shared with .inspector above). Rows mirror Property Panel
+   rows: name, equation-aware NumericField, ‹ ◆ › keyframe controls, and the
+   keyframe-panel .remove button reused for delete. */
+.varspanel .row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  min-height: var(--a-control-h);
+  margin-bottom: var(--a-sp-1);
+}
+
+.varspanel .var-name {
+  font-family: var(--a-mono); /* it's an identifier — same voice as equations */
+  font-size: var(--a-font-sm);
+}
+
+.varspanel .add-row {
+  margin-top: var(--a-sp-3);
+}
+
 /* ── Keyframe panel ──────────────────────────────────────────────────────── */
 
 .kfpanel {
-  height: 100%;
-  overflow-y: auto;
+  /* No height/overflow — the Panel body is the ONLY scroller (round 10). */
   padding: var(--a-sp-3);
   background: var(--a-panel-bg);
   border-top: var(--a-hairline) solid var(--border);
@@ -669,14 +745,16 @@ body,
   white-space: nowrap;
 }
 
-.kf .remove {
+.kf .remove,
+.varspanel .remove {
   background: transparent;
   color: var(--fg-dim);
   border: 0;
   cursor: pointer;
 }
 
-.kf .remove:hover {
+.kf .remove:hover,
+.varspanel .remove:hover {
   color: var(--a-guide);
 }
 
@@ -928,6 +1006,20 @@ body,
 .panel-body > * {
   flex: 1;
   min-height: 0;
+}
+
+/* Scroll ownership (round-10 ruling): the Panel body is the ONLY scroller.
+   Pane-FILLING children (SlideNav lays out its own internal scroller) keep
+   flex:1 above; flow-CONTENT panels take NATURAL height so a wheel event
+   only ever meets one scroll container. (The bug: nested ~100%-height
+   overflow:auto layers + SplitPane's fractional-px pane heights left every
+   layer overflowing by a hair — scrolling chained through them one at a
+   time like a progressive-reveal accordion.) */
+.panel-body > .inspector,
+.panel-body > .varspanel,
+.panel-body > .kfpanel {
+  flex: none;
+  min-height: auto;
 }
 
 /* ── Grid + Ruler (editor-only; toggled via the palette, browser settings) ──
