@@ -20,6 +20,7 @@
   import { sceneIR } from "../render_gpu/ports.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+  import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { renderViewFrame } from "./gpuService.js";
   import * as T from "../core/transform.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
@@ -134,6 +135,12 @@
   let bandRect = $state(null); // {x, y, w, h} world, or null
   let bandCandidates = $state([]); // itemIds the current band would select
   let drag = null; // non-reactive drag bookkeeping
+  // Image decodes are async while the reactive paint is sync — a resolved
+  // bitmap must nudge a repaint (Opus8's flagged seam; the PRESENTER needs no
+  // nudge, its rAF loop repaints anyway). onImageLoad returns the
+  // unsubscriber, which $effect uses as its cleanup.
+  let imageEpoch = $state(0);
+  $effect(() => onImageLoad(() => (imageEpoch += 1)));
   // Active Blender-style modal transform bookkeeping (non-reactive, like drag).
   // {kind: "grab"|"scale", startWorld, members, center, guides?}. Started when
   // app.modalXform is set (G/S shortcut) and captured by the effect below; the
@@ -163,7 +170,7 @@
   });
 
   $effect(() => {
-    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH; gpu;
+    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH; gpu; imageEpoch;
     paint();
   });
 

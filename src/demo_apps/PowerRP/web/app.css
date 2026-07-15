@@ -1662,3 +1662,32 @@ body,
   stroke: var(--bg);
   stroke-width: 3px;
 }
+
+/* Open Project modal (the SvelteLib Modal wired to the project server) —
+   rows are full-width .btn entries; meta (slide count) sits right-aligned
+   in the muted color. Empty/loading/error states are plain captions. */
+.open-project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+}
+.open-project-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--a-sp-2);
+}
+.open-project-meta {
+  color: var(--a-fg-dim);
+}
+.open-project-empty,
+.open-project-error {
+  color: var(--a-fg-dim);
+  font-size: var(--a-font-sm);
+}
+.open-project-error {
+  color: var(--a-guide);
+}

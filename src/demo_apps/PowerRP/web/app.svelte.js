@@ -760,6 +760,21 @@ export class PowerRPApp {
     this.slideIndex = idx;
   }
 
+  /**
+   * Command. New FRESH slide (manifest Round 12): "everything that used to be
+   * visible is no longer" — the new slide's delta keyframes active:false for
+   * every item visible on the current slide (the camera is exempt: it is not
+   * a visible object and must always frame the view). One undo unit.
+   */
+  addBlankSlide() {
+    let [doc, idx] = withNewSlide(this.doc, this.slideIndex);
+    for (const n of this.nodes())
+      if (n.plugin.capabilities.purgeable !== false)
+        doc = keyframed(doc, idx, ["items", n.itemId, "active"], false);
+    this.commit(doc);
+    this.slideIndex = idx;
+  }
+
   deleteSlide() {
     // Deleting a CREATION slide orphans the items created there (their later
     // property keyframes fold into typeless items that crash evaluation) and

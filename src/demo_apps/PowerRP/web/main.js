@@ -5,6 +5,7 @@ import App from "./App.svelte";
 import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled, withLegacyKeysRenamed } from "../core/document.js";
 import { cameraRect, deriveRenderTree } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
+import { withDurationMigrated } from "../core/transitions.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
@@ -36,7 +37,12 @@ window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width
   const { doc: repairedDoc, filled } = withMissingDefaultsFilled(renamedDoc, registry);
   for (const { id, missing } of filled)
     console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
-  const doc = withBindingsMigrated(withCameraEnsured(repairedDoc));
+  // duration → transition.seconds (round 12; keeps CLI loads in lockstep with
+  // the editor's repaired() — the drifted-duplicate lesson, cruft audit 2a).
+  const { doc: migratedDoc, migrated } = withDurationMigrated(repairedDoc);
+  for (const m of migrated)
+    console.error(`PowerRP repair: slide ${m.index} legacy duration → transition.seconds (${m.seconds}s)`);
+  const doc = withBindingsMigrated(withCameraEnsured(migratedDoc));
   // The one pipeline: fold → EVALUATE (equations become numbers) → derive → emit.
   const state = evaluateState(foldState(doc, slide, alpha), registry).state;
   // The view is THE CAMERA's bbox at this (slide, alpha); its background

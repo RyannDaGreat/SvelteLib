@@ -20,6 +20,7 @@
   import CommandPalette from "./CommandPalette.svelte";
   import PresentMode from "./PresentMode.svelte";
   import Panel from "./Panel.svelte";
+  import Modal from "../../../lib/Modal.svelte";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed, foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
@@ -28,6 +29,29 @@
   import { createShortcuts } from "../core/shortcuts.js";
 
   const app = new PowerRPApp();
+
+  // Open Project… modal (manifest Round 12: Open brings up a modal listing
+  // previously saved server projects). Wires the app's showOpenModal hook to
+  // the SvelteLib Modal; the list loads fresh on every open (the server's
+  // projects folder is the source of truth). Errors surface in the list area.
+  let openModalVisible = $state(false);
+  let openProjects = $state(null); // null = loading; [] = none; strings = names
+  let openError = $state(null);
+  app.showOpenModal = async () => {
+    openModalVisible = true;
+    openProjects = null;
+    openError = null;
+    try {
+      openProjects = await app.listProjects();
+    } catch (e) {
+      openError = String(e.message ?? e);
+      console.error("Open Project: could not list server projects:", e);
+    }
+  };
+  async function pickProject(name) {
+    openModalVisible = false;
+    await app.loadProject(name);
+  }
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
@@ -67,6 +91,7 @@
     { id: "toggle-panel-names", title: "Toggle Panel Names", icon: "mdi:format-title", run: (a) => a.togglePanelNames() },
     { id: "toggle-retina", title: "Toggle Retina Rendering (browser setting)", icon: "mdi:monitor-eye", run: (a) => a.toggleRetina() },
     { id: "new-slide", title: "New Slide", icon: "mdi:plus-box-outline", run: (a) => a.addSlide() },
+    { id: "new-blank-slide", title: "New Fresh Slide (hide everything)", icon: "mdi:plus-box", run: (a) => a.addBlankSlide() },
     { id: "delete-slide", title: "Delete Slide", icon: "mdi:file-remove-outline", when: (a) => a.doc.slides.length > 1, run: (a) => a.deleteSlide() },
     { id: "toggle-slide", title: "Toggle Slide Visibility (enable/disable delta)", icon: "mdi:eye-check-outline", run: (a) => a.toggleSlide() },
     { id: "move-slide-up", title: "Move Slide Up", icon: "mdi:arrow-up", run: (a) => a.moveSlide(-1) },
@@ -337,4 +362,24 @@
   {#if app.fpsVisible}
     <FpsCounter {app} />
   {/if}
+  <Modal bind:open={openModalVisible} title="Open Project">
+    {#if openError}
+      <div class="open-project-error">{openError}</div>
+    {:else if openProjects === null}
+      <div class="open-project-empty">Loading projects…</div>
+    {:else if openProjects.length === 0}
+      <div class="open-project-empty">No projects saved on the server yet — use "Save to Server" first.</div>
+    {:else}
+      <ul class="open-project-list">
+        {#each openProjects as p}
+          <li>
+            <button type="button" class="btn open-project-row" onclick={() => pickProject(p.name)}>
+              <span>{p.name}</span>
+              <span class="open-project-meta">{p.slideCount} slides</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </Modal>
 </div>
