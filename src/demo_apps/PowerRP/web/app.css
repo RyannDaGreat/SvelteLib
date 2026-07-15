@@ -61,7 +61,19 @@
   /* ── STANDARDIZED CONTROLS (manifest rule: a few standards, reused
      everywhere — never invent one-off button styles) ── */
   --a-control-h: 26px; /* THE control height: buttons, inputs, rows */
-  --a-input-w: 90px; /* THE value-field width: number, text, color, equation */
+  --a-input-w: 90px; /* THE value-field MIN width: number, text, color, equation.
+     Value controls GROW past this to fill the panel (round-11 ruling) — the row
+     grid gives the value column minmax(--a-input-w, 1fr) so every value control
+     shares ONE growing width, aligned on both edges. */
+  --a-label-w: 84px; /* THE label/identifier column width: fixes the value
+     column's LEFT edge so it aligns across every row (property + variable). Sized
+     to the common labels; longer ones ("Magnification") ellipsis with a tooltip. */
+  --a-kf-btn-w: 20px; /* one keyframe control button (16px icon + 2×--a-sp-1 pad) */
+  /* Trailing keyframe-controls column: fixes the value column's RIGHT edge so it
+     aligns across every row, INCLUDING rows without controls (the Name row, the
+     add row). Property rows carry 3 buttons (‹◆›); Variables rows carry 4 (‹◆›+✕),
+     so each panel reserves its own count (set per-panel below). */
+  --a-kf-w: calc(3 * var(--a-kf-btn-w));
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
   --a-color-swatch: 14px; /* swatch square inside the color control */
   --a-slide-disabled-opacity: 0.5;
@@ -463,14 +475,18 @@ body,
   --dd-fg: var(--fg);
   --dd-fg-dim: var(--fg-dim);
   --dd-border: var(--border);
-  --dd-radius: 0px;
   --dd-font-size: var(--a-font-md);
   --dd-hover-bg: var(--a-hover-bg);
 }
 
-/* Dropdowns fill their container (manifest rule) — .dd is Dropdown's root. */
+/* Dropdowns fill their container (manifest rule) — .dd is Dropdown's root.
+   --dd-radius MUST be set ON .dd (not the ancestor): Dropdown declares
+   --dd-radius on its own .dd root, so an ancestor override is shadowed (same
+   root cause as DraggableNumber's --dn-radius). This wins on specificity so the
+   picker is square like every other field control. */
 .inspector-head .dd {
   width: 100%;
+  --dd-radius: 0;
 }
 
 .inspector .item-actions {
@@ -490,8 +506,15 @@ body,
   gap: var(--a-sp-1);
 }
 
-.inspector .row {
-  display: flex;
+/* ONE row grid, shared by Property + Variables panels (round-11 ruling): a
+   fixed label/identifier column fixes the value column's LEFT edge; the value
+   column is minmax(--a-input-w, 1fr) so EVERY value control shares one width
+   that GROWS with the panel, aligned on both edges; the trailing controls are
+   auto. The grid template is identical across rows, so columns line up. */
+.inspector .row,
+.varspanel .row {
+  display: grid;
+  grid-template-columns: var(--a-label-w) minmax(var(--a-input-w), 1fr) var(--a-kf-w);
   align-items: center;
   gap: var(--a-sp-2);
   min-height: var(--a-control-h);
@@ -501,21 +524,30 @@ body,
   margin-top: var(--a-sp-3);
 }
 
+/* Label sits in the fixed first column; truncate (never wrap) so long labels
+   ("Magnification") keep the value column's left edge aligned — the full text
+   is in the row's hover tooltip. */
 .inspector .label {
-  flex: 1;
   color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* Text/number inputs fill their grid cell (the value column grows; the
+   var-name fills the identifier column) — one growing width, square corners. */
 .inspector input[type="number"],
 .inspector input[type="text"],
 .varspanel input[type="text"] {
-  width: var(--a-input-w);
+  width: 100%;
+  min-width: 0; /* grid children default to min-width:auto — let them shrink */
   height: var(--a-control-h);
   box-sizing: border-box;
   padding: 0 var(--a-sp-2);
   background: var(--control-bg);
   color: var(--fg);
   border: 1px solid var(--border);
+  border-radius: 0; /* square corners — never inherit a UA/rounded default */
   font-size: var(--a-font-md);
 }
 
@@ -533,7 +565,6 @@ body,
   --dn-fg-dim: var(--fg-dim);
   --dn-border: var(--border);
   --dn-accent: var(--a-selection);
-  --dn-radius: 0px; /* square, like the other inputs */
   --dn-padding: 0 var(--a-sp-2) 0 var(--a-sp-1); /* wheel sits a little more left (user spec) */
   --dn-font-size: var(--a-font-md);
   --dn-hover-bg: var(--a-hover-bg);
@@ -542,32 +573,107 @@ body,
 }
 
 /* ── NumericField (equation-aware number field, THE UNIFICATION) ──────────
-   Shared by the Property Panel and the Variables Panel. Number mode is the
-   DraggableNumber scrubber forced to the standardized input box; equation
-   mode is a monospace expression input in the SAME standardized box
-   (--a-input-w × --a-control-h — one width standard, no per-row inventions)
-   with an inline evaluated badge. The mode toggle reuses .jumpbtn. */
+   Shared by the Property Panel and the Variables Panel. It fills its grid cell
+   (the value column, which GROWS with the panel — round-11 ruling); number mode
+   is the DraggableNumber scrubber, equation mode a monospace expression input,
+   both stretched to fill the SAME growing box (--a-input-w is only the MIN via
+   the row grid). Square corners; inline evaluated badge in equation mode. */
 .numfield {
   display: flex;
   align-items: center;
   gap: var(--a-sp-1);
+  width: 100%;
+  min-width: 0; /* grid child: allow shrink below content width */
 }
 
+/* The scrubber grows to fill the field (past --a-input-w). */
 .numfield .dn {
-  width: var(--a-input-w);
+  flex: 1 1 auto;
+  min-width: 0;
   height: var(--a-control-h);
   box-sizing: border-box;
 }
 
+/* SQUARE corners: --dn-radius MUST be set ON the .dn element (not an ancestor) —
+   DraggableNumber declares --dn-radius on its OWN .dn root, and Svelte scopes
+   that rule to `.dn.svelte-hash` (specificity 0,2,0). So the app override must
+   also be ≥ 0,2,0 AND target .dn directly; a bare `.numfield .dn` (0,2,0) only
+   TIES and loses on source order. `.inspector`/`.varspanel` prefix raises it to
+   0,3,0 so it wins. This is the root cause of the "rounded field box" — the one
+   --dn-* token that didn't chain to an ambient token (now fixed in the lib too).
+   --dn-wheel-radius chains to --dn-radius, so the grip goes square with it. */
+.inspector .numfield .dn,
+.varspanel .numfield .dn {
+  --dn-radius: 0; /* square, like every other field control */
+}
+
 .numfield .eq-wrap {
   position: relative;
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .numfield .eq-input {
+  width: 100%;
+  min-width: 0;
+  height: var(--a-control-h);
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0; /* square — same as every other field control */
   font-family: var(--a-mono);
   font-size: var(--a-font-sm); /* mono runs wide; small keeps expressions readable in the box */
+}
+
+/* Equation affordance (round-11 ruling): a small ƒ button on the LEFT of the
+   value, HOVER-ONLY. It opens the same text-entry path a click-without-drag
+   opens (NOT a mode toggle). Hidden at rest (the resting row is just label +
+   value); revealed when the pointer is over the row. Collapsed to zero width at
+   rest so it doesn't reserve space or nudge the value column. */
+.numfield .eq-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 0;
+  height: var(--a-control-h);
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+.numfield .eq-open:hover {
+  color: var(--fg);
+}
+/* Reveal the affordance + the scrub-wheel ridges only when the row is hovered
+   (round-11: "I don't even want to see the x and the 1, 2, 3 all the time").
+   The wheel is hidden at rest via .dn-wheel opacity below. */
+.inspector .row:hover .numfield .eq-open,
+.varspanel .row:hover .numfield .eq-open,
+.numfield:focus-within .eq-open {
+  width: 16px;
+  opacity: 1;
+}
+
+/* The DraggableNumber grip wheel is chrome, not resting content: hidden at rest,
+   revealed on row hover (or while dragging/focused). Kept in flow (visibility,
+   not display) so the value box never reflows when it appears. */
+.numfield .dn .dn-wheel {
+  visibility: hidden;
+}
+.inspector .row:hover .numfield .dn .dn-wheel,
+.varspanel .row:hover .numfield .dn .dn-wheel,
+.numfield .dn.dn-dragging .dn-wheel,
+.numfield .dn:focus-within .dn-wheel {
+  visibility: visible;
 }
 
 /* Invalid draft (won't parse/resolve) and evaluation errors (cycles, unknown
@@ -603,12 +709,14 @@ body,
   display: flex;
   align-items: center;
   gap: var(--a-sp-2);
-  width: var(--a-input-w);
+  width: 100%; /* fills the growing value column (min --a-input-w via the grid) */
+  min-width: 0;
   height: var(--a-control-h);
   box-sizing: border-box;
   padding: 0 var(--a-sp-2);
   background: var(--control-bg);
   border: 1px solid var(--border);
+  border-radius: 0; /* square — same as every other field control */
   cursor: pointer;
 }
 
@@ -649,10 +757,29 @@ body,
   pointer-events: none;
 }
 
+/* Trailing keyframe controls (‹ ◆ › + optional delete), grouped into ONE grid
+   cell (the row grid's reserved --a-kf-w column) so they stay aligned across all
+   rows while the value column grows. It fills the reserved column and hugs the
+   value on its right edge. */
+.inspector .kf-controls,
+.varspanel .kf-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
 .inspector .keybtn,
 .inspector .jumpbtn,
 .varspanel .keybtn,
-.varspanel .jumpbtn {
+.varspanel .jumpbtn,
+.varspanel .kf-controls .remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: var(--a-kf-btn-w); /* fixed so the group width is deterministic → the
+     value column's right edge aligns across every row (see --a-kf-w) */
+  box-sizing: border-box;
   background: transparent;
   color: var(--fg-dim);
   border: 0;
@@ -681,14 +808,11 @@ body,
 }
 
 /* ── Variables Panel rows ─────────────────────────────────────────────────
-   (chrome/hooks shared with .inspector above). Rows mirror Property Panel
-   rows: name, equation-aware NumericField, ‹ ◆ › keyframe controls, and the
-   keyframe-panel .remove button reused for delete. */
+   (chrome/hooks shared with .inspector above; the growing row grid is declared
+   jointly with .inspector .row). Rows mirror Property Panel rows: identifier,
+   equation-aware NumericField, ‹ ◆ › keyframe controls + delete. */
 .varspanel .row {
-  display: flex;
-  align-items: center;
-  gap: var(--a-sp-2);
-  min-height: var(--a-control-h);
+  --a-kf-w: calc(4 * var(--a-kf-btn-w)); /* Variables rows carry a 4th button (delete ✕) */
   margin-bottom: var(--a-sp-1);
 }
 
@@ -697,8 +821,21 @@ body,
   font-size: var(--a-font-sm);
 }
 
+/* The add row is not a value row — a plain identifier field + Add button; it
+   opts out of the value-column grid (Add must not grow like a value control). */
 .varspanel .add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
   margin-top: var(--a-sp-3);
+}
+
+.varspanel .add-row .var-name {
+  flex: 1 1 auto;
+}
+
+.varspanel .add-row .btn {
+  flex: none;
 }
 
 /* ── Keyframe panel ──────────────────────────────────────────────────────── */
@@ -1061,6 +1198,19 @@ body,
   width: 100%;
   height: 100%;
   pointer-events: none; /* purely decorative; all input goes to .overlay */
+}
+
+/* WebGPU init failure notice — loud, centered over the dead canvas (no render
+   fallback by decree; manifest RENDER MODES DECISION). */
+.canvas-wrap .gpu-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--a-sp-4);
+  text-align: center;
+  color: var(--a-guide); /* danger color — same precedent as .btn.danger */
+  background: var(--bg);
 }
 
 /* Top ruler strip — sits in the top gutter, exactly above .render-area (both

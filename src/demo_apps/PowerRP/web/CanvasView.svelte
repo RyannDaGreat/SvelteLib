@@ -12,10 +12,15 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
-  import { pickNode, nodeFeatures, nodeAnchors } from "../core/derive.js";
+  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
-  import { paintScene, THUMB_W } from "../render/compositor.js";
+  import { paintScene, THUMB_W, worldViewRect, canSkipNode } from "../render/compositor.js";
+  import { foldState } from "../core/document.js";
+  import { blendApplied } from "../core/deltas.js";
+  import { evaluateState } from "../core/expressions.js";
+  import { sceneIR } from "../render_gpu/ports.js";
+  import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
   import * as T from "../core/transform.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
 
@@ -110,8 +115,24 @@
 
   // Repaint whenever anything visible changes — INCLUDING the container size
   // (wrapW/wrapH), so pane resizes re-render instead of stretching the bitmap.
+  // THE renderer (manifest "RENDER MODES DECISION"): the content canvas is
+  // WebGPU — no canvas2D mode survives. Init is async; the first paint fires
+  // when `gpu` lands (it's a dep of the paint effect). Failure is LOUD and
+  // user-visible: no fallback by decree, the app shows what went wrong.
+  let gpu = $state(null);
+  let gpuError = $state(null);
   $effect(() => {
-    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH;
+    if (!canvasEl || gpu || gpuError) return;
+    GpuCompositor.create(canvasEl)
+      .then((g) => (gpu = g))
+      .catch((e) => {
+        gpuError = String(e?.message ?? e);
+        console.error("PowerRP: WebGPU init failed:", e);
+      });
+  });
+
+  $effect(() => {
+    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH; gpu;
     paint();
   });
 
@@ -137,25 +158,25 @@
   });
 
   function paint() {
-    if (!canvasEl || !containerEl) return;
+    if (!canvasEl || !containerEl || !gpu) return;
     const dpr = app.dpr(); // retina browser setting (manifest)
     const rect = containerEl.getBoundingClientRect();
     if (canvasEl.width !== Math.round(rect.width * dpr) || canvasEl.height !== Math.round(rect.height * dpr)) {
       canvasEl.width = Math.round(rect.width * dpr);
       canvasEl.height = Math.round(rect.height * dpr);
     }
-    const ctx = canvasEl.getContext("2d");
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    paintScene(ctx, app.doc, {
-      slideIndex: app.slideIndex,
-      alpha: 1,
-      registry: app.registry,
-      view: { ...viewport, dpr },
-      anchorsVisible: app.anchorsVisible,
-      stateOverride: app.previewDelta,
-      editorChrome: true, // camera bbox etc. draw only here
-    });
+    // The canvas2D compositor's pipeline, IR-ified (render/compositor.js is
+    // the reference semantics): fold → preview override → EVALUATE → derive →
+    // cull → emit → GPU. Anchors/selection/guides stay on the SVG overlay.
+    let state = foldState(app.doc, app.slideIndex, 1);
+    if (app.previewDelta) state = blendApplied(state, app.previewDelta, 1);
+    state = evaluateState(state, app.registry).state;
+    const view = { ...viewport, dpr };
+    const viewRect = worldViewRect(view, canvasEl.width, canvasEl.height);
+    const nodes = deriveRenderTree(state, app.registry).filter((n) => !canSkipNode(n, viewRect));
+    // Transparent clear: the editor canvas sits over the app background,
+    // exactly like the old clearRect + canvas2D path.
+    gpu.render(sceneIR(nodes), view, { background: [0, 0, 0, 0] });
   }
 
   // Blender-style background grid on a SEPARATE underlay canvas beneath .scene —
@@ -661,6 +682,11 @@
            compositor never sees it (editor-only chrome). -->
       <canvas bind:this={gridEl} class="grid-underlay"></canvas>
       <canvas bind:this={canvasEl} class="scene"></canvas>
+      {#if gpuError}
+        <!-- No render fallback by decree (manifest RENDER MODES DECISION) —
+             the failure is loud and names itself. -->
+        <div class="gpu-error">WebGPU unavailable — cannot render. {gpuError}</div>
+      {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
         class="overlay"
