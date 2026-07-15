@@ -2,7 +2,7 @@ import "../../../styles/theme.css";
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
-import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped } from "../core/document.js";
+import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled } from "../core/document.js";
 import { cameraRect, deriveRenderTree } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";

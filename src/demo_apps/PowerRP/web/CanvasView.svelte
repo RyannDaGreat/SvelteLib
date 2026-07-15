@@ -12,7 +12,7 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
-  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree } from "../core/derive.js";
+  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { paintScene, THUMB_W, worldViewRect, canSkipNode } from "../render/compositor.js";
@@ -20,6 +20,7 @@
   import { blendApplied } from "../core/deltas.js";
   import { evaluateState } from "../core/expressions.js";
   import { sceneIR } from "../render_gpu/ports.js";
+  import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
   import * as T from "../core/transform.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
@@ -174,9 +175,17 @@
     const view = { ...viewport, dpr };
     const viewRect = worldViewRect(view, canvasEl.width, canvasEl.height);
     const nodes = deriveRenderTree(state, app.registry).filter((n) => !canSkipNode(n, viewRect));
-    // Transparent clear: the editor canvas sits over the app background,
-    // exactly like the old clearRect + canvas2D path.
-    gpu.render(sceneIR(nodes), view, { background: [0, 0, 0, 0] });
+    // The camera's background shows in the editor too (round 11: "I can't
+    // see it in the main editing area") — first draw, under all content;
+    // outside the camera bbox the transparent clear keeps the app background
+    // visible, exactly like the old clearRect + canvas2D path.
+    const camRect = cameraRect(state, app.doc.meta);
+    const ir = [
+      rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: parseColor(camRect.background) }),
+      ...sceneIR(nodes),
+    ];
+    gpu.render(ir, view, { background: [0, 0, 0, 0] });
+    app.renderFrameCount += 1;
   }
 
   // Blender-style background grid on a SEPARATE underlay canvas beneath .scene —

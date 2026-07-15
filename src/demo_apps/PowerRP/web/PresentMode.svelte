@@ -55,6 +55,7 @@
         h: rect.h * view.zoom * dpr,
       },
     });
+    app.renderFrameCount += 1; // the FPS counter reads PRESENTATION frames (round 11)
   }
 
   function onkeydown(e) {

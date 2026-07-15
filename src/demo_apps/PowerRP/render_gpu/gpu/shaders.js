@@ -101,11 +101,18 @@ fn fs(in: ShapeOut) -> @location(0) vec4f {
     let q = abs(in.local - in.params.xy) - half_size + vec2f(r);
     d = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - r;
   } else if (kind < 1.5) {
-    // Ellipse: scaled-space approximation — exact for circles, visually fine
-    // for moderate aspect ellipses (true ellipse SDF needs an iterative solve).
+    // Ellipse: gradient-corrected distance d = F/|∇F| (Inigo Quilez's
+    // ellipse approximation). The old scaled-space form was exact only for
+    // circles — squashed ellipses got thinned/chopped strokes at the pointy
+    // ends (user-reported). This form keeps strokes uniform at any aspect
+    // ratio; near the center (k2 → 0, gradient vanishes) fall back to the
+    // scaled-space value, which is only used deep inside the fill.
     let radii = max(in.params.zw, vec2f(1e-6));
-    let k = length((in.local - in.params.xy) / radii);
-    d = (k - 1.0) * min(radii.x, radii.y);
+    let q = in.local - in.params.xy;
+    let k1 = length(q / radii);
+    let k2 = length(q / (radii * radii));
+    let scaled = (k1 - 1.0) * min(radii.x, radii.y);
+    d = select(k1 * (k1 - 1.0) / k2, scaled, k2 < 1e-6);
   } else {
     // Capsule around segment a→b (round caps/joins for polylines)
     let a = in.params.xy;

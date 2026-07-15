@@ -26,7 +26,7 @@
  * uncaptured GPU errors throw on the next render().
  */
 
-import { flattenIR, DRAW_OPS } from "../ir.js";
+import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop } from "../ir.js";
 import * as T from "../../core/transform.js";
 import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, SHAPE_KIND, TEX_MODE } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
@@ -97,7 +97,28 @@ export class GpuCompositor {
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("WebGPU: no adapter (GPU blocklisted or disabled)");
     const device = await adapter.requestDevice();
-    return new GpuCompositor(canvas, device, media);
+    const comp = new GpuCompositor(canvas, device, media);
+    comp.warmup();
+    return comp;
+  }
+
+  /**
+   * Command. Renders one tiny frame exercising every pipeline (shape, mesh,
+   * text/atlas, blur, magnifier) so Metal/D3D compile shaders at init instead
+   * of stalling the FIRST USER FRAME (~0.5-1.2s measured; FINDINGS). Called
+   * by create(); the frame is immediately overwritten by the first real
+   * render.
+   */
+  warmup() {
+    this.render([
+      rect({ x: 0, y: 0, w: 2, h: 2, cornerRadius: 1, fill: [0, 0, 0, 1], stroke: [0, 0, 0, 1], strokeWidth: 1 }),
+      ellipse({ cx: 1, cy: 1, rx: 1, ry: 1, fill: [0, 0, 0, 1] }),
+      polyline({ points: [[0, 0], [2, 2]], width: 1, color: [0, 0, 0, 1] }),
+      polygon({ points: [[0, 0], [2, 0], [1, 2]], fill: [0, 0, 0, 1] }),
+      text({ text: "w", x: 0, y: 0, size: 8, color: [0, 0, 0, 1] }),
+      blurBackdrop({ radius: 1, opacity: 1 }),
+      magnifyBackdrop({ cx: 1, cy: 1, r: 1, magnification: 2, rimColor: [0, 0, 0, 1], rimWidth: 1 }),
+    ], { zoom: 1, panX: 0, panY: 0, dpr: 1 }, { background: [0, 0, 0, 0] });
   }
 
   /** Use create() — the constructor assumes a ready device. */

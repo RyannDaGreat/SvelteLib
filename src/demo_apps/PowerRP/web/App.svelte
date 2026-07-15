@@ -272,6 +272,6 @@
     <PresentMode {app} />
   {/if}
   {#if app.fpsVisible}
-    <FpsCounter />
+    <FpsCounter {app} />
   {/if}
 </div>

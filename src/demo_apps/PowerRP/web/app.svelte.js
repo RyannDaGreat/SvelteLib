@@ -68,6 +68,11 @@ export class PowerRPApp {
   // BROWSER setting (viewer-local, default OFF): the bottom-left FPS counter
   // (shows in the editor AND present mode — user spec, round 11).
   fpsVisible = $state(localStorage.getItem("powerrp.fps") === "on");
+  // Count of REAL rendered frames (editor viewport + presenter paints bump
+  // it). Deliberately NOT $state — it changes at up to display rate and its
+  // only consumer (FpsCounter) polls it from its own rAF loop; reactive
+  // churn at 120Hz would be pure waste.
+  renderFrameCount = 0;
   // Reactive flag CanvasView raises while any snap correction is applied in the
   // current pointer-move; cleared on pointer-up. Drives the toolbar toggle
   // taking the guide color while a snap is actually engaged.
