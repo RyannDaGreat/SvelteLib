@@ -27,6 +27,7 @@
  */
 
 import { polyline, polygon } from "../render_gpu/ir.js";
+import { bundle, props } from "../core/properties.js";
 import { elbowRoute, elbowHandle, distToSegment } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES, SHAFT_GRAB_PAD } from "../core/endpoints.js";
 
@@ -47,19 +48,17 @@ export const elbowArrowPlugin = {
     elbow: 0.5,
     stroke: "#1a1a2e", strokeWidth: 3, headLength: 14, headWidth: 12, headMode: "end", opacity: 1,
   },
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
+  // shared stroke/strokeWidth/opacity. Head geometry + the elbow position are
+  // plugin-specific (an "arrow" extras category).
   inspector: [
-    { key: "from.x", label: "From X", kind: "number", category: "positioning" },
-    { key: "from.y", label: "From Y", kind: "number", category: "positioning" },
-    { key: "to.x", label: "To X", kind: "number", category: "positioning" },
-    { key: "to.y", label: "To Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
-    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow" },
-    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow" },
-    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow" },
-    { key: "elbow", label: "Elbow", kind: "number", min: 0, max: 1, category: "arrow" },
+    ...bundle("endpoints"),
+    ...props("stroke", "strokeWidth"),
+    ...props("opacity"),
+    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
+    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
+    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start, just the end, or both." },
+    { key: "elbow", label: "Elbow", kind: "number", min: 0, max: 1, category: "arrow", help: "Where the vertical bend sits along the horizontal span, from 0 (flush at the start) to 1 (flush at the end). Drag the yellow handle on canvas." },
   ],
   /**
    * Pure function. State → display-list commands. The route is a 4-point
@@ -131,7 +130,9 @@ export const elbowArrowPlugin = {
       },
     }];
   },
+  // CROSSHAIR PLACEMENT (manifest UNDEFERRAL SWEEP): places by from→to endpoints.
+  placement: "endpoints",
   commands: [
-    { id: "add-elbow-arrow", title: "Add Elbow Arrow", icon: "mdi:arrow-top-right-bottom-left", run: (app) => app.addItem(elbowArrowPlugin.defaults) },
+    { id: "add-elbow-arrow", title: "Add Elbow Arrow", icon: "mdi:arrow-top-right-bottom-left", run: (app) => app.armCrosshairPlacement(elbowArrowPlugin) },
   ],
 };

@@ -6,6 +6,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { ellipse } from "../render_gpu/ir.js";
 
@@ -18,23 +19,18 @@ export const circlePlugin = {
     // Rotation pivots about this WORLD point; default = own center (an equation
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#f7768e", stroke: "#1a1a2e", strokeWidth: 2, opacity: 1,
+    fill: "#f7768e", stroke: "#1a1a2e", strokeWidth: 2,
+    ...defaults("opacity"), // opacity:1
   },
-  // `category` groups rows into the Inspector's collapsible accordion regions
-  // (manifest Round 12 "PROPERTY CATEGORIES").
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: positioning + fill/stroke/
+  // strokeWidth + opacity. NO cornerRadius — an ellipse has no square corners to
+  // round (that's why circle composes the individual fill/stroke/strokeWidth
+  // props, not the whole strokedBox bundle). strokeWidth default 2 (a visible
+  // 2px border) overrides the registry's 0.
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" }, // core stores radians; field shows degrees (round-10 ruling)
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" }, // world pivot; default self.anchors.center
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    { key: "fill", label: "Fill", kind: "color", category: "formatting" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    ...bundle("positioning"),
+    ...props("fill", "stroke", "strokeWidth"),
+    ...props("opacity"),
   ],
   /** Pure function. State → display-list commands (local space) — THE render API. */
   emit(s) {
@@ -59,6 +55,6 @@ export const circlePlugin = {
     return { x: rx + rx * Math.cos(theta), y: ry + ry * Math.sin(theta) };
   },
   commands: [
-    { id: "add-circle", title: "Add Circle", icon: "mdi:circle-outline", run: (app) => app.addItem(circlePlugin.defaults) },
+    { id: "add-circle", title: "Add Circle", icon: "mdi:circle-outline", run: (app) => app.armCrosshairPlacement(circlePlugin) }, // crosshair bbox placement (manifest UNDEFERRAL SWEEP: crosshair placement for ALL Add buttons)
   ],
 };

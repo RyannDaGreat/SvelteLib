@@ -30,6 +30,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { donutOutline, triangulated, pointInPolygon } from "../core/outline.js";
 import { polygon, polyline } from "../render_gpu/ir.js";
@@ -69,29 +70,21 @@ export const donutPlugin = {
   defaults: {
     type: "donut", x: 460, y: 200, w: 140, h: 140, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#bb9af7", stroke: "#1a1a2e", strokeWidth: 2, opacity: 1,
+    fill: "#bb9af7", stroke: "#1a1a2e", strokeWidth: 2,
+    ...defaults("opacity"), // opacity:1
     inner: 0.5, // hole radius as a PROPORTION (0..1) of the outer radius
   },
-  // `category` groups rows into the Inspector's collapsible accordion regions
-  // (manifest Round 12 "PROPERTY CATEGORIES"); `inner` is a FORMATTING
-  // property (it shapes the fill, like cornerRadius does for rect) with
-  // min 0 / max 1 — bounded rows get range-scaled scrub sensitivity for free
-  // (NumericField: (max-min)/RANGE_DRAG_PX when both bounds are set, the same
-  // mechanism opacity already uses — no new scrub wiring needed here).
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: positioning + fill/stroke/
+  // strokeWidth + opacity. No cornerRadius (a ring has no square corners). The
+  // plugin-specific `inner` row (the donut's hole, a FORMATTING property that
+  // shapes the fill like cornerRadius does for rect) stays declared here; its
+  // min 0 / max 1 gives it range-scaled scrub sensitivity for free
+  // (NumericField, the same mechanism opacity uses).
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" },
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" },
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    { key: "fill", label: "Fill", kind: "color", category: "formatting" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
-    { key: "inner", label: "Inner radius", kind: "number", min: 0, max: 1, category: "formatting" },
+    ...bundle("positioning"),
+    ...props("fill", "stroke", "strokeWidth"),
+    ...props("opacity"),
+    { key: "inner", label: "Inner radius", kind: "number", min: 0, max: 1, category: "formatting", help: "The hole's size as a fraction of the donut's radius, from 0 (a full disc) to 1 (a thin ring). Drag the yellow handle on canvas to set it." },
   ],
   /**
    * Near-pure function (console.errors ONCE per unique degenerate-geometry
@@ -166,7 +159,10 @@ export const donutPlugin = {
       },
     }];
   },
+  // CROSSHAIR PLACEMENT (manifest UNDEFERRAL SWEEP): bbox placement — click-drag
+  // sizes the rect, a plain click places the default size (CanvasView.placementUp;
+  // bbox is the default placement kind, no `placement` field needed).
   commands: [
-    { id: "add-donut", title: "Add Donut", icon: "mdi:circle-double", run: (app) => app.addItem(donutPlugin.defaults) },
+    { id: "add-donut", title: "Add Donut", icon: "mdi:circle-double", run: (app) => app.armCrosshairPlacement(donutPlugin) },
   ],
 };

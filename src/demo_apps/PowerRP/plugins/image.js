@@ -36,8 +36,10 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { image } from "../render_gpu/ir.js";
+import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 
 /** A tiny 1×1 transparent PNG data URI — the default `src` so a freshly added
  * image widget is a valid (invisible-until-sourced) item rather than a broken
@@ -49,26 +51,39 @@ export const imagePlugin = {
   type: "image",
   title: "Image",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
+  // the positioning bundle, the stroked-BORDER slice (stroke/strokeWidth/
+  // cornerRadius — a photo has a frame, not a fill), and opacity are inherited,
+  // so an added stroke aspect (dashes/caps/joins) reaches images automatically.
+  // strokeWidth 0 + cornerRadius 0 by default → an undecorated image renders
+  // byte-identically to before this bundle existed (decorateStrokedBox is a
+  // pass-through when there's nothing to draw).
   defaults: {
     type: "image", x: 100, y: 100, w: 200, h: 150, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    src: BLANK_SRC, opacity: 1,
+    src: BLANK_SRC,
+    // stroke COLOR default matches every other stroked shape (rect/circle/donut
+    // all use INK #1a1a2e); it only paints once strokeWidth > 0 (0 by default).
+    stroke: "#1a1a2e",
+    ...defaults("strokeWidth", "cornerRadius", "opacity"), // strokeWidth:0, cornerRadius:0, opacity:1
+    ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
   },
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" }, // core stores radians; field shows degrees (round-10 ruling)
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" }, // world pivot; default self.anchors.center
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    // The image source (data URI / URL). A generic string row today — the
-    // proper asset-picker control lands with the asset server + explorer.
-    { key: "src", label: "Source", kind: "text", category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    ...bundle("positioning"),
+    // The image source (data URI / URL) — the registry `src` row (a generic
+    // string today; the asset-picker control lands with the asset server).
+    ...props("src"),
+    // The stroked-BORDER bundle (manifest "SHARED STYLE BUNDLES — images and
+    // videos inherit stroke/rounding at once"). No `fill` row: an image's own
+    // pixels ARE its interior. The default INK stroke color is in `defaults`
+    // (matching rect/circle/donut), invisible until strokeWidth > 0.
+    ...bundle("strokedBorder"),
+    // EDGE-CROP INSETS (manifest "Edge-crop insets") — trim the source from each
+    // side; all-0 default = byte-identical to no crop.
+    ...bundle("cropInsets"),
+    ...props("opacity"),
   ],
   /**
    * Pure function. State → display-list commands (local space) — THE render
@@ -76,10 +91,32 @@ export const imagePlugin = {
    * GPU compositor through gpu/image_registry.js, the PDF backend by decoding
    * the data URI). Returns nothing for an empty/missing src (a broken widget
    * draws nothing rather than emitting an invalid op).
+   *
+   * EDGE-CROP INSETS (manifest "Edge-crop insets"): cropInsetsToSource shrinks
+   * the drawn quad by the per-edge insets AND contracts the source UV rect to
+   * match — a source crop, not a stretch. All-zero insets → full quad + full
+   * frame (byte-identical to no crop).
+   *
+   * BORDER + ROUNDED CORNERS (manifest "SHARED STYLE BUNDLES"): when the
+   * stroked-border style has anything to draw, the (cropped) image quad is
+   * wrapped by the shared decorateStrokedBox (render_gpu/decorate.js) — a
+   * cropSubtree giving it a rounded-corner clip + border ring, reusing the
+   * crop-box machinery. The decoration frames the CROPPED rect (what's actually
+   * shown), so a bordered+cropped image's frame hugs the visible pixels. When
+   * there's no border/rounding it's a pass-through: the bare image op, unchanged
+   * from before this bundle existed. `world` (sceneIR's 3rd emit arg) is only
+   * needed on the decorated path — cropSubtree's content carries its own
+   * absolute world (see decorate.js's OPACITY/world contracts). The widget
+   * opacity always rides on the image op itself (the OPACITY CONTRACT — it fades
+   * identically on GPU and PDF); the border/fill stay opaque.
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     if (typeof s.src !== "string" || s.src.length === 0) return [];
-    return [image({ ref: s.src, x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0, opacity: s.opacity ?? 1 })];
+    const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
+    if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
+    const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
+    const quad = image({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+    return decorateStrokedBox([quad], style, world);
   },
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {
@@ -87,6 +124,6 @@ export const imagePlugin = {
     return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
   },
   commands: [
-    { id: "add-image", title: "Add Image", icon: "mdi:image-outline", run: (app) => app.addItem(imagePlugin.defaults) },
+    { id: "add-image", title: "Add Image", icon: "mdi:image-outline", run: (app) => app.armCrosshairPlacement(imagePlugin) }, // crosshair bbox placement of a blank image widget (manifest UNDEFERRAL SWEEP); drop/explorer inserts still use native-size insertImageAsset
   ],
 };

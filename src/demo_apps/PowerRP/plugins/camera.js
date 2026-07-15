@@ -12,6 +12,8 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { defaultCameraState } from "../core/document.js";
+import { props } from "../core/properties.js";
 
 
 export const cameraPlugin = {
@@ -20,18 +22,17 @@ export const cameraPlugin = {
   // purgeable:false — the camera is mandatory: exactly one, cannot be deleted
   // or purged (capability-based, not type special-cased; manifest rule).
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, purgeable: false },
-  defaults: {
-    type: "camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1,
-    background: "#ffffff", // the view's background comes FROM the camera
-  },
-  // `category` groups rows into the Inspector's collapsible accordion regions
-  // (manifest Round 12 "PROPERTY CATEGORIES").
+  // THE ONE camera literal (reconciled — this used to lack name/active and
+  // hardcode 1280×720 while document.js carried the fuller truth; cruft audit).
+  // The default-dims fallback (1280×720) matches the historical plugin value.
+  defaults: defaultCameraState(),
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js): the
+  // camera exposes only its frame (x/y/w/h — NOT rotation/z, which don't apply
+  // to the view box's editable surface) + its background color. The `background`
+  // registry help explains it's the slide backdrop.
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "background", label: "Background", kind: "color", category: "formatting" },
+    ...props("x", "y", "w", "h"),
+    ...props("background"),
   ],
   emit() {
     // The camera renders NOTHING (user ruling: its own dashed border doubled

@@ -6,6 +6,7 @@
  */
 
 import { blurBackdrop } from "../render_gpu/ir.js";
+import { props } from "../core/properties.js";
 
 export const blurPlugin = {
   type: "blur",
@@ -15,12 +16,13 @@ export const blurPlugin = {
   // blur needs no canSkip hook of its own (see core/view.js canSkipNode).
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: true },
   defaults: { type: "blur", z: 50, blur: 6, opacity: 1 },
-  // `category` groups rows into the Inspector's collapsible accordion regions
-  // (manifest Round 12 "PROPERTY CATEGORIES").
+  // Rows: the plugin-specific `blur` radius row (its own category), then the
+  // shared registry `opacity` + `z` rows — so opacity/z stay in sync with every
+  // other widget (labels, bounds, help, scrub) from the ONE registry.
   inspector: [
-    { key: "blur", label: "Blur (world px)", kind: "number", min: 0, category: "blur" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "blur", label: "Blur (world px)", kind: "number", min: 0, category: "blur", help: "How far the backdrop is blurred, in canvas units. Everything drawn below this layer is softened by this radius." },
+    ...props("opacity"),
+    ...props("z"),
   ],
   /** Pure function. A backdrop-blur op (no geometry — blurs the composite below this z). */
   emit(s) {

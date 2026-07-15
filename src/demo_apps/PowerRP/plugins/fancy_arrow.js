@@ -41,6 +41,7 @@
  */
 
 import { polygon } from "../render_gpu/ir.js";
+import { bundle, props } from "../core/properties.js";
 import { fancyArrowOutline, triangulated, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
 import { reportOnce } from "../core/report.js";
@@ -77,19 +78,18 @@ export const fancyArrowPlugin = {
   // `category` groups rows into the Inspector's collapsible accordion regions
   // (manifest Round 12 "PROPERTY CATEGORIES"). Endpoints/z → positioning;
   // color/opacity → formatting; tip/shaft geometry → an "arrow" extras category.
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
+  // shared stroke/opacity (NO strokeWidth — a fancy arrow is a FILLED tapered
+  // outline, `stroke` is its fill color). The tapered-shaft/head geometry rows
+  // are plugin-specific (an "arrow" extras category).
   inspector: [
-    { key: "from.x", label: "From X", kind: "number", category: "positioning" },
-    { key: "from.y", label: "From Y", kind: "number", category: "positioning" },
-    { key: "to.x", label: "To X", kind: "number", category: "positioning" },
-    { key: "to.y", label: "To Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
-    { key: "tipLength", label: "Tip length", kind: "number", min: 0, category: "arrow" },
-    { key: "tipWidth", label: "Tip width", kind: "number", min: 0, category: "arrow" },
-    { key: "tipDimple", label: "Tip dimple", kind: "number", min: 0, category: "arrow" },
-    { key: "startWidth", label: "Start width", kind: "number", min: 0, category: "arrow" },
-    { key: "endWidth", label: "End width", kind: "number", min: 0, category: "arrow" },
+    ...bundle("endpoints"),
+    ...props("stroke", "opacity"),
+    { key: "tipLength", label: "Tip length", kind: "number", min: 0, category: "arrow", help: "Length of the arrowhead along the shaft, from tip to the barbs' base, in canvas units." },
+    { key: "tipWidth", label: "Tip width", kind: "number", min: 0, category: "arrow", help: "Full width across the arrowhead's barbs, in canvas units." },
+    { key: "tipDimple", label: "Tip dimple", kind: "number", min: 0, category: "arrow", help: "How deeply the back of the arrowhead notches inward toward the tip, giving the head its swept-back look." },
+    { key: "startWidth", label: "Start width", kind: "number", min: 0, category: "arrow", help: "Shaft thickness at the tail end, in canvas units — the shaft tapers from here to the head." },
+    { key: "endWidth", label: "End width", kind: "number", min: 0, category: "arrow", help: "Shaft thickness where it meets the arrowhead, in canvas units." },
   ],
   /**
    * Near-pure function (console.errors ONCE per unique degenerate-geometry
@@ -222,7 +222,9 @@ export const fancyArrowPlugin = {
       },
     ];
   },
+  // CROSSHAIR PLACEMENT (manifest UNDEFERRAL SWEEP): places by from→to endpoints.
+  placement: "endpoints",
   commands: [
-    { id: "add-fancy-arrow", title: "Add Fancy Arrow", icon: "mdi:arrow-right-bold", run: (app) => app.addItem(fancyArrowPlugin.defaults) },
+    { id: "add-fancy-arrow", title: "Add Fancy Arrow", icon: "mdi:arrow-right-bold", run: (app) => app.armCrosshairPlacement(fancyArrowPlugin) },
   ],
 };

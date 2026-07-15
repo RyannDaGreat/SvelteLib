@@ -36,6 +36,7 @@
  */
 
 import { polyline, polygon } from "../render_gpu/ir.js";
+import { bundle, props } from "../core/properties.js";
 import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES } from "../core/endpoints.js";
 
 export const arrowPlugin = {
@@ -55,23 +56,18 @@ export const arrowPlugin = {
   // document-wide at the load boundary by core/document.withLegacyKeysRenamed;
   // reported loudly there.
   legacyKeys: { headSize: "headLength", color: "stroke", width: "strokeWidth" },
-  // `category` groups rows into the Inspector's collapsible accordion regions
-  // (manifest Round 12 "PROPERTY CATEGORIES"). Endpoints/z → positioning;
-  // stroke/opacity → formatting; head geometry → an "arrow" extras category.
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js): the
+  // `endpoints` bundle (from/to/z — equation-aware number fields, dotted keys =
+  // nested paths, so the Property Panel shows "@…" bindings as editable
+  // equations) + shared stroke/strokeWidth/opacity. Head geometry rows are
+  // plugin-specific (an "arrow" extras category), declared here with their help.
   inspector: [
-    // Endpoint rows are equation-aware number fields (dotted keys = nested
-    // paths) — the Property Panel shows "@…" bindings as editable equations.
-    { key: "from.x", label: "From X", kind: "number", category: "positioning" },
-    { key: "from.y", label: "From Y", kind: "number", category: "positioning" },
-    { key: "to.x", label: "To X", kind: "number", category: "positioning" },
-    { key: "to.y", label: "To Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
-    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow" },
-    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow" },
-    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow" },
+    ...bundle("endpoints"),
+    ...props("stroke", "strokeWidth"),
+    ...props("opacity"),
+    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
+    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
+    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start (tail), just the end (tip), or both." },
   ],
   /**
    * Pure function. State → display-list commands. Endpoints are evaluated
@@ -102,7 +98,11 @@ export const arrowPlugin = {
   // (core/endpoints.js: draggable endpoint handles, free-coordinate shaft
   // translation, closest-anchor toward-context).
   ...endpointPairHooks(),
+  // CROSSHAIR PLACEMENT (manifest UNDEFERRAL SWEEP): an arrow places by its
+  // ENDPOINTS — a click-drag lays from→to; a plain click places a
+  // default-length arrow rightward from the point (CanvasView.placementUp).
+  placement: "endpoints",
   commands: [
-    { id: "add-arrow", title: "Add Arrow", icon: "mdi:arrow-top-right", run: (app) => app.addItem(arrowPlugin.defaults) },
+    { id: "add-arrow", title: "Add Arrow", icon: "mdi:arrow-top-right", run: (app) => app.armCrosshairPlacement(arrowPlugin) },
   ],
 };

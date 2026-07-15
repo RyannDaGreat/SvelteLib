@@ -210,6 +210,10 @@ try {
     // (irToPDF textAscent). loadFontBytes + fontkit let the backend embed the
     // SAME committed TTFs for the font scenes; system scenes fall to Helvetica.
     window.__textAscent = window.__mods.pdfFonts.measureTextAscent();
+    // RICH-TEXT layout seam: the SAME canvas metrics the GPU atlas measures, so
+    // the shared layout (core/richtext) positions every run identically in both
+    // backends — wrapped multi-run PDF text matches the GPU pixels (parity).
+    window.__measureText = window.__mods.pdfFonts.measureText();
     window.__loadFontBytes = window.__mods.pdfFonts.loadFontBytes;
     window.__fontkit = await window.__mods.pdfFonts.fontkit();
     // Force vite to pre-bundle pdf-lib AND @pdf-lib/fontkit NOW, inside the
@@ -240,7 +244,17 @@ try {
       // Image scenes: decode every image ref into the shared registry BEFORE
       // the sync GPU render (the compositor draws nothing for an undecoded src
       // — the async rule — so a scene image must be loaded first to appear).
-      await Promise.all([...new Set(s.commands.filter((c) => c.op === "image").map((c) => c.ref))]
+      // Recurse into cropSubtree `content` — a bordered/rounded/cropped image
+      // (the SHARED STROKED-BOX BUNDLE) nests its image op INSIDE a cropSubtree,
+      // so a top-level-only filter would miss it and the GPU would draw nothing.
+      const collectImageRefs = (cmds, acc) => {
+        for (const c of cmds) {
+          if (c.op === "image") acc.add(c.ref);
+          else if (c.op === "cropSubtree" && Array.isArray(c.content)) collectImageRefs(c.content, acc);
+        }
+        return acc;
+      };
+      await Promise.all([...collectImageRefs(s.commands, new Set())]
         .map((ref) => window.__mods.imageRegistry.ensureImage(ref)));
       // Video scenes: create the <video> element and WAIT for its first frame
       // (the compositor imports the element's current frame; no frame = nothing
@@ -261,6 +275,7 @@ try {
         width: s.width, height: s.height, view: s.view, background: s.background,
         rasterize: window.__rasterizePng, textAscent: window.__textAscent, videoFrame,
         loadFontBytes: window.__loadFontBytes, registerFontkit: window.__fontkit,
+        measureText: window.__measureText,
       });
       return { raw: window.__b64(new Uint8Array(raw.buffer)), expectedPng: window.__b64(expectedPng), pdf: window.__b64(pdfBytes) };
     }, scene.name, K);
@@ -300,6 +315,7 @@ try {
         width: rect.w, height: rect.h, view, background: rect.background,
         rasterize: window.__rasterizePng, textAscent: window.__textAscent,
         loadFontBytes: window.__loadFontBytes, registerFontkit: window.__fontkit,
+        measureText: window.__measureText,
       });
       // Expected pixels through the same camera at k×
       const viewPx = { zoom: view.zoom * k, panX: view.panX * k, panY: view.panY * k, dpr: 1 };

@@ -2,6 +2,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { rect } from "../render_gpu/ir.js";
 
@@ -9,30 +10,29 @@ export const rectPlugin = {
   type: "rect",
   title: "Rectangle",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
+  // rect is the canonical filled+stroked box, so it composes the positioning
+  // bundle + the full strokedBox bundle (fill/stroke/strokeWidth/cornerRadius) +
+  // opacity. strokeWidth default 2 overrides the registry's 0 (rect ships with a
+  // visible 2px border, its long-standing default); cornerRadius 0 (square by
+  // default — user ruling, round 12B). FIX: `opacity: 1` was previously lost —
+  // it had been swallowed into a trailing line comment on the old cornerRadius
+  // line, so rect's defaults silently lacked opacity while every sibling had it;
+  // composing from the registry restores it (deliberate correctness fix).
   defaults: {
     type: "rect", x: 100, y: 100, w: 240, h: 140, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 0, // square by default (user ruling, round 12B); old docs keep their creation-slide value opacity: 1,
+    fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2,
+    ...defaults("cornerRadius", "opacity"), // cornerRadius:0 (square), opacity:1
   },
-  // `category` groups rows into the Inspector's collapsible accordion regions
-  // (manifest Round 12 "PROPERTY CATEGORIES"). Uncategorized rows fall into the
-  // Inspector's default group.
+  // Rows organized into the Inspector's collapsible accordion regions via each
+  // registry row's `category` (manifest Round 12 "PROPERTY CATEGORIES").
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" }, // core stores radians; field edits/shows degrees (round-10 ruling)
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" }, // world pivot; default self.anchors.center
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    { key: "fill", label: "Fill", kind: "color", category: "formatting" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
-    { key: "cornerRadius", label: "Corner radius", kind: "number", min: 0, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    ...bundle("positioning"),
+    ...bundle("strokedBox"),
+    ...props("opacity"),
   ],
   /** Pure function. State → display-list commands (local space) — THE render API. */
   emit(s) {

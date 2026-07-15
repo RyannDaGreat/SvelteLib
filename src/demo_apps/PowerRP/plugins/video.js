@@ -52,8 +52,10 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { video } from "../render_gpu/ir.js";
+import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 
 /** A tiny 1×1 transparent PNG data URI — the default `src` so a freshly added
  * video widget is a valid (invisible-until-sourced) item rather than a broken
@@ -73,28 +75,38 @@ export const videoPlugin = {
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     src: BLANK_SRC,
-    // Playback flags — all default true (see header). muted:true is REQUIRED for
-    // autoplay:true to actually play (browser autoplay policy blocks unmuted).
-    autoplay: true, loop: true, muted: true,
-    opacity: 1,
+    // Playback + animated flags all default true — sourced from the SHARED
+    // PROPERTY REGISTRY (core/properties.js): autoplay/loop/muted/animated each
+    // declare `default: true` there, so this stays in sync with the rows below.
+    // muted:true is REQUIRED for autoplay:true to actually play (browser autoplay
+    // policy blocks unmuted). `animated` (manifest ANIMATED WIDGET) keeps the
+    // PRESENTER rendering every rAF frame while a video is visible so a looping
+    // clip doesn't freeze between transitions; the presenter (Opus26,
+    // web/PresentMode.svelte) reads the evaluated value. Its ROW + help text
+    // live in the registry (this plugin composes them below).
+    ...defaults("autoplay", "loop", "muted", "animated", "opacity"),
+    // stroke COLOR default matches every other stroked shape; paints only once
+    // strokeWidth > 0 (0 by default → an undecorated video is byte-identical to
+    // its pre-bundle rendering).
+    stroke: "#1a1a2e",
+    ...defaults("strokeWidth", "cornerRadius"),
+    ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
   },
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" }, // core stores radians; field shows degrees (round-10 ruling)
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" }, // world pivot; default self.anchors.center
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    // The video source (data URI / URL). A generic string row today — the
-    // proper asset-picker control lands with the asset server + explorer.
-    { key: "src", label: "Source", kind: "text", category: "formatting" },
-    // Boolean playback rows (BooleanField — the keyframeable boolean control).
-    { key: "autoplay", label: "Autoplay", kind: "boolean", category: "formatting" },
-    { key: "loop", label: "Loop", kind: "boolean", category: "formatting" },
-    { key: "muted", label: "Muted", kind: "boolean", category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    ...bundle("positioning"),
+    // The video source (data URI / URL) — the registry `src` row.
+    ...props("src"),
+    // Boolean playback rows + the animated flag (BooleanField — the keyframeable
+    // boolean control), all from the registry so their help texts are shared.
+    ...props("autoplay", "loop", "muted", "animated"),
+    // The stroked-BORDER bundle — a video inherits stroke/rounded corners at
+    // once, exactly like an image (manifest "including images and videos and
+    // such"). No `fill` row (the frame's pixels are its interior).
+    ...bundle("strokedBorder"),
+    // EDGE-CROP INSETS — trim the source from each side (manifest "Edge-crop
+    // insets"); all-0 default = byte-identical to no crop.
+    ...bundle("cropInsets"),
+    ...props("opacity"),
   ],
   /**
    * Pure function. State → display-list commands (local space) — THE render
@@ -105,10 +117,19 @@ export const videoPlugin = {
    * are NOT part of the op: they configure the `<video>` element (the registry
    * reads them off state), not the per-frame draw — the op is just "this frame
    * of this source over this quad".
+   *
+   * EDGE-CROP INSETS + BORDER + ROUNDED CORNERS: identical to the image widget
+   * (cropInsetsToSource shrinks the quad + crops the source; decorateStrokedBox
+   * frames the cropped rect). See image.js/decorate.js for the world + opacity
+   * contracts. All-zero crop + no border → the bare video op (unchanged).
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     if (typeof s.src !== "string" || s.src.length === 0) return [];
-    return [video({ ref: s.src, x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0, opacity: s.opacity ?? 1 })];
+    const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
+    if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
+    const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
+    const quad = video({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+    return decorateStrokedBox([quad], style, world);
   },
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {
@@ -116,6 +137,6 @@ export const videoPlugin = {
     return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
   },
   commands: [
-    { id: "add-video", title: "Add Video", icon: "mdi:video-outline", run: (app) => app.addItem(videoPlugin.defaults) },
+    { id: "add-video", title: "Add Video", icon: "mdi:video-outline", run: (app) => app.armCrosshairPlacement(videoPlugin) }, // crosshair bbox placement of a blank video widget (manifest UNDEFERRAL SWEEP); drop/explorer inserts still use native-size insertVideoAsset
   ],
 };

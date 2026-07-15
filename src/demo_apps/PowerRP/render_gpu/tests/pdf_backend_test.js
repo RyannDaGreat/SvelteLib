@@ -43,6 +43,28 @@ async function atest(name, fn) {
 
 /** 1×1 transparent PNG — the raster-region stub. */
 const STUB_PNG = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+
+/**
+ * Every command in a list INCLUDING those nested inside content-bearing ops
+ * (cropSubtree `content` — a self-contained sub-list the backends flatten
+ * independently). A decorated/cropped image or video (the SHARED STROKED-BOX
+ * BUNDLE) nests its image/video op inside a cropSubtree, so a top-level scan
+ * misses it; structural assertions that ask "does this scene contain op X"
+ * must walk the whole tree. Written generically over a NESTED_CONTENT_KEYS set
+ * so a future effect subtree (drop shadow, etc.) is caught by adding its key,
+ * not by re-patching every call site. (magnifyBackdrop's "below" list is a
+ * PREFIX of the outer stream — already walked — so it needs no entry.)
+ */
+const NESTED_CONTENT_KEYS = ["content"];
+function commandsDeep(commands) {
+  const out = [];
+  for (const c of commands) {
+    out.push(c);
+    for (const k of NESTED_CONTENT_KEYS)
+      if (Array.isArray(c[k])) out.push(...commandsDeep(c[k]));
+  }
+  return out;
+}
 const stubRasterize = async () => STUB_PNG;
 
 const latin1 = (bytes) => Buffer.from(bytes).toString("latin1");
@@ -144,13 +166,21 @@ for (const scene of scenes()) {
     // An image XObject exists iff the scene needs a raster region (any blur —
     // the hybrid rule) OR embeds an image widget (a non-blank image op) OR
     // embeds a video's current frame (a non-blank video op, same XObject path).
-    const wantsImage = scene.commands.some((c) => c.op === "blurBackdrop" || c.op === "image" || c.op === "video");
+    // RECURSES into nested-content ops (cropSubtree `content`) via commandsDeep:
+    // a bordered/rounded/cropped image or video (the SHARED STROKED-BOX BUNDLE)
+    // nests its image/video op INSIDE a cropSubtree, so a top-level-only scan
+    // would say wantsImage=false while an XObject IS emitted (the crop box's own
+    // target content likewise). Written as a generic nested-content walk so a
+    // future effect subtree (drop shadow, etc.) doesn't re-break it.
+    const wantsImage = commandsDeep(scene.commands).some((c) => c.op === "blurBackdrop" || c.op === "image" || c.op === "video");
     assert.equal(s.includes("/Subtype /Image"), wantsImage, `image XObject iff blur or image/video op (${scene.name})`);
 
     const hasLens = scene.commands.some((c) => c.op === "magnifyBackdrop");
     if (hasLens) assert.ok(s.includes("W n"), "lens clip path present");
 
-    const hasAlpha = scene.commands.some((c) => (c.fill && c.fill[3] < 1) || (c.opacity ?? 1) < 1 || (c.stroke && c.stroke[3] < 1));
+    // Alpha too walks nested content (a crop box's target subtree may carry a
+    // translucent op even when nothing at top level does).
+    const hasAlpha = commandsDeep(scene.commands).some((c) => (c.fill && c.fill[3] < 1) || (c.opacity ?? 1) < 1 || (c.stroke && c.stroke[3] < 1));
     if (hasAlpha) assert.ok(s.includes("/ExtGState"), "alpha via ExtGState");
   });
 }

@@ -29,6 +29,7 @@
  */
 
 import { polyline, polygon } from "../render_gpu/ir.js";
+import { bundle, props } from "../core/properties.js";
 import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline, distToSegment } from "../core/outline.js";
 import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, SHAFT_GRAB_PAD } from "../core/endpoints.js";
 
@@ -49,19 +50,17 @@ export const curvedArrowPlugin = {
     bend: 0.25,
     stroke: "#1a1a2e", strokeWidth: 3, headLength: 14, headWidth: 12, headMode: "end", opacity: 1,
   },
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
+  // shared stroke/strokeWidth/opacity. Head geometry + the bend amount are
+  // plugin-specific (an "arrow" extras category).
   inspector: [
-    { key: "from.x", label: "From X", kind: "number", category: "positioning" },
-    { key: "from.y", label: "From Y", kind: "number", category: "positioning" },
-    { key: "to.x", label: "To X", kind: "number", category: "positioning" },
-    { key: "to.y", label: "To Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
-    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow" },
-    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow" },
-    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow" },
-    { key: "bend", label: "Bend", kind: "number", category: "arrow" },
+    ...bundle("endpoints"),
+    ...props("stroke", "strokeWidth"),
+    ...props("opacity"),
+    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
+    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
+    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start, just the end, or both." },
+    { key: "bend", label: "Bend", kind: "number", category: "arrow", help: "How much the arrow curves, as a signed fraction of its length. 0 is straight; positive and negative bow it to opposite sides." },
   ],
   /**
    * Pure function. State → display-list commands. The sampled bezier polyline
@@ -128,8 +127,10 @@ export const curvedArrowPlugin = {
       },
     }];
   },
+  // CROSSHAIR PLACEMENT (manifest UNDEFERRAL SWEEP): places by from→to endpoints.
+  placement: "endpoints",
   commands: [
-    { id: "add-curved-arrow", title: "Add Curved Arrow", icon: "mdi:vector-curve", run: (app) => app.addItem(curvedArrowPlugin.defaults) },
+    { id: "add-curved-arrow", title: "Add Curved Arrow", icon: "mdi:vector-curve", run: (app) => app.armCrosshairPlacement(curvedArrowPlugin) },
   ],
 };
 

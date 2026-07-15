@@ -40,8 +40,10 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { image } from "../render_gpu/ir.js";
+import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { reportOnce } from "../core/report.js";
 
 /** Gap between adjacent frames, as a FRACTION of a cell's width. The Figures
@@ -84,24 +86,26 @@ export const filmstripPlugin = {
     // frame URLs (or data: URIs) an app effect fills from the frames endpoint;
     // emit() reads this. Empty by default → a fresh widget draws nothing (loud)
     // until src+frames resolve, exactly like a not-yet-sourced image.
-    src: "", frames: 6, frameUrls: [], opacity: 1,
+    src: "", frames: 6, frameUrls: [],
+    // stroke COLOR default matches every stroked shape; paints only once
+    // strokeWidth > 0 (0 by default → an undecorated filmstrip is byte-identical
+    // to its pre-bundle rendering).
+    stroke: "#1a1a2e",
+    ...defaults("strokeWidth", "cornerRadius", "opacity"),
   },
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" }, // core stores radians; field shows degrees (round-10 ruling)
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" }, // world pivot; default self.anchors.center
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
-    // The video asset filename; a generic string row today — the asset-picker
-    // control lands with the asset explorer (Opus14).
-    { key: "src", label: "Video", kind: "text", category: "formatting" },
-    // THE one control (manifest: "just the number"). >=1; app clamps to the
-    // video's frame count server-side.
-    { key: "frames", label: "Frames", kind: "number", min: 1, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    ...bundle("positioning"),
+    // The video asset filename — the registry `src` row, relabeled "Video"
+    // (the asset-picker control lands with the asset explorer, Opus14).
+    ...props("src", { src: { label: "Video" } }),
+    // THE one control (manifest: "just the number") — the registry `frames` row.
+    // >=1; app clamps to the video's frame count server-side.
+    ...props("frames"),
+    // The stroked-BORDER bundle — a filmstrip is a box like image/video, so it
+    // inherits stroke/rounded corners at once. The border/rounding frames the
+    // WHOLE strip (all cells), not each cell.
+    ...bundle("strokedBorder"),
+    ...props("opacity"),
   ],
   /**
    * Near-pure function (console.errors ONCE when the strip is unresolved;
@@ -113,8 +117,15 @@ export const filmstripPlugin = {
    * no-silent-fallback rule): an unresolved filmstrip is a loud console.error,
    * never a silent placeholder. A `src` set but frameUrls still empty is the
    * normal in-flight / no-server state — the report says which.
+   *
+   * BORDER + ROUNDED CORNERS: the stroked-border decoration frames the WHOLE
+   * strip's bbox (all cells together) via the shared decorateStrokedBox — a
+   * cropSubtree rounded-clip + border ring reusing the crop-box machinery, same
+   * as image/video. Undecorated → the bare row of cell image ops (unchanged).
+   * The widget opacity rides on each cell image op (the OPACITY CONTRACT — it
+   * fades identically on GPU and PDF); the border/fill stay opaque.
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     const urls = Array.isArray(s.frameUrls) ? s.frameUrls : [];
     if (urls.length === 0) {
       // Distinguish "nothing configured" from "configured but unresolved" so
@@ -126,10 +137,12 @@ export const filmstripPlugin = {
       reportOnce(`PowerRP filmstrip: ${why}`);
       return [];
     }
+    const style = { w: s.w ?? 0, h: s.h ?? 0, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
     const opacity = s.opacity ?? 1;
-    const cells = filmstripLayout(urls.length, s.w ?? 0, s.h ?? 0);
-    return urls.map((ref, i) =>
+    const cells = filmstripLayout(urls.length, style.w, style.h);
+    const content = urls.map((ref, i) =>
       image({ ref, x: cells[i].x, y: 0, w: cells[i].w, h: cells[i].h, opacity }));
+    return decorateStrokedBox(content, style, world);
   },
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {

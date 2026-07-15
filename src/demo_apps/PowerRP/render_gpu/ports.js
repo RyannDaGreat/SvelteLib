@@ -76,7 +76,18 @@ export function sceneIR(nodes) {
     const targetWorldIR = node.type === "cropbox" && node.cropTarget
       ? [pushTransform(node.cropTarget.world), ...node.cropTarget.plugin.emit(node.cropTarget.state), popTransform()]
       : null;
-    const cmds = node.plugin.emit(node.state, targetWorldIR);
+    // emit() gets the node's ABSOLUTE world as a 3rd argument (the SHARED
+    // STROKED-BOX BUNDLE seam — manifest "SHARED STYLE BUNDLES"): a box-like
+    // media widget (image/video/filmstrip) decorates its content with a
+    // cropSubtree border/rounded-clip via render_gpu/decorate.js, and
+    // cropSubtree's `content` is flattened INDEPENDENTLY (from identity), so it
+    // must carry its own absolute world — the outer pushTransform(node.world)
+    // wrap below reaches the emitted ops but NOT into a cropSubtree op's
+    // separately-flattened content (exactly as the crop-box target content
+    // carries pushTransform(node.cropTarget.world), never the box's own wrap).
+    // Every plugin that doesn't decorate simply ignores this argument (they
+    // destructure only `state`); cropbox uses arg 2 and ignores arg 3.
+    const cmds = node.plugin.emit(node.state, targetWorldIR, node.world);
     if (cmds.length === 0) continue;
     out.push(pushTransform(node.world), ...cmds, popTransform());
   }

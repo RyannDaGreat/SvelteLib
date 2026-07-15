@@ -21,6 +21,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { cropSubtree } from "../render_gpu/ir.js";
 
@@ -32,30 +33,28 @@ export const cropboxPlugin = {
   // here too so the capability is discoverable from the plugin definition
   // alone, matching the registry doc's "capabilities... never on type" spirit.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, ghost: true },
+  // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
+  // the crop box IS a filled+stroked box (it shares rect's box shape), so it
+  // composes positioning + the full strokedBox bundle + opacity, PLUS its own
+  // `target` picker. strokeWidth default 2 (visible border, its long-standing
+  // default) overrides the registry's 0; fill defaults to fully-transparent
+  // (#00000000 — a crop box shows its target through, no background by default).
   defaults: {
     type: "cropbox", x: 100, y: 100, w: 240, h: 140, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    target: null, fill: "#00000000", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 0, opacity: 1,
+    target: null, fill: "#00000000", stroke: "#1a1a2e", strokeWidth: 2,
+    ...defaults("cornerRadius", "opacity"), // cornerRadius:0, opacity:1
   },
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" },
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" },
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    ...bundle("positioning"),
     // `options`/`optionLabels` are populated PER-DOCUMENT by the Inspector at
-    // render time (transitions.js `curve` select precedent) — a plugin's
-    // static inspector array has no document to enumerate. See
-    // web/Inspector.svelte's cropTargetOptions seam.
-    { key: "target", label: "Target", kind: "select", optionsFrom: "items", options: [], category: "crop" },
-    { key: "fill", label: "Fill", kind: "color", category: "formatting" },
-    { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
-    { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
-    { key: "cornerRadius", label: "Corner radius", kind: "number", min: 0, category: "formatting" },
-    { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    // render time (transitions.js `curve` select precedent) — a plugin's static
+    // inspector array has no document to enumerate. See web/Inspector.svelte's
+    // cropTargetOptions seam. Plugin-specific row (not in the shared registry —
+    // it's unique to the crop box).
+    { key: "target", label: "Target", kind: "select", optionsFrom: "items", options: [], category: "crop", help: "The item this crop box clips to its region. Everything of the target outside the box is hidden; the target itself doesn't move." },
+    ...bundle("strokedBox"),
+    ...props("opacity"),
   ],
   /**
    * Pure function. State → display-list commands (local space). `targetWorldIR`
@@ -87,6 +86,6 @@ export const cropboxPlugin = {
     return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, state.cornerRadius ?? 0, local.x, local.y);
   },
   commands: [
-    { id: "add-cropbox", title: "Add Crop Box", icon: "mdi:crop", run: (app) => app.addItem(cropboxPlugin.defaults) },
+    { id: "add-cropbox", title: "Add Crop Box", icon: "mdi:crop", run: (app) => app.armCrosshairPlacement(cropboxPlugin) }, // crosshair bbox placement (manifest UNDEFERRAL SWEEP)
   ],
 };

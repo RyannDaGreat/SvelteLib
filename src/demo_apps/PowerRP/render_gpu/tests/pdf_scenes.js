@@ -18,14 +18,19 @@
  */
 
 import { rect, ellipse, polyline, polygon, text, image, video, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "../ir.js";
+import { normalizeRichText } from "../../core/richtext.js";
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
 import { STILL_VIDEO_MP4_DATA_URI, STILL_VIDEO_FRAME_DATA_URI } from "../../tests/fixtures/still_video.js";
 import { filmstripLayout } from "../../plugins/filmstrip.js";
 import { donutPlugin } from "../../plugins/donut.js";
 import { cropboxPlugin } from "../../plugins/cropbox.js";
+import { magnifierPlugin } from "../../plugins/magnifier.js";
+import { imagePlugin } from "../../plugins/image.js";
+import { videoPlugin } from "../../plugins/video.js";
 import { arrowPlugin } from "../../plugins/arrow.js";
 import { elbowArrowPlugin } from "../../plugins/elbow_arrow.js";
 import { curvedArrowPlugin } from "../../plugins/curved_arrow.js";
+import { codeblockPlugin } from "../../plugins/codeblock.js";
 
 /** Standard parity canvas: small enough for fast suites, big enough for detail. */
 export const SCENE_W = 400;
@@ -127,6 +132,41 @@ export function scenes() {
       ...baseContent(),
       magnifyBackdrop({ cx: 180, cy: 140, r: 60, magnification: 3, rimColor: null, rimWidth: 0, supersample: false }),
     ], 20), // measured 23.94 dB (divergence documented above)
+
+    // BOX MAGNIFIER (this task's cornerstone parity — manifest "BOX-SHAPED
+    // MAGNIFIERS"): a rounded, bordered rectangular lens magnifying the base
+    // content. Built through the REAL magnifierPlugin.emit() (like the cropbox/
+    // image scenes) so it exercises the actual widget glue → shaped-lens op →
+    // both backends: the GPU crop pipeline (rrect SDF + border + magnification)
+    // and the PDF emitLens box branch (rectPath clip + magnify cm + stroked
+    // border). The box lens is the same shaped-lens family as a crop box, but
+    // at magnification > 1 sourcing the z-prefix. Proves "box magnifier
+    // magnifies through its rounded bordered rect in GPU AND PDF".
+    (() => {
+      const world = { x: 40, y: 30, rotation: 0, scale: 1 };
+      const state = { ...magnifierPlugin.defaults, shape: "box", x: 0, y: 0, w: 240, h: 150, cornerRadius: 24, magnification: 2.2, stroke: INK, strokeWidth: 5, supersample: true };
+      return s("magnifier-box-rounded-bordered", [
+        ...baseContent(),
+        ...[pushTransform(world), ...magnifierPlugin.emit(state, null, world), popTransform()],
+      ], 20); // floor 20 = the same clip-edge-AA divergence class as the circle lens (measured 23.46) and the crop box (measured 23.38 — the box lens reuses that rrect-clip machinery). Measured + measured-minus-margin land in the next live parity run. PENDING USER RATIFICATION.
+    })(),
+
+    // CIRCLE-LENS REGRESSION through the PLUGIN (this task's byte-stability
+    // proof): a plain circular magnifier built via magnifierPlugin.emit() with
+    // the MIGRATED stroke/strokeWidth props (was rimColor/rimWidth) and the
+    // default origin (self center). Its rendered output must stay identical to
+    // the pre-shape circle lens — the parity floor matches magnifier-sharp-rim.
+    // This guards the "keep every existing behavior byte-identical for circle
+    // lenses" requirement at the plugin boundary (the raw-IR magnifier-sharp-rim
+    // scene above guards it at the IR boundary).
+    (() => {
+      const world = { x: 60, y: 40, rotation: 0, scale: 1 };
+      const state = { ...magnifierPlugin.defaults, shape: "circle", x: 0, y: 0, w: 140, h: 140, magnification: 2.2, stroke: INK, strokeWidth: 5, supersample: true };
+      return s("magnifier-circle-regression", [
+        ...baseContent(),
+        ...[pushTransform(world), ...magnifierPlugin.emit(state, null, world), popTransform()],
+      ], 20); // measured class = magnifier-sharp-rim (23.46 dB); same lens replay geometry, now through the plugin path. PENDING USER RATIFICATION.
+    })(),
 
     s("blur-under-content", [
       ...baseContent(),
@@ -385,5 +425,162 @@ export function scenes() {
       // for the horizontal case above.
       ...arrowPlugin.emit({ ...arrowPlugin.defaults, from: { x: 60, y: 150 }, to: { x: 300, y: 260 }, headMode: "both", headLength: 22, headWidth: 18, stroke: "#7a3a3a", strokeWidth: 5 }),
     ], 40), // measured 45.69 dB (2026-07-15 live parity run) — floor = measured − ~5.4 dB, matching the codebase's measured-minus-margin convention (same margin as donut-basic/arrows-crossing). PENDING USER RATIFICATION (the floor-setting convention itself is flagged app-wide, not specific to this scene).
+
+    // ── CODE BLOCK widget parity (Opus33 — manifest Round 12D) ────────────────
+    // Real codeblockPlugin.emit() (not hand-written IR), so this exercises the
+    // actual widget glue: the offline highlighter (core/codeHighlight.js) → per-
+    // token colored single-run text ops in the committed JetBrains Mono face laid
+    // on the mono grid, plus the box (fill/border/rounding) and the line-number
+    // gutter. `font: true` makes the parity harness embed the SHARED committed
+    // JetBrains Mono TTF (same face the GPU atlas uses), so colored mono text
+    // renders indistinguishably in the PDF — the PDF per-run color already works.
+    // Highlights js (keyword/string/comment/function/number colors), the gutter,
+    // and a rounded bordered box over a plain background.
+    s("code-block", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      pushTransform({ x: 24, y: 24 }),
+      ...codeblockPlugin.emit({
+        ...codeblockPlugin.defaults,
+        w: 352, h: 252, fontSize: 15, lineNumbers: true, language: "javascript", theme: "dark",
+        code: "// factorial\nfunction fact(n) {\n  if (n <= 1) return 1;\n  return n * fact(n - 1);\n}\nconst answer = fact(5);",
+      }),
+      popTransform(),
+    ], 20, { font: true }), // floor 20 dB is the committed-font baseline (matches font-families' 20 dB start) — colored mono over a dark box; measured value + a measured-minus-margin floor land in the next live parity run. PENDING USER RATIFICATION.
+
+    // ── BORDERED + ROUNDED MEDIA parity (Opus22 — manifest "SHARED STYLE
+    //    BUNDLES: images and videos inherit stroke/rounding at once") ──────────
+    // Built the SAME way as cropbox-basic/donut-basic: REAL imagePlugin.emit()/
+    // videoPlugin.emit() calls (not hand-written IR), so this exercises the
+    // actual widget glue — the stroked-box decoration (render_gpu/decorate.js)
+    // wrapping the media quad in a cropSubtree (rounded-corner clip + border
+    // ring, reusing the crop-box machinery), the world-carrying content contract
+    // (emit's 3rd arg), and the edge-crop source-rect math. Each media call is
+    // wrapped in pushTransform(world)/popTransform() exactly as ports.sceneIR
+    // wraps a node's emitted commands (so the box region maps through the world;
+    // the cropSubtree content carries its own absolute world inside). Because a
+    // decorated image emits a cropSubtree (the SAME op the cropbox-basic scene
+    // already parity-tests), parity holds by construction — the border+clip is
+    // the crop machinery, and undecorated media (the image-basic scene above)
+    // still emits a bare image op unchanged.
+    (() => {
+      // sceneIR-style wrap: a node's emit output under its absolute world.
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        // emit works in LOCAL space (x:0,y:0-relative); world lives on the wrap +
+        // (for the cropSubtree content) is passed as emit's 3rd arg. Zero out
+        // x/y so the local emit is origin-relative, matching sceneIR.
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      return s("bordered-rounded-image", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        // 1. A rounded + bordered image (the user's motivating case: "rounded
+        //    options on the image"). cornerRadius clips the checker to rounded
+        //    corners; the stroke ring frames it.
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: CHECKER_PNG_DATA_URI, x: 24, y: 30, w: 150, h: 110, cornerRadius: 22, stroke: INK, strokeWidth: 4 }),
+        // 2. The SAME rotated 45° — the rounded clip + border rotate as a rigid
+        //    unit with the content (the crop-machinery rotation path, the exact
+        //    case that caught the PDF double-rotation bug in cropbox-basic).
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: CHECKER_PNG_DATA_URI, x: 250, y: 40, w: 110, h: 90, rotation: Math.PI / 4, cornerRadius: 16, stroke: "#7a3a3a", strokeWidth: 3 }),
+        // 3. Border only (no rounding) at reduced opacity — the CONTENT fades
+        //    (the opacity rides on the image op; the border stays opaque — the
+        //    parity-safe opacity contract, decorate.js).
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: CHECKER_PNG_DATA_URI, x: 60, y: 180, w: 130, h: 90, cornerRadius: 0, stroke: INK, strokeWidth: 5, opacity: 0.6 }),
+      ], 18, {}); // measured 21.32 dB (2026-07-15 live run) — floor = measured − ~3.4 (the cropbox-basic 20→23.38 margin). This scene combines the tiny-checker upsample edge-AA (image-basic 25→28.83) with the rounded-clip edge-AA (cropbox-basic), so its residual is the SUM of those two AA classes — the sibling bordered-rounded-VIDEO measures 28.90 (a full-res frame has gentler edges than the 64×48 checker). PENDING USER RATIFICATION (the measured-minus-margin convention is flagged app-wide).
+    })(),
+
+    // Bordered + rounded VIDEO (the still-frame fixture), same decoration as the
+    // image scene — proves the SHARED bundle reaches video identically. Carries
+    // `video:` so the parity harness ensures the <video> frame + supplies the
+    // PDF frame resolver (like the other video scenes).
+    (() => {
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      return s("bordered-rounded-video", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        ...node(videoPlugin, { ...videoPlugin.defaults, src: STILL_VIDEO_MP4_DATA_URI, x: 40, y: 40, w: 180, h: 130, cornerRadius: 24, stroke: INK, strokeWidth: 4 }),
+        ...node(videoPlugin, { ...videoPlugin.defaults, src: STILL_VIDEO_MP4_DATA_URI, x: 250, y: 150, w: 120, h: 100, cornerRadius: 12, stroke: "#7a3a3a", strokeWidth: 3, opacity: 0.7 }),
+      ], 20, { video: { ref: STILL_VIDEO_MP4_DATA_URI, frameSrc: STILL_VIDEO_FRAME_DATA_URI } }); // floor 20 matches video-basic's clip-edge-AA class; measured + margin land next live run. PENDING USER RATIFICATION.
+    })(),
+
+    // EDGE-CROP INSETS parity (Opus22 — manifest "Edge-crop insets"): nonzero
+    // per-edge insets on an image. The GPU crops the source via the quad's UV
+    // rect; the PDF via a clip-to-dest + scaled-up image matrix (imagePlacementOps)
+    // — the SAME source-rect crop, so the visible sub-region matches. Includes an
+    // undecorated cropped image (bare cropped op) AND a cropped + bordered one
+    // (the crop feeds decorateStrokedBox, which frames the CROPPED rect).
+    (() => {
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      return s("image-crop-insets", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        // 1. Cropped only (no border): 25% trimmed off left+top of the checker,
+        //    12% off right+bottom — the surviving sub-region keeps its scale.
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: CHECKER_PNG_DATA_URI, x: 24, y: 30, w: 160, h: 120, cropLeft: 40, cropTop: 30, cropRight: 20, cropBottom: 14 }),
+        // 2. Cropped + rounded + bordered: the crop shrinks the quad, then the
+        //    border/rounding frames the CROPPED rect (frame hugs the visible
+        //    pixels). Exercises crop-then-decorate composition.
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: CHECKER_PNG_DATA_URI, x: 230, y: 60, w: 140, h: 140, cropLeft: 24, cropTop: 24, cropRight: 24, cropBottom: 24, cornerRadius: 14, stroke: INK, strokeWidth: 3 }),
+      ], 22, {}); // floor 22 matches the image-basic clip/crop edge-AA class; measured + margin land next live run. PENDING USER RATIFICATION.
+    })(),
+
+    // ── RICH TEXT parity (Opus21 — manifest "RICH TEXT") ────────────────────
+    // Both backends run the SAME shared layout (core/richtext.layoutRichText)
+    // with their OWN canvas2D measure seam, so wrapped multi-run text lands at
+    // the SAME positions in GPU pixels and PDF vector operators — the parity
+    // lever. These scenes use the COMMITTED fonts (font:true → the harness feeds
+    // loadFontBytes/fontkit/measureText), so raster and vector share the face.
+    // Covered: BOLD, ITALIC (GPU: canvas synth-oblique; PDF: text-matrix shear
+    // — a documented delta on faces WITH a real italic; Inter/Lora have italics
+    // so this scene carries that residual), UNDERLINE, STRIKETHROUGH, mixed
+    // SIZES, mixed FONTS, a hard newline, and box-constrained WORD WRAP.
+    s("richtext-wrapped", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      text({
+        // Non-empty plain-text fallback (first run) so the single-run degrade
+        // path — taken when no measureText seam is present, e.g. the node
+        // structural test — still emits a Tj; the parity test injects
+        // measureText and takes the RICH path.
+        text: "Bold ", x: 24, y: 24, size: 28, color: INK,
+        rich: normalizeRichText({
+          runs: [
+            { text: "Bold ", bold: true, font: "inter", size: 28, color: INK },
+            { text: "italic ", italic: true, font: "inter", size: 28, color: "#7a1030" },
+            { text: "under", underline: true, font: "inter", size: 28, color: "#106a30" },
+            { text: "strike ", strike: true, font: "inter", size: 28, color: "#104a7a" },
+            { text: "then a longer serif paragraph that must wrap across the box width",
+              font: "lora", size: 20, color: INK },
+          ],
+          paras: [{ align: "left" }],
+        }, {}),
+        boxW: SCENE_W - 48, boxH: SCENE_H - 48,
+        boxStyle: { align: "left", lineSpacing: 1.15, charSpacing: 0, wordSpacing: 0 },
+      }),
+    ], 20, { font: true }), // committed-face shared layout; floor 20 = the committed-font baseline (font-families class). Italic faces carry the synth-oblique-vs-shear delta; measured + margin land next live run. PENDING USER RATIFICATION.
+
+    // Alignment variants (left / center / right / justify) of the SAME wrapping
+    // text, stacked — proves the per-paragraph alignment + justify inter-word
+    // stretch match between backends.
+    s("richtext-align", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      ...["left", "center", "right", "justify"].map((align, i) =>
+        text({
+          // Non-empty plain fallback (see richtext-wrapped) — keeps the
+          // node structural test's hasText/vectorText invariant on the degrade.
+          text: "The quick brown fox", x: 20, y: 20 + i * 70, size: 16, color: INK,
+          rich: normalizeRichText({
+            runs: [{ text: "The quick brown fox jumps over the lazy dog again", font: "source-serif", size: 16, color: INK }],
+            paras: [{ align }],
+          }, {}),
+          boxW: SCENE_W - 40, boxH: 64,
+          boxStyle: { align, lineSpacing: 1.1, charSpacing: 0, wordSpacing: 0 },
+        })),
+    ], 20, { font: true }), // per-paragraph alignment + justify parity; floor 20 committed-font baseline; measured + margin next live run. PENDING USER RATIFICATION.
   ];
 }
