@@ -144,6 +144,16 @@ export class PowerRPApp {
   hoverRegion = $state(null);
   /** Preview overlay delta shown during drags — NOT committed/undoable. */
   previewDelta = $state(null);
+  /** WYSIWYG RICH-TEXT EDITING (Round 13.4). While a text box is being edited
+   * in place, `textEditing` = { itemId } (null otherwise). Drives: the
+   * TextEditOverlay (an in-canvas contenteditable that IS the visual — a real
+   * browser text layout using the SAME runs/box, so editing is glyph-for-glyph
+   * WYSIWYG, no background overlay); the GPU render SUPPRESSES this item (the
+   * overlay shows it — no double image); the floating format toolbar; and the
+   * textEditing shortcut context (Ctrl/Cmd+B/I/U + Cmd±). Selection-style edits
+   * flow through the preview/commit system as ONE undo unit per logical edit,
+   * exactly like the Inspector rows. */
+  textEditing = $state(null);
   theme = $state("graphite");
   // BROWSER settings below: each = a SETTINGS descriptor's .initial (the
   // localStorage-or-default value) and a toggle*() using .persist. See the
@@ -646,6 +656,44 @@ export class PowerRPApp {
 
   cancelPreview() {
     this.previewDelta = null;
+  }
+
+  // ── WYSIWYG rich-text editing (Round 13.4) ─────────────────────────────────
+
+  /** Command. Enters in-place edit mode on a text item: selects it (so the
+   * Inspector + toolbar reflect it) and sets `textEditing`. The GPU paint then
+   * suppresses this item (the overlay draws it) and the TextEditOverlay mounts.
+   * A no-op if already editing this item. */
+  beginTextEdit(itemId) {
+    if (this.textEditing?.itemId === itemId) return;
+    this.selection = itemId;
+    this.textEditing = { itemId };
+  }
+
+  /** Command. Live-previews the edited text value (the whole {runs,paras} leaf)
+   * — the viewport re-renders through the overlay in real time (the house
+   * live-preview rule; the Inspector-row commit path). Written as a single
+   * keyframable non-numeric leaf, exactly the stored shape. */
+  previewTextValue(rich) {
+    if (!this.textEditing) return;
+    this.setPreview([[["items", this.textEditing.itemId, "text"], rich]]);
+  }
+
+  /** Command. Commits the edit as ONE undo unit (setPreview already holds the
+   * final value → commitPreview keyframes it on the current slide) and exits
+   * edit mode. If there was no pending preview (no change), just exits. */
+  commitTextEdit() {
+    const editing = this.textEditing;
+    this.textEditing = null;
+    if (!editing) return;
+    if (this.previewDelta) this.commitPreview();
+  }
+
+  /** Command. Cancels the edit (reverts the live preview, no undo unit) and
+   * exits edit mode. */
+  cancelTextEdit() {
+    this.textEditing = null;
+    this.cancelPreview();
   }
 
   // ── Item operations ────────────────────────────────────────────────────────
@@ -1492,13 +1540,16 @@ export class PowerRPApp {
     const { irToPDF } = await import("../render_gpu/pdf_backend.js");
     const { sceneIR } = await import("../render_gpu/ports.js");
     const { fitRectView } = await import("../core/view.js");
-    const { loadFontBytes, fontkit, measureTextAscent } = await import("./pdfFonts.js");
+    const { loadFontBytes, fontkit, measureTextAscent, measureText } = await import("./pdfFonts.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
     const rect = cameraRect(state, this.doc.meta);
     // Embed the SAME committed fonts the glyph atlas rasterizes (manifest "Text
     // fonts" / embedFont seam): registerFontkit + loadFontBytes let pdf-lib
     // embed the TTFs; measureTextAscent gives per-font baseline parity with the
     // atlas. `system` text still uses standard-14 Helvetica (no committed file).
+    // measureText is the RICH-TEXT layout seam (Round 13.4) — without it the PDF
+    // backend degrades a multi-run text box to its first run (and outline/
+    // highlight never emit); passing it makes exported rich text match the editor.
     const bytes = await irToPDF(sceneIR(deriveRenderTree(state, this.registry)), {
       width: rect.w,
       height: rect.h,
@@ -1506,6 +1557,7 @@ export class PowerRPApp {
       background: rect.background,
       rasterize: rasterizeIrPng,
       textAscent: measureTextAscent(),
+      measureText: measureText(),
       loadFontBytes,
       registerFontkit: await fontkit(),
     });
@@ -1531,7 +1583,7 @@ export class PowerRPApp {
    */
   async exportSvg() {
     const { irToSVG } = await import("../render_gpu/svg_backend.js");
-    const { loadFontBytes, measureTextAscent } = await import("./pdfFonts.js");
+    const { loadFontBytes, measureTextAscent, measureText } = await import("./pdfFonts.js");
     const { getVideo } = await import("../render_gpu/gpu/video_registry.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
     const rect = cameraRect(state, this.doc.meta);
@@ -1572,6 +1624,7 @@ export class PowerRPApp {
       background: rect.background,
       rasterize: rasterizeIrPng,
       textAscent: measureTextAscent(),
+      measureText: measureText(), // RICH-TEXT layout seam (Round 13.4) — see exportPdf
       loadFontBytes,
       resolveImageHref,
       videoFrame,
@@ -1663,7 +1716,7 @@ export class PowerRPApp {
       return;
     }
     const { irToPDF } = await import("../render_gpu/pdf_backend.js");
-    const { loadFontBytes, fontkit, measureTextAscent } = await import("./pdfFonts.js");
+    const { loadFontBytes, fontkit, measureTextAscent, measureText } = await import("./pdfFonts.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
     const selected = new Set(this.selectedIds());
     const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
@@ -1674,6 +1727,7 @@ export class PowerRPApp {
       background: null, // no camera background — transparent outside the selected items
       rasterize: rasterizeIrPng,
       textAscent: measureTextAscent(),
+      measureText: measureText(), // RICH-TEXT layout seam (Round 13.4) — see exportPdf
       loadFontBytes,
       registerFontkit: await fontkit(),
     });

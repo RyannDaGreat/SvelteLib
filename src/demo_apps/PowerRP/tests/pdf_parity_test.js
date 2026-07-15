@@ -94,6 +94,12 @@ const server = await createServer({
   configFile: resolve(repoRoot, "vite.config.js"),
   root: repoRoot,
   server: { port: 0, open: false, host: "127.0.0.1" },
+  // Every lazily-imported dep must be pre-bundled: vite optimizes a NEW dep on
+  // first import and force-reloads the page, destroying the puppeteer
+  // execution context mid-evaluate (pdfjs-dist is only reached through
+  // pdf_page_raster's lazy import, so it would otherwise be discovered
+  // mid-run).
+  optimizeDeps: { include: ["pdf-lib", "@pdf-lib/fontkit", "pdfjs-dist"] },
 });
 await server.listen();
 const base = `http://127.0.0.1:${server.httpServer.address().port}`;

@@ -62,7 +62,7 @@
  * uncaptured GPU errors throw on the next render().
  */
 
-import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree, effectSubtree, parseColor } from "../ir.js";
+import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree, effectSubtree, parseColor, rgbaToCss } from "../ir.js";
 import { richTextDraws } from "../../core/richtext.js";
 import { reportOnce } from "../../core/report.js";
 import * as T from "../../core/transform.js";
@@ -1422,17 +1422,26 @@ export class GpuCompositor {
           // `italic` selects the synthesized-oblique face IN THE ATLAS (real
           // italic if the face has one, else rasterizer oblique) — a true
           // oblique glyph shape, no shader change (see glyph_atlas.fontString).
-          const packRun = (str, localX, localY, size, bold, font, color, opacity, italic) => {
+          const packRun = (str, localX, localY, size, bold, font, color, opacity, italic, outline = null) => {
             const devicePx = size * world.scale * scaleDev;
             const bucket = bucketFor(devicePx);
             const localScale = size / bucket;
+            // OUTLINE (Round 13.4): a run with outlineWidth > 0 rasterizes an
+            // OUTLINED glyph cell (stroke + fill baked into RGBA — see
+            // glyph_atlas.get). The stroke width is a LOCAL run-unit value; the
+            // atlas rasterizes at `bucket` device px, so convert to bucket space
+            // (width / localScale = width · bucket / size). null ⇒ no outline
+            // (the historical mask path, byte-identical).
+            const outlineSpec = outline && outline.width > 0
+              ? { fill: rgbaToCss(color), color: outline.color, width: outline.width / localScale }
+              : null;
             // Scale-1 quads (exact-raster, unrotated) INTEGER-SNAP: a 1:1 texture
             // at a fractional device offset loses edge contrast to bilinear
             // blending — align it (shift ≤ 0.5 device px).
             const snap = mb === 0 && Math.abs(devicePx / bucket - 1) < 0.01;
             let pen = localX;
             for (const ch of str) {
-              const m = this.atlas.measure(ch, bucket, bold, font, italic);
+              const m = this.atlas.measure(ch, bucket, bold, font, italic, outlineSpec);
               let qx = pen - m.pad * localScale, qy = localY - m.pad * localScale;
               const qw = m.cellW * localScale, qh = m.cellH * localScale;
               pen += m.advance * localScale;
@@ -1454,7 +1463,7 @@ export class GpuCompositor {
                 if (dy > maxDY) maxDY = dy;
               }
               if (maxDX < 0 || minDX > cW || maxDY < 0 || minDY > cH) continue;
-              const e = this.atlas.get(ch, bucket, bold, font, italic);
+              const e = this.atlas.get(ch, bucket, bold, font, italic, outlineSpec);
               const at = quadInstance("tex", null);
               const f = this.quadArr.f32;
               f.set([qx, qy, qw, qh], at);
@@ -1472,6 +1481,21 @@ export class GpuCompositor {
             // atlas-backed measure seam, then pack each positioned run + each
             // underline/strike line. ONE layout, two backends (parity lever).
             const draws = richTextDraws(cmd, this._richMeasure());
+            // HIGHLIGHT backgrounds FIRST (Round 13.4): pack each highlight rect
+            // as a rect-SDF shape instance BEFORE any glyph quad, so its shape
+            // batch precedes the tex batch in `batches[]` and renders UNDERNEATH
+            // the run's glyphs (draw order = pack order — the underline/strike
+            // precedent, but a full-height background rather than a thin bar).
+            for (const h of draws.highlights) {
+              const at = shapeInstance();
+              const f = this.shapeArr.f32;
+              f.set([h.x, h.y, h.w, h.h], at);
+              f.set(xf, at + 4);
+              f.set(parseColor(h.color), at + 8); // fill (hex → rgba floats)
+              f.set(NO_COLOR, at + 12);           // no stroke
+              f.set([h.x + h.w / 2, h.y + h.h / 2, h.w / 2, h.h / 2], at + 16); // rect center/half for the SDF
+              f.set([SHAPE_KIND.rect, 0, h.opacity, 0], at + 20);
+            }
             for (const d of draws.textDraws) {
               // Top-anchor this run at (baselineY − its face ascent) so mixed-
               // size runs share the layout's baseline (matches packRun's own
@@ -1482,7 +1506,10 @@ export class GpuCompositor {
               const asc = this.atlas.measure("Mg", bkt, d.bold, d.font, d.italic).ascent * ls;
               // Run colors are hex strings (runs store hex) — parse to rgba
               // floats (parseColor is memoized, so per-run parsing is cheap).
-              packRun(d.text, d.x, d.baselineY - asc, d.size, d.bold, d.font, parseColor(d.color), d.opacity, d.italic);
+              // OUTLINE: pass the run's {color, width} so packRun rasterizes an
+              // outlined cell when width > 0 (else null ⇒ the mask path).
+              const outline = (d.outlineWidth ?? 0) > 0 ? { color: d.outlineColor, width: d.outlineWidth } : null;
+              packRun(d.text, d.x, d.baselineY - asc, d.size, d.bold, d.font, parseColor(d.color), d.opacity, d.italic, outline);
             }
             // Underline / strike as thin axis-aligned filled rects in local
             // space (crisp bars via the rect SDF; local, so the run's world

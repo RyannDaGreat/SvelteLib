@@ -4,14 +4,14 @@
  *
  * Proves, headless, with ZERO console errors throughout:
  *
- *  TASK 1 — DBLCLICK TEXT EDITING (plain-text stopgap):
- *    - double-clicking a text widget opens a <textarea> positioned OVER the
- *      widget's screen rect, at two zoom levels (box tracks the view);
- *    - typing + ENTER inserts a NEWLINE (does NOT commit);
- *    - Cmd+Enter COMMITS as exactly ONE undo unit (undo restores the old text);
- *    - Esc CANCELS (doc text unchanged, no undo unit, preview cleared);
- *    - canvas shortcuts are SUPPRESSED while the textarea is focused (typing a
- *      shortcut letter like "v"/"a"/Delete does not mutate the doc/selection).
+ *  TASK 1 — WYSIWYG in-place text editing (Round 13.4; the <textarea> stopgap was
+ *    REPLACED by the TextEditOverlay contenteditable — full alignment + rich-per-
+ *    character coverage is in text_wysiwyg_probe.js). Here, in this shared deck:
+ *    - double-clicking a text widget ENTERS edit mode with the overlay over the
+ *      widget's screen rect (app.textEditing set);
+ *    - typing shows a live preview; Esc COMMITS as exactly ONE undo unit;
+ *    - canvas shortcuts are SUPPRESSED while the contenteditable is focused
+ *      (typing "v"/Delete does not fire a canvas command / purge the widget).
  *
  *  TASK 2 — TRANSITION SOUND:
  *    - a transition carrying a `sound` triggers playback at transition START
@@ -136,22 +136,23 @@ try {
     }, textId);
   }
 
-  // The overlay textarea's bounding box + the text widget's screen top-left, so
-  // we can assert the box sits OVER the widget.
+  // The WYSIWYG overlay ROOT's screen top-left + the text widget's screen
+  // top-left, so we can assert the overlay sits OVER the widget (Round 13.4).
   async function overlayVsWidget() {
     return await page.evaluate((id) => {
       const app = window.__powerrp_app;
-      const ta = document.querySelector(".text-editor-overlay");
-      if (!ta) return { open: false };
-      const b = ta.getBoundingClientRect();
+      const root = document.querySelector(".text-edit-overlay-root");
+      if (!root) return { open: false };
+      const b = root.getBoundingClientRect();
       const n = app.nodes().find((nn) => nn.itemId === id);
       const T = { apply: (t, px, py) => { const c = Math.cos(t.rotation), s = Math.sin(t.rotation); return { x: t.x + t.scale * (c * px - s * py), y: t.y + t.scale * (s * px + c * py) }; } };
       const tl = T.apply(n.world, 0, 0);
       const s = app.canvasActions.worldToScreen(tl.x, tl.y);
       const rr = document.querySelector(".render-area").getBoundingClientRect();
-      return { open: true, box: { x: b.left, y: b.top, w: b.width, h: b.height }, widgetTL: { x: rr.left + s.x, y: rr.top + s.y }, fontPx: parseFloat(getComputedStyle(ta).fontSize) };
+      return { open: true, box: { x: b.left, y: b.top, w: b.width, h: b.height }, widgetTL: { x: rr.left + s.x, y: rr.top + s.y } };
     }, textId);
   }
+  const editing = () => page.evaluate(() => !!window.__powerrp_app.textEditing?.itemId);
 
   // The stored text is a rich {runs, paras} value (Opus21's model) — flatten to
   // plain for comparison (mirrors richTextToPlain: runs' text concatenated).
@@ -163,92 +164,48 @@ try {
   const undoDepth = () => page.evaluate(() => window.__powerrp_app.undoLog.canUndo);
   const hasPreview = () => page.evaluate(() => window.__powerrp_app.previewDelta !== null);
 
-  // ── TASK 1a: dblclick opens the overlay positioned over the widget (zoom 1) ──
+  // ── TASK 1: WYSIWYG in-place edit ENTER/COMMIT/CANCEL (Round 13.4) ───────────
+  // The old <textarea> stopgap was REPLACED by the TextEditOverlay contenteditable
+  // (see text_wysiwyg_probe.js for the full alignment + rich-per-char coverage).
+  // Here we verify the essentials in this shared deck: dblclick enters edit mode
+  // with the overlay over the widget, Esc commits + exits (one undo unit), and a
+  // second edit's Esc-with-no-change round-trips. TASK 2/3 below (unchanged).
   let c = await textCenterScreen();
   await page.mouse.click(c.x, c.y, { clickCount: 2 });
-  await new Promise((r) => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 180));
+  assert(await editing(), "T1: dblclick on text should ENTER WYSIWYG edit mode (app.textEditing set)");
   let ov = await overlayVsWidget();
-  assert(ov.open, "T1: dblclick on text should open the overlay textarea");
+  assert(ov.open, "T1: the contenteditable overlay should exist over the widget");
   if (ov.open) {
-    // Box top-left within a few px of the widget's screen top-left (border/scroll slack).
     const dx = Math.abs(ov.box.x - ov.widgetTL.x), dy = Math.abs(ov.box.y - ov.widgetTL.y);
-    assert(dx <= 4 && dy <= 4, `T1: overlay top-left should sit over the widget (Δ=${dx.toFixed(1)},${dy.toFixed(1)}px)`);
-    assert(Math.abs(ov.fontPx - 32) <= 1, `T1: font-size should equal size×zoom at zoom 1 (got ${ov.fontPx}px, want 32)`);
+    assert(dx <= 3 && dy <= 3, `T1: overlay top-left sits over the widget (Δ=${dx.toFixed(1)},${dy.toFixed(1)}px)`);
   }
-
-  // ── TASK 1b: ENTER inserts a NEWLINE and does NOT commit ─────────────────────
-  await page.evaluate(() => { const ta = document.querySelector(".text-editor-overlay"); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); });
-  await page.keyboard.press("Enter");
-  await page.keyboard.type("World");
-  const taVal1 = await page.evaluate(() => document.querySelector(".text-editor-overlay").value);
-  assert(taVal1 === "Hello\nWorld", `T1: ENTER should insert a newline (textarea="${JSON.stringify(taVal1)}", want "Hello\\nWorld")`);
-  assert((await docText()) === "Hello", "T1: ENTER must NOT commit — doc text still 'Hello'");
-  const stillOpen = await page.evaluate(() => !!document.querySelector(".text-editor-overlay"));
-  assert(stillOpen, "T1: ENTER must NOT close the editor (text boxes are real boxes)");
-
-  // ── TASK 1c: Cmd+Enter COMMITS as ONE undo unit ─────────────────────────────
+  // Type into the overlay, then Esc COMMITS as ONE undo unit.
   const undoBefore = await undoDepth();
-  await page.keyboard.down("Meta");
-  await page.keyboard.press("Enter");
-  await page.keyboard.up("Meta");
-  await new Promise((r) => setTimeout(r, 100));
-  assert((await docText()) === "Hello\nWorld", `T1: Cmd+Enter should COMMIT the newline'd text (doc="${JSON.stringify(await docText())}")`);
-  assert(!(await page.evaluate(() => !!document.querySelector(".text-editor-overlay"))), "T1: Cmd+Enter should close the editor");
-  assert(!(await hasPreview()), "T1: preview cleared after commit");
-  // Exactly ONE undo unit: undo restores 'Hello'.
-  await page.evaluate(() => window.__powerrp_app.undo());
-  assert((await docText()) === "Hello", "T1: undo after commit restores 'Hello' (exactly one undo unit)");
-  await page.evaluate(() => window.__powerrp_app.redo()); // back to committed value for the next steps
-  assert((await docText()) === "Hello\nWorld", "T1: redo re-applies the committed text");
-
-  // ── TASK 1d: Esc CANCELS (no mutation, no undo unit) ────────────────────────
-  const textBeforeEsc = await docText();
-  const undoBeforeEsc = await undoDepth();
-  c = await textCenterScreen();
-  await page.mouse.click(c.x, c.y, { clickCount: 2 });
-  await new Promise((r) => setTimeout(r, 120));
-  await page.keyboard.type("ZZZ");
+  await page.keyboard.type("!");
   assert(await hasPreview(), "T1: typing shows a live preview (previewDelta set)");
   await page.keyboard.press("Escape");
-  await new Promise((r) => setTimeout(r, 80));
-  assert(!(await page.evaluate(() => !!document.querySelector(".text-editor-overlay"))), "T1: Esc closes the editor");
-  assert((await docText()) === textBeforeEsc, `T1: Esc must NOT mutate the doc (got "${JSON.stringify(await docText())}")`);
-  assert((await undoDepth()) === undoBeforeEsc, "T1: Esc creates NO undo unit");
-  assert(!(await hasPreview()), "T1: Esc clears the preview");
+  await new Promise((r) => setTimeout(r, 120));
+  assert(!(await editing()), "T1: Esc exits edit mode");
+  assert(!(await page.evaluate(() => !!document.querySelector(".text-edit-overlay"))), "T1: the overlay is gone after commit");
+  assert((await docText()).includes("!"), `T1: Esc COMMITS the typed edit (doc="${JSON.stringify(await docText())}")`);
+  assert(!(await hasPreview()), "T1: preview cleared after commit");
+  // Exactly ONE undo unit: undo restores the pre-edit text.
+  await page.evaluate(() => window.__powerrp_app.undo());
+  assert(!(await docText()).includes("!"), "T1: ONE undo restores the pre-edit text (single undo unit)");
 
-  // ── TASK 1e: shortcuts SUPPRESSED while editing ─────────────────────────────
-  // Open the editor, type a canvas-shortcut key ("v" is a common tool letter;
-  // Delete would deactivate the item). Assert the doc/selection are untouched.
+  // Shortcuts SUPPRESSED while editing (a focused contentEditable makes
+  // App.onKeydown early-return, so typing a tool letter never fires a canvas cmd).
   c = await textCenterScreen();
   await page.mouse.click(c.x, c.y, { clickCount: 2 });
-  await new Promise((r) => setTimeout(r, 120));
-  const selBefore = await page.evaluate(() => window.__powerrp_app.selection);
-  const itemsBefore = await page.evaluate(() => Object.keys(window.__powerrp_app.doc.slides[0].delta.items).length);
-  await page.keyboard.type("aavvv"); // "a" (anchor snap), "v" — must be plain typing here
-  await page.keyboard.press("Delete"); // must delete a CHARACTER, never the widget
-  const taValShort = await page.evaluate(() => document.querySelector(".text-editor-overlay").value);
-  assert(taValShort.includes("aavvv") || taValShort.includes("aavv"), `T1: shortcut letters should type as text (textarea="${JSON.stringify(taValShort)}")`);
-  assert((await page.evaluate(() => window.__powerrp_app.selection)) === selBefore, "T1: selection unchanged while editing (no shortcut fired)");
-  assert((await page.evaluate(() => Object.keys(window.__powerrp_app.doc.slides[0].delta.items).length)) === itemsBefore, "T1: no item purged by Delete while editing");
-  // aHeld must not be stuck from typing "a" (CanvasView A-key guard).
-  await page.keyboard.press("Escape");
-
-  // ── TASK 1f: overlay tracks the view at a SECOND zoom level ──────────────────
-  // Zoom in via the app's canvas actions (setViewport = instant, deterministic),
-  // then re-open and re-check the box.
-  await page.evaluate(() => { window.__powerrp_app.canvasActions.setViewport({ zoom: 2, panX: 0, panY: 0 }); });
   await new Promise((r) => setTimeout(r, 150));
-  c = await textCenterScreen();
-  await page.mouse.click(c.x, c.y, { clickCount: 2 });
-  await new Promise((r) => setTimeout(r, 120));
-  ov = await overlayVsWidget();
-  assert(ov.open, "T1: overlay opens at zoom 2");
-  if (ov.open) {
-    const dx = Math.abs(ov.box.x - ov.widgetTL.x), dy = Math.abs(ov.box.y - ov.widgetTL.y);
-    assert(dx <= 5 && dy <= 5, `T1(zoom2): overlay still sits over the widget (Δ=${dx.toFixed(1)},${dy.toFixed(1)}px)`);
-    assert(ov.fontPx > 40, `T1(zoom2): font-size scales up with zoom (got ${ov.fontPx}px, want >40 at ~2x)`);
-  }
-  await page.keyboard.press("Escape");
+  const itemsBefore = await page.evaluate(() => Object.keys(window.__powerrp_app.doc.slides[0].delta.items).length);
+  await page.keyboard.type("vv");
+  await page.keyboard.press("Delete"); // must delete a CHARACTER, never the widget
+  assert((await page.evaluate(() => Object.keys(window.__powerrp_app.doc.slides[0].delta.items).length)) === itemsBefore, "T1: no item purged by Delete while editing");
+  await page.evaluate(() => window.__powerrp_app.cancelTextEdit());
+  await new Promise((r) => setTimeout(r, 80));
+  assert(!(await editing()), "T1: cancelTextEdit exits edit mode");
 
   // ── TASK 2 + 3: transition sound + animated continuous render (present mode) ─
   // Instrument the PresentMode audio element by capturing play() calls + src.
@@ -339,7 +296,7 @@ try {
     process.exit(1);
   }
   console.log("TEXT/SOUND/ANIMATED PROBE PASS:");
-  console.log("  T1 dblclick edit: overlay positioned (2 zooms), Enter=newline (no commit), Cmd+Enter=1 undo unit, Esc cancels, shortcuts suppressed.");
+  console.log("  T1 WYSIWYG edit: dblclick enters edit (overlay over widget), Esc commits=1 undo unit, shortcuts suppressed (see text_wysiwyg_probe.js for full coverage).");
   console.log(`  T2 transition sound: play() fired once on the sound-bearing transition, silent otherwise (plays=${presentResult.soundPlaysTotal}; headless load-reports=${soundLoadErrors.length} — headless has no audio codec, the loud report proves the load path ran).`);
   console.log(`  T3 animated widget: continuous render at rest (grew ${presentResult.rfcRestGrew}); idle when none visible (grew ${presentResult.rfcSettleGrew}).`);
   console.log("  zero UNEXPECTED console errors (the headless sound-load report is the documented audio-codec caveat).");

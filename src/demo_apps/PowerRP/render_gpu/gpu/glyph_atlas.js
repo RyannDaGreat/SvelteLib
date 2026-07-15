@@ -99,6 +99,23 @@ export function bucketFor(devicePx) {
 }
 
 /**
+ * Pure function. The atlas cache-key fragment for a glyph OUTLINE spec (Round
+ * 13.4). null (no outline) → "" so a non-outlined cell keeps its historical key
+ * exactly (byte-identical to pre-outline behavior — no cache churn for the
+ * common case). An outline is keyed by its baked fill color, stroke color, and
+ * device-px width (rounded to 0.1px to bound key churn) since all three are
+ * rasterized INTO the cell.
+ *
+ * @example outlineKey(null) // ""
+ * @example outlineKey({fill: "#000000", color: "#ff0000", width: 3}) // "o#000000|#ff0000|3"
+ * @example outlineKey({fill: "#000000", color: "#ff0000", width: 3.04}) // "o#000000|#ff0000|3"
+ */
+export function outlineKey(outline) {
+  if (!outline) return "";
+  return `o${outline.fill}|${outline.color}|${Math.round(outline.width * 10) / 10}`;
+}
+
+/**
  * Pure function. The canvas2D `ctx.font` string for a (size, bold, fontId,
  * italic) — the SINGLE SEAM that decides which face rasterizes. `fontId` selects
  * a committed family from the registry (fonts.js); the default is the OS system
@@ -256,20 +273,26 @@ export class GlyphAtlas {
    * offscreen glyphs on these — advances must accrue even for glyphs that
    * never draw, so measuring must never grow the atlas.
    */
-  measure(ch, bucket, bold, font = DEFAULT_FONT, italic = false) {
-    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}|${italic ? 1 : 0}`;
+  measure(ch, bucket, bold, font = DEFAULT_FONT, italic = false, outline = null) {
+    // outline = {color, width} where width is in BUCKET (device) px, or null for
+    // no outline (Round 13.4). An outlined cell needs EXTRA padding: the stroke
+    // extends half its width beyond the glyph ink on every side, so CELL_PAD=2
+    // alone would clip a wider stroke. pad grows to CELL_PAD + ceil(width/2).
+    const okey = outlineKey(outline);
+    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}|${italic ? 1 : 0}|${okey}`;
     const entry = this.entries.get(key); // a rasterized entry carries the same metrics
     if (entry) return entry;
     let m = this.metrics.get(key);
     if (!m) {
       this.ctx.font = fontString(bucket, bold, font, italic);
       const t = this.ctx.measureText(ch);
+      const pad = outline ? CELL_PAD + Math.ceil(outline.width / 2) : CELL_PAD;
       m = {
-        cellW: Math.ceil(Math.max(t.width, 1)) + CELL_PAD * 2,
-        cellH: Math.ceil(t.fontBoundingBoxAscent + t.fontBoundingBoxDescent) + CELL_PAD * 2,
+        cellW: Math.ceil(Math.max(t.width, 1)) + pad * 2,
+        cellH: Math.ceil(t.fontBoundingBoxAscent + t.fontBoundingBoxDescent) + pad * 2,
         advance: t.width,
         ascent: t.fontBoundingBoxAscent,
-        pad: CELL_PAD,
+        pad,
       };
       this.metrics.set(key, m);
     }
@@ -297,12 +320,13 @@ export class GlyphAtlas {
    * evicts the generation and rebuilds the frame ONCE on that marker; a
    * frame that still overflows genuinely exceeds one page and fails loudly.
    */
-  get(ch, bucket, bold, font = DEFAULT_FONT, italic = false) {
-    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}|${italic ? 1 : 0}`;
+  get(ch, bucket, bold, font = DEFAULT_FONT, italic = false, outline = null) {
+    const okey = outlineKey(outline);
+    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}|${italic ? 1 : 0}|${okey}`;
     const hit = this.entries.get(key);
     if (hit) return hit;
 
-    const m = this.measure(ch, bucket, bold, font, italic);
+    const m = this.measure(ch, bucket, bold, font, italic, outline);
     if (this.shelfX + m.cellW > ATLAS_SIZE) {
       this.shelfX = 0;
       this.shelfY += this.shelfH;
@@ -317,16 +341,38 @@ export class GlyphAtlas {
     this.shelfX += m.cellW;
     this.shelfH = Math.max(this.shelfH, m.cellH);
 
-    const color = this.isColor(ch, bold, font, italic);
     const ctx = this.ctx;
     ctx.font = fontString(bucket, bold, font, italic); // measure() may have hit its cache — set the font for fillText
-    // Monochrome glyphs rasterize as a WHITE ALPHA MASK (the shader tints by
-    // the text color). Color glyphs (emoji) ignore fillStyle and paint their
-    // own artwork regardless — fillStyle is left at whatever it already is,
-    // purely so the source is deterministic across atlas rebuilds.
-    ctx.fillStyle = "#ffffff";
     ctx.textBaseline = "alphabetic";
-    ctx.fillText(ch, x + CELL_PAD, y + CELL_PAD + m.ascent);
+    const px = x + m.pad, py = y + m.pad + m.ascent; // baseline origin (pad-aware)
+    let color;
+    if (outline) {
+      // OUTLINED cell (Round 13.4): stroke the glyph contour in the outline
+      // color, then fill it in the run color — a REAL RGBA cell (not a mask),
+      // so the compositor draws it via TEX_MODE.colorGlyph (no shader tint;
+      // e.color=true routes there). The outline is BEHIND the fill (stroke
+      // first, then fill on top) so the letter body stays crisp — the
+      // paint-order="stroke" idiom, done in the rasterizer. lineJoin "round"
+      // keeps sharp corners from spiking. The RUN color is baked here because
+      // an outlined cell can't be shader-tinted; the cell is keyed by the run's
+      // full outline spec so distinct (color, outlineColor, width) get distinct
+      // cells — outlines are a rare per-run style, per the atlas capacity note.
+      ctx.lineWidth = outline.width;
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = outline.color;
+      ctx.strokeText(ch, px, py);
+      ctx.fillStyle = outline.fill;
+      ctx.fillText(ch, px, py);
+      color = true; // baked RGBA → bypass the shader tint
+    } else {
+      // Monochrome glyphs rasterize as a WHITE ALPHA MASK (the shader tints by
+      // the text color). Color glyphs (emoji) ignore fillStyle and paint their
+      // own artwork regardless — fillStyle is left at whatever it already is,
+      // purely so the source is deterministic across atlas rebuilds.
+      color = this.isColor(ch, bold, font, italic);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(ch, px, py);
+    }
 
     const entry = {
       u0: x / ATLAS_SIZE, v0: y / ATLAS_SIZE,
@@ -334,8 +380,8 @@ export class GlyphAtlas {
       cellW: m.cellW, cellH: m.cellH,
       advance: m.advance,
       ascent: m.ascent,
-      pad: CELL_PAD,
-      color, // true = COLOR glyph (bypass shader tint); false = alpha mask (tint as today)
+      pad: m.pad,
+      color, // true = COLOR glyph OR outlined cell (bypass shader tint); false = alpha mask
     };
     this.entries.set(key, entry);
     this.dirty = true;

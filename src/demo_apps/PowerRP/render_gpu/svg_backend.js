@@ -53,6 +53,7 @@ import { flattenIR, parseColor, rgbaToCss, pushTransform, popTransform } from ".
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
+import { richTextDraws } from "../core/richtext.js";
 
 /**
  * Lens re-emit recursion cap — the SAME bound as pdf_backend.MAX_LENS_DEPTH
@@ -234,6 +235,35 @@ export function pointsAttr(points) {
  * @example // textToSVG(text({text:"Hi",x:2,y:4,size:36,color:"#000"}), {ascentFraction:()=>0.8}) → '<text x="2" y="32.8" ...>Hi</text>'
  */
 export function textToSVG(cmd, ctx) {
+  // RICH TEXT (Round 13.4): when the op carries a {runs,paras} value AND a
+  // measure seam is available, run the SHARED pure layout (core/richtext) — the
+  // SAME layout the GPU/PDF backends use (the parity lever) — and emit one REAL
+  // <text> per run (SELECTABLE, the parity requirement) plus highlight/decoration
+  // rects. This is the SVG twin of pdf_backend's rich text case. Falls through to
+  // the legacy single-run path below when there is no rich value or no seam.
+  if (cmd.rich && ctx.measureText) {
+    const draws = richTextDraws(cmd, ctx.richMeasure());
+    const out = [];
+    // HIGHLIGHT backgrounds FIRST (painter's order — behind the glyphs). A plain
+    // filled <rect> spanning the run's laid-out box, mirroring the decoration bar.
+    for (const h of draws.highlights) {
+      out.push(`<rect x="${fmt(h.x)}" y="${fmt(h.y)}" width="${fmt(h.w)}" height="${fmt(h.h)}" fill="${rgbaToCss(parseColor(h.color))}"` +
+        ((h.opacity ?? 1) !== 1 ? ` opacity="${fmt(h.opacity)}"` : "") + `/>`);
+    }
+    // One <text> per run at the layout's shared baseline (baselineY is already
+    // top+ascent from the layout — no ascentFraction needed here).
+    for (const d of draws.textDraws) {
+      if (d.text.length === 0) continue;
+      out.push(richRunTextSVG(d));
+    }
+    // Underline / strike decoration bars (on TOP of glyphs), filled <rect>s.
+    for (const ln of draws.lines) {
+      out.push(`<rect x="${fmt(ln.x)}" y="${fmt(ln.y - ln.thickness / 2)}" width="${fmt(ln.w)}" height="${fmt(ln.thickness)}" fill="${rgbaToCss(parseColor(ln.color))}"` +
+        ((ln.opacity ?? 1) !== 1 ? ` opacity="${fmt(ln.opacity)}"` : "") + `/>`);
+    }
+    return out.join("");
+  }
+  // LEGACY single-run text op (parity scenes / hand-built IR / no measure seam).
   const fontId = cmd.font || DEFAULT_FONT;
   const baseline = cmd.y + ctx.ascentFraction(fontId, cmd.bold) * cmd.size;
   const attrs = [
@@ -246,6 +276,37 @@ export function textToSVG(cmd, ctx) {
   if ((cmd.opacity ?? 1) !== 1) attrs.push(`opacity="${fmt(cmd.opacity)}"`);
   attrs.push(`xml:space="preserve"`);
   return `<text ${attrs.join(" ")}>${xmlEscape(cmd.text)}</text>`;
+}
+
+/**
+ * Pure function. One rich-text run draw → a REAL <text> element (SELECTABLE).
+ * `d` is a richTextDraws textDraw: {text, x, baselineY, size, color, bold,
+ * italic, font, opacity, outlineColor, outlineWidth}. Bold → font-weight,
+ * italic → font-style (the browser uses the face's real italic if it has one,
+ * else synthesizes oblique — matching the GPU atlas's canvas2D-synth italic).
+ * OUTLINE (Round 13.4): outlineWidth > 0 adds stroke + stroke-width +
+ * paint-order="stroke" (the stroke paints UNDER the fill, so the glyph body
+ * stays crisp — the standard SVG glyph-outline idiom). Stroke width is LOCAL
+ * units (the ancestor world <g> scales it with the glyphs — never
+ * pre-multiplied, the concerns.md scale² guard).
+ *
+ * @example // richRunTextSVG({text:"Hi",x:5,baselineY:32,size:36,color:"#000",bold:false,italic:false,font:"system",opacity:1,outlineWidth:0}) → '<text x="5" y="32" ...>Hi</text>'
+ */
+export function richRunTextSVG(d) {
+  const attrs = [
+    `x="${fmt(d.x)}"`, `y="${fmt(d.baselineY)}"`,
+    `font-family="${xmlEscape(cssFamilyFor(d.font || DEFAULT_FONT))}"`,
+    `font-size="${fmt(d.size)}"`,
+  ];
+  if (d.bold) attrs.push(`font-weight="bold"`);
+  if (d.italic) attrs.push(`font-style="italic"`);
+  attrs.push(`fill="${rgbaToCss(parseColor(d.color))}"`);
+  if ((d.outlineWidth ?? 0) > 0) {
+    attrs.push(`stroke="${rgbaToCss(parseColor(d.outlineColor))}"`, `stroke-width="${fmt(d.outlineWidth)}"`, `paint-order="stroke"`);
+  }
+  if ((d.opacity ?? 1) !== 1) attrs.push(`opacity="${fmt(d.opacity)}"`);
+  attrs.push(`xml:space="preserve"`);
+  return `<text ${attrs.join(" ")}>${xmlEscape(d.text)}</text>`;
 }
 
 /**
@@ -537,8 +598,9 @@ export async function emitCropSVG(cmd, world, region, ctx) {
 export async function irToSVG(commands, {
   width, height, view, background = null, rasterize = null, rasterScale = RASTER_SCALE,
   textAscent = null, loadFontBytes = null, resolveImageHref = null, videoFrame = null,
+  measureText = null,
 }) {
-  const ctx = new SvgAssembly({ rasterize, rasterScale, textAscent, loadFontBytes, resolveImageHref, videoFrame, background });
+  const ctx = new SvgAssembly({ rasterize, rasterScale, textAscent, loadFontBytes, resolveImageHref, videoFrame, background, measureText });
   await ctx.ensureFonts(textFaces(commands)); // embed each distinct committed face as @font-face
   await ctx.ensureImages(imageRefs(commands)); // resolve each image ref to a data URI up-front
   await ctx.ensureVideoFrames(videoRefs(commands)); // grab + inline each video's current frame
@@ -570,10 +632,11 @@ export async function irToSVG(commands, {
  * minting. Command object (accumulates state as the walk proceeds).
  */
 class SvgAssembly {
-  constructor({ rasterize, rasterScale, textAscent, loadFontBytes, resolveImageHref, videoFrame, background }) {
+  constructor({ rasterize, rasterScale, textAscent, loadFontBytes, resolveImageHref, videoFrame, background, measureText = null }) {
     this.rasterize = rasterize;
     this.rasterScale = rasterScale;
     this.textAscent = textAscent; // number | (fontId, bold)=>fraction | null
+    this.measureText = measureText; // (str, {size,bold,font,italic}) → {width,ascent,descent} | null
     this.loadFontBytes = loadFontBytes;
     this.resolveImageHref = resolveImageHref;
     this.videoFrame = videoFrame;
@@ -715,6 +778,16 @@ class SvgAssembly {
       this._warnedAscent = true;
     }
     return DEFAULT_ASCENT_FRACTION;
+  }
+
+  /** Query. The rich-text layout measure seam (str, run-style) → {width, ascent,
+   * descent}, adapting the injected measureText to the shape core/richtext's
+   * layout expects — the SAME seam the PDF backend uses (ctx.richMeasure), so
+   * both vector backends lay text out identically (the parity lever). Throws if
+   * no seam was provided (a rich op needs real metrics — no silent default). */
+  richMeasure() {
+    if (!this.measureText) throw new Error("svg_backend: rich text layout needs a measureText seam (irToSVG opts.measureText)");
+    return (str, style) => this.measureText(str, { size: style.size ?? 36, bold: !!style.bold, font: style.font ?? DEFAULT_FONT, italic: !!style.italic });
   }
 
   /**

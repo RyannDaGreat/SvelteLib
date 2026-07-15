@@ -48,8 +48,13 @@
 
 // ── canonical run/paragraph style ────────────────────────────────────────────
 
-/** The character-level style keys a run carries (paragraph style lives in paras). */
-export const RUN_STYLE_KEYS = ["bold", "italic", "underline", "strike", "size", "font", "color"];
+/** The character-level style keys a run carries (paragraph style lives in paras).
+ * OUTLINE and HIGHLIGHT (Round 13.4, the WYSIWYG-editing feature): a run may
+ * carry a glyph OUTLINE (a stroke around the letter shapes — {color, width};
+ * width 0 = off) and a HIGHLIGHT (a solid background color behind the run's
+ * glyphs — the transparent sentinel "" / null = off). Both are per-run, editable
+ * per-selection, and default OFF so old docs render byte-identically. */
+export const RUN_STYLE_KEYS = ["bold", "italic", "underline", "strike", "size", "font", "color", "outlineColor", "outlineWidth", "highlight"];
 
 /** The paragraph-level style keys a paragraph carries. */
 export const PARA_STYLE_KEYS = ["align", "lineSpacing", "charSpacing", "wordSpacing"];
@@ -112,10 +117,19 @@ export function normalizeRichText(value, inherited = {}) {
 /** Pure function. A canonical run from a partial run + widget-level inherited
  * style. text defaults to ""; run style keys fall back to `inherited` then to
  * sane defaults, so a legacy single run reproduces the old widget exactly.
+ * outlineColor/outlineWidth/highlight (Round 13.4) default OFF (width 0, no
+ * background) so a run from an OLD doc — which carries none of these keys —
+ * renders byte-identically (no outline, no highlight). This IS the migration
+ * for the new run properties: every run flows through runFrom (normalizeRichText
+ * → runFrom), so an old rich value gains the off defaults with no separate
+ * migration pass.
  *
  * @example runFrom({text: "x"}, {size: 20, color: "#111"}).size // 20
  * @example runFrom({text: "x", bold: true}, {}).bold // true
  * @example runFrom({text: "x"}, {}).italic // false
+ * @example runFrom({text: "x"}, {}).outlineWidth // 0 (outline off by default)
+ * @example runFrom({text: "x"}, {}).highlight // "" (no highlight by default)
+ * @example runFrom({text: "x", outlineColor: "#f00", outlineWidth: 2}, {}).outlineWidth // 2
  */
 export function runFrom(r, inherited = {}) {
   return {
@@ -127,6 +141,13 @@ export function runFrom(r, inherited = {}) {
     size: r.size ?? inherited.size ?? 36,
     font: r.font ?? inherited.font ?? "system",
     color: r.color ?? inherited.color ?? "#000000",
+    // Glyph outline: a stroke around the letter shapes. width 0 ⇒ off.
+    outlineColor: r.outlineColor ?? inherited.outlineColor ?? "#000000",
+    outlineWidth: r.outlineWidth ?? inherited.outlineWidth ?? 0,
+    // Highlight: a solid background color behind the run's glyphs. "" ⇒ off
+    // (the canonical "no highlight" sentinel — a plain-string leaf, never null,
+    // so it snaps discretely like every run field and survives serialization).
+    highlight: r.highlight ?? inherited.highlight ?? "",
   };
 }
 
@@ -332,12 +353,15 @@ export const STRIKE_OFFSET_FRAC = -0.3;
  * Returns:
  *   {
  *     lines: [{ y, baseline, height, width, glyphRuns: [{ x, text, style }] }],
+ *     highlights: [{ x, y, w, h, color }],  // background rects BEHIND runs (Round 13.4)
  *     decorations: [{ kind: "underline"|"strike", x, y, w, thickness, color }],
  *     width, height   // total laid-out extent (may exceed boxW for overlong words / h for overflow)
  *   }
  * All coordinates local, y-down; glyphRun.x is the pen origin, .y is the LINE's
  * top (a backend advances the pen and top-anchors each glyph like the existing
- * text op). baseline is the line-top→baseline offset.
+ * text op). baseline is the line-top→baseline offset. A highlight rect spans its
+ * piece's advance width × the line's content box (ascent+descent, at the line
+ * top) so it sits directly behind the glyphs — a backend draws it FIRST.
  *
  * @example layoutRichText({runs: [{text: "ab", size: 10, color: "#000"}], paras: [{align: "left"}]}, Infinity, monoMeasure).lines.length // 1
  * @example layoutRichText({runs: [{text: "a\nb", size: 10, color: "#000"}], paras: [{}, {}]}, Infinity, monoMeasure).lines.length // 2
@@ -347,6 +371,7 @@ export function layoutRichText(rich, boxW, measureRun, boxStyle = {}) {
   const { runs, paras } = rich;
   const paragraphs = splitParagraphs(runs);
   const lines = [];
+  const highlights = [];
   const decorations = [];
   let y = 0;
   let maxWidth = 0;
@@ -405,6 +430,10 @@ export function layoutRichText(rich, boxW, measureRun, boxStyle = {}) {
       let pen = startX;
       measured.forEach((p, i) => {
         glyphRuns.push({ x: pen, text: p.text, style: p.style });
+        // Highlight rect (background) spans this piece's advance width × the
+        // line's content box (ascent+descent at the line top) — a solid color
+        // behind the glyphs. Emitted first so a backend paints it under the run.
+        addHighlight(highlights, p, pen, y, halfLeading, ascent, descent);
         // Decoration lines span exactly this piece at its baseline (color +
         // thickness/offset from the run's own style).
         addDecorations(decorations, p, pen, y, baseline);
@@ -418,7 +447,7 @@ export function layoutRichText(rich, boxW, measureRun, boxStyle = {}) {
     });
   });
 
-  return { lines, decorations, width: maxWidth, height: y };
+  return { lines, highlights, decorations, width: maxWidth, height: y };
 }
 
 /**
@@ -468,14 +497,23 @@ export function richTextDraws(cmd, measureRun) {
         bold: !!st.bold,
         italic: !!st.italic,
         font: st.font ?? "system",
+        // Glyph OUTLINE (Round 13.4): a run with outlineWidth > 0 strokes its
+        // letters (outlineColor). Carried per-draw so each backend renders it in
+        // its own way (GPU atlas strokeText, PDF Tr 2, SVG stroke+paint-order).
+        outlineColor: st.outlineColor ?? "#000000",
+        outlineWidth: st.outlineWidth ?? 0,
         opacity,
       });
     }
   }
+  // HIGHLIGHT background rects (Round 13.4) — op-relative, drawn BEHIND glyphs.
+  const highlights = layout.highlights.map((h) => ({
+    x: ox + h.x, y: oy + h.y, w: h.w, h: h.h, color: h.color, opacity,
+  }));
   const lines = layout.decorations.map((d) => ({
     x: ox + d.x, y: oy + d.y, w: d.w, thickness: d.thickness, color: d.color, opacity,
   }));
-  return { textDraws, lines, width: layout.width, height: layout.height };
+  return { textDraws, highlights, lines, width: layout.width, height: layout.height };
 }
 
 const DEFAULT_PARA_SIZE = 36;
@@ -491,6 +529,22 @@ function spacedMeasure(measureRun, charSpacing, wordSpacing) {
     const spaces = chars.filter((c) => c === " ").length;
     return { ...base, width: base.width + chars.length * charSpacing + spaces * wordSpacing };
   };
+}
+
+/** Command (pushes into `out`). Appends a HIGHLIGHT background rect for a
+ * positioned piece whose run has a highlight color (Round 13.4). The rect spans
+ * the piece's advance width × the line's CONTENT box (ascent+descent), placed at
+ * the line's content top (lineY + halfLeading) so it sits directly behind the
+ * glyphs of ANY size on the line. No highlight ("" sentinel) → nothing pushed.
+ *
+ * x = piece pen origin, lineY = line top, halfLeading = the extra line-gap split
+ * above the content, ascent/descent = the LINE's metrics (so a small run's
+ * highlight still fills the line's height — matches how the browser paints a
+ * highlight over the line box, not just the glyph ink). */
+function addHighlight(out, piece, x, lineY, halfLeading, ascent, descent) {
+  const bg = piece.style.highlight;
+  if (typeof bg !== "string" || bg.length === 0) return; // "" ⇒ off
+  out.push({ x, y: lineY + halfLeading, w: piece.width, h: ascent + descent, color: bg });
 }
 
 /** Command (pushes into `out`). Appends underline/strike decoration lines for a
@@ -524,6 +578,204 @@ function addDecorations(out, piece, x, lineY, baseline) {
 export function monoMeasure(text, style) {
   const size = style?.size ?? DEFAULT_PARA_SIZE;
   return { width: [...text].length * size, ascent: size * 0.8, descent: size * 0.2 };
+}
+
+// ── run editing: split / merge / per-selection style (SET-2 UX substrate) ──────
+// The floating PPT toolbar + Ctrl+B/I/U operate on a linear CHARACTER SELECTION
+// [start, end). These PURE helpers split runs at the selection boundaries, apply
+// a style delta to the covered runs, then MERGE adjacent runs whose style became
+// identical — so the stored run list stays in CANONICAL form (no redundant
+// splits persist; a bold-then-unbold round-trips to one run). All offsets are in
+// characters over the concatenated run text (richTextToPlain), "\n" included.
+
+/** Pure function. Total character length of a run list (concatenated text).
+ *
+ * @example runsLength([{text: "ab"}, {text: "cde"}]) // 5
+ * @example runsLength([]) // 0
+ */
+export function runsLength(runs) {
+  let n = 0;
+  for (const r of runs) n += [...(r.text ?? "")].length;
+  return n;
+}
+
+/** Pure function. The style object of a run (everything except `text`). Compared
+ * by canonicalStyleKey to decide run merging.
+ *
+ * @example styleOf({text: "x", bold: true, size: 10}) // {bold: true, size: 10}
+ */
+export function styleOf(run) {
+  const { text, ...style } = run;
+  return style;
+}
+
+/** Pure function. Do two runs carry IDENTICAL style (mergeable)? Compares every
+ * RUN_STYLE_KEY (order-independent), so two runs differing only in text can be
+ * concatenated into one.
+ *
+ * @example sameStyle({text: "a", bold: true}, {text: "b", bold: true}) // true
+ * @example sameStyle({text: "a", bold: true}, {text: "b", bold: false}) // false
+ */
+export function sameStyle(a, b) {
+  // Compare DEFAULTED values (via runFrom) so an ABSENT key and its EXPLICIT
+  // DEFAULT are equal for merging: {bold:false} and {} both mean "not bold", so
+  // unbolding a bolded range round-trips to ONE canonical run (not two — the
+  // stored form must not depend on whether a default was written explicitly).
+  const na = runFrom({ text: "", ...a }), nb = runFrom({ text: "", ...b });
+  for (const k of RUN_STYLE_KEYS) if (na[k] !== nb[k]) return false;
+  return true;
+}
+
+/**
+ * Pure function. Canonicalizes a run list: drops empty-text runs (unless it is
+ * the ONLY run — an empty box keeps one empty run so the cursor has a style to
+ * inherit) and merges ADJACENT runs of identical style into one. The result
+ * renders and stores identically but has no redundant partitions — the canonical
+ * form every edit produces.
+ *
+ * @example mergeAdjacentRuns([{text: "a", bold: true}, {text: "b", bold: true}]).length // 1
+ * @example mergeAdjacentRuns([{text: "a", bold: true}, {text: "b", bold: true}])[0].text // "ab"
+ * @example mergeAdjacentRuns([{text: "a", bold: true}, {text: "b", bold: false}]).length // 2
+ * @example mergeAdjacentRuns([{text: ""}, {text: "x"}]).length // 1 (empty dropped)
+ * @example mergeAdjacentRuns([{text: ""}]).length // 1 (lone empty kept)
+ */
+export function mergeAdjacentRuns(runs) {
+  const nonEmpty = runs.filter((r) => (r.text ?? "").length > 0);
+  if (nonEmpty.length === 0) return [runs[0] ? { ...runs[0] } : runFrom({ text: "" })];
+  const out = [];
+  for (const r of nonEmpty) {
+    const last = out[out.length - 1];
+    if (last && sameStyle(styleOf(last), styleOf(r))) last.text += r.text;
+    else out.push({ ...r });
+  }
+  return out;
+}
+
+/**
+ * Pure function. Splits the run list so that a run boundary falls EXACTLY at
+ * character `offset` (0 ≤ offset ≤ length). A run straddling the offset is cut
+ * into two runs of the same style; offsets at existing boundaries are no-ops.
+ * Returns the new run list (never mutates the input). Style is preserved on both
+ * halves — the cut is purely positional.
+ *
+ * @example splitRunAt([{text: "abcd", bold: true}], 2).length // 2
+ * @example splitRunAt([{text: "abcd", bold: true}], 2)[0].text // "ab"
+ * @example splitRunAt([{text: "abcd", bold: true}], 2)[1].text // "cd"
+ * @example splitRunAt([{text: "abcd"}], 0).length // 1 (boundary already there)
+ * @example splitRunAt([{text: "abcd"}], 4).length // 1 (end boundary)
+ */
+export function splitRunAt(runs, offset) {
+  const out = [];
+  let pos = 0;
+  for (const r of runs) {
+    const chars = [...(r.text ?? "")];
+    const len = chars.length;
+    if (offset > pos && offset < pos + len) {
+      const cut = offset - pos;
+      out.push({ ...r, text: chars.slice(0, cut).join("") });
+      out.push({ ...r, text: chars.slice(cut).join("") });
+    } else {
+      out.push({ ...r });
+    }
+    pos += len;
+  }
+  return out;
+}
+
+/**
+ * Pure function. Applies a style delta (a partial run-style object, e.g.
+ * {bold: true} or {color: "#f00", highlight: "#ff0"}) to every character in the
+ * selection [start, end), splitting runs at the two boundaries first and merging
+ * the result back to canonical form. start === end (empty selection) is a no-op
+ * (returns the input canonicalized) — a caret has no characters to style; the
+ * editor handles caret-style as a pending style, not a run edit. Clamped to the
+ * valid range. Never mutates the input.
+ *
+ * This is THE toolbar/shortcut primitive: bold/italic/underline/strike toggles,
+ * per-selection color, outline, highlight, size, and font ALL route through it
+ * with the appropriate delta.
+ *
+ * @example applyRunStyle([{text: "abcd"}], 1, 3, {bold: true}).length // 3
+ * @example applyRunStyle([{text: "abcd"}], 1, 3, {bold: true})[1].text // "bc"
+ * @example applyRunStyle([{text: "abcd"}], 1, 3, {bold: true})[1].bold // true
+ * @example applyRunStyle([{text: "abcd", bold: true}], 0, 4, {bold: false}).length // 1 (whole-range unbold → one run)
+ * @example applyRunStyle([{text: "abcd"}], 2, 2, {bold: true}).length // 1 (empty selection no-op)
+ */
+export function applyRunStyle(runs, start, end, styleDelta) {
+  const len = runsLength(runs);
+  const lo = Math.max(0, Math.min(start, end, len));
+  const hi = Math.min(len, Math.max(start, end, 0));
+  if (lo >= hi) return mergeAdjacentRuns(runs);
+  // Split at BOTH boundaries so [lo, hi) is spanned by whole runs.
+  const split = splitRunAt(splitRunAt(runs, lo), hi);
+  const out = [];
+  let pos = 0;
+  for (const r of split) {
+    const rlen = [...(r.text ?? "")].length;
+    // A run lies fully inside [lo, hi) iff its whole extent is covered.
+    if (pos >= lo && pos + rlen <= hi && rlen > 0) out.push({ ...r, ...styleDelta });
+    else out.push({ ...r });
+    pos += rlen;
+  }
+  return mergeAdjacentRuns(out);
+}
+
+/**
+ * Pure function. The style of the run covering character `offset` (the caret's
+ * style — used to seed a toolbar for an empty selection and to inherit style for
+ * typed insertions). At a run boundary the LEFT run's style wins (typing at a
+ * boundary continues the preceding run's style — the universal editor
+ * convention); offset 0 uses the first run; past the end uses the last run.
+ *
+ * @example runStyleAt([{text: "ab", bold: true}, {text: "cd", bold: false}], 1).bold // true
+ * @example runStyleAt([{text: "ab", bold: true}, {text: "cd", bold: false}], 2).bold // true (left wins at boundary)
+ * @example runStyleAt([{text: "ab", bold: true}, {text: "cd", bold: false}], 3).bold // false
+ * @example runStyleAt([], 0) // {}
+ */
+export function runStyleAt(runs, offset) {
+  if (runs.length === 0) return {};
+  let pos = 0;
+  let last = runs[0];
+  for (const r of runs) {
+    const rlen = [...(r.text ?? "")].length;
+    // offset strictly inside this run, OR at its END with a following run
+    // (boundary → left wins): this run's style applies.
+    if (offset > pos && offset <= pos + rlen) last = r;
+    else if (offset <= pos && pos === 0) last = r;
+    pos += rlen;
+    if (offset < pos) break;
+  }
+  return styleOf(last);
+}
+
+/**
+ * Pure function. The COMMON value of style key `key` across the selection
+ * [start, end): the shared value if every covered character agrees, else
+ * `undefined` (mixed) — what the toolbar reads to show a control as set,
+ * unset, or indeterminate. An empty selection reads runStyleAt(start).
+ *
+ * @example commonStyle([{text: "ab", bold: true}, {text: "cd", bold: true}], 0, 4, "bold") // true
+ * @example commonStyle([{text: "ab", bold: true}, {text: "cd", bold: false}], 0, 4, "bold") // undefined (mixed)
+ * @example commonStyle([{text: "abcd", bold: true}], 1, 3, "bold") // true
+ */
+export function commonStyle(runs, start, end, key) {
+  const len = runsLength(runs);
+  const lo = Math.max(0, Math.min(start, end, len));
+  const hi = Math.min(len, Math.max(start, end, 0));
+  if (lo >= hi) return runStyleAt(runs, lo)[key];
+  let value; let seen = false;
+  let pos = 0;
+  for (const r of runs) {
+    const rlen = [...(r.text ?? "")].length;
+    // This run overlaps [lo, hi) iff its extent intersects it.
+    if (pos < hi && pos + rlen > lo) {
+      const v = styleOf(r)[key];
+      if (!seen) { value = v; seen = true; }
+      else if (v !== value) return undefined;
+    }
+    pos += rlen;
+  }
+  return value;
 }
 
 // ── loud document migration (string `text` → runs) ────────────────────────────

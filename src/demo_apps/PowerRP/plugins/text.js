@@ -62,7 +62,10 @@ export const textPlugin = {
     // make_demo) migrates to this shape LOUDLY at load via
     // core/richtext.withRichTextMigrated (wired in the app repair path); emit()
     // also tolerates an in-memory string on the fly (normalizeRichText).
-    text: { runs: [{ text: "Text", bold: false, italic: false, underline: false, strike: false, size: 36, font: DEFAULT_FONT, color: "#1a1a2e" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] },
+    // outlineColor/outlineWidth/highlight (Round 13.4) default OFF: no glyph
+    // outline (width 0), no highlight background ("" sentinel). Old docs without
+    // these keys get the same off defaults via core/richtext.runFrom.
+    text: { runs: [{ text: "Text", bold: false, italic: false, underline: false, strike: false, size: 36, font: DEFAULT_FONT, color: "#1a1a2e", outlineColor: "#000000", outlineWidth: 0, highlight: "" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] },
     // Widget-level style the single migrated run inherits AND the per-paragraph
     // layout falls back to (font/size/color/bold are run-inherited; the para
     // keys below are the box's one-alignment-per-box defaults — SET-1 Inspector).

@@ -585,6 +585,27 @@ export function scenes() {
         })),
     ], 20, { font: true }), // per-paragraph alignment + justify parity; floor 20 committed-font baseline; measured + margin next live run. PENDING USER RATIFICATION.
 
+    // Round 13.4: per-run OUTLINE (glyph stroke) + HIGHLIGHT (background) parity.
+    // GPU: atlas strokeText cell + rect-SDF background; PDF: Tr 2 stroke + re/f
+    // rect; SVG: paint-order="stroke" + background <rect>. One run of each so the
+    // three backends' outline/highlight render match.
+    s("richtext-outline-highlight", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      text({
+        text: "Outline ", x: 24, y: 40, size: 30, color: INK,
+        rich: normalizeRichText({
+          runs: [
+            { text: "Outline ", font: "inter", size: 30, color: "#ffffff", outlineColor: "#104a7a", outlineWidth: 2 },
+            { text: "Highlight ", font: "inter", size: 30, color: "#1a1a2e", highlight: "#ffe14d" },
+            { text: "both", font: "inter", size: 30, color: "#ffffff", outlineColor: "#7a1030", outlineWidth: 1.5, highlight: "#c8e0ff" },
+          ],
+          paras: [{ align: "left" }],
+        }, {}),
+        boxW: SCENE_W - 48, boxH: SCENE_H - 48,
+        boxStyle: { align: "left", lineSpacing: 1.2, charSpacing: 0, wordSpacing: 0 },
+      }),
+    ], 20, { font: true }), // outline+highlight parity; measured 23.20 dB (2026-07-15 live run) — floor 20 matches its richtext siblings' convention exactly (richtext-wrapped 22.91→20, richtext-align 22.34→20: the text-AA class runs ~3 under measured). Outline stroke = the atlas-strokeText vs PDF-Tr-stroke class. PENDING USER RATIFICATION (the measured-minus-margin convention is flagged app-wide).
+
     // ══ EFFECTS SUBSTRATE parity (manifest Round 12D — shadow/bloom/blend;
     // render_gpu/effects.js). Every scene builds through the real plugin
     // emit() (the node() sceneIR-wrap idiom), so the effect-wrapping path is

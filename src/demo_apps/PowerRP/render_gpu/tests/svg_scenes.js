@@ -45,6 +45,7 @@ export const SVG_SCENE_NAMES = [
   "donut-basic",            // triangulated-polygon fill + stroke polylines
   "cropbox-basic",          // rounded-rect <clipPath> + re-emit (incl. 45° rotated)
   "elbow-curved-arrows",    // arbitrary-length polyline routes
+  "richtext-outline-highlight", // Round 13.4: the FIRST rich-text SVG scene (the rich path was ported here) — per-run outline (stroke+paint-order) + highlight (<rect>)
 ];
 
 /**
@@ -78,6 +79,14 @@ export const SVG_PSNR_FLOORS = {
   "donut-basic": 32,            // measured 37.03 — triangulated polygon fill + stroke
   "cropbox-basic": 18,          // measured 23.50 — rounded <clipPath> re-emit incl. 45° rotation
   "elbow-curved-arrows": 38,    // measured 43.23 — arbitrary-length polyline routes
+  // Round 13.4: FIRST rich-text SVG scene (the rich path was newly ported). SVG
+  // outline = -webkit-text-stroke-equivalent paint-order="stroke"; the committed
+  // Inter face carries the same synth-oblique/AA deltas as font-families (21).
+  // measured 38.62 dB (2026-07-15 live run) — floor = measured − ~4.6, the
+  // shaped-lens margin class (magnifier-box 33.18→28, magnifier-circle
+  // 29.63→25). SVG text is vector-exact (both sides rasterize real glyph
+  // outlines), hence far above the PDF twin's 23.20. PENDING RATIFICATION.
+  "richtext-outline-highlight": 34,
 };
 
 /**

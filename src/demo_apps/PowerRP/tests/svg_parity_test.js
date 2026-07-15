@@ -88,7 +88,7 @@ const server = await createServer({
   // intermittent race the warmup retry only partly covers). These are the deps
   // the shared pdfFonts/pdf_backend chain pulls in; listing them here makes the
   // whole run deterministic. (pdf-lib + @pdf-lib/fontkit are the two big ones.)
-  optimizeDeps: { include: ["pdf-lib", "@pdf-lib/fontkit"] },
+  optimizeDeps: { include: ["pdf-lib", "@pdf-lib/fontkit", "pdfjs-dist"] },
 });
 await server.listen();
 const base = `http://127.0.0.1:${server.httpServer.address().port}`;
@@ -184,6 +184,7 @@ try {
       });
       window.__fetchBytes = async (src) => new Uint8Array(await (await fetch(src)).arrayBuffer());
       window.__textAscent = window.__mods.pdfFonts.measureTextAscent();
+      window.__measureText = window.__mods.pdfFonts.measureText(); // rich-text layout seam (Round 13.4)
       window.__loadFontBytes = window.__mods.pdfFonts.loadFontBytes;
 
       // Force vite to pre-bundle the heavy deps NOW, inside the retry-wrapped
@@ -251,6 +252,7 @@ try {
       const svgString = await window.__mods.svg.irToSVG(s.commands, {
         width: s.width, height: s.height, view: s.view, background: s.background,
         rasterize: window.__rasterizePng, textAscent: window.__textAscent,
+        measureText: window.__measureText, // rich-text layout seam (Round 13.4)
         loadFontBytes: window.__loadFontBytes, videoFrame,
       });
       const actual = await window.__rasterizeSvg(svgString, s.width * k, s.height * k);

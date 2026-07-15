@@ -804,6 +804,19 @@ function emitVector(cmd, world, out, ctx) {
         // while TJ adjustments pin every piece to the layout's x (GPU parity).
         // Underline/strike follow as filled rects.
         const draws = richTextDraws(cmd, ctx.richMeasure());
+        // HIGHLIGHT backgrounds FIRST (Round 13.4): a filled rect behind each
+        // highlighted run, emitted BEFORE the glyph text objects so it paints
+        // under the glyphs (painter's order — the whole op shares one q…Q + world
+        // cm, so all three layers, highlight/glyph/decoration, transform crisply).
+        // Reuses the decoration-rect idiom (rg + re + f); a highlight is just a
+        // full-height rect rather than a thin bar.
+        for (const h of draws.highlights) {
+          const c = parseColor(h.color);
+          const gs = ctx.gsAlphaPair(c[3] * h.opacity, 1);
+          if (gs) ops.push(gs);
+          ops.push(`${pdfNum(c[0])} ${pdfNum(c[1])} ${pdfNum(c[2])} rg`);
+          ops.push(`${pdfNum(h.x)} ${pdfNum(h.y)} ${pdfNum(h.w)} ${pdfNum(h.h)} re`, "f");
+        }
         for (const g of groupedTextDraws(draws.textDraws)) {
           ops.push(...textGroupOps(g, ctx));
         }
@@ -949,7 +962,13 @@ export function groupedTextDraws(textDraws) {
   const groups = [];
   let key = null;
   for (const d of textDraws) {
-    const k = `${d.baselineY}|${d.size}|${d.font}|${d.bold ? 1 : 0}|${d.italic ? 1 : 0}|${d.color}|${d.opacity}`;
+    // OUTLINE (Round 13.4) joins the cluster key: an outline change splits the
+    // cluster exactly like a color change, so each cluster is style-homogeneous
+    // and the single Tr/RG/w emitted per cluster (textGroupOps) is correct for
+    // every piece in it. A run with no outline (width 0) keys "0|..." identically
+    // to before — non-outlined text keeps its historical single-cluster grouping
+    // (the extraction-fidelity invariant: uniform-style lines stay ONE BT…ET).
+    const k = `${d.baselineY}|${d.size}|${d.font}|${d.bold ? 1 : 0}|${d.italic ? 1 : 0}|${d.color}|${d.opacity}|${(d.outlineWidth ?? 0) > 0 ? 1 : 0}|${d.outlineColor}|${d.outlineWidth}`;
     if (key !== k) { groups.push([]); key = k; }
     groups[groups.length - 1].push(d);
   }
@@ -990,6 +1009,26 @@ function textGroupOps(group, ctx) {
   if (gs) ops.push(gs);
   ops.push(`${pdfNum(r)} ${pdfNum(g)} ${pdfNum(b)} rg`);
   ops.push("BT", `${ctx.fontName(d0.font, d0.bold)} ${pdfNum(d0.size)} Tf`);
+  // OUTLINE (Round 13.4): a run with outlineWidth > 0 draws its glyphs in text
+  // rendering mode 2 (fill + STROKE) with a stroke color (RG) and width (w);
+  // else mode 0 (fill only, the historical default). Tr is a text-state
+  // operator — emitted once per cluster (each cluster is outline-homogeneous by
+  // the grouping key). The mode is ALWAYS emitted (0 or 2) so a prior outlined
+  // cluster's Tr never leaks into a later fill-only cluster (Tr persists across
+  // BT/ET within one content stream). The stroke width is the LOCAL run-unit
+  // value — the surrounding world `cm` (line width applies POST-cm) scales it
+  // with the glyphs; pre-multiplying by world.scale would double-apply it (the
+  // emitLens scale² stroke bug — concerns.md — which the SVG/PDF text path
+  // deliberately avoids by keeping width LOCAL).
+  const outlined = (d0.outlineWidth ?? 0) > 0;
+  if (outlined) {
+    const [sr, sg, sb] = parseColor(d0.outlineColor);
+    ops.push(`${pdfNum(sr)} ${pdfNum(sg)} ${pdfNum(sb)} RG`);
+    ops.push(`${pdfNum(d0.outlineWidth)} w`);
+    ops.push("2 Tr");
+  } else {
+    ops.push("0 Tr");
+  }
   // Italic skews via the Tm `c` slot (see textRunOps); y-flip keeps glyphs
   // upright in the page's y-down space.
   const c = d0.italic ? -PDF_OBLIQUE_SHEAR : 0;

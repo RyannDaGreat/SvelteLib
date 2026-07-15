@@ -31,8 +31,7 @@
   import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, creationRect, creationEndpoint } from "./canvas/dragKinds.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
-  import { cssFamilyFor } from "../render_gpu/fonts.js"; // font id → CSS family (dblclick text-edit overlay)
-  import { richTextToPlain, normalizeRichText } from "../core/richtext.js"; // rich {runs,paras} ⇄ plain string (dblclick stopgap rebase — Opus21's runs model landed)
+  import TextEditOverlay from "./TextEditOverlay.svelte"; // WYSIWYG in-place rich-text editor (Round 13.4)
 
   let { app } = $props();
 
@@ -158,32 +157,11 @@
   // to create. Null outside an endpoint placement drag (and for bbox placements,
   // which use placeRect instead).
   let placeLine = $state(null); // {x1, y1, x2, y2} world, or null
-  // ── DBLCLICK TEXT EDIT (PLAIN-TEXT STOPGAP) ─────────────────────────────────
-  // ⚠️ SUPERSEDED BY THE SET-2 RICH-TEXT EDITOR ⚠️ — this whole region (state +
-  // handler + the textarea overlay in the template + .text-editor-overlay CSS)
-  // is a PLACEHOLDER: double-clicking a text widget opens a positioned <textarea>
-  // to edit its PLAIN text. The real editor (SET 2) is an in-canvas cursor/
-  // selection editor with a floating PPT toolbar and per-run formatting; it will
-  // REPLACE this overlay wholesale. Kept deliberately small and self-contained
-  // (one state var, one open/commit/cancel trio, one derived screen box) so it's
-  // trivial to delete when SET 2 lands.
-  //
-  // REBASED onto Opus21's RICH-TEXT runs model (now landed): `state.text` is a
-  // canonical {runs, paras} value, NOT a plain string. This stopgap is
-  // PLAIN-TEXT, so it bridges through core/richtext.js:
-  //   READ  — richTextToPlain(state.text) flattens runs → the editable string
-  //           (paragraph "\n"s preserved).
-  //   WRITE — normalizeRichText(<textarea value>, boxStyle) rebuilds a single
-  //           run inheriting the widget-level style (font/size/color/bold), split
-  //           into paragraphs at "\n". So editing plain text COLLAPSES multi-run
-  //           formatting to one run (acceptable + expected for a plain-text
-  //           stopgap; SET-2's run-aware editor preserves per-run style). The
-  //           written value is the SAME shape the plugin default + migration
-  //           produce, so it round-trips and never trips the rich-text repair.
-  // {itemId} while a text widget is being edited; null otherwise. Non-reactive
-  // drag state stays plain, but this DRIVES the overlay markup so it's $state.
-  let textEdit = $state(null);
-  let textEditEl = $state(null); // the <textarea> element (focus + read on commit)
+  // ── WYSIWYG TEXT EDIT (Round 13.4) ──────────────────────────────────────────
+  // Edit state lives on the app store (app.textEditing = {itemId}) so the overlay,
+  // the GPU-suppression filter in paint(), and the shortcut context all read the
+  // ONE source of truth. onDblClick just calls app.beginTextEdit; the
+  // TextEditOverlay component (rendered in the template) owns the rest.
   // A-key live state (manifest ARCHITECTURE PLAN #4 "ANCHOR SNAP"): tracked
   // via window keydown/keyup (not e.getModifierState, which has patchy
   // cross-browser support for letter keys) so onPointerUp — which fires no
@@ -286,7 +264,13 @@
     const state = app.state();
     const view = { ...viewport, dpr };
     const viewRect = worldViewRect(view, canvasEl.width, canvasEl.height);
-    const nodes = deriveRenderTree(state, app.registry).filter((n) => !canSkipNode(n, viewRect));
+    // SUPPRESS the item being WYSIWYG-edited (Round 13.4): the TextEditOverlay's
+    // contenteditable IS its visual while editing, so the GPU must NOT also draw
+    // it — that double image is exactly the "background on top of the text" the
+    // user rejected in the stopgap. One filter clause, no compositor change.
+    const editingId = app.textEditing?.itemId ?? null;
+    const nodes = deriveRenderTree(state, app.registry)
+      .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== editingId);
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background
@@ -452,91 +436,23 @@
     }
   }
 
-  // ── DBLCLICK TEXT EDIT (PLAIN-TEXT STOPGAP — SUPERSEDED BY SET-2 RICH TEXT) ──
-  // Double-clicking a TEXT widget opens a <textarea> positioned exactly over its
-  // screen rect (see the `textEditor` $derived box + the template overlay). The
-  // widget's own render keeps drawing UNDER the overlay while editing — the
-  // textarea sits on top with a matching background, so the user reads their
-  // edits, not the stale glyph. That's ACCEPTABLE for a stopgap (SET 2's
-  // in-canvas editor removes the double-draw). ENTER inserts a NEWLINE (never
-  // commits — user ruling: "text boxes are REAL boxes"); Cmd/Ctrl+Enter or BLUR
-  // commits (one undo unit); Esc cancels.
+  // ── DBLCLICK TEXT EDIT → WYSIWYG in-place editor (Round 13.4) ────────────────
+  // Double-clicking a TEXT widget enters IN-PLACE WYSIWYG edit mode: the
+  // TextEditOverlay (a contenteditable transformed into the item's world pose)
+  // becomes the item's visual — CanvasView.paint() suppresses the item's GPU draw
+  // while app.textEditing is set, so there is NO double image and NO background
+  // overlay (the two things the user rejected in the old <textarea> stopgap). The
+  // overlay + floating toolbar own the whole edit lifecycle (preview/commit/cancel,
+  // per-run style, Ctrl+B/I/U, Cmd±); this handler just ENTERS the mode.
 
-  /** Command. Opens the plain-text editor on the double-clicked TEXT widget (if
-   *  any). Non-text targets fall through (a dblclick on a rect does nothing). */
+  /** Command. Enters WYSIWYG edit mode on the double-clicked TEXT widget (if any).
+   *  Non-text targets fall through (a dblclick on a rect does nothing). */
   function onDblClick(e) {
     if (drag || modal) return; // never open mid-gesture
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
     if (hit?.type !== "text") return;
-    app.selection = hit.itemId; // select it too, so the Inspector reflects the same item
-    // Seed from the rich value FLATTENED to plain text (richTextToPlain: runs →
-    // string, paragraph "\n"s preserved). The widget-level style (font/size/
-    // color/bold) is captured so the write-back run inherits it — kept on
-    // `textEdit` so commit doesn't have to re-derive the node.
-    const stored = richTextToPlain(app.storedItemValue(hit.itemId, ["text"]));
-    const s = hit.state;
-    const boxStyle = { font: s.font, size: s.size, color: s.color, bold: s.bold };
-    textEdit = { itemId: hit.itemId, boxStyle };
-    // Seed the textarea's value + focus/select-all NEXT tick, once it's in the
-    // DOM (the {#if textEditor} block renders after this frame). Then live-preview
-    // the seed so the widget under the overlay matches from frame one.
-    queueMicrotask(() => {
-      if (!textEditEl) return;
-      textEditEl.value = stored;
-      textEditEl.focus();
-      textEditEl.select();
-      app.setPreview([[["items", hit.itemId, "text"], normalizeRichText(stored, boxStyle)]]);
-    });
-  }
-
-  /** Command. Live-preview the typed text (viewport re-renders under the overlay
-   *  in real time — the house live-preview rule; matches the Inspector text row).
-   *  The plain-text value is normalized to the rich {runs, paras} shape (one run
-   *  inheriting the box style) before preview. ENTER is a plain newline here: the
-   *  textarea inserts it natively and normalizeRichText splits it into paragraphs. */
-  function textEditInput() {
-    if (!textEdit) return;
-    app.setPreview([[["items", textEdit.itemId, "text"], normalizeRichText(textEditEl.value, textEdit.boxStyle)]]);
-  }
-
-  /** Command. Commits the edit as ONE undo unit (setPreview + commitPreview —
-   *  the exact Inspector text-row commit path). The plain-text value is written
-   *  back as a rich {runs, paras} value (normalizeRichText), collapsing to one
-   *  run — the documented plain-text-stopgap tradeoff. Then closes the overlay. */
-  function commitTextEdit() {
-    if (!textEdit) return;
-    app.setPreview([[["items", textEdit.itemId, "text"], normalizeRichText(textEditEl.value, textEdit.boxStyle)]]);
-    app.commitPreview();
-    textEdit = null;
-  }
-
-  /** Command. Cancels the edit (reverts the live preview, no undo unit) and
-   *  closes the overlay. */
-  function cancelTextEdit() {
-    if (!textEdit) return;
-    app.cancelPreview();
-    textEdit = null;
-  }
-
-  /** The textarea's own keydown: ENTER = newline (do NOT commit — the ruling);
-   *  Cmd/Ctrl+Enter = COMMIT; Esc = CANCEL. stopPropagation on the handled keys
-   *  so nothing at the window level also acts on them (belt-and-suspenders — the
-   *  document-level shortcut guard already skips a focused TEXTAREA). */
-  function textEditKeydown(e) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      e.stopPropagation();
-      commitTextEdit();
-      textEditEl?.blur();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      cancelTextEdit();
-    }
-    // Plain Enter: left alone → the textarea inserts a newline natively. Every
-    // other key: left alone → normal typing (the focused-textarea guard in
-    // App.onKeydown means canvas shortcuts never fire while this is focused).
+    app.beginTextEdit(hit.itemId); // selects + arms the overlay (which suppresses the GPU draw)
   }
 
   // ── Selection + drag ────────────────────────────────────────────────────────
@@ -2034,32 +1950,17 @@
     return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox, placeSeg, multiBoxOutline };
   });
 
-  // DBLCLICK TEXT EDIT overlay box (screen space) — SUPERSEDED BY SET-2. The
-  // <textarea> is positioned EXACTLY over the edited widget's screen rect and
-  // scaled so it visually matches: the world top-left maps through the SAME
-  // worldToScreen the outlines use; width/height are the widget's world w/h
-  // scaled by zoom × the node's own world scale; font-size is the widget's
-  // `size` scaled the same way; rotation is the node's world rotation (radians),
-  // applied via CSS about the top-left corner so the box lines up with a rotated
-  // widget. Recomputes on viewport/selection/doc change like `overlay` above.
-  let textEditor = $derived.by(() => {
+  // WYSIWYG TEXT EDIT (Round 13.4): the derived node of the item being edited (or
+  // null). The TextEditOverlay renders in the item's world pose off THIS node
+  // (preview-blended state, so live edits show as you type). Recomputes on
+  // doc/preview/slide/viewport change (the `overlay` reactive-deps pattern). Null
+  // if the item was purged/retyped mid-edit — the overlay unmounts, the commit
+  // still lands off the last preview.
+  let textEditNode = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
-    if (!textEdit || !actions) return null;
-    const n = app.nodes().find((nn) => nn.itemId === textEdit.itemId);
-    if (!n || n.type !== "text") return null; // widget purged/retyped mid-edit → box vanishes (commit still works off the textarea value)
-    const p = T.apply(n.world, 0, 0); // world top-left point
-    const s = actions.worldToScreen(p.x, p.y); // → screen (render-area frame)
-    const scale = viewport.zoom * (n.world.scale ?? 1); // world units → screen px
-    return {
-      x: s.x, y: s.y,
-      w: (n.state.w ?? 0) * scale,
-      h: (n.state.h ?? 0) * scale,
-      fontPx: (n.state.size ?? 0) * scale,
-      family: cssFamilyFor(n.state.font),
-      bold: n.state.bold ?? false,
-      color: n.state.color ?? "#000",
-      deg: (n.world.rotation ?? 0) * 180 / Math.PI, // CSS rotate() takes degrees
-    };
+    if (!app.textEditing || !actions) return null;
+    const n = app.nodes().find((nn) => nn.itemId === app.textEditing.itemId);
+    return (n && n.type === "text") ? n : null;
   });
 </script>
 
@@ -2221,31 +2122,20 @@
           </g>
         {/if}
       </svg>
-      {#if textEditor}
-        <!-- DBLCLICK TEXT EDIT overlay (PLAIN-TEXT STOPGAP — SUPERSEDED BY THE
-             SET-2 RICH-TEXT EDITOR). A <textarea> laid EXACTLY over the edited
-             text widget's screen rect (textEditor box), scaled by zoom so it
-             visually matches. ENTER = newline (textEditKeydown leaves plain
-             Enter alone); Cmd/Ctrl+Enter or BLUR commits; Esc cancels. Inline
-             style carries only the DYNAMIC geometry/typography (position, size,
-             font — all derived from the live view); the static chrome is in
-             app.css .text-editor-overlay. -->
-        <textarea
-          class="text-editor-overlay"
-          bind:this={textEditEl}
-          style:left="{textEditor.x}px"
-          style:top="{textEditor.y}px"
-          style:width="{textEditor.w}px"
-          style:height="{textEditor.h}px"
-          style:font-size="{textEditor.fontPx}px"
-          style:font-family={textEditor.family}
-          style:font-weight={textEditor.bold ? "bold" : "normal"}
-          style:color={textEditor.color}
-          style:transform="rotate({textEditor.deg}deg)"
-          oninput={textEditInput}
-          onkeydown={textEditKeydown}
-          onblur={commitTextEdit}
-        ></textarea>
+      {#if textEditNode && actions}
+        <!-- WYSIWYG in-place rich-text editor (Round 13.4). The TextEditOverlay
+             IS the item's visual while editing (the GPU draw is suppressed in
+             paint()), so there is no background/double-image. It transforms itself
+             into the item's world pose off `textEditNode` and drives the whole
+             edit lifecycle (preview/commit/cancel, per-run style, the floating
+             toolbar). worldToScreen maps world→render-area px; zoom scales the
+             local font sizes to screen. -->
+        <TextEditOverlay
+          {app}
+          node={textEditNode}
+          worldToScreen={actions.worldToScreen}
+          zoom={viewport.zoom}
+        />
       {/if}
       {#if app.minimapVisible}
         <div class="minimap-dock">

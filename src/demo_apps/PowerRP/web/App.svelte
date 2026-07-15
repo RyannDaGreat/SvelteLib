@@ -391,6 +391,19 @@
     { keys: ["Ctrl", "mouse_scroll"], label: "Zoom", when: editMode },
     { keys: ["Left", "Right"], label: "Step slides", when: (c) => c.mode === "present" },
     { keys: ["Esc"], label: "Exit", when: (c) => c.mode === "present" },
+    // WYSIWYG RICH-TEXT EDITING (Round 13.4): while a text box is being edited,
+    // the bar announces the per-selection format shortcuts. DISPLAY-ONLY — the
+    // TextEditOverlay's own keydown handles them (a focused contentEditable makes
+    // onKeydown early-return, so no registry `run` fires here — the same pattern
+    // as the modifier/A-key hints, which the pointer code reads directly). These
+    // route THROUGH the registry so the HintBar knows them (the "only registered
+    // inputs may exist" convention: an unregistered shortcut does not exist).
+    { keys: ["Cmd", "B"], label: "Bold", when: (c) => c.textEditing },
+    { keys: ["Cmd", "I"], label: "Italic", when: (c) => c.textEditing },
+    { keys: ["Cmd", "U"], label: "Underline", when: (c) => c.textEditing },
+    { keys: ["Cmd", "Plus"], label: "Bigger", when: (c) => c.textEditing },
+    { keys: ["Cmd", "Minus"], label: "Smaller", when: (c) => c.textEditing },
+    { keys: ["Esc"], label: "Done editing", when: (c) => c.textEditing },
   ];
   /** Command. (Re)builds the shortcut registry from the keybinding registry +
    * hand entries — also how a rebind takes effect (createShortcuts has no
@@ -428,12 +441,18 @@
       crosshairArmed: app.crosshair?.kind ?? null,
       modalActive: app.modalXform !== null, // a live G/S transform locks input (Blender modal)
       snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: "A = anchor snap" while a drag has an active snap
+      // WYSIWYG rich-text editing (Round 13.4): true while a text box is being
+      // edited in place — gates the format-shortcut HINTS (Ctrl+B/I/U, Cmd±)
+      // whose actual keys the TextEditOverlay handles (a focused contentEditable
+      // makes onKeydown below early-return, so these entries are DISPLAY-ONLY,
+      // like the modifier/A-key hints — they announce the capability in the bar).
+      textEditing: app.textEditing !== null,
       app,
     };
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged; app.textEditing;
     const base = app.shortcuts.hints(shortcutCtx());
     // While a modal transform is live, LEAD the bar with its announcement —
     // mode · active axis · typed buffer — so the live state is the first thing

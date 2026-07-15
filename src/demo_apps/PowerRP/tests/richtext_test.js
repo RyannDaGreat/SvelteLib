@@ -11,6 +11,8 @@ import {
   splitParagraphs, paraStyleFor, wrapParagraph, layoutRichText, richTextDraws, monoMeasure,
   richTextMigrations, withRichTextMigrated, DEFAULT_PARA,
   NATURAL_LINE_HEIGHT, UNDERLINE_OFFSET_FRAC, STRIKE_OFFSET_FRAC,
+  runsLength, styleOf, sameStyle, mergeAdjacentRuns, splitRunAt, applyRunStyle,
+  runStyleAt, commonStyle,
 } from "../core/richtext.js";
 
 let passed = 0;
@@ -259,6 +261,120 @@ test("richTextDraws: underline/strike become lines offset by op origin", () => {
   assert.equal(d.lines.length, 1);
   assert.equal(d.lines[0].x, 7);       // origin x + decoration x (0)
   assert.equal(d.lines[0].color, "#f00");
+});
+
+// ── outline + highlight (Round 13.4) ─────────────────────────────────────────
+
+test("runFrom: outline/highlight default OFF; explicit values kept", () => {
+  assert.equal(runFrom({ text: "x" }, {}).outlineWidth, 0);
+  assert.equal(runFrom({ text: "x" }, {}).outlineColor, "#000000");
+  assert.equal(runFrom({ text: "x" }, {}).highlight, "");
+  assert.equal(runFrom({ text: "x", outlineWidth: 2, outlineColor: "#f00" }, {}).outlineWidth, 2);
+  assert.equal(runFrom({ text: "x", highlight: "#ff0" }, {}).highlight, "#ff0");
+});
+
+test("normalizeRichText: an OLD rich value (no outline/highlight keys) gains OFF defaults", () => {
+  const old = { runs: [{ text: "Hi", size: 20, color: "#000" }], paras: [{}] };
+  const r = normalizeRichText(old, {});
+  assert.equal(r.runs[0].outlineWidth, 0); // migrated off — old docs render byte-identically
+  assert.equal(r.runs[0].highlight, "");
+});
+
+test("layoutRichText/richTextDraws: highlight rect spans the piece box, drawn behind", () => {
+  const cmd = { rich: { runs: [{ text: "ab", size: 10, color: "#000", highlight: "#ff0" }], paras: [{}] }, x: 3, y: 5, boxW: Infinity, opacity: 1 };
+  const d = richTextDraws(cmd, monoMeasure);
+  assert.equal(d.highlights.length, 1);
+  assert.equal(d.highlights[0].x, 3);          // op origin x + piece x (0)
+  approx(d.highlights[0].w, 20);               // "ab" = 20 wide
+  approx(d.highlights[0].h, 10);               // ascent 8 + descent 2
+  assert.equal(d.highlights[0].color, "#ff0");
+});
+
+test("richTextDraws: no highlight ('' sentinel) emits no highlight rect", () => {
+  const cmd = { rich: { runs: [{ text: "ab", size: 10, color: "#000", highlight: "" }], paras: [{}] }, x: 0, y: 0, boxW: Infinity, opacity: 1 };
+  assert.equal(richTextDraws(cmd, monoMeasure).highlights.length, 0);
+});
+
+test("richTextDraws: outline carried onto each textDraw", () => {
+  const cmd = { rich: { runs: [{ text: "ab", size: 10, color: "#000", outlineColor: "#f00", outlineWidth: 2 }], paras: [{}] }, x: 0, y: 0, boxW: Infinity, opacity: 1 };
+  const d = richTextDraws(cmd, monoMeasure);
+  assert.equal(d.textDraws[0].outlineColor, "#f00");
+  assert.equal(d.textDraws[0].outlineWidth, 2);
+});
+
+// ── run split / merge / per-selection style (SET-2 substrate) ─────────────────
+
+test("runsLength / styleOf / sameStyle", () => {
+  assert.equal(runsLength([{ text: "ab" }, { text: "cde" }]), 5);
+  assert.equal(runsLength([]), 0);
+  assert.deepEqual(styleOf({ text: "x", bold: true, size: 10 }), { bold: true, size: 10 });
+  assert.equal(sameStyle({ text: "a", bold: true }, { text: "b", bold: true }), true);
+  assert.equal(sameStyle({ text: "a", bold: true }, { text: "b", bold: false }), false);
+});
+
+test("splitRunAt: cuts a run at an interior offset, no-op at boundaries", () => {
+  assert.equal(splitRunAt([{ text: "abcd", bold: true }], 2).length, 2);
+  assert.equal(splitRunAt([{ text: "abcd", bold: true }], 2)[0].text, "ab");
+  assert.equal(splitRunAt([{ text: "abcd", bold: true }], 2)[1].text, "cd");
+  assert.equal(splitRunAt([{ text: "abcd", bold: true }], 2)[1].bold, true); // style preserved
+  assert.equal(splitRunAt([{ text: "abcd" }], 0).length, 1);
+  assert.equal(splitRunAt([{ text: "abcd" }], 4).length, 1);
+});
+
+test("mergeAdjacentRuns: merges identical-style, drops empties, keeps a lone empty", () => {
+  assert.equal(mergeAdjacentRuns([{ text: "a", bold: true }, { text: "b", bold: true }]).length, 1);
+  assert.equal(mergeAdjacentRuns([{ text: "a", bold: true }, { text: "b", bold: true }])[0].text, "ab");
+  assert.equal(mergeAdjacentRuns([{ text: "a", bold: true }, { text: "b", bold: false }]).length, 2);
+  assert.equal(mergeAdjacentRuns([{ text: "" }, { text: "x" }]).length, 1);
+  assert.equal(mergeAdjacentRuns([{ text: "" }]).length, 1); // lone empty kept
+});
+
+test("applyRunStyle: styles a middle range, splitting then merging to canonical", () => {
+  const out = applyRunStyle([{ text: "abcd" }], 1, 3, { bold: true });
+  assert.equal(out.length, 3);                    // a | bc | d
+  assert.equal(out[1].text, "bc");
+  assert.equal(out[1].bold, true);
+  assert.equal(out[0].bold, undefined);
+  // whole-range unbold collapses back to one run (canonical form — no leftover splits)
+  const merged = applyRunStyle([{ text: "abcd", bold: true }], 0, 4, { bold: false });
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].bold, false);
+});
+
+test("applyRunStyle: empty selection is a no-op (returns canonicalized input)", () => {
+  const out = applyRunStyle([{ text: "abcd" }], 2, 2, { bold: true });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].bold, undefined);
+});
+
+test("applyRunStyle: bold-then-unbold a range round-trips to one run", () => {
+  const bolded = applyRunStyle([{ text: "hello world" }], 0, 5, { bold: true });
+  assert.equal(bolded.length, 2); // "hello" bold, " world" not
+  const back = applyRunStyle(bolded, 0, 5, { bold: false });
+  assert.equal(back.length, 1);   // merged back — canonical
+  assert.equal(back[0].text, "hello world");
+});
+
+test("applyRunStyle: outline + highlight deltas thread through", () => {
+  const out = applyRunStyle([{ text: "abcd" }], 1, 3, { outlineColor: "#f00", outlineWidth: 2, highlight: "#ff0" });
+  assert.equal(out[1].outlineWidth, 2);
+  assert.equal(out[1].highlight, "#ff0");
+});
+
+test("runStyleAt: covers offset; left run wins at a boundary", () => {
+  const runs = [{ text: "ab", bold: true }, { text: "cd", bold: false }];
+  assert.equal(runStyleAt(runs, 1).bold, true);
+  assert.equal(runStyleAt(runs, 2).bold, true);  // boundary → left wins
+  assert.equal(runStyleAt(runs, 3).bold, false);
+  assert.deepEqual(runStyleAt([], 0), {});
+});
+
+test("commonStyle: shared value across selection, else undefined (mixed)", () => {
+  const runs = [{ text: "ab", bold: true }, { text: "cd", bold: true }];
+  assert.equal(commonStyle(runs, 0, 4, "bold"), true);
+  const mixed = [{ text: "ab", bold: true }, { text: "cd", bold: false }];
+  assert.equal(commonStyle(mixed, 0, 4, "bold"), undefined);
+  assert.equal(commonStyle([{ text: "abcd", bold: true }], 1, 3, "bold"), true);
 });
 
 console.log(`\n${passed} richtext tests passed`);
