@@ -49,23 +49,14 @@ export function createPresenter(getDoc, onFrame) {
       armAutoAdvance();
       return;
     }
-    // FPS is a presentation-level setting (meta.fps, default 120). rAF runs at
-    // the display's rate; frames are skipped only when the display outpaces it.
-    // ABSOLUTE DEADLINES, not now-vs-last gaps: comparing the gap against
-    // exactly one frame period skips every jittered vsync tick whenever the
-    // display rate EQUALS meta.fps — the classic cap bug that halved a 120Hz
-    // presentation to 60fps (user-measured). Deadlines advance by the period
-    // and snap forward when behind, so vsync jitter self-corrects at any rate.
-    const frameMs = 1000 / (doc.meta.fps ?? 120);
+    // UNCAPPED, always (round 11: "No more optional caps") — one frame per
+    // rAF tick, so every monitor gets its native rate with no detection.
+    // Tweens are time-parameterized: more frames add smoothness, never speed.
+    // (The removed fps cap's history — including the gap-comparison bug that
+    // halved 120Hz to 60 — lives in concerns.md.)
     const start = performance.now();
-    let nextEmit = start;
     function tick(now) {
       const t = Math.min((now - start) / duration, 1);
-      if (t < 1 && now < nextEmit) {
-        raf = requestAnimationFrame(tick);
-        return;
-      }
-      nextEmit = Math.max(nextEmit + frameMs, now);
       alpha = easeFn(t);
       emit();
       if (t < 1) raf = requestAnimationFrame(tick);

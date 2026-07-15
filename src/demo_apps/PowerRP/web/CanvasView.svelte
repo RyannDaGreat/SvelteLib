@@ -15,13 +15,14 @@
   import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
-  import { paintScene, THUMB_W, worldViewRect, canSkipNode } from "../render/compositor.js";
+  import { THUMB_W, worldViewRect, canSkipNode } from "../render/compositor.js";
   import { foldState } from "../core/document.js";
   import { blendApplied } from "../core/deltas.js";
   import { evaluateState } from "../core/expressions.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+  import { renderViewFrame } from "./gpuService.js";
   import * as T from "../core/transform.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
 
@@ -137,25 +138,23 @@
     paint();
   });
 
-  // Minimap thumbnail: the same compositor, rendered small. Skipped while
-  // dragging (previewDelta churn) — refreshed on commit.
+  // Minimap thumbnail: THE renderer, small, via the shared pixel service.
+  // Skipped while dragging (previewDelta churn) — refreshed on commit. Async:
+  // last write wins (commits are far slower than renders).
   $effect(() => {
     app.doc; app.slideIndex; app.minimapVisible;
     if (!app.minimapVisible || app.previewDelta) return;
     const meta = app.doc.meta;
     const dpr = app.dpr(); // retina browser setting (manifest)
     const cssH = Math.round((THUMB_W * meta.slideH) / meta.slideW);
-    const thumb = document.createElement("canvas");
-    thumb.width = Math.round(THUMB_W * dpr);
-    thumb.height = Math.round(cssH * dpr);
-    const view = { zoom: THUMB_W / meta.slideW, panX: 0, panY: 0, dpr };
-    paintScene(thumb.getContext("2d"), app.doc, {
+    renderViewFrame(app.doc, {
       slideIndex: app.slideIndex,
       alpha: 1,
       registry: app.registry,
-      view,
-    });
-    minimapThumb = thumb.toDataURL("image/png");
+      width: Math.round(THUMB_W * dpr),
+      height: Math.round(cssH * dpr),
+      view: { zoom: THUMB_W / meta.slideW, panX: 0, panY: 0, dpr },
+    }).then((thumb) => (minimapThumb = thumb.toDataURL("image/png")));
   });
 
   function paint() {

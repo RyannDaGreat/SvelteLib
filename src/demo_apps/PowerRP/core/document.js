@@ -36,7 +36,9 @@ export function newDocument() {
   // a bbox item covering the meta slide rect, tweenable like any other item.
   const cameraId = uuid();
   return {
-    meta: { name: "Untitled", slideW: 1280, slideH: 720, fps: 120 },
+    // No meta.fps: presentations are always UNCAPPED (round 11 ruling —
+    // frame caps don't exist; one frame per rAF tick at any display rate).
+    meta: { name: "Untitled", slideW: 1280, slideH: 720 },
     slides: [{
       id: uuid(),
       name: "Slide 1",

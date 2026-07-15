@@ -34,4 +34,4 @@
   });
 </script>
 
-<div class="fps-counter">{fps}</div>
+<div class="fps-counter">FPS: {fps}</div>

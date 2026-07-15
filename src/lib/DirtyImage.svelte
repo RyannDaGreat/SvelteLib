@@ -26,6 +26,9 @@
 
   render contract:
     render(widthPx, heightPx) → HTMLCanvasElement | string(dataURL/URL) | null
+                                | Promise of any of those (async renderers —
+                                  e.g. GPU readback; stale resolutions are
+                                  dropped when a newer render superseded them)
   Return a canvas (drawn to <img> via toDataURL), a data/blob URL string, or
   null / "" to show nothing. widthPx/heightPx are DEVICE pixels (already × dpr).
 
@@ -189,12 +192,24 @@
   /**
    * Command. Renders the tile now (visible + dirty path only) and records what
    * the resulting bitmap represents. Mutates src + render bookkeeping.
+   * Async renderers: the bookkeeping is stamped immediately (the render is IN
+   * FLIGHT — don't re-fire), and only the NEWEST in-flight result is adopted;
+   * a rejection surfaces as an unhandled rejection (loud, caller's bug).
    */
+  let renderSeq = 0;
   function renderNow() {
     const size = targetSize();
-    src = toSrc(render(size.w, size.h));
+    const seq = ++renderSeq;
     renderedSize = size;
     renderedKey = dirtyKey;
+    const result = render(size.w, size.h);
+    if (result && typeof result.then === "function") {
+      result.then((r) => {
+        if (seq === renderSeq) src = toSrc(r);
+      });
+    } else {
+      src = toSrc(result);
+    }
   }
 
   /**

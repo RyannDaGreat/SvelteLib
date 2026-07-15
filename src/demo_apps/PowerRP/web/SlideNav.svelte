@@ -16,7 +16,7 @@
   import { foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
   import { evaluateState } from "../core/expressions.js";
-  import { paintScene, fitRectView } from "../render/compositor.js";
+  import { renderCameraFrame } from "./gpuService.js";
 
   let { app } = $props();
 
@@ -41,19 +41,10 @@
    * (never the live drag preview), so a drag can't trigger thumbnail repaints.
    */
   function renderThumb(i) {
-    return (wPx, hPx) => {
-      const rect = slideRect(i);
-      const c = document.createElement("canvas");
-      c.width = wPx;
-      c.height = hPx;
-      paintScene(c.getContext("2d"), app.doc, {
-        slideIndex: i,
-        alpha: 1,
-        registry: app.registry,
-        view: fitRectView(rect, wPx, hPx, 1), // wPx/hPx are already device px
-      });
-      return c;
-    };
+    // Async (GPU readback) — DirtyImage awaits the promise and drops stale
+    // resolutions; wPx/hPx are already device px.
+    return (wPx, hPx) =>
+      renderCameraFrame(app.doc, { slideIndex: i, alpha: 1, registry: app.registry, width: wPx, height: hPx });
   }
 
   // The document identity (app.doc changes on every commit) is the dirty key —

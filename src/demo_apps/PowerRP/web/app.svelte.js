@@ -15,7 +15,7 @@ import {
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated, withVariableRenamed, anchorRefName } from "../core/expressions.js";
-import { paintScene, fitRectView } from "../render/compositor.js";
+import { renderCameraFrame } from "./gpuService.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
@@ -502,9 +502,17 @@ export class PowerRPApp {
       console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
     // Typed-but-partial items (e.g. a rect that never got a w anywhere) fold
     // into states the strict IR builders reject — fill from plugin defaults.
-    const { doc: out, filled } = withMissingDefaultsFilled(dropDoc, this.registry);
+    let { doc: out, filled } = withMissingDefaultsFilled(dropDoc, this.registry);
     for (const { id, missing } of filled)
       console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
+    // Frame caps no longer exist (round 11: "No more optional caps, just keep
+    // the meter and no cap") — meta.fps is dead; strip it from legacy docs.
+    if ("fps" in out.meta) {
+      const meta = { ...out.meta };
+      delete meta.fps;
+      out = { ...out, meta };
+      console.error("PowerRP repair: removed legacy meta.fps — presentations are always uncapped");
+    }
     return withCameraEnsured(out);
   }
 
@@ -580,17 +588,16 @@ export class PowerRPApp {
    * Renders the current slide THROUGH THE CAMERA and downloads a PNG.
    * The camera determines the output size/aspect (manifest: THE CAMERA).
    */
-  exportPng() {
-    // Evaluated state: the camera's own properties may be equations.
+  async exportPng() {
+    // THE renderer via the shared pixel service; the camera determines the
+    // output size/aspect (evaluated state — its properties may be equations).
     const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state, this.doc.meta);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(rect.w);
-    canvas.height = Math.round(rect.h);
-    paintScene(canvas.getContext("2d"), this.doc, {
+    const canvas = await renderCameraFrame(this.doc, {
       slideIndex: this.slideIndex,
       alpha: 1,
       registry: this.registry,
-      view: fitRectView(rect, canvas.width, canvas.height, 1),
+      width: Math.round(rect.w),
+      height: Math.round(rect.h),
     });
     const a = document.createElement("a");
     a.href = canvas.toDataURL("image/png");
