@@ -92,6 +92,23 @@ test("similarity transform apply/compose/invert roundtrip", () => {
   approx(both.x, seq.x);
   approx(both.y, seq.y);
 });
+test("worldTransform commutes with translation (drag/snap probe geometry)", () => {
+  // Opus1 review finding #2's fix relies on this: a rotated item translated
+  // by (dx,dy) must have its whole world geometry translate by (dx,dy) —
+  // the default center pivot moves WITH the item. The old snap probe patched
+  // world.x directly (wrong for rotated items, ~80px off); the fix re-derives
+  // via worldTransform, which this property guarantees is a pure translation.
+  const state = { x: 100, y: 100, w: 240, h: 140, rotation: 0.7, scale: 1.25 };
+  const [dx, dy] = [37, -18];
+  const before = worldTransform(state);
+  const after = worldTransform({ ...state, x: state.x + dx, y: state.y + dy });
+  for (const [lx, ly] of [[0, 0], [240, 0], [0, 140], [240, 140], [120, 70]]) {
+    const p0 = T.apply(before, lx, ly);
+    const p1 = T.apply(after, lx, ly);
+    approx(p1.x, p0.x + dx);
+    approx(p1.y, p0.y + dy);
+  }
+});
 test("aboutPivot: rotation 0 is identity; pivot is the fixed point under rotation", () => {
   // rotation 0 → byte-identical to the input (unrotated content is untouched).
   assert.deepEqual(T.aboutPivot({ x: 100, y: 100, rotation: 0, scale: 1 }, 220, 170),

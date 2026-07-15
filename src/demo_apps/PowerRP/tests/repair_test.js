@@ -111,6 +111,19 @@ test("a null (delete-sentinel) write of a required key still counts as missing",
   assert.ok(missingDefaults(nulled, registry).find((r) => r.id === id).missing.some((m) => m.path.join(".") === "w"));
 });
 
+test("computed (self.-equation) defaults are NEVER injected into old docs", () => {
+  // Opus1 review finding #1: rotationAnchor defaults are supplied by
+  // derive.worldTransform's fallback — a pre-round-11 doc must load with
+  // ZERO missing-defaults repairs for them (no console spam, no doc rewrite).
+  let doc = newDocument();
+  doc = keyframed(doc, 0, ["items", "old1"], {
+    type: "rect", x: 1, y: 2, w: 10, h: 10, z: 0, rotation: 0.5, scale: 1,
+    fill: "#fff", stroke: "#000", strokeWidth: 1, cornerRadius: 0, opacity: 1, active: true,
+  });
+  const report = missingDefaults(doc, registry).find((r) => r.id === "old1");
+  assert.equal(report, undefined);
+});
+
 test("complete creations (the normal path) report nothing", () => {
   let doc = newDocument();
   const rectDefaults = registry.get("rect").defaults;

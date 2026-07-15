@@ -240,8 +240,15 @@ export function missingDefaults(doc, registry) {
     }
     const set = written.get(id);
     const missing = [];
-    for (const [path, value] of leaves(plugin.defaults))
+    for (const [path, value] of leaves(plugin.defaults)) {
+      // COMPUTED defaults (self.-equations, e.g. rotationAnchor) are supplied
+      // by the derivation stage's fallback (derive.worldTransform) — they
+      // must NEVER be materialized into documents (Opus1 review finding #1:
+      // injecting them contradicts the defaults-fallback migration design
+      // and rewrites every pre-round-11 doc on load).
+      if (typeof value === "string" && value.startsWith("self.")) continue;
       if (path[0] !== "type" && !set.has(path.join("."))) missing.push({ path, value });
+    }
     if (missing.length) out.push({ id, slideIndex, missing });
   }
   return out;

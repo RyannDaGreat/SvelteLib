@@ -12,7 +12,7 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
-  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect } from "../core/derive.js";
+  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect, worldTransform } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { THUMB_W, worldViewRect, canSkipNode } from "../render/compositor.js";
@@ -354,11 +354,12 @@
       const nodes = app.nodes();
       const me = nodes.find((n) => n.itemId === drag.itemId);
       if (app.snapEnabled && me) {
-        const shifted = {
-          ...me,
-          world: { ...me.world, x: drag.startX + dx, y: drag.startY + dy },
-          state: { ...me.state, x: drag.startX + dx, y: drag.startY + dy },
-        };
+        // The shifted world must be RE-DERIVED, never patched: for a rotated
+        // item world.x ≠ state.x (the rotation pivot shifts the translation),
+        // so overriding world.x with state.x+dx probed corners ~80px off the
+        // true rotated geometry (Opus1 review finding #2).
+        const shiftedState = { ...me.state, x: drag.startX + dx, y: drag.startY + dy };
+        const shifted = { ...me, world: worldTransform(shiftedState), state: shiftedState };
         const probes = nodeFeatures(shifted).filter((f) => f.kind === "point");
         const features = nodes.filter((n) => n.itemId !== drag.itemId).flatMap(nodeFeatures);
         const tol = SNAP_PX / viewport.zoom;
