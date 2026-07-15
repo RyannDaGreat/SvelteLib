@@ -330,6 +330,7 @@
           min={row.min ?? null}
           max={row.max ?? null}
           display={row.display ?? null}
+          scrub={row.scrub ?? null}
         />
       {:else if disabled}
         <!-- Grayed display of a not-yet-created item: read the value straight

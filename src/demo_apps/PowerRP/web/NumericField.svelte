@@ -51,7 +51,20 @@
   import { displayToStored, storedToDisplay, compiled, evalAst } from "../core/expressions.js";
   import { displayUnit } from "./displayUnits.js";
 
-  let { app, path, label, min = null, max = null, display = null } = $props();
+  let { app, path, label, min = null, max = null, display = null, scrub = null } = $props();
+
+  // Scrub sensitivity (manifest "Number-slider sensitivity"): an explicit
+  // per-row `scrub` coefficient wins (transition seconds = 0.1/px); otherwise
+  // a BOUNDED row spans its full range across RANGE_DRAG_PX of drag — the fix
+  // for opacity flicking 0↔1 (1px used to be a full unit). RANGE_DRAG_PX=100
+  // is LINKED to the DraggableNumber demo's canonical 0..1 slider, which uses
+  // coefficient 0.01 (= 100px full range). Unbounded rows keep 1/px.
+  const RANGE_DRAG_PX = 100;
+  let dragCoefficient = $derived(
+    scrub != null ? scrub
+    : min != null && max != null ? (unit.toDisplay(max) - unit.toDisplay(min)) / RANGE_DRAG_PX
+    : 1,
+  );
 
   // Display-unit transform (rotation edits in degrees though core stores
   // radians; identity for every other field). DISPLAY ONLY — never migrates
@@ -242,6 +255,7 @@
       value={round3(unit.toDisplay(evaluated))}
       min={min == null ? null : unit.toDisplay(min)}
       max={max == null ? null : unit.toDisplay(max)}
+      coefficient={dragCoefficient}
       suffix={unit.suffix}
       oninput={previewNumber}
       onchange={commitNumber}

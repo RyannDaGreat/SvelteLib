@@ -79,7 +79,7 @@ export const TRANSITION_CURVES = ["linear", "smooth"];
  * placeholder. Both are flagged, not silently invented.
  */
 export const TRANSITION_BASE_INSPECTOR = [
-  { key: "seconds", label: "Seconds", kind: "number", min: 0, category: "transition" },
+  { key: "seconds", label: "Seconds", kind: "number", min: 0, scrub: 0.1, category: "transition" },
   { key: "curve", label: "Curve", kind: "select", options: TRANSITION_CURVES, category: "transition" },
   { key: "sound", label: "Sound", kind: "asset", assetKind: "sound", nullable: true, category: "transition" },
 ];
