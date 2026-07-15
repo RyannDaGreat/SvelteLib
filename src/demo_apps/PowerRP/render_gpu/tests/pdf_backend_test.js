@@ -14,9 +14,9 @@ import {
   pdfNum, cmSimilarity, rectPath, ellipsePath, pointsPath, paintOp,
   balancedSlice, magnifiedView, hasTextOp, tjHex, irToPDF, MAX_LENS_DEPTH,
   imageRefs, videoRefs, decodeDataUri, base64ToBytes, imageFormat,
-  textFaces, fontResName, groupedTextDraws,
+  textFaces, fontResName, groupedTextDraws, tokenizeSvgPath, svgPathToPdfOps,
 } from "../pdf_backend.js";
-import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video } from "../ir.js";
+import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video, latexVector } from "../ir.js";
 import { normalizeRichText } from "../../core/richtext.js";
 import { fontFileFor } from "../fonts.js";
 import { scenes } from "./pdf_scenes.js";
@@ -101,6 +101,42 @@ test("paintOp: f / B / S", () => {
   assert.equal(paintOp([0, 0, 0, 1], null, 0), "f");
   assert.equal(paintOp([0, 0, 0, 1], [0, 0, 0, 1], 2), "B");
   assert.equal(paintOp(null, [0, 0, 0, 1], 2), "S");
+});
+// ── Round 15.1 LaTeX vector: SVG path `d` → PDF operators ────────────────────
+test("tokenizeSvgPath: M L H V Q T Z, implicit-L after M", () => {
+  assert.deepEqual(tokenizeSvgPath("M0 0L10 10Z"), [["M", 0, 0], ["L", 10, 10], ["Z"]]);
+  assert.deepEqual(tokenizeSvgPath("M1 2 3 4"), [["M", 1, 2], ["L", 3, 4]]); // extra M coords → implicit L (SVG rule)
+  assert.deepEqual(tokenizeSvgPath("H5V-3"), [["H", 5], ["V", -3]]);
+});
+test("svgPathToPdfOps: M/L/Z, H/V→l, Q→cubic (degree elevation)", () => {
+  assert.equal(svgPathToPdfOps("M0 0L10 0Z"), "0 0 m\n10 0 l\nh");
+  assert.equal(svgPathToPdfOps("M0 0H10V10"), "0 0 m\n10 0 l\n10 10 l");
+  // Q10 0 10 10 from (0,0): c1 = 0 + 2/3·10 = 6.6667; c2 = 10 + 2/3·(10−10)=10, 10 + 2/3·(0−10)=3.3333
+  assert.equal(svgPathToPdfOps("M0 0Q10 0 10 10"), "0 0 m\n6.6667 0 10 3.3333 10 10 c");
+});
+test("svgPathToPdfOps: T reflects the previous quad control; throws on unknown cmd", () => {
+  // After Q10 0 10 10 (control 10,0 at endpoint 10,10), T20 20 reflects the
+  // control about (10,10) → (10,20), a new quad to (20,20).
+  const ops = svgPathToPdfOps("M0 0Q10 0 10 10T20 20");
+  assert.ok(ops.includes("c\n"), "two cubics emitted");
+  assert.equal(ops.split("c").length - 1, 2, "Q + T = two cubics");
+  assert.throws(() => svgPathToPdfOps("M0 0A1 1 0 0 1 5 5"), /unsupported SVG path command "A"/);
+});
+test("latexVector: PDF emits fill f (nonzero) + local box→box cm, no XObject", async () => {
+  // The equation glyphs render as inline vector path ops filled with `f`
+  // (nonzero winding = correct glyph counters), NOT a raster XObject. Drive the
+  // real backend: a latexVector op with one glyph, no blur → pure vector.
+  const glyph = { d: "M0 0L100 0L100 50L0 50Z", fill: "#ff0000" };
+  const pdf = await irToPDF([latexVector({ ref: "latex:eq:1", x: 10, y: 10, w: 200, h: 100, glyphs: [glyph], viewBox: { minX: 0, minY: 0, w: 100, h: 50 } })],
+    { width: 300, height: 200, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff" });
+  const s = Buffer.from(pdf).toString("latin1");
+  assert.ok(s.startsWith("%PDF"), "is a PDF");
+  assert.ok(!s.includes("/XObject"), "NO image XObject — the equation is TRUE VECTOR, not a raster embed");
+  assert.ok(s.includes("1 0 0 rg"), "red glyph ink fill (rg device color)");
+  // viewBox→box local cm: sx=200/100=2, sy=100/50=2, translate (10,10).
+  assert.ok(s.includes("2 0 0 2 10 10 cm"), "viewBox→box local cm");
+  // The glyph path + NONZERO fill (`f`, not `f*`) — glyph counters render as holes.
+  assert.ok(/0 0 m\n100 0 l\n100 50 l\n0 50 l\nh\nf/.test(s), "glyph path filled nonzero (f)");
 });
 test("balancedSlice: appends missing pops", () => {
   const cmds = [pushTransform({ x: 1 }), rect({ x: 0, y: 0, w: 1, h: 1, fill: "#fff" }), popTransform()];

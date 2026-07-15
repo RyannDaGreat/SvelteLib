@@ -17,11 +17,13 @@
  * impossible; the floors catch real geometry/color/placement flaws.
  */
 
-import { rect, ellipse, polyline, polygon, text, image, video, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "../ir.js";
+import { rect, ellipse, polyline, polygon, text, image, video, latexVector, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "../ir.js";
 import { normalizeRichText } from "../../core/richtext.js";
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
 import { STILL_VIDEO_MP4_DATA_URI, STILL_VIDEO_FRAME_DATA_URI } from "../../tests/fixtures/still_video.js";
 import { LATEX_EQUATION_PNG_DATA_URI, LATEX_EQUATION_W, LATEX_EQUATION_H } from "../../tests/fixtures/latex_equation_png.js";
+import { LATEX_EQUATION_GLYPHS, LATEX_EQUATION_VIEWBOX } from "../../tests/fixtures/latex_equation_vector.js";
+import { LATEX_COUNTER_GLYPHS, LATEX_COUNTER_VIEWBOX, LATEX_COUNTER_W, LATEX_COUNTER_H, LATEX_COUNTER_PNG_DATA_URI } from "../../tests/fixtures/latex_counter_vector.js";
 import { filmstripLayout, filmstripPlugin } from "../../plugins/filmstrip.js";
 import { rectPlugin } from "../../plugins/rect.js";
 import { circlePlugin } from "../../plugins/circle.js";
@@ -48,6 +50,17 @@ export function sceneView() {
 
 const BG = "#f4f4f0";
 const INK = "#101018";
+
+/** The synthetic image-registry ref the latex-basic scene's latexVector ops use
+ * (Round 15.1). The GPU-expected side of the parity comparison draws the raster
+ * equation bitmap; the parity harness registers LATEX_EQUATION_PNG_DATA_URI's
+ * bitmap under THIS ref before rendering (a latexVector `ref` is a synthetic key,
+ * not a decodable data URI — see the scene's `latexRef`/`latexRaster` meta). */
+export const LATEX_PARITY_REF = "latex-parity:quadratic";
+
+/** The ref for the latex-counters scene's equation raster (Round 15.1) — glyphs
+ * with prominent COUNTERS (e/0/8/a holes) that prove the nonzero fill rule. */
+export const LATEX_COUNTER_REF = "latex-parity:counters";
 
 /** Shared content block: shapes + arrow + text the effect scenes sit on. */
 function baseContent() {
@@ -708,52 +721,77 @@ export function scenes() {
       ], 38, {}); // measured 41.67 dB (2026-07-15 live run) — everything-below raster (blur-split class, exact GPU add); floor = measured − ~3.7. PENDING USER RATIFICATION.
     })(),
 
-    // ── LATEX EQUATION widget parity (Round 14.5 — OpusI) ─────────────────────
-    // A typeset equation IS a bitmap: the latex WIDGET emits an image() op whose
-    // ref is a synthetic key resolved by a browser-only MathJax typeset
-    // (render_gpu/gpu/latex_raster.js), so like the FILMSTRIP scene (which uses
-    // CHECKER_PNG_DATA_URI for its browser-only frame source) this scene
-    // references a DETERMINISTIC, OFFLINE fixture — a rasterized quadratic
-    // formula captured from the REAL runtime path (tests/latex_equation_png.js).
-    // The widget's own emit→MathJax→raster path is covered end-to-end by
-    // tests/latex_probe.js (a real browser); THIS scene proves the equation
-    // BITMAP renders identically through the GPU compositor AND the PDF backend
-    // (the render-parity cornerstone — a rasterized equation is a bitmap,
-    // exactly like a rasterized PDF page). Three placements exercise the emit
-    // shape: bare equation quad, a bordered+rounded equation (the SHARED
-    // STROKED-BOX bundle the widget composes — the same cropSubtree decoration
-    // the bordered-rounded-image scene parity-tests), and a translucent one.
+    // ── LATEX EQUATION widget — TRUE VECTOR parity (Round 15.1, OpusL) ─────────
+    // The equation is now REAL VECTOR (manifest 15.1 "do latex properly"): the
+    // latex widget emits a `latexVector` op carrying flattened MathJax glyph
+    // <path>s (the SVG/PDF backends embed true vector geometry) AND a raster
+    // `ref` (the GPU + the HYBRID RULE fallback draw the tinted bitmap). This
+    // scene drives the REAL latexVector op with the DETERMINISTIC, OFFLINE vector
+    // fixture (tests/latex_equation_vector.js — the flattened quadratic-formula
+    // glyphs captured from the runtime resolveLatexGlyphs path) for the glyph
+    // geometry, and the matching PNG fixture (latex_equation_png.js) for the
+    // raster `ref`, which the parity harness registers under LATEX_PARITY_REF
+    // before the GPU render. So the parity comparison is TRUE-VECTOR (PDF/SVG
+    // path glyphs) vs the GPU's rasterized equation bitmap — the floors RISE vs
+    // the old raster-vs-raster because both sides now carry the same equation but
+    // the vector is crisp. Three placements exercise the op: bare, bordered+
+    // rounded (the SHARED STROKED-BOX bundle), and translucent. The widget's own
+    // emit→MathJax→flatten path is covered end-to-end by tests/latex_probe.js
+    // (a real browser); THIS scene proves the latexVector op renders in parity.
     (() => {
-      // The latex widget composes the SAME box bundles image.js does — its emit()
-      // is byte-for-byte the image path (an image() op wrapped by
-      // decorateStrokedBox), just with a MathJax-raster ref instead of a photo
-      // ref. So this scene drives the REAL imagePlugin.emit() with the equation
-      // fixture as `src` (the sceneIR node() wrap idiom, identical to the
-      // bordered-rounded-image scene) — which exercises the EXACT emit shape a
-      // latex widget produces (bare quad, bordered+rounded via the shared
-      // cropSubtree decoration, translucent), proving the equation bitmap
-      // renders identically through the GPU compositor and the PDF backend.
-      const node = (plugin, state) => {
-        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
-        const local = { ...state, x: 0, y: 0 };
-        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
-      };
-      // Draw the equation at its natural aspect (LATEX_EQUATION_W×_H) so no
-      // squash distorts the glyphs — exactly what the widget's aspect-driven
-      // w/h achieve.
+      // Build a latexVector op directly (the vector fixture is bare-node; the
+      // widget's emit() wrapping is exercised in the probe). INK is the fill for
+      // every glyph — the vector fixture geometry is ink-independent.
+      const eqOp = (x, y, w, h, opacity = 1) => latexVector({
+        ref: LATEX_PARITY_REF, x, y, w, h, opacity,
+        glyphs: LATEX_EQUATION_GLYPHS.map((g) => ({ d: g.d, fill: INK })),
+        viewBox: LATEX_EQUATION_VIEWBOX,
+      });
+      // The op's world wrapper (sceneIR node idiom): a bordered+rounded variant
+      // wraps the op in the shared stroked-box decoration via a plain rect frame
+      // (the box bundle keeps working over the vector form — the border is its
+      // own vector op, no rasterization forced).
+      const framed = (x, y, w, h) => [
+        eqOp(x, y, w, h),
+        rect({ x, y, w, h, cornerRadius: 14, stroke: INK, strokeWidth: 4 }),
+      ];
+      // Draw at the equation's natural aspect (LATEX_EQUATION_W×_H) so no squash
+      // distorts the glyphs — exactly what the widget's aspect-driven w/h achieve.
       const aspect = LATEX_EQUATION_W / LATEX_EQUATION_H;
       const eqH = 70, eqW = Math.round(eqH * aspect); // ~274 wide
       return s("latex-basic", [
         rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
-        // 1. bare equation quad (undecorated — a plain image op, the common case)
-        ...node(imagePlugin, { ...imagePlugin.defaults, src: LATEX_EQUATION_PNG_DATA_URI, x: 20, y: 20, w: eqW, h: eqH }),
-        // 2. bordered + rounded equation (the SHARED STROKED-BOX bundle the latex
-        //    widget composes — the same cropSubtree decoration as a bordered image)
-        ...node(imagePlugin, { ...imagePlugin.defaults, src: LATEX_EQUATION_PNG_DATA_URI, x: 20, y: 120, w: eqW, h: eqH, cornerRadius: 14, stroke: INK, strokeWidth: 4 }),
-        // 3. translucent equation (opacity rides on the image op — the parity-safe
-        //    opacity contract, decorate.js)
-        ...node(imagePlugin, { ...imagePlugin.defaults, src: LATEX_EQUATION_PNG_DATA_URI, x: 200, y: 200, w: Math.round(eqW * 0.6), h: Math.round(eqH * 0.6), opacity: 0.5 }),
-      ], 18, {}); // measured 21.98 dB (2026-07-15 live parity run) — the equation raster's fine anti-aliased glyph strokes are GPU-bilinear-upsampled but poppler-stepped, and the bordered/rounded variant adds rrect-clip edge AA: the SAME edge-AA divergence class as bordered-rounded-image (measured 21.32, floor 18). floor = measured − ~4, matching that sibling's margin. PENDING USER RATIFICATION (the measured-minus-margin convention is flagged app-wide).
+        // 1. bare equation (a plain latexVector op — the common case)
+        eqOp(20, 20, eqW, eqH),
+        // 2. bordered + rounded equation (the SHARED STROKED-BOX bundle)
+        ...framed(20, 120, eqW, eqH),
+        // 3. translucent equation (opacity rides on the op)
+        eqOp(200, 200, Math.round(eqW * 0.6), Math.round(eqH * 0.6), 0.5),
+      ], 18, { latexRef: LATEX_PARITY_REF, latexRaster: LATEX_EQUATION_PNG_DATA_URI }); // measured 21.17 dB (2026-07-15 live vector-parity run). THE COMPARISON IS VECTOR-vs-RASTER, NOT vector-vs-vector: the PDF side is now CRISP true-vector glyph paths (poppler rasterizes them sharply), while the GPU-EXPECTED side stays the soft MathJax raster bitmap (the live GPU view is the raster quad — out of scope to make it vector, per the task brief). So the floor did NOT rise (was 21.98 raster-vs-raster) — the vector's win is CRISPNESS AT ANY ZOOM, not a higher PSNR against the bitmap it replaces; the PSNR is bounded by the raster's own AA softness. floor 18 = measured − ~3 (the bordered-rounded-image edge-AA class margin). PENDING USER RATIFICATION. latexRef/latexRaster tell the parity harness which synthetic ref to seed with the equation bitmap for the GPU-expected side.
+    })(),
+
+    // ── LATEX glyph-counter FILL-RULE correctness (Round 15.1, OpusL) ──────────
+    // The FILL-RULE test the task brief calls for: an equation with glyphs that
+    // have COUNTERS (holes) — e, 0, 8, a, 3. Both backends fill glyph paths with
+    // NONZERO winding (`f`, not even-odd `f*`) because a font's counter contour
+    // is wound OPPOSITE its outer contour — nonzero leaves the hole. A WRONG
+    // even-odd rule would MISFILL nested contours (filling the holes in e/0/8/a),
+    // and since this scene compares the true-vector glyphs against the CORRECT
+    // MathJax raster (holes intact), a wrong rule craters the PSNR far below the
+    // floor. That divergence IS the correctness gate — visually obvious in the
+    // dumped {expected,pdf} images. The equation is drawn LARGE so the counters
+    // are big and unambiguous.
+    (() => {
+      const aspect = LATEX_COUNTER_W / LATEX_COUNTER_H;
+      const eqH = 90, eqW = Math.round(eqH * aspect);
+      return s("latex-counters", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        latexVector({
+          ref: LATEX_COUNTER_REF, x: 20, y: 100, w: Math.min(eqW, SCENE_W - 40), h: eqH,
+          glyphs: LATEX_COUNTER_GLYPHS.map((g) => ({ d: g.d, fill: INK })),
+          viewBox: LATEX_COUNTER_VIEWBOX,
+        }),
+      ], 27, { latexRef: LATEX_COUNTER_REF, latexRaster: LATEX_COUNTER_PNG_DATA_URI }); // measured 30.25 dB (2026-07-15 live vector-parity run) — HIGHER than latex-basic's 21.17 because this equation is large/simple (fewer fine strokes), so the crisp-vector-vs-soft-raster agreement is tighter. floor 27 = measured − ~3. PENDING USER RATIFICATION. A WRONG even-odd fill would fill the e/0/8/a counters solid and sink this FAR below 27 — that divergence IS the fill-rule correctness gate.
     })(),
   ];
 }

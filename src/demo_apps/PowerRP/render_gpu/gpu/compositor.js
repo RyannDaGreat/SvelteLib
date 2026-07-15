@@ -1619,6 +1619,26 @@ export class GpuCompositor {
           f.set([TEX_MODE.image, cmd.opacity, 0, 0], at + 16);
           break;
         }
+        case "latexVector": {
+          // TRUE-VECTOR EQUATION op (Round 15.1) in the RASTER pipeline: the GPU
+          // (the live view AND every hybrid-rule raster fallback — a latex under
+          // a blur/lens/effect is handed this RAW op) draws the MathJax-
+          // rasterized QUAD via `cmd.ref`, byte-identical to the image op (no GPU
+          // path/MSDF renderer — explicitly out of scope; the vector glyph data
+          // the op ALSO carries is consumed only by the SVG/PDF backends). This
+          // is why the hybrid rule "just works": the positional raster split
+          // forwards this op unchanged and the GPU renders the same bitmap the
+          // pre-vector image() op did. Same async-skip contract as image.
+          if (!this._imageSource(cmd.ref)) break;
+          const at = quadInstance("tex", cmd.ref);
+          const f = this.quadArr.f32;
+          f.set([cmd.x, cmd.y, cmd.w, cmd.h], at);
+          f.set(xf, at + 4);
+          f.set(srcUV(cmd.src), at + 8);
+          f.set([1, 1, 1, 1], at + 12);
+          f.set([TEX_MODE.image, cmd.opacity, 0, 0], at + 16);
+          break;
+        }
         case "blurBackdrop": {
           box.current = null;
           // WORLD sigma: the device sigma is view-dependent, and the same

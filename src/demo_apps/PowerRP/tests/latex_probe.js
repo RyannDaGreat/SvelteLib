@@ -45,9 +45,12 @@ const repoRoot = resolve(HERE, "../../../..");
 const outDir = process.argv[2] || join(HERE, "..", ".probe_latex");
 mkdirSync(outDir, { recursive: true });
 
-/** A minimal doc: one latex item over the default camera. `latex` and
- * `fontSize` come from the caller so the same builder serves every check. */
-function makeDoc(latex, fontSize = 40) {
+/** A minimal doc: one latex item over the default camera. `latex`, `fontSize`,
+ * and `ink` come from the caller so the same builder serves every check
+ * (including the two-color / cache checks — Round 15.4). */
+function makeDoc(latex, fontSize = 40, ink = undefined) {
+  const eq = { type: "latex", x: 20, y: 20, w: 360, h: 120, z: 0, rotation: 0, scale: 1, active: true, latex, fontSize };
+  if (ink !== undefined) eq.ink = ink;
   return {
     meta: { name: "latex_probe", slideW: 400, slideH: 160 },
     slides: [{
@@ -55,7 +58,7 @@ function makeDoc(latex, fontSize = 40) {
       delta: {
         items: {
           cam: { type: "camera", x: 0, y: 0, w: 400, h: 160, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff" },
-          eq: { type: "latex", x: 20, y: 20, w: 360, h: 120, z: 0, rotation: 0, scale: 1, active: true, latex, fontSize },
+          eq,
         },
       },
     }],
@@ -138,6 +141,9 @@ try {
       const { parseColor } = await import("/src/demo_apps/PowerRP/render_gpu/ir.js");
       const { GpuCompositor } = await import("/src/demo_apps/PowerRP/render_gpu/gpu/compositor.js");
       const { cameraFrameIR } = await import("/src/demo_apps/PowerRP/web/cameraFrame.js");
+      const { irToSVG } = await import("/src/demo_apps/PowerRP/render_gpu/svg_backend.js");
+      const { irToPDF } = await import("/src/demo_apps/PowerRP/render_gpu/pdf_backend.js");
+      const { latexGlyphs } = await import("/src/demo_apps/PowerRP/render_gpu/gpu/latex_raster.js");
 
       const registry = createRegistry();
       registerAll(registry, createCommands());
@@ -148,6 +154,26 @@ try {
       // Direct hooks for the ghost/emit structural checks (no GPU needed).
       window.__latexIsGhost = (state) => latexPlugin.isGhost(state);
       window.__latexEmitCount = (state, world) => latexPlugin.emit(state, null, world ?? { x: 0, y: 0, rotation: 0, scale: 1 }).length;
+      // The flattened vector glyph geometry (Round 15.1) for a latex string —
+      // used both for the vector-export assertions and to DUMP the deterministic
+      // bare-node parity fixture (analogous to the PNG fixture).
+      window.__latexGlyphs = (latex) => latexGlyphs(latex);
+
+      // Build the derived scene IR for a doc, then serialize to SVG / PDF —
+      // exercises the TRUE latex plugin emit() → latexVector op → vector backends
+      // (Round 15.1). Returns the SVG string + the PDF bytes (base64).
+      window.__latexVectorExports = async function (doc, { slide = 0, width, height } = {}) {
+        const { doc: repaired } = repairedDocument(doc, registry);
+        const state = evaluateState(foldState(repaired, slide, 1), registry).state;
+        const rect = cameraRect(state, repaired.meta);
+        const view = fitRectView(rect, width, height, 1);
+        const ir = cameraFrameIR(state, repaired.meta, registry);
+        const svg = await irToSVG(ir, { width, height, view, background: rect.background });
+        const pdfBytes = await irToPDF(ir, { width, height, view, background: rect.background });
+        let bin = "";
+        for (const b of pdfBytes) bin += String.fromCharCode(b);
+        return { svg, pdf: btoa(bin) };
+      };
 
       window.__latexProbeRender = async function (doc, { slide = 0, alpha = 1, width, height } = {}) {
         const { doc: repaired, reports } = repairedDocument(doc, registry);
@@ -246,9 +272,87 @@ try {
   const nonGhost = await page.evaluate((s) => window.__latexIsGhost(s), { ...emptyState, latex: "x^2" });
   check("non-empty latex is NOT a ghost", nonGhost === false, `isGhost=${nonGhost}`);
 
+  // ── check 5: TRUE VECTOR EXPORT (Round 15.1) — SVG has <path> glyphs + NO
+  //             latex <image>; PDF has path operators for the equation ─────────
+  // First ensure the valid equation's glyph geometry has been flattened (the
+  // valid render above already typeset it; poll latexGlyphs to be safe).
+  let glyphsReady = null;
+  for (let i = 0; i < 60 && !glyphsReady; i++) {
+    glyphsReady = await runAcrossReloads(() => page.evaluate((l) => {
+      const g = window.__latexGlyphs(l);
+      return g ? { count: g.glyphs.length, viewBox: g.viewBox } : null;
+    }, QUADRATIC));
+    if (!glyphsReady) await new Promise((r) => setTimeout(r, 100));
+  }
+  check("valid equation FLATTENS to vector glyphs (>0 <path>s, real viewBox)",
+    glyphsReady && glyphsReady.count > 0 && glyphsReady.viewBox.w > 0,
+    `glyphs=${JSON.stringify(glyphsReady)}`);
+
+  const exports = await runAcrossReloads(() => page.evaluate(
+    (d, w, h) => window.__latexVectorExports(d, { width: w, height: h }),
+    makeDoc(QUADRATIC), W, H,
+  ));
+  // SVG: the equation is inline <path> glyph geometry, NOT a raster <image>.
+  // (The scene has a white camera background; there is NO image widget, so ANY
+  // <image> in the output would be the latex raster — its absence proves true
+  // vector.)
+  check("exported SVG contains <path> glyph geometry", /<path\b/.test(exports.svg), `svg head: ${exports.svg.slice(0, 120)}`);
+  check("exported SVG has NO latex <image> (true vector, not a raster region)", !/<image\b/.test(exports.svg), `contains <image>: ${/<image\b/.test(exports.svg)}`);
+  const svgExternalRef = /href="https?:/.test(exports.svg) || /url\(https?:/.test(exports.svg);
+  check("exported SVG is self-contained (no http(s) external refs)", !svgExternalRef, svgExternalRef ? "external ref found" : "self-contained");
+  // PDF: path-fill operators for the equation region (m/l/c … f). A raster-only
+  // equation would embed an /XObject image instead — assert the vector path ops
+  // are present AND no image XObject was minted for the (unblurred) equation.
+  const pdfText = Buffer.from(exports.pdf, "base64").toString("latin1");
+  check("exported PDF contains path operators for the equation (m/l/c + f fill)",
+    /\bm\b/.test(pdfText) && /\bc\b/.test(pdfText) && /\bf\b/.test(pdfText),
+    `has m:${/\bm\b/.test(pdfText)} c:${/\bc\b/.test(pdfText)} f:${/\bf\b/.test(pdfText)}`);
+  check("exported PDF has NO image XObject for the unblurred equation (true vector)",
+    !/\/XObject/.test(pdfText), `has /XObject: ${/\/XObject/.test(pdfText)}`);
+
+  // ── check 6: INK COLOR (Round 15.4) — two colors render differently (live +
+  //             both vector exports) ──────────────────────────────────────────
+  const rRed = await renderUntilNonBlank(makeDoc(QUADRATIC, 40, "#ff0000"));
+  const rBlue = await renderUntilNonBlank(makeDoc(QUADRATIC, 40, "#0000ff"));
+  check("red-ink equation renders reddish ink", rRed.mean.r > rRed.mean.b, `mean=${JSON.stringify(rRed.mean)}`);
+  check("blue-ink equation renders bluish ink", rBlue.mean.b > rBlue.mean.r, `mean=${JSON.stringify(rBlue.mean)}`);
+  check("two ink colors produce DIFFERENT live pixels (raster tint honors ink)",
+    Math.abs(rRed.mean.r - rBlue.mean.r) > 5 || Math.abs(rRed.mean.b - rBlue.mean.b) > 5,
+    `red=${JSON.stringify(rRed.mean)} blue=${JSON.stringify(rBlue.mean)}`);
+  const exRed = await runAcrossReloads(() => page.evaluate((d, w, h) => window.__latexVectorExports(d, { width: w, height: h }), makeDoc(QUADRATIC, 40, "#ff0000"), W, H));
+  const exBlue = await runAcrossReloads(() => page.evaluate((d, w, h) => window.__latexVectorExports(d, { width: w, height: h }), makeDoc(QUADRATIC, 40, "#0000ff"), W, H));
+  check("exported SVG glyph fill follows ink (red vs blue paths differ)",
+    /rgba\(255,0,0/.test(exRed.svg) && /rgba\(0,0,255/.test(exBlue.svg),
+    `redSvgHasRed=${/rgba\(255,0,0/.test(exRed.svg)} blueSvgHasBlue=${/rgba\(0,0,255/.test(exBlue.svg)}`);
+  const pdfRed = Buffer.from(exRed.pdf, "base64").toString("latin1");
+  const pdfBlue = Buffer.from(exBlue.pdf, "base64").toString("latin1");
+  check("exported PDF glyph fill follows ink (1 0 0 rg vs 0 0 1 rg)",
+    /1 0 0 rg/.test(pdfRed) && /0 0 1 rg/.test(pdfBlue),
+    `redPdfHasRed=${/1 0 0 rg/.test(pdfRed)} bluePdfHasBlue=${/0 0 1 rg/.test(pdfBlue)}`);
+
+  // ── check 7: CACHE correctness — ink is in the ref key; a color flip mints a
+  //             new ref (a new raster), never reuses the wrong-colored bitmap ──
+  const refCheck = await runAcrossReloads(() => page.evaluate(async (latex) => {
+    const { latexRef } = await import("/src/demo_apps/PowerRP/render_gpu/gpu/latex_raster.js");
+    return { red: latexRef(latex, 40, "#ff0000"), blue: latexRef(latex, 40, "#0000ff"), def: latexRef(latex, 40) };
+  }, QUADRATIC));
+  check("ink is in the raster cache key (red ref != blue ref != default ref)",
+    refCheck.red !== refCheck.blue && refCheck.red !== refCheck.def && refCheck.blue !== refCheck.def,
+    JSON.stringify(refCheck));
+
   // ── check 4: no unexpected console errors from THIS widget ──────────────────
   const mine = consoleErrors.filter((m) => /latex|latex_raster|image_registry|mathjax/i.test(m));
   check("no unexpected console errors from latex/latex_raster/image_registry", mine.length === 0, `mine: ${JSON.stringify(mine)}; ALL: ${JSON.stringify(consoleErrors)}`);
+
+  // ── vector fixture dump: the flattened glyph geometry (Round 15.1) for the
+  //     bare-node parity scene (analogous to the PNG fixture) ─────────────────
+  const vecFixture = await runAcrossReloads(() => page.evaluate((l) => window.__latexGlyphs(l), QUADRATIC));
+  if (vecFixture && vecFixture.glyphs.length > 0) {
+    check(`vector fixture captured (${vecFixture.glyphs.length} glyph paths)`, true);
+    console.log(`LATEX_VECTOR_FIXTURE ${JSON.stringify(vecFixture)}`);
+  } else {
+    check("vector fixture captured", false, "latexGlyphs returned null/empty");
+  }
 
   // ── fixture dump: the valid equation's rasterized PNG (from the REAL path) ──
   // Grab the widget's own bitmap via the image registry (the ref the plugin

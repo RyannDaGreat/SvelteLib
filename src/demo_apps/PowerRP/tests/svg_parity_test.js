@@ -239,6 +239,16 @@ try {
       const s = svgScenes().find((x) => x.name === name);
       await Promise.all([...new Set(s.commands.filter((c) => c.op === "image").map((c) => c.ref))]
         .map((ref) => window.__mods.imageRegistry.ensureImage(ref)));
+      // LaTeX vector scene (Round 15.1): seed the equation raster bitmap under the
+      // latexVector op's synthetic `ref` so the GPU-EXPECTED side draws it, while
+      // the SVG side embeds true-vector glyph <path>s (vector-vs-raster parity).
+      if (s.latexRef && s.latexRaster) {
+        const img = new Image();
+        img.src = s.latexRaster;
+        await img.decode();
+        const bm = await createImageBitmap(img);
+        window.__mods.imageRegistry.registerRasterizedBitmap(s.latexRef, bm);
+      }
       let videoFrame = null;
       if (s.video) {
         const el = window.__mods.videoRegistry.ensureVideo(s.video.ref, { autoplay: false, loop: false, muted: true });

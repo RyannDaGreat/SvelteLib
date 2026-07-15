@@ -211,6 +211,29 @@ export function vectorCommandToSVG(cmd, world, ctx) {
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") +
         ` preserveAspectRatio="none" href="${href}"/>`);
     }
+    case "latexVector": {
+      // TRUE VECTOR EQUATION (Round 15.1): MathJax glyph <path>s embedded INLINE
+      // (no nested <svg>, no <use>/<defs>/id refs — the glyphs were flattened to
+      // plain absolute-coord `d` strings at typeset, so the SVG stays fully
+      // SELF-CONTAINED, the parity suite's no-external-ref assertion). A MathJax
+      // `d` string IS native SVG path syntax → emitted verbatim, no conversion
+      // (the PDF backend converts to operators; SVG passes through). Two nested
+      // <g>s (the file's coordinate-mapping convention, never a nested <svg>):
+      // the world <g> (via g()) wraps an inner <g> mapping the glyph viewBox onto
+      // the draw box {x,y,w,h} — a plain box→box scale+translate (both y-DOWN, no
+      // flip), the same shape emitLensSVG's `magnify` uses.
+      const vb = cmd.viewBox;
+      if (cmd.glyphs.length === 0 || vb.w <= 0 || vb.h <= 0) return "";
+      const sx = cmd.w / vb.w, sy = cmd.h / vb.h;
+      const boxT = `translate(${fmt(cmd.x - vb.minX * sx)} ${fmt(cmd.y - vb.minY * sy)}) scale(${fmt(sx)} ${fmt(sy)})`;
+      const paths = cmd.glyphs
+        .map((gl) => `<path d="${xmlEscape(gl.d)}" fill="${rgbaToCss(parseColor(gl.fill))}"/>`)
+        .join("");
+      const inner = `<g transform="${boxT}">${paths}</g>`;
+      // Per-item opacity rides the world <g> (a group opacity over all glyphs —
+      // matching the image op's single-element opacity attr, but on the group).
+      return g((cmd.opacity ?? 1) !== 1 ? `<g opacity="${fmt(cmd.opacity)}">${inner}</g>` : inner);
+    }
     default:
       throw new Error(`svg_backend: unknown op "${cmd.op}"`);
   }

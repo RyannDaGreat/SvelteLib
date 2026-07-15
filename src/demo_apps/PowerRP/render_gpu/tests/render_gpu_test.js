@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import {
   parseColor, rgbaToCss, rect, ellipse, polyline, polygon, text, image, video,
-  pushTransform, popTransform, blurBackdrop, magnifyBackdrop, flattenIR,
+  latexVector, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, flattenIR, DRAW_OPS,
 } from "../ir.js";
 import { videoIR, sceneIR } from "../ports.js";
 import { rectPlugin } from "../../plugins/rect.js";
@@ -144,6 +144,30 @@ test("image_registry: DOM-free queries (an undecoded src is quiet + null)", () =
   assert.equal(getImage("nope://never-requested"), null); // not ready → draw nothing (async rule)
   assert.equal(truncate("short"), "short");
   assert.match(truncate("data:image/png;base64," + "A".repeat(200)), /…\(\d+ chars\)$/);
+});
+// ── Round 15.1 LaTeX vector op ───────────────────────────────────────────────
+test("latexVector: builder validates, carries dual payload, is a known DRAW_OP", () => {
+  const op = latexVector({ ref: "latex:eq:#1a1a2e:1", x: 5, y: 6, w: 40, h: 20, opacity: 0.5,
+    glyphs: [{ d: "M0 0L10 10", fill: "#f00" }], viewBox: { minX: 0, minY: -883, w: 3552, h: 1738 } });
+  assert.equal(op.op, "latexVector");
+  assert.equal(op.ref, "latex:eq:#1a1a2e:1");   // GPU + hybrid raster fallback
+  assert.deepEqual(op.glyphs, [{ d: "M0 0L10 10", fill: "#f00" }]); // SVG/PDF vector
+  assert.deepEqual(op.viewBox, { minX: 0, minY: -883, w: 3552, h: 1738 });
+  assert.deepEqual(op.src, { sx: 0, sy: 0, sw: 1, sh: 1 });
+  assert.ok(DRAW_OPS.includes("latexVector"), "backends must know the op (throw otherwise)");
+  assert.throws(() => latexVector({ ref: "r", x: 0, y: 0, w: 1, h: 1, glyphs: "no", viewBox: { minX: 0, minY: 0, w: 1, h: 1 } }), /"glyphs" must be an array/);
+  assert.throws(() => latexVector({ ref: "r", x: 0, y: 0, w: 1, h: 1, glyphs: [], viewBox: { minX: 0, minY: 0, w: 0, h: 1 } }), /positive w\/h/);
+});
+test("latexVector → SVG: inline <path> glyphs, viewBox→box <g>, NO <image>, ink fill", () => {
+  const op = latexVector({ ref: "latex:eq:1", x: 10, y: 20, w: 100, h: 40,
+    glyphs: [{ d: "M0 0L200 0L200 80Z", fill: "#ff0000" }], viewBox: { minX: 0, minY: 0, w: 200, h: 80 } });
+  const svg = vectorCommandToSVG(op, { x: 0, y: 0, rotation: 0, scale: 1 });
+  assert.ok(svg.includes("<path"), "emits real vector <path> geometry");
+  assert.ok(svg.includes('d="M0 0L200 0L200 80Z"'), "the glyph d verbatim (SVG native syntax)");
+  assert.ok(svg.includes("rgba(255,0,0,1)"), "ink fill applied");
+  assert.ok(!svg.includes("<image"), "NO raster <image> — true vector");
+  // viewBox→box map: sx = 100/200 = 0.5, sy = 40/80 = 0.5, translate (10,20)
+  assert.ok(svg.includes("translate(10 20)") && svg.includes("scale(0.5 0.5)"), `box→box transform: ${svg}`);
 });
 test("arrowIR: shaft pullback + independent headLength/headWidth triangle", () => {
   const cmds = arrowPlugin.emit({ from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, stroke: "#000", strokeWidth: 3, headLength: 10, headWidth: 8 });

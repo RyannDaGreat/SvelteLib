@@ -21,6 +21,7 @@
  *   {op:"text", text, x, y, size, color, bold, opacity, font}    // top-left origin, single run; font = registry id (fonts.js)
  *   {op:"image", ref, x, y, w, h, opacity}                       // ref → media registry key
  *   {op:"video", ref, x, y, w, h, opacity}                       // ref → <video> registry key
+ *   {op:"latexVector", ref, x, y, w, h, glyphs, viewBox, opacity}// dual: vector glyph <path>s (SVG/PDF) + raster ref (GPU/hybrid)
  *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
@@ -253,6 +254,66 @@ export function video({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh
   if (typeof ref !== "string") throw new Error(`video: "ref" must be a string, got ${JSON.stringify(ref)}`);
   requireFinite("video", { x, y, w, h, opacity, sx, sy, sw, sh });
   return { op: "video", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh) };
+}
+
+// ── latexVector (Round 15.1 — TRUE VECTOR EQUATION EXPORT) ────────────────────
+// A DUAL-PAYLOAD op: the ONE display-list command for a typeset LaTeX equation,
+// carrying both the glyph VECTOR geometry (SVG/PDF backends embed real <path>s /
+// PDF path operators — true vector, crisp at any zoom, the paper-figure use
+// case) AND the raster `ref` fallback (the GPU compositor draws the existing
+// MathJax-rasterized quad, and the HYBRID RULE's raster split hands this raw op
+// to the GPU/rasterize callback — a latex UNDER a blurBackdrop rasterizes,
+// exactly like real text). WHY dual-payload, not a plain image op the vector
+// backends special-case: the split is POSITIONAL and forwards raw IR to the GPU,
+// so the GPU MUST render this op — and drawing the raster quad (no MSDF/path GPU
+// renderer, explicitly out of scope) keeps the LIVE view + every raster fallback
+// byte-identical to the pre-vector image path. See plugins/latex.js and
+// render_gpu/gpu/latex_raster.js for how the glyph data + ref are produced.
+
+/**
+ * Pure function. TRUE-VECTOR LaTeX equation command (Round 15.1). Draws the
+ * equation as vector glyph <path>s in SVG/PDF and as the raster quad `ref` in
+ * the GPU (and every hybrid raster fallback). Geometry is in LOCAL space: the
+ * box {x, y, w, h} is where the equation draws; `glyphs` are MathJax-derived
+ * filled sub-paths whose `d` coordinates live in `viewBox` space and map onto
+ * the box (a straight box→box scale, y-DOWN already — the raster and vector
+ * agree). Each glyph carries its own `fill` (a CSS color string — usually the
+ * widget's single ink color, but per-path so multi-color equations survive).
+ *
+ * `ref` (the raster fallback) + `src` (edge-crop UV rect, image() semantics) let
+ * the GPU + hybrid split reuse the image path verbatim; a vector backend ignores
+ * `ref`/`src` and consumes `glyphs`/`viewBox`/box.
+ *
+ * Args:
+ *   ref (string): raster media-registry key (GPU / hybrid raster fallback)
+ *   x, y, w, h (number): the equation's local draw box
+ *   glyphs (array): [{ d: SVG-path-string, fill: cssColor }] in viewBox space
+ *   viewBox ({minX, minY, w, h}): the glyph coordinate frame (MathJax units)
+ *   opacity (number), sx/sy/sw/sh (number): raster source-rect (image() crop)
+ *
+ * @example latexVector({ref: "latex:x^2:1", x: 0, y: 0, w: 40, h: 20, glyphs: [{d: "M0 0L10 10", fill: "#000"}], viewBox: {minX: 0, minY: 0, w: 100, h: 50}}).op // "latexVector"
+ * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).glyphs // []
+ * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [{d: "M0 0", fill: "#f00"}], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ */
+export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1 }) {
+  if (typeof ref !== "string") throw new Error(`latexVector: "ref" must be a string, got ${JSON.stringify(ref)}`);
+  requireFinite("latexVector", { x, y, w, h, opacity, sx, sy, sw, sh });
+  if (!Array.isArray(glyphs)) throw new Error(`latexVector: "glyphs" must be an array, got ${JSON.stringify(glyphs)}`);
+  if (!viewBox || typeof viewBox !== "object") throw new Error(`latexVector: "viewBox" must be a {minX,minY,w,h} object, got ${JSON.stringify(viewBox)}`);
+  requireFinite("latexVector.viewBox", { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h });
+  if (!(viewBox.w > 0) || !(viewBox.h > 0)) throw new Error(`latexVector: viewBox must have positive w/h, got ${JSON.stringify(viewBox)}`);
+  const outGlyphs = glyphs.map((g) => {
+    if (typeof g.d !== "string") throw new Error(`latexVector: glyph "d" must be a string, got ${JSON.stringify(g.d)}`);
+    // fill kept as a CSS string (parsed by the vector backends via parseColor,
+    // the rich-text-highlight precedent) — the op never rasterizes color itself.
+    return { d: g.d, fill: g.fill };
+  });
+  return {
+    op: "latexVector", ref, x, y, w, h, opacity,
+    src: sourceRect(sx, sy, sw, sh),
+    glyphs: outGlyphs,
+    viewBox: { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h },
+  };
 }
 
 /**
@@ -522,4 +583,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "text", "image", "video", "blurBackdrop", "magnifyBackdrop", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "cropSubtree", "effectSubtree"];

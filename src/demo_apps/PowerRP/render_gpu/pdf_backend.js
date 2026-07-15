@@ -133,6 +133,118 @@ export function pointsPath(points) {
 }
 
 /**
+ * Pure function. Tokenizes an SVG path `d` string into [command, ...numbers]
+ * runs. Splits on command letters (MLHVCSQTAZ, absolute+relative) and parses the
+ * number list between them (commas/whitespace/sign-boundaries). MathJax v3
+ * tex-svg glyph paths use ONLY absolute M L H V Q T Z (verified against the
+ * bundled tex font) — this tokenizer covers the broader SVG grammar so a future
+ * MathJax/font change can't silently drop geometry.
+ *
+ * @example tokenizeSvgPath("M0 0L10 10Z") // [["M", 0, 0], ["L", 10, 10], ["Z"]]
+ * @example tokenizeSvgPath("M1 2 3 4") // [["M", 1, 2], ["L", 3, 4]] (repeated M coords → implicit L, SVG rule)
+ * @example tokenizeSvgPath("H5V-3") // [["H", 5], ["V", -3]]
+ */
+export function tokenizeSvgPath(d) {
+  const tokens = [];
+  const re = /([MLHVCSQTAZmlhvcsqtaz])|(-?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)/g;
+  let m, cur = null;
+  while ((m = re.exec(d)) !== null) {
+    if (m[1] !== undefined) { cur = [m[1]]; tokens.push(cur); }
+    else {
+      if (!cur) throw new Error(`tokenizeSvgPath: number before any command in "${d.slice(0, 40)}"`);
+      // SVG rule: extra coord pairs after M/m implicitly continue as L/l.
+      const expected = SVG_ARGS[cur[0].toUpperCase()];
+      if (expected > 0 && cur.length - 1 === expected && (cur[0] === "M" || cur[0] === "m")) {
+        cur = [cur[0] === "M" ? "L" : "l"]; tokens.push(cur);
+      }
+      cur.push(Number(m[2]));
+    }
+  }
+  return tokens;
+}
+
+/** Number of numeric args per SVG path command (per pair for repeatable ones). */
+const SVG_ARGS = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
+
+/**
+ * Pure function. Converts an SVG path `d` string into PDF path operators
+ * (m/l/c/h) in the SAME y-DOWN coordinate frame the string uses (no flip — the
+ * page is already y-down when this content emits, and MathJax's exported viewBox
+ * paths are y-down as drawn). Quadratic beziers (Q/T) are ELEVATED to cubic (c)
+ * via the exact degree-elevation c1=p0+⅔(qc−p0), c2=p1+⅔(qc−p1) — PDF has no
+ * quadratic operator. Relative commands (lowercase) accumulate off the current
+ * point; H/V are horizontal/vertical lines; T reflects the previous quadratic
+ * control point (identity if the previous command was not Q/T, per the SVG spec).
+ * Fill rule is the CALLER's choice (`f` nonzero — glyph counters are wound
+ * opposite the outer contour, the TrueType/Type1 convention MathJax inherits).
+ *
+ * Args:
+ *   d (string): an SVG path data string (M L H V C S Q T Z, abs+rel)
+ *
+ * Returns:
+ *   string: newline-joined PDF path operators (no paint operator — caller fills)
+ *
+ * @example svgPathToPdfOps("M0 0L10 0Z") // "0 0 m\n10 0 l\nh"
+ * @example svgPathToPdfOps("M0 0H10V10") // "0 0 m\n10 0 l\n10 10 l"
+ * @example svgPathToPdfOps("M0 0Q10 0 10 10") // "0 0 m\n6.6667 0 10 3.3333 10 10 c" (quadratic elevated to cubic)
+ */
+export function svgPathToPdfOps(d) {
+  const n = pdfNum;
+  const out = [];
+  let cx = 0, cy = 0;        // current point
+  let sx = 0, sy = 0;        // subpath start (for Z)
+  let qpx = null, qpy = null; // previous quadratic control point (for T reflection)
+  // Emit a quadratic (control qcx,qcy → end ex,ey from current) as a cubic.
+  const quadTo = (qcx, qcy, ex, ey) => {
+    const c1x = cx + (2 / 3) * (qcx - cx), c1y = cy + (2 / 3) * (qcy - cy);
+    const c2x = ex + (2 / 3) * (qcx - ex), c2y = ey + (2 / 3) * (qcy - ey);
+    out.push(`${n(c1x)} ${n(c1y)} ${n(c2x)} ${n(c2y)} ${n(ex)} ${n(ey)} c`);
+    qpx = qcx; qpy = qcy; cx = ex; cy = ey;
+  };
+  for (const tok of tokenizeSvgPath(d)) {
+    const cmd = tok[0];
+    const rel = cmd === cmd.toLowerCase();
+    const up = cmd.toUpperCase();
+    const a = tok.slice(1);
+    if (up === "M") {
+      cx = rel ? cx + a[0] : a[0]; cy = rel ? cy + a[1] : a[1];
+      sx = cx; sy = cy; qpx = qpy = null;
+      out.push(`${n(cx)} ${n(cy)} m`);
+    } else if (up === "L") {
+      cx = rel ? cx + a[0] : a[0]; cy = rel ? cy + a[1] : a[1]; qpx = qpy = null;
+      out.push(`${n(cx)} ${n(cy)} l`);
+    } else if (up === "H") {
+      cx = rel ? cx + a[0] : a[0]; qpx = qpy = null;
+      out.push(`${n(cx)} ${n(cy)} l`);
+    } else if (up === "V") {
+      cy = rel ? cy + a[0] : a[0]; qpx = qpy = null;
+      out.push(`${n(cx)} ${n(cy)} l`);
+    } else if (up === "C") {
+      const c1x = rel ? cx + a[0] : a[0], c1y = rel ? cy + a[1] : a[1];
+      const c2x = rel ? cx + a[2] : a[2], c2y = rel ? cy + a[3] : a[3];
+      cx = rel ? cx + a[4] : a[4]; cy = rel ? cy + a[5] : a[5]; qpx = qpy = null;
+      out.push(`${n(c1x)} ${n(c1y)} ${n(c2x)} ${n(c2y)} ${n(cx)} ${n(cy)} c`);
+    } else if (up === "Q") {
+      const qcx = rel ? cx + a[0] : a[0], qcy = rel ? cy + a[1] : a[1];
+      quadTo(qcx, qcy, rel ? cx + a[2] : a[2], rel ? cy + a[3] : a[3]);
+    } else if (up === "T") {
+      // Reflect the previous quad control point about the current point; if the
+      // previous command was not a quadratic, the control point IS the current
+      // point (SVG spec) — a straight segment expressed as a degenerate quad.
+      const qcx = qpx === null ? cx : 2 * cx - qpx, qcy = qpy === null ? cy : 2 * cy - qpy;
+      quadTo(qcx, qcy, rel ? cx + a[0] : a[0], rel ? cy + a[1] : a[1]);
+    } else if (up === "Z") {
+      out.push("h"); cx = sx; cy = sy; qpx = qpy = null;
+    } else {
+      throw new Error(`svgPathToPdfOps: unsupported SVG path command "${cmd}" (MathJax uses M L H V Q T Z)`);
+    }
+    // Reflection state (qpx/qpy) is maintained inside each branch: quads set it,
+    // every other command clears it — so a T after a non-quad reflects nothing.
+  }
+  return out.join("\n");
+}
+
+/**
  * Pure function. The paint operator for a fill/stroke combination.
  *
  * @example paintOp([0, 0, 0, 1], null, 0) // "f"
@@ -837,6 +949,48 @@ function emitVector(cmd, world, out, ctx) {
       const fontId = cmd.font || DEFAULT_FONT;
       const baseline = cmd.y + ctx.ascentFraction(fontId, cmd.bold) * cmd.size;
       ops.push(...textRunOps(cmd.text, cmd.x, baseline, cmd.size, cmd.bold, false, cmd.color, cmd.opacity, fontId, ctx));
+      break;
+    }
+    case "latexVector": {
+      // TRUE VECTOR EQUATION (Round 15.1): MathJax glyph <path>s → PDF path
+      // operators (m/l/c) filled NONZERO (`f`) — the file's universal fill rule
+      // AND the correct rule for font-derived outlines (glyph counters in
+      // e/a/0/8 are wound opposite the outer contour, so nonzero winding leaves
+      // them as holes; even-odd would misfill nested/self-intersecting glyphs).
+      // emitVector already applied cmSimilarity(world); here we push ONE extra
+      // local cm mapping the glyph viewBox onto the draw box {x,y,w,h} — a plain
+      // box→box scale+translate (BOTH y-DOWN, so no flip, unlike the image op's
+      // -h). This is the same "extra local cm inside ops" shape image placement
+      // uses (imagePlacementOps), minus the flip.
+      const vb = cmd.viewBox;
+      if (cmd.glyphs.length === 0 || vb.w <= 0 || vb.h <= 0) return; // nothing to draw
+      const sxScale = cmd.w / vb.w, syScale = cmd.h / vb.h;
+      // box→box: glyph point (px,py) → (x + (px−minX)·sx, y + (py−minY)·sy).
+      const tx = cmd.x - vb.minX * sxScale, ty = cmd.y - vb.minY * syScale;
+      ops.push(`${pdfNum(sxScale)} 0 0 ${pdfNum(syScale)} ${pdfNum(tx)} ${pdfNum(ty)} cm`);
+      // Group consecutive glyphs by fill color: set `rg` + alpha once per color
+      // run, concatenate all that run's subpaths, fill once (the polygon/rich-
+      // text "many subpaths, one fill" idiom — fewest operators, and nonzero
+      // winding across a glyph's outer+counter contours produces the holes).
+      let curFill = null;
+      let pending = [];
+      const flush = () => {
+        if (pending.length === 0) return;
+        const c = curFill;
+        const gs = ctx.gsAlphaPair(c[3] * (cmd.opacity ?? 1), 1);
+        if (gs) ops.push(gs);
+        ops.push(`${pdfNum(c[0])} ${pdfNum(c[1])} ${pdfNum(c[2])} rg`);
+        ops.push(pending.join("\n"), "f");
+        pending = [];
+      };
+      for (const glyph of cmd.glyphs) {
+        const c = parseColor(glyph.fill);
+        if (curFill === null || c[0] !== curFill[0] || c[1] !== curFill[1] || c[2] !== curFill[2] || c[3] !== curFill[3]) {
+          flush(); curFill = c;
+        }
+        pending.push(svgPathToPdfOps(glyph.d));
+      }
+      flush();
       break;
     }
     case "image": {

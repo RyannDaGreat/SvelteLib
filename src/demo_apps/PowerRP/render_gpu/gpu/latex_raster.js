@@ -136,14 +136,31 @@ export const LATEX_RASTER_DENSITY = 2;
  */
 export const LATEX_SCALE_STEP = 0.1;
 
-/** "<latex>|<roundedScale>" → {status, ref, error, mathError, aspect} */
+/** "<latex>|<ink>|<roundedScale>" → {status, ref, error, mathError, aspect}. The
+ * INK color is IN the key (Round 15.4 "why cant i choose the color for latx"):
+ * a color change re-rasterizes (the GPU draws the tinted bitmap), the same
+ * bucketing discipline as scale. */
 const typesets = new Map();
 /** latex → {w, h} natural aspect (px at scale 1) once measured — the "how big
- * is this equation" the plugin needs to size its bbox from a font size. */
+ * is this equation" the plugin needs to size its bbox from a font size. Ink-
+ * INDEPENDENT (geometry only), so keyed by latex alone. */
 const aspects = new Map();
+/** latex → { glyphs: [{d}], viewBox: {minX,minY,w,h} } — the FLATTENED MathJax
+ * glyph geometry (Round 15.1 TRUE VECTOR EXPORT), in the SVG root viewBox
+ * coordinate frame, <use>/<defs> resolved to plain absolute-coord `d` strings.
+ * INK-INDEPENDENT (geometry only — the fill color is applied by the plugin at
+ * op-build time), so keyed by latex alone; the vector backends stroke it in the
+ * widget's ink. Populated alongside the raster in ensureLatexTypeset. */
+const glyphGeom = new Map();
 /** latex → the MathJax error message string when the LaTeX had a syntax error
  * (an merror node was produced), else absent. Read by latexErrorFor. */
 const mathErrors = new Map();
+
+/** The default ink color for a typeset equation — the INK convention every
+ * stroked shape / the text widget uses (#1a1a2e), so an equation and a line of
+ * text read at the same color by default. Used when a caller omits an ink
+ * override (keeps the pre-Round-15.4 pixel output byte-identical). */
+export const LATEX_DEFAULT_INK = "#1a1a2e";
 
 // The MathJax UMD bundle is loaded LAZILY (a <script> tag pointing at Vite's
 // `?url`, done INSIDE this dynamic path so bare node never parses the Vite-only
@@ -205,6 +222,57 @@ export function parseExAttr(attr) {
 }
 
 /**
+ * Pure function. Applies a 2D affine matrix {a,b,c,d,e,f} (the SVG/DOMMatrix
+ * convention: x' = a·x + c·y + e, y' = b·x + d·y + f) to an SVG path `d` string,
+ * returning a new ABSOLUTE-coordinate `d`. Used to BAKE a MathJax <use>'s CTM
+ * into its referenced glyph path so the flattened glyph carries no transform
+ * (Round 15.1). Handles the MathJax tex-svg command set (absolute M L H V Q T Z);
+ * because a general matrix rotates axes, H/V become L and the path is emitted as
+ * M/L/Q/Z with transformed points (a curve's control point transforms like any
+ * point — an affine map preserves the Bézier). Unsupported commands throw (no
+ * silent geometry drop).
+ *
+ * Args:
+ *   d (string): an absolute-coord SVG path (M L H V Q T Z)
+ *   m ({a,b,c,d,e,f}): the affine matrix to bake in
+ *
+ * Returns:
+ *   string: the transformed absolute-coord `d`
+ *
+ * @example transformSvgPathD("M0 0L10 0", {a: 2, b: 0, c: 0, d: 2, e: 5, f: 5}) // "M5 5L25 5"
+ * @example transformSvgPathD("M0 0H10", {a: 1, b: 0, c: 0, d: -1, e: 0, f: 100}) // "M0 100L10 100" (y-flip: H stays horizontal, becomes L)
+ * @example transformSvgPathD("M0 0Q5 10 10 0", {a: 1, b: 0, c: 0, d: 1, e: 0, f: 0}) // "M0 0Q5 10 10 0" (identity)
+ */
+export function transformSvgPathD(d, m) {
+  const num = (v) => String(+v.toFixed(3));
+  const px = (x, y) => m.a * x + m.c * y + m.e;
+  const py = (x, y) => m.b * x + m.d * y + m.f;
+  const out = [];
+  let cx = 0, cy = 0, sx = 0, sy = 0;      // current point + subpath start
+  let qpx = null, qpy = null;               // previous quad control (for T)
+  const re = /([MLHVQTZ])|(-?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)/g;
+  let match, cur = null;
+  const toks = [];
+  while ((match = re.exec(d)) !== null) {
+    if (match[1] !== undefined) { cur = [match[1]]; toks.push(cur); }
+    else { if (!cur) throw new Error(`transformSvgPathD: number before command in "${d.slice(0, 40)}"`); cur.push(Number(match[2])); }
+  }
+  const P = (x, y) => `${num(px(x, y))} ${num(py(x, y))}`;
+  for (const tok of toks) {
+    const cmd = tok[0], a = tok.slice(1);
+    if (cmd === "M") { cx = a[0]; cy = a[1]; sx = cx; sy = cy; qpx = qpy = null; out.push(`M${P(cx, cy)}`); }
+    else if (cmd === "L") { cx = a[0]; cy = a[1]; qpx = qpy = null; out.push(`L${P(cx, cy)}`); }
+    else if (cmd === "H") { cx = a[0]; qpx = qpy = null; out.push(`L${P(cx, cy)}`); }
+    else if (cmd === "V") { cy = a[0]; qpx = qpy = null; out.push(`L${P(cx, cy)}`); }
+    else if (cmd === "Q") { const qx = a[0], qy = a[1]; cx = a[2]; cy = a[3]; qpx = qx; qpy = qy; out.push(`Q${P(qx, qy)} ${P(cx, cy)}`); }
+    else if (cmd === "T") { const qx = qpx === null ? cx : 2 * cx - qpx, qy = qpy === null ? cy : 2 * cy - qpy; cx = a[0]; cy = a[1]; qpx = qx; qpy = qy; out.push(`Q${P(qx, qy)} ${P(cx, cy)}`); }
+    else if (cmd === "Z") { out.push("Z"); cx = sx; cy = sy; qpx = qpy = null; }
+    else throw new Error(`transformSvgPathD: unsupported command "${cmd}"`);
+  }
+  return out.join("");
+}
+
+/**
  * Pure function. Rounds a raster scale to the LATEX_SCALE_STEP grid (never below
  * the step — a zero/negative scale would rasterize nothing). Identical shape to
  * pdf_page_raster.roundPdfScale.
@@ -238,23 +306,42 @@ export function latexIsEmpty(latex) {
  * NOT a real data: URI — a plain cache key the image registry stores an
  * ImageBitmap under directly (registerRasterizedBitmap). Rounds scale via
  * roundLatexScale so the key is stable across a continuous resize/font-size
- * drag. Mirrors pdf_page_raster.pdfPageRef.
+ * drag. The INK color is part of the key (Round 15.4): two colors of the same
+ * equation are two distinct rasters. Omitting ink → LATEX_DEFAULT_INK, so an
+ * un-colored equation's ref is stable and its pixels are byte-identical to the
+ * pre-ink output. Mirrors pdf_page_raster.pdfPageRef.
  *
- * @example latexRef("x^2", 1) // "latex:x^2:1"
- * @example latexRef("\\frac{a}{b}", 2.34) // "latex:\\frac{a}{b}:2.3"
+ * @example latexRef("x^2", 1) // "latex:x^2:#1a1a2e:1"
+ * @example latexRef("\\frac{a}{b}", 2.34, "#ff0000") // "latex:\\frac{a}{b}:#ff0000:2.3"
  */
-export function latexRef(latex, scale) {
-  return `latex:${latex}:${roundLatexScale(scale)}`;
+export function latexRef(latex, scale, ink = LATEX_DEFAULT_INK) {
+  return `latex:${latex}:${ink}:${roundLatexScale(scale)}`;
 }
 
 /**
- * Query. The typeset status of an (latex, scale) key: "unloaded", "loading",
- * "ready", or "error".
+ * Query. The typeset status of an (latex, ink, scale) key: "unloaded",
+ * "loading", "ready", or "error".
  *
  * @example latexStatus("nope", 1) // "unloaded"
  */
-export function latexStatus(latex, scale) {
-  return typesets.get(`${latex}|${roundLatexScale(scale)}`)?.status ?? "unloaded";
+export function latexStatus(latex, scale, ink = LATEX_DEFAULT_INK) {
+  return typesets.get(`${latex}|${ink}|${roundLatexScale(scale)}`)?.status ?? "unloaded";
+}
+
+/**
+ * Query. The FLATTENED vector glyph geometry of a typeset equation (Round 15.1),
+ * or null if not measured yet. `{ glyphs: [{d}], viewBox: {minX,minY,w,h} }` —
+ * the MathJax <use>/<defs> resolved to plain absolute-coord SVG `d` strings in
+ * the root viewBox coordinate frame, INK-INDEPENDENT (the plugin applies the ink
+ * fill). The vector backends (SVG/PDF) consume this to draw TRUE VECTOR glyphs;
+ * the plugin's emit() builds a latexVector op from it. Populated by
+ * ensureLatexTypeset (browser only); null until the first typeset lands, so
+ * emit() falls back to the raster image op meanwhile (the async contract).
+ *
+ * @example latexGlyphs("nope") // null
+ */
+export function latexGlyphs(latex) {
+  return glyphGeom.get(latex) ?? null;
 }
 
 /**
@@ -285,25 +372,76 @@ export function latexErrorFor(latex) {
 }
 
 /**
- * Command (near-pure: idempotent). Ensures a specific (latex, scale) is typeset
- * to an SVG, rasterized to a bitmap, and registered into the image registry
- * under latexRef(...). A no-op if that exact key is already loading/ready/
- * errored — safe to call every frame from a sync emit(). Fire-and-forget: the
- * render path never awaits; it reads latexRef(...) through the normal
+ * Query (browser only — reads SVG geometry via the DOM). FLATTENS a MathJax
+ * tex-svg tree into a plain list of absolute-coord glyph `{d}` paths + the root
+ * viewBox (Round 15.1 TRUE VECTOR EXPORT). MathJax emits glyphs as
+ * `<use xlink:href="#id">` referencing `<path id>` in `<defs>`, nested under
+ * `<g transform>` groups (including a top-level y-flip). To embed them as
+ * SELF-CONTAINED plain `<path>`s (SVG backend) / PDF path operators (no <use>,
+ * no id refs, no nested <svg> — avoiding the "1000-per-em internal grid" scaling
+ * bug), each <use> is resolved: its referenced path's `d` is baked through the
+ * CTM from the SVG root to that <use> (getCTM — the browser computes the
+ * accumulated transform, including the y-flip), producing a `d` already in the
+ * root's viewBox coordinate frame. The whole tree therefore collapses to a flat,
+ * y-DOWN (as-drawn) `d` list a plain box→box scale maps onto the widget box.
+ *
+ * REQUIRES the SVG to be attached to the document (getCTM returns null on a
+ * detached node), so the caller appends it offscreen first.
+ *
+ * Args:
+ *   svg (SVGSVGElement): a MathJax tex-svg root, attached to the document
+ *
+ * Returns:
+ *   { glyphs: [{d}], viewBox: {minX,minY,w,h} }
+ *
+ * @example // resolveLatexGlyphs(mathJaxSvg) → { glyphs: [{d: "M413 655..."}, ...], viewBox: {minX: 0, minY: -883, w: 3552, h: 1738} }
+ */
+function resolveLatexGlyphs(svg) {
+  const vbAttr = (svg.getAttribute("viewBox") || "0 0 1 1").trim().split(/\s+/).map(Number);
+  const viewBox = { minX: vbAttr[0], minY: vbAttr[1], w: vbAttr[2], h: vbAttr[3] };
+  const rootCTM = svg.getScreenCTM();
+  if (!rootCTM) throw new Error("resolveLatexGlyphs: SVG has no screen CTM (must be attached to the document)");
+  const rootInv = rootCTM.inverse(); // screen → root viewBox space
+  const defs = new Map();
+  for (const p of svg.querySelectorAll("defs path, defs [id]")) {
+    if (p.tagName.toLowerCase() === "path" && p.id) defs.set(p.id, p.getAttribute("d") || "");
+  }
+  const glyphs = [];
+  for (const use of svg.querySelectorAll("use")) {
+    const href = use.getAttribute("xlink:href") || use.getAttribute("href") || "";
+    const id = href.replace(/^#/, "");
+    const d = defs.get(id);
+    if (!d) continue; // a <use> pointing at a non-path def (rare) — skip, don't fake geometry
+    // CTM of this <use> relative to the root viewBox frame: rootInv · useScreenCTM.
+    const useCTM = use.getScreenCTM();
+    if (!useCTM) continue;
+    const m = rootInv.multiply(useCTM); // screen-cancel → root viewBox coords
+    glyphs.push({ d: transformSvgPathD(d, m) });
+  }
+  return { glyphs, viewBox };
+}
+
+/**
+ * Command (near-pure: idempotent). Ensures a specific (latex, ink, scale) is
+ * typeset to an SVG, rasterized to a bitmap (tinted `ink`), and registered into
+ * the image registry under latexRef(...), AND the ink-independent vector glyph
+ * geometry (glyphGeom) is captured. A no-op if that exact key is already
+ * loading/ready/errored — safe to call every frame from a sync emit(). Fire-and-
+ * forget: the render path never awaits; it reads latexRef(...) through the normal
  * image_registry getImage/onImageLoad path (a not-yet-typeset equation draws
  * nothing this frame, exactly like an undecoded image — the manifest async
  * rule). Mirrors pdf_page_raster.ensurePdfPageRasterized end to end, including
  * the reserveImageSlot-before-await race guard.
  *
- * @example // ensureLatexTypeset("x^2", 1); ...later... getImage(latexRef("x^2", 1)) → ImageBitmap
+ * @example // ensureLatexTypeset("x^2", 1, "#f00"); ...later... getImage(latexRef("x^2", 1, "#f00")) → ImageBitmap
  */
-export function ensureLatexTypeset(latex, scale) {
+export function ensureLatexTypeset(latex, scale, ink = LATEX_DEFAULT_INK) {
   if (latexIsEmpty(latex)) throw new Error("ensureLatexTypeset: latex must be a non-empty string (the caller ghosts an empty equation before calling)");
   const roundedScale = roundLatexScale(scale);
-  const key = `${latex}|${roundedScale}`;
+  const key = `${latex}|${ink}|${roundedScale}`;
   if (typesets.has(key)) return typesets.get(key).promise;
 
-  const ref = latexRef(latex, scale);
+  const ref = latexRef(latex, scale, ink);
   // RESERVE THE IMAGE-REGISTRY SLOT SYNCHRONOUSLY, before any await below —
   // the SAME race guard pdf_page_raster documents (read reserveImageSlot's doc
   // in image_registry.js): without it, a compositor frame between "typeset
@@ -350,6 +488,28 @@ export function ensureLatexTypeset(latex, scale) {
     const aspectW = exW > 0 ? exW : 1;
     const aspectH = exH > 0 ? exH : 1;
     aspects.set(latex, { w: aspectW, h: aspectH });
+    // VECTOR GLYPH EXTRACTION (Round 15.1): flatten <use>/<defs> to plain
+    // absolute-coord `d`s in the root viewBox frame. getScreenCTM (inside
+    // resolveLatexGlyphs) needs the SVG attached to the document, so mount it in
+    // a 0-size offscreen host, extract, then remove — geometry only, INK-
+    // independent (cached by latex alone; the plugin applies the ink fill). Only
+    // extracted once per latex (skip if already cached, e.g. a scale/ink change).
+    if (!glyphGeom.has(latex) && !merror) {
+      const host = document.createElement("div");
+      host.style.cssText = "position:absolute;left:-99999px;top:0;width:0;height:0;overflow:hidden";
+      // Clone so the offscreen-measure copy keeps MathJax's ORIGINAL viewBox
+      // width/height/transform intact (below we overwrite the real svg's
+      // width/height/color for rasterization — that must not corrupt the glyph
+      // coordinate frame the CTMs are measured in).
+      const measureSvg = svg.cloneNode(true);
+      host.appendChild(measureSvg);
+      document.body.appendChild(host);
+      try {
+        glyphGeom.set(latex, resolveLatexGlyphs(measureSvg));
+      } finally {
+        host.remove();
+      }
+    }
     // RASTERIZE: pixel size = the ex extent × the em pixel size × EX_PER_EM,
     // then draw the SVG onto a 2D canvas and createImageBitmap(canvas) — the
     // pdf_page canvas-render pattern. Drawing an SVG <img> to a canvas is far
@@ -364,13 +524,13 @@ export function ensureLatexTypeset(latex, scale) {
     const pxH = Math.max(1, Math.round(aspectH * emPx * EX_PER_EM));
     const pxW = Math.max(1, Math.round(aspectW * emPx * EX_PER_EM));
     // MathJax glyph paths fill with `currentColor` (inherited CSS color); a
-    // detached/canvas-drawn SVG has no CSS context, so pin an explicit black
-    // fill on the root so the ink renders (INK, matching every other stroked
-    // shape's default). width/height in px give the <img> intrinsic dimensions
-    // createImageBitmap needs.
+    // detached/canvas-drawn SVG has no CSS context, so pin the widget's INK on
+    // the root so the ink renders (Round 15.4: the user chooses the color; ink
+    // is in the cache key so a color change re-rasterizes). width/height in px
+    // give the <img> intrinsic dimensions createImageBitmap needs.
     svg.setAttribute("width", `${pxW}`);
     svg.setAttribute("height", `${pxH}`);
-    svg.setAttribute("color", "#1a1a2e"); // currentColor for the glyph paths
+    svg.setAttribute("color", ink); // currentColor for the glyph paths — the widget's chosen ink
     // Serialize + base64-encode the self-contained SVG (base64 is more robust
     // than percent-encoding for an <img src> SVG data URI — avoids the
     // encodeURIComponent edge cases that broke the direct-createImageBitmap path).
@@ -408,22 +568,25 @@ function truncate(latex) {
 }
 
 /**
- * Command. Drops all cached typeset equations, aspects, and errors. For tests
- * that need a clean registry; the invalidation hook mirroring
+ * Command. Drops all cached typeset equations, aspects, glyph geometry, and
+ * errors. For tests that need a clean registry; the invalidation hook mirroring
  * resetPdfPageRaster/resetImageRegistry.
  */
 export function resetLatexRaster() {
   typesets.clear();
   aspects.clear();
+  glyphGeom.clear();
   mathErrors.clear();
 }
 
-// ── FUTURE WORK (flagged, not built here) ───────────────────────────────────
-// VECTOR SVG re-embed: today's SVG EXPORT of a latex widget is a raster PNG
-// region (this module's bitmap, embedded via the same image path as a photo) —
-// the "hybrid rule" precedent (manifest: the pdf_page widget took the identical
-// v1 stance). Because MathJax already produces a self-contained vector <svg>
-// (glyphs as <path>), a future upgrade could inline that SVG DIRECTLY into the
-// SVG export (true vector, crisp at any zoom, selectable-ish) and keep a raster
-// region only in PDF — flagged future work, not attempted in v1 (out of this
-// widget's scope per the task brief).
+// ── VECTOR SVG/PDF re-embed: BUILT (Round 15.1 — "do latex properly") ────────
+// The former FUTURE-WORK stance (raster PNG region in every backend) is retired.
+// MathJax's self-contained vector <svg> is now FLATTENED (resolveLatexGlyphs:
+// <use>/<defs> baked to plain absolute-coord `d`s via each <use>'s CTM) into the
+// ink-independent glyphGeom cache. plugins/latex.js emit() builds a `latexVector`
+// IR op carrying BOTH the raster ref (GPU live view + the HYBRID RULE's raster
+// fallback — a latex under a blur still rasterizes, like text) AND this glyph
+// geometry (the SVG backend embeds inline <path>s; the PDF backend emits m/l/c
+// operators filled NONZERO for correct glyph counters). True vector, crisp at
+// any zoom, in every export. See render_gpu/ir.js latexVector + the SVG/PDF
+// backends' latexVector cases.

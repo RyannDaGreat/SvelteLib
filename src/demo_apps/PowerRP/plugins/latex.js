@@ -84,12 +84,12 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { image, rect, text } from "../render_gpu/ir.js";
+import { image, latexVector, rect, text } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import {
-  ensureLatexTypeset, latexRef, latexAspect, latexErrorFor, latexIsEmpty,
-  LATEX_RASTER_DENSITY,
+  ensureLatexTypeset, latexRef, latexAspect, latexErrorFor, latexGlyphs, latexIsEmpty,
+  LATEX_RASTER_DENSITY, LATEX_DEFAULT_INK,
 } from "../render_gpu/gpu/latex_raster.js";
 
 /** The default equation for a freshly added widget — the quadratic formula, a
@@ -209,6 +209,13 @@ export const latexPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     latex: DEFAULT_LATEX,
     fontSize: DEFAULT_FONT_SIZE,
+    // INK — the equation glyph color (Round 15.4 "why cant i choose the color
+    // for latx"). Keyframable like any color property; default = the INK
+    // convention every stroked shape / the text widget uses (LATEX_DEFAULT_INK
+    // #1a1a2e), so a fresh equation reads the same color as default text. Drives
+    // BOTH the raster (baked into the tinted bitmap, in the cache key) AND the
+    // vector export (the SVG <path> / PDF fill color).
+    ink: LATEX_DEFAULT_INK,
     // stroke COLOR default matches every other stroked shape (INK); paints only
     // once strokeWidth > 0 (0 by default → an undecorated equation is byte-
     // identical to the bare image op).
@@ -231,6 +238,10 @@ export const latexPlugin = {
     // Font size (em) — the equation's rendered scale, like a text box's size.
     // The widget's natural w/h follow from this × the equation's aspect ratio.
     { key: "fontSize", label: "Font size", kind: "number", min: 1, category: "text", help: "The equation's rendered size in canvas units per em (like a text font size). Larger typesets the equation bigger; the box grows to fit." },
+    // INK — the glyph color (Round 15.4). A standard color row (kind "color",
+    // like text's Color / rect's Fill), keyframable; drives the live raster tint
+    // AND the SVG/PDF vector fill.
+    { key: "ink", label: "Color", kind: "color", category: "formatting", help: "The color of the equation's glyphs. Applies live and in SVG/PDF vector export (where the equation is real vector paths)." },
     // The stroked-BORDER bundle (a framed equation) — no `fill` row: the
     // equation's own glyphs ARE its interior, like an image/pdf page.
     ...bundle("strokedBorder"),
@@ -265,7 +276,8 @@ export const latexPlugin = {
     const worldScale = world?.scale ?? 1;
     const fontSize = s.fontSize ?? DEFAULT_FONT_SIZE;
     const scale = worldScale * fontSize; // px-per-em bucket the raster keys on (density applied inside latex_raster)
-    ensureLatexTypeset(latex, scale); // idempotent; safe every emit()
+    const ink = s.ink ?? LATEX_DEFAULT_INK; // Round 15.4 — the glyph color (raster tint + vector fill)
+    ensureLatexTypeset(latex, scale, ink); // idempotent; safe every emit()
 
     // ERROR AFFORDANCE: once the typeset resolved and reported a syntax error,
     // draw the loud red box+message (vector) rather than the raster. Before the
@@ -282,9 +294,32 @@ export const latexPlugin = {
       return applyEffects(decorateStrokedBox(shifted, errStyle, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });
     }
 
-    const ref = latexRef(latex, scale);
+    const ref = latexRef(latex, scale, ink);
     const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
-    const quad = image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+    // TRUE VECTOR (Round 15.1): once the glyph geometry is flattened (browser-
+    // side, async — null until the first typeset lands), emit a `latexVector` op
+    // carrying BOTH the ink-tinted `glyphs` (SVG/PDF embed real vector paths, ink
+    // as fill) AND the raster `ref` (the GPU live view + the HYBRID RULE raster
+    // fallback draw the tinted bitmap — a latex under a blur rasterizes like
+    // text). Before glyphs land, degrade to the plain raster `image` op (draws
+    // the bitmap; a repaint re-emits the vector op once glyphs are cached) — the
+    // async no-silent-placeholder contract, identical to how the raster itself
+    // arrives. Glyph geometry is ink-independent; the fill is applied here.
+    // A cropped equation (edge-crop insets shrink the source sub-rect below full
+    // frame) stays RASTER: the vector glyph op draws all glyphs mapped into the
+    // box, with no source-sub-rect clip, so it can't represent a partial crop —
+    // rasterizing (which honors sx/sy/sw/sh) is the faithful, no-divergence
+    // choice, exactly the hybrid rule's "what can't cleanly vectorize, rasterize".
+    const cropped = c.sw < 1 || c.sh < 1 || c.sx > 0 || c.sy > 0;
+    const geom = cropped ? null : latexGlyphs(latex);
+    const quad = geom
+      ? latexVector({
+          ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1,
+          sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh,
+          viewBox: geom.viewBox,
+          glyphs: geom.glyphs.map((g) => ({ d: g.d, fill: ink })),
+        })
+      : image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED equation, border included.
     return applyEffects(decorateStrokedBox([quad], style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });

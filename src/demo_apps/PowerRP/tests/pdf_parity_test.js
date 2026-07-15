@@ -263,6 +263,20 @@ try {
       };
       await Promise.all([...collectImageRefs(s.commands, new Set())]
         .map((ref) => window.__mods.imageRegistry.ensureImage(ref)));
+      // LaTeX vector scene (Round 15.1): the latexVector op's raster `ref` is a
+      // synthetic key (not a decodable data URI), so seed the image registry with
+      // the equation's raster bitmap under it — the GPU-EXPECTED side draws that
+      // bitmap while the PDF side emits true-vector glyph paths (the whole point
+      // of the vector-vs-raster parity). Decode the PNG data-URI fixture into an
+      // ImageBitmap and register it under s.latexRef (registerRasterizedBitmap,
+      // the same injection latex_raster uses for a real typeset).
+      if (s.latexRef && s.latexRaster) {
+        const img = new Image();
+        img.src = s.latexRaster;
+        await img.decode();
+        const bm = await createImageBitmap(img);
+        window.__mods.imageRegistry.registerRasterizedBitmap(s.latexRef, bm);
+      }
       // Video scenes: create the <video> element and WAIT for its first frame
       // (the compositor imports the element's current frame; no frame = nothing
       // drawn). A STILL clip's frame is deterministic, so the GPU render is

@@ -47,7 +47,8 @@ export const SVG_SCENE_NAMES = [
   "cropbox-basic",          // rounded-rect <clipPath> + re-emit (incl. 45° rotated)
   "elbow-curved-arrows",    // arbitrary-length polyline routes
   "richtext-outline-highlight", // Round 13.4: the FIRST rich-text SVG scene (the rich path was ported here) — per-run outline (stroke+paint-order) + highlight (<rect>)
-  "latex-basic",            // Round 14.5: LaTeX equation as a rasterized-bitmap <image> data URI (bare + bordered/rounded + translucent) — the equation-raster region renders parity in the SVG backend
+  "latex-basic",            // Round 15.1: LaTeX equation as TRUE VECTOR glyph <path>s (latexVector op) — bare + bordered/rounded + translucent — vs the GPU raster bitmap
+  "latex-counters",         // Round 15.1: glyph-counter FILL-RULE test (e/0/8/a holes) — nonzero-winding vector paths vs the correct MathJax raster; a wrong even-odd rule craters the PSNR
 ];
 
 /**
@@ -97,15 +98,29 @@ export const SVG_PSNR_FLOORS = {
   // 29.63→25). SVG text is vector-exact (both sides rasterize real glyph
   // outlines), hence far above the PDF twin's 23.20. PENDING RATIFICATION.
   "richtext-outline-highlight": 34,
-  // Round 14.5: the LaTeX equation is a rasterized-bitmap <image> data URI —
-  // the same image-class parity as image-basic (measured 51.13): Chromium
-  // rasterizes the embedded PNG data URI natively and both sides are the same
-  // PNG bytes, so parity is tight; the bordered/rounded variant's rrect-clip
-  // edge AA pulls it a bit below image-basic's 51. measured 43.00 dB (2026-07-15
-  // live SVG parity run) — floor = measured − ~5, the SVG margin class (matching
-  // shapes-overlap-z 45.54→40, richtext-outline-highlight 38.62→34). PENDING
-  // USER RATIFICATION (the measured-minus-margin convention is flagged app-wide).
-  "latex-basic": 38,
+  // Round 15.1: the LaTeX equation is now TRUE VECTOR — inline glyph <path>s
+  // (the latexVector op), NOT a raster <image> data URI. So this is now a
+  // VECTOR-vs-RASTER comparison: Chromium rasterizes the crisp SVG glyph paths
+  // while the GPU-EXPECTED side draws the SOFT MathJax raster bitmap (the live
+  // GPU view stays the raster quad — out of scope to vectorize per the task
+  // brief). The floor therefore DROPPED from 38 (the old raster-vs-raster, same
+  // PNG both sides, 43 dB) to the vector-vs-raster class: measured 21.18 dB
+  // (2026-07-15 live SVG vector-parity run), IDENTICAL to the PDF twin's 21.17 —
+  // both backends now emit the same true-vector glyphs, diverging from the raster
+  // the same way (the PSNR is bounded by the raster's AA softness, not the
+  // vector's crispness). floor 18 = measured − ~3, matching the PDF latex-basic
+  // floor. PENDING USER RATIFICATION (the measured-minus-margin convention is
+  // flagged app-wide). The vector's win is CRISPNESS AT ANY ZOOM in exports, not
+  // a higher PSNR against the bitmap it replaces.
+  "latex-basic": 18,
+  // Round 15.1: glyph-counter FILL-RULE test (e/0/8/a). measured 30.55 dB
+  // (2026-07-15 live SVG vector-parity run) — HIGHER than latex-basic's 21.18
+  // because the equation is large/simple (fewer fine strokes → tighter crisp-
+  // vector-vs-soft-raster agreement), matching the PDF twin's 30.25. floor 27 =
+  // measured − ~3. A WRONG even-odd fill would fill the e/0/8/a counters solid
+  // and sink this FAR below 27 — that divergence IS the fill-rule gate. PENDING
+  // USER RATIFICATION.
+  "latex-counters": 27,
 };
 
 /**
