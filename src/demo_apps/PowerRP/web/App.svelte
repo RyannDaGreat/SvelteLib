@@ -87,6 +87,11 @@
     { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, run: (a) => a.sendToExtreme(-1) },
     { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "x", "w") },
     { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "y", "h") },
+    // GROUPS (manifest rough draft): Group Selection needs ≥2 groupable items;
+    // Ungroup is enabled when any selected node is a group. Both operate on the
+    // selection through the app helpers (which own the AABB + keyframe baking).
+    { id: "group", title: "Group Selection", icon: "mdi:group", when: (a) => a.canGroup(), run: (a) => a.groupSelection() },
+    { id: "ungroup", title: "Ungroup", icon: "mdi:ungroup", when: (a) => a.selectedNodes().some((n) => n.type === "group"), run: (a) => a.ungroupSelection() },
     { id: "toggle-anchors", title: "Toggle Anchor Visibility", icon: "mdi:anchor", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },

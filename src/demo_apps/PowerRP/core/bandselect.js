@@ -78,6 +78,66 @@ export function selectInBox(nodes, boxRect, mode) {
 }
 
 /**
+ * Pure function. Rewrites a raw list of band-caught itemIds so a rubber band
+ * grabs TOP-LEVEL GROUPS only, never members of a group (manifest Round-12B
+ * box-select rule: "box select grabs TOP-LEVEL GROUPS only, never reaches
+ * inside a group; you can never have a group AND its members selected
+ * simultaneously"). `membership` is core/derive.groupMembership (memberId →
+ * its group's itemId).
+ *
+ * Each caught id becomes: its GROUP's id if it is a member (so catching a
+ * member selects the whole group), or itself if it is ungrouped (a group node
+ * caught directly stays itself — it isn't a member). Deduped, first-appearance
+ * order preserved. A member caught alongside its group both collapse to the
+ * group id and dedupe to one entry — the group-and-members-never-both invariant
+ * holds by construction.
+ *
+ * @example groupFilteredSelection(["a", "b"], new Map([["a", "g"], ["b", "g"]])) // ["g"]
+ * @example groupFilteredSelection(["r", "a"], new Map([["a", "g"]])) // ["r", "g"]
+ * @example groupFilteredSelection(["g", "a"], new Map([["a", "g"]])) // ["g"]
+ */
+export function groupFilteredSelection(caughtIds, membership) {
+  const out = [];
+  const seen = new Set();
+  for (const id of caughtIds) {
+    const top = membership.get(id) ?? id;
+    if (!seen.has(top)) { seen.add(top); out.push(top); }
+  }
+  return out;
+}
+
+/**
+ * Pure function. A selection set with the group-and-members-never-both
+ * invariant enforced (manifest Round-12B): if a GROUP is present, every member
+ * of that group is removed; a member whose group is NOT in the set is left
+ * alone (a member may be selected on its own — e.g. a direct member click with
+ * Show Ghosts off). `membership` is core/derive.groupMembership. Order
+ * preserved; deduped.
+ *
+ * WHY the asymmetry (drop members-of-a-present-group, keep lone members): the
+ * only way both a group and its member enter one set is a mixed gesture (e.g.
+ * a band catching a group plus a shift-add of a member) — there the group is
+ * the intended top-level handle and the member is redundant, so the group
+ * wins. A member selected with NO group in the set is a deliberate
+ * member-level selection and must survive.
+ *
+ * @example dedupeGroupSelection(["g", "a"], new Map([["a", "g"]])) // ["g"]
+ * @example dedupeGroupSelection(["a"], new Map([["a", "g"]])) // ["a"]
+ * @example dedupeGroupSelection(["g", "r"], new Map([["a", "g"]])) // ["g", "r"]
+ */
+export function dedupeGroupSelection(ids, membership) {
+  const present = new Set(ids);
+  const out = [];
+  const seen = new Set();
+  for (const id of ids) {
+    const g = membership.get(id);
+    if (g && present.has(g)) continue; // member whose group is also selected → drop the member
+    if (!seen.has(id)) { seen.add(id); out.push(id); }
+  }
+  return out;
+}
+
+/**
  * Pure function. Normalizes two world drag corners into a positive-size rect
  * (x,y,w,h). A rubber-band may be dragged in any direction; the band rect is
  * always the axis-aligned box between the two points.

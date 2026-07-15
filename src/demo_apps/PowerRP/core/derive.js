@@ -114,7 +114,116 @@ export function deriveRenderTree(state, registry) {
     plugin: registry.get(itemState.type),
   }));
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
-  return resolveCropTargets(nodes);
+  return resolveCropTargets(applyGroupParenting(nodes));
+}
+
+/**
+ * Pure function. A GROUP's parent INFLUENCE — the similarity transform that,
+ * composed onto a member's OWN world transform, reproduces "the member as
+ * re-posed by the group moving from its bind pose to its current pose"
+ * (manifest "Bind state (ground-zero stack)": a parent's influence on a child
+ * = the parent's current state RELATIVE TO its bind state).
+ *
+ * influence = current ∘ invert(bind). Two properties this guarantees:
+ *   - RE-POSE INVARIANCE: current === bind ⇒ influence === identity (a group
+ *     sitting exactly at its creation pose does not move its members at all).
+ *   - COMPOSABILITY: the result is a plain similarity, so member.world' =
+ *     compose(influence, member.world) is itself a similarity that every
+ *     downstream consumer (sceneIR wrap, hit-test invert, snap/anchor features,
+ *     culling AABB, band-select AABB) reads with no special cases.
+ *
+ * `current` and `bind` are the group's WORLD transforms (rotation already
+ * pivoted about the group's rotation anchor by worldTransform on both sides —
+ * so a group rotated about its center orbits its members about that same
+ * center, per the 45° tests).
+ *
+ * @example groupInfluence({x: 150, y: 120, rotation: 0, scale: 1}, {x: 100, y: 100, rotation: 0, scale: 1}) // {x: 50, y: 20, rotation: 0, scale: 1}
+ * @example groupInfluence({x: 100, y: 100, rotation: 0, scale: 1}, {x: 100, y: 100, rotation: 0, scale: 1}) // {x: 0, y: 0, rotation: 0, scale: 1}
+ */
+export function groupInfluence(current, bind) {
+  return T.compose(current, T.invert(bind));
+}
+
+/**
+ * Pure function. A group's BIND-pose world transform. The group stores its
+ * bind as flat {x, y, rotation, scale} captured at creation (Group Selection
+ * time — see web/app.svelte.js groupSelection); this reads it through the SAME
+ * worldTransform pivot machinery the CURRENT pose uses (passing the group's
+ * live w/h/rotationAnchor so both poses pivot about the same anchor), so
+ * influence measures a pure current-vs-bind delta. Missing bind ⇒ identity
+ * (a group with no bind never moves its members — the safe default; a
+ * freshly-created group always has one).
+ *
+ * @example groupBindWorld({bind: {x: 100, y: 100, rotation: 0, scale: 1}, w: 200, h: 100}) // {x: 100, y: 100, rotation: 0, scale: 1}
+ * @example groupBindWorld({w: 200, h: 100}) // {x: 0, y: 0, rotation: 0, scale: 1}
+ */
+export function groupBindWorld(groupState) {
+  const b = groupState.bind;
+  if (!b) return T.identity();
+  // Re-pose the bind pose through worldTransform using the group's CURRENT box
+  // geometry + rotation anchor (bind pose differs only in x/y/rotation/scale).
+  return worldTransform({ ...groupState, x: b.x, y: b.y, rotation: b.rotation, scale: b.scale });
+}
+
+/**
+ * Pure function. Applies every group node's parent influence to its members'
+ * world transforms (the manifest's armature-shaped derivation, first instance).
+ * A GROUP is a widget whose state carries `members: [itemId]`; each member
+ * remains a STORED, independently-derived node (deltas still target it directly
+ * — moving a member alone still works) whose world is RE-COMPOSED here:
+ *   member.world' = compose(groupInfluence(group.world, groupBind), member.world)
+ *
+ * Order/precedence (the "two parents compose in stack order" clause of the
+ * bind-state design): influences are applied in the node list's order (already
+ * z-sorted), so a member caught by two groups picks up both, composed
+ * outer-most-last. NESTED groups (a group that is itself a member of another
+ * group) fall out of this same pass because a group node's OWN world is
+ * re-composed before it is read as a parent for its own members ONLY IF the
+ * outer group precedes it — full nested-group ordering is OUT OF SCOPE for the
+ * rough draft (flagged: the single pass does not topologically sort parents).
+ *
+ * Groups themselves render nothing (plugins/group.js emit() → []); this pass
+ * only rewrites `.world` on the members, never removes or reorders nodes.
+ *
+ * @example // one rect member at world (200,200); its group moved +50,+20 from bind:
+ * @example applyGroupParenting([{itemId: "g", type: "group", state: {members: ["r"], bind: {x: 100, y: 100, rotation: 0, scale: 1}}, world: {x: 150, y: 120, rotation: 0, scale: 1}, plugin: {}}, {itemId: "r", type: "rect", state: {}, world: {x: 200, y: 200, rotation: 0, scale: 1}, plugin: {}}]).find((n) => n.itemId === "r").world // {x: 250, y: 220, rotation: 0, scale: 1}
+ * @example applyGroupParenting([{itemId: "r", type: "rect", state: {}, world: {x: 5, y: 5, rotation: 0, scale: 1}, plugin: {}}]).length // 1 (no groups: passthrough)
+ */
+export function applyGroupParenting(nodes) {
+  const groups = nodes.filter((n) => n.type === "group" && Array.isArray(n.state.members));
+  if (groups.length === 0) return nodes;
+  const byId = new Map(nodes.map((n) => [n.itemId, n]));
+  // Mutate a shallow-cloned world per touched node so the input nodes stay pure.
+  const cloned = new Map();
+  const worldOf = (n) => cloned.get(n.itemId) ?? n.world;
+  for (const g of groups) {
+    const influence = groupInfluence(g.world, groupBindWorld(g.state));
+    for (const memberId of g.state.members) {
+      const m = byId.get(memberId);
+      if (!m) continue; // member purged / not on this slide / not created yet — skip
+      cloned.set(memberId, T.compose(influence, worldOf(m)));
+    }
+  }
+  return nodes.map((n) => (cloned.has(n.itemId) ? { ...n, world: cloned.get(n.itemId) } : n));
+}
+
+/**
+ * Pure function. itemId → the itemId of the GROUP that owns it, for every
+ * member of every group node in the tree (manifest Round-12B box-select rule:
+ * band select grabs TOP-LEVEL GROUPS only, never members; a member and its
+ * group are never both selected). A member listed by two groups maps to the
+ * LAST group in node order (deterministic; nested-group precedence is out of
+ * the rough-draft scope). Non-members are absent from the map.
+ *
+ * @example groupMembership([{itemId: "g", type: "group", state: {members: ["a", "b"]}}, {itemId: "a", type: "rect", state: {}}]).get("a") // "g"
+ * @example groupMembership([{itemId: "r", type: "rect", state: {}}]).size // 0
+ */
+export function groupMembership(nodes) {
+  const map = new Map();
+  for (const n of nodes)
+    if (n.type === "group" && Array.isArray(n.state.members))
+      for (const memberId of n.state.members) map.set(memberId, n.itemId);
+  return map;
 }
 
 /**

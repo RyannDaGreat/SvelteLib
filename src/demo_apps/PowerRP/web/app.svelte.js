@@ -13,9 +13,10 @@ import {
   repairedDocument, printRepairReports, itemFallbackName,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
-import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { resolveTransition, retypedTransition } from "../core/transitions.js";
+import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld } from "../core/derive.js";
 import { evaluateState, withVariableRenamed, anchorRefName } from "../core/expressions.js";
+import { dedupeGroupSelection } from "../core/bandselect.js";
 import { rotatedBBoxAABB, fitRectView } from "../core/view.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
@@ -343,12 +344,20 @@ export class PowerRPApp {
    * Empty ids → full deselect.
    */
   selectMany(ids) {
-    if (ids.length === 0) {
+    // GROUP INVARIANT (manifest Round-12B): a group and its members can never be
+    // simultaneously selected. Enforced HERE — the ONE multi-select substrate —
+    // so band select, Select All, and future multi-click paths all inherit it
+    // with no per-caller code (and CanvasView's band commit needs no edit): a
+    // member whose group is also in the set collapses out, leaving the group as
+    // the top-level handle. A lone member (no group in the set) survives, so a
+    // direct member click with Show Ghosts off still selects the member.
+    const filtered = dedupeGroupSelection(ids, groupMembership(this.nodes()));
+    if (filtered.length === 0) {
       this.selection = null; // clears both (accessor path)
       return;
     }
-    this.#selection = ids[0];
-    this.selectionSet = [...ids];
+    this.#selection = filtered[0];
+    this.selectionSet = [...filtered];
     this.selectedTransition = null; // selecting items clears a transition selection
   }
 
@@ -625,6 +634,138 @@ export class PowerRPApp {
     const [doc, id] = withNewItem(this.doc, this.slideIndex, state);
     this.commit(withNormalizedZ(doc));
     this.selection = id;
+  }
+
+  // ── Groups (manifest "GROUPS", rough draft — the armature-shaped parent) ────
+
+  /**
+   * Query. The itemIds that a Group Selection would make members: the current
+   * selection, minus purgeable:false widgets (the camera never joins a group)
+   * and minus items ALREADY in a group (no nested-group creation in the rough
+   * draft — flagged). Order = selection order. Groups themselves are excluded
+   * (grouping groups = nesting, out of scope).
+   */
+  #groupableSelection() {
+    const membership = groupMembership(this.nodes());
+    return this.selectedIds().filter((id) => {
+      const type = this.state().items?.[id]?.type;
+      if (!type) return false;
+      const plugin = this.registry.get(type);
+      if (plugin.capabilities.purgeable === false) return false; // camera
+      if (type === "group") return false; // no group-of-groups (rough draft)
+      if (membership.has(id)) return false; // already grouped
+      return true;
+    });
+  }
+
+  /** Query. Can the current selection be grouped? (≥2 groupable members — a
+   * one-item group is inert, and PowerPoint requires two+ to group.) */
+  canGroup() {
+    return this.#groupableSelection().length >= 2;
+  }
+
+  /**
+   * Command (one undo unit). "Group Selection" (manifest GROUPS): creates a
+   * group widget whose bbox = the selection's collective world AABB and whose
+   * `members` = the selected ids, capturing the group's creation transform as
+   * its BIND POSE (bind = {x,y,rotation:0,scale:1} at the AABB origin — so the
+   * group sits exactly at its bind pose the instant it is made and moves
+   * nothing until the user transforms it; manifest "Bind state"). Members stay
+   * STORED items (their deltas are untouched); the group's influence composes
+   * onto their world transforms in the derivation stage. Selects the new group.
+   * No-op (reported) with fewer than two groupable items.
+   */
+  groupSelection() {
+    const members = this.#groupableSelection();
+    if (members.length < 2) {
+      console.warn("Group Selection: needs at least two groupable items (camera and already-grouped items are excluded) — nothing grouped.");
+      return;
+    }
+    const boxes = this.selectedNodes()
+      .filter((n) => members.includes(n.itemId))
+      .map(rotatedBBoxAABB)
+      .filter(Boolean);
+    if (boxes.length === 0) {
+      console.warn("Group Selection: selected items have no bounding box — nothing grouped.");
+      return;
+    }
+    const minX = Math.min(...boxes.map((b) => b.x));
+    const minY = Math.min(...boxes.map((b) => b.y));
+    const maxX = Math.max(...boxes.map((b) => b.x + b.w));
+    const maxY = Math.max(...boxes.map((b) => b.y + b.h));
+    const zs = this.nodes().map((n) => n.state.z ?? 0);
+    // The group's own transform IS its bind pose at creation: x/y = AABB origin,
+    // rotation 0, scale 1. Storing bind = the same params makes influence the
+    // identity until the user moves the group (re-pose invariance).
+    const state = {
+      ...this.registry.get("group").defaults,
+      x: minX, y: minY, w: maxX - minX, h: maxY - minY,
+      rotation: 0, scale: 1,
+      members: [...members],
+      bind: { x: minX, y: minY, rotation: 0, scale: 1 },
+      active: true,
+      z: (zs.length ? Math.max(...zs) : 0) + 1,
+    };
+    const [doc, id] = withNewItem(this.doc, this.slideIndex, state);
+    this.commit(withNormalizedZ(doc));
+    this.selection = id;
+  }
+
+  /**
+   * Command (one undo unit). "Ungroup" (manifest UNGROUP spec): for every
+   * SELECTED group, BAKES each member's CURRENT DERIVED world state back into
+   * numeric x/y/rotation/scale keyframes on the CURRENT slide (so the member
+   * stays world-exact after its parent is gone), then PURGES the group. All in
+   * one undo unit. No-op (reported) when no group is selected.
+   *
+   * Baking math: a member's derived node.world already includes the group's
+   * influence. worldTransform(state) pivots a rotated box about its center, so
+   * we back-solve the stored x/y via stateXYForCenterPivotWorld (the same
+   * inverse the rotated-resize commit uses) and write rotation/scale straight
+   * from node.world — after which worldTransform(baked) reproduces node.world
+   * exactly (numeric asserts in tests/group_integration_probe.js). Non-bbox
+   * members (no w/h) get x/y/rotation/scale written directly (their world is
+   * un-pivoted).
+   *
+   * FLAGGED ROUGH-DRAFT LIMITATION: the back-solve assumes the member uses the
+   * default CENTER rotation pivot (the `self.anchors.center` equation every
+   * normally-created item carries — stateXYForCenterPivotWorld is its exact
+   * inverse, the SAME assumption the rotated-resize commit relies on). A member
+   * with a CUSTOM NUMERIC rotationAnchor would bake with a small position drift
+   * (its pivot isn't the center). This is a narrow edge case (numeric anchors
+   * are rare) shared with the rotated-resize precedent — a full fix transforms
+   * the member's evaluated pivot through the group influence too; deferred.
+   */
+  ungroupSelection() {
+    const groups = this.selectedNodes().filter((n) => n.type === "group");
+    if (groups.length === 0) {
+      console.warn("Ungroup: no group is selected — nothing to ungroup.");
+      return;
+    }
+    const nodes = this.nodes();
+    const byId = new Map(nodes.map((n) => [n.itemId, n]));
+    let doc = this.doc;
+    const freed = new Set();
+    for (const g of groups) {
+      for (const memberId of g.state.members ?? []) {
+        const m = byId.get(memberId);
+        if (!m) continue; // member not on this slide / purged / not yet created — nothing to bake
+        const world = m.world; // already group-influenced (derivation stage)
+        const w = m.state.w, h = m.state.h;
+        const xy = (typeof w === "number" && typeof h === "number")
+          ? stateXYForCenterPivotWorld(world, w, h) // undo the center-pivot re-parametrization
+          : { x: world.x, y: world.y };
+        doc = keyframed(doc, this.slideIndex, ["items", memberId, "x"], xy.x);
+        doc = keyframed(doc, this.slideIndex, ["items", memberId, "y"], xy.y);
+        doc = keyframed(doc, this.slideIndex, ["items", memberId, "rotation"], world.rotation);
+        doc = keyframed(doc, this.slideIndex, ["items", memberId, "scale"], world.scale);
+        freed.add(memberId);
+      }
+      doc = withItemPurged(doc, g.itemId);
+    }
+    this.commit(doc);
+    // Select the freed members (the group is gone). Empty → deselect.
+    this.selectMany([...freed]);
   }
 
   // ── Copy / paste ───────────────────────────────────────────────────────────
