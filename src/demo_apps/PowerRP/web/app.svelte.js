@@ -100,7 +100,24 @@ function assetKindForFile(file) {
 
 export class PowerRPApp {
   doc = $state(newDocument());
-  slideIndex = $state(0);
+  // [ROUND 15.2] Backed by a private $state through an accessor (mirrors the
+  // `selection` accessor immediately below) so that ANY slide switch (~13
+  // write sites: SlideNav, KeyframePanel "Go To", jumpKeyframePath, addSlide/
+  // addBlankSlide/deleteSlide/moveSlide, the palette+shortcut prev/next-slide
+  // commands, loadFile/clearDoc/openProject) exits WYSIWYG text edit first —
+  // a slide switch mid-edit must never strand the overlay (manifest 15.2:
+  // "selection change via other UI ... must all commit ... never strand the
+  // overlay"). Dismisses through the SAME dismissTextEdit() the click-away
+  // and selection-change guards use, so all three share one commit/cancel
+  // decision (see dismissTextEdit's doc).
+  #slideIndex = $state(0);
+  get slideIndex() {
+    return this.#slideIndex;
+  }
+  set slideIndex(i) {
+    this.dismissTextEdit();
+    this.#slideIndex = i;
+  }
   // PRIMARY selection — a single itemId or null. Kept as the primary for full
   // single-select compatibility: selectedNode(), delete/purge/copy/rename/
   // reorder/keyframe, the Inspector's single-item UI, the KeyframePanel
@@ -115,6 +132,14 @@ export class PowerRPApp {
     return this.#selection;
   }
   set selection(id) {
+    // [ROUND 15.2] A selection change to a DIFFERENT item than the one being
+    // edited must commit+exit text edit first (manifest: "selection change
+    // via other UI (outline panel etc.) ... must all commit ... never strand
+    // the overlay"). Excludes the id === textEditing.itemId case on purpose:
+    // beginTextEdit() itself writes `this.selection = itemId` to select the
+    // item it is about to edit, and that write must NOT immediately cancel
+    // the edit it is starting.
+    if (this.textEditing && id !== this.textEditing.itemId) this.dismissTextEdit();
     this.#selection = id;
     this.selectionSet = []; // single-select write drops the multi override
     if (id !== null) this.selectedTransition = null; // item and transition selection are mutually exclusive
@@ -429,6 +454,14 @@ export class PowerRPApp {
     // the top-level handle. A lone member (no group in the set) survives, so a
     // direct member click with Show Ghosts off still selects the member.
     const filtered = dedupeGroupSelection(ids, groupMembership(this.nodes()));
+    // [ROUND 15.2] #selection is written directly below (not through the
+    // `selection` accessor, which would clear selectionSet) — so this entry
+    // point needs its OWN text-edit dismissal, same rule as that accessor:
+    // a multi-select that doesn't merely re-affirm the item being edited
+    // must commit+exit first. (In practice CanvasView's click-away guard
+    // already dismisses before any band-select/shift-click logic runs; this
+    // is the defensive second layer for any other caller, e.g. Select All.)
+    if (this.textEditing && !(filtered.length === 1 && filtered[0] === this.textEditing.itemId)) this.dismissTextEdit();
     if (filtered.length === 0) {
       this.selection = null; // clears both (accessor path)
       return;
@@ -736,6 +769,35 @@ export class PowerRPApp {
   cancelTextEdit() {
     this.textEditing = null;
     this.cancelPreview();
+  }
+
+  /**
+   * [ROUND 15.2] Command. The ONE dismissal decision every "something else
+   * happened mid-edit" gate calls (Esc, click-away, selectMany, the
+   * slideIndex/selection accessors, mode→present, deleteSelection/
+   * purgeSelection on the edited item): commit if the edited item still
+   * EXISTS on the current slide (one undo unit, same as Esc — manifest:
+   * "Keep the one-undo-unit commit semantics"), else cancel (nothing to
+   * commit — the item is gone, e.g. purged or deactivated mid-edit). A no-op
+   * when nothing is being edited, so every call site can call it
+   * unconditionally without its own `if (app.textEditing)` guard.
+   */
+  dismissTextEdit() {
+    if (!this.textEditing) return;
+    const stillExists = !!this.state().items?.[this.textEditing.itemId];
+    if (stillExists) this.commitTextEdit();
+    else this.cancelTextEdit();
+  }
+
+  /** [ROUND 15.2] Command. Enters fullscreen presenter mode, dismissing any
+   * live WYSIWYG text edit first (manifest: "presenter entry ... must all
+   * commit ... never strand the overlay" — PresentMode has no canvas/overlay
+   * DOM at all, so an un-dismissed edit would simply vanish with no exit
+   * path). The one `mode = "present"` write site (the palette/toolbar
+   * "Present" command) routes through here instead of writing `mode` bare. */
+  enterPresentMode() {
+    this.dismissTextEdit();
+    this.mode = "present";
   }
 
   // ── Item operations ────────────────────────────────────────────────────────
@@ -1191,6 +1253,13 @@ export class PowerRPApp {
   deleteSelection() {
     const ids = this.selectedIds().filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
     if (ids.length === 0) return;
+    // [ROUND 15.2] deactivate keeps the item OBJECT alive (just hidden), so
+    // the edited item's in-progress text is worth keeping — commit it first
+    // (one undo unit, same as Esc) rather than losing it to the deactivation
+    // commit() below, which writes `this.doc` directly and does not know
+    // about a live previewDelta (manifest: "item deletion while editing ...
+    // must all commit ... never strand the overlay").
+    this.dismissTextEdit();
     let doc = this.doc;
     for (const id of ids) doc = keyframed(doc, this.slideIndex, ["items", id, "active"], false);
     this.commit(doc);
@@ -1244,6 +1313,15 @@ export class PowerRPApp {
   purgeSelection() {
     const ids = this.selectedIds().filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
     if (ids.length === 0) return;
+    // [ROUND 15.2] purge is true removal, so if the edited item is IN the
+    // purge set there is nothing left to commit — cancel (drop the pending
+    // preview with no undo unit) rather than keyframing text onto an item
+    // this very call is about to erase from every slide. An edit on some
+    // OTHER item (not in `ids`) still gets the normal commit-before-mutate
+    // (dismissTextEdit's existence check passes) so ITS in-progress text
+    // survives an unrelated purge.
+    if (ids.includes(this.textEditing?.itemId)) this.cancelTextEdit();
+    else this.dismissTextEdit();
     let doc = this.doc;
     for (const id of ids) doc = withItemPurged(doc, id);
     this.commit(doc);

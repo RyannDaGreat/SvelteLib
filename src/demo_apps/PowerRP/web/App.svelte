@@ -116,7 +116,7 @@
     { id: "move-slide-down", title: "Move Slide Down", icon: "mdi:arrow-down", run: (a) => a.moveSlide(+1) },
     { id: "next-slide", title: "Next Slide", icon: "mdi:chevron-right", run: (a) => (a.slideIndex = Math.min(a.slideIndex + 1, a.doc.slides.length - 1)) },
     { id: "prev-slide", title: "Previous Slide", icon: "mdi:chevron-left", run: (a) => (a.slideIndex = Math.max(a.slideIndex - 1, 0)) },
-    { id: "present", title: "Present (fullscreen)", icon: "mdi:play", run: (a) => (a.mode = "present") },
+    { id: "present", title: "Present (fullscreen)", icon: "mdi:play", run: (a) => a.enterPresentMode() },
     { id: "save-file", title: "Save Presentation", icon: "mdi:content-save-outline", run: (a) => a.saveFile() },
     { id: "load-file", title: "Load Presentation", icon: "mdi:folder-open-outline", run: (a) => a.loadFile() },
     { id: "clear-doc", title: "Clear Document (new)", icon: "mdi:broom", run: (a) => a.clearDoc() },
@@ -479,6 +479,41 @@
     return [[[m.kind === "scale" ? "S" : "G"], modalAnnouncement(m)], ...base];
   });
 
+  /**
+   * [ROUND 15.2] CLICK-AWAY commits + exits WYSIWYG text edit (manifest: "the
+   * universal editor convention" — pointerdown anywhere outside the overlay
+   * AND outside the toolbar). CAPTURE phase, at the window: it must run
+   * BEFORE the click's own target handler (CanvasView's onPointerDown may
+   * start a NEW drag/selection/band-select on the very same pointerdown;
+   * SlideNav/Inspector may reassign selection/slideIndex) so that handler
+   * sees an already-dismissed app — this is the "commit-then-continue" half
+   * of the spec's ordering choice (see the design note below).
+   *
+   * ORDERING CHOICE (documented per the task's "pick one, record why"): a
+   * plain dismiss here does NOT preventDefault/stopPropagation — the click
+   * is allowed to CONTINUE to its normal target after the commit fires, so
+   * clicking another item selects it in the SAME gesture (verified live:
+   * one click, old text committed + new item selected). This works cleanly
+   * because every state change a click could trigger (selection, slideIndex,
+   * a fresh beginTextEdit) is itself gated through dismissTextEdit()-calling
+   * accessors/methods (see app.svelte.js), so nothing downstream can act on
+   * stale textEditing state even though the event keeps going. The
+   * alternative (swallow the first click, require a second click to act on
+   * the new target) was rejected: PowerPoint/Figma/Keynote all let a
+   * click-away-and-select land in one gesture, and re-entrancy here is
+   * already safe, so swallowing would only add friction with no benefit.
+   *
+   * `.closest(".text-edit-overlay-root")` covers BOTH the contenteditable
+   * AND the floating TextFormatToolbar in one check — they share that one
+   * wrapper div (TextEditOverlay.svelte's template), so a toolbar button
+   * click (color pickers, B/I/U, size stepper) never dismisses.
+   */
+  function onPointerDownCapture(e) {
+    if (!app.textEditing) return;
+    if (e.target.closest(".text-edit-overlay-root")) return; // inside the editor/toolbar — not a click-away
+    app.dismissTextEdit();
+  }
+
   function onKeydown(e) {
     const el = document.activeElement;
     // isContentEditable added alongside the SPACEBAR-opens-palette binding
@@ -515,7 +550,7 @@
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} onpaste={onPaste} />
+<svelte:window onkeydown={onKeydown} onpaste={onPaste} onpointerdowncapture={onPointerDownCapture} />
 
 <div class="app">
   <Toolbar {app} />

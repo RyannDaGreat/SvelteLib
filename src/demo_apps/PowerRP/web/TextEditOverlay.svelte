@@ -394,7 +394,9 @@
      item's world top-left, transformed by its world rotation + scale (about the
      top-left, so it lines up with a rotated/scaled widget). The contenteditable
      inside uses LOCAL (world-unit) font sizes; the transform scales it to screen.
-     onblur commits (like the stopgap) UNLESS focus moved into the toolbar. -->
+     Dismissal is NOT handled here: every exit path (Esc aside) funnels through
+     app.dismissTextEdit() — the capture-phase pointer listener in App.svelte and
+     the slideIndex/selection accessors (Round 15.2). No onblur handler exists. -->
 <div
   class="text-edit-overlay-root"
   style:left="{box.x}px"
