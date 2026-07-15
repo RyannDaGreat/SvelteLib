@@ -101,7 +101,16 @@ try {
 
   let checks = 0;
   const ok = (n, c, d) => { assert.ok(c, `${n}: ${d}`); checks++; console.log(`  ok  ${n}`); };
-  ok("analytic shadow is DEFAULT ON", analyticDefaultOn, "gpu.useAnalyticShadow !== true");
+  // Round 17.5: analytic shadow is DEFAULT OFF on main (rolled back pending the
+  // Skia-faithful rewrite). The ENDURING guarantee this probe protects is the
+  // 16.1 fix — soft penumbra on ALL FOUR sides (incl. top/left leading edges)
+  // — which holds for the SUBSTRATE FALLBACK regardless of the analytic flag.
+  // The stroked-rect case ALWAYS exercises the fallback (stroke → ineligible),
+  // so it gates 16.1 unconditionally. The ellipse gates the analytic path only
+  // when the flag is on (a guard, not a hard requirement, so the probe stays
+  // green on main while analytic is off and green in the worktree with it on).
+  if (analyticDefaultOn) console.log("  ok  analytic shadow ON — ellipse exercises the analytic path");
+  else console.log("  ok  analytic shadow OFF (Round 17.5) — ellipse also on the fallback; stroked-rect gates 16.1");
 
   // For each shape and each of the 4 cardinal directions, scan OUTWARD from the
   // fill edge and require a run of penumbra greys before the background (a soft

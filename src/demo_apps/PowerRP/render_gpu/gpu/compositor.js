@@ -576,10 +576,19 @@ export class GpuCompositor {
     this.analyticShadowPipe = make("ir-analytic-shadow", ANALYTIC_SHADOW_WGSL, [this.viewBGL],
       [cornerLayout, { arrayStride: SHAPE_FLOATS * 4, stepMode: "instance", attributes: vec4attrs([1, 2, 3, 4, 5, 6]) }],
       this.sampleCount, EFFECT_BLEND_STATES.normal);
-    // Fast-effects toggles. useAnalyticShadow / useLinearBlur default ON (the
-    // integration goal — analytic shadows for plain SDF shapes + the ~2× linear
-    // blur kernel; both are correctness-preserving).
-    this.useAnalyticShadow = true;
+    // Fast-effects toggles.
+    // useAnalyticShadow default OFF (Round 17.5 rollback, user directive): the
+    // erf-in-X + 4-sample-Y analytic rrect shadow facets its corners at high
+    // zoom and, critically, only fires on UNSTROKED shapes — the default
+    // rect/circle ship strokeWidth:2, so the user's actual shapes hit the
+    // separable fallback anyway, making the analytic path a per-shape
+    // half-measure that isn't Skia's real (ninepatch) method. Left ON in code
+    // as an escape hatch / reference for the clean Skia-faithful unified
+    // rewrite (17.6, being designed in a worktree); OFF on main so users get
+    // ONE consistent shadow (OpusQ's corrected separable path) meanwhile.
+    // useLinearBlur stays ON — a pure ~2× kernel-fetch win, no visual change,
+    // orthogonal to the shadow-algorithm question.
+    this.useAnalyticShadow = false;
     this.useLinearBlur = true;
     // useDownscaleBlur (#2 Skia's ≤4px-per-pass rule) defaults OFF. It downscales
     // the WHOLE effect texture — which for a NON-analytic effect (an IMAGE with a
