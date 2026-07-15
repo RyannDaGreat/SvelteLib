@@ -98,8 +98,9 @@ const server = await createServer({
   // first import and force-reloads the page, destroying the puppeteer
   // execution context mid-evaluate (pdfjs-dist is only reached through
   // pdf_page_raster's lazy import, so it would otherwise be discovered
-  // mid-run).
-  optimizeDeps: { include: ["pdf-lib", "@pdf-lib/fontkit", "pdfjs-dist"] },
+  // mid-run). `mathjax` is the same class — the latex-basic scene's raster is
+  // typeset by latex_raster's lazy tex-svg import (Round 14.5).
+  optimizeDeps: { include: ["pdf-lib", "@pdf-lib/fontkit", "pdfjs-dist", "mathjax"] },
 });
 await server.listen();
 const base = `http://127.0.0.1:${server.httpServer.address().port}`;

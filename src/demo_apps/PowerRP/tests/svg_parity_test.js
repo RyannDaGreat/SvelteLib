@@ -88,7 +88,8 @@ const server = await createServer({
   // intermittent race the warmup retry only partly covers). These are the deps
   // the shared pdfFonts/pdf_backend chain pulls in; listing them here makes the
   // whole run deterministic. (pdf-lib + @pdf-lib/fontkit are the two big ones.)
-  optimizeDeps: { include: ["pdf-lib", "@pdf-lib/fontkit", "pdfjs-dist"] },
+  // `mathjax` is the latex widget's lazy tex-svg dep (Round 14.5) — same class.
+  optimizeDeps: { include: ["pdf-lib", "@pdf-lib/fontkit", "pdfjs-dist", "mathjax"] },
 });
 await server.listen();
 const base = `http://127.0.0.1:${server.httpServer.address().port}`;

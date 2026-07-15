@@ -21,8 +21,11 @@ export default defineConfig({
   // `await import(...)` (a bare-node-safety requirement), so vite would
   // otherwise discover it mid-session on first serve, re-optimize deps, and
   // force a full page reload — which aborts any puppeteer probe mid-evaluate.
-  // Pre-bundling it at server start makes boot deterministic.
-  optimizeDeps: { include: ["pdfjs-dist"] },
+  // Pre-bundling it at server start makes boot deterministic. `mathjax` (the
+  // tex-svg bundle for the latex widget, Round 14.5) is the SAME lazy-dep flake
+  // class — reached only through latex_raster's lazy `?url` script injection —
+  // so it is pre-bundled here too (append, per the same reasoning).
+  optimizeDeps: { include: ["pdfjs-dist", "mathjax"] },
   server: {
     port: 3637,
     host: true,
