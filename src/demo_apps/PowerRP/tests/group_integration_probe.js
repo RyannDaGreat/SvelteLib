@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { createRegistry } from "../core/registry.js";
 import {
   newDocument, foldState, keyframed, withNewItem, withItemPurged, withNormalizedZ, blockZToExtreme,
+  ungroupBakeSlides,
 } from "../core/document.js";
 import {
   deriveRenderTree, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet,
@@ -174,6 +175,75 @@ test("UNGROUP bakes members world-exact then purges the group (one flow)", () =>
     approx(w.x, b.x, 1e-4); approx(w.y, b.y, 1e-4);
     approx(w.rotation, b.rotation, 1e-9); approx(w.scale, b.scale, 1e-9);
   }
+});
+
+// ── ROUND 17.3: MULTI-SLIDE ungroup keeps every member world-exact on EVERY
+// slide (the ungroupBakeSlides + per-slide bake, reproduced from app.svelte.js).
+// This is a pure-derive test (no equations) — the anchor/equation end-to-end
+// cases live in tests/group_anchor_probe.js.
+
+function addBlankSlide(doc, name) {
+  return { ...doc, slides: [...doc.slides, { id: `slide-${doc.slides.length}`, name, transition: doc.slides[0].transition, delta: { items: {} } }] };
+}
+// Reproduces app.svelte.js ungroupSelection: bakes each member's group-influenced
+// world at every ungroupBakeSlides change point (worlds read from the ORIGINAL
+// doc), then purges the group. Returns the ungrouped doc.
+function ungroupMultiSlide(origDoc, gid, memberIds) {
+  let doc = origDoc;
+  for (const memberId of memberIds)
+    for (const slide of ungroupBakeSlides(origDoc, memberId, gid)) {
+      const m = deriveRenderTree(foldState(origDoc, slide, 1), registry).find((n) => n.itemId === memberId);
+      if (!m) continue;
+      const xy = (typeof m.state.w === "number" && typeof m.state.h === "number")
+        ? stateXYForCenterPivotWorld(m.world, m.state.w, m.state.h)
+        : { x: m.world.x, y: m.world.y };
+      doc = keyframed(doc, slide, ["items", memberId, "x"], xy.x);
+      doc = keyframed(doc, slide, ["items", memberId, "y"], xy.y);
+      doc = keyframed(doc, slide, ["items", memberId, "rotation"], m.world.rotation);
+      doc = keyframed(doc, slide, ["items", memberId, "scale"], m.world.scale);
+    }
+  return withItemPurged(doc, gid);
+}
+
+test("MULTI-SLIDE ungroup: members world-exact on EVERY slide (member keyframed across slides)", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  doc = addBlankSlide(doc, "Slide 2");
+  doc = addBlankSlide(doc, "Slide 3");
+  let gid, origin; [doc, gid, origin] = groupTwo(doc, id1, id2);
+  doc = withNormalizedZ(doc);
+  // member 1 moves on slide 1; the GROUP moves+rotates on slide 2 (member has no
+  // keyframe there — a group-ONLY change point that the old single-slide bake
+  // would have dropped, jumping the member off slide 2).
+  doc = keyframed(doc, 1, ["items", id1, "x"], 140);
+  doc = keyframed(doc, 1, ["items", id1, "y"], 130);
+  doc = keyframed(doc, 2, ["items", gid, "x"], origin.minX + 60);
+  doc = keyframed(doc, 2, ["items", gid, "rotation"], Math.PI / 5);
+  // Capture BEFORE worlds on all three slides for both members.
+  const before = {};
+  for (const id of [id1, id2]) before[id] = [0, 1, 2].map((s) => deriveRenderTree(foldState(doc, s, 1), registry).find((n) => n.itemId === id).world);
+  const ungrouped = ungroupMultiSlide(doc, gid, [id1, id2]);
+  assert.equal(deriveRenderTree(foldState(ungrouped, 0, 1), registry).find((n) => n.itemId === gid), undefined); // purged
+  for (const id of [id1, id2])
+    for (const s of [0, 1, 2]) {
+      const a = deriveRenderTree(foldState(ungrouped, s, 1), registry).find((n) => n.itemId === id).world, b = before[id][s];
+      approx(a.x, b.x, 1e-3); approx(a.y, b.y, 1e-3);
+      approx(a.rotation, b.rotation, 1e-9); approx(a.scale, b.scale, 1e-9);
+    }
+});
+
+test("MULTI-SLIDE ungroup: bake slides = member creation + member-change + group-change points", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  doc = addBlankSlide(doc, "Slide 2");
+  doc = addBlankSlide(doc, "Slide 3");
+  doc = addBlankSlide(doc, "Slide 4"); // slides 0..3 exist
+  let gid; [doc, gid] = groupTwo(doc, id1, id2);
+  doc = withNormalizedZ(doc);
+  doc = keyframed(doc, 1, ["items", id1, "x"], 140); // member 1 change on slide 1
+  doc = keyframed(doc, 3, ["items", gid, "scale"], 2); // group change on slide 3
+  // member 1: creation(0) + its own change(1) + group change(3).
+  assert.deepEqual(ungroupBakeSlides(doc, id1, gid), [0, 1, 3]);
+  // member 2: creation(0) + group change(3) — no own keyframe on slide 1.
+  assert.deepEqual(ungroupBakeSlides(doc, id2, gid), [0, 3]);
 });
 
 test("band select grabs the GROUP, not its members (real selectInBox + filter)", () => {

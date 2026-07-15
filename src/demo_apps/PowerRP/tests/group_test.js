@@ -19,9 +19,10 @@ import * as T from "../core/transform.js";
 import {
   groupInfluence, groupBindWorld, applyGroupParenting, groupMembership,
   worldTransform, stateXYForCenterPivotWorld, snapExclusionSet,
+  composedMemberInfluence, memberOwnerGroups,
 } from "../core/derive.js";
 import { groupFilteredSelection, dedupeGroupSelection } from "../core/bandselect.js";
-import { blockZToExtreme } from "../core/document.js";
+import { blockZToExtreme, ungroupBakeSlides } from "../core/document.js";
 import { groupResizeState } from "../web/canvas/dragKinds.js";
 
 let passed = 0;
@@ -366,6 +367,96 @@ test("blockZToExtreme: back is symmetric — block below foreign min, order pres
   const zById = new Map(out);
   for (const id of ["g", "a", "b"]) assert.ok(zById.get(id) < foreignMin, `${id} should be below foreign min`);
   assert.ok(zById.get("a") < zById.get("b") && zById.get("b") < zById.get("g")); // relative order kept
+});
+
+// ── ROUND 17: group-aware anchor resolution helpers (pure math) ──────────────
+
+test("composedMemberInfluence doctest: single group's translation", () => {
+  assert.deepEqual(
+    composedMemberInfluence(["g"], { items: { g: { type: "group", members: ["r"], bind: { x: 100, y: 100, rotation: 0, scale: 1 }, x: 150, y: 120, rotation: 0, scale: 1, w: 80, h: 60 } } }),
+    { x: 50, y: 20, rotation: 0, scale: 1 });
+});
+
+test("composedMemberInfluence doctest: ungrouped member → null", () => {
+  assert.equal(composedMemberInfluence(undefined, { items: {} }), null);
+});
+
+test("composedMemberInfluence: matches applyGroupParenting exactly (rotate+scale group)", () => {
+  // A group rotated 30° + scaled 1.5 about its center; its member sits offset.
+  const gState = { type: "group", members: ["r"], w: 200, h: 100, x: 10, y: 20, rotation: Math.PI / 6, scale: 1.5, bind: { x: 10, y: 20, rotation: 0, scale: 1 }, rotationAnchor: { x: 110, y: 70 } };
+  const memberWorld = { x: 40, y: 55, rotation: 0.2, scale: 0.8 };
+  const state = { items: { g: gState, r: { type: "rect" } } };
+  const owners = memberOwnerGroups(state).get("r");
+  const influence = composedMemberInfluence(owners, state);
+  // The composed influence applied to the member's own world must equal what
+  // applyGroupParenting composes onto node.world.
+  const viaExpr = T.compose(influence, memberWorld);
+  const viaDerive = applyGroupParenting([
+    { itemId: "g", type: "group", state: gState, world: worldTransform(gState), plugin: {} },
+    { itemId: "r", type: "rect", state: { type: "rect" }, world: memberWorld, plugin: {} },
+  ]).find((n) => n.itemId === "r").world;
+  approxT(viaExpr, viaDerive);
+});
+
+test("composedMemberInfluence: two groups compose later-outermost (matches derive order)", () => {
+  // Member r in g1 (z 0) then g2 (z 1). memberInfluence must be compose(inf2, inf1).
+  const g1 = { type: "group", members: ["r"], z: 0, w: 100, h: 100, x: 5, y: 0, rotation: 0, scale: 2, bind: { x: 0, y: 0, rotation: 0, scale: 1 } };
+  const g2 = { type: "group", members: ["r"], z: 1, w: 100, h: 100, x: 0, y: 7, rotation: 0, scale: 1, bind: { x: 0, y: 0, rotation: 0, scale: 1 } };
+  const state = { items: { g1, g2, r: { type: "rect" } } };
+  const owners = memberOwnerGroups(state).get("r");
+  assert.deepEqual(owners, ["g1", "g2"]); // z-order (later group last)
+  const memberWorld = { x: 1, y: 1, rotation: 0, scale: 1 };
+  const composed = T.compose(composedMemberInfluence(owners, state), memberWorld);
+  const viaDerive = applyGroupParenting([
+    { itemId: "g1", type: "group", state: g1, world: worldTransform(g1), plugin: {} },
+    { itemId: "g2", type: "group", state: g2, world: worldTransform(g2), plugin: {} },
+    { itemId: "r", type: "rect", state: { type: "rect" }, world: memberWorld, plugin: {} },
+  ]).find((n) => n.itemId === "r").world;
+  approxT(composed, viaDerive);
+});
+
+test("memberOwnerGroups doctest: member → [groupId]", () => {
+  assert.deepEqual(memberOwnerGroups({ items: { g: { type: "group", members: ["a"], z: 0 }, a: { type: "rect", z: 1 } } }).get("a"), ["g"]);
+});
+
+test("memberOwnerGroups doctest: no groups → empty", () => {
+  assert.equal(memberOwnerGroups({ items: { r: { type: "rect" } } }).size, 0);
+});
+
+test("memberOwnerGroups: inactive group is not an owner", () => {
+  const st = { items: { g: { type: "group", members: ["a"], z: 0, active: false }, a: { type: "rect", z: 1 } } };
+  assert.equal(memberOwnerGroups(st).has("a"), false);
+});
+
+// ── ROUND 17.3: ungroup bake-slide set (pure) ────────────────────────────────
+
+test("ungroupBakeSlides doctest: member creation + a group-only change slide", () => {
+  assert.deepEqual(
+    ungroupBakeSlides({ slides: [{ delta: { items: { m: { type: "rect", x: 1, y: 1 } } } }, { delta: { items: {} } }, { delta: { items: { g: { x: 5 } } } }] }, "m", "g"),
+    [0, 2]);
+});
+
+test("ungroupBakeSlides doctest: single-slide member", () => {
+  assert.deepEqual(ungroupBakeSlides({ slides: [{ delta: { items: { m: { type: "rect", x: 1 } } } }] }, "m", "g"), [0]);
+});
+
+test("ungroupBakeSlides: member-only change slides are included; unrelated slides excluded", () => {
+  const doc = { slides: [
+    { delta: { items: { m: { type: "rect", x: 1, y: 1 } } } }, // 0: creation
+    { delta: { items: { m: { rotation: 0.5 } } } },            // 1: member rotates
+    { delta: { items: { other: { fill: "#0f0" } } } },         // 2: unrelated item — excluded
+    { delta: { items: { g: { scale: 2 } } } },                 // 3: group scales
+  ] };
+  assert.deepEqual(ungroupBakeSlides(doc, "m", "g"), [0, 1, 3]);
+});
+
+test("ungroupBakeSlides: slides BEFORE the member's creation are excluded", () => {
+  const doc = { slides: [
+    { delta: { items: { g: { x: 9 } } } },                     // 0: before member exists
+    { delta: { items: { m: { type: "rect", x: 1 } } } },       // 1: creation
+    { delta: { items: { g: { x: 5 } } } },                     // 2: group change
+  ] };
+  assert.deepEqual(ungroupBakeSlides(doc, "m", "g"), [1, 2]);
 });
 
 console.log(`\n${passed} group tests passed.`);

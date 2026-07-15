@@ -208,6 +208,60 @@ export function applyGroupParenting(nodes) {
 }
 
 /**
+ * Pure function. The COMPOSED group influence for ONE member of a folded /
+ * evaluated state, or null if it is controlled by no group. Reads ONLY that
+ * member's owning group transforms (not the whole scene), so a caller mid-way
+ * through incremental evaluation gets a correct answer as long as those groups
+ * are settled — which the expression pass guarantees via dependency edges
+ * (Round 17). Composition order matches applyGroupParenting (later group
+ * outermost). `ownerIds` is memberOwnerGroups(state).get(id) (the member's
+ * owning group ids in z-order); passed in so the caller computes the owner map
+ * once.
+ *
+ * @example // member "r" owned only by group "g" (moved +50,+20 from bind):
+ * @example composedMemberInfluence(["g"], {items: {g: {type: "group", members: ["r"], bind: {x: 100, y: 100, rotation: 0, scale: 1}, x: 150, y: 120, rotation: 0, scale: 1, w: 80, h: 60}}}) // {x: 50, y: 20, rotation: 0, scale: 1}
+ * @example composedMemberInfluence(undefined, {items: {}}) // null (ungrouped)
+ */
+export function composedMemberInfluence(ownerIds, state) {
+  if (!ownerIds || ownerIds.length === 0) return null;
+  const items = state.items ?? {};
+  let composed = null;
+  for (const gid of ownerIds) {
+    const g = items[gid];
+    if (!g || !Array.isArray(g.members)) continue;
+    const influence = groupInfluence(worldTransform(g), groupBindWorld(g));
+    composed = composed ? T.compose(influence, composed) : influence;
+  }
+  return composed;
+}
+
+/**
+ * Pure function. itemId → [groupId] for every group whose `members` list names
+ * it (a folded/evaluated state), in the SAME z-sorted order applyGroupParenting
+ * visits groups (later group last — the order composedMemberInfluence composes).
+ * Used by the expression pass to add the dependency edges that make a group's
+ * transform evaluate BEFORE any equation referencing a grouped member's anchor
+ * (Round 17 — otherwise Kahn could evaluate the anchor first and read a stale,
+ * pre-influence group transform). Non-members are absent.
+ *
+ * @example memberOwnerGroups({items: {g: {type: "group", members: ["a"], z: 0}, a: {type: "rect", z: 1}}}).get("a") // ["g"]
+ * @example memberOwnerGroups({items: {r: {type: "rect"}}}).size // 0
+ */
+export function memberOwnerGroups(state) {
+  const items = state.items ?? {};
+  const groups = Object.entries(items)
+    .filter(([, s]) => s.type === "group" && Array.isArray(s.members) && s.active !== false)
+    .sort(([aId, a], [bId, b]) => (a.z ?? 0) - (b.z ?? 0) || (aId < bId ? -1 : 1));
+  const map = new Map();
+  for (const [gid, g] of groups)
+    for (const memberId of g.members) {
+      if (!map.has(memberId)) map.set(memberId, []);
+      map.get(memberId).push(gid);
+    }
+  return map;
+}
+
+/**
  * Pure function. itemId → the itemId of the GROUP that owns it, for every
  * member of every group node in the tree (manifest Round-12B box-select rule:
  * band select grabs TOP-LEVEL GROUPS only, never members; a member and its

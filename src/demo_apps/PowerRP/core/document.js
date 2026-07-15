@@ -163,6 +163,47 @@ export function keyframeIndices(doc, path) {
   return out;
 }
 
+// The item-subtree leaf paths (relative to items.<id>) that can change an
+// item's DERIVED world, plus a group's own INFLUENCE (Round 17 ungroup bake).
+// A keyframe on any of these at slide i is a "change point" where the member's
+// group-influenced world may differ from slide i−1, so ungroup must re-bake
+// there. (fill/opacity/etc. don't move geometry, so they're excluded — no
+// redundant transform keyframes.) `members`/`bind.*` are group-only but listing
+// them for the member subtree too is harmless (members never key them).
+const WORLD_AFFECTING_LEAVES = [
+  ["x"], ["y"], ["rotation"], ["scale"], ["w"], ["h"],
+  ["rotationAnchor", "x"], ["rotationAnchor", "y"], ["active"],
+  ["members"], ["bind", "x"], ["bind", "y"], ["bind", "rotation"], ["bind", "scale"],
+];
+
+/**
+ * Pure function. The ascending slide indices at which ungroup must BAKE a
+ * member's transform (Round 17.3): every slide where the MEMBER or its GROUP has
+ * a world-affecting keyframe (WORLD_AFFECTING_LEAVES), from the member's
+ * creation slide onward. Between two such slides the member's group-influenced
+ * world is constant (neither the member's own transform nor the group's
+ * influence changed), so a keyframe baked at each change point reproduces the
+ * pre-ungroup world on EVERY slide the member exists — that is the invariant
+ * "removing the group changes nothing visible, anywhere". The member's creation
+ * slide (where its full initial transform is keyed) is always included; slides
+ * before it are excluded (the member does not exist yet).
+ *
+ * @example // member created slide 0 (x/y keyed), group moved on slide 2:
+ * @example ungroupBakeSlides({slides: [{delta: {items: {m: {type: "rect", x: 1, y: 1}}}}, {delta: {items: {}}}, {delta: {items: {g: {x: 5}}}}]}, "m", "g") // [0, 2]
+ * @example ungroupBakeSlides({slides: [{delta: {items: {m: {type: "rect", x: 1}}}}]}, "m", "g") // [0]
+ */
+export function ungroupBakeSlides(doc, memberId, groupId) {
+  const creation = keyframeIndices(doc, ["items", memberId, "type"])[0] ?? 0;
+  const touches = (id, delta) =>
+    WORLD_AFFECTING_LEAVES.some((leaf) => getPath(delta, ["items", id, ...leaf]) !== undefined);
+  const out = [];
+  doc.slides.forEach((s, i) => {
+    if (i < creation) return;
+    if (i === creation || touches(memberId, s.delta) || touches(groupId, s.delta)) out.push(i);
+  });
+  return out;
+}
+
 /**
  * Pure function. THE fallback display name for an unnamed item: its plugin
  * `title` plus a 4-char id prefix — "Rect (ab12)". The ONE home for this format

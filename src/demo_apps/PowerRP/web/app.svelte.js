@@ -10,7 +10,7 @@ import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
-  repairedDocument, printRepairReports, itemFallbackName,
+  repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { resolveTransition, retypedTransition } from "../core/transitions.js";
@@ -895,29 +895,36 @@ export class PowerRPApp {
   }
 
   /**
-   * Command (one undo unit). "Ungroup" (manifest UNGROUP spec): for every
-   * SELECTED group, BAKES each member's CURRENT DERIVED world state back into
-   * numeric x/y/rotation/scale keyframes on the CURRENT slide (so the member
-   * stays world-exact after its parent is gone), then PURGES the group. All in
-   * one undo unit. No-op (reported) when no group is selected.
+   * Command (one undo unit). "Ungroup" (manifest UNGROUP spec + Round 17.3): for
+   * every SELECTED group, BAKES each member's group-influenced DERIVED world back
+   * into numeric x/y/rotation/scale keyframes AT EVERY SLIDE the member exists
+   * (ungroupBakeSlides — the change points where the member's own transform OR
+   * the group's influence keyframes), then PURGES the group. All in one undo unit.
+   * No-op (reported) when no group is selected.
    *
-   * Baking math: a member's derived node.world already includes the group's
-   * influence. worldTransform(state) pivots a rotated box about its center, so
-   * we back-solve the stored x/y via stateXYForCenterPivotWorld (the same
-   * inverse the rotated-resize commit uses) and write rotation/scale straight
-   * from node.world — after which worldTransform(baked) reproduces node.world
-   * exactly (numeric asserts in tests/group_integration_probe.js). Non-bbox
-   * members (no w/h) get x/y/rotation/scale written directly (their world is
-   * un-pivoted).
+   * WHY PER-SLIDE (17.3, user: "when deleting a group, the things inside should
+   * not move … in every place"): a member keyframed across slides, or a group
+   * keyframed across slides, has a DIFFERENT influenced world per slide. Baking
+   * only the CURRENT slide (the pre-17.3 behavior) left every OTHER slide with the
+   * un-influenced stored transform, so members JUMPED off-current-slide. The
+   * invariant: after ungroup, each member's WORLD is byte-identical to before on
+   * EVERY slide. Between two consecutive change points the influenced world is
+   * constant, so a keyframe at each change point reproduces it everywhere.
    *
-   * FLAGGED ROUGH-DRAFT LIMITATION: the back-solve assumes the member uses the
-   * default CENTER rotation pivot (the `self.anchors.center` equation every
-   * normally-created item carries — stateXYForCenterPivotWorld is its exact
-   * inverse, the SAME assumption the rotated-resize commit relies on). A member
-   * with a CUSTOM NUMERIC rotationAnchor would bake with a small position drift
-   * (its pivot isn't the center). This is a narrow edge case (numeric anchors
-   * are rare) shared with the rotated-resize precedent — a full fix transforms
-   * the member's evaluated pivot through the group influence too; deferred.
+   * Baking math (per slide i): the member's derived node.world at slide i already
+   * includes the group influence at slide i. worldTransform pivots a rotated box
+   * about its center, so we back-solve the stored x/y via stateXYForCenterPivotWorld
+   * and write rotation/scale straight from node.world — worldTransform(baked@i)
+   * then reproduces node.world@i exactly. Non-bbox members (no w/h) get x/y/rot/
+   * scale written directly (their world is un-pivoted). Worlds are computed from
+   * the ORIGINAL doc (group still present) BEFORE any keyframe is written, so a
+   * bake never reads its own already-baked (double-counted) value.
+   *
+   * FLAGGED ROUGH-DRAFT LIMITATION (unchanged from the single-slide bake): the
+   * back-solve assumes the member uses the default CENTER rotation pivot (the
+   * `self.anchors.center` equation every normally-created item carries — the SAME
+   * assumption the rotated-resize commit relies on). A member with a CUSTOM
+   * NUMERIC rotationAnchor bakes with a small position drift; deferred.
    */
   ungroupSelection() {
     const groups = this.selectedNodes().filter((n) => n.type === "group");
@@ -925,27 +932,40 @@ export class PowerRPApp {
       console.warn("Ungroup: no group is selected — nothing to ungroup.");
       return;
     }
-    const nodes = this.nodes();
-    const byId = new Map(nodes.map((n) => [n.itemId, n]));
-    let doc = this.doc;
+    const origDoc = this.doc; // read every member world from the ORIGINAL (group-present) doc
     const freed = new Set();
+    // 1. Compute the full bake (memberId → [{slide, x, y, rotation, scale}]) from
+    //    the original doc, so no bake reads an already-written keyframe.
+    const bakes = new Map();
     for (const g of groups) {
       for (const memberId of g.state.members ?? []) {
-        const m = byId.get(memberId);
-        if (!m) continue; // member not on this slide / purged / not yet created — nothing to bake
-        const world = m.world; // already group-influenced (derivation stage)
-        const w = m.state.w, h = m.state.h;
-        const xy = (typeof w === "number" && typeof h === "number")
-          ? stateXYForCenterPivotWorld(world, w, h) // undo the center-pivot re-parametrization
-          : { x: world.x, y: world.y };
-        doc = keyframed(doc, this.slideIndex, ["items", memberId, "x"], xy.x);
-        doc = keyframed(doc, this.slideIndex, ["items", memberId, "y"], xy.y);
-        doc = keyframed(doc, this.slideIndex, ["items", memberId, "rotation"], world.rotation);
-        doc = keyframed(doc, this.slideIndex, ["items", memberId, "scale"], world.scale);
+        if (bakes.has(memberId)) continue; // a member belongs to ONE group (no nested groups)
+        const perSlide = [];
+        for (const slide of ungroupBakeSlides(origDoc, memberId, g.itemId)) {
+          const state = evaluateState(foldState(origDoc, slide, 1), this.registry).state;
+          const m = deriveRenderTree(state, this.registry).find((n) => n.itemId === memberId);
+          if (!m) continue; // member not active on this slide — nothing to bake there
+          const world = m.world; // group-influenced (derivation stage) at THIS slide
+          const w = m.state.w, h = m.state.h;
+          const xy = (typeof w === "number" && typeof h === "number")
+            ? stateXYForCenterPivotWorld(world, w, h) // undo the center-pivot re-parametrization
+            : { x: world.x, y: world.y };
+          perSlide.push({ slide, x: xy.x, y: xy.y, rotation: world.rotation, scale: world.scale });
+        }
+        bakes.set(memberId, perSlide);
         freed.add(memberId);
       }
-      doc = withItemPurged(doc, g.itemId);
     }
+    // 2. Write every keyframe, then purge every group — one undo unit.
+    let doc = origDoc;
+    for (const [memberId, perSlide] of bakes)
+      for (const { slide, x, y, rotation, scale } of perSlide) {
+        doc = keyframed(doc, slide, ["items", memberId, "x"], x);
+        doc = keyframed(doc, slide, ["items", memberId, "y"], y);
+        doc = keyframed(doc, slide, ["items", memberId, "rotation"], rotation);
+        doc = keyframed(doc, slide, ["items", memberId, "scale"], scale);
+      }
+    for (const g of groups) doc = withItemPurged(doc, g.itemId);
     this.commit(doc);
     // Select the freed members (the group is gone). Empty → deselect.
     this.selectMany([...freed]);

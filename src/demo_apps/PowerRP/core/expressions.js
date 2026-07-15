@@ -91,7 +91,7 @@
 
 import { isTree, copied, getPath, setPath, leaves } from "./deltas.js";
 import * as T from "./transform.js";
-import { worldTransform } from "./derive.js";
+import { worldTransform, composedMemberInfluence, memberOwnerGroups } from "./derive.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 
@@ -1228,6 +1228,14 @@ function computeEvaluatedState(state, registry) {
   const errors = new Map();
   const slugs = slugMap(state);
   const slots = new Map(); // key ("items.a1.x") → slot
+  // Round 17: memberId → [owning groupIds]. A CROSS-ITEM anchor ref to a grouped
+  // member must resolve at the member's GROUP-INFLUENCED world (the painted
+  // position — 17.1/17.2), and evaluateState runs BEFORE applyGroupParenting.
+  // So such a slot must (a) depend on each owning group's transform equations so
+  // the group evaluates first (added below), and (b) compose the group influence
+  // onto the member's world at lookup time (lookupFor). Empty for group-free
+  // documents — the common case adds zero edges and keeps the memo/fast path.
+  const ownerGroups = memberOwnerGroups(state);
 
   const fallbackFor = (path) => {
     if (path[0] !== "items") return 0; // variables have no plugin defaults
@@ -1380,6 +1388,16 @@ function computeEvaluatedState(state, registry) {
               : (itemSlotKeys.get(d.itemId) ?? []);
             for (const depKey of baseKeys)
               if (depKey !== slot.key) slot.deps.add(depKey);
+            // Round 17 (17.1/17.2): a CROSS-ITEM anchor ref to a GROUPED member
+            // resolves at the member's group-INFLUENCED world (lookupFor), so it
+            // must evaluate AFTER the owning group's transform — depend on each
+            // owning group's equation slots. selfBase (the member's own rotation
+            // pivot) stays in the member's OWN pre-influence frame (the group
+            // influence composes ON TOP in derive.js), so it takes NO group dep
+            // — applying influence to the pivot would double-count it.
+            if (!d.selfBase)
+              for (const gid of ownerGroups.get(d.itemId) ?? [])
+                dependOnItemGeometry(gid);
           }
         }
       }
@@ -1444,6 +1462,16 @@ function computeEvaluatedState(state, registry) {
     return solvePair(widgetIds[0], widgetIds[1]); // rim vs rim (joint)
   };
 
+  // Round 17: the group influence for a grouped member, read from the EVOLVING
+  // `out` — computed from ONLY that member's owning groups (composedMemberInfluence
+  // reads just those group transforms, which the dep edges added in step 2 have
+  // already settled by the time this lookup runs, so it never reads an unsettled
+  // group). Null for ungrouped members → callers keep worldTransform(item)
+  // untouched (the no-group fast path). Composition order (later group outermost)
+  // is byte-identical to applyGroupParenting, so a cross-item anchor ref lands on
+  // the member's PAINTED (group-influenced) position (17.1/17.2).
+  const memberInfluenceFor = (memberId) => composedMemberInfluence(ownerGroups.get(memberId), out);
+
   // 3b. Evaluation lookup (reads the evolving `out` state).
   const lookupFor = (slot) => (token) => {
     const d = slot.descriptors.get(token);
@@ -1474,8 +1502,15 @@ function computeEvaluatedState(state, registry) {
     //     its geometric center).
     //   otherwise (a CROSS-ITEM ref like box.anchors.tr): the item's PAINTED
     //     transform = worldTransform(item), which pivots the rotation about the
-    //     item's rotationAnchor exactly as derive.js paints it (registry #2).
-    const world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : worldTransform(item);
+    //     item's rotationAnchor exactly as derive.js paints it (registry #2) —
+    //     PLUS, if the item is a GROUP MEMBER, the group influence composed onto
+    //     it (Round 17: byte-identical to the derived node.world, so the ref
+    //     lands on the painted position under group translate/rotate/scale).
+    let world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : worldTransform(item);
+    if (!d.selfBase) {
+      const influence = memberInfluenceFor(d.itemId);
+      if (influence) world = T.compose(influence, world);
+    }
     const anchor = plugin.anchors(item).find((a) => a.id === d.anchorId);
     return T.apply(world, anchor.x, anchor.y)[d.coord];
   };
