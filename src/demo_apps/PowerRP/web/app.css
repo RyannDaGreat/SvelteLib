@@ -1247,6 +1247,12 @@ body,
   border-bottom: var(--a-hairline) solid var(--border);
 }
 
+/* Breadcrumb separator chevron (mdi, iconify-only rule) sits on the text line. */
+.palette-crumbs .crumb-sep {
+  vertical-align: middle;
+  margin: 0 var(--a-sp-1);
+}
+
 .palette input {
   width: 100%;
   box-sizing: border-box;

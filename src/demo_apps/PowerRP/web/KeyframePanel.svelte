@@ -25,8 +25,9 @@
   // substrate) — falls back to the single primary when nothing multi is set.
   let selectedIds = $derived(new Set(app.selectedIds()));
 
+  // null (the delete sentinel) renders in the template as an mdi icon +
+  // "delete" (iconify-only rule — no Unicode ∅ glyph), so fmt never sees it.
   function fmt(v) {
-    if (v === null) return "∅ (delete)";
     if (typeof v === "object") return JSON.stringify(v);
     if (typeof v === "number") return String(Math.round(v * 1000) / 1000);
     return String(v);
@@ -47,7 +48,14 @@
           <Tooltip text={k.path.join(".")}>
             <span class="path">{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
           </Tooltip>
-          <span class="value">{fmt(k.value)}</span>
+          <span class="value">
+            {#if k.value === null}
+              <!-- The delete sentinel: this keyframe REMOVES the key. -->
+              <iconify-icon icon="mdi:cancel" width="12" height="12"></iconify-icon> delete
+            {:else}
+              {fmt(k.value)}
+            {/if}
+          </span>
           <Tooltip text="Remove this keyframe">
             <button class="remove" aria-label="Remove keyframe" onclick={() => app.removeKey(slideIndex, k.path)}>
               <iconify-icon icon="mdi:close" width="13" height="13"></iconify-icon>

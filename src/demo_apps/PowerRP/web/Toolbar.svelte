@@ -108,7 +108,9 @@
     </button>
   </Tooltip>
   <span class="spacer"></span>
-  <Tooltip text="Toggle light/dark — all themes: palette › Color Theme">
+  <!-- Tooltip is a plain-text prop (no iconify possible), so no arrow glyph:
+       worded around it instead ("›" is in the manifest's banned set). -->
+  <Tooltip text={'Toggle light/dark — all themes: palette, "Color Theme"'}>
     <button class="btn-icon" aria-label="Toggle light/dark theme" onclick={() => app.toggleLightDark()}>
       <iconify-icon icon={app.theme === "light" ? "mdi:weather-night" : "mdi:weather-sunny"} width="18" height="18"></iconify-icon>
     </button>

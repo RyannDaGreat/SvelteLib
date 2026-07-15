@@ -126,7 +126,9 @@
     <div class="palette" onpointerdown={(e) => e.stopPropagation()}>
       {#if stack.length}
         <div class="palette-crumbs">
-          {#each stack as s, i}{i > 0 ? " › " : ""}{s.title}{/each}
+          <!-- Separator is an mdi chevron (iconify-only rule — the "›" glyph
+               is in the manifest's banned set), matching the row sub-arrow. -->
+          {#each stack as s, i}{#if i > 0}<iconify-icon class="crumb-sep" icon="mdi:chevron-right" width="12" height="12"></iconify-icon>{/if}{s.title}{/each}
         </div>
       {/if}
       <input
