@@ -1,9 +1,8 @@
 /**
  * Undo/redo as a document snapshot log (annotator pattern). Documents are
  * immutable plain-JSON trees, so a "snapshot" is just holding the reference —
- * no cloning needed. Documents are immutable
- * plain trees, so holding references is free; receipts-style undo was never
- * ported from LIAC (a possible future optimization).
+ * no cloning needed. Receipts-style undo was never ported from LIAC (a
+ * possible future optimization).
  */
 
 export function createUndo(initialDoc) {

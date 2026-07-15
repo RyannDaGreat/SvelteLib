@@ -16,9 +16,9 @@
  *     (only nodes with z strictly below the magnifier) into an offscreen canvas
  *     sized to the lens's device diameter, then composite that through the clip.
  *     A true re-render at display resolution, so it's sharp. Cheap because the
- *     region is small. Falls back to the sampling path when re-render isn't
- *     available (env.renderRegion absent — happens for a nested magnifier, the
- *     depth-1 recursion guard in the compositor).
+ *     region is small. A lens NESTED inside another lens's replay falls back
+ *     to the sampling path (the GPU compositor's MAX_SUPERSAMPLE_DEPTH
+ *     recursion guard — see render_gpu/gpu/compositor.js).
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";

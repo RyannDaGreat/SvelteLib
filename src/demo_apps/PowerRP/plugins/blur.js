@@ -10,9 +10,9 @@ import { blurBackdrop } from "../render_gpu/ir.js";
 export const blurPlugin = {
   type: "blur",
   title: "Blur Layer",
-  // backdrop:true also makes this widget uncullable — the compositor never
+  // backdrop:true also makes this widget uncullable — the renderer never
   // skips a backdrop sampler (it may read pixels anywhere on the canvas), so
-  // blur needs no canSkip hook of its own (see compositor.js canSkipNode).
+  // blur needs no canSkip hook of its own (see core/view.js canSkipNode).
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: true },
   defaults: { type: "blur", z: 50, blur: 6, opacity: 1 },
   // `category` groups rows into the Inspector's collapsible accordion regions

@@ -36,7 +36,9 @@
  *   }
  *
  * No plugin may import another plugin. Composition happens through
- * tests/conventions_test.js).
+ * capabilities, shared core modules (e.g. core/endpoints.js), and document
+ * state. (A BirdsEye-style convention test suite enforcing this mechanically
+ * is planned — see the dump manifest — but does not exist yet.)
  */
 
 export function createRegistry() {

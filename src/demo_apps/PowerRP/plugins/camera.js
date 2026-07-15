@@ -4,9 +4,11 @@
  * fits the camera's bbox, letterboxing the rest). One per document, created
  * with the document, tweened between slides like any other item.
  *
- * Paints ONLY in the editor (env.editorChrome): a dashed cyan bbox — cyan per
- * user spec / the annotator's --a-current precedent. Invisible in exports,
- * presentations, thumbnails, and CLI renders.
+ * Renders NOTHING anywhere (emit() below — user ruling: its own border
+ * doubled up with the selection outline). In the editor it is discovered by
+ * border hit-testing + the item picker, and selecting it shows the standard
+ * selection outline; exports, presentations, thumbnails, and CLI renders
+ * never see it.
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
