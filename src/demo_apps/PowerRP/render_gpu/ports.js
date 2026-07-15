@@ -15,7 +15,6 @@
  */
 
 import { rect, ellipse, polyline, polygon, text, video, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "./ir.js";
-import { resolveEndpoints } from "../plugins/arrow.js";
 import { lensGeom } from "../plugins/magnifier.js";
 
 /** Arrowhead half-angle — matches arrowPlugin's hardcoded 0.44 rad flare. */
@@ -57,21 +56,16 @@ export function circleIR(s) {
 
 /**
  * Pure function. Arrow widget state → IR (WORLD space — arrows have no
- * transform, matching arrowPlugin). Returns [] when a bound endpoint is
- * missing on this slide (the arrow simply doesn't draw, same as the plugin).
+ * transform, matching arrowPlugin). Endpoints are plain numbers here:
+ * equation endpoints were already resolved by the derivation stage's
+ * expression pass (core/expressions.evaluateState) before the render tree
+ * existed — THE UNIFICATION deleted the old {item, anchor} binding objects.
  * Shaft = capsule polyline stopped short of the tip; head = filled triangle.
  *
- * Args:
- *   s (object): arrow state {from, to, color, width, headSize, opacity}
- *   resolveBinding (function): env.resolveBinding — (binding, towardX, towardY) → {x,y}|null
- *
- * @example arrowIR({from: {x: 0, y: 0}, to: {x: 10, y: 0}, color: "#000", width: 2, headSize: 4}, (b) => b).map((c) => c.op) // ["polyline", "polygon"]
- * @example arrowIR({from: {x: 0, y: 0}, to: {item: "gone", anchor: "cm"}, color: "#000", width: 2, headSize: 4}, () => null) // []
+ * @example arrowIR({from: {x: 0, y: 0}, to: {x: 10, y: 0}, color: "#000", width: 2, headSize: 4}).map((c) => c.op) // ["polyline", "polygon"]
  */
-export function arrowIR(s, resolveBinding) {
-  const pts = resolveEndpoints(s, resolveBinding);
-  if (!pts) return [];
-  const { from, to } = pts;
+export function arrowIR(s) {
+  const { from, to } = s;
   const angle = Math.atan2(to.y - from.y, to.x - from.x);
   const head = s.headSize;
   const opacity = s.opacity ?? 1;
@@ -146,7 +140,7 @@ export const EMITTERS = {
   video: videoIR,
   blur: blurIR,
   magnifier: magnifierIR,
-  // arrow is special-cased in sceneIR (needs resolveBinding, world-space)
+  // arrow is special-cased in sceneIR (world-space, no transform wrap)
 };
 
 /**
@@ -156,20 +150,20 @@ export const EMITTERS = {
  * per-node save/transform/paint/restore loop.
  *
  * Args:
- *   nodes (object[]): deriveRenderTree output
- *   resolveBinding (function): (binding, towardX, towardY) → {x,y}|null
+ *   nodes (object[]): deriveRenderTree output (of an EVALUATED state — run
+ *     core/expressions.evaluateState first, exactly like render/compositor.js)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
  *
- * @example // sceneIR(deriveRenderTree(state, registry), env.resolveBinding) → [pushTransform, rect, popTransform, polyline, polygon, ...]
- * @example sceneIR([], () => null) // []
+ * @example // sceneIR(deriveRenderTree(evaluateState(state, registry).state, registry)) → [pushTransform, rect, popTransform, polyline, polygon, ...]
+ * @example sceneIR([]) // []
  */
-export function sceneIR(nodes, resolveBinding) {
+export function sceneIR(nodes) {
   const out = [];
   for (const node of nodes) {
     if (node.type === "arrow") {
-      out.push(...arrowIR(node.state, resolveBinding)); // world-space, no wrap
+      out.push(...arrowIR(node.state)); // world-space, no wrap
       continue;
     }
     const emit = EMITTERS[node.type];

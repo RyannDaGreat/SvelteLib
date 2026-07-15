@@ -14,7 +14,8 @@ import {
 import { rectIR, circleIR, arrowIR, textIR, videoIR, blurIR, magnifierIR, sceneIR } from "../ports.js";
 import { irToSVG, commandToSVG, svgTransform, xmlEscape } from "../svg_backend.js";
 import { benchScene, hash01 } from "../bench/scene.js";
-import { deriveRenderTree, resolveBinding } from "../../core/derive.js";
+import { deriveRenderTree } from "../../core/derive.js";
+import { evaluateState } from "../../core/expressions.js";
 import { createRegistry } from "../../core/registry.js";
 import { registerAll } from "../../plugins/index.js";
 import { createCommands } from "../../core/commands.js";
@@ -104,17 +105,23 @@ test("rectIR/circleIR mirror plugin geometry", () => {
   assert.equal(c.ry, 50);
 });
 test("arrowIR: shaft pullback + head triangle", () => {
-  const cmds = arrowIR(
-    { from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, color: "#000", width: 3, headSize: 10 },
-    (b) => (b?.item === undefined ? b : null),
-  );
+  const cmds = arrowIR({ from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, color: "#000", width: 3, headSize: 10 });
   assert.deepEqual(cmds.map((c) => c.op), ["polyline", "polygon"]);
   approxArr(cmds[0].points[1], [100 - 10 * 0.6, 0]); // shaft stops 0.6*head short
   assert.equal(cmds[1].points.length, 3);
   approxArr(cmds[1].points[0], [100, 0]); // tip at the endpoint
 });
-test("arrowIR: missing binding → no commands (matches plugin)", () => {
-  assert.deepEqual(arrowIR({ from: { x: 0, y: 0 }, to: { item: "gone", anchor: "cm" } }, () => null), []);
+test("arrowIR: dangling reference falls back loudly upstream, still draws", () => {
+  // Post-UNIFICATION semantics: a reference to a missing item is an ERROR
+  // reported by evaluateState (with a numeric fallback) — never a silently
+  // skipped arrow and never NaN geometry reaching the IR.
+  const registry = createRegistry();
+  registerAll(registry, createCommands());
+  const state = { items: { c: { type: "arrow", from: { x: 0, y: 0 }, to: { x: "@gone.x", y: 5 }, color: "#000", width: 3, headSize: 10 } } };
+  const { state: evaluated, errors } = evaluateState(state, registry);
+  assert.ok(errors.size > 0); // the unknown reference is REPORTED
+  assert.equal(typeof evaluated.items.c.to.x, "number"); // fallback, not NaN
+  assert.deepEqual(arrowIR(evaluated.items.c).map((c) => c.op), ["polyline", "polygon"]);
 });
 test("blurIR: zero blur emits nothing", () => {
   assert.deepEqual(blurIR({ blur: 0 }), []);
@@ -134,12 +141,12 @@ test("sceneIR: real registry render tree → z-ordered wrapped IR", () => {
     items: {
       a: { type: "rect", x: 10, y: 20, w: 100, h: 50, z: 1, fill: "#7aa2f7", stroke: "#000", strokeWidth: 2, cornerRadius: 4 },
       b: { type: "circle", x: 0, y: 0, w: 80, h: 80, z: 0, fill: "#f7768e", strokeWidth: 0 },
-      c: { type: "arrow", z: 2, from: { x: 0, y: 0 }, to: { item: "a", anchor: "cm" }, color: "#000", width: 3, headSize: 14 },
+      c: { type: "arrow", z: 2, from: { x: 0, y: 0 }, to: { x: "@a_cm.x", y: "@a_cm.y" }, color: "#000", width: 3, headSize: 14 },
     },
   };
-  const nodes = deriveRenderTree(state, registry);
-  const nodesById = Object.fromEntries(nodes.map((n) => [n.id, n]));
-  const ir = sceneIR(nodes, (bd, tx, ty) => resolveBinding(bd, nodesById, tx, ty));
+  // The real pipeline: fold → EVALUATE (equations become numbers) → derive → emit.
+  const nodes = deriveRenderTree(evaluateState(state, registry).state, registry);
+  const ir = sceneIR(nodes);
   // circle (z0) first, rect (z1), then the arrow's two world-space commands
   assert.deepEqual(ir.map((c) => c.op),
     ["pushTransform", "ellipse", "popTransform", "pushTransform", "rect", "popTransform", "polyline", "polygon"]);
@@ -151,7 +158,7 @@ test("sceneIR: real registry render tree → z-ordered wrapped IR", () => {
 });
 test("sceneIR: loud on unknown widget type", () => {
   assert.throws(
-    () => sceneIR([{ type: "hologram", state: {}, world: { x: 0, y: 0, rotation: 0, scale: 1 } }], () => null),
+    () => sceneIR([{ type: "hologram", state: {}, world: { x: 0, y: 0, rotation: 0, scale: 1 } }]),
     /no IR emitter/,
   );
 });
@@ -181,7 +188,7 @@ test("irToSVG: full scene document", () => {
     },
   };
   const nodes = deriveRenderTree(state, registry);
-  const ir = sceneIR(nodes, () => null);
+  const ir = sceneIR(nodes);
   const svg = irToSVG(ir, { width: 640, height: 360, view: { zoom: 0.5, panX: 0, panY: 0 }, background: "#ffffff" });
   assert.ok(svg.startsWith("<svg xmlns"));
   assert.match(svg, /<rect x="0" y="0" width="100" height="50" rx="4"/);
