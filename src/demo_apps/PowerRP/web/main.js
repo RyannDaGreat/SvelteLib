@@ -27,8 +27,11 @@ window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width
   // Same load-time migrations as the editor: drop orphaned items LOUDLY,
   // inject THE camera, convert legacy {item, anchor} bindings to equations.
   const raw = typeof docJson === "string" ? deserialize(docJson) : docJson;
-  const { doc: repairedDoc, dropped } = withOrphanedItemsDropped(raw, new Set(registry.all().map((p) => p.type)));
+  const { doc: droppedDoc, dropped } = withOrphanedItemsDropped(raw, new Set(registry.all().map((p) => p.type)));
   for (const { id, reason } of dropped) console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
+  const { doc: repairedDoc, filled } = withMissingDefaultsFilled(droppedDoc, registry);
+  for (const { id, missing } of filled)
+    console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
   const doc = withBindingsMigrated(withCameraEnsured(repairedDoc));
   // The one pipeline: fold → EVALUATE (equations become numbers) → derive → emit.
   const state = evaluateState(foldState(doc, slide, alpha), registry).state;

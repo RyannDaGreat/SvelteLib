@@ -43,7 +43,7 @@ export function newDocument() {
       duration: 0.5,
       delta: {
         items: {
-          [cameraId]: { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, active: true, background: "#ffffff" },
+          [cameraId]: { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff" },
         },
       },
     }],
@@ -188,6 +188,70 @@ export function withOrphanedItemsDropped(doc, knownTypes) {
   return { doc: out, dropped };
 }
 
+/**
+ * Pure function. Default-valued leaf paths a TYPED item never writes (non-null)
+ * in ANY slide delta. Such partial items fold into states missing required
+ * geometry ("w: undefined"); the canvas2D painter silently drew nothing for
+ * them, but the strict IR builders throw and brick the app — so they must be
+ * repaired at the load boundary. `type` itself is exempt (that's the orphan
+ * case — see orphanedItems); a null (delete-sentinel) write does NOT count as
+ * coverage, since it folds to the same missing key.
+ *
+ * Args:
+ *   doc (object): document
+ *   registry (object): plugin registry (.get(type) → plugin with .defaults)
+ *
+ * Returns:
+ *   {id, slideIndex, missing: {path: string[], value}[]}[]
+ *
+ * @example missingDefaults({slides: [{delta: {items: {a: {type: "rect", x: 1, y: 2}}}}]}, reg)[0].missing.some((m) => m.path.join(".") === "w") // true
+ * @example // a fully-written item (normal creation) reports nothing
+ */
+export function missingDefaults(doc, registry) {
+  const typeSlide = new Map(); // id → first slide index with a known type
+  const written = new Map(); // id → Set of non-null leaf path strings
+  for (let i = 0; i < doc.slides.length; i++)
+    for (const [id, item] of Object.entries(doc.slides[i].delta.items ?? {})) {
+      if (!(item && typeof item === "object")) continue;
+      if (typeof item.type === "string" && !typeSlide.has(id)) typeSlide.set(id, i);
+      if (!written.has(id)) written.set(id, new Set());
+      const set = written.get(id);
+      for (const [path, value] of leaves(item)) if (value !== null) set.add(path.join("."));
+    }
+  const out = [];
+  for (const [id, slideIndex] of typeSlide) {
+    let plugin;
+    try {
+      plugin = registry.get(doc.slides[slideIndex].delta.items[id].type);
+    } catch {
+      continue; // unknown type = the orphan case, repaired by orphanedItems
+    }
+    const set = written.get(id);
+    const missing = [];
+    for (const [path, value] of leaves(plugin.defaults))
+      if (path[0] !== "type" && !set.has(path.join("."))) missing.push({ path, value });
+    if (missing.length) out.push({ id, slideIndex, missing });
+  }
+  return out;
+}
+
+/**
+ * Pure function. Document with every missing default keyframed into the
+ * item's CREATION slide (where its type is written), plus the fill report.
+ * REPORTING IS THE CALLER'S JOB (the app console.errors each fill — silent
+ * repairs are forbidden). Idempotent: a filled document reports nothing.
+ *
+ * @example withMissingDefaultsFilled({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, reg).filled.length // 1
+ */
+export function withMissingDefaultsFilled(doc, registry) {
+  const filled = missingDefaults(doc, registry);
+  let out = doc;
+  for (const { id, slideIndex, missing } of filled)
+    for (const { path, value } of missing)
+      out = keyframed(out, slideIndex, ["items", id, ...path], value);
+  return { doc: out, filled };
+}
+
 // ── Slide edits ──────────────────────────────────────────────────────────────
 
 /** Pure function. Inserts an empty slide after `index`. Returns [doc, newIndex]. */
@@ -235,8 +299,8 @@ export function withCameraEnsured(doc) {
       if (item && item.type === "camera") return doc;
   const cameraId = uuid();
   return keyframed(doc, 0, ["items", cameraId], {
-    type: "camera", name: "Camera", x: 0, y: 0,
-    w: doc.meta.slideW, h: doc.meta.slideH, z: 1000, active: true, background: "#ffffff",
+    type: "camera", name: "Camera", x: 0, y: 0, w: doc.meta.slideW, h: doc.meta.slideH,
+    z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff",
   });
 }
 

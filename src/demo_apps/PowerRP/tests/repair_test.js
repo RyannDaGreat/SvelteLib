@@ -10,9 +10,12 @@
 
 import assert from "node:assert/strict";
 import {
-  newDocument, withNewItem, withNewSlide, keyframed, withSlideDeleted,
+  newDocument, withNewItem, withNewSlide, keyframed, unkeyframed, withSlideDeleted,
   withSlideToggled, foldState, orphanedItems, withOrphanedItemsDropped,
+  missingDefaults, withMissingDefaultsFilled,
 } from "../core/document.js";
+import { deriveRenderTree } from "../core/derive.js";
+import { sceneIR } from "../render_gpu/ports.js";
 import { evaluateState } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -83,6 +86,36 @@ test("clean documents pass through untouched and idempotently", () => {
   assert.deepEqual(first.dropped, []);
   const again = withOrphanedItemsDropped(first.doc, KNOWN);
   assert.deepEqual(again.dropped, []);
+});
+
+test("partial typed item (missing w) is reported and filled from plugin defaults", () => {
+  // The user's second live crash: type present, geometry absent — canvas2D
+  // silently drew nothing, the strict IR builders throw on w: undefined.
+  let doc = newDocument();
+  doc = keyframed(doc, 0, ["items", "p1"], { type: "rect", x: 5, y: 6, active: true });
+  const report = missingDefaults(doc, registry);
+  const p1 = report.find((r) => r.id === "p1");
+  assert.ok(p1.missing.some((m) => m.path.join(".") === "w"));
+  const { doc: fixed, filled } = withMissingDefaultsFilled(doc, registry);
+  assert.equal(filled.length, 1);
+  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
+  assert.equal(typeof state.items.p1.w, "number");
+  sceneIR(deriveRenderTree(state, registry)); // must not throw
+  assert.deepEqual(withMissingDefaultsFilled(fixed, registry).filled, []); // idempotent
+});
+
+test("a null (delete-sentinel) write of a required key still counts as missing", () => {
+  let doc = newDocument();
+  const [d1, id] = withNewItem(doc, 0, { type: "rect", x: 1, y: 1, w: 10, h: 10, active: true });
+  const nulled = keyframed(d1, 0, ["items", id, "w"], null); // author deleted w
+  assert.ok(missingDefaults(nulled, registry).find((r) => r.id === id).missing.some((m) => m.path.join(".") === "w"));
+});
+
+test("complete creations (the normal path) report nothing", () => {
+  let doc = newDocument();
+  const rectDefaults = registry.get("rect").defaults;
+  const [d1] = withNewItem(doc, 0, { ...rectDefaults, active: true });
+  assert.deepEqual(missingDefaults(d1, registry), []);
 });
 
 console.log(`\n${passed} repair tests passed`);

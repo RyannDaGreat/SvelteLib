@@ -10,7 +10,7 @@ import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
-  withCameraEnsured, withOrphanedItemsDropped,
+  withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
@@ -484,9 +484,14 @@ export class PowerRPApp {
    */
   repaired(doc) {
     const known = new Set(this.registry.all().map((p) => p.type));
-    const { doc: out, dropped } = withOrphanedItemsDropped(doc, known);
+    const { doc: dropDoc, dropped } = withOrphanedItemsDropped(doc, known);
     for (const { id, reason } of dropped)
       console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
+    // Typed-but-partial items (e.g. a rect that never got a w anywhere) fold
+    // into states the strict IR builders reject — fill from plugin defaults.
+    const { doc: out, filled } = withMissingDefaultsFilled(dropDoc, this.registry);
+    for (const { id, missing } of filled)
+      console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
     return withCameraEnsured(out);
   }
 
