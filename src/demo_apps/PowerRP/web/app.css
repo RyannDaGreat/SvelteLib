@@ -527,6 +527,13 @@ body,
   --dd-radius: 0;
 }
 
+/* Picker rows for items NOT VISIBLE on the current slide (not yet created /
+   active:false) list at the BOTTOM in the danger red — same precedent as
+   .btn.danger (manifest: "Item picker shows ALL objects on ALL slides"). */
+.inspector-head .picker-invisible {
+  color: var(--a-guide);
+}
+
 .inspector .item-actions {
   display: flex;
   gap: var(--a-sp-2);

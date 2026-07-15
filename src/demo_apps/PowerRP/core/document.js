@@ -462,3 +462,34 @@ export function allKeyframes(doc) {
   return doc.slides.flatMap((s, slideIndex) =>
     leaves(s.delta).map(([path, value]) => ({ slideIndex, slideId: s.id, path, value })));
 }
+
+/**
+ * Pure function. Every item the DOCUMENT ever keys (union across all slide
+ * deltas, enabled or disabled), in first-appearance (creation) order. `type`
+ * and `name` are the FIRST values any slide writes for them — creation-slide
+ * semantics (names are written on the creation slide; the load-time orphan
+ * repair guarantees every id has a type). Powers the item picker's "ALL
+ * objects on ALL slides" listing: items with no state on the current slide
+ * (not yet created / active:false) still need an identity to list.
+ *
+ * Args:
+ *   doc (object): document
+ *
+ * Returns:
+ *   {id, type, name}[] (name undefined when the item was never named)
+ *
+ * @example allDocumentItems({slides: [{delta: {items: {a: {type: "rect", name: "Box"}}}}, {delta: {items: {b: {type: "circle"}, a: {x: 5}}}}]}) // [{id: "a", type: "rect", name: "Box"}, {id: "b", type: "circle", name: undefined}]
+ * @example allDocumentItems({slides: [{delta: {}}]}) // []
+ */
+export function allDocumentItems(doc) {
+  const out = new Map(); // id → {id, type, name}; first write of each field wins
+  for (const s of doc.slides)
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!(item && typeof item === "object")) continue;
+      const cur = out.get(id) ?? { id, type: undefined, name: undefined };
+      if (cur.type === undefined && typeof item.type === "string") cur.type = item.type;
+      if (cur.name === undefined && typeof item.name === "string") cur.name = item.name;
+      out.set(id, cur);
+    }
+  return [...out.values()];
+}

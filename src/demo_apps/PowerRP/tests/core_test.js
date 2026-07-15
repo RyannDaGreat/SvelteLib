@@ -14,6 +14,7 @@ import {
   newDocument, foldState, slideState, keyframed, unkeyframed, keyframeIndices,
   withNewItem, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, serialize, deserialize, allKeyframes, withNormalizedZ, bisectedZ,
+  allDocumentItems,
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
 import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, standardBBoxAnchors, cameraRect } from "../core/derive.js";
@@ -220,6 +221,22 @@ test("serialize roundtrip + loud on garbage", () => {
 test("fold cache: same doc object → same state object", () => {
   const doc = newDocument();
   assert.equal(slideState(doc, 0), slideState(doc, 0));
+});
+test("allDocumentItems: union across slides, creation order, first-write type/name", () => {
+  const doc = {
+    slides: [
+      { delta: { items: { a: { type: "rect", name: "Box" } } } },
+      { delta: { items: { b: { type: "circle" }, a: { x: 5 } } } }, // a's later keyframe adds nothing new
+      { delta: { items: { b: { name: "Moon" } } } }, // late name still found (first write of the field)
+    ],
+  };
+  assert.deepEqual(allDocumentItems(doc), [
+    { id: "a", type: "rect", name: "Box" },
+    { id: "b", type: "circle", name: "Moon" },
+  ]);
+  assert.deepEqual(allDocumentItems({ slides: [{ delta: {} }] }), []);
+  // Delete-sentinel (null) item entries are not identities.
+  assert.deepEqual(allDocumentItems({ slides: [{ delta: { items: { a: null } } }] }), []);
 });
 
 // ── z-order helpers ──────────────────────────────────────────────────────────

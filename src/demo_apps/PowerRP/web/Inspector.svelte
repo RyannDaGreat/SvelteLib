@@ -17,12 +17,48 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import NumericField from "./NumericField.svelte";
+  import { allDocumentItems, keyframeIndices } from "../core/document.js";
 
   let { app } = $props();
 
   let nodes = $derived(app.nodes());
-  let sel = $derived(app.selectedNode());
-  let itemChoices = $derived(nodes.map((n) => ({ value: n.itemId, label: app.displayName(n.itemId) })));
+  /** The selected item as the node-shaped {itemId, type, state, plugin} the
+   * template consumes. The render tree derives only items VISIBLE on this
+   * slide, but the picker lists EVERY document item (manifest: "Item picker
+   * shows ALL objects on ALL slides") — an item that is active:false here
+   * still has folded state, so build the same shape from the state and every
+   * row keeps working (it just doesn't render on canvas). An item NOT YET
+   * CREATED on this slide has no state at all → null (the template shows the
+   * not-created notice instead; editing it here would write keyframes BEFORE
+   * its creation slide, folding typeless partial items). */
+  let sel = $derived.by(() => {
+    const live = app.selectedNode();
+    if (live || app.selection == null) return live;
+    const state = app.state().items?.[app.selection];
+    if (!state) return null;
+    return { itemId: app.selection, type: state.type, state, plugin: app.registry.get(state.type) };
+  });
+  // Picker: items visible on this slide first (render-tree order, as before),
+  // then every OTHER document item — not yet created here, or active:false —
+  // at the BOTTOM, flagged `invisible` for the red style (manifest, round 11).
+  // Invisible items have no state here, so their label derives from the
+  // document (first-written name, else the displayName fallback format).
+  let itemChoices = $derived.by(() => {
+    const visible = nodes.map((n) => ({ value: n.itemId, label: app.displayName(n.itemId) }));
+    const visibleIds = new Set(nodes.map((n) => n.itemId));
+    const invisible = allDocumentItems(app.doc)
+      .filter((it) => !visibleIds.has(it.id))
+      .map((it) => ({
+        value: it.id,
+        label: it.name ?? `${app.registry.get(it.type).title} (${it.id.slice(0, 4)})`,
+        invisible: true,
+      }));
+    return [...visible, ...invisible];
+  });
+  // Creation slide of the selected item (first slide keying its type) —
+  // names the slide in the not-created-yet notice.
+  let creationIndex = $derived(app.selection == null ? null
+    : keyframeIndices(app.doc, ["items", app.selection, "type"])[0] ?? null);
   // Number of selected items — >1 shows the minimal multi-select placeholder
   // (the full intersection Property Panel is a SEPARATE milestone; manifest).
   let selCount = $derived(app.selectedIds().length);
@@ -164,6 +200,13 @@
   }
 </script>
 
+<!-- Picker row adapter: items flagged `invisible` (not visible on the current
+     slide) render in the danger red — the signal that selecting them shows
+     state without a canvas presence. Visible rows render exactly as before. -->
+{#snippet pickerItem(it)}
+  <span class:picker-invisible={it.invisible}>{it.label}</span>
+{/snippet}
+
 <div class="inspector">
   <div class="inspector-head">
     <Dropdown
@@ -171,6 +214,7 @@
       value={app.selection}
       placeholder="— select item —"
       onchange={(v) => (app.selection = v)}
+      item={pickerItem}
     />
   </div>
 
@@ -191,9 +235,27 @@
     </div>
   {:else if sel}
     {#if sel.plugin.capabilities.purgeable !== false}
+      <!-- Visibility is a PARAMETER, not an action (user, round 11): every
+           widget has `active`, so the old "Delete here" ACTION button is a
+           TOGGLE now — it keyframes active true/false on the CURRENT slide
+           (upsert) and KEEPS the selection, so a hidden item (red picker row)
+           toggles right back. Eye = the SlideNav slide-toggle visual language;
+           state shows via the icon, never a background fill (toggle ruling).
+           Backspace / palette "Delete" still deactivates — that path is
+           unchanged. Not-yet-created items never reach this row (sel is null
+           for them): activating an item BEFORE its creation slide would fold
+           a typeless partial item, so it stays impossible by construction. -->
+      {@const visible = sel.state.active !== false}
       <div class="item-actions">
-        <Tooltip text="Deactivate on this slide (item survives on earlier slides)">
-          <button class="btn" onclick={() => app.runCommand("delete-item")}>Delete here</button>
+        <Tooltip text={visible ? "Visible on this slide — click to hide (keyframes active: false)" : "Hidden on this slide — click to show (keyframes active: true)"}>
+          <button
+            class="btn-icon"
+            aria-label="Toggle visibility on this slide"
+            aria-pressed={visible}
+            onclick={() => app.keyframePath(["items", app.selection, "active"], !visible)}
+          >
+            <iconify-icon icon={visible ? "mdi:eye" : "mdi:eye-off"} width="16" height="16"></iconify-icon>
+          </button>
         </Tooltip>
         <Tooltip text="Remove from existence (all keyframes, all slides)">
           <button class="btn danger" onclick={() => app.runCommand("purge-item")}>Purge</button>
@@ -341,6 +403,12 @@
           </span>
         </div>
       {/each}
+    </div>
+  {:else if app.selection != null}
+    <!-- Picker-selected but NOT YET CREATED on this slide: there is no folded
+         state to show or edit (keyframes here would predate creation). -->
+    <div class="empty">
+      Not created yet on this slide{#if creationIndex != null} — appears on slide {creationIndex + 1}{/if}
     </div>
   {:else}
     <div class="empty">Nothing selected</div>
