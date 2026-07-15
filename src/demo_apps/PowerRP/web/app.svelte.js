@@ -421,28 +421,59 @@ export class PowerRPApp {
   // Clipboard payloads are tagged JSON: {powerrp_item: state} or
   // {powerrp_props: {key: value}}.
 
+  // In-app clipboard (a JSON string snapshot). WHY: navigator.clipboard.readText
+  // needs a permission browsers can deny silently-to-the-user — readText then
+  // rejects and paste no-ops (the probe-confirmed "paste does not create new
+  // objects" bug). Copy ALWAYS lands here; the system clipboard is written
+  // best-effort on top (cross-tab paste). Stored as a string so later doc
+  // mutations can never alias into the copied payload. Not $state — no UI reads.
+  #clipboardFallback = null;
+
+  /** Command. Snapshots `payload` to the in-app clipboard (always succeeds),
+   * then best-effort mirrors it to the system clipboard — a write failure is
+   * REPORTED but does not fail the copy (the in-app copy is already good). */
+  async #writeClipboard(payload) {
+    this.#clipboardFallback = JSON.stringify(payload);
+    try {
+      await navigator.clipboard.writeText(this.#clipboardFallback);
+    } catch (e) {
+      console.error("Copy: system clipboard write failed (in-app clipboard still set):", e.message);
+    }
+  }
+
   async copySelection() {
     if (!this.selection) return;
     // RAW state: equations copy as equations, not their evaluated snapshots.
     const state = this.rawState().items?.[this.selection];
     if (!state) return;
-    await navigator.clipboard.writeText(JSON.stringify({ powerrp_item: state }));
+    await this.#writeClipboard({ powerrp_item: state });
   }
 
   async copyProperty(key) {
     if (!this.selection) return;
     const value = this.storedItemValue(this.selection, key.split(".")); // dotted keys = nested paths
     if (value === undefined) return;
-    await navigator.clipboard.writeText(JSON.stringify({ powerrp_props: { [key]: value } }));
+    await this.#writeClipboard({ powerrp_props: { [key]: value } });
   }
 
   async pasteClipboard() {
-    let payload;
+    // System clipboard first (cross-tab paste, and it may hold a NEWER copy);
+    // in-app fallback second. A read failure (permission denied — the common
+    // real-world case) or foreign/non-PowerRP content falls back to the last
+    // in-app copy: a PowerRP "Paste" action pasting the last PowerRP copy
+    // beats silently doing nothing. Both outcomes are reported.
+    let payload = null;
     try {
       payload = JSON.parse(await navigator.clipboard.readText());
     } catch (e) {
-      console.warn("Paste: clipboard is not PowerRP JSON:", e.message);
-      return;
+      console.warn("Paste: system clipboard unreadable or not JSON — trying the in-app clipboard:", e.message);
+    }
+    if (!payload?.powerrp_item && !payload?.powerrp_props) {
+      if (!this.#clipboardFallback) {
+        console.warn("Paste: nothing PowerRP-shaped on the system clipboard and no in-app copy yet.");
+        return;
+      }
+      payload = JSON.parse(this.#clipboardFallback);
     }
     if (payload.powerrp_item) {
       const s = payload.powerrp_item;
@@ -460,8 +491,12 @@ export class PowerRPApp {
       }
       // Paste offset: one spacing step, same convention PowerPoint uses for
       // paste-in-place collisions (precedent, not an invented constant).
+      // Equation-valued coordinates are left VERBATIM — offsetting a string
+      // would concatenate ("circle.x + 10" + 16); the pasted copy keeps its
+      // binding and lands wherever the equation says.
       const OFFSET = 16;
-      this.addItem({ ...s, x: (s.x ?? 0) + OFFSET, y: (s.y ?? 0) + OFFSET });
+      const bump = (v) => (typeof v === "number" ? v + OFFSET : v);
+      this.addItem({ ...s, x: bump(s.x ?? 0), y: bump(s.y ?? 0) });
     } else if (payload.powerrp_props && this.selection) {
       let doc = this.doc;
       for (const [key, value] of Object.entries(payload.powerrp_props))
