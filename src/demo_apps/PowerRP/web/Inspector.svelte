@@ -29,8 +29,9 @@
    * still has folded state, so build the same shape from the state and every
    * row keeps working (it just doesn't render on canvas). An item NOT YET
    * CREATED on this slide has no state at all → null (the template shows the
-   * not-created notice instead; editing it here would write keyframes BEFORE
-   * its creation slide, folding typeless partial items). */
+   * not-created notice instead; an item doesn't EXIST before its creation
+   * slide — imaginary-slide semantics — so pre-creation keyframes would be
+   * inert clutter on earlier slides, and the panel offers none). */
   let sel = $derived.by(() => {
     const live = app.selectedNode();
     if (live || app.selection == null) return live;
@@ -242,9 +243,10 @@
            toggles right back. Eye = the SlideNav slide-toggle visual language;
            state shows via the icon, never a background fill (toggle ruling).
            Backspace / palette "Delete" still deactivates — that path is
-           unchanged. Not-yet-created items never reach this row (sel is null
-           for them): activating an item BEFORE its creation slide would fold
-           a typeless partial item, so it stays impossible by construction. -->
+           unchanged (but it no longer deselects — user ruling). Not-yet-
+           created items never reach this row (sel is null for them): an item
+           doesn't EXIST before its creation slide (imaginary-slide
+           semantics), so there is nothing to toggle there. -->
       {@const visible = sel.state.active !== false}
       <div class="item-actions">
         <Tooltip text={visible ? "Visible on this slide — click to hide (keyframes active: false)" : "Hidden on this slide — click to show (keyframes active: true)"}>
