@@ -28,6 +28,7 @@
   import { evaluateState } from "../core/expressions.js";
   import { createKeybindings } from "../core/keybindings.js";
   import { createShortcuts } from "../core/shortcuts.js";
+  import { unionRect, alignedPosition, mirroredPosition } from "../core/geometry.js";
 
   const app = new PowerRPApp();
 
@@ -68,6 +69,15 @@
   const needsSelection = (a) => a.selection !== null;
   // purgeable:false widgets (the camera) can be neither deleted nor purged.
   const needsPurgeable = (a) => a.selectedNode()?.plugin.capabilities.purgeable !== false && a.selection !== null;
+  // Align/mirror (manifest 16.3) need ≥2 selected BBOX items — a single item
+  // has no OTHER extreme/center to align or mirror against (single-item
+  // align-to-canvas is a plausible future fallback, deliberately NOT built
+  // here per the task's "your call, flag it": no precedent command reads
+  // the camera as an alignment target yet, and inventing one would be an
+  // arbitrary scope decision the manifest's "no arbitrary constraints" rule
+  // says to run by the user first — so a lone selection simply disables
+  // these, same as distribute disables below 3).
+  const needsMultiBbox = (a) => a.nodes().filter((n) => new Set(a.selectedIds()).has(n.itemId) && n.plugin.capabilities.bbox).length >= 2;
   // Per-theme palette icons (mdi), keyed by THEMES[].id. No colors (user spec).
   const THEME_ICONS = {
     graphite: "mdi:brightness-6",
@@ -93,6 +103,37 @@
     { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, run: (a) => a.sendToExtreme(-1) },
     { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "x", "w") },
     { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "y", "h") },
+    // OBJECT ALIGN (manifest 16.3, distinct from 15.6's text-paragraph align):
+    // moves every selected bbox widget so its edge/center matches the
+    // SELECTION's own collective edge/center — same needsMultiBbox gate as
+    // distribute (≥2 items: aligning a single item to itself is a no-op, so
+    // unlike distribute's ≥3 this only needs ≥2 to be meaningful).
+    { id: "align-left", title: "Align Left", icon: "mdi:align-horizontal-left", when: needsMultiBbox, run: (a) => align(a, "x", "min") },
+    { id: "align-right", title: "Align Right", icon: "mdi:align-horizontal-right", when: needsMultiBbox, run: (a) => align(a, "x", "max") },
+    { id: "align-top", title: "Align Top", icon: "mdi:align-vertical-top", when: needsMultiBbox, run: (a) => align(a, "y", "min") },
+    { id: "align-bottom", title: "Align Bottom", icon: "mdi:align-vertical-bottom", when: needsMultiBbox, run: (a) => align(a, "y", "max") },
+    { id: "align-center-h", title: "Align Center Horizontal", icon: "mdi:align-horizontal-center", when: needsMultiBbox, run: (a) => align(a, "x", "center") },
+    { id: "align-center-v", title: "Align Center Vertical", icon: "mdi:align-vertical-center", when: needsMultiBbox, run: (a) => align(a, "y", "center") },
+    // MIRROR (manifest 16.3): LAYOUT-ONLY mirror — reflects each selected
+    // item's POSITION about the selection's own center axis; items swap
+    // sides but their own content is NOT flipped. DESIGN FORK (recorded per
+    // the task): PowerRP's transform is a similarity {x,y,rotation,scale}
+    // with a SINGLE scalar scale — no per-axis/negative scale, so a true
+    // per-item content flip isn't representable without extending the
+    // model (a flipX/flipY boolean the renderer would need to honor, across
+    // both render backends). Titled "Mirror Layout" (not plain "Mirror") so
+    // it is never mistaken for a content flip. See core/geometry.js
+    // mirroredPosition's docstring for the full math + rationale.
+    { id: "mirror-h", title: "Mirror Layout Horizontal", icon: "mdi:flip-horizontal", when: needsMultiBbox, run: (a) => mirror(a, "x") },
+    { id: "mirror-v", title: "Mirror Layout Vertical", icon: "mdi:flip-vertical", when: needsMultiBbox, run: (a) => mirror(a, "y") },
+    // FLAGGED — PENDING USER RATIFICATION: no keybindings assigned to any of
+    // the 8 align/mirror commands above. Followed the exact precedent of
+    // distribute-h/distribute-v (also palette-only, no bound keys) rather
+    // than inventing new key combos — the manifest's "no arbitrary
+    // constraints invented by Claude" rule requires picking new bindings be
+    // run by the user first, not guessed. All 8 are reachable via the
+    // command palette today; add to the `kb` array below if/when the user
+    // picks combos.
     // GROUPS (manifest rough draft): Group Selection needs ≥2 groupable items;
     // Ungroup is enabled when any selected node is a group. Both operate on the
     // selection through the app helpers (which own the AABB + keyframe baking).
@@ -227,6 +268,57 @@
       const value = (n.state[axis] ?? 0) + (target - c);
       doc = keyframed(doc, a.slideIndex, ["items", n.itemId, axis], value);
     });
+    a.commit(doc);
+  }
+
+  /** Command. Selected bbox nodes as {n, box} pairs — the shared basis for
+   * align/mirror, mirroring distribute's own node-filter above. */
+  function selectedBboxNodes(a) {
+    const ids = new Set(a.selectedIds());
+    return a.nodes()
+      .filter((n) => ids.has(n.itemId) && n.plugin.capabilities.bbox)
+      .map((n) => ({ n, box: { x: n.state.x ?? 0, y: n.state.y ?? 0, w: n.state.w ?? 0, h: n.state.h ?? 0 } }));
+  }
+
+  /**
+   * Command (one undo unit). OBJECT ALIGN (manifest 16.3): moves every
+   * selected bbox item so its `axis` edge/center matches the SELECTION's own
+   * union AABB `edge` ("min"|"max"|"center" — see core/geometry.js
+   * alignedPosition). No-op below 2 bbox items (needsMultiBbox gates the
+   * command's visibility; this direct-call guard keeps the function safe if
+   * ever invoked outside the registry, e.g. from a test).
+   */
+  function align(a, axis, edge) {
+    const items = selectedBboxNodes(a);
+    if (items.length < 2) return;
+    const union = unionRect(items.map((it) => it.box));
+    let doc = a.doc;
+    for (const { n, box } of items) {
+      const target = alignedPosition(box, union, axis, edge);
+      if (target[axis] === box[axis]) continue;
+      doc = keyframed(doc, a.slideIndex, ["items", n.itemId, axis], target[axis]);
+    }
+    a.commit(doc);
+  }
+
+  /**
+   * Command (one undo unit). MIRROR LAYOUT (manifest 16.3 design fork — see
+   * the command registration comment + core/geometry.js mirroredPosition for
+   * the full rationale): reflects every selected item's POSITION about the
+   * selection's own center axis. Content itself is untouched — this is a
+   * layout reflection, not a per-item flip (not representable by the single-
+   * scalar {x,y,rotation,scale} transform without a model extension).
+   */
+  function mirror(a, axis) {
+    const items = selectedBboxNodes(a);
+    if (items.length < 2) return;
+    const union = unionRect(items.map((it) => it.box));
+    let doc = a.doc;
+    for (const { n, box } of items) {
+      const target = mirroredPosition(box, union, axis);
+      if (target[axis] === box[axis]) continue;
+      doc = keyframed(doc, a.slideIndex, ["items", n.itemId, axis], target[axis]);
+    }
     a.commit(doc);
   }
 

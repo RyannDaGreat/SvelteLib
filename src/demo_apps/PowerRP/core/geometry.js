@@ -65,3 +65,79 @@ export function closestPointOnRectBorder(rect, px, py) {
   }
   return { x: cx, y: cy };
 }
+
+/**
+ * Pure function. The union AABB {x, y, w, h} of a list of rects. Used to find
+ * a multi-selection's collective extreme edges/center — the shared basis for
+ * BOTH align (extreme-edge match) and mirror (reflect about center).
+ *
+ * @example unionRect([{x: 0, y: 0, w: 10, h: 10}, {x: 20, y: 5, w: 10, h: 10}]) // {x: 0, y: 0, w: 30, h: 15}
+ * @example unionRect([{x: 5, y: 5, w: 10, h: 10}]) // {x: 5, y: 5, w: 10, h: 10}
+ */
+export function unionRect(rects) {
+  const minX = Math.min(...rects.map((r) => r.x));
+  const minY = Math.min(...rects.map((r) => r.y));
+  const maxX = Math.max(...rects.map((r) => r.x + r.w));
+  const maxY = Math.max(...rects.map((r) => r.y + r.h));
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/**
+ * Pure function. The target top-left `x` (or `y`, by passing h/height in
+ * place of w/width) that makes a box of size `size` share the given `edge`
+ * of a selection's union AABB span `[lo, hi]` (lo = union.x, hi = union.x+w
+ * for horizontal; lo = union.y, hi = union.y+h for vertical). `edge` is one
+ * of "min" (left/top), "max" (right/bottom), "center" (centered in the span).
+ * THE one-axis primitive both alignLeft/Right/Top/Bottom and
+ * alignCenterHorizontal/Vertical reduce to — see `alignedPosition` for the
+ * per-command wrapper.
+ *
+ * @example alignedCoord(10, 40, 20, "min") // 10 (left/top edge matches lo)
+ * @example alignedCoord(10, 40, 20, "max") // 20 (right/bottom edge matches hi: 40 - 20)
+ * @example alignedCoord(0, 30, 10, "center") // 10 (centered: (0+30)/2 - 10/2)
+ */
+export function alignedCoord(lo, hi, size, edge) {
+  if (edge === "min") return lo;
+  if (edge === "max") return hi - size;
+  return (lo + hi) / 2 - size / 2; // "center"
+}
+
+/**
+ * Pure function. Target {x, y} for one bbox item aligning to a selection's
+ * union AABB, given which edge to align on which axis. `axis` is "x" or "y"
+ * (which coordinate moves); `edge` is "min"|"max"|"center" (see
+ * alignedCoord). The untouched axis passes through unchanged — align-left
+ * only ever moves x, never y.
+ *
+ * @example alignedPosition({x: 5, y: 5, w: 10, h: 10}, {x: 0, y: 0, w: 100, h: 50}, "x", "min") // {x: 0, y: 5}
+ * @example alignedPosition({x: 5, y: 5, w: 10, h: 10}, {x: 0, y: 0, w: 100, h: 50}, "x", "max") // {x: 90, y: 5}
+ * @example alignedPosition({x: 5, y: 5, w: 10, h: 10}, {x: 0, y: 0, w: 100, h: 50}, "y", "center") // {x: 5, y: 20}
+ */
+export function alignedPosition(box, union, axis, edge) {
+  if (axis === "x") return { x: alignedCoord(union.x, union.x + union.w, box.w, edge), y: box.y };
+  return { x: box.x, y: alignedCoord(union.y, union.y + union.h, box.h, edge) };
+}
+
+/**
+ * Pure function. Target {x, y} for one bbox item's LAYOUT MIRROR: reflects
+ * the box's POSITION about the selection union AABB's center axis, keeping
+ * its w/h (and thus its own content) untouched — items swap sides but are
+ * not themselves flipped. This is the layout-only mirror (see the module
+ * docstring for why): PowerRP's transform is a similarity {x,y,rotation,
+ * scale} with a single scalar scale, so a true per-item content flip
+ * (negative axis scale) isn't representable without extending the model.
+ * `axis` "x" reflects horizontally (mirror-left-right, flips x positions);
+ * "y" reflects vertically (mirror-up-down, flips y positions).
+ *
+ * @example mirroredPosition({x: 0, y: 5, w: 10, h: 10}, {x: 0, y: 0, w: 100, h: 50}, "x") // {x: 90, y: 5}
+ * @example mirroredPosition({x: 45, y: 5, w: 10, h: 10}, {x: 0, y: 0, w: 100, h: 50}, "x") // {x: 45, y: 5} (centered item stays put)
+ * @example mirroredPosition({x: 5, y: 0, w: 10, h: 10}, {x: 0, y: 0, w: 100, h: 50}, "y") // {x: 5, y: 40}
+ */
+export function mirroredPosition(box, union, axis) {
+  if (axis === "x") {
+    const mirroredCenter = 2 * (union.x + union.w / 2) - (box.x + box.w / 2);
+    return { x: mirroredCenter - box.w / 2, y: box.y };
+  }
+  const mirroredCenter = 2 * (union.y + union.h / 2) - (box.y + box.h / 2);
+  return { x: box.x, y: mirroredCenter - box.h / 2 };
+}
