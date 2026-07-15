@@ -17,8 +17,10 @@
  * impossible; the floors catch real geometry/color/placement flaws.
  */
 
-import { rect, ellipse, polyline, polygon, text, image, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "../ir.js";
+import { rect, ellipse, polyline, polygon, text, image, video, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "../ir.js";
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
+import { STILL_VIDEO_MP4_DATA_URI, STILL_VIDEO_FRAME_DATA_URI } from "../../tests/fixtures/still_video.js";
+import { filmstripLayout } from "../../plugins/filmstrip.js";
 
 /** Standard parity canvas: small enough for fast suites, big enough for detail. */
 export const SCENE_W = 400;
@@ -170,5 +172,65 @@ export function scenes() {
       image({ ref: CHECKER_PNG_DATA_URI, x: 60, y: 40, w: 260, h: 200 }),
       magnifyBackdrop({ cx: 200, cy: 150, r: 70, magnification: 2.2, rimColor: INK, rimWidth: 5, supersample: true }),
     ], 22), // measured 26.07 dB — vector lens (Form-XObject clip + magnify) replays the image XObject; edge-AA divergence class as the other lens scenes. floor PENDING USER RATIFICATION
+
+    // ── VIDEO PLAYER widget parity (Opus15/W2b) ──────────────────────────────
+    // A STILL (constant-frame) mp4 fixture (still_video.js): the GPU imports the
+    // <video> element's CURRENT frame as an external texture; the PDF embeds that
+    // same current frame as an image XObject (manifest: video → current-frame
+    // raster embed). Because the clip is STILL, the "current frame" is
+    // deterministic (== STILL_VIDEO_FRAME_DATA_URI), so parity is stable. The
+    // four-quadrant + white-diagonal pattern crushes PSNR on any flip/swap.
+    //
+    // Scenes carry `video: {ref, frameSrc}` so the parity harness knows to
+    // ensureVideo(ref) before the GPU render AND to supply the frame resolver
+    // (ref → frameSrc bytes) to the PDF backend. Same structure as the image
+    // scenes (backdrop:false → video composites into the scene the effects read).
+    s("video-basic", [
+      video({ ref: STILL_VIDEO_MP4_DATA_URI, x: 30, y: 40, w: 160, h: 120 }),
+      pushTransform({ x: 300, y: 90, rotation: 0.35 }),
+      video({ ref: STILL_VIDEO_MP4_DATA_URI, x: -60, y: -45, w: 120, h: 90 }),
+      popTransform(),
+      video({ ref: STILL_VIDEO_MP4_DATA_URI, x: 150, y: 120, w: 170, h: 130, opacity: 0.5 }),
+    ], 22, { video: { ref: STILL_VIDEO_MP4_DATA_URI, frameSrc: STILL_VIDEO_FRAME_DATA_URI } }), // measured 27.04 dB — geometry/rotation/opacity match; the gap is edge AA (GPU bilinear-upsamples the frame, poppler steps it) + the codec's YUV→RGB rounding vs the still-frame PNG. floor PENDING USER RATIFICATION
+
+    // Video UNDER a backdrop blur → the current frame is inside the hybrid raster
+    // region (backdrop:false, composites into the scene the blur reads); a vector
+    // rect sits above. Proves video + hybrid-rule compositing (like image-under-blur).
+    s("video-under-blur", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      video({ ref: STILL_VIDEO_MP4_DATA_URI, x: 40, y: 40, w: 220, h: 165 }),
+      blurBackdrop({ radius: 5 }),
+      rect({ x: 250, y: 40, w: 120, h: 80, cornerRadius: 6, fill: "#9ece6a", stroke: INK, strokeWidth: 2 }),
+    ], 30, { video: { ref: STILL_VIDEO_MP4_DATA_URI, frameSrc: STILL_VIDEO_FRAME_DATA_URI } }), // measured 45.70 dB — hybrid raster base compares near-exactly (the frame is inside the embedded region). floor PENDING USER RATIFICATION
+
+    // Video UNDER a magnifier → the lens re-emits the video op at magnification,
+    // clipped to the lens circle (the video's current-frame XObject replays in
+    // the vector lens, like image-under-magnifier). Proves the video participates
+    // in the vector lens replay, not just flat compositing.
+    s("video-under-magnifier", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      video({ ref: STILL_VIDEO_MP4_DATA_URI, x: 60, y: 40, w: 260, h: 200 }),
+      magnifyBackdrop({ cx: 200, cy: 150, r: 70, magnification: 2.2, rimColor: INK, rimWidth: 5, supersample: true }),
+    ], 20, { video: { ref: STILL_VIDEO_MP4_DATA_URI, frameSrc: STILL_VIDEO_FRAME_DATA_URI } }), // measured 24.83 dB — vector lens (Form-XObject clip + magnify) replays the video's current-frame XObject; edge-AA divergence class as the other lens scenes. floor PENDING USER RATIFICATION
+
+    // FILMSTRIP: N frames laid left-to-right within the widget bbox (the exact
+    // plugins/filmstrip.js emit() geometry — filmstripLayout, thin gaps). The
+    // frames come from the server in the app, but for OFFLINE parity each
+    // "frame" is the committed checker fixture (data URI) — the widget's
+    // frameUrls contract admits data URIs, so this is the true emit path with a
+    // deterministic source. Proves the strip's image ops render identically
+    // through the GPU compositor and the PDF backend (the cornerstone rule).
+    // Placed with a bbox offset (pushTransform) exactly as sceneIR wraps the
+    // node's world transform.
+    s("filmstrip", (() => {
+      const N = 5, W = 340, H = 90;
+      const cells = filmstripLayout(N, W, H);
+      return [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        pushTransform({ x: 30, y: 100 }),
+        ...cells.map((c) => image({ ref: CHECKER_PNG_DATA_URI, x: c.x, y: 0, w: c.w, h: c.h })),
+        popTransform(),
+      ];
+    })(), 25), // image-class parity: same edge-AA divergence as image-basic (GPU bilinear vs poppler step). floor PENDING USER RATIFICATION
   ];
 }

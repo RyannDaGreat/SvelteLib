@@ -9,11 +9,13 @@ import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
 import { fancyArrowPlugin } from "./fancy_arrow.js";
 import { imagePlugin } from "./image.js";
+import { videoPlugin } from "./video.js";
+import { filmstripPlugin } from "./filmstrip.js";
 import { magnifierPlugin } from "./magnifier.js";
 import { blurPlugin } from "./blur.js";
 import { cameraPlugin } from "./camera.js";
 
-export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, imagePlugin, magnifierPlugin, blurPlugin, cameraPlugin];
+export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {
