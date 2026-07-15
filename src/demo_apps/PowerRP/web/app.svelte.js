@@ -851,9 +851,86 @@ export class PowerRPApp {
       input.click();
     });
     if (!file) return;
+    // Legacy .powerrp.json still LOADS (manifest Round 12: on-disk is now a
+    // folder, but old single-file saves migrate through the same repair path).
     this.commit(withBindingsMigrated(this.repaired(deserialize(await file.text()))));
     this.slideIndex = 0;
     this.selection = null;
+  }
+
+  // ── Project server (projects are FOLDERS: doc.json + assets/) ────────────────
+  // The server (server/server.py) owns project storage. These methods are the
+  // app's seam to it (thin client = web/projectApi.js). doc.meta.name is the
+  // project name. The localStorage autosave (commit → AUTOSAVE_KEY) stays as
+  // crash-safety and is INDEPENDENT of project storage — a project must be
+  // saved to the server explicitly (Save to Server). Errors surface loudly.
+
+  /** Query. The current project name (doc.meta.name), defaulting to "Untitled". */
+  projectName() {
+    return this.doc.meta.name || "Untitled";
+  }
+
+  /** Command. Save the current document to the server as a project FOLDER
+   *  (doc.json under projects/<name>/). Creates the folder if new. Throws
+   *  loudly on failure so the caller can surface it. */
+  async saveToServer(name = this.projectName()) {
+    await projectApi.saveProject(name, this.doc);
+    return name;
+  }
+
+  /** Query. List saved projects on the server (newest first) — the data the
+   *  Open modal renders. Exposed so the UI can be a lib Modal (built in
+   *  parallel); no ad-hoc dialog is built here. */
+  async listProjects() {
+    return projectApi.listProjects();
+  }
+
+  /** Command. Load a project from the server by name into the editor (same
+   *  repair + binding migration as loadFile). UI resets mirror loadFile. */
+  async loadProject(name) {
+    const { doc } = await projectApi.loadProject(name);
+    this.commit(withBindingsMigrated(this.repaired(doc)));
+    this.slideIndex = 0;
+    this.selection = null;
+  }
+
+  /** Command. Download the current project as a .zip (server-built from the
+   *  folder). Saves the doc first so the ZIP reflects the live document. */
+  async downloadZip(name = this.projectName()) {
+    await this.saveToServer(name);
+    await projectApi.downloadProjectZip(name);
+  }
+
+  /** Command. Upload a File/Blob into the current project's assets/ folder
+   *  (the source of truth for the asset library). Returns {ok, name, url}.
+   *  Saves the project first so the folder exists server-side. */
+  async uploadAsset(file, filename = file.name, name = this.projectName()) {
+    await this.saveToServer(name);
+    return projectApi.uploadAsset(name, file, filename);
+  }
+
+  /** Query. List the current project's assets from the server (reflects the
+   *  assets/ folder on disk — a manual drop appears after a refresh). This is
+   *  the refresh-button data source for the future Asset Explorer pane. */
+  async listProjectAssets(name = this.projectName()) {
+    return projectApi.listAssets(name);
+  }
+
+  // Open-project UI seam: the Open command opens a project-picker MODAL, but
+  // the Modal lib component is landing in PARALLEL (Sonnet1). The modal
+  // integration sets `app.showOpenModal` to a function; until it lands the
+  // command reports LOUDLY (no ad-hoc dialog is built here — the data/API
+  // above — listProjects()/loadProject() — is the seam the modal consumes).
+  showOpenModal = null;
+
+  /** Command. Open the project-picker (delegates to the modal hook once wired). */
+  openProject() {
+    if (this.showOpenModal) return this.showOpenModal();
+    console.error(
+      "Open Project: the project-picker modal is not wired yet " +
+      "(Modal lib component pending). Use app.listProjects() / app.loadProject(name) " +
+      "programmatically, or Load Presentation for a local file.",
+    );
   }
 
   /**

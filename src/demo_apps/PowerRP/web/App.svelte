@@ -77,6 +77,13 @@
     { id: "save-file", title: "Save Presentation", icon: "mdi:content-save-outline", run: (a) => a.saveFile() },
     { id: "load-file", title: "Load Presentation", icon: "mdi:folder-open-outline", run: (a) => a.loadFile() },
     { id: "clear-doc", title: "Clear Document (new)", icon: "mdi:broom", run: (a) => a.clearDoc() },
+    // Project server (manifest Round 12: projects are FOLDERS on the server;
+    // Download = a .zip of the folder). Save/Download need no UI; Open opens a
+    // project-picker modal — that UI lands in parallel (Sonnet1's Modal lib
+    // component), so open-project delegates to app.openProject()'s modal hook.
+    { id: "save-to-server", title: "Save to Server (as project)", icon: "mdi:cloud-upload-outline", run: (a) => a.saveToServer() },
+    { id: "open-project", title: "Open Project…", icon: "mdi:folder-network-outline", run: (a) => a.openProject() },
+    { id: "download-zip", title: "Download Project (.zip)", icon: "mdi:folder-zip-outline", run: (a) => a.downloadZip() },
     { id: "undo", title: "Undo", icon: "mdi:undo", run: (a) => a.undo() },
     { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
     { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, run: (a) => (a.selection = null) },
