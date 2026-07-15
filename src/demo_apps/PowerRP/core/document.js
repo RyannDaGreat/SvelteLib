@@ -136,6 +136,58 @@ export function withItemPurged(doc, itemId) {
   return out;
 }
 
+/**
+ * Pure function. Item ids that can never render: ids referenced by any
+ * slide's delta whose `type` is never set to one of `knownTypes` in ANY
+ * slide's delta (enabled or disabled — a disabled creation slide is a
+ * transient view state, not an orphan). The known producer: deleting an
+ * item's CREATION slide leaves its later property keyframes orphaned, and
+ * the fold then materializes a typeless item that crashes evaluation.
+ *
+ * Args:
+ *   doc (object): document
+ *   knownTypes (Set<string>): registered plugin type names
+ *
+ * Returns:
+ *   {id, reason}[] (empty when the document is clean)
+ *
+ * @example orphanedItems({slides: [{delta: {items: {a: {x: 99}}}}]}, new Set(["rect"])) // [{id: "a", reason: "no type is ever set (orphaned keyframes)"}]
+ * @example orphanedItems({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, new Set(["rect"])) // []
+ */
+export function orphanedItems(doc, knownTypes) {
+  const typeOf = new Map();
+  const seen = new Set();
+  for (const s of doc.slides)
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      seen.add(id);
+      if (item && typeof item === "object" && typeof item.type === "string" && !typeOf.has(id))
+        typeOf.set(id, item.type);
+    }
+  const out = [];
+  for (const id of seen) {
+    if (!typeOf.has(id)) out.push({ id, reason: "no type is ever set (orphaned keyframes)" });
+    else if (!knownTypes.has(typeOf.get(id))) out.push({ id, reason: `unknown type "${typeOf.get(id)}"` });
+  }
+  return out;
+}
+
+/**
+ * Pure function. Document with every orphaned item's subtree purged from
+ * every slide delta, plus the report of exactly what was removed and why.
+ * REPORTING IS THE CALLER'S JOB — the repair never hides anything, it hands
+ * back the drop list (the app console.errors each entry; silence forbidden).
+ * Idempotent; a clean document comes back unchanged with dropped = [].
+ *
+ * @example withOrphanedItemsDropped({slides: [{delta: {items: {a: {x: 99}}}}]}, new Set(["rect"])).dropped.length // 1
+ * @example // withOrphanedItemsDropped(cleanDoc, types) → {doc: cleanDoc-equivalent, dropped: []}
+ */
+export function withOrphanedItemsDropped(doc, knownTypes) {
+  const dropped = orphanedItems(doc, knownTypes);
+  let out = doc;
+  for (const { id } of dropped) out = withItemPurged(out, id);
+  return { doc: out, dropped };
+}
+
 // ── Slide edits ──────────────────────────────────────────────────────────────
 
 /** Pure function. Inserts an empty slide after `index`. Returns [doc, newIndex]. */

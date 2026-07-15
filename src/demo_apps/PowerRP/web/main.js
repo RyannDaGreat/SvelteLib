@@ -2,7 +2,7 @@ import "../../../styles/theme.css";
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
-import { deserialize, foldState, withCameraEnsured } from "../core/document.js";
+import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped } from "../core/document.js";
 import { cameraRect, deriveRenderTree } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
@@ -22,12 +22,14 @@ import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
  * post-present).
  */
 window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width = 1280, height = 720 } = {}) {
-  // Same load-time migrations as the editor: inject THE camera into
-  // pre-camera docs, convert legacy {item, anchor} bindings to equations.
-  const doc = withBindingsMigrated(withCameraEnsured(
-    typeof docJson === "string" ? deserialize(docJson) : docJson));
   const registry = createRegistry();
   registerAll(registry, createCommands());
+  // Same load-time migrations as the editor: drop orphaned items LOUDLY,
+  // inject THE camera, convert legacy {item, anchor} bindings to equations.
+  const raw = typeof docJson === "string" ? deserialize(docJson) : docJson;
+  const { doc: repairedDoc, dropped } = withOrphanedItemsDropped(raw, new Set(registry.all().map((p) => p.type)));
+  for (const { id, reason } of dropped) console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
+  const doc = withBindingsMigrated(withCameraEnsured(repairedDoc));
   // The one pipeline: fold → EVALUATE (equations become numbers) → derive → emit.
   const state = evaluateState(foldState(doc, slide, alpha), registry).state;
   // The view is THE CAMERA's bbox at this (slide, alpha); its background

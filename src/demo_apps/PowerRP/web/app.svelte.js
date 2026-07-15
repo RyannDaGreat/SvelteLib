@@ -10,7 +10,7 @@ import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
-  withCameraEnsured,
+  withCameraEnsured, withOrphanedItemsDropped,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
@@ -469,8 +469,25 @@ export class PowerRPApp {
   }
 
   deleteSlide() {
-    this.commit(withSlideDeleted(this.doc, this.slideIndex));
+    // Deleting a CREATION slide orphans the items created there (their later
+    // property keyframes fold into typeless items that crash evaluation) and
+    // can even orphan THE camera — repair + re-ensure, loudly.
+    this.commit(this.repaired(withSlideDeleted(this.doc, this.slideIndex)));
     this.slideIndex = Math.min(this.slideIndex, this.doc.slides.length - 1);
+  }
+
+  /**
+   * Command (reports). Drops orphaned items (typeless / unknown type) and
+   * console.errors EVERY drop — a bad item must never brick the render loop,
+   * and silent repairs are forbidden. Re-ensures THE camera afterward (the
+   * camera itself can be orphaned by deleting its creation slide).
+   */
+  repaired(doc) {
+    const known = new Set(this.registry.all().map((p) => p.type));
+    const { doc: out, dropped } = withOrphanedItemsDropped(doc, known);
+    for (const { id, reason } of dropped)
+      console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
+    return withCameraEnsured(out);
   }
 
   /** Toggles whether slide `index` (default: current) contributes its delta. */
@@ -503,7 +520,7 @@ export class PowerRPApp {
       input.click();
     });
     if (!file) return;
-    this.commit(withBindingsMigrated(withCameraEnsured(deserialize(await file.text()))));
+    this.commit(withBindingsMigrated(this.repaired(deserialize(await file.text()))));
     this.slideIndex = 0;
     this.selection = null;
   }
@@ -511,10 +528,10 @@ export class PowerRPApp {
   loadAutosave() {
     const json = localStorage.getItem(AUTOSAVE_KEY);
     if (json) {
-      // Load-time migrations: withCameraEnsured injects THE camera into
-      // pre-camera documents; withBindingsMigrated converts legacy
+      // Load-time migrations: repaired() drops orphaned items LOUDLY and
+      // ensures THE camera; withBindingsMigrated converts legacy
       // {item, anchor} arrow bindings to equation pairs (THE UNIFICATION).
-      this.doc = withBindingsMigrated(withCameraEnsured(deserialize(json)));
+      this.doc = withBindingsMigrated(this.repaired(deserialize(json)));
       this.undoLog = createUndo(this.snapshot(this.doc));
     }
   }
