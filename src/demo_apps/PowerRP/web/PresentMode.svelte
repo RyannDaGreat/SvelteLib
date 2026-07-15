@@ -21,6 +21,7 @@
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
+  import { assetUrl } from "./projectApi.js";
 
   let { app } = $props();
 
@@ -34,10 +35,114 @@
   // Monotonic token so a slow async fade render can't paint over a newer frame.
   let paintToken = 0;
 
-  const presenter = createPresenter(() => app.doc, (f) => {
-    frame = f;
-    paint();
-  });
+  // The single Audio element for transition sounds — owned here (the DOM side),
+  // NOT in core/presentation.js (which stays DOM-free so the CLI renders without
+  // ever touching audio: the SPARKLER RULE — sounds are playback-only, never
+  // rendered). One reusable element: each new transition-with-sound reloads its
+  // src and restarts, so overlapping transitions never stack audio.
+  let transitionAudio = null; // set at mount (browser only)
+
+  // ANIMATED WIDGET continuous render (manifest "Animated is a TOGGLEABLE
+  // PROPERTY"): between transitions the presenter is IDLE — it only paints on a
+  // tween's rAF. A looping video (state.animated === true) would therefore
+  // FREEZE at rest. So when the current RESTING slide has any VISIBLE animated
+  // widget, we run our OWN rAF chain to keep repainting (importing each fresh
+  // video frame). Re-evaluated ONLY when the frame changes (slide/alpha, in
+  // onFrame) — never a per-frame full scene scan (the manifest's cheapness
+  // requirement). `restingAnimated` caches that decision; `idleRaf` is the loop.
+  let restingAnimated = false; // does the settled slide hold a visible animated widget?
+  let idleRaf = null; // rAF handle for the at-rest animation loop (null = idle)
+
+  const presenter = createPresenter(
+    () => app.doc,
+    (f) => {
+      frame = f;
+      paint();
+      // Re-decide continuous rendering on EVERY delivered frame (this is the
+      // "on slide/tween/visibility change" seam — a new frame is exactly such a
+      // change). Cheap: one derive+cull pass here, not per rAF tick.
+      syncIdleAnimation();
+    },
+    (transition) => playTransitionSound(transition), // fired ONCE per transition start
+  );
+
+  /** Query. Does the slide at the CURRENT frame (evaluated, culled to the
+   *  camera) hold at least one VISIBLE animated widget?
+   *
+   *  LENS VISIBILITY IS FREE (manifest: "counting visibility THROUGH a magnifier
+   *  lens region"): canSkipNode(node, cameraRect) IS the lens-visibility
+   *  boundary. A magnifier lens only ever samples the ON-CANVAS pixels, which
+   *  cover exactly the camera rect (core/view.js worldViewRect docstring). So a
+   *  node NOT culled by the camera rect is contributing to the canvas the lens
+   *  reads; a node culled by it contributes nothing to the canvas OR to any lens
+   *  sampling that canvas. Thus the SAME cull test the render loop uses (paintGpu
+   *  line: filter !canSkipNode(n, rect)) is exactly "visible, including through a
+   *  lens" — no separate lens-region math is needed or correct. */
+  function currentSlideHasVisibleAnimated() {
+    const state = evaluateState(foldState(app.doc, frame.index, frame.alpha), app.registry).state;
+    const rect = cameraRect(state, app.doc.meta);
+    return deriveRenderTree(state, app.registry).some(
+      (n) => n.state.animated === true && !canSkipNode(n, rect),
+    );
+  }
+
+  /** Command. Starts/stops the at-rest animation rAF loop to match whether the
+   *  current slide has a visible animated widget. Idempotent (safe to call on
+   *  every frame): it flips the loop on/off only on a state change. */
+  function syncIdleAnimation() {
+    restingAnimated = currentSlideHasVisibleAnimated();
+    if (restingAnimated && idleRaf === null) idleRaf = requestAnimationFrame(idleTick);
+    else if (!restingAnimated && idleRaf !== null) { cancelAnimationFrame(idleRaf); idleRaf = null; }
+  }
+
+  /** Command. One tick of the at-rest animation loop. Repaints ONLY when the
+   *  frame is settled (alpha === 1): while a transition is tweening, the
+   *  presenter's OWN rAF is already repainting every frame (and importing fresh
+   *  video frames), so this loop must not double-paint — it idles through the
+   *  tween and resumes once the frame settles. Reschedules itself while
+   *  restingAnimated holds. */
+  function idleTick() {
+    if (!restingAnimated) { idleRaf = null; return; }
+    if (frame.alpha === 1) paint(); // at rest: drive the repaint (video frame advances)
+    idleRaf = requestAnimationFrame(idleTick);
+  }
+
+  /** Query. The playable URL for a transition's `sound` value. The Inspector
+   *  sound row stores a BARE asset filename (the user types it — the asset
+   *  picker is a later wave); it resolves to the project's served asset path
+   *  `/asset/<project>/<file>`. A value that is ALREADY a URL — a served path
+   *  ("/asset/…"), a scheme URL ("http:", "https:", "blob:"), or a data: URI —
+   *  is passed through untouched (the same resolution shape app.#resolvedSrc
+   *  uses for image/video src, extended to any scheme so a pasted URL/data URI
+   *  works too). */
+  function soundUrl(sound) {
+    if (sound.startsWith("/")) return assetUrl(sound); // served path → resolve through the backend base
+    if (/^[a-z][a-z0-9+.-]*:/i.test(sound)) return sound; // has a URI scheme (data:/http:/https:/blob:) → use verbatim
+    return assetUrl(`/asset/${encodeURIComponent(app.projectName())}/${encodeURIComponent(sound)}`); // bare filename → project asset
+  }
+
+  /** Command. Plays a transition's sound ONCE, at transition start. No sound
+   *  (null/empty) is SILENCE — the normal case, never an error. A load or play
+   *  failure is LOUD (console.error) — a named asset that can't be heard is a
+   *  reportable problem, not a silent no-op. Playback is user-gesture-legal:
+   *  present mode is entered by a user action (Present button / key) and every
+   *  advance is a keypress, so the browser's autoplay policy is satisfied (no
+   *  muted-autoplay workaround needed); documented rather than assumed. */
+  function playTransitionSound(transition) {
+    const sound = transition?.sound;
+    if (!sound || !transitionAudio) return; // no sound = silence (normal)
+    const url = soundUrl(sound);
+    transitionAudio.pause();
+    transitionAudio.currentTime = 0;
+    transitionAudio.src = url;
+    // play() rejects on autoplay-block OR (separately) an 'error' event fires on
+    // a load failure — cover BOTH loudly. The error handler is (re)assigned per
+    // call so it names the current asset.
+    transitionAudio.onerror = () =>
+      console.error(`PowerRP transition sound: failed to load "${sound}" (${url}) — is it uploaded to this project's assets?`);
+    transitionAudio.play().catch((e) =>
+      console.error(`PowerRP transition sound: playback of "${sound}" (${url}) was blocked/failed:`, e));
+  }
 
   /** Command. Paints the current frame. Branches on whether this is a FADE
    * crossfade frame (async 2D snapshot blend) or an ordinary tween/instant
@@ -132,6 +237,9 @@
   }
 
   onMount(() => {
+    // The one reusable transition-sound element (see playTransitionSound). Not
+    // added to the DOM — an out-of-tree Audio() plays fine and needs no layout.
+    transitionAudio = new Audio();
     presenter.goTo(app.slideIndex);
     document.documentElement.requestFullscreen?.().catch(() => {}); // headless/iframe: fine without
     window.addEventListener("keydown", onkeydown, true);
@@ -146,6 +254,10 @@
       .then((g) => {
         gpu = g;
         paint();
+        // The initial goTo fired onFrame BEFORE the device existed (paint was a
+        // no-op then); re-sync now so a first slide that holds an animated
+        // widget starts its continuous render as soon as the GPU is up.
+        syncIdleAnimation();
       })
       .catch((e) => {
         console.error("PowerRP: WebGPU init failed in present mode:", e);
@@ -157,6 +269,9 @@
       window.removeEventListener("resize", paint);
       document.removeEventListener("fullscreenchange", onFsChange);
       presenter.stop();
+      if (idleRaf !== null) { cancelAnimationFrame(idleRaf); idleRaf = null; } // stop the at-rest anim loop
+      restingAnimated = false;
+      if (transitionAudio) { transitionAudio.pause(); transitionAudio.src = ""; transitionAudio = null; } // release audio
     };
   });
 </script>

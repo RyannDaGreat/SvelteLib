@@ -10,17 +10,16 @@ import { loadFonts } from "./fontLoader.js";
 // rule). Kicked at module load so BOTH the editor mount and the CLI render hook
 // share one memoized promise; each awaits it before its first frame.
 const fontsLoaded = loadFonts();
-import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled, withLegacyKeysRenamed } from "../core/document.js";
-import { cameraRect, deriveRenderTree } from "../core/derive.js";
-import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
-import { withDurationMigrated } from "../core/transitions.js";
+import { deserialize, foldState, repairedDocument, printRepairReports } from "../core/document.js";
+import { cameraRect } from "../core/derive.js";
+import { evaluateState } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { fitRectView } from "../core/view.js";
-import { sceneIR } from "../render_gpu/ports.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+import { cameraFrameIR } from "./cameraFrame.js";
 
 /**
  * Headless render hook for cli/render.js (puppeteer awaits the promise):
@@ -34,24 +33,14 @@ window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width
   await fontsLoaded; // committed fonts must be loaded before the atlas rasterizes text (CLI path too)
   const registry = createRegistry();
   registerAll(registry, createCommands());
-  // Same load-time migrations as the editor: drop orphaned items LOUDLY,
-  // inject THE camera, convert legacy {item, anchor} bindings to equations.
+  // EXACTLY the editor's load-boundary repair — the SAME repairedDocument the
+  // app's repaired() runs (orphans→renames→fps-strip→fill→duration→camera→
+  // bindings), so the CLI and editor can never drift. The cruft audit caught
+  // this pair drifting: the CLI used to MISS the meta.fps strip. Reports are
+  // console.errored (silent repairs are forbidden).
   const raw = typeof docJson === "string" ? deserialize(docJson) : docJson;
-  const { doc: droppedDoc, dropped } = withOrphanedItemsDropped(raw, new Set(registry.all().map((p) => p.type)));
-  for (const { id, reason } of dropped) console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
-  // Rename BEFORE fill — order-critical (see app.svelte.js repaired()).
-  const { doc: renamedDoc, renamed } = withLegacyKeysRenamed(droppedDoc, registry);
-  for (const r of renamed)
-    console.error(`PowerRP repair: item "${r.id}" slide ${r.slideIndex}: legacy "${r.from}" → "${r.to}"${r.stale ? " (stale copy dropped)" : ""}`);
-  const { doc: repairedDoc, filled } = withMissingDefaultsFilled(renamedDoc, registry);
-  for (const { id, missing } of filled)
-    console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
-  // duration → transition.seconds (round 12; keeps CLI loads in lockstep with
-  // the editor's repaired() — the drifted-duplicate lesson, cruft audit 2a).
-  const { doc: migratedDoc, migrated } = withDurationMigrated(repairedDoc);
-  for (const m of migrated)
-    console.error(`PowerRP repair: slide ${m.index} legacy duration → transition.seconds (${m.seconds}s)`);
-  const doc = withBindingsMigrated(withCameraEnsured(migratedDoc));
+  const { doc, reports } = repairedDocument(raw, registry);
+  printRepairReports(reports);
   // The one pipeline: fold → EVALUATE (equations become numbers) → derive → emit.
   const state = evaluateState(foldState(doc, slide, alpha), registry).state;
   // The view is THE CAMERA's bbox at this (slide, alpha); its background
@@ -62,8 +51,11 @@ window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width
   canvas.width = width;
   canvas.height = height;
   const gpu = await GpuCompositor.create(canvas);
-  // parseColor returns normalized [r,g,b,a] floats — exactly render()'s space.
-  gpu.render(sceneIR(deriveRenderTree(state, registry)), view, { background: parseColor(rect.background) });
+  // The SAME camera-frame IR the pixel service builds (cameraFrameIR: bg rect +
+  // scene) — so the CLI and the editor's thumbnails/export emit byte-identical
+  // frames. The bg rect is redundant with the clear here (fitRectView fills the
+  // canvas), so pixels are unchanged; parseColor returns render()'s float space.
+  gpu.render(cameraFrameIR(state, doc.meta, registry), view, { background: parseColor(rect.background) });
   const px = await gpu.readPixels(0, 0, width, height);
   // Encode via a plain 2D canvas fed the GPU pixels — an encode surface for
   // toDataURL, not a render mode.

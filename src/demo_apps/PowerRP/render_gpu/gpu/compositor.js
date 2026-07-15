@@ -62,7 +62,8 @@
  * uncaptured GPU errors throw on the next render().
  */
 
-import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree } from "../ir.js";
+import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree, parseColor } from "../ir.js";
+import { richTextDraws } from "../../core/richtext.js";
 import * as T from "../../core/transform.js";
 import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, CROP_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
@@ -126,31 +127,51 @@ export function nextPow2(n) {
 }
 
 /**
- * Pure function. The view a supersampling lens re-renders its sub-scene
- * under: zoom scaled by `magnification`, pan recentered so the lens's WORLD
- * center stays at the SAME device pixel as in `view`. Rendering into a
- * canvas-sized texture under this view puts the magnified source region
- * (plugins/magnifier.js lensSourceRect: the 2r/M square about the center)
- * exactly over the lens's on-screen circle — the lens quad then samples the
- * texture 1:1. This is the GPU form of the old canvas renderRegion's
- * fitRectView(lensSourceRect(...), diam, diam) lens view.
+ * Pure function. A source rect ({sx,sy,sw,sh}, ir.js image/video edge-crop
+ * insets) → the quad shader's UV instance [u0, v0, du, dv]. Undefined (a
+ * pre-crop op / hand-built IR that predates the source rect) → the full frame
+ * [0,0,1,1], keeping such ops byte-identical to before edge-crop existed.
+ *
+ * @example srcUV(undefined) // [0, 0, 1, 1]
+ * @example srcUV({sx: 0.1, sy: 0.2, sw: 0.7, sh: 0.6}) // [0.1, 0.2, 0.7, 0.6]
+ */
+export function srcUV(src) {
+  return src ? [src.sx, src.sy, src.sw, src.sh] : [0, 0, 1, 1];
+}
+
+/**
+ * Pure function. The view a supersampling lens re-renders its sub-scene under:
+ * zoom scaled by `magnification`, pan positioned so the lens's ORIGIN world
+ * point renders at the SAME device pixel where the lens CENTER rendered in
+ * `view` (i.e. the origin — what the lens magnifies FROM — appears at the lens
+ * region center, magnified by M). Rendering into a canvas-sized texture under
+ * this view puts the magnified source region exactly over the lens's on-screen
+ * region — the lens quad then samples the texture 1:1. This is the GPU form of
+ * the old canvas renderRegion's fitRectView(lensSourceRect(...)) lens view.
+ *
+ * `originWorld` defaults to `centerWorld` (the manifest default: a magnifier
+ * with no target magnifies about its own center), which reduces this to the
+ * pre-origin behavior — pan recentered so the CENTER stays put — byte-identical.
  *
  * Args:
  *   view (object): {zoom, panX, panY, dpr} outer view
- *   centerWorld (object): {x, y} lens center in world space
+ *   centerWorld (object): {x, y} lens region center in world space
  *   magnification (number): the lens's M (> 0)
+ *   originWorld (object): {x, y} the point the lens magnifies FROM (shown at
+ *     the region center); defaults to centerWorld
  *
  * Returns:
  *   object: {zoom, panX, panY, dpr}
  *
  * @example lensRenderView({zoom: 1, panX: 0, panY: 0, dpr: 1}, {x: 100, y: 50}, 2) // {zoom: 2, panX: -100, panY: -50, dpr: 1}
  * @example lensRenderView({zoom: 2, panX: 10, panY: 0, dpr: 2}, {x: 0, y: 0}, 3) // {zoom: 6, panX: 10, panY: 0, dpr: 2} (center at origin: pan unchanged)
+ * @example lensRenderView({zoom: 1, panX: 0, panY: 0, dpr: 1}, {x: 100, y: 50}, 2, {x: 20, y: 10}) // {zoom: 2, panX: 60, panY: 30, dpr: 1} (origin 20 renders where center 100 was: 100 - 20*2 = 60)
  */
-export function lensRenderView(view, centerWorld, magnification) {
+export function lensRenderView(view, centerWorld, magnification, originWorld = centerWorld) {
   return {
     zoom: view.zoom * magnification,
-    panX: view.panX - centerWorld.x * view.zoom * (magnification - 1),
-    panY: view.panY - centerWorld.y * view.zoom * (magnification - 1),
+    panX: view.panX + centerWorld.x * view.zoom - originWorld.x * view.zoom * magnification,
+    panY: view.panY + centerWorld.y * view.zoom - originWorld.y * view.zoom * magnification,
     dpr: view.dpr,
   };
 }
@@ -860,26 +881,35 @@ export class GpuCompositor {
           // its device rect with the content rect (manifest: "Magnifier
           // renders only the VISIBLE lens intersection") — empty means the
           // lens is offscreen: skip it entirely (free culling), soft or sharp.
-          const rDev = batch.rWorld * view.zoom * view.dpr;
+          // A CIRCLE lens uses its radius; a BOX lens (shape === "box") uses
+          // its half-extents (the crop case's convention) and draws through the
+          // rounded-rect crop pipeline instead — the SHAPED-LENS family: one
+          // encode path, two region shapes.
+          const isBox = batch.shape === "box";
           const cDevX = (batch.centerWorld.x * view.zoom + view.panX) * view.dpr;
           const cDevY = (batch.centerWorld.y * view.zoom + view.panY) * view.dpr;
-          const pad = rDev + AA_MARGIN_DEVICE;
+          const padX = (isBox ? batch.halfWWorld : batch.rWorld) * view.zoom * view.dpr + AA_MARGIN_DEVICE;
+          const padY = (isBox ? batch.halfHWorld : batch.rWorld) * view.zoom * view.dpr + AA_MARGIN_DEVICE;
           const visible = intersectRects(
             // Integer-aligned so the re-render's pixel grid lands exactly on
             // the target's (crisp 1:1 sampling), floor/ceil = conservative.
             {
-              x: Math.floor(cDevX - pad), y: Math.floor(cDevY - pad),
-              w: Math.ceil(pad * 2) + 1, h: Math.ceil(pad * 2) + 1,
+              x: Math.floor(cDevX - padX), y: Math.floor(cDevY - padY),
+              w: Math.ceil(padX * 2) + 1, h: Math.ceil(padY * 2) + 1,
             },
             { x: 0, y: 0, w: cw, h: ch },
           );
           if (visible.w === 0 || visible.h === 0) break;
+          const pipe = isBox ? this.cropPipe : this.magnifyPipe;
+          const instBuf = isBox ? this.cropBuf : this.quadBuf;
           if (batch.supersample && depth < MAX_SUPERSAMPLE_DEPTH) {
             endPass();
-            // Lens view: magnified about the lens center, then shifted so
+            // Lens view: magnified about the ORIGIN (positioned so the origin
+            // renders where the lens center did — magnifier "target"; default
+            // origin=center reduces to magnify-about-center), then shifted so
             // the visible intersection's origin renders at the texture's
             // top-left (device px shift ⇒ pan shift of rect.origin/dpr).
-            const lensView = lensRenderView(view, batch.centerWorld, batch.magnification);
+            const lensView = lensRenderView(view, batch.centerWorld, batch.magnification, batch.originWorld);
             lensView.panX -= visible.x / lensView.dpr;
             lensView.panY -= visible.y / lensView.dpr;
             // Carry an outer scissor (presenter letterbox) into the lens
@@ -896,18 +926,18 @@ export class GpuCompositor {
               { tex: lens.tex, view: lens.view, msaaView: lens.msaaView, contentW: visible.w, contentH: visible.h },
               { background: [0, 0, 0, 0], scissor: subScissor }, depth + 1);
             const p = ensurePass();
-            p.setPipeline(this.magnifyPipe);
+            p.setPipeline(pipe);
             p.setBindGroup(1, use.bgByDepth[depth]);
             p.setVertexBuffer(0, this.cornerBuf);
-            p.setVertexBuffer(1, this.quadBuf);
+            p.setVertexBuffer(1, instBuf);
             p.draw(6, 1, 0, batch.firstSharp); // magnification-1 instance: 1:1 sample of the sharp re-render
           } else {
             snapshotBackdrop();
             const p = ensurePass();
-            p.setPipeline(this.magnifyPipe);
+            p.setPipeline(pipe);
             p.setBindGroup(1, this.backdropBG);
             p.setVertexBuffer(0, this.cornerBuf);
-            p.setVertexBuffer(1, this.quadBuf);
+            p.setVertexBuffer(1, instBuf);
             p.draw(6, 1, 0, batch.firstSoft); // contract-by-1/M instance over the backdrop snapshot
           }
           break;
@@ -967,6 +997,18 @@ export class GpuCompositor {
     }
     if (!cleared) ensurePass(); // empty scene still clears to background
     endPass();
+  }
+
+  /**
+   * Query (touches the atlas ctx.font). The per-RUN measure seam the SHARED
+   * rich-text layout (core/richtext.layoutRichText) needs: (text, runStyle) →
+   * {width, ascent, descent} at the run's NOMINAL size, from the atlas's
+   * canvas2D. This is what makes ONE layout serve both backends — the GPU
+   * injects THIS, the PDF backend injects its own equivalent, and both get the
+   * SAME positions. Rebuilt per rich op (cheap: a bound closure).
+   */
+  _richMeasure() {
+    return (str, style) => this.atlas.measureText(str, style.size ?? 36, !!style.bold, style.font ?? "system", !!style.italic);
   }
 
   /**
@@ -1088,61 +1130,97 @@ export class GpuCompositor {
           break;
         }
         case "text": {
-          const devicePx = cmd.size * world.scale * scaleDev;
-          const bucket = bucketFor(devicePx);
-          const localScale = cmd.size / bucket;
-          // PER-GLYPH VISIBILITY CULLING: only glyphs whose quad touches the
-          // canvas rasterize and draw. This is what makes the raised
-          // MAX_BUCKET safe — a deep zoom shows only a handful of huge
-          // glyphs, so the atlas page holds exactly what's visible instead
-          // of entire runs. measure() supplies metrics WITHOUT allocating
-          // atlas space; advances accrue for culled glyphs so layout holds.
           const [ma, mb, mtx, mty] = xf; // packXform: [s·cosθ, s·sinθ, tx, ty]
           const panDx = view.panX * view.dpr, panDy = view.panY * view.dpr;
           const cW = this.canvas.width, cH = this.canvas.height;
-          // Scale-1 quads (the exact-raster regime, unclamped) can be
-          // INTEGER-SNAPPED when unrotated: a 1:1 texture sampled at a
-          // fractional device offset loses edge contrast to bilinear blending
-          // (measured: top-decile gradient 208 vs 243 native at half-texel);
-          // the platform rasterizer handles subpixel coverage internally, a
-          // texture copy can't — so align it. Shift ≤ 0.5 device px.
-          const snap = mb === 0 && Math.abs(devicePx / bucket - 1) < 0.01;
-          let pen = cmd.x;
-          for (const ch of cmd.text) {
-            const m = this.atlas.measure(ch, bucket, cmd.bold, cmd.font);
-            let qx = pen - m.pad * localScale, qy = cmd.y - m.pad * localScale;
-            const qw = m.cellW * localScale, qh = m.cellH * localScale;
-            pen += m.advance * localScale;
-            if (snap) {
-              const dScale = ma * scaleDev; // local→device (uniform, unrotated)
-              const dx0 = (ma * qx + mtx) * scaleDev + panDx;
-              const dy0 = (ma * qy + mty) * scaleDev + panDy;
-              qx += (Math.round(dx0) - dx0) / dScale;
-              qy += (Math.round(dy0) - dy0) / dScale;
+
+          // packRun draws ONE single-run text run (chars from `str`) whose glyph
+          // TOPS sit at localY, pen starting at localX. Extracted so the rich
+          // path calls it once per laid-out glyph run (top-anchored to the
+          // SHARED line baseline) and the legacy single-run path calls it once.
+          // `italic` selects the synthesized-oblique face IN THE ATLAS (real
+          // italic if the face has one, else rasterizer oblique) — a true
+          // oblique glyph shape, no shader change (see glyph_atlas.fontString).
+          const packRun = (str, localX, localY, size, bold, font, color, opacity, italic) => {
+            const devicePx = size * world.scale * scaleDev;
+            const bucket = bucketFor(devicePx);
+            const localScale = size / bucket;
+            // Scale-1 quads (exact-raster, unrotated) INTEGER-SNAP: a 1:1 texture
+            // at a fractional device offset loses edge contrast to bilinear
+            // blending — align it (shift ≤ 0.5 device px).
+            const snap = mb === 0 && Math.abs(devicePx / bucket - 1) < 0.01;
+            let pen = localX;
+            for (const ch of str) {
+              const m = this.atlas.measure(ch, bucket, bold, font, italic);
+              let qx = pen - m.pad * localScale, qy = localY - m.pad * localScale;
+              const qw = m.cellW * localScale, qh = m.cellH * localScale;
+              pen += m.advance * localScale;
+              if (snap) {
+                const dScale = ma * scaleDev; // local→device (uniform, unrotated)
+                const dx0 = (ma * qx + mtx) * scaleDev + panDx;
+                const dy0 = (ma * qy + mty) * scaleDev + panDy;
+                qx += (Math.round(dx0) - dx0) / dScale;
+                qy += (Math.round(dy0) - dy0) / dScale;
+              }
+              // Quad's device-space AABB (4 corners — the world may rotate).
+              let minDX = Infinity, minDY = Infinity, maxDX = -Infinity, maxDY = -Infinity;
+              for (const [lx, ly] of [[qx, qy], [qx + qw, qy], [qx, qy + qh], [qx + qw, qy + qh]]) {
+                const dx = (ma * lx - mb * ly + mtx) * scaleDev + panDx;
+                const dy = (mb * lx + ma * ly + mty) * scaleDev + panDy;
+                if (dx < minDX) minDX = dx;
+                if (dx > maxDX) maxDX = dx;
+                if (dy < minDY) minDY = dy;
+                if (dy > maxDY) maxDY = dy;
+              }
+              if (maxDX < 0 || minDX > cW || maxDY < 0 || minDY > cH) continue;
+              const e = this.atlas.get(ch, bucket, bold, font, italic);
+              const at = quadInstance("tex", null);
+              const f = this.quadArr.f32;
+              f.set([qx, qy, qw, qh], at);
+              f.set(xf, at + 4);
+              f.set([e.u0, e.v0, e.du, e.dv], at + 8);
+              f.set(color, at + 12);
+              // Color glyphs (emoji) carry their own RGB — TEX_MODE.colorGlyph
+              // samples as-is; monochrome glyphs are tinted by `color`.
+              f.set([e.color ? TEX_MODE.colorGlyph : TEX_MODE.glyph, opacity, 0, 0], at + 16);
             }
-            // Quad's device-space AABB (4 corners — the world may rotate).
-            let minDX = Infinity, minDY = Infinity, maxDX = -Infinity, maxDY = -Infinity;
-            for (const [lx, ly] of [[qx, qy], [qx + qw, qy], [qx, qy + qh], [qx + qw, qy + qh]]) {
-              const dx = (ma * lx - mb * ly + mtx) * scaleDev + panDx;
-              const dy = (mb * lx + ma * ly + mty) * scaleDev + panDy;
-              if (dx < minDX) minDX = dx;
-              if (dx > maxDX) maxDX = dx;
-              if (dy < minDY) minDY = dy;
-              if (dy > maxDY) maxDY = dy;
+          };
+
+          if (cmd.rich) {
+            // RICH TEXT: run the SHARED pure layout (core/richtext.js) with an
+            // atlas-backed measure seam, then pack each positioned run + each
+            // underline/strike line. ONE layout, two backends (parity lever).
+            const draws = richTextDraws(cmd, this._richMeasure());
+            for (const d of draws.textDraws) {
+              // Top-anchor this run at (baselineY − its face ascent) so mixed-
+              // size runs share the layout's baseline (matches packRun's own
+              // top-anchor convention: glyph baseline = top + ascent·localScale).
+              const devicePx = d.size * world.scale * scaleDev;
+              const bkt = bucketFor(devicePx);
+              const ls = d.size / bkt;
+              const asc = this.atlas.measure("Mg", bkt, d.bold, d.font, d.italic).ascent * ls;
+              // Run colors are hex strings (runs store hex) — parse to rgba
+              // floats (parseColor is memoized, so per-run parsing is cheap).
+              packRun(d.text, d.x, d.baselineY - asc, d.size, d.bold, d.font, parseColor(d.color), d.opacity, d.italic);
             }
-            if (maxDX < 0 || minDX > cW || maxDY < 0 || minDY > cH) continue;
-            const e = this.atlas.get(ch, bucket, cmd.bold, cmd.font);
-            const at = quadInstance("tex", null);
-            const f = this.quadArr.f32;
-            f.set([qx, qy, qw, qh], at);
-            f.set(xf, at + 4);
-            f.set([e.u0, e.v0, e.du, e.dv], at + 8);
-            f.set(cmd.color, at + 12);
-            // Color glyphs (emoji) carry their own RGB in the atlas texel —
-            // TEX_MODE.colorGlyph samples it as-is; cmd.color is packed
-            // regardless (harmless, ignored by that mode) so the instance
-            // layout stays uniform. Monochrome glyphs keep the tinted path.
-            f.set([e.color ? TEX_MODE.colorGlyph : TEX_MODE.glyph, cmd.opacity, 0, 0], at + 16);
+            // Underline / strike as thin axis-aligned filled rects in local
+            // space (crisp bars via the rect SDF; local, so the run's world
+            // xform rotates/scales them with the text).
+            for (const ln of draws.lines) {
+              const at = shapeInstance();
+              const f = this.shapeArr.f32;
+              const half = ln.thickness / 2;
+              f.set([ln.x, ln.y - half, ln.w, ln.thickness], at);
+              f.set(xf, at + 4);
+              f.set(parseColor(ln.color), at + 8); // fill (hex → rgba floats)
+              f.set(NO_COLOR, at + 12);            // no stroke
+              f.set([ln.x + ln.w / 2, ln.y, ln.w / 2, half], at + 16); // rect center/half for the SDF
+              f.set([SHAPE_KIND.rect, 0, ln.opacity, 0], at + 20);
+            }
+          } else {
+            // LEGACY single-run text op (parity scenes, hand-built IR): one run
+            // top-anchored at cmd.y, exactly as before.
+            packRun(cmd.text, cmd.x, cmd.y, cmd.size, cmd.bold, cmd.font, cmd.color, cmd.opacity, false);
           }
           break;
         }
@@ -1157,7 +1235,10 @@ export class GpuCompositor {
           const f = this.quadArr.f32;
           f.set([cmd.x, cmd.y, cmd.w, cmd.h], at);
           f.set(xf, at + 4);
-          f.set([0, 0, 1, 1], at + 8);
+          // Source UV rect (edge-crop insets): the (u0,v0,du,dv) the quad
+          // shader samples. Full-frame default {0,0,1,1} → unchanged from the
+          // pre-crop op; a cropped source draws that sub-rect over the quad.
+          f.set(srcUV(cmd.src), at + 8);
           f.set([1, 1, 1, 1], at + 12);
           f.set([TEX_MODE.image, cmd.opacity, 0, 0], at + 16);
           break;
@@ -1175,7 +1256,8 @@ export class GpuCompositor {
           const f = this.quadArr.f32;
           f.set([cmd.x, cmd.y, cmd.w, cmd.h], at);
           f.set(xf, at + 4);
-          f.set([0, 0, 1, 1], at + 8);
+          // Source UV rect (edge-crop insets) — same as the image op.
+          f.set(srcUV(cmd.src), at + 8);
           f.set([1, 1, 1, 1], at + 12);
           f.set([TEX_MODE.image, cmd.opacity, 0, 0], at + 16);
           break;
@@ -1194,30 +1276,75 @@ export class GpuCompositor {
           // sample by 1/M). Which one draws is an ENCODE-time choice
           // (supersample flag + recursion depth) — the same batch replays at
           // different depths inside other lenses' re-renders, so both must
-          // exist. Instance params are WORLD units; MAGNIFY_WGSL's vertex
-          // shader converts through the bound view — view-independent
-          // instances are what make the replays correct.
+          // exist. Instance params are WORLD units; the vertex shader converts
+          // through the bound view — view-independent instances are what make
+          // the replays correct. The ORIGIN (what the lens magnifies AROUND —
+          // manifest "magnifier target") defaults to the region center, so a
+          // magnifier with no target is byte-identical to before origin existed.
           const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+          const originWorld = T.apply(world, cmd.originX, cmd.originY);
+          if (cmd.shape === "box") {
+            // BOX magnifier — the ROUNDED-RECT half of the shaped-lens family.
+            // Renders through the SAME crop pipeline (rrect SDF + border) a crop
+            // box uses, but with magnification (crop = magnification 1) and the
+            // z-prefix as content (crop = a named subtree). Border = the shared
+            // stroked-box bundle (stroke/strokeWidth). Two crop-style instances
+            // (sharp mag=1 / soft mag=M), mirroring the circle lens's split.
+            const halfWWorld = cmd.halfW * world.scale, halfHWorld = cmd.halfH * world.scale;
+            const strokeW = cmd.stroke ? cmd.strokeWidth : 0;
+            const m = strokeW / 2 + aaLocal;
+            // Same sampleAnchor rule as the circle path (CROP_WGSL's rDev.zw):
+            // center for the sharp instance, origin for the soft.
+            const packBoxLens = (magnification, anchor) => {
+              const at = this.cropArr.alloc(CROP_FLOATS);
+              const f = this.cropArr.f32;
+              f.set([cmd.cx - cmd.halfW - m, cmd.cy - cmd.halfH - m, 2 * (cmd.halfW + m), 2 * (cmd.halfH + m)], at);
+              f.set(xf, at + 4);
+              f.set([centerWorld.x, centerWorld.y, halfWWorld, halfHWorld], at + 8);
+              // rDev = (cornerRadius, magnification, sampleAnchorWorldX, sampleAnchorWorldY)
+              f.set([cmd.cornerRadius * world.scale, magnification, anchor.x, anchor.y], at + 12);
+              f.set(NO_COLOR, at + 16);                       // a magnifier has no fill (lens content fills it)
+              f.set(cmd.stroke ?? NO_COLOR, at + 20);
+              f.set([strokeW * world.scale, cmd.opacity, 0, 0], at + 24);
+              return at / CROP_FLOATS;
+            };
+            batches.push({
+              type: "magnify", shape: "box",
+              firstSharp: packBoxLens(1, centerWorld),
+              firstSoft: packBoxLens(cmd.magnification, originWorld),
+              supersample: cmd.supersample ?? true,
+              magnification: cmd.magnification,
+              centerWorld, originWorld, halfWWorld, halfHWorld,
+            });
+            box.current = null;
+            break;
+          }
           const rWorld = cmd.r * world.scale;
           const rimW = cmd.rimColor ? cmd.rimWidth : 0;
           const m = rimW / 2 + aaLocal;
-          const packLens = (magnification) => {
+          // sampleAnchor = the world point shown at the lens center: the CENTER
+          // for the sharp instance (the re-render was positioned so origin maps
+          // there — the shader samples 1:1) and the ORIGIN for the soft
+          // instance (over the un-repositioned backdrop). Default origin=center
+          // ⇒ both are center ⇒ byte-identical to before origin.
+          const packLens = (magnification, anchor) => {
             const at = this.quadArr.alloc(QUAD_FLOATS);
             const f = this.quadArr.f32;
             f.set([cmd.cx - cmd.r - m, cmd.cy - cmd.r - m, 2 * (cmd.r + m), 2 * (cmd.r + m)], at);
             f.set(xf, at + 4);
             f.set([centerWorld.x, centerWorld.y, rWorld, magnification], at + 8);
             f.set(cmd.rimColor ?? NO_COLOR, at + 12);
-            f.set([rimW * world.scale, cmd.opacity, 0, 0], at + 16);
+            // misc = (rimWidthWorld, opacity, sampleAnchorWorldX, sampleAnchorWorldY)
+            f.set([rimW * world.scale, cmd.opacity, anchor.x, anchor.y], at + 16);
             return at / QUAD_FLOATS;
           };
           batches.push({
-            type: "magnify",
-            firstSharp: packLens(1),
-            firstSoft: packLens(cmd.magnification),
+            type: "magnify", shape: "circle",
+            firstSharp: packLens(1, centerWorld),
+            firstSoft: packLens(cmd.magnification, originWorld),
             supersample: cmd.supersample ?? true, // ?? guards hand-built IR that bypassed the builder
             magnification: cmd.magnification,
-            centerWorld, rWorld,
+            centerWorld, originWorld, rWorld,
           });
           box.current = null; // effects never merge with a following batch
           break;
@@ -1243,7 +1370,12 @@ export class GpuCompositor {
           f.set([cmd.x - m, cmd.y - m, cmd.w + 2 * m, cmd.h + 2 * m], at);
           f.set(xf, at + 4);
           f.set([centerWorld.x, centerWorld.y, (cmd.w / 2) * world.scale, (cmd.h / 2) * world.scale], at + 8);
-          f.set([cmd.cornerRadius * world.scale, 0, 0, 0], at + 12);
+          // rDev = (cornerRadius, magnification, originWorldX, originWorldY). A
+          // crop box re-renders its target 1:1 → magnification 1 + origin =
+          // center makes CROP_WGSL's contraction a no-op (q_src = p), so this
+          // is byte-identical to the pre-shaped-lens crop packing (the two
+          // trailing zeros became mag=1 + the center, all consumed to q_src=p).
+          f.set([cmd.cornerRadius * world.scale, 1, centerWorld.x, centerWorld.y], at + 12);
           f.set(cmd.fill ?? NO_COLOR, at + 16);
           f.set(cmd.stroke ?? NO_COLOR, at + 20);
           f.set([(cmd.strokeWidth ?? 0) * world.scale, cmd.opacity, 0, 0], at + 24);

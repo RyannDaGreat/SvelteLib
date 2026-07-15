@@ -13,6 +13,7 @@ import {
   newDocument, withNewItem, withNewSlide, keyframed, unkeyframed, withSlideDeleted,
   withSlideToggled, foldState, orphanedItems, withOrphanedItemsDropped,
   missingDefaults, withMissingDefaultsFilled, legacyKeyRenames, withLegacyKeysRenamed,
+  repairedDocument, defaultCameraState,
 } from "../core/document.js";
 import { deriveRenderTree } from "../core/derive.js";
 import { sceneIR } from "../render_gpu/ports.js";
@@ -230,6 +231,76 @@ test("current documents report no legacy renames", () => {
   let doc = newDocument();
   const [d1] = withNewItem(doc, 0, { ...registry.get("arrow").defaults, active: true });
   assert.deepEqual(legacyKeyRenames(d1, registry), []);
+});
+
+// ── defaultCameraState (the ONE camera literal) ─────────────────────────────
+
+test("defaultCameraState sizes to meta and carries name/active (the reconciled truth)", () => {
+  const cam = defaultCameraState({ slideW: 800, slideH: 600 });
+  assert.equal(cam.type, "camera");
+  assert.equal(cam.name, "Camera");
+  assert.equal(cam.active, true);
+  assert.equal(cam.w, 800);
+  assert.equal(cam.h, 600);
+  // no meta → the historical 1280×720 fallback
+  assert.equal(defaultCameraState().w, 1280);
+  assert.equal(defaultCameraState().h, 720);
+});
+
+test("the camera plugin's defaults ARE defaultCameraState (no drift)", () => {
+  // The plugin literal used to lack name/active and hardcode 1280×720; it now
+  // reuses the ONE truth, so filling from plugin defaults yields name/active too.
+  const d = registry.get("camera").defaults;
+  assert.equal(d.name, "Camera");
+  assert.equal(d.active, true);
+  assert.equal(d.w, 1280);
+});
+
+// ── repairedDocument (the ONE load-boundary pipeline) ───────────────────────
+
+test("repairedDocument is idempotent on a fresh document (no reports)", () => {
+  const { doc, reports } = repairedDocument(newDocument(), registry);
+  assert.deepEqual(reports, []);
+  const again = repairedDocument(doc, registry);
+  assert.deepEqual(again.reports, []);
+});
+
+test("repairedDocument STRIPS legacy meta.fps (the CLI-vs-editor drift the audit flagged)", () => {
+  const doc = newDocument();
+  doc.meta.fps = 120; // legacy field
+  const { doc: fixed, reports } = repairedDocument(doc, registry);
+  assert.equal("fps" in fixed.meta, false);
+  assert.ok(reports.some((r) => r.includes("removed legacy meta.fps")));
+});
+
+test("repairedDocument drops an orphan, re-ensures the camera, and reports both classes", () => {
+  const [doc, id] = orphanedDoc(); // orphaned rect + camera lost with the deleted slide
+  const { doc: fixed, reports } = repairedDocument(doc, registry);
+  // orphan gone
+  assert.equal(foldState(fixed, 0, 1).items?.[id], undefined);
+  // camera re-ensured (withCameraEnsured runs inside the pipeline)
+  const hasCamera = fixed.slides.some((s) =>
+    Object.values(s.delta.items ?? {}).some((it) => it?.type === "camera"));
+  assert.ok(hasCamera);
+  assert.ok(reports.some((r) => r.includes(`dropped item "${id}"`)));
+  // the repaired doc renders through the strict IR
+  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
+  sceneIR(deriveRenderTree(state, registry));
+});
+
+test("repairedDocument runs legacy renames BEFORE fill (value preserved) and migrates duration", () => {
+  const [doc, id] = legacyArrowDoc(); // headSize animated; slide 0 also color/width legacy
+  // A pre-transitions slide: strip the fresh doc's transition and give it the
+  // legacy per-slide `duration` so withDurationMigrated actually fires.
+  delete doc.slides[1].transition;
+  doc.slides[1].duration = 3;
+  const { doc: fixed, reports } = repairedDocument(doc, registry);
+  assert.equal(fixed.slides[0].delta.items[id].headLength, 20); // user value preserved
+  assert.equal(fixed.slides[1].delta.items[id].headLength, 40); // animation survives
+  assert.equal("duration" in fixed.slides[1], false);
+  assert.equal(fixed.slides[1].transition.seconds, 3);
+  assert.ok(reports.some((r) => r.includes("headSize") && r.includes("headLength")));
+  assert.ok(reports.some((r) => r.includes("duration") && r.includes("transition.seconds")));
 });
 
 console.log(`\n${passed} repair tests passed`);

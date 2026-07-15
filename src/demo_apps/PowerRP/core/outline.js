@@ -216,6 +216,118 @@ export function roundedRectAnchorPoint(w, h, r, id, sx, sy) {
   return closestPointOnRoundedRect(w, h, r, sx, sy);
 }
 
+// ── Dynamic-anchor rim solvers (nearest point / nearest pair) ─────────────────
+// The substrate for the equation function `closest_to_rim` (manifest "Dynamic
+// anchors — USER REFINEMENT"). A RIM is modeled abstractly as its CLOSEST-POINT
+// MAP: a pure function proj(qx, qy) → {x, y} returning the rim point nearest a
+// query point, ALL IN WORLD SPACE. Every bbox plugin already exposes exactly
+// this via closestAnchor(state, wx, wy, world) (circle → radial point, rect /
+// rounded-rect / crop box → closestPointOnRoundedRect, all worldTransform-aware),
+// so these solvers are GENERIC over rim geometry — circle, rect, rounded rect,
+// and any future custom outline work through the identical interface with no
+// per-shape branch here (manifest generic-rim ruling: "ONE geometry system").
+
+/**
+ * Pure function. The closest point ON a circle's rim (center c, radius rad) to a
+ * query point (qx, qy) — the radial projection. A query AT the center has no
+ * defined direction; it falls back to the +x rim point (an arbitrary but
+ * consistent choice, matching axisNormalFrame's degenerate convention).
+ *
+ * @example closestPointOnCircle({x: 0, y: 0}, 10, 100, 0) // {x: 10, y: 0}
+ * @example closestPointOnCircle({x: 0, y: 0}, 5, 3, 4) // {x: 3, y: 4} (already at radius 5: the point projects onto itself)
+ * @example closestPointOnCircle({x: 2, y: 3}, 7, 2, 3) // {x: 9, y: 3} (query at center → +x rim)
+ */
+export function closestPointOnCircle(c, rad, qx, qy) {
+  const dx = qx - c.x, dy = qy - c.y;
+  const d = Math.hypot(dx, dy);
+  if (d === 0) return { x: c.x + rad, y: c.y };
+  return { x: c.x + (rad * dx) / d, y: c.y + (rad * dy) / d };
+}
+
+/**
+ * Pure function. The nearest PAIR of points between TWO circles (centers cA/cB,
+ * radii rA/rB), solved in ONE closed form: both points lie on the center line,
+ * on the sides FACING each other — pA = cA + rA·u, pB = cB − rB·u where
+ * u = unit(cB − cA). This is the exact analytic answer for the circle/circle
+ * case (no iteration), and the reason a mutual closest_to_rim(circleA, circleB)
+ * lands each endpoint on the true nearest pair with ZERO wobble: from.x/from.y
+ * read pA, to.x/to.y read pB, both from ONE solve. Concentric circles
+ * (coincident centers) have no facing direction; the pair falls back to the +x
+ * axis (arbitrary but consistent, same convention as closestPointOnCircle).
+ *
+ * @example nearestPairCircleCircle({x: 0, y: 0}, 10, {x: 100, y: 0}, 20) // {a: {x: 10, y: 0}, b: {x: 80, y: 0}}
+ * @example nearestPairCircleCircle({x: 0, y: 0}, 10, {x: 0, y: 50}, 10) // {a: {x: 0, y: 10}, b: {x: 0, y: 40}} (vertical center line)
+ * @example nearestPairCircleCircle({x: 5, y: 5}, 3, {x: 5, y: 5}, 4) // {a: {x: 8, y: 5}, b: {x: 1, y: 5}} (concentric → +x fallback)
+ */
+export function nearestPairCircleCircle(cA, rA, cB, rB) {
+  const dx = cB.x - cA.x, dy = cB.y - cA.y;
+  const d = Math.hypot(dx, dy);
+  const ux = d === 0 ? 1 : dx / d, uy = d === 0 ? 0 : dy / d;
+  return {
+    a: { x: cA.x + rA * ux, y: cA.y + rA * uy },
+    b: { x: cB.x - rB * ux, y: cB.y - rB * uy },
+  };
+}
+
+// Convergence controls for the GENERIC alternating-projection nearest-pair
+// solver (nearestRimPair), used for any rim pair without a closed form
+// (rect/rect, circle/rect, rounded/rotated, custom outlines). Alternating
+// projection between two convex-ish rims is a firmly-nonexpansive fixed-point
+// iteration: each half-step is the metric projection onto a rim, which is
+// nonexpansive, so the round-trip map A∘B is nonexpansive and the iterates
+// converge to a point pair realizing the inter-rim distance. Contraction weakens
+// as the rims approach tangency (the wobble class the manifest calls out), so a
+// FIXED iteration count cannot hold a tolerance — the loop runs until the step
+// movement drops under NEAREST_PAIR_EPS_PX or the cap fires (reported, never
+// silent). Unlike the OLD closestToward Gauss-Seidel (which interleaved this
+// iteration with topo evaluation, so re-evaluation could re-wobble), this solves
+// the pair ONCE per evaluation pass and both endpoints read the same result.
+const NEAREST_PAIR_EPS_PX = 1e-4;
+// Iteration cap. Probe-measured against the worst legitimate geometry (two rims
+// a hair from tangency): alternating projection settles in well under this even
+// near tangency because each rim's projection re-snaps to the true boundary (it
+// is NOT the weakly-contracting endpoint-to-endpoint map of the old fixpoint);
+// 200 gives ample headroom at negligible cost (a step is two closest-point
+// evals). Hitting the cap is REPORTED by the caller, never silent. (Safety
+// bound, not tuned behavior — PENDING USER RATIFICATION, derivation above.)
+export const NEAREST_PAIR_MAX_ITERS = 200;
+
+/**
+ * Pure function. The nearest PAIR of world points between two rims given ONLY
+ * their closest-point maps (projA/projB: (qx, qy) → {x, y} world rim point) —
+ * the GENERIC solver for any rim geometry without a closed form. Alternating
+ * projection from a seed (default the midpoint between two seed hints, or the
+ * origin): project the current B-point onto rim A, that onto rim B, repeat until
+ * the movement is under NEAREST_PAIR_EPS_PX or NEAREST_PAIR_MAX_ITERS is hit.
+ *
+ * Returns {a, b, iters, converged}: `a` on rim A nearest `b` on rim B, the
+ * iteration count, and whether it met the tolerance (false ⇒ the caller reports
+ * the cap loudly — degenerate/tangent geometry). Deterministic given the seed,
+ * so identical calls memoize to identical results (no wobble).
+ *
+ * @example // Two 20-wide squares (as rects via their closestAnchor); solved to the facing edges.
+ * @example nearestRimPair((x, y) => ({x: Math.max(0, Math.min(x, 20)), y: 10}), (x, y) => ({x: Math.max(100, Math.min(x, 120)), y: 10}), {seedA: {x: 20, y: 10}, seedB: {x: 100, y: 10}}).a // {x: 20, y: 10}
+ */
+export function nearestRimPair(projA, projB, { seedA, seedB } = {}) {
+  // Seed b from a hint (the other rim's facing anchor) or the origin; the seed
+  // only affects WHICH local minimum a nonconvex rim converges to, and the
+  // caller passes facing-side hints (each rim's center or preset anchor toward
+  // the other) so the intuitive nearest pair is found.
+  let b = seedB ?? { x: 0, y: 0 };
+  let a = seedA ?? { x: 0, y: 0 };
+  let iters = 0;
+  let converged = false;
+  for (; iters < NEAREST_PAIR_MAX_ITERS; iters++) {
+    const na = projA(b.x, b.y);
+    const nb = projB(na.x, na.y);
+    const moved = Math.max(Math.hypot(na.x - a.x, na.y - a.y), Math.hypot(nb.x - b.x, nb.y - b.y));
+    a = na;
+    b = nb;
+    if (moved < NEAREST_PAIR_EPS_PX) { converged = true; iters++; break; }
+  }
+  return { a, b, iters, converged };
+}
+
 /**
  * Pure function. Ear-clipping triangulation of a SIMPLE closed polygon
  * (concave allowed, either winding) into triangles — the bridge from

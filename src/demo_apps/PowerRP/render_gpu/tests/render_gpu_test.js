@@ -201,25 +201,60 @@ test("blurIR: zero blur emits nothing", () => {
   assert.deepEqual(blurPlugin.emit({ blur: 0 }), []);
   assert.equal(blurPlugin.emit({ blur: 6 })[0].radius, 6);
 });
-test("magnifierIR: lens geometry from bbox", () => {
-  const m = magnifierPlugin.emit({ x: 0, y: 0, w: 160, h: 160, magnification: 2.5, rimColor: "#1a1a2e", rimWidth: 4 })[0];
+test("magnifierIR: circle lens geometry from bbox (stroke = migrated rim)", () => {
+  // stroke/strokeWidth are the migrated rimColor/rimWidth (manifest rim→stroke).
+  const m = magnifierPlugin.emit({ shape: "circle", x: 0, y: 0, w: 160, h: 160, magnification: 2.5, stroke: "#1a1a2e", strokeWidth: 4 })[0];
+  assert.equal(m.shape, "circle");
   assert.equal(m.cx, 80);
   assert.equal(m.r, 80);
   assert.equal(m.magnification, 2.5);
-  assert.ok(m.rimColor);
+  assert.ok(m.rimColor); // circle border feeds the rim slot (byte-identical IR path)
+  assert.equal(m.rimWidth, 4);
+  assert.equal(m.originX, 80); // no origin → lens center (byte-identical to pre-origin)
+  assert.equal(m.originY, 80);
+});
+test("magnifierIR: BOX lens geometry + stroked border + cornerRadius", () => {
+  const m = magnifierPlugin.emit({ shape: "box", x: 0, y: 0, w: 200, h: 120, cornerRadius: 16, magnification: 2, stroke: "#123456", strokeWidth: 3 })[0];
+  assert.equal(m.shape, "box");
+  assert.equal(m.cx, 100);
+  assert.equal(m.cy, 60);
+  assert.equal(m.halfW, 100);
+  assert.equal(m.halfH, 60);
+  assert.equal(m.cornerRadius, 16);
+  assert.ok(m.stroke); // box border feeds the stroke slot
+  assert.equal(m.strokeWidth, 3);
+  assert.equal(m.rimColor, null); // box uses the stroke slot, not the rim slot
+});
+test("magnifierIR: origin retargets the magnified point (world→local via node world)", () => {
+  // Node translated to world x=1000; origin at world (1080, 80) → local (80, 80).
+  const world = { x: 1000, y: 0, rotation: 0, scale: 1 };
+  const m = magnifierPlugin.emit({ shape: "circle", x: 0, y: 0, w: 160, h: 160, magnification: 2, stroke: "#000", strokeWidth: 2, origin: { x: 1080, y: 80 } }, null, world)[0];
+  assert.equal(m.originX, 80);
+  assert.equal(m.originY, 80);
+  // A different origin moves the op's local origin point.
+  const m2 = magnifierPlugin.emit({ shape: "circle", x: 0, y: 0, w: 160, h: 160, magnification: 2, stroke: "#000", strokeWidth: 2, origin: { x: 1020, y: 200 } }, null, world)[0];
+  assert.equal(m2.originX, 20);
+  assert.equal(m2.originY, 200);
 });
 test("magnifyBackdrop: supersample flag (default true, false honored)", () => {
   assert.equal(magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2 }).supersample, true);
   assert.equal(magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2, supersample: false }).supersample, false);
   assert.equal(magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2, supersample: 1 }).supersample, true); // normalized to bool
 });
+test("magnifyBackdrop: shape validation + box params + origin default", () => {
+  assert.equal(magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2 }).shape, "circle");
+  assert.equal(magnifyBackdrop({ cx: 5, cy: 8, r: 50, magnification: 2 }).originX, 5); // origin defaults to center
+  assert.equal(magnifyBackdrop({ shape: "box", cx: 0, cy: 0, halfW: 80, halfH: 50, cornerRadius: 12, magnification: 2 }).cornerRadius, 12);
+  assert.throws(() => magnifyBackdrop({ shape: "hex", cx: 0, cy: 0, r: 1, magnification: 1 }), /shape/);
+  assert.throws(() => magnifyBackdrop({ shape: "box", cx: 0, cy: 0, halfW: NaN, halfH: 1, magnification: 1 }), /halfW/);
+});
 test("magnifierIR: emit passes supersample through (state default true)", () => {
-  const base = { x: 0, y: 0, w: 160, h: 160, magnification: 2.5, rimColor: "#000", rimWidth: 4 };
+  const base = { shape: "circle", x: 0, y: 0, w: 160, h: 160, magnification: 2.5, stroke: "#000", strokeWidth: 4 };
   assert.equal(magnifierPlugin.emit(base)[0].supersample, true); // absent → default true (plugin defaults)
   assert.equal(magnifierPlugin.emit({ ...base, supersample: false })[0].supersample, false);
   assert.equal(magnifierPlugin.emit({ ...base, supersample: true })[0].supersample, true);
 });
-test("lensRenderView: lens center is the fixed point of the magnified view", () => {
+test("lensRenderView: lens center is the fixed point of the magnified view (default origin)", () => {
   const view = { zoom: 1.5, panX: 40, panY: -12, dpr: 2 };
   const center = { x: 123, y: 77 };
   const lens = lensRenderView(view, center, 2.5);
@@ -230,6 +265,15 @@ test("lensRenderView: lens center is the fixed point of the magnified view", () 
   // A point r away from center lands M× farther from it (that IS magnification)
   const off = { x: center.x + 10, y: center.y };
   assert.ok(Math.abs((dev(lens, off)[0] - dev(lens, center)[0]) - 2.5 * (dev(view, off)[0] - dev(view, center)[0])) < 1e-9);
+});
+test("lensRenderView: ORIGIN renders where the center did (origin ≠ center)", () => {
+  const view = { zoom: 1.5, panX: 40, panY: -12, dpr: 2 };
+  const center = { x: 123, y: 77 };
+  const origin = { x: 90, y: 60 };
+  const lens = lensRenderView(view, center, 2.5, origin);
+  const dev = (v, w) => [(w.x * v.zoom + v.panX) * v.dpr, (w.y * v.zoom + v.panY) * v.dpr];
+  // The origin under the lens view lands exactly where the center was under the outer view.
+  approxArr(dev(lens, origin), dev(view, center));
 });
 test("deviceRectThroughViews + intersectRects: scissor carry math", () => {
   assert.deepEqual(
@@ -382,16 +426,49 @@ await test("irToSVG: hybrid rule embeds ONE <image> for the blur region, vector 
   assert.equal((svg.match(/<image /g) || []).length, 1); // exactly one raster region
   assert.match(svg, /<rect x="5" y="5" width="10" height="10" fill="rgba\(0,255,0,1\)"/); // the above-blur rect stays vector
 });
-await test("irToSVG: magnifier lens = clipPath circle + magnify group (vector lens)", async () => {
+await test("irToSVG: magnifier lens = clipPath circle + magnify group (vector lens) — CIRCLE OUTPUT BYTE-IDENTITY REGRESSION (pre-shape strings preserved)", async () => {
   const svg = await irToSVG(
     [rect({ x: 0, y: 0, w: 100, h: 100, fill: "#7aa2f7" }),
       magnifyBackdrop({ cx: 50, cy: 50, r: 30, magnification: 2, rimColor: "#000", rimWidth: 4 })],
     { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } },
   );
+  // These exact strings are the PRE-SHAPE circle-lens output (shaped-lens task:
+  // "circle output stays byte-identical") — clip circle, magnify-about-center
+  // transform (origin defaults to center: C − M·C = C·(1−M) → translate(-50 -50)),
+  // and the rimColor/rimWidth ring. Do not loosen these matchers.
   assert.match(svg, /<clipPath id="lensclip1"><circle cx="50" cy="50" r="30"\/><\/clipPath>/);
   assert.match(svg, /clip-path="url\(#lensclip1\)"/);
-  assert.match(svg, /scale\(2\)/);                          // the magnify transform
+  assert.match(svg, /translate\(-50 -50\) scale\(2\)/);     // center·(1−m) — the pre-origin form
   assert.match(svg, /<circle cx="50" cy="50" r="30" fill="none" stroke="rgba\(0,0,0,1\)" stroke-width="4"\/>/); // rim
+});
+await test("irToSVG: BOX lens = rounded-rect clipPath + stroked border (stroke/strokeWidth), rotation on the clip child", async () => {
+  const svg = await irToSVG(
+    [rect({ x: 0, y: 0, w: 200, h: 200, fill: "#7aa2f7" }),
+      pushTransform({ x: 100, y: 100, rotation: Math.PI / 4 }),
+      magnifyBackdrop({ shape: "box", cx: 0, cy: 0, halfW: 40, halfH: 25, cornerRadius: 8, magnification: 2, stroke: "#000", strokeWidth: 3 }),
+      popTransform()],
+    { width: 200, height: 200, view: { zoom: 1, panX: 0, panY: 0 } },
+  );
+  // Clip = rounded-rect path in the box's LOCAL frame (-40,-25 → 80×50, r 8)
+  // with the world transform baked onto the clip child (emitCropSVG convention).
+  assert.match(svg, /<clipPath id="lensclip1"><path d="M-32 -25[^"]*" transform="translate\(100 100\) rotate\(45\)"\/><\/clipPath>/);
+  assert.match(svg, /clip-path="url\(#lensclip1\)"/);
+  assert.match(svg, /scale\(2\)/); // magnify group present
+  // Border reads the stroked-box bundle: LOCAL stroke-width under the transform.
+  assert.match(svg, /<g transform="translate\(100 100\) rotate\(45\)"><path d="M-32 -25[^"]*" fill="none" stroke="rgba\(0,0,0,1\)" stroke-width="3"\/><\/g>/);
+  // NO circle ring for a box lens.
+  assert.doesNotMatch(svg, /<circle[^>]*stroke/);
+});
+await test("irToSVG: lens ORIGIN — magnify transform maps origin → center (translate(C − M·O) scale(M))", async () => {
+  const svg = await irToSVG(
+    [rect({ x: 0, y: 0, w: 100, h: 100, fill: "#7aa2f7" }),
+      magnifyBackdrop({ cx: 50, cy: 50, r: 30, magnification: 2, originX: 10, originY: 20, rimColor: "#000", rimWidth: 4 })],
+    { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } },
+  );
+  // C − M·O = (50 − 2·10, 50 − 2·20) = (30, 10).
+  assert.match(svg, /translate\(30 10\) scale\(2\)/);
+  // Region/rim geometry is untouched by the origin (only WHAT is magnified moves).
+  assert.match(svg, /<clipPath id="lensclip1"><circle cx="50" cy="50" r="30"\/><\/clipPath>/);
 });
 
 // ── benchmark scene (must stay DOM-free + deterministic) ───────────────────

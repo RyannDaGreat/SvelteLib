@@ -99,20 +99,27 @@ export function bucketFor(devicePx) {
 }
 
 /**
- * Pure function. The canvas2D `ctx.font` string for a (size, bold, fontId) — the
- * SINGLE SEAM that decides which face rasterizes. `fontId` selects a committed
- * family from the registry (fonts.js); the default is the OS system stack, so
- * old callers (and the `system` font) get the pre-fonts-task behavior verbatim.
- * The chosen face must already be LOADED (web/fontLoader.js) or canvas2D
- * silently substitutes — the compositor awaits font readiness before drawing.
+ * Pure function. The canvas2D `ctx.font` string for a (size, bold, fontId,
+ * italic) — the SINGLE SEAM that decides which face rasterizes. `fontId` selects
+ * a committed family from the registry (fonts.js); the default is the OS system
+ * stack, so old callers (and the `system` font) get the pre-fonts-task behavior
+ * verbatim. ITALIC is synthesized here (manifest RICH TEXT: "ITALIC synthesis"):
+ * a `italic` prefix makes canvas2D use the face's real italic if it has one, or
+ * an oblique synthesized by the rasterizer otherwise — a TRUE oblique glyph
+ * shape (chosen over a per-quad shear because it produces proper italic forms
+ * for faces that have them, and needs no shader change). The chosen face must
+ * already be LOADED (web/fontLoader.js) or canvas2D silently substitutes — the
+ * compositor awaits font readiness before drawing.
  *
  * @example fontString(36, false) // "36px system-ui, sans-serif"
  * @example fontString(36, true) // "bold 36px system-ui, sans-serif"
  * @example fontString(36, false, "inter") // "36px \"PowerRP Inter\", sans-serif"
  * @example fontString(36, true, "jetbrains-mono") // "bold 36px \"PowerRP JetBrains Mono\", monospace"
+ * @example fontString(36, false, "inter", true) // "italic 36px \"PowerRP Inter\", sans-serif"
+ * @example fontString(36, true, "lora", true) // "italic bold 36px \"PowerRP Lora\", serif"
  */
-export function fontString(sizePx, bold, fontId = DEFAULT_FONT) {
-  return `${bold ? "bold " : ""}${sizePx}px ${cssFamilyFor(fontId)}`;
+export function fontString(sizePx, bold, fontId = DEFAULT_FONT, italic = false) {
+  return `${italic ? "italic " : ""}${bold ? "bold " : ""}${sizePx}px ${cssFamilyFor(fontId)}`;
 }
 
 /** Probe raster size for the color-glyph classifier (device px, in the
@@ -206,8 +213,8 @@ export class GlyphAtlas {
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    this.entries = new Map(); // "char|bucket|bold|font" → {u0, v0, du, dv, cellW, cellH, advance, ascent, pad, color}
-    this.metrics = new Map(); // "char|bucket|bold|font" → measure-only metrics (never evicted — no atlas space)
+    this.entries = new Map(); // "char|bucket|bold|font|italic" → {u0, v0, du, dv, cellW, cellH, advance, ascent, pad, color}
+    this.metrics = new Map(); // "char|bucket|bold|font|italic" → measure-only metrics (never evicted — no atlas space)
     // Color-glyph verdicts: keyed "char|font" ONLY (bold/bucket-independent —
     // whether a glyph ignores fillStyle is a font-substitution fact, not a
     // size fact, so buckets/bold weights of the same glyph share one verdict).
@@ -227,14 +234,16 @@ export class GlyphAtlas {
   }
 
   /**
-   * Query (memoizes on char|font — see colorVerdicts). Is this glyph a color
-   * glyph (emoji / color-font artwork) that must bypass the shader's tint?
+   * Query (memoizes on char|font|italic — see colorVerdicts). Is this glyph a
+   * color glyph (emoji / color-font artwork) that must bypass the shader's
+   * tint? (italic-independent in practice, but keyed with it so a synthesized-
+   * oblique color glyph is still classified once per style.)
    */
-  isColor(ch, bold, font = DEFAULT_FONT) {
-    const key = `${ch}|${font}`;
+  isColor(ch, bold, font = DEFAULT_FONT, italic = false) {
+    const key = `${ch}|${font}|${italic ? 1 : 0}`;
     let verdict = this.colorVerdicts.get(key);
     if (verdict === undefined) {
-      this._probeCtx.font = fontString(COLOR_PROBE_PX, bold, font);
+      this._probeCtx.font = fontString(COLOR_PROBE_PX, bold, font, italic);
       verdict = isColorGlyph(this._probeCtx, ch);
       this.colorVerdicts.set(key, verdict);
     }
@@ -247,13 +256,13 @@ export class GlyphAtlas {
    * offscreen glyphs on these — advances must accrue even for glyphs that
    * never draw, so measuring must never grow the atlas.
    */
-  measure(ch, bucket, bold, font = DEFAULT_FONT) {
-    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}`;
+  measure(ch, bucket, bold, font = DEFAULT_FONT, italic = false) {
+    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}|${italic ? 1 : 0}`;
     const entry = this.entries.get(key); // a rasterized entry carries the same metrics
     if (entry) return entry;
     let m = this.metrics.get(key);
     if (!m) {
-      this.ctx.font = fontString(bucket, bold, font);
+      this.ctx.font = fontString(bucket, bold, font, italic);
       const t = this.ctx.measureText(ch);
       m = {
         cellW: Math.ceil(Math.max(t.width, 1)) + CELL_PAD * 2,
@@ -268,18 +277,32 @@ export class GlyphAtlas {
   }
 
   /**
+   * Query (touches ctx.font). Whole-string metrics at a run's NOMINAL size (not
+   * a device bucket): the seam the shared rich-text layout uses to measure run
+   * advances DOM-free-ly through the atlas's canvas. Returns local-unit
+   * {width, ascent, descent} so layoutRichText can wrap + align + baseline-
+   * align. Distinct from measure() (per-glyph, at a device bucket, for culling):
+   * this is a per-RUN measure at the true size the backend will draw.
+   */
+  measureText(str, size, bold, font = DEFAULT_FONT, italic = false) {
+    this.ctx.font = fontString(size, bold, font, italic);
+    const t = this.ctx.measureText(str);
+    return { width: t.width, ascent: t.fontBoundingBoxAscent, descent: t.fontBoundingBoxDescent };
+  }
+
+  /**
    * Command (may rasterize into the atlas canvas; marks dirty). Returns the
    * atlas entry for a glyph at a size bucket. Throws a marked error
    * (err.atlasPageFull) when the page is full — the compositor's render()
    * evicts the generation and rebuilds the frame ONCE on that marker; a
    * frame that still overflows genuinely exceeds one page and fails loudly.
    */
-  get(ch, bucket, bold, font = DEFAULT_FONT) {
-    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}`;
+  get(ch, bucket, bold, font = DEFAULT_FONT, italic = false) {
+    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}|${italic ? 1 : 0}`;
     const hit = this.entries.get(key);
     if (hit) return hit;
 
-    const m = this.measure(ch, bucket, bold, font);
+    const m = this.measure(ch, bucket, bold, font, italic);
     if (this.shelfX + m.cellW > ATLAS_SIZE) {
       this.shelfX = 0;
       this.shelfY += this.shelfH;
@@ -294,9 +317,9 @@ export class GlyphAtlas {
     this.shelfX += m.cellW;
     this.shelfH = Math.max(this.shelfH, m.cellH);
 
-    const color = this.isColor(ch, bold, font);
+    const color = this.isColor(ch, bold, font, italic);
     const ctx = this.ctx;
-    ctx.font = fontString(bucket, bold, font); // measure() may have hit its cache — set the font for fillText
+    ctx.font = fontString(bucket, bold, font, italic); // measure() may have hit its cache — set the font for fillText
     // Monochrome glyphs rasterize as a WHITE ALPHA MASK (the shader tints by
     // the text color). Color glyphs (emoji) ignore fillStyle and paint their
     // own artwork regardless — fillStyle is left at whatever it already is,

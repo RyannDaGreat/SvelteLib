@@ -1,0 +1,264 @@
+/**
+ * core/richtext.js tests — the rich-text model, string→runs migration, and the
+ * pure box-constrained layout (word wrap, alignment incl. justify, line/char/
+ * word spacing, underline/strike decorations). Bare node, no framework (suite
+ * conventions). Mirrors the module's @example doctests plus behavioral cases.
+ */
+
+import assert from "node:assert/strict";
+import {
+  normalizeRichText, runFrom, isLegacyString, richTextToPlain, richTextIsEmpty,
+  splitParagraphs, paraStyleFor, wrapParagraph, layoutRichText, richTextDraws, monoMeasure,
+  richTextMigrations, withRichTextMigrated, DEFAULT_PARA,
+  NATURAL_LINE_HEIGHT, UNDERLINE_OFFSET_FRAC, STRIKE_OFFSET_FRAC,
+} from "../core/richtext.js";
+
+let passed = 0;
+function test(name, fn) { fn(); console.log(`  ok  ${name}`); passed += 1; }
+function approx(a, b, eps = 1e-9) { assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`); }
+
+// ── model + migration ─────────────────────────────────────────────────────────
+
+test("normalizeRichText: string → one run, one para per line", () => {
+  const r = normalizeRichText("Hi", { font: "inter", size: 20, color: "#000", bold: false });
+  assert.equal(r.runs.length, 1);
+  assert.equal(r.runs[0].text, "Hi");
+  assert.equal(r.runs[0].font, "inter");
+  assert.equal(r.runs[0].size, 20);
+  assert.equal(r.paras.length, 1);
+  assert.equal(normalizeRichText("a\nb", {}).paras.length, 2);
+});
+
+test("normalizeRichText: already-rich passes through, paras backfilled", () => {
+  const r = normalizeRichText({ runs: [{ text: "x" }], paras: [] }, {});
+  assert.equal(r.paras.length, 1);
+  assert.equal(r.runs[0].text, "x");
+  // multi-line rich value → paras count from the joined text
+  const r2 = normalizeRichText({ runs: [{ text: "a\nb\nc" }], paras: [{ align: "center" }] }, {});
+  assert.equal(r2.paras.length, 3);
+  assert.equal(r2.paras[0].align, "center"); // preserved override
+  assert.equal(r2.paras[1].align, "left");   // backfilled default
+});
+
+test("normalizeRichText: junk value → empty single run (never throws)", () => {
+  assert.equal(normalizeRichText(null, {}).runs.length, 1);
+  assert.equal(normalizeRichText(42, {}).runs[0].text, "");
+});
+
+test("runFrom: inheritance + defaults", () => {
+  assert.equal(runFrom({ text: "x" }, { size: 20, color: "#111" }).size, 20);
+  assert.equal(runFrom({ text: "x", bold: true }, {}).bold, true);
+  assert.equal(runFrom({ text: "x" }, {}).italic, false);
+  assert.equal(runFrom({ text: "x" }, {}).font, "system");
+});
+
+test("isLegacyString / richTextToPlain / richTextIsEmpty", () => {
+  assert.equal(isLegacyString("Hi"), true);
+  assert.equal(isLegacyString({ runs: [], paras: [] }), false);
+  assert.equal(richTextToPlain({ runs: [{ text: "Hi " }, { text: "there" }], paras: [{}] }), "Hi there");
+  assert.equal(richTextToPlain("legacy"), "legacy");
+  assert.equal(richTextIsEmpty({ runs: [{ text: "" }], paras: [{}] }), true);
+  assert.equal(richTextIsEmpty("hi"), false);
+  assert.equal(richTextIsEmpty({ runs: [{ text: " " }], paras: [{}] }), false);
+});
+
+test("richTextMigrations: only legacy-string text on text widgets", () => {
+  const doc = { slides: [{ delta: { items: { a: { type: "text", text: "Hi" }, b: { type: "rect", text: "x" } } } }] };
+  assert.equal(richTextMigrations(doc, (t) => t === "text").length, 1);
+  const rich = { slides: [{ delta: { items: { a: { type: "text", text: { runs: [], paras: [] } } } } }] };
+  assert.equal(richTextMigrations(rich, (t) => t === "text").length, 0);
+});
+
+test("richTextMigrations: keyframed later-slide string ALSO migrates", () => {
+  const doc = { slides: [
+    { delta: { items: { a: { type: "text", text: "Hi", size: 20 } } } },
+    { delta: { items: { a: { text: "Bye" } } } }, // keyframed text change, no type
+  ] };
+  const m = richTextMigrations(doc, (t) => t === "text");
+  assert.equal(m.length, 2);
+  assert.deepEqual(m.map((e) => e.slideIndex).sort(), [0, 1]);
+});
+
+test("withRichTextMigrated: converts in place, inherits style, reports, idempotent", () => {
+  const doc = { slides: [{ delta: { items: { a: { type: "text", text: "Hi", size: 20, color: "#abc", bold: true } } } }] };
+  const { doc: out, migrated } = withRichTextMigrated(doc, (t) => t === "text");
+  assert.equal(migrated.length, 1);
+  const run = out.slides[0].delta.items.a.text.runs[0];
+  assert.equal(run.text, "Hi");
+  assert.equal(run.size, 20);      // inherited from the same delta
+  assert.equal(run.bold, true);
+  assert.equal(out.slides[0].delta.items.a.size, 20); // widget-level keys untouched
+  // idempotent: a second pass finds nothing
+  assert.equal(withRichTextMigrated(out, (t) => t === "text").migrated.length, 0);
+});
+
+test("withRichTextMigrated: folded inheritance seam supplies earlier-slide size", () => {
+  const doc = { slides: [{ delta: { items: { a: { type: "text", text: "Hi" } } } }] };
+  const folded = () => ({ size: 99, color: "#f00" });
+  const { doc: out } = withRichTextMigrated(doc, (t) => t === "text", folded);
+  assert.equal(out.slides[0].delta.items.a.text.runs[0].size, 99);
+});
+
+// ── paragraph split + style ─────────────────────────────────────────────────
+
+test("splitParagraphs: newline splits, empty → one empty para", () => {
+  assert.equal(splitParagraphs([{ text: "ab", size: 10 }]).length, 1);
+  assert.equal(splitParagraphs([{ text: "a\nb", size: 10 }]).length, 2);
+  assert.equal(splitParagraphs([{ text: "a\nb" }])[0][0].text, "a");
+  assert.equal(splitParagraphs([]).length, 1);
+  // trailing newline → trailing empty paragraph (PPT blank line)
+  assert.equal(splitParagraphs([{ text: "a\n" }]).length, 2);
+  assert.equal(splitParagraphs([{ text: "a\n" }])[1].length, 0);
+  // a run boundary crossing works: two runs, no newline → one paragraph, two pieces
+  assert.equal(splitParagraphs([{ text: "a", bold: true }, { text: "b" }]).length, 1);
+  assert.equal(splitParagraphs([{ text: "a", bold: true }, { text: "b" }])[0].length, 2);
+});
+
+test("paraStyleFor: default ‹ box ‹ para override layering", () => {
+  assert.equal(paraStyleFor([{ align: "center" }], 0).align, "center");
+  assert.equal(paraStyleFor([{ align: "right" }], 5).align, "right");
+  assert.equal(paraStyleFor([], 0).align, "left");
+  assert.equal(paraStyleFor([], 0, { align: "center" }).align, "center");
+  assert.equal(paraStyleFor([{ align: "right" }], 0, { align: "center" }).align, "right");
+});
+
+// ── wrap ──────────────────────────────────────────────────────────────────────
+
+const w1 = (t) => ({ width: t.length });
+
+test("wrapParagraph: no wrap under Infinity, wraps at width, empty → one line", () => {
+  assert.equal(wrapParagraph([{ text: "a b", style: {} }], Infinity, w1).length, 1);
+  assert.equal(wrapParagraph([{ text: "aa bb", style: {} }], 3, w1).length, 2);
+  assert.equal(wrapParagraph([], 100, w1).length, 1);
+});
+
+test("wrapParagraph: overlong unbreakable word overflows on its own line", () => {
+  const lines = wrapParagraph([{ text: "verylongword ok", style: {} }], 5, w1);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].map((p) => p.text).join(""), "verylongword"); // overflowed, not broken
+  assert.equal(lines[1].map((p) => p.text).join(""), "ok");
+});
+
+test("wrapParagraph: trailing whitespace at a wrap point is dropped", () => {
+  const lines = wrapParagraph([{ text: "aa bb cc", style: {} }], 5, w1);
+  // no line should end in whitespace
+  for (const line of lines) {
+    const last = line[line.length - 1];
+    if (last) assert.ok(!/\s$/.test(last.text), `line ends in space: ${JSON.stringify(line)}`);
+  }
+});
+
+test("wrapParagraph: mixed-style pieces keep their style across the wrap", () => {
+  const lines = wrapParagraph(
+    [{ text: "aa ", style: { bold: true } }, { text: "bb", style: { italic: true } }], 3, w1);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0][0].style.bold, true);
+  assert.equal(lines[1][0].style.italic, true);
+});
+
+// ── layout ──────────────────────────────────────────────────────────────────
+
+test("layoutRichText: single line, multi-line, empty", () => {
+  assert.equal(layoutRichText({ runs: [{ text: "ab", size: 10, color: "#000" }], paras: [{ align: "left" }] }, Infinity, monoMeasure).lines.length, 1);
+  assert.equal(layoutRichText({ runs: [{ text: "a\nb", size: 10, color: "#000" }], paras: [{}, {}] }, Infinity, monoMeasure).lines.length, 2);
+  assert.equal(layoutRichText({ runs: [], paras: [] }, 100, monoMeasure).lines.length, 1);
+});
+
+test("layoutRichText: line height = (ascent+descent)·lineSpacing; y advances", () => {
+  const out = layoutRichText({ runs: [{ text: "a\nb", size: 10, color: "#000" }], paras: [{}, {}] }, Infinity, monoMeasure);
+  // mono: ascent 8, descent 2 → natural height 10
+  approx(out.lines[0].height, 10);
+  approx(out.lines[1].y, 10); // second line sits below the first
+  // baseline = halfLeading + ascent; lineSpacing 1 ⇒ halfLeading 0 ⇒ baseline = ascent = 8
+  approx(out.lines[0].baseline, 8);
+  const spaced = layoutRichText({ runs: [{ text: "a", size: 10, color: "#000" }], paras: [{ lineSpacing: 2 }] }, Infinity, monoMeasure);
+  approx(spaced.lines[0].height, 20); // 10 · 2
+  approx(spaced.lines[0].baseline, 5 + 8); // halfLeading (20-10)/2=5 + ascent 8
+});
+
+test("layoutRichText: left/center/right alignment shifts glyph run x", () => {
+  const rt = (align) => layoutRichText({ runs: [{ text: "ab", size: 10, color: "#000" }], paras: [{ align }] }, 100, monoMeasure);
+  approx(rt("left").lines[0].glyphRuns[0].x, 0);
+  approx(rt("center").lines[0].glyphRuns[0].x, (100 - 20) / 2); // slack 80 / 2
+  approx(rt("right").lines[0].glyphRuns[0].x, 100 - 20);
+});
+
+test("layoutRichText: justify stretches inter-piece gaps on non-last lines", () => {
+  // Two words that wrap: line 1 "aa bb" should justify to boxW; last line stays left.
+  const rich = { runs: [{ text: "aa bb cc", size: 10, color: "#000" }], paras: [{ align: "justify" }] };
+  const out = layoutRichText(rich, 60, monoMeasure); // "aa"=20 "bb"=20 -> wrap; each word 20 wide, space 10
+  assert.ok(out.lines.length >= 2);
+  const first = out.lines[0];
+  // first line's last glyph run should be pushed toward the right edge by justify
+  const lastRun = first.glyphRuns[first.glyphRuns.length - 1];
+  const lastRight = lastRun.x + monoMeasure(lastRun.text, lastRun.style).width;
+  assert.ok(lastRight > first.width, "justify did not stretch the first line");
+});
+
+test("layoutRichText: box style underlies paragraph align", () => {
+  const out = layoutRichText({ runs: [{ text: "ab", size: 10, color: "#000" }], paras: [{}] }, 100, monoMeasure, { align: "right" });
+  approx(out.lines[0].glyphRuns[0].x, 100 - 20);
+});
+
+test("layoutRichText: word wrap keeps text within boxW (the user's bug)", () => {
+  const rich = { runs: [{ text: "one two three four five", size: 10, color: "#000" }], paras: [{ align: "left" }] };
+  const out = layoutRichText(rich, 100, monoMeasure);
+  assert.ok(out.lines.length > 1, "did not wrap");
+  for (const line of out.lines) {
+    assert.ok(line.width <= 100 + 1e-9, `line width ${line.width} exceeds boxW 100`);
+  }
+});
+
+test("layoutRichText: underline + strike decoration lines positioned at baseline offsets", () => {
+  const out = layoutRichText({ runs: [{ text: "ab", size: 10, color: "#f00", underline: true, strike: true }], paras: [{}] }, Infinity, monoMeasure);
+  assert.equal(out.decorations.length, 2);
+  const u = out.decorations.find((d) => d.kind === "underline");
+  const s = out.decorations.find((d) => d.kind === "strike");
+  assert.equal(u.color, "#f00");
+  approx(u.w, 20);         // spans the piece
+  // baseline for a single line: ascent 8 (lineSpacing 1). underline below, strike above.
+  approx(u.y, 0 + 8 + 10 * UNDERLINE_OFFSET_FRAC);
+  approx(s.y, 0 + 8 + 10 * STRIKE_OFFSET_FRAC);
+  assert.ok(s.y < u.y, "strike should be above underline");
+});
+
+test("layoutRichText: char/word spacing widen advances", () => {
+  const base = layoutRichText({ runs: [{ text: "a b", size: 10, color: "#000" }], paras: [{}] }, Infinity, monoMeasure);
+  const spaced = layoutRichText({ runs: [{ text: "a b", size: 10, color: "#000" }], paras: [{ charSpacing: 2, wordSpacing: 5 }] }, Infinity, monoMeasure);
+  assert.ok(spaced.width > base.width, "spacing did not widen the line");
+});
+
+test("layoutRichText: per-run size drives line ascent (mixed sizes)", () => {
+  const out = layoutRichText({ runs: [{ text: "a", size: 10, color: "#000" }, { text: "B", size: 40, color: "#000" }], paras: [{}] }, Infinity, monoMeasure);
+  // one line; ascent from the 40px run: 0.8*40 = 32; height = 32 + 8 = 40
+  approx(out.lines[0].height, 40);
+});
+
+// ── richTextDraws (the backend-neutral positioned draws) ─────────────────────
+
+test("richTextDraws: op origin offsets every draw; single run → one textDraw", () => {
+  const cmd = { rich: { runs: [{ text: "ab", size: 10, color: "#000" }], paras: [{}] }, x: 5, y: 3, boxW: Infinity, opacity: 1 };
+  const d = richTextDraws(cmd, monoMeasure);
+  assert.equal(d.textDraws.length, 1);
+  assert.equal(d.textDraws[0].x, 5);          // op origin x + glyph run x (0)
+  approx(d.textDraws[0].baselineY, 3 + 0 + 8); // op y + line top 0 + baseline 8
+  assert.equal(d.textDraws[0].text, "ab");
+});
+
+test("richTextDraws: mixed sizes share ONE baseline (baselineY equal)", () => {
+  const cmd = { rich: { runs: [{ text: "a", size: 10, color: "#000" }, { text: "B", size: 40, color: "#000" }], paras: [{}] }, x: 0, y: 0, boxW: Infinity, opacity: 1 };
+  const d = richTextDraws(cmd, monoMeasure);
+  assert.equal(d.textDraws.length, 2);
+  approx(d.textDraws[0].baselineY, d.textDraws[1].baselineY); // shared baseline
+  approx(d.textDraws[0].baselineY, 32); // line ascent from 40px run = 0.8*40
+});
+
+test("richTextDraws: underline/strike become lines offset by op origin", () => {
+  const cmd = { rich: { runs: [{ text: "a", size: 10, color: "#f00", underline: true }], paras: [{}] }, x: 7, y: 2, boxW: Infinity, opacity: 1 };
+  const d = richTextDraws(cmd, monoMeasure);
+  assert.equal(d.lines.length, 1);
+  assert.equal(d.lines[0].x, 7);       // origin x + decoration x (0)
+  assert.equal(d.lines[0].color, "#f00");
+});
+
+console.log(`\n${passed} richtext tests passed`);

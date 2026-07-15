@@ -22,15 +22,46 @@
  * Documents are treated as IMMUTABLE — every edit returns a new document.
  * That makes the undo snapshot log and the per-document fold cache trivial
  * (WeakMap keyed on document identity).
+ *
+ * There is no meta.fps: presentations are always UNCAPPED (round 11 ruling —
+ * frame caps don't exist; one frame per rAF tick). Legacy docs that still
+ * carry meta.fps get it stripped loudly by repairedDocument().
  */
 
 import { blendApplied, copied, getPath, setPath, deletePath, leaves } from "./deltas.js";
-import { defaultTransition } from "./transitions.js";
+import { defaultTransition, withDurationMigrated } from "./transitions.js";
+import { withBindingsMigrated } from "./expressions.js";
+import { withRichTextMigrated } from "./richtext.js";
 
 /** Query (reads crypto). Random 8-char id — short but collision-safe at presentation scale. */
 export function uuid() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID().slice(0, 8);
   return Math.floor(Math.random() * 2 ** 48).toString(36);
+}
+
+// Default slide dimensions when no meta is supplied — the historical camera
+// literal (1280×720, 16:9). Named so the ONE place that defines it can't drift.
+const DEFAULT_SLIDE_W = 1280;
+const DEFAULT_SLIDE_H = 720;
+
+/**
+ * Pure function. THE canonical initial state of THE camera item — the ONE
+ * source of truth reconciling the three literals that used to disagree
+ * (newDocument, withCameraEnsured, and the camera plugin's `defaults`; the
+ * plugin ones lacked name/active and hardcoded 1280×720 — cruft audit). The
+ * camera is a bbox covering the slide rect; `meta` (default {slideW, slideH})
+ * sizes it. `active:true` so it frames from slide 0; white background per the
+ * user spec. `name` lets the picker/inspector label it.
+ *
+ * @example defaultCameraState() // {type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff"}
+ * @example defaultCameraState({slideW: 800, slideH: 600}).w // 800
+ */
+export function defaultCameraState(meta = {}) {
+  return {
+    type: "camera", name: "Camera",
+    x: 0, y: 0, w: meta.slideW ?? DEFAULT_SLIDE_W, h: meta.slideH ?? DEFAULT_SLIDE_H,
+    z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff",
+  };
 }
 
 /**
@@ -42,10 +73,11 @@ export function newDocument() {
   // Every document is born with THE camera (one per document, manifest spec):
   // a bbox item covering the meta slide rect, tweenable like any other item.
   const cameraId = uuid();
+  const meta = { name: "Untitled", slideW: DEFAULT_SLIDE_W, slideH: DEFAULT_SLIDE_H };
   return {
     // No meta.fps: presentations are always UNCAPPED (round 11 ruling —
     // frame caps don't exist; one frame per rAF tick at any display rate).
-    meta: { name: "Untitled", slideW: 1280, slideH: 720 },
+    meta,
     slides: [{
       id: uuid(),
       name: "Slide 1",
@@ -54,9 +86,7 @@ export function newDocument() {
       // the slice above each row; slide 0's is simply never animated).
       transition: defaultTransition("tween"),
       delta: {
-        items: {
-          [cameraId]: { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff" },
-        },
+        items: { [cameraId]: defaultCameraState(meta) },
       },
     }],
   };
@@ -131,6 +161,20 @@ export function keyframeIndices(doc, path) {
     if (getPath(s.delta, path) !== undefined) out.push(i);
   });
   return out;
+}
+
+/**
+ * Pure function. THE fallback display name for an unnamed item: its plugin
+ * `title` plus a 4-char id prefix — "Rect (ab12)". The ONE home for this format
+ * (app.displayName and the Inspector item picker both built it by hand; cruft
+ * audit "displayName fallback format in two homes"). Callers pass the item's
+ * own `name` first and only fall back to this when it is absent.
+ *
+ * @example itemFallbackName("Rect", "ab12cd34") // "Rect (ab12)"
+ * @example itemFallbackName("Camera", "ff00") // "Camera (ff00)"
+ */
+export function itemFallbackName(title, id) {
+  return `${title} (${id.slice(0, 4)})`;
 }
 
 // ── Item edits ───────────────────────────────────────────────────────────────
@@ -350,6 +394,94 @@ export function withLegacyKeysRenamed(doc, registry) {
   return { doc: out, renamed };
 }
 
+// ── The load-boundary repair pipeline (ONE home) ─────────────────────────────
+// Both consumers of load-time repair — the editor (app.repaired via loadFile /
+// loadAutosave / loadProject / deleteSlide) and the CLI render hook
+// (web/main.js) — went through hand-copied chains that DRIFTED (the editor
+// stripped legacy meta.fps, the CLI did not — cruft audit 2a). This is the
+// single orchestrator; both callers consume {doc, reports} and print with
+// printRepairReports so the console.error FORMAT strings live in exactly one
+// place. Every step is a pure repair function already covered by repair_test.js;
+// this composes them in the ORDER-CRITICAL sequence and collects the report.
+
+/**
+ * Pure function. The full load-boundary repair of `doc` against the plugin
+ * `registry`, plus the human-readable report of everything it changed
+ * (REPORTING IS THE CALLER'S JOB — this never touches console; printRepairReports
+ * does). Returns {doc, reports: string[]}. Idempotent: a current document comes
+ * back unchanged with reports = [].
+ *
+ * ORDER (every step is order-critical — do not reshuffle):
+ *   1. orphaned items dropped   — a typeless/unknown item must go before any
+ *      later step reads its (missing) type; keeps the fold renderable.
+ *   2. legacy key renames       — MUST precede defaults-fill: filling first
+ *      writes the new key's default at the creation slide and the rename then
+ *      drops the user's legacy value as stale (data loss — repair_test.js
+ *      "legacy rename ORDER").
+ *   3. meta.fps stripped        — frame caps are dead (round 11); meta-only, so
+ *      its position among the item/slide steps is free — placed here to match
+ *      the editor's long-tested sequence.
+ *   4. missing defaults filled  — typed-but-partial items get plugin defaults so
+ *      the strict IR builders never see w: undefined.
+ *   5. duration → transition    — legacy per-slide `duration` becomes
+ *      transition.seconds (round 12).
+ *   6. camera ensured           — a doc predating the camera (or one whose camera
+ *      was orphaned away in step 1) gets THE camera injected.
+ *   7. bindings migrated        — legacy {item, anchor} arrow bindings become
+ *      equation pairs (THE UNIFICATION); runs LAST, on the now-clean doc.
+ *
+ * @example // repairedDocument(newDocument(), registry) → {doc: <equivalent>, reports: []}
+ * @example // a doc with meta.fps → reports includes "PowerRP repair: removed legacy meta.fps — presentations are always uncapped"
+ */
+export function repairedDocument(doc, registry) {
+  const reports = [];
+  const known = new Set(registry.all().map((p) => p.type));
+
+  const { doc: droppedDoc, dropped } = withOrphanedItemsDropped(doc, known);
+  for (const { id, reason } of dropped)
+    reports.push(`PowerRP repair: dropped item "${id}" — ${reason}`);
+
+  const { doc: renamedDoc, renamed } = withLegacyKeysRenamed(droppedDoc, registry);
+  for (const r of renamed)
+    reports.push(`PowerRP repair: item "${r.id}" slide ${r.slideIndex}: legacy "${r.from}" → "${r.to}"${r.stale ? " (stale copy dropped)" : ""}`);
+
+  let out = renamedDoc;
+  if ("fps" in out.meta) {
+    const meta = { ...out.meta };
+    delete meta.fps;
+    out = { ...out, meta };
+    reports.push("PowerRP repair: removed legacy meta.fps — presentations are always uncapped");
+  }
+
+  // Rich text BEFORE defaults-fill (order-critical, Opus21's proven hazard:
+  // filling first clobbers an old string-`text` to the rich DEFAULT "Text" —
+  // the string must become runs while it is still the user's string).
+  const { doc: richDoc, migrated: richMigrated } = withRichTextMigrated(out, (t) => registry.get(t)?.richText === true || t === "text");
+  for (const m of richMigrated)
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy string text → rich runs`);
+
+  const { doc: filledDoc, filled } = withMissingDefaultsFilled(richDoc, registry);
+  for (const { id, missing } of filled)
+    reports.push(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
+
+  const { doc: migratedDoc, migrated } = withDurationMigrated(filledDoc);
+  for (const m of migrated)
+    reports.push(`PowerRP repair: slide ${m.index} legacy "duration" (${m.seconds}s) → transition.seconds${m.stale ? " (already had a transition — stale duration dropped)" : ""}`);
+
+  return { doc: withBindingsMigrated(withCameraEnsured(migratedDoc)), reports };
+}
+
+/**
+ * Command (console side effect). console.errors each repair report line. The
+ * ONE printer both repair consumers call — silent repairs are forbidden, and
+ * the format strings live in repairedDocument, so this stays trivial.
+ *
+ * @example // printRepairReports(["PowerRP repair: dropped item \"a\" — …"]) → console.errors the one line
+ */
+export function printRepairReports(reports) {
+  for (const line of reports) console.error(line);
+}
+
 // ── Slide edits ──────────────────────────────────────────────────────────────
 
 /** Pure function. Inserts an empty slide after `index`. Returns [doc, newIndex].
@@ -399,10 +531,7 @@ export function withCameraEnsured(doc) {
     for (const item of Object.values(s.delta.items ?? {}))
       if (item && item.type === "camera") return doc;
   const cameraId = uuid();
-  return keyframed(doc, 0, ["items", cameraId], {
-    type: "camera", name: "Camera", x: 0, y: 0, w: doc.meta.slideW, h: doc.meta.slideH,
-    z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff",
-  });
+  return keyframed(doc, 0, ["items", cameraId], defaultCameraState(doc.meta));
 }
 
 // ── Z-order maintenance ──────────────────────────────────────────────────────

@@ -12,12 +12,18 @@
  */
 
 import { foldState } from "../core/document.js";
-import { deriveRenderTree, cameraRect } from "../core/derive.js";
+import { cameraRect } from "../core/derive.js";
 import { evaluateState } from "../core/expressions.js";
 import { fitRectView } from "../core/view.js";
-import { sceneIR } from "../render_gpu/ports.js";
-import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
+import { parseColor } from "../render_gpu/ir.js";
 import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+import { cameraFrameIR } from "./cameraFrame.js";
+
+/** Query. Evaluated folded state for (doc, slide, alpha) — the input both the
+ *  camera rect and cameraFrameIR read (one fold+evaluate, memoized). */
+function evaluateStateFor(doc, slideIndex, alpha, registry) {
+  return evaluateState(foldState(doc, slideIndex, alpha), registry).state;
+}
 
 let canvas = null;
 let gpuPromise = null;
@@ -64,15 +70,12 @@ function renderJob(width, height, buildIR) {
  */
 export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height }) {
   return renderJob(width, height, () => {
-    const state = evaluateState(foldState(doc, slideIndex, alpha), registry).state;
+    const state = evaluateStateFor(doc, slideIndex, alpha, registry);
     const rect = cameraRect(state, doc.meta);
     return {
       view: fitRectView(rect, width, height, 1),
       background: parseColor(rect.background),
-      ir: [
-        rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: parseColor(rect.background) }),
-        ...sceneIR(deriveRenderTree(state, registry)),
-      ],
+      ir: cameraFrameIR(state, doc.meta, registry),
     };
   });
 }
@@ -92,25 +95,6 @@ export async function rasterizeIrPng(ir, view, width, height, background = null)
   const blob = await new Promise((res) => out.toBlob(res, "image/png"));
   return new Uint8Array(await blob.arrayBuffer());
 }
-
-/**
- * Command (async). One document frame at an EXPLICIT view (world mapping) —
- * the minimap's overview semantics. Transparent clear unless `background`
- * (a parsed [r,g,b,a]) is given.
- *
- * @example // renderViewFrame(doc, {slideIndex, registry, width, height, view: {zoom, panX: 0, panY: 0, dpr}}) → Promise<canvas>
- */
-export function renderViewFrame(doc, { slideIndex, alpha = 1, registry, width, height, view, background = [0, 0, 0, 0] }) {
-  return renderJob(width, height, () => {
-    const state = evaluateState(foldState(doc, slideIndex, alpha), registry).state;
-    const rect = cameraRect(state, doc.meta);
-    return {
-      view,
-      background,
-      ir: [
-        rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: parseColor(rect.background) }),
-        ...sceneIR(deriveRenderTree(state, registry)),
-      ],
-    };
-  });
-}
+// (renderViewFrame — the old explicit-view minimap render — was removed with
+// the minimap's camera rebase: the minimap now renders THROUGH the camera via
+// renderCameraFrame, like the slide thumbnails. cruft audit #2.)

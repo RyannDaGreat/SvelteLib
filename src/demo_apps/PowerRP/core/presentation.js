@@ -14,7 +14,18 @@
 import { ease } from "./interpolators.js";
 import { resolveTransition } from "./transitions.js";
 
-export function createPresenter(getDoc, onFrame) {
+/**
+ * @param getDoc  () → the live document.
+ * @param onFrame (frame) → paints {index, alpha, transition}.
+ * @param onTransitionStart (transition) → OPTIONAL side-effect seam fired ONCE
+ *   at the instant a transition begins animating INTO a slide (not per alpha
+ *   frame). This is where a DOM owner (web/PresentMode.svelte) plays a
+ *   transition's SOUND — audio lives on the DOM side so core/ stays DOM-free
+ *   and the CLI never emits sound (the SPARKLER RULE: sounds are playback-only,
+ *   never rendered; a headless render has no speaker and needs none). Absent in
+ *   node/tests → no-op (sound is a browser-only concern).
+ */
+export function createPresenter(getDoc, onFrame, onTransitionStart = () => {}) {
   let index = 0;
   let alpha = 1;
   let raf = null;
@@ -54,13 +65,12 @@ export function createPresenter(getDoc, onFrame) {
     // Slide 0 has no predecessor to transition FROM — no animation, no
     // transition record in flight (its stored transition is inert).
     transition = to === 0 ? null : resolveTransition(doc, to);
-    // SOUND (Round 12B): a transition can play a sound. The property exists and
-    // round-trips NOW; actual audio playback is a later wave (the assets server
-    // is parallel work). Stubbed LOUDLY so it's impossible to forget.
-    if (transition?.sound)
-      // TODO(assets-wave): play the sound asset `transition.sound` through the
-      // project asset server once it lands. No silent no-op — this is a stub.
-      console.warn(`PowerRP transition: sound "${transition.sound}" not played (audio playback is a later wave — assets server pending)`);
+    // SOUND (Round 12B: "a transition can play a sound"). Fired ONCE here, at
+    // the START of the transition (not per alpha frame), so the DOM owner plays
+    // the asset exactly once. A null/absent sound is silence — normal, not an
+    // error (see PresentMode.playTransitionSound). Core does NOT touch audio
+    // itself (DOM-free; SPARKLER RULE — sounds never render headlessly).
+    if (transition) onTransitionStart(transition);
     const duration = (transition?.seconds ?? 0) * 1000;
     // Curve: "smooth" = the existing eased alpha (cubic); "linear" = raw alpha.
     const easeFn = ease(transition?.curve === "linear" ? "linear" : "cubic");

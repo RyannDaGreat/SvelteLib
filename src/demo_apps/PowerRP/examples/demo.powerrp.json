@@ -79,12 +79,32 @@
               "x": "self.anchors.center.x",
               "y": "self.anchors.center.y"
             },
-            "text": "PowerRP V1",
+            "text": {
+              "runs": [
+                {
+                  "text": "PowerRP V1",
+                  "bold": false,
+                  "italic": false,
+                  "underline": false,
+                  "strike": false,
+                  "size": 48,
+                  "font": "system",
+                  "color": "#1a1a2e"
+                }
+              ],
+              "paras": [
+                { "align": "left", "lineSpacing": 1, "charSpacing": 0, "wordSpacing": 0 }
+              ]
+            },
             "size": 48,
             "color": "#1a1a2e",
             "bold": false,
             "font": "system",
-            "opacity": 1
+            "opacity": 1,
+            "align": "left",
+            "lineSpacing": 1,
+            "charSpacing": 0,
+            "wordSpacing": 0
           },
           "510eda10": {
             "type": "arrow",

@@ -34,7 +34,8 @@
   import NumericField from "./NumericField.svelte";
   import BooleanField from "./BooleanField.svelte";
   import ColorField from "./ColorField.svelte";
-  import { allDocumentItems, keyframeIndices, foldState } from "../core/document.js";
+  import KeyframeControls from "./KeyframeControls.svelte";
+  import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import { canonicalPropPath } from "../core/expressions.js";
 
@@ -77,7 +78,7 @@
       .filter((it) => !visibleIds.has(it.id))
       .map((it) => ({
         value: it.id,
-        label: it.name ?? `${app.registry.get(it.type).title} (${it.id.slice(0, 4)})`,
+        label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id),
         invisible: true,
       }));
     return [...visible, ...invisible];
@@ -273,13 +274,8 @@
     }
   }
 
-  function toggleKey(key) {
-    // Dotted keys are nested paths (arrow "from.x"). Inserting a keyframe copies
-    // the RAW stored value — an equation keyframes as the equation.
-    const path = key.split(".");
-    if (app.hasKey(key)) app.removeKey(app.slideIndex, ["items", pickedItemId, ...path]);
-    else app.keyframePath(["items", pickedItemId, ...path], app.storedItemValue(pickedItemId, path));
-  }
+  // (keyframe insert/remove/jump for property rows now lives in the shared
+  // KeyframeControls component — see the propRow snippet.)
 
   // ── Visibility (the `active` boolean row) + Purge gating ────────────────────
   // Whether Purge / the visibility row show at all — the camera
@@ -467,7 +463,7 @@
         items={row.optionsFrom === "items"
           ? allDocumentItems(app.doc)
               .filter((it) => it.id !== itemId && app.registry.get(it.type)?.capabilities.purgeable !== false)
-              .map((it) => ({ value: it.id, label: it.name ?? `${app.registry.get(it.type).title} (${it.id.slice(0, 4)})` }))
+              .map((it) => ({ value: it.id, label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id) }))
           : (row.options ?? []).map((o) => ({ value: o, label: row.optionLabels?.[o] ?? o }))}
         value={valueAt(state, row.key)}
         onchange={(v) => oncommit(row.key, "select", v)}
@@ -547,33 +543,16 @@
         onkeydown={fieldKeydown}
       />
     {/if}
-    <!-- prev ◆ next — jumps hug the diamond (manifest spec); hollow = not keyed
-         on this slide, filled = keyed. Iconify, never Unicode. Grouped in ONE
+    <!-- prev ◆ next — the shared KeyframeControls (jumps hug the diamond;
+         hollow = not keyed on this slide, filled = keyed). Grouped in ONE
          .kf-controls span so they occupy a SINGLE grid cell (the row grid's
-         trailing auto column). Transitions and grayed rows have no diamonds; the
-         empty span still reserves the column so value edges stay aligned. -->
+         trailing auto column). Dotted item keys (arrow "from.x") split into the
+         full ["items", id, ...] path. Transitions and grayed rows have no
+         diamonds; the empty span still reserves the column so value edges stay
+         aligned. -->
     {#if keyframes && !disabled}
       <span class="kf-controls">
-        <Tooltip text="Previous keyframe">
-          <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpKeyframe(row.key, -1)}>
-            <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
-          </button>
-        </Tooltip>
-        <Tooltip text={app.hasKey(row.key) ? "Remove keyframe on this slide" : "Insert keyframe on this slide"}>
-          <button
-            class="keybtn"
-            class:keyed={app.hasKey(row.key)}
-            aria-label="Toggle keyframe on this slide"
-            onclick={() => toggleKey(row.key)}
-          >
-            <iconify-icon icon={app.hasKey(row.key) ? "mdi:rhombus" : "mdi:rhombus-outline"} width="17" height="17"></iconify-icon>
-          </button>
-        </Tooltip>
-        <Tooltip text="Next keyframe">
-          <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpKeyframe(row.key, +1)}>
-            <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
-          </button>
-        </Tooltip>
+        <KeyframeControls {app} path={["items", itemId, ...row.key.split(".")]} />
       </span>
     {:else}
       <span class="kf-controls" aria-hidden="true"></span>

@@ -11,6 +11,7 @@ import {
   closestPointOnRoundedRect, roundedRectAnchorPoint, donutOutline,
   elbowRoute, elbowHandle, bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline,
   axisNormalFrame, projectOntoAxis, projectOntoNormal,
+  closestPointOnCircle, nearestPairCircleCircle, nearestRimPair, NEAREST_PAIR_MAX_ITERS,
 } from "../core/outline.js";
 
 let passed = 0;
@@ -351,6 +352,45 @@ test("curvedArrowPolyline round-trips through bezierControlFromBend's own invers
   const mx = (params.x0 + params.x1) / 2, my = (params.y0 + params.y1) / 2;
   const offset = (mid.x - mx) * nx + (mid.y - my) * ny;
   approx((offset * 2) / length, 0.4);
+});
+
+// ── Dynamic-anchor rim solvers (Opus24) ──────────────────────────────────────
+test("closestPointOnCircle: radial projection + center degeneracy", () => {
+  assert.deepEqual(closestPointOnCircle({ x: 0, y: 0 }, 10, 100, 0), { x: 10, y: 0 });
+  assert.deepEqual(closestPointOnCircle({ x: 0, y: 0 }, 5, 3, 4), { x: 3, y: 4 }); // point already at radius 5
+  assert.deepEqual(closestPointOnCircle({ x: 2, y: 3 }, 7, 2, 3), { x: 9, y: 3 }); // query AT center → +x rim
+});
+test("nearestPairCircleCircle: closed-form facing points on the center line", () => {
+  assert.deepEqual(nearestPairCircleCircle({ x: 0, y: 0 }, 10, { x: 100, y: 0 }, 20), { a: { x: 10, y: 0 }, b: { x: 80, y: 0 } });
+  assert.deepEqual(nearestPairCircleCircle({ x: 0, y: 0 }, 10, { x: 0, y: 50 }, 10), { a: { x: 0, y: 10 }, b: { x: 0, y: 40 } });
+  assert.deepEqual(nearestPairCircleCircle({ x: 5, y: 5 }, 3, { x: 5, y: 5 }, 4), { a: { x: 8, y: 5 }, b: { x: 1, y: 5 } }); // concentric → +x fallback
+  // The pair are the two points minimizing inter-rim distance (both on the line
+  // through the centers); verify each sits at its own radius from its center.
+  const p = nearestPairCircleCircle({ x: 10, y: 20 }, 15, { x: 200, y: 90 }, 40);
+  approx(Math.hypot(p.a.x - 10, p.a.y - 20), 15);
+  approx(Math.hypot(p.b.x - 200, p.b.y - 90), 40);
+});
+test("nearestRimPair: generic solver matches the circle/circle closed form", () => {
+  const cA = { x: 0, y: 0 }, rA = 50, cB = { x: 200, y: 0 }, rB = 50;
+  const g = nearestRimPair((x, y) => closestPointOnCircle(cA, rA, x, y), (x, y) => closestPointOnCircle(cB, rB, x, y),
+    { seedA: { x: rA, y: 0 }, seedB: { x: cB.x - rB, y: 0 } });
+  const closed = nearestPairCircleCircle(cA, rA, cB, rB);
+  approx(g.a.x, closed.a.x, 1e-6); approx(g.a.y, closed.a.y, 1e-6);
+  approx(g.b.x, closed.b.x, 1e-6); approx(g.b.y, closed.b.y, 1e-6);
+  assert.ok(g.converged);
+  assert.ok(g.iters <= NEAREST_PAIR_MAX_ITERS);
+});
+test("nearestRimPair: NEAR-TANGENT converges fast (the old fixpoint's worst case)", () => {
+  // 1px gap between two 50-radius circles — the geometry the OLD Gauss-Seidel
+  // fixpoint needed ~82 sweeps for. Alternating projection onto the true rim
+  // converges in a handful of iterations (projects to the boundary each step).
+  const g = nearestRimPair(
+    (x, y) => closestPointOnCircle({ x: 0, y: 0 }, 50, x, y),
+    (x, y) => closestPointOnCircle({ x: 101, y: 0 }, 50, x, y),
+    { seedA: { x: 50, y: 0 }, seedB: { x: 51, y: 0 } });
+  assert.ok(g.converged, "converged under the cap");
+  assert.ok(g.iters < 10, `fast convergence (got ${g.iters} iters)`);
+  approx(g.a.x, 50, 1e-3); approx(g.b.x, 51, 1e-3);
 });
 
 console.log(`\n${passed} outline tests passed`);

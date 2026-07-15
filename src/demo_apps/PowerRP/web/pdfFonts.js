@@ -61,3 +61,22 @@ export function measureTextAscent() {
     return frac;
   };
 }
+
+/**
+ * Query. The per-RUN measure seam the PDF backend's RICH-TEXT layout needs
+ * (irToPDF opts.measureText): (text, {size, bold, font, italic}) → {width,
+ * ascent, descent} at the run's nominal size, from canvas2D — the SAME face
+ * fontString() names AND the SAME metrics the GPU glyph atlas measures, so the
+ * shared layout (core/richtext) puts every run at the SAME position in both
+ * backends (the parity lever). Uses the SAME font syntax as the atlas
+ * (glyph_atlas.fontString, incl. italic synthesis). The committed fonts must be
+ * loaded (web/fontLoader.js) before measuring; export runs post-boot.
+ */
+export function measureText() {
+  const mctx = document.createElement("canvas").getContext("2d");
+  return (str, { size, bold, font, italic }) => {
+    mctx.font = fontString(size, !!bold, font, !!italic);
+    const t = mctx.measureText(str);
+    return { width: t.width, ascent: t.fontBoundingBoxAscent, descent: t.fontBoundingBoxDescent };
+  };
+}

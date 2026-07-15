@@ -335,7 +335,7 @@ struct MagOut {
   @builtin(position) pos: vec4f,
   @location(0) @interpolate(flat) params: vec4f, // (centerDevX, centerDevY, rDev, magnification)
   @location(1) @interpolate(flat) rim: vec4f,
-  @location(2) @interpolate(flat) misc: vec4f,   // (rimWidthDev, opacity, 0, 0)
+  @location(2) @interpolate(flat) misc: vec4f,   // (rimWidthDev, opacity, anchorDevX, anchorDevY)
 };
 
 @vertex
@@ -345,7 +345,7 @@ fn vs(
   @location(2) i_xform: vec4f,
   @location(3) i_params: vec4f, // (centerWorldX, centerWorldY, rWorld, magnification)
   @location(4) i_rim: vec4f,
-  @location(5) i_misc: vec4f,   // (rimWidthWorld, opacity, 0, 0)
+  @location(5) i_misc: vec4f,   // (rimWidthWorld, opacity, sampleAnchorWorldX, sampleAnchorWorldY)
 ) -> MagOut {
   let local = i_quad.xy + corner * i_quad.zw;
   var out: MagOut;
@@ -354,7 +354,14 @@ fn vs(
   let center_dev = i_params.xy * view.scale_pan.x + view.scale_pan.yz;
   out.params = vec4f(center_dev, i_params.z * view.scale_pan.x, i_params.w);
   out.rim = i_rim;
-  out.misc = vec4f(i_misc.x * view.scale_pan.x, i_misc.yzw);
+  // sampleAnchor world → device px (same mapping as center_dev). It is the
+  // world point shown at the lens CENTER: the region center for the sharp
+  // instance (the re-render was already positioned so the origin maps to
+  // center), the origin for the soft instance (the backdrop is the
+  // un-repositioned composite). Default origin = center: both are the center,
+  // byte-identical.
+  let anchor_dev = i_misc.zw * view.scale_pan.x + view.scale_pan.yz;
+  out.misc = vec4f(i_misc.x * view.scale_pan.x, i_misc.y, anchor_dev);
   return out;
 }
 
@@ -366,11 +373,18 @@ fn fs(in: MagOut) -> @location(0) vec4f {
   let mag = max(in.params.w, 0.01);
   let d = length(p - center) - r;
 
-  // q = the device-px point this fragment shows, contracted about the lens
-  // center by 1/mag. Backdrop path: mag = M upscales the composite (soft).
-  // Supersample path: mag = 1 so q = p — the re-render is already magnified,
-  // sampled 1:1 (sharp). u.rect maps q into the bound texture's UV space.
-  let q = center + (p - center) / mag;
+  // q = the device-px point this fragment samples. The ORIGIN (manifest
+  // "magnifier target": what the lens magnifies FROM) is the world point shown
+  // at the lens region CENTER: q = anchor + (p - center)/mag maps the region
+  // center (p=center) to the anchor. SHARP (mag=1, anchor=center): q=p, a 1:1
+  // sample of the re-render lensRenderView already positioned so the origin
+  // lands at center — byte-identical to before origin, and origin moved the
+  // re-render, not this sample. SOFT (mag=M, anchor=origin): q=origin+(p-center)/M
+  // magnifies the backdrop about the mapping origin→center (origin retarget
+  // moves the sampled region). Default origin=center ⇒ both reduce to the old
+  // contract-about-center. u.rect maps q into the bound texture's UV space.
+  let anchor = in.misc.zw;
+  let q = anchor + (p - center) / mag;
   let uv = (q - u.rect.xy) / u.rect.zw;
   let rim_w = in.misc.x;
   // Coverages before any branch — fwidth needs uniform control flow.
@@ -384,21 +398,32 @@ fn fs(in: MagOut) -> @location(0) vec4f {
 `;
 
 /**
- * The crop-box pipeline (manifest ARCHITECTURE PLAN #3) — the SAME "re-render
- * a sub-scene into a texture, then sample it through an SDF-masked quad" shape
- * as MAGNIFY_WGSL, with two differences: the SDF is a ROUNDED RECT (the exact
- * sdRoundBox formula SHAPE_WGSL's rect kind already uses — "reuse the lens
- * clip+replay machinery with a rounded-rect region", extended minimally) in
- * place of a circle, and there is no magnification (the crop box re-renders
- * its target 1:1 — q = p always; the "backdrop sampling" soft path doesn't
- * apply either, since a crop box's content is ONE named subtree, not
- * everything below it — see gpu/compositor.js's cropSubtree batch, which
- * therefore always re-renders and never falls back to a backdrop sample). A
- * dedicated pipeline (not a MAGNIFY_WGSL branch) because the params differ in
- * shape (half-size + corner radius vs. radius + magnification) and adding a
- * shape discriminator to the shared QUAD_FLOATS stride would touch the
- * tex/video pipelines that stride also serves — a fresh small instance layout
- * is the minimal, lowest-risk extension.
+ * The ROUNDED-RECT SHAPED-LENS pipeline — the box half of the shaped-lens
+ * family (manifest "BOX-SHAPED MAGNIFIERS": a lens = shaped clip + magnified
+ * re-emit + rim/border). It serves BOTH:
+ *   - the CROP BOX (manifest ARCHITECTURE PLAN #3): magnification 1, sampling a
+ *     re-render of ONE named subtree 1:1 — q = p, byte-identical to before this
+ *     pipeline gained magnification (mag = 1 ⇒ the contraction below is a
+ *     no-op; crop-box output is provably unchanged, proven by the cropbox
+ *     regression parity scene);
+ *   - the BOX MAGNIFIER: magnification M ≥ 1, sampling either a sharp lens
+ *     re-render (M passed as 1 — already magnified, sampled 1:1, like the
+ *     circle lens's sharp path) or the soft backdrop (M passed as the
+ *     magnification, contracting the sample about the ORIGIN — like MAGNIFY_WGSL).
+ * The SAME "re-render a sub-scene into a texture, then sample it through an
+ * SDF-masked quad" shape as MAGNIFY_WGSL; the SDF is a ROUNDED RECT (the exact
+ * sdRoundBox SHAPE_WGSL's rect kind uses — "reuse the lens clip+replay
+ * machinery with a rounded-rect region") in place of MAGNIFY_WGSL's circle. A
+ * dedicated pipeline (not a MAGNIFY_WGSL branch) because the region params
+ * differ in shape (half-size + corner radius vs. radius) and a box magnifier
+ * ALSO wants the crop's fill/stroke slots — so the crop pipeline is the natural
+ * home for the box shape, generalized minimally with an origin+magnification
+ * rather than folding the two shapes into one stride (the QUAD stride
+ * MAGNIFY_WGSL shares also serves tex/video — untouched here).
+ *
+ * ORIGIN + MAGNIFICATION live in the previously-unused lanes of the rDev/misc
+ * vec4s (no stride change → crop-box instance packing is byte-identical). A
+ * crop box packs origin = center, magnification = 1.
  */
 export const CROP_WGSL = VIEW_WGSL + /* wgsl */ `
 @group(1) @binding(0) var samp: sampler;
@@ -411,7 +436,7 @@ struct CropU { rect: vec4f };
 struct CropOut {
   @builtin(position) pos: vec4f,
   @location(0) @interpolate(flat) box: vec4f,   // (centerDevX, centerDevY, halfWDev, halfHDev)
-  @location(1) @interpolate(flat) rDev: f32,
+  @location(1) @interpolate(flat) rDev: vec4f,  // (cornerRadiusDev, magnification, originDevX, originDevY)
   @location(2) @interpolate(flat) fill: vec4f,
   @location(3) @interpolate(flat) stroke: vec4f,
   @location(4) @interpolate(flat) misc: vec4f,  // (strokeWidthDev, opacity, 0, 0)
@@ -423,7 +448,7 @@ fn vs(
   @location(1) i_quad: vec4f,
   @location(2) i_xform: vec4f,
   @location(3) i_box: vec4f,    // (centerWorldX, centerWorldY, halfWWorld, halfHWorld)
-  @location(4) i_rWorld: vec4f, // (cornerRadiusWorld, 0, 0, 0)
+  @location(4) i_rWorld: vec4f, // (cornerRadiusWorld, magnification, originWorldX, originWorldY)
   @location(5) i_fill: vec4f,
   @location(6) i_stroke: vec4f,
   @location(7) i_misc: vec4f,   // (strokeWidthWorld, opacity, 0, 0)
@@ -433,7 +458,10 @@ fn vs(
   out.pos = world_to_clip(apply_xform(i_xform, local));
   let center_dev = i_box.xy * view.scale_pan.x + view.scale_pan.yz;
   out.box = vec4f(center_dev, i_box.zw * view.scale_pan.x);
-  out.rDev = i_rWorld.x * view.scale_pan.x;
+  // origin world → device px (same mapping as center_dev); magnification is
+  // dimensionless, carried through unchanged.
+  let origin_dev = i_rWorld.zw * view.scale_pan.x + view.scale_pan.yz;
+  out.rDev = vec4f(i_rWorld.x * view.scale_pan.x, i_rWorld.y, origin_dev);
   out.fill = i_fill;
   out.stroke = i_stroke;
   out.misc = vec4f(i_misc.x * view.scale_pan.x, i_misc.yzw);
@@ -446,14 +474,20 @@ fn fs(in: CropOut) -> @location(0) vec4f {
   let center = in.box.xy;
   let half_size = in.box.zw;
   // sdRoundBox (Inigo Quilez) — the SAME formula SHAPE_WGSL's rect kind uses,
-  // so a crop box's clip edge is pixel-identical to a plain rounded rect's.
-  let r = min(in.rDev, min(half_size.x, half_size.y));
+  // so the clip edge is pixel-identical to a plain rounded rect's.
+  let r = min(in.rDev.x, min(half_size.x, half_size.y));
   let q = abs(p - center) - half_size + vec2f(r);
   let d = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - r;
 
-  // The bound texture is the target's 1:1 re-render (no magnification — see
-  // header); q maps straight through to its UV space.
-  let uv = (p - u.rect.xy) / u.rect.zw;
+  // q_src = the device-px point this fragment shows, contracted about the
+  // ORIGIN by 1/mag (MAGNIFY_WGSL's rule, generalized from the region center
+  // to an arbitrary origin). Crop box / sharp box-magnifier: mag = 1 ⇒
+  // q_src = p (the re-render is 1:1 — byte-identical to the pre-magnification
+  // crop). Soft box magnifier: mag = M contracts the backdrop sample.
+  let mag = max(in.rDev.y, 0.01);
+  let origin = in.rDev.zw;
+  let q_src = origin + (p - origin) / mag;
+  let uv = (q_src - u.rect.xy) / u.rect.zw;
   let sw = in.misc.x;
   let cov_region = coverage(d);
   let cov_stroke = coverage(abs(d) - sw * 0.5);

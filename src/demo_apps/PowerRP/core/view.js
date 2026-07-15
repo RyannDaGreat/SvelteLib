@@ -96,9 +96,6 @@ export function canSkipNode(node, viewRectWorld) {
   return defaultCanSkip(node, viewRectWorld);
 }
 
-/** Minimap thumbnail render width (slide-nav thumbnails size themselves via DirtyImage). */
-export const THUMB_W = 256;
-
 /**
  * Pure function. The view that fits a world rect into a w×h output —
  * THE camera mapping, used by export, presentation, thumbnails, and CLI.

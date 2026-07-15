@@ -36,6 +36,7 @@ import { flattenIR, parseColor, popTransform } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
+import { richTextDraws } from "../core/richtext.js";
 
 /**
  * Lens re-emit recursion cap — mirrors the GPU compositor's
@@ -157,19 +158,21 @@ export function balancedSlice(commands, end) {
 }
 
 /**
- * Pure function. The view that magnifies `view` by M about world point C
- * (page-space fixed point): page' = Cp + M·(page − Cp). The same lens-view
- * algebra as the GPU's lensRenderView, in dpr-free page space.
+ * Pure function. The view that magnifies `view` by M so the lens's ORIGIN world
+ * point renders where the lens CENTER did (the origin — what the lens magnifies
+ * FROM — appears at the lens center, magnified by M). The same lens-view
+ * algebra as the GPU's lensRenderView, in dpr-free page space. `originWorld`
+ * defaults to `centerWorld` (a magnifier with no target magnifies about its own
+ * center), reducing to the pre-origin page-space fixed point about the center.
  *
  * @example magnifiedView({zoom: 1, panX: 0, panY: 0}, {x: 100, y: 50}, 2) // {zoom: 2, panX: -100, panY: -50}
+ * @example magnifiedView({zoom: 1, panX: 0, panY: 0}, {x: 100, y: 50}, 2, {x: 20, y: 10}) // {zoom: 2, panX: 60, panY: 30} (origin 20 renders where center 100 was)
  */
-export function magnifiedView(view, centerWorld, m) {
-  const cpx = centerWorld.x * view.zoom + view.panX;
-  const cpy = centerWorld.y * view.zoom + view.panY;
+export function magnifiedView(view, centerWorld, m, originWorld = centerWorld) {
   return {
     zoom: view.zoom * m,
-    panX: m * view.panX + cpx * (1 - m),
-    panY: m * view.panY + cpy * (1 - m),
+    panX: centerWorld.x * view.zoom + view.panX - originWorld.x * view.zoom * m,
+    panY: centerWorld.y * view.zoom + view.panY - originWorld.y * view.zoom * m,
   };
 }
 
@@ -208,20 +211,34 @@ export function hasTextOp(commands) {
  * Pure function. The DISTINCT (font id, bold) faces used by text ops — the set
  * ensureFonts embeds. Order-preserving, deduped. A text op with no `font`
  * defaults to DEFAULT_FONT (old IR / the system stack). Keyed "<fontId>|<0|1>".
+ * A RICH text op contributes its op-level (font, bold) fallback face PLUS every
+ * (font, bold) face across its runs (italic is NOT a separate face — the
+ * committed fonts ship Regular+Bold only, so PDF fakes italic with a text-matrix
+ * shear on the regular/bold face; see the text case). The op-level face is
+ * included because it is the single-run FALLBACK the text case draws when no
+ * measureText seam is available.
  *
  * @example textFaces([{op: "text", font: "inter", bold: false}, {op: "text", font: "inter", bold: true}]) // [{font: "inter", bold: false}, {font: "inter", bold: true}]
  * @example textFaces([{op: "text", bold: false}]) // [{font: "system", bold: false}]
  * @example textFaces([{op: "rect"}]) // []
+ * @example textFaces([{op: "text", font: "inter", rich: {runs: [{font: "inter", bold: false}, {font: "lora", bold: true}], paras: [{}]}}]).length // 3 (op-level inter + inter/lora runs)
  */
 export function textFaces(commands) {
   const seen = new Set();
   const out = [];
+  const add = (font, bold) => {
+    const key = `${font || DEFAULT_FONT}|${bold ? 1 : 0}`;
+    if (!seen.has(key)) { seen.add(key); out.push({ font: font || DEFAULT_FONT, bold: !!bold }); }
+  };
   for (const c of commands) {
     if (c.op !== "text") continue;
-    const font = c.font || DEFAULT_FONT;
-    const bold = !!c.bold;
-    const key = `${font}|${bold ? 1 : 0}`;
-    if (!seen.has(key)) { seen.add(key); out.push({ font, bold }); }
+    // Always include the op-level (font, bold): it is the single-run FALLBACK
+    // face the text case uses when no measureText seam is present (rich op → its
+    // plain-text degrade), so it must be embedded even for a rich op.
+    add(c.font, c.bold);
+    if (c.rich && Array.isArray(c.rich.runs)) {
+      for (const r of c.rich.runs) add(r.font, r.bold);
+    }
   }
   return out;
 }
@@ -237,33 +254,56 @@ export function fontResName(fontId, bold) {
 }
 
 /**
- * Pure function. The DISTINCT image refs in an IR list (each embeds once,
- * like a font). Order-preserving, deduped.
+ * Pure function. The DISTINCT refs of ops with the given `op` in an IR list
+ * (each embeds once, like a font). Order-preserving, deduped, and RECURSES into
+ * `cropSubtree` content — a bordered/rounded/cropped image or video (the SHARED
+ * STROKED-BOX BUNDLE) nests its image/video op INSIDE a cropSubtree's `content`
+ * (an independently-flattened sub-list), so a top-level-only scan would miss it
+ * and ensureImages/ensureVideoFrames would never embed the XObject, making
+ * imageXObject/videoXObject throw at emit time (the crop box's OWN content
+ * subtree — its target — likewise carries these ops). The magnifier lens's
+ * "below" sub-list is a PREFIX of the outer stream (already scanned), so only
+ * cropSubtree needs the descent.
  *
- * @example imageRefs([{op: "image", ref: "a"}, {op: "rect"}, {op: "image", ref: "a"}]) // ["a"]
- * @example imageRefs([{op: "rect"}]) // []
+ * @example refsOfOp([{op: "image", ref: "a"}, {op: "rect"}, {op: "image", ref: "a"}], "image") // ["a"]
+ * @example refsOfOp([{op: "cropSubtree", content: [{op: "image", ref: "x"}]}], "image") // ["x"]
  */
-export function imageRefs(commands) {
+export function refsOfOp(commands, op) {
   const seen = new Set();
   const out = [];
-  for (const c of commands)
-    if (c.op === "image" && !seen.has(c.ref)) { seen.add(c.ref); out.push(c.ref); }
+  const walk = (cmds) => {
+    for (const c of cmds) {
+      if (c.op === op && !seen.has(c.ref)) { seen.add(c.ref); out.push(c.ref); }
+      if (c.op === "cropSubtree" && Array.isArray(c.content)) walk(c.content);
+    }
+  };
+  walk(commands);
   return out;
 }
 
 /**
+ * Pure function. The DISTINCT image refs in an IR list (each embeds once,
+ * like a font). Order-preserving, deduped, recurses into cropSubtree content.
+ *
+ * @example imageRefs([{op: "image", ref: "a"}, {op: "rect"}, {op: "image", ref: "a"}]) // ["a"]
+ * @example imageRefs([{op: "rect"}]) // []
+ * @example imageRefs([{op: "cropSubtree", content: [{op: "image", ref: "b"}]}]) // ["b"]
+ */
+export function imageRefs(commands) {
+  return refsOfOp(commands, "image");
+}
+
+/**
  * Pure function. The DISTINCT video refs in an IR list (each embeds ONE
- * current-frame image, like image refs). Order-preserving, deduped.
+ * current-frame image, like image refs). Order-preserving, deduped, recurses
+ * into cropSubtree content.
  *
  * @example videoRefs([{op: "video", ref: "clip"}, {op: "rect"}, {op: "video", ref: "clip"}]) // ["clip"]
  * @example videoRefs([{op: "rect"}]) // []
+ * @example videoRefs([{op: "cropSubtree", content: [{op: "video", ref: "c"}]}]) // ["c"]
  */
 export function videoRefs(commands) {
-  const seen = new Set();
-  const out = [];
-  for (const c of commands)
-    if (c.op === "video" && !seen.has(c.ref)) { seen.add(c.ref); out.push(c.ref); }
-  return out;
+  return refsOfOp(commands, "video");
 }
 
 /**
@@ -364,6 +404,13 @@ async function loadImageBytes(ref) {
  *     fixture resolver (a STILL video's frame is deterministic — the sparkler
  *     rule). null → a scene containing a video op THROWS loudly (no silent
  *     drop) — a video export needs its frame resolver.
+ *   opts.measureText (fn|null): (text, {size, bold, font, italic}) → {width,
+ *     ascent, descent} in the same units as `size` — the per-RUN metric seam
+ *     the SHARED rich-text layout (core/richtext) needs for wrap/align/baseline.
+ *     Inject the SAME canvas2D-backed measure the GPU atlas uses so BOTH
+ *     backends lay text out identically (the parity lever). null → a RICH text
+ *     op falls back to its single-run plain-text draw (never a silent blank);
+ *     legacy single-run text ops don't need it.
  *
  * Returns:
  *   Promise<Uint8Array>: the PDF file bytes
@@ -371,11 +418,11 @@ async function loadImageBytes(ref) {
  * @example // await irToPDF(sceneIR(nodes), {width: 1280, height: 720, view: fitRectView(camRect, 1280, 720, 1), background: "#ffffff", rasterize}) → Uint8Array starting "%PDF-"
  * @example // no-effect scenes need no rasterize: await irToPDF([rect({...})], {width: 100, height: 100, view: {zoom: 1, panX: 0, panY: 0}})
  */
-export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = 2, textAscent = null, videoFrame = null, loadFontBytes = null, registerFontkit = null }) {
+export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = 2, textAscent = null, videoFrame = null, loadFontBytes = null, registerFontkit = null, measureText = null }) {
   const doc = await PDFDocument.create();
   if (registerFontkit) doc.registerFontkit(registerFontkit); // required for embedFont(customTTF)
   const page = doc.addPage([width, height]);
-  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent, videoFrame, loadFontBytes);
+  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent, videoFrame, loadFontBytes, measureText);
   await ctx.ensureFonts(textFaces(commands)); // sub-lists are slices, so scanning the top list covers lens re-emits
   await ctx.ensureImages(imageRefs(commands)); // embed image XObjects up-front — emit is synchronous per command (same seam as fonts)
   await ctx.ensureVideoFrames(videoRefs(commands)); // grab + embed each video's current frame as an XObject (same up-front seam)
@@ -454,38 +501,66 @@ async function emitRegion(commands, region, out, ctx) {
 }
 
 /**
- * Command (async; appends operators). One magnifier lens: circle clip +
- * magnify-about-center cm + recursive re-emit of the commands below the lens
- * (depth-capped → raster embed), then the vector rim ring. All geometry is
- * in WORLD coordinates — the current CTM maps them to the page.
+ * Command (async; appends operators). One SHAPED-LENS magnifier (manifest
+ * "BOX-SHAPED MAGNIFIERS"): a shaped clip (circle | rounded rect) + a
+ * magnify-about-ORIGIN cm + recursive re-emit of the commands below the lens
+ * (depth-capped → raster embed), then the vector rim/border ring. This is the
+ * PDF form of the GPU shaped-lens; a crop box (emitCrop) is the magnification-1
+ * named-subtree sibling of the same family. The ORIGIN (manifest "magnifier
+ * target": what the lens magnifies FROM) is the world point shown at the lens
+ * CENTER — the magnify cm maps origin → center; a default origin = center
+ * reduces to the pre-origin magnify-about-center (byte-identical).
+ *
+ * SHAPE: a CIRCLE is rotation-invariant, so its clip/rim are emitted directly
+ * in WORLD coordinates about the world center (the current CTM maps them to the
+ * page) — unchanged from before shapes existed. A ROUNDED RECT genuinely has
+ * orientation, so its clip/border are emitted in LOCAL coordinates under an
+ * explicit cmSimilarity(world), then the CTM returns to the base frame before
+ * the magnify cm (the emitCrop rotation convention — see emitCrop's comment).
  */
 async function emitLens(cmd, world, commands, rawIdx, region, out, ctx) {
+  const isBox = cmd.shape === "box";
   const center = T.apply(world, cmd.cx, cmd.cy);
-  const rWorld = cmd.r * world.scale;
+  const originWorld = T.apply(world, cmd.originX, cmd.originY);
   const m = Math.max(cmd.magnification, 0.01);
   const below = balancedSlice(commands, rawIdx);
-  // The lens shows the source square about its center, side 2r/M
-  // (plugins/magnifier.js lensSourceRect) — the sub-region's world rect.
-  const half = rWorld / m;
+  // The lens shows a magnified view of the region about the ORIGIN. For the
+  // hybrid raster split, the source rect is centered on the origin (what shows
+  // at the lens center), sized by the lens extent / M (lensSourceRect's rule,
+  // generalized to the box's half-extents).
+  const halfSrcX = (isBox ? cmd.halfW : cmd.r) * world.scale / m;
+  const halfSrcY = (isBox ? cmd.halfH : cmd.r) * world.scale / m;
   const sub = {
-    view: magnifiedView(region.view, center, m),
-    worldRect: { x: center.x - half, y: center.y - half, w: half * 2, h: half * 2 },
+    view: magnifiedView(region.view, center, m, originWorld),
+    worldRect: { x: originWorld.x - halfSrcX, y: originWorld.y - halfSrcY, w: halfSrcX * 2, h: halfSrcY * 2 },
     depth: region.depth + 1,
     background: region.background,
   };
+  // The border geometry (circle path in world coords, or box path in local
+  // coords under the box's transform) + its stroke color/width. A circle reads
+  // rimColor/rimWidth; a box reads stroke/strokeWidth — both are one ring.
+  const strokeColor = isBox ? cmd.stroke : cmd.rimColor;
+  const strokeW = (isBox ? cmd.strokeWidth : cmd.rimWidth) * world.scale;
+  const clipOps = () => isBox
+    ? [cmSimilarity(world), rectPath({ x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2, cornerRadius: cmd.cornerRadius }), "W n", cmSimilarity(T.invert(world))]
+    : [ellipsePath({ cx: center.x, cy: center.y, rx: cmd.r * world.scale, ry: cmd.r * world.scale }), "W n"];
 
   out.push("q");
-  out.push(ellipsePath({ cx: center.x, cy: center.y, rx: rWorld, ry: rWorld }), "W n"); // clip, no paint
+  out.push(...clipOps()); // clip (in the box's local frame, then back to base), no paint
   if (region.depth < MAX_LENS_DEPTH) {
-    // VECTOR lens: magnify about the center, re-emit the display list below.
-    out.push(`${pdfNum(m)} 0 0 ${pdfNum(m)} ${pdfNum(center.x * (1 - m))} ${pdfNum(center.y * (1 - m))} cm`);
+    // VECTOR lens: magnify about the origin (maps origin → center), re-emit the
+    // display list below. cm `m 0 0 m (center - m·origin)` scales world space by
+    // m with origin landing at center; default origin=center ⇒ center·(1-m).
+    out.push(`${pdfNum(m)} 0 0 ${pdfNum(m)} ${pdfNum(center.x - m * originWorld.x)} ${pdfNum(center.y - m * originWorld.y)} cm`);
     await emitRegion(below, sub, out, ctx);
   } else {
     // Depth cap (MAX_LENS_DEPTH = the GPU recursion bound): a lens inside a
-    // lens embeds as raster — the user-ratified pixelated fallback. Sample
-    // the SOURCE square, place it over the lens bbox (that IS magnification).
+    // lens embeds as raster — the user-ratified pixelated fallback. Sample the
+    // SOURCE region (about the origin), place it over the lens bbox.
+    const placeHalfX = (isBox ? cmd.halfW : cmd.r) * world.scale;
+    const placeHalfY = (isBox ? cmd.halfH : cmd.r) * world.scale;
     await ctx.emitRasterRegion(below, {
-      placeRect: { x: center.x - rWorld, y: center.y - rWorld, w: rWorld * 2, h: rWorld * 2 },
+      placeRect: { x: center.x - placeHalfX, y: center.y - placeHalfY, w: placeHalfX * 2, h: placeHalfY * 2 },
       srcRect: sub.worldRect,
       srcView: region.view,
       background: region.background,
@@ -493,13 +568,16 @@ async function emitLens(cmd, world, commands, rawIdx, region, out, ctx) {
   }
   out.push("Q");
 
-  const rimW = cmd.rimColor ? cmd.rimWidth * world.scale : 0;
-  if (rimW > 0) { // rimWidth 0 = NO rim (manifest spec)
-    const gs = ctx.gsAlphaPair(1, cmd.rimColor[3] * cmd.opacity);
+  if (strokeColor && strokeW > 0) { // width 0 = NO rim/border (manifest spec)
+    const gs = ctx.gsAlphaPair(1, strokeColor[3] * cmd.opacity);
     out.push("q", ...(gs ? [gs] : []));
-    out.push(`${pdfNum(cmd.rimColor[0])} ${pdfNum(cmd.rimColor[1])} ${pdfNum(cmd.rimColor[2])} RG`);
-    out.push(`${pdfNum(rimW)} w`);
-    out.push(ellipsePath({ cx: center.x, cy: center.y, rx: rWorld, ry: rWorld }), "S", "Q");
+    out.push(`${pdfNum(strokeColor[0])} ${pdfNum(strokeColor[1])} ${pdfNum(strokeColor[2])} RG`);
+    out.push(`${pdfNum(strokeW)} w`);
+    if (isBox) {
+      out.push(cmSimilarity(world), rectPath({ x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2, cornerRadius: cmd.cornerRadius }), "S", "Q");
+    } else {
+      out.push(ellipsePath({ cx: center.x, cy: center.y, rx: cmd.r * world.scale, ry: cmd.r * world.scale }), "S", "Q");
+    }
   }
 }
 
@@ -542,7 +620,14 @@ async function emitLens(cmd, world, commands, rawIdx, region, out, ctx) {
  * the crop box's own transform).
  */
 async function emitCrop(cmd, world, region, out, ctx) {
-  const local = { x: 0, y: 0, w: cmd.w, h: cmd.h, cornerRadius: cmd.cornerRadius };
+  // Honor cmd.x/cmd.y (the region's LOCAL top-left), not a hardcoded 0,0. A
+  // real crop box always has x=y=0 (its position lives in `world`), so this was
+  // latent — but a DECORATED media widget (render_gpu/decorate.js) emits a
+  // cropSubtree at the CROPPED rect's inset offset (x=cropLeft, y=cropTop) so
+  // the frame hugs the visible pixels; the GPU compositor already reads cmd.x/
+  // cmd.y (its rounded-rect region is centered at cmd.x+cmd.w/2), so using them
+  // here makes the PDF clip/fill/border match the GPU exactly.
+  const local = { x: cmd.x ?? 0, y: cmd.y ?? 0, w: cmd.w, h: cmd.h, cornerRadius: cmd.cornerRadius };
 
   if (cmd.fill) {
     const gs = ctx.gsAlphaPair(cmd.fill[3] * cmd.opacity, 1);
@@ -595,22 +680,32 @@ function emitVector(cmd, world, out, ctx) {
       break;
     }
     case "text": {
-      // Per-RUN font (fonts.js id; absent → DEFAULT_FONT). The SAME committed
-      // TTF the glyph atlas rasterizes is embedded here (ensureFonts), so raster
-      // and vector text finally share a face and metrics.
+      if (cmd.rich && ctx.measureText) {
+        // RICH TEXT: run the SHARED pure layout (core/richtext) with the PDF's
+        // OWN measure seam (the SAME canvas-backed metrics the GPU atlas uses —
+        // the parity lever), then emit per-run Tf/Tj at the laid-out baselines
+        // and underline/strike as filled rects. ONE layout, two backends.
+        const draws = richTextDraws(cmd, ctx.richMeasure());
+        for (const d of draws.textDraws) {
+          ops.push(...textRunOps(d.text, d.x, d.baselineY, d.size, d.bold, d.italic, parseColor(d.color), d.opacity, d.font, ctx));
+        }
+        for (const ln of draws.lines) {
+          // Decoration bar: a filled rect in local space (crisp, rotates/scales
+          // with the run's world transform like the glyphs).
+          const c = parseColor(ln.color);
+          const gs = ctx.gsAlphaPair(c[3] * ln.opacity, 1);
+          if (gs) ops.push(gs);
+          ops.push(`${pdfNum(c[0])} ${pdfNum(c[1])} ${pdfNum(c[2])} rg`);
+          ops.push(`${pdfNum(ln.x)} ${pdfNum(ln.y - ln.thickness / 2)} ${pdfNum(ln.w)} ${pdfNum(ln.thickness)} re`, "f");
+        }
+        break;
+      }
+      // LEGACY single-run text op (parity scenes / hand-built IR / no measure
+      // seam): one run top-anchored at cmd.y via ascentFraction, exactly as
+      // before. Its color is already a parsed rgba array (from the text builder).
       const fontId = cmd.font || DEFAULT_FONT;
-      const font = ctx.font(fontId, cmd.bold);
-      const [r, g, b, a] = cmd.color;
-      const gs = ctx.gsAlphaPair(a * cmd.opacity, 1);
-      if (gs) ops.push(gs);
-      ops.push(`${pdfNum(r)} ${pdfNum(g)} ${pdfNum(b)} rg`);
-      // Baseline from the font's own metrics (canvas textBaseline="top"
-      // semantics: baseline = top + ascent). Tm re-flips locally (-1 d
-      // entry) so glyphs stay upright inside the page's y-down space.
       const baseline = cmd.y + ctx.ascentFraction(fontId, cmd.bold) * cmd.size;
-      ops.push("BT", `${ctx.fontName(fontId, cmd.bold)} ${pdfNum(cmd.size)} Tf`);
-      ops.push(`1 0 0 -1 ${pdfNum(cmd.x)} ${pdfNum(baseline)} Tm`);
-      ops.push(`${tjHex(font, cmd.text)} Tj`, "ET");
+      ops.push(...textRunOps(cmd.text, cmd.x, baseline, cmd.size, cmd.bold, false, cmd.color, cmd.opacity, fontId, ctx));
       break;
     }
     case "image": {
@@ -619,13 +714,14 @@ function emitVector(cmd, world, out, ctx) {
       // here we just place it. The image unit square has v=1 at its TOP row, so
       // in the page's y-DOWN space the cm carries -h and lands the top row at the
       // rect's visual top (same convention as emitRasterRegion). Alpha via
-      // ExtGState so per-item opacity composites like every other op.
+      // ExtGState so per-item opacity composites like every other op. A source
+      // rect (edge-crop insets) becomes a clip-to-dest + scaled-up placement so
+      // only the cropped sub-region shows (imagePlacementOps).
       const name = ctx.imageXObject(cmd.ref);
       if (name === null) return; // src had no drawable bytes (empty/blank) — draw nothing, matching the GPU skip
       const gs = ctx.gsAlphaPair(cmd.opacity ?? 1, 1);
       if (gs) ops.push(gs);
-      const n = pdfNum;
-      ops.push(`${n(cmd.w)} 0 0 ${n(-cmd.h)} ${n(cmd.x)} ${n(cmd.y + cmd.h)} cm`, `/${name} Do`);
+      ops.push(...imagePlacementOps(cmd, name));
       break;
     }
     case "video": {
@@ -633,20 +729,99 @@ function emitVector(cmd, world, out, ctx) {
       // current frame). The grabbed frame was pre-embedded as an image XObject
       // by ensureVideoFrames; here we place it exactly like the image case
       // (y-flip cm so the frame's top row lands at the rect's visual top,
-      // opacity via ExtGState). A CLI/deterministic export shows the
-      // poster/first frame (the sparkler rule) — the frame the resolver grabs.
+      // opacity via ExtGState, source-rect crop via imagePlacementOps). A
+      // CLI/deterministic export shows the poster/first frame (the sparkler
+      // rule) — the frame the resolver grabs.
       const name = ctx.videoXObject(cmd.ref);
       if (name === null) return; // src had no drawable frame (blank/undecoded) — draw nothing, matching the GPU skip
       const gs = ctx.gsAlphaPair(cmd.opacity ?? 1, 1);
       if (gs) ops.push(gs);
-      const n = pdfNum;
-      ops.push(`${n(cmd.w)} 0 0 ${n(-cmd.h)} ${n(cmd.x)} ${n(cmd.y + cmd.h)} cm`, `/${name} Do`);
+      ops.push(...imagePlacementOps(cmd, name));
       break;
     }
     default:
       throw new Error(`pdf_backend: unknown op "${cmd.op}"`);
   }
   out.push("q", cmSimilarity(world), ...ops, "Q");
+}
+
+/**
+ * Pure function. The content-stream ops that place an image/video XObject
+ * `name` into the op's dest rect (cmd.x/y/w/h), honoring an optional source
+ * rect (cmd.src, edge-crop insets). Full-frame source ({0,0,1,1} or absent) →
+ * the plain y-flip cm placement, byte-identical to the pre-crop backend. A
+ * cropped source → clip to the dest rect, then place the WHOLE image scaled up
+ * so its sub-rect (sx,sy,sw,sh) lands exactly on the dest rect (only that
+ * sub-region survives the clip). This is the PDF equivalent of the GPU's UV
+ * source rect — a source crop, not a stretch.
+ *
+ * DERIVATION (page y-DOWN space; image data has v=0 at its TOP row, and the
+ * plain placement's `-h` in the cm flips the unit square so the image's TOP row
+ * lands at the dest rect's TOP). With no crop the placement maps the image's
+ * [0,1]² unit square onto the dest rect via `w 0 0 -h  x  y+h cm`. To instead
+ * map the source sub-rect (sx,sy,sw,sh) onto the dest rect, scale the FULL image
+ * up to width w/sw, height h/sh, and shift its origin by the cropped-away
+ * margins measured FROM THE TOP-LEFT of the source (the sx,sy corner is the
+ * sub-rect's top-left, same convention as the GPU UV origin): left crop = sx of
+ * the full width, TOP crop = sy of the full height. The clip to the dest rect
+ * (re W n) then shows only the sub-rect. (The earlier 1−(sy+sh) top margin was
+ * an inverted-v bug — the source top IS sy from the top, verified against the
+ * GPU UV output.)
+ *
+ * @example imagePlacementOps({x: 10, y: 20, w: 100, h: 80}, "Im0") // ["100 0 0 -80 10 100 cm", "/Im0 Do"]
+ * @example imagePlacementOps({x: 0, y: 0, w: 100, h: 100, src: {sx: 0, sy: 0, sw: 0.5, sh: 0.5}}, "Im0")[0] // "0 0 100 100 re W n"
+ * @example imagePlacementOps({x: 40, y: 30, w: 100, h: 76, src: {sx: 0.25, sy: 0.25, sw: 0.625, sh: 0.6333}}, "Im0")[1] // "160 0 0 -120.0063 0 120.0047 cm" (full image origin: left crop 0.25·160 back from x=40 → 0; top crop 0.25·120 up from y=30 → 0, +fullH for the flip)
+ */
+export function imagePlacementOps(cmd, name) {
+  const n = pdfNum;
+  const s = cmd.src;
+  const full = !s || (s.sx === 0 && s.sy === 0 && s.sw === 1 && s.sh === 1);
+  if (full) {
+    return [`${n(cmd.w)} 0 0 ${n(-cmd.h)} ${n(cmd.x)} ${n(cmd.y + cmd.h)} cm`, `/${name} Do`];
+  }
+  // Full image size so the sub-rect fills the dest rect; origin shifted by the
+  // cropped-away margins measured from the source TOP-LEFT (sx, sy).
+  const fullW = cmd.w / s.sw, fullH = cmd.h / s.sh;
+  const originX = cmd.x - s.sx * fullW;      // left crop = sx of the full width
+  const originYTop = cmd.y - s.sy * fullH;    // top crop = sy of the full height (v=0 at top)
+  return [
+    `${n(cmd.x)} ${n(cmd.y)} ${n(cmd.w)} ${n(cmd.h)} re W n`, // clip to the dest rect (no paint)
+    `${n(fullW)} 0 0 ${n(-fullH)} ${n(originX)} ${n(originYTop + fullH)} cm`,
+    `/${name} Do`,
+  ];
+}
+
+/** Oblique shear (tan of the synthesized-italic slant angle) for PDF fake-italic
+ * — the committed fonts ship Regular+Bold only (no italic file), so an italic
+ * run is drawn on the regular/bold face with a text-matrix skew, mirroring the
+ * GPU's canvas2D-synthesized oblique. ≈ tan(12°) — the de-facto oblique angle
+ * (FreeType/Cairo synthesize italic at ~12°; a common typographic default).
+ * PENDING RATIFICATION (no linked in-repo precedent). NOTE: a face that HAS a
+ * real italic (canvas2D uses it on the GPU) will differ from this fixed oblique
+ * — a documented italic parity delta for those faces. */
+const PDF_OBLIQUE_SHEAR = 0.2126; // tan(12°)
+
+/** Command (may register an ExtGState via ctx). Operators drawing ONE text run's
+ * glyphs: BT / Tf / color / Tm (y-flip, + oblique skew when italic) / Tj / ET.
+ * `baseline` is the run's baseline y in local (op) space; italic applies a
+ * text-matrix shear (PDF fake-italic) since the committed fonts have no italic
+ * file. Color is a parsed [r,g,b,a] array. */
+function textRunOps(str, x, baseline, size, bold, italic, color, opacity, fontId, ctx) {
+  if (str.length === 0) return [];
+  const ops = [];
+  const font = ctx.font(fontId, bold);
+  const [r, g, b, a] = color;
+  const gs = ctx.gsAlphaPair(a * (opacity ?? 1), 1);
+  if (gs) ops.push(gs);
+  ops.push(`${pdfNum(r)} ${pdfNum(g)} ${pdfNum(b)} rg`);
+  ops.push("BT", `${ctx.fontName(fontId, bold)} ${pdfNum(size)} Tf`);
+  // Tm: y-flip (d = -1) keeps glyphs upright in the page's y-down space. Italic
+  // adds a skew in the `c` slot; with d = -1 the skew is negated so the top of
+  // each glyph leans RIGHT (the standard forward italic slant).
+  const c = italic ? -PDF_OBLIQUE_SHEAR : 0;
+  ops.push(`1 0 ${pdfNum(c)} -1 ${pdfNum(x)} ${pdfNum(baseline)} Tm`);
+  ops.push(`${tjHex(font, str)} Tj`, "ET");
+  return ops;
 }
 
 /** Command (may register an ExtGState via ctx). Color + alpha + width setup ops. */
@@ -670,7 +845,7 @@ function paintSetup(fill, stroke, strokeWidth, opacity, ctx) {
  * (mutates the pdf-lib document).
  */
 class PdfAssembly {
-  constructor(doc, page, rasterize, rasterScale, textAscent = null, videoFrame = null, loadFontBytes = null) {
+  constructor(doc, page, rasterize, rasterScale, textAscent = null, videoFrame = null, loadFontBytes = null, measureText = null) {
     this.doc = doc;
     this.page = page;
     this.rasterize = rasterize;
@@ -678,6 +853,7 @@ class PdfAssembly {
     this.textAscent = textAscent; // number | (fontId, bold)=>fraction | null
     this.videoFrame = videoFrame; // (ref) → {mime, bytes} of the current frame, or null
     this.loadFontBytes = loadFontBytes; // (basename) → Uint8Array | null (env seam)
+    this.measureText = measureText; // (text, {size,bold,font,italic}) → {width,ascent,descent} | null (rich layout seam)
     this._fonts = new Map();  // "<fontId>|<0|1>" → PDFFont
     this._fontNames = new Map(); // "<fontId>|<0|1>" → PDF resource name
     this._gs = new Map(); // "ca,CA" → ExtGState name
@@ -822,6 +998,17 @@ class PdfAssembly {
       return embedder.ascent / embedder.unitsPerEm;
     if (typeof embedder.Ascender === "number") return embedder.Ascender / 1000;
     throw new Error(`pdf_backend: font "${fontId}" has no ascent metric`);
+  }
+
+  /** Query. The per-RUN measure seam the SHARED rich-text layout needs, adapting
+   * the injected measureText(text, {size,bold,font,italic}) to the layout's
+   * (text, runStyle) → {width, ascent, descent} contract. Injecting the SAME
+   * canvas metrics the GPU atlas uses is what makes ONE layout serve both
+   * backends identically. Throws if called without a seam (the text case guards
+   * on ctx.measureText before ever running the rich path). */
+  richMeasure() {
+    if (!this.measureText) throw new Error("pdf_backend: rich text layout needs a measureText seam (irToPDF opts.measureText)");
+    return (str, style) => this.measureText(str, { size: style.size ?? 36, bold: !!style.bold, font: style.font ?? DEFAULT_FONT, italic: !!style.italic });
   }
 
   /** Command. ExtGState op for a (fill, stroke) alpha pair; "" when opaque. */
