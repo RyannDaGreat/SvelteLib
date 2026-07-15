@@ -94,6 +94,47 @@
      so each panel reserves its own count (set per-panel below). */
   --a-kf-w: calc(3 * var(--a-kf-btn-w));
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
+  /* ── EQUATION SYNTAX-HIGHLIGHT PALETTE (Opus25, round-3 field) ──
+     One token per highlight class from equationTokenSpans (core/expressions.js).
+     CHAINED to existing theme tokens (never fresh colors — the palette then
+     tracks every theme override for free): variables read in the selection
+     chroma (the "live value" color); item properties are plain text; anchor
+     coords take the on-canvas anchor gray; `self` and function calls take the
+     amber keyed/endpoint family (emphasis, distinct from plain refs); numbers
+     are plain; operators/parens/commas are dimmed punctuation; errors reuse the
+     danger color the field's invalid affordance already uses. Square, minimal —
+     color only, no weights/backgrounds, so highlighting never shifts glyph
+     metrics under the transparent input. */
+  --a-eq-var: var(--a-selection);
+  --a-eq-prop: var(--fg);
+  --a-eq-anchor: var(--a-anchor);
+  --a-eq-self: var(--a-modifier);
+  --a-eq-call: var(--a-keyed);
+  --a-eq-member: var(--a-anchor); /* .x/.y projection coord after a call/paren (Opus24 grammar) — reads like a property accessor */
+  --a-eq-num: var(--fg);
+  --a-eq-punct: var(--fg-dim);
+  --a-eq-error: var(--a-guide);
+  /* ── CODE-BLOCK SYNTAX-HIGHLIGHT PALETTE (Opus33, round-12D field) ──
+     One token per highlight KIND from core/codeHighlight.js (KINDS). CHAINED to
+     existing theme tokens (following the equation-palette precedent above — never
+     fresh colors, so the palette tracks every theme override for free). These
+     drive the code-block INSPECTOR chrome / any DOM code preview; the RENDERED
+     code block on the WebGPU canvas uses the mirrored hex set in
+     plugins/codeblock.js CODE_PALETTES (emit() is DOM-free and can't read CSS
+     vars — the two are kept in lockstep by kind name). Reuses the equation
+     palette's mapping intent: keywords in the amber keyed/self family (emphasis),
+     strings in the anchor gray, functions in the selection chroma, comments
+     dimmed, numbers plain, punctuation dimmed. Color only, no weights — a mono
+     grid must not shift glyph metrics. */
+  --a-code-plain: var(--fg);
+  --a-code-keyword: var(--a-modifier);
+  --a-code-string: var(--a-anchor);
+  --a-code-comment: var(--fg-dim);
+  --a-code-number: var(--fg);
+  --a-code-function: var(--a-selection);
+  --a-code-property: var(--a-keyed);
+  --a-code-punct: var(--fg-dim);
+  --a-code-gutter: var(--fg-dim); /* the line-number gutter color */
   --a-color-swatch: 14px; /* swatch square inside the color control */
   /* Max width of the inline-expanded ColorPicker's S/V square (it is square, so
      this also caps its height). LINKED to the SvelteLib ColorPicker's own
