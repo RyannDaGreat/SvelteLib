@@ -299,10 +299,21 @@
       startWorld: w,
       startX: hit.state.x ?? 0,
       startY: hit.state.y ?? 0,
+      // The shift axis guide anchors at the item's world CENTER (manifest
+      // "Drag/resize modifiers": "the guideline should go down the middle") —
+      // computed through node.world, since world.x is NOT state.x for rotated
+      // items (the rotation pivot shifts the translation — Opus1 finding #2).
+      // Axis lock zeroes the cross-axis delta, so the center stays ON this
+      // line for the whole locked drag. Non-bbox draggables (arrow shafts)
+      // have no center; their guide anchors at the grab point instead.
+      centerWorld: hit.plugin.capabilities.bbox
+        ? T.apply(hit.world, (hit.state.w ?? 0) / 2, (hit.state.h ?? 0) / 2)
+        : null,
       axis: null,
     };
     hoverAnchor = null; // a hover tip must not linger frozen through the drag
     app.dragging = true;
+    app.dragKind = "move";
   }
 
   function onPointerMove(e) {
@@ -330,7 +341,7 @@
       return;
     }
     if (drag.kind === "move") moveDrag(e, w);
-    else if (drag.kind === "resize") resizeDrag(w);
+    else if (drag.kind === "resize") resizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
   }
 
@@ -343,11 +354,14 @@
     const custom = !!drag.plugin.moveBy;
     if (e.shiftKey) {
       // Axis lock with hysteresis; guide is an INFINITE line through the
-      // drag origin (clipped to the viewport at render time).
+      // item's CENTER at the drag origin (clipped to the viewport at render
+      // time). The lock measures from the drag ORIGIN — engaging shift
+      // mid-drag aligns to the axis through the start pose, which is the
+      // point of axis-align (Figma/PPT semantics; editor_smoke encodes it).
       drag.axis = axisLock(dx, dy, drag.axis);
       if (drag.axis === "x") dy = 0;
       else dx = 0;
-      const origin = custom ? drag.startWorld : { x: drag.startX, y: drag.startY };
+      const origin = drag.centerWorld ?? drag.startWorld;
       newGuides.push({
         kind: "line",
         x: origin.x, y: origin.y,
@@ -398,12 +412,104 @@
 
   // ── Resize ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Pure function. The grabbed point and fixed (anchor) point of a handle
+   * resize, in the box's local frame — ONE computation shared by the resize
+   * math (resizedBox) and the uniform diagonal guide, so they never disagree.
+   *
+   * gx/gy is the grabbed corner (on an axis with no grabbed edge it holds the
+   * far coordinate, unused there); fx/fy is the point the resize is anchored
+   * to — the opposite corner/edge, or the box CENTER when `symmetric` (Cmd).
+   *
+   * @example // resizeAnchors([0, 0, 100, 50], {east: true, south: true}, {})
+   * //   → {gx: 100, gy: 50, fx: 0, fy: 0, cx: 50, cy: 25, xActive: true, yActive: true}
+   * @example // resizeAnchors([0, 0, 100, 50], {east: true}, {symmetric: true}).fx → 50
+   */
+  function resizeAnchors([x0, y0, x1, y1], edges, mods) {
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    return {
+      gx: edges.west ? x0 : x1,
+      gy: edges.north ? y0 : y1,
+      fx: mods.symmetric ? cx : edges.west ? x1 : x0,
+      fy: mods.symmetric ? cy : edges.north ? y1 : y0,
+      cx, cy,
+      xActive: !!(edges.east || edges.west),
+      yActive: !!(edges.north || edges.south),
+    };
+  }
+
+  /**
+   * Pure function. The resized box for a handle drag with modifiers, in the
+   * item's local frame (`base` = the box at the last modifier rebase).
+   *
+   * Modifier semantics (manifest "Drag/resize modifiers — CONFIRMED mapping"):
+   *   uniform (Shift)  — ONE scale factor K for both dimensions. A corner
+   *     rides the diagonal through the anchor (the pointer projects onto it);
+   *     an edge handle drives K from its own axis, and the passive axis
+   *     scales about its center — the only symmetric-neutral choice for an
+   *     axis with no grabbed edge (Figma's Shift+edge precedent).
+   *   symmetric (Cmd)  — the anchor is the box CENTER, so both sides move
+   *     (PowerPoint's Ctrl-resize precedent). Composes with uniform: the
+   *     corner then rides the FULL diagonal, scaling about the center.
+   *
+   * Sizes never invert (MIN_SIZE = 0, the mathematical bound): K clamps at 0
+   * (collapse onto the anchor); free edges stop at theirs.
+   *
+   * Args:
+   *   base  (number[4]): [x0, y0, x1, y1] box at the last modifier rebase
+   *   d     ({x, y}):    local pointer movement since that rebase
+   *   edges (object):    {west, east, north, south} — edges the handle moves
+   *   mods  (object):    {uniform, symmetric}
+   *
+   * Returns:
+   *   number[4]: the new [x0, y0, x1, y1]
+   *
+   * @example // resizedBox([0,0,100,50], {x:20,y:0}, {east:true}, {}) → [0, 0, 120, 50]
+   * @example // resizedBox([0,0,100,50], {x:20,y:0}, {east:true}, {symmetric:true}) → [-20, 0, 120, 50]
+   * @example // resizedBox([0,0,100,50], {x:100,y:0}, {east:true,south:true}, {uniform:true}) → [0, 0, 180, 90]
+   * @example // resizedBox([0,0,100,50], {x:-200,y:0}, {east:true}, {}) → [0, 0, 0, 50] (clamped at the fixed edge)
+   */
+  function resizedBox(base, d, edges, mods) {
+    const [bx0, by0, bx1, by1] = base;
+    const { gx, gy, fx, fy, cx, cy, xActive, yActive } = resizeAnchors(base, edges, mods);
+
+    if (mods.uniform) {
+      const ux = gx - fx, uy = gy - fy;
+      const len2 = xActive && yActive ? ux * ux + uy * uy : xActive ? ux * ux : uy * uy;
+      if (len2 > 0) {
+        const K = Math.max(0, (xActive && yActive
+          ? (gx + d.x - fx) * ux + (gy + d.y - fy) * uy
+          : xActive ? (gx + d.x - fx) * ux : (gy + d.y - fy) * uy) / len2);
+        const ax = xActive ? fx : cx, ay = yActive ? fy : cy;
+        return [ax + K * (bx0 - ax), ay + K * (by0 - ay), ax + K * (bx1 - ax), ay + K * (by1 - ay)];
+      }
+      // Zero extent along the drive: no aspect to preserve — fall through.
+    }
+
+    let x0 = bx0, y0 = by0, x1 = bx1, y1 = by1;
+    if (edges.east) x1 += d.x;
+    if (edges.west) x0 += d.x;
+    if (edges.south) y1 += d.y;
+    if (edges.north) y0 += d.y;
+    if (mods.symmetric) {
+      // The opposite edge mirrors the moved one about the center.
+      if (edges.east) x0 = 2 * cx - x1;
+      if (edges.west) x1 = 2 * cx - x0;
+      if (edges.south) y0 = 2 * cy - y1;
+      if (edges.north) y1 = 2 * cy - y0;
+    }
+    if (x1 < x0) x0 = x1 = mods.symmetric ? cx : fx;
+    if (y1 < y0) y0 = y1 = mods.symmetric ? cy : fy;
+    return [x0, y0, x1, y1];
+  }
+
   function startResize(handleId, e) {
     const node = app.selectedNode();
     if (!node) return;
     e.stopPropagation();
     overlayEl.setPointerCapture(e.pointerId);
     const h = handleId;
+    const grab = worldPoint(e);
     drag = {
       kind: "resize",
       itemId: node.itemId,
@@ -415,52 +521,78 @@
       // rotation and skip snapping (not wrong math) for rotated items.
       west: h.includes("l"), east: h.includes("r"), north: h.includes("t"), south: h.includes("b"),
       rotated: Math.abs((node.state.rotation ?? 0) % (2 * Math.PI)) > 1e-9,
+      // Modifier + rebase bookkeeping (manifest "Drag/resize modifiers").
+      // baseBox/basePointer = box + pointer at the LAST modifier toggle, in
+      // the ORIGINAL local frame ([0, 0, w, h] = the box at grab); resize is
+      // pointer-DELTA-based from there, so toggling Shift/Cmd mid-drag
+      // rebases instead of jumping (the Pixel-Aligner lesson), and grabbing
+      // a handle slightly off-center no longer nudges the box.
+      mods: { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey },
+      baseBox: [0, 0, node.state.w, node.state.h],
+      lastBox: [0, 0, node.state.w, node.state.h],
+      basePointer: T.apply(T.invert(node.world), grab.x, grab.y),
     };
     hoverAnchor = null; // a hover tip must not linger frozen through the drag
     app.dragging = true;
+    app.dragKind = "resize";
   }
 
-  function resizeDrag(w) {
+  function resizeDrag(e, w) {
     const s = drag.startState;
     const local = T.apply(T.invert(drag.world), w.x, w.y); // pointer in the item's local space
-    const h = drag.handleId;
-    let { x, y, w: ww, h: hh } = s;
-    const west = h.includes("l"), east = h.includes("r"), north = h.includes("t"), south = h.includes("b");
-    if (east) ww = Math.max(MIN_SIZE, local.x);
-    if (south) hh = Math.max(MIN_SIZE, local.y);
-    if (west) {
-      const lx = Math.min(local.x, s.w - MIN_SIZE);
-      ww = s.w - lx;
-      const p = T.apply(drag.world, lx, 0);
-      const o = T.apply(drag.world, 0, 0);
-      x = s.x + (p.x - o.x);
-      y = s.y + (p.y - o.y);
+    const mods = { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey };
+    if (mods.uniform !== drag.mods.uniform || mods.symmetric !== drag.mods.symmetric) {
+      // Modifier rebase: the new constraint measures from the CURRENT box and
+      // pointer, so engaging/releasing Shift or Cmd mid-drag never jumps.
+      drag.baseBox = drag.lastBox;
+      drag.basePointer = local;
+      drag.mods = mods;
     }
-    if (north) {
-      const ly = Math.min(local.y, s.h - MIN_SIZE);
-      hh = s.h - ly;
-      const p = T.apply(drag.world, 0, ly);
-      const o = T.apply(drag.world, 0, 0);
-      x = (west ? x : s.x) + (p.x - o.x) - (west ? 0 : 0);
-      y = (west ? y : s.y) + (p.y - o.y);
-      if (west) {
-        // Both west+north: recompute origin from the combined local corner.
-        const lx = Math.min(local.x, s.w - MIN_SIZE);
-        const pc = T.apply(drag.world, lx, ly);
-        x = s.x + (pc.x - T.apply(drag.world, 0, 0).x);
-        y = s.y + (pc.y - T.apply(drag.world, 0, 0).y);
-      }
-    }
+    const edges = { west: drag.west, east: drag.east, north: drag.north, south: drag.south };
+    const box = resizedBox(
+      drag.baseBox,
+      { x: local.x - drag.basePointer.x, y: local.y - drag.basePointer.y },
+      edges, mods,
+    );
+    drag.lastBox = box;
+    let ww = box[2] - box[0], hh = box[3] - box[1];
+    // Local origin shift → state translation through the item's world
+    // transform (rotation-aware — the same conversion the west/north handles
+    // always used): state x/y move by the world delta of local (x0, y0).
+    const o = T.apply(drag.world, 0, 0);
+    const p = T.apply(drag.world, box[0], box[1]);
+    let x = s.x + (p.x - o.x);
+    let y = s.y + (p.y - o.y);
 
     // Snapping (edge→line + size-match) operates in WORLD space on the
     // axis-aligned case only. For rotated items the box edges aren't axis
-    // parallel, so we skip snapping rather than produce wrong math.
+    // parallel, so we skip snapping rather than produce wrong math. Active
+    // MODIFIERS also bypass it: a per-edge snap correction would silently
+    // break the invariant the modifier holds (aspect ratio / fixed center);
+    // constraint-respecting snap is a separate design decision.
     let newGuides = [], indicators = [];
-    if (!drag.rotated && app.snapEnabled) {
+    if (!drag.rotated && app.snapEnabled && !mods.uniform && !mods.symmetric) {
       const r = applyResizeSnap({ x, y, ww, hh });
       x = r.x; y = r.y; ww = r.ww; hh = r.hh;
       newGuides = r.guides;
       indicators = r.indicators;
+      // Fold the snap correction back into lastBox (unrotated ⇒ world delta =
+      // scale · local delta) so a modifier engaging on the NEXT move rebases
+      // from exactly the box on screen.
+      const k = drag.world.scale;
+      drag.lastBox = [(x - s.x) / k, (y - s.y) / k, (x - s.x) / k + ww, (y - s.y) / k + hh];
+    }
+    if (mods.uniform) {
+      // The uniform CORNER scale shows its DIAGONAL guideline (manifest): the
+      // infinite line the grabbed corner rides — through the opposite corner,
+      // or through the center (the full diagonal) when symmetric. Edge-handle
+      // uniform has no diagonal to ride, so no guide.
+      const a = resizeAnchors(drag.baseBox, edges, mods);
+      if (a.xActive && a.yActive && (a.gx !== a.fx || a.gy !== a.fy)) {
+        const fW = T.apply(drag.world, a.fx, a.fy);
+        const gW = T.apply(drag.world, a.gx, a.gy);
+        newGuides.push({ kind: "line", x: fW.x, y: fW.y, dx: gW.x - fW.x, dy: gW.y - fW.y });
+      }
     }
     guides = newGuides;
     sizeIndicators = indicators;
@@ -627,6 +759,7 @@
     dynamicAnchor = null;
     app.snapEngaged = false; // cleared on pointer-up (per snap-round-2 spec)
     app.dragging = false;
+    app.dragKind = null;
     app.commitPreview();
   }
 

@@ -24,6 +24,11 @@ import { registerAll } from "../plugins/index.js";
 
 const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
+const BAND_MODE_KEY = "powerrp.bandMode";
+
+/** Rubber-band selection modes. "regular" resolves to the DEFAULT setting
+ * (bandMode) at drag time — a browser preference, localStorage like snap. */
+export const BAND_MODES = ["inner", "outer"];
 
 /** Theme catalog — viewer preference (localStorage), NOT document state.
  * Each id matches a `:root[data-theme="…"]` block in app.css. */
@@ -37,11 +42,38 @@ export const THEMES = [
 export class PowerRPApp {
   doc = $state(newDocument());
   slideIndex = $state(0);
-  selection = $state(null); // itemId | null
+  // PRIMARY selection — a single itemId or null. Kept as the primary for full
+  // single-select compatibility: selectedNode(), delete/purge/copy/rename/
+  // reorder/keyframe, the Inspector's single-item UI, the KeyframePanel
+  // highlight, and needsSelection/needsPurgeable all read THIS. Backed by a
+  // private $state through an accessor so that ANY single-select write
+  // (`app.selection = x`, of which there are ~10 sites) automatically CLEARS
+  // the multi-select override below — that one coupling is what keeps the two
+  // coherent with zero edits to the existing write sites (least-invasive
+  // design; the manifest's multi-select is a minimal SUBSTRATE, not a rewrite).
+  #selection = $state(null);
+  get selection() {
+    return this.#selection;
+  }
+  set selection(id) {
+    this.#selection = id;
+    this.selectionSet = []; // single-select write drops the multi override
+  }
+  // MULTI-select override: the FULL set of selected itemIds (band select /
+  // future multi-click). Authoritative when non-empty; its FIRST element is
+  // mirrored into `selection` (the primary) so single-item consumers still
+  // work. Empty → selectedIds() falls back to [selection]. Populated only by
+  // selectMany(); cleared by any single-select `selection` write (see above).
+  selectionSet = $state([]);
   mode = $state("edit"); // "edit" | "present"
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
   dragging = $state(false); // canvas sets this; drives HintBar context
+  // Which drag gesture is live: null | "move" | "resize" — drives the
+  // HintBar's per-gesture modifier hints (manifest "Drag/resize modifiers":
+  // auto-announce while dragging). Endpoint drags leave it null (they have
+  // no modifier behaviors to announce).
+  dragKind = $state(null);
   /** Canonical region name under the pointer (Panel sets it) — the substrate
    * for region-aware hints (manifest: panels are first-class). */
   hoverRegion = $state(null);
@@ -60,6 +92,17 @@ export class PowerRPApp {
   // snapping — move AND resize) and the snap-size / matching-dimension toggle.
   snapEnabled = $state(localStorage.getItem("powerrp.snap") !== "off");
   snapSizeEnabled = $state(localStorage.getItem("powerrp.snapSize") !== "off");
+  // BROWSER setting (viewer-local): the DEFAULT rubber-band mode — what a
+  // "regular" (unspecified-mode) band select uses. Persisted like snap; the
+  // future drag-on-empty-canvas entry point reads this. Default "inner"
+  // (PowerPoint's default marquee behavior — a precedent, not invented).
+  bandMode = $state(localStorage.getItem(BAND_MODE_KEY) === "outer" ? "outer" : "inner");
+  // One-shot band-select arming set by the palette commands. null = not armed;
+  // otherwise the resolved mode ("inner"|"outer") for the NEXT canvas drag. The
+  // CanvasView consumes it on drag start and clears it (one-shot). Designed so a
+  // future direct entry point (drag on empty canvas) reuses the same band-drag
+  // path with mode = bandMode instead of arming.
+  bandArm = $state(null);
   // BROWSER settings (viewer-local): editor-only Blender-style background grid
   // and top ruler strip. Both are "options" defaulting OFF (manifest: Grid +
   // Ruler). Persisted per-browser like the other viewer preferences above.
@@ -183,6 +226,48 @@ export class PowerRPApp {
 
   selectedNode() {
     return this.nodes().find((n) => n.itemId === this.selection) ?? null;
+  }
+
+  /** Query. The full set of selected itemIds: the multi override when non-empty,
+   * else [selection] (or []). The ONE place set-aware consumers (canvas
+   * outlines, the Inspector placeholder) read to know everything selected. */
+  selectedIds() {
+    return this.selectionSet.length ? this.selectionSet : (this.selection !== null ? [this.selection] : []);
+  }
+
+  /** Query. Render nodes for every selected id (order = selectedIds()). */
+  selectedNodes() {
+    const ids = new Set(this.selectedIds());
+    return this.nodes().filter((n) => ids.has(n.itemId));
+  }
+
+  /**
+   * Command. Sets the selection to a SET of itemIds (band select / future
+   * multi-click). The primary `selection` becomes the first id (drives every
+   * single-item consumer); the multi override holds the whole set. Assigning
+   * #selection directly (not through the accessor) so the set is NOT cleared.
+   * Empty ids → full deselect.
+   */
+  selectMany(ids) {
+    if (ids.length === 0) {
+      this.selection = null; // clears both (accessor path)
+      return;
+    }
+    this.#selection = ids[0];
+    this.selectionSet = [...ids];
+  }
+
+  /** Command. Arms a one-shot band-select drag in `mode` ("inner"|"outer"|
+   * "regular"). "regular" resolves to the default bandMode setting. The next
+   * canvas drag performs the rubber band; CanvasView clears the arm. */
+  armBandSelect(mode) {
+    this.bandArm = mode === "regular" ? this.bandMode : mode;
+  }
+
+  /** Command. Sets and persists the default ("regular") band-select mode. */
+  setBandMode(mode) {
+    this.bandMode = mode;
+    localStorage.setItem(BAND_MODE_KEY, mode);
   }
 
   /** Display name for an item: its `name` state, else "<Type> (id-prefix)". */
@@ -344,17 +429,30 @@ export class PowerRPApp {
     }
   }
 
-  /** "Delete": keyframe active:false here — identity survives (symlink-safe). */
+  /**
+   * "Delete": keyframe active:false here — identity survives (symlink-safe).
+   * Multi-select falls out naturally: deactivates EVERY selected item on this
+   * slide in one undo unit. purgeable:false items (the camera) are skipped
+   * (the command `when` already excludes a lone camera; in a mixed set the
+   * camera stays put rather than erroring).
+   */
   deleteSelection() {
-    if (!this.selection) return;
-    this.commit(keyframed(this.doc, this.slideIndex, ["items", this.selection, "active"], false));
+    const ids = this.selectedIds().filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
+    if (ids.length === 0) return;
+    let doc = this.doc;
+    for (const id of ids) doc = keyframed(doc, this.slideIndex, ["items", id, "active"], false);
+    this.commit(doc);
     this.selection = null;
   }
 
-  /** True removal FROM EXISTENCE: every keyframe of the item on every slide. */
+  /** True removal FROM EXISTENCE: every keyframe of each selected item on every
+   * slide (multi-select falls out naturally). Skips purgeable:false (camera). */
   purgeSelection() {
-    if (!this.selection) return;
-    this.commit(withItemPurged(this.doc, this.selection));
+    const ids = this.selectedIds().filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
+    if (ids.length === 0) return;
+    let doc = this.doc;
+    for (const id of ids) doc = withItemPurged(doc, id);
+    this.commit(doc);
     this.selection = null;
   }
 

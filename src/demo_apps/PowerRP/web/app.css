@@ -516,6 +516,15 @@ body,
   flex: 1;
 }
 
+/* Multi-select placeholder (minimal — the full intersection Property Panel is
+   a separate milestone). The count line uses the same dim/centered treatment
+   as .empty; the actions row reuses .item-actions above. */
+.inspector .multi-select .multi-count {
+  color: var(--fg-dim);
+  padding: var(--a-sp-4);
+  text-align: center;
+}
+
 .inspector .rows {
   margin-top: var(--a-sp-3);
   display: flex;

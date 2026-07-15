@@ -21,6 +21,10 @@
     return [...bySlide.entries()].sort((a, b) => a[0] - b[0]);
   });
 
+  // Set-aware: every selected item's keyframes highlight (multi-select
+  // substrate) — falls back to the single primary when nothing multi is set.
+  let selectedIds = $derived(new Set(app.selectedIds()));
+
   function fmt(v) {
     if (v === null) return "∅ (delete)";
     if (typeof v === "object") return JSON.stringify(v);
@@ -39,7 +43,7 @@
         <button class="btn goto" onclick={() => (app.slideIndex = slideIndex)}>Go To</button>
       </div>
       {#each ks as k}
-        <div class="kf" class:selected={k.path[1] === app.selection}>
+        <div class="kf" class:selected={selectedIds.has(k.path[1])}>
           <Tooltip text={k.path.join(".")}>
             <span class="path">{[app.displayName(k.path[1]), ...k.path.slice(2)].join(".")}</span>
           </Tooltip>

@@ -23,6 +23,9 @@
   let nodes = $derived(app.nodes());
   let sel = $derived(app.selectedNode());
   let itemChoices = $derived(nodes.map((n) => ({ value: n.itemId, label: app.displayName(n.itemId) })));
+  // Number of selected items — >1 shows the minimal multi-select placeholder
+  // (the full intersection Property Panel is a SEPARATE milestone; manifest).
+  let selCount = $derived(app.selectedIds().length);
 
   function coerce(kind, raw) {
     return kind === "number" ? Number(raw) : kind === "checkbox" ? Boolean(raw) : raw;
@@ -171,7 +174,22 @@
     />
   </div>
 
-  {#if sel}
+  {#if selCount > 1}
+    <!-- Minimal multi-select placeholder (manifest: the full intersection
+         Property Panel is a SEPARATE milestone — do NOT build it here). Delete
+         and Purge still act on the whole set via the command registry. -->
+    <div class="multi-select">
+      <div class="multi-count">{selCount} items selected</div>
+      <div class="item-actions">
+        <Tooltip text="Deactivate every selected item on this slide">
+          <button class="btn" onclick={() => app.runCommand("delete-item")}>Delete here</button>
+        </Tooltip>
+        <Tooltip text="Remove every selected item from existence (all slides)">
+          <button class="btn danger" onclick={() => app.runCommand("purge-item")}>Purge</button>
+        </Tooltip>
+      </div>
+    </div>
+  {:else if sel}
     {#if sel.plugin.capabilities.purgeable !== false}
       <div class="item-actions">
         <Tooltip text="Deactivate on this slide (item survives on earlier slides)">

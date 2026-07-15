@@ -80,6 +80,23 @@
     { id: "undo", title: "Undo", icon: "mdi:undo", run: (a) => a.undo() },
     { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
     { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, run: (a) => (a.selection = null) },
+    // Rubber-band selection — armed via the palette (initiation is command-only
+    // for now, manifest round 11). Each command arms a ONE-SHOT band drag on the
+    // canvas; the CanvasView performs the drag and applies selectInBox in the
+    // armed mode. INNER = fully enclosed; OUTER = touching counts; "Regular" uses
+    // the default bandMode browser setting (drilldown submenu below).
+    { id: "band-select-inner", title: "Select in Box (Inner — fully enclosed)", icon: "mdi:select-all", run: (a) => a.armBandSelect("inner") },
+    { id: "band-select-outer", title: "Select in Box (Outer — touching)", icon: "mdi:selection-ellipse", run: (a) => a.armBandSelect("outer") },
+    { id: "band-select-regular", title: "Select in Box (Regular — default mode)", icon: "mdi:selection-drag", run: (a) => a.armBandSelect("regular") },
+    {
+      id: "band-mode",
+      title: "Default Band Select Mode",
+      icon: "mdi:selection-drag",
+      children: [
+        { id: "band-mode-inner", title: "Inner (fully enclosed)", icon: "mdi:select-all", run: (a) => a.setBandMode("inner") },
+        { id: "band-mode-outer", title: "Outer (touching)", icon: "mdi:selection-ellipse", run: (a) => a.setBandMode("outer") },
+      ],
+    },
     { id: "toggle-palette", title: "Toggle Command Palette", icon: "mdi:chevron-down-box-outline", run: (a) => (a.paletteOpen = !a.paletteOpen) },
     // Evaluated state: the camera's own properties may be equations.
     { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRect(evaluateState(foldState(a.doc, a.slideIndex, 1), a.registry).state, a.doc.meta)) },
@@ -173,7 +190,13 @@
   const handEntries = [
     { keys: ["Delete"], label: "Delete", hidden: true, when: editSelection, command: "delete-item" },
     { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging },
-    { keys: ["Shift"], label: "Axis lock", when: (c) => editMode(c) && c.dragging },
+    // Modifier hints auto-announce PER DRAG KIND (manifest "Drag/resize
+    // modifiers": the axis-auto-lock hint pattern, extended) — same registry,
+    // never a second pathway. Display-only: the pointer code reads the
+    // modifier keys itself. Endpoint drags have no modifiers → no hints.
+    { keys: ["Shift"], label: "Axis lock", when: (c) => editMode(c) && c.dragKind === "move" },
+    { keys: ["Shift"], label: "Uniform scale", when: (c) => editMode(c) && c.dragKind === "resize" },
+    { keys: ["Cmd"], label: "Symmetric resize", when: (c) => editMode(c) && c.dragKind === "resize" },
     { keys: ["mouse_scroll"], label: "Pan", when: editMode },
     { keys: ["Ctrl", "mouse_scroll"], label: "Zoom", when: editMode },
     { keys: ["Left", "Right"], label: "Step slides", when: (c) => c.mode === "present" },
@@ -208,12 +231,13 @@
       paletteOpen: app.paletteOpen,
       hasSelection: app.selection !== null,
       dragging: app.dragging,
+      dragKind: app.dragKind,
       app,
     };
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind;
     return app.shortcuts.hints(shortcutCtx());
   });
 
