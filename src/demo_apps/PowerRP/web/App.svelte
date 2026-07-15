@@ -126,14 +126,18 @@
     // fuzzy search without first knowing something is already selected.
     { id: "select-all", title: "Select All", icon: "mdi:select-all", run: (a) => a.selectAll() },
     { id: "deselect-all", title: "Deselect All", icon: "mdi:select-off", when: needsSelection, run: (a) => a.deselectAll() },
-    // Rubber-band selection — armed via the palette (initiation is command-only
-    // for now, manifest round 11). Each command arms a ONE-SHOT band drag on the
-    // canvas; the CanvasView performs the drag and applies selectInBox in the
-    // armed mode. INNER = fully enclosed; OUTER = touching counts; "Regular" uses
-    // the default bandMode browser setting (drilldown submenu below).
-    { id: "band-select-inner", title: "Select in Box (Inner — fully enclosed)", icon: "mdi:select-all", run: (a) => a.armBandSelect("inner") },
-    { id: "band-select-outer", title: "Select in Box (Outer — touching)", icon: "mdi:selection-ellipse", run: (a) => a.armBandSelect("outer") },
-    { id: "band-select-regular", title: "Select in Box (Regular — default mode)", icon: "mdi:selection-drag", run: (a) => a.armBandSelect("regular") },
+    // Rubber-band selection — armed via the palette (manifest round 11) OR the
+    // toolbar button (Round 12B "Box select round 2"; Toolbar.svelte), and
+    // (Round 12B) directly via an empty-space drag with NO arming at all
+    // (CanvasView.onPointerDown). Each armed command sets the CROSSHAIR
+    // (manifest ARCHITECTURE PLAN #5) to the band skin for the NEXT canvas
+    // drag; CanvasView performs the drag and applies selectInBox in the armed
+    // mode. INNER = fully enclosed; OUTER = touching counts; "Regular" uses
+    // the default bandMode browser setting (drilldown submenu below) — same
+    // resolution the toolbar button's plain press uses.
+    { id: "band-select-inner", title: "Select in Box (Inner — fully enclosed)", icon: "mdi:select-all", run: (a) => a.armCrosshairBand("inner") },
+    { id: "band-select-outer", title: "Select in Box (Outer — touching)", icon: "mdi:selection-ellipse", run: (a) => a.armCrosshairBand("outer") },
+    { id: "band-select-regular", title: "Select in Box (Regular — default mode)", icon: "mdi:selection-drag", run: (a) => a.armCrosshairBand("regular") },
     {
       id: "band-mode",
       title: "Default Band Select Mode",
@@ -251,9 +255,15 @@
   // A live modal transform (G/S) LOCKS INPUT like Blender: while it runs, normal
   // command shortcuts (palette, undo, delete, deselect, slide nav, …) are
   // suppressed so keys only reach the modal's own confirm/cancel entries below.
-  // Every edit-context resolver therefore also requires !modalActive.
-  const editAny = (c) => c.mode === "edit" && !c.modalActive;
-  const editMode = (c) => c.mode === "edit" && !c.paletteOpen && !c.modalActive;
+  // Every edit-context resolver therefore also requires !modalActive. An armed
+  // CROSSHAIR mode (manifest ARCHITECTURE PLAN #5) gets the SAME treatment for
+  // Escape specifically: while armed, Escape must cancel the crosshair, not
+  // fall through to "deselect" — excluding crosshairArmed from editMode (the
+  // same lever modalActive uses) means the crosshair-cancel hand entry below,
+  // guarded on crosshairArmed alone, is the only Escape handler live at that
+  // moment (registry `when`-guards do the disambiguation, not entry order).
+  const editAny = (c) => c.mode === "edit" && !c.modalActive && !c.crosshairArmed;
+  const editMode = (c) => c.mode === "edit" && !c.paletteOpen && !c.modalActive && !c.crosshairArmed;
   const editSelection = (c) => editMode(c) && c.hasSelection;
   const kb = createKeybindings([
     { command: "toggle-palette", keys: ["Cmd", "Shift", "P"], when: "editAny" },
@@ -300,16 +310,29 @@
     // visible chip for the same command would be redundant clutter, same
     // reasoning as the Delete alias.
     { keys: ["Space"], label: "Palette", hidden: true, when: editAny, command: "toggle-palette" },
-    { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging && !c.bandArmed },
+    { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging && !c.crosshairArmed },
     // Shift-click ADDS/REMOVES from the multi-selection (manifest "Shift-click
     // multi-select"). Display-only, same registry pathway as the other pointer
     // hints — the pick code reads the modifier itself. Alongside "Select / drag"
     // while idle over the canvas; hidden mid-drag (shift then means axis-lock,
-    // whose own hint fires) and while a band select is armed.
-    { keys: ["Shift", "mouse_left"], label: "Add to selection", when: (c) => editMode(c) && !c.dragging && !c.bandArmed },
-    // A palette-armed band select replaces the plain pointer hint until the
-    // one-shot drag happens (band-select initiation is palette-only for now).
-    { keys: ["mouse_left"], label: "Drag box to select", when: (c) => editMode(c) && !c.dragging && c.bandArmed },
+    // whose own hint fires) and while a crosshair mode is armed.
+    { keys: ["Shift", "mouse_left"], label: "Add to selection", when: (c) => editMode(c) && !c.dragging && !c.crosshairArmed },
+    // An armed CROSSHAIR mode (manifest ARCHITECTURE PLAN #5) replaces the
+    // plain pointer hint until the one-shot gesture happens — one hint per
+    // skin (band-select vs placement), each named for what the drag DOES.
+    { keys: ["mouse_left"], label: "Drag box to select", when: (c) => editMode(c) && !c.dragging && c.crosshairArmed === "band" },
+    { keys: ["mouse_left"], label: "Click or drag to place", when: (c) => editMode(c) && !c.dragging && c.crosshairArmed === "place" },
+    // Escape cancels an ARMED (not-yet-gesturing) crosshair mode — the
+    // editAny/editMode exclusion above (!c.crosshairArmed) means this is the
+    // ONLY live Escape handler while armed, so no ordering trick is needed
+    // (same disambiguation-by-`when` the modalActive Escape entry below uses).
+    { keys: ["Escape"], label: "Cancel", when: (c) => !!c.crosshairArmed, run: () => app.cancelCrosshair() },
+    // ANCHOR SNAP (manifest ARCHITECTURE PLAN #4): while a move/resize drag
+    // has an ACTIVE snap correction, announce the A-key equation-write. Held
+    // A is read directly by CanvasView at pointer-up (a plain keydown/keyup
+    // pair, not a command — nothing to run here; display-only, like the
+    // Shift/Cmd resize-modifier hints above).
+    { keys: ["A"], label: "Anchor snap", when: (c) => editMode(c) && (c.dragKind === "move" || c.dragKind === "resize") && c.snapEngaged },
     // Modifier hints auto-announce PER DRAG KIND (manifest "Drag/resize
     // modifiers": the axis-auto-lock hint pattern, extended) — same registry,
     // never a second pathway. Display-only: the pointer code reads the
@@ -382,14 +405,18 @@
       hasSelection: app.selection !== null,
       dragging: app.dragging,
       dragKind: app.dragKind,
-      bandArmed: app.bandArm !== null,
+      // The ARMED crosshair's kind ("band"|"place"), or null — both a truthy
+      // "is anything armed" check (editAny/editMode's !c.crosshairArmed) and a
+      // per-skin discriminator (the two pointer hints above) from one field.
+      crosshairArmed: app.crosshair?.kind ?? null,
       modalActive: app.modalXform !== null, // a live G/S transform locks input (Blender modal)
+      snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: "A = anchor snap" while a drag has an active snap
       app,
     };
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.bandArm; app.modalXform;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged;
     const base = app.shortcuts.hints(shortcutCtx());
     // While a modal transform is live, LEAD the bar with its announcement —
     // mode · active axis · typed buffer — so the live state is the first thing

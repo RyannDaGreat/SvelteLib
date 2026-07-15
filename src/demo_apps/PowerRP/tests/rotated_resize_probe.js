@@ -59,9 +59,13 @@ try {
   afterBoot.on = true;
 
   // Add a rect and set it rotated 45° at a known pose, via the preview/commit API.
+  // NOTE: "add-rect" now ARMS crosshair placement mode instead of spawning
+  // immediately (manifest ARCHITECTURE PLAN #5) — this probe doesn't test
+  // placement, so it creates the rect directly via app.addItem (the same
+  // primitive the placement gesture itself calls on release).
   const setup = await page.evaluate((rot) => {
     const app = window.__powerrp_app;
-    app.runCommand("add-rect");
+    app.addItem(app.registry.get("rect").defaults);
     const id = app.selection;
     app.setPreview([
       [["items", id, "x"], 300], [["items", id, "y"], 300],

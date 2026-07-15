@@ -42,6 +42,10 @@ export const textPlugin = {
   },
   anchors: standardBBoxAnchors,
   commands: [
-    { id: "add-text", title: "Add Text", icon: "mdi:format-text", run: (app) => app.addItem(textPlugin.defaults) },
+    // CROSSHAIR PLACEMENT (manifest ARCHITECTURE PLAN #5 / Round 12B "Boxes":
+    // "Same for TEXT boxes") — arms place mode instead of spawning at
+    // defaults; CanvasView (out of this plugin's fence) drives the gesture
+    // generically off `textPlugin` (type + .defaults).
+    { id: "add-text", title: "Add Text", icon: "mdi:format-text", run: (app) => app.armCrosshairPlacement(textPlugin) },
   ],
 };

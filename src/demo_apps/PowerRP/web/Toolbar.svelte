@@ -65,6 +65,25 @@
     {/each}
   {/each}
   <span class="sep"></span>
+  <!-- BOX SELECT (manifest Round 12B "Box select round 2": "A TOOLBAR BUTTON
+       for default box select"). Arms the band CROSSHAIR at the default
+       bandMode ("regular" — same resolution the palette's "Regular" entry
+       and an empty-space drag both use); "active" (the toggle-button
+       convention below) while armed OR while a band drag is actually live,
+       so the button visibly reflects the mode it started, like the snap/
+       anchor/ghost toggles beside it. A left click while armed is consumed
+       by CanvasView's pointer-down (starts the drag), not this button. -->
+  <Tooltip text="Box select (drag a box to select; Shift = deselect)">
+    <button
+      class="btn-icon"
+      class:active={app.crosshair?.kind === "band" || app.dragKind === "band"}
+      aria-label="Box select"
+      aria-pressed={app.crosshair?.kind === "band"}
+      onclick={() => app.runCommand("band-select-regular")}
+    >
+      <iconify-icon icon="mdi:selection-drag" width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
   <!-- Snap toggles: ACTIVE (accent) when the setting is on; while a snap is
        actually ENGAGED mid-drag the icon takes the guide color (snap-engaged). -->
   <Tooltip text="Toggle snapping (guides on move/resize)">

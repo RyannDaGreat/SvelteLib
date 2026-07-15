@@ -116,16 +116,34 @@ export class PowerRPApp {
   snapEnabled = $state(localStorage.getItem("powerrp.snap") !== "off");
   snapSizeEnabled = $state(localStorage.getItem("powerrp.snapSize") !== "off");
   // BROWSER setting (viewer-local): the DEFAULT rubber-band mode — what a
-  // "regular" (unspecified-mode) band select uses. Persisted like snap; the
-  // future drag-on-empty-canvas entry point reads this. Default "inner"
+  // "regular" (unspecified-mode) band select uses, AND what an empty-space
+  // drag uses directly (manifest Round 12B "DEFAULT EMPTY-SPACE DRAG = BOX
+  // SELECT" — no arming needed there). Persisted like snap. Default "inner"
   // (PowerPoint's default marquee behavior — a precedent, not invented).
   bandMode = $state(localStorage.getItem(BAND_MODE_KEY) === "outer" ? "outer" : "inner");
-  // One-shot band-select arming set by the palette commands. null = not armed;
-  // otherwise the resolved mode ("inner"|"outer") for the NEXT canvas drag. The
-  // CanvasView consumes it on drag start and clears it (one-shot). Designed so a
-  // future direct entry point (drag on empty canvas) reuses the same band-drag
-  // path with mode = bandMode instead of arming.
-  bandArm = $state(null);
+
+  // ── CROSSHAIR MODE (manifest ARCHITECTURE PLAN #5: "one mechanism, two
+  // skins") ───────────────────────────────────────────────────────────────
+  // ONE-SHOT arming record for a gesture that starts with full-viewport
+  // infinite crosshairs following the cursor, consumed by CanvasView on the
+  // NEXT pointer-down and cleared (one-shot) — or by Esc, which cancels the
+  // mode with no gesture at all. null = not armed.
+  //   {kind: "band", mode: "inner"|"outer"}   — band-select skin (dashed,
+  //     the band-select dash style); armed by the toolbar button / palette
+  //     band-select commands. The toolbar's default press resolves through
+  //     bandMode (armCrosshairBand("regular")); a DIRECT empty-space drag
+  //     (CanvasView onPointerDown, nothing hit) does NOT go through this
+  //     arm at all — it starts the SAME "band" drag kind straight from
+  //     bandMode, matching the spec's "no arming required" for that path.
+  //   {kind: "place", plugin}                 — placement skin (gray,
+  //     --a-ghost tone); armed by Add Box / Add Text so a widget button
+  //     click-drags/clicks its rect into existence instead of spawning at
+  //     defaults (manifest Round 12B "Boxes": "right now it just places a
+  //     box wherever the hell it wants"). `plugin` carries the widget's
+  //     `.defaults` (for default-size single-click placement) and `.type` —
+  //     the ENTIRE generalization surface: any future plugin opts in by
+  //     arming with itself, no CanvasView changes needed.
+  crosshair = $state(null);
   // BROWSER settings (viewer-local): editor-only Blender-style background grid
   // and top ruler strip. Both are "options" defaulting OFF (manifest: Grid +
   // Ruler). Persisted per-browser like the other viewer preferences above.
@@ -453,11 +471,31 @@ export class PowerRPApp {
   modalAppendBuffer = () => {};
   modalBackspace = () => {};
 
-  /** Command. Arms a one-shot band-select drag in `mode` ("inner"|"outer"|
-   * "regular"). "regular" resolves to the default bandMode setting. The next
-   * canvas drag performs the rubber band; CanvasView clears the arm. */
-  armBandSelect(mode) {
-    this.bandArm = mode === "regular" ? this.bandMode : mode;
+  /** Command. Arms a one-shot CROSSHAIR band-select drag in `mode`
+   * ("inner"|"outer"|"regular"). "regular" resolves to the default bandMode
+   * setting (the toolbar button's press — manifest Round 12B "TOOLBAR BUTTON
+   * for default box select"). The next canvas drag performs the rubber band;
+   * CanvasView clears the arm. */
+  armCrosshairBand(mode) {
+    this.crosshair = { kind: "band", mode: mode === "regular" ? this.bandMode : mode };
+  }
+
+  /** Command. Arms a one-shot CROSSHAIR placement drag for `plugin` (manifest
+   * ARCHITECTURE PLAN #5 "PLACEMENT rides it"): the next canvas gesture
+   * click-drags the widget's rect into existence, or a plain click places it
+   * at `plugin.defaults` size centered on the point (CanvasView.onPointerDown
+   * / placementDrag / placementUp). Generalizes to ANY plugin — the widget
+   * type itself is the only per-plugin knowledge CanvasView needs. */
+  armCrosshairPlacement(plugin) {
+    this.crosshair = { kind: "place", plugin };
+  }
+
+  /** Command. Cancels an armed-but-not-yet-gestured crosshair mode (Esc,
+   * manifest ARCHITECTURE PLAN #5: "Esc cancels"). No-op once a drag has
+   * actually started — CanvasView's drag record takes over at that point and
+   * its own Esc-cancel (mirroring the modifier-drag pattern) applies instead. */
+  cancelCrosshair() {
+    this.crosshair = null;
   }
 
   /** Command. Sets and persists the default ("regular") band-select mode. */

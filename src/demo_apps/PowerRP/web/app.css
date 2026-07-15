@@ -409,6 +409,38 @@ body,
   pointer-events: none;
 }
 
+/* CROSSHAIR MODE (manifest ARCHITECTURE PLAN #5 — "one mechanism, two
+   skins"): full-viewport lines through the cursor while a mode is armed.
+   Shared base (stroke width + no fill/pointer-events, same as every other
+   overlay decoration); the two skins differ ONLY in stroke color/dash —
+   band reuses the EXACT band-rect styling (guide color + selection dash) so
+   the crosshair visually matches the drag it precedes; place is the flat
+   --a-ghost gray the manifest specifies ("place = GRAY (--a-ghost tone)"),
+   undashed (a ghost affordance, not a selection-adjacent one). */
+.overlay .crosshair {
+  stroke-width: var(--a-guide-stroke);
+  pointer-events: none;
+}
+
+.overlay .crosshair-band {
+  stroke: var(--a-guide);
+  stroke-dasharray: var(--a-selection-dash);
+}
+
+.overlay .crosshair-place {
+  stroke: var(--a-ghost);
+}
+
+/* In-progress CROSSHAIR PLACEMENT drag rect: the gray ghost tone (matching
+   the place crosshair skin above), solid — the box is a concrete "this is
+   what will exist," unlike the transient dashed band-select box. */
+.overlay .place-rect {
+  fill: none;
+  stroke: var(--a-ghost);
+  stroke-width: var(--a-guide-stroke);
+  pointer-events: none;
+}
+
 .overlay .guide-point {
   fill: var(--a-guide);
   pointer-events: none;

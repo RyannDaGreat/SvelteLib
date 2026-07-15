@@ -13,7 +13,7 @@
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
   import { pickNode, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld } from "../core/derive.js";
-  import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
+  import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { THUMB_W, worldViewRect, canSkipNode } from "../core/view.js";
   import { selectInBox, rectFromCorners } from "../core/bandselect.js";
@@ -136,6 +136,19 @@
   // exactly what a drop selects). Both cleared on pointer-up.
   let bandRect = $state(null); // {x, y, w, h} world, or null
   let bandCandidates = $state([]); // itemIds the current band would select
+  // In-progress CROSSHAIR PLACEMENT preview (manifest ARCHITECTURE PLAN #5):
+  // the world-space rect a drag-placement is about to create. Null outside a
+  // placement drag (a plain click never sets it — see placementUp).
+  let placeRect = $state(null); // {x, y, w, h} world, or null
+  // A-key live state (manifest ARCHITECTURE PLAN #4 "ANCHOR SNAP"): tracked
+  // via window keydown/keyup (not e.getModifierState, which has patchy
+  // cross-browser support for letter keys) so onPointerUp — which fires no
+  // keyboard event of its own — can read "was A held at release". Reactive
+  // only through app.snapEngaged's existing HintBar wiring below; this flag
+  // itself stays non-reactive bookkeeping, like `drag`/`modal`, since nothing
+  // paints from it directly (the HintBar hint is keyed on snapEngaged, not on
+  // whether A specifically is down).
+  let aHeld = false;
   let drag = null; // non-reactive drag bookkeeping
   // Image decodes are async while the reactive paint is sync — a resolved
   // bitmap must nudge a repaint (Opus8's flagged seam; the PRESENTER needs no
@@ -438,24 +451,56 @@
       return;
     }
     const w = worldPoint(e);
-    // Armed rubber-band select (palette "Select in Box …") consumes the
-    // ONE-SHOT arm: this drag is a band, not a pick/move. The mode was already
-    // resolved at arm time ("regular" → the bandMode browser setting), so a
-    // future drag-on-empty-canvas entry point starts this same drag kind
-    // directly with mode = app.bandMode — no arming required.
-    if (app.bandArm) {
+    // An armed CROSSHAIR (manifest ARCHITECTURE PLAN #5) consumes the
+    // ONE-SHOT arm on the first pointer-down: "band" starts the rubber-band
+    // drag kind below (mode already resolved at arm time — "regular" →
+    // bandMode); "place" starts the placement drag kind. Both clear the arm
+    // immediately (one-shot) so a second gesture needs a fresh arm/command.
+    if (app.crosshair) {
+      const armed = app.crosshair;
       e.currentTarget.setPointerCapture(e.pointerId);
-      drag = { kind: "band", mode: app.bandArm, startWorld: w, lastWorld: w };
-      app.bandArm = null;
-      bandRect = rectFromCorners(w, w);
-      bandCandidates = [];
+      app.crosshair = null;
       hoverAnchor = null; // a hover tip must not linger frozen through the drag
       app.dragging = true;
-      app.dragKind = "band";
+      if (armed.kind === "band") {
+        drag = { kind: "band", mode: armed.mode, startWorld: w, lastWorld: w };
+        bandRect = rectFromCorners(w, w);
+        bandCandidates = [];
+        app.dragKind = "band";
+      } else {
+        // downScreen/moved: the SAME click-vs-drag slop tracking every other
+        // drag kind uses (onPointerMove, CLICK_SLOP_PX) — a placement that
+        // never crosses it is a CLICK (default-size placement); crossing it
+        // makes it a DRAG (exact-rect placement). See placementUp.
+        drag = { kind: "place", plugin: armed.plugin, startWorld: w, lastWorld: w, downScreen: screenPoint(e), moved: false };
+        placeRect = rectFromCorners(w, w);
+        app.dragKind = "place";
+      }
       return;
     }
     const nodes = app.nodes();
     const hit = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom);
+    // DEFAULT EMPTY-SPACE DRAG = BOX SELECT (manifest Round 12B "Box select
+    // round 2"): a pointer-down that hits nothing draggable AND nothing at
+    // all (camera background is a non-hit — camera.hitTest is border-only —
+    // and so is the empty canvas) starts a band drag DIRECTLY, no arming
+    // needed, at the default bandMode. Shift is EXCLUDED here on purpose: a
+    // shift+down on empty canvas must keep falling through to the existing
+    // "keeps the selection" branch below (a shift-click-empty spec this task
+    // must not disturb) rather than starting a band — band-select's OWN shift
+    // semantics (deselect-caught, see bandDrag/onPointerUp) only apply to a
+    // gesture that is unambiguously a band drag from the start (toolbar/
+    // palette-armed, or this empty-space default with no modifier).
+    if (!e.shiftKey && !hit) {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      drag = { kind: "band", mode: app.bandMode, startWorld: w, lastWorld: w };
+      bandRect = rectFromCorners(w, w);
+      bandCandidates = [];
+      hoverAnchor = null;
+      app.dragging = true;
+      app.dragKind = "band";
+      return;
+    }
     // Shift disambiguation (manifest "Shift-click multi-select"): Shift is BOTH
     // the axis-lock modifier AND the multi-select add/remove modifier, so a
     // shift+down must NOT decide selection here — it is DEFERRED to release. If
@@ -568,7 +613,8 @@
     else if (drag.kind === "resize") resizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
-    else if (drag.kind === "band") bandDrag(w);
+    else if (drag.kind === "band") bandDrag(w, e.shiftKey);
+    else if (drag.kind === "place") placementDrag(w);
     // "shiftpick" = a deferred shift-click on a NON-draggable item: no drag
     // behavior, only the slop tracking above, so the pointer path does nothing.
   }
@@ -577,15 +623,60 @@
 
   /**
    * Command (updates band preview state). Recomputes the world-space band rect
-   * and the live CANDIDATE set — the items the current box would select in the
+   * and the live CANDIDATE set — the items the current box would catch in the
    * drag's mode (core/bandselect.js: INNER = fully enclosed by the box, OUTER =
    * touching counts; bounds = the conservative rotated world AABB). Candidates
-   * render as preview outlines; the selection itself is applied on pointer-up.
+   * render as preview outlines; the selection/deselection itself is applied on
+   * pointer-up. `shiftHeld` (manifest Round 12B "SHIFT during a band drag =
+   * DESELECT the caught items instead of select") is latched into drag.deselect
+   * on to EVERY move — it re-reads live so toggling Shift mid-drag flips the
+   * pending action, matching how the axis-lock/resize modifiers already
+   * re-read their event flags each move rather than freezing at grab time.
    */
-  function bandDrag(w) {
+  function bandDrag(w, shiftHeld) {
     drag.lastWorld = w;
+    drag.deselect = shiftHeld;
     bandRect = rectFromCorners(drag.startWorld, w);
     bandCandidates = selectInBox(app.nodes(), bandRect, drag.mode);
+  }
+
+  // ── Crosshair placement drag (manifest ARCHITECTURE PLAN #5) ──────────────
+
+  /** Command (updates placement preview state). Recomputes the world-space
+   * rect a drag-placement is about to create — pure rect-from-corners, same
+   * primitive the band drag uses (rectFromCorners), so the preview outline
+   * behaves identically under any drag direction. */
+  function placementDrag(w) {
+    drag.lastWorld = w;
+    placeRect = rectFromCorners(drag.startWorld, w);
+  }
+
+  /**
+   * Command. Places the armed plugin's widget on release: a DRAG (moved past
+   * CLICK_SLOP_PX) places it at the EXACT dragged rect; a plain CLICK places
+   * it at the plugin's default size (`plugin.defaults.w`/`.h`), CENTERED on
+   * the click point (manifest Round 12B "Boxes": "a SINGLE CLICK places a
+   * default-size box... centered on the point" — the same centering rule
+   * insertImageAsset already uses for dropped media, app.svelte.js
+   * #insertMediaAt). Routes through app.addItem exactly like the plugin's OLD
+   * immediate-spawn `run`, so identity/z/active:true keyframing is unchanged
+   * — only x/y/w/h now come from the gesture instead of `plugin.defaults`
+   * verbatim. A plugin with no bbox size in its defaults (w/h both absent —
+   * none exist yet, but future non-bbox placeable widgets are conceivable) is
+   * NOT this task's scope; every current placeable plugin (rect, text) has
+   * numeric w/h defaults, so `?? 0` is a defensive fallback, not a silent
+   * behavior change for any real plugin today.
+   */
+  function placementUp() {
+    const { plugin, startWorld } = drag;
+    if (drag.moved) {
+      const r = rectFromCorners(startWorld, drag.lastWorld);
+      app.addItem({ ...plugin.defaults, x: r.x, y: r.y, w: r.w, h: r.h });
+    } else {
+      const w = plugin.defaults.w ?? 0, h = plugin.defaults.h ?? 0;
+      app.addItem({ ...plugin.defaults, x: startWorld.x - w / 2, y: startWorld.y - h / 2 });
+    }
+    placeRect = null;
   }
 
   function moveDrag(e, w) {
@@ -631,6 +722,11 @@
         dx += snap.dx;
         dy += snap.dy;
         newGuides.push(...snap.guides);
+        // ANCHOR SNAP (manifest ARCHITECTURE PLAN #4): stash the CURRENT
+        // move's provenance for onPointerUp to read if A is held at release
+        // — cleared every move (a snap that stops applying mid-drag must not
+        // leave a stale provenance an A-release would wrongly honor).
+        drag.snapProvenance = (snap.dx !== 0 || snap.dy !== 0) ? snap.provenance : null;
         if (snap.dx !== 0 || snap.dy !== 0) app.snapEngaged = true;
       }
     } else {
@@ -644,6 +740,14 @@
     // writes plain numeric x/y. With one member (== the grabbed item) this is
     // byte-identical to the old single-item preview — the editor_smoke mid-drag
     // invariants keep holding.
+    // Stashed for the anchor-snap release (writeMoveAnchorSnap): the FINAL
+    // (post-axis-lock, post-snap) delta this move committed, so a rewrite at
+    // release can rebuild the SAME DRAG-ALL pairs for every member and only
+    // override the grabbed item's snapped coordinate(s) — never dropping the
+    // other members' translation the way a bare re-setPreview([x,y]) would
+    // (setPreview REPLACES previewDelta wholesale, it doesn't merge).
+    drag.lastDx = dx;
+    drag.lastDy = dy;
     const pairs = drag.members.flatMap((m) => translationPairs(m, dx, dy));
     if (pairs.length) app.setPreview(pairs);
   }
@@ -809,11 +913,17 @@
     // break the invariant the modifier holds (aspect ratio / fixed center);
     // constraint-respecting snap is a separate design decision.
     let newGuides = [], indicators = [];
+    // ANCHOR SNAP (manifest ARCHITECTURE PLAN #4): cleared every move (like
+    // moveDrag's) so a snap that stops applying mid-drag can't leave a stale
+    // provenance an A-release would wrongly honor. Set below only when the
+    // gate (unrotated, enabled, no modifier) is open AND a correction lands.
+    drag.snapProvenance = null;
     if (!drag.rotated && app.snapEnabled && !mods.uniform && !mods.symmetric) {
       const r = applyResizeSnap({ x, y, ww, hh });
       x = r.x; y = r.y; ww = r.ww; hh = r.hh;
       newGuides = r.guides;
       indicators = r.indicators;
+      drag.snapProvenance = r.edgeProvenance;
       // Fold the snap correction back into lastBox (unrotated ⇒ world delta =
       // scale · local delta) so a modifier engaging on the NEXT move rebases
       // from exactly the box on screen.
@@ -868,10 +978,13 @@
 
   /**
    * Snaps an in-progress axis-aligned resize. Returns corrected {x,y,ww,hh},
-   * the aligned line `guides`, and matching-dimension `indicators`. The moving
-   * edges snap to other nodes' infinite lines (solveEdgeSnap); when the master
-   * item's width/height lands within tolerance of another VISIBLE bbox item's
-   * same dimension it snaps EXACTLY to it (sizeMatches, gated on snapSizeEnabled)
+   * the aligned line `guides`, matching-dimension `indicators`, and
+   * `edgeProvenance` (manifest ARCHITECTURE PLAN #4 — the EDGE→LINE snap's
+   * source only, never the size-match step: "v1 scope: move point/edge snaps
+   * + resize edge snaps; skip size-match snaps"). The moving edges snap to
+   * other nodes' infinite lines (solveEdgeSnap); when the master item's
+   * width/height lands within tolerance of another VISIBLE bbox item's same
+   * dimension it snaps EXACTLY to it (sizeMatches, gated on snapSizeEnabled)
    * and every matching object gets a two-way-arrow indicator across its span.
    * Raises app.snapEngaged whenever any correction is applied.
    *
@@ -901,6 +1014,7 @@
     if (drag.north) { y += es.dy; hh -= es.dy / scale; }
     if (es.dx !== 0 || es.dy !== 0) engaged = true;
     guides.push(...es.guides);
+    const edgeProvenance = (es.dx !== 0 || es.dy !== 0) ? es.provenance : null;
 
     // ── Size matching (Figma-style matching-dimension indicator) ──
     if (app.snapSizeEnabled) {
@@ -930,7 +1044,7 @@
       }
     }
     if (engaged) app.snapEngaged = true;
-    return { x, y, ww, hh, guides, indicators };
+    return { x, y, ww, hh, guides, indicators, edgeProvenance };
   }
 
   /** Pure-ish. The world-space axis-aligned bbox {x,y,w,h} of a bbox node. */
@@ -1043,6 +1157,116 @@
     if (pairs.length) app.setPreview(pairs);
   }
 
+  // ── Anchor snap release (manifest ARCHITECTURE PLAN #4) ────────────────────
+  // Holding A through a move/resize release rewrites the snapped axes as
+  // EQUATIONS referencing the provenance anchor instead of committing plain
+  // numbers — a live binding, not a one-time correction. v1 scope: move
+  // point/edge snaps + resize edge snaps (skip size-match snaps, per spec).
+
+  /**
+   * Query. The world-space coordinate of item `itemId`'s preset anchor
+   * `anchorId` on `coord` ("x"|"y"), read from the CURRENT (post-drag,
+   * pre-commit) node set — the same live state the equation will be
+   * evaluated relative to at commit time, so the offset anchorSnapEquation
+   * computes is exact. Returns null if the item or anchor is gone (e.g.
+   * purged mid-drag by another gesture — defensive, not expected in
+   * practice) so the caller can fall back to a plain numeric commit.
+   */
+  function anchorWorldCoord(itemId, anchorId, coord) {
+    const node = app.nodes().find((n) => n.itemId === itemId);
+    if (!node) return null;
+    const a = nodeAnchors(node).find((x) => x.id === anchorId);
+    return a ? a[coord] : null;
+  }
+
+  /**
+   * Command. Rewrites drag.itemId's x/y as anchor-snap EQUATIONS for a MOVE
+   * release (manifest: "move point/edge snaps"). `drag.snapProvenance` is
+   * either ONE "both"-axis entry (a point snap — pins x AND y to the SAME
+   * source point) or up to two single-axis entries (line snaps, one winner
+   * per axis). Each axis whose provenance maps to a real preset anchor
+   * (provenanceAnchorId) gets rewritten; an axis with no provenance, or whose
+   * source anchor doesn't resolve, is left as whatever moveDrag already
+   * wrote (a plain number) — no partial failure, just a partial equation.
+   *
+   * REBUILDS the full DRAG-ALL pairs set (drag.members × translationPairs,
+   * the SAME call moveDrag's last move made) rather than writing just the
+   * grabbed item's x/y — setPreview REPLACES previewDelta wholesale, so a
+   * narrower call would silently drop every OTHER selected member's
+   * translation on a multi-selection move. The grabbed item's pairs are
+   * then overridden coordinate-by-coordinate with the equation string.
+   */
+  function writeMoveAnchorSnap() {
+    const prov = drag.snapProvenance;
+    if (!prov?.length) return;
+    const pairs = drag.members.flatMap((m) => translationPairs(m, drag.lastDx, drag.lastDy));
+    const overrides = new Map(); // "x"|"y" → equation string, for drag.itemId only
+    for (const p of prov) {
+      const anchorId = provenanceAnchorId(p.sourceAnchorId);
+      if (!anchorId) continue; // non-standard source feature — no anchor to bind; numeric stands
+      for (const coord of p.axis === "both" ? ["x", "y"] : [p.axis]) {
+        const grabbed = pairs.find(([path]) => path[1] === drag.itemId && path[2] === coord);
+        if (!grabbed || typeof grabbed[1] !== "number") continue; // moveBy widget (no plain x/y pair) — nothing to rewrite
+        const anchorValue = anchorWorldCoord(p.sourceItemId, anchorId, coord);
+        if (anchorValue == null) continue;
+        overrides.set(coord, anchorSnapEquation(p.sourceItemId, anchorId, coord, grabbed[1], anchorValue));
+      }
+    }
+    if (!overrides.size) return;
+    const rewritten = pairs.map(([path, value]) =>
+      path[1] === drag.itemId && overrides.has(path[2]) ? [path, overrides.get(path[2])] : [path, value]);
+    app.setPreview(rewritten);
+  }
+
+  /**
+   * Command. Rewrites drag.itemId's `w`/`h` as a "stretching" anchor-snap
+   * EQUATION for a RESIZE release (manifest: "resize edge snaps... the
+   * snapped edge writes the stretching equation — edge tracks the target").
+   * Only the axis (x→w, y→h) whose provenance came from `applyResizeSnap`'s
+   * EDGE step is rewritten (drag.snapProvenance already excludes size-match,
+   * per its own doc) — `resizeEdgeEquation` needs the FIXED opposite edge's
+   * world coordinate (a plain snapshot number, read from the CURRENT
+   * committed geometry before this rewrite touches it) and the moving edge's
+   * sign (east/south = +1, west/north = −1, drag.east/west/north/south).
+   *
+   * REBUILDS all four x/y/w/h keys from the current preview (resizeDrag's
+   * last setPreview already wrote all four every move) rather than writing
+   * just the snapped size — setPreview REPLACES previewDelta wholesale, so a
+   * narrower call would silently drop the other three.
+   */
+  function writeResizeAnchorSnap() {
+    const prov = drag.snapProvenance;
+    if (!prov?.length) return;
+    const node = app.nodes().find((n) => n.itemId === drag.itemId);
+    if (!node) return;
+    const scale = node.world.scale;
+    const current = app.previewDelta?.items?.[drag.itemId] ?? {};
+    const overrides = new Map(); // "w"|"h" → equation string
+    for (const p of prov) {
+      const anchorId = provenanceAnchorId(p.sourceAnchorId);
+      if (!anchorId) continue;
+      const coord = p.axis; // resize edge provenance is always single-axis (x or y — never "both")
+      const sizeKey = coord === "x" ? "w" : "h";
+      const movingEdge = coord === "x" ? (drag.east ? 1 : drag.west ? -1 : 0) : (drag.south ? 1 : drag.north ? -1 : 0);
+      if (movingEdge === 0) continue; // this axis wasn't actually resized (shouldn't happen — defensive)
+      // The FIXED opposite edge's current world coordinate: for an east/south
+      // (sign +1) moving edge that's the node's own origin (world.x/.y —
+      // never rewritten here); for a west/north (sign -1) moving edge it's
+      // the far corner, read from the node's world bbox before this rewrite.
+      const worldFixed = movingEdge > 0
+        ? (coord === "x" ? node.world.x : node.world.y)
+        : (coord === "x" ? node.world.x + scale * (node.state.w ?? 0) : node.world.y + scale * (node.state.h ?? 0));
+      const anchorValue = anchorWorldCoord(p.sourceItemId, anchorId, coord);
+      if (anchorValue == null) continue;
+      overrides.set(sizeKey, resizeEdgeEquation(p.sourceItemId, anchorId, coord, movingEdge, worldFixed, scale));
+    }
+    if (!overrides.size) return;
+    const pairs = ["x", "y", "w", "h"]
+      .filter((k) => k in current)
+      .map((k) => [["items", drag.itemId, k], overrides.get(k) ?? current[k]]);
+    app.setPreview(pairs);
+  }
+
   /** Command. Esc-cancels an in-progress modifier-point drag (manifest: "Esc
    * cancels"): drops the preview (reverting to the committed pose, exactly
    * like modal cancelPreview) and releases drag bookkeeping. A no-op unless a
@@ -1068,11 +1292,32 @@
     if (!drag) return;
     if (drag.kind === "band") {
       // Apply the band: recomputed from the drag's own endpoints (not the
-      // render preview) so the result is deterministic. selectMany sets the
-      // multi-selection (primary = first hit); an empty result deselects.
-      app.selectMany(selectInBox(app.nodes(), rectFromCorners(drag.startWorld, drag.lastWorld), drag.mode));
+      // render preview) so the result is deterministic. Caught = the items in
+      // the final box (INNER/OUTER per drag.mode). Plain drag SELECTS them
+      // (selectMany — empty result deselects); a SHIFT-held drag (manifest
+      // Round 12B "SHIFT during a band drag = DESELECT the caught items
+      // instead of select") removes them from whatever was already selected
+      // instead — an empty catch is then a no-op, not a deselect-all.
+      const caught = selectInBox(app.nodes(), rectFromCorners(drag.startWorld, drag.lastWorld), drag.mode);
+      if (drag.deselect) {
+        const remove = new Set(caught);
+        app.selectMany(app.selectedIds().filter((id) => !remove.has(id)));
+      } else {
+        app.selectMany(caught);
+      }
       bandRect = null;
       bandCandidates = [];
+    } else if (drag.kind === "place") {
+      placementUp();
+    } else if (aHeld && drag.kind === "move") {
+      // ANCHOR SNAP (manifest ARCHITECTURE PLAN #4): A held at release
+      // rewrites the snapped axes as equations instead of the plain numbers
+      // moveDrag already wrote — a no-op when nothing was snapping (no
+      // provenance), so a plain A-held-but-not-snapped release commits
+      // exactly like a plain release always has.
+      writeMoveAnchorSnap();
+    } else if (aHeld && drag.kind === "resize") {
+      writeResizeAnchorSnap();
     }
     // Deferred shift-click: a shift+down released WITHIN the click slop (no drag)
     // toggles the hit item's selection membership (PPT/Figma add/remove). A
@@ -1358,11 +1603,33 @@
     return () => window.removeEventListener("keydown", onKeydownCapture, true);
   });
 
+  // ANCHOR SNAP A-key tracking (manifest ARCHITECTURE PLAN #4): plain
+  // (non-capturing, non-preventing) window listeners — "A" has no other
+  // binding today, so this never needs to pre-empt anything, unlike the
+  // Escape capture listener above. onPointerUp reads `aHeld` synchronously
+  // (keyup/keydown always precede the mouseup they accompany in DOM event
+  // order), so "release with A still down" is exactly "aHeld is true at the
+  // moment onPointerUp runs". A window blur clears it too — an alt-tab mid-
+  // drag must not leave a stuck phantom hold for the NEXT unrelated release.
+  $effect(() => {
+    const onKeydown = (e) => { if (e.key === "a" || e.key === "A") aHeld = true; };
+    const onKeyup = (e) => { if (e.key === "a" || e.key === "A") aHeld = false; };
+    const onBlur = () => { aHeld = false; };
+    window.addEventListener("keydown", onKeydown);
+    window.addEventListener("keyup", onKeyup);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("keyup", onKeyup);
+      window.removeEventListener("blur", onBlur);
+    };
+  });
+
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandCandidates; modalCenter;
-    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null, ghostOutlines: [] };
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandCandidates; modalCenter; app.crosshair; placeRect; mouseWorld;
+    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null, ghostOutlines: [], crosshairSegs: [], placeBox: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -1466,7 +1733,39 @@
     // affordance; no new styling).
     const scalePivot = modalCenter ? actions.worldToScreen(modalCenter.x, modalCenter.y) : null;
 
-    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines };
+    // CROSSHAIR MODE (manifest ARCHITECTURE PLAN #5 — "one mechanism, two
+    // skins"): while a mode is ARMED (before the gesture starts — `drag` is
+    // still null at this point in a plain hover, since a live band/place drag
+    // clears app.crosshair on pointer-down) and the cursor is over the
+    // canvas, draw FULL-VIEWPORT infinite crosshairs through the cursor's
+    // world point — THE ONE guide pipeline (clipLineToRect against the same
+    // worldRect guides/anchors already use), not a second geometry path.
+    // Skin is carried alongside each segment so the template picks the CSS
+    // class (band = dashed band-select styling; place = --a-ghost gray) with
+    // no duplicated line-building code between the two.
+    const crosshairSegs = app.crosshair && mouseWorld
+      ? [
+          clipLineToRect(mouseWorld.x, mouseWorld.y, 1, 0, worldRect),
+          clipLineToRect(mouseWorld.x, mouseWorld.y, 0, 1, worldRect),
+        ].filter(Boolean).map((seg) => {
+          const a = actions.worldToScreen(seg[0], seg[1]);
+          const b = actions.worldToScreen(seg[2], seg[3]);
+          return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, skin: app.crosshair.kind };
+        })
+      : [];
+
+    // In-progress PLACEMENT preview rect (gray, manifest ARCHITECTURE PLAN
+    // #5): same corner-normalizing shape as the band-select box (`band`
+    // above), so the template's rect math is identical between the two
+    // skins — only the CSS class differs.
+    let placeBox = null;
+    if (placeRect) {
+      const a = actions.worldToScreen(placeRect.x, placeRect.y);
+      const b = actions.worldToScreen(placeRect.x + placeRect.w, placeRect.y + placeRect.h);
+      placeBox = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+    }
+
+    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox };
   });
 </script>
 
@@ -1513,6 +1812,15 @@
             <path d="M2,1 L7,4 L2,7" fill="none" stroke="context-stroke" stroke-width="1.5" />
           </marker>
         </defs>
+        <!-- CROSSHAIR MODE (manifest ARCHITECTURE PLAN #5): full-viewport
+             infinite lines through the cursor while a mode is ARMED (before
+             the gesture starts — they vanish once you click, since drag
+             starting clears app.crosshair and no live drag repopulates this
+             array). Skin picks the CSS class: band = dashed band-select
+             style, place = gray --a-ghost tone. -->
+        {#each overlay.crosshairSegs as c}
+          <line class="crosshair" class:crosshair-band={c.skin === "band"} class:crosshair-place={c.skin === "place"} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} />
+        {/each}
         {#each overlay.guideSegs as g}
           {#if g.kind === "line"}
             <line class="guide" x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} />
@@ -1544,6 +1852,11 @@
         {#each overlay.outlines as o}
           <polygon class="selection" points={o} />
         {/each}
+        {#if overlay.placeBox}
+          <!-- In-progress CROSSHAIR PLACEMENT drag rect (manifest ARCHITECTURE
+               PLAN #5): the exact box a release right now would place. -->
+          <rect class="place-rect" x={overlay.placeBox.x} y={overlay.placeBox.y} width={overlay.placeBox.w} height={overlay.placeBox.h} />
+        {/if}
         {#if overlay.band}
           <!-- The in-progress rubber band + preview outlines on the items the
                current box would select (live band-select feedback). -->

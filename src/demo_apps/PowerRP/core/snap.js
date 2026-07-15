@@ -11,6 +11,62 @@
 import { dist2 } from "./geometry.js";
 
 /**
+ * Pure function. Parses a node-feature id ("<itemId>:<featureId>" — see
+ * derive.nodeFeatures) into PROVENANCE: which item and which named
+ * point/edge produced a snap correction (manifest ARCHITECTURE PLAN #4:
+ * "The snap solver's results gain PROVENANCE"). itemId never contains ":"
+ * (opaque ids from document.js), so the FIRST colon is the split point —
+ * featureId itself may be a plugin-declared id containing anything else.
+ * axis classifies the standard point/edge names for the anchor-snap release
+ * logic (CanvasView): "tl"/"tr"/"bl"/"br"/"cm" are joint (both axes), "tm"/
+ * "bm"/"top"/"bottom"/"hcenter" are y-only, "ml"/"mr"/"left"/"right"/
+ * "vcenter" are x-only. Plugin-declared extras (snapFeatures) default to
+ * "both" — a plugin may not follow the standard bbox naming, and "both" is
+ * the conservative choice (never wrongly narrows which coordinate an
+ * equation should track).
+ *
+ * @example snapProvenance("ab12cd34:tm") // {sourceItemId: "ab12cd34", sourceAnchorId: "tm", axis: "y"}
+ * @example snapProvenance("ab12cd34:right") // {sourceItemId: "ab12cd34", sourceAnchorId: "right", axis: "x"}
+ * @example snapProvenance("ab12cd34:cm") // {sourceItemId: "ab12cd34", sourceAnchorId: "cm", axis: "both"}
+ */
+export function snapProvenance(featureId) {
+  const i = featureId.indexOf(":");
+  const sourceItemId = i === -1 ? featureId : featureId.slice(0, i);
+  const sourceAnchorId = i === -1 ? null : featureId.slice(i + 1);
+  const Y_ONLY = new Set(["tm", "bm", "top", "bottom", "hcenter"]);
+  const X_ONLY = new Set(["ml", "mr", "left", "right", "vcenter"]);
+  const axis = Y_ONLY.has(sourceAnchorId) ? "y" : X_ONLY.has(sourceAnchorId) ? "x" : "both";
+  return { sourceItemId, sourceAnchorId, axis };
+}
+
+/**
+ * Pure function. Maps a snap-provenance `sourceAnchorId` to the CANONICAL
+ * PRESET ANCHOR id an equation can actually reference (manifest ARCHITECTURE
+ * PLAN #4: "write the EQUATION referencing the provenance anchor" —
+ * expressions.js only resolves `@id_<anchorId>.x|y` against
+ * `plugin.anchors(state)`, which are the 9 standard bbox points; the four
+ * EDGE-LINE feature ids ("top"/"bottom"/"left"/"right") and the two CENTER-
+ * LINE ids ("hcenter"/"vcenter") are snap/guide-only names with no anchor of
+ * their own, so a resize edge snap needs a representative point anchor that
+ * lies on the same line). The 9 standard point ids pass through unchanged
+ * (already valid anchor ids — a move point-snap never needs this mapping).
+ * Non-standard ids (a plugin's own snapFeatures extra) return null — the
+ * caller falls back to a plain numeric commit rather than guessing.
+ *
+ * @example provenanceAnchorId("right") // "mr"
+ * @example provenanceAnchorId("hcenter") // "cm"
+ * @example provenanceAnchorId("tm") // "tm" (already a preset anchor)
+ * @example provenanceAnchorId("some_plugin_extra") // null
+ */
+export function provenanceAnchorId(sourceAnchorId) {
+  const EDGE_TO_ANCHOR = {
+    top: "tm", bottom: "bm", left: "ml", right: "mr", hcenter: "cm", vcenter: "cm",
+    tl: "tl", tm: "tm", tr: "tr", ml: "ml", cm: "cm", mr: "mr", bl: "bl", bm: "bm", br: "br",
+  };
+  return EDGE_TO_ANCHOR[sourceAnchorId] ?? null;
+}
+
+/**
  * Pure function. Solves snapping for a drag.
  *
  * Args:
@@ -19,9 +75,17 @@ import { dist2 } from "./geometry.js";
  *   features — world-space features of every OTHER node (points + lines).
  *   tol      — snap distance in WORLD units (screen px / zoom).
  *
- * Returns {dx, dy, guides}: the correction to add to the proposed position,
- * and guide descriptors to render:
- *   {kind:"point", x, y} or {kind:"line", x, y, dx, dy}.
+ * Returns {dx, dy, guides, provenance}: the correction to add to the
+ * proposed position, guide descriptors to render:
+ *   {kind:"point", x, y} or {kind:"line", x, y, dx, dy},
+ * and PROVENANCE (manifest ARCHITECTURE PLAN #4) — pure data, no behavior
+ * change: which source feature(s) produced the correction, one entry per
+ * axis actually applied — [{sourceItemId, sourceAnchorId, axis}]. A point
+ * snap yields ONE "both"-axis entry (it pins x and y together); a line snap
+ * yields up to two entries (one per axis, from the winning line on that
+ * axis — "snap to BOTH" may light up several guides, but only the WINNING
+ * line per axis is the equation-write source). Empty when no correction
+ * applied (dx === 0 && dy === 0).
  *
  * X and Y solve independently for line features (align-to-edge), jointly for
  * point features (corner-to-corner beats two separate line snaps).
@@ -29,11 +93,11 @@ import { dist2 } from "./geometry.js";
  * @example
  * // A probe 3px left of a vertical line at x=100 snaps onto it:
  * // solveSnap([{kind:"point",x:97,y:50,id:"p"}],
- * //           [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e"}], 5)
- * // → {dx: 3, dy: 0, guides: [{kind:"line",...}]}
+ * //           [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e:right"}], 5)
+ * // → {dx: 3, dy: 0, guides: [{kind:"line",...}], provenance: [{sourceItemId:"e",sourceAnchorId:"right",axis:"x"}]}
  */
 export function solveSnap(probes, features, tol) {
-  let best = { dx: 0, dy: 0, guides: [] };
+  let best = { dx: 0, dy: 0, guides: [], provenance: [] };
   let bestPoint = null; // {d2, dx, dy, feature}
   let bestX = null, bestY = null; // {d, correction, feature}
 
@@ -62,14 +126,16 @@ export function solveSnap(probes, features, tol) {
 
   if (bestPoint) {
     // A point snap wins outright — it pins both axes coherently.
+    const prov = snapProvenance(bestPoint.feature.id);
     return {
       dx: bestPoint.dx,
       dy: bestPoint.dy,
       guides: [{ kind: "point", x: bestPoint.feature.x, y: bestPoint.feature.y }],
+      provenance: [{ ...prov, axis: "both" }],
     };
   }
-  if (bestX) best.dx = bestX.correction;
-  if (bestY) best.dy = bestY.correction;
+  if (bestX) { best.dx = bestX.correction; best.provenance.push({ ...snapProvenance(bestX.feature.id), axis: "x" }); }
+  if (bestY) { best.dy = bestY.correction; best.provenance.push({ ...snapProvenance(bestY.feature.id), axis: "y" }); }
 
   // "Snap to BOTH" (manifest): one deterministic correction, then EVERY line
   // that the corrected probes land on becomes a guide — top+bottom+middle
@@ -120,27 +186,31 @@ function pickLine(f) {
  *              derive.nodeFeatures); non-line features are ignored.
  *   tol      — snap distance in WORLD units (screen px / zoom).
  *
- * Returns {dx, dy, guides}: the world-space correction to add to the moving
- * edge coordinates (dx for x-axis edges, dy for y-axis edges) and the guide
- * descriptors that ended up aligned. Like solveSnap, once a correction is
- * chosen EVERY line the corrected edges land on becomes a guide ("snap to
- * BOTH" — top+bottom+middle light up together instead of flickering). EPS is
- * float slack only: aligned distances are ~0 after correction.
+ * Returns {dx, dy, guides, provenance}: the world-space correction to add to
+ * the moving edge coordinates (dx for x-axis edges, dy for y-axis edges), the
+ * guide descriptors that ended up aligned, and PROVENANCE (manifest
+ * ARCHITECTURE PLAN #4) — [{sourceItemId, sourceAnchorId, axis}], one entry
+ * per axis whose edge actually snapped (the WINNING line on that axis — the
+ * equation-write source for the anchor-snap release). Like solveSnap, once a
+ * correction is chosen EVERY line the corrected edges land on becomes a
+ * guide ("snap to BOTH" — top+bottom+middle light up together instead of
+ * flickering). EPS is float slack only: aligned distances are ~0 after
+ * correction.
  *
  * @example
  * // A right edge 3px left of a vertical line at x=100 snaps onto it:
  * // solveEdgeSnap([{axis:"x",pos:97}],
- * //               [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e"}], 5)
- * // → {dx: 3, dy: 0, guides: [{kind:"line",x:100,y:0,dx:0,dy:1}]}
+ * //               [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e:right"}], 5)
+ * // → {dx: 3, dy: 0, guides: [{kind:"line",x:100,y:0,dx:0,dy:1}], provenance: [{sourceItemId:"e",sourceAnchorId:"right",axis:"x"}]}
  * @example
- * // Out of tolerance → no correction, no guides:
+ * // Out of tolerance → no correction, no guides, no provenance:
  * // solveEdgeSnap([{axis:"x",pos:80}],
- * //               [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e"}], 5)
- * // → {dx: 0, dy: 0, guides: []}
+ * //               [{kind:"line",x:100,y:0,dx:0,dy:1,id:"e:right"}], 5)
+ * // → {dx: 0, dy: 0, guides: [], provenance: []}
  */
 export function solveEdgeSnap(edges, features, tol) {
-  const best = { dx: 0, dy: 0, guides: [] };
-  let bestX = null, bestY = null; // {d, correction}
+  const best = { dx: 0, dy: 0, guides: [], provenance: [] };
+  let bestX = null, bestY = null; // {d, correction, feature}
   const EPS = 1e-6; // float slack only (see solveSnap): aligned dist ≈ 0.
 
   for (const edge of edges) {
@@ -155,16 +225,16 @@ export function solveEdgeSnap(edges, features, tol) {
       if (edge.axis === "x" && vertical) {
         const d = f.x - edge.pos;
         if (Math.abs(d) <= tol && (!bestX || Math.abs(d) < bestX.d))
-          bestX = { d: Math.abs(d), correction: d };
+          bestX = { d: Math.abs(d), correction: d, feature: f };
       } else if (edge.axis === "y" && horizontal) {
         const d = f.y - edge.pos;
         if (Math.abs(d) <= tol && (!bestY || Math.abs(d) < bestY.d))
-          bestY = { d: Math.abs(d), correction: d };
+          bestY = { d: Math.abs(d), correction: d, feature: f };
       }
     }
   }
-  if (bestX) best.dx = bestX.correction;
-  if (bestY) best.dy = bestY.correction;
+  if (bestX) { best.dx = bestX.correction; best.provenance.push({ ...snapProvenance(bestX.feature.id), axis: "x" }); }
+  if (bestY) { best.dy = bestY.correction; best.provenance.push({ ...snapProvenance(bestY.feature.id), axis: "y" }); }
 
   if (bestX || bestY) {
     const seen = new Set();
@@ -225,6 +295,69 @@ export function sizeMatches(size, candidates, tol) {
   if (!best) return null;
   const ids = candidates.filter((c) => c.size === best.value).map((c) => c.id);
   return { value: best.value, ids };
+}
+
+/**
+ * Pure function. The STORED equation string for an ANCHOR SNAP release
+ * (manifest ARCHITECTURE PLAN #4): "@id_anchor.x form via the expressions
+ * API [+ numeric offset when the correction wasn't exact-point]". Compares
+ * `finalValue` (what the plain numeric commit would have written) against
+ * `anchorValue` (the source anchor's CURRENT evaluated coordinate on `coord`)
+ * and emits the bare reference when they coincide (within float slack — an
+ * exact-point snap, e.g. dragging one item's own top-left onto another's),
+ * else appends a signed offset so the equation reproduces `finalValue`
+ * exactly. The offset direction matters for readability only (both "+ -3"
+ * and "- 3" evaluate identically); this always emits the shorter, natural
+ * "-" form for a negative offset.
+ *
+ * @example anchorSnapEquation("ab12cd34", "mr", "x", 150, 150) // "@ab12cd34_mr.x"
+ * @example anchorSnapEquation("ab12cd34", "mr", "x", 158, 150) // "@ab12cd34_mr.x + 8"
+ * @example anchorSnapEquation("ab12cd34", "tm", "y", 142, 150) // "@ab12cd34_tm.y - 8"
+ */
+export function anchorSnapEquation(sourceItemId, anchorId, coord, finalValue, anchorValue) {
+  const ref = `@${sourceItemId}_${anchorId}.${coord}`;
+  const offset = finalValue - anchorValue;
+  const EPS = 1e-6; // float slack only — see solveSnap's identical convention
+  if (Math.abs(offset) < EPS) return ref;
+  return offset > 0 ? `${ref} + ${offset}` : `${ref} - ${-offset}`;
+}
+
+/**
+ * Pure function. The STORED equation for a RESIZE EDGE anchor-snap release
+ * (manifest ARCHITECTURE PLAN #4: "the snapped edge writes the stretching
+ * equation — edge tracks the target"). The MOVING edge's world coordinate is
+ * `worldFixed + sign * scale * size` (worldTransform at rotation 0 — resize
+ * edge snapping is already gated to unrotated items in CanvasView, so this
+ * is exact, not an approximation); solving `= anchorRef` for `size` gives:
+ *   size = sign * (anchorRef − worldFixed) / scale
+ * `sign` is +1 for an east/south (max-side) edge, −1 for a west/north
+ * (min-side) edge — the SAME edge convention CanvasView.resizeDrag already
+ * uses (`drag.east`/`drag.west` etc.). `scale === 1` (the overwhelmingly
+ * common case — resize never itself changes `scale`) emits the simpler
+ * division-free form; a non-1 scale (the item was previously S-modal-scaled)
+ * divides through explicitly via `self.scale` so the equation stays exact.
+ *
+ * Args:
+ *   sourceItemId, anchorId, coord — the provenance anchor (coord: "x"|"y").
+ *   sign     — +1 (east/south moving edge) | −1 (west/north moving edge).
+ *   worldFixed — the world coordinate of the FIXED opposite edge (its
+ *                current numeric value — never itself rewritten).
+ *   scale    — the resized item's world.scale (drag.world.scale).
+ *
+ * Returns the stored equation string for the size property (`w` or `h`).
+ *
+ * @example
+ * // East edge (sign +1) snapped to x=300; fixed left edge at world x=100, scale 1:
+ * // resizeEdgeEquation("ab12cd34", "mr", "x", 1, 100, 1) // "@ab12cd34_mr.x - self.x"
+ * @example
+ * // West edge (sign -1) snapped to x=50; fixed right edge at world x=300, scale 2:
+ * // resizeEdgeEquation("ab12cd34", "ml", "x", -1, 300, 2) // "(300 - @ab12cd34_ml.x) / self.scale"
+ */
+export function resizeEdgeEquation(sourceItemId, anchorId, coord, sign, worldFixed, scale) {
+  const ref = `@${sourceItemId}_${anchorId}.${coord}`;
+  const selfProp = coord === "x" ? "self.x" : "self.y";
+  const numerator = sign > 0 ? `${ref} - ${selfProp}` : `${worldFixed} - ${ref}`;
+  return scale === 1 ? numerator : `(${numerator}) / self.scale`;
 }
 
 /**

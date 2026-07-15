@@ -14,7 +14,7 @@ export const rectPlugin = {
     // Rotation pivots about this WORLD point; default = own center (an equation
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 8, opacity: 1,
+    fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 0, // square by default (user ruling, round 12B); old docs keep their creation-slide value opacity: 1,
   },
   // `category` groups rows into the Inspector's collapsible accordion regions
   // (manifest Round 12 "PROPERTY CATEGORIES"). Uncategorized rows fall into the
@@ -62,6 +62,12 @@ export const rectPlugin = {
     return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, state.cornerRadius ?? 0, local.x, local.y);
   },
   commands: [
-    { id: "add-rect", title: "Add Rectangle", icon: "mdi:rectangle-outline", run: (app) => app.addItem(rectPlugin.defaults) },
+    // CROSSHAIR PLACEMENT (manifest ARCHITECTURE PLAN #5 / Round 12B "Boxes":
+    // "right now it just places a box wherever the hell it wants") — arms
+    // place mode instead of spawning at defaults; CanvasView (web/CanvasView.
+    // svelte, out of this plugin's fence) drives the click-drag-places-rect /
+    // click-places-default-size gesture generically off `rectPlugin` (type +
+    // .defaults is the entire per-plugin surface it needs).
+    { id: "add-rect", title: "Add Rectangle", icon: "mdi:rectangle-outline", run: (app) => app.armCrosshairPlacement(rectPlugin) },
   ],
 };
