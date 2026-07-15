@@ -16,6 +16,19 @@
  * later without touching the IR — the text command stays a text run either
  * way (Tier-2 assessment in the manifest).
  *
+ * COLOR GLYPHS (emoji): "white-on-transparent tinted in the shader" only
+ * holds for MONOCHROME glyphs. A color glyph (emoji, or any font whose
+ * COLR/CBDT table substitutes its own artwork) ignores fillStyle entirely —
+ * rasterizing it "white" paints its real colors, and the shader's
+ * multiply-by-text-color tint would then corrupt those colors (the "emoji
+ * render black" bug: white glyphs get multiplied by a black-ish text color).
+ * isColorGlyph() classifies each glyph by RASTERIZING IT TWICE (fillStyle
+ * black vs white) and comparing the pixels — see its docstring for why this
+ * beats a Unicode-range heuristic. Color glyphs still rasterize into the SAME
+ * atlas page (their true-color pixels, not a mask); the entry records
+ * `color: true` so the compositor selects TEX_MODE.colorGlyph (sample as-is,
+ * opacity-only) instead of TEX_MODE.glyph (tint by color × alpha mask).
+ *
  * Stateful service object (owns the atlas canvas + GPU texture + packing
  * cursor). Not pure. Browser-only (needs document.createElement("canvas")).
  */
@@ -102,6 +115,78 @@ export function fontString(sizePx, bold, fontId = DEFAULT_FONT) {
   return `${bold ? "bold " : ""}${sizePx}px ${cssFamilyFor(fontId)}`;
 }
 
+/** Probe raster size for the color-glyph classifier (device px, in the
+ * scratch canvas — unrelated to any display bucket). Small enough to be
+ * cheap per glyph, large enough that emoji artwork actually paints (a few
+ * device px can round color detail away). Not a precedent-linked constant —
+ * it only needs to be "big enough to rasterize, small enough to be cheap";
+ * flagged PENDING RATIFICATION alongside the atlas's other capacity numbers. */
+const COLOR_PROBE_PX = 32;
+
+/**
+ * Pure function (given a 2D context whose canvas is at least COLOR_PROBE_PX
+ * square — the classifier only reads back RGBA bytes, never allocates or
+ * mutates canvas STATE beyond what the caller's ctx already has). Detects
+ * whether a glyph supplies its OWN color (an emoji / color-font glyph) as
+ * opposed to a monochrome glyph that a shader can tint.
+ *
+ * METHOD: rasterize the glyph twice into the probe canvas — once with
+ * fillStyle black, once with fillStyle white — and compare the resulting
+ * RGBA byte buffers. A monochrome glyph is an ALPHA MASK: canvas2D paints
+ * exactly `fillStyle` at every covered pixel, so the black and white passes
+ * differ at every non-transparent pixel (0,0,0,a) vs (255,255,255,a) — by
+ * construction, a mask's white and black rasterizations are always exact
+ * bytewise inverses of RGB wherever alpha > 0. A COLOR glyph (emoji) ignores
+ * fillStyle entirely — the platform substitutes its own bitmap/COLR artwork
+ * — so both passes come out IDENTICAL. This is why comparing two fill colors
+ * beats any unicode-range heuristic: it directly tests the actual behavior
+ * (does fillStyle affect the pixels?) rather than guessing from a codepoint,
+ * so it is correct for variation-selector emoji, future Unicode emoji, and
+ * any OS/browser color-font quirk without a maintained range table.
+ *
+ * Args:
+ *   ctx (CanvasRenderingContext2D): scratch context, already sized to at
+ *     least COLOR_PROBE_PX square; caller sets ctx.font before calling.
+ *   ch (string): the glyph's text run (may be a multi-codepoint grapheme,
+ *     e.g. an emoji + variation selector — canvas2D shapes it as one glyph).
+ *
+ * Returns:
+ *   boolean: true if the glyph is a color glyph (bypass tint), false if it
+ *   is a monochrome mask (tint as today).
+ *
+ * Examples:
+ *   >>> # isColorGlyph(ctx, "A") with ctx.font = "32px sans-serif" -> false
+ *   >>> # isColorGlyph(ctx, "\u{1F7E5}") (🟥) with an emoji-capable font -> true
+ */
+export function isColorGlyph(ctx, ch) {
+  const n = COLOR_PROBE_PX;
+  ctx.clearRect(0, 0, n, n);
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "#000000";
+  ctx.fillText(ch, 0, 0);
+  const black = ctx.getImageData(0, 0, n, n).data;
+  ctx.clearRect(0, 0, n, n);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(ch, 0, 0);
+  const white = ctx.getImageData(0, 0, n, n).data;
+  ctx.clearRect(0, 0, n, n); // leave the scratch context clean for the next caller
+  let sawCoverage = false;
+  for (let i = 0; i < black.length; i += 4) {
+    if (black[i + 3] === 0 && white[i + 3] === 0) continue; // both transparent — uninked, skip
+    sawCoverage = true;
+    // A MONOCHROME mask paints exactly fillStyle at every covered pixel, so
+    // black vs white DIFFER here (0,0,0,a) vs (255,255,255,a); a COLOR glyph
+    // ignores fillStyle, so its RGB is IDENTICAL between the two passes. A
+    // pixel that differs is proof of a mask — bail out false immediately.
+    if (black[i] !== white[i] || black[i + 1] !== white[i + 1] || black[i + 2] !== white[i + 2]) return false;
+  }
+  // No inked pixel ever differed between the two fills: either every covered
+  // pixel ignored fillStyle (a color glyph) or nothing rasterized at all (an
+  // unsupported/whitespace glyph — harmless to call it "color": get() then
+  // rasterizes it plain, and an empty glyph draws nothing regardless of mode).
+  return sawCoverage;
+}
+
 export class GlyphAtlas {
   /**
    * Command (allocates GPU texture + canvas).
@@ -121,12 +206,39 @@ export class GlyphAtlas {
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    this.entries = new Map(); // "char|bucket|bold|font" → {u0, v0, du, dv, cellW, cellH, advance, ascent, pad}
+    this.entries = new Map(); // "char|bucket|bold|font" → {u0, v0, du, dv, cellW, cellH, advance, ascent, pad, color}
     this.metrics = new Map(); // "char|bucket|bold|font" → measure-only metrics (never evicted — no atlas space)
+    // Color-glyph verdicts: keyed "char|font" ONLY (bold/bucket-independent —
+    // whether a glyph ignores fillStyle is a font-substitution fact, not a
+    // size fact, so buckets/bold weights of the same glyph share one verdict).
+    // Matches the `metrics` map's documented no-eviction caveat: verdicts cost
+    // no atlas space and survive generation resets (see reset()).
+    this.colorVerdicts = new Map();
+    // Scratch context for isColorGlyph's probe rasterizations — SEPARATE from
+    // this.ctx (the atlas page): probing must never clearRect/paint over
+    // already-packed shelf cells.
+    this._probeCanvas = document.createElement("canvas");
+    this._probeCanvas.width = this._probeCanvas.height = COLOR_PROBE_PX;
+    this._probeCtx = this._probeCanvas.getContext("2d", { willReadFrequently: true });
     this.shelfX = 0;
     this.shelfY = 0;
     this.shelfH = 0;
     this.dirty = false;
+  }
+
+  /**
+   * Query (memoizes on char|font — see colorVerdicts). Is this glyph a color
+   * glyph (emoji / color-font artwork) that must bypass the shader's tint?
+   */
+  isColor(ch, bold, font = DEFAULT_FONT) {
+    const key = `${ch}|${font}`;
+    let verdict = this.colorVerdicts.get(key);
+    if (verdict === undefined) {
+      this._probeCtx.font = fontString(COLOR_PROBE_PX, bold, font);
+      verdict = isColorGlyph(this._probeCtx, ch);
+      this.colorVerdicts.set(key, verdict);
+    }
+    return verdict;
   }
 
   /**
@@ -182,9 +294,14 @@ export class GlyphAtlas {
     this.shelfX += m.cellW;
     this.shelfH = Math.max(this.shelfH, m.cellH);
 
+    const color = this.isColor(ch, bold, font);
     const ctx = this.ctx;
     ctx.font = fontString(bucket, bold, font); // measure() may have hit its cache — set the font for fillText
-    ctx.fillStyle = "#ffffff"; // white mask — the shader tints
+    // Monochrome glyphs rasterize as a WHITE ALPHA MASK (the shader tints by
+    // the text color). Color glyphs (emoji) ignore fillStyle and paint their
+    // own artwork regardless — fillStyle is left at whatever it already is,
+    // purely so the source is deterministic across atlas rebuilds.
+    ctx.fillStyle = "#ffffff";
     ctx.textBaseline = "alphabetic";
     ctx.fillText(ch, x + CELL_PAD, y + CELL_PAD + m.ascent);
 
@@ -195,6 +312,7 @@ export class GlyphAtlas {
       advance: m.advance,
       ascent: m.ascent,
       pad: CELL_PAD,
+      color, // true = COLOR glyph (bypass shader tint); false = alpha mask (tint as today)
     };
     this.entries.set(key, entry);
     this.dirty = true;
@@ -204,9 +322,9 @@ export class GlyphAtlas {
   /**
    * Command. Evicts the whole generation: clears the page, the entry table,
    * and the packing cursor (shelf packing can't free single cells, so a full
-   * page evicts EVERYTHING). Font metrics survive — they occupy no atlas
-   * space. Reporting is the CALLER's job (compositor.render() warns loudly);
-   * this class stays policy-free.
+   * page evicts EVERYTHING). Font metrics AND color-glyph verdicts survive —
+   * neither occupies atlas space. Reporting is the CALLER's job
+   * (compositor.render() warns loudly); this class stays policy-free.
    */
   reset() {
     this.ctx.clearRect(0, 0, ATLAS_SIZE, ATLAS_SIZE);

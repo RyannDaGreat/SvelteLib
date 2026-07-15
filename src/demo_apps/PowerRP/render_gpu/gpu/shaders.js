@@ -156,8 +156,13 @@ fn fs(in: MeshOut) -> @location(0) vec4f {
 }
 `;
 
-/** TEX modes (misc.x). */
-export const TEX_MODE = { glyph: 0, image: 1 };
+/** TEX modes (misc.x). `glyph` tints a white alpha-mask glyph by the run's
+ * text color (monochrome text — the original path). `colorGlyph` samples the
+ * atlas texel AS-IS (the glyph's own rasterized color, e.g. emoji artwork)
+ * modulated only by opacity — bypassing the tint entirely, because the
+ * glyph already supplies correct RGB (glyph_atlas.js isColorGlyph). `image`
+ * is unrelated — an uploaded premultiplied texture. */
+export const TEX_MODE = { glyph: 0, image: 1, colorGlyph: 2 };
 
 export const TEX_WGSL = VIEW_WGSL + /* wgsl */ `
 @group(1) @binding(0) var samp: sampler;
@@ -193,9 +198,11 @@ fn fs(in: TexOut) -> @location(0) vec4f {
   let s = textureSample(tex, samp, in.uv);
   var c: vec4f;
   if (in.misc.x < 0.5) {
-    c = vec4f(in.color.rgb, 1.0) * (in.color.a * s.a); // glyph: alpha mask × color
-  } else {
+    c = vec4f(in.color.rgb, 1.0) * (in.color.a * s.a); // glyph: alpha mask × color (tinted)
+  } else if (in.misc.x < 1.5) {
     c = s; // image: uploaded premultiplied
+  } else {
+    c = s; // colorGlyph: the atlas texel's OWN color (premultiplied) — no tint
   }
   return c * in.misc.y;
 }

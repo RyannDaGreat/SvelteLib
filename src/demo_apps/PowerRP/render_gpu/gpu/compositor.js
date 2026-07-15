@@ -1039,7 +1039,11 @@ export class GpuCompositor {
             f.set(xf, at + 4);
             f.set([e.u0, e.v0, e.du, e.dv], at + 8);
             f.set(cmd.color, at + 12);
-            f.set([TEX_MODE.glyph, cmd.opacity, 0, 0], at + 16);
+            // Color glyphs (emoji) carry their own RGB in the atlas texel —
+            // TEX_MODE.colorGlyph samples it as-is; cmd.color is packed
+            // regardless (harmless, ignored by that mode) so the instance
+            // layout stays uniform. Monochrome glyphs keep the tinted path.
+            f.set([e.color ? TEX_MODE.colorGlyph : TEX_MODE.glyph, cmd.opacity, 0, 0], at + 16);
           }
           break;
         }
