@@ -16,7 +16,8 @@ import {
 } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { newDocument, withNewItem, withNewSlide, keyframed, foldState, withSlideMoved } from "../core/document.js";
-import { deriveRenderTree } from "../core/derive.js";
+import { deriveRenderTree, worldTransform, nodeAnchors } from "../core/derive.js";
+import * as T from "../core/transform.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { circlePlugin } from "../plugins/circle.js";
 import { arrowPlugin } from "../plugins/arrow.js";
@@ -342,6 +343,117 @@ test("evaluateState: DEGENERATE tangency hits the sweep cap LOUDLY, result stays
   approx(result.state.items.ar.from.y, 50, 0.1);
   approx(result.state.items.ar.to.x, 100.1, 0.1);
   approx(result.state.items.ar.to.y, 50, 0.1);
+});
+// ── Cross-item anchor refs to ROTATED targets (registry #2) ──────────────────
+// A cross-item anchor ref must evaluate through the target's PAINTED transform
+// (worldTransform — rotation pivoted about the rotationAnchor), NOT T.fromState
+// (top-left pivot). Before the fix, arrows attached 49-233px off a rotated
+// target. The invariant asserted: the evaluated ref === the painted anchor
+// (derive.nodeAnchors), at every rotation.
+function paintedAnchor(item, anchorId, reg) {
+  const node = { world: worldTransform(item), state: item, plugin: reg.get(item.type) };
+  return nodeAnchors(node).find((a) => a.id === anchorId);
+}
+test("evaluateState: preset anchor ref to a ROTATED rect matches the painted rim", () => {
+  for (const rot of [Math.PI / 6, Math.PI / 4, Math.PI / 2, Math.PI]) {
+    const tgt = { ...rectPlugin.defaults, x: 100, y: 100, w: 200, h: 120, rotation: rot, name: "Tgt" };
+    const state = {
+      items: {
+        tgt,
+        ar: { ...arrowPlugin.defaults, from: { x: 0, y: 0 }, to: { x: "@tgt_tr.x", y: "@tgt_tr.y" } },
+      },
+    };
+    const { state: s, errors } = evaluateState(state, registry);
+    assert.equal(errors.size, 0, `rot ${rot}`);
+    const painted = paintedAnchor(tgt, "tr", registry);
+    approx(s.items.ar.to.x, painted.x, 1e-6);
+    approx(s.items.ar.to.y, painted.y, 1e-6);
+  }
+});
+test("evaluateState: closest-rim ref to a ROTATED circle attaches on the painted rim", () => {
+  for (const rot of [Math.PI / 6, Math.PI / 4, Math.PI / 2, Math.PI]) {
+    const c1 = { ...circlePlugin.defaults, x: 100, y: 100, w: 120, h: 120, rotation: rot, name: "C" };
+    const state = {
+      items: {
+        c1,
+        ar: { ...arrowPlugin.defaults, from: { x: 400, y: 160 }, to: { x: "@c1_closest.x", y: "@c1_closest.y" } },
+      },
+    };
+    const { state: s, errors } = evaluateState(state, registry);
+    assert.equal(errors.size, 0, `rot ${rot}`);
+    // Painted rim point toward the arrow's other (free) endpoint.
+    const world = worldTransform(c1);
+    const local = circlePlugin.closestAnchor(c1, s.items.ar.from.x, s.items.ar.from.y, world);
+    const painted = T.apply(world, local.x, local.y);
+    approx(s.items.ar.to.x, painted.x, 0.02);
+    approx(s.items.ar.to.y, painted.y, 0.02);
+    // A closest rim point is genuinely ON the circle (radius from center).
+    const cen = T.apply(world, c1.w / 2, c1.h / 2);
+    approx(Math.hypot(s.items.ar.to.x - cen.x, s.items.ar.to.y - cen.y), c1.w / 2, 0.05);
+  }
+});
+test("evaluateState: mutual closest between TWO rotated rims stays consistent (both on the center line)", () => {
+  // Two 100px circles 200px apart; rotation is a no-op for a circle's geometry
+  // but exercises the pivoted-world eval path for BOTH endpoints jointly. The
+  // fixpoint must land each endpoint on the facing rim (the mutual-closest
+  // solve), not drift like the pre-fix top-left-pivot eval.
+  const c1 = { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100, rotation: Math.PI / 3, name: "A" };
+  const c2 = { ...circlePlugin.defaults, x: 300, y: 0, w: 100, h: 100, rotation: -Math.PI / 4, name: "B" };
+  const state = {
+    items: {
+      c1, c2,
+      ar: {
+        ...arrowPlugin.defaults,
+        from: { x: "@c1_closest.x", y: "@c1_closest.y" },
+        to: { x: "@c2_closest.x", y: "@c2_closest.y" },
+      },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  const EPS = 0.02;
+  approx(s.items.ar.from.x, 100, EPS); // right rim of c1, facing c2
+  approx(s.items.ar.from.y, 50, EPS);
+  approx(s.items.ar.to.x, 300, EPS); // left rim of c2, facing c1
+  approx(s.items.ar.to.y, 50, EPS);
+});
+test("evaluateState: anchor ref to a rotated target does NOT introduce a cycle", () => {
+  // The anchor slot now depends on the target's rotationAnchor.{x,y} (self
+  // anchors) — which depend only on the target's base geometry — so no path
+  // returns to the arrow. Must evaluate cleanly (no false Cyclic error).
+  const tgt = { ...rectPlugin.defaults, x: 10, y: 20, w: 200, h: 100, rotation: Math.PI / 5, name: "Tgt" };
+  const state = {
+    items: {
+      tgt,
+      ar: { ...arrowPlugin.defaults, from: { x: 0, y: 0 }, to: { x: "@tgt_cm.x", y: "@tgt_cm.y" } },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  // cm (center) is the rotation pivot's fixed point = the base-frame center.
+  approx(s.items.ar.to.x, 110, 1e-6); // x + w/2
+  approx(s.items.ar.to.y, 70, 1e-6); // y + h/2
+});
+test("evaluateState: closest-rim ref to a ROUNDED + ROTATED rect lands on the visible rounded rim", () => {
+  // The user's ORIGINAL complaint: an arrow to a rounded, rotated rect must meet
+  // the rounded rim exactly (rect.js closestAnchor → closestPointOnRoundedRect,
+  // evaluated through worldTransform).
+  for (const rot of [Math.PI / 6, Math.PI / 4, Math.PI]) {
+    const rr = { ...rectPlugin.defaults, x: 100, y: 100, w: 200, h: 120, cornerRadius: 30, rotation: rot, name: "RR" };
+    const state = {
+      items: {
+        rr,
+        ar: { ...arrowPlugin.defaults, from: { x: 600, y: 400 }, to: { x: "@rr_closest.x", y: "@rr_closest.y" } },
+      },
+    };
+    const { state: s, errors } = evaluateState(state, registry);
+    assert.equal(errors.size, 0, `rot ${rot}`);
+    const world = worldTransform(rr);
+    const local = rectPlugin.closestAnchor(rr, s.items.ar.from.x, s.items.ar.from.y, world);
+    const painted = T.apply(world, local.x, local.y);
+    approx(s.items.ar.to.x, painted.x, 0.02);
+    approx(s.items.ar.to.y, painted.y, 0.02);
+  }
 });
 test("evaluateState: cycles are LOUD (errors + console + fallback, no NaN)", () => {
   const state = {

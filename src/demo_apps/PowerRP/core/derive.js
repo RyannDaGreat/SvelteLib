@@ -55,6 +55,41 @@ export function worldTransform(itemState) {
 }
 
 /**
+ * Pure function. The INVERSE of worldTransform for the default GEOMETRIC-CENTER
+ * pivot: given a target world transform (rotation θ, scale s) and a box size
+ * w×h, returns the stored {x, y} such that worldTransform({x, y, w, h,
+ * rotation: θ, scale: s}) — evaluated with the default self-center pivot —
+ * reproduces `target` exactly.
+ *
+ * WHY IT EXISTS (registry #1, rotated-resize): during a rotated resize the box
+ * is laid out against a FIXED (pinned) pivot, so the "fixed" opposite edge
+ * stays put in world (PPT semantics). But committing must keep the clean
+ * `self.anchors.center` pivot equation (so future rotations orbit the NEW
+ * center). This back-solves the x/y that makes the re-centered equation pivot
+ * paint the identical world — no numeric rotationAnchor is ever persisted, and
+ * the opposite-edge drift (24px measured) is eliminated by construction.
+ *
+ * Derivation: worldTransform maps local (0,0) → its own (.x,.y), and two
+ * similarity transforms with equal θ,s are equal iff they agree there. With the
+ * center pivot C=(x+s·w/2, y+s·h/2), worldTransform(state).x
+ *   = x + s·w/2 − s·(cosθ·w/2 − sinθ·h/2). Setting it to target.x (and .y) and
+ * solving for x (y) gives the closed forms below.
+ *
+ * @example stateXYForCenterPivotWorld({x: 100, y: 100, rotation: 0, scale: 1}, 200, 120) // {x: 100, y: 100} (rotation 0: x/y = target translation)
+ * @example // A 90° 200×120 box at x=100,y=100 has center-pivot world translation
+ * @example // (260, 60); back-solving that translation recovers x=100, y=100.
+ * @example stateXYForCenterPivotWorld({x: 260, y: 60, rotation: Math.PI / 2, scale: 1}, 200, 120) // {x: 100, y: 100}
+ */
+export function stateXYForCenterPivotWorld(target, w, h) {
+  const c = Math.cos(target.rotation), s = Math.sin(target.rotation);
+  const k = target.scale;
+  return {
+    x: target.x - (k * w) / 2 + k * ((c * w) / 2 - (s * h) / 2),
+    y: target.y - (k * h) / 2 + k * ((s * w) / 2 + (c * h) / 2),
+  };
+}
+
+/**
  * Pure function. Derives the z-sorted render tree from a folded state.
  * Sort: ascending z (default 0), ties broken by id for determinism.
  * Callers pass an EVALUATED state (core/expressions.evaluateState — the

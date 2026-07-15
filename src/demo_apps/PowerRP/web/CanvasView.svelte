@@ -12,7 +12,7 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
-  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect, worldTransform } from "../core/derive.js";
+  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { THUMB_W, worldViewRect, canSkipNode } from "../core/view.js";
@@ -756,6 +756,29 @@
     }
     guides = newGuides;
     sizeIndicators = indicators;
+
+    // ROTATED-RESIZE PIVOT PIN (registry #1, PPT opposite-handle). The box was
+    // laid out in drag.world — the transform with the pivot FIXED where it was
+    // at grab (drag.world never re-centers mid-drag). But the item keeps its
+    // `self.anchors.center` rotationAnchor equation, so BOTH the live derivation
+    // and the commit would otherwise re-center the pivot to the new box center
+    // and shift the whole box (the "fixed" opposite edge drifted 10-40px,
+    // registry-measured). Fix: back-solve x/y so the re-centered CENTER pivot
+    // reproduces the SAME world the fixed pivot painted — the opposite edge then
+    // stays put in world space and the grabbed edge tracks the cursor exactly,
+    // while the stored pivot stays the clean center equation (nothing numeric is
+    // persisted, so future rotations orbit the NEW center). Unrotated items are
+    // untouched: their pivot is irrelevant (worldTransform short-circuits at
+    // rotation 0) and edge snapping already handles them. Cmd-symmetric keeps
+    // the center fixed, so the back-solve is a coincidental no-op there — the
+    // modifier still works.
+    if (drag.rotated) {
+      const topLeftWorld = T.apply(drag.world, box[0], box[1]); // intended local(0,0) in world
+      const pinnedWorld = { x: topLeftWorld.x, y: topLeftWorld.y, rotation: drag.world.rotation, scale: drag.world.scale };
+      const solved = stateXYForCenterPivotWorld(pinnedWorld, ww, hh);
+      x = solved.x;
+      y = solved.y;
+    }
 
     app.setPreview([
       [["items", drag.itemId, "x"], x],

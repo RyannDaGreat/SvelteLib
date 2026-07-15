@@ -1,7 +1,7 @@
 /** Rectangle widget — the canonical bbox plugin. */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { closestPointOnRectBorder } from "../core/geometry.js";
+import { closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
 import * as T from "../core/transform.js";
 import { rect } from "../render_gpu/ir.js";
 
@@ -45,10 +45,21 @@ export const rectPlugin = {
       opacity: s.opacity ?? 1,
     })];
   },
-  anchors: standardBBoxAnchors,
+  // Anchors sit on the VISIBLE rim: for a rounded rect the four corner anchors
+  // slide onto their arcs (the 45° rim point), so arrows meet the painted
+  // rounded corner instead of the empty square corner (Round 12 bug). Edge
+  // midpoints/center are on straight edges/interior — unchanged by rounding.
+  // r=0 → byte-identical to standardBBoxAnchors.
+  anchors(state) {
+    const r = state.cornerRadius ?? 0;
+    return standardBBoxAnchors(state).map((a) =>
+      ({ id: a.id, ...roundedRectAnchorPoint(state.w ?? 0, state.h ?? 0, r, a.id, a.x, a.y) }));
+  },
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
-    return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
+    // Closest point on the ROUNDED rim (arcs at the corners) — not the square
+    // bbox border — so a closest-rim arrow lands on the visible rounded edge.
+    return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, state.cornerRadius ?? 0, local.x, local.y);
   },
   commands: [
     { id: "add-rect", title: "Add Rectangle", icon: "mdi:rectangle-outline", run: (app) => app.addItem(rectPlugin.defaults) },

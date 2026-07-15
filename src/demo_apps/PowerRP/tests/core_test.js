@@ -158,6 +158,21 @@ test("aboutPivot: rotation 0 is identity; pivot is the fixed point under rotatio
   approx(tl.x, 290);
   approx(tl.y, 50);
 });
+test("scale:0 degenerate transforms stay FINITE (registry #3 — fade-by-shrink)", () => {
+  // aboutPivot and invert both divide by scale; a rotated item scaled through 0
+  // (a plausible authoring value) produced NaN → requireFinite threw → the paint
+  // loop halted. The degenerate result must be finite: the shape collapses to a
+  // single point AT the pivot, and hit-tests (via invert) then miss cleanly.
+  const w = T.aboutPivot({ x: 100, y: 100, rotation: Math.PI / 4, scale: 0 }, 220, 170);
+  assert.deepEqual(w, { x: 220, y: 170, rotation: Math.PI / 4, scale: 0 }); // collapsed to the pivot
+  assert.ok(Number.isFinite(w.x) && Number.isFinite(w.y));
+  const inv = T.invert(w);
+  assert.ok(Number.isFinite(inv.x) && Number.isFinite(inv.y) && inv.scale === 0);
+  // apply(invert) maps every world point to a single finite point (zero-area
+  // shape ⇒ nothing to hit) — never NaN.
+  const p = T.apply(inv, 999, -999);
+  assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+});
 
 // ── geometry ─────────────────────────────────────────────────────────────────
 test("clipLineToRect", () => {

@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { signedArea, pointInPolygon, distToSegment, triangulated, fancyArrowOutline } from "../core/outline.js";
+import { signedArea, pointInPolygon, distToSegment, triangulated, fancyArrowOutline, closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -142,6 +142,53 @@ test("fancyArrowOutline: zero-width degenerates triangulate cleanly (duplicate v
   // All widths 0: a pure line — nothing to fill, no throw.
   const line = fancyArrowOutline({ ...REF, tipWidth: 0, startWidth: 0, endWidth: 0 });
   assert.deepEqual(triangulated(line), []);
+});
+
+// ── Rounded-rect rim (Round 12 bug: anchors on the rounded rim, not the
+//    square bbox corner) ───────────────────────────────────────────────────────
+const ON_RIM_R = 30, RW = 200, RH = 120;
+/** Distance of a point from the rounded-rect rim (arcs at the corners). */
+function distFromRoundedRim(w, h, r, px, py) {
+  const c = closestPointOnRoundedRect(w, h, r, px, py);
+  return Math.hypot(px - c.x, py - c.y);
+}
+test("closestPointOnRoundedRect: corner query lands on the 45° arc rim, not the square corner", () => {
+  const c = closestPointOnRoundedRect(RW, RH, ON_RIM_R, RW, 0); // square tr corner
+  const cx = RW - ON_RIM_R, cy = ON_RIM_R; // tr arc center
+  approx(c.x, cx + ON_RIM_R / Math.SQRT2);
+  approx(c.y, cy - ON_RIM_R / Math.SQRT2);
+  // It really is ON the arc (radius r from the arc center).
+  approx(Math.hypot(c.x - cx, c.y - cy), ON_RIM_R);
+});
+test("closestPointOnRoundedRect: edge midpoints and external points", () => {
+  assert.deepEqual(closestPointOnRoundedRect(RW, RH, ON_RIM_R, 100, 0), { x: 100, y: 0 }); // top edge
+  assert.deepEqual(closestPointOnRoundedRect(RW, RH, ON_RIM_R, 0, 60), { x: 0, y: 60 }); // left edge
+  // External point past the tr corner → on the tr arc (radius r from center).
+  const ext = closestPointOnRoundedRect(RW, RH, ON_RIM_R, 400, -100);
+  approx(Math.hypot(ext.x - (RW - ON_RIM_R), ext.y - ON_RIM_R), ON_RIM_R);
+});
+test("closestPointOnRoundedRect: r=0 equals the square border; r clamps to min/2", () => {
+  assert.deepEqual(closestPointOnRoundedRect(RW, RH, 0, 250, 60), { x: RW, y: 60 });
+  assert.deepEqual(closestPointOnRoundedRect(10, 10, 0, 25, 5), { x: 10, y: 5 }); // matches closestPointOnRectBorder
+  // Huge radius clamps to a stadium/circle (min(w,h)/2 = 5): corner query on the arc.
+  const c = closestPointOnRoundedRect(10, 10, 999, 10, 0);
+  approx(Math.hypot(c.x - 5, c.y - 5), 5); // radius 5 from center (5,5)
+});
+test("closestPointOnRoundedRect: INTERIOR point projects to the nearest straight edge", () => {
+  // (100,60) is the rect center-ish; nearest edge is top (y=0) at 60 vs sides.
+  const c = closestPointOnRoundedRect(RW, RH, ON_RIM_R, 100, 50);
+  assert.deepEqual(c, { x: 100, y: 0 }); // 50 to top edge (nearest), stays on straight edge
+});
+test("roundedRectAnchorPoint: corners slide to the rim, edges/center stay, r=0 is square", () => {
+  // Corner tr → arc rim; the square corner is 12.43px (r·(√2−1)) away.
+  const tr = roundedRectAnchorPoint(RW, RH, ON_RIM_R, "tr", RW, 0);
+  approx(distFromRoundedRim(RW, RH, ON_RIM_R, tr.x, tr.y), 0); // ON the rim
+  approx(Math.hypot(tr.x - RW, tr.y - 0), ON_RIM_R * (Math.SQRT2 - 1)); // pulled in
+  // Edge midpoint unchanged.
+  assert.deepEqual(roundedRectAnchorPoint(RW, RH, ON_RIM_R, "tm", 100, 0), { x: 100, y: 0 });
+  assert.deepEqual(roundedRectAnchorPoint(RW, RH, ON_RIM_R, "cm", 100, 60), { x: 100, y: 60 });
+  // r=0 → the square corner verbatim.
+  assert.deepEqual(roundedRectAnchorPoint(RW, RH, 0, "tr", RW, 0), { x: RW, y: 0 });
 });
 
 console.log(`\n${passed} outline tests passed`);

@@ -59,6 +59,7 @@
 
 import { isTree, copied, getPath, setPath, leaves } from "./deltas.js";
 import * as T from "./transform.js";
+import { worldTransform } from "./derive.js";
 import { reportOnce } from "./report.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
@@ -635,10 +636,20 @@ function computeEvaluatedState(state, registry) {
     if (d.kind === "prop") return getPath(out.items[d.itemId], d.path);
     const item = out.items[d.itemId];
     const plugin = registry.get(item.type);
-    // A self anchor used as a rotation pivot must be a FIXED point, so it maps
-    // through the ROTATION-ZEROED base frame (self.anchors.center of a rotated
-    // box is its geometric center, not a center that spins with the box).
-    const world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : T.fromState(item);
+    // WHICH FRAME an anchor maps through:
+    //   selfBase (a self.anchors.<id> used as the rotation pivot): the
+    //     ROTATION-ZEROED base frame — the pivot must be a FIXED point, not one
+    //     that spins with the object (self.anchors.center of a rotated box is
+    //     its geometric center).
+    //   otherwise (a CROSS-ITEM ref like box.anchors.tr, or a closest-rim ref):
+    //     the item's PAINTED transform = worldTransform(item), which pivots the
+    //     rotation about the item's rotationAnchor exactly as derive.js paints
+    //     it. Using T.fromState here (top-left pivot) instead made arrows attach
+    //     49-233px off a rotated target — where the anchor WOULD be if the box
+    //     rotated about its top-left (registry #2). worldTransform reads the
+    //     item's {x,y,w,h,rotation,scale,rotationAnchor}; the dep-collection
+    //     block adds those slots so they are evaluated first.
+    const world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : worldTransform(item);
     if (d.anchorId === "closest") {
       const owner = getPath(out, slot.path.slice(0, 2));
       const ownerPlugin = slot.path[0] === "items" ? registry.get(owner.type) : null;

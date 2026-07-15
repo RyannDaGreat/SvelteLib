@@ -50,9 +50,20 @@ export function compose(outer, inner) {
 /**
  * Pure function. Inverse transform: apply(invert(t), apply(t, p)) === p.
  *
+ * DEGENERATE scale === 0 (a shape shrunk through 0 — a plausible authoring
+ * value, e.g. fade-by-shrink): a rank-0 transform collapses every point to
+ * (t.x, t.y), so it has no true inverse. Rather than divide by 0 (→ Infinity →
+ * NaN once composed, which halts the paint loop when requireFinite throws), we
+ * return a FINITE degenerate inverse whose own scale is 0: apply(invert(t), ·)
+ * then maps everything to a single point. This keeps hit-tests well-defined and
+ * MISSING (a zero-area shape has nothing to hit) instead of erroring — the
+ * documented choice.
+ *
  * @example invert({x: 10, y: 0, rotation: 0, scale: 2}) // {x: -5, y: 0, rotation: 0, scale: 0.5}
+ * @example invert({x: 10, y: 5, rotation: 0, scale: 0}) // {x: 0, y: 0, rotation: 0, scale: 0} (degenerate: finite, not NaN)
  */
 export function invert(t) {
+  if (t.scale === 0) return { x: 0, y: 0, rotation: -t.rotation, scale: 0 };
   const inv = { x: 0, y: 0, rotation: -t.rotation, scale: 1 / t.scale };
   const p = apply(inv, -t.x, -t.y);
   return { x: p.x, y: p.y, rotation: inv.rotation, scale: inv.scale };
@@ -95,10 +106,20 @@ export function fromState(state) {
  * translation is chosen so apply(out, px, py) === (ax, ay):
  *   out.x = ax − s(cosθ·px − sinθ·py),  out.y = ay − s(sinθ·px + cosθ·py).
  *
+ * DEGENERATE scale === 0: a rank-0 transform collapses the whole shape to the
+ * single point (t.x, t.y), so "pivot about (ax,ay)" has no size to rotate. The
+ * finite degenerate choice is to place that collapsed point AT the pivot —
+ * out = {x: ax, y: ay, rotation, scale: 0} — which is the s→0 limit of the
+ * formula (the s·(…) terms vanish). Without this guard px/py divide by 0 and
+ * the whole world transform becomes NaN, halting the paint loop (requireFinite
+ * throws) the instant a rotated item is scaled through 0.
+ *
  * @example aboutPivot({x: 100, y: 100, rotation: 0, scale: 1}, 220, 170) // {x: 100, y: 100, rotation: 0, scale: 1}
  * @example aboutPivot({x: 100, y: 100, rotation: Math.PI / 2, scale: 1}, 220, 170) // {x: 290, y: 50, rotation: 1.5707963267948966, scale: 1}
+ * @example aboutPivot({x: 100, y: 100, rotation: Math.PI / 4, scale: 0}, 220, 170) // {x: 220, y: 170, rotation: 0.7853981633974483, scale: 0} (degenerate: collapses to the pivot, finite)
  */
 export function aboutPivot(t, ax, ay) {
+  if (t.scale === 0) return { x: ax, y: ay, rotation: t.rotation, scale: 0 };
   const c = Math.cos(t.rotation), s = Math.sin(t.rotation);
   const px = (ax - t.x) / t.scale, py = (ay - t.y) / t.scale;
   return {

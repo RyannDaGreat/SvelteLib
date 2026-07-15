@@ -93,6 +93,81 @@ export function distToSegment(px, py, a, b) {
 }
 
 /**
+ * Pure function. Closest point on the RIM of an axis-aligned ROUNDED rectangle
+ * (top-left at 0,0, size w×h, uniform corner radius r) to a query point. The
+ * rim is four straight edges plus four quarter-circle arcs — the SAME geometry
+ * the renderer paints (ir.js cornerRadius) and the substrate the dynamic-anchor
+ * rim solvers share. r is clamped to [0, min(w,h)/2] (a mathematical bound —
+ * the arcs can't overlap), matching ir.js's cornerRadius clamp.
+ *
+ * HOW IT WORKS: the four arc centers span the inner box [r, w−r]×[r, h−r].
+ * Clamping the query to that box gives (ax, ay) — the nearest arc center on a
+ * corner, or the foot of the perpendicular onto a straight edge on a side. For
+ * a query OUTSIDE the rim the boundary point is (ax,ay) + r·unit(query−(ax,ay)):
+ * on a corner that traces the arc, on a side that lands on the straight edge
+ * (the offset is purely axis-aligned). A query strictly INSIDE (r=0 or when the
+ * clamp doesn't move it) projects to the nearest of the four straight edges,
+ * exactly like closestPointOnRectBorder — a rounded rect's nearest boundary
+ * from inside is always a straight edge when r ≤ min(w,h)/2.
+ *
+ * Args:
+ *   w, h (number): rect size
+ *   r (number): corner radius (clamped to [0, min(w,h)/2])
+ *   px, py (number): query point (rect-local coords)
+ *
+ * Returns:
+ *   {x, y}: closest rim point
+ *
+ * @example closestPointOnRoundedRect(200, 120, 30, 200, 0) // {x: 191.21320343559643, y: 8.786796564403573} (tr corner → the 45° arc rim point, not the square corner)
+ * @example closestPointOnRoundedRect(200, 120, 30, 100, 0) // {x: 100, y: 0} (top edge midpoint — straight, unaffected)
+ * @example closestPointOnRoundedRect(200, 120, 30, 400, -100) // {x: 196.11688516160402, y: 15.238282299962943} (external point → tr arc)
+ * @example closestPointOnRoundedRect(200, 120, 0, 250, 60) // {x: 200, y: 60} (r=0 collapses to the square border)
+ */
+export function closestPointOnRoundedRect(w, h, r, px, py) {
+  const rad = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+  const ax = Math.max(rad, Math.min(px, w - rad));
+  const ay = Math.max(rad, Math.min(py, h - rad));
+  const dx = px - ax, dy = py - ay;
+  const d = Math.hypot(dx, dy);
+  if (d > 0) return { x: ax + (rad * dx) / d, y: ay + (rad * dy) / d };
+  // Query is on/inside the arc-center box: project to the nearest STRAIGHT edge.
+  const dl = px, dr = w - px, dt = py, db = h - py;
+  const m = Math.min(dl, dr, dt, db);
+  if (m === dl) return { x: 0, y: py };
+  if (m === dr) return { x: w, y: py };
+  if (m === dt) return { x: px, y: 0 };
+  return { x: px, y: h };
+}
+
+/**
+ * Pure function. The rim point for a STANDARD bbox anchor id on a ROUNDED rect
+ * (top-left 0,0, size w×h, radius r). Edge-midpoint and center anchors are on
+ * straight edges / interior and DON'T move with rounding; the four CORNER
+ * anchors (tl/tr/bl/br) slide onto the arc — the 45° outermost rim point of
+ * each rounded corner (computed as the closest rim point to the SQUARE corner).
+ * When r ≤ 0 every anchor is its square-bbox position (byte-identical to
+ * standardBBoxAnchors), so unrounded rects are unaffected.
+ *
+ * Args:
+ *   w, h (number): rect size
+ *   r (number): corner radius
+ *   id (string): one of tl tm tr ml cm mr bl bm br
+ *   sx, sy (number): the square-bbox anchor position for `id`
+ *
+ * Returns:
+ *   {x, y}: the anchor point ON the rounded rim
+ *
+ * @example roundedRectAnchorPoint(200, 120, 30, "tr", 200, 0) // {x: 191.21320343559643, y: 8.786796564403573}
+ * @example roundedRectAnchorPoint(200, 120, 30, "tm", 100, 0) // {x: 100, y: 0} (edge midpoint — unchanged)
+ * @example roundedRectAnchorPoint(200, 120, 0, "tr", 200, 0) // {x: 200, y: 0} (no rounding — square corner)
+ */
+export function roundedRectAnchorPoint(w, h, r, id, sx, sy) {
+  const CORNERS = new Set(["tl", "tr", "bl", "br"]);
+  if (r <= 0 || !CORNERS.has(id)) return { x: sx, y: sy };
+  return closestPointOnRoundedRect(w, h, r, sx, sy);
+}
+
+/**
  * Pure function. Ear-clipping triangulation of a SIMPLE closed polygon
  * (concave allowed, either winding) into triangles — the bridge from
  * arbitrary outlines to the IR's CONVEX-only polygon op (fan-triangulated
