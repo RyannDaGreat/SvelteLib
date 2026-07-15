@@ -1001,6 +1001,40 @@ audio.ae-preview-media {
   opacity: 1;
 }
 
+/* (?) property-help icon: same LEFT-side, HOVER-ONLY idiom as .copy-path-btn
+   above (manifest "property help tooltips": the (?) uses EXACTLY the copy-path
+   button's idiom and alignment). Collapsed to zero width at rest so it never
+   reserves space in the fixed label column or shifts the value edges; revealed
+   on .row:hover alongside copy-path. Hovering it shows the property's help text
+   through the Tooltip component (the MEANING; the label's tooltip shows the
+   PATH). Its 15px reveal = the 13px icon + breathing room, paralleling
+   copy-path's 14px = 12px + room. Rows without `help` never render the button,
+   so alignment across mixed help/no-help rows is identical (the grid column is
+   fixed; nothing here changes column geometry). */
+.inspector .help-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 0;
+  height: var(--a-control-h);
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  cursor: help;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+.inspector .help-btn:hover {
+  color: var(--fg);
+}
+.inspector .row:hover .help-btn {
+  width: 15px;
+  opacity: 1;
+}
+
 /* Path tooltip content: one line per form (self.<path>, then the absolute
    <slug>.<path> when it differs) — monospace, like every other equation
    surface (--a-mono, matching .numfield .eq-input). */

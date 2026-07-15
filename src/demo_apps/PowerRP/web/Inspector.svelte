@@ -368,31 +368,56 @@
        no equations, no diamonds. -->
   {@const itemMode = keyframes && !disabled}
   {@const pathText = pathTooltipText(pathState ?? state, itemId, row.key)}
+  {@const helpText = row.help ?? null}
   <div class="row" class:row-disabled={disabled}>
     <!-- Row-label hover chrome: PATH tooltip on the LABEL (never a label echo
-         — banned) + a copy-path icon, LEFT of the label (round-11 hover-only
-         left-side field-chrome precedent — .numfield .eq-open mirrors the
-         same idiom on the value side: zero-width/opacity at rest, revealed by
-         .row:hover). No item in scope (transition rows) → no path to show or
-         copy; the label keeps a plain (non-echo-banned-because-there's-
-         nothing-else) hover affordance only via its own title-less span. -->
-    {#if pathText != null}
+         — banned) + two LEFT-side hover-only icons (round-11 field-chrome
+         precedent — .numfield .eq-open mirrors the same idiom on the value
+         side: zero-width/opacity at rest, revealed by .row:hover, so revealing
+         them never nudges the fixed label column or the value edges):
+           • copy-path — copies the row's canonical equation path (needs an
+             owning item; absent on transition rows).
+           • (?) help  — shows the property's descriptive help via Tooltip
+             (immediate, follows the cursor) when the row def carries `help`
+             (manifest "property help tooltips"; text lives on the shared
+             property registry, inherited by every widget). Its tooltip is the
+             MEANING; the label's is the PATH — they coexist without fighting
+             (different anchors: (?) button vs. label span).
+         The chrome renders when EITHER affordance applies; each button gates
+         on its own condition, so a row with help-but-no-path (a transition
+         row) still gets the (?), and a row with path-but-no-help still gets
+         copy. A row with neither falls back to a plain label span (no echo
+         tooltip — banned). -->
+    {#if pathText != null || helpText != null}
       <span class="row-label-chrome">
-        <Tooltip text="Copy equation path">
-          <button
-            class="copy-path-btn"
-            aria-label={`Copy equation path for ${row.label}`}
-            onclick={() => copyPath(pathState ?? state, itemId, row.key)}
-          >
-            <iconify-icon icon="mdi:content-copy" width="12" height="12"></iconify-icon>
-          </button>
-        </Tooltip>
-        <Tooltip placement="top">
-          {#snippet tip()}
-            {#each pathText.split("\n") as line}<div class="path-tip-line">{line}</div>{/each}
-          {/snippet}
+        {#if pathText != null}
+          <Tooltip text="Copy equation path">
+            <button
+              class="copy-path-btn"
+              aria-label={`Copy equation path for ${row.label}`}
+              onclick={() => copyPath(pathState ?? state, itemId, row.key)}
+            >
+              <iconify-icon icon="mdi:content-copy" width="12" height="12"></iconify-icon>
+            </button>
+          </Tooltip>
+        {/if}
+        {#if helpText != null}
+          <Tooltip text={helpText}>
+            <button class="help-btn" aria-label={`Help: ${row.label}`}>
+              <iconify-icon icon="mdi:help-circle-outline" width="13" height="13"></iconify-icon>
+            </button>
+          </Tooltip>
+        {/if}
+        {#if pathText != null}
+          <Tooltip placement="top">
+            {#snippet tip()}
+              {#each pathText.split("\n") as line}<div class="path-tip-line">{line}</div>{/each}
+            {/snippet}
+            <span class="label">{row.label}</span>
+          </Tooltip>
+        {:else}
           <span class="label">{row.label}</span>
-        </Tooltip>
+        {/if}
       </span>
     {:else}
       <span class="label">{row.label}</span>
@@ -691,7 +716,12 @@
           { key: "active", label: "Visible", kind: "boolean",
             onIcon: "mdi:eye", offIcon: "mdi:eye-off",
             onText: "Visible on this slide — click to hide (keyframes active: false)",
-            offText: "Hidden on this slide — click to show (keyframes active: true)" },
+            offText: "Hidden on this slide — click to show (keyframes active: true)",
+            // `help` proves the (?) affordance on a UNIVERSAL boolean row (the
+            // Visible row is defined inline, not from the shared registry). Once
+            // `active` moves into core/properties.js this inline help is
+            // superseded by the registry's (row.help flows through unchanged).
+            help: "Whether this item shows on THIS slide. It is a keyframeable boolean like any other property — hiding it keyframes active: false here, so the item can appear on some slides and not others." },
           sel.state,
           { keyframes: true, disabled: false, onpreview: previewField, oncommit: commitField, itemId: sel.itemId, pathState: app.rawState() }
         )}
