@@ -36,6 +36,8 @@ export const SVG_SCENE_NAMES = [
   "alpha-translucency",     // per-item + per-channel alpha
   "blur-under-content",     // HYBRID RULE: raster <image> region + vector above
   "magnifier-sharp-rim",    // VECTOR lens: <clipPath> circle + <g> magnify + rim
+  "magnifier-box-rounded-bordered", // SHAPED LENS: rounded-rect <clipPath> + stroked border (box branch)
+  "magnifier-circle-regression",    // shaped-lens circle byte-stability through the PLUGIN (migrated stroke props)
   "blur-plus-lens",         // raster base + vector lens over it (stacked effects)
   "image-basic",            // <image> data-URI quads (unrotated/rotated/alpha)
   "image-under-magnifier",  // image replays inside the vector lens
@@ -67,6 +69,8 @@ export const SVG_PSNR_FLOORS = {
   "alpha-translucency": 45,     // measured 50.43 — group/channel alpha matches near-exactly
   "blur-under-content": 25,     // measured 30.84 — hybrid raster base + vector above
   "magnifier-sharp-rim": 26,    // measured 31.22 — vector lens clip+magnify replay
+  "magnifier-box-rounded-bordered": 28, // measured 33.18 (2026-07-15 shaped-lens run) — rrect clip + border + magnify; clip-edge-AA class
+  "magnifier-circle-regression": 25,    // measured 29.63 (2026-07-15 shaped-lens run) — in magnifier-sharp-rim's class (31.22): the byte-stability guard through the plugin path
   "blur-plus-lens": 21,         // measured 26.44 — raster base + vector lens over it
   "image-basic": 45,            // measured 51.13 — <image> data-URI quads match tightly
   "image-under-magnifier": 46,  // measured 51.78 — image replays inside the vector lens

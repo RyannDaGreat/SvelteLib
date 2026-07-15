@@ -19,8 +19,9 @@ import { cameraPlugin } from "./camera.js";
 import { cropboxPlugin } from "./cropbox.js";
 import { donutPlugin } from "./donut.js";
 import { codeblockPlugin } from "./codeblock.js";
+import { anchorPointPlugin } from "./anchor_point.js";
 
-export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, codeblockPlugin];
+export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, codeblockPlugin, anchorPointPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

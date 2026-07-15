@@ -10,13 +10,12 @@ import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
-  withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled,
-  withLegacyKeysRenamed,
+  repairedDocument, printRepairReports, itemFallbackName,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
-import { withDurationMigrated, resolveTransition, retypedTransition } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
-import { evaluateState, withBindingsMigrated, withVariableRenamed, anchorRefName } from "../core/expressions.js";
+import { resolveTransition, retypedTransition } from "../core/transitions.js";
+import { evaluateState, withVariableRenamed, anchorRefName } from "../core/expressions.js";
 import { rotatedBBoxAABB, fitRectView } from "../core/view.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
@@ -28,10 +27,27 @@ import { createUndo } from "../core/undo.js";
 import { registerAll } from "../plugins/index.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
+import { browserSetting } from "./settings.js";
 
 const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
 const BAND_MODE_KEY = "powerrp.bandMode";
+
+// THE settings repo (manifest "SETTINGS TAXONOMY"): every boolean BROWSER
+// setting declared ONCE here (key + default), consumed by a $state field
+// (`.initial`) + a toggle method (`.persist`) below. Adding a setting = one
+// line here + a field + a toggle, never four scattered edits (cruft audit).
+const SETTINGS = {
+  minimap: browserSetting("powerrp.minimap", true),
+  panelNames: browserSetting("powerrp.panelNames", false),
+  retina: browserSetting("powerrp.retina", true),
+  snap: browserSetting("powerrp.snap", true),
+  snapSize: browserSetting("powerrp.snapSize", true),
+  grid: browserSetting("powerrp.grid", false),
+  ruler: browserSetting("powerrp.ruler", false),
+  showGhosts: browserSetting("powerrp.showGhosts", false),
+  fps: browserSetting("powerrp.fps", false),
+};
 
 /** Theme catalog — viewer preference (localStorage), NOT document state.
  * Each id matches a `:root[data-theme="…"]` block in app.css. */
@@ -103,18 +119,20 @@ export class PowerRPApp {
   /** Preview overlay delta shown during drags — NOT committed/undoable. */
   previewDelta = $state(null);
   theme = $state("graphite");
-  minimapVisible = $state(localStorage.getItem("powerrp.minimap") !== "off");
-  // BROWSER setting (viewer-local): optionally show each panel's canonical name
-  // (Slide Navigator / Property Panel / Keyframe Panel) as a title bar at its
-  // top. OFF by default (panels are not first-class — manifest Round 7).
-  panelNames = $state(localStorage.getItem("powerrp.panelNames") === "on");
-  // BROWSER setting (viewer-local, travels with the browser not the file):
-  // render raster surfaces at devicePixelRatio. Default ON (manifest).
-  retina = $state(localStorage.getItem("powerrp.retina") !== "off");
-  // BROWSER settings (viewer-local, default ON): master snap toggle (gates ALL
-  // snapping — move AND resize) and the snap-size / matching-dimension toggle.
-  snapEnabled = $state(localStorage.getItem("powerrp.snap") !== "off");
-  snapSizeEnabled = $state(localStorage.getItem("powerrp.snapSize") !== "off");
+  // BROWSER settings below: each = a SETTINGS descriptor's .initial (the
+  // localStorage-or-default value) and a toggle*() using .persist. See the
+  // SETTINGS repo above.
+  minimapVisible = $state(SETTINGS.minimap.initial);
+  // Optionally show each panel's canonical name (Slide Navigator / Property
+  // Panel / Keyframe Panel) as a title bar. OFF by default (panels are not
+  // first-class — manifest Round 7).
+  panelNames = $state(SETTINGS.panelNames.initial);
+  // Render raster surfaces at devicePixelRatio. Default ON (manifest).
+  retina = $state(SETTINGS.retina.initial);
+  // Master snap toggle (gates ALL snapping — move AND resize) and the
+  // snap-size / matching-dimension toggle. Both default ON.
+  snapEnabled = $state(SETTINGS.snap.initial);
+  snapSizeEnabled = $state(SETTINGS.snapSize.initial);
   // BROWSER setting (viewer-local): the DEFAULT rubber-band mode — what a
   // "regular" (unspecified-mode) band select uses, AND what an empty-space
   // drag uses directly (manifest Round 12B "DEFAULT EMPTY-SPACE DRAG = BOX
@@ -144,20 +162,18 @@ export class PowerRPApp {
   //     the ENTIRE generalization surface: any future plugin opts in by
   //     arming with itself, no CanvasView changes needed.
   crosshair = $state(null);
-  // BROWSER settings (viewer-local): editor-only Blender-style background grid
-  // and top ruler strip. Both are "options" defaulting OFF (manifest: Grid +
-  // Ruler). Persisted per-browser like the other viewer preferences above.
-  gridEnabled = $state(localStorage.getItem("powerrp.grid") === "on");
-  rulerEnabled = $state(localStorage.getItem("powerrp.ruler") === "on");
-  // BROWSER setting (viewer-local, default OFF — manifest ARCHITECTURE PLAN #2
-  // GHOST capability): shows/hides GHOST outlines (empty text, groups) on the
-  // CanvasView SVG overlay. Crop-box ghost outlines are NOT gated by this —
-  // they show ALWAYS (core/derive.isGhostNode + the "always" rule: a crop box
-  // is unclickable otherwise). Persisted like grid/ruler.
-  showGhosts = $state(localStorage.getItem("powerrp.showGhosts") === "on");
-  // BROWSER setting (viewer-local, default OFF): the bottom-left FPS counter
-  // (shows in the editor AND present mode — user spec, round 11).
-  fpsVisible = $state(localStorage.getItem("powerrp.fps") === "on");
+  // Editor-only Blender-style background grid and top ruler strip. Both are
+  // "options" defaulting OFF (manifest: Grid + Ruler).
+  gridEnabled = $state(SETTINGS.grid.initial);
+  rulerEnabled = $state(SETTINGS.ruler.initial);
+  // Default OFF (manifest ARCHITECTURE PLAN #2 GHOST capability): shows/hides
+  // GHOST outlines (empty text, groups) on the CanvasView SVG overlay. Crop-box
+  // ghost outlines are NOT gated by this — they show ALWAYS (core/derive.
+  // isGhostNode + the "always" rule: a crop box is unclickable otherwise).
+  showGhosts = $state(SETTINGS.showGhosts.initial);
+  // Default OFF: the bottom-left FPS counter (shows in the editor AND present
+  // mode — user spec, round 11).
+  fpsVisible = $state(SETTINGS.fps.initial);
   // Count of REAL rendered frames (editor viewport + presenter paints bump
   // it). Deliberately NOT $state — it changes at up to display rate and its
   // only consumer (FpsCounter) polls it from its own rAF loop; reactive
@@ -172,49 +188,43 @@ export class PowerRPApp {
   // scope note) and the HintBar picks up the swap reactively.
   shortcuts = $state(null);
 
+  // Toggles: flip the reactive field, persisting through the SETTINGS repo's
+  // .persist (writes "on"/"off"). One line each — the read/write logic and the
+  // localStorage key live in the descriptor.
   toggleMinimap() {
-    this.minimapVisible = !this.minimapVisible;
-    localStorage.setItem("powerrp.minimap", this.minimapVisible ? "on" : "off");
+    this.minimapVisible = SETTINGS.minimap.persist(!this.minimapVisible);
   }
 
   toggleFps() {
-    this.fpsVisible = !this.fpsVisible;
-    localStorage.setItem("powerrp.fps", this.fpsVisible ? "on" : "off");
+    this.fpsVisible = SETTINGS.fps.persist(!this.fpsVisible);
   }
 
   toggleRetina() {
-    this.retina = !this.retina;
-    localStorage.setItem("powerrp.retina", this.retina ? "on" : "off");
+    this.retina = SETTINGS.retina.persist(!this.retina);
   }
 
   togglePanelNames() {
-    this.panelNames = !this.panelNames;
-    localStorage.setItem("powerrp.panelNames", this.panelNames ? "on" : "off");
+    this.panelNames = SETTINGS.panelNames.persist(!this.panelNames);
   }
 
   toggleSnap() {
-    this.snapEnabled = !this.snapEnabled;
-    localStorage.setItem("powerrp.snap", this.snapEnabled ? "on" : "off");
+    this.snapEnabled = SETTINGS.snap.persist(!this.snapEnabled);
   }
 
   toggleSnapSize() {
-    this.snapSizeEnabled = !this.snapSizeEnabled;
-    localStorage.setItem("powerrp.snapSize", this.snapSizeEnabled ? "on" : "off");
+    this.snapSizeEnabled = SETTINGS.snapSize.persist(!this.snapSizeEnabled);
   }
 
   toggleGrid() {
-    this.gridEnabled = !this.gridEnabled;
-    localStorage.setItem("powerrp.grid", this.gridEnabled ? "on" : "off");
+    this.gridEnabled = SETTINGS.grid.persist(!this.gridEnabled);
   }
 
   toggleRuler() {
-    this.rulerEnabled = !this.rulerEnabled;
-    localStorage.setItem("powerrp.ruler", this.rulerEnabled ? "on" : "off");
+    this.rulerEnabled = SETTINGS.ruler.persist(!this.rulerEnabled);
   }
 
   toggleGhosts() {
-    this.showGhosts = !this.showGhosts;
-    localStorage.setItem("powerrp.showGhosts", this.showGhosts ? "on" : "off");
+    this.showGhosts = SETTINGS.showGhosts.persist(!this.showGhosts);
   }
 
   /** Query. The effective devicePixelRatio for all raster rendering. */
@@ -286,6 +296,13 @@ export class PowerRPApp {
   /** RAW stored value at a path within an item (equation string or number). */
   storedItemValue(itemId, path) {
     return getPath(this.rawState().items?.[itemId] ?? {}, path);
+  }
+
+  /** RAW stored value at a FULL state path (e.g. ["items", id, "x"] or
+   * ["vars", name]) — the KeyframeControls upsert reads this to copy the
+   * current value into a new keyframe (equations stay equations). */
+  storedValueAtPath(path) {
+    return getPath(this.rawState(), path);
   }
 
   /** The referencable display name of an anchor ("circle_tm") — what the
@@ -504,12 +521,13 @@ export class PowerRPApp {
     localStorage.setItem(BAND_MODE_KEY, mode);
   }
 
-  /** Display name for an item: its `name` state, else "<Type> (id-prefix)". */
+  /** Display name for an item: its `name` state, else the shared fallback
+   * "<Type> (id-prefix)" (itemFallbackName — one home). */
   displayName(itemId) {
     const s = this.state().items?.[itemId];
     if (!s) return itemId;
     if (s.name) return s.name;
-    return `${this.registry.get(s.type).title} (${itemId.slice(0, 4)})`;
+    return itemFallbackName(this.registry.get(s.type).title, itemId);
   }
 
   // ── Theme (viewer preference — not document state, not undoable) ──────────
@@ -914,46 +932,19 @@ export class PowerRPApp {
   }
 
   /**
-   * Command (reports). Drops orphaned items (typeless / unknown type) and
-   * console.errors EVERY drop — a bad item must never brick the render loop,
-   * and silent repairs are forbidden. Re-ensures THE camera afterward (the
-   * camera itself can be orphaned by deleting its creation slide).
+   * Command (reports). The ONE load-boundary repair: orchestrated by
+   * core/document.js's repairedDocument (orphans dropped → legacy renames →
+   * meta.fps stripped → defaults filled → duration→transition → camera ensured
+   * → bindings migrated, order-critical). This is a THIN wrapper — it runs the
+   * pure pipeline and prints its report (silent repairs are forbidden; the CLI
+   * hook in web/main.js consumes the SAME repairedDocument so the two can't
+   * drift, which the cruft audit caught them doing). Bindings migration is now
+   * INSIDE the pipeline — callers no longer wrap with withBindingsMigrated.
    */
   repaired(doc) {
-    const known = new Set(this.registry.all().map((p) => p.type));
-    const { doc: dropDoc, dropped } = withOrphanedItemsDropped(doc, known);
-    for (const { id, reason } of dropped)
-      console.error(`PowerRP repair: dropped item "${id}" — ${reason}`);
-    // Legacy key renames MUST run BEFORE the defaults fill (regression-tested:
-    // fill-first writes the new key's default and the rename then drops the
-    // user's legacy value as stale — data loss). Values move verbatim across
-    // every slide: numbers, equations, and null delete-sentinels alike.
-    const { doc: renamedDoc, renamed } = withLegacyKeysRenamed(dropDoc, this.registry);
-    for (const r of renamed)
-      console.error(`PowerRP repair: item "${r.id}" slide ${r.slideIndex}: legacy "${r.from}" → "${r.to}"${r.stale ? " (stale copy dropped)" : ""}`);
-    // Typed-but-partial items (e.g. a rect that never got a w anywhere) fold
-    // into states the strict IR builders reject — fill from plugin defaults.
-    let { doc: out, filled } = withMissingDefaultsFilled(renamedDoc, this.registry);
-    for (const { id, missing } of filled)
-      console.error(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
-    // Frame caps no longer exist (round 11: "No more optional caps, just keep
-    // the meter and no cap") — meta.fps is dead; strip it from legacy docs.
-    if ("fps" in out.meta) {
-      const meta = { ...out.meta };
-      delete meta.fps;
-      out = { ...out, meta };
-      console.error("PowerRP repair: removed legacy meta.fps — presentations are always uncapped");
-    }
-    // TRANSITIONS (Round 12): transition.seconds SUPERSEDES the old per-slide
-    // `duration` (lead ruling). Move duration → transition = {type: "tween",
-    // seconds, curve: "smooth", sound: null} LOUDLY; curve "smooth" preserves
-    // today's eased playback so behavior is unchanged. Same load-boundary
-    // discipline as meta.fps / withLegacyKeysRenamed.
-    const { doc: transDoc, migrated } = withDurationMigrated(out);
-    for (const m of migrated)
-      console.error(`PowerRP repair: slide ${m.index} legacy "duration" (${m.seconds}s) → transition.seconds${m.stale ? " (already had a transition — stale duration dropped)" : ""}`);
-    out = transDoc;
-    return withCameraEnsured(out);
+    const { doc: out, reports } = repairedDocument(doc, this.registry);
+    printRepairReports(reports);
+    return out;
   }
 
   /** Toggles whether slide `index` (default: current) contributes its delta. */
@@ -988,7 +979,8 @@ export class PowerRPApp {
     if (!file) return;
     // Legacy .powerrp.json still LOADS (manifest Round 12: on-disk is now a
     // folder, but old single-file saves migrate through the same repair path).
-    this.commit(withBindingsMigrated(this.repaired(deserialize(await file.text()))));
+    // repaired() runs the full pipeline (bindings migration included).
+    this.commit(this.repaired(deserialize(await file.text())));
     this.slideIndex = 0;
     this.selection = null;
   }
@@ -1024,7 +1016,7 @@ export class PowerRPApp {
    *  repair + binding migration as loadFile). UI resets mirror loadFile. */
   async loadProject(name) {
     const { doc } = await projectApi.loadProject(name);
-    this.commit(withBindingsMigrated(this.repaired(doc)));
+    this.commit(this.repaired(doc)); // repaired() includes bindings migration
     this.slideIndex = 0;
     this.selection = null;
   }
@@ -1237,10 +1229,11 @@ export class PowerRPApp {
   loadAutosave() {
     const json = localStorage.getItem(AUTOSAVE_KEY);
     if (json) {
-      // Load-time migrations: repaired() drops orphaned items LOUDLY and
-      // ensures THE camera; withBindingsMigrated converts legacy
-      // {item, anchor} arrow bindings to equation pairs (THE UNIFICATION).
-      this.doc = withBindingsMigrated(this.repaired(deserialize(json)));
+      // repaired() runs the full load-boundary pipeline: drops orphaned items
+      // LOUDLY, ensures THE camera, and migrates legacy {item, anchor} arrow
+      // bindings to equation pairs (THE UNIFICATION) — all inside
+      // repairedDocument now, so no separate withBindingsMigrated wrap.
+      this.doc = this.repaired(deserialize(json));
       this.undoLog = createUndo(this.snapshot(this.doc));
     }
   }
