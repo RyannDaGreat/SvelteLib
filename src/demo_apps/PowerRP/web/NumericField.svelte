@@ -16,12 +16,21 @@
   expression ("42", "6*7") commits as a plain NUMBER; anything with
   references commits as an EQUATION. beginTextEntry() opens that path
   pre-filled with the current value.
-  SEAM: from number mode, text entry is meant to open on a CLICK-WITHOUT-DRAG
-  on the scrubber — a GENERIC DraggableNumber capability that lands in
-  src/lib separately. It is wired here already via the `onedit` prop below:
-  the day DraggableNumber emits onedit, this field lights up with no further
-  app changes. Until then, equation fields (already-string values) are the
-  reachable text-entry surface.
+  CLICK-WITHOUT-DRAG on the number scrubber opens text entry: DraggableNumber
+  emits `onedit` on a click that doesn't cross its slop threshold, and we
+  DELEGATE to beginTextEntry() (wired below) so the ONE symmetric text path
+  lives here — the lib scrubber stays generic, this field owns the
+  equation-aware entry. (Drag still scrubs; nothing here changed for that.)
+
+  Display units: `display` (a row option, e.g. "degrees") shows/edits the
+  value in a unit different from how core STORES it — rotation edits in
+  degrees though core stores radians (round-10 ruling). DISPLAY ONLY, never
+  migrates storage; conversion happens at this field boundary via
+  ./displayUnits.js. It applies to the number scrubber, the numeric text-entry
+  commit, and the evaluated badge. A free-form EQUATION's text is authored in
+  stored-space references and stored verbatim — only its evaluated BADGE is
+  shown in display units; the expression string itself is not unit-converted
+  (out of scope: converting arbitrary arithmetic between units is ill-defined).
 
   Live preview: valid drafts preview via app.setPreview (viewport re-renders
   in real time, manifest rule); Enter/blur commits (one undo unit); Escape
@@ -30,7 +39,8 @@
   message from the derivation stage's error map.
 
   Props: app, path (full state path, e.g. ["items", id, "x"] or
-  ["vars", name]), label, min/max (DraggableNumber bounds).
+  ["vars", name]), label, min/max (DraggableNumber bounds, in STORED units),
+  display (display-unit name, e.g. "degrees"; null = identity).
   Styling lives in app.css (.numfield / .eq-*; app convention: no <style>).
 -->
 <script>
@@ -39,8 +49,14 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { getPath } from "../core/deltas.js";
   import { displayToStored, storedToDisplay, compiled, evalAst } from "../core/expressions.js";
+  import { displayUnit } from "./displayUnits.js";
 
-  let { app, path, label, min = null, max = null } = $props();
+  let { app, path, label, min = null, max = null, display = null } = $props();
+
+  // Display-unit transform (rotation edits in degrees though core stores
+  // radians; identity for every other field). DISPLAY ONLY — never migrates
+  // storage. See ./displayUnits.js.
+  let unit = $derived(displayUnit(display));
 
   let stored = $derived(getPath(app.rawState(), path));
   let isEquation = $derived(typeof stored === "string");
@@ -67,14 +83,16 @@
     return typeof v === "number" ? Math.round(v * 1000) / 1000 : 0;
   }
 
-  // ── Number mode (DraggableNumber emits numbers) ────────────────────────────
+  // ── Number mode (DraggableNumber emits DISPLAY-unit numbers) ───────────────
+  // DraggableNumber scrubs in the shown unit (degrees for rotation); we convert
+  // back to the STORED unit (radians) before writing. Identity for normal rows.
 
-  function previewNumber(v) {
-    app.setPreview([[path, v]]);
+  function previewNumber(shown) {
+    app.setPreview([[path, unit.fromDisplay(shown)]]);
   }
 
-  function commitNumber(v) {
-    app.setPreview([[path, v]]);
+  function commitNumber(shown) {
+    app.setPreview([[path, unit.fromDisplay(shown)]]);
     app.commitPreview();
   }
 
@@ -113,7 +131,11 @@
       return;
     }
     const { ast, refs } = compiled(storedForm);
-    const value = refs.length === 0 ? evalAst(ast, () => 0) : storedForm;
+    // A pure numeric expression is entered in DISPLAY units (degrees) and
+    // stored in core units (radians); an equation is stored verbatim (its
+    // text is authored in stored-space references — unit conversion of
+    // free-form expressions is out of scope, see the field header note).
+    const value = refs.length === 0 ? unit.fromDisplay(evalAst(ast, () => 0)) : storedForm;
     app.setPreview([[path, value]]);
     app.commitPreview();
     invalid = false;
@@ -141,10 +163,12 @@
   }
 
   /** Opens keyboard text entry pre-filled with the current value — the seam
-   * DraggableNumber's click-without-drag plugs into (see header comment). */
+   * DraggableNumber's click-without-drag plugs into (see header comment).
+   * Pre-fill is in DISPLAY units (degrees for rotation) to match what the
+   * number scrubber showed. */
   async function beginTextEntry() {
     textEntry = true;
-    draft = String(round3(evaluated));
+    draft = String(round3(unit.toDisplay(evaluated)));
     await Promise.resolve(); // let the input render before focusing it
     eqInputEl?.focus();
     eqInputEl?.select();
@@ -186,19 +210,24 @@
           </span>
         </Tooltip>
       {:else}
-        <span class="eq-badge">= {invalid ? "?" : round3(evaluated)}</span>
+        <!-- Live evaluation, shown in DISPLAY units + suffix (degrees for
+             rotation) so it matches the scrubber the field toggles from. -->
+        <span class="eq-badge">= {invalid ? "?" : round3(unit.toDisplay(evaluated))}{unit.suffix}</span>
       {/if}
     </span>
   {:else}
-    <!-- SEAM: `onedit` is DraggableNumber's future click-without-drag hook
-         (generic lib capability, landing separately). Unknown props are
-         ignored today; when the lib emits it, typing-into-a-number works
-         everywhere with no further changes here. -->
+    <!-- `onedit` = DraggableNumber's click-without-drag hook (the generic lib
+         capability). It DELEGATES text entry to beginTextEntry() so the ONE
+         symmetric text path (number vs equation) lives here. The scrubber
+         works in DISPLAY units (degrees for rotation); previewNumber/
+         commitNumber convert back to stored (radians). `suffix` shows the
+         unit indicator ("°") inside the standardized box. -->
     <DraggableNumber
       {label}
-      value={round3(evaluated)}
-      min={min ?? null}
-      max={max ?? null}
+      value={round3(unit.toDisplay(evaluated))}
+      min={min == null ? null : unit.toDisplay(min)}
+      max={max == null ? null : unit.toDisplay(max)}
+      suffix={unit.suffix}
       oninput={previewNumber}
       onchange={commitNumber}
       onedit={beginTextEntry}

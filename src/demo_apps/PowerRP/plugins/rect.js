@@ -18,7 +18,7 @@ export const rectPlugin = {
     { key: "y", label: "Y", kind: "number" },
     { key: "w", label: "Width", kind: "number", min: 0 },
     { key: "h", label: "Height", kind: "number", min: 0 },
-    { key: "rotation", label: "Rotation", kind: "number" },
+    { key: "rotation", label: "Rotation", kind: "number", display: "degrees" }, // core stores radians; field edits/shows degrees (round-10 ruling)
     { key: "z", label: "Z order", kind: "number" },
     { key: "fill", label: "Fill", kind: "color" },
     { key: "stroke", label: "Stroke", kind: "color" },

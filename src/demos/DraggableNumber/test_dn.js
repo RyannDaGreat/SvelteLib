@@ -131,6 +131,15 @@ try {
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: k, ...opts }),
       );
     }
+    // Type into the inline text-entry <input>: set its value + dispatch input
+    // (bind:value reads .value on the input event), then a keydown for the key.
+    function type(input, text) {
+      input.value = text;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    // Await the microtask openTextEntry() uses to focus+select the input, so
+    // the <input> is in the DOM before the test reads it.
+    const settle = () => new Promise((r) => queueMicrotask(r));
 
     const out = {};
 
@@ -336,7 +345,9 @@ try {
       const ridges = inst.el.querySelector(".dn-ridges");
       const before = ridges.style.transform;
       down(inst.el);
-      moveTo(inst.el, startY - 20);
+      // 18px: past the click slop AND not a whole multiple of the ridge period
+      // (4px), so the wrapped offset genuinely differs from the resting 0.
+      moveTo(inst.el, startY - 18);
       await tick();
       const after = ridges.style.transform;
       out.wheelRolls = before !== after && /translateY/.test(after);
@@ -352,6 +363,183 @@ try {
       down(inst.el);
       moveTo(inst.el, startY - 50);
       out.disabledValue = inst.state.value; // unchanged 5
+      up(inst.el);
+      unmount(inst.app);
+      inst.host.remove();
+    }
+
+    // --- 15. CLICK (down+up, no move) opens the inline text editor ---
+    {
+      const inst = makeInstance({ value: 7, coefficient: 1 });
+      down(inst.el); // at center, no move
+      up(inst.el); // released within slop → click
+      await settle();
+      await tick();
+      const input = inst.el.querySelector(".dn-input");
+      out.clickOpensEditor = !!input;
+      out.clickPrefill = input ? input.value : null; // pre-filled with "7"
+      unmount(inst.app);
+      inst.host.remove();
+    }
+
+    // --- 16. type a number + Enter COMMITS (clamped), closes the editor ---
+    {
+      const inst = makeInstance({ value: 0, coefficient: 1, min: 0, max: 100 });
+      down(inst.el);
+      up(inst.el);
+      await settle();
+      await tick();
+      const input = inst.el.querySelector(".dn-input");
+      type(input, "42");
+      key(input, "Enter");
+      await tick();
+      out.typeCommitValue = inst.state.value; // 42
+      out.typeCommitClosed = !inst.el.querySelector(".dn-input"); // editor gone
+      unmount(inst.app);
+      inst.host.remove();
+    }
+
+    // --- 16b. typed number is CLAMPED to max on commit ---
+    {
+      const inst = makeInstance({ value: 0, coefficient: 1, min: 0, max: 10 });
+      down(inst.el);
+      up(inst.el);
+      await settle();
+      const input = inst.el.querySelector(".dn-input");
+      type(input, "999");
+      key(input, "Enter");
+      await tick();
+      out.typeClampValue = inst.state.value; // 10
+      unmount(inst.app);
+      inst.host.remove();
+    }
+
+    // --- 17. Escape CANCELS text entry (value unchanged, editor closes) ---
+    {
+      const inst = makeInstance({ value: 3, coefficient: 1 });
+      down(inst.el);
+      up(inst.el);
+      await settle();
+      const input = inst.el.querySelector(".dn-input");
+      type(input, "88"); // typed but not committed
+      key(input, "Escape");
+      await tick();
+      out.escValue = inst.state.value; // unchanged 3
+      out.escClosed = !inst.el.querySelector(".dn-input");
+      unmount(inst.app);
+      inst.host.remove();
+    }
+
+    // --- 18. non-numeric text + ontext handler → ontext gets the string ---
+    {
+      let got = null;
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const state = makeValueBox(5);
+      const app = mount(DraggableNumber, {
+        target: host,
+        props: {
+          ontext: (s) => (got = s),
+          get value() {
+            return state.value;
+          },
+          set value(v) {
+            state.value = v;
+          },
+        },
+      });
+      const el = host.querySelector(".dn");
+      down(el);
+      up(el);
+      await settle();
+      const input = el.querySelector(".dn-input");
+      type(input, "speed * 2");
+      key(input, "Enter");
+      await tick();
+      out.ontextGot = got; // "speed * 2"
+      out.ontextValueUnchanged = state.value; // still 5 (not a number)
+      out.ontextClosed = !el.querySelector(".dn-input");
+      unmount(app);
+      host.remove();
+    }
+
+    // --- 19. onedit DELEGATES the click (built-in editor does NOT open) ---
+    {
+      let edited = 0;
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const state = makeValueBox(1);
+      const app = mount(DraggableNumber, {
+        target: host,
+        props: {
+          onedit: () => edited++,
+          get value() {
+            return state.value;
+          },
+          set value(v) {
+            state.value = v;
+          },
+        },
+      });
+      const el = host.querySelector(".dn");
+      down(el);
+      up(el);
+      await settle();
+      await tick();
+      out.oneditCalled = edited; // 1
+      out.oneditNoBuiltinEditor = !el.querySelector(".dn-input"); // delegated → no input
+      unmount(app);
+      host.remove();
+    }
+
+    // --- 19b. non-numeric text with NO ontext → Enter is REJECTED LOUDLY:
+    //          editor stays open with the invalid affordance, value unchanged ---
+    {
+      const inst = makeInstance({ value: 4, coefficient: 1 }); // no ontext
+      down(inst.el);
+      up(inst.el);
+      await settle();
+      const input = inst.el.querySelector(".dn-input");
+      type(input, "not a number");
+      key(input, "Enter");
+      await tick();
+      const stillOpen = inst.el.querySelector(".dn-input");
+      out.rejectStaysOpen = !!stillOpen;
+      out.rejectInvalidClass = stillOpen ? stillOpen.classList.contains("dn-invalid") : false;
+      out.rejectValueUnchanged = inst.state.value; // still 4
+      unmount(inst.app);
+      inst.host.remove();
+    }
+
+    // --- 20. DRAG (move past slop) still scrubs, does NOT open the editor ---
+    {
+      const inst = makeInstance({ value: 0, coefficient: 1 });
+      const startY = rect(inst.el).top + rect(inst.el).height / 2;
+      down(inst.el);
+      moveTo(inst.el, startY - 20); // 20px up, well past 4px slop → scrub
+      out.dragStillScrubs = inst.state.value; // +20
+      up(inst.el);
+      await settle();
+      out.dragNoEditor = !inst.el.querySelector(".dn-input"); // no text entry
+      unmount(inst.app);
+      inst.host.remove();
+    }
+
+    // --- 21. WHEEL STOPS at a bound: accumulator clamps, so pushing PAST the
+    //         wall doesn't roll the ridge strip further (round-9 bug) ---
+    {
+      const inst = makeInstance({ value: 0.5, coefficient: 0.01, min: 0, max: 1 });
+      const startY = rect(inst.el).top + rect(inst.el).height / 2;
+      const ridges = inst.el.querySelector(".dn-ridges");
+      down(inst.el);
+      moveTo(inst.el, startY - 60); // 60px up * 0.01 = +0.6 → clamps to max (1) at 50px
+      await tick();
+      const atWall = ridges.style.transform; // roll frozen at the wall
+      moveTo(inst.el, startY - 400); // shove 340px further past the wall
+      await tick();
+      const pastWall = ridges.style.transform; // must NOT have moved
+      out.wheelStopsAtBound = atWall === pastWall;
+      out.wheelAtWallValue = inst.state.value; // pinned at 1
       up(inst.el);
       unmount(inst.app);
       inst.host.remove();
@@ -383,6 +571,27 @@ try {
   check("wheel absent when wheel=false", results.wheelAbsentWhenFalse === true);
   check("wheel ridge strip rolls with drag", results.wheelRolls === true);
   check("disabled ignores drag (stays 5)", approx(results.disabledValue, 5), `got ${results.disabledValue}`);
+
+  // Click-to-type suite (Task 1).
+  check("click (no drag) opens inline text editor", results.clickOpensEditor === true);
+  check("editor pre-fills with current value (7)", results.clickPrefill === "7", `got ${results.clickPrefill}`);
+  check("type '42' + Enter commits value", approx(results.typeCommitValue, 42), `got ${results.typeCommitValue}`);
+  check("commit closes the editor", results.typeCommitClosed === true);
+  check("typed number clamps to max (999 -> 10)", approx(results.typeClampValue, 10), `got ${results.typeClampValue}`);
+  check("Escape cancels text entry (stays 3)", approx(results.escValue, 3), `got ${results.escValue}`);
+  check("Escape closes the editor", results.escClosed === true);
+  check("non-numeric text routes to ontext('speed * 2')", results.ontextGot === "speed * 2", `got ${results.ontextGot}`);
+  check("ontext text leaves the value unchanged (5)", approx(results.ontextValueUnchanged, 5), `got ${results.ontextValueUnchanged}`);
+  check("ontext commit closes the editor", results.ontextClosed === true);
+  check("non-numeric + no ontext: editor stays open (rejected)", results.rejectStaysOpen === true);
+  check("rejected draft shows the invalid affordance (.dn-invalid)", results.rejectInvalidClass === true);
+  check("rejected commit leaves the value unchanged (4)", approx(results.rejectValueUnchanged, 4), `got ${results.rejectValueUnchanged}`);
+  check("onedit delegates the click (called once)", results.oneditCalled === 1, `got ${results.oneditCalled}`);
+  check("onedit suppresses the built-in editor", results.oneditNoBuiltinEditor === true);
+  check("drag past slop still scrubs (+20)", approx(results.dragStillScrubs, 20), `got ${results.dragStillScrubs}`);
+  check("drag does NOT open the editor", results.dragNoEditor === true);
+  check("wheel STOPS rolling at a bound (round-9)", results.wheelStopsAtBound === true);
+  check("value pinned at max while shoved past wall (1)", approx(results.wheelAtWallValue, 1), `got ${results.wheelAtWallValue}`);
 
   console.log(`\n${passed} passed, ${failed} failed`);
 } finally {

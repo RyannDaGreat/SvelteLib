@@ -115,14 +115,17 @@
             <!-- NumericField: equation-aware (THE UNIFICATION). A number
                  renders as the DraggableNumber scrubber; an equation renders
                  as a monospace expression editor with live evaluation and the
-                 error affordance; the ƒ/№ toggle converts between them.
-                 Dotted keys ("from.x") address nested state. -->
+                 error affordance. Click-without-drag on the scrubber opens
+                 text entry; typed content decides number vs equation (no mode
+                 toggle). `display` (e.g. "degrees") edits/shows in a unit
+                 different from storage. Dotted keys ("from.x") = nested state. -->
             <NumericField
               {app}
               path={["items", app.selection, ...row.key.split(".")]}
               label={row.label}
               min={row.min ?? null}
               max={row.max ?? null}
+              display={row.display ?? null}
             />
           {:else if row.kind === "color"}
             <!-- A themed control shaped like the number/text inputs (same

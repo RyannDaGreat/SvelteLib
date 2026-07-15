@@ -11,6 +11,11 @@
   let volume = $state(50); // bounded 0..100, stepped
   let free = $state(0); // fully unbounded, plain (no wheel)
   let lastEvent = $state("—");
+
+  // Click-to-type: a click (no drag) opens keyboard entry. `ontext` receives
+  // any committed text that ISN'T a plain number (here: an expression string).
+  let expr = $state(10);
+  let exprText = $state("—"); // last non-numeric text the field handed back
 </script>
 
 <main class="demo-page">
@@ -96,6 +101,23 @@
           onchange={(v) => (lastEvent = `change ${v} (settled)`)}
         /></label
       >
+    </div>
+
+    <div class="card">
+      <h2>Click to type</h2>
+      <p class="note">
+        <strong>Click</strong> (without dragging) opens keyboard entry — retype the value,
+        <kbd>Enter</kbd> commits, <kbd>Esc</kbd> cancels. A plain number stays a number; any
+        other text goes to <code>ontext</code> (here shown below). <strong>Drag</strong> still
+        scrubs.
+      </p>
+      <label class="field"
+        ><span>Value</span><DraggableNumber
+          bind:value={expr}
+          ontext={(s) => (exprText = s)}
+        /></label
+      >
+      <p class="note">Last non-numeric text via <code>ontext</code>: <code>{exprText}</code></p>
     </div>
 
     <div class="card themed">
