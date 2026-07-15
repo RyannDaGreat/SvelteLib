@@ -79,8 +79,8 @@
     { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, run: (a) => a.reorderSelection(-1) },
     { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, run: (a) => a.sendToExtreme(+1) },
     { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, run: (a) => a.sendToExtreme(-1) },
-    { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", run: (a) => distribute(a, "x", "w") },
-    { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", run: (a) => distribute(a, "y", "h") },
+    { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "x", "w") },
+    { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "y", "h") },
     { id: "toggle-anchors", title: "Toggle Anchor Visibility", icon: "mdi:anchor", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },
@@ -170,7 +170,12 @@
 
   /** Distributes all active bbox items on the current slide with equal center spacing. */
   function distribute(a, axis, sizeKey) {
-    const nodes = a.nodes().filter((n) => n.plugin.capabilities.bbox);
+    // Distributes the SELECTION (user, round 12B follow-up: the V1 version
+    // distributed EVERY item on the slide — with a selection it ignored you,
+    // which read as a no-op). Centers evenly spaced across the selection's
+    // span; the first and last centers stay put (the user's stated spec).
+    const ids = new Set(a.selectedIds());
+    const nodes = a.nodes().filter((n) => ids.has(n.itemId) && n.plugin.capabilities.bbox);
     if (nodes.length < 3) return;
     const centers = nodes
       .map((n) => ({ n, c: (n.state[axis] ?? 0) + (n.state[sizeKey] ?? 0) / 2 }))
