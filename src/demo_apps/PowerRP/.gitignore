@@ -1,0 +1,12 @@
+# Project storage is USER DATA, not source (manifest Round 12: projects are
+# folders — doc.json + assets/, the assets/ folder being the asset-library
+# source of truth). Keep the folder, ignore its contents.
+projects/*
+!projects/.gitkeep
+
+# Python backend cruft
+server/__pycache__/
+.venv/
+
+# Vite build output (this app builds into web/dist)
+web/dist/
