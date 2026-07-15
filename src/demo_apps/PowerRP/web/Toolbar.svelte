@@ -90,6 +90,24 @@
       <iconify-icon icon="mdi:magnet-on" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
+  <Tooltip text="Toggle anchor visibility (endpoint binding targets)">
+    <button
+      class="btn-icon"
+      class:active={app.anchorsVisible}
+      aria-label="Toggle anchor visibility"
+      aria-pressed={app.anchorsVisible}
+      onclick={() => app.runCommand("toggle-anchors")}
+    >
+      <!-- User-specified composite: the horseshoe magnet with an anchor in
+           the middle (iconify-only rule: two mdi glyphs stacked, no custom
+           SVG). The magnet opens downward, the small anchor sits centered
+           in its mouth. -->
+      <span class="icon-stack">
+        <iconify-icon icon="mdi:magnet" width="18" height="18"></iconify-icon>
+        <iconify-icon class="icon-stack-overlay" icon="mdi:anchor" width="9" height="9"></iconify-icon>
+      </span>
+    </button>
+  </Tooltip>
   <span class="spacer"></span>
   <Tooltip text="Toggle light/dark — all themes: palette › Color Theme">
     <button class="btn-icon" aria-label="Toggle light/dark theme" onclick={() => app.toggleLightDark()}>

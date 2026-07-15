@@ -1265,6 +1265,23 @@ body,
   pointer-events: none; /* purely decorative; all input goes to .overlay */
 }
 
+/* Composite toolbar glyphs (iconify-only rule: stacked mdi icons, never
+   custom SVG) — e.g. the anchor toggle's horseshoe magnet with the anchor
+   centered in its mouth (user round-11 spec). */
+.icon-stack {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-stack .icon-stack-overlay {
+  position: absolute;
+  /* Sits in the lower half — the magnet's mouth (the glyph opens downward). */
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
 /* FPS counter — browser setting, OFF by default; bottom-LEFT always,
    including present mode (user spec: "little box with some green numbers").
    Sits above .present (z 200). */
