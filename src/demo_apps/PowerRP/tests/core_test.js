@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { NONE, applied, blendApplied, contains, setPath, deletePath, getPath, leaves } from "../core/deltas.js";
-import { interpolate, ease } from "../core/interpolators.js";
+import { interpolate, ease, isHexColor, hexToRgb, rgbToHex } from "../core/interpolators.js";
 import * as T from "../core/transform.js";
 import { clipLineToRect, closestPointOnRectBorder } from "../core/geometry.js";
 import {
@@ -73,6 +73,32 @@ test("interpolate types", () => {
   assert.deepEqual(interpolate([0, 0], [10, 20], 0.5), [5, 10]);
   assert.equal(interpolate("a", "b", 0.5), "b");
   assert.equal(interpolate(false, true, 0.2), true);
+});
+
+test("alpha hex colors: parse, compose, tween (Round 10 'colors support ALPHA')", () => {
+  // 8-digit and shorthand-with-alpha forms are hex colors; junk is not.
+  assert.equal(isHexColor("#7aa2f780"), true);
+  assert.equal(isHexColor("#f08c"), true);
+  assert.equal(isHexColor("#7aa2f7"), true);
+  assert.equal(isHexColor("#7aa2f7801"), false); // 9 digits is nothing
+  // Channel round-trip keeps the alpha byte.
+  assert.deepEqual(hexToRgb("#7aa2f780"), [122, 162, 247, 128]);
+  assert.equal(rgbToHex([122, 162, 247, 128]), "#7aa2f780");
+  assert.deepEqual(hexToRgb("#f08c"), [255, 0, 136, 204]); // shorthand digits double
+  // Alpha tweens per-channel like r/g/b…
+  assert.equal(interpolate("#ff000000", "#ff0000ff", 0.5), "#ff000080");
+  // …and a plain #rrggbb endpoint reads as opaque (255) in a mixed pair.
+  assert.equal(interpolate("#ff0000", "#ff000000", 0.5), "#ff000080");
+  assert.equal(interpolate("#00000080", "#ffffff80", 0.5), "#80808080"); // rgb tweens, alpha holds
+  // Endpoints are exact (alpha 0 / 1 return a / b verbatim).
+  assert.equal(interpolate("#ff0000", "#ff000000", 0), "#ff0000");
+  assert.equal(interpolate("#ff0000", "#ff000000", 1), "#ff000000");
+  // Doc-level: a fill keyframed opaque → translucent tweens through the fold
+  // (blendApplied routes leaves through interpolate — the behavior the
+  // presenter/editor actually exercise mid-slide).
+  const base = { items: { r: { type: "rect", fill: "#7aa2f7" } } };
+  const mid = blendApplied(base, { items: { r: { fill: "#7aa2f700" } } }, 0.5);
+  assert.equal(mid.items.r.fill, "#7aa2f780");
 });
 test("ease is loud on unknown names", () => {
   assert.throws(() => ease("bogus"), /Unknown ease/);

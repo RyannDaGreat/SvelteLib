@@ -2,7 +2,9 @@
  * Typed value interpolation — how a single leaf tweens from a → b.
  *
  * Chosen by VALUE SHAPE, not property name: numbers lerp (int pairs round),
- * booleans threshold, #rrggbb colors blend per-channel, equal-length numeric
+ * booleans threshold, hex colors blend per-channel — INCLUDING the alpha
+ * channel of #rrggbbaa colors (Round 10: "color properties support ALPHA";
+ * plain #rrggbb stays legal and reads as opaque) — equal-length numeric
  * arrays blend elementwise, everything else is discrete (snaps to the target
  * as soon as alpha > 0 — matching tweenline/LIAC reference semantics; if you
  * want a fade, author one with opacity).
@@ -19,32 +21,43 @@ export function lerp(a, b, t) {
 }
 
 /**
- * Pure function. True for CSS hex colors like "#a3f" or "#aa33ff".
+ * Pure function. True for CSS hex colors: "#rgb", "#rrggbb", and the alpha
+ * forms "#rgba" / "#rrggbbaa" (8-digit hex is the alpha storage format;
+ * plain #rrggbb stays legal = opaque).
  *
  * @example isHexColor("#aa33ff") // true
+ * @example isHexColor("#aa33ff80") // true (alpha 0x80)
  * @example isHexColor("#a3f") // true
+ * @example isHexColor("#a3f8") // true (shorthand with alpha)
  * @example isHexColor("blue") // false
  */
 export function isHexColor(x) {
-  return typeof x === "string" && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(x);
+  return typeof x === "string" && /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(x);
 }
 
 /**
- * Pure function. "#rgb"/"#rrggbb" → [r, g, b] in 0..255.
+ * Pure function. Hex color → channel array in 0..255: [r, g, b] for the
+ * opaque forms, [r, g, b, a] when alpha digits are present. Shorthand
+ * digits double ("#f08c" → "#ff0088cc").
  *
  * @example hexToRgb("#ff0080") // [255, 0, 128]
+ * @example hexToRgb("#ff008080") // [255, 0, 128, 128]
  * @example hexToRgb("#f08") // [255, 0, 136]
+ * @example hexToRgb("#f08c") // [255, 0, 136, 204]
  */
 export function hexToRgb(hex) {
   let h = hex.slice(1);
-  if (h.length === 3) h = [...h].map((c) => c + c).join("");
-  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  if (h.length <= 4) h = [...h].map((c) => c + c).join("");
+  const out = [];
+  for (let i = 0; i < h.length; i += 2) out.push(parseInt(h.slice(i, i + 2), 16));
+  return out;
 }
 
 /**
- * Pure function. [r, g, b] (0..255) → "#rrggbb".
+ * Pure function. [r, g, b] or [r, g, b, a] (0..255) → "#rrggbb" / "#rrggbbaa".
  *
  * @example rgbToHex([255, 0, 128]) // "#ff0080"
+ * @example rgbToHex([255, 0, 128, 128]) // "#ff008080"
  */
 export function rgbToHex(rgb) {
   return "#" + rgb.map((c) => Math.round(Math.max(0, Math.min(255, c))).toString(16).padStart(2, "0")).join("");
@@ -57,6 +70,8 @@ export function rgbToHex(rgb) {
  * @example interpolate(1, 4, 0.5) // 3 (int pair → rounded, tweenline rule)
  * @example interpolate(1.0, 4, 0.5) // 3 (JS can't tell 1.0 from 1; ints round)
  * @example interpolate("#000000", "#ffffff", 0.5) // "#808080"
+ * @example interpolate("#ff000000", "#ff0000ff", 0.5) // "#ff000080" (alpha tweens per-channel)
+ * @example interpolate("#ff0000", "#ff000000", 0.5) // "#ff000080" (plain hex = opaque: 255 → 0)
  * @example interpolate([0, 0], [10, 20], 0.5) // [5, 10]
  * @example interpolate("a", "b", 0.5) // "b" (discrete: alpha > 0 snaps)
  * @example interpolate(false, true, 0.2) // true (discrete)
@@ -70,6 +85,12 @@ export function interpolate(a, b, alpha) {
   }
   if (isHexColor(a) && isHexColor(b)) {
     const ca = hexToRgb(a), cb = hexToRgb(b);
+    // Mixed #rrggbb ↔ #rrggbbaa pairs: a missing alpha channel IS opaque
+    // (255), so the alpha tweens from/to fully opaque instead of snapping.
+    if (ca.length !== cb.length) {
+      if (ca.length === 3) ca.push(255);
+      if (cb.length === 3) cb.push(255);
+    }
     return rgbToHex(ca.map((c, i) => lerp(c, cb[i], alpha)));
   }
   if (Array.isArray(a) && Array.isArray(b) && a.length === b.length

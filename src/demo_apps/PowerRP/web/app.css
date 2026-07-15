@@ -76,6 +76,14 @@
   --a-kf-w: calc(3 * var(--a-kf-btn-w));
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
   --a-color-swatch: 14px; /* swatch square inside the color control */
+  /* Transparency checkerboard under the color swatch (colors carry ALPHA —
+     round 10). White/gray is the universal transparency convention
+     (Photoshop / Chrome devtools / the Figures repo's alpha checkerboard),
+     deliberately theme-independent; the cell derives from the swatch so it
+     always reads as a 2×2 checker. */
+  --a-checker-light: #ffffff;
+  --a-checker-dark: #cccccc;
+  --a-checker-size: calc(var(--a-color-swatch) / 2);
   --a-slide-disabled-opacity: 0.5;
   --a-minimap-opacity: 0.5; /* user spec: minimap at 50% transparency */
   --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
@@ -709,10 +717,12 @@ body,
   display: inline-flex;
 }
 
-/* Color control: shaped IDENTICALLY to the number/text inputs (same width,
-   height, square corners, themed 1px border). The native color input is
-   stretched invisibly over the whole box so clicking anywhere opens Chrome's
-   picker; a small swatch square + the hex value sit on top. */
+/* Color control WITH ALPHA: shaped like the number/text inputs (same growing
+   width, height, square corners, themed 1px border). Layout:
+   [swatch = native RGB picker] [hex text (#rrggbb / #rrggbbaa)] [alpha scrub].
+   The native <input type=color> cannot carry alpha, so it edits only the RGB
+   part and sits invisibly under the swatch; alpha lives in the DraggableNumber
+   scrub, and the 8-digit hex round-trips through the text field. */
 .inspector .color-control {
   position: relative;
   display: flex;
@@ -726,10 +736,20 @@ body,
   background: var(--control-bg);
   border: 1px solid var(--border);
   border-radius: 0; /* square — same as every other field control */
+}
+
+/* Swatch hit area: the native RGB picker fills it invisibly, so clicking the
+   swatch opens Chrome's picker. Full control height for a comfortable target. */
+.inspector .color-control .color-pick {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 100%;
   cursor: pointer;
 }
 
-/* The real input: fills the control, invisible, still receives the click that
+/* The real input: fills the swatch area, invisible, receives the click that
    opens the picker (a click on the wrapping <label> also focuses it). */
 .inspector .color-control .color-native {
   position: absolute;
@@ -752,18 +772,54 @@ body,
   border: none;
 }
 
+/* The swatch shows the CURRENT color WITH its alpha over the transparency
+   checkerboard (manifest: swatch shows transparency; Figures-repo precedent),
+   so translucency reads at a glance. --a-swatch-rgba is set inline by the
+   Inspector; when absent (unparseable stored color) it falls back to black —
+   the pre-alpha control's fallback, kept. */
 .inspector .color-control .color-swatch {
   width: var(--a-color-swatch);
   height: var(--a-color-swatch);
   flex: none;
   border: 1px solid var(--border);
   pointer-events: none; /* clicks pass through to .color-native */
+  background:
+    linear-gradient(var(--a-swatch-rgba, #000000), var(--a-swatch-rgba, #000000)),
+    repeating-conic-gradient(var(--a-checker-dark) 0% 25%, var(--a-checker-light) 0% 50%);
+  background-size: auto, var(--a-checker-size) var(--a-checker-size);
 }
 
+/* Hex text: an in-control editable field — accepts #rgb/#rgba/#rrggbb/#rrggbbaa,
+   previews live, commits on Enter/blur (invalid text reverts loudly). Mono, like
+   equations — a hex code reads as code. */
 .inspector .color-control .color-hex {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--fg);
-  font-size: var(--a-font-md);
-  pointer-events: none;
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm); /* mono runs wide; matches .eq-input */
+  outline: none;
+}
+
+/* Alpha scrub: an UNBOXED DraggableNumber inside the control — the control
+   already draws THE box; a second border would double the field chrome
+   (round-11 minimalism). Inherits the ambient --dn-* theming from .inspector;
+   overrides are on .dn itself for the same specificity reason as the
+   .numfield square-corners rule above. */
+.inspector .color-control .color-alpha .dn {
+  --dn-bg: transparent;
+  --dn-border: transparent;
+  --dn-radius: 0; /* square, like every other field control */
+  --dn-padding: 0 var(--a-sp-1);
+  --dn-font-size: var(--a-font-sm);
+  height: 100%;
+  box-sizing: border-box;
 }
 
 /* Trailing keyframe controls (‹ ◆ › + optional delete), grouped into ONE grid
