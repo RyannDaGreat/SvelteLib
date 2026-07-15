@@ -146,10 +146,14 @@
   // the registry) — same epoch, same reason (reactive paint, async frames).
   $effect(() => onVideoFrame(() => (imageEpoch += 1)));
   // Active Blender-style modal transform bookkeeping (non-reactive, like drag).
-  // {kind: "grab"|"scale", startWorld, members, center, guides?}. Started when
-  // app.modalXform is set (G/S shortcut) and captured by the effect below; the
-  // pointer follows it with NO button held. World-space scale pivot for the
-  // overlay (a guide-point during scale) — cleared with the modal.
+  // {kind: "grab"|"scale", startWorld, members, center, axis, buffer}. Started
+  // when app.modalXform is set (G/S shortcut) and captured by the effect below;
+  // the pointer follows it with NO button held. `axis` (null|"x"|"y") is the
+  // Blender-style constraint (X/Y keys); `buffer` is the typed numeric string
+  // (digits/./-, applied EXACTLY, pointer-independent while non-empty). Both
+  // are mirrored into the reactive app.modalXform on every change so the HintBar
+  // announces the live mode/axis/buffer. World-space scale pivot for the overlay
+  // (a guide-point during scale) — cleared with the modal.
   let modal = null;
   let modalCenter = $state(null); // {x, y} world — the scale pivot dot, or null
 
@@ -1006,48 +1010,139 @@
     const members = translateMembers(nodes);
     if (!center || members.length === 0) { app.modalXform = null; return; } // nothing to transform
     const start = mouseWorld ?? center;
-    modal = { kind, startWorld: start, members, center };
+    modal = { kind, startWorld: start, members, center, axis: null, buffer: "" };
     modalCenter = kind === "scale" ? center : null;
     // Paint the initial (zero-delta) preview immediately so the selection is
     // visibly "grabbed"/"scaling" before the first mouse move.
     modalMove(start);
   }
 
-  /** Command. Updates the modal preview from the current cursor world point. */
+  /** Command. Records the cursor world point and re-derives the modal preview
+   * from it. A NON-EMPTY numeric buffer means typed input wins (Blender modal
+   * semantics): the pointer is remembered for a later clear but does NOT drive
+   * the transform until the buffer is edited away. */
   function modalMove(w) {
-    if (modal.kind === "grab") {
-      const dx = w.x - modal.startWorld.x, dy = w.y - modal.startWorld.y;
-      const pairs = modal.members.flatMap((m) => translationPairs(m, dx, dy));
-      if (pairs.length) app.setPreview(pairs);
-      return;
-    }
-    // SCALE: uniform factor = current / initial cursor distance from the
-    // collective center (Blender precedent). Degenerate start distance (cursor
-    // began at the center) → factor 1 (no scale) until it moves away.
-    const c = modal.center;
-    const d0 = Math.hypot(modal.startWorld.x - c.x, modal.startWorld.y - c.y);
-    const d1 = Math.hypot(w.x - c.x, w.y - c.y);
-    const factor = d0 > 1e-9 ? d1 / d0 : 1;
-    app.setPreview(modal.members.flatMap((m) => scalePairs(m, factor, c)));
+    modal.lastWorld = w;
+    if (modal.buffer !== "") return; // typed value drives; ignore pointer
+    applyModal();
+  }
+
+  /** Command. Sets or toggles the axis constraint (Blender X/Y): the same axis
+   * again clears it, the other axis switches. Re-derives the preview + axis
+   * guide and mirrors the state to the HintBar. */
+  function modalSetAxis(axis) {
+    modal.axis = modal.axis === axis ? null : axis;
+    syncModalXform();
+    applyModal();
+  }
+
+  /** Command. Appends one character to the numeric buffer. Digits always append;
+   * "." appends only if the buffer has no decimal yet; "-" appends only as the
+   * first character (leading sign). For GRAB, digits require an axis constraint
+   * first (the G-numeric-requires-axis ruling — see report); with no axis the
+   * keystroke is a no-op and the HintBar keeps prompting for one. */
+  function modalAppendBuffer(ch) {
+    if (modal.kind === "grab" && !modal.axis) return; // pick an axis first (ruling)
+    if (ch === "." && modal.buffer.includes(".")) return;
+    if (ch === "-" && modal.buffer !== "") return;
+    modal.buffer += ch;
+    syncModalXform();
+    applyModal();
+  }
+
+  /** Command. Deletes the last buffer character. Emptying the buffer hands the
+   * transform back to the pointer (re-applies from the remembered cursor). */
+  function modalBackspace() {
+    if (modal.buffer === "") return;
+    modal.buffer = modal.buffer.slice(0, -1);
+    syncModalXform();
+    applyModal();
+  }
+
+  /** Near-pure command (advances Svelte reactive state). Mirrors the modal's
+   * live {kind, axis, buffer} into the reactive app.modalXform so the HintBar
+   * announcement (mode · axis · buffer) re-derives. Reassigns the whole object
+   * so the $derived tracking it invalidates. */
+  function syncModalXform() {
+    app.modalXform = { kind: modal.kind, axis: modal.axis, buffer: modal.buffer };
   }
 
   /**
-   * Pure function. Preview pairs that scale one member uniformly by `factor`
-   * about world center `c`. A bbox/transform widget scales its w/h AND
-   * repositions its x/y about the center (a true size+position scale, honest to
-   * the w/h the inspector shows — the resize path's convention). A moveBy widget
-   * (arrow) scales each FREE numeric endpoint about the center; equation-bound
-   * endpoints stay put. NOTE: for ROTATED / non-unit-scale bbox items the x/y
-   * scaling uses the stored (base-frame) coordinates, so the pivot is exact only
-   * for unrotated items — full rotation-aware modal scale is deferred to the
-   * rotation sweep (out of this task's scope; flagged).
+   * Command. Re-derives the modal preview and the axis guide from the current
+   * modal state (axis, buffer, lastWorld). GRAB translates by a world (dx, dy);
+   * SCALE grows by a factor about the collective center. A non-empty numeric
+   * buffer supplies the value EXACTLY (G X 2 = +2 world units; S 2 = factor 2;
+   * S X 2 = width ×2 about the center); otherwise the pointer supplies it. The
+   * axis constraint (if any) draws the infinite guide line through the center
+   * using the SAME {kind:"line"} guide primitive as shift-axis-lock.
    */
-  function scalePairs(member, factor, c) {
+  function applyModal() {
+    const c = modal.center;
+    const num = modal.buffer === "" ? null : Number(modal.buffer);
+    // A partial buffer ("-", ".", "-.") is not yet a number — hold at identity.
+    const typed = num !== null && Number.isFinite(num);
+
+    if (modal.kind === "grab") {
+      let dx, dy;
+      if (typed) {
+        // Numeric grab REQUIRES an axis (ruling); the value is the signed
+        // distance along it. Guarded in modalAppendBuffer, so axis is set here.
+        dx = modal.axis === "x" ? num : 0;
+        dy = modal.axis === "y" ? num : 0;
+      } else {
+        const w = modal.lastWorld ?? modal.startWorld;
+        dx = w.x - modal.startWorld.x;
+        dy = w.y - modal.startWorld.y;
+        if (modal.axis === "x") dy = 0;
+        else if (modal.axis === "y") dx = 0;
+      }
+      const pairs = modal.members.flatMap((m) => translationPairs(m, dx, dy));
+      if (pairs.length) app.setPreview(pairs);
+    } else {
+      // SCALE: factor = typed buffer, else current/initial cursor distance from
+      // the collective center (Blender precedent). Degenerate start distance
+      // (cursor began at the center) → factor 1 until it moves away.
+      let factor;
+      if (typed) factor = num;
+      else {
+        const w = modal.lastWorld ?? modal.startWorld;
+        const d0 = Math.hypot(modal.startWorld.x - c.x, modal.startWorld.y - c.y);
+        const d1 = Math.hypot(w.x - c.x, w.y - c.y);
+        factor = d0 > 1e-9 ? d1 / d0 : 1;
+      }
+      app.setPreview(modal.members.flatMap((m) => scalePairs(m, factor, c, modal.axis)));
+    }
+
+    // Axis guide: an infinite line through the collective center along the
+    // constrained axis — the SAME guide primitive shift-axis-lock uses (clipped
+    // to the viewport at overlay time via clipLineToRect). Cleared with no axis.
+    guides = modal.axis
+      ? [{ kind: "line", x: c.x, y: c.y, dx: modal.axis === "x" ? 1 : 0, dy: modal.axis === "x" ? 0 : 1 }]
+      : [];
+  }
+
+  /**
+   * Pure function. Preview pairs that scale one member by `factor` about world
+   * center `c`, optionally constrained to one `axis` ("x" → width + x-position
+   * only; "y" → height + y-position only; null → uniform). A bbox/transform
+   * widget scales its w/h AND repositions its x/y about the center (a true
+   * size+position scale, honest to the w/h the inspector shows — the resize
+   * path's convention). A moveBy widget (arrow) scales each FREE numeric
+   * endpoint about the center; equation-bound endpoints stay put. NOTE: for
+   * ROTATED / non-unit-scale bbox items the x/y scaling uses the stored
+   * (base-frame) coordinates, so the pivot is exact only for unrotated items —
+   * full rotation-aware modal scale is deferred to the rotation sweep (out of
+   * this task's scope; flagged).
+   */
+  function scalePairs(member, factor, c, axis = null) {
+    const doX = axis !== "y"; // x-axis constraint (or unconstrained) touches x/w
+    const doY = axis !== "x"; // y-axis constraint (or unconstrained) touches y/h
     if (member.plugin.moveBy) {
       const s = member.rawItem ?? {};
       const pairs = [];
       for (const end of ["from", "to"])
         for (const coord of ["x", "y"]) {
+          if (coord === "x" ? !doX : !doY) continue;
           const v = s[end]?.[coord];
           if (typeof v === "number") {
             const cc = coord === "x" ? c.x : c.y;
@@ -1059,12 +1154,11 @@
     const rawItem = member.rawItem ?? {};
     const w = typeof rawItem.w === "number" ? rawItem.w : null;
     const h = typeof rawItem.h === "number" ? rawItem.h : null;
-    const pairs = [
-      [["items", member.itemId, "x"], c.x + factor * (member.startX - c.x)],
-      [["items", member.itemId, "y"], c.y + factor * (member.startY - c.y)],
-    ];
-    if (w !== null) pairs.push([["items", member.itemId, "w"], w * factor]);
-    if (h !== null) pairs.push([["items", member.itemId, "h"], h * factor]);
+    const pairs = [];
+    if (doX) pairs.push([["items", member.itemId, "x"], c.x + factor * (member.startX - c.x)]);
+    if (doY) pairs.push([["items", member.itemId, "y"], c.y + factor * (member.startY - c.y)]);
+    if (doX && w !== null) pairs.push([["items", member.itemId, "w"], w * factor]);
+    if (doY && h !== null) pairs.push([["items", member.itemId, "h"], h * factor]);
     return pairs;
   }
 
@@ -1075,6 +1169,7 @@
   function commitModal() {
     modal = null;
     modalCenter = null;
+    guides = []; // drop the axis guide
     app.modalXform = null;
     app.commitPreview(); // one undo unit (or a no-op if the preview is empty)
   }
@@ -1084,6 +1179,7 @@
   function cancelModal() {
     modal = null;
     modalCenter = null;
+    guides = []; // drop the axis guide
     app.modalXform = null;
     app.cancelPreview();
   }
@@ -1093,18 +1189,26 @@
   // effect is the CanvasView side that owns the geometry + preview. Starting is
   // driven here; commit/cancel null the flag themselves (with `modal` already
   // cleared) so this branch only fires for an EXTERNAL clear (e.g. a mode
-  // switch), which reverts safely.
+  // switch), which reverts safely. The effect ONLY reacts to modal presence
+  // (x != null), not to axis/buffer edits inside it — those reassign
+  // app.modalXform for the HintBar but must NOT retrigger begin/teardown; a
+  // guard on `!modal`/`modal` already ensures that (an axis edit leaves both
+  // truthy → neither branch runs).
   $effect(() => {
     const x = app.modalXform;
     if (x && !modal) beginModal(x.kind);
-    else if (!x && modal) { modal = null; modalCenter = null; app.cancelPreview(); }
+    else if (!x && modal) { modal = null; modalCenter = null; guides = []; app.cancelPreview(); }
   });
 
-  // Install the confirm/cancel hooks the Enter/Escape shortcut entries call
-  // (App.svelte), the same seam as canvasActions. Once, at mount.
+  // Install the confirm/cancel/axis/buffer hooks the modal shortcut entries call
+  // (App.svelte), the same seam as canvasActions. Once, at mount. Each guards on
+  // a live `modal` so a stray key outside a transform is a harmless no-op.
   $effect(() => {
     app.modalCommit = commitModal;
     app.modalCancel = cancelModal;
+    app.modalSetAxis = (axis) => { if (modal) modalSetAxis(axis); };
+    app.modalAppendBuffer = (ch) => { if (modal) modalAppendBuffer(ch); };
+    app.modalBackspace = () => { if (modal) modalBackspace(); };
   });
 
   // ── Overlay geometry (screen space) ────────────────────────────────────────

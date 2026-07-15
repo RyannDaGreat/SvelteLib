@@ -197,6 +197,36 @@
     a.commit(doc);
   }
 
+  /**
+   * Pure function. The HintBar label for a live modal transform — mode, active
+   * axis, and typed numeric buffer, joined by " · " (spec: "Scale · X · 2.5").
+   * A grab with no axis carries the "pick an axis (X/Y) to type a distance"
+   * prompt (the G-numeric-requires-axis ruling — a grab number needs an axis;
+   * the digit keystroke is a no-op until one is chosen). Absent axis/buffer
+   * segments are simply omitted.
+   *
+   * @param {{kind:string, axis:(null|"x"|"y"), buffer:string}} m — modalXform
+   * @returns {string}
+   *
+   * @example modalAnnouncement({ kind: "scale", axis: null, buffer: "" })
+   * // "Scale · type a factor"
+   * @example modalAnnouncement({ kind: "scale", axis: "x", buffer: "2.5" })
+   * // "Scale · X · 2.5"
+   * @example modalAnnouncement({ kind: "grab", axis: null, buffer: "" })
+   * // "Grab · pick an axis (X/Y) to type a distance"
+   * @example modalAnnouncement({ kind: "grab", axis: "x", buffer: "2" })
+   * // "Grab · X · 2"
+   * @example modalAnnouncement({ kind: "scale", axis: "y", buffer: "" })
+   * // "Scale · Y"
+   */
+  function modalAnnouncement(m) {
+    const parts = [m.kind === "scale" ? "Scale" : "Grab"];
+    if (m.axis) parts.push(m.axis.toUpperCase());
+    if (m.buffer) parts.push(m.buffer);
+    else if (!m.axis) parts.push(m.kind === "grab" ? "pick an axis (X/Y) to type a distance" : "type a factor");
+    return parts.join(" · ");
+  }
+
   // ── Shortcuts: keybinding registry → shortcut registry (dispatch + HintBar)
   // Command-bound key combos live in core/keybindings.js (an EDITOR setting:
   // defaults in code, user overrides persisted in localStorage). The bridge
@@ -254,21 +284,36 @@
     { keys: ["Shift"], label: "Axis lock", when: (c) => editMode(c) && c.dragKind === "move" },
     { keys: ["Shift"], label: "Uniform scale", when: (c) => editMode(c) && c.dragKind === "resize" },
     { keys: ["Cmd"], label: "Symmetric resize", when: (c) => editMode(c) && c.dragKind === "resize" },
-    // Blender-style MODAL transforms (manifest Round 12): G grabs the selection
-    // (it follows the mouse with no button held), S scales it about its
-    // collective center. Available with a selection in edit mode (editSelection
-    // already excludes an active modal, so G/S don't re-enter). These START the
-    // modal via the app; CanvasView captures the geometry and drives the preview.
-    // No axis-constraint keys yet (X/Y) — flagged as a follow-up.
+    // Blender-style MODAL transforms (manifest "G/S modal transforms round 2"):
+    // G grabs the selection (it follows the mouse with no button held), S scales
+    // it about its collective center. Available with a selection in edit mode
+    // (editSelection already excludes an active modal, so G/S don't re-enter).
+    // These START the modal via the app; CanvasView captures the geometry and
+    // drives the preview.
     { keys: ["G"], label: "Grab", when: editSelection, run: () => app.beginModalTransform("grab") },
     { keys: ["S"], label: "Scale", when: editSelection, run: () => app.beginModalTransform("scale") },
-    // While a modal transform is live, ONLY its own confirm/cancel inputs are
-    // active (every edit-context resolver excludes modalActive). Enter or a left
-    // click CONFIRMS (one undo unit); Escape CANCELS (reverts the preview). The
-    // click is display-only here — CanvasView's pointer handler commits it.
+    // While a modal transform is live, ONLY its own inputs are active (every
+    // edit-context resolver excludes modalActive). Enter or a left click
+    // CONFIRMS (one undo unit); Escape CANCELS (reverts the preview). The click
+    // is display-only here — CanvasView's pointer handler commits it. The modal
+    // announcement (mode · axis · buffer) is injected into the hints below.
     { keys: ["Enter"], label: "Confirm", when: (c) => c.modalActive, run: () => app.modalCommit() },
     { keys: ["mouse_left"], label: "Confirm", when: (c) => c.modalActive },
     { keys: ["Escape"], label: "Cancel", when: (c) => c.modalActive, run: () => app.modalCancel() },
+    // AXIS CONSTRAINTS (Blender X/Y): during a live modal, X constrains to the
+    // x-axis, Y to the y-axis; same key clears, other key switches. CanvasView
+    // toggles the constraint + draws the infinite axis guide through the center.
+    { keys: ["X"], label: "X axis", when: (c) => c.modalActive, run: () => app.modalSetAxis("x") },
+    { keys: ["Y"], label: "Y axis", when: (c) => c.modalActive, run: () => app.modalSetAxis("y") },
+    // NUMERIC ENTRY: digits / "." / "-" build a value buffer applied EXACTLY
+    // (S 2 = factor 2; G X 2 = +2 world units along X). Backspace edits it. The
+    // digit/sign keys DISPATCH but don't each show a chip (hidden) — one visible
+    // hint below announces the capability; the live buffer shows in the modal
+    // announcement. modalAppendBuffer no-ops a grab digit with no axis (ruling).
+    ...["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "-"].map((ch) => ({
+      keys: [ch], label: "Type value", hidden: true, when: (c) => c.modalActive, run: () => app.modalAppendBuffer(ch),
+    })),
+    { keys: ["Backspace"], label: "Edit value", when: (c) => c.modalActive, run: () => app.modalBackspace() },
     { keys: ["mouse_scroll"], label: "Pan", when: editMode },
     { keys: ["Ctrl", "mouse_scroll"], label: "Zoom", when: editMode },
     { keys: ["Left", "Right"], label: "Step slides", when: (c) => c.mode === "present" },
@@ -312,7 +357,14 @@
 
   let hints = $derived.by(() => {
     app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.bandArm; app.modalXform;
-    return app.shortcuts.hints(shortcutCtx());
+    const base = app.shortcuts.hints(shortcutCtx());
+    // While a modal transform is live, LEAD the bar with its announcement —
+    // mode · active axis · typed buffer — so the live state is the first thing
+    // read (spec: "Scale · X · 2.5 — Enter commit, Esc cancel"). The [keys] slot
+    // shows the mode key (G/S); Enter/Esc chips follow from the entries above.
+    const m = app.modalXform;
+    if (!m) return base;
+    return [[[m.kind === "scale" ? "S" : "G"], modalAnnouncement(m)], ...base];
   });
 
   function onKeydown(e) {

@@ -82,13 +82,17 @@ export class PowerRPApp {
   // auto-announce while dragging). Endpoint drags leave it null (they have
   // no modifier behaviors to announce).
   dragKind = $state(null);
-  // Active Blender-style MODAL transform (manifest Round 12 "Multi-select
-  // interactions": G grab / S scale), or null. Just the KIND flag ("grab" |
-  // "scale") + a phase — the geometry (start cursor, per-member start states,
-  // collective center) is captured and driven entirely in CanvasView, which
-  // owns pointer/preview; this is only the shared context the shortcut registry
-  // reads (to gate normal edit shortcuts off mid-transform — Blender's modal
-  // lock) and the HintBar reads (to announce the mode + its commit/cancel keys).
+  // Active Blender-style MODAL transform (manifest "G/S modal transforms round
+  // 2": G grab / S scale + axis constraints + numeric entry), or null. Shape:
+  // { kind: "grab"|"scale", axis: null|"x"|"y", buffer: string }. The geometry
+  // (start cursor, per-member start states, collective center) is captured and
+  // driven entirely in CanvasView, which owns pointer/preview; this reactive
+  // record is only the shared context the shortcut registry reads (to gate
+  // normal edit shortcuts off mid-transform — Blender's modal lock) and the
+  // HintBar reads (to announce mode · axis · typed buffer + commit/cancel keys).
+  // CanvasView is the SOLE writer: beginModalTransform sets {kind, axis:null,
+  // buffer:""}; the axis/buffer commands reassign it whole so the HintBar
+  // $derived invalidates. (Round-2 shape addition — flagged in the report.)
   modalXform = $state(null);
   /** Canonical region name under the pointer (Panel sets it) — the substrate
    * for region-aware hints (manifest: panels are first-class). */
@@ -395,15 +399,20 @@ export class PowerRPApp {
    */
   beginModalTransform(kind) {
     if (this.selectedIds().length === 0) return;
-    this.modalXform = { kind };
+    this.modalXform = { kind, axis: null, buffer: "" };
   }
 
-  // Confirm/cancel hooks for the active modal transform — installed by
-  // CanvasView (which owns the preview) like canvasActions. The Enter/Escape
-  // shortcut entries (App.svelte) call these; a left click confirms directly in
-  // CanvasView's pointer handler. No-ops before the canvas mounts.
+  // Confirm/cancel/constraint hooks for the active modal transform — installed
+  // by CanvasView (which owns the preview) like canvasActions. The modal
+  // shortcut entries (App.svelte) call these: Enter/left-click confirm, Escape
+  // cancels, X/Y set the axis constraint, digit/./- keys build the numeric
+  // buffer, Backspace edits it. All no-ops before the canvas mounts (and no-ops
+  // outside a live transform — CanvasView guards each on a live modal record).
   modalCommit = () => {};
   modalCancel = () => {};
+  modalSetAxis = () => {};
+  modalAppendBuffer = () => {};
+  modalBackspace = () => {};
 
   /** Command. Arms a one-shot band-select drag in `mode` ("inner"|"outer"|
    * "regular"). "regular" resolves to the default bandMode setting. The next
