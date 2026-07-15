@@ -190,6 +190,12 @@
   const handEntries = [
     { keys: ["Delete"], label: "Delete", hidden: true, when: editSelection, command: "delete-item" },
     { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging && !c.bandArmed },
+    // Shift-click ADDS/REMOVES from the multi-selection (manifest "Shift-click
+    // multi-select"). Display-only, same registry pathway as the other pointer
+    // hints — the pick code reads the modifier itself. Alongside "Select / drag"
+    // while idle over the canvas; hidden mid-drag (shift then means axis-lock,
+    // whose own hint fires) and while a band select is armed.
+    { keys: ["Shift", "mouse_left"], label: "Add to selection", when: (c) => editMode(c) && !c.dragging && !c.bandArmed },
     // A palette-armed band select replaces the plain pointer hint until the
     // one-shot drag happens (band-select initiation is palette-only for now).
     { keys: ["mouse_left"], label: "Drag box to select", when: (c) => editMode(c) && !c.dragging && c.bandArmed },

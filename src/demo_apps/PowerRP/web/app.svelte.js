@@ -261,6 +261,21 @@ export class PowerRPApp {
     this.selectionSet = [...ids];
   }
 
+  /**
+   * Command. Toggles an itemId's MEMBERSHIP in the current selection
+   * (shift-click semantics — PowerPoint/Figma): if `id` is already selected it
+   * is removed, otherwise it is added. Order-preserving: an added id lands at
+   * the end. Routes ENTIRELY through the existing substrate — it builds the new
+   * id list from selectedIds() ± `id` and applies it via selectMany (a
+   * collapse-to-one still goes through selectMany, whose first-element mirror
+   * keeps `selection` coherent); removing the last id fully deselects. No second
+   * selection mechanism.
+   */
+  toggleInSelection(id) {
+    const ids = this.selectedIds();
+    this.selectMany(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  }
+
   /** Command. Arms a one-shot band-select drag in `mode` ("inner"|"outer"|
    * "regular"). "regular" resolves to the default bandMode setting. The next
    * canvas drag performs the rubber band; CanvasView clears the arm. */
