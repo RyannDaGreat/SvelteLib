@@ -98,13 +98,12 @@
       aria-pressed={app.anchorsVisible}
       onclick={() => app.runCommand("toggle-anchors")}
     >
-      <!-- User-specified composite: the horseshoe magnet with an anchor in
-           the middle (iconify-only rule: two mdi glyphs stacked, no custom
-           SVG). The magnet opens downward, the small anchor sits centered
-           in its mouth. -->
+      <!-- User-specified composite (round-11 correction: NOT a literal
+           anchor glyph — the X-cross that anchors render as on canvas,
+           CENTERED in the magnet; iconify-only rule, stacked mdi glyphs). -->
       <span class="icon-stack">
         <iconify-icon icon="mdi:magnet" width="18" height="18"></iconify-icon>
-        <iconify-icon class="icon-stack-overlay" icon="mdi:anchor" width="9" height="9"></iconify-icon>
+        <iconify-icon class="icon-stack-overlay" icon="mdi:close" width="9" height="9"></iconify-icon>
       </span>
     </button>
   </Tooltip>
