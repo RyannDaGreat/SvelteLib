@@ -1040,14 +1040,25 @@ body,
   background: var(--a-hover-bg);
 }
 
-/* Fixed-width icon slot: identical whether filled or blank, so titles align. */
+/* Fixed-width icon slot: identical whether filled or blank, so titles align.
+   Fixed HEIGHT too (same rule): iconify icons hydrate ASYNC, and an
+   unreserved icon box changes the row height when the SVG pops in — which
+   shifts the list under keyboard scroll-to-highlighted and nudges the
+   highlighted row out of view. Geometry must be identical whether the icon
+   is filled, blank, or still loading. --a-sp-5 = the 16px icon size the
+   markup declares (width="16" height="16"). */
 .palette-item .icon-slot {
   width: var(--a-sp-5);
+  height: var(--a-sp-5);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--fg-dim);
   flex: none;
+}
+
+.palette-item .icon-slot iconify-icon {
+  display: block; /* no line-box: pre-hydration inline sizing differs from the SVG's */
 }
 
 .palette-item .title {
@@ -1075,6 +1086,11 @@ body,
 .palette-item .sub-arrow {
   color: var(--fg-dim);
   flex: none;
+  /* Reserved box + block display for the same hydration-stability rule as
+     .icon-slot (this element IS an iconify-icon; 16px per its markup). */
+  width: var(--a-sp-5);
+  height: var(--a-sp-5);
+  display: block;
 }
 
 .palette-none {
@@ -1276,10 +1292,11 @@ body,
 }
 .icon-stack .icon-stack-overlay {
   position: absolute;
-  /* Sits in the lower half — the magnet's mouth (the glyph opens downward). */
-  bottom: 0;
+  /* Dead-centered in the base glyph (round-11 correction: bottom-anchored
+     "in the mouth" read as no good — center it). */
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
 }
 
 /* FPS counter — browser setting, OFF by default; bottom-LEFT always,

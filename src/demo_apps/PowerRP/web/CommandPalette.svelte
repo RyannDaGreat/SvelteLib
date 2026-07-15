@@ -43,6 +43,7 @@
   let highlighted = $state(0);
   let stack = $state([]); // drill-down path of submenu entries
   let inputEl = $state(null);
+  let resultsEl = $state(null); // the scrollable results list
 
   let parent = $derived(stack.length ? stack[stack.length - 1] : null);
   // `used` inside the registry is a plain (non-reactive) Map, so markUsed() from
@@ -51,11 +52,31 @@
   // is shown — even when query/stack are unchanged from the prior open.
   let results = $derived(app.paletteOpen ? app.commands.search(query, app, parent) : []);
 
+  /** Command. Resets the highlight to the first row AND snaps the list back
+   * to the top — the two must move together: open, typing, submenu drill,
+   * and back-up all restart the list, and a stale scroll offset would leave
+   * row 0 highlighted but out of view. */
+  function resetHighlight() {
+    highlighted = 0;
+    if (resultsEl) resultsEl.scrollTop = 0;
+  }
+
+  /** Command. Keeps the KEYBOARD-highlighted row visible. Called ONLY from
+   * the arrow-key branches — row hover (pointermove) also moves `highlighted`,
+   * but hover must never yank the scroll position. scrollIntoView follows Dropdown's
+   * scrollTargetIntoView precedent (src/lib/Dropdown.svelte); it centers on
+   * OPEN, whereas per-keystroke stepping wants {block: "nearest"} so the list
+   * moves only when the row would leave view. Safe pre-flush: the row
+   * elements already exist — arrows just move the highlight among them. */
+  function scrollHighlightedIntoView() {
+    resultsEl?.querySelectorAll(".palette-item")[highlighted]?.scrollIntoView({ block: "nearest" });
+  }
+
   $effect(() => {
     if (app.paletteOpen && inputEl) {
       query = "";
-      highlighted = 0;
       stack = [];
+      resetHighlight();
       inputEl.focus();
     }
   });
@@ -64,7 +85,7 @@
     if (cmd.children) {
       stack = [...stack, cmd];
       query = "";
-      highlighted = 0;
+      resetHighlight();
       inputEl.focus();
     } else {
       app.paletteOpen = false;
@@ -76,7 +97,7 @@
     if (stack.length) {
       stack = stack.slice(0, -1);
       query = "";
-      highlighted = 0;
+      resetHighlight();
     } else {
       app.paletteOpen = false;
     }
@@ -85,9 +106,13 @@
   function onkeydown(e) {
     if (e.key === "Escape") back();
     else if (e.key === "Backspace" && query === "" && stack.length) back();
-    else if (e.key === "ArrowDown") highlighted = Math.min(highlighted + 1, results.length - 1);
-    else if (e.key === "ArrowUp") highlighted = Math.max(highlighted - 1, 0);
-    else if (e.key === "Enter" && results[highlighted]) activate(results[highlighted]);
+    else if (e.key === "ArrowDown") {
+      highlighted = Math.min(highlighted + 1, results.length - 1);
+      scrollHighlightedIntoView();
+    } else if (e.key === "ArrowUp") {
+      highlighted = Math.max(highlighted - 1, 0);
+      scrollHighlightedIntoView();
+    } else if (e.key === "Enter" && results[highlighted]) activate(results[highlighted]);
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -108,16 +133,22 @@
         bind:this={inputEl}
         bind:value={query}
         onkeydown={onkeydown}
-        oninput={() => (highlighted = 0)}
+        oninput={resetHighlight}
         placeholder={parent ? `${parent.title}…` : "Type a command…"}
         spellcheck="false"
       />
-      <div class="palette-results">
+      <div class="palette-results" bind:this={resultsEl}>
         {#each results as cmd, i (cmd.id)}
+          <!-- Hover-highlight keys on pointerMOVE, not pointerenter: keyboard
+               navigation scrolls the list, which slides rows UNDER a stationary
+               cursor — that fires pointerenter (yanking the highlight off the
+               keyboard row) but never pointermove, which only fires on genuine
+               mouse movement. So hover still highlights instantly, and hover
+               and keyboard can't fight (the VS Code list rule). -->
           <button
             class="palette-item"
             class:highlighted={i === highlighted}
-            onpointerenter={() => (highlighted = i)}
+            onpointermove={() => (highlighted = i)}
             onclick={() => activate(cmd)}
           >
             <!-- Fixed-width icon slot (same width whether filled or blank, so
