@@ -174,6 +174,57 @@ export function effectsCullMargin(state) {
 }
 
 /**
+ * Pure function. The PER-SIDE-inflated effect SOURCE rect (in device px) that
+ * the GPU "effect" batch must re-render the widget into, so the blur has valid
+ * source texels on every side and the shifted shadow's own body is captured.
+ *
+ * ── WHY per-side, not a symmetric scalar (manifest 16.1) ──────────────────────
+ * The offscreen texture holds ONE re-render of the widget; the separable
+ * Gaussian then reads from it, spilling `reach` texels beyond each geometry
+ * edge, and the shadow quad samples the SAME texture translated by the device
+ * offset (offDx, offDy). If the source rect is only the widget footprint (the
+ * pre-16.1 bug), the blur that should spill UP/LEFT of the geometry reads empty
+ * texels → a hard straight cliff on the TOP and LEFT (the leading edges,
+ * OPPOSITE the +dx/+dy offset), while the offset direction still looked soft
+ * because the shifted shadow body extends past the footprint there.
+ *
+ * The correct source must expand by the FULL blur reach on ALL FOUR sides
+ * (the widget's blurred silhouette spills `reach` every direction) PLUS the
+ * shadow offset on the side the shadow moves TOWARD (its shifted body needs
+ * source there). Left/top get max(0, -off); right/bottom get max(0, +off) —
+ * so a positive dx grows the RIGHT source, a negative dx grows the LEFT.
+ *
+ * This is NOT a second definition of shadow reach: `reach` and `offDx/offDy`
+ * are passed in by the compositor, derived from the SAME blur·3 + offset that
+ * effectsCullMargin / effectSubtree.margin use (effectsCullMargin's scalar
+ * contract is untouched — 16.1 coordination note, option 1). The scalar margin
+ * (a symmetric bound) stays correct for CULLING and the composite QUAD size;
+ * only the render-to-texture SOURCE needs the per-side split.
+ *
+ * Args:
+ *   cx, cy (number): widget footprint center, device px
+ *   halfW, halfH (number): rotation-aware half-extents of the footprint, device px
+ *   reach (number): blur support (blur sigma · 3), device px, applied EVERY side
+ *   offDx, offDy (number): shadow offset in device px (0 when no shadow)
+ *
+ * Returns:
+ *   {x, y, w, h}: device-px source rect (may extend off-canvas; the caller
+ *   intersects it with the inflated canvas bound and downscales to fit)
+ *
+ * @example effectSourceRect(100, 100, 20, 15, 0, 0, 0) // {x: 80, y: 85, w: 40, h: 30} (no effect halo → bare footprint)
+ * @example effectSourceRect(100, 100, 20, 15, 30, 6, 6) // {x: 50, y: 55, w: 106, h: 96} (reach 30 every side; +6 offset grows right/bottom only)
+ * @example effectSourceRect(100, 100, 20, 15, 30, -6, -6) // {x: 44, y: 49, w: 106, h: 96} (negative offset grows left/top instead)
+ */
+export function effectSourceRect(cx, cy, halfW, halfH, reach, offDx, offDy) {
+  const left = reach + Math.max(0, -offDx);
+  const right = reach + Math.max(0, offDx);
+  const top = reach + Math.max(0, -offDy);
+  const bottom = reach + Math.max(0, offDy);
+  const x = cx - halfW - left, y = cy - halfH - top;
+  return { x, y, w: halfW * 2 + left + right, h: halfH * 2 + top + bottom };
+}
+
+/**
  * Pure function. The LOCAL AABB of a set of points, padded on every side —
  * the arrow-family widgets' effect bbox (they have no w/h state; their drawn
  * extent is their endpoints plus stroke/head geometry). `pad` should cover

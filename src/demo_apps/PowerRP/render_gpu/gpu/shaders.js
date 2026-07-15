@@ -300,6 +300,180 @@ fn fs(in: BlurOut) -> @location(0) vec4f {
 }
 `;
 
+export const LINEAR_BLUR_WGSL = /* wgsl */ `
+struct BlurU {
+  dir_sigma: vec4f,   // (dirX, dirY, sigmaDevicePx, unused) — dir in texels
+  opacity: vec4f,     // (opacity, unused, unused, unused)
+};
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> u: BlurU;
+
+struct BlurOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> BlurOut {
+  let corner = vec2f(f32(vi % 2u) * 4.0 - 1.0, f32(vi / 2u) * 4.0 - 1.0);
+  var out: BlurOut;
+  out.pos = vec4f(corner, 0.0, 1.0);
+  out.uv = vec2f(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+  return out;
+}
+
+const MAX_HALF_KERNEL: i32 = ${MAX_HALF_KERNEL};
+
+fn gw(i: f32, sigma: f32) -> f32 { let x = i / sigma; return exp(-0.5 * x * x); }
+
+@fragment
+fn fs(in: BlurOut) -> @location(0) vec4f {
+  let sigma = max(u.dir_sigma.z, 0.01);
+  let half_kernel = min(i32(ceil(sigma * 3.0)), MAX_HALF_KERNEL);
+  let texel = 1.0 / vec2f(textureDimensions(src));
+  let dir = u.dir_sigma.xy * texel;
+  // Center tap (unpaired).
+  var sum = textureSampleLevel(src, samp, in.uv, 0.0) * gw(0.0, sigma);
+  var weight_sum = gw(0.0, sigma);
+  // Pair texels (1,2), (3,4), ... on each side: one bilinear fetch per pair.
+  var i = 1;
+  loop {
+    if (i > half_kernel) { break; }
+    let w0 = gw(f32(i), sigma);
+    let w1 = select(0.0, gw(f32(i + 1), sigma), i + 1 <= half_kernel);
+    let wsum = w0 + w1;
+    let off = (f32(i) * w0 + f32(i + 1) * w1) / max(wsum, 1e-8);
+    sum += textureSampleLevel(src, samp, in.uv + dir * off, 0.0) * wsum;
+    sum += textureSampleLevel(src, samp, in.uv - dir * off, 0.0) * wsum;
+    weight_sum += 2.0 * wsum;
+    i += 2;
+  }
+  return (sum / weight_sum) * u.opacity.x;
+}
+`;
+
+/** Analytic-shadow shape kinds (i_shape.x). rect covers plain + rounded. */
+export const ANALYTIC_KIND = { rect: 0, ellipse: 1 };
+
+/**
+ * PROTOTYPE (Round 15.5, OpusN) — improvement #1: ANALYTIC drop shadow for
+ * plain SDF shapes (rect / rounded-rect / ellipse). Evaluates the
+ * Gaussian-blurred silhouette in CLOSED FORM per fragment — ZERO offscreen
+ * texture, ZERO blur passes, ONE instanced quad. Cost is independent of blur
+ * radius and of zoom (it is fragment math over the shadow bbox), which is the
+ * whole point: it fixes both the large-σ cost AND the zoom-clip class of bug
+ * (there is no texture to clip).
+ *
+ * MATH:
+ *   - rect / rrect: Evan Wallace's erf closed form
+ *     (madebyevan.com/shaders/fast-rounded-rectangle-shadows). A blurred box
+ *     edge is 0.5·(1+erf(x·√½/σ)); a blurred box is the product of the X and Y
+ *     integrals. Rounded corners break separability in Y, so Y is a 4-sample
+ *     numeric Gaussian integral of the X-closed-form (Wallace's roundedBoxShadowX).
+ *   - ellipse: no exact elementary closed form, so we use the SDF + erf falloff
+ *     approximation (Raph Levien's technique): coverage ≈ 0.5·(1 - erf(d·√½/σ))
+ *     where d is the signed distance to the ellipse. Near-exact for the smooth
+ *     Gaussian falloff of an ellipse shadow (no corners to special-case).
+ *
+ * Instance stride = SHAPE_FLOATS (6·vec4), reusing the corner + 6-attr vertex
+ * layout family. Sigma & offset are WORLD units converted to device px through
+ * the view uniform (view-independent instances → replays correctly inside lens
+ * re-renders, the shaped-lens nesting rule). Premultiplied output, composited
+ * OVER (a shadow is an occluder), drawn UNDER the widget.
+ */
+export const ANALYTIC_SHADOW_WGSL = VIEW_WGSL + /* wgsl */ `
+struct AsOut {
+  @builtin(position) pos: vec4f,
+  @location(0) @interpolate(flat) shape: vec4f,  // (kind, cxDev, cyDev, cornerDev)
+  @location(1) @interpolate(flat) dims: vec4f,   // (hwDev, hhDev, sigmaDev, 0)
+  @location(2) @interpolate(flat) tint: vec4f,   // (r, g, b, opacity)
+};
+
+@vertex
+fn vs(
+  @location(0) corner: vec2f,
+  @location(1) i_quad: vec4f,   // local shadow bbox (x, y, w, h) — bbox + 3σ + offset
+  @location(2) i_xform: vec4f,  // similarity (a, b, tx, ty)
+  @location(3) i_shape: vec4f,  // (kind, cxLocal, cyLocal, cornerLocal)
+  @location(4) i_dims: vec4f,   // (hwLocal, hhLocal, sigmaWorld, 0)
+  @location(5) i_tint: vec4f,   // (r, g, b, opacity)
+  @location(6) i_off: vec4f,    // (offsetWorldX, offsetWorldY, 0, 0)
+) -> AsOut {
+  let local = i_quad.xy + corner * i_quad.zw;
+  // World point, then the canvas-space shadow offset (does NOT rotate w/ widget).
+  let world = apply_xform(i_xform, local) + i_off.xy;
+  var out: AsOut;
+  out.pos = world_to_clip(world);
+  // Shape center → device px (through the widget xform, then to device). The
+  // shape is axis-aligned in LOCAL space; we evaluate the SDF in DEVICE px, so
+  // convert the center + half-extents by the widget scale × view scale.
+  let center_world = apply_xform(i_xform, i_shape.yz);
+  let center_dev = center_world * view.scale_pan.x + view.scale_pan.yz + i_off.xy * view.scale_pan.x;
+  // Widget uniform scale = length of the xform's (a,b) column.
+  let wscale = length(i_xform.xy);
+  let dev = view.scale_pan.x * wscale;
+  out.shape = vec4f(i_shape.x, center_dev, i_shape.w * dev);
+  out.dims = vec4f(i_dims.xy * dev, i_dims.z * view.scale_pan.x * wscale, 0.0);
+  out.tint = i_tint;
+  return out;
+}
+
+// A&S 7.1.27 erf approximation (Wallace), scalar + vec2 helpers.
+fn erf1(x: f32) -> f32 {
+  let s = sign(x); let a = abs(x);
+  var t = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
+  t = t * t;
+  return s - s / (t * t);
+}
+fn erf2(x: vec2f) -> vec2f { return vec2f(erf1(x.x), erf1(x.y)); }
+
+// Blurred half-plane integral in X at row y, for a rounded box (Wallace).
+fn roundedBoxShadowX(x: f32, y: f32, sigma: f32, corner: f32, half: vec2f) -> f32 {
+  let d = min(half.y - corner - abs(y), 0.0);
+  let curved = half.x - corner + sqrt(max(0.0, corner * corner - d * d));
+  let integral = 0.5 + 0.5 * erf2(vec2f(x - curved, x + curved) * (0.70710678 / sigma));
+  return integral.y - integral.x;
+}
+
+// Ellipse signed distance (IQ gradient-corrected), device px, centered.
+fn sdEllipse(p: vec2f, r: vec2f) -> f32 {
+  let rr = max(r, vec2f(1e-6));
+  let k1 = length(p / rr);
+  let k2 = length(p / (rr * rr));
+  return select(k1 * (k1 - 1.0) / k2, (k1 - 1.0) * min(rr.x, rr.y), k2 < 1e-6);
+}
+
+@fragment
+fn fs(in: AsOut) -> @location(0) vec4f {
+  let p = in.pos.xy - in.shape.yz;   // device px relative to shape center
+  let sigma = max(in.dims.z, 0.01);
+  let half = in.dims.xy;
+  var cov: f32;
+  if (in.shape.x < 0.5) {
+    // rect / rrect — Wallace: 4-sample numeric Gaussian integral in Y of the
+    // X-closed-form. clamp integration to ±3σ ∩ the box for accuracy/speed.
+    let corner = min(in.shape.w, min(half.x, half.y));
+    let low = p.y - half.y; let high = p.y + half.y;
+    let start = clamp(-3.0 * sigma, low, high);
+    let end = clamp(3.0 * sigma, low, high);
+    let step = (end - start) / 4.0;
+    var y = start + 0.5 * step;
+    var acc = 0.0;
+    for (var i = 0; i < 4; i++) {
+      let gy = exp(-0.5 * (y / sigma) * (y / sigma)) / (2.5066282746 * sigma);
+      acc += roundedBoxShadowX(p.x, p.y - y, sigma, corner, half) * gy * step;
+      y += step;
+    }
+    cov = acc;
+  } else {
+    // ellipse — SDF + erf falloff (Levien). d<0 inside → coverage→1.
+    let d = sdEllipse(p, half);
+    cov = 0.5 - 0.5 * erf1(d * (0.70710678 / sigma));
+  }
+  cov = clamp(cov, 0.0, 1.0);
+  return vec4f(in.tint.rgb, 1.0) * (in.tint.a * cov);
+}
+`;
+
+
 /**
  * Magnifier lens: an instanced quad (same layout family as SHAPE) whose
  * fragment samples the bound texture at UVs contracted about the lens center

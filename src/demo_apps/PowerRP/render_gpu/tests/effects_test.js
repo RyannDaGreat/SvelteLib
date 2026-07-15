@@ -14,7 +14,7 @@
 
 import assert from "node:assert/strict";
 import { effectSubtree, BLEND_MODES, rect, ellipse, text, polyline, polygon, pushTransform, popTransform, parseColor } from "../ir.js";
-import { effectsOff, applyEffects, effectsCullMargin, paddedPointsBBox } from "../effects.js";
+import { effectsOff, applyEffects, effectsCullMargin, paddedPointsBBox, effectSourceRect } from "../effects.js";
 import { PROPS, BUNDLES, bundle, bundleNestedDefaults } from "../../core/properties.js";
 import { defaultCanSkip } from "../../core/view.js";
 import { irToPDF } from "../pdf_backend.js";
@@ -114,6 +114,21 @@ test("effectsCullMargin: matches the builder's margin; 0 when off", () => {
 test("paddedPointsBBox: AABB + per-side pad; throws on empty", () => {
   assert.deepEqual(paddedPointsBBox([{ x: 10, y: 20 }, { x: 110, y: 60 }], 5), { x: 5, y: 15, w: 110, h: 50 });
   assert.throws(() => paddedPointsBBox([], 1), /point/);
+});
+
+test("effectSourceRect: blur reach ALL four sides, offset only the offset side (16.1)", () => {
+  // no halo → bare footprint (byte-identical to the pre-16.1 symmetric footprint)
+  assert.deepEqual(effectSourceRect(100, 100, 20, 15, 0, 0, 0), { x: 80, y: 85, w: 40, h: 30 });
+  // reach 30 grows EVERY side; +6 offset adds to right/bottom only (the 16.1 fix:
+  // top/left get the full reach, so the leading-edge penumbra is no longer clipped)
+  assert.deepEqual(effectSourceRect(100, 100, 20, 15, 30, 6, 6), { x: 50, y: 55, w: 106, h: 96 });
+  // a NEGATIVE offset mirrors it onto left/top (reach still on all four sides)
+  assert.deepEqual(effectSourceRect(100, 100, 20, 15, 30, -6, -6), { x: 44, y: 49, w: 106, h: 96 });
+  // the leading (non-offset) side ALWAYS carries the full reach — the bug was a
+  // ZERO leading-side margin; assert left margin == reach when offset is +x.
+  const r = effectSourceRect(0, 0, 10, 10, 30, 8, 0);
+  assert.equal(-10 - r.x, 30, "left margin must equal the full blur reach (leading side)");
+  assert.equal((r.x + r.w) - 10, 30 + 8, "right (offset) side = reach + offset");
 });
 
 // ── the EFFECT-OFF BYTE-IDENTITY guarantee (Round 12D) ───────────────────────

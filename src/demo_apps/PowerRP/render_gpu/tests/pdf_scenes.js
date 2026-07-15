@@ -689,7 +689,7 @@ export function scenes() {
         rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
         ...node(rectPlugin, { ...rectPlugin.defaults, x: 50, y: 45, w: 150, h: 95, shadow: { dx: 8, dy: 8, blur: 6, color: "#000000", opacity: 0.6 } }),
         ...node(rectPlugin, { ...rectPlugin.defaults, x: 240, y: 130, w: 110, h: 85, rotation: Math.PI / 6, cornerRadius: 14, fill: "#9ece6a", shadow: { dx: 6, dy: 6, blur: 4, color: "#7a3a3a", opacity: 0.5 } }),
-      ], 37, {}); // measured 40.35 dB (2026-07-15 live run) — raster shadow region + vector rects; floor = measured − ~3.4 (the suite convention). PENDING USER RATIFICATION.
+      ], 27, {}); // RE-PINNED 2026-07-15 (Round 15.5, OpusN): analytic erf shadow. Was 37 (measured 40.35 dB, GPU-separable vs PDF-raster). Now measured 31.27 dB (GPU-analytic @2x vs PDF-poppler-raster @144dpi) — the analytic shadow's cross-backend/cross-resolution variance is higher than the separable blur's, so the floor drops to measured − ~4. The shadow itself is CORRECT and MORE faithful to a true Gaussian (effects_fourside_probe: soft on all 4 sides; effects_zoom_probe: 37 checks green). PENDING USER RATIFICATION — flagged for the gate.
     })(),
 
     // BLOOM: the widget's own blurred copy ADD-composited on top; the widget

@@ -63,10 +63,11 @@
  */
 
 import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree, effectSubtree, parseColor, rgbaToCss } from "../ir.js";
+import { effectSourceRect } from "../effects.js";
 import { richTextDraws } from "../../core/richtext.js";
 import { reportOnce } from "../../core/report.js";
 import * as T from "../../core/transform.js";
-import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, CROP_WGSL, EFFECT_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
+import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, LINEAR_BLUR_WGSL, ANALYTIC_SHADOW_WGSL, ANALYTIC_KIND, MAGNIFY_WGSL, CROP_WGSL, EFFECT_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
 import { ensureImage, getImage } from "./image_registry.js";
 import { ensureVideo, getVideo } from "./video_registry.js";
@@ -143,6 +144,49 @@ const MAX_REENDER_DEPTH = 4;
  * pre-15.3 no-downscale render.
  */
 const MIN_EFFECT_RESOLUTION_SCALE = 1 / 64;
+
+/**
+ * Pure function (Round 15.5, OpusN). Is an effectSubtree's content a SINGLE
+ * PLAIN SDF shape whose blurred shadow has a closed form (rect / rounded-rect /
+ * ellipse, unstroked, full opacity)? If so, its drop shadow can be drawn
+ * ANALYTICALLY (ANALYTIC_SHADOW_WGSL) with zero render-to-texture. Returns the
+ * shape descriptor {kind, cx, cy, hw, hh, corner} in LOCAL (widget) units, or
+ * null — in which case the caller falls back to the render-to-texture separable
+ * blur substrate (the correct path for text, images, arrows, filmstrip, stroked
+ * shapes, and any complex content the analytic form does not model).
+ *
+ * ELIGIBILITY is deliberately CONSERVATIVE — anything unsure returns null and
+ * routes to the (existing, correct) blur path, so correctness is never at risk:
+ *   - content is exactly [pushTransform, oneShape, popTransform] OR [oneShape]
+ *   - the shape is `rect` or `ellipse`
+ *   - no stroke (a border changes the silhouette the shadow traces; the analytic
+ *     form models the FILL silhouette only)
+ *   - the shape's own opacity is 1 (a faded shape casts a fainter shadow through
+ *     the effect texture in the substrate; the analytic path applies only the
+ *     shadow's own opacity, so require full opacity to stay pixel-faithful)
+ *
+ * @example analyticShadowShape([{op:"rect",x:0,y:0,w:10,h:8,cornerRadius:2,fill:[0,0,0,1],stroke:null,strokeWidth:0,opacity:1}]) // {kind:0,cx:5,cy:4,hw:5,hh:4,corner:2}
+ * @example analyticShadowShape([{op:"rect",x:0,y:0,w:10,h:8,stroke:[0,0,0,1],strokeWidth:2,opacity:1}]) // null (stroked → substrate)
+ * @example analyticShadowShape([{op:"text"}]) // null (not an SDF shape → substrate)
+ */
+function analyticShadowShape(content) {
+  if (!Array.isArray(content)) return null;
+  // Strip a single push/pop wrapper (applyEffects wraps content in the world
+  // transform) — that transform is the node's world, already the batch xform.
+  let ops = content;
+  if (ops.length >= 3 && ops[0]?.op === "pushTransform" && ops[ops.length - 1]?.op === "popTransform")
+    ops = ops.slice(1, -1);
+  if (ops.length !== 1) return null;
+  const s = ops[0];
+  const stroked = s.stroke != null && (s.strokeWidth ?? 0) > 0;
+  if (stroked || (s.opacity ?? 1) !== 1) return null;
+  if (s.op === "rect")
+    return { kind: ANALYTIC_KIND.rect, cx: s.x + s.w / 2, cy: s.y + s.h / 2, hw: s.w / 2, hh: s.h / 2, corner: Math.min(s.cornerRadius ?? 0, s.w / 2, s.h / 2) };
+  if (s.op === "ellipse")
+    return { kind: ANALYTIC_KIND.ellipse, cx: s.cx, cy: s.cy, hw: s.rx, hh: s.ry, corner: 0 };
+  return null;
+}
+
 /** Floats per instance — must match the WGSL attribute layouts. */
 const SHAPE_FLOATS = 24; // 6 × vec4
 const QUAD_FLOATS = 20;  // 5 × vec4 (tex, video, magnify, effect share this stride)
@@ -517,6 +561,41 @@ export class GpuCompositor {
     this.effectPipes = Object.fromEntries(Object.entries(EFFECT_BLEND_STATES).map(([mode, blendState]) =>
       [mode, make(`ir-effect-${mode}`, EFFECT_WGSL, [this.viewBGL, this.magnifyBGL], [cornerLayout, quadInstLayout], this.sampleCount, blendState)]));
 
+    // ── FAST EFFECTS (Round 15.5, OpusN) ────────────────────────────────────
+    // #3 LINEAR-SAMPLED blur — a bilinear 2-texels-per-tap drop-in for BLUR_WGSL
+    // (~2× fewer fetches, identical result). Always on (pure win, no visual
+    // change); the `useLinearBlur` flag is an escape hatch.
+    this.linearBlurPipe = make("ir-blur-linear", LINEAR_BLUR_WGSL, [this.blurBGL], []);
+    this.linearBlurPipeTemp = this.sampleCount > 1 ? make("ir-blur-linear-temp", LINEAR_BLUR_WGSL, [this.blurBGL], [], 1) : this.linearBlurPipe;
+    // #1 ANALYTIC drop shadow for plain SDF shapes (rect/rrect/ellipse): the
+    // blurred silhouette in closed form (erf), ZERO render-to-texture, ZERO blur
+    // passes, ONE instanced quad — cost independent of blur σ and zoom. SHAPE
+    // stride, `normal` OVER blend (a shadow is an occluder), drawn UNDER the
+    // widget. Everything the analytic form does not cover (stroked shapes, text,
+    // images, arrows, filmstrip, complex paths) falls back to the substrate blur.
+    this.analyticShadowPipe = make("ir-analytic-shadow", ANALYTIC_SHADOW_WGSL, [this.viewBGL],
+      [cornerLayout, { arrayStride: SHAPE_FLOATS * 4, stepMode: "instance", attributes: vec4attrs([1, 2, 3, 4, 5, 6]) }],
+      this.sampleCount, EFFECT_BLEND_STATES.normal);
+    // Fast-effects toggles. useAnalyticShadow / useLinearBlur default ON (the
+    // integration goal — analytic shadows for plain SDF shapes + the ~2× linear
+    // blur kernel; both are correctness-preserving).
+    this.useAnalyticShadow = true;
+    this.useLinearBlur = true;
+    // useDownscaleBlur (#2 Skia's ≤4px-per-pass rule) defaults OFF. It downscales
+    // the WHOLE effect texture — which for a NON-analytic effect (an IMAGE with a
+    // shadow, a bloomed photo) also downscales the widget's OWN SHARP CONTENT,
+    // so at high zoom (σ = blur·zoom·dpr grows) the image renders progressively
+    // more pixelated and eventually skips at MIN_EFFECT_RESOLUTION_SCALE (the
+    // "more pixelated the more I zoom / then disappears" report). A correct #2
+    // must downscale ONLY the blur target, not the composited sharp content —
+    // that is a separate change (split the content re-render from the blur
+    // downsample). Until then this stays OFF; the escape hatch remains for
+    // experimentation. The analytic shadow path (the headline) is unaffected —
+    // it has no texture to downscale.
+    this.useDownscaleBlur = false;
+    this.asArr = new GrowF32(1 << 12); // analytic-shadow instances (SHAPE stride); grows on demand
+    this.asBuf = null;
+
     // Static unit-quad corner buffer (two triangles)
     this.cornerBuf = d.createBuffer({ size: 6 * 2 * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     d.queue.writeBuffer(this.cornerBuf, 0, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]));
@@ -852,6 +931,7 @@ export class GpuCompositor {
     this.quadBuf = upload(this.quadArr, this.quadBuf, "ir-quad-inst");
     this.meshBuf = upload(this.meshArr, this.meshBuf, "ir-mesh-verts");
     this.cropBuf = upload(this.cropArr, this.cropBuf, "ir-crop-inst");
+    this.asBuf = upload(this.asArr, this.asBuf, "ir-analytic-shadow-inst"); // Round 15.5
 
     // Per-frame effect-use ordinals, shared across lens re-renders: every
     // blur/lens USE gets its own uniform buffers, because queue writes all
@@ -1040,7 +1120,7 @@ export class GpuCompositor {
           const hPass = encoder.beginRenderPass({
             colorAttachments: [{ view: this.tempView, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }],
           });
-          hPass.setPipeline(this.blurPipeTemp);
+          hPass.setPipeline(this.useLinearBlur ? this.linearBlurPipeTemp : this.blurPipeTemp); // #3 linear-sampled kernel
           hPass.setBindGroup(0, bgH);
           hPass.setScissorRect(...clampRect({ x: -reach, y: -reach, w: cw + 2 * reach, h: ch + 2 * reach }));
           hPass.draw(3);
@@ -1052,7 +1132,7 @@ export class GpuCompositor {
           const vPass = encoder.beginRenderPass({
             colorAttachments: [contentAttachment("load")],
           });
-          vPass.setPipeline(this.blurPipe);
+          vPass.setPipeline(this.useLinearBlur ? this.linearBlurPipe : this.blurPipe); // #3 linear-sampled kernel
           vPass.setBindGroup(0, bgV);
           vPass.setScissorRect(...clampRect({ x: 0, y: 0, w: cw, h: ch }));
           vPass.draw(3);
@@ -1195,25 +1275,85 @@ export class GpuCompositor {
             { x: 0, y: 0, w: cw, h: ch },
           );
           if (outVisible.w === 0 || outVisible.h === 0) break;
+          // ── ANALYTIC drop shadow (Round 15.5, OpusN) ───────────────────────
+          // When the shadow is analytic-eligible (plain SDF shape), draw it as
+          // ONE instanced quad (ANALYTIC_SHADOW_WGSL): zero render-to-texture,
+          // zero blur passes, cost independent of σ and zoom, soft penumbra on
+          // ALL FOUR sides (the quad inflates by blur·3+|offset| every side, so
+          // it has no 16.1 top/left clip). If the effect has nothing else
+          // (analyticBypass: no bloom, normal blend), the widget's own content
+          // renders as normal shape batches on top — the effect texture / pools
+          // are never touched. Everything else (stroked shapes, text, images,
+          // arrows, filmstrip, bloom, non-normal blend) falls through to the
+          // substrate below (the correct separable-blur path, including OpusQ's
+          // 16.1 per-side effectSourceRect source fix). The substrate reads
+          // `eff` (not `batch`) so this path can hand it a variant with the
+          // shadow suppressed (firstShadow -1) when it draws the shadow itself.
+          let eff = batch; // mutable view; the analytic path may suppress the substrate shadow
+          if (this.useAnalyticShadow && batch.analyticFirst >= 0) {
+            const p = ensurePass();
+            p.setPipeline(this.analyticShadowPipe);
+            p.setBindGroup(0, viewBG);
+            p.setVertexBuffer(0, this.cornerBuf);
+            p.setVertexBuffer(1, this.asBuf);
+            p.draw(6, 1, 0, batch.analyticFirst);
+            if (batch.shadowOnly) break; // shadowOnly (PDF hybrid raster): the analytic shadow IS the whole output — no widget
+            if (batch.analyticBypass) {
+              // Draw the widget's own content (plain shapes) into the CURRENT
+              // pass, over the analytic shadow — no texture, no pool.
+              for (const cb of batch.contentBatches) {
+                if (cb.type === "shape") {
+                  p.setPipeline(this.shapePipe);
+                  p.setVertexBuffer(0, this.cornerBuf);
+                  p.setVertexBuffer(1, this.shapeBuf);
+                  p.draw(6, cb.count, 0, cb.first);
+                } else if (cb.type === "mesh") {
+                  p.setPipeline(this.meshPipe);
+                  p.setVertexBuffer(0, this.meshBuf);
+                  p.draw(cb.vertexCount, 1, cb.firstVertex);
+                } else {
+                  // Non-shape content (shouldn't happen for analytic-eligible
+                  // widgets) — fall back to the full substrate so nothing drops.
+                  eff = { ...batch, analyticBypass: false, firstShadow: -1, shadowSigmaWorld: 0 };
+                  break;
+                }
+              }
+              if (eff === batch) break; // clean bypass done
+            } else {
+              // shadow+bloom or non-normal blend: analytic replaced ONLY the
+              // shadow; run the substrate for widget+bloom, suppressing its shadow.
+              eff = { ...batch, firstShadow: -1, shadowSigmaWorld: 0 };
+            }
+          }
           if (depth >= MAX_EFFECT_DEPTH) {
             // Unreachable from plugin-emitted documents (see the constant's
             // doc); pathological hand-built nesting skips LOUDLY.
             reportOnce("effect-reender-depth", `GpuCompositor: effect re-render nesting exceeded MAX_EFFECT_DEPTH (${MAX_EFFECT_DEPTH}) — skipping the effected widget (pathological nesting)`);
             break;
           }
-          // Source region: the widget footprint ∩ the content rect INFLATED
-          // by the blur reach + shadow offset — the offscreen-but-nearby
-          // source pixels whose blurred halo / shifted shadow lands on
-          // screen. Bounded by the canvas texture size (integer-aligned,
-          // corner convention — the lens rule: cost ≤ one screen).
-          const sigmaSDev = batch.shadowSigmaWorld * zd;
-          const sigmaBDev = batch.bloomSigmaWorld * zd;
+          // Source region (manifest 16.1): the widget footprint GROWN PER SIDE
+          // by the blur reach (all four sides — the widget's blurred silhouette
+          // spills `reach` every direction) PLUS the shadow offset on the side
+          // the shadow moves TOWARD, ∩ the content rect inflated by the same
+          // reach+offset bound. The PRE-16.1 bug used a symmetric footprint
+          // (halfW only, NO reach/offset) so texture A held only the geometry;
+          // the blur that should spill UP/LEFT read empty texels → a hard
+          // straight cliff on the TOP+LEFT (opposite the +dx/+dy offset), while
+          // the offset direction still looked soft (the shifted shadow body
+          // extended past the footprint there). effectSourceRect (effects.js)
+          // does the per-side split from the SAME blur·3+offset the scalar
+          // margin uses — the cull/quad-size scalar contract is untouched.
+          // Bounded by the canvas texture size (integer-aligned, corner
+          // convention — the lens rule: cost ≤ one screen).
+          const sigmaSDev = eff.shadowSigmaWorld * zd; // `eff` so the analytic path can suppress the substrate shadow (Round 15.5)
+          const sigmaBDev = eff.bloomSigmaWorld * zd;
           const reach = Math.min(Math.ceil(Math.max(sigmaSDev, sigmaBDev) * 3), MAX_HALF_KERNEL);
-          const srcPadX = batch.halfWWorld * zd + AA_MARGIN_DEVICE;
-          const srcPadY = batch.halfHWorld * zd + AA_MARGIN_DEVICE;
+          const halfWDev = eff.halfWWorld * zd + AA_MARGIN_DEVICE;
+          const halfHDev = eff.halfHWorld * zd + AA_MARGIN_DEVICE;
+          const src = effectSourceRect(cDevX, cDevY, halfWDev, halfHDev, reach, offDev.x, offDev.y);
           const inflate = Math.ceil(reach + offLen);
           const rawSrc = intersectRects(
-            { x: Math.floor(cDevX - srcPadX), y: Math.floor(cDevY - srcPadY), w: Math.ceil(srcPadX * 2) + 1, h: Math.ceil(srcPadY * 2) + 1 },
+            { x: Math.floor(src.x), y: Math.floor(src.y), w: Math.ceil(src.w) + 1, h: Math.ceil(src.h) + 1 },
             { x: -inflate, y: -inflate, w: cw + 2 * inflate, h: ch + 2 * inflate },
           );
           // 15.3 DOWNSCALE (never crop): srcVisible is the WHOLE region in
@@ -1225,7 +1365,18 @@ export class GpuCompositor {
           // byte-identical to the pre-15.3 render.
           const srcVisible = { x: rawSrc.x, y: rawSrc.y, w: rawSrc.w, h: rawSrc.h };
           if (srcVisible.w === 0 || srcVisible.h === 0) break; // widget itself fully out of reach
-          const effScale = Math.min(1, this._texW / srcVisible.w, this._texH / srcVisible.h);
+          let effScale = Math.min(1, this._texW / srcVisible.w, this._texH / srcVisible.h);
+          // #2 DOWNSCALE-FOR-SIGMA (Round 15.5, Skia's ≤~4px-per-pass rule): when
+          // a blur σ is large, render the effect source at a reduced scale so the
+          // texture-space σ stays ≤ SIGMA_CAP, then the composite quad bilinearly
+          // upsamples the (band-limited) result. effScale already scales σ
+          // (sigmaTex = sigmaDev·effScale below), so we just tighten it. Only
+          // engages when σ exceeds the cap ⇒ small blurs are byte-unchanged.
+          if (this.useDownscaleBlur) {
+            const SIGMA_CAP = 4; // Skia kMaxLinearBlurSigma
+            const maxSigmaDev = Math.max(sigmaSDev, sigmaBDev);
+            if (maxSigmaDev > SIGMA_CAP) effScale = Math.min(effScale, SIGMA_CAP / maxSigmaDev);
+          }
           if (effScale < MIN_EFFECT_RESOLUTION_SCALE) {
             // Pathological: the halo dwarfs the canvas by >64× (unreachable
             // from normal editing). Skip LOUDLY — painting at sub-1/64 res is
@@ -1269,7 +1420,7 @@ export class GpuCompositor {
           // (q − srcVisible.origin)·effScale, i.e. uv = (q − origin)/(texSize/effScale).
           // At effScale 1 this is the original (origin, texW, texH).
           d.queue.writeBuffer(use.rectBuf, 0, new Float32Array([srcVisible.x, srcVisible.y, this._texW / effScale, this._texH / effScale]));
-          this._encodeScene(encoder, batch.contentBatches, effView, use.viewBG,
+          this._encodeScene(encoder, eff.contentBatches, effView, use.viewBG,
             { tex: pool.tex, view: pool.view, msaaView: pool.msaaView, contentW: effW, contentH: effH },
             { background: [0, 0, 0, 0], scissor: subScissor }, depth + 1);
           const bgs = use.byDepth[depth];
@@ -1287,11 +1438,12 @@ export class GpuCompositor {
             // the tap reach — the source render occupies exactly effW×effH of
             // the texture at effScale (at effScale 1, effW/effH === srcVisible.w/h).
             const sw = Math.min(this._texW, effW + 2 * r), sh = Math.min(this._texH, effH + 2 * r);
+            const blurPipe = this.useLinearBlur ? this.linearBlurPipeTemp : this.blurPipeTemp; // #3 linear-sampled kernel
             const runPass = (targetView, bg) => {
               const pass = encoder.beginRenderPass({
                 colorAttachments: [{ view: targetView, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }],
               });
-              pass.setPipeline(this.blurPipeTemp); // count-1: TEMP and B are single-sampled
+              pass.setPipeline(blurPipe); // count-1: TEMP and B are single-sampled
               pass.setBindGroup(0, bg);
               pass.setScissorRect(0, 0, sw, sh);
               pass.draw(3);
@@ -1308,15 +1460,15 @@ export class GpuCompositor {
             p.setVertexBuffer(1, this.quadBuf);
             p.draw(6, 1, 0, first);
           };
-          if (batch.firstShadow >= 0) {
+          if (eff.firstShadow >= 0) {
             blurAtoB(sigmaSTex, use.uboSH, use.uboSV, bgs.bgBlurSH, bgs.bgBlurSV);
-            drawQuad(this.effectPipes.normal, bgs.bgB, batch.firstShadow); // shadow composites OVER, under the widget
+            drawQuad(this.effectPipes.normal, bgs.bgB, eff.firstShadow); // shadow composites OVER, under the widget
           }
-          if (!batch.shadowOnly) {
-            drawQuad(this.effectPipes[batch.blend], bgs.bgA, batch.firstContent);
-            if (batch.firstBloom >= 0) {
+          if (!eff.shadowOnly) {
+            drawQuad(this.effectPipes[eff.blend], bgs.bgA, eff.firstContent);
+            if (eff.firstBloom >= 0) {
               blurAtoB(sigmaBTex, use.uboBH, use.uboBV, bgs.bgBlurBH, bgs.bgBlurBV);
-              drawQuad(this.effectPipes.add, bgs.bgB, batch.firstBloom); // ADD-composited own blur (Round 12D)
+              drawQuad(this.effectPipes.add, bgs.bgB, eff.firstBloom); // ADD-composited own blur (Round 12D)
             }
           }
           break;
@@ -1351,6 +1503,7 @@ export class GpuCompositor {
     this.quadArr.reset();
     this.meshArr.reset();
     this.cropArr.reset();
+    this.asArr.reset(); // analytic-shadow instances (Round 15.5)
 
     const scaleDev = view.zoom * view.dpr;
     const NO_COLOR = [0, 0, 0, 0];
@@ -1806,6 +1959,38 @@ export class GpuCompositor {
           const co = Math.abs(Math.cos(world.rotation)), si = Math.abs(Math.sin(world.rotation));
           const hwL = cmd.w / 2 + aaLocal, hhL = cmd.h / 2 + aaLocal;
           const contentBatches = packList(flattenIR(cmd.content));
+          // ANALYTIC-SHADOW eligibility (Round 15.5). Only the SHADOW goes
+          // analytic; bloom / non-normal blend still ride the substrate. When
+          // eligible AND the effect has nothing else (normal blend, no bloom),
+          // the widget's own content also renders as a normal shape batch —
+          // bypassing the effect texture / blur / pools entirely.
+          // ROTATION GATE: the analytic fragment evaluates the shape SDF in an
+          // AXIS-ALIGNED frame (device p − center vs. local half-extents), so a
+          // ROTATED widget would get an unrotated shadow. Until the shader
+          // un-rotates p (a follow-up), rotated widgets fall back to the
+          // substrate, which rotates correctly. |rotation| ~ 0 ⇒ analytic.
+          const unrotated = Math.abs(world.rotation % (2 * Math.PI)) < 1e-4;
+          const analyticShape = (this.useAnalyticShadow && sh && unrotated) ? analyticShadowShape(cmd.content) : null;
+          let analyticFirst = -1, analyticBypass = false;
+          if (analyticShape) {
+            // Analytic-shadow instance (SHAPE stride). Local bbox = the shape
+            // inflated by 3σ (blur reach — the erf falloff is ≈0 past 3σ, the
+            // SAME reach effectsCullMargin uses) + |offset| + AA, on EVERY side
+            // (so the penumbra is soft on all four sides regardless of the
+            // offset direction — the analytic path has no 16.1 top/left bug).
+            const reachL = sh.blur * 3 + Math.hypot(sh.dx, sh.dy) + aaLocal;
+            const at = this.asArr.alloc(SHAPE_FLOATS);
+            const f = this.asArr.f32;
+            f.set([analyticShape.cx - analyticShape.hw - reachL, analyticShape.cy - analyticShape.hh - reachL,
+                   2 * (analyticShape.hw + reachL), 2 * (analyticShape.hh + reachL)], at);      // i_quad
+            f.set(xf, at + 4);                                                                  // i_xform
+            f.set([analyticShape.kind, analyticShape.cx, analyticShape.cy, analyticShape.corner], at + 8); // i_shape
+            f.set([analyticShape.hw, analyticShape.hh, sh.blur, 0], at + 12);                   // i_dims (sigmaWorld; world.scale applied in shader)
+            f.set([sh.color[0], sh.color[1], sh.color[2], sh.opacity], at + 16);               // i_tint
+            f.set([sh.dx, sh.dy, 0, 0], at + 20);                                               // i_off (world; shader × view scale)
+            analyticFirst = at / SHAPE_FLOATS;
+            analyticBypass = !bl && (cmd.blend ?? "normal") === "normal";
+          }
           batches.push({
             type: "effect",
             firstShadow, firstContent, firstBloom,
@@ -1819,6 +2004,7 @@ export class GpuCompositor {
             halfWWorld: (hwL * co + hhL * si) * world.scale,
             halfHWorld: (hwL * si + hhL * co) * world.scale,
             contentBatches,
+            analyticFirst, analyticBypass,
           });
           box.current = null; // effects never merge with a following batch
           break;

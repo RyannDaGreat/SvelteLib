@@ -80,22 +80,39 @@ const scene = [
 // center crosses fill → penumbra → background).
 const EDGE_MID = { x: ELL.X + ELL.w, y: ELL.Y + ELL.h / 2 };
 const CENTER = { x: ELL.X + ELL.w / 2, y: ELL.Y + ELL.h / 2 };
+// The ellipse's TOP-LEFT corner region (manifest 16.1): the LEADING edges,
+// OPPOSITE the +dx/+dy offset. Anchoring the top-edge and left-edge midpoints
+// at screen center keeps those leading edges + their (should-be-soft) penumbra
+// on-screen so a scan outward crosses fill → penumbra → background. The 16.1
+// bug clipped these with a straight cliff (the source texture started AT the
+// geometry, so the blur that spills up/left had no source texels).
+const TOP_MID = { x: ELL.X + ELL.w / 2, y: ELL.Y };
+const LEFT_MID = { x: ELL.X, y: ELL.Y + ELL.h / 2 };
 
 // A view that puts a chosen WORLD anchor point at the canvas center at `zoom`.
 // panX/panY in CSS px (the compositor multiplies by dpr).
 const viewAnchoring = (zoom, anchor) => ({ zoom, panX: W / 2 - anchor.x * zoom, panY: H / 2 - anchor.y * zoom, dpr: DPR });
 
-// The four views: the three edge views anchor the ellipse's right-edge
-// midpoint at screen center (the far fill edge + rightward soft shadow always
-// visible); z8fill centers the whole ellipse to test the interior.
+// Views: the three edge views anchor the ellipse's right-edge midpoint at
+// screen center (the far fill edge + rightward soft shadow always visible);
+// z8fill centers the whole ellipse to test the interior; the tl* views anchor
+// the top/left leading-edge midpoints at zoom 1 AND 8 (16.1 leading-edge
+// penumbra — the non-zero dx/dy shadow makes the leading side the STRESSED one).
 const VIEWS = {
   z1: viewAnchoring(1, EDGE_MID),
   z8: viewAnchoring(8, EDGE_MID),
   z025: viewAnchoring(0.25, EDGE_MID),
   z8fill: viewAnchoring(8, CENTER),
+  tlTop1: viewAnchoring(1, TOP_MID),   tlLeft1: viewAnchoring(1, LEFT_MID),
+  tlTop8: viewAnchoring(8, TOP_MID),   tlLeft8: viewAnchoring(8, LEFT_MID),
 };
-const CORNER_VIEWS = ["z1", "z8", "z025"]; // fill + soft-shadow assertions
-const ZOOM_OF = { z1: 1, z8: 8, z025: 0.25, z8fill: 8 };
+const CORNER_VIEWS = ["z1", "z8", "z025"]; // fill + soft-shadow assertions (offset side)
+// Leading-edge (top/left) views: [view, zoom, edge-axis 'top'|'left'].
+const LEADING_VIEWS = [
+  ["tlTop1", 1, "top"], ["tlLeft1", 1, "left"],
+  ["tlTop8", 8, "top"], ["tlLeft8", 8, "left"],
+];
+const ZOOM_OF = { z1: 1, z8: 8, z025: 0.25, z8fill: 8, tlTop1: 1, tlLeft1: 1, tlTop8: 8, tlLeft8: 8 };
 
 // Pure helper (in-probe): world point → device px under a view.
 const w2d = (wx, wy, v) => [(wx * v.zoom + v.panX) * v.dpr, (wy * v.zoom + v.panY) * v.dpr];
@@ -212,10 +229,60 @@ try {
     ok("z8fill: no interior fill cliff (item dwarfs screen)", allFill, `a non-fill px (lum ${worst}) appeared mid-item — the clip cliff`);
   }
 
+  // (4) LEADING-EDGE (TOP + LEFT) PENUMBRA — manifest 16.1. OPPOSITE the +dx/+dy
+  // offset. Scan OUTWARD past the top edge (upward) / left edge (leftward): a
+  // correct render shows the SAME soft grey penumbra as the offset side; the
+  // 16.1 bug clipped it to a straight fill→background cliff (penWidth 0), because
+  // the effect source texture started AT the geometry — the up/left blur spill
+  // read empty texels. Run at zoom 1 AND 8 with the NON-ZERO dx/dy shadow so the
+  // leading side is the stressed one (its penumbra is the small offset SUBTRACTED
+  // from the blur reach, still a wide soft band — never a cliff).
+  const leadPenPx = {};
+  for (const [name, zoom, axis] of LEADING_VIEWS) {
+    const px = framePx[name], v = VIEWS[name];
+    const isTop = axis === "top";
+    // The leading geometry edge, on the ellipse's mid axis, in device px.
+    const [exD, eyD] = isTop
+      ? w2d(ELL.X + ELL.w / 2, ELL.Y, v)          // top edge midpoint
+      : w2d(ELL.X, ELL.Y + ELL.h / 2, v);         // left edge midpoint
+    const inset = Math.max(3, Math.round(6 * zoom));
+    // (4a) FILL present just INSIDE the leading edge (the fill itself is intact).
+    const fillIn = isTop ? at(px, Math.round(exD), Math.round(eyD) + inset)
+                         : at(px, Math.round(exD) + inset, Math.round(eyD));
+    ok(`${name}: fill intact just inside the ${axis} edge`, lum(fillIn) < FILL_LUM_MAX, `${axis}-edge fill missing, got ${fillIn}`);
+    // (4b) SOFT PENUMBRA outward (up for top, left for left) — a grey run before
+    // the background, exactly like the offset-side test.
+    const scan = [];
+    const scanLen = Math.ceil((ELL.h * 0.4 + SHADOW.blur * 3) * zoom) + 20;
+    for (let k = 0; k < scanLen; k++) {
+      const [sx, sy] = isTop ? [Math.round(exD), Math.round(eyD) - k] : [Math.round(exD) - k, Math.round(eyD)];
+      scan.push(lum(at(px, sx, sy)));
+    }
+    let firstBg = scan.findIndex((L) => L > BG_LUM_MIN); if (firstBg < 0) firstBg = scan.length;
+    let penStart = 0; while (penStart < firstBg && scan[penStart] < FILL_LUM_MAX) penStart++;
+    const penWidth = firstBg - penStart;
+    const greys = scan.slice(penStart, firstBg);
+    const darkest = greys.length ? Math.min(...greys) : 255;
+    ok(`${name}: ${axis} shadow present (darkens bg past the leading edge)`, darkest < SHADOW_DARKEST, `no leading-edge shadow darkening, min grey ${darkest}`);
+    ok(`${name}: ${axis} penumbra is SOFT (no leading-edge cliff)`, penWidth >= Math.max(3, Math.round(2 * zoom)), `leading penumbra only ${penWidth}px — the 16.1 top/left cliff`);
+    ok(`${name}: ${axis} no hard black-blob core`, darkest > 120, `leading penumbra dipped near-black (${darkest})`);
+    leadPenPx[name] = penWidth;
+  }
+  // The leading-edge penumbra stays SUBSTANTIAL at zoom 8 (the downscale path
+  // keeps the up/left blur source, so a wide soft band survives — the 16.1 bug
+  // gave 0 here). NB: at zoom 8 the penumbra (blur·zoom·dpr ≈ 336 dev px) exceeds
+  // the upward/leftward scan room to the canvas edge, so its measured width is
+  // canvas-capped, NOT compared to z1 — the softness checks above already prove
+  // no cliff. A cliff would read penWidth 0 regardless of scan room.
+  const Z8_LEADING_MIN = 40; // device px — comfortably a soft band, never a cliff
+  ok("top leading penumbra stays wide at z8", leadPenPx.tlTop8 >= Z8_LEADING_MIN, `tlTop8=${leadPenPx.tlTop8}px — a soft band must survive the downscale`);
+  ok("left leading penumbra stays wide at z8", leadPenPx.tlLeft8 >= Z8_LEADING_MIN, `tlLeft8=${leadPenPx.tlLeft8}px — a soft band must survive the downscale`);
+
   ok("zero page console errors", pageErrors.length === 0, `page errors: ${pageErrors.join(" | ")}`);
 
   console.log(`\nEFFECTS ZOOM PROBE: ${checks} checks passed`);
   console.log(`  right penumbra device px: z025=${penumbraPx.z025} z1=${penumbraPx.z1} z8=${penumbraPx.z8}`);
+  console.log(`  leading penumbra device px: top z1=${leadPenPx.tlTop1} z8=${leadPenPx.tlTop8}  left z1=${leadPenPx.tlLeft1} z8=${leadPenPx.tlLeft8}`);
   console.log(`  screenshots: ${SHOT_DIR}`);
 } finally {
   browser && await browser.close();
