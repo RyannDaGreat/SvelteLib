@@ -59,6 +59,31 @@ export const THEMES = [
   { id: "warm", title: "Warm Gray (dark)" },
 ];
 
+/**
+ * Pure function. Asset kind of a File/Blob by MIME prefix — the paste-to-
+ * upload twin of CanvasView's OS-file-drop `fileKind` (same MIME-prefix
+ * convention, kept as a small local duplicate rather than a cross-file
+ * import: neither file exports it, and this one is one line).
+ *
+ * Args:
+ *     file (File|Blob): a clipboard or drop file, read via its `.type`.
+ *
+ * Returns:
+ *     "image" | "video" | "sound" | "other"
+ *
+ * Examples:
+ *     >>> assetKindForFile({type: "image/png"})
+ *     'image'
+ *     >>> assetKindForFile({type: "video/quicktime"})
+ *     'video'
+ */
+function assetKindForFile(file) {
+  if (file.type.startsWith("image/")) return "image";
+  if (file.type.startsWith("video/")) return "video";
+  if (file.type.startsWith("audio/")) return "sound";
+  return "other";
+}
+
 export class PowerRPApp {
   doc = $state(newDocument());
   slideIndex = $state(0);
@@ -854,6 +879,42 @@ export class PowerRPApp {
       for (const [key, value] of Object.entries(payload.powerrp_props))
         doc = keyframed(doc, this.slideIndex, ["items", this.selection, ...key.split(".")], value);
       this.commit(doc);
+    }
+  }
+
+  // ── Paste-to-upload (manifest 13.3): Cmd/Ctrl+V with image/video/file data
+  // on the OS clipboard uploads it through the SAME path as an OS-file drop
+  // (app.uploadAsset → insertImageAsset/insertVideoAsset), landing at the
+  // camera-view center (paste has no drop point, unlike a canvas drag-drop —
+  // the same "at=null" fallback insertImageAsset already uses for the Asset
+  // Explorer's insert button). This is a SIBLING of pasteClipboard, not a
+  // replacement: the caller (App.svelte's native `paste` listener) only calls
+  // this when clipboardData carries Files — copying a PowerRP item puts JSON
+  // TEXT on the system clipboard with no Files present, and copying an OS
+  // file/image never carries our JSON text, so the two are mutually exclusive
+  // in practice and internal widget-paste (the pre-existing Ctrl+V keydown
+  // path, untouched) always runs whenever there are no Files to upload — per
+  // manifest 13.3's compose-don't-fight rule.
+  // Hash-dedup is EXPLICITLY DEFERRED (user, 13.3) — every paste re-uploads.
+
+  /** Command. Uploads each File in `files` to the current project's assets
+   *  (app.uploadAsset — the same upload endpoint the canvas OS-file drop and
+   *  the Asset Explorer's file input use) and inserts the matching widget
+   *  (image/video by MIME) at the camera-view center. Kinds with no canvas
+   *  widget still upload (they land in the asset library) and are reported,
+   *  never silently dropped. A failure in any step is REPORTED loudly
+   *  (console.error) — a paste gesture must never fail silently. */
+  async pasteFiles(files) {
+    for (const file of files) {
+      try {
+        const up = await this.uploadAsset(file); // {ok, name, url}
+        const kind = assetKindForFile(file);
+        if (kind === "image") await this.insertImageAsset(up.url);
+        else if (kind === "video") await this.insertVideoAsset(up.url);
+        else console.warn(`Paste: uploaded "${up.name}" but no canvas widget exists for kind "${kind}" — it stays in the asset library.`);
+      } catch (e) {
+        console.error(`Paste-to-upload failed for "${file.name}":`, e);
+      }
     }
   }
 

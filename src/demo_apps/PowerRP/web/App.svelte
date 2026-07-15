@@ -445,9 +445,31 @@
     if (app.paletteOpen) return; // palette owns its keys
     if (app.shortcuts.dispatch(e, shortcutCtx())) e.preventDefault();
   }
+
+  /**
+   * Command. Native OS-paste handler (manifest 13.3 PASTE-TO-UPLOAD): Cmd/
+   * Ctrl+V with image/video/file data on the OS clipboard uploads it via
+   * app.pasteFiles (same upload endpoint as the canvas OS-file drop) and
+   * inserts the matching widget. COMPOSES with the pre-existing Ctrl+V
+   * keyboard shortcut (dispatched on keydown, above) rather than replacing
+   * it: this listener is a no-op whenever clipboardData carries no Files —
+   * the internal powerrp_item/powerrp_props JSON paste (system-clipboard
+   * text, no Files present) is untouched and always wins in that case, per
+   * spec. Guarded identically to onKeydown (skip while typing/present/
+   * palette-open). Hash-dedup is explicitly DEFERRED (user, 13.3).
+   */
+  function onPaste(e) {
+    const el = document.activeElement;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+    if (app.mode === "present" || app.paletteOpen) return;
+    const files = [...(e.clipboardData?.files ?? [])];
+    if (!files.length) return; // no OS files — defer entirely to the existing Ctrl+V path
+    e.preventDefault();
+    app.pasteFiles(files);
+  }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onpaste={onPaste} />
 
 <div class="app">
   <Toolbar {app} />
