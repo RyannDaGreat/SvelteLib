@@ -118,6 +118,13 @@
     { id: "undo", title: "Undo", icon: "mdi:undo", run: (a) => a.undo() },
     { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
     { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, run: (a) => (a.selection = null) },
+    // Select All / Deselect All (manifest Round 12B "Palette / selection
+    // commands"): distinct from the single-item "Deselect" above (Escape's
+    // existing path — needsSelection, singular semantics unaffected) — these
+    // are explicit SET commands, always visible, so they're discoverable via
+    // fuzzy search without first knowing something is already selected.
+    { id: "select-all", title: "Select All", icon: "mdi:select-all", run: (a) => a.selectAll() },
+    { id: "deselect-all", title: "Deselect All", icon: "mdi:select-off", when: needsSelection, run: (a) => a.deselectAll() },
     // Rubber-band selection — armed via the palette (initiation is command-only
     // for now, manifest round 11). Each command arms a ONE-SHOT band drag on the
     // canvas; the CanvasView performs the drag and applies selectInBox in the
@@ -153,6 +160,12 @@
     { id: "export-pdf", title: "Export Slide as PDF", icon: "mdi:file-pdf-box", run: (a) => a.exportPdf() },
     { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, run: (a) => a.copySelection() },
     { id: "paste", title: "Paste", icon: "mdi:content-paste", run: (a) => a.pasteClipboard() },
+    // Copy selection region to the SYSTEM clipboard (manifest Round 12B
+    // "Palette / selection commands"): renders the selection's world AABB,
+    // not the whole slide (unlike Export as PNG/PDF above). when: selection
+    // non-empty — needsSelection is exactly that (a.selection !== null).
+    { id: "copy-as-png", title: "Copy as PNG", icon: "mdi:image-multiple-outline", when: needsSelection, run: (a) => a.copyAsPng() },
+    { id: "copy-as-pdf", title: "Copy as PDF", icon: "mdi:file-pdf-box", when: needsSelection, run: (a) => a.copyAsPdf() },
     {
       id: "copy-property",
       title: "Copy Property",
@@ -267,6 +280,25 @@
   // (core/keybindings.js scope: ONE binding per command; gestures aren't keys).
   const handEntries = [
     { keys: ["Delete"], label: "Delete", hidden: true, when: editSelection, command: "delete-item" },
+    // SPACEBAR opens the palette (manifest Round 12B: Blender spacebar
+    // precedent, same action as Cmd+Shift+P) — a second key ALIAS for
+    // toggle-palette, hand-registered exactly like the Delete/Backspace alias
+    // above (core/keybindings.js is ONE binding per command by design, for a
+    // future keybinding-editor UI; a second alias to the same command is the
+    // documented escape hatch). `editAny` matches Cmd+Shift+P's own `when` —
+    // same three guards it already encodes: NOT mode==="present" (PresentMode
+    // mounts its own capture-phase keydown listener where Space already means
+    // "next slide" — completely separate from this dispatcher, so scoping to
+    // editAny is both necessary and sufficient to stay out of its way), NOT
+    // modalActive (a live G/S modal transform locks input to its own keys —
+    // Space isn't one of them), and it's naturally excluded from the
+    // INPUT/TEXTAREA/SELECT focus guard in onKeydown below (typing a literal
+    // space in a text field never reaches the shortcut registry at all).
+    // hidden:true: the palette's OWN shortcut chip (Cmd+Shift+P, via the kb
+    // default below) already shows in the HintBar/palette row — a second
+    // visible chip for the same command would be redundant clutter, same
+    // reasoning as the Delete alias.
+    { keys: ["Space"], label: "Palette", hidden: true, when: editAny, command: "toggle-palette" },
     { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging && !c.bandArmed },
     // Shift-click ADDS/REMOVES from the multi-selection (manifest "Shift-click
     // multi-select"). Display-only, same registry pathway as the other pointer
@@ -369,7 +401,12 @@
 
   function onKeydown(e) {
     const el = document.activeElement;
-    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return;
+    // isContentEditable added alongside the SPACEBAR-opens-palette binding
+    // (manifest Round 12B): no contenteditable exists in the app YET (rich
+    // text is future work), but the guard is the general "am I typing text
+    // right now" check the spec calls for, so it belongs here rather than
+    // waiting for rich text to reintroduce the same gap.
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
     if (app.mode === "present") return; // PresentMode owns its keys
     if (app.paletteOpen) return; // palette owns its keys
     if (app.shortcuts.dispatch(e, shortcutCtx())) e.preventDefault();

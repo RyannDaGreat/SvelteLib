@@ -17,6 +17,8 @@ import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { withDurationMigrated, resolveTransition, retypedTransition } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated, withVariableRenamed, anchorRefName } from "../core/expressions.js";
+import { rotatedBBoxAABB, fitRectView } from "../core/view.js";
+import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import * as projectApi from "./projectApi.js";
 import { createRegistry } from "../core/registry.js";
@@ -317,6 +319,31 @@ export class PowerRPApp {
   toggleInSelection(id) {
     const ids = this.selectedIds();
     this.selectMany(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  }
+
+  /**
+   * Command. Selects every selectable item on the current slide (palette
+   * "Select All" — manifest Round 12B). Excludes purgeable:false widgets (the
+   * camera) — the same set-operation exclusion `deleteSelection`/
+   * `purgeSelection`/`showSelection`/`addBlankSlide` already use, since the
+   * camera is not a content object a user means to grab with Select All.
+   * Routes through selectMany (the ONE multi-select substrate).
+   */
+  selectAll() {
+    const ids = this.nodes()
+      .filter((n) => n.plugin.capabilities.purgeable !== false)
+      .map((n) => n.itemId);
+    this.selectMany(ids);
+  }
+
+  /** Command. Clears the selection (palette "Deselect All" — manifest Round
+   * 12B). Same effect as Escape's existing deselect path (needsSelection
+   * `deselect` command); a separate palette entry exists because Escape is
+   * also read by other contexts (modal cancel) where "Deselect All" as a
+   * distinct, always-nameable command is still useful (fuzzy search, no
+   * keyboard focus required). */
+  deselectAll() {
+    this.selection = null; // clears both selection and selectionSet (accessor path)
   }
 
   // ── Transition selection (the between-rows navigator slice) ─────────────────
@@ -1243,5 +1270,120 @@ export class PowerRPApp {
     a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.pdf`;
     a.click();
     URL.revokeObjectURL(a.href);
+  }
+
+  // ── Copy selection as PNG/PDF (manifest Round 12B "Palette / selection
+  // commands"): render ONLY the selected items, cropped to their collective
+  // world AABB, onto the SYSTEM clipboard. Distinct from exportPng/exportPdf
+  // (which always render the FULL slide through THE CAMERA) — these two crop
+  // to the selection instead, reusing the same GPU/PDF backends. ──────────────
+
+  /**
+   * Query. The selected nodes' collective WORLD AABB (union of each selected
+   * bbox node's rotatedBBoxAABB — the same conservative rotation-aware bound
+   * the culling protocol uses), or null when nothing selected or none of the
+   * selected items have a bbox (e.g. only the camera, or a non-bbox widget
+   * alone — nothing to crop to).
+   */
+  selectionWorldAABB() {
+    const boxes = this.selectedNodes().map(rotatedBBoxAABB).filter(Boolean);
+    if (boxes.length === 0) return null;
+    const minX = Math.min(...boxes.map((b) => b.x));
+    const minY = Math.min(...boxes.map((b) => b.y));
+    const maxX = Math.max(...boxes.map((b) => b.x + b.w));
+    const maxY = Math.max(...boxes.map((b) => b.y + b.h));
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  /**
+   * Command (async). Renders the SELECTED ITEMS ONLY (not everything that
+   * merely intersects their box — the spec's "whatever bounding box are the
+   * things we currently select we copy that") at their collective world AABB
+   * to PNG bytes, then writes those bytes to the SYSTEM clipboard as
+   * image/png (navigator.clipboard.write + ClipboardItem). No camera
+   * background rect is drawn first (unlike exportPng) — outside the selected
+   * items' own fills, the PNG is transparent.
+   *
+   * Loud on failure: clipboard image writes need a permission browsers can
+   * silently deny, and unlike copySelection's item-copy (which has an in-app
+   * fallback) THERE IS NO IN-APP FALLBACK for a system-image copy — pasting
+   * into another app is the entire point, so a denial is reported, not
+   * swallowed. No-op (reported) with nothing selected.
+   */
+  async copyAsPng() {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      console.error("Copy as PNG: this browser has no Clipboard image-write API (navigator.clipboard.write/ClipboardItem) — cannot copy an image to the system clipboard.");
+      return;
+    }
+    const rect = this.selectionWorldAABB();
+    if (!rect || rect.w <= 0 || rect.h <= 0) {
+      console.error("Copy as PNG: nothing selected (or the selection has no bounding box) — nothing to copy.");
+      return;
+    }
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const selected = new Set(this.selectedIds());
+    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
+    const dpr = this.dpr();
+    const width = Math.max(1, Math.round(rect.w * dpr));
+    const height = Math.max(1, Math.round(rect.h * dpr));
+    const png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, width, height, dpr), width, height);
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
+    } catch (e) {
+      console.error("Copy as PNG: system clipboard write was denied or failed (permission?) — the in-app clipboard fallback does NOT apply to system-image copies:", e.message);
+    }
+  }
+
+  /**
+   * Command (async). Renders the SELECTED ITEMS ONLY at their collective
+   * world AABB through the vector PDF backend (exportPdf's irToPDF path,
+   * same hybrid-raster/text-embedding rules), then tries to put the PDF
+   * bytes on the SYSTEM clipboard as application/pdf. Most browsers' Async
+   * Clipboard API only allows a small clipboard-item type allowlist
+   * (image/png, text/plain, text/html) and REJECTS application/pdf — when
+   * that happens this falls back to DOWNLOADING the PDF file, with a loud
+   * console.warn explaining why: a reported degradation, never a silent one.
+   * No-op (reported) with nothing selected.
+   */
+  async copyAsPdf() {
+    const rect = this.selectionWorldAABB();
+    if (!rect || rect.w <= 0 || rect.h <= 0) {
+      console.error("Copy as PDF: nothing selected (or the selection has no bounding box) — nothing to copy.");
+      return;
+    }
+    const { irToPDF } = await import("../render_gpu/pdf_backend.js");
+    const { loadFontBytes, fontkit, measureTextAscent } = await import("./pdfFonts.js");
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const selected = new Set(this.selectedIds());
+    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
+    const bytes = await irToPDF(sceneIR(nodes), {
+      width: rect.w,
+      height: rect.h,
+      view: fitRectView(rect, rect.w, rect.h, 1),
+      background: null, // no camera background — transparent outside the selected items
+      rasterize: rasterizeIrPng,
+      textAscent: measureTextAscent(),
+      loadFontBytes,
+      registerFontkit: await fontkit(),
+    });
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    let wroteToClipboard = false;
+    if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ "application/pdf": blob })]);
+        wroteToClipboard = true;
+      } catch (e) {
+        console.warn(`Copy as PDF: the browser's clipboard rejected application/pdf (${e.message}) — falling back to downloading the PDF file instead of a silent failure.`);
+      }
+    } else {
+      console.warn("Copy as PDF: this browser has no Clipboard write API for application/pdf — falling back to downloading the PDF file instead of a silent failure.");
+    }
+    if (!wroteToClipboard) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${this.doc.meta.name || "presentation"}-selection.pdf`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
   }
 }
