@@ -52,9 +52,15 @@ test("producer: deleting the creation slide orphans the item", () => {
   assert.ok(orphans[0].reason.includes("no type"));
 });
 
-test("unrepaired fold crashes evaluation (the strict core is the safety net)", () => {
-  const [doc] = orphanedDoc();
-  assert.throws(() => evaluateState(foldState(doc, 0, 1), registry), /Unknown widget type "undefined"/);
+test("unrepaired typeless folds evaluate cleanly and derive to nothing (imaginary-slide semantics)", () => {
+  // SUPERSEDED behavior: this used to assert a crash ('Unknown widget type
+  // "undefined"'). The imaginary-slide semantics fix made typeless-in-fold a
+  // DEFINED state (not yet created → skipped), so even an unrepaired orphan
+  // can never brick the app; the repair below remains as data hygiene.
+  const [doc, id] = orphanedDoc();
+  const { state, errors } = evaluateState(foldState(doc, 0, 1), registry);
+  assert.equal(errors.size, 0);
+  assert.equal(deriveRenderTree(state, registry).some((n) => n.itemId === id), false);
 });
 
 test("repair drops the orphan and evaluation survives", () => {

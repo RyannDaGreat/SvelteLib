@@ -66,7 +66,10 @@ export function deriveRenderTree(state, registry) {
   // keyframes active:false — the item KEEPS its identity and properties and
   // simply isn't derived on slides where it's inactive (this is how objects
   // live on some slides and not others). "Purge" is the real removal.
-  const nodes = Object.entries(items).filter(([, s]) => s.active !== false).map(([id, itemState]) => ({
+  // Typeless items are NOT YET CREATED on this fold (their creation slide is
+  // later in the deck — imaginary-slide semantics; see expressions.js) and
+  // derive exactly like inactive ones: skipped, never an error.
+  const nodes = Object.entries(items).filter(([, s]) => s.active !== false && typeof s.type === "string").map(([id, itemState]) => ({
     id,
     itemId: id,
     type: itemState.type,

@@ -15,7 +15,8 @@ import {
   evaluateState, withBindingsMigrated, withVariableRenamed,
 } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
-import { newDocument, withNewItem, withNewSlide, keyframed, foldState } from "../core/document.js";
+import { newDocument, withNewItem, withNewSlide, keyframed, foldState, withSlideMoved } from "../core/document.js";
+import { deriveRenderTree } from "../core/derive.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { circlePlugin } from "../plugins/circle.js";
 import { arrowPlugin } from "../plugins/arrow.js";
@@ -470,6 +471,32 @@ test("tween a VARIABLE, equations follow (fold then evaluate)", () => {
   const mid = evaluateState(foldState(doc, 1, 0.5), registry).state;
   assert.equal(mid.vars.speed, 50); // the var lerps...
   assert.equal(mid.items[rect].x, 100); // ...and the equation follows
+});
+
+test("typeless-in-fold = NOT YET CREATED: Move Slide Down never crashes", () => {
+  // Opus3's 3-keystroke crash: a creation slide moved BELOW a slide that
+  // keyframes its items leaves intermediate folds holding typeless items.
+  // Imaginary-slide semantics: such items don't exist yet — evaluation and
+  // derivation SKIP them (defined behavior, not an error), and the item
+  // exists again on folds that include its creation delta.
+  const reg = createRegistry();
+  reg.register(rectPlugin);
+  reg.register(cameraPlugin);
+  let doc = newDocument();
+  const [d1, id] = withNewItem(doc, 0, {
+    type: "rect", x: 10, y: 10, w: 50, h: 50, z: 0, rotation: 0, scale: 1,
+    fill: "#fff", stroke: "#000", strokeWidth: 1, cornerRadius: 0, opacity: 1, active: true,
+  });
+  const [d2] = withNewSlide(d1, 0);
+  const d3 = keyframed(d2, 1, ["items", id, "x"], 300);
+  const moved = withSlideMoved(d3, 0, +1); // creation slide now BELOW its keyframes
+  const early = foldState(moved, 0, 1);
+  assert.deepEqual(early.items[id], { x: 300 }); // typeless — not yet created
+  const { state: evaluated, errors } = evaluateState(early, reg); // must not throw
+  assert.equal(errors.size, 0); // defined semantics, not a failure
+  assert.equal(deriveRenderTree(evaluated, reg).some((n) => n.itemId === id), false);
+  const late = evaluateState(foldState(moved, 1, 1), reg).state; // creation folded in
+  assert.equal(deriveRenderTree(late, reg).some((n) => n.itemId === id), true);
 });
 
 console.log(`\n${passed} expressions tests passed`);

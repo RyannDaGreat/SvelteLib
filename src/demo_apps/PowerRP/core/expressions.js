@@ -237,6 +237,10 @@ export function slugMap(state) {
   const toId = new Map();
   const toSlug = new Map();
   for (const [id, item] of Object.entries(state.items ?? {})) {
+    // Not-yet-created items (type hasn't folded in — imaginary-slide
+    // semantics) are unreferencable: no slug. References to them resolve as
+    // unknown and fall back LOUDLY in evaluation — correct, not silent.
+    if (typeof item?.type !== "string") continue;
     const base = item.name ? slugify(item.name) : `${item.type}_${id.slice(0, 4)}`;
     let slug = base;
     for (let n = 2; toId.has(slug); n++) slug = `${base}_${n}`;
@@ -545,6 +549,12 @@ function computeEvaluatedState(state, registry) {
     if (typeof value === "string")
       slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value });
   for (const [id, item] of Object.entries(state.items ?? {})) {
+    // An item whose `type` hasn't folded in yet DOES NOT EXIST YET (the
+    // imaginary-slide semantics) — legitimate mid-document state when a
+    // creation slide sits BELOW a slide that keyframes the item (e.g. after
+    // Move Slide Down; Opus3's 3-keystroke crash repro). Skip, never throw:
+    // it "exists" again on folds that include its creation delta.
+    if (typeof item?.type !== "string") continue;
     const plugin = registry.get(item.type);
     for (const [path, value] of leaves(item))
       if (typeof value === "string" && isNumericSlot(plugin, path)) {
