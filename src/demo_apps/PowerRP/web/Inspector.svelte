@@ -36,6 +36,7 @@
   import ColorField from "./ColorField.svelte";
   import { allDocumentItems, keyframeIndices, foldState } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
+  import { canonicalPropPath } from "../core/expressions.js";
 
   let { app } = $props();
 
@@ -99,6 +100,17 @@
   let creationState = $derived.by(() => {
     if (sel || pickedItemId == null || creationIndex == null) return null;
     return foldState(app.doc, creationIndex, 1).items?.[pickedItemId] ?? null;
+  });
+
+  // Slug-resolution state for a NOT-YET-CREATED item's path tooltip/copy-path:
+  // canonicalPropPath needs every item's {type, name} to dedupe slug
+  // collisions correctly (slugMap, core/expressions.js) — app.rawState()
+  // won't do (it folds only THIS slide, which by definition excludes an item
+  // that doesn't exist yet here). allDocumentItems(app.doc) already collects
+  // {id, type, name} across every slide (used by the picker); reshape it into
+  // the {items: {...}} shape canonicalPropPath expects.
+  let allItemsState = $derived({
+    items: Object.fromEntries(allDocumentItems(app.doc).map((it) => [it.id, { type: it.type, name: it.name }])),
   });
 
   // ── Category accordion ────────────────────────────────────────────────────
@@ -167,6 +179,45 @@
   function toggleCategory(id) {
     collapsed = { ...collapsed, [id]: !collapsed[id] };
     localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed));
+  }
+
+  // ── Equation discoverability (path tooltip + copy-path) ───────────────────────
+  // manifest "EQUATION DISCOVERABILITY — Blender data-path standard": every
+  // property row exposes its referencable equation path through the GUI. The
+  // label-echo tooltip (hovering a row just repeating its own label) is BANNED
+  // as useless ("why not show the path instead") — this replaces it.
+
+  /**
+   * Pure function. The row-label tooltip's two-line content: `self.<path>`
+   * (valid inside the item's OWN equations) plus, if it differs, the absolute
+   * `<slug>.<path>` form (valid from anywhere) on a second line — cheap to
+   * show since canonicalPropPath already computes both. Returns null when
+   * there's no owning item (transition rows) — those fall back to the label.
+   *
+   * Examples:
+   *     >>> // pathTooltipText({items:{a1:{type:"rect",name:"Box"}}}, "a1", "x")
+   *     >>> // → "self.x\nbox.x"
+   */
+  function pathTooltipText(state, itemId, key) {
+    if (itemId == null) return null;
+    const { self, absolute } = canonicalPropPath(state, itemId, key);
+    return self === absolute ? self : `${self}\n${absolute}`;
+  }
+
+  /** Command. Best-effort copies the row's ABSOLUTE canonical path (the slug
+   * form — paste-ready from anywhere, unlike `self.…` which only resolves
+   * inside the item's own equations) to the system clipboard. A write
+   * failure is REPORTED loudly (no silent fallback) — matches the app
+   * controller's #writeClipboard precedent (web/app.svelte.js), but this is
+   * plain text (no in-app JSON fallback needed: nothing pastes a path back
+   * into document state, it's read-only discoverability). */
+  async function copyPath(state, itemId, key) {
+    const { absolute } = canonicalPropPath(state, itemId, key);
+    try {
+      await navigator.clipboard.writeText(absolute);
+    } catch (e) {
+      console.error(`PowerRP: copy path failed for "${absolute}":`, e.message);
+    }
   }
 
   // ── Value coercion / path read ───────────────────────────────────────────────
@@ -303,18 +354,49 @@
      `disabled` the row is grayed and non-interactive (a not-yet-created item's
      display rows); `state` supplies the display values, `onpreview`/`oncommit`
      the write path (item rows write items[id].key; transition rows write
-     transition props). -->
-{#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit })}
+     transition props); `itemId` (null for transitions — they have no equation
+     path) + `pathState` (the state canonicalPropPath resolves the item's slug
+     against — usually `state` itself, but the not-yet-created path needs a
+     synthetic {items:{id: creationState}} shape since app.rawState() doesn't
+     fold an item that doesn't exist on this slide) drive the row-label PATH
+     tooltip + copy-path chrome (manifest "EQUATION DISCOVERABILITY"). -->
+{#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit, itemId = null, pathState = null })}
   <!-- ITEM MODE (keyframes && !disabled): equation-aware NumericField + keyframe
        diamonds, writing item property keyframes. Otherwise PLAIN MODE: a not-yet-
        created item's grayed display (disabled) or a transition's config rows
        (keyframes:false) — plain inputs committing directly via onpreview/oncommit,
        no equations, no diamonds. -->
   {@const itemMode = keyframes && !disabled}
+  {@const pathText = pathTooltipText(pathState ?? state, itemId, row.key)}
   <div class="row" class:row-disabled={disabled}>
-    <Tooltip text={row.label}>
+    <!-- Row-label hover chrome: PATH tooltip on the LABEL (never a label echo
+         — banned) + a copy-path icon, LEFT of the label (round-11 hover-only
+         left-side field-chrome precedent — .numfield .eq-open mirrors the
+         same idiom on the value side: zero-width/opacity at rest, revealed by
+         .row:hover). No item in scope (transition rows) → no path to show or
+         copy; the label keeps a plain (non-echo-banned-because-there's-
+         nothing-else) hover affordance only via its own title-less span. -->
+    {#if pathText != null}
+      <span class="row-label-chrome">
+        <Tooltip text="Copy equation path">
+          <button
+            class="copy-path-btn"
+            aria-label={`Copy equation path for ${row.label}`}
+            onclick={() => copyPath(pathState ?? state, itemId, row.key)}
+          >
+            <iconify-icon icon="mdi:content-copy" width="12" height="12"></iconify-icon>
+          </button>
+        </Tooltip>
+        <Tooltip placement="top">
+          {#snippet tip()}
+            {#each pathText.split("\n") as line}<div class="path-tip-line">{line}</div>{/each}
+          {/snippet}
+          <span class="label">{row.label}</span>
+        </Tooltip>
+      </span>
+    {:else}
       <span class="label">{row.label}</span>
-    </Tooltip>
+    {/if}
     {#if row.kind === "number"}
       {#if itemMode}
         <!-- NumericField: equation-aware (THE UNIFICATION). A number renders as
@@ -607,7 +689,7 @@
             onText: "Visible on this slide — click to hide (keyframes active: false)",
             offText: "Hidden on this slide — click to show (keyframes active: true)" },
           sel.state,
-          { keyframes: true, disabled: false, onpreview: previewField, oncommit: commitField }
+          { keyframes: true, disabled: false, onpreview: previewField, oncommit: commitField, itemId: sel.itemId, pathState: app.rawState() }
         )}
       {/if}
       {#each itemCategories as cat (cat.id)}
@@ -616,6 +698,8 @@
           disabled: false,
           onpreview: previewField,
           oncommit: commitField,
+          itemId: sel.itemId,
+          pathState: app.rawState(),
         })}
       {/each}
     </div>
@@ -668,6 +752,8 @@
           disabled: true,
           onpreview: () => {},
           oncommit: () => {},
+          itemId: pickedItemId,
+          pathState: allItemsState,
         })}
       {/each}
       {#if creationIndex != null}

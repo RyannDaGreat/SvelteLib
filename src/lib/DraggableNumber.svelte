@@ -308,7 +308,10 @@
   }
 
   function onPointerUp(e) {
-    rootEl?.releasePointerCapture?.(e.pointerId);
+    // Guarded: releasing an unheld capture throws NotFoundError under
+    // synthetic/headless pointer events (no trusted activation), silently
+    // breaking click-without-drag in probes. Real gestures always hold it.
+    if (rootEl?.hasPointerCapture?.(e.pointerId)) rootEl.releasePointerCapture(e.pointerId);
     if (pending) {
       // Released without crossing slop → it was a CLICK: open text entry.
       pending = false;

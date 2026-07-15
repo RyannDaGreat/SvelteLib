@@ -37,6 +37,20 @@
  * are also legal (hand-written save files resolve against current slugs);
  * the editor always stores the @id form.
  *
+ * PROPERTY-PATH CASE (manifest "EQUATION DISCOVERABILITY — Blender data-path
+ * standard"): the SAME display↔stored duality applies one level deeper, to a
+ * property path's individual segments. Display is ALWAYS snake_case
+ * ("end_width", "rotation_anchor.x"); stored is the plugin's native camelCase
+ * key ("endWidth", "rotationAnchor.x") — converted per-segment at the field
+ * boundary via snakeToCamel/camelToSnake (pathToStored/pathToDisplay),
+ * exactly where item slugs already convert (displayToStored/storedToDisplay).
+ * ONE canonical form, NO tolerant aliasing: a camelCase segment typed into an
+ * equation is not silently accepted as the same property — it is rejected as
+ * unknown (checkCanonicalPath), the same loud-typo-protection discipline
+ * unknown variables already get. `self.anchors.<id>` and item-anchor refs
+ * (`slug_anchorId.x`) are UNAFFECTED — anchor ids are short internal codes
+ * ("tm", "cm"), never multi-word plugin properties.
+ *
  * EVALUATION lives in the derivation stage, post-fold: evaluateState() takes
  * a folded state, builds the dependency graph over all equation slots,
  * topo-sorts (Kahn), and evaluates. Cycles are a LOUD error: every slot on
@@ -212,6 +226,37 @@ export function evalAst(ast, lookup) {
 // ── Slugs (identifier naming) ────────────────────────────────────────────────
 
 /**
+ * Pure function. One property-path segment, DISPLAY form → STORED form:
+ * snake_case → camelCase ("end_width" → "endWidth"). The canonical equation
+ * grammar (manifest "EQUATION DISCOVERABILITY — Blender data-path standard")
+ * — property segments always DISPLAY snake_case and convert EXPLICITLY at the
+ * field boundary, exactly like item refs already convert (@id.x ↔
+ * circle_top.x). Single-word segments ("x", "w") round-trip unchanged; this
+ * is a bijection with camelToSnake for every stored key actually produced by
+ * a plugin (verified by the round-trip test in expressions_test.js).
+ *
+ * @example snakeToCamel("end_width") // "endWidth"
+ * @example snakeToCamel("x") // "x"
+ * @example snakeToCamel("rotation_anchor") // "rotationAnchor"
+ */
+export function snakeToCamel(segment) {
+  return segment.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+}
+
+/**
+ * Pure function. One property-path segment, STORED form → DISPLAY form:
+ * camelCase → snake_case ("endWidth" → "end_width"). Inverse of
+ * snakeToCamel — see its docs for the design rationale.
+ *
+ * @example camelToSnake("endWidth") // "end_width"
+ * @example camelToSnake("x") // "x"
+ * @example camelToSnake("rotationAnchor") // "rotation_anchor"
+ */
+export function camelToSnake(segment) {
+  return segment.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+
+/**
  * Pure function. Item name → identifier slug: lowercase, runs of
  * non-alphanumerics collapse to "_", trimmed; a leading digit gets a "_"
  * prefix (identifiers can't start with a digit); empty names become "item".
@@ -261,6 +306,29 @@ export function slugMap(state) {
  */
 export function anchorRefName(state, itemId, anchorId) {
   return `${slugMap(state).toSlug.get(itemId) ?? itemId}_${anchorId}`;
+}
+
+/**
+ * Pure function. The canonical EQUATION PATH for a property row — what the
+ * GUI reveals through the row-label tooltip and the copy-path affordance
+ * (manifest "EQUATION DISCOVERABILITY — Blender data-path standard": "every
+ * property row exposes its referencable EQUATION PATH through the GUI").
+ * `key` is a plugin inspector row's dotted STORED key ("endWidth",
+ * "rotationAnchor.x" — what row.key already is); the result converts every
+ * segment to the canonical snake_case display grammar via camelToSnake.
+ *
+ * Returns BOTH forms: `self` (valid only inside the item's OWN equations —
+ * "self.end_width") and `absolute` (valid from anywhere — the item's slug
+ * prefixed, "fancy_arrow_8595.end_width"), so a caller can show the short
+ * form when inspecting the owner and the long form as a second line.
+ *
+ * @example canonicalPropPath({items: {a1: {type: "fancy_arrow"}}}, "a1", "endWidth") // {self: "self.end_width", absolute: "fancy_arrow_a1.end_width"}
+ * @example canonicalPropPath({items: {a1: {type: "rect", name: "Box"}}}, "a1", "rotationAnchor.x") // {self: "self.rotation_anchor.x", absolute: "box.rotation_anchor.x"}
+ */
+export function canonicalPropPath(state, itemId, key) {
+  const display = pathToDisplay(key.split(".")).join(".");
+  const slug = slugMap(state).toSlug.get(itemId) ?? itemId;
+  return { self: `self.${display}`, absolute: `${slug}.${display}` };
 }
 
 // ── Reference resolution ─────────────────────────────────────────────────────
@@ -374,44 +442,152 @@ export function mapRefTokens(src, mapToken) {
 }
 
 /**
+ * Pure function. True iff every char of `segment` is lowercase/digit/"_" —
+ * i.e. it could not possibly be anything but snake_case. This is the guard
+ * that keeps snakeToCamel from silently ACCEPTING camelCase input: a
+ * camelCase segment has no "_" for snakeToCamel to act on, so it round-trips
+ * as itself and would otherwise pass an existence check by accident (the
+ * exact silent-aliasing the manifest ruling vetoes). Rejecting any uppercase
+ * letter up front makes "is this canonical" a property of the TEXT the user
+ * typed, not of whether it happens to already match a stored key.
+ *
+ * @example isCanonicalSegment("end_width") // true
+ * @example isCanonicalSegment("endWidth") // false
+ * @example isCanonicalSegment("x") // true
+ */
+function isCanonicalSegment(segment) {
+  return !/[A-Z]/.test(segment);
+}
+
+/**
+ * Pure function. Throws unless every DISPLAY path segment is canonical
+ * snake_case — the ENTRY-TIME "unknown property" guard (mirrors the existing
+ * "Unknown variable" typo protection in displayToStored, at the same
+ * boundary). Rejects camelCase input even when it happens to name a real key
+ * (isCanonicalSegment) — ONE canonical form, no tolerant aliasing: a
+ * camelCase identifier IS an unknown identifier in this grammar, exactly
+ * like a misspelled slug is. Existence of the property itself (does the item
+ * actually HAVE this key) is left to evaluateState's existing "has no
+ * property" check — same division of labor as anchor refs, which
+ * displayToStored also doesn't verify against a real plugin (only
+ * evaluateState does); duplicating that check here would need the folded
+ * item's FULL default-filled shape, which isn't guaranteed at this boundary
+ * (e.g. slug-resolution-only call sites use minimal item shapes). `path` is
+ * the segments the user typed; `displayToken` is the whole token, for the
+ * error message.
+ *
+ * @example checkCanonicalPath(["end_width"], "self.end_width") // undefined (no throw)
+ * @example // checkCanonicalPath(["endWidth"], "self.endWidth") throws: Unknown property "endWidth" (self.endWidth) — not canonical snake_case
+ */
+function checkCanonicalPath(path, displayToken) {
+  const bad = path.find((seg) => !isCanonicalSegment(seg));
+  if (bad !== undefined) throw new Error(`Unknown property "${bad}" (${displayToken}) — not canonical snake_case`);
+}
+
+/**
+ * Pure function. Splits a `self.…` token's path into its two grammars:
+ * `self.anchors.<id>.x|y` (STRUCTURAL — "anchors" and the anchor id are not
+ * plugin properties, so segments are never case-converted) vs `self.<prop…>`
+ * (an ordinary property path, case-converted like any other). Delegates the
+ * actual parse to parseSelfRef with a placeholder owner id ("self" is never a
+ * real itemId, so it never collides) — this function only needs the SHAPE of
+ * the reference, not a real owner (display↔stored conversion has no owner to
+ * resolve against; only evaluation does).
+ *
+ * @example selfRefShape("self.end_width") // {kind: "prop", path: ["end_width"]}
+ * @example selfRefShape("self.anchors.center.x") // {kind: "anchor"}
+ */
+function selfRefShape(token) {
+  const d = parseSelfRef(token, "self");
+  return d.kind === "prop" ? { kind: "prop", path: d.path } : { kind: "anchor" };
+}
+
+/**
+ * Pure function. Property-path segments, DISPLAY form → STORED form, applying
+ * snakeToCamel per segment ("end_width" → "endWidth", "rotation_anchor.x" →
+ * "rotationAnchor.x") — the canonical grammar's per-segment bijection over a
+ * whole dotted path.
+ *
+ * @example pathToStored(["end_width"]) // ["endWidth"]
+ * @example pathToStored(["rotation_anchor", "x"]) // ["rotationAnchor", "x"]
+ */
+function pathToStored(path) {
+  return path.map(snakeToCamel);
+}
+
+/**
+ * Pure function. Property-path segments, STORED form → DISPLAY form, applying
+ * camelToSnake per segment. Inverse of pathToStored.
+ *
+ * @example pathToDisplay(["endWidth"]) // ["end_width"]
+ * @example pathToDisplay(["rotationAnchor", "x"]) // ["rotation_anchor", "x"]
+ */
+function pathToDisplay(path) {
+  return path.map(camelToSnake);
+}
+
+/**
  * Pure function. Display form → stored form: item slugs become @itemIds
- * (variables stay bare). Throws on syntax errors, unresolvable slugs, and
- * UNKNOWN VARIABLES (typo protection at entry time; eval-time still reports
- * vars that disappear later) — the equation field surfaces the throw as its
- * invalid affordance. A leading "=" (spreadsheet affordance) is stripped.
+ * (variables stay bare), and property-path segments convert snake_case →
+ * camelCase (the canonical grammar — manifest "EQUATION DISCOVERABILITY").
+ * Throws on syntax errors, unresolvable slugs, UNKNOWN VARIABLES, and UNKNOWN
+ * PROPERTIES (typo protection at entry time — ONE canonical form; a typed
+ * camelCase property name is NOT silently accepted, it resolves as an unknown
+ * snake_case identifier and errors) — the equation field surfaces the throw
+ * as its invalid affordance. A leading "=" (spreadsheet affordance) is
+ * stripped.
  *
  * `self.…` tokens are IDENTITY-STABLE (they name the owner, not a slug) and
- * are stored VERBATIM — no @id rewrite, so they survive renames untouched.
+ * the `self`/`self.anchors.<id>` structure is stored VERBATIM (no @id
+ * rewrite, so it survives renames untouched) — but a `self.<prop...>` path's
+ * segments still convert, same as any other property reference.
  *
  * @example displayToStored("box.x + 10", {items: {a1: {type: "rect", name: "Box"}}}) // "@a1.x + 10"
  * @example displayToStored("speed * 2", {vars: {speed: 5}, items: {}}) // "speed * 2"
- * @example displayToStored("self.w / 2", {items: {}}) // "self.w / 2"
+ * @example displayToStored("self.end_width / 2", {items: {}}) // "self.endWidth / 2"
  * @example // displayToStored("sped * 2", {vars: {speed: 5}}) throws: Unknown variable "sped"
+ * @example // displayToStored("self.endWidth", {items: {}}) throws: Unknown property "endWidth" (self.endWidth) — camelCase is not accepted, one canonical form only
  */
 export function displayToStored(src, state) {
   const clean = src.replace(/^\s*=\s*/, "");
   parseExpression(clean); // validate the full grammar, not just the tokens
   const slugs = slugMap(state);
   return mapRefTokens(clean, (token) => {
-    if (token === "self" || token.startsWith("self.")) return token; // stored verbatim
+    if (token === "self" || token.startsWith("self.")) {
+      const shape = selfRefShape(token); // throws "needs a property" on bare "self"
+      if (shape.kind !== "prop") return token; // self.anchors.<id>.x|y: structural, stored verbatim
+      checkCanonicalPath(shape.path, token);
+      return `self.${pathToStored(shape.path).join(".")}`;
+    }
     const d = resolveRef(token, slugs); // throws on unknown refs
     if (d.kind === "var") {
       if (!(d.name in (state.vars ?? {}))) throw new Error(`Unknown variable "${d.name}"`);
       return token;
     }
-    if (d.kind === "prop") return `@${d.itemId}.${d.path.join(".")}`;
+    if (d.kind === "prop") {
+      checkCanonicalPath(d.path, token);
+      return `@${d.itemId}.${pathToStored(d.path).join(".")}`;
+    }
     return `@${d.itemId}_${d.anchorId}.${d.coord}`;
   });
 }
 
 /**
- * Pure function. Stored form → display form: @itemIds become current slugs.
- * Unknown ids (purged items) are left in @-form so the user can still see
- * and fix the reference. Never throws on resolvable syntax; malformed
- * sources are returned unchanged (the error affordance reports them).
+ * Pure function. Stored form → display form: @itemIds become current slugs,
+ * and property-path segments convert camelCase → snake_case (the inverse of
+ * displayToStored's pathToStored — see its docs). This is what makes
+ * PRE-EXISTING stored equations (authored before this canonical grammar
+ * landed, or hand-written) render in the canonical display grammar the first
+ * time the field shows them — no migration needed, since storage was already
+ * camelCase (the plugin's native key spelling). Unknown ids (purged items)
+ * are left in @-form so the user can still see and fix the reference. Never
+ * throws on resolvable syntax; malformed sources are returned unchanged (the
+ * error affordance reports them).
  *
  * @example storedToDisplay("@a1.x + 10", {items: {a1: {type: "rect", name: "Box"}}}) // "box.x + 10"
  * @example storedToDisplay("@a1_tm.y", {items: {a1: {type: "rect", name: "Box"}}}) // "box_tm.y"
+ * @example storedToDisplay("@a1.endWidth", {items: {a1: {type: "fancy_arrow", name: "Arrow"}}}) // "arrow.end_width"
+ * @example storedToDisplay("self.rotationAnchor.x") // "self.rotation_anchor.x"
  */
 export function storedToDisplay(src, state) {
   const slugs = slugMap(state);
@@ -424,14 +600,26 @@ export function storedToDisplay(src, state) {
   let out = "";
   let last = 0;
   for (const t of tokens) {
-    if (t.kind !== "ref" || !t.value.startsWith("@")) continue;
+    if (t.kind !== "ref") continue;
     let mapped = t.value;
-    try {
-      const d = parseStoredRef(t.value);
-      const slug = slugs.toSlug.get(d.itemId);
-      if (slug) mapped = d.kind === "prop" ? `${slug}.${d.path.join(".")}` : `${slug}_${d.anchorId}.${d.coord}`;
-    } catch {
-      // Unparseable @token: keep it verbatim (evaluateState reports it).
+    if (t.value.startsWith("@")) {
+      try {
+        const d = parseStoredRef(t.value);
+        const slug = slugs.toSlug.get(d.itemId);
+        if (slug) mapped = d.kind === "prop" ? `${slug}.${pathToDisplay(d.path).join(".")}` : `${slug}_${d.anchorId}.${d.coord}`;
+      } catch {
+        // Unparseable @token: keep it verbatim (evaluateState reports it).
+      }
+    } else if (t.value === "self" || t.value.startsWith("self.")) {
+      try {
+        const shape = selfRefShape(t.value);
+        if (shape.kind === "prop") mapped = `self.${pathToDisplay(shape.path).join(".")}`;
+        // self.anchors.<id>.x|y: structural, shown verbatim.
+      } catch {
+        // Malformed self ref (e.g. bare "self"): keep it verbatim (evaluateState reports it).
+      }
+    } else {
+      continue; // bare variable name: unchanged
     }
     out += src.slice(last, t.start) + mapped;
     last = t.end;
@@ -461,6 +649,26 @@ export function isNumericSlot(plugin, path) {
   const def = getPath(plugin.defaults, path);
   if (typeof def === "number") return true;
   return typeof def === "string" && def.startsWith("self.");
+}
+
+/**
+ * Pure function. Every referencable equation path on a plugin's own
+ * properties, in CANONICAL DISPLAY (snake_case, dot-joined) form — the
+ * candidate list for the autocomplete AND the discoverability guarantee's
+ * source of truth: only isNumericSlot leaves are offered, so what's typeable
+ * is exactly what's referenceable ("if a name can be referenced, the GUI
+ * reveals it" — manifest). Walks plugin.defaults (leaves(), core/deltas.js)
+ * rather than a live item's state, so it lists what EVERY instance of the
+ * type offers, independent of any particular item's current values.
+ *
+ * @example numericPropertyPaths(rectPlugin) // ["x", "y", "w", "h", "z", "rotation", "scale", "rotation_anchor.x", "rotation_anchor.y", "stroke_width", "corner_radius", "opacity"]
+ * @example numericPropertyPaths(fancyArrowPlugin) // [..., "start_width", "end_width"] (camelCase startWidth/endWidth shown as snake_case)
+ */
+export function numericPropertyPaths(plugin) {
+  const out = [];
+  for (const [path] of leaves(plugin.defaults))
+    if (isNumericSlot(plugin, path)) out.push(pathToDisplay(path).join("."));
+  return out;
 }
 
 /** Command (mutates tree in place). Sets a leaf at path, creating nodes. */

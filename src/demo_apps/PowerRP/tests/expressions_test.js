@@ -10,17 +10,20 @@
 import assert from "node:assert/strict";
 import {
   tokenize, parseExpression, compiled, evalAst,
-  slugify, slugMap, anchorRefName, parseStoredRef, parseSelfRef, resolveRef, mapRefTokens,
+  slugify, slugMap, anchorRefName, canonicalPropPath, parseStoredRef, parseSelfRef, resolveRef, mapRefTokens,
+  snakeToCamel, camelToSnake,
   displayToStored, storedToDisplay, isNumericSlot,
   evaluateState, withBindingsMigrated, withVariableRenamed,
 } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { newDocument, withNewItem, withNewSlide, keyframed, foldState, withSlideMoved } from "../core/document.js";
 import { deriveRenderTree, worldTransform, nodeAnchors } from "../core/derive.js";
+import { leaves } from "../core/deltas.js";
 import * as T from "../core/transform.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { circlePlugin } from "../plugins/circle.js";
 import { arrowPlugin } from "../plugins/arrow.js";
+import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { textPlugin } from "../plugins/text.js";
 import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
 
@@ -50,6 +53,7 @@ const registry = createRegistry();
 registry.register(rectPlugin);
 registry.register(circlePlugin);
 registry.register(arrowPlugin);
+registry.register(fancyArrowPlugin);
 registry.register(textPlugin);
 registry.register(cameraPlugin);
 
@@ -160,6 +164,79 @@ test("display ↔ stored conversion (spacing preserved, roundtrip)", () => {
   assert.throws(() => displayToStored("ghost.x", state), /Unknown reference/);
   assert.throws(() => displayToStored("1 +", state), /Unexpected end/);
   assert.equal(mapRefTokens("a + b", (t) => t.toUpperCase()), "A + B");
+});
+
+// ── canonical snake_case property grammar (EQUATION DISCOVERABILITY) ─────────
+test("snakeToCamel / camelToSnake: per-segment bijection", () => {
+  assert.equal(snakeToCamel("end_width"), "endWidth");
+  assert.equal(snakeToCamel("x"), "x"); // single-word: identity
+  assert.equal(snakeToCamel("rotation_anchor"), "rotationAnchor");
+  assert.equal(camelToSnake("endWidth"), "end_width");
+  assert.equal(camelToSnake("x"), "x");
+  assert.equal(camelToSnake("rotationAnchor"), "rotation_anchor");
+  // Bijection over every plugin's ACTUAL stored keys (the real coverage that
+  // matters: not just the two example words, but every property this app has).
+  for (const plugin of [rectPlugin, circlePlugin, arrowPlugin, fancyArrowPlugin, textPlugin]) {
+    for (const [path] of leaves(plugin.defaults)) {
+      for (const seg of path) assert.equal(snakeToCamel(camelToSnake(seg)), seg, `${plugin.type}.${path.join(".")}`);
+    }
+  }
+});
+test("canonical grammar: snake_case entry resolves against a camelCase-keyed property (the user's fancy-arrow case)", () => {
+  // The user's EXACT complaint case: self.end_width / self.start_width must
+  // resolve against the plugin's stored `endWidth`/`startWidth` keys.
+  const state = { items: { fa1: { ...fancyArrowPlugin.defaults, name: "Fancy Arrow", endWidth: "self.startWidth + 2" } } };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.fa1.endWidth, fancyArrowPlugin.defaults.startWidth + 2);
+  // The SAME equation authored end-to-end through the display boundary:
+  const stored = displayToStored("self.start_width + 2", state);
+  assert.equal(stored, "self.startWidth + 2");
+  assert.equal(storedToDisplay(stored, state), "self.start_width + 2"); // round-trip
+  // Absolute (non-self) form via the item's slug.
+  assert.equal(displayToStored("fancy_arrow.start_width", state), "@fa1.startWidth");
+  assert.equal(storedToDisplay("@fa1.startWidth + @fa1.tipLength", state), "fancy_arrow.start_width + fancy_arrow.tip_length");
+});
+test("canonical grammar: camelCase typed in the field is NOT silently accepted — errors as unknown (one visible form)", () => {
+  const state = { items: { fa1: { ...fancyArrowPlugin.defaults, name: "Fancy Arrow" } } };
+  // The tolerant-aliasing fallback the user explicitly vetoed: camelCase must
+  // NOT resolve, even though "endWidth" is the item's REAL stored key.
+  assert.throws(() => displayToStored("self.endWidth", state), /Unknown property "endWidth".*not canonical snake_case/);
+  assert.throws(() => displayToStored("fancy_arrow.startWidth", state), /Unknown property "startWidth".*not canonical snake_case/);
+  assert.throws(() => displayToStored("self.rotationAnchor.x", state), /Unknown property "rotationAnchor".*not canonical snake_case/);
+  // A GENUINELY unknown snake_case name still reaches evaluation's own error
+  // (displayToStored only guards CASE; existence is eval's job — same
+  // division of labor as anchor refs). Loud either way, never silent.
+  const bad = { items: { fa1: { ...fancyArrowPlugin.defaults, name: "Fancy Arrow", x2: "self.not_a_real_prop" } } };
+  assert.equal(displayToStored("self.not_a_real_prop", bad), "self.notARealProp"); // passes the CASE guard...
+  const { errors } = evaluateState({ items: { fa1: { ...fancyArrowPlugin.defaults, endWidth: "self.notARealProp" } } }, registry);
+  assert.match(errors.get("items.fa1.endWidth"), /has no property/); // ...but eval catches the typo
+});
+test("canonical grammar: nested paths convert per-segment (rotation_anchor.x ↔ rotationAnchor.x)", () => {
+  const state = { items: { r1: { ...rectPlugin.defaults, name: "Box" } } };
+  assert.equal(displayToStored("self.rotation_anchor.x", state), "self.rotationAnchor.x");
+  assert.equal(displayToStored("box.rotation_anchor.y", state), "@r1.rotationAnchor.y");
+  assert.equal(storedToDisplay("self.rotationAnchor.x + self.rotationAnchor.y", state),
+    "self.rotation_anchor.x + self.rotation_anchor.y");
+  assert.equal(storedToDisplay("@r1.rotationAnchor.x", state), "box.rotation_anchor.x");
+  // Evaluates correctly end-to-end (the default rotation pivot IS this equation).
+  const { state: s, errors } = evaluateState({ items: { r1: { ...rectPlugin.defaults, x: 0, y: 0, w: 100, h: 60 } } }, registry);
+  assert.equal(errors.size, 0);
+  assert.deepEqual(s.items.r1.rotationAnchor, { x: 50, y: 30 });
+});
+test("canonicalPropPath: self + absolute forms, snake_case, unnamed-item slug", () => {
+  assert.deepEqual(
+    canonicalPropPath({ items: { fa1: { type: "fancy_arrow" } } }, "fa1", "endWidth"),
+    { self: "self.end_width", absolute: "fancy_arrow_fa1.end_width" },
+  );
+  assert.deepEqual(
+    canonicalPropPath({ items: { r1: { type: "rect", name: "Box" } } }, "r1", "rotationAnchor.x"),
+    { self: "self.rotation_anchor.x", absolute: "box.rotation_anchor.x" },
+  );
+  assert.deepEqual(
+    canonicalPropPath({ items: { r1: { type: "rect", name: "Box" } } }, "r1", "x"),
+    { self: "self.x", absolute: "box.x" },
+  );
 });
 
 // ── numeric slots ────────────────────────────────────────────────────────────

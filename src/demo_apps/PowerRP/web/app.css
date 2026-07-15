@@ -879,6 +879,55 @@ audio.ae-preview-media {
   white-space: nowrap;
 }
 
+/* Row-label hover chrome: the copy-path icon + the label, sharing the fixed
+   label column. min-width:0 lets the label still truncate inside the flex
+   row (grid children default min-width:auto, same reasoning as .numfield). */
+.inspector .row-label-chrome {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Copy-path icon: LEFT of the label, HOVER-ONLY — mirrors .numfield .eq-open
+   (round-11 field-chrome minimalism: "it goes on the LEFT... hover-only").
+   Collapsed to zero width at rest so it never nudges the label or reserves
+   space; revealed on .row:hover as one continuous rule with the value-side
+   equation affordance. */
+.inspector .copy-path-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 0;
+  height: var(--a-control-h);
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+.inspector .copy-path-btn:hover {
+  color: var(--fg);
+}
+.inspector .row:hover .copy-path-btn {
+  width: 14px;
+  opacity: 1;
+}
+
+/* Path tooltip content: one line per form (self.<path>, then the absolute
+   <slug>.<path> when it differs) — monospace, like every other equation
+   surface (--a-mono, matching .numfield .eq-input). */
+.path-tip-line {
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
+}
+
 /* Text/number inputs fill their grid cell (the value column grows; the
    var-name fills the identifier column) — one growing width, square corners. */
 .inspector input[type="number"],
@@ -1043,6 +1092,55 @@ audio.ae-preview-media {
   color: var(--a-guide);
   pointer-events: auto; /* hoverable: the tooltip carries the error message */
   display: inline-flex;
+}
+
+/* ── EquationSuggest (equation autocomplete dropdown) ──────────────────────
+   Anchored under .eq-wrap (already position:relative — the equation input's
+   own wrapper), so it sits directly below the field regardless of which
+   Inspector row it's in. Styled by app.css tokens directly (not Dropdown's
+   --dd-* — see EquationSuggest.svelte header for why a bespoke component).
+   Same visual language as Dropdown's menu (border/shadow/radius-0) so it
+   reads as "the same kind of thing" without literally being one. */
+.eqs-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 100%;
+  z-index: 20; /* above sibling rows; below Tooltip's 2147483647 */
+  margin-top: var(--a-sp-1);
+  max-height: var(--a-palette-max-h, 240px);
+  overflow-y: auto;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: 0; /* square corners — the field-chrome rule applies here too */
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
+}
+
+.eqs-item {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  width: 100%;
+  padding: var(--a-sp-2) var(--a-sp-3);
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.eqs-item :global(iconify-icon) {
+  color: var(--fg-dim);
+  flex: none;
+}
+.eqs-item.eqs-active {
+  background: var(--a-hover-bg);
+}
+.eqs-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── ColorField (the color property field; wraps the SvelteLib ColorPicker) ──

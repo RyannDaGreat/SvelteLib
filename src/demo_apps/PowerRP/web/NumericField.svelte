@@ -42,16 +42,33 @@
   ["vars", name]), label, min/max (DraggableNumber bounds, in STORED units),
   display (display-unit name, e.g. "degrees"; null = identity).
   Styling lives in app.css (.numfield / .eq-*; app convention: no <style>).
+
+  AUTOCOMPLETE (manifest "EQUATION DISCOVERABILITY"): while typing in the
+  equation input, EquationSuggest.svelte renders a ranked dropdown (core/
+  equationSuggest.js — pure candidate discovery + rp's fuzzy ranker) anchored
+  under the field. Up/Down move the highlight, Tab/Enter accept the
+  highlighted candidate (replacing the in-progress fragment, NOT committing
+  the field — the user keeps editing), Escape dismisses the SUGGESTIONS first;
+  a second Escape then reverts the field (the pre-existing behavior is
+  UNCHANGED — the suggestion layer intercepts only when it's actually open).
 -->
 <script>
   import "iconify-icon";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import EquationSuggest from "./EquationSuggest.svelte";
   import { getPath } from "../core/deltas.js";
   import { displayToStored, storedToDisplay, compiled, evalAst } from "../core/expressions.js";
+  import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { displayUnit } from "./displayUnits.js";
 
   let { app, path, label, min = null, max = null, display = null, scrub = null } = $props();
+
+  // The equation's OWNING item id, enabling `self.` completion — mirrors
+  // evaluateState's own selfId derivation (core/expressions.js: "self resolves
+  // to the item that OWNS the equation slot", slot.path[1] when
+  // slot.path[0] === "items"). null for a Variables Panel row (path = ["vars", name]).
+  let selfId = $derived(path[0] === "items" ? path[1] : null);
 
   // Scrub sensitivity (manifest "Number-slider sensitivity"): an explicit
   // per-row `scrub` coefficient wins (transition seconds = 0.1/px); otherwise
@@ -92,6 +109,25 @@
     if (!focused) draft = isEquation ? storedToDisplay(stored, app.rawState()) : "";
   });
 
+  // ── Autocomplete (manifest "EQUATION DISCOVERABILITY") ─────────────────────
+  // Re-ranked on every keystroke from the CURRENT caret position (not just the
+  // draft text) — the same fragment mid-expression ("box.x + 10 + spe|") must
+  // suggest against "spe", not the whole draft. suggestionsOpen is a SEPARATE
+  // flag from "candidates.length > 0" so one Escape can close an open list
+  // without the next keystroke (if any) reopening it from stale candidates.
+  let suggestionsOpen = $state(false);
+  let highlighted = $state(0);
+  let candidates = $derived(
+    suggestionsOpen && eqInputEl
+      ? suggestEquation(draft, eqInputEl.selectionStart ?? draft.length, app.rawState(), app.registry, selfId)
+      : [],
+  );
+  // Clamp highlight when the candidate set shrinks (e.g. a keystroke narrows
+  // the fuzzy match) so it never points past the end of a shorter list.
+  $effect(() => {
+    if (highlighted >= candidates.length) highlighted = Math.max(0, candidates.length - 1);
+  });
+
   function round3(v) {
     return typeof v === "number" ? Math.round(v * 1000) / 1000 : 0;
   }
@@ -118,6 +154,8 @@
 
   function onEqInput(e) {
     draft = e.target.value;
+    suggestionsOpen = true; // any edit re-opens/re-ranks (candidates is $derived on the caret)
+    highlighted = 0;
     try {
       app.setPreview([[path, toStored(draft)]]);
       invalid = false;
@@ -129,9 +167,34 @@
     }
   }
 
+  /** Command. Replaces the in-progress fragment with the accepted candidate
+   * (core/equationSuggest.js acceptSuggestion) and re-previews — does NOT
+   * commit the field (the user is still editing; Enter/blur commits as
+   * usual). Keeps focus in the text input (never moves it to the dropdown),
+   * closes the dropdown, and re-runs onEqInput's preview/invalid bookkeeping
+   * via the same draft-mutation path so behavior stays single-sourced. */
+  function acceptCandidate(candidate) {
+    if (!candidate || !eqInputEl) return;
+    const { text, cursor } = acceptSuggestion(draft, eqInputEl.selectionStart ?? draft.length, candidate.text);
+    draft = text;
+    suggestionsOpen = false;
+    try {
+      app.setPreview([[path, toStored(draft)]]);
+      invalid = false;
+    } catch {
+      app.cancelPreview();
+      invalid = true;
+    }
+    // Restore the caret right after the inserted text (not end-of-field —
+    // there may be more expression after it, e.g. "self.end_wi| + 2").
+    requestAnimationFrame(() => eqInputEl?.setSelectionRange(cursor, cursor));
+    eqInputEl.focus();
+  }
+
   /** Commits the draft; WHAT WAS TYPED decides the type (symmetric): a pure
    * numeric expression becomes a plain number, references make an equation. */
   function commitText() {
+    suggestionsOpen = false;
     let storedForm;
     try {
       storedForm = toStored(draft);
@@ -155,10 +218,32 @@
     textEntry = false;
   }
 
+  /** Keyboard for the ONE text-entry path, autocomplete-aware:
+   *   Up/Down     — move the suggestion highlight (only while open)
+   *   Tab/Enter   — accept the highlighted suggestion IF the dropdown is
+   *                 open (does not commit the field — see acceptCandidate);
+   *                 Enter with the dropdown CLOSED still commits as before
+   *   Escape      — closes an OPEN dropdown first (one keystroke, field
+   *                 untouched); a SECOND Escape (dropdown already closed)
+   *                 falls through to the pre-existing revert-the-field
+   *                 behavior, UNCHANGED. Gated on candidates.length (not just
+   *                 suggestionsOpen) so Escape reverts IMMEDIATELY when
+   *                 nothing is actually showing — no invisible "eaten"
+   *                 keystroke. */
   function onEqKeydown(e) {
-    if (e.key === "Enter") {
+    const hasSuggestions = suggestionsOpen && candidates.length > 0;
+    if (hasSuggestions && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      highlighted = (highlighted + (e.key === "ArrowDown" ? 1 : -1) + candidates.length) % candidates.length;
+      e.preventDefault();
+    } else if (hasSuggestions && (e.key === "Tab" || e.key === "Enter")) {
+      acceptCandidate(candidates[highlighted]);
+      e.preventDefault();
+    } else if (e.key === "Enter") {
       commitText();
       e.target.blur();
+    } else if (e.key === "Escape" && hasSuggestions) {
+      suggestionsOpen = false;
+      e.stopPropagation(); // dismiss-only: field/draft untouched, don't bubble into Deselect
     } else if (e.key === "Escape") {
       app.cancelPreview();
       invalid = false;
@@ -171,6 +256,7 @@
 
   function onEqBlur() {
     focused = false;
+    suggestionsOpen = false;
     const current = isEquation ? storedToDisplay(stored, app.rawState()) : null;
     if (invalid || textEntry || draft !== current) commitText();
   }
@@ -227,6 +313,13 @@
              rotation) so it matches the scrubber the field toggles from. -->
         <span class="eq-badge">= {invalid ? "?" : round3(unit.toDisplay(evaluated))}{unit.suffix}</span>
       {/if}
+      <EquationSuggest
+        {candidates}
+        {highlighted}
+        anchorEl={eqInputEl}
+        onhover={(i) => (highlighted = i)}
+        onpick={acceptCandidate}
+      />
     </span>
   {:else}
     <!-- Equation affordance (round-11 ruling): on the LEFT of the value,
