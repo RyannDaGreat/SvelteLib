@@ -76,6 +76,11 @@
   --a-kf-w: calc(3 * var(--a-kf-btn-w));
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
   --a-color-swatch: 14px; /* swatch square inside the color control */
+  /* Max width of the inline-expanded ColorPicker's S/V square (it is square, so
+     this also caps its height). LINKED to the SvelteLib ColorPicker's own
+     default --cp-square-size (160px, src/lib/ColorPicker.svelte) — the component
+     author's chosen comfortable square; we reuse it rather than invent a size. */
+  --a-colorpicker-max-w: 160px;
   /* Transparency checkerboard under the color swatch (colors carry ALPHA —
      round 10). White/gray is the universal transparency convention
      (Photoshop / Chrome devtools / the Figures repo's alpha checkerboard),
@@ -91,6 +96,13 @@
   --a-transition-slice-h: var(--a-key-chip-h);
   --a-transition-chip-pad: 0 var(--a-sp-2);
   --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
+
+  /* Asset Explorer: thumbnail grid cell min-width (auto-fill columns) — a
+     visual choice with no in-repo precedent; PENDING USER RATIFICATION. The
+     drag-over highlight reuses the selection color (same language as the
+     slide-current border). */
+  --a-asset-cell-min: 72px;
+  --a-asset-dropzone: color-mix(in srgb, var(--a-selection) 14%, transparent);
   --a-key-chip-h: 18px; /* THE key-chip height (one standard; value PENDING USER RATIFICATION) */
 
   /* SplitPane handles — thin, per annotator reference */
@@ -269,6 +281,10 @@ body,
 }
 
 .right-col {
+  height: 100%;
+}
+
+.left-col {
   height: 100%;
 }
 
@@ -539,6 +555,157 @@ body,
    nav row spreads its four buttons across the panel width). */
 .slidenav .nav-actions .btn-icon {
   flex: 1;
+}
+
+/* ── Asset Explorer ──────────────────────────────────────────────────────────
+   The asset library pane below the Slide Navigator. Same chrome language as
+   the navigator: panel background, a top action row of transparent .btn-icons,
+   a scrolling body. All values are --a-* tokens; corners are square. */
+.asset-explorer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--a-panel-bg);
+  border-right: var(--a-hairline) solid var(--border);
+}
+
+/* Drop-target feedback: the whole pane tints when an OS file is dragged over
+   it (mirrors .slide.current using the selection color). */
+.asset-explorer.dragging {
+  background: var(--a-asset-dropzone);
+  outline: var(--a-selection-stroke) dashed var(--a-selection);
+  outline-offset: calc(-1 * var(--a-selection-stroke));
+}
+
+/* Top action row: matches the navigator's bottom toolbar (transparent icons,
+   spread across the width) but sits at the TOP of this pane. */
+.asset-explorer .ae-actions {
+  display: flex;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-3);
+  border-bottom: var(--a-hairline) solid var(--border);
+}
+
+.asset-explorer .ae-actions .btn-icon {
+  flex: 1;
+}
+
+.asset-explorer .ae-file {
+  display: none;
+}
+
+.asset-explorer .ae-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--a-sp-3);
+}
+
+/* Loud, visible notices — loading / empty / error — never a blank pane. */
+.asset-explorer .ae-notice {
+  padding: var(--a-sp-3);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  line-height: 1.4;
+}
+
+.asset-explorer .ae-error {
+  color: var(--a-guide); /* the danger/attention color, same as .btn.danger refs */
+}
+
+.asset-explorer .ae-notice-title {
+  font-weight: 600;
+  margin-bottom: var(--a-sp-1);
+}
+
+.asset-explorer .ae-notice-detail {
+  color: var(--fg-dim);
+  word-break: break-word;
+}
+
+/* Thumbnail grid: auto-fill square cells (Thumbnail needs a DEFINITE row
+   height — grid-auto-rows tracks the column width via aspect-ratio on the
+   cell, not the tile, avoiding the row-sizing cycle Thumbnail documents). */
+.asset-explorer .ae-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--a-asset-cell-min), 1fr));
+  gap: var(--a-sp-3);
+}
+
+.asset-explorer .ae-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  min-width: 0;
+}
+
+/* Square tile (defines the Thumbnail cell height) + overlay layer for the kind
+   icon, the double-click hit target, and the insert button. */
+.asset-explorer .ae-tile {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border: var(--a-hairline) solid var(--border);
+  background: var(--control-bg);
+}
+
+/* Kind icon centered on video/sound tiles (no still image to show). */
+.asset-explorer .ae-kind {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+  pointer-events: none;
+}
+
+/* Transparent full-tile button = the double-click target (sits above the
+   Thumbnail/kind-icon, below the insert button). */
+.asset-explorer .ae-tile-hit {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+/* Insert affordance, top-right of image tiles. Above the hit target. */
+.asset-explorer .ae-insert {
+  position: absolute;
+  top: var(--a-sp-1);
+  right: var(--a-sp-1);
+  width: auto;
+  height: auto;
+  padding: var(--a-sp-1);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+  opacity: 0;
+}
+
+.asset-explorer .ae-tile:hover .ae-insert,
+.asset-explorer .ae-insert:focus-visible {
+  opacity: 1;
+}
+
+.asset-explorer .ae-name {
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Modal preview media fills the dialog width (square corners, from the tokens). */
+.ae-preview-media {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  margin: 0 auto;
+}
+
+audio.ae-preview-media {
+  width: 100%;
 }
 
 /* ── Inspector + Variables Panel ─────────────────────────────────────────
@@ -819,18 +986,32 @@ body,
   display: inline-flex;
 }
 
-/* Color control WITH ALPHA: shaped like the number/text inputs (same growing
-   width, height, square corners, themed 1px border). Layout:
-   [swatch = native RGB picker] [hex text (#rrggbb / #rrggbbaa)] [alpha scrub].
-   The native <input type=color> cannot carry alpha, so it edits only the RGB
-   part and sits invisibly under the swatch; alpha lives in the DraggableNumber
-   scrub, and the 8-digit hex round-trips through the text field. */
-.inspector .color-control {
-  position: relative;
+/* ── ColorField (the color property field; wraps the SvelteLib ColorPicker) ──
+   A compact RESTING row (swatch + hex readout) that INLINE-EXPANDS the full
+   picker on click (design decision: inline, not a popover/modal — the resting
+   row is minimal per the round-11 field-chrome ruling; inline expansion can't
+   be clipped by the panel's scroll container and keeps the preview/commit
+   wiring local). The head is shaped like the number/text inputs (same growing
+   width, height, square corners, themed 1px border); the picker sits under it
+   in the panel flow. See web/ColorField.svelte for the WHY. */
+.inspector .colorfield {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  width: 100%; /* fills the growing value column (min --a-input-w via the grid) */
+  min-width: 0;
+}
+.inspector .colorfield.disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* The resting head: swatch + hex, the standardized input box. */
+.inspector .colorfield-head {
   display: flex;
   align-items: center;
   gap: var(--a-sp-2);
-  width: 100%; /* fills the growing value column (min --a-input-w via the grid) */
+  width: 100%;
   min-width: 0;
   height: var(--a-control-h);
   box-sizing: border-box;
@@ -840,87 +1021,91 @@ body,
   border-radius: 0; /* square — same as every other field control */
 }
 
-/* Swatch hit area: the native RGB picker fills it invisibly, so clicking the
-   swatch opens Chrome's picker. Full control height for a comfortable target. */
-.inspector .color-control .color-pick {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  height: 100%;
-  cursor: pointer;
-}
-
-/* The real input: fills the swatch area, invisible, receives the click that
-   opens the picker (a click on the wrapping <label> also focuses it). */
-.inspector .color-control .color-native {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-
-/* Neutralize the UA swatch chrome (Chrome's white border + inner padding). */
-.inspector .color-control .color-native::-webkit-color-swatch-wrapper {
-  padding: 0;
-}
-
-.inspector .color-control .color-native::-webkit-color-swatch {
-  border: none;
-}
-
-/* The swatch shows the CURRENT color WITH its alpha over the transparency
+/* Swatch button: shows the CURRENT color WITH its alpha over the transparency
    checkerboard (manifest: swatch shows transparency; Figures-repo precedent),
-   so translucency reads at a glance. --a-swatch-rgba is set inline by the
-   Inspector; when absent (unparseable stored color) it falls back to black —
-   the pre-alpha control's fallback, kept. */
-.inspector .color-control .color-swatch {
+   so translucency reads at a glance. --cf-swatch is set inline by ColorField;
+   an unparseable value shows transparent + a "?" marker (never a silent
+   black). Clicking it toggles the inline picker. */
+.inspector .colorfield-swatch {
+  position: relative;
   width: var(--a-color-swatch);
   height: var(--a-color-swatch);
   flex: none;
+  padding: 0;
   border: 1px solid var(--border);
-  pointer-events: none; /* clicks pass through to .color-native */
+  border-radius: 0;
+  cursor: pointer;
   background:
-    linear-gradient(var(--a-swatch-rgba, #000000), var(--a-swatch-rgba, #000000)),
+    linear-gradient(var(--cf-swatch, #00000000), var(--cf-swatch, #00000000)),
     repeating-conic-gradient(var(--a-checker-dark) 0% 25%, var(--a-checker-light) 0% 50%);
   background-size: auto, var(--a-checker-size) var(--a-checker-size);
 }
-
-/* Hex text: an in-control editable field — accepts #rgb/#rgba/#rrggbb/#rrggbbaa,
-   previews live, commits on Enter/blur (invalid text reverts loudly). Mono, like
-   equations — a hex code reads as code. */
-.inspector .color-control .color-hex {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 100%;
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
+.inspector .colorfield-swatch:focus-visible {
+  outline: var(--a-selection-stroke) solid var(--a-selection);
+  outline-offset: 1px;
+}
+/* The "?" marker on an unparseable stored color. */
+.inspector .colorfield-swatch .colorfield-unknown {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--a-font-sm);
+  font-weight: 700;
   color: var(--fg);
-  font-family: var(--a-mono);
-  font-size: var(--a-font-sm); /* mono runs wide; matches .eq-input */
-  outline: none;
 }
 
-/* Alpha scrub: an UNBOXED DraggableNumber inside the control — the control
-   already draws THE box; a second border would double the field chrome
-   (round-11 minimalism). Inherits the ambient --dn-* theming from .inspector;
-   overrides are on .dn itself for the same specificity reason as the
-   .numfield square-corners rule above. */
-.inspector .color-control .color-alpha .dn {
-  --dn-bg: transparent;
-  --dn-border: transparent;
-  --dn-radius: 0; /* square, like every other field control */
-  --dn-padding: 0 var(--a-sp-1);
-  --dn-font-size: var(--a-font-sm);
-  height: 100%;
+/* Hex readout: mono, like equations — a hex code reads as code. Fills the rest
+   of the head; unparseable stored values render in the danger color so a bad
+   value is visible + fixable (open the picker to correct it). */
+.inspector .colorfield-hex {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm);
+}
+.inspector .colorfield-hex.unknown {
+  color: var(--a-guide);
+}
+
+/* The inline-expanded picker region. The SvelteLib ColorPicker's --cp-* props
+   chain to our --a-* / ambient tokens so it matches every theme (light + dark),
+   and its corners stay square (--cp-corner: 0). The region fills the value
+   column but is capped so the (square) S/V square never grows absurdly tall on
+   a very wide panel; --cp-square-size:100% makes the square/strips track that
+   width (resolves against .cp, which is width:100% of the resolved cap). */
+.inspector .colorfield-picker {
+  width: 100%;
+  max-width: var(--a-colorpicker-max-w);
+  min-width: 0;
+
+  /* Chain the picker's tokens to the app theme. The picker already falls back
+     to ambient --control-bg/--fg/--border/--accent, but we set them explicitly
+     so it tracks the PowerRP panel palette exactly (and the checker matches the
+     swatch above). */
+  --cp-bg: var(--a-panel-bg);
+  --cp-fg: var(--fg);
+  --cp-fg-dim: var(--fg-dim);
+  --cp-border: var(--border);
+  --cp-accent: var(--a-selection);
+  --cp-corner: 0; /* square, like every field control */
+  --cp-checker-light: var(--a-checker-light);
+  --cp-checker-dark: var(--a-checker-dark);
+  --cp-checker-size: var(--a-checker-size);
+  --cp-font-size: var(--a-font-sm);
+  --cp-gap: var(--a-sp-2);
+  /* Square + strips fill the picker width (100% of .cp's resolved width). */
+  --cp-square-size: 100%;
+}
+/* The picker fills the region's width (its root is inline-flex/fit-content by
+   default), so --cp-square-size:100% has a concrete width to resolve against. */
+.inspector .colorfield-picker :global(.cp) {
+  width: 100%;
   box-sizing: border-box;
 }
 
@@ -1098,10 +1283,6 @@ body,
   border: 1px solid var(--border);
   border-radius: 0;
   font-size: var(--a-font-md);
-}
-
-.inspector .color-control.control-disabled {
-  pointer-events: none;
 }
 
 /* ── Transition target rows (manifest Round 12; the type + enum dropdowns) ──

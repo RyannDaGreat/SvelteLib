@@ -12,6 +12,7 @@
   import HintBar from "../../../lib/HintBar.svelte";
   import Toolbar from "./Toolbar.svelte";
   import SlideNav from "./SlideNav.svelte";
+  import AssetExplorer from "./AssetExplorer.svelte";
   import CanvasView from "./CanvasView.svelte";
   import Inspector from "./Inspector.svelte";
   import KeyframePanel from "./KeyframePanel.svelte";
@@ -58,6 +59,8 @@
 
   // SplitPane splits are BOUNDARY positions: [0.16, 0.78] → 3 panes.
   let hSplits = $state([0.16, 0.78]);
+  // Left column: Slide Navigator (top) / Asset Explorer (bottom) — one split.
+  let leftSplits = $state([0.62]);
   // Right column: Property Panel / Variables Panel / Keyframe Panel.
   let rightSplits = $state([0.45, 0.7]);
 
@@ -330,9 +333,24 @@
              palette command (OFF by default). The Canvas is exempt — it's an
              interaction surface, not a first-class named panel. -->
         {#if col === 0}
-          <Panel {app} name="Slide Navigator">
-            <SlideNav {app} />
-          </Panel>
+          <!-- Left column stacks the Slide Navigator over the Asset Explorer
+               (manifest Round 12: "a pane BELOW the Slide Navigator"). Same
+               boundary-split pattern as the right column. -->
+          <div class="left-col">
+            <SplitPane orientation="vertical" bind:splits={leftSplits}>
+              {#snippet children(row)}
+                {#if row === 0}
+                  <Panel {app} name="Slide Navigator">
+                    <SlideNav {app} />
+                  </Panel>
+                {:else}
+                  <Panel {app} name="Asset Explorer">
+                    <AssetExplorer {app} />
+                  </Panel>
+                {/if}
+              {/snippet}
+            </SplitPane>
+          </div>
         {:else if col === 1}
           <CanvasView {app} />
         {:else}

@@ -24,6 +24,7 @@ import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
 import { createUndo } from "../core/undo.js";
 import { registerAll } from "../plugins/index.js";
+import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 
 const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
@@ -919,6 +920,30 @@ export class PowerRPApp {
    *  the refresh-button data source for the future Asset Explorer pane. */
   async listProjectAssets(name = this.projectName()) {
     return projectApi.listAssets(name);
+  }
+
+  /**
+   * Command. Inserts an image asset (by URL) as a new image widget on the
+   * current slide — the Asset Explorer's "insert into slide" affordance
+   * (manifest Round 12: drop/pick media inserts at NATIVE pixel size, "because
+   * we have pixels to measure things"). Loads the bitmap to learn its native
+   * size, then centers it in the CURRENT CAMERA VIEW (the same
+   * cameraRect(evaluateState(foldState(…))) idiom exportPng uses). addItem
+   * keyframes active:true on this slide and selects the new item.
+   *
+   * Async because the natural size is only known after decode. A decode
+   * FAILURE rejects loudly (no silent fallback) so the caller surfaces it.
+   */
+  async insertImageAsset(url) {
+    const { naturalWidth: w, naturalHeight: h } = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`insertImageAsset: could not load image "${url}"`));
+      img.src = url;
+    });
+    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state, this.doc.meta);
+    // Center the native-size quad in the camera view (top-left = center − half).
+    this.addItem({ ...imagePlugin.defaults, src: url, w, h, x: rect.x + rect.w / 2 - w / 2, y: rect.y + rect.h / 2 - h / 2 });
   }
 
   // Open-project UI seam: the Open command opens a project-picker MODAL, but
