@@ -12,6 +12,7 @@ import { worldTransform } from "../core/derive.js";
 import {
   translationPairs, resizeAnchors, resizedBox,
   scaledBoxAboutPoint, scaleMemberPairs, scalePairs,
+  creationRect, creationEndpoint,
 } from "../web/canvas/dragKinds.js";
 
 let n = 0;
@@ -102,6 +103,40 @@ test("scalePairs: adapter — uniform about c, axis constraint suppresses the ot
     [[["items", "r", "x"], 20], [["items", "r", "y"], 40], [["items", "r", "w"], 200], [["items", "r", "h"], 100]]);
   eq(scalePairs(m, 2, { x: 0, y: 0 }, "x"),
     [[["items", "r", "x"], 20], [["items", "r", "w"], 200]]);
+});
+
+// ── creationRect / creationEndpoint (manifest ROUND 13.2 CREATION-DRAG
+// MODIFIERS) — mirrors of the module's own doctests, plus the quadrant-
+// direction cases that motivated a dedicated point-anchored function instead
+// of reusing resizedBox with a collapsed base box (see the docstring: a
+// collapsed base makes resizedBox's gx/gy/fx/fy all coincide, so its uniform
+// branch finds a zero drive vector and silently falls through to a plain,
+// non-aspect-locked move — verified during design, not just asserted here).
+test("creationRect: plain drag in all four quadrants", () => {
+  eq(creationRect(100, 100, 300, 50, {}), [100, 50, 300, 100]); // down-right in x, up in y
+  eq(creationRect(100, 100, 50, 40, {}), [50, 40, 100, 100]); // up-left quadrant
+  eq(creationRect(100, 100, 300, 150, {}), [100, 100, 300, 150]); // down-right quadrant
+});
+test("creationRect: uniform (Shift) locks aspect to a square, any quadrant", () => {
+  eq(creationRect(100, 100, 300, 130, { uniform: true }), [100, 100, 300, 300]); // dx dominates
+  eq(creationRect(100, 100, 50, 40, { uniform: true }), [40, 40, 100, 100]); // dy dominates, up-left
+});
+test("creationRect: symmetric (Cmd) grows both sides about the start", () => {
+  eq(creationRect(100, 100, 300, 150, { symmetric: true }), [-100, 50, 300, 150]);
+  eq(creationRect(100, 100, 50, 150, { symmetric: true }), [50, 50, 150, 150]);
+});
+test("creationRect: uniform+symmetric composes (aspect-locked AND centered)", () => {
+  eq(creationRect(100, 100, 300, 130, { uniform: true, symmetric: true }), [-100, -100, 300, 300]);
+});
+test("creationEndpoint: plain drag is a straight from-start to-pointer segment", () => {
+  eq(creationEndpoint(100, 100, 300, 130, {}), { from: { x: 100, y: 100 }, to: { x: 300, y: 130 } });
+});
+test("creationEndpoint: uniform (Shift) axis-locks to the dominant direction", () => {
+  eq(creationEndpoint(100, 100, 300, 130, { uniform: true }), { from: { x: 100, y: 100 }, to: { x: 300, y: 100 } });
+  eq(creationEndpoint(100, 100, 130, 300, { uniform: true }), { from: { x: 100, y: 100 }, to: { x: 100, y: 300 } });
+});
+test("creationEndpoint: symmetric (Cmd) mirrors both endpoints about the start", () => {
+  eq(creationEndpoint(100, 100, 300, 130, { symmetric: true }), { from: { x: -100, y: 70 }, to: { x: 300, y: 130 } });
 });
 
 console.log(`\ndragKinds tests: ${n} passed`);

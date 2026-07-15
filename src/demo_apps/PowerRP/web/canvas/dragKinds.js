@@ -237,3 +237,97 @@ export function scalePairs(member, factor, c, axis = null) {
   const doY = axis !== "x"; // y-axis constraint (or unconstrained) touches y/h
   return scaleMemberPairs(member, doX ? factor : 1, doY ? factor : 1, c.x, c.y, { x: doX, y: doY });
 }
+
+/**
+ * Pure function. The world-space [x0, y0, x1, y1] box for a CROSSHAIR
+ * CREATION drag (manifest 13.2 "CREATION-DRAG MODIFIERS"), point-anchored at
+ * the drag's start (sx, sy) — as opposed to resizedBox's box-anchored resize,
+ * which grabs a HANDLE on an existing box with a real opposite edge/corner.
+ * A creation drag has no such box: any quadrant is a valid drag direction, so
+ * this reads the SAME modifier semantics resizedBox documents (manifest
+ * "Drag/resize modifiers — CONFIRMED mapping") but re-derives them for a
+ * degenerate (zero-extent) base, where resizedBox's own uniform branch can't
+ * find a driving axis to lock aspect against (verified: gx/gy/fx/fy all
+ * collapse to the same start point, so its (gx−fx, gy−fy) drive vector is
+ * zero — this is the reason a separate function exists rather than a call
+ * into resizedBox with a collapsed base box).
+ *
+ *   uniform (Shift)   — BOTH dimensions get the SAME magnitude (the larger of
+ *     |dx|, |dy| drives it), each keeping its own sign — a square/1:1-aspect
+ *     box growing from the start point along the cursor's general direction
+ *     (resize's "corner rides the diagonal through the anchor" reading, with
+ *     the start point AS the anchor).
+ *   symmetric (Cmd)   — the start point becomes the box CENTER: both edges on
+ *     each axis move together, magnitude |dx|/|dy| each way (PowerPoint's
+ *     Ctrl-resize precedent, identical interpretation to resizedBox's
+ *     symmetric branch — there the anchor is forced to the box center; here
+ *     the anchor (start point) simply IS the center already).
+ * Composes exactly like resize: uniform+symmetric locks aspect AND centers.
+ *
+ * Args:
+ *   sx, sy (number): the drag's start point (world).
+ *   wx, wy (number): the live pointer position (world).
+ *   mods   (object): {uniform, symmetric} — same shape as resizedBox's mods.
+ *
+ * Returns:
+ *   number[4]: [x0, y0, x1, y1]
+ *
+ * @example creationRect(100, 100, 300, 50, {}) // [100, 50, 300, 100]
+ * @example creationRect(100, 100, 50, 40, {}) // [50, 40, 100, 100]
+ * @example creationRect(100, 100, 300, 130, { uniform: true }) // [100, 100, 300, 300]
+ * @example creationRect(100, 100, 300, 150, { symmetric: true }) // [-100, 50, 300, 150]
+ */
+export function creationRect(sx, sy, wx, wy, mods) {
+  let dx = wx - sx, dy = wy - sy;
+  if (mods.uniform) {
+    const k = Math.max(Math.abs(dx), Math.abs(dy));
+    // Math.sign(0) is 0, which would zero out a still axis under uniform —
+    // fall back to +1 (an arbitrary but harmless tie-break: a zero-delta axis
+    // has no direction of its own to preserve).
+    dx = (Math.sign(dx) || 1) * k;
+    dy = (Math.sign(dy) || 1) * k;
+  }
+  if (mods.symmetric) {
+    const ax = Math.abs(dx), ay = Math.abs(dy);
+    return [sx - ax, sy - ay, sx + ax, sy + ay];
+  }
+  return [Math.min(sx, sx + dx), Math.min(sy, sy + dy), Math.max(sx, sx + dx), Math.max(sy, sy + dy)];
+}
+
+/**
+ * Pure function. The {x, y} endpoint for a CROSSHAIR CREATION drag of an
+ * ENDPOINT-kind widget (the arrow family: `placement === "endpoints"` —
+ * manifest 13.2), point-anchored at the drag's start exactly like
+ * creationRect, but for a single free point rather than a box (no aspect to
+ * preserve, so Shift is a plain AXIS LOCK — the same interpretation
+ * moveDrag's shift-drag already uses for a moveBy widget with no bbox probe
+ * features, snapping the point onto the horizontal/vertical through the
+ * start) instead of resize's uniform-scale reading, which needs two
+ * dimensions to relate.
+ *
+ *   uniform (Shift)   — axis-locks the live point to the horizontal or
+ *     vertical THROUGH THE START (bigger |dx| vs |dy| decides — same
+ *     dominant-axis rule as core/snap.js axisLock's first-frame case; no
+ *     hysteresis here since the caller re-derives from raw pointer state on
+ *     every move rather than tracking a "locked so far" axis).
+ *   symmetric (Cmd)   — the start point becomes the segment's MIDPOINT: the
+ *     other end mirrors the live point through it, so the shape grows both
+ *     directions (PowerPoint's Ctrl-resize precedent, same interpretation as
+ *     creationRect's symmetric branch).
+ * Composes exactly like creationRect: uniform+symmetric axis-locks AND mirrors.
+ *
+ * Returns: {from: {x, y}, to: {x, y}} — the placed widget's two endpoints.
+ *
+ * @example creationEndpoint(100, 100, 300, 130, {}) // {from: {x: 100, y: 100}, to: {x: 300, y: 130}}
+ * @example creationEndpoint(100, 100, 300, 130, { uniform: true }) // {from: {x: 100, y: 100}, to: {x: 300, y: 100}}
+ * @example creationEndpoint(100, 100, 300, 130, { symmetric: true }) // {from: {x: -100, y: 70}, to: {x: 300, y: 130}}
+ */
+export function creationEndpoint(sx, sy, wx, wy, mods) {
+  let dx = wx - sx, dy = wy - sy;
+  if (mods.uniform) {
+    if (Math.abs(dx) >= Math.abs(dy)) dy = 0; else dx = 0;
+  }
+  const to = { x: sx + dx, y: sy + dy };
+  const from = mods.symmetric ? { x: sx - dx, y: sy - dy } : { x: sx, y: sy };
+  return { from, to };
+}

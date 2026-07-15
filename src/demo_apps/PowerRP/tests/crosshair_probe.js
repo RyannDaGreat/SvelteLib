@@ -1,9 +1,10 @@
 /**
- * Crosshair mode + anchor snap probe (SB2, manifest ARCHITECTURE PLAN #4
- * ANCHOR SNAP + #5 CROSSHAIR MODE). Boots the PowerRP editor headless with
- * the demo deck and drives REAL pointer/keyboard gestures (page.mouse /
- * page.keyboard — CanvasView's handlers call setPointerCapture, so a
- * synthetic dispatchEvent would not route through them; same technique
+ * Crosshair mode + anchor snap + CREATION-DRAG MODIFIERS probe (SB2, manifest
+ * ARCHITECTURE PLAN #4 ANCHOR SNAP + #5 CROSSHAIR MODE + ROUND 13.2
+ * CREATION-DRAG MODIFIERS). Boots the PowerRP editor headless with the demo
+ * deck and drives REAL pointer/keyboard gestures (page.mouse / page.keyboard
+ * — CanvasView's handlers call setPointerCapture, so a synthetic
+ * dispatchEvent would not route through them; same technique
  * modifier_probe.js/editor_smoke.js use) against the live app, asserting:
  *   - crosshairs render + follow the cursor while armed, and Esc cancels
  *     the arm with no gesture;
@@ -14,7 +15,16 @@
  *   - Add Rectangle's plain CLICK places a default-size box centered there;
  *   - holding A through a snapping move release writes the anchor EQUATION
  *     (asserts the stored string), and a plain release still writes plain
- *     numbers.
+ *     numbers;
+ *   - ROUND 13.2: Shift during a BBOX creation drag places a SQUARE anchored
+ *     at the start point (uniform); Cmd grows BOTH SIDES about the start
+ *     point (symmetric); toggling Shift MID-DRAG re-derives the LIVE preview
+ *     immediately (no release needed) — proving modifiers are live, not
+ *     latched at grab time; a creation drag's START point and its LIVE
+ *     (release) point both SNAP to another item's anchor/feature, via the
+ *     SAME solver resize/move use; the ENDPOINTS (arrow) placement kind gets
+ *     the same two modifiers (Shift = axis-lock, Cmd = mirror both endpoints
+ *     about the start).
  * Zero console errors throughout (ignoring the documented stale-fixture
  * boot noise other in-flight agents' migrations leave — same IGNORE_BOOT
  * list as rotated_resize_probe.js/colorfield_probe.js).
@@ -25,7 +35,7 @@
  * h160), circle 0f3d6775 (x760 y200 w180 h180), camera 1280x720. World≈
  * screen at zoom 1 (no pan/zoom on fresh boot).
  */
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
@@ -34,6 +44,7 @@ const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
 const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/demo.powerrp.json"), "utf8");
 const shots = process.argv[2] ?? "/tmp";
+await mkdir(shots, { recursive: true }); // screenshots must never fail on a missing artifact dir
 
 const RECT = "c5c2bed3"; // x120 y160 w260 h160
 const CIRCLE = "0f3d6775"; // x760 y200 w180 h180
@@ -270,6 +281,211 @@ try {
     `plain release (no A) still commits PLAIN NUMBERS even though it snapped (got x=${JSON.stringify(rectAfter8.x)} y=${JSON.stringify(rectAfter8.y)})`);
   ok(approx(rectAfter8.x, 760) && approx(rectAfter8.y, 200), `plain numeric commit matches the snapped position (got ${JSON.stringify(rectAfter8)})`);
   await page.evaluate(() => window.__powerrp_app.undo());
+
+  // Scenarios 9-15 reuse a few fixed start points (450,450)/(450,550) across
+  // separate creation drags — each drag SELECTS the item it just placed
+  // (app.addItem), and a selected item's resize handles/endpoints sit
+  // exactly at ITS OWN corners. Since several of these squares/rects
+  // deliberately land back at (450,450), the NEXT scenario's pointerdown at
+  // that same point would otherwise hit the PREVIOUS item's top-left resize
+  // handle (ResizeHandles.svelte's onstart calls e.stopPropagation(), so the
+  // event would never reach CanvasView's crosshair-arm consumption at all) —
+  // deselecting before every drag keeps each scenario's pointerdown landing
+  // on bare canvas, exactly like a fresh click would in real usage.
+  const deselect = () => page.evaluate(() => window.__powerrp_app.deselectAll());
+
+  // ── Scenario 9: SHIFT during a BBOX creation drag = uniform/square ────────
+  // (manifest ROUND 13.2 "CREATION-DRAG MODIFIERS"): dragging a rect
+  // placement with Shift held must produce a SQUARE (aspect-locked, anchored
+  // at the drag's start point) — exactly resizedBox's uniform-corner reading,
+  // re-derived for a point anchor (dragKinds.creationRect).
+  await deselect();
+  await page.evaluate(() => window.__powerrp_app.runCommand("add-rect"));
+  await new Promise((r) => setTimeout(r, 60));
+  const idsBefore9 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const s9 = await worldToPage(450, 450);
+  const e9 = await worldToPage(650, 490); // dx=200, dy=40 world — Shift should force h to 200 too
+  await page.mouse.move(s9.x, s9.y);
+  await page.mouse.down();
+  await page.keyboard.down("Shift");
+  await page.mouse.move(e9.x, e9.y, { steps: 8 });
+  await new Promise((r) => setTimeout(r, 60));
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await new Promise((r) => setTimeout(r, 80));
+  const idsAfter9 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const newId9 = idsAfter9.find((id) => !idsBefore9.includes(id));
+  const placed9 = newId9 ? await nodeState(newId9) : null;
+  ok(placed9 && approx(placed9.x, 450) && approx(placed9.y, 450) && approx(placed9.w, 200) && approx(placed9.h, 200),
+    `Shift-held bbox creation drag places a SQUARE anchored at the start (got ${JSON.stringify(placed9)}, want x450 y450 w200 h200)`);
+
+  // ── Scenario 10: CMD during a BBOX creation drag = symmetric about start ──
+  // (manifest: "if I hold command... it should do both sides") — the drag
+  // start point becomes the box CENTER, so both edges move.
+  await deselect();
+  await page.evaluate(() => window.__powerrp_app.runCommand("add-rect"));
+  await new Promise((r) => setTimeout(r, 60));
+  const idsBefore10 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const s10 = await worldToPage(450, 450);
+  const e10 = await worldToPage(550, 490); // dx=100, dy=40 from the start point
+  await page.mouse.move(s10.x, s10.y);
+  await page.mouse.down();
+  await page.keyboard.down("Meta");
+  await page.mouse.move(e10.x, e10.y, { steps: 8 });
+  await new Promise((r) => setTimeout(r, 60));
+  await page.mouse.up();
+  await page.keyboard.up("Meta");
+  await new Promise((r) => setTimeout(r, 80));
+  const idsAfter10 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const newId10 = idsAfter10.find((id) => !idsBefore10.includes(id));
+  const placed10 = newId10 ? await nodeState(newId10) : null;
+  // Symmetric about (450,450): x0=450-100=350, x1=450+100=550, y0=450-40=410, y1=450+40=490.
+  ok(placed10 && approx(placed10.x, 350) && approx(placed10.y, 410) && approx(placed10.w, 200) && approx(placed10.h, 80),
+    `Cmd-held bbox creation drag grows BOTH SIDES about the start point (got ${JSON.stringify(placed10)}, want x350 y410 w200 h80)`);
+
+  // ── Scenario 11: modifiers are LIVE — toggling Shift MID-DRAG re-derives ──
+  // from RAW pointer state on the very next move (manifest: "pressing/
+  // releasing mid-drag re-derives the rect from raw pointer state, matching
+  // how resize handles mid-drag modifier changes — verify how it does").
+  // VERIFIED (read resizeDrag): resize has no keydown listener of its own —
+  // e.shiftKey/e.metaKey are read fresh inside resizeDrag, which only runs
+  // from onPointerMove's dispatch, so a modifier toggle updates the preview
+  // on the NEXT move event, not synchronously the instant the key goes down
+  // with the pointer motionless. placementDrag follows the identical
+  // contract on purpose (same "read the event's own modifier flags" idiom) —
+  // so this proves the toggle takes effect on the very next move with NO
+  // rebase/jump (placementDrag has no baseBox to rebase in the first place,
+  // unlike resizeDrag — see its docstring), not that a bare keydown alone
+  // repaints with zero pointer motion (true of resize too, and not what
+  // "live" claims). Drag WITHOUT Shift to a non-square point (preview is the
+  // plain rect), press Shift, then nudge the pointer ONE world unit (the
+  // same position in real terms, but a genuine move event) — the preview
+  // must become square on THAT move, and the FINAL placed geometry must be
+  // the square.
+  await deselect();
+  await page.evaluate(() => window.__powerrp_app.runCommand("add-rect"));
+  await new Promise((r) => setTimeout(r, 60));
+  const idsBefore11 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const s11 = await worldToPage(450, 450);
+  const mid11 = await worldToPage(650, 490); // plain rect target (w200 h40)
+  const mid11Nudge = await worldToPage(650, 490.01); // same target, one more move event
+  await page.mouse.move(s11.x, s11.y);
+  await page.mouse.down();
+  await page.mouse.move(mid11.x, mid11.y, { steps: 8 });
+  await new Promise((r) => setTimeout(r, 60));
+  const previewPlain11 = await appState(() => {
+    const r = document.querySelector(".overlay .place-rect");
+    return r ? { w: r.getAttribute("width"), h: r.getAttribute("height") } : null;
+  });
+  await page.keyboard.down("Shift"); // engage mid-drag, pointer stays at (650,490)
+  await page.mouse.move(mid11Nudge.x, mid11Nudge.y); // the "next move" resize's own contract requires
+  await new Promise((r) => setTimeout(r, 60));
+  const previewShift11 = await appState(() => {
+    const r = document.querySelector(".overlay .place-rect");
+    return r ? { w: r.getAttribute("width"), h: r.getAttribute("height") } : null;
+  });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await new Promise((r) => setTimeout(r, 80));
+  const idsAfter11 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const newId11 = idsAfter11.find((id) => !idsBefore11.includes(id));
+  const placed11 = newId11 ? await nodeState(newId11) : null;
+  ok(previewPlain11 && Math.abs(Number(previewPlain11.w) - Number(previewPlain11.h)) > 1,
+    `pre-Shift preview is the plain (non-square) rect (got ${JSON.stringify(previewPlain11)})`);
+  ok(previewShift11 && approx(Number(previewShift11.w), Number(previewShift11.h), 1),
+    `preview becomes square on the FIRST move after Shift engages, no jump/rebase (got ${JSON.stringify(previewShift11)})`);
+  ok(placed11 && approx(placed11.w, placed11.h, 1e-6) && approx(placed11.w, 200),
+    `final placed geometry reflects the mid-drag Shift toggle (got ${JSON.stringify(placed11)}, want a 200x200 square)`);
+
+  // ── Scenario 12: BBOX creation drag SNAPS to another item's anchor/feature ─
+  // (manifest: "when anchors are enabled... drag onto those anchors, it
+  // should snap just like it would when I'm resizing things"). Drag a new
+  // rect's start point onto the circle's tl (760,200) — offset by a few px
+  // so the solver, not the gesture, produces the exact snapped corner.
+  await deselect();
+  await page.evaluate(() => window.__powerrp_app.runCommand("add-rect"));
+  await new Promise((r) => setTimeout(r, 60));
+  const idsBefore12 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const s12 = await worldToPage(763, 203); // 3px off the circle's tl (760,200) — within SNAP_PX
+  const e12 = await worldToPage(900, 350);
+  await page.mouse.move(s12.x, s12.y);
+  await page.mouse.down();
+  await new Promise((r) => setTimeout(r, 30));
+  const engaged12 = await appState(() => window.__powerrp_app.snapEngaged);
+  await page.mouse.move(e12.x, e12.y, { steps: 8 });
+  await new Promise((r) => setTimeout(r, 60));
+  await page.mouse.up();
+  await new Promise((r) => setTimeout(r, 80));
+  ok(engaged12 === true, "snapEngaged goes true while the creation drag's START point sits near the circle's tl anchor");
+  const idsAfter12 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const newId12 = idsAfter12.find((id) => !idsBefore12.includes(id));
+  const placed12 = newId12 ? await nodeState(newId12) : null;
+  ok(placed12 && approx(placed12.x, 760) && approx(placed12.y, 200),
+    `creation drag's START point SNAPS to the circle's tl anchor (760,200) (got ${JSON.stringify(placed12)})`);
+
+  // ── Scenario 13: the creation drag's LIVE (release) point snaps too ───────
+  // Drag AWAY from any feature, ending a few px from the rect's tl (120,160).
+  await deselect();
+  await page.evaluate(() => window.__powerrp_app.runCommand("add-rect"));
+  await new Promise((r) => setTimeout(r, 60));
+  const idsBefore13 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const s13 = await worldToPage(50, 60);
+  const e13 = await worldToPage(123, 163); // 3px off the rect's tl (120,160)
+  await page.mouse.move(s13.x, s13.y);
+  await page.mouse.down();
+  await page.mouse.move(e13.x, e13.y, { steps: 8 });
+  await new Promise((r) => setTimeout(r, 60));
+  await page.mouse.up();
+  await new Promise((r) => setTimeout(r, 80));
+  const idsAfter13 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const newId13 = idsAfter13.find((id) => !idsBefore13.includes(id));
+  const placed13 = newId13 ? await nodeState(newId13) : null;
+  ok(placed13 && approx(placed13.x, 50) && approx(placed13.y, 60) && approx(placed13.x + placed13.w, 120) && approx(placed13.y + placed13.h, 160),
+    `creation drag's LIVE (release) point SNAPS to the rect's tl (120,160) (got ${JSON.stringify(placed13)})`);
+
+  // ── Scenario 14: ENDPOINT (arrow) creation drag — Shift axis-locks, ──────
+  // Cmd mirrors about the start (manifest: same modifier semantics extend to
+  // "an arrow or a donut or whatever").
+  await deselect();
+  await page.evaluate(() => window.__powerrp_app.runCommand("add-arrow"));
+  await new Promise((r) => setTimeout(r, 60));
+  const idsBefore14 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const s14 = await worldToPage(450, 550);
+  const e14 = await worldToPage(650, 590); // dx=200 dy=40 — Shift axis-locks to horizontal
+  await page.mouse.move(s14.x, s14.y);
+  await page.mouse.down();
+  await page.keyboard.down("Shift");
+  await page.mouse.move(e14.x, e14.y, { steps: 8 });
+  await new Promise((r) => setTimeout(r, 60));
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await new Promise((r) => setTimeout(r, 80));
+  const idsAfter14 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const newId14 = idsAfter14.find((id) => !idsBefore14.includes(id));
+  const rawArrow14 = newId14 ? await rawItem(newId14) : null;
+  ok(rawArrow14 && approx(rawArrow14.from.x, 450) && approx(rawArrow14.from.y, 550) && approx(rawArrow14.to.x, 650) && approx(rawArrow14.to.y, 550),
+    `Shift-held ARROW creation drag axis-locks to horizontal (got ${JSON.stringify(rawArrow14)}, want from(450,550) to(650,550))`);
+
+  await deselect();
+  await page.evaluate(() => window.__powerrp_app.runCommand("add-arrow"));
+  await new Promise((r) => setTimeout(r, 60));
+  const idsBefore15 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const s15 = await worldToPage(450, 550);
+  const e15 = await worldToPage(550, 590); // dx=100 dy=40 from the start
+  await page.mouse.move(s15.x, s15.y);
+  await page.mouse.down();
+  await page.keyboard.down("Meta");
+  await page.mouse.move(e15.x, e15.y, { steps: 8 });
+  await new Promise((r) => setTimeout(r, 60));
+  await page.mouse.up();
+  await page.keyboard.up("Meta");
+  await new Promise((r) => setTimeout(r, 80));
+  const idsAfter15 = await appState(() => Object.keys(window.__powerrp_app.rawState().items));
+  const newId15 = idsAfter15.find((id) => !idsBefore15.includes(id));
+  const rawArrow15 = newId15 ? await rawItem(newId15) : null;
+  // Cmd mirrors the "to" point through the start: from = start - d, to = start + d.
+  ok(rawArrow15 && approx(rawArrow15.from.x, 350) && approx(rawArrow15.from.y, 510) && approx(rawArrow15.to.x, 550) && approx(rawArrow15.to.y, 590),
+    `Cmd-held ARROW creation drag mirrors BOTH endpoints about the start (got ${JSON.stringify(rawArrow15)}, want from(350,510) to(550,590))`);
 
   await page.screenshot({ path: `${shots}/crosshair_probe.png` });
 

@@ -28,7 +28,7 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs } from "./canvas/dragKinds.js";
+  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, creationRect, creationEndpoint } from "./canvas/dragKinds.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
   import { cssFamilyFor } from "../render_gpu/fonts.js"; // font id → CSS family (dblclick text-edit overlay)
@@ -606,10 +606,17 @@
         // drag kind uses (onPointerMove, CLICK_SLOP_PX) — a placement that
         // never crosses it is a CLICK (default-size/length placement); crossing
         // it makes it a DRAG (exact rect / exact from→to). See placementUp.
-        drag = { kind: "place", plugin: armed.plugin, startWorld: w, lastWorld: w, downScreen: screenPoint(e), moved: false };
+        // The START point snaps HERE, at arm/grab time (manifest 13.2: "both
+        // the start point and the live drag point") — not deferred to the
+        // first pointermove, so it applies even to a plain CLICK placement
+        // (no move ever fires) and so guides/snapEngaged appear immediately
+        // rather than one move-event later.
+        const snappedStart = snapPoint(w.x, w.y);
+        guides = snappedStart.guides;
+        drag = { kind: "place", plugin: armed.plugin, startWorld: { x: snappedStart.x, y: snappedStart.y }, startGuides: snappedStart.guides, lastWorld: w, downScreen: screenPoint(e), moved: false };
         // Endpoint-kind (arrows) previews a from→to LINE; bbox-kind a rect.
-        if (armed.plugin.placement === "endpoints") placeLine = { x1: w.x, y1: w.y, x2: w.x, y2: w.y };
-        else placeRect = rectFromCorners(w, w);
+        if (armed.plugin.placement === "endpoints") placeLine = { x1: drag.startWorld.x, y1: drag.startWorld.y, x2: drag.startWorld.x, y2: drag.startWorld.y };
+        else placeRect = rectFromCorners(drag.startWorld, drag.startWorld);
         app.dragKind = "place";
       }
       return;
@@ -751,7 +758,7 @@
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
     else if (drag.kind === "band") bandDrag(w, e.shiftKey);
-    else if (drag.kind === "place") placementDrag(w);
+    else if (drag.kind === "place") placementDrag(e, w);
     // "shiftpick" = a deferred shift-click on a NON-draggable item: no drag
     // behavior, only the slop tracking above, so the pointer path does nothing.
   }
@@ -777,17 +784,81 @@
     bandCandidates = selectInBox(app.nodes(), bandRect, drag.mode);
   }
 
-  // ── Crosshair placement drag (manifest ARCHITECTURE PLAN #5) ──────────────
+  // ── Crosshair placement drag (manifest ARCHITECTURE PLAN #5 + ROUND 13.2
+  // CREATION-DRAG MODIFIERS + CREATION ANCHOR SNAP) ──────────────────────────
 
-  /** Command (updates placement preview state). Recomputes the world-space
-   * preview a drag-placement is about to create: a from→to LINE for endpoint-
-   * kind plugins (arrows), else the rect (pure rect-from-corners, the same
-   * primitive band select uses, so the outline behaves identically under any
-   * drag direction). */
-  function placementDrag(w) {
+  /**
+   * Pure-ish (reads app scene state; geometry itself is deterministic). The
+   * world-space point (wx, wy) snapped onto other nodes' features, via the
+   * SAME solveSnap call moveDrag makes for a single dragged point — anchors
+   * ARE point-kind snap features (nodeFeatures' 9 bbox points), so no separate
+   * anchor pass exists; this is the one snap substrate. No self-exclusion is
+   * needed (unlike moveDrag/resizeDrag, which drag an EXISTING item and must
+   * exclude it from its own candidate features): a creation drag places a
+   * brand-new item, so every OTHER node is a legitimate snap target. Returns
+   * {x, y, guides} — guides empty when nothing snapped or app.snapEnabled is
+   * off.
+   */
+  function snapPoint(wx, wy) {
+    if (!app.snapEnabled) return { x: wx, y: wy, guides: [] };
+    const features = app.nodes().flatMap(nodeFeatures);
+    const tol = SNAP_PX / viewport.zoom;
+    const s = solveSnap([{ kind: "point", x: wx, y: wy, id: "creation" }], features, tol);
+    if (s.dx !== 0 || s.dy !== 0) app.snapEngaged = true;
+    return { x: wx + s.dx, y: wy + s.dy, guides: s.guides };
+  }
+
+  /**
+   * Command (updates placement preview state). Recomputes the world-space
+   * preview a drag-placement is about to create, EVERY move, straight from
+   * drag.startWorld + the raw pointer + the CURRENT modifier keys — never
+   * from a rebased "last" box the way resizeDrag must (resize measures a
+   * pointer DELTA off a mutable baseBox/basePointer that has to rebase when a
+   * modifier toggles mid-drag, manifest "Drag/resize modifiers"; a creation
+   * drag has no such mutable base — it is always start→pointer, so engaging
+   * or releasing Shift/Cmd mid-drag is ALREADY live with zero jump, by
+   * construction, satisfying 13.2's "modifiers must be LIVE" requirement with
+   * no rebase bookkeeping to get wrong).
+   *
+   * Both the drag's start point and the live pointer point are snapped
+   * (manifest 13.2: "both the start point and the live drag point") via the
+   * SAME solveSnap the single-item move drag uses (snapPoint above) — the
+   * START point was already snapped once at pointer-DOWN (onPointerDown
+   * stores the snapped value straight into drag.startWorld, so a plain CLICK
+   * placement — no move ever fires — still gets it; re-snapping the same
+   * fixed point every move here would be redundant, not wrong, but the stored
+   * value is the single source of truth). Only the LIVE pointer point is
+   * snapped fresh on every move. For an ENDPOINT (arrow) placement the
+   * snapped `from`/`to` are the widget's own final endpoints; for a BBOX
+   * placement the snapped corners are fed into creationRect same as the raw
+   * ones, so a modifier's aspect/center reading still applies to the SNAPPED
+   * corners (matching resizeDrag's own modifier-bypasses-snap ordering is
+   * unnecessary here — a creation rect has no fixed opposite edge to protect,
+   * so snapping first and then reshaping around the (possibly snapped) two
+   * corners is the correct order: the anchor point genuinely is either
+   * corner, snapped or not).
+   */
+  function placementDrag(e, w) {
     drag.lastWorld = w;
-    if (drag.plugin.placement === "endpoints") placeLine = { x1: drag.startWorld.x, y1: drag.startWorld.y, x2: w.x, y2: w.y };
-    else placeRect = rectFromCorners(drag.startWorld, w);
+    const mods = { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey };
+    const start = drag.startWorld;
+    const live = snapPoint(w.x, w.y);
+    // The start point's guide (if it snapped at grab time) stays visible for
+    // the WHOLE drag — its correction is fixed (drag.startGuides), only the
+    // live point's guide is recomputed every move.
+    guides = [...drag.startGuides, ...live.guides];
+    if (drag.plugin.placement === "endpoints") {
+      // Stashed for placementUp (manifest pattern: resizeDrag stashes
+      // drag.lastBox the same way) — the commit reads exactly what was last
+      // previewed rather than re-deriving from modifier keys that a plain
+      // pointerup event doesn't carry.
+      drag.lastEndpoint = creationEndpoint(start.x, start.y, live.x, live.y, mods);
+      placeLine = { x1: drag.lastEndpoint.from.x, y1: drag.lastEndpoint.from.y, x2: drag.lastEndpoint.to.x, y2: drag.lastEndpoint.to.y };
+    } else {
+      const [x0, y0, x1, y1] = creationRect(start.x, start.y, live.x, live.y, mods);
+      drag.lastRect = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      placeRect = drag.lastRect;
+    }
   }
 
   /**
@@ -814,12 +885,20 @@
    * Both kinds route through app.addItem exactly like the plugin's OLD
    * immediate-spawn `run`, so identity/z/active:true keyframing is unchanged —
    * only the geometry now comes from the gesture instead of `defaults` verbatim.
+   *
+   * A DRAG (drag.moved) commits drag.lastRect/lastEndpoint — the SAME
+   * modifier- and snap-corrected geometry placementDrag last previewed
+   * (manifest 13.2: Shift/Cmd modifiers + anchor/feature snap on creation
+   * drags), never a fresh rectFromCorners(startWorld, lastWorld) that would
+   * silently discard both. A plain CLICK (never moved, so placementDrag never
+   * ran) is unchanged: default size/length centered/rightward on the point —
+   * modifiers and snap have no meaning for a single click with no drag vector.
    */
   function placementUp() {
     const { plugin, startWorld } = drag;
     if (plugin.placement === "endpoints") {
       if (drag.moved) {
-        app.addItem({ ...plugin.defaults, from: { x: startWorld.x, y: startWorld.y }, to: { x: drag.lastWorld.x, y: drag.lastWorld.y } });
+        app.addItem({ ...plugin.defaults, from: drag.lastEndpoint.from, to: drag.lastEndpoint.to });
       } else {
         // Default length = the plugin's own shipped from→to extent (linked
         // precedent), placed rightward from the click point.
@@ -828,7 +907,7 @@
         app.addItem({ ...d, from: { x: startWorld.x, y: startWorld.y }, to: { x: startWorld.x + len, y: startWorld.y } });
       }
     } else if (drag.moved) {
-      const r = rectFromCorners(startWorld, drag.lastWorld);
+      const r = drag.lastRect;
       app.addItem({ ...plugin.defaults, x: r.x, y: r.y, w: r.w, h: r.h });
     } else {
       const w = plugin.defaults.w ?? 0, h = plugin.defaults.h ?? 0;

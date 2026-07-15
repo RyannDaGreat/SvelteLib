@@ -346,6 +346,17 @@
     { keys: ["Shift"], label: "Axis lock", when: (c) => editMode(c) && c.dragKind === "move" },
     { keys: ["Shift"], label: "Uniform scale", when: (c) => editMode(c) && c.dragKind === "resize" },
     { keys: ["Cmd"], label: "Symmetric resize", when: (c) => editMode(c) && c.dragKind === "resize" },
+    // ROUND 13.2 CREATION-DRAG MODIFIERS: a crosshair placement drag
+    // (dragKind "place") inherits resize's OWN modifier reading verbatim
+    // (CanvasView.placementDrag) — Shift = uniform/aspect-lock, Cmd =
+    // symmetric-about-the-start-point — so the hints mirror resize's wording.
+    // The BBOX (rect/donut/...) and ENDPOINTS (arrow family) placement kinds
+    // share both modifiers (creationRect/creationEndpoint in dragKinds.js),
+    // unlike plain resize where an endpoint drag has none — a placement
+    // ALWAYS has two live coordinates (start + pointer) to shape, so both
+    // hints apply regardless of which kind is armed.
+    { keys: ["Shift"], label: "Uniform scale", when: (c) => editMode(c) && c.dragKind === "place" },
+    { keys: ["Cmd"], label: "Symmetric resize", when: (c) => editMode(c) && c.dragKind === "place" },
     // Blender-style MODAL transforms (manifest "G/S modal transforms round 2"):
     // G grabs the selection (it follows the mouse with no button held), S scales
     // it about its collective center. Available with a selection in edit mode
