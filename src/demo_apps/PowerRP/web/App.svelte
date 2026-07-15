@@ -161,8 +161,12 @@
   // EVERYTHING still routes through the command registry (user invariant) and
   // the palette still displays each command's keys automatically.
   const KEYBINDINGS_KEY = "powerrp.keybindings";
-  const editAny = (c) => c.mode === "edit";
-  const editMode = (c) => c.mode === "edit" && !c.paletteOpen;
+  // A live modal transform (G/S) LOCKS INPUT like Blender: while it runs, normal
+  // command shortcuts (palette, undo, delete, deselect, slide nav, …) are
+  // suppressed so keys only reach the modal's own confirm/cancel entries below.
+  // Every edit-context resolver therefore also requires !modalActive.
+  const editAny = (c) => c.mode === "edit" && !c.modalActive;
+  const editMode = (c) => c.mode === "edit" && !c.paletteOpen && !c.modalActive;
   const editSelection = (c) => editMode(c) && c.hasSelection;
   const kb = createKeybindings([
     { command: "toggle-palette", keys: ["Cmd", "Shift", "P"], when: "editAny" },
@@ -207,6 +211,21 @@
     { keys: ["Shift"], label: "Axis lock", when: (c) => editMode(c) && c.dragKind === "move" },
     { keys: ["Shift"], label: "Uniform scale", when: (c) => editMode(c) && c.dragKind === "resize" },
     { keys: ["Cmd"], label: "Symmetric resize", when: (c) => editMode(c) && c.dragKind === "resize" },
+    // Blender-style MODAL transforms (manifest Round 12): G grabs the selection
+    // (it follows the mouse with no button held), S scales it about its
+    // collective center. Available with a selection in edit mode (editSelection
+    // already excludes an active modal, so G/S don't re-enter). These START the
+    // modal via the app; CanvasView captures the geometry and drives the preview.
+    // No axis-constraint keys yet (X/Y) — flagged as a follow-up.
+    { keys: ["G"], label: "Grab", when: editSelection, run: () => app.beginModalTransform("grab") },
+    { keys: ["S"], label: "Scale", when: editSelection, run: () => app.beginModalTransform("scale") },
+    // While a modal transform is live, ONLY its own confirm/cancel inputs are
+    // active (every edit-context resolver excludes modalActive). Enter or a left
+    // click CONFIRMS (one undo unit); Escape CANCELS (reverts the preview). The
+    // click is display-only here — CanvasView's pointer handler commits it.
+    { keys: ["Enter"], label: "Confirm", when: (c) => c.modalActive, run: () => app.modalCommit() },
+    { keys: ["mouse_left"], label: "Confirm", when: (c) => c.modalActive },
+    { keys: ["Escape"], label: "Cancel", when: (c) => c.modalActive, run: () => app.modalCancel() },
     { keys: ["mouse_scroll"], label: "Pan", when: editMode },
     { keys: ["Ctrl", "mouse_scroll"], label: "Zoom", when: editMode },
     { keys: ["Left", "Right"], label: "Step slides", when: (c) => c.mode === "present" },
@@ -243,12 +262,13 @@
       dragging: app.dragging,
       dragKind: app.dragKind,
       bandArmed: app.bandArm !== null,
+      modalActive: app.modalXform !== null, // a live G/S transform locks input (Blender modal)
       app,
     };
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.bandArm;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.bandArm; app.modalXform;
     return app.shortcuts.hints(shortcutCtx());
   });
 

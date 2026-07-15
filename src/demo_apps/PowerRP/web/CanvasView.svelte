@@ -134,6 +134,13 @@
   let bandRect = $state(null); // {x, y, w, h} world, or null
   let bandCandidates = $state([]); // itemIds the current band would select
   let drag = null; // non-reactive drag bookkeeping
+  // Active Blender-style modal transform bookkeeping (non-reactive, like drag).
+  // {kind: "grab"|"scale", startWorld, members, center, guides?}. Started when
+  // app.modalXform is set (G/S shortcut) and captured by the effect below; the
+  // pointer follows it with NO button held. World-space scale pivot for the
+  // overlay (a guide-point during scale) — cleared with the modal.
+  let modal = null;
+  let modalCenter = $state(null); // {x, y} world — the scale pivot dot, or null
 
   // Repaint whenever anything visible changes — INCLUDING the container size
   // (wrapW/wrapH), so pane resizes re-render instead of stretching the bitmap.
@@ -296,8 +303,56 @@
 
   // ── Selection + drag ────────────────────────────────────────────────────────
 
+  /**
+   * The translatable members of the current selection, each captured with the
+   * data a body-drag/modal-grab needs: its plugin, its RAW stored item (so
+   * equation-bound coords are recognized as strings and stay anchored), and its
+   * numeric start x/y. Shared by DRAG-ALL and the G/S modal transforms so the
+   * two never disagree on what "the selection" is. A member qualifies exactly
+   * like a single body-drag target: transform (bbox x/y) OR a moveBy hook
+   * (arrow shafts) — everything else in the set (blur, etc.) is simply not
+   * moved. `nodes` is the current derived tree (already evaluated).
+   */
+  function translateMembers(nodes) {
+    const ids = new Set(app.selectedIds());
+    const raw = app.rawState().items ?? {};
+    return nodes
+      .filter((n) => ids.has(n.itemId) && (n.plugin.capabilities.transform || n.plugin.moveBy))
+      .map((n) => ({
+        itemId: n.itemId,
+        plugin: n.plugin,
+        rawItem: raw[n.itemId],
+        startX: n.state.x ?? 0,
+        startY: n.state.y ?? 0,
+      }));
+  }
+
+  /**
+   * Pure function. The path/value preview pairs that translate one member by a
+   * world delta (dx, dy) — the ONE translation rule shared by DRAG-ALL body
+   * drags and modal grab. A moveBy widget (arrow) translates only its FREE
+   * numeric coordinates via its plugin hook (bound endpoints stay anchored); a
+   * bbox/transform widget writes plain numeric x/y (direct manipulation
+   * replaces any equation on x/y outright — the established body-drag rule).
+   */
+  function translationPairs(member, dx, dy) {
+    if (member.plugin.moveBy)
+      return member.plugin.moveBy(member.rawItem, dx, dy)
+        .map(([p, v]) => [["items", member.itemId, ...p], v]);
+    return [
+      [["items", member.itemId, "x"], member.startX + dx],
+      [["items", member.itemId, "y"], member.startY + dy],
+    ];
+  }
+
   function onPointerDown(e) {
     if (e.button !== 0 || app.mode !== "edit") return;
+    // A left click CONFIRMS an active modal transform (Blender precedent) and
+    // consumes the event — it must NOT start a new pick/drag underneath.
+    if (modal) {
+      commitModal();
+      return;
+    }
     const w = worldPoint(e);
     // Armed rubber-band select (palette "Select in Box …") consumes the
     // ONE-SHOT arm: this drag is a band, not a pick/move. The mode was already
@@ -324,7 +379,14 @@
     // hit item's membership (or, on empty canvas, keep the selection — PPT); if
     // it crosses the slop it was a shift-DRAG → axis-lock as today, selection
     // untouched. Plain (non-shift) click keeps the eager single-select on down.
-    if (!e.shiftKey) app.selection = hit?.itemId ?? null;
+    // Plain (non-shift) pointer-down resolves the selection eagerly. Clicking an
+    // item that is ALREADY part of a multi-selection KEEPS the whole set — that
+    // is what lets a drag of any selected member move the WHOLE selection
+    // (manifest Round 12 "DRAG-ALL"; PowerPoint/Figma precedent). Clicking any
+    // OTHER item (or empty canvas) replaces the selection with just it. Shift is
+    // deferred to release (toggle-vs-axis-lock — see below).
+    if (!e.shiftKey && !(hit && app.selectedIds().includes(hit.itemId)))
+      app.selection = hit?.itemId ?? null;
     // Draggable = has a transform (x/y) OR a moveBy hook (arrow shaft drag
     // translates its endpoints — manifest round 5: "Both must work").
     if (!hit || !(hit.plugin.capabilities.transform || hit.plugin.moveBy)) {
@@ -355,6 +417,14 @@
       startWorld: w,
       startX: hit.state.x ?? 0,
       startY: hit.state.y ?? 0,
+      // DRAG-ALL (manifest Round 12): dragging any selected member moves the
+      // WHOLE selection — the move preview is built over EVERY translatable
+      // member, all by the SAME (post-axis-lock, post-snap) world delta. The
+      // snap probe + axis guide still run on the GRABBED item only (the
+      // single-item behavior is the precedent). A lone selection makes members
+      // == [grabbed], so the single-item preview shape is byte-identical (the
+      // editor_smoke mid-drag invariants keep holding).
+      members: translateMembers(nodes),
       // The shift axis guide anchors at the item's world CENTER (manifest
       // "Drag/resize modifiers": "the guideline should go down the middle") —
       // computed through node.world, since world.x is NOT state.x for rotated
@@ -377,6 +447,12 @@
     // ruler markers/readout are $derived from it + the view (see screenMouse).
     screenMouse = screenPoint(e);
     const w = worldPoint(e);
+    // A modal transform (G/S) follows the mouse with NO button held — the
+    // pointer path drives it directly and nothing else runs.
+    if (modal) {
+      modalMove(w);
+      return;
+    }
     if (!drag) {
       const nodes = app.nodes();
       // Anchor hover tooltip (immediate; only while anchors are shown).
@@ -476,20 +552,15 @@
       drag.axis = null;
     }
     guides = newGuides;
-    if (custom) {
-      // Plugin-defined translation (arrow shaft): only FREE (numeric)
-      // coordinates move; equation-bound ones stay anchored (see arrow.js).
-      const pairs = drag.plugin.moveBy(drag.rawItem, dx, dy);
-      if (pairs.length) app.setPreview(pairs.map(([p, v]) => [["items", drag.itemId, ...p], v]));
-      return;
-    }
-    // Body-dragging writes plain numeric keyframes: direct manipulation
-    // replaces an equation on x/y outright (only ENDPOINT drags have the
-    // bind/detach threshold semantics — see endpointDrag).
-    app.setPreview([
-      [["items", drag.itemId, "x"], drag.startX + dx],
-      [["items", drag.itemId, "y"], drag.startY + dy],
-    ]);
+    // DRAG-ALL: the SAME (dx, dy) — already axis-locked and snapped on the
+    // GRABBED item — translates EVERY member of the selection (manifest Round
+    // 12). Each member follows its own rule: a moveBy widget (arrow) moves only
+    // its free numeric coords (bound endpoints stay anchored); a bbox widget
+    // writes plain numeric x/y. With one member (== the grabbed item) this is
+    // byte-identical to the old single-item preview — the editor_smoke mid-drag
+    // invariants keep holding.
+    const pairs = drag.members.flatMap((m) => translationPairs(m, dx, dy));
+    if (pairs.length) app.setPreview(pairs);
   }
 
   // ── Resize ──────────────────────────────────────────────────────────────────
@@ -829,7 +900,7 @@
   }
 
   function onPointerLeave() {
-    if (!drag) screenMouse = null; // hide ruler markers on leave
+    if (!drag && !modal) screenMouse = null; // hide ruler markers on leave (not mid-gesture)
   }
 
   function onPointerUp() {
@@ -859,11 +930,154 @@
     app.commitPreview();
   }
 
+  // ── Blender-style modal transforms (G grab / S scale) ──────────────────────
+
+  /**
+   * The collective world-space CENTER of a selection — the pivot the S modal
+   * scales about (manifest Round 12: "about the SELECTION'S COLLECTIVE
+   * CENTER"). It is the center of the AABB enclosing every selected node's
+   * geometry: bbox nodes contribute their four world corners; endpoint widgets
+   * (arrows) contribute their editable points (so a selected arrow counts).
+   * Returns {x, y}, or null if nothing bounded was found.
+   */
+  function selectionCenter(nodes) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
+    const eat = (x, y) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
+    for (const n of nodes) {
+      if (n.plugin.capabilities.bbox) {
+        const w = n.state.w ?? 0, h = n.state.h ?? 0;
+        for (const [lx, ly] of [[0, 0], [w, 0], [w, h], [0, h]]) {
+          const p = T.apply(n.world, lx, ly);
+          eat(p.x, p.y);
+        }
+      } else if (n.plugin.editPoints) {
+        for (const ep of n.plugin.editPoints(n, byId)) eat(ep.x, ep.y);
+      }
+    }
+    if (minX === Infinity) return null;
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  }
+
+  /**
+   * Command. Starts a modal transform: captures the cursor start point, the
+   * translatable members (with start poses), and the collective center. Called
+   * by the effect below when app.modalXform is set (the G/S shortcut). If the
+   * cursor is off-canvas the start point falls back to the center, so a grab
+   * begins at zero delta and a scale at factor 1.
+   */
+  function beginModal(kind) {
+    const nodes = app.nodes();
+    const center = selectionCenter(app.selectedNodes());
+    const members = translateMembers(nodes);
+    if (!center || members.length === 0) { app.modalXform = null; return; } // nothing to transform
+    const start = mouseWorld ?? center;
+    modal = { kind, startWorld: start, members, center };
+    modalCenter = kind === "scale" ? center : null;
+    // Paint the initial (zero-delta) preview immediately so the selection is
+    // visibly "grabbed"/"scaling" before the first mouse move.
+    modalMove(start);
+  }
+
+  /** Command. Updates the modal preview from the current cursor world point. */
+  function modalMove(w) {
+    if (modal.kind === "grab") {
+      const dx = w.x - modal.startWorld.x, dy = w.y - modal.startWorld.y;
+      const pairs = modal.members.flatMap((m) => translationPairs(m, dx, dy));
+      if (pairs.length) app.setPreview(pairs);
+      return;
+    }
+    // SCALE: uniform factor = current / initial cursor distance from the
+    // collective center (Blender precedent). Degenerate start distance (cursor
+    // began at the center) → factor 1 (no scale) until it moves away.
+    const c = modal.center;
+    const d0 = Math.hypot(modal.startWorld.x - c.x, modal.startWorld.y - c.y);
+    const d1 = Math.hypot(w.x - c.x, w.y - c.y);
+    const factor = d0 > 1e-9 ? d1 / d0 : 1;
+    app.setPreview(modal.members.flatMap((m) => scalePairs(m, factor, c)));
+  }
+
+  /**
+   * Pure function. Preview pairs that scale one member uniformly by `factor`
+   * about world center `c`. A bbox/transform widget scales its w/h AND
+   * repositions its x/y about the center (a true size+position scale, honest to
+   * the w/h the inspector shows — the resize path's convention). A moveBy widget
+   * (arrow) scales each FREE numeric endpoint about the center; equation-bound
+   * endpoints stay put. NOTE: for ROTATED / non-unit-scale bbox items the x/y
+   * scaling uses the stored (base-frame) coordinates, so the pivot is exact only
+   * for unrotated items — full rotation-aware modal scale is deferred to the
+   * rotation sweep (out of this task's scope; flagged).
+   */
+  function scalePairs(member, factor, c) {
+    if (member.plugin.moveBy) {
+      const s = member.rawItem ?? {};
+      const pairs = [];
+      for (const end of ["from", "to"])
+        for (const coord of ["x", "y"]) {
+          const v = s[end]?.[coord];
+          if (typeof v === "number") {
+            const cc = coord === "x" ? c.x : c.y;
+            pairs.push([["items", member.itemId, end, coord], cc + factor * (v - cc)]);
+          }
+        }
+      return pairs;
+    }
+    const rawItem = member.rawItem ?? {};
+    const w = typeof rawItem.w === "number" ? rawItem.w : null;
+    const h = typeof rawItem.h === "number" ? rawItem.h : null;
+    const pairs = [
+      [["items", member.itemId, "x"], c.x + factor * (member.startX - c.x)],
+      [["items", member.itemId, "y"], c.y + factor * (member.startY - c.y)],
+    ];
+    if (w !== null) pairs.push([["items", member.itemId, "w"], w * factor]);
+    if (h !== null) pairs.push([["items", member.itemId, "h"], h * factor]);
+    return pairs;
+  }
+
+  /** Command. Confirms the modal transform: commit the preview as ONE undo unit
+   * (the existing commitPreview) and leave the modal. Nulling app.modalXform
+   * BEFORE committing means the tear-down effect sees `modal` already cleared
+   * and does nothing (no double preview-drop). */
+  function commitModal() {
+    modal = null;
+    modalCenter = null;
+    app.modalXform = null;
+    app.commitPreview(); // one undo unit (or a no-op if the preview is empty)
+  }
+
+  /** Command. Cancels the modal transform: drop the preview (reverts the
+   * selection to its committed pose) and leave the modal. */
+  function cancelModal() {
+    modal = null;
+    modalCenter = null;
+    app.modalXform = null;
+    app.cancelPreview();
+  }
+
+  // Start/tear-down the modal record when app.modalXform (set by the G/S
+  // shortcut) flips. The shortcut lives in the registry (App.svelte); this
+  // effect is the CanvasView side that owns the geometry + preview. Starting is
+  // driven here; commit/cancel null the flag themselves (with `modal` already
+  // cleared) so this branch only fires for an EXTERNAL clear (e.g. a mode
+  // switch), which reverts safely.
+  $effect(() => {
+    const x = app.modalXform;
+    if (x && !modal) beginModal(x.kind);
+    else if (!x && modal) { modal = null; modalCenter = null; app.cancelPreview(); }
+  });
+
+  // Install the confirm/cancel hooks the Enter/Escape shortcut entries call
+  // (App.svelte), the same seam as canvasActions. Once, at mount.
+  $effect(() => {
+    app.modalCommit = commitModal;
+    app.modalCancel = cancelModal;
+  });
+
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; sizeIndicators; bandRect; bandCandidates;
-    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], sizeArrows: [], band: null, bandOutlines: [] };
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; sizeIndicators; bandRect; bandCandidates; modalCenter;
+    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -943,7 +1157,12 @@
       return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
     });
 
-    return { outlines, handles, anchors, guideSegs, endpoints, sizeArrows, band, bandOutlines };
+    // The S-modal scale pivot (the selection's collective center) — a small
+    // dot marking what the scale grows/shrinks about (reuses the guide-point
+    // affordance; no new styling).
+    const scalePivot = modalCenter ? actions.worldToScreen(modalCenter.x, modalCenter.y) : null;
+
+    return { outlines, handles, anchors, guideSegs, endpoints, sizeArrows, band, bandOutlines, scalePivot };
   });
 </script>
 
@@ -995,6 +1214,10 @@
             <circle class="guide-point" cx={g.x} cy={g.y} r="4" />
           {/if}
         {/each}
+        {#if overlay.scalePivot}
+          <!-- The S-modal scale pivot (selection's collective center). -->
+          <circle class="guide-point" cx={overlay.scalePivot.x} cy={overlay.scalePivot.y} r="4" />
+        {/if}
         {#each overlay.sizeArrows as s}
           <line
             class="size-arrow"

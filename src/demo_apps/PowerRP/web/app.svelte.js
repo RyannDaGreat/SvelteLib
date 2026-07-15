@@ -75,6 +75,14 @@ export class PowerRPApp {
   // auto-announce while dragging). Endpoint drags leave it null (they have
   // no modifier behaviors to announce).
   dragKind = $state(null);
+  // Active Blender-style MODAL transform (manifest Round 12 "Multi-select
+  // interactions": G grab / S scale), or null. Just the KIND flag ("grab" |
+  // "scale") + a phase — the geometry (start cursor, per-member start states,
+  // collective center) is captured and driven entirely in CanvasView, which
+  // owns pointer/preview; this is only the shared context the shortcut registry
+  // reads (to gate normal edit shortcuts off mid-transform — Blender's modal
+  // lock) and the HintBar reads (to announce the mode + its commit/cancel keys).
+  modalXform = $state(null);
   /** Canonical region name under the pointer (Panel sets it) — the substrate
    * for region-aware hints (manifest: panels are first-class). */
   hoverRegion = $state(null);
@@ -297,6 +305,97 @@ export class PowerRPApp {
     const ids = this.selectedIds();
     this.selectMany(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
   }
+
+  // ── Transition selection (the between-rows navigator slice) ─────────────────
+  // A transition is selected BY the incoming slide's slideId (stable identity;
+  // slide indices shift on insert). Mutually exclusive with item selection.
+
+  /** Command. Selects the transition INTO slide `slideId` (clears item
+   * selection). Passing null deselects the transition. */
+  selectTransition(slideId) {
+    if (slideId === null) {
+      this.selectedTransition = null;
+      return;
+    }
+    this.selection = null; // clears item selection (accessor path)
+    this.selectedTransition = slideId;
+  }
+
+  /**
+   * Query. The unified selection target — what the Property Panel inspects.
+   * One of: {kind: "item", itemId}, {kind: "transition", slideId}, or null.
+   * The ONE thing Opus10's Inspector reads to decide which UI to show; item
+   * selection wins if somehow both are set (they're kept mutually exclusive).
+   */
+  get selectionTarget() {
+    if (this.selection !== null) return { kind: "item", itemId: this.selection };
+    if (this.selectedTransition !== null) return { kind: "transition", slideId: this.selectedTransition };
+    return null;
+  }
+
+  /** Query. The slide index for a slideId, or -1. */
+  slideIndexOf(slideId) {
+    return this.doc.slides.findIndex((s) => s.id === slideId);
+  }
+
+  /**
+   * Query. The EFFECTIVE transition record for slide `slideId` — stored props
+   * folded with the type-registry superclass + type defaults (every property
+   * present). What the Inspector's transition rows display. Returns null when
+   * the slide doesn't exist.
+   */
+  transitionAt(slideId) {
+    const i = this.slideIndexOf(slideId);
+    return i === -1 ? null : resolveTransition(this.doc, i);
+  }
+
+  /**
+   * Command (one undo unit). Sets one transition property (seconds/curve/sound
+   * or a type extra) on slide `slideId`. Writes the FULL resolved record back
+   * so a partially-stored transition becomes complete (no half-written records
+   * in the document). No-op when the slide is gone.
+   */
+  setTransitionProp(slideId, key, value) {
+    const i = this.slideIndexOf(slideId);
+    if (i === -1) return;
+    const transition = { ...resolveTransition(this.doc, i), [key]: value };
+    const slides = this.doc.slides.map((s, j) => (j === i ? { ...s, transition } : s));
+    this.commit({ ...this.doc, slides });
+  }
+
+  /**
+   * Command (one undo unit). Switches slide `slideId`'s transition TYPE,
+   * PRESERVING the superclass props (seconds/curve/sound survive) and re-seeding
+   * the type's extras from the new type's defaults (retypedTransition). No-op
+   * when the slide is gone.
+   */
+  setTransitionType(slideId, type) {
+    const i = this.slideIndexOf(slideId);
+    if (i === -1) return;
+    const transition = retypedTransition(resolveTransition(this.doc, i), type);
+    const slides = this.doc.slides.map((s, j) => (j === i ? { ...s, transition } : s));
+    this.commit({ ...this.doc, slides });
+  }
+
+  /**
+   * Command. Enters a Blender-style modal transform ("grab" | "scale") over the
+   * current selection (manifest Round 12). No-op with nothing selected. Only the
+   * KIND is stored here; CanvasView (which owns pointer + preview) watches this
+   * flag, captures the start geometry (cursor, member poses, collective center),
+   * and drives the live preview. Confirm/cancel go through the callbacks below,
+   * which CanvasView installs — the same seam pattern as canvasActions.
+   */
+  beginModalTransform(kind) {
+    if (this.selectedIds().length === 0) return;
+    this.modalXform = { kind };
+  }
+
+  // Confirm/cancel hooks for the active modal transform — installed by
+  // CanvasView (which owns the preview) like canvasActions. The Enter/Escape
+  // shortcut entries (App.svelte) call these; a left click confirms directly in
+  // CanvasView's pointer handler. No-ops before the canvas mounts.
+  modalCommit = () => {};
+  modalCancel = () => {};
 
   /** Command. Arms a one-shot band-select drag in `mode` ("inner"|"outer"|
    * "regular"). "regular" resolves to the default bandMode setting. The next
