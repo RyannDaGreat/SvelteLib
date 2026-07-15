@@ -181,6 +181,33 @@ export const PROPS = {
   // literal here because core/ never imports render_gpu/; the effects IR test
   // asserts the two lists stay identical).
   blendMode: { label: "Blend mode", kind: "select", options: ["normal", "multiply", "add", "screen"], category: "effects", default: "normal", help: "How the widget's pixels combine with what's behind it: normal paints over, multiply darkens, add/screen brighten (light-like)." },
+
+  // ── particles: the EMITTER bundle (manifest 13.5 PARTICLE EFFECT WIDGET) ──────
+  // The sparkler's emission parameters — all equation-capable numeric properties
+  // (kind "number"), read by the PURE simulation core/particles.js. There are no
+  // magic literals here: every default is a plain, self-explanatory value a user
+  // would set (a modest steady stream, a 2-second life, a small upward-ish burst
+  // under light gravity). Category "particles" is the emitter's own Inspector
+  // accordion group. Bounds are mathematical (rate/lifetime/sizes/speeds are
+  // non-negative; fade/shrink are proportions in [0,1]). `angle`/`spread` are in
+  // DEGREES (no display unit needed — they ARE degrees in storage, unlike
+  // rotation which is stored in radians). Only the particle widget composes this
+  // bundle (it is the only emitter), but it lives in the registry so its rows/
+  // help/bounds are single-sourced like every other family.
+  particleRate: { label: "Rate", kind: "number", min: 0, category: "particles", default: 40, help: "How many particles are emitted per second. Zero emits nothing (the emitter becomes an invisible ghost you can still select)." },
+  particleLifetime: { label: "Lifetime", kind: "number", min: 0, category: "particles", default: 2, help: "How many seconds each particle lives before it disappears. Longer lifetimes keep more particles on screen at once." },
+  particleAngle: { label: "Angle", kind: "number", category: "particles", default: 270, help: "The central launch direction in degrees (0 = right, 90 = down, 270 = up). Particles fly outward from the origin along this heading." },
+  particleSpread: { label: "Spread", kind: "number", min: 0, max: 360, category: "particles", default: 50, help: "How wide the launch fan is, in degrees, centered on the angle. Zero is a tight jet; 360 is a full radial burst in every direction." },
+  particleSpeedMin: { label: "Speed min", kind: "number", min: 0, category: "particles", default: 60, help: "The slowest a particle can be launched, in canvas units per second. Each particle picks a random speed between min and max." },
+  particleSpeedMax: { label: "Speed max", kind: "number", min: 0, category: "particles", default: 140, help: "The fastest a particle can be launched, in canvas units per second. Set equal to Speed min for a uniform speed." },
+  particleGravityX: { label: "Gravity X", kind: "number", category: "particles", default: 0, help: "A constant sideways pull on every particle, in canvas units per second squared (positive drifts them right, like wind)." },
+  particleGravityY: { label: "Gravity Y", kind: "number", category: "particles", default: 120, help: "A constant downward pull on every particle, in canvas units per second squared (positive is down — real gravity). Negative makes them float up." },
+  particleSizeMin: { label: "Size min", kind: "number", min: 0, category: "particles", default: 2, help: "The smallest a particle's radius can be at birth, in canvas units. Each particle picks a random size between min and max." },
+  particleSizeMax: { label: "Size max", kind: "number", min: 0, category: "particles", default: 5, help: "The largest a particle's radius can be at birth, in canvas units. Set equal to Size min for uniform dots." },
+  particleColor: { label: "Color", kind: "color", category: "particles", default: "#ffcc33", help: "The color of every particle. Lower its alpha for translucent sparks; combine with Fade to have them dim out over their life." },
+  particleFade: { label: "Fade", kind: "number", min: 0, max: 1, category: "particles", default: 1, help: "How much a particle fades out over its life, from 0 (stays solid then vanishes) to 1 (fades all the way to transparent by the end)." },
+  particleShrink: { label: "Shrink", kind: "number", min: 0, max: 1, category: "particles", default: 0, help: "How much a particle shrinks over its life, from 0 (keeps its birth size) to 1 (shrinks down to nothing by the end)." },
+  particleSeed: { label: "Seed", kind: "number", category: "particles", default: 1, help: "The randomness seed. The same seed always produces the exact same particle pattern (so renders reproduce); change it to reshuffle." },
 };
 
 /**
@@ -219,6 +246,19 @@ export const BUNDLES = {
   // exclusions justified in its header). Defaults are effect-OFF; use
   // bundleNestedDefaults("effects") in plugin defaults (the keys are nested).
   effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode"],
+  // THE PARTICLE EMITTER BUNDLE (manifest 13.5): the sparkler's emission
+  // parameters, all equation-capable numbers read by the pure simulation
+  // (core/particles.js). Composed only by plugins/particles.js (the sole
+  // emitter), single-sourced here like every other family. Order = the
+  // Inspector row order (rate/lifetime first, then launch, gravity, size,
+  // appearance, seed).
+  particles: [
+    "particleRate", "particleLifetime",
+    "particleAngle", "particleSpread", "particleSpeedMin", "particleSpeedMax",
+    "particleGravityX", "particleGravityY",
+    "particleSizeMin", "particleSizeMax",
+    "particleColor", "particleFade", "particleShrink", "particleSeed",
+  ],
 };
 
 /**

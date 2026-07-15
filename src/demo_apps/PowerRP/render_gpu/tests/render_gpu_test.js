@@ -29,9 +29,14 @@ import { bucketFor } from "../gpu/glyph_atlas.js";
 import { benchScene, hash01 } from "../bench/scene.js";
 import { deriveRenderTree } from "../../core/derive.js";
 import { evaluateState } from "../../core/expressions.js";
+import { foldState } from "../../core/document.js";
 import { createRegistry } from "../../core/registry.js";
 import { registerAll } from "../../plugins/index.js";
 import { createCommands } from "../../core/commands.js";
+import { particlesPlugin, particleOps } from "../../plugins/particles.js";
+import { cameraPlugin } from "../../plugins/camera.js";
+import { simulateParticles } from "../../core/particles.js";
+import { setParticleTimeOverride } from "../particle_clock.js";
 
 let passed = 0;
 // Awaits fn if it returns a promise (the SVG backend is async — irToSVG embeds
@@ -515,6 +520,61 @@ test("bucketFor: ceil lattice below the exact regime, exact size above, capacity
   // Clamps: invisible floor, page-capacity ceiling.
   assert.equal(bucketFor(1), 4);
   assert.equal(bucketFor(9999), 724);
+});
+
+test("particlesIR: alive particles emit as ellipse ops (free vector path)", () => {
+  // A particle emitter renders as plain ellipse ops — no new IR op — so the
+  // GPU (instanced SDF discs) and the vector backends (SVG/PDF <ellipse>) draw
+  // it with zero backend changes. Drive the sim at a FIXED time via the plugin's
+  // pure particleOps so the test needs no ambient clock.
+  const parts = simulateParticles(
+    { rate: 20, lifetime: 2, originX: 40, originY: 40, angle: 270, spread: 40, speedMin: 30, speedMax: 60, gravityX: 0, gravityY: 80, sizeMin: 2, sizeMax: 4, fade: 1, shrink: 0.3, seed: 5 },
+    1.5,
+  );
+  assert.ok(parts.length > 0 && parts.length <= 41); // bounded (rate·lifetime+1)
+  const ops = particleOps(parts, "#ffcc33", 1);
+  assert.equal(ops.length, parts.length);
+  assert.ok(ops.every((o) => o.op === "ellipse")); // ONLY ellipse ops (no unknown op)
+  assert.deepEqual([...new Set(ops.map((o) => o.op))], ["ellipse"]);
+  // Every op is valid, transform-flattenable IR (throws would fail the suite).
+  const flat = flattenIR([pushTransform({ x: 200, y: 200 }), ...ops, popTransform()]);
+  assert.equal(flat.length, ops.length);
+  assert.equal(flat[0].cmd.op, "ellipse");
+  assert.deepEqual(flat[0].world, { x: 200, y: 200, rotation: 0, scale: 1 });
+});
+test("particlesIR: a full scene emits through sceneIR to ellipse commands", () => {
+  // The whole pipeline: evaluate → derive → sceneIR, with the ambient clock
+  // overridden to a fixed time (deterministic). Proves the node's emit() output
+  // survives the scene walker as pushTransform+ellipses. A MINIMAL registry
+  // (camera + particles) is built directly — NOT via registerAll/plugins/index.js
+  // — so this test is self-sufficient (the index.js roster line is the lead's to
+  // add) and immune to unrelated plugins' load state.
+  const registry = createRegistry();
+  registry.register(cameraPlugin);
+  registry.register(particlesPlugin);
+  setParticleTimeOverride(1.5);
+  const raw = {
+    meta: { camera: "cam" },
+    slides: [{ id: "s0", name: "S0", delta: {
+      items: {
+        cam: { ...cameraPlugin.defaults, type: "camera", active: true },
+        p1: { ...particlesPlugin.defaults, type: "particles", active: true, x: 100, y: 100 },
+      },
+    } }],
+  };
+  const state = evaluateState(foldState(raw, 0, 1), registry).state;
+  const nodes = deriveRenderTree(state, registry);
+  const ir = sceneIR(nodes);
+  setParticleTimeOverride(null);
+  // At least one ellipse op appears (the particles); camera emits nothing.
+  assert.ok(ir.some((c) => c.op === "ellipse"), "no particle ellipse ops in the scene IR");
+  // Balanced transform stack (flattenIR throws on imbalance — the strict check).
+  assert.doesNotThrow(() => flattenIR(ir));
+});
+test("particlesIR: a dead emitter (rate 0) is a ghost — emits nothing", () => {
+  const world = { x: 0, y: 0, rotation: 0, scale: 1 };
+  assert.deepEqual(particlesPlugin.emit({ ...particlesPlugin.defaults, particleRate: 0 }, null, world), []);
+  assert.equal(particlesPlugin.isGhost({ particleRate: 0, particleLifetime: 2 }), true);
 });
 
 console.log(`\nrender_gpu tests: ${passed} passed`);

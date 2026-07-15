@@ -21,6 +21,7 @@
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
+  import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
   import { assetUrl } from "./projectApi.js";
 
   let { app } = $props();
@@ -240,6 +241,13 @@
     // The one reusable transition-sound element (see playTransitionSound). Not
     // added to the DOM — an out-of-tree Audio() plays fine and needs no layout.
     transitionAudio = new Audio();
+    // PARTICLE ANIMATION CLOCK (manifest 13.5): present mode is the LIVE regime —
+    // start the ambient wall clock so any visible particle emitter animates. The
+    // presenter's existing rAF loops (tween ticks + the restingAnimated idle loop
+    // that already runs for `animated` widgets) repaint every frame and read the
+    // advancing time. Every other consumer (editor/CLI/thumbnails/export) leaves
+    // the clock PAUSED → a deterministic freeze still. Stopped on exit (cleanup).
+    startParticleClock();
     presenter.goTo(app.slideIndex);
     document.documentElement.requestFullscreen?.().catch(() => {}); // headless/iframe: fine without
     window.addEventListener("keydown", onkeydown, true);
@@ -269,6 +277,7 @@
       window.removeEventListener("resize", paint);
       document.removeEventListener("fullscreenchange", onFsChange);
       presenter.stop();
+      stopParticleClock(); // back to the PAUSED freeze regime (editor renders a still)
       if (idleRaf !== null) { cancelAnimationFrame(idleRaf); idleRaf = null; } // stop the at-rest anim loop
       restingAnimated = false;
       if (transitionAudio) { transitionAudio.pause(); transitionAudio.src = ""; transitionAudio = null; } // release audio
