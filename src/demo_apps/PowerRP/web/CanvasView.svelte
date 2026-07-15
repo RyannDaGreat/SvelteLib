@@ -31,6 +31,15 @@
 
   const SNAP_PX = 8; // THE one uniform snap threshold (user rule): drag snap, resize snap, anchor bind, border grab (value PENDING USER RATIFICATION)
   const MIN_SIZE = 0; // sizes are non-negative — a mathematical bound, not a design choice
+  // Click-vs-drag slop for shift-click multi-select: a shift+pointer-down that
+  // is RELEASED before the pointer moves this many screen px is a CLICK (toggles
+  // selection membership); crossing it makes the gesture a shift-DRAG (axis-lock,
+  // selection untouched). LINKED to the identical click-vs-drag distinction in
+  // AnnotateBar.svelte:255 / DraggableNumber.svelte:138 (CLICK_SLOP_PX = 4) —
+  // the house pointer-gesture slop; one value, one precedent (user rule: no
+  // arbitrary invented constants). Measured in SCREEN px so zoom doesn't change
+  // the feel.
+  const CLICK_SLOP_PX = 4;
 
   let containerEl = $state(null);
   let canvasEl = $state(null);
@@ -139,7 +148,9 @@
   let gpuError = $state(null);
   $effect(() => {
     if (!canvasEl || gpu || gpuError) return;
-    GpuCompositor.create(canvasEl)
+    // premultiplied: the editor's transparent clear must show the grid
+    // underlay + app background beneath the canvas (opaque rendered it black).
+    GpuCompositor.create(canvasEl, { alphaMode: "premultiplied" })
       .then((g) => (gpu = g))
       .catch((e) => {
         gpuError = String(e?.message ?? e);
@@ -307,15 +318,38 @@
     }
     const nodes = app.nodes();
     const hit = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom);
-    app.selection = hit?.itemId ?? null;
+    // Shift disambiguation (manifest "Shift-click multi-select"): Shift is BOTH
+    // the axis-lock modifier AND the multi-select add/remove modifier, so a
+    // shift+down must NOT decide selection here — it is DEFERRED to release. If
+    // the pointer stays within CLICK_SLOP_PX it was a shift-CLICK → toggle the
+    // hit item's membership (or, on empty canvas, keep the selection — PPT); if
+    // it crosses the slop it was a shift-DRAG → axis-lock as today, selection
+    // untouched. Plain (non-shift) click keeps the eager single-select on down.
+    if (!e.shiftKey) app.selection = hit?.itemId ?? null;
     // Draggable = has a transform (x/y) OR a moveBy hook (arrow shaft drag
     // translates its endpoints — manifest round 5: "Both must work").
-    if (!hit || !(hit.plugin.capabilities.transform || hit.plugin.moveBy)) return;
+    if (!hit || !(hit.plugin.capabilities.transform || hit.plugin.moveBy)) {
+      // Nothing draggable under the pointer. A pending shift-click still needs a
+      // gesture record so onPointerUp can toggle on release (with no capture,
+      // since there's no drag) — but only when there's an item to toggle; a
+      // shift-click on EMPTY canvas records nothing and thus keeps the selection.
+      if (e.shiftKey && hit) {
+        drag = { kind: "shiftpick", toggleId: hit.itemId, downScreen: screenPoint(e), moved: false };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
+      return;
+    }
     e.currentTarget.setPointerCapture(e.pointerId);
     drag = {
       kind: "move",
       itemId: hit.itemId,
       plugin: hit.plugin,
+      // Pending shift-click toggle: set only when Shift is down. onPointerUp
+      // toggles this item's membership IFF the gesture never crossed the slop
+      // (a plain shift-DRAG leaves it untouched — it's an axis-locked move).
+      toggleId: e.shiftKey ? hit.itemId : null,
+      downScreen: screenPoint(e),
+      moved: false,
       // moveBy needs the RAW stored state: equation-bound coordinates must be
       // recognized (strings) so they stay anchored instead of translating.
       rawItem: app.rawState().items?.[hit.itemId],
@@ -363,10 +397,20 @@
       }
       return;
     }
+    // Once the pointer travels past CLICK_SLOP_PX (screen px) the gesture is a
+    // DRAG, not a click — this latches the flag a pending shift-click reads on
+    // release to decide toggle-vs-axis-lock (AnnotateBar:450 precedent). Only
+    // gestures that recorded a down position participate.
+    if (drag.downScreen && !drag.moved) {
+      const s = screenPoint(e);
+      if (Math.hypot(s.x - drag.downScreen.x, s.y - drag.downScreen.y) > CLICK_SLOP_PX) drag.moved = true;
+    }
     if (drag.kind === "move") moveDrag(e, w);
     else if (drag.kind === "resize") resizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "band") bandDrag(w);
+    // "shiftpick" = a deferred shift-click on a NON-draggable item: no drag
+    // behavior, only the slop tracking above, so the pointer path does nothing.
   }
 
   // ── Rubber-band selection drag ─────────────────────────────────────────────
@@ -799,6 +843,12 @@
       bandRect = null;
       bandCandidates = [];
     }
+    // Deferred shift-click: a shift+down released WITHIN the click slop (no drag)
+    // toggles the hit item's selection membership (PPT/Figma add/remove). A
+    // shift-DRAG (moved past the slop) leaves selection alone — it was an
+    // axis-locked move, already committed via commitPreview below. `toggleId` is
+    // set on both the "move" (draggable) and "shiftpick" (non-draggable) records.
+    if (drag.toggleId && !drag.moved) app.toggleInSelection(drag.toggleId);
     drag = null;
     guides = [];
     sizeIndicators = [];

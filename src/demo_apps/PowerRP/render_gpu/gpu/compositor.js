@@ -27,6 +27,23 @@
  *      lens's re-render falls back to backdrop sampling.
  *   4. The scene is copied to the canvas swapchain texture.
  *
+ * ANTIALIASING (browser setting "powerrp.antialiasing", DEFAULT ON, no UI —
+ * manifest "ANTIALIASING — GO"): MSAA 4× on every CONTENT target. Each
+ * content target (the scene, each lens depth) gets a multisampled companion
+ * texture; content passes render into the MSAA attachment and RESOLVE into
+ * the logical texture at every pass end (storeOp "store" keeps the samples
+ * authoritative across effect-interrupted passes). Every READER — backdrop
+ * snapshot, lens quad sampling, readPixels, the final swapchain copy — binds
+ * the RESOLVED texture, so nothing downstream knows MSAA exists. The blur's
+ * H pass targets the single-sampled TEMP (a fullscreen triangle has no
+ * geometric edges to antialias) and needs a sampleCount-1 pipeline variant;
+ * its V pass composites INTO the content target and must go through the MSAA
+ * attachment like every content draw (bypassing it would leave the stored
+ * samples stale, and the next pass's resolve would wipe the blur). SDF
+ * shapes/text keep their superior shader AA regardless; MSAA is what fixes
+ * the mesh (polygon) pipeline's jagged edges — arrowheads, fancy arrows.
+ * Cost: one 4-sample canvas-size texture (+ one per live lens depth, lazy).
+ *
  * The `view` argument is the SAME camera mapping as the canvas compositor
  * ({zoom, panX, panY, dpr}; fitRectView-compatible) — the camera region stays
  * the one view function for every render target.
@@ -43,6 +60,9 @@ import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
 
 /** Extra device px around each SDF quad so antialiased edges never clip. */
 const AA_MARGIN_DEVICE = 2;
+/** MSAA sample count when antialiasing is on — 4× per the approved plan
+ * (manifest "ANTIALIASING — GO": MSAA 4× on the scene texture). */
+const MSAA_SAMPLES = 4;
 /**
  * Lens re-render recursion cap: a magnifier replayed INSIDE another lens's
  * re-render falls back to backdrop sampling (soft) instead of recursing —
@@ -177,14 +197,24 @@ export class GpuCompositor {
    * Args:
    *   canvas (HTMLCanvasElement)
    *   opts.media (object): ref → HTMLVideoElement | HTMLImageElement | HTMLCanvasElement
+   *   opts.alphaMode (string): canvas compositing mode — "opaque" (default;
+   *     presenter/CLI/thumbnails own their full frame) or "premultiplied"
+   *     (the EDITOR: its transparent clear must show the grid underlay and
+   *     app background beneath the canvas; the scene texture is already
+   *     premultiplied by the blend mode, so the copy composites correctly).
+   *   opts.antialiasing (boolean|null): MSAA 4× on content targets. null
+   *     (default) reads the BROWSER SETTING "powerrp.antialiasing"
+   *     (localStorage, default ON — same viewer-preference pattern as
+   *     powerrp.retina); pass an explicit boolean to pin it (tests).
    */
-  static async create(canvas, { media = {} } = {}) {
+  static async create(canvas, { media = {}, alphaMode = "opaque", antialiasing = null } = {}) {
     if (!navigator.gpu)
       throw new Error("WebGPU unavailable (navigator.gpu missing — insecure context or unsupported browser)");
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("WebGPU: no adapter (GPU blocklisted or disabled)");
     const device = await adapter.requestDevice();
-    const comp = new GpuCompositor(canvas, device, media);
+    const aa = antialiasing ?? globalThis.localStorage?.getItem("powerrp.antialiasing") !== "off";
+    const comp = new GpuCompositor(canvas, device, media, { alphaMode, sampleCount: aa ? MSAA_SAMPLES : 1 });
     comp.warmup();
     return comp;
   }
@@ -209,10 +239,11 @@ export class GpuCompositor {
   }
 
   /** Use create() — the constructor assumes a ready device. */
-  constructor(canvas, device, media) {
+  constructor(canvas, device, media, { alphaMode = "opaque", sampleCount = 1 } = {}) {
     this.canvas = canvas;
     this.device = device;
     this.media = media;
+    this.sampleCount = sampleCount; // 1 = no MSAA; MSAA_SAMPLES when antialiasing
     this._fatal = null;
     device.addEventListener("uncapturederror", (e) => { this._fatal = new Error(`WebGPU uncaptured error: ${e.error.message}`); });
     device.lost.then((info) => {
@@ -224,7 +255,7 @@ export class GpuCompositor {
     this.context.configure({
       device,
       format: this.format,
-      alphaMode: "opaque",
+      alphaMode,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
     });
 
@@ -300,7 +331,11 @@ export class GpuCompositor {
       arrayStride: 8, stepMode: "vertex",
       attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }],
     };
-    const make = (label, code, bgls, buffers) => {
+    // Content pipelines carry the compositor's sample count (they render into
+    // the MSAA attachment when antialiasing is on); a pipeline's multisample
+    // state must match its pass's attachment, so pipelines that target
+    // single-sampled textures (blur H → TEMP) get an explicit count of 1.
+    const make = (label, code, bgls, buffers, sampleCount = this.sampleCount) => {
       const module = d.createShaderModule({ label, code });
       return d.createRenderPipeline({
         label,
@@ -308,6 +343,7 @@ export class GpuCompositor {
         vertex: { module, entryPoint: "vs", buffers },
         fragment: { module, entryPoint: "fs", targets: [target] },
         primitive: { topology: "triangle-list" },
+        multisample: { count: sampleCount },
       });
     };
 
@@ -328,7 +364,12 @@ export class GpuCompositor {
     this.texPipe = make("ir-tex", TEX_WGSL, [this.viewBGL, this.texBGL], [cornerLayout, quadInstLayout]);
     this.videoPipe = make("ir-video", VIDEO_WGSL, [this.viewBGL, this.videoBGL], [cornerLayout, quadInstLayout]);
     this.magnifyPipe = make("ir-magnify", MAGNIFY_WGSL, [this.viewBGL, this.magnifyBGL], [cornerLayout, quadInstLayout]);
+    // Blur V composites INTO the content target (MSAA attachment — content
+    // sample count); blur H renders into the single-sampled TEMP and needs a
+    // count-1 variant. Same shader; only the pipeline multisample state
+    // differs. With antialiasing off the two are the same descriptor — reuse.
     this.blurPipe = make("ir-blur", BLUR_WGSL, [this.blurBGL], []);
+    this.blurPipeTemp = this.sampleCount > 1 ? make("ir-blur-temp", BLUR_WGSL, [this.blurBGL], [], 1) : this.blurPipe;
 
     // Static unit-quad corner buffer (two triangles)
     this.cornerBuf = d.createBuffer({ size: 6 * 2 * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -343,17 +384,23 @@ export class GpuCompositor {
     });
   }
 
-  /** Command. (Re)creates the offscreen scene/backdrop/temp/lens textures. */
+  /** Command. (Re)creates the offscreen scene/backdrop/temp/lens (+ MSAA) textures. */
   _ensureTargets(w, h) {
     if (this._texW === w && this._texH === h) return;
-    for (const t of [this.sceneTex, this.backdropTex, this.tempTex]) t?.destroy();
-    for (const l of this._lensPool) l.tex.destroy();
+    for (const t of [this.sceneTex, this.backdropTex, this.tempTex, this.msaaTex]) t?.destroy();
+    for (const l of this._lensPool) { l.tex.destroy(); l.msaaTex?.destroy(); }
     const mk = (label, usage) => this.device.createTexture({ label, size: [w, h], format: this.format, usage });
     const RT = GPUTextureUsage.RENDER_ATTACHMENT, TB = GPUTextureUsage.TEXTURE_BINDING;
     const CS = GPUTextureUsage.COPY_SRC, CD = GPUTextureUsage.COPY_DST;
     this.sceneTex = mk("ir-scene", RT | TB | CS);
     this.backdropTex = mk("ir-backdrop", TB | CD);
     this.tempTex = mk("ir-temp", RT | TB);
+    // The scene's MSAA companion: content passes render here and resolve into
+    // sceneTex (multisampled textures are attachment-only — never sampled).
+    this.msaaTex = this.sampleCount > 1
+      ? this.device.createTexture({ label: "ir-scene-msaa", size: [w, h], format: this.format, usage: RT, sampleCount: this.sampleCount })
+      : null;
+    this.msaaView = this.msaaTex?.createView() ?? null;
     this.sceneView = this.sceneTex.createView();
     this.backdropView = this.backdropTex.createView();
     this.tempView = this.tempTex.createView();
@@ -400,7 +447,15 @@ export class GpuCompositor {
         format: this.format,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
       });
-      this._lensPool[depth] = { tex, view: tex.createView() };
+      // Each lens depth is a CONTENT target, so it gets its own MSAA
+      // companion — the scene's is mid-frame live while a lens re-renders
+      // (its stored samples must survive the recursion), so sharing is
+      // impossible. Lazy like the lens texture itself: costs nothing until
+      // a supersampling lens is actually on screen.
+      const msaaTex = this.sampleCount > 1
+        ? this.device.createTexture({ label: `ir-lens-msaa-${depth}`, size: [w, h], format: this.format, usage: GPUTextureUsage.RENDER_ATTACHMENT, sampleCount: this.sampleCount })
+        : null;
+      this._lensPool[depth] = { tex, view: tex.createView(), msaaTex, msaaView: msaaTex?.createView() ?? null };
     }
     return this._lensPool[depth];
   }
@@ -503,7 +558,7 @@ export class GpuCompositor {
     this._lensOrdinal = 0;
     const encoder = d.createCommandEncoder();
     this._encodeScene(encoder, batches, view, this.viewBG,
-      { tex: this.sceneTex, view: this.sceneView, contentW: w, contentH: h },
+      { tex: this.sceneTex, view: this.sceneView, msaaView: this.msaaView, contentW: w, contentH: h },
       { background, scissor }, 0);
     encoder.copyTextureToTexture({ texture: this.sceneTex }, { texture: this.context.getCurrentTexture() }, [w, h]);
     d.queue.submit([encoder.finish()]);
@@ -522,12 +577,15 @@ export class GpuCompositor {
    * RE-ENTRANT so a supersampling magnifier can replay the batches below
    * itself (batch order is z-order) into a lens texture under a lens view.
    *
-   * `target` is {tex, view, contentW, contentH}: the scene texture at depth 0
-   * (content = whole canvas), a lens texture in re-renders (content = the
-   * visible lens intersection, rendered into the texture's top-left corner —
-   * the manifest rule "Magnifier renders only the VISIBLE lens intersection").
-   * All targets share the canvas's texture size, so a device px means the
-   * same thing at every depth; only the content rect shrinks.
+   * `target` is {tex, view, msaaView, contentW, contentH}: the scene texture
+   * at depth 0 (content = whole canvas), a lens texture in re-renders
+   * (content = the visible lens intersection, rendered into the texture's
+   * top-left corner — the manifest rule "Magnifier renders only the VISIBLE
+   * lens intersection"). msaaView (null when antialiasing is off) is the
+   * target's multisampled companion: content passes attach IT and resolve
+   * into `view`, so `tex`/`view` always hold the resolved-so-far image for
+   * every reader. All targets share the canvas's texture size, so a device
+   * px means the same thing at every depth; only the content rect shrinks.
    *
    * `viewBG` binds the uniform holding `view` — every re-render has its own
    * (see render()'s ordinal note). `depth` caps lens recursion.
@@ -538,15 +596,21 @@ export class GpuCompositor {
     let pass = null;
     let cleared = false;
     const [br, bg, bb, ba] = background;
+    // Content attachment: through the MSAA companion (resolving into the
+    // logical texture every pass end) when antialiasing is on, direct
+    // otherwise. storeOp "store" keeps the MSAA samples authoritative across
+    // effect-interrupted passes (loadOp "load" resumes from them).
+    const contentAttachment = (loadOp) => ({
+      view: target.msaaView ?? target.view,
+      ...(target.msaaView ? { resolveTarget: target.view } : {}),
+      loadOp,
+      clearValue: { r: br, g: bg, b: bb, a: ba },
+      storeOp: "store",
+    });
     const ensurePass = () => {
       if (pass) return pass;
       pass = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: target.view,
-          loadOp: cleared ? "load" : "clear",
-          clearValue: { r: br, g: bg, b: bb, a: ba },
-          storeOp: "store",
-        }],
+        colorAttachments: [contentAttachment(cleared ? "load" : "clear")],
       });
       cleared = true;
       pass.setBindGroup(0, viewBG);
@@ -663,16 +727,22 @@ export class GpuCompositor {
               Math.max(0, Math.min(this._texW - x, Math.round(r.w))),
               Math.max(0, Math.min(this._texH - y, Math.round(r.h)))];
           };
+          // H pass → single-sampled TEMP (count-1 pipeline variant; a
+          // fullscreen triangle has no geometric edges — MSAA is pure cost).
           const hPass = encoder.beginRenderPass({
             colorAttachments: [{ view: this.tempView, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }],
           });
-          hPass.setPipeline(this.blurPipe);
+          hPass.setPipeline(this.blurPipeTemp);
           hPass.setBindGroup(0, bgH);
           hPass.setScissorRect(...clampRect({ x: -reach, y: -reach, w: cw + 2 * reach, h: ch + 2 * reach }));
           hPass.draw(3);
           hPass.end();
+          // V pass composites INTO the content target — through the MSAA
+          // attachment (writing the resolved texture directly would leave
+          // the stored samples stale, and the next resolve would wipe the
+          // blur; see the header's antialiasing note).
           const vPass = encoder.beginRenderPass({
-            colorAttachments: [{ view: target.view, loadOp: "load", storeOp: "store" }],
+            colorAttachments: [contentAttachment("load")],
           });
           vPass.setPipeline(this.blurPipe);
           vPass.setBindGroup(0, bgV);
@@ -719,7 +789,7 @@ export class GpuCompositor {
             // textureSize — the re-render sits in the texture's corner.
             d.queue.writeBuffer(use.rectBuf, 0, new Float32Array([visible.x, visible.y, this._texW, this._texH]));
             this._encodeScene(encoder, batches.slice(0, idx), lensView, use.viewBG,
-              { tex: lens.tex, view: lens.view, contentW: visible.w, contentH: visible.h },
+              { tex: lens.tex, view: lens.view, msaaView: lens.msaaView, contentW: visible.w, contentH: visible.h },
               { background: [0, 0, 0, 0], scissor: subScissor }, depth + 1);
             const p = ensurePass();
             p.setPipeline(this.magnifyPipe);
@@ -971,8 +1041,8 @@ export class GpuCompositor {
 
   /** Command. Releases GPU resources. */
   destroy() {
-    for (const t of [this.sceneTex, this.backdropTex, this.tempTex, this.atlas.texture]) t?.destroy();
-    for (const l of this._lensPool) l.tex.destroy();
+    for (const t of [this.sceneTex, this.backdropTex, this.tempTex, this.msaaTex, this.atlas.texture]) t?.destroy();
+    for (const l of this._lensPool) { l.tex.destroy(); l.msaaTex?.destroy(); }
     for (const u of this._lensUsePool) { u.viewBuf.destroy(); u.rectBuf.destroy(); }
     for (const { texture } of this.imageTextures.values()) texture.destroy();
     this.device.destroy();
