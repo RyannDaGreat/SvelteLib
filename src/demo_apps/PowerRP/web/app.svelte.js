@@ -25,6 +25,7 @@ import { createShortcuts } from "../core/shortcuts.js";
 import { createUndo } from "../core/undo.js";
 import { registerAll } from "../plugins/index.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
+import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
 
 const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
@@ -959,12 +960,21 @@ export class PowerRPApp {
     await projectApi.downloadProjectZip(name);
   }
 
+  // ── Assets: upload / delete / insert / filmstrip frames (one region) ────────
+
+  /** Bumped on every asset add/remove, so asset consumers (the Asset Explorer
+   *  pane) can re-list reactively — e.g. a canvas OS-file drop must show up in
+   *  the pane without a manual Refresh. Monotonic, viewer-local, not undoable. */
+  assetsVersion = $state(0);
+
   /** Command. Upload a File/Blob into the current project's assets/ folder
    *  (the source of truth for the asset library). Returns {ok, name, url}.
    *  Saves the project first so the folder exists server-side. */
   async uploadAsset(file, filename = file.name, name = this.projectName()) {
     await this.saveToServer(name);
-    return projectApi.uploadAsset(name, file, filename);
+    const res = await projectApi.uploadAsset(name, file, filename);
+    this.assetsVersion++;
+    return res;
   }
 
   /** Query. List the current project's assets from the server (reflects the
@@ -974,28 +984,148 @@ export class PowerRPApp {
     return projectApi.listAssets(name);
   }
 
+  /** Command. Delete one asset from the current project (the server removes
+   *  the file AND its cached filmstrip frames). Throws loudly on failure —
+   *  the Asset Explorer's trash-can flow surfaces it. */
+  async deleteProjectAsset(filename, name = this.projectName()) {
+    await projectApi.deleteAsset(name, filename);
+    this.assetsVersion++;
+  }
+
+  /** Query. World point at the center of the CURRENT camera view — the default
+   *  placement for inserts that don't come from a canvas drop (the same
+   *  cameraRect(evaluateState(foldState(…))) idiom exportPng uses). */
+  #viewCenter() {
+    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state, this.doc.meta);
+    return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
+  }
+
+  /** Command. addItem a media widget at native size `w`×`h`, CENTERED at world
+   *  point `at` (or the camera-view center when null). addItem keyframes
+   *  active:true on this slide and selects the new item. */
+  #insertMediaAt(defaults, src, w, h, at) {
+    const p = at ?? this.#viewCenter();
+    this.addItem({ ...defaults, src, w, h, x: p.x - w / 2, y: p.y - h / 2 });
+  }
+
+  /** Query. A src string for the document: relative served paths ("/asset/…")
+   *  resolve through the backend base (identity when same-origin/proxied);
+   *  absolute URLs and data: URIs pass through untouched. */
+  #resolvedSrc(url) {
+    return url.startsWith("/") ? projectApi.assetUrl(url) : url;
+  }
+
   /**
    * Command. Inserts an image asset (by URL) as a new image widget on the
-   * current slide — the Asset Explorer's "insert into slide" affordance
-   * (manifest Round 12: drop/pick media inserts at NATIVE pixel size, "because
-   * we have pixels to measure things"). Loads the bitmap to learn its native
-   * size, then centers it in the CURRENT CAMERA VIEW (the same
-   * cameraRect(evaluateState(foldState(…))) idiom exportPng uses). addItem
-   * keyframes active:true on this slide and selects the new item.
+   * current slide at NATIVE pixel size (manifest Round 12: "because we have
+   * pixels to measure things"), CENTERED at world point `at` — a canvas drop
+   * point (manifest Round 12C: asset→canvas drag inserts at the drop point) —
+   * or at the current camera-view center when `at` is omitted (the Asset
+   * Explorer's insert button).
    *
    * Async because the natural size is only known after decode. A decode
    * FAILURE rejects loudly (no silent fallback) so the caller surfaces it.
    */
-  async insertImageAsset(url) {
+  async insertImageAsset(url, at = null) {
+    const src = this.#resolvedSrc(url);
     const { naturalWidth: w, naturalHeight: h } = await new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`insertImageAsset: could not load image "${url}"`));
-      img.src = url;
+      img.onerror = () => reject(new Error(`insertImageAsset: could not load image "${src}"`));
+      img.src = src;
     });
-    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state, this.doc.meta);
-    // Center the native-size quad in the camera view (top-left = center − half).
-    this.addItem({ ...imagePlugin.defaults, src: url, w, h, x: rect.x + rect.w / 2 - w / 2, y: rect.y + rect.h / 2 - h / 2 });
+    this.#insertMediaAt(imagePlugin.defaults, src, w, h, at);
+  }
+
+  /**
+   * Command. Inserts a video asset (by URL) as a new video PLAYER widget at
+   * native pixel size, centered at `at` (canvas drop point) or the camera-view
+   * center — the video twin of insertImageAsset (manifest Round 12 drag-drop:
+   * "Same for videos"; autoplay/loop/muted defaults come from the plugin).
+   * Loads METADATA only (no full decode) for the native size; a load failure
+   * rejects loudly.
+   */
+  async insertVideoAsset(url, at = null) {
+    const src = this.#resolvedSrc(url);
+    const { videoWidth: w, videoHeight: h } = await new Promise((resolve, reject) => {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.onloadedmetadata = () => resolve(v);
+      v.onerror = () => reject(new Error(`insertVideoAsset: could not load video "${src}"`));
+      v.src = src;
+    });
+    this.#insertMediaAt(videoPlugin.defaults, src, w, h, at);
+  }
+
+  // ── Filmstrip frames wiring (grep handles: fetchFrames / frameUrls). The
+  // filmstrip plugin stores only (src, frames); frameUrls is server-derived
+  // data this effect fills in (plugins/filmstrip.js documents the contract:
+  // "an app-side effect requests them whenever src/frames changes"). ─────────
+
+  /** (item|project|src|frames) combos already attempted this session — ONE
+   *  fetch per combo, so a FAILURE (server down, bad video) is console.error'd
+   *  once and cannot hot-loop the effect; editing src/frames retries naturally
+   *  (new combo). A discarded stale fetch un-registers itself (see below).
+   *  Not $state: nothing renders it. */
+  #framesAttempted = new Set();
+
+  /** Runs during field initialization — i.e. at construction, which happens in
+   *  App.svelte's component init (the app's only construction site), so
+   *  $effect has an owner. A field (not a constructor statement) keeps the
+   *  whole asset region CONTIGUOUS. The effect body is scheduled by Svelte
+   *  post-mount, after the constructor finishes (this.registry is set). */
+  #filmstripWiring = this.#wireFilmstripFrames();
+
+  #wireFilmstripFrames() {
+    // Command (registers a reactive effect). Whenever the CURRENT slide's
+    // folded state shows a filmstrip whose (src, frames) has no matching
+    // frameUrls, fetch the frame URLs and keyframe them (ONE undo unit).
+    // Cheap per run: one evaluated-state read (memoized) + a scan that only
+    // inspects filmstrip items.
+    $effect(() => {
+      const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+      const project = this.projectName();
+      for (const [id, s] of Object.entries(state.items ?? {})) {
+        if (s.type !== "filmstrip" || typeof s.src !== "string" || !s.src || !(s.frames >= 1)) continue;
+        const frames = Math.round(s.frames);
+        // Staleness test: the stored URLs' DECODED cache path must name this
+        // exact (project, src, frames). Decoding makes the test independent of
+        // server-vs-JS percent-encoding differences.
+        const want = `/asset/${project}/frames/${s.src}/${frames}/`;
+        const urls = Array.isArray(s.frameUrls) ? s.frameUrls : [];
+        if (urls.length > 0 && decodeURIComponent(urls[0]).includes(want)) continue; // resolved + current
+        const key = `${id}|${want}`;
+        if (this.#framesAttempted.has(key)) continue;
+        this.#framesAttempted.add(key);
+        this.#fillFilmstripFrames(id, s.src, frames, project, want, key);
+      }
+    });
+  }
+
+  /** Command (async). One filmstrip frames fetch → ONE undo-unit frameUrls
+   *  keyframe. A result that no longer matches the widget (src/frames retyped,
+   *  item purged, slide switched mid-fetch) is DISCARDED and its attempt key
+   *  released so the effect can refetch when the combo shows again (the server
+   *  cache makes that retry cheap). Fetch failures console.error loudly. */
+  async #fillFilmstripFrames(id, src, frames, project, want, key) {
+    try {
+      const res = await projectApi.fetchFrames(project, src, frames);
+      // Re-check against the FRESH doc before writing (no stale writes).
+      const s = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state.items?.[id];
+      if (!s || s.type !== "filmstrip" || `/asset/${project}/frames/${s.src}/${Math.round(s.frames)}/` !== want) {
+        this.#framesAttempted.delete(key); // let the live combo refetch later
+        console.warn(`PowerRP filmstrip: discarded a stale frames fetch for "${src}" × ${frames} (widget changed mid-fetch)`);
+        return;
+      }
+      // Keyframe on the slide where the current src/frames combo was AUTHORED
+      // (its last keyframe at or before the current slide) so every later
+      // slide inherits the resolved strip from the same place the user set it.
+      const authoredAt = Math.max(0, ...["src", "frames"].map((k) =>
+        Math.max(-1, ...keyframeIndices(this.doc, ["items", id, k]).filter((i) => i <= this.slideIndex))));
+      this.commit(keyframed(this.doc, authoredAt, ["items", id, "frameUrls"], res.frames));
+    } catch (e) {
+      console.error(`PowerRP filmstrip: frames fetch failed for "${src}" × ${frames}:`, e);
+    }
   }
 
   // Open-project UI seam: the Open command opens a project-picker MODAL, but

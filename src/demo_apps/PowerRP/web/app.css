@@ -688,6 +688,30 @@ body,
   opacity: 1;
 }
 
+/* Trash can, bottom-right of EVERY tile on hover (Round 12C: asset delete).
+   Same hover-reveal overlay chrome as .ae-insert; the glyph takes the danger
+   color on hover (the .btn.danger / --a-guide precedent). */
+.asset-explorer .ae-trash {
+  position: absolute;
+  bottom: var(--a-sp-1);
+  right: var(--a-sp-1);
+  width: auto;
+  height: auto;
+  padding: var(--a-sp-1);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+  opacity: 0;
+}
+
+.asset-explorer .ae-tile:hover .ae-trash,
+.asset-explorer .ae-trash:focus-visible {
+  opacity: 1;
+}
+
+.asset-explorer .ae-trash:hover {
+  color: var(--a-guide);
+}
+
 .asset-explorer .ae-name {
   font-size: var(--a-font-sm);
   color: var(--fg-dim);
@@ -706,6 +730,41 @@ body,
 
 audio.ae-preview-media {
   width: 100%;
+}
+
+/* Delete-with-users confirm modal (Round 12C): message, user rows (each row
+   is a full-width .btn that SELECTS the widget), and the action row. Same
+   list chrome as the Open Project modal (.open-project-*). */
+.ae-confirm-msg {
+  font-size: var(--a-font-md);
+  margin-bottom: var(--a-sp-3);
+}
+
+.ae-confirm-sub {
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  margin-bottom: var(--a-sp-3);
+}
+
+.ae-users {
+  list-style: none;
+  margin: 0 0 var(--a-sp-4);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+}
+
+.ae-users .ae-user-row {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.ae-confirm-actions {
+  display: flex;
+  gap: var(--a-sp-2);
+  justify-content: flex-end;
 }
 
 /* ── Inspector + Variables Panel ─────────────────────────────────────────

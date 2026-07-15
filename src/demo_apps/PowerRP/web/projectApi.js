@@ -16,6 +16,11 @@ export const BACKEND = params.get("backend") || "";
 
 const enc = encodeURIComponent;
 
+/** DataTransfer MIME type for an asset-tile drag (Asset Explorer → canvas).
+ *  Payload: JSON {name, kind, url}. ONE home so the drag source (the pane)
+ *  and the drop target (CanvasView) can never disagree. */
+export const ASSET_DRAG_MIME = "application/x-powerrp-asset";
+
 /** Query. Absolute (proxied) URL of an asset file, given the server's relative
  *  url ("/asset/<name>/<file>"). Used by the asset explorer / image widget. */
 export const assetUrl = (relativeUrl) => `${BACKEND}${relativeUrl}`;
@@ -67,6 +72,23 @@ export async function uploadAsset(name, file, filename = file.name) {
     body: file,
   });
   return jsonOrThrow(res, `uploadAsset(${name}, ${filename})`);
+}
+
+/** Command. Delete one asset from a project's assets/ folder (the server also
+ *  drops the asset's cached filmstrip frames). Returns {ok, name}. 404s (loud
+ *  throw) if the asset does not exist — a stale list is a reportable state. */
+export async function deleteAsset(name, filename) {
+  const res = await fetch(`${BACKEND}/api/asset/${enc(name)}/${enc(filename)}/`, { method: "DELETE" });
+  return jsonOrThrow(res, `deleteAsset(${name}, ${filename})`);
+}
+
+/** Query (the server extracts on first request, then serves from its cache).
+ *  N evenly-spread frames of a project video asset: {count, frames: [url,…]}.
+ *  `video` is the asset FILENAME (the filmstrip widget's src); count may be
+ *  less than n for a video shorter than n frames. */
+export async function fetchFrames(name, video, n) {
+  const res = await fetch(`${BACKEND}/api/frames/${enc(name)}/${enc(video)}/${encodeURIComponent(n)}/`);
+  return jsonOrThrow(res, `fetchFrames(${name}, ${video}, ${n})`);
 }
 
 /** Command. Download the whole project as a .zip (browser save dialog). The

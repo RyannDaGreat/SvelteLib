@@ -25,6 +25,7 @@
   import { renderViewFrame } from "./gpuService.js";
   import * as T from "../core/transform.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
+  import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
 
   let { app } = $props();
 
@@ -314,6 +315,74 @@
   function worldPoint(e) {
     const s = screenPoint(e);
     return actions.screenToWorld(s.x, s.y);
+  }
+
+  // ── Asset / OS-file drop (drop-handler region — manifest Round 12C) ─────────
+  // An asset tile dragged from the Asset Explorer, or a file dragged from the
+  // OS, inserts AT THE DROP POINT (media centered there, native pixel size).
+  // The tile payload rides our own MIME type (set by AssetExplorer ondragstart);
+  // an OS drag carries Files — nothing else is accepted. Media inserts route
+  // through app.insertImageAsset / app.insertVideoAsset; OS files are first
+  // UPLOADED to the project (the pane's own upload path, app.uploadAsset) and
+  // then inserted. Kinds with no canvas widget (sound/other) still upload —
+  // they appear in the asset library — and the no-widget case is reported.
+
+  function dropAccepts(dt) {
+    const types = dt?.types ?? [];
+    return types.includes(ASSET_DRAG_MIME) || types.includes("Files");
+  }
+
+  function onCanvasDragOver(e) {
+    if (!dropAccepts(e.dataTransfer)) return; // not ours — default (rejects the drop)
+    e.preventDefault(); // required, or the browser never fires drop
+    e.dataTransfer.dropEffect = "copy";
+  }
+
+  /**
+   * Pure function. Asset kind of a dropped OS File by MIME prefix (the client
+   * mirror of the server's extension-based asset_kind).
+   *
+   * @example fileKind({type: "image/png"})  // "image"
+   * @example fileKind({type: "video/mp4"})  // "video"
+   * @example fileKind({type: "audio/wav"})  // "sound"
+   * @example fileKind({type: "text/plain"}) // "other"
+   */
+  function fileKind(file) {
+    if (file.type.startsWith("image/")) return "image";
+    if (file.type.startsWith("video/")) return "video";
+    if (file.type.startsWith("audio/")) return "sound";
+    return "other";
+  }
+
+  /** Command. Insert one asset ({name, kind, url}) centered at world point
+   *  `at`. Kinds without a canvas widget are reported, never silently dropped. */
+  async function insertDroppedAsset(asset, at) {
+    if (asset.kind === "image") return app.insertImageAsset(asset.url, at);
+    if (asset.kind === "video") return app.insertVideoAsset(asset.url, at);
+    console.warn(`Canvas drop: no canvas widget for a "${asset.kind}" asset (${asset.name}) — it stays in the asset library.`);
+  }
+
+  /** Command. The canvas drop: asset-tile payload → insert at the drop point;
+   *  OS files → upload each, then insert at the drop point. A failure in any
+   *  step is REPORTED loudly (console.error) — a user gesture must never fail
+   *  silently, and an event handler has no caller to rethrow to. */
+  async function onCanvasDrop(e) {
+    if (!dropAccepts(e.dataTransfer)) return;
+    e.preventDefault();
+    // Read the DataTransfer SYNCHRONOUSLY — browsers neuter it once the
+    // handler yields, so the payload and file list are captured up front.
+    const payload = e.dataTransfer.getData(ASSET_DRAG_MIME);
+    const files = [...e.dataTransfer.files];
+    const at = worldPoint(e); // world-space drop point (render-area frame)
+    try {
+      if (payload) return await insertDroppedAsset(JSON.parse(payload), at);
+      for (const file of files) {
+        const up = await app.uploadAsset(file); // {ok, name, url}
+        await insertDroppedAsset({ name: up.name, kind: fileKind(file), url: up.url }, at);
+      }
+    } catch (err) {
+      console.error("Canvas drop failed:", err);
+    }
   }
 
   // ── Selection + drag ────────────────────────────────────────────────────────
@@ -1334,6 +1403,8 @@
         onpointerup={onPointerUp}
         onpointercancel={onPointerUp}
         onpointerleave={onPointerLeave}
+        ondragover={onCanvasDragOver}
+        ondrop={onCanvasDrop}
       >
         <defs>
           <!-- Two-way arrowheads for matching-dimension indicators; markers

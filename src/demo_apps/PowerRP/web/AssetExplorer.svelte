@@ -12,6 +12,12 @@
     handler — the CANVAS drag-drop is a DIFFERENT surface owned elsewhere).
   - Double-click an asset → a Modal preview (img / video / audio playback).
   - Image assets carry an "insert into slide" affordance → app.insertImageAsset.
+  - DRAG a tile onto the canvas → insert at the drop point (Round 12C). The
+    tile sets the ASSET_DRAG_MIME payload; CanvasView owns the drop side.
+  - TRASH CAN on tile hover (bottom-right) deletes the asset (Round 12C). If
+    the document has USERS of the asset, a confirm Modal lists them — clicking
+    a listed user SELECTS it (Property Panel opens on it; explicitly NOT
+    navigate-to-slide, which the user retracted) — and Delete still deletes.
   - No project loaded / server down: a loud caption + the error (never a
     silently-empty pane).
 
@@ -19,12 +25,55 @@
   tokens), square corners, iconify glyphs only, SvelteLib Tooltip for hover
   help. The wrapping Panel (App.svelte) owns the region name + scroll body.
 -->
+<script module>
+  /**
+   * Pure function. Every item in the document that REFERENCES the given asset:
+   * any slide's delta setting the item's `src` to the asset's served path
+   * (image/video widgets store the url) or bare filename (filmstrips), or
+   * holding filmstrip `frameUrls` extracted from it. Purged items never appear
+   * (purge removes an item's delta entries entirely). Returns [{id, type,
+   * name}] in first-reference order; type/name accumulate across deltas (an
+   * item's type lives only in its creation delta; the freshest name wins).
+   *
+   * @example
+   * // A video widget sourcing the asset by URL is a user:
+   * // assetUsers({slides: [{delta: {items: {v1: {type: "video", src: "/asset/P/clip.mp4"}}}}]},
+   * //            "clip.mp4", "/asset/P/clip.mp4")  // => [{id: "v1", type: "video", name: undefined}]
+   * @example
+   * // A filmstrip stores the bare FILENAME; a rect never matches:
+   * // assetUsers({slides: [{delta: {items: {f1: {type: "filmstrip", src: "clip.mp4"}, r1: {type: "rect"}}}}]},
+   * //            "clip.mp4", "/asset/P/clip.mp4")  // => [{id: "f1", type: "filmstrip", name: undefined}]
+   * @example
+   * // assetUsers({slides: [{delta: {}}]}, "x.png", "/asset/P/x.png")  // => []
+   */
+  export function assetUsers(doc, assetName, assetPath) {
+    const meta = new Map(); // id → {type, name} accumulated across all deltas
+    const refs = new Set(); // ids that reference the asset in ANY delta
+    for (const slide of doc.slides ?? []) {
+      for (const [id, it] of Object.entries(slide.delta?.items ?? {})) {
+        const m = meta.get(id) ?? { type: undefined, name: undefined };
+        if (typeof it.type === "string") m.type = it.type;
+        if (typeof it.name === "string") m.name = it.name;
+        meta.set(id, m);
+        const src = typeof it.src === "string" ? it.src : "";
+        if (
+          (src && (src.includes(assetPath) || src === assetName)) ||
+          (Array.isArray(it.frameUrls) &&
+            it.frameUrls.some((u) => decodeURIComponent(u).includes(`/frames/${assetName}/`)))
+        )
+          refs.add(id);
+      }
+    }
+    return [...refs].map((id) => ({ id, ...meta.get(id) }));
+  }
+</script>
+
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import Thumbnail from "../../../lib/Thumbnail.svelte";
   import Modal from "../../../lib/Modal.svelte";
-  import { assetUrl } from "./projectApi.js";
+  import { assetUrl, ASSET_DRAG_MIME } from "./projectApi.js";
 
   let { app } = $props();
 
@@ -38,6 +87,10 @@
   let uploading = $state(false);
   let preview = $state(null); // {name, kind, url} being previewed in the Modal
   let previewOpen = $state(false);
+  // Pending delete-with-users confirmation: {asset, users} or null (Round 12C:
+  // deleting an asset the document references asks first, listing the users).
+  let confirmDelete = $state(null);
+  let confirmOpen = $state(false);
   let fileInput; // hidden <input type=file> for the Upload button
   // Whether the pane has ever successfully listed (or been asked to). Gates the
   // project-name effect: a fresh boot does NOT auto-fetch (an unsaved "Untitled"
@@ -80,27 +133,40 @@
     }
   }
 
-  // Re-list when the PROJECT IDENTITY changes (Open/Load/Clear swaps the folder)
-  // — but ONLY once the pane has been activated (see `activated`): a fresh boot
+  // Re-list when the PROJECT IDENTITY changes (Open/Load/Clear swaps the
+  // folder) or when ANY asset lands/leaves (app.assetsVersion bumps on every
+  // upload/delete — including a canvas OS-file drop, which must appear here
+  // without a manual Refresh) — but ONLY once the pane is active: a fresh boot
   // does not fetch, because an unsaved "Untitled" project has no server folder
   // and the backend may not even be up (manifest: "server down / no project
-  // loaded" → the pane shows a caption, not an error). The first Refresh (or a
-  // Save/Open, which also touches the server) activates it; thereafter a project
-  // switch re-lists automatically.
+  // loaded" → the pane shows a caption, not an error). The first Refresh — or
+  // the first asset action anywhere (version > 0) — activates it.
+  //
+  // Keyed on the VALUE pair, not reactive identity: projectName() reads
+  // app.doc, whose object identity flips on EVERY commit (any canvas edit) —
+  // without the key guard each commit would re-list the assets (a network
+  // call + the grid flashing through its loading notice).
+  let lastListedKey = null;
   $effect(() => {
-    app.projectName(); // dependency: fire on project-identity change
-    if (activated) refresh();
+    const key = `${app.projectName()}|${app.assetsVersion}`;
+    const armed = activated || app.assetsVersion > 0;
+    if (key === lastListedKey || !armed) {
+      lastListedKey = key; // record silently (pre-activation and no-op runs)
+      return;
+    }
+    lastListedKey = key;
+    refresh();
   });
 
-  /** Command. Uploads one or more Files to the project, then refreshes the
-   *  list so the new asset(s) appear. Errors surface loudly. */
+  /** Command. Uploads one or more Files to the project. The list refreshes via
+   *  the assetsVersion effect above (one refresh pathway for uploads from this
+   *  pane AND from canvas drops). Errors surface loudly. */
   async function uploadFiles(files) {
     if (!files || files.length === 0) return;
     uploading = true;
     error = null;
     try {
       for (const file of files) await app.uploadAsset(file);
-      await refresh();
     } catch (e) {
       error = String(e?.message ?? e);
       console.error("AssetExplorer: upload failed:", e);
@@ -142,14 +208,63 @@
   }
 
   /** Command. Inserts an image asset onto the current slide (native size,
-   *  centered in the camera view). Errors surface loudly. */
+   *  centered in the camera view — the app resolves the served path). Errors
+   *  surface loudly. */
   async function insert(a) {
     try {
-      await app.insertImageAsset(urlOf(a));
+      await app.insertImageAsset(a.url);
     } catch (e) {
       error = String(e?.message ?? e);
       console.error("AssetExplorer: insert failed:", e);
     }
+  }
+
+  /** Command. Starts an asset-tile drag: the payload CanvasView's drop handler
+   *  reads to insert the asset at the drop point (Round 12C). */
+  function onTileDragStart(e, a) {
+    e.dataTransfer.setData(ASSET_DRAG_MIME, JSON.stringify({ name: a.name, kind: a.kind, url: a.url }));
+    e.dataTransfer.effectAllowed = "copy";
+  }
+
+  /** Display label for a using item — the Inspector picker's convention:
+   *  authored name, else "<Type> (id-prefix)". */
+  function userLabel(u) {
+    return u.name ?? `${app.registry.get(u.type)?.title ?? u.type} (${u.id.slice(0, 4)})`;
+  }
+
+  /** Command. Trash-can click: delete immediately when nothing references the
+   *  asset; otherwise ask first, listing the users (Round 12C). */
+  function onTrashClick(a) {
+    const users = assetUsers(app.doc, a.name, a.url);
+    if (users.length === 0) return doDelete(a);
+    confirmDelete = { asset: a, users };
+    confirmOpen = true;
+  }
+
+  /** Command. Deletes the asset server-side (the assetsVersion effect
+   *  re-lists). Errors surface loudly in the pane and the console. */
+  async function doDelete(a) {
+    try {
+      await app.deleteProjectAsset(a.name);
+    } catch (e) {
+      error = String(e?.message ?? e);
+      console.error("AssetExplorer: delete failed:", e);
+    }
+  }
+
+  /** Command. Clicking a listed user SELECTS it — the Property Panel opens on
+   *  it (the picker already handles not-visible selection; explicitly NOT
+   *  navigate-to-slide, which the user retracted). Closes the modal so the
+   *  now-open Property Panel is actually visible behind it. */
+  function selectUser(u) {
+    app.selection = u.id;
+    confirmOpen = false;
+  }
+
+  /** Command. Confirmed delete-with-users: close the modal and delete. */
+  function confirmDeleteNow() {
+    confirmOpen = false;
+    doDelete(confirmDelete.asset);
   }
 </script>
 
@@ -197,8 +312,9 @@
       <div class="ae-grid">
         {#each assets as a (a.name)}
           <div class="ae-cell">
-            <Tooltip text={`${a.name} (${a.kind})`}>
-              <div class="ae-tile">
+            <Tooltip text={`${a.name} (${a.kind}) — drag onto the canvas to insert at a point`}>
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="ae-tile" draggable="true" ondragstart={(e) => onTileDragStart(e, a)}>
                 <Thumbnail
                   src={a.kind === "image" ? urlOf(a) : ""}
                   title=""
@@ -226,6 +342,15 @@
                     </button>
                   </Tooltip>
                 {/if}
+                <Tooltip text="Delete asset from the project">
+                  <button
+                    class="btn-icon ae-trash"
+                    aria-label={`Delete ${a.name}`}
+                    onclick={() => onTrashClick(a)}
+                  >
+                    <iconify-icon icon="mdi:trash-can-outline" width="14" height="14"></iconify-icon>
+                  </button>
+                </Tooltip>
               </div>
             </Tooltip>
             <div class="ae-name">{a.name}</div>
@@ -244,5 +369,29 @@
     <video class="ae-preview-media" src={urlOf(preview)} controls autoplay></video>
   {:else if preview?.kind === "sound"}
     <audio class="ae-preview-media" src={urlOf(preview)} controls autoplay></audio>
+  {/if}
+</Modal>
+
+<!-- Delete-with-users confirmation (Round 12C). The message is the user's
+     spec verbatim; each row selects its widget (Property Panel opens on it). -->
+<Modal bind:open={confirmOpen} title="Delete asset?">
+  {#if confirmDelete}
+    <div class="ae-confirm-msg">There's a user of this asset. Are you sure you want to delete?</div>
+    <div class="ae-confirm-sub">
+      “{confirmDelete.asset.name}” is used by — click one to inspect it:
+    </div>
+    <ul class="ae-users">
+      {#each confirmDelete.users as u (u.id)}
+        <li>
+          <button type="button" class="btn ae-user-row" onclick={() => selectUser(u)}>
+            {userLabel(u)}
+          </button>
+        </li>
+      {/each}
+    </ul>
+    <div class="ae-confirm-actions">
+      <button type="button" class="btn danger" onclick={confirmDeleteNow}>Delete</button>
+      <button type="button" class="btn" onclick={() => (confirmOpen = false)}>Cancel</button>
+    </div>
   {/if}
 </Modal>

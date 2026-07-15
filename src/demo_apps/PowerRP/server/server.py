@@ -222,17 +222,24 @@ def _extract_indices(video_path, indices, out_dir):
         raise RuntimeError(f"ffmpeg frame extraction failed: {exc.stderr.strip()[-500:]}")
 
 
-def _frame_urls(name, video, n):
+def _frame_urls(name, video, dir_n, count):
     """
     Query. The served URLs for the cached frames of (project, video, N), in
     order. ffmpeg writes 1-based frame_001.png … frame_00N.png; the URL path
     goes through the /asset seam under assets/frames/<video>/<N>/.
+
+    `dir_n` is the REQUESTED frame count (the cache FOLDER name — always the
+    request's N so a repeat request is a cache hit); `count` is how many frames
+    actually exist there (== dir_n normally, fewer for a video shorter than N
+    frames). Splitting the two fixes the short-video bug where URLs pointed at
+    a frames/<n_eff>/ folder that extraction never wrote (files land in
+    frames/<requested-N>/).
     """
     q = urllib.parse.quote
-    sub = f"{FRAMES_SUBDIR}/{video}/{int(n)}"
+    sub = f"{FRAMES_SUBDIR}/{video}/{int(dir_n)}"
     return [
         f"/asset/{q(name)}/{q(sub, safe='/')}/frame_{i + 1:0{FRAME_INDEX_PAD}d}.png"
-        for i in range(n)
+        for i in range(count)
     ]
 
 
@@ -257,15 +264,21 @@ def extract_frames(name, video, n):
 
     cache = frames_cache_dir(name, video, n)
     cached = sorted(f for f in os.listdir(cache)) if os.path.isdir(cache) else []
-    if len(cached) == n:  # cache hit — every frame present, no re-extraction
-        return {"count": n, "frames": _frame_urls(name, video, n)}
+    if len(cached) == n:  # full cache hit — no ffprobe, no re-extraction
+        return {"count": n, "frames": _frame_urls(name, video, n, n)}
+
+    # The cache folder is keyed by the REQUESTED n; a video with fewer than n
+    # frames legitimately holds total-frames files there. ffprobe tells us
+    # which case a not-exactly-n cache is (short-video hit vs corrupt/partial).
+    total = video_frame_count(video_file)
+    n_eff = min(n, total)  # a video shorter than N frames yields total frames
+    if cached and len(cached) == n_eff:  # short-video cache hit — complete
+        return {"count": n_eff, "frames": _frame_urls(name, video, n, n_eff)}
 
     # Cache miss (or partial/corrupt cache): rebuild from scratch so a crashed
     # prior run never yields a short strip. total>=1 guaranteed by ffprobe check.
     if os.path.isdir(cache):
         shutil.rmtree(cache)
-    total = video_frame_count(video_file)
-    n_eff = min(n, total)  # a video shorter than N frames yields total frames
     indices = evenly_spread_indices(total, n_eff)
     _extract_indices(video_file, indices, cache)
     produced = sorted(f for f in os.listdir(cache) if f.endswith(".png"))
@@ -273,7 +286,7 @@ def extract_frames(name, video, n):
         raise RuntimeError(
             f"frame extraction produced {len(produced)} files, expected {n_eff} "
             f"(video {video}, total {total} frames)")
-    return {"count": len(produced), "frames": _frame_urls(name, video, len(produced))}
+    return {"count": n_eff, "frames": _frame_urls(name, video, n, n_eff)}
 
 
 def asset_kind(filename):
@@ -409,6 +422,25 @@ def save_asset(name, filename, data):
     return final
 
 
+def delete_asset(name, filename):
+    """
+    Command. Delete one asset file from a project's assets/ folder, plus its
+    filmstrip frame cache (assets/frames/<filename>/, all N variants) if any —
+    cached frames of a deleted video would otherwise be orphaned on disk.
+    Both name parts are traversal-guarded via safe_name. Raises loudly
+    (FileNotFoundError) if the asset does not exist; the HTTP layer maps that
+    to a 404. Mutates the filesystem.
+    """
+    path = os.path.join(assets_dir(name), safe_name(filename))
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"asset not found: {name}/{filename}")
+    os.remove(path)
+    frame_cache = os.path.join(assets_dir(name), FRAMES_SUBDIR, safe_name(filename))
+    if os.path.isdir(frame_cache):
+        shutil.rmtree(frame_cache)
+    return filename
+
+
 def zip_project_bytes(name):
     """
     Query (reads the filesystem, no mutation). ZIP archive bytes of the WHOLE
@@ -446,6 +478,8 @@ class Handler(BaseHTTPRequestHandler):
       GET  /api/download/<name>/     → application/zip of the whole folder
       GET  /api/frames/<name>/<video>/<N>/  → {count, frames:[url,…]}
                                      (extract N evenly-spread frames, cached)
+      DELETE /api/asset/<name>/<file>/  → delete one asset (+ its frame cache);
+                                     {ok, name: file}; 404 if absent
       GET  /asset/<name>/<file…>     → the asset file (Range-supported; a file
                                        may be a frames/<video>/<N>/… subpath)
     """
@@ -456,7 +490,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _json(self, obj, status=200):
@@ -581,6 +615,16 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._error(500, f"{type(exc).__name__}: {exc}")
 
+    def do_DELETE(self):
+        parsed, parts = self._parts()
+        try:
+            if len(parts) == 4 and parts[:2] == ["api", "asset"]:
+                return self._handle_delete_asset(parts[2], parts[3])
+            self._error(404, f"no DELETE route for {parsed.path}")
+        except Exception as exc:
+            traceback.print_exc()
+            self._error(500, f"{type(exc).__name__}: {exc}")
+
     # -- route handlers --
 
     def _read_body(self):
@@ -614,6 +658,17 @@ class Handler(BaseHTTPRequestHandler):
         final = save_asset(name, filename, data)
         self._json({"ok": True, "name": final,
                     "url": f"/asset/{urllib.parse.quote(name)}/{urllib.parse.quote(final)}"})
+
+    def _handle_delete_asset(self, name, filename):
+        # Asset delete (manifest Round 12C: trash can on the asset tile). A
+        # missing asset is a 404, not a 500 — deleting twice / a stale list is
+        # an expected client state, reported distinctly. delete_asset also
+        # removes the asset's filmstrip frame cache.
+        try:
+            delete_asset(name, filename)
+        except FileNotFoundError as exc:
+            return self._error(404, str(exc))
+        self._json({"ok": True, "name": filename})
 
     def _handle_download(self, name):
         data = zip_project_bytes(name)
