@@ -74,6 +74,12 @@
     light: "mdi:weather-sunny",
     black: "mdi:weather-night",
     warm: "mdi:palette-swatch-outline",
+    // 14.11 additions:
+    sepia: "mdi:file-document-outline",
+    slate: "mdi:contrast-box",
+    nord: "mdi:snowflake",
+    gruvbox: "mdi:coffee-outline",
+    aurora: "mdi:creation",
   };
   const coreCommands = [
     { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", when: needsPurgeable, run: (a) => a.deleteSelection() },

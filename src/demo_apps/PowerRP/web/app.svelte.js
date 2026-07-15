@@ -51,12 +51,20 @@ const SETTINGS = {
 };
 
 /** Theme catalog — viewer preference (localStorage), NOT document state.
- * Each id matches a `:root[data-theme="…"]` block in app.css. */
+ * Each id matches a `:root[data-theme="…"]` block in app.css. (14.11: five
+ * new moods appended — sepia paper light, high-contrast slate dark, a
+ * Nord-inspired cool dark, a gruvbox-inspired warm dark, and a saturated
+ * "aurora" dark — each a full token override, see app.css for the palette.) */
 export const THEMES = [
   { id: "graphite", title: "Graphite (dark)" },
   { id: "light", title: "Light" },
   { id: "black", title: "Pure Black" },
   { id: "warm", title: "Warm Gray (dark)" },
+  { id: "sepia", title: "Sepia" },
+  { id: "slate", title: "Slate" },
+  { id: "nord", title: "Nord" },
+  { id: "gruvbox", title: "Gruvbox" },
+  { id: "aurora", title: "Aurora" },
 ];
 
 /**

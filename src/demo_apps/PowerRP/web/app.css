@@ -233,6 +233,172 @@
   --a-hover-bg: rgba(255, 240, 220, 0.1);
 }
 
+/* ── 14.11 MORE COLOR THEMES (user: "some VARIETY could be nice, with taste
+   of course") — five new moods, each a FULL override (like "light" above,
+   not a partial like "black"/"warm") since each mood picks its own harmonized
+   accent/guide/keyed/anchor chroma rather than inheriting Graphite's blue/
+   pink/amber.
+
+   ACCENT IDENTITY (lead review, round 2): each dark theme must be nameable
+   from ANY corner of the UI — so the tokens the eye keys on (keyframe
+   diamonds = --a-keyed, equation-pill text = the --a-eq-* chain bases,
+   selection, --a-modifier which feeds --a-eq-self/--a-code-keyword and the
+   canvas modifier points) are overridden PER THEME with a distinct family:
+   Slate = sky blue on strictly neutral mono, Nord = frost cyan + aurora
+   green (NO amber anywhere — --a-modifier re-based to Nord purple), Gruvbox
+   = mustard/orange on visibly warm olive-brown, Aurora = magenta diamonds +
+   teal selection on clearly-purple panels.
+
+   Contrast-checked (WCAG relative-luminance ratio) against both --bg and
+   --a-panel-bg for --fg, --fg-dim, and every chroma token — every theme
+   below clears 4.3:1 (--fg-dim, the smallest-text token) and clears 3.4:1
+   for the graphical/accent tokens (guide/keyed/anchor/selection/modifier),
+   checked via scratchpad_sonnetF.py. The --a-eq-* equation palette and
+   --a-code-* code palette need no per-theme entries: both CHAIN off --fg /
+   --fg-dim / --a-selection / --a-guide / --a-keyed / --a-anchor / --a-modifier
+   (see the base :root's comment above those blocks), so overriding the
+   chained tokens here is sufficient — verified by the cycle-every-theme
+   probe (tests/theme_probe.js). */
+
+/* Sepia — warm paper/ink light theme. Cream page, brown-black ink, a muted
+   umber accent instead of the cool blues elsewhere — reads like an annotated
+   printed figure, not a website. */
+:root[data-theme="sepia"] {
+  --bg: #f2e8d5;
+  --fg: #3a2e1f;
+  --fg-dim: #7a6a52;
+  --accent: #8a5a2b;
+  --border: rgba(58, 46, 31, 0.16);
+  --control-bg: #e6d9bd;
+  --a-panel-bg: #ebe0c8;
+  --a-canvas-bg: #e4d6b8;
+  --a-hover-bg: rgba(58, 46, 31, 0.08);
+  --a-selection: #8a5a2b;
+  --a-guide: #b0463f;
+  --a-keyed: #6b7d3d;
+  --a-endpoint: #6b7d3d;
+  --a-anchor: #5b6f7a;
+  --a-scrollbar: rgba(58, 46, 31, 0.22);
+  --a-scrollbar-hover: rgba(58, 46, 31, 0.38);
+  --a-split-handle: #cbb98f;
+  --a-split-handle-hover: #a3906a;
+  --a-palette-shadow: 0 12px 40px rgba(58, 46, 31, 0.22);
+}
+
+/* Slate — high-contrast dark. STRICTLY NEUTRAL monochrome surfaces (pure
+   grays, no blue cast — the surfaces' neutrality IS the identity's canvas)
+   with the entire accent system in one SKY BLUE family: selection, keyframe
+   diamonds (--a-keyed), anchors, modifier points, and therefore the whole
+   --a-eq-* pill text. Guide/danger stays red-pink (error semantics). */
+:root[data-theme="slate"] {
+  --bg: #0e0e0e;
+  --fg: #f2f2f2;
+  --fg-dim: #9e9e9e;
+  --accent: #38a8f5;
+  --border: rgba(255, 255, 255, 0.16);
+  --control-bg: #181818;
+  --a-panel-bg: #121212;
+  --a-canvas-bg: #060606;
+  --a-hover-bg: rgba(255, 255, 255, 0.14);
+  --a-selection: #38a8f5;
+  --a-guide: #ff5c7a;
+  --a-keyed: #7cc7ff;
+  --a-endpoint: #7cc7ff;
+  --a-anchor: #5e9fd4;
+  --a-modifier: #a8d8ff; /* pale sky — keeps eq `self` / code keywords in the blue family */
+  --a-scrollbar: rgba(255, 255, 255, 0.22);
+  --a-scrollbar-hover: rgba(255, 255, 255, 0.38);
+  --a-split-handle: #333333;
+  --a-split-handle-hover: #555555;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+}
+
+/* Nord — soft, cool dark (Nord-palette inspired: nordtheme.com). Bluish-gray
+   stage, frost-cyan selection, aurora-GREEN keyframe diamonds, frost-blue
+   anchors, Nord-purple modifier — NO amber anywhere (round-2 rule: amber was
+   the sameness that made the dark themes read as one; --a-modifier is
+   re-based off the PPT yellow so eq `self` / code keywords go purple). */
+:root[data-theme="nord"] {
+  --bg: #2e3440;
+  --fg: #e5e9f0;
+  --fg-dim: #9aa5b8;
+  --accent: #88c0d0;
+  --border: rgba(229, 233, 240, 0.12);
+  --control-bg: #343b48;
+  --a-panel-bg: #2a2f3a;
+  --a-canvas-bg: #242933;
+  --a-hover-bg: rgba(229, 233, 240, 0.1);
+  --a-selection: #88c0d0;
+  --a-guide: #d88aa8; /* aurora rose — brightened past Nord's stock #bf616a for --a-eq-error legibility */
+  --a-keyed: #a3be8c; /* aurora green diamonds — Nord's second hue, never gold */
+  --a-endpoint: #a3be8c;
+  --a-anchor: #81a1c1; /* frost blue */
+  --a-modifier: #b48ead; /* Nord purple — replaces the PPT-yellow base */
+  --a-scrollbar: rgba(229, 233, 240, 0.18);
+  --a-scrollbar-hover: rgba(229, 233, 240, 0.3);
+  --a-split-handle: #3b4252;
+  --a-split-handle-hover: #4c5668;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Gruvbox — warm, retro dark (gruvbox-inspired). Surfaces lifted into the
+   olive-brown #3c3836 family so the panels VISIBLY read warm-brown, not
+   gray (round-2 fix: the previous surfaces were so dark the warmth
+   vanished); cream ink, gruvbox-ORANGE selection, mustard diamonds,
+   avocado anchors, red guide — the whole gruvbox chroma set. The amber
+   --a-modifier base is kept explicitly: amber IS the gruvbox family, so
+   here (and only here among the dark themes) it is identity, not sameness. */
+:root[data-theme="gruvbox"] {
+  --bg: #3a352e;
+  --fg: #ebdbb2;
+  --fg-dim: #b0a284;
+  --accent: #d79921;
+  --border: rgba(235, 219, 178, 0.14);
+  --control-bg: #474034;
+  --a-panel-bg: #332f28;
+  --a-canvas-bg: #2a2620;
+  --a-hover-bg: rgba(235, 219, 178, 0.12);
+  --a-selection: #fe8019; /* gruvbox orange — the theme's unmistakable selection */
+  --a-guide: #fb4934;
+  --a-keyed: #fabd2f;
+  --a-endpoint: #fabd2f;
+  --a-anchor: #b8bb26;
+  --a-modifier: #ffc72c; /* the PPT-yellow base, restated: mustard family = gruvbox identity */
+  --a-scrollbar: rgba(235, 219, 178, 0.2);
+  --a-scrollbar-hover: rgba(235, 219, 178, 0.34);
+  --a-split-handle: #504945;
+  --a-split-handle-hover: #665c54;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Aurora — bold, saturated dark; the one deliberately LOUD option. Panels
+   pushed clearly PURPLE (round-2 fix: the old violet was dark enough to
+   read gray-blue), MAGENTA keyframe diamonds, TEAL selection, violet
+   anchors, gold modifier as the rare third accent. Guide/danger moves to
+   red-pink so errors never read as the magenta keyed state. */
+:root[data-theme="aurora"] {
+  --bg: #251345;
+  --fg: #ede8fa;
+  --fg-dim: #b4a6d8;
+  --accent: #a78bfa;
+  --border: rgba(237, 232, 250, 0.16);
+  --control-bg: #33205c;
+  --a-panel-bg: #1f0f3c;
+  --a-canvas-bg: #180a30;
+  --a-hover-bg: rgba(237, 232, 250, 0.12);
+  --a-selection: #64e8d2; /* teal */
+  --a-guide: #ff4d6d; /* red-pink danger — distinct from the magenta diamonds */
+  --a-keyed: #ff6ec7; /* magenta diamonds — the loud identity mark */
+  --a-endpoint: #ff6ec7;
+  --a-anchor: #a78bfa; /* violet */
+  --a-modifier: #ffd166; /* gold — rare third accent (modifier points, eq `self`) */
+  --a-scrollbar: rgba(237, 232, 250, 0.22);
+  --a-scrollbar-hover: rgba(237, 232, 250, 0.36);
+  --a-split-handle: #3a2766;
+  --a-split-handle-hover: #4f3a85;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
 html,
 body,
 #app {
