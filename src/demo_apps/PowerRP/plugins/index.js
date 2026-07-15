@@ -21,8 +21,9 @@ import { donutPlugin } from "./donut.js";
 import { groupPlugin } from "./group.js";
 import { codeblockPlugin } from "./codeblock.js";
 import { anchorPointPlugin } from "./anchor_point.js";
+import { pdfPagePlugin } from "./pdf_page.js";
 
-export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin];
+export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

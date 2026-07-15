@@ -17,6 +17,12 @@ const BACKEND = process.env.BACKEND_URL || "http://localhost:3638";
 export default defineConfig({
   root,
   plugins: [svelte()],
+  // pdfjs-dist is only ever reached through pdf_page_raster's LAZY
+  // `await import(...)` (a bare-node-safety requirement), so vite would
+  // otherwise discover it mid-session on first serve, re-optimize deps, and
+  // force a full page reload — which aborts any puppeteer probe mid-evaluate.
+  // Pre-bundling it at server start makes boot deterministic.
+  optimizeDeps: { include: ["pdfjs-dist"] },
   server: {
     port: 3637,
     host: true,

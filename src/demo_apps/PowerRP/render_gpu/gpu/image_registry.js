@@ -110,6 +110,54 @@ export function ensureImage(src) {
 }
 
 /**
+ * Command. Reserves `ref`'s registry slot in the "loading" state, SYNCHRONOUSLY,
+ * with no fetch attempt — the seam a non-fetchable raster SOURCE uses before
+ * it starts its OWN async work (render_gpu/gpu/pdf_page_raster.js: a PDF page
+ * rasterized via pdfjs-dist, keyed by a synthetic pdfPageRef(...) string that
+ * is not a real fetchable URI). WHY this must run BEFORE any `await`: the
+ * compositor's `_imageSource(ref)` fallback calls `getImage(ref)` (null while
+ * loading) then `ensureImage(ref)` (gpu/compositor.js `_imageSource`) — and
+ * `ensureImage` only skips its OWN fetch() when `registry.has(ref)` is
+ * already true. Without reserving the slot first, a compositor frame that
+ * runs between "rasterization started" and "registerRasterizedBitmap
+ * called" would see no entry, call ensureImage(ref), and `fetch()` the fake
+ * ref (guaranteed to fail, permanently latching the key to "error" before
+ * the real bitmap ever arrives — reproduced and fixed during this task's
+ * verification). A no-op if the slot is already reserved/ready/errored
+ * (idempotent, like ensureImage itself).
+ *
+ * @example // reserveImageSlot("pdfpage:x:1:1"); imageStatus("pdfpage:x:1:1") // "loading"
+ */
+export function reserveImageSlot(ref) {
+  if (typeof ref !== "string" || ref.length === 0)
+    throw new Error(`reserveImageSlot: ref must be a non-empty string, got ${JSON.stringify(ref)}`);
+  if (registry.has(ref)) return;
+  registry.set(ref, { status: "loading", bitmap: null, error: null, promise: null });
+}
+
+/**
+ * Command. Fills an ALREADY-DECODED bitmap into `ref`'s slot directly,
+ * skipping the fetch+createImageBitmap decode path (the reserveImageSlot
+ * twin — see it for the full "why a non-fetchable ref needs this pair"
+ * reasoning). Overwrites a "loading" placeholder (the expected prior state
+ * when reserveImageSlot was called first) but is a no-op if the slot is
+ * somehow ALREADY "ready" (content-addressed key: refs here are (src, page,
+ * scale) — the same ref always means the same pixels, so a second fill would
+ * be redundant, not a correction). Wakes onImageLoad subscribers exactly like
+ * a normal ensureImage() decode landing, so the compositor's reactive
+ * repaint-on-load path needs no special case for registry-injected bitmaps.
+ *
+ * @example // reserveImageSlot("pdfpage:x:1:1"); registerRasterizedBitmap("pdfpage:x:1:1", bitmap); getImage("pdfpage:x:1:1") → bitmap
+ */
+export function registerRasterizedBitmap(ref, bitmap) {
+  if (typeof ref !== "string" || ref.length === 0)
+    throw new Error(`registerRasterizedBitmap: ref must be a non-empty string, got ${JSON.stringify(ref)}`);
+  if (registry.get(ref)?.status === "ready") return; // already filled — the same ref always means the same pixels
+  registry.set(ref, { status: "ready", bitmap, error: null, promise: Promise.resolve(bitmap) });
+  notify(ref);
+}
+
+/**
  * Command. Subscribes to decode-resolution events (a src became ready or
  * errored). The editor's paint loop is reactive, so a bitmap that arrives
  * after the frame that requested it needs this to trigger a repaint. Returns
