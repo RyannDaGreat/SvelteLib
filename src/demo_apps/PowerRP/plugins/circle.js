@@ -7,6 +7,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import * as T from "../core/transform.js";
+import { ellipse } from "../render_gpu/ir.js";
 
 export const circlePlugin = {
   type: "circle",
@@ -38,6 +39,16 @@ export const circlePlugin = {
       ctx.lineWidth = s.strokeWidth;
       ctx.stroke();
     }
+  },
+  /** Pure function. paint()'s IR twin: state → display-list commands (local space). */
+  emit(s) {
+    return [ellipse({
+      cx: s.w / 2, cy: s.h / 2, rx: s.w / 2, ry: s.h / 2,
+      fill: s.fill,
+      stroke: (s.strokeWidth ?? 0) > 0 ? s.stroke : null,
+      strokeWidth: s.strokeWidth ?? 0,
+      opacity: s.opacity ?? 1,
+    })];
   },
   hitTest(s, lx, ly) {
     const nx = (lx - s.w / 2) / (s.w / 2), ny = (ly - s.h / 2) / (s.h / 2);

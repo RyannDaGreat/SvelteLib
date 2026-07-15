@@ -34,6 +34,10 @@ export const cameraPlugin = {
     // with the selection outline and "looked chaotic as fuck"). Selection uses
     // the standard outline; discovery is border hit-testing + the item picker.
   },
+  /** Pure function. paint()'s IR twin — nothing, for the same reason. */
+  emit() {
+    return [];
+  },
   // Hit only near the border, not the interior — the camera frames content;
   // clicks inside should select the content, not the camera. `tol` is the
   // editor's world-unit grab tolerance (constant screen-space feel).

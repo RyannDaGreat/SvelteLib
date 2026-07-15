@@ -23,6 +23,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { fitRectView } from "../render/compositor.js";
+import { magnifyBackdrop } from "../render_gpu/ir.js";
 
 /**
  * Pure function. Normalizes state to the bbox model, accepting legacy
@@ -125,6 +126,17 @@ export const magnifierPlugin = {
       ctx.lineWidth = s.rimWidth;
       ctx.stroke();
     }
+  },
+  /** Pure function. paint()'s IR twin: one lens op (the backend samples/re-renders its own backdrop). */
+  emit(s) {
+    const { cx, cy, r } = lensGeom(s);
+    return [magnifyBackdrop({
+      cx, cy, r,
+      magnification: s.magnification,
+      rimColor: (s.rimWidth ?? 0) > 0 ? s.rimColor : null, // rimWidth 0 = NO rim (manifest spec)
+      rimWidth: s.rimWidth ?? 0,
+      opacity: s.opacity ?? 1,
+    })];
   },
   hitTest(s, lx, ly) {
     const { cx, cy, r } = lensGeom(s);

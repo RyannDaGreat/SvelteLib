@@ -1,6 +1,7 @@
 /** Text widget. V1: single line, no wrap; bbox w/h stored (not measured). */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { text } from "../render_gpu/ir.js";
 
 export const textPlugin = {
   type: "text",
@@ -26,6 +27,10 @@ export const textPlugin = {
     ctx.fillStyle = s.color;
     ctx.textBaseline = "top";
     ctx.fillText(s.text, 0, 0);
+  },
+  /** Pure function. paint()'s IR twin (top-left origin, like textBaseline="top"). */
+  emit(s) {
+    return [text({ text: s.text, x: 0, y: 0, size: s.size, color: s.color, bold: s.bold ?? false, opacity: s.opacity ?? 1 })];
   },
   anchors: standardBBoxAnchors,
   commands: [

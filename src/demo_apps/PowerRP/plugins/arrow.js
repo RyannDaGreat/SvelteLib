@@ -11,6 +11,13 @@
  * coordinates stay put (they're anchored), free ones translate.
  */
 
+import { polyline, polygon } from "../render_gpu/ir.js";
+
+/** Arrowhead half-angle (rad) — shared by paint and emit so raster and IR geometry can never drift. */
+const ARROWHEAD_FLARE = 0.44;
+/** Fraction of headSize the shaft stops short of the tip (so it doesn't poke through the head). */
+const SHAFT_PULLBACK = 0.6;
+
 export const arrowPlugin = {
   type: "arrow",
   title: "Arrow",
@@ -42,18 +49,40 @@ export const arrowPlugin = {
     ctx.lineCap = "round";
     const angle = Math.atan2(to.y - from.y, to.x - from.x);
     const head = s.headSize;
-    // Shorten the shaft so it doesn't poke through the head tip.
-    const shaftEnd = { x: to.x - Math.cos(angle) * head * 0.6, y: to.y - Math.sin(angle) * head * 0.6 };
+    const shaftEnd = { x: to.x - Math.cos(angle) * head * SHAFT_PULLBACK, y: to.y - Math.sin(angle) * head * SHAFT_PULLBACK };
     ctx.beginPath();
     ctx.moveTo(from.x, from.y);
     ctx.lineTo(shaftEnd.x, shaftEnd.y);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(to.x, to.y);
-    ctx.lineTo(to.x - Math.cos(angle - 0.44) * head, to.y - Math.sin(angle - 0.44) * head);
-    ctx.lineTo(to.x - Math.cos(angle + 0.44) * head, to.y - Math.sin(angle + 0.44) * head);
+    ctx.lineTo(to.x - Math.cos(angle - ARROWHEAD_FLARE) * head, to.y - Math.sin(angle - ARROWHEAD_FLARE) * head);
+    ctx.lineTo(to.x - Math.cos(angle + ARROWHEAD_FLARE) * head, to.y - Math.sin(angle + ARROWHEAD_FLARE) * head);
     ctx.closePath();
     ctx.fill();
+  },
+  /**
+   * Pure function. paint()'s IR twin. Endpoints are evaluated numbers, and
+   * the arrow's world transform is IDENTITY (no x/y/rotation/scale state),
+   * so these local commands are world coordinates as well.
+   */
+  emit(s) {
+    const { from, to } = s;
+    const angle = Math.atan2(to.y - from.y, to.x - from.x);
+    const head = s.headSize;
+    const opacity = s.opacity ?? 1;
+    const shaftEnd = { x: to.x - Math.cos(angle) * head * SHAFT_PULLBACK, y: to.y - Math.sin(angle) * head * SHAFT_PULLBACK };
+    return [
+      polyline({ points: [[from.x, from.y], [shaftEnd.x, shaftEnd.y]], width: s.width, color: s.color, opacity }),
+      polygon({
+        points: [
+          [to.x, to.y],
+          [to.x - Math.cos(angle - ARROWHEAD_FLARE) * head, to.y - Math.sin(angle - ARROWHEAD_FLARE) * head],
+          [to.x - Math.cos(angle + ARROWHEAD_FLARE) * head, to.y - Math.sin(angle + ARROWHEAD_FLARE) * head],
+        ],
+        fill: s.color, opacity,
+      }),
+    ];
   },
   hitTestWorld(node, wx, wy) {
     const { from, to } = node.state;

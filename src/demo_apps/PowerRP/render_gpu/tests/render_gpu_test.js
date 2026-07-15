@@ -11,7 +11,12 @@ import {
   parseColor, rgbaToCss, rect, ellipse, polyline, polygon, text, image, video,
   pushTransform, popTransform, blurBackdrop, magnifyBackdrop, flattenIR,
 } from "../ir.js";
-import { rectIR, circleIR, arrowIR, textIR, videoIR, blurIR, magnifierIR, sceneIR } from "../ports.js";
+import { videoIR, sceneIR } from "../ports.js";
+import { rectPlugin } from "../../plugins/rect.js";
+import { circlePlugin } from "../../plugins/circle.js";
+import { arrowPlugin } from "../../plugins/arrow.js";
+import { blurPlugin } from "../../plugins/blur.js";
+import { magnifierPlugin } from "../../plugins/magnifier.js";
 import { irToSVG, commandToSVG, svgTransform, xmlEscape } from "../svg_backend.js";
 import { benchScene, hash01 } from "../bench/scene.js";
 import { deriveRenderTree } from "../../core/derive.js";
@@ -93,19 +98,19 @@ test("flattenIR: loud on unbalanced stack", () => {
 
 // ── ports ───────────────────────────────────────────────────────────────────
 test("rectIR/circleIR mirror plugin geometry", () => {
-  const r = rectIR({ w: 240, h: 140, fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 8, opacity: 0.5 })[0];
+  const r = rectPlugin.emit({ w: 240, h: 140, fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 8, opacity: 0.5 })[0];
   assert.equal(r.op, "rect");
   assert.equal(r.opacity, 0.5);
   assert.ok(r.stroke);
-  const zeroStroke = rectIR({ w: 1, h: 1, fill: "#fff", stroke: "#000", strokeWidth: 0 })[0];
+  const zeroStroke = rectPlugin.emit({ w: 1, h: 1, fill: "#fff", stroke: "#000", strokeWidth: 0 })[0];
   assert.equal(zeroStroke.stroke, null); // strokeWidth 0 ⇒ no stroke emitted
-  const c = circleIR({ w: 140, h: 100, fill: "#f7768e", strokeWidth: 0 })[0];
+  const c = circlePlugin.emit({ w: 140, h: 100, fill: "#f7768e", strokeWidth: 0 })[0];
   assert.equal(c.op, "ellipse");
   assert.equal(c.rx, 70);
   assert.equal(c.ry, 50);
 });
 test("arrowIR: shaft pullback + head triangle", () => {
-  const cmds = arrowIR({ from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, color: "#000", width: 3, headSize: 10 });
+  const cmds = arrowPlugin.emit({ from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, color: "#000", width: 3, headSize: 10 });
   assert.deepEqual(cmds.map((c) => c.op), ["polyline", "polygon"]);
   approxArr(cmds[0].points[1], [100 - 10 * 0.6, 0]); // shaft stops 0.6*head short
   assert.equal(cmds[1].points.length, 3);
@@ -121,14 +126,19 @@ test("arrowIR: dangling reference falls back loudly upstream, still draws", () =
   const { state: evaluated, errors } = evaluateState(state, registry);
   assert.ok(errors.size > 0); // the unknown reference is REPORTED
   assert.equal(typeof evaluated.items.c.to.x, "number"); // fallback, not NaN
-  assert.deepEqual(arrowIR(evaluated.items.c).map((c) => c.op), ["polyline", "polygon"]);
+  assert.deepEqual(arrowPlugin.emit(evaluated.items.c).map((c) => c.op), ["polyline", "polygon"]);
+});
+test("videoIR: the future video plugin's emit body", () => {
+  const v = videoIR({ ref: "clip1", w: 320, h: 180 })[0];
+  assert.equal(v.op, "video");
+  assert.equal(v.ref, "clip1");
 });
 test("blurIR: zero blur emits nothing", () => {
-  assert.deepEqual(blurIR({ blur: 0 }), []);
-  assert.equal(blurIR({ blur: 6 })[0].radius, 6);
+  assert.deepEqual(blurPlugin.emit({ blur: 0 }), []);
+  assert.equal(blurPlugin.emit({ blur: 6 })[0].radius, 6);
 });
 test("magnifierIR: lens geometry from bbox", () => {
-  const m = magnifierIR({ x: 0, y: 0, w: 160, h: 160, magnification: 2.5, rimColor: "#1a1a2e", rimWidth: 4 })[0];
+  const m = magnifierPlugin.emit({ x: 0, y: 0, w: 160, h: 160, magnification: 2.5, rimColor: "#1a1a2e", rimWidth: 4 })[0];
   assert.equal(m.cx, 80);
   assert.equal(m.r, 80);
   assert.equal(m.magnification, 2.5);
@@ -147,19 +157,19 @@ test("sceneIR: real registry render tree → z-ordered wrapped IR", () => {
   // The real pipeline: fold → EVALUATE (equations become numbers) → derive → emit.
   const nodes = deriveRenderTree(evaluateState(state, registry).state, registry);
   const ir = sceneIR(nodes);
-  // circle (z0) first, rect (z1), then the arrow's two world-space commands
+  // circle (z0) first, rect (z1), then the arrow (identity world — uniform wrap)
   assert.deepEqual(ir.map((c) => c.op),
-    ["pushTransform", "ellipse", "popTransform", "pushTransform", "rect", "popTransform", "polyline", "polygon"]);
+    ["pushTransform", "ellipse", "popTransform", "pushTransform", "rect", "popTransform", "pushTransform", "polyline", "polygon", "popTransform"]);
   assert.equal(ir[3].x, 10); // rect's world transform carries the item position
   const flat = flattenIR(ir);
   assert.equal(flat.length, 4);
   // the arrow's head lands on the rect center (60, 45)
   approxArr(flat[3].cmd.points[0], [60, 45]);
 });
-test("sceneIR: loud on unknown widget type", () => {
+test("sceneIR: loud on a plugin without emit()", () => {
   assert.throws(
-    () => sceneIR([{ type: "hologram", state: {}, world: { x: 0, y: 0, rotation: 0, scale: 1 } }]),
-    /no IR emitter/,
+    () => sceneIR([{ type: "hologram", plugin: {}, state: {}, world: { x: 0, y: 0, rotation: 0, scale: 1 } }]),
+    /no emit/,
   );
 });
 

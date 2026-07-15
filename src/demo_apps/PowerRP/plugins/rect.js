@@ -3,6 +3,7 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import * as T from "../core/transform.js";
+import { rect } from "../render_gpu/ir.js";
 
 export const rectPlugin = {
   type: "rect",
@@ -36,6 +37,17 @@ export const rectPlugin = {
       ctx.lineWidth = s.strokeWidth;
       ctx.stroke();
     }
+  },
+  /** Pure function. paint()'s IR twin: state → display-list commands (local space). */
+  emit(s) {
+    return [rect({
+      x: 0, y: 0, w: s.w, h: s.h,
+      cornerRadius: s.cornerRadius ?? 0,
+      fill: s.fill,
+      stroke: (s.strokeWidth ?? 0) > 0 ? s.stroke : null,
+      strokeWidth: s.strokeWidth ?? 0,
+      opacity: s.opacity ?? 1,
+    })];
   },
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {

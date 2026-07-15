@@ -1,101 +1,32 @@
 /**
- * Widget ports: plugin state → IR commands.
+ * sceneIR — render tree → flat display-list IR via each plugin's emit().
  *
- * Each function mirrors the corresponding plugin's paint() but EMITS the
- * display list instead of touching a ctx. In the full migration these bodies
- * replace plugin.paint (plugins gain `emit(state, env) → commands`); they live
- * here for the prototype so the live canvas2D pipeline stays untouched.
+ * emit(state) is paint(ctx, state)'s IR twin: same geometry, no ctx — the
+ * device-independent display list that the WebGPU and vector backends
+ * consume (manifest "RENDER MODES DECISION"). The prototype's port bodies
+ * moved INTO the plugins (plugins/*.js emit()); this module keeps only the
+ * scene walker and the future video plugin's emit body.
  *
- * Geometry conventions are identical to the plugins: commands are in the
- * widget's LOCAL space, and the caller wraps them in the node's world
- * transform (see sceneIR). The arrow is the exception — like arrowPlugin it
- * has no transform of its own, so its IR is world-space directly.
+ * Plugins emit LOCAL-space commands; sceneIR wraps every node's commands in
+ * its world transform. Widgets with no transform state (arrow, blur) get an
+ * IDENTITY world from T.fromState, so the wrap is uniform — no world-space
+ * special cases.
+ *
+ * Callers pass a render tree derived from an EVALUATED state
+ * (core/expressions.evaluateState) — equations are already numbers — exactly
+ * like render/compositor.js.
  *
  * DOM-free pure JS (bare-node testable).
  */
 
-import { rect, ellipse, polyline, polygon, text, video, pushTransform, popTransform, blurBackdrop, magnifyBackdrop } from "./ir.js";
-import { lensGeom } from "../plugins/magnifier.js";
-
-/** Arrowhead half-angle — matches arrowPlugin's hardcoded 0.44 rad flare. */
-const ARROWHEAD_FLARE = 0.44;
-/** Fraction of headSize the shaft stops short of the tip (arrowPlugin's 0.6). */
-const SHAFT_PULLBACK = 0.6;
-
-/**
- * Pure function. Rect widget state → IR (local space).
- *
- * @example rectIR({w: 10, h: 5, fill: "#f00", stroke: "#000", strokeWidth: 2, cornerRadius: 1})[0].op // "rect"
- * @example rectIR({w: 10, h: 5, fill: "#f00", strokeWidth: 0}).length // 1
- */
-export function rectIR(s) {
-  return [rect({
-    x: 0, y: 0, w: s.w, h: s.h,
-    cornerRadius: s.cornerRadius ?? 0,
-    fill: s.fill,
-    stroke: (s.strokeWidth ?? 0) > 0 ? s.stroke : null,
-    strokeWidth: s.strokeWidth ?? 0,
-    opacity: s.opacity ?? 1,
-  })];
-}
-
-/**
- * Pure function. Circle/ellipse widget state → IR (local space).
- *
- * @example circleIR({w: 10, h: 6, fill: "#f00", strokeWidth: 0})[0].rx // 5
- */
-export function circleIR(s) {
-  return [ellipse({
-    cx: s.w / 2, cy: s.h / 2, rx: s.w / 2, ry: s.h / 2,
-    fill: s.fill,
-    stroke: (s.strokeWidth ?? 0) > 0 ? s.stroke : null,
-    strokeWidth: s.strokeWidth ?? 0,
-    opacity: s.opacity ?? 1,
-  })];
-}
-
-/**
- * Pure function. Arrow widget state → IR (WORLD space — arrows have no
- * transform, matching arrowPlugin). Endpoints are plain numbers here:
- * equation endpoints were already resolved by the derivation stage's
- * expression pass (core/expressions.evaluateState) before the render tree
- * existed — THE UNIFICATION deleted the old {item, anchor} binding objects.
- * Shaft = capsule polyline stopped short of the tip; head = filled triangle.
- *
- * @example arrowIR({from: {x: 0, y: 0}, to: {x: 10, y: 0}, color: "#000", width: 2, headSize: 4}).map((c) => c.op) // ["polyline", "polygon"]
- */
-export function arrowIR(s) {
-  const { from, to } = s;
-  const angle = Math.atan2(to.y - from.y, to.x - from.x);
-  const head = s.headSize;
-  const opacity = s.opacity ?? 1;
-  const shaftEnd = { x: to.x - Math.cos(angle) * head * SHAFT_PULLBACK, y: to.y - Math.sin(angle) * head * SHAFT_PULLBACK };
-  return [
-    polyline({ points: [[from.x, from.y], [shaftEnd.x, shaftEnd.y]], width: s.width, color: s.color, opacity }),
-    polygon({
-      points: [
-        [to.x, to.y],
-        [to.x - Math.cos(angle - ARROWHEAD_FLARE) * head, to.y - Math.sin(angle - ARROWHEAD_FLARE) * head],
-        [to.x - Math.cos(angle + ARROWHEAD_FLARE) * head, to.y - Math.sin(angle + ARROWHEAD_FLARE) * head],
-      ],
-      fill: s.color, opacity,
-    }),
-  ];
-}
-
-/**
- * Pure function. Text widget state → IR (local space, top-left origin like
- * the plugin's textBaseline="top").
- *
- * @example textIR({text: "Hi", size: 36, color: "#000", bold: true})[0].bold // true
- */
-export function textIR(s) {
-  return [text({ text: s.text, x: 0, y: 0, size: s.size, color: s.color, bold: s.bold ?? false, opacity: s.opacity ?? 1 })];
-}
+import { video, pushTransform, popTransform } from "./ir.js";
 
 /**
  * Pure function. Video widget state → IR (local space). `ref` names an entry
  * in the backend's media registry (a <video> element for raster backends).
+ * This is the FUTURE video-player plugin's emit body — proven against the
+ * GPU external-texture pipeline by bench/video.html; it lives here until
+ * that plugin exists.
  *
  * @example videoIR({ref: "clip1", w: 320, h: 180})[0].op // "video"
  */
@@ -104,71 +35,25 @@ export function videoIR(s) {
 }
 
 /**
- * Pure function. Blur-layer widget state → IR. No geometry — it blurs the
- * whole composite below its z (matching blurPlugin).
- *
- * @example blurIR({blur: 6, opacity: 0.8})[0] // {op: "blurBackdrop", radius: 6, opacity: 0.8}
- * @example blurIR({blur: 0}) // []
- */
-export function blurIR(s) {
-  if ((s.blur ?? 0) <= 0) return [];
-  return [blurBackdrop({ radius: s.blur, opacity: s.opacity ?? 1 })];
-}
-
-/**
- * Pure function. Magnifier widget state → IR (local space; lens circle from
- * lensGeom, i.e. radius min(w,h)/2 centered in the bbox — same as the plugin).
- *
- * @example magnifierIR({x: 0, y: 0, w: 100, h: 100, magnification: 2, rimColor: "#000", rimWidth: 4})[0].r // 50
- */
-export function magnifierIR(s) {
-  const { cx, cy, r } = lensGeom(s);
-  return [magnifyBackdrop({
-    cx, cy, r,
-    magnification: s.magnification,
-    rimColor: (s.rimWidth ?? 0) > 0 ? s.rimColor : null,
-    rimWidth: s.rimWidth ?? 0,
-    opacity: s.opacity ?? 1,
-  })];
-}
-
-/** emitter per widget type — sceneIR's dispatch table. */
-export const EMITTERS = {
-  rect: rectIR,
-  circle: circleIR,
-  text: textIR,
-  video: videoIR,
-  blur: blurIR,
-  magnifier: magnifierIR,
-  // arrow is special-cased in sceneIR (world-space, no transform wrap)
-};
-
-/**
- * Pure function. A full render tree (core/derive.js nodes, already z-sorted)
- * → one flat IR command list: each node's local IR wrapped in its world
- * transform. This is the display-list analogue of the canvas compositor's
- * per-node save/transform/paint/restore loop.
+ * Pure function. A full render tree (core/derive.js nodes of an evaluated
+ * state, already z-sorted) → one flat IR command list: each node's emitted
+ * commands wrapped in its world transform. The display-list analogue of the
+ * canvas compositor's per-node save/transform/paint/restore loop.
  *
  * Args:
- *   nodes (object[]): deriveRenderTree output (of an EVALUATED state — run
- *     core/expressions.evaluateState first, exactly like render/compositor.js)
+ *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
  *
- * @example // sceneIR(deriveRenderTree(evaluateState(state, registry).state, registry)) → [pushTransform, rect, popTransform, polyline, polygon, ...]
+ * @example // sceneIR(deriveRenderTree(evaluateState(state, registry).state, registry)) → [pushTransform, rect, popTransform, ...]
  * @example sceneIR([]) // []
  */
 export function sceneIR(nodes) {
   const out = [];
   for (const node of nodes) {
-    if (node.type === "arrow") {
-      out.push(...arrowIR(node.state)); // world-space, no wrap
-      continue;
-    }
-    const emit = EMITTERS[node.type];
-    if (!emit) throw new Error(`sceneIR: no IR emitter for widget type "${node.type}"`);
-    const cmds = emit(node.state);
+    if (!node.plugin?.emit) throw new Error(`sceneIR: plugin "${node.type}" has no emit()`);
+    const cmds = node.plugin.emit(node.state);
     if (cmds.length === 0) continue;
     out.push(pushTransform(node.world), ...cmds, popTransform());
   }
