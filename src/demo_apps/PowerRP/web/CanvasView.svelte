@@ -12,7 +12,7 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
-  import { pickNode, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld } from "../core/derive.js";
+  import { pickNode, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { worldViewRect, canSkipNode } from "../core/view.js";
@@ -28,7 +28,7 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, creationRect, creationEndpoint } from "./canvas/dragKinds.js";
+  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, groupResizeState, creationRect, creationEndpoint } from "./canvas/dragKinds.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
   import TextEditOverlay from "./TextEditOverlay.svelte"; // WYSIWYG in-place rich-text editor (Round 13.4)
@@ -366,6 +366,19 @@
   function worldPoint(e) {
     const s = screenPoint(e);
     return actions.screenToWorld(s.x, s.y);
+  }
+
+  /**
+   * The snap CANDIDATE nodes for the current single-item drag: every node
+   * EXCEPT the dragged item's own group relation (manifest 15.7 SNAP EXCLUSION —
+   * a member never snaps to its group's outline/anchors, a group never snaps to
+   * its own members' features, both directions). Generalizes the old
+   * `n.itemId !== drag.itemId` self-exclusion via core snapExclusionSet (self +
+   * own group + own members); snapping to OTHER groups/items is unchanged.
+   */
+  function snapCandidates(nodes) {
+    const excluded = snapExclusionSet(drag.itemId, groupMembership(nodes), nodes);
+    return nodes.filter((n) => !excluded.has(n.itemId));
   }
 
   // ── Asset / OS-file drop (drop-handler region — manifest Round 12C) ─────────
@@ -870,7 +883,7 @@
         const shiftedState = { ...me.state, x: drag.startX + dx, y: drag.startY + dy };
         const shifted = { ...me, world: worldTransform(shiftedState), state: shiftedState };
         const probes = nodeFeatures(shifted).filter((f) => f.kind === "point");
-        const features = nodes.filter((n) => n.itemId !== drag.itemId).flatMap(nodeFeatures);
+        const features = snapCandidates(nodes).flatMap(nodeFeatures);
         const tol = SNAP_PX / viewport.zoom;
         const snap = solveSnap(probes, features, tol);
         dx += snap.dx;
@@ -927,6 +940,11 @@
       kind: "resize",
       itemId: node.itemId,
       handleId,
+      // A GROUP resizes by driving its own SIMILARITY `scale` (which members
+      // inherit through applyGroupParenting), never w/h — so it needs its start
+      // scale. Members follow with zero writes (manifest 15.7 GROUP RESIZE).
+      group: node.type === "group",
+      startScale: node.state.scale ?? 1,
       startState: { x: node.state.x, y: node.state.y, w: node.state.w, h: node.state.h },
       world: node.world,
       // Which edges this handle moves — used by edge/size snapping. World-space
@@ -961,6 +979,14 @@
       drag.basePointer = local;
       drag.mods = mods;
     }
+    // GROUP RESIZE (manifest 15.7): a group drives its own uniform `scale`
+    // (members inherit it through applyGroupParenting) + x/y compensation to pin
+    // the grabbed handle's opposite corner — NOT w/h. It is UNIFORM-only (the
+    // similarity model has no per-axis group scale — it would shear members), so
+    // Shift is already implied; Cmd still scales about the group center. Members
+    // follow with ZERO per-member writes (pure/keyframable). Returns early — the
+    // group has no rotated-pivot w/h path (groupResizeState handles rotation).
+    if (drag.group) { groupResizeDrag(local, mods); return; }
     const edges = { west: drag.west, east: drag.east, north: drag.north, south: drag.south };
     const box = resizedBox(
       drag.baseBox,
@@ -1044,6 +1070,40 @@
       [["items", drag.itemId, "y"], y],
       [["items", drag.itemId, "w"], ww],
       [["items", drag.itemId, "h"], hh],
+    ]);
+  }
+
+  /**
+   * GROUP resize per-move (manifest 15.7). Maps the handle drag into the
+   * group's own uniform `scale` + x/y (groupResizeState — pure, rotation-aware),
+   * so every member scales+moves about the grabbed handle's FIXED opposite
+   * corner through the EXISTING parenting composition, with zero per-member
+   * writes. w/h are left untouched (the hull is scale·w, so `scale` grows it);
+   * the whole gesture commits as ONE undo unit via the standard preview→
+   * commitPreview path. The uniform diagonal guide (the line the grabbed corner
+   * rides) is shown, matching single-item uniform resize.
+   */
+  function groupResizeDrag(local, mods) {
+    const edges = { west: drag.west, east: drag.east, north: drag.north, south: drag.south };
+    const dLocal = { x: local.x - drag.basePointer.x, y: local.y - drag.basePointer.y };
+    // Track lastBox so a modifier rebase (Cmd toggle) measures from the box on
+    // screen — same bookkeeping the single-item path keeps (uniform forced).
+    drag.lastBox = resizedBox(drag.baseBox, dLocal, edges, { ...mods, uniform: true });
+    const gs = groupResizeState(
+      { x: drag.startState.x, y: drag.startState.y, w: drag.startState.w, h: drag.startState.h, rotation: drag.world.rotation, scale: drag.startScale },
+      drag.world, edges, mods, dLocal,
+    );
+    // Uniform diagonal guide: the infinite line the grabbed corner rides through
+    // the fixed anchor (or the center when Cmd-symmetric) — corner grabs only.
+    const a = resizeAnchors(drag.baseBox, edges, { ...mods, uniform: true });
+    guides = (a.xActive && a.yActive && (a.gx !== a.fx || a.gy !== a.fy))
+      ? [(() => { const fW = T.apply(drag.world, a.fx, a.fy), gW = T.apply(drag.world, a.gx, a.gy); return { kind: "line", x: fW.x, y: fW.y, dx: gW.x - fW.x, dy: gW.y - fW.y }; })()]
+      : [];
+    sizeIndicators = [];
+    app.setPreview([
+      [["items", drag.itemId, "scale"], gs.scale],
+      [["items", drag.itemId, "x"], gs.x],
+      [["items", drag.itemId, "y"], gs.y],
     ]);
   }
 
@@ -1132,8 +1192,15 @@
    */
   function snapMultiBox(box, edges) {
     const tol = SNAP_PX / viewport.zoom;
-    const ids = new Set(app.selectedIds());
-    const others = app.nodes().filter((n) => !ids.has(n.itemId));
+    const nodes = app.nodes();
+    // Exclude every selected id AND (for any selected group) its members — they
+    // move with the collective box, so their features are self-references
+    // (manifest 15.7 SNAP EXCLUSION, extended to the multi-resize collective box).
+    const membership = groupMembership(nodes);
+    const ids = new Set();
+    for (const sid of app.selectedIds())
+      for (const ex of snapExclusionSet(sid, membership, nodes)) ids.add(ex);
+    const others = nodes.filter((n) => !ids.has(n.itemId));
     const probes = [];
     if (edges.east) probes.push({ axis: "x", pos: box[2] });
     if (edges.west) probes.push({ axis: "x", pos: box[0] });
@@ -1168,7 +1235,7 @@
   function applyResizeSnap({ x, y, ww, hh }) {
     const scale = drag.world.scale;
     const tol = SNAP_PX / viewport.zoom;
-    const others = app.nodes().filter((n) => n.itemId !== drag.itemId);
+    const others = snapCandidates(app.nodes());
     const guides = [], indicators = [];
     let engaged = false;
 
@@ -1262,7 +1329,10 @@
     hoverAnchor = null;
     dynamicAnchor = null;
     if (app.anchorsVisible) {
-      const nodes = app.nodes().filter((n) => n.itemId !== drag.itemId);
+      // Anchors ARE point-kind features, so the SAME group exclusion applies
+      // (manifest 15.7): an arrow endpoint that belongs to a group won't bind to
+      // its own group's anchors, and a grouped target's members are excluded.
+      const nodes = snapCandidates(app.nodes());
       let best = null;
       for (const n of nodes)
         for (const a of nodeAnchors(n)) {

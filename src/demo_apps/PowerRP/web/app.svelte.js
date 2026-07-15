@@ -9,7 +9,7 @@
 import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
-  withSlideToggled, withNormalizedZ, bisectedZ, serialize, deserialize,
+  withSlideToggled, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
   repairedDocument, printRepairReports, itemFallbackName,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
@@ -1345,18 +1345,62 @@ export class PowerRPApp {
     return this.nodes().map((n) => [n.itemId, n.state.z ?? 0]);
   }
 
+  /**
+   * Query. The Z-ORDER BLOCK for the current selection (manifest 15.7: "when i
+   * move a group to front or back it should move all elements in it too"): a
+   * selected GROUP travels with EVERY member (and any members that are
+   * themselves groups pull in their own members transitively) so the whole
+   * cluster reorders as one; any other selection is just itself. The group's
+   * members list is the derived-node membership map (present-on-this-slide
+   * members only — a member absent from zPairs is simply not reassigned, per
+   * blockZToExtreme). Returns the block itemIds (selection first).
+   */
+  #zOrderBlock() {
+    if (!this.selection) return [];
+    const nodes = this.nodes();
+    const byId = new Map(nodes.map((n) => [n.itemId, n]));
+    const block = new Set();
+    const visit = (id) => {
+      if (block.has(id)) return;
+      block.add(id);
+      const n = byId.get(id);
+      if (n?.type === "group" && Array.isArray(n.state.members))
+        for (const m of n.state.members) visit(m);
+    };
+    visit(this.selection);
+    return [...block];
+  }
+
   reorderSelection(direction) {
     if (!this.selection) return;
+    const block = this.#zOrderBlock();
+    // A GROUP steps as a BLOCK (front/back of everything else); a single item
+    // bisects between its neighbors as before. "Forward/backward" on a block is
+    // still a move to the extreme — a group has no single z to bisect around.
+    if (block.length > 1) { this.#commitBlockZ(block, direction); return; }
     const z = bisectedZ(this.zPairs(), this.selection, direction);
     this.commit(withNormalizedZ(keyframed(this.doc, this.slideIndex, ["items", this.selection, "z"], z)));
   }
 
-  /** "Put on Top"/"Put on Bottom": beyond the extremes of VISIBLE items on this slide. */
+  /** "Put on Top"/"Put on Bottom": beyond the extremes of VISIBLE items on this
+   *  slide. A GROUP sends its whole block (group + members) as one (manifest 15.7). */
   sendToExtreme(direction) {
     if (!this.selection) return;
+    const block = this.#zOrderBlock();
+    if (block.length > 1) { this.#commitBlockZ(block, direction); return; }
     const zs = this.zPairs().map(([, z]) => z);
     const z = direction > 0 ? Math.max(...zs) + 1 : Math.min(...zs) - 1;
     this.commit(withNormalizedZ(keyframed(this.doc, this.slideIndex, ["items", this.selection, "z"], z)));
+  }
+
+  /** Command (one undo unit). Reassigns every block id's z to the front/back
+   *  extreme, preserving the block's internal relative order (blockZToExtreme),
+   *  then normalizes document-wide — ONE commit. */
+  #commitBlockZ(block, direction) {
+    let doc = this.doc;
+    for (const [id, z] of blockZToExtreme(this.zPairs(), block, direction))
+      doc = keyframed(doc, this.slideIndex, ["items", id, "z"], z);
+    this.commit(withNormalizedZ(doc));
   }
 
   // ── Keyframe panel operations ──────────────────────────────────────────────

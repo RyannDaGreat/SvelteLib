@@ -227,6 +227,38 @@ export function groupMembership(nodes) {
 }
 
 /**
+ * Pure function. The set of itemIds a DRAGGED item must NOT snap to (manifest
+ * 15.7 SNAP EXCLUSION: "no need to snap things inside the group to the group
+ * itself or vice versa"). Generalizes the long-standing "an item never snaps
+ * to itself" precedent (the `n.itemId !== drag.itemId` filter at every snap
+ * call site) to the whole GROUP RELATION, both directions:
+ *   - always the dragged item itself (self-snap is meaningless);
+ *   - if the dragged item is a MEMBER: its owning group (its outline/anchors
+ *     move relative to the member as the member drags — a stale, jittery
+ *     candidate);
+ *   - if the dragged item is a GROUP: every one of its members (they move
+ *     WITH the group through applyGroupParenting, so their features track the
+ *     group rigidly — snapping the group to its own moving members is
+ *     nonsensical).
+ * Snapping to OTHER groups/items is unaffected — only the dragged item's own
+ * group relation is excluded. `membership` is groupMembership(nodes) (the
+ * memberId→groupId map); `nodes` supplies a dragged group's member list.
+ *
+ * @example snapExclusionSet("a", new Map([["a", "g"]]), [{itemId: "g", type: "group", state: {members: ["a", "b"]}}]) // Set {"a", "g"} (member excludes itself + its group)
+ * @example [...snapExclusionSet("g", new Map([["a", "g"], ["b", "g"]]), [{itemId: "g", type: "group", state: {members: ["a", "b"]}}])].sort() // ["a", "b", "g"] (group excludes itself + all members)
+ * @example snapExclusionSet("r", new Map(), [{itemId: "r", type: "rect", state: {}}]) // Set {"r"} (ungrouped item: just itself — the plain self-exclusion)
+ */
+export function snapExclusionSet(draggedId, membership, nodes) {
+  const excluded = new Set([draggedId]);
+  const ownGroup = membership.get(draggedId);
+  if (ownGroup) excluded.add(ownGroup); // dragged member → its group
+  const draggedNode = nodes.find((n) => n.itemId === draggedId);
+  if (draggedNode?.type === "group" && Array.isArray(draggedNode.state.members))
+    for (const memberId of draggedNode.state.members) excluded.add(memberId); // dragged group → its members
+  return excluded;
+}
+
+/**
  * Pure function. Is this render node a GHOST (manifest ARCHITECTURE PLAN #2)?
  * A ghost has no rendered volume of its own: crop boxes ALWAYS (a crop box
  * with a dangling target renders nothing but its clip fill/border still

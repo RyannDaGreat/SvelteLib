@@ -239,6 +239,65 @@ export function scalePairs(member, factor, c, axis = null) {
 }
 
 /**
+ * Pure function. The group's own {scale, x, y} for a handle resize (manifest
+ * 15.7 GROUP RESIZE). A GROUP is an armature: its members follow its
+ * {x, y, rotation, scale} SIMILARITY through core/derive.applyGroupParenting —
+ * NOT its w/h (worldTransform never reads w/h into the transform; groupInfluence
+ * is a pure {x,y,rotation,scale} delta-from-bind). So resizing a group must
+ * drive the group's `scale` (which members inherit), never its w/h — writing
+ * w/h alone is a no-op on members (the rough-draft bug this fixes).
+ *
+ * WHY UNIFORM-ONLY (the design fork, manifest-sanctioned "resize handles drive
+ * group scale about the grab's opposite anchor"): the influence is a single
+ * uniform `scale`. A per-axis (non-uniform) box resize has NO representation in
+ * the similarity model — it would SHEAR members, which the transform contract
+ * forbids (core/transform.js: "similarity ∘ similarity = similarity, never
+ * shear"). So a group ALWAYS resizes uniformly; `resizedBox` is called with
+ * `uniform` forced, so corner handles ride the diagonal and edge handles drive
+ * one uniform K from their axis — the SAME resizedBox math single-item and
+ * multi-resize already use, just with the modifier pinned on.
+ *
+ * The mapping (verified numerically — scratchpad group_resize_via_box/rot):
+ *   K            = new local box width / old (uniform: equal on both axes)
+ *   worldOrigin  = the resized box's local (0,0) mapped through the group's
+ *                  START world transform — where the group's origin now sits
+ *   scale        = startScale · K
+ *   x, y         = back-solved (stateXYForCenterPivotWorld) so worldTransform
+ *                  reproduces {worldOrigin, rotation, newScale} EXACTLY, keeping
+ *                  the group's clean center-pivot equation (the SAME rotated-
+ *                  resize inverse single-item resize uses at rotation != 0; at
+ *                  rotation 0 it is the identity, so x/y = worldOrigin).
+ * w/h are UNCHANGED — the visual hull is scale·w, so growing `scale` grows the
+ * hull; touching w/h too would double-count K. Members scale about the grabbed
+ * handle's FIXED opposite corner (resizeAnchors' fx/fy), which `resizedBox`
+ * pins by construction — zero per-member writes, fully keyframable.
+ *
+ * Args:
+ *   gState  — the group's start state ({x, y, w, h, rotation, scale, ...}).
+ *   gWorld  — worldTransform(gState) (the rotation-pivoted start world).
+ *   edges   — {west, east, north, south} the grabbed handle moves.
+ *   mods    — {uniform, symmetric}; `uniform` is forced true internally, so
+ *             only `symmetric` (Cmd — scale about the group CENTER) varies.
+ *   dLocal  — pointer movement since the last modifier rebase, in the group's
+ *             LOCAL frame (the same delta resizeDrag feeds resizedBox).
+ *
+ * Returns {scale, x, y} — the group's new own transform (w/h stay put).
+ *
+ * @example // BR corner grab, unrotated 200x100 group at (100,100) scale 1, drag +200/+100 local → scale 2 about the fixed top-left (100,100):
+ * @example groupResizeState({x:100,y:100,w:200,h:100,rotation:0,scale:1}, {x:100,y:100,rotation:0,scale:1}, {east:true,south:true}, {}, {x:200,y:100}) // {scale: 2, x: 100, y: 100}
+ */
+export function groupResizeState(gState, gWorld, edges, mods, dLocal) {
+  const box = resizedBox([0, 0, gState.w, gState.h], dLocal, edges, { ...mods, uniform: true });
+  const K = gState.w > 1e-9 ? (box[2] - box[0]) / gState.w
+    : gState.h > 1e-9 ? (box[3] - box[1]) / gState.h : 1;
+  const newScale = (gState.scale ?? 1) * K;
+  const worldOrigin = T.apply(gWorld, box[0], box[1]); // where local (0,0) lands
+  const targetWorld = { x: worldOrigin.x, y: worldOrigin.y, rotation: gWorld.rotation, scale: newScale };
+  const xy = stateXYForCenterPivotWorld(targetWorld, gState.w, gState.h);
+  return { scale: newScale, x: xy.x, y: xy.y };
+}
+
+/**
  * Pure function. The world-space [x0, y0, x1, y1] box for a CROSSHAIR
  * CREATION drag (manifest 13.2 "CREATION-DRAG MODIFIERS"), point-anchored at
  * the drag's start (sx, sy) — as opposed to resizedBox's box-anchored resize,

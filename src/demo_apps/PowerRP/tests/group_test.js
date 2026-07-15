@@ -18,9 +18,11 @@ import assert from "node:assert/strict";
 import * as T from "../core/transform.js";
 import {
   groupInfluence, groupBindWorld, applyGroupParenting, groupMembership,
-  worldTransform, stateXYForCenterPivotWorld,
+  worldTransform, stateXYForCenterPivotWorld, snapExclusionSet,
 } from "../core/derive.js";
 import { groupFilteredSelection, dedupeGroupSelection } from "../core/bandselect.js";
+import { blockZToExtreme } from "../core/document.js";
+import { groupResizeState } from "../web/canvas/dragKinds.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -224,6 +226,146 @@ test("ungroup bake: non-bbox member (no w/h) bakes x/y/rotation/scale directly",
   const baked = bakeMemberWorld(memberState, influence, ownWorld);
   const derived = T.compose(influence, ownWorld);
   approxT({ x: baked.x, y: baked.y, rotation: baked.rotation, scale: baked.scale }, derived);
+});
+
+// ── 15.7 GROUP RESIZE: members scale about the fixed anchor (real derive) ─────
+// groupResizeState maps a handle drag → the group's own uniform scale + x/y;
+// members then follow through applyGroupParenting with NO per-member writes.
+
+// A group at bind (100,100,scale1,rot0), box 200x100, with two members at its
+// corners. Resizing must scale members about the grabbed handle's FIXED corner.
+function groupWithTwoMembers() {
+  const bind = { x: 100, y: 100, rotation: 0, scale: 1 };
+  const gState = { members: ["a", "b"], w: 200, h: 100, x: 100, y: 100, rotation: 0, scale: 1, bind };
+  const a = { itemId: "a", type: "rect", state: { w: 40, h: 40 }, world: worldTransform({ x: 100, y: 100, w: 40, h: 40, rotation: 0, scale: 1 }), plugin: {} };
+  const b = { itemId: "b", type: "rect", state: { w: 40, h: 40 }, world: worldTransform({ x: 260, y: 160, w: 40, h: 40, rotation: 0, scale: 1 }), plugin: {} };
+  return { gState, a, b };
+}
+function deriveWithGroup(gState, ...members) {
+  return applyGroupParenting([{ itemId: "g", type: "group", state: gState, world: worldTransform(gState), plugin: {} }, ...members]);
+}
+
+test("groupResizeState doctest: BR corner ×2 about the fixed top-left", () => {
+  assert.deepEqual(
+    groupResizeState({ x: 100, y: 100, w: 200, h: 100, rotation: 0, scale: 1 }, { x: 100, y: 100, rotation: 0, scale: 1 }, { east: true, south: true }, {}, { x: 200, y: 100 }),
+    { scale: 2, x: 100, y: 100 });
+});
+
+test("group resize: BR handle scales members ×2 about the fixed TOP-LEFT corner", () => {
+  const { gState, a, b } = groupWithTwoMembers();
+  // Grab bottom-right (east+south); fixed corner = top-left world (100,100).
+  // A drag that doubles the box (local delta +200/+100 on a 200x100 box, uniform).
+  const gs = groupResizeState({ ...gState, rotation: 0, scale: 1 }, worldTransform(gState), { east: true, south: true }, {}, { x: 200, y: 100 });
+  const g2 = { ...gState, scale: gs.scale, x: gs.x, y: gs.y }; // w/h UNCHANGED
+  const out = deriveWithGroup(g2, { ...a }, { ...b });
+  const wa = out.find((n) => n.itemId === "a").world, wb = out.find((n) => n.itemId === "b").world;
+  approx(gs.scale, 2);
+  approx(wa.x, 100); approx(wa.y, 100); approx(wa.scale, 2); // member AT the fixed corner stays
+  approx(wb.x, 100 + 2 * (260 - 100)); approx(wb.y, 100 + 2 * (160 - 100)); approx(wb.scale, 2);
+});
+
+test("group resize: TL handle scales members about the fixed BOTTOM-RIGHT corner", () => {
+  const { gState, a, b } = groupWithTwoMembers();
+  // Grab top-left (west+north); fixed corner = bottom-right world (300,200).
+  const gs = groupResizeState({ ...gState, rotation: 0, scale: 1 }, worldTransform(gState), { west: true, north: true }, {}, { x: 100, y: 50 });
+  const g2 = { ...gState, scale: gs.scale, x: gs.x, y: gs.y };
+  const out = deriveWithGroup(g2, { ...a }, { ...b });
+  const wa = out.find((n) => n.itemId === "a").world, wb = out.find((n) => n.itemId === "b").world;
+  approx(gs.scale, 0.5);
+  // Members scale ×0.5 about the fixed BR corner (300,200).
+  approx(wa.x, 300 + 0.5 * (100 - 300)); approx(wa.y, 200 + 0.5 * (100 - 200)); // (200,150)
+  approx(wb.x, 300 + 0.5 * (260 - 300)); approx(wb.y, 200 + 0.5 * (160 - 200)); // (280,180)
+});
+
+test("group resize: ROTATED group — fixed corner stays put, members scale about it", () => {
+  const bind = { x: 100, y: 100, rotation: 0, scale: 1 };
+  const gState = { members: ["a"], w: 200, h: 100, x: 100, y: 100, rotation: Math.PI / 6, scale: 1, bind };
+  const gWorld = worldTransform(gState);
+  const fixedTL = T.apply(gWorld, 0, 0); // BR grab → fixed = local top-left corner
+  const a = { itemId: "a", type: "rect", state: { w: 40, h: 40 }, world: worldTransform({ x: 150, y: 130, w: 40, h: 40, rotation: 0, scale: 1 }), plugin: {} };
+  const before = deriveWithGroup(gState, { ...a }).find((n) => n.itemId === "a").world;
+  const gs = groupResizeState(gState, gWorld, { east: true, south: true }, {}, { x: 200, y: 100 });
+  const g2 = { ...gState, scale: gs.scale, x: gs.x, y: gs.y };
+  const after = deriveWithGroup(g2, { ...a }).find((n) => n.itemId === "a").world;
+  approx(gs.scale, 2);
+  // The fixed top-left corner is unmoved in world after the resize.
+  const newTL = T.apply(worldTransform(g2), 0, 0);
+  approx(newTL.x, fixedTL.x, 1e-4); approx(newTL.y, fixedTL.y, 1e-4);
+  // The member's distance from the fixed corner scales ×2.
+  const d0 = Math.hypot(before.x - fixedTL.x, before.y - fixedTL.y);
+  const d1 = Math.hypot(after.x - fixedTL.x, after.y - fixedTL.y);
+  approx(d1 / d0, 2, 1e-4);
+  approx(after.scale, 2);
+});
+
+test("group resize: Cmd-symmetric scales members about the group CENTER", () => {
+  const { gState, a, b } = groupWithTwoMembers();
+  const cx = gState.x + gState.w / 2, cy = gState.y + gState.h / 2; // (200,150)
+  const gs = groupResizeState({ ...gState, rotation: 0, scale: 1 }, worldTransform(gState), { east: true, south: true }, { symmetric: true }, { x: 100, y: 50 });
+  const g2 = { ...gState, scale: gs.scale, x: gs.x, y: gs.y };
+  const out = deriveWithGroup(g2, { ...a }, { ...b });
+  const wa = out.find((n) => n.itemId === "a").world;
+  const K = gs.scale;
+  // Symmetric ⇒ members scale about the CENTER, not a corner.
+  approx(wa.x, cx + K * (100 - cx), 1e-4); approx(wa.y, cy + K * (100 - cy), 1e-4);
+});
+
+// ── 15.7 SNAP EXCLUSION (snapExclusionSet doctests + behavior) ────────────────
+
+test("snapExclusionSet doctest: a member excludes itself + its group", () => {
+  const nodes = [{ itemId: "g", type: "group", state: { members: ["a", "b"] } }];
+  assert.deepEqual([...snapExclusionSet("a", new Map([["a", "g"]]), nodes)].sort(), ["a", "g"]);
+});
+
+test("snapExclusionSet doctest: a group excludes itself + ALL members", () => {
+  const nodes = [{ itemId: "g", type: "group", state: { members: ["a", "b"] } }];
+  assert.deepEqual([...snapExclusionSet("g", new Map([["a", "g"], ["b", "g"]]), nodes)].sort(), ["a", "b", "g"]);
+});
+
+test("snapExclusionSet: an UNGROUPED item excludes only itself (plain self-exclusion)", () => {
+  assert.deepEqual([...snapExclusionSet("r", new Map(), [{ itemId: "r", type: "rect", state: {} }])], ["r"]);
+});
+
+test("snapExclusionSet: snapping to OTHER groups/items is NOT excluded", () => {
+  // Two groups g1{a}, g2{c}. Dragging member "a" excludes a + g1, but NOT g2 or c.
+  const nodes = [
+    { itemId: "g1", type: "group", state: { members: ["a"] } },
+    { itemId: "g2", type: "group", state: { members: ["c"] } },
+  ];
+  const membership = groupMembership(nodes);
+  const ex = snapExclusionSet("a", membership, nodes);
+  assert.ok(ex.has("a") && ex.has("g1"));
+  assert.ok(!ex.has("g2") && !ex.has("c")); // foreign group + its member remain snap candidates
+});
+
+// ── 15.7 Z-ORDER BLOCK (blockZToExtreme doctests + behavior) ──────────────────
+
+test("blockZToExtreme doctest: front puts the whole block above everything else", () => {
+  assert.deepEqual(blockZToExtreme([["g", 3], ["a", 1], ["b", 2], ["x", 5]], ["g", "a", "b"], +1), [["a", 6], ["b", 7], ["g", 8]]);
+});
+
+test("blockZToExtreme doctest: back puts the whole block below everything else", () => {
+  assert.deepEqual(blockZToExtreme([["g", 3], ["a", 1], ["b", 2], ["x", 5]], ["g", "a", "b"], -1), [["a", 2], ["b", 3], ["g", 4]]);
+});
+
+test("blockZToExtreme: block lands ABOVE a foreign item interleaved with it, order preserved", () => {
+  // z: a=1, x1=2, b=3, g=4, x2=5. Block = {g,a,b}, foreign = {x1,x2}.
+  const pairs = [["a", 1], ["x1", 2], ["b", 3], ["g", 4], ["x2", 5]];
+  const out = blockZToExtreme(pairs, ["g", "a", "b"], +1);
+  const zById = new Map(out);
+  // All three block members now exceed the max foreign z (5).
+  for (const id of ["g", "a", "b"]) assert.ok(zById.get(id) > 5, `${id} should be above foreign max`);
+  // Relative order within the block preserved: a(1) < b(3) < g(4) ⇒ a < b < g.
+  assert.ok(zById.get("a") < zById.get("b") && zById.get("b") < zById.get("g"));
+});
+
+test("blockZToExtreme: back is symmetric — block below foreign min, order preserved", () => {
+  const pairs = [["a", 1], ["x1", 2], ["b", 3], ["g", 4], ["x2", 5]];
+  const foreignMin = 2; // min of x1=2, x2=5
+  const out = blockZToExtreme(pairs, ["g", "a", "b"], -1);
+  const zById = new Map(out);
+  for (const id of ["g", "a", "b"]) assert.ok(zById.get(id) < foreignMin, `${id} should be below foreign min`);
+  assert.ok(zById.get("a") < zById.get("b") && zById.get("b") < zById.get("g")); // relative order kept
 });
 
 console.log(`\n${passed} group tests passed.`);

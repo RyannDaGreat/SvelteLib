@@ -656,6 +656,44 @@ export function bisectedZ(pairs, itemId, direction) {
   return (pairs[j][1] + pairs[k][1]) / 2;
 }
 
+/**
+ * Pure function. New z values for a BLOCK of items moved together to the front
+ * (direction +1) or back (−1) of everything else, PRESERVING the block's
+ * internal relative order (manifest 15.7: "when i move a group to front or back
+ * it should move all elements in it to front or back too" — a group and its
+ * members travel as ONE block; members keep their relative z within it, the
+ * block lands above/below every non-block item).
+ *
+ * The block members are ordered by their CURRENT z (ascending) so their
+ * relative stacking survives the move; they are then assigned consecutive z
+ * values placed entirely beyond the extreme of the NON-block items (max+1,
+ * max+2, … for front; min−1, min−2, … in reverse for back, so the block's
+ * TOP stays on top). withNormalizedZ re-packs the whole document to integers
+ * afterward, so the fractional/large intermediate spacing is safe. Returns
+ * [[itemId, newZ]] only for the block ids (unknown block ids are skipped, not
+ * an error — a member absent on this slide simply isn't reassigned). An empty
+ * scene (no non-block items) still returns a valid ascending block.
+ *
+ * @example blockZToExtreme([["g",3],["a",1],["b",2],["x",5]], ["g","a","b"], +1) // [["a",6],["b",7],["g",8]] (block ordered by z, all above x's 5)
+ * @example blockZToExtreme([["g",3],["a",1],["b",2],["x",5]], ["g","a","b"], -1) // [["a",2],["b",3],["g",4]] (block all below x's 5, relative order a<b<g kept)
+ */
+export function blockZToExtreme(pairs, blockIds, direction) {
+  const inBlock = new Set(blockIds);
+  const blockPairs = pairs.filter(([id]) => inBlock.has(id));
+  const otherZs = pairs.filter(([id]) => !inBlock.has(id)).map(([, z]) => z);
+  // Order the block by current z so its internal stacking is preserved.
+  const ordered = [...blockPairs].sort((a, b) => a[1] - b[1]).map(([id]) => id);
+  if (direction > 0) {
+    const base = otherZs.length ? Math.max(...otherZs) : 0;
+    // Ascending: the block's own bottom→top lands just above everything else.
+    return ordered.map((id, i) => [id, base + 1 + i]);
+  }
+  const base = otherZs.length ? Math.min(...otherZs) : 0;
+  // Descending: the block's top→bottom lands just below everything else, so the
+  // block's own top item stays nearest the rest (its internal order preserved).
+  return ordered.map((id, i) => [id, base - 1 - (ordered.length - 1 - i)]);
+}
+
 // ── (De)serialization ────────────────────────────────────────────────────────
 
 /** Pure function. Document → pretty JSON (the .powerrp.json save format). */

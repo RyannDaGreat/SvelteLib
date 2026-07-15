@@ -17,13 +17,15 @@
 import assert from "node:assert/strict";
 import { createRegistry } from "../core/registry.js";
 import {
-  newDocument, foldState, keyframed, withNewItem, withItemPurged, withNormalizedZ,
+  newDocument, foldState, keyframed, withNewItem, withItemPurged, withNormalizedZ, blockZToExtreme,
 } from "../core/document.js";
 import {
-  deriveRenderTree, worldTransform, stateXYForCenterPivotWorld, groupMembership,
+  deriveRenderTree, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet,
 } from "../core/derive.js";
 import { rotatedBBoxAABB } from "../core/view.js";
 import { selectInBox, groupFilteredSelection, rectFromCorners } from "../core/bandselect.js";
+import { nodeFeatures } from "../core/derive.js";
+import { groupResizeState } from "../web/canvas/dragKinds.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
@@ -201,6 +203,138 @@ test("Show-Ghosts outline: group is a ghost with a bbox (rides the ghost outline
   // Border-only hitTest: interior misses, border hits (clicking the outline selects the group).
   assert.equal(g.plugin.hitTest(g.state, g.state.w / 2, g.state.h / 2, 6), false); // interior → falls through
   assert.equal(g.plugin.hitTest(g.state, 0, 0, 6), true); // corner/border → group
+});
+
+// ── 15.7 GROUP RESIZE end-to-end (commit group scale/x/y → members follow) ────
+// Reproduces CanvasView's groupResizeDrag → commitPreview: a handle drag writes
+// the GROUP's own scale + x/y (via groupResizeState); members scale+move through
+// the derivation stage with ZERO per-member writes.
+
+test("group resize commit: members scale ×2 about the fixed corner (real derive)", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  let gid, origin; [doc, gid] = groupTwo(doc, id1, id2);
+  const g = nodesAt(doc).find((n) => n.itemId === gid);
+  const w1before = worldOf(doc, id1), w2before = worldOf(doc, id2);
+  // Grab bottom-right (east+south); fixed corner = the group box's top-left world.
+  const gWorld = worldTransform(g.state);
+  const fixedTL = T.apply(gWorld, 0, 0);
+  const gs = groupResizeState(
+    { x: g.state.x, y: g.state.y, w: g.state.w, h: g.state.h, rotation: 0, scale: 1 },
+    gWorld, { east: true, south: true }, {}, { x: g.state.w, y: g.state.h }, // double the box
+  );
+  // Commit the group's own scale/x/y (w/h untouched) — the actual write set.
+  doc = keyframed(doc, 0, ["items", gid, "scale"], gs.scale);
+  doc = keyframed(doc, 0, ["items", gid, "x"], gs.x);
+  doc = keyframed(doc, 0, ["items", gid, "y"], gs.y);
+  approx(gs.scale, 2);
+  const w1 = worldOf(doc, id1), w2 = worldOf(doc, id2);
+  // Both members' scale doubled.
+  approx(w1.scale, w1before.scale * 2); approx(w2.scale, w2before.scale * 2);
+  // Member 1 sits AT the fixed top-left corner (100,100) — it stays put.
+  approx(w1.x, fixedTL.x, 1e-4); approx(w1.y, fixedTL.y, 1e-4);
+  // Member 2 (offset) — its distance from the fixed corner doubled.
+  const d2b = Math.hypot(w2before.x - fixedTL.x, w2before.y - fixedTL.y);
+  const d2a = Math.hypot(w2.x - fixedTL.x, w2.y - fixedTL.y);
+  assert.ok(d2b > 1e-6, "member 2 must be offset from the fixed corner");
+  approx(d2a / d2b, 2, 1e-4);
+});
+
+test("group resize commit writes NO member keyframes (members follow purely via parenting)", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  let gid; [doc, gid] = groupTwo(doc, id1, id2);
+  const g = nodesAt(doc).find((n) => n.itemId === gid);
+  const gs = groupResizeState({ x: g.state.x, y: g.state.y, w: g.state.w, h: g.state.h, rotation: 0, scale: 1 }, worldTransform(g.state), { east: true, south: true }, {}, { x: 40, y: 20 });
+  const memberXBefore = foldState(doc, 0, 1).items[id1].x;
+  doc = keyframed(doc, 0, ["items", gid, "scale"], gs.scale);
+  doc = keyframed(doc, 0, ["items", gid, "x"], gs.x);
+  doc = keyframed(doc, 0, ["items", gid, "y"], gs.y);
+  // The member's STORED x is unchanged — only its DERIVED world moved.
+  assert.equal(foldState(doc, 0, 1).items[id1].x, memberXBefore);
+});
+
+// ── 15.7 SNAP EXCLUSION end-to-end (candidate feature lists) ──────────────────
+
+test("snap candidates: dragging a MEMBER excludes its own group's features", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  let gid; [doc, gid] = groupTwo(doc, id1, id2);
+  const nodes = nodesAt(doc);
+  const membership = groupMembership(nodes);
+  // Dragging member id1: excluded = {id1, gid}. The group's outline/anchor
+  // features must NOT appear among the snap candidates.
+  const excluded = snapExclusionSet(id1, membership, nodes);
+  assert.ok(excluded.has(id1) && excluded.has(gid));
+  const candidateFeatures = nodes.filter((n) => !excluded.has(n.itemId)).flatMap(nodeFeatures);
+  assert.ok(!candidateFeatures.some((f) => f.id.startsWith(`${gid}:`)), "group's own features excluded");
+  assert.ok(!candidateFeatures.some((f) => f.id.startsWith(`${id1}:`)), "the member's own features excluded");
+  // The OTHER member (id2) is a foreign item to id1 (both grouped, but exclusion
+  // is only self+own-group+own-members for the DRAGGED id; id2 is neither).
+  assert.ok(candidateFeatures.some((f) => f.id.startsWith(`${id2}:`)), "sibling member still a candidate");
+});
+
+test("snap candidates: dragging a GROUP excludes all its members' features", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  let gid; [doc, gid] = groupTwo(doc, id1, id2);
+  const nodes = nodesAt(doc);
+  const excluded = snapExclusionSet(gid, groupMembership(nodes), nodes);
+  assert.ok(excluded.has(gid) && excluded.has(id1) && excluded.has(id2));
+  const candidateFeatures = nodes.filter((n) => !excluded.has(n.itemId)).flatMap(nodeFeatures);
+  for (const id of [gid, id1, id2])
+    assert.ok(!candidateFeatures.some((f) => f.id.startsWith(`${id}:`)), `${id} features excluded when dragging the group`);
+});
+
+test("snap candidates: a FOREIGN item stays a candidate when dragging a group", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  let foreignId; [doc, foreignId] = withNewItem(doc, 0, { type: "rect", x: 500, y: 500, w: 30, h: 30, z: 1, rotation: 0, scale: 1, active: true, fill: "#00f", stroke: "#000", strokeWidth: 2, cornerRadius: 0, opacity: 1 });
+  let gid; [doc, gid] = groupTwo(doc, id1, id2);
+  const nodes = nodesAt(doc);
+  const excluded = snapExclusionSet(gid, groupMembership(nodes), nodes);
+  assert.ok(!excluded.has(foreignId));
+  const candidateFeatures = nodes.filter((n) => !excluded.has(n.itemId)).flatMap(nodeFeatures);
+  assert.ok(candidateFeatures.some((f) => f.id.startsWith(`${foreignId}:`)), "foreign item snaps as before");
+});
+
+// ── 15.7 Z-ORDER BLOCK end-to-end (group + members to front/back as a block) ──
+
+test("z-order block: To Front lifts the group AND its members above foreign items", () => {
+  // Two rects grouped (z become normalized), plus two foreign rects interleaved.
+  let [doc, id1, id2] = docWithTwoRects();
+  let fA, fB;
+  [doc, fA] = withNewItem(doc, 0, { type: "rect", x: 400, y: 400, w: 20, h: 20, z: 10, rotation: 0, scale: 1, active: true, fill: "#111", stroke: "#000", strokeWidth: 1, cornerRadius: 0, opacity: 1 });
+  [doc, fB] = withNewItem(doc, 0, { type: "rect", x: 450, y: 450, w: 20, h: 20, z: 11, rotation: 0, scale: 1, active: true, fill: "#222", stroke: "#000", strokeWidth: 1, cornerRadius: 0, opacity: 1 });
+  let gid; [doc, gid] = groupTwo(doc, id1, id2);
+  doc = withNormalizedZ(doc);
+  // Reproduce app.svelte.js #zOrderBlock + #commitBlockZ for the selected group.
+  const zPairs = () => nodesAt(doc).map((n) => [n.itemId, n.state.z ?? 0]);
+  const block = [gid, id1, id2];
+  // Capture the members' relative z ordering BEFORE the block move.
+  const zBefore = new Map(nodesAt(doc).map((n) => [n.itemId, n.state.z]));
+  const member1WasBelow2 = zBefore.get(id1) < zBefore.get(id2);
+  for (const [id, z] of blockZToExtreme(zPairs(), block, +1))
+    doc = keyframed(doc, 0, ["items", id, "z"], z);
+  doc = withNormalizedZ(doc);
+  const zById = new Map(nodesAt(doc).map((n) => [n.itemId, n.state.z]));
+  // Every block id above both foreign items.
+  for (const id of block) {
+    assert.ok(zById.get(id) > zById.get(fA), `${id} above foreign A`);
+    assert.ok(zById.get(id) > zById.get(fB), `${id} above foreign B`);
+  }
+  // Members' relative z order within the block preserved.
+  assert.equal(zById.get(id1) < zById.get(id2), member1WasBelow2, "member relative order preserved");
+});
+
+test("z-order block: To Back drops the group AND its members below foreign items", () => {
+  let [doc, id1, id2] = docWithTwoRects();
+  let fA;
+  [doc, fA] = withNewItem(doc, 0, { type: "rect", x: 400, y: 400, w: 20, h: 20, z: 10, rotation: 0, scale: 1, active: true, fill: "#111", stroke: "#000", strokeWidth: 1, cornerRadius: 0, opacity: 1 });
+  let gid; [doc, gid] = groupTwo(doc, id1, id2);
+  doc = withNormalizedZ(doc);
+  const zPairs = () => nodesAt(doc).map((n) => [n.itemId, n.state.z ?? 0]);
+  const block = [gid, id1, id2];
+  for (const [id, z] of blockZToExtreme(zPairs(), block, -1))
+    doc = keyframed(doc, 0, ["items", id, "z"], z);
+  doc = withNormalizedZ(doc);
+  const zById = new Map(nodesAt(doc).map((n) => [n.itemId, n.state.z]));
+  for (const id of block) assert.ok(zById.get(id) < zById.get(fA), `${id} below foreign A`);
 });
 
 console.log(`\n${passed} group integration checks passed.`);

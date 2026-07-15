@@ -11,7 +11,7 @@ import * as T from "../core/transform.js";
 import { worldTransform } from "../core/derive.js";
 import {
   translationPairs, resizeAnchors, resizedBox,
-  scaledBoxAboutPoint, scaleMemberPairs, scalePairs,
+  scaledBoxAboutPoint, scaleMemberPairs, scalePairs, groupResizeState,
   creationRect, creationEndpoint,
 } from "../web/canvas/dragKinds.js";
 
@@ -137,6 +137,23 @@ test("creationEndpoint: uniform (Shift) axis-locks to the dominant direction", (
 });
 test("creationEndpoint: symmetric (Cmd) mirrors both endpoints about the start", () => {
   eq(creationEndpoint(100, 100, 300, 130, { symmetric: true }), { from: { x: -100, y: 70 }, to: { x: 300, y: 130 } });
+});
+
+// ── groupResizeState (manifest 15.7 GROUP RESIZE — uniform scale + x/y) ────────
+test("groupResizeState: doctest — BR corner ×2 about the fixed top-left", () => {
+  eq(groupResizeState({ x: 100, y: 100, w: 200, h: 100, rotation: 0, scale: 1 }, { x: 100, y: 100, rotation: 0, scale: 1 }, { east: true, south: true }, {}, { x: 200, y: 100 }),
+    { scale: 2, x: 100, y: 100 });
+});
+test("groupResizeState: TL corner drag scales about the fixed bottom-right, x/y move", () => {
+  // Fixed corner = BR world (300,200). Shrink by dragging TL inward → scale 0.5.
+  const gs = groupResizeState({ x: 100, y: 100, w: 200, h: 100, rotation: 0, scale: 1 }, { x: 100, y: 100, rotation: 0, scale: 1 }, { west: true, north: true }, {}, { x: 100, y: 50 });
+  approx(gs.scale, 0.5);
+  approx(gs.x, 200); approx(gs.y, 150); // the new box origin (world) after shrinking to BR
+});
+test("groupResizeState: an existing group scale multiplies (not overwrites)", () => {
+  // A group already at scale 2, resized ×1.5 about TL → 3.
+  const gs = groupResizeState({ x: 0, y: 0, w: 100, h: 100, rotation: 0, scale: 2 }, { x: 0, y: 0, rotation: 0, scale: 2 }, { east: true, south: true }, {}, { x: 50, y: 50 });
+  approx(gs.scale, 3);
 });
 
 console.log(`\ndragKinds tests: ${n} passed`);
