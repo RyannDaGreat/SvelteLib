@@ -46,6 +46,8 @@
  * like items carry a `type` + state), it does not build the intersection UI.
  */
 
+import { row } from "./properties.js";
+
 /** The default transition duration for a fresh slide, in seconds. Was
  * `slide.duration`'s new-slide value (core/document.js) before seconds
  * superseded it (lead ruling) — same number, so new decks feel identical. */
@@ -79,7 +81,11 @@ export const TRANSITION_CURVES = ["linear", "smooth"];
  * so AssetField is one component for both media widgets and transition sound).
  */
 export const TRANSITION_BASE_INSPECTOR = [
-  { key: "seconds", label: "Seconds", kind: "number", min: 0, scrub: 0.1, category: "transition" },
+  // `seconds` is the shared SECONDS unit-kind from the property registry
+  // (core/properties.js) — its low scrub sensitivity (SECONDS_SCRUB) is inherited
+  // there, NOT re-typed here, so every seconds row moves at the same tuned rate
+  // (manifest 14.6). Category is already "transition" in the registry def.
+  row("seconds"),
   { key: "curve", label: "Curve", kind: "select", options: TRANSITION_CURVES, category: "transition" },
   { key: "sound", label: "Sound", kind: "asset", assetKinds: ["sound"], nullable: true, category: "transition" },
 ];

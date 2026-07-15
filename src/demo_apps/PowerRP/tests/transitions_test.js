@@ -17,6 +17,7 @@ import { newDocument, withNewSlide } from "../core/document.js";
 import { createPresenter } from "../core/presentation.js";
 import { fadeStrength, isFadeFrame } from "../web/transitionRender.js";
 import { ease } from "../core/interpolators.js";
+import { SECONDS_SCRUB, PROPS } from "../core/properties.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -71,6 +72,19 @@ test("transitionInspector = base rows + type extras; base is superclass rows", (
   assert.deepEqual(transitionInspector("fade").map((r) => r.key), ["seconds", "curve", "sound"]);
   // row shape matches plugin inspector rows (label/key/kind present)
   for (const r of transitionInspector("tween")) assert.ok(r.key && r.label && r.kind);
+});
+
+// ── 14.6: the seconds row inherits the LOW registry scrub (unit-kind fix) ──────
+test("seconds transition row carries the registry SECONDS_SCRUB (14.6 unit-kind)", () => {
+  const secondsRow = TRANSITION_BASE_INSPECTOR.find((r) => r.key === "seconds");
+  // It comes from the shared property registry (row("seconds")) — NOT a
+  // hand-written scrub — so the coefficient is single-sourced. Was 0.1 (Round 12,
+  // still ~10× too coarse); SECONDS_SCRUB (0.01) makes a full 100px drag ≈ 1s.
+  assert.equal(secondsRow.scrub, SECONDS_SCRUB);
+  assert.equal(PROPS.seconds.scrub, SECONDS_SCRUB); // the registry is the home
+  assert.ok(SECONDS_SCRUB <= 0.02, "SECONDS_SCRUB must be within the ratified ~0.01-0.02 s/px target");
+  assert.equal(secondsRow.min, 0); // a duration is non-negative
+  assert.equal(secondsRow.category, "transition");
 });
 
 // ── duration → transition.seconds migration (lead ruling) ──────────────────
@@ -150,6 +164,33 @@ test("presenter prev/goTo clear the in-flight transition (instant steps)", () =>
   pres.prev(); // instant back → transition cleared
   assert.equal(frames.at(-1).index, 0);
   assert.equal(frames.at(-1).transition, null);
+});
+
+// ── 14.7 ROOT CAUSE: a fade with seconds 0 CUTS (one alpha-1 frame, no ramp) ───
+// This documents WHY the user sees "fade just flicks from slide to slide": the
+// fade RENDERER is fine (fade_presenter_probe.js / fade_livemode_probe.js prove
+// a real on-screen crossfade at seconds>0), but a seconds=0 transition takes the
+// presenter's instant path (duration<=0 → emit one alpha-1 frame). A user only
+// reaches seconds=0 because the slider was oversensitive — the 14.6 bug — so the
+// two reports are one root cause. seconds=0 cutting is CORRECT (an instant
+// transition IS a cut); the fix is making seconds settable (14.6), not the fade.
+test("14.7: seconds-0 fade emits a single alpha-1 frame (instant cut, no crossfade)", () => {
+  const doc = { slides: [
+    { id: "s0", transition: defaultTransition("tween"), delta: {} },
+    { id: "s1", transition: { type: "fade", seconds: 0, curve: "linear" }, delta: {} },
+  ] };
+  const frames = [];
+  const pres = createPresenter(() => doc, (f) => frames.push({ index: f.index, alpha: f.alpha, type: f.transition?.type ?? null }));
+  pres.goTo(0);
+  const before = frames.length;
+  pres.next();
+  const stepFrames = frames.slice(before).filter((f) => f.index === 1);
+  // exactly ONE frame into slide 1, and it is fully applied (alpha 1) — a cut.
+  assert.equal(stepFrames.length, 1);
+  assert.equal(stepFrames[0].alpha, 1);
+  assert.equal(stepFrames[0].type, "fade"); // the type is still carried (it's a fade that happened to be instant)
+  // NO intermediate alpha was emitted (that is what a crossfade would need).
+  assert.equal(stepFrames.filter((f) => f.alpha > 0 && f.alpha < 1).length, 0);
 });
 
 // ── pure fade blend math (transitionRender.js) ─────────────────────────────

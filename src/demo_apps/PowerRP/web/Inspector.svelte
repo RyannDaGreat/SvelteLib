@@ -443,13 +443,23 @@
         <input type="text" class="disabled-val" value={String(valueAt(state, row.key) ?? "")} disabled />
       {:else}
         <!-- Plain number (transition config): a bounded DraggableNumber scrubber
-             that commits directly (no equations, no keyframes). -->
+             that commits directly (no equations, no keyframes). THREADS the row's
+             `scrub` coefficient (manifest 14.6): a transition-seconds row carries
+             SECONDS_SCRUB from the property registry, so a full 100px drag spans
+             ~1s instead of 100s. Without this the plain scrubber fell back to
+             DraggableNumber's 1 unit/px default — the reason the Round-12
+             `scrub: 0.1` fix never reached the transition seconds row (it was only
+             threaded through the ITEM NumericField path above, never this one).
+             The item path scales bounded rows across a pixel run in NumericField;
+             here (an unbounded seconds row) the explicit coefficient IS the fix,
+             so pass row.scrub straight through when present. -->
         <div class="numfield">
           <DraggableNumber
             label={row.label}
             value={Number(valueAt(state, row.key) ?? 0)}
             min={row.min ?? null}
             max={row.max ?? null}
+            coefficient={row.scrub ?? 1}
             oninput={(n) => onpreview(row.key, row.kind, n)}
             onchange={(n) => oncommit(row.key, row.kind, n)}
           />

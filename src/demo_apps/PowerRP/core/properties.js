@@ -44,6 +44,29 @@
  */
 
 /**
+ * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
+ * numeric rows — the seconds/time UNIT-KIND (manifest 14.6: "a time in seconds
+ * property number slider should default to MUCH less sensitivity", the user's
+ * SECOND report of this pain). Every seconds row (transition duration, slide
+ * autoAdvance, any future time property) inherits it from ONE place, so there is
+ * no per-widget patching to drift.
+ *
+ * WHY THIS VALUE: an unbounded numeric row falls back to 1 unit/px in
+ * DraggableNumber — for seconds that is enormous (a 1px twitch = a whole second,
+ * and dragging down instantly clamps to 0, which turns any transition into an
+ * instant CUT). 0.01 s/px makes a full 100px drag span 1 second — LINKED to the
+ * same 100px full-range feel opacity uses (web/NumericField.svelte RANGE_DRAG_PX
+ * = 100, coefficient 0.01 over the 0..1 range): a seconds row now scrubs with the
+ * same tactile range as a bounded 0..1 slider, one second per 100px. It replaces
+ * the old hand-written `scrub: 0.1` on the transition seconds row (Round 12,
+ * 10s/100px — still ~10× too coarse; the user reported it a SECOND time).
+ *
+ * FLAG — PENDING RATIFICATION: 0.01 s/px is at the tight end of the manifest's
+ * "~0.01-0.02 s/px" target (100px ≈ 1s). Confirm the feel with the user.
+ */
+export const SECONDS_SCRUB = 0.01;
+
+/**
  * The property definition table. Each entry is keyed by its property key (the
  * state field / equation slug) and holds the DEFAULT row aspects + an optional
  * `default` value (the fragment default). A widget composes rows/defaults by
@@ -105,6 +128,17 @@ export const PROPS = {
 
   // ── formatting: color (single-color widgets: camera background) ─────────────
   background: { label: "Background", kind: "color", category: "formatting", help: "The color painted behind everything in this camera's view — the slide's backdrop in exports and presentation." },
+
+  // ── time: the SECONDS unit-kind (manifest 14.6) ─────────────────────────────
+  // A duration in seconds. Its `scrub` (SECONDS_SCRUB, ~0.01 s/px) is the SANE
+  // DEFAULT every seconds row inherits — the fix for the transition seconds slider
+  // "jumping by so much" (a bare unbounded number scrubs at 1 unit/px, so a 1px
+  // twitch was a whole second and dragging down snapped it to 0 → an instant CUT).
+  // `min: 0` (a negative duration is meaningless). Consumers (transition duration,
+  // slide autoAdvance) compose this via row("seconds", {...}); `category` is
+  // already "transition" here (its current sole home) — a future non-transition
+  // time property overrides it.
+  seconds: { label: "Seconds", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "transition", help: "How long the transition takes, in seconds. Zero is an instant cut; larger values make the fade or tween slower and smoother." },
 
   // ── media: source + playback ────────────────────────────────────────────────
   // `src` is the media asset reference (image data URI / URL, video filename).
