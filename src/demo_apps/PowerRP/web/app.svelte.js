@@ -231,9 +231,12 @@ export class PowerRPApp {
 
   /** Query. The full set of selected itemIds: the multi override when non-empty,
    * else [selection] (or []). The ONE place set-aware consumers (canvas
-   * outlines, the Inspector placeholder) read to know everything selected. */
+   * outlines, the Inspector placeholder) read to know everything selected.
+   * Always a FRESH plain array — never the internal $state proxy (callers
+   * can't mutate selection state through it, and plain arrays survive
+   * puppeteer serialization — the concerns.md proxy gotcha). */
   selectedIds() {
-    return this.selectionSet.length ? this.selectionSet : (this.selection !== null ? [this.selection] : []);
+    return this.selectionSet.length ? [...this.selectionSet] : (this.selection !== null ? [this.selection] : []);
   }
 
   /** Query. Render nodes for every selected id (order = selectedIds()). */

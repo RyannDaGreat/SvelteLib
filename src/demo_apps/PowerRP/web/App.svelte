@@ -189,7 +189,10 @@
   // (core/keybindings.js scope: ONE binding per command; gestures aren't keys).
   const handEntries = [
     { keys: ["Delete"], label: "Delete", hidden: true, when: editSelection, command: "delete-item" },
-    { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging },
+    { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging && !c.bandArmed },
+    // A palette-armed band select replaces the plain pointer hint until the
+    // one-shot drag happens (band-select initiation is palette-only for now).
+    { keys: ["mouse_left"], label: "Drag box to select", when: (c) => editMode(c) && !c.dragging && c.bandArmed },
     // Modifier hints auto-announce PER DRAG KIND (manifest "Drag/resize
     // modifiers": the axis-auto-lock hint pattern, extended) — same registry,
     // never a second pathway. Display-only: the pointer code reads the
@@ -232,12 +235,13 @@
       hasSelection: app.selection !== null,
       dragging: app.dragging,
       dragKind: app.dragKind,
+      bandArmed: app.bandArm !== null,
       app,
     };
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.bandArm;
     return app.shortcuts.hints(shortcutCtx());
   });
 

@@ -16,6 +16,7 @@
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { THUMB_W, worldViewRect, canSkipNode } from "../core/view.js";
+  import { selectInBox, rectFromCorners } from "../core/bandselect.js";
   import { foldState } from "../core/document.js";
   import { blendApplied } from "../core/deltas.js";
   import { evaluateState } from "../core/expressions.js";
@@ -120,6 +121,12 @@
   // dragged endpoint), not a fixed preset: rendered as a # glyph, vs the
   // preset anchors' X. {x, y} world coords, or null.
   let dynamicAnchor = $state(null);
+  // In-progress rubber-band selection (armed via the palette "Select in Box"
+  // commands): the world-space band rect and the itemIds the current box
+  // would select (live preview — outlined before release so the user sees
+  // exactly what a drop selects). Both cleared on pointer-up.
+  let bandRect = $state(null); // {x, y, w, h} world, or null
+  let bandCandidates = $state([]); // itemIds the current band would select
   let drag = null; // non-reactive drag bookkeeping
 
   // Repaint whenever anything visible changes — INCLUDING the container size
@@ -282,6 +289,22 @@
   function onPointerDown(e) {
     if (e.button !== 0 || app.mode !== "edit") return;
     const w = worldPoint(e);
+    // Armed rubber-band select (palette "Select in Box …") consumes the
+    // ONE-SHOT arm: this drag is a band, not a pick/move. The mode was already
+    // resolved at arm time ("regular" → the bandMode browser setting), so a
+    // future drag-on-empty-canvas entry point starts this same drag kind
+    // directly with mode = app.bandMode — no arming required.
+    if (app.bandArm) {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      drag = { kind: "band", mode: app.bandArm, startWorld: w, lastWorld: w };
+      app.bandArm = null;
+      bandRect = rectFromCorners(w, w);
+      bandCandidates = [];
+      hoverAnchor = null; // a hover tip must not linger frozen through the drag
+      app.dragging = true;
+      app.dragKind = "band";
+      return;
+    }
     const nodes = app.nodes();
     const hit = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom);
     app.selection = hit?.itemId ?? null;
@@ -343,6 +366,22 @@
     if (drag.kind === "move") moveDrag(e, w);
     else if (drag.kind === "resize") resizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
+    else if (drag.kind === "band") bandDrag(w);
+  }
+
+  // ── Rubber-band selection drag ─────────────────────────────────────────────
+
+  /**
+   * Command (updates band preview state). Recomputes the world-space band rect
+   * and the live CANDIDATE set — the items the current box would select in the
+   * drag's mode (core/bandselect.js: INNER = fully enclosed by the box, OUTER =
+   * touching counts; bounds = the conservative rotated world AABB). Candidates
+   * render as preview outlines; the selection itself is applied on pointer-up.
+   */
+  function bandDrag(w) {
+    drag.lastWorld = w;
+    bandRect = rectFromCorners(drag.startWorld, w);
+    bandCandidates = selectInBox(app.nodes(), bandRect, drag.mode);
   }
 
   function moveDrag(e, w) {
@@ -752,6 +791,14 @@
 
   function onPointerUp() {
     if (!drag) return;
+    if (drag.kind === "band") {
+      // Apply the band: recomputed from the drag's own endpoints (not the
+      // render preview) so the result is deterministic. selectMany sets the
+      // multi-selection (primary = first hit); an empty result deselects.
+      app.selectMany(selectInBox(app.nodes(), rectFromCorners(drag.startWorld, drag.lastWorld), drag.mode));
+      bandRect = null;
+      bandCandidates = [];
+    }
     drag = null;
     guides = [];
     sizeIndicators = [];
@@ -766,8 +813,8 @@
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.anchorsVisible; sizeIndicators;
-    if (!actions || !containerEl) return { outline: null, handles: [], anchors: [], guideSegs: [], endpoints: [], sizeArrows: [] };
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; sizeIndicators; bandRect; bandCandidates;
+    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], sizeArrows: [], band: null, bandOutlines: [] };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -776,28 +823,48 @@
       h: rect.height / viewport.zoom,
     };
     const nodes = app.nodes();
+    const selectedIds = app.selectedIds();
     const sel = nodes.find((n) => n.itemId === app.selection);
 
-    let outline = null, handles = [], endpoints = [];
-    if (sel?.plugin.capabilities.bbox) {
+    /** A bbox node's screen-space outline polygon points string. */
+    const outlineOf = (n) => {
+      const w = n.state.w ?? 0, h = n.state.h ?? 0;
+      return [[0, 0], [w, 0], [w, h], [0, h]].map(([lx, ly]) => {
+        const p = T.apply(n.world, lx, ly);
+        const s = actions.worldToScreen(p.x, p.y);
+        return `${s.x},${s.y}`;
+      }).join(" ");
+    };
+
+    // EVERY selected bbox node gets a selection outline (multi-select
+    // substrate); resize handles and edit points only for a SINGLE selection
+    // (manifest: "resize handles only for a single selection").
+    const selSet = new Set(selectedIds);
+    const outlines = nodes.filter((n) => selSet.has(n.itemId) && n.plugin.capabilities.bbox).map(outlineOf);
+    let handles = [], endpoints = [];
+    if (selectedIds.length === 1 && sel?.plugin.capabilities.bbox && sel.plugin.capabilities.resizable) {
       const w = sel.state.w ?? 0, h = sel.state.h ?? 0;
-      const corners = [[0, 0], [w, 0], [w, h], [0, h]].map(([lx, ly]) => {
+      const hs = [["tl", 0, 0], ["tm", w / 2, 0], ["tr", w, 0], ["mr", w, h / 2], ["br", w, h], ["bm", w / 2, h], ["bl", 0, h], ["ml", 0, h / 2]];
+      handles = hs.map(([id, lx, ly]) => {
         const p = T.apply(sel.world, lx, ly);
-        return actions.worldToScreen(p.x, p.y);
+        return { id, ...actions.worldToScreen(p.x, p.y) };
       });
-      outline = corners.map((p) => `${p.x},${p.y}`).join(" ");
-      if (sel.plugin.capabilities.resizable) {
-        const hs = [["tl", 0, 0], ["tm", w / 2, 0], ["tr", w, 0], ["mr", w, h / 2], ["br", w, h], ["bm", w / 2, h], ["bl", 0, h], ["ml", 0, h / 2]];
-        handles = hs.map(([id, lx, ly]) => {
-          const p = T.apply(sel.world, lx, ly);
-          return { id, ...actions.worldToScreen(p.x, p.y) };
-        });
-      }
     }
-    if (sel?.plugin.editPoints) {
+    if (selectedIds.length <= 1 && sel?.plugin.editPoints) {
       const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
       for (const p of sel.plugin.editPoints(sel, byId))
         endpoints.push({ which: p.key, ...actions.worldToScreen(p.x, p.y) });
+    }
+
+    // In-progress rubber band: the box itself (world-axis-aligned, so two
+    // corners suffice) + preview outlines on the current candidates.
+    let band = null, bandOutlines = [];
+    if (bandRect) {
+      const a = actions.worldToScreen(bandRect.x, bandRect.y);
+      const b = actions.worldToScreen(bandRect.x + bandRect.w, bandRect.y + bandRect.h);
+      band = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+      const candSet = new Set(bandCandidates);
+      bandOutlines = nodes.filter((n) => candSet.has(n.itemId)).map(outlineOf);
     }
 
     const anchors = (app.anchorsVisible ? nodes : []).flatMap((n) =>
@@ -827,7 +894,7 @@
       return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
     });
 
-    return { outline, handles, anchors, guideSegs, endpoints, sizeArrows };
+    return { outlines, handles, anchors, guideSegs, endpoints, sizeArrows, band, bandOutlines };
   });
 </script>
 
@@ -887,9 +954,17 @@
             marker-end="url(#size-arrow-end)"
           />
         {/each}
-        {#if overlay.outline}
-          <polygon class="selection" points={overlay.outline} />
+        {#each overlay.outlines as o}
+          <polygon class="selection" points={o} />
+        {/each}
+        {#if overlay.band}
+          <!-- The in-progress rubber band + preview outlines on the items the
+               current box would select (live band-select feedback). -->
+          <rect class="band-rect" x={overlay.band.x} y={overlay.band.y} width={overlay.band.w} height={overlay.band.h} />
         {/if}
+        {#each overlay.bandOutlines as o}
+          <polygon class="band-candidate" points={o} />
+        {/each}
         <ResizeHandles handles={overlay.handles} onstart={startResize} />
         {#each overlay.endpoints as ep}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
