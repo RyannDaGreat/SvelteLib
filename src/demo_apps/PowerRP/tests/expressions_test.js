@@ -9,12 +9,14 @@
 
 import assert from "node:assert/strict";
 import {
-  tokenize, parseExpression, compiled, evalAst,
+  tokenize, classifyEquation, equationTokenSpans, parseExpression, compiled, evalAst,
   slugify, slugMap, anchorRefName, canonicalPropPath, parseStoredRef, parseSelfRef, resolveRef, mapRefTokens,
   snakeToCamel, camelToSnake,
   displayToStored, storedToDisplay, isNumericSlot,
   evaluateState, withBindingsMigrated, withVariableRenamed,
+  FUNCTIONS, equationFunctionNames, resolveOverload, widgetArgToken, widgetArgSpans, resolveWidgetArg,
 } from "../core/expressions.js";
+import { nearestPairCircleCircle, closestPointOnCircle, nearestRimPair } from "../core/outline.js";
 import { createRegistry } from "../core/registry.js";
 import { newDocument, withNewItem, withNewSlide, keyframed, foldState, withSlideMoved } from "../core/document.js";
 import { deriveRenderTree, worldTransform, nodeAnchors } from "../core/derive.js";
@@ -26,6 +28,7 @@ import { arrowPlugin } from "../plugins/arrow.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { textPlugin } from "../plugins/text.js";
 import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
+import { anchorPointPlugin } from "../plugins/anchor_point.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -70,7 +73,10 @@ test("parseExpression: precedence, parens, unary minus, leading =", () => {
   const ast = parseExpression("2 + 3 * x");
   assert.equal(ast.op, "+");
   assert.equal(ast.right.op, "*");
-  assert.deepEqual(parseExpression("-(a.x)"), { kind: "neg", arg: { kind: "ref", name: "a.x" } });
+  const neg = parseExpression("-(a.x)");
+  assert.equal(neg.kind, "neg");
+  assert.equal(neg.arg.kind, "ref");
+  assert.equal(neg.arg.name, "a.x"); // ref nodes now also carry source spans (start/end) — checked structurally
   assert.deepEqual(parseExpression("= 1 + 1"), parseExpression("1 + 1")); // spreadsheet affordance
   assert.throws(() => parseExpression("1 +"), /Unexpected end/);
   assert.throws(() => parseExpression("(1"), /Missing "\)"/);
@@ -83,6 +89,52 @@ test("compiled: refs deduped; evalAst arithmetic", () => {
   assert.equal(evalAst(parseExpression("-(1 + 1)"), () => 0), -2);
   assert.equal(evalAst(parseExpression("10 / 4"), () => 0), 2.5);
   assert.equal(evalAst(parseExpression("10 - 2 - 3"), () => 0), 5); // left assoc
+});
+
+// ── equation special forms + highlight spans (Opus25, round-3 field) ──────────
+test("classifyEquation: constant / reference / general (structure only)", () => {
+  assert.equal(classifyEquation("42"), "constant");
+  assert.equal(classifyEquation("-3.5"), "constant"); // unary minus on a lone number
+  assert.equal(classifyEquation("= 42"), "constant"); // leading "=" tolerated
+  assert.equal(classifyEquation("speed"), "reference"); // bare variable
+  assert.equal(classifyEquation("box.x"), "reference"); // item-property path
+  assert.equal(classifyEquation("self.w"), "reference"); // self path
+  assert.equal(classifyEquation("box_tm.x"), "reference"); // anchor path
+  assert.equal(classifyEquation("self.w / 2"), "general"); // modified reference
+  assert.equal(classifyEquation("a + b"), "general");
+  assert.equal(classifyEquation("2 * 3"), "general"); // arithmetic, not a bare literal
+  assert.equal(classifyEquation("3 $ 4"), "general"); // unparseable → edited as general
+});
+test("equationTokenSpans: kinds, resolved refs, unknown → error, malformed", () => {
+  const state = { items: { a1: { type: "rect", name: "Box" } }, vars: { speed: 5 } };
+  // Each ref classified by resolveRef's real kind; num/op/paren by token kind.
+  assert.deepEqual(equationTokenSpans("box.x + speed * self.w", state, "a1"), [
+    { start: 0, end: 5, cls: "prop" },
+    { start: 6, end: 7, cls: "op" },
+    { start: 8, end: 13, cls: "var" },
+    { start: 14, end: 15, cls: "op" },
+    { start: 16, end: 22, cls: "self" },
+  ]);
+  assert.deepEqual(equationTokenSpans("box_tm.x", state), [{ start: 0, end: 8, cls: "anchor" }]);
+  assert.deepEqual(equationTokenSpans("(1)", state), [
+    { start: 0, end: 1, cls: "paren" },
+    { start: 1, end: 2, cls: "num" },
+    { start: 2, end: 3, cls: "paren" },
+  ]);
+  // Unknown variable resolves as {kind:"var"} structurally but doesn't exist →
+  // flagged "error" so the overlay matches the field's invalid affordance.
+  assert.deepEqual(equationTokenSpans("ghost", state), [{ start: 0, end: 5, cls: "error" }]);
+  assert.deepEqual(equationTokenSpans("nope.x", state), [{ start: 0, end: 6, cls: "error" }]); // unknown slug
+  assert.deepEqual(equationTokenSpans("self.w", state, null), [{ start: 0, end: 6, cls: "error" }]); // self w/o owner
+  assert.deepEqual(equationTokenSpans("3 $ 4", state), [{ start: 0, end: 5, cls: "error" }]); // whole-source error
+  assert.deepEqual(equationTokenSpans("", state), []); // empty → no spans
+  // A ref immediately followed by "(" is a FUNCTION name — classified as "call"
+  // POSITIONALLY (exactly as the parser decides), never as an unknown variable.
+  assert.deepEqual(equationTokenSpans("f(2)", state).map((s) => s.cls), ["call", "paren", "num", "paren"]);
+  // Grammar coexistence with Opus24's call/projection tokens (comma/dot → punct).
+  // A .x/.y after a call/paren is a MEMBER projection (grammar, not a variable).
+  assert.deepEqual(equationTokenSpans("g(speed, 2).x", state, "a1").map((s) => s.cls),
+    ["call", "paren", "var", "punct", "num", "paren", "punct", "member"]);
 });
 
 // ── slugs ────────────────────────────────────────────────────────────────────
@@ -396,10 +448,13 @@ test("evaluateState: NEARLY-TANGENT mutual closest converges (weak contraction)"
   approx(s.items.ar.to.x, 101, EPS);
   approx(s.items.ar.to.y, 50, EPS);
 });
-test("evaluateState: DEGENERATE tangency hits the sweep cap LOUDLY, result stays sane", () => {
-  // 0.1px gap: asymptotic contraction ~0.996/sweep — certifying 0.01px would
-  // take thousands of sweeps, so the cap fires (reported, never silent) and
-  // the best iterate is kept. The residual is sub-visual (< 0.1px).
+test("evaluateState: NEAR-TANGENT mutual closest solves EXACTLY (no wobble, no cap)", () => {
+  // 0.1px gap — the geometry that made the OLD Gauss-Seidel fixpoint crawl
+  // (~0.996 contraction/sweep, thousands of sweeps to certify 0.01px, so the
+  // cap fired). The JOINT nearest-pair solver projects onto the true rim each
+  // half-step, so it converges in ONE iteration to the analytic pair: from on
+  // c1's right rim (100, 50), to on c2's left rim (100.1, 50). No sweep cap,
+  // no warning — the wobble class is gone by construction.
   const state = {
     items: {
       c1: { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100 },
@@ -413,13 +468,13 @@ test("evaluateState: DEGENERATE tangency hits the sweep cap LOUDLY, result stays
   };
   let result;
   const logged = capturedErrors(() => { result = evaluateState(state, registry); });
-  assert.equal(result.errors.size, 0); // a slow fixpoint is not a slot error
-  assert.ok(logged.some((m) => m.includes("closest-anchor fixpoint still moving")),
-    `expected the loud sweep-cap warning, got: ${JSON.stringify(logged)}`);
-  approx(result.state.items.ar.from.x, 100, 0.1);
-  approx(result.state.items.ar.from.y, 50, 0.1);
-  approx(result.state.items.ar.to.x, 100.1, 0.1);
-  approx(result.state.items.ar.to.y, 50, 0.1);
+  assert.equal(result.errors.size, 0);
+  assert.deepEqual(logged, [], `expected no cap/wobble warning, got: ${JSON.stringify(logged)}`);
+  const EPS = 1e-6; // analytic, not merely sub-visual
+  approx(result.state.items.ar.from.x, 100, EPS);
+  approx(result.state.items.ar.from.y, 50, EPS);
+  approx(result.state.items.ar.to.x, 100.1, EPS);
+  approx(result.state.items.ar.to.y, 50, EPS);
 });
 // ── Cross-item anchor refs to ROTATED targets (registry #2) ──────────────────
 // A cross-item anchor ref must evaluate through the target's PAINTED transform
@@ -532,6 +587,200 @@ test("evaluateState: closest-rim ref to a ROUNDED + ROTATED rect lands on the vi
     approx(s.items.ar.to.y, painted.y, 0.02);
   }
 });
+
+// ── DYNAMIC ANCHOR FUNCTION LIBRARY (closest_to_rim) — Opus24 ─────────────────
+test("grammar: call parsing + point .x/.y projection", () => {
+  const ast = parseExpression("closest_to_rim(a, b).x");
+  assert.equal(ast.kind, "member");
+  assert.equal(ast.prop, "x");
+  assert.equal(ast.obj.kind, "call");
+  assert.equal(ast.obj.name, "closest_to_rim");
+  assert.equal(ast.obj.args.length, 2);
+  // The .x/.y projection tokenizes as a standalone dot + coord.
+  assert.deepEqual(tokenize("f(a, b).x").map((t) => t.kind), ["ref", "op", "ref", "comma", "ref", "op", "dot", "ref"]);
+  // A call is a POINT; using it unprojected in arithmetic is a loud error.
+  assert.throws(() => evalAst(parseExpression("closest_to_rim(a,b) + 1"), () => 0, () => ({ x: 1, y: 2 })), /returns a point/);
+  // Only .x / .y are valid projections.
+  assert.throws(() => parseExpression("f(a).z"), /Expected \.x or \.y/);
+  assert.equal(evalAst(parseExpression("f(a,b).y + 1"), () => 0, () => ({ x: 3, y: 4 })), 5);
+});
+test("function table: names, overloads, arity/kind/unknown errors", () => {
+  assert.deepEqual(equationFunctionNames(), ["closest_to_rim"]);
+  assert.ok("closest_to_rim" in FUNCTIONS);
+  assert.deepEqual(resolveOverload("closest_to_rim", 2).params, ["widget", "widget"]);
+  assert.deepEqual(resolveOverload("closest_to_rim", 3).params, ["widget", "number", "number"]);
+  assert.throws(() => resolveOverload("nope", 1), /Unknown function "nope"/);
+  assert.throws(() => resolveOverload("closest_to_rim", 4), /has no 4-argument form/);
+  assert.equal(widgetArgToken({ kind: "ref", name: "circle1" }), "circle1");
+  assert.equal(widgetArgToken({ kind: "ref", name: "box.x" }), null);
+  // A widget position requires a bare widget token, not an expression.
+  assert.throws(() => widgetArgSpans(parseExpression("closest_to_rim(a + 1, b).x")), /must be a widget name/);
+});
+test("conversion: widget args round-trip slug↔@id; fn name + projection verbatim", () => {
+  const st = { items: { a1: { type: "rect", name: "Box" }, a2: { type: "circle", name: "C" } }, vars: {} };
+  assert.equal(displayToStored("closest_to_rim(box, c).x", st), "closest_to_rim(@a1, @a2).x");
+  assert.equal(storedToDisplay("closest_to_rim(@a1, @a2).x", st), "closest_to_rim(box, c).x");
+  // Round-trip is stable.
+  assert.equal(displayToStored(storedToDisplay("closest_to_rim(@a1, @a2).y", st), st), "closest_to_rim(@a1, @a2).y");
+  // Mixed widget + numeric args + arithmetic.
+  assert.equal(displayToStored("closest_to_rim(box, 5, 6).y + 10", st), "closest_to_rim(@a1, 5, 6).y + 10");
+  assert.equal(resolveWidgetArg("@a1", slugMap(st)), "a1");
+  assert.equal(resolveWidgetArg("box", slugMap(st)), "a1");
+  // Unknown widget name is a loud entry error.
+  assert.throws(() => displayToStored("closest_to_rim(nope, c).x", st), /Unknown widget "nope"/);
+});
+test("closest_to_rim(widget, x, y): rim-vs-point equals the plugin closestAnchor", () => {
+  // A rect's x/y written as closest_to_rim to a fixed world point → the point on
+  // the rim nearest that point (here the free arrow endpoint).
+  const c1 = { ...circlePlugin.defaults, x: 100, y: 100, w: 120, h: 120, name: "C" };
+  const state = {
+    items: {
+      c1,
+      ar: { ...arrowPlugin.defaults, from: { x: 400, y: 160 }, to: { x: "closest_to_rim(c, ar.from.x, ar.from.y).x", y: "closest_to_rim(c, ar.from.x, ar.from.y).y" }, name: "Ar" },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  const world = worldTransform(c1);
+  const local = circlePlugin.closestAnchor(c1, 400, 160, world);
+  const painted = T.apply(world, local.x, local.y);
+  approx(s.items.ar.to.x, painted.x, 1e-9);
+  approx(s.items.ar.to.y, painted.y, 1e-9);
+});
+test("closest_to_rim(A, B): JOINT nearest pair — TRUE analytic pair, both endpoints", () => {
+  // Two circles: c1 radius 50 at center (50,50), c2 radius 50 at center (250,50).
+  // True nearest pair: c1's right rim (100, 50), c2's left rim (200, 50).
+  const c1 = { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100, name: "A" };
+  const c2 = { ...circlePlugin.defaults, x: 200, y: 0, w: 100, h: 100, name: "B" };
+  const state = {
+    items: {
+      c1, c2,
+      ar: {
+        ...arrowPlugin.defaults,
+        from: { x: "closest_to_rim(a, b).x", y: "closest_to_rim(a, b).y" },
+        to: { x: "closest_to_rim(b, a).x", y: "closest_to_rim(b, a).y" },
+      },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  const analytic = nearestPairCircleCircle({ x: 50, y: 50 }, 50, { x: 250, y: 50 }, 50);
+  approx(s.items.ar.from.x, analytic.a.x, 1e-6); // point on A's rim
+  approx(s.items.ar.from.y, analytic.a.y, 1e-6);
+  approx(s.items.ar.to.x, analytic.b.x, 1e-6);   // point on B's rim
+  approx(s.items.ar.to.y, analytic.b.y, 1e-6);
+  approx(s.items.ar.from.x, 100, 1e-6);
+  approx(s.items.ar.to.x, 200, 1e-6);
+});
+test("closest_to_rim(A, B): re-evaluation is DETERMINISTIC (zero wobble across passes)", () => {
+  const c1 = { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100, name: "A" };
+  const c2 = { ...circlePlugin.defaults, x: 200, y: 0, w: 100, h: 100, name: "B" };
+  const mk = () => ({
+    items: {
+      c1: { ...c1 }, c2: { ...c2 },
+      ar: {
+        ...arrowPlugin.defaults,
+        from: { x: "closest_to_rim(a, b).x", y: "closest_to_rim(a, b).y" },
+        to: { x: "closest_to_rim(b, a).x", y: "closest_to_rim(b, a).y" },
+      },
+    },
+  });
+  // Fresh state objects (defeats the whole-state memo) — the answer must be
+  // bit-identical every pass: the joint solve is a pure function of geometry,
+  // NOT of a previous iterate (the wobble class the old fixpoint had).
+  const r1 = evaluateState(mk(), registry).state;
+  const r2 = evaluateState(mk(), registry).state;
+  assert.equal(r1.items.ar.from.x, r2.items.ar.from.x);
+  assert.equal(r1.items.ar.from.y, r2.items.ar.from.y);
+  assert.equal(r1.items.ar.to.x, r2.items.ar.to.x);
+  assert.equal(r1.items.ar.to.y, r2.items.ar.to.y);
+});
+test("closest_to_rim: memoized joint solve — from.x and from.y share ONE solve", () => {
+  // Both from.x and from.y reference closest_to_rim(a, b); the per-pass memo
+  // makes them read the SAME pair (identical x/y on the exact same rim point).
+  const c1 = { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100, name: "A" };
+  const c2 = { ...circlePlugin.defaults, x: 137, y: 41, w: 80, h: 80, name: "B" };
+  const state = {
+    items: {
+      c1, c2,
+      ar: { ...arrowPlugin.defaults, from: { x: "closest_to_rim(a, b).x", y: "closest_to_rim(a, b).y" }, to: { x: 500, y: 500 } },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  // The from point lies exactly on c1's rim (radius 50 from center (50,50)).
+  approx(Math.hypot(s.items.ar.from.x - 50, s.items.ar.from.y - 50), 50, 1e-6);
+});
+test("closest_to_rim(A, B) on ROTATED rims resolves on the PAINTED rim (45°)", () => {
+  // A rotated rounded rect and a circle; the joint solve must use each rim's
+  // worldTransform-painted geometry. Assert the result sits on each painted rim.
+  const rr = { ...rectPlugin.defaults, x: 0, y: 0, w: 200, h: 120, cornerRadius: 30, rotation: Math.PI / 4, name: "RR" };
+  const c2 = { ...circlePlugin.defaults, x: 400, y: 200, w: 100, h: 100, name: "C" };
+  const state = {
+    items: {
+      rr, c2,
+      ar: {
+        ...arrowPlugin.defaults,
+        from: { x: "closest_to_rim(rr, c).x", y: "closest_to_rim(rr, c).y" },
+        to: { x: "closest_to_rim(c, rr).x", y: "closest_to_rim(c, rr).y" },
+      },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  // `to` lands on c2's painted rim (radius 50 from its center).
+  const cWorld = T.apply(worldTransform(c2), 50, 50);
+  approx(Math.hypot(s.items.ar.to.x - cWorld.x, s.items.ar.to.y - cWorld.y), 50, 1e-6);
+  // `from` lands on the rounded rect's painted rim: re-project it and confirm it
+  // maps to itself (it's a fixed point of the rim's closest-point map).
+  const rrWorld = worldTransform(rr);
+  const localFrom = rectPlugin.closestAnchor(rr, s.items.ar.from.x, s.items.ar.from.y, rrWorld);
+  const reproj = T.apply(rrWorld, localFrom.x, localFrom.y);
+  approx(reproj.x, s.items.ar.from.x, 1e-4);
+  approx(reproj.y, s.items.ar.from.y, 1e-4);
+});
+test("closest_to_rim: cycle THROUGH a function arg is LOUD (widget's own geometry)", () => {
+  // A rect whose x = closest_to_rim(self, …).x depends on self's geometry incl.
+  // x → self-cycle. Must be a loud Cyclic error with a numeric fallback.
+  const state = {
+    items: {
+      r1: { ...rectPlugin.defaults, x: "closest_to_rim(self, 10, 10).x", name: "R" },
+    },
+  };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.match(errors.get("items.r1.x"), /Cyclic/);
+  assert.equal(typeof s.items.r1.x, "number"); // fallback, not NaN
+});
+test("closest_to_rim: unknown widget / non-rim widget are loud entry errors", () => {
+  // A widget without closestAnchor (blur has no rim) is rejected.
+  const state = {
+    items: {
+      r1: { ...rectPlugin.defaults, name: "R" },
+      ar: { ...arrowPlugin.defaults, to: { x: "closest_to_rim(missing, r).x", y: 0 }, name: "Ar" },
+    },
+  };
+  const { errors } = capturedErrorsResult(state);
+  assert.ok([...errors.values()].some((m) => /Unknown widget|has no item/.test(m)), `got: ${JSON.stringify([...errors])}`);
+});
+test("anchor_point widget: its `pt` anchor is a referencable movable reference point", () => {
+  const anchorReg = createRegistry();
+  anchorReg.register(anchorPointPlugin);
+  anchorReg.register(arrowPlugin);
+  const state = {
+    items: {
+      ap: { ...anchorPointPlugin.defaults, x: 100, y: 200, w: 20, h: 20, name: "My Anchor" },
+      ar: { ...arrowPlugin.defaults, from: { x: 0, y: 0 }, to: { x: "@ap_pt.x", y: "@ap_pt.y" } },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, anchorReg);
+  assert.equal(errors.size, 0);
+  approx(s.items.ar.to.x, 110); // anchor pt = center = x + w/2
+  approx(s.items.ar.to.y, 210);
+  // Paints nothing (invisible), is a ghost, and the display slug is my_anchor_pt.
+  assert.deepEqual(anchorPointPlugin.emit(s.items.ap), []);
+  assert.equal(displayToStored("my_anchor_pt.x + 5", state), "@ap_pt.x + 5");
+});
+
 test("evaluateState: cycles are LOUD (errors + console + fallback, no NaN)", () => {
   const state = {
     vars: { a: "b + 1", b: "a + 1" },

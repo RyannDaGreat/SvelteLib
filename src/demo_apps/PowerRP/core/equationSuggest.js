@@ -19,7 +19,7 @@
  * per the manifest's "natural reuse" note.
  */
 
-import { slugMap, numericPropertyPaths } from "./expressions.js";
+import { slugMap, numericPropertyPaths, equationFunctionNames } from "./expressions.js";
 import { rpFuzzyScore } from "./fuzzy.js";
 
 // A trailing identifier chain: the token the cursor is currently inside/after.
@@ -92,12 +92,17 @@ export function headPlugin(headPath, state, slugs, registry, selfId) {
  *
  * Each candidate is {text, kind}: `text` is what REPLACES the current
  * fragment's final segment on accept; `kind` is "property" | "slug" |
- * "variable" | "keyword" (for the caller's icon/styling, not ranking).
+ * "variable" | "keyword" | "function" (for the caller's icon/styling, not
+ * ranking). A FUNCTION candidate's `text` carries a trailing "(" so accepting
+ * it inserts "closest_to_rim(" with the caret parked inside the call (the
+ * registry-driven set is equationFunctionNames(), core/expressions.js — ONE
+ * source of truth, so a new equation function surfaces here automatically).
  * Empty `partial` (just typed "self." or "box.") returns ALL of that
  * head's properties, unranked-but-alphabetical (nothing to rank against yet).
  *
  * @example suggestEquation("self.end_wi", 11, state, registry, "a1") // [{text: "end_width", kind: "property"}, ...]
  * @example suggestEquation("spe", 3, {vars: {speed: 5}, items: {}}, registry, null) // [{text: "speed", kind: "variable"}]
+ * @example suggestEquation("clos", 4, {items: {}}, registry, null) // [{text: "closest_to_rim(", kind: "function"}]
  */
 export function suggestEquation(text, cursor, state, registry, selfId = null) {
   const fragment = currentFragment(text, cursor);
@@ -110,6 +115,9 @@ export function suggestEquation(text, cursor, state, registry, selfId = null) {
     if ("self".startsWith(partial.toLowerCase()) || !partial) candidates.push({ text: "self", kind: "keyword" });
     for (const slug of slugs.toId.keys()) candidates.push({ text: slug, kind: "slug" });
     for (const name of Object.keys(state.vars ?? {})) candidates.push({ text: name, kind: "variable" });
+    // Equation FUNCTIONS (registry-driven — Lead scope addition): insert with
+    // the open paren so the caret lands inside the call ("closest_to_rim(").
+    for (const fn of equationFunctionNames()) candidates.push({ text: `${fn}(`, kind: "function" });
   } else {
     const plugin = headPlugin(headPath, state, slugs, registry, selfId);
     if (!plugin) return [];

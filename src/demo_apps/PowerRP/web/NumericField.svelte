@@ -58,7 +58,10 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import EquationSuggest from "./EquationSuggest.svelte";
   import { getPath } from "../core/deltas.js";
-  import { displayToStored, storedToDisplay, compiled, evalAst } from "../core/expressions.js";
+  import {
+    displayToStored, storedToDisplay, compiled, evalAst,
+    classifyEquation, equationTokenSpans, resolveRef, slugMap,
+  } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { displayUnit } from "./displayUnits.js";
 
@@ -101,7 +104,63 @@
   let draft = $state("");
   let eqInputEl = $state(null);
 
-  let showText = $derived(isEquation || textEntry);
+  // ── Reference special form (manifest "Equation special forms": REFERENCE) ──
+  // A row whose stored value is a PURE, UNMODIFIED reference to a VARIABLE
+  // renders as a SCRUBBER (not text) that WRITES THROUGH to that variable
+  // (round-10 spec: "scrubbing a numeric reference edits the referenced
+  // variable"). classifyEquation gives the special form; resolveRef gives the
+  // target kind. VARIABLES ONLY: write-through to another item's PROPERTY would
+  // silently edit a different item, so item-property/anchor references keep the
+  // text field (see the field-header note + FLAG in the report). refTarget is
+  // the {kind:"var", name} write-through target, or null (→ not a scrubber).
+  let refTarget = $derived.by(() => {
+    if (!isEquation || textEntry) return null;
+    if (classifyEquation(stored) !== "reference") return null;
+    try {
+      const d = resolveRef(stored, slugMap(app.rawState()), selfId);
+      // Variables only, and only if the variable actually exists (a dangling
+      // reference stays as text so its error affordance shows).
+      if (d.kind === "var" && d.name in (app.rawState().vars ?? {})) return d;
+    } catch {
+      // Unresolvable reference (purged item, typo): fall through to text so the
+      // error affordance surfaces it — never silently swallow.
+    }
+    return null;
+  });
+  let showRefScrubber = $derived(refTarget != null);
+  // The referenced variable's own state path — the write-through target.
+  let refVarPath = $derived(refTarget ? ["vars", refTarget.name] : null);
+
+  let showText = $derived((isEquation || textEntry) && !showRefScrubber);
+
+  // ── Syntax highlight spans (manifest "Equation syntax highlighting") ────────
+  // The overlay renders these BEHIND a transparent-text input; classes come
+  // from the REAL tokenizer/resolver (equationTokenSpans), never a regex re-lex.
+  // Recomputed from the live DRAFT (what the user sees) so highlighting tracks
+  // typing before commit. Interleaved with the plain-text gaps in the markup.
+  let highlightPieces = $derived(buildHighlightPieces(showText ? draft : ""));
+
+  function buildHighlightPieces(text) {
+    const clean = text.replace(/^\s*=\s*/, "");
+    const lead = text.slice(0, text.length - clean.length); // preserved "= " prefix (plain)
+    const spans = equationTokenSpans(clean, app.rawState(), selfId);
+    const pieces = lead ? [{ text: lead, cls: null }] : [];
+    let last = 0;
+    for (const s of spans) {
+      if (s.start > last) pieces.push({ text: clean.slice(last, s.start), cls: null }); // whitespace gap
+      pieces.push({ text: clean.slice(s.start, s.end), cls: s.cls });
+      last = s.end;
+    }
+    if (last < clean.length) pieces.push({ text: clean.slice(last), cls: null }); // trailing space
+    return pieces;
+  }
+
+  // Keep the highlight overlay's horizontal scroll pinned to the input's, so a
+  // long expression that scrolls past the box edge stays aligned under the caret.
+  let highlightEl = $state(null);
+  function syncScroll() {
+    if (highlightEl && eqInputEl) highlightEl.scrollLeft = eqInputEl.scrollLeft;
+  }
 
   // Keep the draft synced to the document while the user is NOT typing —
   // a bind:value-style local buffer avoids caret fights with live preview.
@@ -145,6 +204,23 @@
     app.commitPreview();
   }
 
+  // ── Reference scrub write-through (round-10 spec) ──────────────────────────
+  // Scrubbing a pure-VARIABLE-reference row edits the REFERENCED VARIABLE, not
+  // the row (the row keeps its reference string). Bounds/scrub still come from
+  // the ROW (the ratified rule: "variables don't own minimum or maximum
+  // values"), so previewNumber/commitNumber's DraggableNumber wiring is reused
+  // unchanged — only the write TARGET differs (refVarPath instead of path).
+  // Display units apply to the SHOWN value; a variable stores a plain number.
+
+  function previewRef(shown) {
+    app.setPreview([[refVarPath, unit.fromDisplay(shown)]]);
+  }
+
+  function commitRef(shown) {
+    app.setPreview([[refVarPath, unit.fromDisplay(shown)]]);
+    app.commitPreview(); // one undo unit per scrub commit
+  }
+
   // ── The ONE text-entry path (numbers AND equations) ────────────────────────
 
   /** Draft → stored-form string (throws on bad syntax/unknown refs). */
@@ -156,6 +232,7 @@
     draft = e.target.value;
     suggestionsOpen = true; // any edit re-opens/re-ranks (candidates is $derived on the caret)
     highlighted = 0;
+    syncScroll(); // keep the highlight overlay aligned as the caret scrolls the input
     try {
       app.setPreview([[path, toStored(draft)]]);
       invalid = false;
@@ -288,6 +365,19 @@
 <div class="numfield" onkeydown={onWrapKeydown}>
   {#if showText}
     <span class="eq-wrap">
+      <!-- Syntax highlight overlay (manifest "Equation syntax highlighting"):
+           the colorized equation rendered BEHIND the input. The input's own text
+           is transparent (app.css .eq-input color:transparent) with a native
+           visible caret/selection, so caret behavior and metrics stay 100%
+           native; this layer only paints color. Same font/padding/scroll as the
+           input (app.css) keeps every glyph pixel-aligned. aria-hidden: it is
+           decoration; the input carries the accessible value. DESIGN BOUND: the
+           overlay TECHNIQUE generalizes to multi-line (an absolutely-positioned
+           colored layer under a transparent editor) — a future language editor
+           swaps this <span> run for a per-line run of the same pieces. -->
+      <div class="eq-highlight" bind:this={highlightEl} aria-hidden="true">
+        {#each highlightPieces as p}{#if p.cls}<span class="eq-tok eq-tok-{p.cls}">{p.text}</span>{:else}{p.text}{/if}{/each}
+      </div>
       <input
         bind:this={eqInputEl}
         type="text"
@@ -298,6 +388,7 @@
         aria-label={`${label} equation`}
         value={draft}
         oninput={onEqInput}
+        onscroll={syncScroll}
         onfocus={() => (focused = true)}
         onblur={onEqBlur}
         onkeydown={onEqKeydown}
@@ -321,6 +412,35 @@
         onpick={acceptCandidate}
       />
     </span>
+  {:else if showRefScrubber}
+    <!-- REFERENCE scrub write-through (manifest "Equation special forms" +
+         round-10 spec): the stored value is a pure, unmodified reference to a
+         VARIABLE, so the row is a SCRUBBER affordanced as a reference — the
+         path tooltip shows what it points at (the existing path-tooltip
+         machinery), a link glyph on the LEFT marks it as a reference (mirrors
+         the ƒ affordance's placement), and scrubbing WRITES THROUGH to the
+         variable (previewRef/commitRef target ["vars", name]). The row is NOT
+         demoted to a number: its stored reference string is untouched; only the
+         variable's value changes, so every OTHER equation reading that variable
+         follows live. Bounds/scrub come from the ROW (min/max/scrub props), the
+         ratified rule — a variable owns no min/max. onedit (click-without-drag)
+         still opens the equation text path so the reference can be retargeted. -->
+    <Tooltip text={`References ${storedToDisplay(stored, app.rawState())} — scrubbing edits the variable`}>
+      <span class="eq-ref-mark" aria-hidden="true">
+        <iconify-icon icon="mdi:link-variant" width="13" height="13"></iconify-icon>
+      </span>
+    </Tooltip>
+    <DraggableNumber
+      label={`${label} (reference to ${storedToDisplay(stored, app.rawState())})`}
+      value={round3(unit.toDisplay(evaluated))}
+      min={min == null ? null : unit.toDisplay(min)}
+      max={max == null ? null : unit.toDisplay(max)}
+      coefficient={dragCoefficient}
+      suffix={unit.suffix}
+      oninput={previewRef}
+      onchange={commitRef}
+      onedit={beginTextEntry}
+    />
   {:else}
     <!-- Equation affordance (round-11 ruling): on the LEFT of the value,
          HOVER-ONLY (revealed by .row:hover in app.css; hidden at rest so the

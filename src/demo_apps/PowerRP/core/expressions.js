@@ -11,10 +11,21 @@
  * the expression system with no per-plugin annotations. Variables (state.vars)
  * are numbers by definition, so every string var is an equation.
  *
- * GRAMMAR (tiny recursive descent — arithmetic over references):
- *   expr   := term (("+" | "-") term)*
- *   term   := factor (("*" | "/") factor)*
- *   factor := NUMBER | REF | "(" expr ")" | "-" factor
+ * GRAMMAR (tiny recursive descent — arithmetic over references and function
+ * calls):
+ *   expr    := term (("+" | "-") term)*
+ *   term    := factor (("*" | "/") factor)*
+ *   factor  := "-" factor | primary ("." ("x"|"y"))?
+ *   primary := NUMBER | CALL | REF | "(" expr ")"
+ *   CALL    := REF "(" (expr ("," expr)*)? ")"
+ * A CALL evaluates to a POINT value ({x, y}); the optional ".x"/".y" suffix
+ * PROJECTS it to a scalar (from.x = `closest_to_rim(circle1, circle2).x`). The
+ * function names are REGISTRY-DRIVEN (the FUNCTIONS table below), not baked into
+ * the tokenizer: `foo` tokenizes as an ordinary identifier and is only treated
+ * as a call when followed by "(" — an unknown function name is a LOUD error.
+ * Widget arguments (a bare item slug / stored "@id") are converted display↔stored
+ * exactly like any item reference, driven by the function's declared parameter
+ * kinds (see FUNCTIONS).
  *
  * REFERENCE SYNTAX (display form — what the user types and sees):
  *   speed                bare identifier         → variable state.vars.speed
@@ -59,22 +70,30 @@
  * to its plugin default (never a silent NaN). RenderTree stays
  * pure(Document, [[delta, alpha]]) — evaluation is deterministic.
  *
- * The "closest" computed anchor needs a toward-point (closest to WHAT?), so
- * after the main pass (closest refs use the owner plugin's closestToward()
- * with still-unevaluated coords roughed to 0) the closest-bearing slots are
- * re-evaluated in Gauss-Seidel sweeps UNTIL the estimated residual error
- * drops under CLOSEST_EPS_PX. Mutual-closest pairs (both endpoints computed,
- * each aiming at the other) converge geometrically, and the contraction
- * weakens as the two shapes approach tangency — probe-measured: a 1px gap
- * needs ~82 sweeps where ordinary layouts need 2-4 — so a FIXED sweep count
- * cannot hold the tolerance (the original two fixed sweeps left a visible
- * ~10px error at a 1px gap).
+ * DYNAMIC-ANCHOR FUNCTION LIBRARY (manifest "Dynamic anchors — USER
+ * REFINEMENT"): the grammar has FUNCTION CALLS returning POINT values, projected
+ * with `.x`/`.y` — `closest_to_rim(widget, x, y)` (the rim point nearest a
+ * point) and `closest_to_rim(widgetA, widgetB)` (the point on A's rim of the
+ * nearest PAIR between two rims). Function names are REGISTRY-driven (FUNCTIONS),
+ * not baked into the tokenizer; widget args convert display↔stored like any item
+ * ref. The rim-vs-rim case is solved as ONE joint nearest-pair problem
+ * (outline.nearestRimPair, generic over rim geometry) reading only the two rims'
+ * GEOMETRY — so a mutual pair's two endpoints are topologically INDEPENDENT (they
+ * do NOT depend on each other), which kills the mutual-closest wobble class by
+ * construction: NO fixpoint sweeps, one deterministic solve per pass, memoized so
+ * from.x/from.y (and the symmetric to-side call) share it. The legacy
+ * `@id_closest.x` anchor sugar (still written by the drag-to-rim UX) is routed to
+ * the SAME solver — mutual (its toward endpoint is also a closest ref) → joint
+ * pair; otherwise → rim-vs-point toward the arrow's other endpoint. This REPLACES
+ * the old Gauss-Seidel two-sweep fixpoint (which needed ~82 sweeps at a 1px gap
+ * and left visible error near tangency).
  */
 
 import { isTree, copied, getPath, setPath, leaves } from "./deltas.js";
 import * as T from "./transform.js";
 import { worldTransform } from "./derive.js";
 import { reportOnce } from "./report.js";
+import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
 
@@ -86,12 +105,17 @@ const REF_RE = /^@?[A-Za-z0-9_]+(?:\.[A-Za-z_][A-Za-z0-9_]*)*/;
 /**
  * Pure function. Tokenizes an expression source string.
  *
- * Returns [{kind: "num"|"ref"|"op", value, start, end}] with source
- * positions (so display↔stored conversion can rewrite refs in place).
- * Throws on any character outside the grammar.
+ * Returns [{kind: "num"|"ref"|"op"|"comma"|"dot", value, start, end}] with
+ * source positions (so display↔stored conversion can rewrite refs in place).
+ * "comma" separates function-call arguments; "dot" is a STANDALONE "." (member
+ * projection after a call/paren, e.g. `f(a).x`) — dots INSIDE an identifier
+ * chain (`a.b.c`) are eaten by REF_RE and never surface as a dot token, so a
+ * lone dot only appears where a projection can. Throws on any character
+ * outside the grammar.
  *
  * @example tokenize("speed * 2").map((t) => t.kind) // ["ref", "op", "num"]
  * @example tokenize("@ab12_tm.x + 10")[0].value // "@ab12_tm.x"
+ * @example tokenize("f(a, b).x").map((t) => t.kind) // ["ref", "op", "ref", "comma", "ref", "op", "dot", "ref"]
  * @example // tokenize("3 $ 4") throws: Unexpected character "$" at 2
  */
 export function tokenize(src) {
@@ -101,8 +125,17 @@ export function tokenize(src) {
     const ch = src[i];
     if (/\s/.test(ch)) {
       i++;
+    } else if (ch === ",") {
+      tokens.push({ kind: "comma", value: ",", start: i, end: i + 1 });
+      i++;
     } else if (OP_CHARS.includes(ch)) {
       tokens.push({ kind: "op", value: ch, start: i, end: i + 1 });
+      i++;
+    } else if (ch === "." && !/[0-9]/.test(src[i + 1] ?? "")) {
+      // A standalone "." (not the start of a ".5"-style number) — member
+      // projection. `a.b` refs are handled by REF_RE above; this only fires
+      // for a dot that starts a token, i.e. right after a ")" or another ref.
+      tokens.push({ kind: "dot", value: ".", start: i, end: i + 1 });
       i++;
     } else if (/[0-9.]/.test(ch)) {
       const m = NUM_RE.exec(src.slice(i));
@@ -121,16 +154,158 @@ export function tokenize(src) {
   return tokens;
 }
 
+// ── Equation special forms + highlight spans (Opus25, round-3 equation field) ──
+// FLAG (Opus24 owns this file's grammar+outline): these two pure functions are
+// ADDITIVE and self-contained — they build ONLY on tokenize/resolveRef, add no
+// grammar, and are grep-able as "Opus25". They power NumericField's special-form
+// GUI (constant scrubber / reference write-through / general text) and its
+// syntax-highlight overlay. If the grammar grows (new token kinds, function
+// calls), extend TOKEN_CLS below; nothing else here needs to change.
+
+/**
+ * Pure function. Classifies an equation STRING into its special form (manifest
+ * "Equation special forms" — the GUI keys off this):
+ *   "constant"  — a bare number literal ("42", "-3.5"): rendered as a scrubber.
+ *   "reference" — a bare, UNMODIFIED dotted path ("speed", "box.x", "self.w",
+ *                 "box_tm.x"): the reference-scrub write-through target.
+ *   "general"   — anything else (arithmetic over refs): plain text editing.
+ * A leading "=" (spreadsheet affordance) is tolerated. Structure ONLY — it does
+ * not resolve refs against state (an unknown-but-well-formed path is still a
+ * "reference" shape; whether it RESOLVES is a separate question for the caller).
+ *
+ * @example classifyEquation("42") // "constant"
+ * @example classifyEquation("-3.5") // "constant"
+ * @example classifyEquation("speed") // "reference"
+ * @example classifyEquation("box_tm.x") // "reference"
+ * @example classifyEquation("self.w / 2") // "general"
+ * @example classifyEquation("a + b") // "general"
+ */
+export function classifyEquation(src) {
+  let tokens;
+  try {
+    tokens = tokenize(String(src).replace(/^\s*=\s*/, ""));
+  } catch {
+    return "general"; // unparseable text is edited as general
+  }
+  if (tokens.length === 1 && tokens[0].kind === "num") return "constant";
+  // A leading unary minus on a lone number is still a constant (-3.5).
+  if (tokens.length === 2 && tokens[0].kind === "op" && tokens[0].value === "-" && tokens[1].kind === "num")
+    return "constant";
+  if (tokens.length === 1 && tokens[0].kind === "ref") return "reference";
+  return "general";
+}
+
+// Non-ref, non-call token → highlight class. Ref tokens get their class from
+// resolveRef (var/prop/anchor/self) — a real resolution, never a regex re-lex.
+// comma/dot are call/projection punctuation; parens are handled inline.
+const TOKEN_CLS = { num: "num", op: "op", comma: "punct", dot: "punct" };
+
+/**
+ * Pure function. Maps an equation's SOURCE positions to highlight classes for
+ * the syntax overlay (NumericField renders one colored <span> per span behind a
+ * transparent input). Reuses tokenize + resolveRef (the REAL tokenizer/
+ * resolver, never a second lexer), so highlighting can never diverge from what
+ * evaluation actually parses; and it flags UNKNOWN refs as errors on the SAME
+ * criteria displayToStored throws on (unknown variable, unknown item/anchor,
+ * malformed self) — so the overlay's red always matches the field's invalid
+ * affordance.
+ *
+ * Returns [{start, end, cls}] over the (leading-"="-stripped) source, in order,
+ * covering exactly the token characters (gaps = whitespace, rendered as plain
+ * text by the caller). Classes: "num", "op", "paren" (a "("/")"), "punct"
+ * (comma / projection dot), "call" (a ref immediately followed by "(" — a
+ * function name, classified positionally EXACTLY as the parser decides so an
+ * unknown function name never looks like an unknown variable), "self", "var",
+ * "prop", "anchor" (resolved ref kinds), "error" (a ref that does not resolve
+ * to a REAL var/item/anchor, or a source that does not tokenize). `state` is the
+ * raw state (for slugs + the vars set); `selfId` (optional) enables `self.…`.
+ *
+ * DESIGN BOUND (manifest "don't corner the field"): span-based classification is
+ * substrate-agnostic — it names character ranges, making no single-line
+ * assumption. A future multi-line editor reuses this unchanged (feed it each
+ * line's source, offset the spans) — the overlay TECHNIQUE, not this function,
+ * is what would generalize.
+ *
+ * @example // one bare variable, resolvable → a single "var" span
+ * @example equationTokenSpans("speed", {vars: {speed: 1}, items: {}}) // [{start: 0, end: 5, cls: "var"}]
+ * @example // number + operator + UNKNOWN var → the var is flagged "error"
+ * @example equationTokenSpans("2 + ghost", {items: {}}) // [{start: 0, end: 1, cls: "num"}, {start: 2, end: 3, cls: "op"}, {start: 4, end: 9, cls: "error"}]
+ * @example // a ref followed by "(" is a function CALL name (not a var/error)
+ * @example equationTokenSpans("f(2)", {items: {}}).map((s) => s.cls) // ["call", "paren", "num", "paren"]
+ */
+export function equationTokenSpans(src, state, selfId = null) {
+  const clean = String(src).replace(/^\s*=\s*/, "");
+  let tokens;
+  try {
+    tokens = tokenize(clean);
+  } catch {
+    // Malformed source: one error span over the whole thing (evaluateState /
+    // the invalid affordance report the specifics; the overlay just shows red).
+    return clean.length ? [{ start: 0, end: clean.length, cls: "error" }] : [];
+  }
+  const slugs = slugMap(state);
+  const vars = state.vars ?? {};
+  // Widget-arg token spans (a bare item ref at a "widget" call position) — so a
+  // widget name argument highlights as an item ref, not as an unknown variable.
+  // Best-effort: an unparseable/unknown-function source yields no spans (each
+  // token still classifies on its own, below).
+  let wSpans = new Set();
+  try {
+    wSpans = widgetArgSpans(parseExpression(clean));
+  } catch {
+    // no widget-arg classification for malformed input; per-token below still runs
+  }
+  return tokens.map((t, i) => {
+    if (t.kind !== "ref") {
+      const cls = t.kind === "op" && (t.value === "(" || t.value === ")") ? "paren" : TOKEN_CLS[t.kind] ?? "op";
+      return { start: t.start, end: t.end, cls };
+    }
+    // A member-projection coord (the x/y right after a standalone "."): grammar.
+    if (tokens[i - 1]?.kind === "dot") return { start: t.start, end: t.end, cls: "member" };
+    // A ref immediately followed by "(" is a FUNCTION NAME — classify it exactly
+    // as the parser does (primary(): ref then peek() "(" → call), so an unknown
+    // function name reads as a call, not as an unknown variable.
+    const next = tokens[i + 1];
+    if (next?.kind === "op" && next.value === "(") return { start: t.start, end: t.end, cls: "call" };
+    // A WIDGET argument (bare item slug / "@id" at a widget param): an item ref.
+    if (wSpans.has(`${t.start}:${t.end}`)) {
+      const ok = t.value === "self" || t.value.startsWith("@") || slugs.toId.has(t.value);
+      return { start: t.start, end: t.end, cls: ok ? "prop" : "error" };
+    }
+    if (t.value === "self" || t.value.startsWith("self.")) {
+      try {
+        parseSelfRef(t.value, selfId); // validate shape (throws on bare/malformed self)
+        return { start: t.start, end: t.end, cls: "self" };
+      } catch {
+        return { start: t.start, end: t.end, cls: "error" };
+      }
+    }
+    try {
+      const d = resolveRef(t.value, slugs, selfId);
+      // A bare identifier resolves to {kind:"var"} STRUCTURALLY even when no such
+      // variable exists (resolveRef defers the existence check to displayToStored)
+      // — flag the nonexistent var as an error so the overlay matches the field.
+      if (d.kind === "var" && !(d.name in vars)) return { start: t.start, end: t.end, cls: "error" };
+      return { start: t.start, end: t.end, cls: d.kind === "var" ? "var" : d.kind }; // "prop" | "anchor" | "var"
+    } catch {
+      return { start: t.start, end: t.end, cls: "error" };
+    }
+  });
+}
+
 /**
  * Pure function. Parses an expression into an AST.
  *
  * AST nodes: {kind: "num", value} | {kind: "ref", name} |
- * {kind: "neg", arg} | {kind: "bin", op, left, right}. Throws (with
- * position) on syntax errors. A leading "=" is tolerated and ignored —
- * the spreadsheet-style equation affordance.
+ * {kind: "call", name, args} | {kind: "member", obj, prop} |
+ * {kind: "neg", arg} | {kind: "bin", op, left, right}. A `call` evaluates to a
+ * POINT ({x, y}); a `member` projects it to `.x`/`.y`. Throws (with position)
+ * on syntax errors. A leading "=" is tolerated and ignored — the
+ * spreadsheet-style equation affordance.
  *
  * @example parseExpression("2 + 3 * x") // {kind: "bin", op: "+", left: {kind: "num", value: 2}, right: {kind: "bin", op: "*", left: {kind: "num", value: 3}, right: {kind: "ref", name: "x"}}}
  * @example parseExpression("-(a.x)") // {kind: "neg", arg: {kind: "ref", name: "a.x"}}
+ * @example parseExpression("f(a, b).x") // {kind: "member", obj: {kind: "call", name: "f", args: [{kind: "ref", name: "a"}, {kind: "ref", name: "b"}]}, prop: "x"}
  * @example // parseExpression("1 +") throws: Unexpected end of expression
  */
 export function parseExpression(src) {
@@ -143,6 +318,7 @@ export function parseExpression(src) {
     if (t?.kind === "op" && ops.includes(t.value)) return tokens[pos++].value;
     return null;
   };
+  const takeKind = (kind) => (tokens[pos]?.kind === kind ? tokens[pos++] : null);
   function expr() {
     let node = term();
     let op;
@@ -157,6 +333,19 @@ export function parseExpression(src) {
   }
   function factor() {
     if (takeOp("-")) return { kind: "neg", arg: factor() };
+    let node = primary();
+    // Optional member projection ".x"/".y" on a point-valued primary (a call
+    // result, or a parenthesized point). Only x/y are valid coords.
+    if (takeKind("dot")) {
+      const p = tokens[pos];
+      if (p?.kind !== "ref" || (p.value !== "x" && p.value !== "y"))
+        throw new Error(`Expected .x or .y at ${p?.start ?? clean.length} in "${clean}"`);
+      pos++;
+      node = { kind: "member", obj: node, prop: p.value };
+    }
+    return node;
+  }
+  function primary() {
     if (takeOp("(")) {
       const inner = expr();
       if (!takeOp(")")) throw new Error(`Missing ")" at ${peek()?.start ?? clean.length} in "${clean}"`);
@@ -165,8 +354,24 @@ export function parseExpression(src) {
     const t = peek();
     if (!t) throw new Error(`Unexpected end of expression in "${clean}"`);
     if (t.kind === "num") return { kind: "num", value: tokens[pos++].value };
-    if (t.kind === "ref") return { kind: "ref", name: tokens[pos++].value };
+    if (t.kind === "ref") {
+      const tok = tokens[pos++];
+      if (peek()?.kind === "op" && peek().value === "(") return call(tok.value);
+      // start/end are the source span of this ref token — lets the display↔
+      // stored converters and the dependency collector locate widget-arg tokens.
+      return { kind: "ref", name: tok.value, start: tok.start, end: tok.end };
+    }
     throw new Error(`Unexpected "${t.value}" at ${t.start} in "${clean}"`);
+  }
+  function call(name) {
+    takeOp("("); // consumed the "("
+    const args = [];
+    if (!(peek()?.kind === "op" && peek().value === ")")) {
+      args.push(expr());
+      while (takeKind("comma")) args.push(expr());
+    }
+    if (!takeOp(")")) throw new Error(`Missing ")" in call "${name}(...)" at ${peek()?.start ?? clean.length} in "${clean}"`);
+    return { kind: "call", name, args };
   }
   const ast = expr();
   if (pos < tokens.length)
@@ -187,31 +392,50 @@ export function compiled(src) {
   if (!c) {
     const ast = parseExpression(src);
     const refs = [];
+    const calls = [];
     (function walk(n) {
       if (n.kind === "ref" && !refs.includes(n.name)) refs.push(n.name);
       if (n.kind === "neg") walk(n.arg);
+      if (n.kind === "member") walk(n.obj);
+      if (n.kind === "call") { calls.push(n); n.args.forEach(walk); }
       if (n.kind === "bin") { walk(n.left); walk(n.right); }
     })(ast);
-    parseCache.set(src, (c = { ast, refs }));
+    parseCache.set(src, (c = { ast, refs, calls }));
   }
   return c;
 }
 
 /**
- * Pure function. Evaluates an AST; lookup(refToken) supplies reference values
- * (and throws on unknown references).
+ * Pure function. Evaluates an AST. `lookup(refToken)` supplies reference values
+ * (and throws on unknown references); the optional `callFn(name, argAsts,
+ * evalArg)` evaluates a function CALL to a POINT value ({x, y}) — a `.x`/`.y`
+ * member then projects it. `callFn` receives the raw arg ASTs plus an `evalArg`
+ * helper (evaluates a numeric arg with the same lookup) so it can distinguish a
+ * WIDGET argument (a bare item ref) from a numeric one. A call/member in an AST
+ * with no callFn is a loud error.
  *
  * @example evalAst(parseExpression("2 + x * 3"), () => 4) // 14
  * @example evalAst(parseExpression("-(1 + 1)"), () => 0) // -2
+ * @example evalAst(parseExpression("f(a).x"), () => 0, () => ({x: 7, y: 9})) // 7
  */
-export function evalAst(ast, lookup) {
+export function evalAst(ast, lookup, callFn = null) {
   switch (ast.kind) {
     case "num": return ast.value;
     case "ref": return lookup(ast.name);
-    case "neg": return -evalAst(ast.arg, lookup);
+    case "neg": return -evalAst(ast.arg, lookup, callFn);
+    case "member": {
+      const pt = evalAstPoint(ast.obj, lookup, callFn);
+      return pt[ast.prop];
+    }
+    case "call":
+      // A bare (unprojected) call is a POINT, not a number — the grammar
+      // requires a .x/.y projection to use it in arithmetic. Still evaluate it
+      // so a genuine solve error surfaces before this message.
+      evalCall(ast, lookup, callFn);
+      throw new Error(`Function "${ast.name}(...)" returns a point — project it with .x or .y`);
     case "bin": {
-      const a = evalAst(ast.left, lookup);
-      const b = evalAst(ast.right, lookup);
+      const a = evalAst(ast.left, lookup, callFn);
+      const b = evalAst(ast.right, lookup, callFn);
       switch (ast.op) {
         case "+": return a + b;
         case "-": return a - b;
@@ -221,6 +445,170 @@ export function evalAst(ast, lookup) {
     }
   }
   throw new Error(`Unknown AST node: ${JSON.stringify(ast)}`);
+}
+
+/** Pure function. Evaluates a point-valued AST node (a call or a projected-away member's object). */
+function evalAstPoint(ast, lookup, callFn) {
+  if (ast.kind === "call") return evalCall(ast, lookup, callFn);
+  throw new Error(`Only a function call is a point value here (got ${ast.kind})`);
+}
+
+/** Pure function. Evaluates a call node to a point via callFn. */
+function evalCall(ast, lookup, callFn) {
+  if (!callFn) throw new Error(`Function calls need a call handler (got "${ast.name}")`);
+  const pt = callFn(ast.name, ast.args, (argAst) => evalAst(argAst, lookup, callFn));
+  if (!pt || typeof pt.x !== "number" || typeof pt.y !== "number")
+    throw new Error(`Function "${ast.name}" did not return a point`);
+  return pt;
+}
+
+// ── Function library (dynamic-anchor equation functions) ─────────────────────
+//
+// The FUNCTIONS table is the registry-driven function library (manifest
+// "Dynamic anchors — USER REFINEMENT": "widgets that support dynamic anchoring
+// expose functions … registry-driven, not hardcoded in the tokenizer"). Each
+// entry lists its OVERLOADS by parameter-kind signature; a "widget" param is an
+// item reference (a bare item slug in display form, "@id" in stored form — the
+// SAME conversion machinery as any item ref, driven by these kinds so the
+// converter and dependency collector know which args are widgets). A "number"
+// param is an ordinary numeric sub-expression. Every function returns a POINT
+// ({x, y}); the grammar's ".x"/".y" projects it.
+//
+// The actual SOLVE (nearest point / nearest pair over rim geometry) lives in
+// evaluateState's call handler — it needs the folded item states, the plugin
+// registry, and the per-pass solve MEMO (so from.x and from.y of one arrow
+// share ONE joint solve). This table is pure metadata: signatures + arity +
+// autocomplete surface, no engine state.
+//
+// closest_to_rim:
+//   (widget, x, y)     rim-vs-point — the point ON widget's rim nearest (x, y).
+//   (widgetA, widgetB) rim-vs-rim   — the point on widgetA's rim of the nearest
+//                                     PAIR between the two rims (solved jointly;
+//                                     the symmetric call (B, A) gives B's point).
+
+/**
+ * The equation function library, keyed by canonical (snake_case) name. Each
+ * value: {overloads: [{params: ("widget"|"number")[]}], doc}. Exported as the
+ * ONE source of truth for autocomplete (equationFunctionNames) — nothing else
+ * enumerates function names.
+ */
+export const FUNCTIONS = {
+  closest_to_rim: {
+    doc: "The point on a widget's rim nearest a point, or the nearest-pair point between two rims.",
+    overloads: [
+      { params: ["widget", "number", "number"] }, // rim vs point
+      { params: ["widget", "widget"] },            // rim vs rim (joint solve)
+    ],
+  },
+};
+
+/**
+ * Pure function. The function-library names, for equation autocomplete (the ONE
+ * exported list — manifest EQUATION DISCOVERABILITY: "expose the function table
+ * for equationSuggest"). Each entry is a ready-to-type stub with its first
+ * overload's arity, e.g. "closest_to_rim(" — the caller appends args.
+ *
+ * @example equationFunctionNames() // ["closest_to_rim"]
+ */
+export function equationFunctionNames() {
+  return Object.keys(FUNCTIONS);
+}
+
+/**
+ * Pure function. Resolves the OVERLOAD of a function call by its argument count,
+ * throwing loudly (unknown function / bad arity) — the entry-time and eval-time
+ * guard. `name` is the function name; `argCount` the number of args supplied.
+ *
+ * @example resolveOverload("closest_to_rim", 3).params // ["widget", "number", "number"]
+ * @example resolveOverload("closest_to_rim", 2).params // ["widget", "widget"]
+ * @example // resolveOverload("nope", 1) throws: Unknown function "nope"
+ * @example // resolveOverload("closest_to_rim", 5) throws: "closest_to_rim" has no 5-argument form
+ */
+export function resolveOverload(name, argCount) {
+  const fn = FUNCTIONS[name];
+  if (!fn) throw new Error(`Unknown function "${name}"`);
+  const overload = fn.overloads.find((o) => o.params.length === argCount);
+  if (!overload) {
+    const arities = fn.overloads.map((o) => o.params.length).join(" or ");
+    throw new Error(`"${name}" has no ${argCount}-argument form (takes ${arities})`);
+  }
+  return overload;
+}
+
+/**
+ * Pure function. Is this arg AST a WIDGET reference (a bare item ref, i.e. an
+ * identifier token that is NOT a variable / property / anchor / self / call)?
+ * A widget arg is a lone `{kind:"ref"}` whose name has no "." (item slug in
+ * display form, "@id" in stored form) — anything with a coordinate suffix, a
+ * variable, or an arithmetic node is NOT a widget. Used to type-check and
+ * resolve widget args against the function signature.
+ *
+ * @example widgetArgToken({kind: "ref", name: "circle1"}) // "circle1"
+ * @example widgetArgToken({kind: "ref", name: "@ab12"}) // "@ab12"
+ * @example widgetArgToken({kind: "ref", name: "box.x"}) // null (a property, not a bare widget)
+ * @example widgetArgToken({kind: "bin", op: "+"}) // null
+ */
+export function widgetArgToken(argAst) {
+  if (argAst.kind !== "ref") return null;
+  return argAst.name.includes(".") ? null : argAst.name;
+}
+
+/**
+ * Pure function. Resolves a widget-arg token (display slug or stored "@id") to
+ * an itemId, throwing if it names no item. `slugs` is a slugMap(state);
+ * `selfId` lets `self` name the owner item (a widget arg may be `self`).
+ *
+ * @example resolveWidgetArg("@ab12", slugMap({items: {ab12: {type: "circle"}}})) // "ab12"
+ * @example resolveWidgetArg("box", slugMap({items: {a1: {type: "rect", name: "Box"}}})) // "a1"
+ * @example resolveWidgetArg("self", slugMap({items: {}}), "a1") // "a1"
+ */
+export function resolveWidgetArg(token, slugs, selfId = null) {
+  if (token === "self") {
+    if (selfId == null) throw new Error(`"self" is only valid in an item's own equation`);
+    return selfId;
+  }
+  if (token.startsWith("@")) {
+    const id = token.slice(1);
+    return id;
+  }
+  if (slugs.toId.has(token)) return slugs.toId.get(token);
+  throw new Error(`Unknown widget "${token}" — no item with that name`);
+}
+
+/**
+ * Pure function. The source spans of every WIDGET-argument ref token in an
+ * expression (a bare item ref sitting at a "widget"-declared parameter position
+ * of a known function call). Returned as a Set of "start:end" keys so the
+ * display↔stored converters can rewrite JUST those tokens as item refs
+ * (slug↔@id) instead of the default variable treatment. Also VALIDATES arity
+ * (resolveOverload throws on unknown functions / bad arity) and that a
+ * widget-position arg is actually a bare widget token (not arithmetic).
+ *
+ * @example widgetArgSpans(parseExpression("closest_to_rim(a, b).x")) // Set { "15:16", "18:19" }
+ * @example widgetArgSpans(parseExpression("closest_to_rim(a, 1, 2).x")) // Set { "15:16" } (only the widget param)
+ * @example widgetArgSpans(parseExpression("x + 1")) // Set {} (no calls)
+ */
+export function widgetArgSpans(ast) {
+  const spans = new Set();
+  (function walk(n) {
+    if (!n || typeof n !== "object") return;
+    if (n.kind === "call") {
+      const overload = resolveOverload(n.name, n.args.length); // throws loudly
+      n.args.forEach((arg, i) => {
+        if (overload.params[i] === "widget") {
+          const tok = widgetArgToken(arg);
+          if (tok === null) throw new Error(`Argument ${i + 1} of "${n.name}" must be a widget name, not an expression`);
+          if (arg.start != null) spans.add(`${arg.start}:${arg.end}`);
+        }
+        walk(arg);
+      });
+      return;
+    }
+    if (n.kind === "neg") walk(n.arg);
+    if (n.kind === "member") walk(n.obj);
+    if (n.kind === "bin") { walk(n.left); walk(n.right); }
+  })(ast);
+  return spans;
 }
 
 // ── Slugs (identifier naming) ────────────────────────────────────────────────
@@ -428,14 +816,25 @@ export function resolveRef(token, slugs, selfId = null) {
  * Pure function. Rewrites an expression's reference tokens via mapToken,
  * preserving all spacing/operators exactly (tokens carry positions).
  *
+ * A ref that is a MEMBER PROJECTION coordinate (the `x`/`y` right after a
+ * standalone "." — e.g. the `.x` in `f(a).x`) is GRAMMAR, not a reference, so
+ * it is left verbatim (the mapper is never called for it). A function NAME ref
+ * (before "(") IS passed to the mapper — the mapper decides what to do with it
+ * (displayToStored/storedToDisplay pass known function names through verbatim).
+ *
  * @example mapRefTokens("a + b", (t) => t.toUpperCase()) // "A + B"
+ * @example mapRefTokens("f(a).x", (t) => t.toUpperCase()) // "F(A).x" (name + arg mapped; the projection .x is grammar, untouched)
+ * @example mapRefTokens("a + b", (v, tok) => `${v}@${tok.start}`) // "a@0 + b@4" (mapper gets the token for its span)
  */
 export function mapRefTokens(src, mapToken) {
   let out = "";
   let last = 0;
-  for (const t of tokenize(src)) {
+  const tokens = tokenize(src);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
     if (t.kind !== "ref") continue;
-    out += src.slice(last, t.start) + mapToken(t.value);
+    if (tokens[i - 1]?.kind === "dot") continue; // member projection coord (.x/.y): grammar, not a ref
+    out += src.slice(last, t.start) + mapToken(t.value, t);
     last = t.end;
   }
   return out + src.slice(last);
@@ -545,14 +944,25 @@ function pathToDisplay(path) {
  * @example displayToStored("box.x + 10", {items: {a1: {type: "rect", name: "Box"}}}) // "@a1.x + 10"
  * @example displayToStored("speed * 2", {vars: {speed: 5}, items: {}}) // "speed * 2"
  * @example displayToStored("self.end_width / 2", {items: {}}) // "self.endWidth / 2"
+ * @example displayToStored("closest_to_rim(box, c).x", {items: {a1: {type: "rect", name: "Box"}, a2: {type: "circle", name: "C"}}}) // "closest_to_rim(@a1, @a2).x"
  * @example // displayToStored("sped * 2", {vars: {speed: 5}}) throws: Unknown variable "sped"
  * @example // displayToStored("self.endWidth", {items: {}}) throws: Unknown property "endWidth" (self.endWidth) — camelCase is not accepted, one canonical form only
  */
 export function displayToStored(src, state) {
   const clean = src.replace(/^\s*=\s*/, "");
-  parseExpression(clean); // validate the full grammar, not just the tokens
+  const ast = parseExpression(clean); // validate the full grammar, not just the tokens
+  const wSpans = widgetArgSpans(ast); // validates function arity/kinds; marks widget-arg tokens
   const slugs = slugMap(state);
-  return mapRefTokens(clean, (token) => {
+  return mapRefTokens(clean, (token, tok) => {
+    // A function NAME (a ref immediately followed by "(") stays verbatim —
+    // it is grammar, not a reference; widgetArgSpans already validated it.
+    if (token in FUNCTIONS && clean[tok.end] === "(") return token;
+    // A WIDGET argument: a bare item slug → "@id" (or verbatim "self").
+    if (wSpans.has(`${tok.start}:${tok.end}`)) {
+      if (token === "self") return token;
+      const id = resolveWidgetArg(token, slugs); // throws on unknown widget
+      return `@${id}`;
+    }
     if (token === "self" || token.startsWith("self.")) {
       const shape = selfRefShape(token); // throws "needs a property" on bare "self"
       if (shape.kind !== "prop") return token; // self.anchors.<id>.x|y: structural, stored verbatim
@@ -588,6 +998,7 @@ export function displayToStored(src, state) {
  * @example storedToDisplay("@a1_tm.y", {items: {a1: {type: "rect", name: "Box"}}}) // "box_tm.y"
  * @example storedToDisplay("@a1.endWidth", {items: {a1: {type: "fancy_arrow", name: "Arrow"}}}) // "arrow.end_width"
  * @example storedToDisplay("self.rotationAnchor.x") // "self.rotation_anchor.x"
+ * @example storedToDisplay("closest_to_rim(@a1, @a2).x", {items: {a1: {type: "rect", name: "Box"}, a2: {type: "circle", name: "C"}}}) // "closest_to_rim(box, c).x"
  */
 export function storedToDisplay(src, state) {
   const slugs = slugMap(state);
@@ -597,12 +1008,27 @@ export function storedToDisplay(src, state) {
   } catch {
     return src; // malformed stays visible verbatim; evaluateState reports it
   }
+  // Widget-arg token spans (bare "@id" at a widget param position). Best-effort:
+  // if the source doesn't parse, wSpans stays empty and bare @ids fall through
+  // to parseStoredRef's error path (kept verbatim), exactly as before.
+  let wSpans = new Set();
+  try {
+    wSpans = widgetArgSpans(parseExpression(src));
+  } catch {
+    // unparseable / unknown function — no widget-arg rewrites, verbatim fallback
+  }
   let out = "";
   let last = 0;
-  for (const t of tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
     if (t.kind !== "ref") continue;
+    if (tokens[i - 1]?.kind === "dot") continue; // member projection coord (.x/.y): grammar, unchanged
     let mapped = t.value;
-    if (t.value.startsWith("@")) {
+    if (wSpans.has(`${t.start}:${t.end}`) && t.value.startsWith("@")) {
+      // A widget argument stored as a bare "@id" → its current slug.
+      const slug = slugs.toSlug.get(t.value.slice(1));
+      if (slug) mapped = slug; // unknown id stays "@id" verbatim (purged widget)
+    } else if (t.value.startsWith("@")) {
       try {
         const d = parseStoredRef(t.value);
         const slug = slugs.toSlug.get(d.itemId);
@@ -681,22 +1107,80 @@ function mutSetPath(tree, path, value) {
   cur[path[path.length - 1]] = value;
 }
 
+// ── Rim solving (dynamic-anchor functions + the `closest` sugar) ─────────────
+//
+// The point ON a widget's rim, generic over rim geometry: every bbox plugin
+// exposes closestAnchor(state, worldX, worldY, world) returning the LOCAL rim
+// point nearest a world target, evaluated through the item's PAINTED transform
+// (worldTransform — rotation pivoted about rotationAnchor, so a rotated rim
+// resolves on the visible rim). rimProjector wraps that into a world→world
+// closest-point map — the exact interface outline.nearestRimPair consumes, so
+// circle / rect / rounded-rect / crop box / future custom outlines all solve
+// through ONE path with no per-shape branch here.
+
+/** Pure function. The world-space CENTER of a bbox item (its rim's facing-seed hint). */
+function rimCenter(item) {
+  return T.apply(worldTransform(item), (item.w ?? 0) / 2, (item.h ?? 0) / 2);
+}
+
+/**
+ * Pure function (closure over the item's evaluated state). A world→world
+ * closest-point map for one widget's rim: (qx, qy) → the world rim point nearest
+ * (qx, qy). Throws if the plugin has no closestAnchor (not a rim widget).
+ */
+function rimProjector(item, plugin) {
+  if (!plugin.closestAnchor) throw new Error(`"${item.type}" has no rim (no closestAnchor) for closest_to_rim`);
+  const world = worldTransform(item);
+  return (qx, qy) => {
+    const local = plugin.closestAnchor(item, qx, qy, world);
+    return T.apply(world, local.x, local.y);
+  };
+}
+
+/**
+ * Pure function. If the `toward` endpoint (the arrow's OTHER endpoint, as
+ * returned by closestToward — an {x, y} whose coords may be equation strings) is
+ * ITSELF a closest-rim reference to some item, returns that item's id — the
+ * mutual-closest case, which routes to the JOINT nearest-pair solve. Otherwise
+ * null (an ordinary point target → rim-vs-point). It suffices to inspect the x
+ * coordinate: the writer (CanvasView / migration) always writes the pair
+ * `@id_closest.x` / `@id_closest.y` together.
+ *
+ * @example closestPartnerRimId({x: "@c2_closest.x", y: "@c2_closest.y"}, {toId: new Map(), toSlug: new Map()}) // "c2"
+ * @example closestPartnerRimId({x: 100, y: 50}, {toId: new Map()}) // null (a plain point)
+ */
+function closestPartnerRimId(toward, slugs) {
+  if (!toward || typeof toward.x !== "string") return null;
+  let d;
+  try {
+    d = resolveRef(toward.x.replace(/^\s*=\s*/, "").trim(), slugs);
+  } catch {
+    return null; // not a resolvable ref → treat as a point target
+  }
+  return d.kind === "anchor" && d.anchorId === "closest" ? d.itemId : null;
+}
+
+/**
+ * Pure function. The key (e.g. "from"/"to") of the endpoint OBJECT `toward`
+ * within the owner item's state, by object identity — so a rim-vs-point closest
+ * can depend on that endpoint's own coordinate slots. Returns null if `toward`
+ * isn't one of the owner's own endpoint objects (defensive; then the caller
+ * simply adds no toward dependency).
+ *
+ * @example // owner = {from: {x:1,y:2}, to: {x:3,y:4}}; siblingEndpointKey(owner, owner.to) === "to"
+ */
+function siblingEndpointKey(owner, toward) {
+  for (const [key, value] of Object.entries(owner ?? {}))
+    if (value === toward) return key;
+  return null;
+}
+
 // ── Evaluation (the derivation-stage expression pass) ────────────────────────
 
 const evalMemo = new WeakMap(); // state object → {registry, result}
 // The geometry a base-frame self anchor (rotation pivot) reads — never
 // rotation or rotationAnchor, so the pivot is a stable fixed point.
 const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
-// Mutual-closest fixpoint tolerance: the residual-error bound the sweeps
-// converge to. LINKED PRECEDENT: the manifest's own convergence claim
-// ("mutual-closest converges to <0.01px") — now enforced, not assumed.
-const CLOSEST_EPS_PX = 0.01;
-// Sweep cap. Probe-measured: the worst legitimate geometry (two circles
-// 0.1px from tangent) settles in ~130 sweeps; ordinary layouts take 2-4.
-// 1000 gives order-of-magnitude headroom at negligible cost (a sweep is a
-// few trig evals per closest slot). Hitting the cap is REPORTED, never
-// silent. (Safety bound, not tuned behavior — PENDING USER RATIFICATION.)
-const MAX_CLOSEST_SWEEPS = 1000;
 
 /**
  * Near-pure function (memoized on state identity; console.errors each NEW
@@ -715,11 +1199,17 @@ const MAX_CLOSEST_SWEEPS = 1000;
  *   - property ref  → that item-property slot (if it is an equation)
  *   - anchor ref    → ALL equation slots of the referenced item
  *     (conservative: anchors read the item's transform + bbox)
- *   - "closest" anchors additionally resolve by fixpoint sweeps to a
- *     < CLOSEST_EPS_PX residual (V1 resolveEndpoints semantics, now
- *     convergence-gated) using the owner plugin's
- *     closestToward(state, pathWithinItem) hook — the arrow supplies its
- *     other endpoint.
+ *   - closest_to_rim(W, x, y) / a `@id_closest` ref toward a plain point →
+ *     depends on W's geometry slots + the toward point's own slots (the
+ *     point is a RIM-VS-POINT projection, so the point must evaluate first)
+ *   - closest_to_rim(A, B) / a MUTUAL `@id_closest` pair → depends on BOTH
+ *     rims' geometry slots and NOTHING else. The nearest PAIR is solved
+ *     jointly from the two rims' GEOMETRY, so the two endpoints do NOT depend
+ *     on each other — no fixpoint, no wobble (manifest USER REFINEMENT: "the
+ *     rim-vs-rim solver computes the nearest PAIR internally as ONE joint
+ *     problem … kills the observed mutual-closest wobble"). Identical solves
+ *     within one pass are MEMOIZED, so from.x/from.y (and the symmetric
+ *     to-side call) share ONE solve.
  *
  * @example evaluateState({vars: {speed: 5}, items: {a1: {type: "rect", x: "speed * 2"}}}, registry).state.items.a1.x // 10
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
@@ -781,15 +1271,51 @@ function computeEvaluatedState(state, registry) {
   for (const slot of [...slots.values()]) {
     slot.deps = new Set();
     slot.descriptors = new Map(); // ref token → descriptor
-    slot.hasClosest = false;
     // `self` resolves to the item that OWNS this slot (its equations live in
     // items.<selfId>.…). Variable slots have no self (self is meaningless
     // there); a `self.…` token in a variable throws, reported per-slot.
     const selfId = slot.path[0] === "items" ? slot.path[1] : null;
+    // Depend on ALL of an item's equation slots (its transform + bbox) — the
+    // conservative geometry dependency anchors and rim solves need.
+    const dependOnItemGeometry = (itemId) => {
+      for (const depKey of itemSlotKeys.get(itemId) ?? [])
+        if (depKey !== slot.key) slot.deps.add(depKey);
+    };
     try {
-      const { ast, refs } = compiled(slot.src);
+      const { ast, refs, calls } = compiled(slot.src);
       slot.ast = ast;
+      // A) Function CALLS (closest_to_rim, …): validate arity/kinds, resolve
+      //    widget args, and depend on each widget's geometry. The joint solve
+      //    reads only rim GEOMETRY, so a mutual pair's two endpoints never
+      //    depend on each other — that is what removes the fixpoint. (The eval
+      //    handler re-resolves widget ids from the AST + slugs; this pass only
+      //    needs the DEPS and the entry-time validation, not stored ids.)
+      const widgetArgNames = new Set(); // widget-arg tokens: handled here, skipped in the refs loop
+      for (const c of calls) {
+        const overload = resolveOverload(c.name, c.args.length); // loud on unknown fn / bad arity
+        c.args.forEach((arg, i) => {
+          if (overload.params[i] !== "widget") return;
+          const tok = widgetArgToken(arg);
+          if (tok === null) throw new Error(`Argument ${i + 1} of "${c.name}" must be a widget name`);
+          widgetArgNames.add(tok);
+          const wid = resolveWidgetArg(tok, slugs, selfId);
+          const witem = state.items?.[wid];
+          if (!witem || typeof witem.type !== "string") throw new Error(`Unknown widget "${tok}" in "${c.name}(…)"`);
+          const wplugin = registry.get(witem.type);
+          if (!wplugin.closestAnchor) throw new Error(`"${slugs.toSlug.get(wid) ?? wid}" has no rim (no closestAnchor) for ${c.name}`);
+          dependOnItemGeometry(wid);
+        });
+      }
       for (const token of refs) {
+        // A widget-argument token (a bare item name inside a call) is resolved
+        // in the calls block above; skip it here UNLESS the same identifier also
+        // resolves to a variable (a name used both as a widget and a variable —
+        // pathological but possible), in which case it still needs its var dep.
+        // resolveRef of a bare item slug throws (no such var), so this check
+        // cleanly keeps genuine variables and drops pure widget names.
+        if (widgetArgNames.has(token)) {
+          if (!(token in (state.vars ?? {}))) continue; // pure widget name — handled by the calls block
+        }
         const d = resolveRef(token, slugs, selfId);
         slot.descriptors.set(token, d);
         if (d.kind === "var") {
@@ -811,24 +1337,50 @@ function computeEvaluatedState(state, registry) {
           if (!item) throw new Error(`Unknown item "@${d.itemId}" in "${token}"`);
           const plugin = registry.get(item.type);
           if (d.anchorId === "closest") {
+            // The `@id_closest` sugar. Route to the rim solver: rim-vs-point
+            // toward the arrow's OTHER endpoint, or (when that endpoint is also
+            // a closest ref to another rim) the JOINT rim-vs-rim nearest pair.
             if (!plugin.closestAnchor)
               throw new Error(`"${slugs.toSlug.get(d.itemId)}" has no computed closest anchor`);
-            slot.hasClosest = true;
-          } else if (!(plugin.anchors?.(item) ?? []).some((a) => a.id === d.anchorId)) {
-            throw new Error(`"${slugs.toSlug.get(d.itemId)}" has no anchor "${d.anchorId}"`);
+            const owner = state.items?.[selfId];
+            const ownerPlugin = selfId != null && typeof owner?.type === "string" ? registry.get(owner.type) : null;
+            const toward = ownerPlugin?.closestToward?.(owner, slot.path.slice(2));
+            if (!toward)
+              throw new Error(`"closest" anchor needs a toward context — only widgets with a closestToward hook (arrows) can use it`);
+            const otherRimId = closestPartnerRimId(toward, slugs); // set if the other endpoint is itself a closest ref
+            d.otherRimId = otherRimId; // read at eval time to pick joint vs point solve
+            dependOnItemGeometry(d.itemId); // this rim's geometry
+            if (otherRimId) {
+              dependOnItemGeometry(otherRimId); // the other rim's geometry (mutual: JOINT solve)
+            } else {
+              // Rim-vs-point: the toward endpoint's coordinates feed the
+              // projection, so they must evaluate FIRST. Find the sibling
+              // endpoint's key by object identity against the owner's state,
+              // and depend on its x/y equation slots (plain-number coords have
+              // no slot — nothing to wait on).
+              const siblingKey = siblingEndpointKey(owner, toward);
+              if (siblingKey)
+                for (const k of ["x", "y"]) {
+                  const towardKey = `items.${selfId}.${siblingKey}.${k}`;
+                  if (slots.has(towardKey)) slot.deps.add(towardKey);
+                }
+            }
+          } else {
+            if (!(plugin.anchors?.(item) ?? []).some((a) => a.id === d.anchorId))
+              throw new Error(`"${slugs.toSlug.get(d.itemId)}" has no anchor "${d.anchorId}"`);
+            // A self anchor (rotation pivot) evaluates in the ROTATION-ZEROED base
+            // frame from geometry only (x,y,w,h,scale) — never rotation or the
+            // rotationAnchor slots — so it depends only on those geometry slots,
+            // NOT conservatively on all of the owner's slots. This keeps the
+            // default rotationAnchor {x,y} (both = self center) from spuriously
+            // depending on each other (which would be a false cycle) and never
+            // pivots the pivot on itself.
+            const baseKeys = d.selfBase
+              ? (itemSlotKeys.get(d.itemId) ?? []).filter((k) => SELF_ANCHOR_DEP_PROPS.has(k.split(".")[2]))
+              : (itemSlotKeys.get(d.itemId) ?? []);
+            for (const depKey of baseKeys)
+              if (depKey !== slot.key) slot.deps.add(depKey);
           }
-          // A self anchor (rotation pivot) evaluates in the ROTATION-ZEROED base
-          // frame from geometry only (x,y,w,h,scale) — never rotation or the
-          // rotationAnchor slots — so it depends only on those geometry slots,
-          // NOT conservatively on all of the owner's slots. This keeps the
-          // default rotationAnchor {x,y} (both = self center) from spuriously
-          // depending on each other (which would be a false cycle) and never
-          // pivots the pivot on itself.
-          const baseKeys = d.selfBase
-            ? (itemSlotKeys.get(d.itemId) ?? []).filter((k) => SELF_ANCHOR_DEP_PROPS.has(k.split(".")[2]))
-            : (itemSlotKeys.get(d.itemId) ?? []);
-          for (const depKey of baseKeys)
-            if (depKey !== slot.key) slot.deps.add(depKey);
         }
       }
     } catch (e) {
@@ -837,47 +1389,99 @@ function computeEvaluatedState(state, registry) {
     }
   }
 
-  // 3. Evaluation lookup (reads the evolving `out` state).
+  // 3. Rim-solve MEMO (per evaluation pass). Keyed by a canonical string so
+  //    from.x and from.y of one closest ref share ONE solve, and the two
+  //    symmetric endpoints of a mutual pair share the SAME nearest-pair solve
+  //    (each reading its own side). This is what makes both endpoints land on
+  //    the true nearest pair with zero wobble across re-evaluations: the answer
+  //    is a deterministic function of the two rims' geometry, computed once.
+  const pairMemo = new Map(); // "pair:<idLo>|<idHi>" → {lo, hi} (world points, by sorted id)
+  const pointMemo = new Map(); // "pt:<rimId>:<tx>:<ty>" → world point
+  let capHit = false;
+  const solvePair = (idA, idB) => {
+    const [lo, hi] = idA < idB ? [idA, idB] : [idB, idA];
+    const memoKey = `pair:${lo}|${hi}`;
+    let pair = pairMemo.get(memoKey);
+    if (!pair) {
+      const loItem = out.items[lo], hiItem = out.items[hi];
+      const loPlug = registry.get(loItem.type), hiPlug = registry.get(hiItem.type);
+      const projLo = rimProjector(loItem, loPlug), projHi = rimProjector(hiItem, hiPlug);
+      const res = nearestRimPair(projLo, projHi, { seedA: rimCenter(loItem), seedB: rimCenter(hiItem) });
+      if (!res.converged) capHit = true;
+      pair = { lo: res.a, hi: res.b };
+      pairMemo.set(memoKey, pair);
+    }
+    return idA === lo ? pair.lo : pair.hi; // the point on idA's rim
+  };
+  const solvePoint = (rimId, tx, ty) => {
+    const memoKey = `pt:${rimId}:${tx}:${ty}`;
+    let pt = pointMemo.get(memoKey);
+    if (!pt) {
+      const item = out.items[rimId];
+      pt = rimProjector(item, registry.get(item.type))(tx, ty);
+      pointMemo.set(memoKey, pt);
+    }
+    return pt;
+  };
+
+  // Function-call handler: `closest_to_rim` returns a POINT ({x, y}). Widget
+  // args are resolved by position from the arg ASTs (dep collection already
+  // validated arity/kinds); numeric args evaluate via the arithmetic lookup.
+  // Overloads: (widget, x, y) → rim-vs-point; (widgetA, widgetB) → the point on
+  // widgetA's rim of the joint nearest pair.
+  const selfIdFor = (slot) => (slot.path[0] === "items" ? slot.path[1] : null);
+  const callFor = (slot) => (name, argAsts, evalArg) => {
+    const overload = resolveOverload(name, argAsts.length); // loud on unknown fn / bad arity
+    // Resolve widget ids by position (dep-time already validated arity/kinds).
+    const widgetIds = [];
+    const nums = [];
+    argAsts.forEach((arg, i) => {
+      if (overload.params[i] === "widget")
+        widgetIds.push(resolveWidgetArg(widgetArgToken(arg), slugs, selfIdFor(slot)));
+      else nums.push(evalArg(arg));
+    });
+    if (overload.params.length === 3) return solvePoint(widgetIds[0], nums[0], nums[1]); // rim vs point
+    return solvePair(widgetIds[0], widgetIds[1]); // rim vs rim (joint)
+  };
+
+  // 3b. Evaluation lookup (reads the evolving `out` state).
   const lookupFor = (slot) => (token) => {
     const d = slot.descriptors.get(token);
     if (d.kind === "var") return out.vars[d.name];
     if (d.kind === "prop") return getPath(out.items[d.itemId], d.path);
     const item = out.items[d.itemId];
     const plugin = registry.get(item.type);
-    // WHICH FRAME an anchor maps through:
-    //   selfBase (a self.anchors.<id> used as the rotation pivot): the
-    //     ROTATION-ZEROED base frame — the pivot must be a FIXED point, not one
-    //     that spins with the object (self.anchors.center of a rotated box is
-    //     its geometric center).
-    //   otherwise (a CROSS-ITEM ref like box.anchors.tr, or a closest-rim ref):
-    //     the item's PAINTED transform = worldTransform(item), which pivots the
-    //     rotation about the item's rotationAnchor exactly as derive.js paints
-    //     it. Using T.fromState here (top-left pivot) instead made arrows attach
-    //     49-233px off a rotated target — where the anchor WOULD be if the box
-    //     rotated about its top-left (registry #2). worldTransform reads the
-    //     item's {x,y,w,h,rotation,scale,rotationAnchor}; the dep-collection
-    //     block adds those slots so they are evaluated first.
-    const world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : worldTransform(item);
     if (d.anchorId === "closest") {
+      // The `@id_closest` sugar → the rim solver. Mutual (the other endpoint is
+      // itself a closest ref to another rim) → JOINT nearest pair; otherwise the
+      // rim-vs-point projection toward the arrow's evaluated other endpoint.
+      // Mutual: the joint solve reads only geometry (memoized, so from.x/from.y
+      // and the symmetric to-side share ONE solve) — no toward context needed.
+      if (d.otherRimId) return solvePair(d.itemId, d.otherRimId)[d.coord];
       const owner = getPath(out, slot.path.slice(0, 2));
       const ownerPlugin = slot.path[0] === "items" ? registry.get(owner.type) : null;
       const toward = ownerPlugin?.closestToward?.(owner, slot.path.slice(2));
       if (!toward)
         throw new Error(`"closest" anchor needs a toward context — only widgets with a closestToward hook (arrows) can use it`);
-      // Rough pass: a still-unevaluated (string) coordinate reads as 0; the
-      // closest-bearing slots are re-evaluated in pass 2 with final numbers
-      // (V1 resolveEndpoints' two-pass fixpoint, reproduced).
       const tx = typeof toward.x === "number" ? toward.x : 0;
       const ty = typeof toward.y === "number" ? toward.y : 0;
-      const local = plugin.closestAnchor(item, tx, ty, world);
-      return T.apply(world, local.x, local.y)[d.coord];
+      return solvePoint(d.itemId, tx, ty)[d.coord];
     }
+    // WHICH FRAME a preset anchor maps through:
+    //   selfBase (a self.anchors.<id> used as the rotation pivot): the
+    //     ROTATION-ZEROED base frame — the pivot must be a FIXED point, not one
+    //     that spins with the object (self.anchors.center of a rotated box is
+    //     its geometric center).
+    //   otherwise (a CROSS-ITEM ref like box.anchors.tr): the item's PAINTED
+    //     transform = worldTransform(item), which pivots the rotation about the
+    //     item's rotationAnchor exactly as derive.js paints it (registry #2).
+    const world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : worldTransform(item);
     const anchor = plugin.anchors(item).find((a) => a.id === d.anchorId);
     return T.apply(world, anchor.x, anchor.y)[d.coord];
   };
   const evalSlot = (slot) => {
     try {
-      const v = evalAst(slot.ast, lookupFor(slot));
+      const v = evalAst(slot.ast, lookupFor(slot), callFor(slot));
       if (!Number.isFinite(v)) throw new Error(`evaluates to ${v}`);
       mutSetPath(out, slot.path, v);
     } catch (e) {
@@ -930,37 +1534,19 @@ function computeEvaluatedState(state, registry) {
     }
   }
 
-  // 6. Closest fixpoint sweeps (see module docs). Gauss-Seidel: each sweep
-  //    re-evaluates every closest-bearing slot against ever-fresher numbers.
-  //    STOP RULE: successive sweep movements shrink geometrically (ratio r),
-  //    so the remaining error is ≈ moved·r/(1−r) — movement ALONE understates
-  //    the residual exactly when contraction is weak (nearly tangent shapes),
-  //    which is why the estimate, not the raw movement, is compared against
-  //    CLOSEST_EPS_PX. Ordinary layouts stop after 2 sweeps (same cost as the
-  //    old fixed-two); near-tangency runs as long as it needs under the cap.
-  let prevMoved = null;
-  for (let sweep = 0; sweep < MAX_CLOSEST_SWEEPS; sweep++) {
-    let moved = 0;
-    for (const slot of slots.values()) {
-      if (!slot.hasClosest || errors.has(slot.key)) continue;
-      const before = getPath(out, slot.path);
-      evalSlot(slot);
-      const after = getPath(out, slot.path);
-      if (typeof before === "number" && typeof after === "number")
-        moved = Math.max(moved, Math.abs(after - before));
-    }
-    if (moved === 0) break; // exact fixpoint (or no closest slots at all)
-    if (prevMoved !== null) {
-      const r = Math.min(moved / prevMoved, 0.999); // clamp: early transients can overshoot
-      if ((moved * r) / (1 - r) < CLOSEST_EPS_PX) break;
-    }
-    prevMoved = moved;
-    if (sweep === MAX_CLOSEST_SWEEPS - 1) {
-      // Degenerate geometry (e.g. exactly tangent circles) may never meet the
-      // tolerance: keep the best iterate, but NEVER silently — report once.
-      const message = `closest-anchor fixpoint still moving after ${MAX_CLOSEST_SWEEPS} sweeps — keeping the last iterate (near-degenerate geometry?)`;
-      reportOnce(message, `PowerRP expression warning: ${message}`);
-    }
+  // 6. Rim solves happen INLINE during the Kahn evaluation above (each closest
+  //    ref / closest_to_rim call reads the per-pass solve memo), so there is NO
+  //    fixpoint sweep anymore — the old Gauss-Seidel loop (which re-evaluated
+  //    closest slots until a residual estimate settled) is gone. The joint
+  //    nearest-pair solve reads only the two rims' GEOMETRY, so a mutual pair's
+  //    endpoints are topologically independent and evaluate exactly once each,
+  //    both landing on the true nearest pair with ZERO wobble across re-evals.
+  //    A rim pair that did not converge under the generic solver's iteration cap
+  //    (near-degenerate/tangent geometry) is REPORTED once, never silently — the
+  //    best iterate is kept (outline.nearestRimPair's documented behavior).
+  if (capHit) {
+    const message = `closest_to_rim nearest-pair solve hit the ${NEAREST_PAIR_MAX_ITERS}-iteration cap (near-degenerate geometry?) — keeping the best iterate`;
+    reportOnce(message, `PowerRP expression warning: ${message}`);
   }
 
   return { state: out, errors };

@@ -45,7 +45,7 @@
     listEl?.querySelectorAll(".eqs-item")[highlighted]?.scrollIntoView({ block: "nearest" });
   });
 
-  const KIND_ICON = { property: "mdi:cube-outline", slug: "mdi:shape-outline", variable: "mdi:variable", keyword: "mdi:key-variant" };
+  const KIND_ICON = { property: "mdi:cube-outline", slug: "mdi:shape-outline", variable: "mdi:variable", keyword: "mdi:key-variant", function: "mdi:function" };
 </script>
 
 {#if candidates.length && anchorEl}
