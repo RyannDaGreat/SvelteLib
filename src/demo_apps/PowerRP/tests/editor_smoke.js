@@ -4,7 +4,7 @@
  * screenshot. Fails loudly on any page error.
  * Run from SvelteLib root: node src/demo_apps/PowerRP/tests/editor_smoke.js <shot_dir>
  */
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
@@ -13,6 +13,7 @@ const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
 const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/demo.powerrp.json"), "utf8");
 const shots = process.argv[2];
+await mkdir(shots, { recursive: true }); // screenshots must never fail on a missing artifact dir
 
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),

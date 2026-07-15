@@ -34,7 +34,7 @@
  * collective box's handles never land under a right-side panel — the demo
  * rect+circle span too wide). World≈screen at zoom 1 on fresh boot.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
@@ -45,6 +45,7 @@ const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
 const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/demo.powerrp.json"), "utf8");
 const shots = process.argv[2] ?? "/tmp";
+await mkdir(shots, { recursive: true }); // screenshots must never fail on a missing artifact dir
 
 const approx = (a, b, eps = 0.5) => Math.abs(a - b) < eps; // 0.5px: pointer-driven gestures land within sub-pixel of the analytic target
 
