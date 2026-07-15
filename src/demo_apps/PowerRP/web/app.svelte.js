@@ -17,7 +17,7 @@ import { resolveTransition, retypedTransition } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld } from "../core/derive.js";
 import { evaluateState, withVariableRenamed, anchorRefName } from "../core/expressions.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
-import { rotatedBBoxAABB, fitRectView } from "../core/view.js";
+import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView } from "../core/view.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import * as projectApi from "./projectApi.js";
@@ -1026,9 +1026,18 @@ export class PowerRPApp {
     const dpr = this.dpr();
     const width = Math.max(1, Math.round(rect.w * dpr));
     const height = Math.max(1, Math.round(rect.h * dpr));
+    // fitRectView's (w, h) args are WORLD units (same space as rect) — dpr is
+    // a SEPARATE multiplier the compositor applies on top (view.zoom *
+    // view.dpr; core/view.js fitRectView doctests). Passing the already-
+    // dpr-scaled device px here as (w, h) double-applies dpr (zoom = dpr,
+    // then compositor multiplies by dpr again) — at dpr 2 that rasterizes at
+    // 4x the intended scale, so only the canvas's top-left quarter fills
+    // (the 15.8 bug). rect.w/rect.h (world units) is what every other
+    // rasterizeIrPng caller passes (gpuService.js renderCameraFrame, cli
+    // main.js, PresentMode) — dpr flows through the 4th arg only.
     let png;
     try {
-      png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, width, height, dpr), width, height);
+      png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, rect.w, rect.h, dpr), width, height);
     } catch (e) {
       console.error("Copy: rendering the selection PNG failed (the item is still on the server clipboard):", e.message);
       return;
@@ -2031,13 +2040,15 @@ export class PowerRPApp {
 
   /**
    * Query. The selected nodes' collective WORLD AABB (union of each selected
-   * bbox node's rotatedBBoxAABB — the same conservative rotation-aware bound
-   * the culling protocol uses), or null when nothing selected or none of the
-   * selected items have a bbox (e.g. only the camera, or a non-bbox widget
-   * alone — nothing to crop to).
+   * bbox node's effectInclusiveAABB — rotatedBBoxAABB, the same conservative
+   * rotation-aware bound the culling protocol uses, inflated by that node's
+   * shadow/bloom reach so a copied/exported PNG contains the WHOLE rendered
+   * element, halo and all — manifest 15.8 ADDITION), or null when nothing
+   * selected or none of the selected items have a bbox (e.g. only the
+   * camera, or a non-bbox widget alone — nothing to crop to).
    */
   selectionWorldAABB() {
-    const boxes = this.selectedNodes().map(rotatedBBoxAABB).filter(Boolean);
+    const boxes = this.selectedNodes().map(effectInclusiveAABB).filter(Boolean);
     if (boxes.length === 0) return null;
     const minX = Math.min(...boxes.map((b) => b.x));
     const minY = Math.min(...boxes.map((b) => b.y));
@@ -2077,7 +2088,10 @@ export class PowerRPApp {
     const dpr = this.dpr();
     const width = Math.max(1, Math.round(rect.w * dpr));
     const height = Math.max(1, Math.round(rect.h * dpr));
-    const png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, width, height, dpr), width, height);
+    // fitRectView's (w, h) are WORLD units (rect.w/rect.h) — dpr is a
+    // separate multiplier applied by the compositor (see the identical fix +
+    // comment in #copySelectionPngToOS above; same 15.8 bug, same cause).
+    const png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, rect.w, rect.h, dpr), width, height);
     try {
       await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
     } catch (e) {

@@ -9,6 +9,7 @@
  */
 
 import * as T from "./transform.js";
+import { effectsCullMargin } from "../render_gpu/effects.js";
 
 /**
  * Pure function. The world-space AABB currently visible in a device canvas of
@@ -48,6 +49,31 @@ export function rotatedBBoxAABB(node) {
   const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   return { x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
+}
+
+/**
+ * Pure function. `rotatedBBoxAABB` inflated by the node's effect halo (shadow
+ * blur spill + offset, bloom spill — the SAME reach a plugin declares via its
+ * `cullMargin` hook, defaulting to `effectsCullMargin` when the plugin has
+ * none declared). THE shared effect-reach seam: culling (defaultCanSkip, this
+ * file) and the 15.8 copy/export capture rect both call through here so a
+ * captured PNG's bounds and the renderer's "is this on screen" bounds can
+ * never disagree. If a future effects pipeline changes how shadow/bloom reach
+ * is computed, update the reach function passed in here (or its default,
+ * effectsCullMargin) — not the callers.
+ *
+ * Returns null exactly when rotatedBBoxAABB does (no bbox = nothing to bound
+ * or inflate).
+ *
+ * @example effectInclusiveAABB({state: {w: 10, h: 20}, world: {x: 5, y: 5, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}) // {x: 5, y: 5, w: 10, h: 20} (no effects: same as rotatedBBoxAABB)
+ * @example effectInclusiveAABB({state: {w: 10, h: 20, shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 0.5}}, world: {x: 5, y: 5, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}, cullMargin: () => 11}}) // {x: -6, y: -6, w: 32, h: 42} (11-unit halo on every side)
+ */
+export function effectInclusiveAABB(node) {
+  const aabb = rotatedBBoxAABB(node);
+  if (!aabb) return null;
+  const margin = (node.plugin.cullMargin?.(node.state) ?? effectsCullMargin(node.state)) * node.world.scale;
+  if (margin <= 0) return aabb;
+  return { x: aabb.x - margin, y: aabb.y - margin, w: aabb.w + 2 * margin, h: aabb.h + 2 * margin };
 }
 
 /**
