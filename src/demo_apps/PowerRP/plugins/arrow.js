@@ -8,7 +8,9 @@
  *
  * The arrow has no transform of its own (world == local); shaft drags
  * translate the endpoints directly via the moveBy hook — equation-bound
- * coordinates stay put (they're anchored), free ones translate.
+ * coordinates stay put (they're anchored), free ones translate. The endpoint
+ * plumbing (editPoints/moveBy/closestToward + the padded shaft grab) comes
+ * from core/endpoints.js — the ONE home shared by all arrow-family widgets.
  *
  * Head parameters (manifest Round 11, "Arrow head parameters"): headLength
  * (tip to base, along the shaft axis) and headWidth (across the base) are
@@ -19,7 +21,7 @@
  */
 
 import { polyline, polygon } from "../render_gpu/ir.js";
-import { distToSegment } from "../core/outline.js";
+import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
 
 /** Fraction of headLength the shaft stops short of the tip — the shaft end
  * sits INSIDE the head triangle, so shaft and head always overlap seamlessly
@@ -84,53 +86,12 @@ export const arrowPlugin = {
     ];
   },
   hitTestWorld(node, wx, wy) {
-    const { from, to } = node.state;
-    return distToSegment(wx, wy, from, to) <= (node.state.width ?? 3) + 5;
+    return hitsShaft(node.state, wx, wy, node.state.width ?? 3);
   },
-  /**
-   * Generic editable-point interface: the editor renders a draggable handle
-   * per entry; dragging one writes values into state[key].x/.y (numbers when
-   * free, equation strings when dropped on an anchor). Any widget with
-   * bindable points implements this — the UI never special-cases arrows.
-   */
-  editPoints(node) {
-    return [
-      { key: "from", x: node.state.from.x, y: node.state.from.y },
-      { key: "to", x: node.state.to.x, y: node.state.to.y },
-    ];
-  },
-  /**
-   * Pure function. Shaft-drag translation (manifest round 5: "dragging the
-   * middle should move BOTH endpoints"). Takes the RAW stored state and
-   * returns [pathWithinItem, value] pairs for every FREE (numeric) endpoint
-   * coordinate; equation-bound coordinates are anchored and stay put — an
-   * arrow with both ends bound doesn't move from a shaft drag (documented).
-   *
-   * @example arrowPlugin.moveBy({from: {x: 0, y: 0}, to: {x: 10, y: "@c1_tm.y"}}, 5, 2) // [[["from","x"],5],[["from","y"],2],[["to","x"],15]]
-   */
-  moveBy(state, dx, dy) {
-    const pairs = [];
-    for (const end of ["from", "to"])
-      for (const coord of ["x", "y"]) {
-        const v = state[end]?.[coord];
-        if (typeof v === "number") pairs.push([[end, coord], v + (coord === "x" ? dx : dy)]);
-      }
-    return pairs;
-  },
-  /**
-   * Pure function. The toward-context for "closest" anchor references in
-   * this widget's equations (core/expressions.js evaluation hook): an
-   * endpoint aims at the OTHER endpoint. Coordinates may still be
-   * unevaluated strings mid-pass — the evaluator roughs those to 0 and
-   * fixpoints (see expressions.js).
-   *
-   * @example arrowPlugin.closestToward({from: {x: 1, y: 2}, to: {x: 3, y: 4}}, ["from", "x"]) // {x: 3, y: 4}
-   */
-  closestToward(state, path) {
-    if (path[0] === "from") return state.to;
-    if (path[0] === "to") return state.from;
-    return null;
-  },
+  // editPoints / moveBy / closestToward — the shared endpoint-pair capability
+  // (core/endpoints.js: draggable endpoint handles, free-coordinate shaft
+  // translation, closest-anchor toward-context).
+  ...endpointPairHooks(),
   commands: [
     { id: "add-arrow", title: "Add Arrow", icon: "mdi:arrow-top-right", run: (app) => app.addItem(arrowPlugin.defaults) },
   ],

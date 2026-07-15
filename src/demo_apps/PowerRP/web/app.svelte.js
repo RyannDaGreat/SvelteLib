@@ -14,9 +14,11 @@ import {
   withLegacyKeysRenamed,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
+import { withDurationMigrated, resolveTransition, retypedTransition } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated, withVariableRenamed, anchorRefName } from "../core/expressions.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
+import * as projectApi from "./projectApi.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
@@ -59,6 +61,7 @@ export class PowerRPApp {
   set selection(id) {
     this.#selection = id;
     this.selectionSet = []; // single-select write drops the multi override
+    if (id !== null) this.selectedTransition = null; // item and transition selection are mutually exclusive
   }
   // MULTI-select override: the FULL set of selected itemIds (band select /
   // future multi-click). Authoritative when non-empty; its FIRST element is
@@ -66,6 +69,13 @@ export class PowerRPApp {
   // work. Empty → selectedIds() falls back to [selection]. Populated only by
   // selectMany(); cleared by any single-select `selection` write (see above).
   selectionSet = $state([]);
+  // TRANSITION selection — the INCOMING slide's slideId whose between-rows
+  // transition slice is selected, or null (manifest Round 12: transitions are
+  // first-class SELECTABLE things whose properties show in the Property Panel).
+  // MUTUALLY EXCLUSIVE with item selection: setting a transition clears the item
+  // selection (via selectTransition); setting an item clears this (setter above).
+  // Opus10 builds the Inspector side against selectionTarget/transitionAt.
+  selectedTransition = $state(null);
   mode = $state("edit"); // "edit" | "present"
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
@@ -289,6 +299,7 @@ export class PowerRPApp {
     }
     this.#selection = ids[0];
     this.selectionSet = [...ids];
+    this.selectedTransition = null; // selecting items clears a transition selection
   }
 
   /**
@@ -798,6 +809,15 @@ export class PowerRPApp {
       out = { ...out, meta };
       console.error("PowerRP repair: removed legacy meta.fps — presentations are always uncapped");
     }
+    // TRANSITIONS (Round 12): transition.seconds SUPERSEDES the old per-slide
+    // `duration` (lead ruling). Move duration → transition = {type: "tween",
+    // seconds, curve: "smooth", sound: null} LOUDLY; curve "smooth" preserves
+    // today's eased playback so behavior is unchanged. Same load-boundary
+    // discipline as meta.fps / withLegacyKeysRenamed.
+    const { doc: transDoc, migrated } = withDurationMigrated(out);
+    for (const m of migrated)
+      console.error(`PowerRP repair: slide ${m.index} legacy "duration" (${m.seconds}s) → transition.seconds${m.stale ? " (already had a transition — stale duration dropped)" : ""}`);
+    out = transDoc;
     return withCameraEnsured(out);
   }
 

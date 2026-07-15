@@ -2,6 +2,11 @@
   SlideNav — the left-hand slide navigator. Shows display NUMBERS (which
   shift on insert) while slides keep permanent UUIDs underneath.
 
+  Between each pair of slide rows sits a TRANSITION SLICE — a small, first-class
+  SELECTABLE thing (manifest Round 12): clicking it selects the transition INTO
+  the lower slide, whose properties then show in the Property Panel. The slice
+  above slide 1 is the first real transition (slide 0 has no predecessor).
+
   Thumbnails use the generic DirtyImage widget (src/lib): each renders THROUGH
   its slide's camera, at the size it's DISPLAYED (panel width × dpr) so it's
   crisp, and only when it's on screen AND dirty. "Dirty" = the document changed
@@ -16,9 +21,14 @@
   import { foldState } from "../core/document.js";
   import { cameraRect } from "../core/derive.js";
   import { evaluateState } from "../core/expressions.js";
+  import { resolveTransition, transitionType } from "../core/transitions.js";
   import { renderCameraFrame } from "./gpuService.js";
 
   let { app } = $props();
+
+  // Per-type icon for the between-rows slice (iconify only — manifest rule).
+  // A third type adds one entry; unknown types fall back to a generic glyph.
+  const TRANSITION_ICONS = { tween: "mdi:transition", fade: "mdi:transition-masked" };
 
   /** Camera rect of slide `i` at full alpha (the thumbnail's view + aspect).
       Evaluated state: the camera's own properties may be equations. */
@@ -47,6 +57,12 @@
       renderCameraFrame(app.doc, { slideIndex: i, alpha: 1, registry: app.registry, width: wPx, height: hPx });
   }
 
+  /** The resolved transition INTO slide `i` (i > 0), for the slice label/icon. */
+  function transitionInfo(i) {
+    const t = resolveTransition(app.doc, i);
+    return { type: t.type, seconds: t.seconds, title: transitionType(t.type).title };
+  }
+
   // The document identity (app.doc changes on every commit) is the dirty key —
   // a NEW object reference per commit, so every mounted thumbnail goes dirty on
   // any edit (only the visible ones repaint). Per-slide identity is handled by
@@ -66,12 +82,29 @@
 <div class="slidenav">
   <div class="slides">
     {#each app.doc.slides as slide, i (slide.id)}
+      {#if i > 0}
+        {@const info = transitionInfo(i)}
+        <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit`}>
+          <button
+            class="transition-slice"
+            class:selected={app.selectedTransition === slide.id}
+            aria-label={`Transition into slide ${i + 1}`}
+            onclick={() => app.selectTransition(slide.id)}
+          >
+            <span class="tr-line"></span>
+            <span class="tr-chip">
+              <iconify-icon icon={TRANSITION_ICONS[info.type] ?? "mdi:transition"} width="13" height="13"></iconify-icon>
+              <span class="tr-label">{info.title} · {info.seconds}s</span>
+            </span>
+            <span class="tr-line"></span>
+          </button>
+        </Tooltip>
+      {/if}
       <button
         class="slide"
         class:current={i === app.slideIndex}
         class:disabled={slide.enabled === false}
         onclick={() => (app.slideIndex = i)}
-
       >
         <span class="row-top">
           <span class="num">{i + 1}</span>

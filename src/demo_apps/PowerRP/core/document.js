@@ -2,7 +2,13 @@
  * The PowerRP document model.
  *
  * A document is ONLY:
- *   { meta: {name, slideW, slideH, fps}, slides: [{id, name, duration, delta}] }
+ *   { meta: {name, slideW, slideH}, slides: [{id, name, transition, delta}] }
+ *
+ * `slide.transition` = {type, seconds, curve, sound} describes how the
+ * presenter animates INTO this slide from its predecessor (core/transitions.js;
+ * a first-class SELECTABLE thing — the navigator's between-rows slice). It
+ * SUPERSEDES the old per-slide `duration` (lead ruling, Round 12); legacy
+ * documents migrate LOUDLY at load (withDurationMigrated).
  *
  * There is no separate items table — EVERYTHING is deltas (slide 0's delta
  * creates the initial items). Slide N's full state = fold of deltas 0..N over
@@ -19,6 +25,7 @@
  */
 
 import { blendApplied, copied, getPath, setPath, deletePath, leaves } from "./deltas.js";
+import { defaultTransition } from "./transitions.js";
 
 /** Query (reads crypto). Random 8-char id — short but collision-safe at presentation scale. */
 export function uuid() {
@@ -42,7 +49,10 @@ export function newDocument() {
     slides: [{
       id: uuid(),
       name: "Slide 1",
-      duration: 0.5,
+      // Slide 0 has no predecessor, so its transition is inert, but every slide
+      // carries the default tween for a uniform shape (the navigator addresses
+      // the slice above each row; slide 0's is simply never animated).
+      transition: defaultTransition("tween"),
       delta: {
         items: {
           [cameraId]: { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff" },
@@ -342,9 +352,12 @@ export function withLegacyKeysRenamed(doc, registry) {
 
 // ── Slide edits ──────────────────────────────────────────────────────────────
 
-/** Pure function. Inserts an empty slide after `index`. Returns [doc, newIndex]. */
+/** Pure function. Inserts an empty slide after `index`. Returns [doc, newIndex].
+ * The new slide gets the default tween transition (seconds = the old default
+ * duration, curve "smooth") — new decks feel identical to the pre-transitions
+ * era (lead ruling, Round 12). */
 export function withNewSlide(doc, index) {
-  const slide = { id: uuid(), name: `Slide ${doc.slides.length + 1}`, duration: 0.5, delta: {} };
+  const slide = { id: uuid(), name: `Slide ${doc.slides.length + 1}`, transition: defaultTransition("tween"), delta: {} };
   const slides = [...doc.slides];
   slides.splice(index + 1, 0, slide);
   return [{ ...doc, slides }, index + 1];

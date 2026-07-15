@@ -14,15 +14,15 @@
  *
  * Endpoint semantics are identical to the basic arrow: from/to coordinates
  * may be equations (anchor bindings), no transform of its own (world ==
- * local), shaft drags translate only FREE coordinates via moveBy. Those tiny
- * endpoint hooks are duplicated from plugins/arrow.js verbatim — plugins may
- * not import each other (registry rule); the shared home for an
- * "endpoint-pair capability" helper is a future core module (flagged in the
- * task report), not a cross-plugin import.
+ * local), shaft drags translate only FREE coordinates via moveBy. The
+ * endpoint plumbing (editPoints/moveBy/closestToward + padded shaft grab)
+ * comes from core/endpoints.js — the shared home, since plugins may not
+ * import each other (registry rule).
  */
 
 import { polygon } from "../render_gpu/ir.js";
-import { fancyArrowOutline, triangulated, pointInPolygon, distToSegment } from "../core/outline.js";
+import { fancyArrowOutline, triangulated, pointInPolygon } from "../core/outline.js";
+import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
 
 // Degenerate-geometry reports, once per unique message (the expressions.js
 // loggedErrors pattern) — emit runs every frame and must not spam.
@@ -99,48 +99,16 @@ export const fancyArrowPlugin = {
   },
   hitTestWorld(node, wx, wy) {
     const s = node.state;
-    // The body (exact, concavity-aware) plus the basic arrow's padded-shaft
-    // grab (same +5 screen-feel slack as plugins/arrow.js) so a hairline
-    // shaft stays clickable.
+    // The body (exact, concavity-aware) plus the shared padded-shaft grab
+    // (core/endpoints.js SHAFT_GRAB_PAD) so a hairline shaft stays clickable.
     const outline = fancyArrowOutline(outlineParams(s));
     if (!outline) return false;
     if (pointInPolygon(outline, wx, wy)) return true;
-    const grab = Math.max(s.startWidth ?? 0, s.endWidth ?? 0) / 2 + 5;
-    return distToSegment(wx, wy, s.from, s.to) <= grab;
+    return hitsShaft(s, wx, wy, Math.max(s.startWidth ?? 0, s.endWidth ?? 0) / 2);
   },
-  /** Generic editable-point interface (same contract as plugins/arrow.js). */
-  editPoints(node) {
-    return [
-      { key: "from", x: node.state.from.x, y: node.state.from.y },
-      { key: "to", x: node.state.to.x, y: node.state.to.y },
-    ];
-  },
-  /**
-   * Pure function. Shaft-drag translation — duplicated verbatim from
-   * plugins/arrow.js (see module header: no cross-plugin imports).
-   *
-   * @example fancyArrowPlugin.moveBy({from: {x: 0, y: 0}, to: {x: 10, y: "@c1_tm.y"}}, 5, 2) // [[["from","x"],5],[["from","y"],2],[["to","x"],15]]
-   */
-  moveBy(state, dx, dy) {
-    const pairs = [];
-    for (const end of ["from", "to"])
-      for (const coord of ["x", "y"]) {
-        const v = state[end]?.[coord];
-        if (typeof v === "number") pairs.push([[end, coord], v + (coord === "x" ? dx : dy)]);
-      }
-    return pairs;
-  },
-  /**
-   * Pure function. "closest" anchor toward-context: an endpoint aims at the
-   * OTHER endpoint (same contract as plugins/arrow.js).
-   *
-   * @example fancyArrowPlugin.closestToward({from: {x: 1, y: 2}, to: {x: 3, y: 4}}, ["from", "x"]) // {x: 3, y: 4}
-   */
-  closestToward(state, path) {
-    if (path[0] === "from") return state.to;
-    if (path[0] === "to") return state.from;
-    return null;
-  },
+  // editPoints / moveBy / closestToward — the shared endpoint-pair capability
+  // (core/endpoints.js), identical semantics to the basic arrow by construction.
+  ...endpointPairHooks(),
   commands: [
     { id: "add-fancy-arrow", title: "Add Fancy Arrow", icon: "mdi:arrow-right-bold", run: (app) => app.addItem(fancyArrowPlugin.defaults) },
   ],

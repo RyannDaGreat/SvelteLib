@@ -86,6 +86,10 @@
   --a-checker-size: calc(var(--a-color-swatch) / 2);
   --a-slide-disabled-opacity: 0.5;
   --a-minimap-opacity: 0.5; /* user spec: minimap at 50% transparency */
+  /* Transition slice (the between-rows navigator element). Height matches one
+     key chip (--a-key-chip-h) so the slice reads as a thin band, not a row. */
+  --a-transition-slice-h: var(--a-key-chip-h);
+  --a-transition-chip-pad: 0 var(--a-sp-2);
   --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
   --a-key-chip-h: 18px; /* THE key-chip height (one standard; value PENDING USER RATIFICATION) */
 
@@ -440,6 +444,55 @@ body,
   border: var(--a-hairline) solid var(--border);
 }
 
+/* Transition slice — the small selectable band between two slide rows. A
+   center hairline (the "connector") with a type chip in the middle; the whole
+   band is the click target. Square corners, --a-* tokens only (chrome rules). */
+.slidenav .transition-slice {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  width: 100%;
+  height: var(--a-transition-slice-h);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.slidenav .transition-slice .tr-line {
+  flex: 1;
+  height: var(--a-hairline);
+  background: var(--border);
+}
+
+.slidenav .transition-slice .tr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  padding: var(--a-transition-chip-pad);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
+}
+
+.slidenav .transition-slice:hover {
+  color: var(--fg);
+}
+
+.slidenav .transition-slice:hover .tr-line {
+  background: var(--fg-dim);
+}
+
+/* Selected transition: the chip + connector take the selection color (same
+   language as .slide.current), so the between-rows target reads as selected. */
+.slidenav .transition-slice.selected {
+  color: var(--a-selection);
+}
+
+.slidenav .transition-slice.selected .tr-line {
+  background: var(--a-selection);
+}
+
 .slidenav .slide.current {
   border-color: var(--a-selection);
 }
@@ -480,9 +533,12 @@ body,
   border-top: var(--a-hairline) solid var(--border);
 }
 
+/* The bottom toolbar matches the TOP toolbar's style — no box around every
+   icon (Round 12B chrome ruling: "the one on the top was nicer"). Same
+   transparent .btn-icon as the toolbar; only the flex:1 stretch differs (the
+   nav row spreads its four buttons across the panel width). */
 .slidenav .nav-actions .btn-icon {
   flex: 1;
-  border: 1px solid var(--border);
 }
 
 /* ── Inspector + Variables Panel ─────────────────────────────────────────
@@ -1171,6 +1227,13 @@ body,
   inset: 0;
   width: 100%;
   height: 100%;
+}
+
+/* Only one present surface shows per frame: the GPU swapchain canvas for
+   tween/instant frames, the 2D crossfade canvas for fade frames. The inactive
+   one is hidden (kept mounted so its context/size survive). */
+.present canvas.hidden {
+  display: none;
 }
 
 .present-pos {

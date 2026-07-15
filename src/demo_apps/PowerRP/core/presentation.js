@@ -12,6 +12,7 @@
  */
 
 import { ease } from "./interpolators.js";
+import { resolveTransition } from "./transitions.js";
 
 export function createPresenter(getDoc, onFrame) {
   let index = 0;
@@ -25,8 +26,15 @@ export function createPresenter(getDoc, onFrame) {
     raf = autoTimer = null;
   }
 
+  // The transition being animated INTO the current index (its type/seconds/
+  // curve). null at rest / on slide 0 / after an instant step. Carried in every
+  // emitted frame so the render surface (PresentMode) picks tween vs fade — a
+  // fade is a crossfade of two COMPLETED-state snapshots, not a delta tween, so
+  // it needs a different draw path (and stays a pure function of alpha for CLI).
+  let transition = null;
+
   function emit() {
-    onFrame({ index, alpha });
+    onFrame({ index, alpha, transition });
   }
 
   function armAutoAdvance() {
@@ -36,13 +44,26 @@ export function createPresenter(getDoc, onFrame) {
       autoTimer = setTimeout(() => api.next(), secs * 1000);
   }
 
-  /** Command. Animates alpha 0→1 into slide `to` over its duration. */
+  /** Command. Animates alpha 0→1 into slide `to` over its transition's seconds,
+   * honoring the transition's curve (smooth = eased, linear = raw). The
+   * transition TYPE (tween|fade) is carried to the render surface via emit(). */
   function transitionTo(to) {
     cancel();
     const doc = getDoc();
     index = to;
-    const duration = (doc.slides[to].duration ?? 0.5) * 1000;
-    const easeFn = ease("cubic");
+    // Slide 0 has no predecessor to transition FROM — no animation, no
+    // transition record in flight (its stored transition is inert).
+    transition = to === 0 ? null : resolveTransition(doc, to);
+    // SOUND (Round 12B): a transition can play a sound. The property exists and
+    // round-trips NOW; actual audio playback is a later wave (the assets server
+    // is parallel work). Stubbed LOUDLY so it's impossible to forget.
+    if (transition?.sound)
+      // TODO(assets-wave): play the sound asset `transition.sound` through the
+      // project asset server once it lands. No silent no-op — this is a stub.
+      console.warn(`PowerRP transition: sound "${transition.sound}" not played (audio playback is a later wave — assets server pending)`);
+    const duration = (transition?.seconds ?? 0) * 1000;
+    // Curve: "smooth" = the existing eased alpha (cubic); "linear" = raw alpha.
+    const easeFn = ease(transition?.curve === "linear" ? "linear" : "cubic");
     if (duration <= 0 || to === 0) {
       alpha = 1;
       emit();
@@ -89,6 +110,7 @@ export function createPresenter(getDoc, onFrame) {
       const to = enabledNeighbor(index, -1);
       if (to !== null) index = to;
       alpha = 1;
+      transition = null; // instant step: no crossfade/tween in flight
       emit();
     },
     /** Command. Jump straight to a slide, fully applied. */
@@ -96,6 +118,7 @@ export function createPresenter(getDoc, onFrame) {
       cancel();
       index = Math.max(0, Math.min(getDoc().slides.length - 1, i));
       alpha = 1;
+      transition = null; // instant jump
       emit();
       armAutoAdvance();
     },
