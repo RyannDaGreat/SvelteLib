@@ -17,9 +17,6 @@
   import { clipLineToRect } from "../core/geometry.js";
   import { THUMB_W, worldViewRect, canSkipNode } from "../core/view.js";
   import { selectInBox, rectFromCorners } from "../core/bandselect.js";
-  import { foldState } from "../core/document.js";
-  import { blendApplied } from "../core/deltas.js";
-  import { evaluateState } from "../core/expressions.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
@@ -192,9 +189,11 @@
     }
     // THE render pipeline: fold → preview override → EVALUATE → derive →
     // cull → emit → GPU. Anchors/selection/guides stay on the SVG overlay.
-    let state = foldState(app.doc, app.slideIndex, 1);
-    if (app.previewDelta) state = blendApplied(state, app.previewDelta, 1);
-    state = evaluateState(state, app.registry).state;
+    // fold/blend/evaluate route through app.state() so the paint shares the
+    // ONE memoized evaluation per pointermove with every panel consumer
+    // (inlining them here allocated a fresh blend per frame — a full extra
+    // equation pass; the drag-lag fix, concerns 2026-07-15).
+    const state = app.state();
     const view = { ...viewport, dpr };
     const viewRect = worldViewRect(view, canvasEl.width, canvasEl.height);
     const nodes = deriveRenderTree(state, app.registry).filter((n) => !canSkipNode(n, viewRect));

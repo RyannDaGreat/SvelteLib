@@ -182,14 +182,36 @@ export class PowerRPApp {
 
   // ── State queries ──────────────────────────────────────────────────────────
 
+  // Preview-blend cache: (base, previewDelta) identity pair → blended state.
+  // Deliberately non-reactive (renderFrameCount precedent). WHY: during a drag
+  // every reactive consumer (viewport paint, picker displayName × N items,
+  // nodes(), per-row error checks, ...) reads state() on EVERY pointermove; a
+  // fresh blendApplied object per CALL defeated evaluateState's state-identity
+  // memo, so each consumer paid its own full O(items) equation pass per mouse
+  // move — the profiled drag-lag cliff (concerns 2026-07-15, Opus4 risk (b)).
+  // One stable object per (base, preview) pair = ONE evaluation per move.
+  #blendCache = { base: null, preview: null, state: null };
+
   /**
    * Folded state of the current slide, with any live drag preview applied —
    * RAW: equation slots still hold their stored strings. The Property Panel
-   * and Variables Panel read THIS to display/edit equations.
+   * and Variables Panel read THIS to display/edit equations. IDENTITY-STABLE:
+   * repeated calls return the SAME object until the fold or previewDelta
+   * changes (evaluateState's memo — and thus drag latency — depends on this;
+   * consumers must never mutate the returned state). setPreview reassigns
+   * previewDelta wholesale each move, which is what keys the cache.
    */
   rawState() {
     const base = foldState(this.doc, this.slideIndex, 1);
-    return this.previewDelta ? blendApplied(base, this.previewDelta, 1) : base;
+    const preview = this.previewDelta;
+    if (!preview) return base;
+    const c = this.#blendCache;
+    if (c.base !== base || c.preview !== preview) {
+      c.base = base;
+      c.preview = preview;
+      c.state = blendApplied(base, preview, 1);
+    }
+    return c.state;
   }
 
   /** The derivation-stage expression pass over rawState(): {state, errors}.
