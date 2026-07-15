@@ -36,6 +36,7 @@ import { arrowPlugin } from "../../plugins/arrow.js";
 import { elbowArrowPlugin } from "../../plugins/elbow_arrow.js";
 import { curvedArrowPlugin } from "../../plugins/curved_arrow.js";
 import { codeblockPlugin } from "../../plugins/codeblock.js";
+import { fancyArrowPlugin } from "../../plugins/fancy_arrow.js";
 
 /** Standard parity canvas: small enough for fast suites, big enough for detail. */
 export const SCENE_W = 400;
@@ -816,5 +817,36 @@ export function scenes() {
         }),
       ], 27, { latexRef: LATEX_COUNTER_REF, latexRaster: LATEX_COUNTER_PNG_DATA_URI }); // measured 30.25 dB (2026-07-15 live vector-parity run) — HIGHER than latex-basic's 21.17 because this equation is large/simple (fewer fine strokes), so the crisp-vector-vs-soft-raster agreement is tighter. floor 27 = measured − ~3. PENDING USER RATIFICATION. A WRONG even-odd fill would fill the e/0/8/a counters solid and sink this FAR below 27 — that divergence IS the fill-rule correctness gate.
     })(),
+
+    // ── FANCY ARROW: fill + outline stroke parity (Round 17.4) ────────────────
+    // Built the SAME way as donut-basic above: REAL fancyArrowPlugin.emit()
+    // calls (not hand-written IR), so this exercises actual widget glue — the
+    // triangulated fill AND (Round 17.4's new bit) the outline polyline drawn
+    // around the outer hull when strokeWidth > 0. Both backends consume the
+    // SAME triangle list AND the SAME closed-polyline points from ONE emit()
+    // call, so parity holds by construction (the donut-basic precedent).
+    // Three arrows: (1) fill only, strokeWidth 0 — the migrated-old-doc /
+    // untouched-default case, proving NO outline draws; (2) fill + a THICK
+    // contrasting outline around the whole tapered hull (the user's probe
+    // case: red body, black outline, no internal triangle seams); (3) a
+    // translucent fill + thin outline overlapping a rect, so the outline's
+    // edges are visually checkable against a straight-edged neighbor.
+    s("fancy-arrow-basic", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      ...fancyArrowPlugin.emit({
+        ...fancyArrowPlugin.defaults, from: { x: 20, y: 60 }, to: { x: 200, y: 60 },
+        fill: "#7aa2f7", strokeWidth: 0,
+      }, null, { x: 0, y: 0, rotation: 0, scale: 1 }),
+      ...fancyArrowPlugin.emit({
+        ...fancyArrowPlugin.defaults, from: { x: 20, y: 150 }, to: { x: 260, y: 150 },
+        tipLength: 30, tipWidth: 60, tipDimple: 10, startWidth: 8, endWidth: 14,
+        fill: "#f7768e", stroke: INK, strokeWidth: 6,
+      }, null, { x: 0, y: 0, rotation: 0, scale: 1 }),
+      rect({ x: 230, y: 200, w: 140, h: 80, fill: "#9ece6a" }),
+      ...fancyArrowPlugin.emit({
+        ...fancyArrowPlugin.defaults, from: { x: 60, y: 240 }, to: { x: 300, y: 240 },
+        fill: "#bb9af7", stroke: INK, strokeWidth: 2, opacity: 0.85,
+      }, null, { x: 0, y: 0, rotation: 0, scale: 1 }),
+    ], 35), // measured 41.02 dB (2026-07-15 live PDF-parity run) — same triangulated-polygon-fill + polyline-outline parity class as donut-basic (32 floor, 37.42 measured) and arrows-crossing (37 floor, 41.32 measured); floor = measured − ~6 dB (the same measured-minus-margin convention, AA/rotation/translucency headroom). PENDING RATIFICATION (same convention as every other scene's floor in this file).
   ];
 }

@@ -14,8 +14,10 @@ import {
   withSlideToggled, foldState, orphanedItems, withOrphanedItemsDropped,
   missingDefaults, withMissingDefaultsFilled, legacyKeyRenames, withLegacyKeysRenamed,
   dormantShadows, withDormantShadowsNeutralized,
+  fancyArrowFillMigrations, withFancyArrowFillMigrated,
   repairedDocument, defaultCameraState,
 } from "../core/document.js";
+import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { deriveRenderTree } from "../core/derive.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { evaluateState } from "../core/expressions.js";
@@ -382,6 +384,91 @@ test("an OLD text item (no valign key) gets valign filled to 'top' — old docs 
   const [complete, cid] = withNewItem(newDocument(), 0, { ...textDefaults, active: true });
   const textRep = missingDefaults(complete, registry).find((r) => r.id === cid);
   assert.ok(!textRep || !textRep.missing.some((m) => m.path.join(".") === "valign"), "a complete text item does not report valign");
+});
+
+// ── Round 17.4: fancy-arrow "stroke was the fill" migration ────────────────
+
+test("fancyArrowFillMigrations: an OLD stroke-as-fill write is selected, a NEW fill-bearing item is not", () => {
+  const oldDoc = { slides: [{ delta: { items: { a: { type: "fancy_arrow", stroke: "#ff0000" } } } }] };
+  assert.deepEqual(fancyArrowFillMigrations(oldDoc, registry), [{ id: "a", slideIndex: 0, value: "#ff0000" }]);
+  const newDoc = { slides: [{ delta: { items: { a: { type: "fancy_arrow", fill: "#ff0000", stroke: "#000000" } } } }] };
+  assert.deepEqual(fancyArrowFillMigrations(newDoc, registry), []); // already migrated — idempotent
+});
+
+test("fancyArrowFillMigrations: only fancy_arrow items are touched (a rect's stroke is a real outline already)", () => {
+  const doc = { slides: [{ delta: { items: { a: { type: "rect", fill: "#7aa2f7", stroke: "#ff0000" } } } }] };
+  assert.deepEqual(fancyArrowFillMigrations(doc, registry), []);
+});
+
+test("withFancyArrowFillMigrated: old stroke value moves to fill, stroke key is dropped (falls back to the plugin default)", () => {
+  const [d1, id] = withNewItem(newDocument(), 0, {
+    type: "fancy_arrow", z: 1, from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
+    stroke: "#ff0000", opacity: 1, active: true,
+  });
+  const { doc: fixed, migrated } = withFancyArrowFillMigrated(d1, registry);
+  assert.equal(migrated.length, 1);
+  assert.equal(fixed.slides[0].delta.items[id].fill, "#ff0000");
+  assert.equal("stroke" in fixed.slides[0].delta.items[id], false);
+  // Idempotent: re-running finds nothing left to migrate.
+  assert.equal(withFancyArrowFillMigrated(fixed, registry).migrated.length, 0);
+});
+
+test("withFancyArrowFillMigrated: a keyframed-on-a-LATER-slide stroke (an animated fill color) migrates on that slide too", () => {
+  let doc = newDocument();
+  const [d1, id] = withNewItem(doc, 0, {
+    type: "fancy_arrow", z: 1, from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
+    stroke: "#ff0000", opacity: 1, active: true,
+  });
+  const [d2] = withNewSlide(d1, 0);
+  const d3 = keyframed(d2, 1, ["items", id, "stroke"], "#00ff00"); // color animates across slides
+  const { doc: fixed, migrated } = withFancyArrowFillMigrated(d3, registry);
+  assert.equal(migrated.length, 2);
+  assert.equal(fixed.slides[0].delta.items[id].fill, "#ff0000");
+  assert.equal(fixed.slides[1].delta.items[id].fill, "#00ff00"); // the animation survives
+  assert.equal("stroke" in fixed.slides[1].delta.items[id], false);
+});
+
+test("repairedDocument: an OLD fancy arrow (stroke-as-fill) migrates to fill + strokeWidth 0, and renders BYTE-IDENTICAL to its pre-migration appearance", () => {
+  const [d1, id] = withNewItem(newDocument(), 0, {
+    type: "fancy_arrow", z: 1, from: { x: 200, y: 340 }, to: { x: 420, y: 340 },
+    tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
+    stroke: "#ff0000", opacity: 1, active: true,
+  });
+  const { doc: fixed, reports } = repairedDocument(d1, registry);
+  assert.ok(reports.some((r) => r.includes(id) && r.includes("fancy-arrow") && r.includes("fill")));
+  const item = fixed.slides[0].delta.items[id];
+  assert.equal(item.fill, "#ff0000"); // the OLD "stroke" value, preserved exactly
+  assert.equal(item.strokeWidth, 0);  // no outline — the migration never invents one
+  // The RENDER must be byte-identical: pre-migration, the old emit() drew
+  // `fill: s.stroke`; post-migration the new emit() draws `fill: s.fill` and,
+  // with strokeWidth 0, emits NO outline polyline — same op list, same color.
+  const world = { x: 0, y: 0, rotation: 0, scale: 1 };
+  const migratedOps = fancyArrowPlugin.emit(item, null, world);
+  assert.ok(migratedOps.every((op) => op.op === "polygon"), "strokeWidth 0 must emit zero outline ops");
+  const preMigrationFillColor = [1, 0, 0, 1]; // parseColor("#ff0000")
+  assert.deepEqual(migratedOps[0].fill, preMigrationFillColor);
+  // And the full strict-IR pipeline survives (fold → evaluate → derive → sceneIR).
+  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
+  sceneIR(deriveRenderTree(state, registry));
+});
+
+test("repairedDocument: a fresh fancy arrow (already on fill/stroke) is idempotent — no migration report", () => {
+  const [d1] = withNewItem(newDocument(), 0, { ...fancyArrowPlugin.defaults, active: true });
+  const { reports } = repairedDocument(d1, registry);
+  assert.ok(!reports.some((r) => r.includes("fancy-arrow")));
+});
+
+test("fancyArrowPlugin.emit: strokeWidth > 0 draws ONE closed outline polyline around the OUTER HULL (no per-triangle seams)", () => {
+  const state = { ...fancyArrowPlugin.defaults, fill: "#ff0000", stroke: "#000000", strokeWidth: 4 };
+  const ops = fancyArrowPlugin.emit(state, null, { x: 0, y: 0, rotation: 0, scale: 1 });
+  const polylines = ops.filter((op) => op.op === "polyline");
+  assert.equal(polylines.length, 1); // exactly one outline, not one per fill triangle
+  const pts = polylines[0].points;
+  assert.deepEqual(pts[0], pts[pts.length - 1]); // closed loop (first vertex repeated)
+  assert.equal(pts.length, 8); // the 7-vertex hull + the closing repeat
+  assert.equal(polylines[0].width, 4);
 });
 
 console.log(`\n${passed} repair tests passed`);

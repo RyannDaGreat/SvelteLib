@@ -193,10 +193,12 @@ test("arrowIR: dangling reference falls back loudly upstream, still draws", () =
 test("fancyArrowIR: outline triangulates to convex polygons (the parameterized-geometry path)", () => {
   // Reference params = the Figures-library defaults on a 100px arrow
   // (core/outline.js fancyArrowOutline; area cross-checked in outline_test).
+  // `fill` is the body color (Round 17.4 — `stroke` is now the OUTLINE, left
+  // unset here since strokeWidth defaults to 0 / undefined → no outline op).
   const s = {
     from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
     tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
-    stroke: "#000", opacity: 0.5,
+    fill: "#000", opacity: 0.5,
   };
   const cmds = fancyArrowPlugin.emit(s);
   assert.equal(cmds.length, 5); // 7-vertex simple outline → n-2 triangles
@@ -205,11 +207,24 @@ test("fancyArrowIR: outline triangulates to convex polygons (the parameterized-g
   // The tip vertex survives triangulation verbatim (watertight shared points).
   assert.ok(cmds.some((c) => c.points.some(([x, y]) => x === 100 && y === 0)));
 });
+test("fancyArrowIR: strokeWidth > 0 additionally emits ONE closed outline polyline (Round 17.4)", () => {
+  const s = {
+    from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
+    tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
+    fill: "#000", stroke: "#fff", strokeWidth: 3, opacity: 1,
+  };
+  const cmds = fancyArrowPlugin.emit(s);
+  assert.equal(cmds.length, 6); // 5 fill triangles + 1 outline polyline
+  const outline = cmds[cmds.length - 1];
+  assert.equal(outline.op, "polyline");
+  assert.equal(outline.width, 3);
+  assert.deepEqual(outline.points[0], outline.points[outline.points.length - 1]); // closed loop
+});
 test("fancyArrowIR: zero-length arrow emits nothing (skia_draw_arrow precedent)", () => {
   assert.deepEqual(fancyArrowPlugin.emit({
     from: { x: 7, y: 7 }, to: { x: 7, y: 7 },
     tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
-    stroke: "#000",
+    fill: "#000",
   }), []);
 });
 test("fancyArrow hit test: concavity-aware (dimple notch is a miss, head is a hit)", () => {

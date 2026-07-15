@@ -46,6 +46,7 @@ export const SVG_SCENE_NAMES = [
   "filmstrip-look",         // 14.1 faithful look: triangulated perforation bands + per-cell rounded-clip <image> frames
   "cropbox-basic",          // rounded-rect <clipPath> + re-emit (incl. 45° rotated)
   "elbow-curved-arrows",    // arbitrary-length polyline routes
+  "fancy-arrow-basic",      // Round 17.4: FILL triangles + a real OUTLINE stroke polyline around the outer hull (donut's fill+stroke-polyline class, this widget specifically)
   "richtext-outline-highlight", // Round 13.4: the FIRST rich-text SVG scene (the rich path was ported here) — per-run outline (stroke+paint-order) + highlight (<rect>)
   "latex-basic",            // Round 15.1: LaTeX equation as TRUE VECTOR glyph <path>s (latexVector op) — bare + bordered/rounded + translucent — vs the GPU raster bitmap
   "latex-counters",         // Round 15.1: glyph-counter FILL-RULE test (e/0/8/a holes) — nonzero-winding vector paths vs the correct MathJax raster; a wrong even-odd rule craters the PSNR
@@ -90,6 +91,7 @@ export const SVG_PSNR_FLOORS = {
   "filmstrip-look": 26,         // measured 31.07 — perforation-band polygons + per-cell rounded <clipPath> <image> frames
   "cropbox-basic": 18,          // measured 23.50 — rounded <clipPath> re-emit incl. 45° rotation
   "elbow-curved-arrows": 38,    // measured 43.23 — arbitrary-length polyline routes
+  "fancy-arrow-basic": 36,      // measured 41.85 dB (2026-07-15 live SVG parity run) — donut-basic's class (triangulated fill + stroke polylines, measured 37.03 → floor 32); floor = measured − ~5.9, matching the file's measured-minus-margin convention. PENDING USER RATIFICATION.
   // Round 13.4: FIRST rich-text SVG scene (the rich path was newly ported). SVG
   // outline = -webkit-text-stroke-equivalent paint-order="stroke"; the committed
   // Inter face carries the same synth-oblique/AA deltas as font-families (21).

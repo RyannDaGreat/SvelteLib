@@ -459,6 +459,78 @@ export function withLegacyKeysRenamed(doc, registry) {
   return { doc: out, renamed };
 }
 
+/**
+ * Pure function. Fancy-arrow fill/stroke value migrations the document needs
+ * (manifest Round 17.4, "fancy arrow should have both fill AND stroke"):
+ * every fancy_arrow slide-delta write of `stroke` that predates the real
+ * `fill` property. Historically `stroke` WAS the tapered polygon's fill color
+ * (see plugins/fancy_arrow.js's header) — this is a VALUE migration, not a
+ * key rename (both the old and new schema use the key name "stroke", just
+ * with a different meaning), so it can't reuse the generic legacyKeys
+ * mechanism (which only moves a value from one key name to another). It runs
+ * AFTER withLegacyKeysRenamed (so a truly ancient `color`-keyed doc has
+ * already converged on `stroke` by the time this reads it) and BEFORE
+ * withMissingDefaultsFilled (so the fill-in-progress fancy_arrow items still
+ * look "missing fill" to that step and get NOTHING clobbered here — the fill
+ * step then supplies the untouched-old-doc's `strokeWidth` default of 0,
+ * which is exactly the "no outline until the user adds one" requirement).
+ *
+ * A slide is a migration candidate iff it writes `stroke` on a fancy_arrow
+ * item AND that same delta does not ALSO write `fill` (an item already on
+ * the new schema, or one where the current slide is a later keyframe of just
+ * `stroke`-the-outline-color post-migration, is left alone — idempotent).
+ *
+ * Args:
+ *   doc (object): document
+ *   registry (object): plugin registry (.get(type) → plugin)
+ *
+ * Returns:
+ *   {id, slideIndex, value}[] (empty when nothing needs migrating)
+ *
+ * @example fancyArrowFillMigrations({slides: [{delta: {items: {a: {type: "fancy_arrow", stroke: "#ff0000"}}}}]}, reg) // [{id: "a", slideIndex: 0, value: "#ff0000"}]
+ * @example fancyArrowFillMigrations({slides: [{delta: {items: {a: {type: "fancy_arrow", fill: "#ff0000", stroke: "#000000"}}}}]}, reg) // [] (already on the new schema)
+ */
+export function fancyArrowFillMigrations(doc, registry) {
+  const typeOf = new Map();
+  for (const s of doc.slides)
+    for (const [id, item] of Object.entries(s.delta.items ?? {}))
+      if (item && typeof item === "object" && typeof item.type === "string" && !typeOf.has(id))
+        typeOf.set(id, item.type);
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!(item && typeof item === "object") || typeOf.get(id) !== "fancy_arrow") continue;
+      if (!("stroke" in item) || "fill" in item) continue;
+      out.push({ id, slideIndex, value: item.stroke });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every fancy-arrow fill/stroke migration
+ * (fancyArrowFillMigrations) applied: the old `stroke` value is COPIED to
+ * `fill` on the same slide (preserving the exact appearance — old renders
+ * were that color), and the old `stroke` write is deleted (falling back to
+ * the plugin's new outline-color default; strokeWidth stays whatever the doc
+ * already had, or the missing-defaults fill supplies 0 next — so an
+ * un-migrated doc that never set strokeWidth draws NO outline, byte-identical
+ * to before). REPORTING IS THE CALLER'S JOB. Idempotent (a migrated item has
+ * `fill`, so fancyArrowFillMigrations no longer selects it).
+ *
+ * @example withFancyArrowFillMigrated({slides: [{delta: {items: {a: {type: "fancy_arrow", stroke: "#ff0000"}}}}]}, reg).doc.slides[0].delta.items.a.fill // "#ff0000"
+ * @example withFancyArrowFillMigrated({slides: [{delta: {items: {a: {type: "fancy_arrow", stroke: "#ff0000"}}}}]}, reg).doc.slides[0].delta.items.a.stroke // undefined (falls back to the plugin default)
+ */
+export function withFancyArrowFillMigrated(doc, registry) {
+  const migrated = fancyArrowFillMigrations(doc, registry);
+  let out = doc;
+  for (const { id, slideIndex, value } of migrated) {
+    out = keyframed(out, slideIndex, ["items", id, "fill"], value);
+    out = unkeyframed(out, slideIndex, ["items", id, "stroke"]);
+  }
+  return { doc: out, migrated };
+}
+
 // ── The load-boundary repair pipeline (ONE home) ─────────────────────────────
 // Both consumers of load-time repair — the editor (app.repaired via loadFile /
 // loadAutosave / loadProject / deleteSlide) and the CLI render hook
@@ -483,6 +555,11 @@ export function withLegacyKeysRenamed(doc, registry) {
  *      writes the new key's default at the creation slide and the rename then
  *      drops the user's legacy value as stale (data loss — repair_test.js
  *      "legacy rename ORDER").
+ *  2b. fancy-arrow fill migrated — MUST run AFTER legacy key renames (a
+ *      `color`-keyed ancient doc needs to have already converged on `stroke`)
+ *      and BEFORE defaults-fill (same hazard class as rich text below: fill
+ *      first and the old `stroke`-as-fill value would already be gone,
+ *      replaced by the fill default, before this step could read it).
  *   3. meta.fps stripped        — frame caps are dead (round 11); meta-only, so
  *      its position among the item/slide steps is free — placed here to match
  *      the editor's long-tested sequence.
@@ -514,7 +591,16 @@ export function repairedDocument(doc, registry) {
   for (const r of renamed)
     reports.push(`PowerRP repair: item "${r.id}" slide ${r.slideIndex}: legacy "${r.from}" → "${r.to}"${r.stale ? " (stale copy dropped)" : ""}`);
 
-  let out = renamedDoc;
+  // Fancy-arrow fill migration (Round 17.4): `stroke` was misused as the fill
+  // color — move its value to the new `fill` property so old arrows keep
+  // their EXACT appearance; the new `stroke` falls back to the plugin's
+  // outline-color default with strokeWidth 0 (no outline) via the fill step
+  // below, so an un-migrated doc renders byte-identical.
+  const { doc: fillMigratedDoc, migrated: fancyArrowFilled } = withFancyArrowFillMigrated(renamedDoc, registry);
+  for (const m of fancyArrowFilled)
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy fancy-arrow "stroke" (fill color) → "fill"; "stroke" now means outline`);
+
+  let out = fillMigratedDoc;
   if ("fps" in out.meta) {
     const meta = { ...out.meta };
     delete meta.fps;

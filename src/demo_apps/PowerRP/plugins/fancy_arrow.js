@@ -33,15 +33,27 @@
  * drag back onto that ONE-dimensional trajectory — donut's apply pattern,
  * generalized from "one radius" to "one axis or one normal".
  *
- * STROKE NAMING MIGRATION (manifest ARCHITECTURE PLAN #6): fancy_arrow has no
- * generic `width` property (only shape params tipWidth/startWidth/endWidth,
- * which are NOT the migration's target — they stay as-is), so only
- * color→stroke applies here (unlike the basic arrow, which also renames
- * width→strokeWidth).
+ * STROKE NAMING MIGRATION (manifest ARCHITECTURE PLAN #6, superseded by
+ * Round 17.4 below): fancy_arrow has no generic `width` property (only shape
+ * params tipWidth/startWidth/endWidth, which are NOT the migration's target
+ * — they stay as-is), so only color→stroke applies here (unlike the basic
+ * arrow, which also renames width→strokeWidth).
+ *
+ * FILL + OUTLINE STROKE (manifest Round 17.4, "fancy arrow should have both
+ * fill AND stroke"): historically `stroke` was MISUSED as the tapered
+ * polygon's fill color (there was no real outline). This plugin now composes
+ * the ordinary stroked-border convention other shapes use: `fill` is the
+ * body color, `stroke`/`strokeWidth` are a real OUTLINE drawn around the
+ * shape's outer hull (strokeWidth default 0 = no outline, matching
+ * strokedBorder's registry default). The one-time value migration (old
+ * `stroke`-as-fill → new `fill`, new `stroke` reset to the registry default
+ * with strokeWidth 0) lives in core/document.js's
+ * withFancyArrowFillMigrated — the ONE migration home (repairedDocument),
+ * NOT here (plugins hold no migration logic beyond declarative legacyKeys).
  */
 
-import { polygon } from "../render_gpu/ir.js";
-import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
+import { polygon, polyline } from "../render_gpu/ir.js";
+import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
 import { fancyArrowOutline, triangulated, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
@@ -70,23 +82,34 @@ export const fancyArrowPlugin = {
     // The Figures library's own defaults (arrow.py:354): tip_width=15 is the
     // PER-SIDE barb offset there, so full tipWidth = 30 here; the rest map 1:1.
     tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
-    stroke: "#1a1a2e", opacity: 1,
+    // Round 17.4: `fill` is the tapered polygon's body color (was `stroke`,
+    // misused as fill — see the header note + core/document.js's
+    // withFancyArrowFillMigrated). `stroke`/`strokeWidth` are now a REAL
+    // outline: strokeWidth 0 (no outline — the strokedBorder registry
+    // default, PROPS.strokeWidth.default) so a fresh arrow's silhouette is
+    // unchanged; `stroke` still gets a sane color (rect/donut's own outline
+    // ink) so turning strokeWidth up "just works" with no extra step.
+    fill: "#1a1a2e", stroke: "#1a1a2e", ...defaults("strokeWidth"),
+    opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // color → stroke only (manifest ARCHITECTURE PLAN #6, "arrows are
   // line-objects"): fancy_arrow has no generic `width` property, so
   // width→strokeWidth (the basic arrow's second rename) doesn't apply here.
+  // This still fires for pre-Round-17.4 docs that predate even the stroke
+  // rename (color never existed as a real fancy_arrow key) — its output feeds
+  // withFancyArrowFillMigrated (core/document.js), which runs AFTER it.
   legacyKeys: { color: "stroke" },
   // `category` groups rows into the Inspector's collapsible accordion regions
   // (manifest Round 12 "PROPERTY CATEGORIES"). Endpoints/z → positioning;
-  // color/opacity → formatting; tip/shaft geometry → an "arrow" extras category.
-  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
-  // shared stroke/opacity (NO strokeWidth — a fancy arrow is a FILLED tapered
-  // outline, `stroke` is its fill color). The tapered-shaft/head geometry rows
-  // are plugin-specific (an "arrow" extras category).
+  // fill/stroke/opacity → formatting; tip/shaft geometry → an "arrow" extras
+  // category. Rows COMPOSE from the SHARED PROPERTY REGISTRY: the
+  // `endpoints` bundle + fill/stroke/strokeWidth (the strokedBorder trio,
+  // composed directly rather than via bundle("strokedBorder") since a fancy
+  // arrow has no cornerRadius — it isn't a box) + opacity.
   inspector: [
     ...bundle("endpoints"),
-    ...props("stroke", "opacity"),
+    ...props("fill", "stroke", "strokeWidth", "opacity"),
     ...bundle("effects"),
     { key: "tipLength", label: "Tip length", kind: "number", min: 0, category: "arrow", help: "Length of the arrowhead along the shaft, from tip to the barbs' base, in canvas units." },
     { key: "tipWidth", label: "Tip width", kind: "number", min: 0, category: "arrow", help: "Full width across the arrowhead's barbs, in canvas units." },
@@ -98,9 +121,18 @@ export const fancyArrowPlugin = {
    * Near-pure function (console.errors ONCE per unique degenerate-geometry
    * message; otherwise pure). State → display-list commands: the outline
    * (concave at the dimple) ear-clips into convex triangles for the IR's
-   * convex-only polygon op. Shared triangle vertices are verbatim-identical,
-   * so raster edges tile watertight. A zero-length arrow emits nothing
-   * (generator returns null — the Python skia_draw_arrow precedent).
+   * convex-only polygon op, filled with `fill`. When strokeWidth > 0 an
+   * OUTLINE stroke also draws around the outer hull (Round 17.4) — the SAME
+   * closed-polyline technique donut.js uses for its rim (a polyline() with
+   * the first vertex repeated at the end, so the closing edge gets a round
+   * join instead of two bare end caps — verbatim-identical seam to the fill
+   * triangles' own edges, so nothing double-draws or gaps). This is drawn
+   * around the WHOLE hull, never per-triangle — a per-triangle stroke would
+   * draw seams along the ear-clip's internal diagonals, which are not part
+   * of the shape's visible boundary.
+   *
+   * A zero-length arrow emits nothing (generator returns null — the Python
+   * skia_draw_arrow precedent).
    *
    * The triangulated() guard covers the generator's residual self-intersecting
    * parameter corners (documented in core/outline.js): a degenerate config is
@@ -120,15 +152,20 @@ export const fancyArrowPlugin = {
       return [];
     }
     const opacity = s.opacity ?? 1;
+    const strokeWidth = s.strokeWidth ?? 0;
+    const cmds = tris.map((tri) => polygon({ points: tri, fill: s.fill, opacity }));
+    if (strokeWidth > 0)
+      cmds.push(polyline({ points: [...outline, outline[0]], width: strokeWidth, color: s.stroke, opacity }));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
     // effects.js; all-off = pass-through). Effect region = padded AABB of the
     // drawn geometry (no bbox state; world == identity). No cullMargin:
-    // non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
-    // The outline vertices ([x, y] pairs) ARE the drawn extent — exact AABB,
-    // no stroke pad needed (a filled polygon has no stroke overhang).
+    // non-bbox widgets never cull-skip (core/view.js defaultCanSkip). Padded
+    // by half the outline strokeWidth (0 when there is no outline — byte-
+    // identical to the old exact-AABB fill-only extent) — the same
+    // half-strokeWidth pad convention rect.js/donut.js use for their own
+    // stroked bbox halo.
     return applyEffects(
-      tris.map((tri) => polygon({ points: tri, fill: s.stroke, opacity })),
-      s, world, paddedPointsBBox(outline.map(([x, y]) => ({ x, y })), 0));
+      cmds, s, world, paddedPointsBBox(outline.map(([x, y]) => ({ x, y })), strokeWidth / 2));
   },
   hitTestWorld(node, wx, wy) {
     const s = node.state;
