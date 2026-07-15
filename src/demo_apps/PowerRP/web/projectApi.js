@@ -85,10 +85,42 @@ export async function deleteAsset(name, filename) {
 /** Query (the server extracts on first request, then serves from its cache).
  *  N evenly-spread frames of a project video asset: {count, frames: [url,…]}.
  *  `video` is the asset FILENAME (the filmstrip widget's src); count may be
- *  less than n for a video shorter than n frames. */
-export async function fetchFrames(name, video, n) {
-  const res = await fetch(`${BACKEND}/api/frames/${enc(name)}/${enc(video)}/${encodeURIComponent(n)}/`);
+ *  less than n for a video shorter than n frames. `h`/`w` are the OPTIONAL
+ *  per-frame extraction resolution in pixels (manifest 14.1 frameH/frameW; null/
+ *  undefined = the video's native size) — passed as ?h=&w= query params, folded
+ *  into the server's cache key so a resolution change re-extracts. */
+export async function fetchFrames(name, video, n, h = null, w = null) {
+  const q = new URLSearchParams();
+  if (h != null && h > 0) q.set("h", String(Math.round(h)));
+  if (w != null && w > 0) q.set("w", String(Math.round(w)));
+  const qs = q.toString() ? `?${q}` : "";
+  const res = await fetch(`${BACKEND}/api/frames/${enc(name)}/${enc(video)}/${encodeURIComponent(n)}/${qs}`);
   return jsonOrThrow(res, `fetchFrames(${name}, ${video}, ${n})`);
+}
+
+/** Command. Store `payload` (a JSON STRING — the serialized item) on THIS
+ *  browser session's server-side clipboard (manifest 14.10 AMENDED). The
+ *  server keys it by a session cookie, so two open presentations of the same
+ *  browser share it. `credentials:"include"` sends/receives that cookie even
+ *  when the backend is a different origin (?backend=…); same-origin (the Vite
+ *  proxy, the normal case) sends it anyway. Throws loudly on a non-OK response. */
+export async function setClipboard(payload) {
+  const res = await fetch(`${BACKEND}/api/clipboard/`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ payload }),
+  });
+  return jsonOrThrow(res, "setClipboard");
+}
+
+/** Query. This browser session's last server-side clipboard payload (the JSON
+ *  STRING stored by setClipboard), or null if this session never copied.
+ *  Throws loudly on a non-OK response. */
+export async function getClipboard() {
+  const res = await fetch(`${BACKEND}/api/clipboard/`, { credentials: "include" });
+  const { payload } = await jsonOrThrow(res, "getClipboard");
+  return payload ?? null;
 }
 
 /** Command. Download the whole project as a .zip (browser save dialog). The

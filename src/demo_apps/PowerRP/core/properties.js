@@ -192,23 +192,30 @@ export const PROPS = {
   // ONE substrate, three effects, every drawn widget (render half:
   // render_gpu/effects.js applyEffects — the module header there records which
   // widgets compose this and why the rest are excluded). DEFAULTS = EFFECT-OFF
-  // (shadow blur 0 / bloom strength 0 / blendMode normal) so every old document
-  // renders byte-identically (the Round 12D requirement). Nested dotted keys,
-  // the rotationAnchor.{x,y} precedent — Inspector paths/keyframes/equations all
-  // split on "." (equations read them as shadow.dx etc.).
+  // (shadow OPACITY 0 / bloom strength 0 / blendMode normal) so every old
+  // document renders byte-identically (the Round 12D requirement). Nested dotted
+  // keys, the rotationAnchor.{x,y} precedent — Inspector paths/keyframes/
+  // equations all split on "." (equations read them as shadow.dx etc.).
   //
-  // Enabled-state defaults are LINKED PRECEDENTS (arbitrary-constants rule):
-  // dx/dy 3 = refs/Figures/scratchpad.py's shadow_dx=3 (the Figures drop-shadow
-  // demo); color black + opacity 0.5 = refs/Figures/paper_peacock.py's
-  // production call with_drop_shadows(color='black', opacity=.5); bloom radius
-  // 10 = rp with_drop_shadow's blur=10 default (the same Gaussian-sigma family;
-  // rp r.py:5002). Blur/radius are Gaussian SIGMAS in world units — the
+  // SHADOW GATE (manifest 14.8, user verbatim: "shadow should default x and y
+  // to 0 and blur should be allowed to be 0 and still visible - but shadow
+  // opacity = 0 gates whether we render it which is by default 0"): shadow.dx/dy
+  // default 0 (no offset), shadow.opacity default 0 (THE render gate — off).
+  // blur default 0 is now LEGAL AND VISIBLE (opacity>0, blur 0 = a hard-edged
+  // tinted offset silhouette; the GPU shader clamps sigma to 0.01 so a 0-blur
+  // shadow is a crisp copy, and no backend gates the shadow on blur).
+  //
+  // Enabled-state (color/bloom) defaults are LINKED PRECEDENTS (arbitrary-
+  // constants rule): color black = refs/Figures/paper_peacock.py's production
+  // call with_drop_shadows(color='black'); bloom radius 10 = rp
+  // with_drop_shadow's blur=10 default (the same Gaussian-sigma family; rp
+  // r.py:5002). Blur/radius are Gaussian SIGMAS in world units — the
   // blurBackdrop radius convention (render_gpu/ir.js).
-  "shadow.dx": { label: "Shadow X", kind: "number", category: "effects", default: 3, help: "How far the drop shadow shifts horizontally, in canvas units (positive is right). The shadow appears once Shadow blur is above zero." },
-  "shadow.dy": { label: "Shadow Y", kind: "number", category: "effects", default: 3, help: "How far the drop shadow shifts vertically, in canvas units (positive is down). The shadow appears once Shadow blur is above zero." },
-  "shadow.blur": { label: "Shadow blur", kind: "number", min: 0, category: "effects", default: 0, help: "How soft the drop shadow is (Gaussian blur amount, canvas units). Zero means NO shadow — raise it to turn the shadow on." },
+  "shadow.dx": { label: "Shadow X", kind: "number", category: "effects", default: 0, help: "How far the drop shadow shifts horizontally, in canvas units (positive is right). The shadow appears once Shadow opacity is above zero." },
+  "shadow.dy": { label: "Shadow Y", kind: "number", category: "effects", default: 0, help: "How far the drop shadow shifts vertically, in canvas units (positive is down). The shadow appears once Shadow opacity is above zero." },
+  "shadow.blur": { label: "Shadow blur", kind: "number", min: 0, category: "effects", default: 0, help: "How soft the drop shadow is (Gaussian blur amount, canvas units). Zero is a crisp, hard-edged shadow — the shadow is on whenever Shadow opacity is above zero, softness is separate." },
   "shadow.color": { label: "Shadow color", kind: "color", category: "effects", default: "#000000", help: "The drop shadow's color — classically black, but any color works (a colored glow-like shadow, for instance)." },
-  "shadow.opacity": { label: "Shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0.5, help: "How dark the drop shadow is, from 0 (invisible) to 1 (fully solid shadow color)." },
+  "shadow.opacity": { label: "Shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0, help: "How dark the drop shadow is, from 0 (invisible — NO shadow, the default) to 1 (fully solid shadow color). This is the shadow's on/off gate: raise it above 0 to turn the shadow on." },
   "bloom.radius": { label: "Bloom radius", kind: "number", min: 0, category: "effects", default: 10, help: "How far the bloom glow spreads (Gaussian blur amount, canvas units). Takes effect once Bloom strength is above zero." },
   "bloom.strength": { label: "Bloom strength", kind: "number", min: 0, category: "effects", default: 0, help: "How bright the glow is: a blurred copy of the widget added on top of itself. Zero means NO bloom; 1 adds a full-brightness copy; higher over-glows." },
   // Options mirror render_gpu/ir.js BLEND_MODES (the validating home — kept a
@@ -447,7 +454,7 @@ export function bundleDefaults(name) {
  * same as defaults().
  *
  * @example nestedDefaults("shadow.blur", "shadow.opacity", "blendMode")
- * {"shadow":{"blur":0,"opacity":0.5},"blendMode":"normal"}
+ * {"shadow":{"blur":0,"opacity":0},"blendMode":"normal"}
  * @example nestedDefaults("opacity")
  * {"opacity":1}
  */
@@ -471,7 +478,7 @@ export function nestedDefaults(...keys) {
  * `...bundleNestedDefaults("effects")`.
  *
  * @example bundleNestedDefaults("effects")
- * {"shadow":{"dx":3,"dy":3,"blur":0,"color":"#000000","opacity":0.5},"bloom":{"radius":10,"strength":0},"blendMode":"normal"}
+ * {"shadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"bloom":{"radius":10,"strength":0},"blendMode":"normal"}
  */
 export function bundleNestedDefaults(name) {
   const keys = BUNDLES[name];

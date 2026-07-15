@@ -54,10 +54,15 @@ import { effectSubtree, pushTransform, popTransform } from "./ir.js";
 
 /**
  * Pure function. Is a widget's effects state visually a no-op? True iff the
- * shadow is off (blur <= 0 — the manifest's effect-off definition; opacity 0
- * also counts, it paints nothing) AND bloom is off (strength <= 0) AND the
- * blend mode is normal/absent. Absent keys are OFF (old documents predate the
+ * shadow is off (OPACITY <= 0 — the manifest 14.8 gate: "shadow opacity = 0
+ * gates whether we render it") AND bloom is off (strength <= 0) AND the blend
+ * mode is normal/absent. Absent keys are OFF (old documents predate the
  * bundle), so a pre-effects document is byte-identical by construction.
+ *
+ * BLUR IS NOT PART OF THE GATE (manifest 14.8, user verbatim: "blur should be
+ * allowed to be 0 and still visible"). blur 0 with opacity > 0 is a legal,
+ * VISIBLE shadow: a crisp, hard-edged tinted offset silhouette (no softening).
+ * Only opacity turns the shadow on/off.
  *
  * Args:
  *   state (object): evaluated widget state (shadow/bloom/blendMode read here)
@@ -66,8 +71,9 @@ import { effectSubtree, pushTransform, popTransform } from "./ir.js";
  *   boolean
  *
  * @example effectsOff({}) // true
- * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 0, color: "#000", opacity: 0.5}}) // true (blur 0 = shadow off)
+ * @example effectsOff({shadow: {dx: 0, dy: 0, blur: 0, color: "#000", opacity: 0}}) // true (opacity 0 = shadow off — the default)
  * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 4, color: "#000", opacity: 0}}) // true (opacity 0 paints nothing)
+ * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 0, color: "#000", opacity: 0.5}}) // false (blur 0 but opacity>0 = a HARD-edged shadow, visible)
  * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 4, color: "#000", opacity: 0.5}}) // false
  * @example effectsOff({bloom: {radius: 10, strength: 0.8}}) // false
  * @example effectsOff({bloom: {radius: 10, strength: 0}}) // true (strength 0 = bloom off)
@@ -75,7 +81,7 @@ import { effectSubtree, pushTransform, popTransform } from "./ir.js";
  * @example effectsOff({blendMode: "normal"}) // true
  */
 export function effectsOff(state) {
-  const shadowOn = (state.shadow?.blur ?? 0) > 0 && (state.shadow?.opacity ?? 0) > 0;
+  const shadowOn = (state.shadow?.opacity ?? 0) > 0;
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   const blendOn = (state.blendMode ?? "normal") !== "normal";
   return !shadowOn && !bloomOn && !blendOn;
@@ -120,7 +126,7 @@ export function effectsOff(state) {
 export function applyEffects(content, state, world, bbox) {
   if (effectsOff(state)) return content;
   if (!world) throw new Error("applyEffects: an effected widget needs the node's absolute `world` (sceneIR passes it as emit's 3rd arg); got undefined");
-  const shadowOn = (state.shadow?.blur ?? 0) > 0 && (state.shadow?.opacity ?? 0) > 0;
+  const shadowOn = (state.shadow?.opacity ?? 0) > 0; // 14.8: opacity is the gate, blur 0 stays visible
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   return [effectSubtree({
     x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h,
@@ -150,6 +156,7 @@ export function applyEffects(content, state, world, bbox) {
  *
  * @example effectsCullMargin({}) // 0
  * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 0.5}}) // 11 (3·2 blur spill + 5 offset length)
+ * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 0, color: "#000", opacity: 0.5}}) // 5 (blur 0 = no spill, but the offset silhouette still reaches 5)
  * @example effectsCullMargin({bloom: {radius: 5, strength: 1}}) // 15 (3·5 bloom spill)
  * @example effectsCullMargin({blendMode: "multiply"}) // 0 (blend alone adds no halo)
  */
@@ -158,7 +165,7 @@ export function effectsCullMargin(state) {
   // MAX_HALF_KERNEL's own derivation — sigma·3), matching effectSubtree's
   // build-time margin exactly.
   const BLUR_SUPPORT_SIGMAS = 3;
-  const shadowOn = (state.shadow?.blur ?? 0) > 0 && (state.shadow?.opacity ?? 0) > 0;
+  const shadowOn = (state.shadow?.opacity ?? 0) > 0; // 14.8: opacity gates; a blur-0 shadow still offsets by (dx,dy)
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   return Math.max(
     shadowOn ? state.shadow.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(state.shadow.dx ?? 0, state.shadow.dy ?? 0) : 0,

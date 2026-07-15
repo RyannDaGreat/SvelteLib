@@ -326,6 +326,71 @@ export function withMissingDefaultsFilled(doc, registry) {
 }
 
 /**
+ * Query. Every stored shadow keyframe that was INVISIBLE under the OLD shadow
+ * gate but WOULD render under the NEW one (manifest 14.8) — the "dormant
+ * shadow" migration set.
+ *
+ * WHY this exists: Round 14.8 changed the shadow render gate from
+ * `blur > 0 AND opacity > 0` (the only gate ever committed — effects.js
+ * ab9a675) to `opacity > 0` alone (blur 0 is now a legal HARD-edged shadow).
+ * But the OLD defaults spread `{dx:3, dy:3, blur:0, color, opacity:0.5}` onto
+ * every item at creation, so pre-14.8 documents carry a stored shadow with
+ * opacity 0.5 and blur 0 — INVISIBLE under the old gate (blur 0), but the new
+ * gate would suddenly render it. The user's ruling "existing docs keep stored
+ * values" cannot mean "shadows the user never saw suddenly appear"; this
+ * migration neutralizes exactly those dormant shadows (and ONLY those) to the
+ * new-gate-off form (opacity 0), leaving every VISIBLE shadow untouched.
+ *
+ * A shadow keyframe is dormant iff, in a single slide's delta, it carries BOTH
+ *   opacity > 0  (would render under the new gate) AND
+ *   blur <= 0    (was invisible under the old gate: it needed blur > 0)
+ * with both leaves present in that same delta (the creation-slide full-object
+ * case old docs universally produce). A partial keyframe touching only blur or
+ * only opacity is left alone — the old-gate-invisibility test needs both.
+ *
+ * Args:
+ *   doc (object): document
+ *
+ * Returns:
+ *   {id, slideIndex, opacity, blur}[]  (empty when nothing is dormant)
+ *
+ * @example dormantShadows({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0.5}}}}}]}) // [{id: "a", slideIndex: 0, opacity: 0.5, blur: 0}]
+ * @example dormantShadows({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 4, opacity: 0.5}}}}}]}) // [] (blur > 0 = it was visible before; keep it)
+ * @example dormantShadows({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0}}}}}]}) // [] (opacity 0 = already off)
+ */
+export function dormantShadows(doc) {
+  const out = [];
+  for (let i = 0; i < doc.slides.length; i++)
+    for (const [id, item] of Object.entries(doc.slides[i].delta.items ?? {})) {
+      const sh = item && typeof item === "object" ? item.shadow : null;
+      if (!sh || typeof sh !== "object") continue;
+      const opacity = sh.opacity, blur = sh.blur;
+      // Both leaves must be present in THIS delta (a same-delta full shadow) so
+      // the old-gate-invisibility test is well-defined; skip a partial keyframe.
+      if (typeof opacity !== "number" || typeof blur !== "number") continue;
+      if (opacity > 0 && blur <= 0) out.push({ id, slideIndex: i, opacity, blur });
+    }
+  return out;
+}
+
+/**
+ * Pure function. Document with every DORMANT shadow (dormantShadows) rewritten
+ * to opacity 0 — the new-gate-off form — plus the migration report. Idempotent
+ * (a neutralized shadow has opacity 0, so it is no longer dormant). REPORTING IS
+ * THE CALLER'S JOB (printRepairReports); this only builds the {doc, report}.
+ *
+ * @example withDormantShadowsNeutralized({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0.5}}}}}]}).doc.slides[0].delta.items.a.shadow.opacity // 0
+ * @example withDormantShadowsNeutralized({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0.5}}}}}]}).neutralized.length // 1
+ */
+export function withDormantShadowsNeutralized(doc) {
+  const neutralized = dormantShadows(doc);
+  let out = doc;
+  for (const { id, slideIndex } of neutralized)
+    out = keyframed(out, slideIndex, ["items", id, "shadow", "opacity"], 0);
+  return { doc: out, neutralized };
+}
+
+/**
  * Pure function. Legacy key renames the document needs: every slide-delta
  * write at items.<id>.<oldKey> where the item's plugin declares
  * `legacyKeys: {oldKey: newKey}` (a top-level-state-key rename map — the
@@ -423,6 +488,10 @@ export function withLegacyKeysRenamed(doc, registry) {
  *      the editor's long-tested sequence.
  *   4. missing defaults filled  — typed-but-partial items get plugin defaults so
  *      the strict IR builders never see w: undefined.
+ *  4b. dormant shadows off      — AFTER defaults-fill: a stored old-default
+ *      shadow (opacity 0.5, blur 0) was invisible under the old gate but the
+ *      14.8 opacity-only gate would resurrect it; neutralize to opacity 0
+ *      (only shadows that were already invisible — visible shadows untouched).
  *   5. duration → transition    — legacy per-slide `duration` becomes
  *      transition.seconds (round 12).
  *   6. camera ensured           — a doc predating the camera (or one whose camera
@@ -464,7 +533,16 @@ export function repairedDocument(doc, registry) {
   for (const { id, missing } of filled)
     reports.push(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
 
-  const { doc: migratedDoc, migrated } = withDurationMigrated(filledDoc);
+  // Dormant shadows AFTER defaults-fill (order-critical): a doc missing shadow
+  // entirely gets the NEW effect-off defaults (opacity 0) from the fill above,
+  // which are not dormant — so this step only neutralizes shadows that were
+  // STORED with the old defaults (opacity 0.5, blur 0), invisible under the old
+  // gate but resurrected by the 14.8 opacity-only gate (see dormantShadows).
+  const { doc: deshadowedDoc, neutralized } = withDormantShadowsNeutralized(filledDoc);
+  for (const { id, slideIndex, opacity } of neutralized)
+    reports.push(`PowerRP repair: item "${id}" slide ${slideIndex}: a stored blur-0 shadow (opacity ${opacity}) was invisible under the old gate — set opacity 0 so the 14.8 gate change does not resurrect it`);
+
+  const { doc: migratedDoc, migrated } = withDurationMigrated(deshadowedDoc);
   for (const m of migrated)
     reports.push(`PowerRP repair: slide ${m.index} legacy "duration" (${m.seconds}s) → transition.seconds${m.stale ? " (already had a transition — stale duration dropped)" : ""}`);
 

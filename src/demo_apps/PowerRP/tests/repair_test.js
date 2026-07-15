@@ -13,6 +13,7 @@ import {
   newDocument, withNewItem, withNewSlide, keyframed, unkeyframed, withSlideDeleted,
   withSlideToggled, foldState, orphanedItems, withOrphanedItemsDropped,
   missingDefaults, withMissingDefaultsFilled, legacyKeyRenames, withLegacyKeysRenamed,
+  dormantShadows, withDormantShadowsNeutralized,
   repairedDocument, defaultCameraState,
 } from "../core/document.js";
 import { deriveRenderTree } from "../core/derive.js";
@@ -314,6 +315,47 @@ test("repairedDocument runs legacy renames BEFORE fill (value preserved) and mig
   assert.equal(fixed.slides[1].transition.seconds, 3);
   assert.ok(reports.some((r) => r.includes("headSize") && r.includes("headLength")));
   assert.ok(reports.some((r) => r.includes("duration") && r.includes("transition.seconds")));
+});
+
+test("dormantShadows: only a blur-0, opacity>0 stored shadow (the old default) is dormant", () => {
+  // The exact old-default shadow every pre-14.8 item stored at creation.
+  const oldDefault = { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 };
+  const doc = { slides: [{ delta: { items: {
+    a: { type: "rect", shadow: { ...oldDefault } },            // dormant (blur 0, opacity 0.5)
+    b: { type: "rect", shadow: { ...oldDefault, blur: 4 } },   // VISIBLE before (blur 4) → keep
+    c: { type: "rect", shadow: { ...oldDefault, opacity: 0 } },// already off → not dormant
+    d: { type: "rect" },                                        // no shadow → nothing
+  } } }] };
+  const dormant = dormantShadows(doc);
+  assert.equal(dormant.length, 1);
+  assert.equal(dormant[0].id, "a");
+});
+
+test("withDormantShadowsNeutralized: dormant shadow → opacity 0, visible shadow untouched, idempotent", () => {
+  const doc = { slides: [{ delta: { items: {
+    a: { type: "rect", shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 } },
+    b: { type: "rect", shadow: { dx: 3, dy: 3, blur: 4, color: "#000000", opacity: 0.5 } },
+  } } }] };
+  const { doc: fixed, neutralized } = withDormantShadowsNeutralized(doc);
+  assert.equal(fixed.slides[0].delta.items.a.shadow.opacity, 0); // neutralized
+  assert.equal(fixed.slides[0].delta.items.a.shadow.dx, 3);      // dx/dy left as stored
+  assert.equal(fixed.slides[0].delta.items.b.shadow.opacity, 0.5); // visible shadow untouched
+  assert.equal(neutralized.length, 1);
+  // Idempotent: re-running finds nothing dormant.
+  assert.equal(withDormantShadowsNeutralized(fixed).neutralized.length, 0);
+});
+
+test("repairedDocument neutralizes an old-default dormant shadow with a loud report", () => {
+  const [doc, id] = withNewItem(newDocument(registry), 0, {
+    type: "rect", x: 0, y: 0, w: 10, h: 10, active: true,
+    shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 }, // old default
+  });
+  const { doc: fixed, reports } = repairedDocument(doc, registry);
+  assert.equal(fixed.slides[0].delta.items[id].shadow.opacity, 0);
+  assert.ok(reports.some((r) => r.includes(id) && r.includes("opacity 0")));
+  // And it still renders through the strict IR.
+  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
+  sceneIR(deriveRenderTree(state, registry));
 });
 
 console.log(`\n${passed} repair tests passed`);

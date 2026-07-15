@@ -889,65 +889,150 @@ export class PowerRPApp {
     this.selectMany([...freed]);
   }
 
-  // ── Copy / paste ───────────────────────────────────────────────────────────
+  // ── Copy / paste / duplicate (manifest 14.10 AMENDED + 14.9) ────────────────
   // Whole-object by default; single properties via the palette submenu.
   // Clipboard payloads are tagged JSON: {powerrp_item: state} or
   // {powerrp_props: {key: value}}.
+  //
+  // 14.10 AMENDED ARCHITECTURE (user verbatim: "u can copy it into the browser
+  // cookie session thing in case i have two presentations open the server can
+  // keep track of that. but my local clipboard, u can copy a rendered PNG of
+  // that element ... pasting triggers the serverside clipboard"):
+  //   COPY  → (1) the item JSON goes to the SERVER-SIDE clipboard, keyed by the
+  //           browser session cookie (projectApi.setClipboard) — SHARED across
+  //           two open presentations of the same browser; (2) a RENDERED PNG of
+  //           the element at its pixel resolution goes to the OS clipboard.
+  //   PASTE → reads the SERVER-SIDE clipboard (projectApi.getClipboard) and
+  //           inserts the object. navigator.clipboard.readText is RETIRED for
+  //           items — the whole permission saga (the old dead-paste bug: a
+  //           silently-denied readText no-op'd the paste) is gone.
+  // WHY the server, not the OS clipboard, for the item JSON: the OS clipboard
+  // can't reliably carry an app's private JSON across tabs, and reading it needs
+  // a permission browsers deny silently (the root cause of the paste-does-
+  // nothing bug). The server keys the copy by session cookie, so a second open
+  // presentation pastes it with zero permission prompts.
 
-  // In-app clipboard (a JSON string snapshot). WHY: navigator.clipboard.readText
-  // needs a permission browsers can deny silently-to-the-user — readText then
-  // rejects and paste no-ops (the probe-confirmed "paste does not create new
-  // objects" bug). Copy ALWAYS lands here; the system clipboard is written
-  // best-effort on top (cross-tab paste). Stored as a string so later doc
-  // mutations can never alias into the copied payload. Not $state — no UI reads.
-  #clipboardFallback = null;
+  // The bytes of the PNG we last wrote to the OS clipboard on copy (or null).
+  // WHY it exists: copying now ALSO puts a rendered PNG on the OS clipboard, so
+  // the 13.3 paste-to-upload listener (App.svelte onPaste) would otherwise
+  // re-upload OUR OWN render as a new image asset on an internal Cmd+V. The
+  // disambiguation RULE (flagged for the user): if a pasted OS-clipboard file's
+  // bytes byte-match this last-copied render, it is OUR internal copy — skip the
+  // upload (the item paste already ran via the Cmd+V keydown path). An EXTERNAL
+  // image (different bytes, or no internal copy) still uploads-and-inserts, so
+  // 13.3 is preserved. Bytes-equality (not a hash) is exact and needs no hash
+  // dependency; the render is small (a selection crop). Not $state — no UI reads.
+  #lastCopiedPng = null;
 
-  /** Command. Snapshots `payload` to the in-app clipboard (always succeeds),
-   * then best-effort mirrors it to the system clipboard — a write failure is
-   * REPORTED but does not fail the copy (the in-app copy is already good). */
-  async #writeClipboard(payload) {
-    this.#clipboardFallback = JSON.stringify(payload);
-    try {
-      await navigator.clipboard.writeText(this.#clipboardFallback);
-    } catch (e) {
-      console.error("Copy: system clipboard write failed (in-app clipboard still set):", e.message);
-    }
-  }
-
+  /** Command (async). COPY the selected item (manifest 14.10 AMENDED). Writes
+   *  the item's RAW state (equations stay equations) to the SERVER-SIDE session
+   *  clipboard, then writes a rendered PNG of the selection to the OS clipboard.
+   *  Either write failing is REPORTED loudly — a copy must never fail silently. */
   async copySelection() {
     if (!this.selection) return;
     // RAW state: equations copy as equations, not their evaluated snapshots.
     const state = this.rawState().items?.[this.selection];
     if (!state) return;
-    await this.#writeClipboard({ powerrp_item: state });
+    // 1. Item JSON → the server-side session clipboard (the paste source).
+    try {
+      await projectApi.setClipboard(JSON.stringify({ powerrp_item: state }));
+    } catch (e) {
+      console.error("Copy: could not reach the server-side clipboard (paste will not work until the project server is up):", e.message);
+      return; // no point writing a PNG the user can't paste back internally
+    }
+    // 2. Rendered PNG of the element → the OS clipboard (user's "copy a rendered
+    //    PNG of that element to my clipboard"). Failure is reported, not fatal —
+    //    the internal paste still works from the server clipboard.
+    await this.#copySelectionPngToOS();
+  }
+
+  /** Command (async). Renders the current selection at its pixel resolution and
+   *  writes the PNG to the OS clipboard (the 14.10 "rendered PNG" half — the
+   *  same selection-crop rasterize path as copyAsPng). Remembers the bytes in
+   *  #lastCopiedPng so an internal Cmd+V paste can distinguish OUR render from
+   *  an external image. Reports loudly on any failure. */
+  async #copySelectionPngToOS() {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      console.warn("Copy: this browser has no Clipboard image-write API — the item is on the server clipboard (paste works), but no PNG was placed on the OS clipboard.");
+      return;
+    }
+    const rect = this.selectionWorldAABB();
+    if (!rect || rect.w <= 0 || rect.h <= 0) return; // e.g. camera-only selection: no bbox to render
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const selected = new Set(this.selectedIds());
+    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
+    const dpr = this.dpr();
+    const width = Math.max(1, Math.round(rect.w * dpr));
+    const height = Math.max(1, Math.round(rect.h * dpr));
+    let png;
+    try {
+      png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, width, height, dpr), width, height);
+    } catch (e) {
+      console.error("Copy: rendering the selection PNG failed (the item is still on the server clipboard):", e.message);
+      return;
+    }
+    this.#lastCopiedPng = png; // remember for the onPaste self-render check (13.3 disambiguation)
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
+    } catch (e) {
+      console.error("Copy: OS-clipboard image write was denied or failed (the item is still on the server clipboard — internal paste works):", e.message);
+    }
+  }
+
+  /** Query. True iff `bytes` (a Uint8Array from a pasted OS-clipboard file) is
+   *  byte-identical to the PNG this app last put on the OS clipboard on copy —
+   *  i.e. the user is pasting OUR OWN render internally (13.3 disambiguation).
+   *  Used by App.svelte's onPaste to skip re-uploading our render as an asset. */
+  isOwnCopiedPng(bytes) {
+    const mine = this.#lastCopiedPng;
+    if (!mine || !bytes || mine.length !== bytes.length) return false;
+    for (let i = 0; i < mine.length; i++) if (mine[i] !== bytes[i]) return false;
+    return true;
   }
 
   async copyProperty(key) {
     if (!this.selection) return;
     const value = this.storedItemValue(this.selection, key.split(".")); // dotted keys = nested paths
     if (value === undefined) return;
-    await this.#writeClipboard({ powerrp_props: { [key]: value } });
+    try {
+      await projectApi.setClipboard(JSON.stringify({ powerrp_props: { [key]: value } }));
+    } catch (e) {
+      console.error("Copy Property: could not reach the server-side clipboard:", e.message);
+    }
   }
 
   async pasteClipboard() {
-    // System clipboard first (cross-tab paste, and it may hold a NEWER copy);
-    // in-app fallback second. A read failure (permission denied — the common
-    // real-world case) or foreign/non-PowerRP content falls back to the last
-    // in-app copy: a PowerRP "Paste" action pasting the last PowerRP copy
-    // beats silently doing nothing. Both outcomes are reported.
-    let payload = null;
+    // 14.10 AMENDED: read the SERVER-SIDE session clipboard (no OS-clipboard
+    // readText, no permission saga). A missing server / empty clipboard is
+    // reported, never a silent no-op.
+    let payload;
     try {
-      payload = JSON.parse(await navigator.clipboard.readText());
-    } catch (e) {
-      console.warn("Paste: system clipboard unreadable or not JSON — trying the in-app clipboard:", e.message);
-    }
-    if (!payload?.powerrp_item && !payload?.powerrp_props) {
-      if (!this.#clipboardFallback) {
-        console.warn("Paste: nothing PowerRP-shaped on the system clipboard and no in-app copy yet.");
+      const raw = await projectApi.getClipboard();
+      if (!raw) {
+        console.warn("Paste: the server-side clipboard is empty for this browser session (nothing copied yet).");
         return;
       }
-      payload = JSON.parse(this.#clipboardFallback);
+      payload = JSON.parse(raw);
+    } catch (e) {
+      console.error("Paste: could not read the server-side clipboard (is the project server up?):", e.message);
+      return;
     }
+    if (!payload?.powerrp_item && !payload?.powerrp_props) {
+      console.warn("Paste: the server clipboard holds no PowerRP item or property payload.");
+      return;
+    }
+    this.#insertClipboardPayload(payload);
+  }
+
+  /** Command (one undo unit). Inserts a tagged clipboard payload
+   *  ({powerrp_item} or {powerrp_props}) into the current slide — the ONE
+   *  canonical insert path shared by pasteClipboard and duplicateSelection
+   *  (14.9's "one canonical clone home"):
+   *    - powerrp_item: a NEW instance (new UUID) offset one spacing step, or —
+   *      for a camera (exactly one per document) — its aspects keyframed onto
+   *      the existing camera instead of a duplicate.
+   *    - powerrp_props: applies the property values to the current selection. */
+  #insertClipboardPayload(payload) {
     if (payload.powerrp_item) {
       const s = payload.powerrp_item;
       // ONE camera per document: pasting a camera keyframes its ASPECTS onto
@@ -978,6 +1063,66 @@ export class PowerRPApp {
     }
   }
 
+  // ── Duplicate (manifest 14.9: "duplicate object should be a thing") ──────────
+  // Duplicate = the same serialize→insert clone as copy+paste, but WITHOUT the
+  // clipboard round-trip (local, immediate) and as ONE undo unit for the whole
+  // selection. It reuses copySelection's raw-state serialization idea (equations
+  // stay equations) and pasteClipboard's offset-and-new-UUID insert idea — the
+  // ONE canonical clone home the manifest asks for — rather than a second
+  // cloning path. Multi-select duplicates every duplicable member.
+
+  /** Query. The selected itemIds that Duplicate would clone: every selected item
+   *  EXCEPT non-purgeable widgets (the camera is exactly one per document — it
+   *  cannot be duplicated, mirroring the paste-a-camera-merges rule). Order =
+   *  selectedIds() order. */
+  #duplicableSelection() {
+    return this.selectedIds().filter((id) => {
+      const type = this.rawState().items?.[id]?.type;
+      if (!type) return false;
+      return this.registry.get(type).capabilities.purgeable !== false; // exclude the camera
+    });
+  }
+
+  /** Query. Can the current selection be duplicated? (at least one duplicable
+   *  item — a camera-only selection cannot). Drives the command's `when`. */
+  canDuplicate() {
+    return this.#duplicableSelection().length > 0;
+  }
+
+  /**
+   * Command (ONE undo unit). Duplicates every duplicable selected item: each
+   * gets a NEW UUID, the SAME raw state (equations verbatim), offset one
+   * spacing step (the paste offset — same PowerPoint precedent), z stacked above
+   * the current max. All the new items commit together (one snapshot = one
+   * undo) and become the new selection. No-op (reported) when nothing duplicable
+   * is selected.
+   */
+  duplicateSelection() {
+    const ids = this.#duplicableSelection();
+    if (ids.length === 0) {
+      console.warn("Duplicate: nothing duplicable is selected (the camera cannot be duplicated).");
+      return;
+    }
+    // Same offset + equation-safe bump as the paste path (one canonical rule).
+    const OFFSET = 16;
+    const bump = (v) => (typeof v === "number" ? v + OFFSET : v);
+    const items = this.rawState().items ?? {};
+    // Stack the clones above the current max z, preserving their relative order.
+    let nextZ = (this.nodes().map((n) => n.state.z ?? 0).reduce((a, b) => Math.max(a, b), 0)) + 1;
+    let doc = this.doc;
+    const newIds = [];
+    for (const id of ids) {
+      const s = items[id];
+      if (!s) continue;
+      const clone = { ...s, active: true, z: nextZ++, x: bump(s.x ?? 0), y: bump(s.y ?? 0) };
+      const [next, newId] = withNewItem(doc, this.slideIndex, clone);
+      doc = next;
+      newIds.push(newId);
+    }
+    this.commit(withNormalizedZ(doc)); // ONE commit = one undo unit
+    this.selectMany(newIds);
+  }
+
   // ── Paste-to-upload (manifest 13.3): Cmd/Ctrl+V with image/video/file data
   // on the OS clipboard uploads it through the SAME path as an OS-file drop
   // (app.uploadAsset → insertImageAsset/insertVideoAsset), landing at the
@@ -985,24 +1130,40 @@ export class PowerRPApp {
   // the same "at=null" fallback insertImageAsset already uses for the Asset
   // Explorer's insert button). This is a SIBLING of pasteClipboard, not a
   // replacement: the caller (App.svelte's native `paste` listener) only calls
-  // this when clipboardData carries Files — copying a PowerRP item puts JSON
-  // TEXT on the system clipboard with no Files present, and copying an OS
-  // file/image never carries our JSON text, so the two are mutually exclusive
-  // in practice and internal widget-paste (the pre-existing Ctrl+V keydown
-  // path, untouched) always runs whenever there are no Files to upload — per
-  // manifest 13.3's compose-don't-fight rule.
-  // Hash-dedup is EXPLICITLY DEFERRED (user, 13.3) — every paste re-uploads.
+  // this when clipboardData carries Files, and the internal widget-paste (the
+  // Ctrl+V keydown → pasteClipboard path, reading the SERVER-SIDE clipboard)
+  // always runs on that same keydown.
+  //
+  // 14.10-AMENDED INTERACTION (the disambiguation the manifest asks us to flag):
+  // copying a PowerRP item now ALSO puts a rendered PNG on the OS clipboard, so
+  // an INTERNAL Cmd+V fires onPaste WITH a File (our own render). Without a guard
+  // that render would be re-uploaded as a new image asset on every internal
+  // paste. RULE (flagged for ratification): a pasted file whose bytes byte-match
+  // the render we last put on the OS clipboard (isOwnCopiedPng) is OUR internal
+  // copy — SKIP it (the item paste already ran via the keydown path). An
+  // EXTERNAL image (different bytes, or no internal copy this session) still
+  // uploads-and-inserts, so 13.3 is fully preserved. Bytes-equality is exact and
+  // needs no hash dependency; the copied render is a small selection crop.
+  // Upload hash-dedup across DIFFERENT assets stays EXPLICITLY DEFERRED (13.3).
 
   /** Command. Uploads each File in `files` to the current project's assets
    *  (app.uploadAsset — the same upload endpoint the canvas OS-file drop and
    *  the Asset Explorer's file input use) and inserts the matching widget
-   *  (image/video by MIME) at the camera-view center. Kinds with no canvas
-   *  widget still upload (they land in the asset library) and are reported,
-   *  never silently dropped. A failure in any step is REPORTED loudly
-   *  (console.error) — a paste gesture must never fail silently. */
+   *  (image/video by MIME) at the camera-view center. A file whose bytes match
+   *  this app's own last-copied render (isOwnCopiedPng) is SKIPPED — it is an
+   *  internal item copy, already pasted via the keydown path (14.10 AMENDED).
+   *  Kinds with no canvas widget still upload (they land in the asset library)
+   *  and are reported, never silently dropped. A failure in any step is REPORTED
+   *  loudly (console.error) — a paste gesture must never fail silently. */
   async pasteFiles(files) {
     for (const file of files) {
       try {
+        // 14.10 AMENDED: skip our OWN copied render (the internal item paste
+        // already ran on this Cmd+V's keydown — do not also re-upload it).
+        if (file.type === "image/png") {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          if (this.isOwnCopiedPng(bytes)) continue;
+        }
         const up = await this.uploadAsset(file); // {ok, name, url}
         const kind = assetKindForFile(file);
         if (kind === "image") await this.insertImageAsset(up.url);

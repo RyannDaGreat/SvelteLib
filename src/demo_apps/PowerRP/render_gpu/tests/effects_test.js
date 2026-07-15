@@ -69,9 +69,11 @@ test("BLEND_MODES: ir.js and the property registry's blendMode options agree", (
 
 test("effectsOff: absent/off states are off; any live effect is on", () => {
   assert.equal(effectsOff({}), true);
-  assert.equal(effectsOff(bundleNestedDefaults("effects")), true); // the registry defaults ARE off
-  assert.equal(effectsOff({ shadow: { ...SHADOW_ON, blur: 0 } }), true);
-  assert.equal(effectsOff({ shadow: { ...SHADOW_ON, opacity: 0 } }), true);
+  assert.equal(effectsOff(bundleNestedDefaults("effects")), true); // the registry defaults ARE off (opacity 0)
+  // 14.8: OPACITY is the gate, not blur. A blur-0 shadow with opacity>0 is a
+  // VISIBLE hard-edged offset shadow — ON, not off.
+  assert.equal(effectsOff({ shadow: { ...SHADOW_ON, blur: 0 } }), false);
+  assert.equal(effectsOff({ shadow: { ...SHADOW_ON, opacity: 0 } }), true); // opacity 0 = off, at any blur
   assert.equal(effectsOff({ shadow: SHADOW_ON }), false);
   assert.equal(effectsOff({ bloom: { radius: 10, strength: 0 } }), true);
   assert.equal(effectsOff({ bloom: { radius: 10, strength: 0.5 } }), false);

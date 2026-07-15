@@ -32,6 +32,7 @@ Run:
     uv run server.py ports            # print two free ports for start_server.sh
 """
 
+import http.cookies
 import io
 import json
 import os
@@ -39,8 +40,10 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import traceback
 import urllib.parse
+import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -517,6 +520,38 @@ def zip_project_bytes(name):
     return buf.getvalue()
 
 
+# -- Session clipboard (manifest 14.10 AMENDED) ------------------------------
+# The user copies an item in one open presentation and pastes it in ANOTHER: a
+# per-BROWSER clipboard the server tracks, keyed by a session cookie, so the two
+# tabs share it (verbatim user ruling: "u can copy it into the browser cookie
+# session thing in case i have two presentations open the server can keep track
+# of that"). The item's serialized JSON lives HERE, not on the OS clipboard —
+# the OS clipboard gets a rendered PNG instead (client side). Paste reads this.
+#
+# In-memory only (per-process): a server restart empties it, which is fine —
+# the clipboard is a transient scratch, not saved state. FLAGGED for the user:
+# no cross-restart persistence and no TTL eviction (an idle session's payload
+# lingers until restart). ThreadingHTTPServer serves requests on many threads,
+# so the store is guarded by a lock. Values are the RAW payload STRING the
+# client sends (opaque JSON) — the server never parses it, so a future payload
+# shape needs no server change.
+SESSION_COOKIE = "powerrp_session"
+_clipboard_lock = threading.Lock()
+_session_clipboards = {}  # session id (str) -> last-copied payload (str)
+
+
+def clipboard_set(session_id, payload):
+    """Command (mutates the in-memory store). Store `payload` (str) for `session_id`."""
+    with _clipboard_lock:
+        _session_clipboards[session_id] = payload
+
+
+def clipboard_get(session_id):
+    """Query. The last payload stored for `session_id`, or None if the session never copied."""
+    with _clipboard_lock:
+        return _session_clipboards.get(session_id)
+
+
 # -- HTTP handler ------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
@@ -525,6 +560,8 @@ class Handler(BaseHTTPRequestHandler):
     swallows the app's own /api*.js modules — see vite.config.js):
 
       GET  /api/projects/            → [{name, mtime, slideCount}]
+      GET  /api/clipboard/           → {payload:<str|null>} (this session's copy)
+      PUT  /api/clipboard/           → body {payload:<str>}; {ok}; session-cookied
       GET  /api/project/<name>/      → {doc, assets}
       PUT  /api/project/<name>/      → body = doc JSON; {ok, name}
       GET  /api/assets/<name>/       → [{name, size, kind, url}]
@@ -613,11 +650,65 @@ class Handler(BaseHTTPRequestHandler):
         parts = [urllib.parse.unquote(p) for p in parsed.path.split("/") if p]
         return parsed, parts
 
+    # -- session clipboard (manifest 14.10 AMENDED) --
+    # Read the browser session id from the request cookie, minting a fresh one
+    # when the browser has none yet. Returns (session_id, is_new): the caller
+    # Set-Cookies it back only when new, so an existing session sticks. The
+    # cookie is same-origin in normal use (the Vite proxy fronts /api), so it
+    # round-trips without CORS-credentials gymnastics.
+    def _session(self):
+        raw = self.headers.get("Cookie")
+        if raw:
+            jar = http.cookies.SimpleCookie(raw)
+            if SESSION_COOKIE in jar and jar[SESSION_COOKIE].value:
+                return jar[SESSION_COOKIE].value, False
+        return uuid.uuid4().hex, True
+
+    def _set_session_cookie(self, session_id):
+        # HttpOnly (JS never needs to read it) + SameSite=Lax + Path=/ so every
+        # /api call carries it. No Secure flag: the dev server is plain HTTP on
+        # localhost.
+        self.send_header("Set-Cookie", f"{SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax")
+
+    def _handle_clipboard_get(self):
+        """GET /api/clipboard/ → {payload: <str|null>}. Reads THIS session's clipboard."""
+        session_id, is_new = self._session()
+        payload = None if is_new else clipboard_get(session_id)
+        body = json.dumps({"payload": payload}).encode()
+        self.send_response(200)
+        self._cors()
+        if is_new:
+            self._set_session_cookie(session_id)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_clipboard_set(self):
+        """PUT /api/clipboard/ → body {payload: <str>}; stores it for THIS session; {ok:true}."""
+        session_id, is_new = self._session()
+        body = json.loads(self._read_body() or b"{}")
+        payload = body.get("payload")
+        if not isinstance(payload, str):
+            return self._error(400, "clipboard set: body must be {payload: <string>}")
+        clipboard_set(session_id, payload)
+        out = json.dumps({"ok": True}).encode()
+        self.send_response(200)
+        self._cors()
+        if is_new:
+            self._set_session_cookie(session_id)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
     def do_GET(self):
         parsed, parts = self._parts()
         try:
             if parts == ["api", "projects"]:
                 return self._json(list_projects())
+            if parts == ["api", "clipboard"]:  # session clipboard (14.10 AMENDED)
+                return self._handle_clipboard_get()
             if len(parts) == 3 and parts[:2] == ["api", "project"]:
                 return self._handle_load(parts[2])
             if len(parts) == 3 and parts[:2] == ["api", "assets"]:
@@ -652,6 +743,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         parsed, parts = self._parts()
         try:
+            if parts == ["api", "clipboard"]:  # session clipboard (14.10 AMENDED)
+                return self._handle_clipboard_set()
             if len(parts) == 3 and parts[:2] == ["api", "project"]:
                 return self._handle_save(parts[2])
             self._error(404, f"no PUT route for {parsed.path}")

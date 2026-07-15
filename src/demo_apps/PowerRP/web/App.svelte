@@ -177,6 +177,9 @@
     { id: "export-svg", title: "Export Slide as SVG", icon: "mdi:svg", run: (a) => a.exportSvg() },
     { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, run: (a) => a.copySelection() },
     { id: "paste", title: "Paste", icon: "mdi:content-paste", run: (a) => a.pasteClipboard() },
+    // 14.9: Duplicate = clone the selection in place (new UUIDs, one undo unit),
+    // reusing the copy/paste serialize→insert path locally (no clipboard trip).
+    { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", when: (a) => a.canDuplicate(), run: (a) => a.duplicateSelection() },
     // Copy selection region to the SYSTEM clipboard (manifest Round 12B
     // "Palette / selection commands"): renders the selection's world AABB,
     // not the whole slide (unlike Export as PNG/PDF above). when: selection
@@ -284,6 +287,12 @@
     { command: "delete-item", keys: ["Backspace"], when: "editSelection" },
     { command: "copy-item", keys: ["Ctrl", "C"], when: "editSelection" },
     { command: "paste", keys: ["Ctrl", "V"], when: "editMode" },
+    // 14.9: Cmd/Ctrl+D = Duplicate. FLAGGED — the binding is the convention
+    // candidate PENDING USER RATIFICATION (Cmd+D is the browser bookmark key;
+    // onKeydown preventDefaults on dispatch so the bookmark is suppressed while
+    // editing). No existing binding uses D, so createKeybindings finds no
+    // conflict (keybindings_test guards this).
+    { command: "duplicate", keys: ["Cmd", "D"], when: "editSelection" },
     { command: "put-on-top", keys: ["Cmd", "Shift", "F"], when: "editSelection" },
     { command: "put-on-bottom", keys: ["Cmd", "Shift", "B"], when: "editSelection" },
     { command: "prev-slide", keys: ["Left"], when: "editMode" },
@@ -295,6 +304,7 @@
   const KEYBINDING_LABELS = {
     "toggle-palette": "Palette", undo: "Undo", redo: "Redo",
     "delete-item": "Delete", "copy-item": "Copy", paste: "Paste",
+    duplicate: "Duplicate",
     "put-on-top": "To front", "put-on-bottom": "To back",
     "prev-slide": "Prev slide", "next-slide": "Next slide", deselect: "Deselect",
   };

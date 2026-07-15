@@ -52,7 +52,7 @@
               "dy": 3,
               "blur": 0,
               "color": "#000000",
-              "opacity": 0.5
+              "opacity": 0
             },
             "bloom": {
               "radius": 10,
@@ -82,7 +82,7 @@
               "dy": 3,
               "blur": 0,
               "color": "#000000",
-              "opacity": 0.5
+              "opacity": 0
             },
             "bloom": {
               "radius": 10,
@@ -139,7 +139,7 @@
               "dy": 3,
               "blur": 0,
               "color": "#000000",
-              "opacity": 0.5
+              "opacity": 0
             },
             "bloom": {
               "radius": 10,
@@ -169,7 +169,7 @@
               "dy": 3,
               "blur": 0,
               "color": "#000000",
-              "opacity": 0.5
+              "opacity": 0
             },
             "bloom": {
               "radius": 10,
