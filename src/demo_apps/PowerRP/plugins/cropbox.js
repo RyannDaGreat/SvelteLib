@@ -50,7 +50,7 @@ export const cropboxPlugin = {
     // render time (transitions.js `curve` select precedent) — a plugin's
     // static inspector array has no document to enumerate. See
     // web/Inspector.svelte's cropTargetOptions seam.
-    { key: "target", label: "Target", kind: "select", options: [], category: "crop" },
+    { key: "target", label: "Target", kind: "select", optionsFrom: "items", options: [], category: "crop" },
     { key: "fill", label: "Fill", kind: "color", category: "formatting" },
     { key: "stroke", label: "Stroke", kind: "color", category: "formatting" },
     { key: "strokeWidth", label: "Stroke width", kind: "number", min: 0, category: "formatting" },
