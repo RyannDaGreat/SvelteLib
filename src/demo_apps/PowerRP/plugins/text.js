@@ -17,7 +17,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults } from "../core/properties.js";
-import { normalizeRichText } from "../core/richtext.js";
+import { normalizeRichText, richTextIsEmpty } from "../core/richtext.js";
 import { text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
@@ -29,6 +29,24 @@ export const textPlugin = {
   // machinery as rect — capabilities.bbox && capabilities.resizable; NO special
   // case). w/h are real box dimensions; w constrains word wrap.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  /**
+   * Pure function. Is this text box currently a GHOST (manifest 13.6
+   * CONDITIONAL GHOSTS: "same with text")? STATE-dependent, not
+   * capabilities.ghost — a text box is only a ghost while its rich value has
+   * no visible characters (core/richtext.richTextIsEmpty is the canonical
+   * "no visible characters" predicate, shared with any other empty-text
+   * consumer); core/derive.isGhostNode calls this hook to grant the
+   * dashed-outline/findable-when-Show-Ghosts affordance exactly while the box
+   * would otherwise render nothing.
+   *
+   * @example textPlugin.isGhost({ text: { runs: [{ text: "" }], paras: [{}] } })
+   * true
+   * @example textPlugin.isGhost({ text: { runs: [{ text: "Text" }], paras: [{}] } })
+   * false
+   */
+  isGhost(state) {
+    return richTextIsEmpty(state.text);
+  },
   defaults: {
     type: "text", x: 120, y: 80, w: 260, h: 48, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation
@@ -94,6 +112,14 @@ export const textPlugin = {
    * effect texture holds exactly what the widget painted.
    */
   emit(s, _targetWorldIR, world) {
+    // GHOST short-circuit (manifest 13.6 CONDITIONAL GHOSTS): an empty text box
+    // (no visible characters) draws NOTHING — same as filmstrip's empty-frames
+    // case. Without this the box is a ghost in the EDITOR (isGhost above) but
+    // still emits a zero-ink text op into the PRESENTATION/export render, which
+    // is the asymmetry the ghost model forbids: a ghost has no rendered volume
+    // in ANY backend. Returning [] here makes editor-ghostness and render-
+    // exclusion agree (the assertion SonnetE's ghost_test locks).
+    if (richTextIsEmpty(s.text)) return [];
     const inherited = { font: s.font ?? DEFAULT_FONT, size: s.size ?? 36, color: s.color ?? "#000000", bold: s.bold ?? false };
     const rich = normalizeRichText(s.text, inherited);
     const first = rich.runs[0] ?? {};

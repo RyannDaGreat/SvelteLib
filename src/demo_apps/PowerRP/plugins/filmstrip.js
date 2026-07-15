@@ -77,6 +77,23 @@ export const filmstripPlugin = {
   type: "filmstrip",
   title: "Filmstrip",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  /**
+   * Pure function. Is this filmstrip currently a GHOST (manifest 13.6
+   * CONDITIONAL GHOSTS: "a film strip with no film in it is invisible and is
+   * basically a ghost")? STATE-dependent, not capabilities.ghost — a filmstrip
+   * is only a ghost while it has no resolved frames to draw, mirroring emit()'s
+   * own "nothing to draw" condition exactly (one source of truth for "empty";
+   * core/derive.isGhostNode calls this hook to grant the dashed-outline/
+   * findable-when-Show-Ghosts affordance exactly while it would render nothing).
+   *
+   * @example filmstripPlugin.isGhost({ frameUrls: [] })
+   * true
+   * @example filmstripPlugin.isGhost({ frameUrls: ["a.jpg", "b.jpg"] })
+   * false
+   */
+  isGhost(state) {
+    return !Array.isArray(state.frameUrls) || state.frameUrls.length === 0;
+  },
   defaults: {
     type: "filmstrip", x: 100, y: 100, w: 480, h: 90, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation
