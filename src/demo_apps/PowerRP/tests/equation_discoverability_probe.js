@@ -116,7 +116,10 @@ try {
   const arrowId = await page.evaluate(() => {
     const app = window.__powerrp_app;
     app.slideIndex = 0;
-    app.runCommand("add-fancy-arrow");
+    // add-fancy-arrow now ARMS crosshair placement (manifest UNDEFERRAL SWEEP:
+    // crosshair placement for ALL Add buttons) — create directly via app.addItem
+    // (the primitive the placement gesture calls), this probe tests the Inspector.
+    app.addItem(app.registry.get("fancy_arrow").defaults);
     return app.selection;
   });
   ok(arrowId, "fancy arrow created + selected");

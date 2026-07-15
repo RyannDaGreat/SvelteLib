@@ -500,6 +500,34 @@ body,
   cursor: grab;
 }
 
+/* DBLCLICK TEXT EDIT overlay (PLAIN-TEXT STOPGAP — SUPERSEDED BY THE SET-2
+   RICH-TEXT EDITOR). A <textarea> laid EXACTLY over the edited text widget's
+   screen rect. It sits in the .render-area (PanZoom) frame, positioned via
+   inline left/top/width/height/font from the live view (CanvasView textEditor
+   box); ONLY the static chrome lives here. The widget's own render keeps drawing
+   underneath — a subtle panel background + selection-colored border marks this as
+   the active edit surface (standard PPT text-edit affordance) so the user reads
+   their live-previewed edit, not the stale glyph beneath. transform-origin is the
+   TOP-LEFT so the CSS rotate() lines the box up with a rotated widget (the
+   position is the widget's world top-left). box-sizing:border-box so the border
+   doesn't push the text off the widget's glyph origin. Line-height 1 matches the
+   top-left, top-baseline text layout the GPU atlas uses (textBaseline top). */
+.text-editor-overlay {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: var(--a-selection-stroke) solid var(--a-selection);
+  box-sizing: border-box;
+  background: var(--a-panel-bg);
+  line-height: 1;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  transform-origin: top left;
+  outline: none;
+  z-index: 2; /* above the .scene canvas + .overlay svg, below panel chrome */
+}
+
 /* MODIFIER POINTS (manifest ARCHITECTURE PLAN #1): yellow squares, drawn as
    <rect> (not <circle> like .endpoint) so they read as visually distinct from
    both the blue resize handles and the amber endpoint dots — a widget can
@@ -1166,18 +1194,108 @@ audio.ae-preview-media {
   min-width: 0;
 }
 
+/* SYNTAX HIGHLIGHTING (manifest "Equation syntax highlighting"): the input's own
+   text AND background are TRANSPARENT, with a native visible caret; the colored
+   equation AND the box fill are painted by .eq-highlight sitting BEHIND it. The
+   fill lives on the overlay (not the input) because an opaque input background
+   would OCCLUDE the overlay it sits above — so the overlay owns control-bg, the
+   input owns only the border + caret + (transparent) text. Both share the EXACT
+   box model (same padding, font, height, 1px border, box-sizing) so every glyph
+   lands pixel-aligned under the caret. */
 .numfield .eq-input {
+  position: relative; /* above the absolutely-positioned .eq-highlight */
+  z-index: 1;
   width: 100%;
   min-width: 0;
   height: var(--a-control-h);
   box-sizing: border-box;
   padding: 0 var(--a-sp-2);
-  background: var(--control-bg);
-  color: var(--fg);
+  background: transparent; /* the overlay behind carries the box fill */
+  color: transparent;
+  caret-color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 0; /* square — same as every other field control */
   font-family: var(--a-mono);
   font-size: var(--a-font-sm); /* mono runs wide; small keeps expressions readable in the box */
+}
+
+/* The generic panel-input rule `.varspanel input[type="text"]` /
+   `.inspector input[type="text"]` (specificity 0,2,1) sets color:var(--fg) AND
+   background:var(--control-bg), which would OUTWEIGH the bare `.numfield
+   .eq-input` (0,2,0) above — making the text opaque AND the background occlude
+   the overlay behind. Re-assert transparent text + transparent background at
+   0,3,1 (panel prefix + .numfield + .eq-input + [type]) so both win, EXACTLY the
+   specificity-raising idiom `.inspector/.varspanel .numfield .dn` already uses
+   for --dn-radius (see that rule's comment). */
+.inspector .numfield .eq-input[type="text"],
+.varspanel .numfield .eq-input[type="text"] {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--fg);
+}
+
+/* The colorized overlay: same box model as .eq-input, positioned exactly under
+   it (border-box + transparent 1px border reproduces the input's 1px inset, so
+   text origin matches). It carries the box FILL (control-bg) since the input
+   above is transparent. Not interactive (the input owns caret/selection); clipped
+   and non-wrapping like a single-line text input, scroll-synced from JS. */
+.numfield .eq-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg); /* the field fill (the transparent input reveals it) */
+  border: 1px solid transparent; /* mirror the input's 1px border so text x-origin matches */
+  /* Single-line vertical centering that matches an <input>: a line box exactly
+     as tall as the content box centers the one line the same way the input does.
+     No flex — flex + scrollLeft on a text run is fragile; line-height + overflow
+     is the standard "highlight behind a textarea/input" technique. */
+  line-height: calc(var(--a-control-h) - 2px);
+  overflow: hidden;
+  white-space: pre; /* preserve spaces exactly like the input; never wrap (single line) */
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm);
+  color: var(--fg); /* plain text (whitespace/unclassified pieces) */
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Token colors (chained to the eq-palette above, which chains to theme tokens). */
+.numfield .eq-tok-var { color: var(--a-eq-var); }
+.numfield .eq-tok-prop { color: var(--a-eq-prop); }
+.numfield .eq-tok-anchor { color: var(--a-eq-anchor); }
+.numfield .eq-tok-self { color: var(--a-eq-self); }
+.numfield .eq-tok-call { color: var(--a-eq-call); }
+.numfield .eq-tok-member { color: var(--a-eq-member); }
+.numfield .eq-tok-num { color: var(--a-eq-num); }
+.numfield .eq-tok-op,
+.numfield .eq-tok-paren,
+.numfield .eq-tok-punct { color: var(--a-eq-punct); }
+.numfield .eq-tok-error { color: var(--a-eq-error); }
+
+/* Reference-scrub write-through mark (manifest "Equation special forms"): a small
+   link glyph on the LEFT of a pure-VARIABLE-reference row, marking it a reference
+   whose scrub writes THROUGH to the variable. HOVER-ONLY, mirroring the ƒ
+   affordance's placement/reveal so the resting row stays minimal (round-11 field-
+   chrome rule). The path tooltip (what it points at) rides the wrapping Tooltip. */
+.numfield .eq-ref-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 0;
+  height: var(--a-control-h);
+  overflow: hidden;
+  color: var(--a-eq-var); /* same chroma as a variable token — it IS a variable ref */
+  opacity: 0;
+  transition: opacity 0.08s ease;
+}
+.inspector .row:hover .numfield .eq-ref-mark,
+.varspanel .row:hover .numfield .eq-ref-mark,
+.numfield:focus-within .eq-ref-mark {
+  width: 16px;
+  opacity: 1;
 }
 
 /* Equation affordance (round-11 ruling): a small ƒ button on the LEFT of the

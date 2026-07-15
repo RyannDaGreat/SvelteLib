@@ -77,7 +77,13 @@ try {
    * unlike donut's bbox transform). */
   const setupArrow = (cmdId, extra, mpId) => page.evaluate((cmdId, extra, mpId) => {
     const app = window.__powerrp_app;
-    app.runCommand(cmdId);
+    // The arrow Add commands now ARM crosshair placement instead of spawning
+    // immediately (manifest UNDEFERRAL SWEEP: crosshair placement for ALL Add
+    // buttons). This probe tests modifier points, not placement, so it creates
+    // the widget directly via app.addItem (the SAME primitive the placement
+    // gesture calls on release) — find the plugin whose command is `cmdId`.
+    const plugin = app.registry.all().find((p) => (p.commands ?? []).some((c) => c.id === cmdId));
+    app.addItem(plugin.defaults);
     const id = app.selection;
     const pairs = Object.entries(extra).map(([k, v]) => [["items", id, k], v]);
     app.setPreview(pairs);
@@ -171,7 +177,8 @@ try {
   {
     await page.evaluate(() => {
       const app = window.__powerrp_app;
-      app.runCommand("add-arrow");
+      // add-arrow now arms placement — create directly (see setupArrow's note).
+      app.addItem(app.registry.get("arrow").defaults);
       const id = app.selection;
       app.setPreview([
         [["items", id, "from"], { x: 950, y: 400 }],

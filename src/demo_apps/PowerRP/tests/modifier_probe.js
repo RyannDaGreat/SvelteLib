@@ -72,7 +72,12 @@ try {
    * request. */
   const setupDonut = (rotation) => page.evaluate((rotation) => {
     const app = window.__powerrp_app;
-    app.runCommand("add-donut");
+    // "add-donut" now ARMS crosshair placement instead of spawning immediately
+    // (manifest UNDEFERRAL SWEEP: crosshair placement for ALL Add buttons) — this
+    // probe doesn't test placement, so it creates the donut directly via
+    // app.addItem (the SAME primitive the placement gesture calls on release),
+    // mirroring rotated_resize_probe's add-rect fix.
+    app.addItem(app.registry.get("donut").defaults);
     const id = app.selection;
     app.setPreview([
       [["items", id, "x"], 300], [["items", id, "y"], 300],

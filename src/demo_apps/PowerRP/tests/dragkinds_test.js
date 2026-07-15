@@ -1,0 +1,107 @@
+/**
+ * dragKinds.js — the extracted pure drag geometry (manifest UNDEFERRAL SWEEP:
+ * CanvasView drag-machine extraction). Node assert tests (no framework), mirror
+ * of the module's doctests plus the rotation-aware scale invariants that the
+ * live multiresize_place_probe checks end-to-end.
+ *
+ * Run: node src/demo_apps/PowerRP/tests/dragkinds_test.js
+ */
+import assert from "node:assert/strict";
+import * as T from "../core/transform.js";
+import { worldTransform } from "../core/derive.js";
+import {
+  translationPairs, resizeAnchors, resizedBox,
+  scaledBoxAboutPoint, scaleMemberPairs, scalePairs,
+} from "../web/canvas/dragKinds.js";
+
+let n = 0;
+const test = (label, fn) => { fn(); n++; console.log(`  ok  ${label}`); };
+const eq = (a, b) => assert.deepEqual(a, b);
+const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
+
+// ── translationPairs ──────────────────────────────────────────────────────
+test("translationPairs: bbox writes plain x/y", () => {
+  eq(translationPairs({ itemId: "r", plugin: {}, startX: 10, startY: 20 }, 5, 3),
+    [[["items", "r", "x"], 15], [["items", "r", "y"], 23]]);
+});
+test("translationPairs: moveBy widget delegates to the plugin hook", () => {
+  const plugin = { moveBy: (raw, dx, dy) => [[["from", "x"], raw.from.x + dx], [["to", "x"], raw.to.x + dx]] };
+  eq(translationPairs({ itemId: "a", plugin, rawItem: { from: { x: 0 }, to: { x: 100 } } }, 5, 0),
+    [[["items", "a", "from", "x"], 5], [["items", "a", "to", "x"], 105]]);
+});
+
+// ── resizeAnchors / resizedBox ────────────────────────────────────────────
+test("resizeAnchors: corner drag anchors at the opposite corner", () => {
+  const a = resizeAnchors([0, 0, 100, 50], { east: true, south: true }, {});
+  eq({ gx: a.gx, gy: a.gy, fx: a.fx, fy: a.fy, cx: a.cx, cy: a.cy, xActive: a.xActive, yActive: a.yActive },
+    { gx: 100, gy: 50, fx: 0, fy: 0, cx: 50, cy: 25, xActive: true, yActive: true });
+});
+test("resizeAnchors: symmetric anchors at the center", () => {
+  assert.equal(resizeAnchors([0, 0, 100, 50], { east: true }, { symmetric: true }).fx, 50);
+});
+test("resizedBox: plain east, symmetric, uniform-corner, and clamp", () => {
+  eq(resizedBox([0, 0, 100, 50], { x: 20, y: 0 }, { east: true }, {}), [0, 0, 120, 50]);
+  eq(resizedBox([0, 0, 100, 50], { x: 20, y: 0 }, { east: true }, { symmetric: true }), [-20, 0, 120, 50]);
+  eq(resizedBox([0, 0, 100, 50], { x: 100, y: 0 }, { east: true, south: true }, { uniform: true }), [0, 0, 180, 90]);
+  eq(resizedBox([0, 0, 100, 50], { x: -200, y: 0 }, { east: true }, {}), [0, 0, 0, 50]);
+});
+
+// ── scaledBoxAboutPoint / scaleMemberPairs / scalePairs ────────────────────
+const member = (over = {}) => {
+  const state = { x: 300, y: 300, w: 200, h: 120, rotation: Math.PI / 4, scale: 1.5, ...over };
+  return { itemId: "r", plugin: {}, rawItem: { w: state.w, h: state.h }, startWorld: worldTransform(state), startW: state.w, startH: state.h, startX: state.x, startY: state.y, _state: state };
+};
+const cornerSet = (world, w, h) => [[0, 0], [w, 0], [w, h], [0, h]].map(([lx, ly]) => T.apply(world, lx, ly));
+
+test("scaledBoxAboutPoint: unrotated is the plain proportional scale", () => {
+  const m = member({ rotation: 0, scale: 1 });
+  eq(scaledBoxAboutPoint(m, 2, 2, 0, 0), { x: 600, y: 600, w: 400, h: 240 });
+});
+test("scaledBoxAboutPoint: 45° UNIFORM scale is EXACT (world corners map about the anchor)", () => {
+  // The house standard: analytic asserts at 45°. After scaling by k about c,
+  // every world corner p must land at c + k·(p − c).
+  for (const k of [2, 0.5, 1.75])
+    for (const c of [{ x: 250, y: 260 }, { x: 300, y: 300 }]) {
+      const m = member();
+      const before = cornerSet(m.startWorld, m.startW, m.startH);
+      const nb = scaledBoxAboutPoint(m, k, k, c.x, c.y);
+      const after = cornerSet(worldTransform({ ...m._state, x: nb.x, y: nb.y, w: nb.w, h: nb.h }), nb.w, nb.h);
+      for (let i = 0; i < 4; i++) {
+        approx(after[i].x, c.x + k * (before[i].x - c.x));
+        approx(after[i].y, c.y + k * (before[i].y - c.y));
+      }
+    }
+});
+test("scaledBoxAboutPoint: per-axis (kx≠ky) unrotated maps corners about the anchor", () => {
+  const m = member({ rotation: 0, scale: 1 });
+  const before = cornerSet(m.startWorld, m.startW, m.startH);
+  const [kx, ky, ax, ay] = [2, 3, 100, 100];
+  const nb = scaledBoxAboutPoint(m, kx, ky, ax, ay);
+  const after = cornerSet(worldTransform({ ...m._state, x: nb.x, y: nb.y, w: nb.w, h: nb.h }), nb.w, nb.h);
+  for (let i = 0; i < 4; i++) {
+    approx(after[i].x, ax + kx * (before[i].x - ax));
+    approx(after[i].y, ay + ky * (before[i].y - ay));
+  }
+});
+test("scaleMemberPairs: bbox writes x/y/w/h; touch suppresses an axis", () => {
+  const m = member({ rotation: 0, scale: 1, x: 10, y: 20, w: 100, h: 50 });
+  eq(scaleMemberPairs(m, 2, 2, 0, 0),
+    [[["items", "r", "x"], 20], [["items", "r", "y"], 40], [["items", "r", "w"], 200], [["items", "r", "h"], 100]]);
+  eq(scaleMemberPairs(m, 2, 1, 0, 0, { x: true, y: false }),
+    [[["items", "r", "x"], 20], [["items", "r", "w"], 200]]);
+});
+test("scaleMemberPairs: moveBy scales free endpoints about the anchor", () => {
+  const plugin = { moveBy: () => [] }; // presence of moveBy selects the endpoint branch
+  const m = { itemId: "a", plugin, rawItem: { from: { x: 0, y: 0 }, to: { x: 100, y: 0 } } };
+  eq(scaleMemberPairs(m, 2, 2, 0, 0),
+    [[["items", "a", "from", "x"], 0], [["items", "a", "from", "y"], 0], [["items", "a", "to", "x"], 200], [["items", "a", "to", "y"], 0]]);
+});
+test("scalePairs: adapter — uniform about c, axis constraint suppresses the other axis", () => {
+  const m = member({ rotation: 0, scale: 1, x: 10, y: 20, w: 100, h: 50 });
+  eq(scalePairs(m, 2, { x: 0, y: 0 }),
+    [[["items", "r", "x"], 20], [["items", "r", "y"], 40], [["items", "r", "w"], 200], [["items", "r", "h"], 100]]);
+  eq(scalePairs(m, 2, { x: 0, y: 0 }, "x"),
+    [[["items", "r", "x"], 20], [["items", "r", "w"], 200]]);
+});
+
+console.log(`\ndragKinds tests: ${n} passed`);

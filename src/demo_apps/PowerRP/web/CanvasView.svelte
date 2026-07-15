@@ -15,22 +15,30 @@
   import { pickNode, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
-  import { THUMB_W, worldViewRect, canSkipNode } from "../core/view.js";
+  import { worldViewRect, canSkipNode } from "../core/view.js";
   import { selectInBox, rectFromCorners } from "../core/bandselect.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onVideoFrame } from "../render_gpu/gpu/video_registry.js";
-  import { renderViewFrame } from "./gpuService.js";
+  import { renderCameraFrame } from "./gpuService.js";
+  import { cameraRectAt } from "./cameraFrame.js";
   import * as T from "../core/transform.js";
+  // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
+  // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
+  // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
+  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs } from "./canvas/dragKinds.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
+  import { cssFamilyFor } from "../render_gpu/fonts.js"; // font id → CSS family (dblclick text-edit overlay)
+  import { richTextToPlain, normalizeRichText } from "../core/richtext.js"; // rich {runs,paras} ⇄ plain string (dblclick stopgap rebase — Opus21's runs model landed)
 
   let { app } = $props();
 
   const SNAP_PX = 8; // THE one uniform snap threshold (user rule): drag snap, resize snap, anchor bind, border grab (value PENDING USER RATIFICATION)
-  const MIN_SIZE = 0; // sizes are non-negative — a mathematical bound, not a design choice
+  // (MIN_SIZE = 0 — the non-negative-size bound — now lives with resizedBox in
+  // ./canvas/dragKinds.js, its only reference; removed here as dead code.)
   // Click-vs-drag slop for shift-click multi-select: a shift+pointer-down that
   // is RELEASED before the pointer moves this many screen px is a CLICK (toggles
   // selection membership); crossing it makes the gesture a shift-DRAG (axis-lock,
@@ -108,7 +116,12 @@
   // view transform to keep every ruler value in the one (world↔screen) frame.
   let mouseMarkerX = $derived(mouseWorld == null ? null : actions.worldToScreen(mouseWorld.x, 0).x);
   let mouseMarkerY = $derived(mouseWorld == null ? null : actions.worldToScreen(0, mouseWorld.y).y);
-  let minimapThumb = $state(""); // data URL of the current slide, for the minimap
+  let minimapThumb = $state(""); // data URL of the current slide's CAMERA frame, for the minimap
+  // The current slide's camera rect (world space) — the minimap's world bounds
+  // AND the placement of its content image (rebased off the raw slide rect;
+  // cruft audit #2). Committed state only (never the drag preview), matching the
+  // thumbnail freeze: the minimap tracks committed edits, not drag churn.
+  let minimapCamRect = $derived(cameraRectAt(app.doc, app.slideIndex, 1, app.registry));
   let viewport = $state({ zoom: 1, panX: 0, panY: 0 });
   // PanZoom actions — deliberately NOT $state: it's bound during template
   // render (mutating $state there is forbidden), and every overlay that needs
@@ -140,6 +153,37 @@
   // the world-space rect a drag-placement is about to create. Null outside a
   // placement drag (a plain click never sets it — see placementUp).
   let placeRect = $state(null); // {x, y, w, h} world, or null
+  // In-progress ENDPOINT-placement preview (arrow-family Add buttons, manifest
+  // UNDEFERRAL SWEEP): the world-space from→to segment a drag-placement is about
+  // to create. Null outside an endpoint placement drag (and for bbox placements,
+  // which use placeRect instead).
+  let placeLine = $state(null); // {x1, y1, x2, y2} world, or null
+  // ── DBLCLICK TEXT EDIT (PLAIN-TEXT STOPGAP) ─────────────────────────────────
+  // ⚠️ SUPERSEDED BY THE SET-2 RICH-TEXT EDITOR ⚠️ — this whole region (state +
+  // handler + the textarea overlay in the template + .text-editor-overlay CSS)
+  // is a PLACEHOLDER: double-clicking a text widget opens a positioned <textarea>
+  // to edit its PLAIN text. The real editor (SET 2) is an in-canvas cursor/
+  // selection editor with a floating PPT toolbar and per-run formatting; it will
+  // REPLACE this overlay wholesale. Kept deliberately small and self-contained
+  // (one state var, one open/commit/cancel trio, one derived screen box) so it's
+  // trivial to delete when SET 2 lands.
+  //
+  // REBASED onto Opus21's RICH-TEXT runs model (now landed): `state.text` is a
+  // canonical {runs, paras} value, NOT a plain string. This stopgap is
+  // PLAIN-TEXT, so it bridges through core/richtext.js:
+  //   READ  — richTextToPlain(state.text) flattens runs → the editable string
+  //           (paragraph "\n"s preserved).
+  //   WRITE — normalizeRichText(<textarea value>, boxStyle) rebuilds a single
+  //           run inheriting the widget-level style (font/size/color/bold), split
+  //           into paragraphs at "\n". So editing plain text COLLAPSES multi-run
+  //           formatting to one run (acceptable + expected for a plain-text
+  //           stopgap; SET-2's run-aware editor preserves per-run style). The
+  //           written value is the SAME shape the plugin default + migration
+  //           produce, so it round-trips and never trips the rich-text repair.
+  // {itemId} while a text widget is being edited; null otherwise. Non-reactive
+  // drag state stays plain, but this DRIVES the overlay markup so it's $state.
+  let textEdit = $state(null);
+  let textEditEl = $state(null); // the <textarea> element (focus + read on commit)
   // A-key live state (manifest ARCHITECTURE PLAN #4 "ANCHOR SNAP"): tracked
   // via window keydown/keyup (not e.getModifierState, which has patchy
   // cross-browser support for letter keys) so onPointerUp — which fires no
@@ -196,22 +240,32 @@
     paint();
   });
 
-  // Minimap thumbnail: THE renderer, small, via the shared pixel service.
-  // Skipped while dragging (previewDelta churn) — refreshed on commit. Async:
-  // last write wins (commits are far slower than renders).
+  // Minimap content: the current slide's CAMERA FRAME (through the camera, like
+  // the slide thumbnails — renderCameraFrame), rebased off the old raw-slide
+  // view (cruft audit #2). Rendered at the minimap's displayed content size ×
+  // dpr (retina), CAMERA-RECT aspect — no fixed THUMB_W upscale. Skipped while
+  // dragging (previewDelta churn) — refreshed on commit. Async: last write wins.
+  // MINIMAP_MAX_PX is the MiniMap component's own maxSize default (src/lib/
+  // MiniMap.svelte) — the longest CSS edge the content is displayed at; linked,
+  // not invented (user rule: base constants on precedent).
+  const MINIMAP_MAX_PX = 150;
   $effect(() => {
-    app.doc; app.slideIndex; app.minimapVisible;
+    app.doc; app.slideIndex; app.minimapVisible; minimapCamRect;
     if (!app.minimapVisible || app.previewDelta) return;
-    const meta = app.doc.meta;
+    const rect = minimapCamRect;
+    if (!(rect.w > 0 && rect.h > 0)) return; // degenerate camera → no thumbnail
     const dpr = app.dpr(); // retina browser setting (manifest)
-    const cssH = Math.round((THUMB_W * meta.slideH) / meta.slideW);
-    renderViewFrame(app.doc, {
+    // Fit the camera-rect aspect into a MINIMAP_MAX_PX box (the displayed size),
+    // then × dpr so it is exactly as crisp as the screen shows it.
+    const scale = MINIMAP_MAX_PX / Math.max(rect.w, rect.h);
+    const width = Math.max(1, Math.round(rect.w * scale * dpr));
+    const height = Math.max(1, Math.round(rect.h * scale * dpr));
+    renderCameraFrame(app.doc, {
       slideIndex: app.slideIndex,
       alpha: 1,
       registry: app.registry,
-      width: Math.round(THUMB_W * dpr),
-      height: Math.round(cssH * dpr),
-      view: { zoom: THUMB_W / meta.slideW, panX: 0, panY: 0, dpr },
+      width,
+      height,
     }).then((thumb) => (minimapThumb = thumb.toDataURL("image/png")));
   });
 
@@ -398,13 +452,102 @@
     }
   }
 
+  // ── DBLCLICK TEXT EDIT (PLAIN-TEXT STOPGAP — SUPERSEDED BY SET-2 RICH TEXT) ──
+  // Double-clicking a TEXT widget opens a <textarea> positioned exactly over its
+  // screen rect (see the `textEditor` $derived box + the template overlay). The
+  // widget's own render keeps drawing UNDER the overlay while editing — the
+  // textarea sits on top with a matching background, so the user reads their
+  // edits, not the stale glyph. That's ACCEPTABLE for a stopgap (SET 2's
+  // in-canvas editor removes the double-draw). ENTER inserts a NEWLINE (never
+  // commits — user ruling: "text boxes are REAL boxes"); Cmd/Ctrl+Enter or BLUR
+  // commits (one undo unit); Esc cancels.
+
+  /** Command. Opens the plain-text editor on the double-clicked TEXT widget (if
+   *  any). Non-text targets fall through (a dblclick on a rect does nothing). */
+  function onDblClick(e) {
+    if (drag || modal) return; // never open mid-gesture
+    const w = worldPoint(e);
+    const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
+    if (hit?.type !== "text") return;
+    app.selection = hit.itemId; // select it too, so the Inspector reflects the same item
+    // Seed from the rich value FLATTENED to plain text (richTextToPlain: runs →
+    // string, paragraph "\n"s preserved). The widget-level style (font/size/
+    // color/bold) is captured so the write-back run inherits it — kept on
+    // `textEdit` so commit doesn't have to re-derive the node.
+    const stored = richTextToPlain(app.storedItemValue(hit.itemId, ["text"]));
+    const s = hit.state;
+    const boxStyle = { font: s.font, size: s.size, color: s.color, bold: s.bold };
+    textEdit = { itemId: hit.itemId, boxStyle };
+    // Seed the textarea's value + focus/select-all NEXT tick, once it's in the
+    // DOM (the {#if textEditor} block renders after this frame). Then live-preview
+    // the seed so the widget under the overlay matches from frame one.
+    queueMicrotask(() => {
+      if (!textEditEl) return;
+      textEditEl.value = stored;
+      textEditEl.focus();
+      textEditEl.select();
+      app.setPreview([[["items", hit.itemId, "text"], normalizeRichText(stored, boxStyle)]]);
+    });
+  }
+
+  /** Command. Live-preview the typed text (viewport re-renders under the overlay
+   *  in real time — the house live-preview rule; matches the Inspector text row).
+   *  The plain-text value is normalized to the rich {runs, paras} shape (one run
+   *  inheriting the box style) before preview. ENTER is a plain newline here: the
+   *  textarea inserts it natively and normalizeRichText splits it into paragraphs. */
+  function textEditInput() {
+    if (!textEdit) return;
+    app.setPreview([[["items", textEdit.itemId, "text"], normalizeRichText(textEditEl.value, textEdit.boxStyle)]]);
+  }
+
+  /** Command. Commits the edit as ONE undo unit (setPreview + commitPreview —
+   *  the exact Inspector text-row commit path). The plain-text value is written
+   *  back as a rich {runs, paras} value (normalizeRichText), collapsing to one
+   *  run — the documented plain-text-stopgap tradeoff. Then closes the overlay. */
+  function commitTextEdit() {
+    if (!textEdit) return;
+    app.setPreview([[["items", textEdit.itemId, "text"], normalizeRichText(textEditEl.value, textEdit.boxStyle)]]);
+    app.commitPreview();
+    textEdit = null;
+  }
+
+  /** Command. Cancels the edit (reverts the live preview, no undo unit) and
+   *  closes the overlay. */
+  function cancelTextEdit() {
+    if (!textEdit) return;
+    app.cancelPreview();
+    textEdit = null;
+  }
+
+  /** The textarea's own keydown: ENTER = newline (do NOT commit — the ruling);
+   *  Cmd/Ctrl+Enter = COMMIT; Esc = CANCEL. stopPropagation on the handled keys
+   *  so nothing at the window level also acts on them (belt-and-suspenders — the
+   *  document-level shortcut guard already skips a focused TEXTAREA). */
+  function textEditKeydown(e) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      commitTextEdit();
+      textEditEl?.blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelTextEdit();
+    }
+    // Plain Enter: left alone → the textarea inserts a newline natively. Every
+    // other key: left alone → normal typing (the focused-textarea guard in
+    // App.onKeydown means canvas shortcuts never fire while this is focused).
+  }
+
   // ── Selection + drag ────────────────────────────────────────────────────────
 
   /**
    * The translatable members of the current selection, each captured with the
    * data a body-drag/modal-grab needs: its plugin, its RAW stored item (so
-   * equation-bound coords are recognized as strings and stay anchored), and its
-   * numeric start x/y. Shared by DRAG-ALL and the G/S modal transforms so the
+   * equation-bound coords are recognized as strings and stay anchored), its
+   * numeric start x/y, and its start WORLD transform + w/h (the exact
+   * rotation-aware scale needs the pivoted world, not the base-frame x/y —
+   * see scalePairs). Shared by DRAG-ALL and the G/S modal transforms so the
    * two never disagree on what "the selection" is. A member qualifies exactly
    * like a single body-drag target: transform (bbox x/y) OR a moveBy hook
    * (arrow shafts) — everything else in the set (blur, etc.) is simply not
@@ -421,26 +564,17 @@
         rawItem: raw[n.itemId],
         startX: n.state.x ?? 0,
         startY: n.state.y ?? 0,
+        // Start world transform + local box size — the exact scale-about-center
+        // (scalePairs) needs the FOLDED world (rotation pivot included), since a
+        // rotated item's world top-left ≠ its stored x/y.
+        startWorld: n.world,
+        startW: n.state.w ?? 0,
+        startH: n.state.h ?? 0,
       }));
   }
 
-  /**
-   * Pure function. The path/value preview pairs that translate one member by a
-   * world delta (dx, dy) — the ONE translation rule shared by DRAG-ALL body
-   * drags and modal grab. A moveBy widget (arrow) translates only its FREE
-   * numeric coordinates via its plugin hook (bound endpoints stay anchored); a
-   * bbox/transform widget writes plain numeric x/y (direct manipulation
-   * replaces any equation on x/y outright — the established body-drag rule).
-   */
-  function translationPairs(member, dx, dy) {
-    if (member.plugin.moveBy)
-      return member.plugin.moveBy(member.rawItem, dx, dy)
-        .map(([p, v]) => [["items", member.itemId, ...p], v]);
-    return [
-      [["items", member.itemId, "x"], member.startX + dx],
-      [["items", member.itemId, "y"], member.startY + dy],
-    ];
-  }
+  // translationPairs / resizeAnchors / resizedBox / scaleMemberPairs / scalePairs
+  // are imported from ./canvas/dragKinds.js (the extracted pure drag geometry).
 
   function onPointerDown(e) {
     if (e.button !== 0 || app.mode !== "edit") return;
@@ -470,10 +604,12 @@
       } else {
         // downScreen/moved: the SAME click-vs-drag slop tracking every other
         // drag kind uses (onPointerMove, CLICK_SLOP_PX) — a placement that
-        // never crosses it is a CLICK (default-size placement); crossing it
-        // makes it a DRAG (exact-rect placement). See placementUp.
+        // never crosses it is a CLICK (default-size/length placement); crossing
+        // it makes it a DRAG (exact rect / exact from→to). See placementUp.
         drag = { kind: "place", plugin: armed.plugin, startWorld: w, lastWorld: w, downScreen: screenPoint(e), moved: false };
-        placeRect = rectFromCorners(w, w);
+        // Endpoint-kind (arrows) previews a from→to LINE; bbox-kind a rect.
+        if (armed.plugin.placement === "endpoints") placeLine = { x1: w.x, y1: w.y, x2: w.x, y2: w.y };
+        else placeRect = rectFromCorners(w, w);
         app.dragKind = "place";
       }
       return;
@@ -611,6 +747,7 @@
     }
     if (drag.kind === "move") moveDrag(e, w);
     else if (drag.kind === "resize") resizeDrag(e, w);
+    else if (drag.kind === "multiresize") multiResizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
     else if (drag.kind === "band") bandDrag(w, e.shiftKey);
@@ -643,33 +780,54 @@
   // ── Crosshair placement drag (manifest ARCHITECTURE PLAN #5) ──────────────
 
   /** Command (updates placement preview state). Recomputes the world-space
-   * rect a drag-placement is about to create — pure rect-from-corners, same
-   * primitive the band drag uses (rectFromCorners), so the preview outline
-   * behaves identically under any drag direction. */
+   * preview a drag-placement is about to create: a from→to LINE for endpoint-
+   * kind plugins (arrows), else the rect (pure rect-from-corners, the same
+   * primitive band select uses, so the outline behaves identically under any
+   * drag direction). */
   function placementDrag(w) {
     drag.lastWorld = w;
-    placeRect = rectFromCorners(drag.startWorld, w);
+    if (drag.plugin.placement === "endpoints") placeLine = { x1: drag.startWorld.x, y1: drag.startWorld.y, x2: w.x, y2: w.y };
+    else placeRect = rectFromCorners(drag.startWorld, w);
   }
 
   /**
-   * Command. Places the armed plugin's widget on release: a DRAG (moved past
-   * CLICK_SLOP_PX) places it at the EXACT dragged rect; a plain CLICK places
-   * it at the plugin's default size (`plugin.defaults.w`/`.h`), CENTERED on
-   * the click point (manifest Round 12B "Boxes": "a SINGLE CLICK places a
-   * default-size box... centered on the point" — the same centering rule
-   * insertImageAsset already uses for dropped media, app.svelte.js
-   * #insertMediaAt). Routes through app.addItem exactly like the plugin's OLD
-   * immediate-spawn `run`, so identity/z/active:true keyframing is unchanged
-   * — only x/y/w/h now come from the gesture instead of `plugin.defaults`
-   * verbatim. A plugin with no bbox size in its defaults (w/h both absent —
-   * none exist yet, but future non-bbox placeable widgets are conceivable) is
-   * NOT this task's scope; every current placeable plugin (rect, text) has
-   * numeric w/h defaults, so `?? 0` is a defensive fallback, not a silent
-   * behavior change for any real plugin today.
+   * Command. Places the armed plugin's widget on release. TWO placement kinds,
+   * chosen by the plugin's declared `placement` descriptor (manifest UNDEFERRAL
+   * SWEEP: "crosshair PLACEMENT for ALL Add buttons"; the per-plugin descriptor
+   * is the ONE piece of type knowledge — everything else here is generic):
+   *
+   *   BBOX (default — `placement` absent or "bbox"; rect/text/donut/magnifier/
+   *   cropbox/image/video): a DRAG (moved past CLICK_SLOP_PX) places at the
+   *   EXACT dragged rect; a plain CLICK places at the plugin's default size
+   *   (`defaults.w`/`.h`), CENTERED on the click point (manifest Round 12B
+   *   "Boxes": "a SINGLE CLICK places a default-size box... centered" — the
+   *   same centering rule #insertMediaAt uses for dropped media). `?? 0` is a
+   *   defensive fallback for a bbox default with no size (none exist today).
+   *
+   *   ENDPOINTS (`placement` === "endpoints"; the arrow family): a DRAG lays
+   *   from→to along the dragged segment (from = start corner, to = release
+   *   corner — the endpoints ARE the gesture, no bbox); a plain CLICK places a
+   *   default-length arrow rightward from the point, the length taken from the
+   *   plugin's own `defaults.to.x − defaults.from.x` (a LINKED precedent — the
+   *   widget's own shipped default extent — not an invented constant).
+   *
+   * Both kinds route through app.addItem exactly like the plugin's OLD
+   * immediate-spawn `run`, so identity/z/active:true keyframing is unchanged —
+   * only the geometry now comes from the gesture instead of `defaults` verbatim.
    */
   function placementUp() {
     const { plugin, startWorld } = drag;
-    if (drag.moved) {
+    if (plugin.placement === "endpoints") {
+      if (drag.moved) {
+        app.addItem({ ...plugin.defaults, from: { x: startWorld.x, y: startWorld.y }, to: { x: drag.lastWorld.x, y: drag.lastWorld.y } });
+      } else {
+        // Default length = the plugin's own shipped from→to extent (linked
+        // precedent), placed rightward from the click point.
+        const d = plugin.defaults;
+        const len = (d.to?.x ?? 0) - (d.from?.x ?? 0);
+        app.addItem({ ...d, from: { x: startWorld.x, y: startWorld.y }, to: { x: startWorld.x + len, y: startWorld.y } });
+      }
+    } else if (drag.moved) {
       const r = rectFromCorners(startWorld, drag.lastWorld);
       app.addItem({ ...plugin.defaults, x: r.x, y: r.y, w: r.w, h: r.h });
     } else {
@@ -677,6 +835,7 @@
       app.addItem({ ...plugin.defaults, x: startWorld.x - w / 2, y: startWorld.y - h / 2 });
     }
     placeRect = null;
+    placeLine = null;
   }
 
   function moveDrag(e, w) {
@@ -753,99 +912,16 @@
   }
 
   // ── Resize ──────────────────────────────────────────────────────────────────
-
-  /**
-   * Pure function. The grabbed point and fixed (anchor) point of a handle
-   * resize, in the box's local frame — ONE computation shared by the resize
-   * math (resizedBox) and the uniform diagonal guide, so they never disagree.
-   *
-   * gx/gy is the grabbed corner (on an axis with no grabbed edge it holds the
-   * far coordinate, unused there); fx/fy is the point the resize is anchored
-   * to — the opposite corner/edge, or the box CENTER when `symmetric` (Cmd).
-   *
-   * @example // resizeAnchors([0, 0, 100, 50], {east: true, south: true}, {})
-   * //   → {gx: 100, gy: 50, fx: 0, fy: 0, cx: 50, cy: 25, xActive: true, yActive: true}
-   * @example // resizeAnchors([0, 0, 100, 50], {east: true}, {symmetric: true}).fx → 50
-   */
-  function resizeAnchors([x0, y0, x1, y1], edges, mods) {
-    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    return {
-      gx: edges.west ? x0 : x1,
-      gy: edges.north ? y0 : y1,
-      fx: mods.symmetric ? cx : edges.west ? x1 : x0,
-      fy: mods.symmetric ? cy : edges.north ? y1 : y0,
-      cx, cy,
-      xActive: !!(edges.east || edges.west),
-      yActive: !!(edges.north || edges.south),
-    };
-  }
-
-  /**
-   * Pure function. The resized box for a handle drag with modifiers, in the
-   * item's local frame (`base` = the box at the last modifier rebase).
-   *
-   * Modifier semantics (manifest "Drag/resize modifiers — CONFIRMED mapping"):
-   *   uniform (Shift)  — ONE scale factor K for both dimensions. A corner
-   *     rides the diagonal through the anchor (the pointer projects onto it);
-   *     an edge handle drives K from its own axis, and the passive axis
-   *     scales about its center — the only symmetric-neutral choice for an
-   *     axis with no grabbed edge (Figma's Shift+edge precedent).
-   *   symmetric (Cmd)  — the anchor is the box CENTER, so both sides move
-   *     (PowerPoint's Ctrl-resize precedent). Composes with uniform: the
-   *     corner then rides the FULL diagonal, scaling about the center.
-   *
-   * Sizes never invert (MIN_SIZE = 0, the mathematical bound): K clamps at 0
-   * (collapse onto the anchor); free edges stop at theirs.
-   *
-   * Args:
-   *   base  (number[4]): [x0, y0, x1, y1] box at the last modifier rebase
-   *   d     ({x, y}):    local pointer movement since that rebase
-   *   edges (object):    {west, east, north, south} — edges the handle moves
-   *   mods  (object):    {uniform, symmetric}
-   *
-   * Returns:
-   *   number[4]: the new [x0, y0, x1, y1]
-   *
-   * @example // resizedBox([0,0,100,50], {x:20,y:0}, {east:true}, {}) → [0, 0, 120, 50]
-   * @example // resizedBox([0,0,100,50], {x:20,y:0}, {east:true}, {symmetric:true}) → [-20, 0, 120, 50]
-   * @example // resizedBox([0,0,100,50], {x:100,y:0}, {east:true,south:true}, {uniform:true}) → [0, 0, 180, 90]
-   * @example // resizedBox([0,0,100,50], {x:-200,y:0}, {east:true}, {}) → [0, 0, 0, 50] (clamped at the fixed edge)
-   */
-  function resizedBox(base, d, edges, mods) {
-    const [bx0, by0, bx1, by1] = base;
-    const { gx, gy, fx, fy, cx, cy, xActive, yActive } = resizeAnchors(base, edges, mods);
-
-    if (mods.uniform) {
-      const ux = gx - fx, uy = gy - fy;
-      const len2 = xActive && yActive ? ux * ux + uy * uy : xActive ? ux * ux : uy * uy;
-      if (len2 > 0) {
-        const K = Math.max(0, (xActive && yActive
-          ? (gx + d.x - fx) * ux + (gy + d.y - fy) * uy
-          : xActive ? (gx + d.x - fx) * ux : (gy + d.y - fy) * uy) / len2);
-        const ax = xActive ? fx : cx, ay = yActive ? fy : cy;
-        return [ax + K * (bx0 - ax), ay + K * (by0 - ay), ax + K * (bx1 - ax), ay + K * (by1 - ay)];
-      }
-      // Zero extent along the drive: no aspect to preserve — fall through.
-    }
-
-    let x0 = bx0, y0 = by0, x1 = bx1, y1 = by1;
-    if (edges.east) x1 += d.x;
-    if (edges.west) x0 += d.x;
-    if (edges.south) y1 += d.y;
-    if (edges.north) y0 += d.y;
-    if (mods.symmetric) {
-      // The opposite edge mirrors the moved one about the center.
-      if (edges.east) x0 = 2 * cx - x1;
-      if (edges.west) x1 = 2 * cx - x0;
-      if (edges.south) y0 = 2 * cy - y1;
-      if (edges.north) y1 = 2 * cy - y0;
-    }
-    if (x1 < x0) x0 = x1 = mods.symmetric ? cx : fx;
-    if (y1 < y0) y0 = y1 = mods.symmetric ? cy : fy;
-    return [x0, y0, x1, y1];
-  }
+  // resizeAnchors / resizedBox are imported from ./canvas/dragKinds.js.
 
   function startResize(handleId, e) {
+    // MULTI-RESIZE (manifest UNDEFERRAL SWEEP): a handle on a 2+ selection grabs
+    // the collective AABB and scales every member about it — a different drag
+    // kind from the single-item resize (which owns the rotation back-solve, edge
+    // snapping, size-match indicators, anchor-snap). The overlay only shows
+    // collective handles when >1 is selected, so this branch is never reached
+    // for a single selection.
+    if (app.selectedIds().length > 1) { startMultiResize(handleId, e); return; }
     const node = app.selectedNode();
     if (!node) return;
     e.stopPropagation();
@@ -974,6 +1050,109 @@
       [["items", drag.itemId, "w"], ww],
       [["items", drag.itemId, "h"], hh],
     ]);
+  }
+
+  // ── Multi-resize (manifest UNDEFERRAL SWEEP: handles on a multi-selection ────
+  // scale ALL members about the collective AABB, PPT semantics). The collective
+  // box is AXIS-ALIGNED in world space, so it reuses the SAME resizedBox/
+  // resizeAnchors modifier machinery as the single-item resize; the difference
+  // is only WHAT gets scaled: instead of one item's local box, every member's
+  // world position AND size scale about the box's fixed anchor (scaleMemberPairs
+  // — the exact rotation-aware scale, shared with the S-modal). Cmd-symmetric
+  // and Shift-uniform work on the collective box for free (they're resizedBox's
+  // own modifier params). Snap runs on the collective box edges.
+
+  function startMultiResize(handleId, e) {
+    const members = translateMembers(app.nodes());
+    const box0 = selectionAABB(app.selectedNodes());
+    if (!box0 || members.length === 0) return; // nothing bounded to resize
+    e.stopPropagation();
+    overlayEl.setPointerCapture(e.pointerId);
+    const h = handleId;
+    const grab = worldPoint(e);
+    const base = [box0.x, box0.y, box0.x + box0.w, box0.y + box0.h]; // world AABB [x0,y0,x1,y1]
+    drag = {
+      kind: "multiresize",
+      handleId,
+      members,
+      west: h.includes("l"), east: h.includes("r"), north: h.includes("t"), south: h.includes("b"),
+      // Same modifier + rebase bookkeeping as the single resize, but the
+      // "local" frame IS world (the collective box is world-axis-aligned), so
+      // basePointer is the grab point in world and the delta is a plain world
+      // delta — no per-item transform inversion.
+      mods: { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey },
+      baseBox: base,
+      lastBox: base,
+      basePointer: { x: grab.x, y: grab.y },
+    };
+    hoverAnchor = null;
+    app.dragging = true;
+    app.dragKind = "multiresize";
+  }
+
+  function multiResizeDrag(e, w) {
+    const mods = { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey };
+    if (mods.uniform !== drag.mods.uniform || mods.symmetric !== drag.mods.symmetric) {
+      drag.baseBox = drag.lastBox; // rebase from the box on screen (no jump on toggle)
+      drag.basePointer = { x: w.x, y: w.y };
+      drag.mods = mods;
+    }
+    const edges = { west: drag.west, east: drag.east, north: drag.north, south: drag.south };
+    let box = resizedBox(drag.baseBox, { x: w.x - drag.basePointer.x, y: w.y - drag.basePointer.y }, edges, mods);
+
+    // Snap the collective box edges to other nodes' features (same edge→line
+    // solver the single resize uses), unless a modifier is active (a per-edge
+    // correction would break the modifier's aspect/center invariant).
+    let newGuides = [];
+    if (app.snapEnabled && !mods.uniform && !mods.symmetric) {
+      const snapped = snapMultiBox(box, edges);
+      box = snapped.box;
+      newGuides = snapped.guides;
+    }
+    guides = newGuides;
+    sizeIndicators = [];
+
+    // Map the OLD collective box → the NEW one as a per-axis scale about the
+    // fixed anchor (resizeAnchors gives the fixed point / center), then scale
+    // every member about it. Degenerate old extent (a zero-width selection) →
+    // factor 1 on that axis (no scale, avoids /0).
+    const b0 = drag.baseBox;
+    const oldW = b0[2] - b0[0], oldH = b0[3] - b0[1];
+    const kx = oldW > 1e-9 ? (box[2] - box[0]) / oldW : 1;
+    const ky = oldH > 1e-9 ? (box[3] - box[1]) / oldH : 1;
+    const a = resizeAnchors(b0, edges, mods);
+    const ax = mods.symmetric ? a.cx : a.fx;
+    const ay = mods.symmetric ? a.cy : a.fy;
+    const pairs = drag.members.flatMap((m) => scaleMemberPairs(m, kx, ky, ax, ay));
+    if (pairs.length) app.setPreview(pairs);
+  }
+
+  /**
+   * Snaps the collective multi-resize box's MOVING edges to other nodes' line
+   * features (the same solveEdgeSnap the single-item resize uses), returning the
+   * corrected box and the aligned guides. World-space and axis-aligned, so no
+   * per-item scale factor is involved (the collective box IS in world units).
+   * Near-pure: reads app scene state + raises app.snapEngaged when a correction
+   * lands; geometry itself is deterministic.
+   */
+  function snapMultiBox(box, edges) {
+    const tol = SNAP_PX / viewport.zoom;
+    const ids = new Set(app.selectedIds());
+    const others = app.nodes().filter((n) => !ids.has(n.itemId));
+    const probes = [];
+    if (edges.east) probes.push({ axis: "x", pos: box[2] });
+    if (edges.west) probes.push({ axis: "x", pos: box[0] });
+    if (edges.south) probes.push({ axis: "y", pos: box[3] });
+    if (edges.north) probes.push({ axis: "y", pos: box[1] });
+    const features = others.flatMap(nodeFeatures);
+    const es = solveEdgeSnap(probes, features, tol);
+    const out = [...box];
+    if (edges.east) out[2] += es.dx;
+    if (edges.west) out[0] += es.dx;
+    if (edges.south) out[3] += es.dy;
+    if (edges.north) out[1] += es.dy;
+    if (es.dx !== 0 || es.dy !== 0) app.snapEngaged = true;
+    return { box: out, guides: es.guides };
   }
 
   /**
@@ -1346,7 +1525,14 @@
    * (arrows) contribute their editable points (so a selected arrow counts).
    * Returns {x, y}, or null if nothing bounded was found.
    */
-  function selectionCenter(nodes) {
+  /**
+   * The collective world-space AABB of `nodes` (the same geometry
+   * selectionCenter measures, factored out): bbox nodes contribute their four
+   * world corners; endpoint widgets (arrows) contribute their editable points.
+   * Returns {x, y, w, h} (world), or null if nothing bounded was found. This is
+   * the box multi-RESIZE (manifest UNDEFERRAL SWEEP) grabs handles on.
+   */
+  function selectionAABB(nodes) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
     const eat = (x, y) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
@@ -1362,7 +1548,12 @@
       }
     }
     if (minX === Infinity) return null;
-    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  }
+
+  function selectionCenter(nodes) {
+    const b = selectionAABB(nodes);
+    return b ? { x: b.x + b.w / 2, y: b.y + b.h / 2 } : null;
   }
 
   /**
@@ -1489,46 +1680,10 @@
       : [];
   }
 
-  /**
-   * Pure function. Preview pairs that scale one member by `factor` about world
-   * center `c`, optionally constrained to one `axis` ("x" → width + x-position
-   * only; "y" → height + y-position only; null → uniform). A bbox/transform
-   * widget scales its w/h AND repositions its x/y about the center (a true
-   * size+position scale, honest to the w/h the inspector shows — the resize
-   * path's convention). A moveBy widget (arrow) scales each FREE numeric
-   * endpoint about the center; equation-bound endpoints stay put. NOTE: for
-   * ROTATED / non-unit-scale bbox items the x/y scaling uses the stored
-   * (base-frame) coordinates, so the pivot is exact only for unrotated items —
-   * full rotation-aware modal scale is deferred to the rotation sweep (out of
-   * this task's scope; flagged).
-   */
-  function scalePairs(member, factor, c, axis = null) {
-    const doX = axis !== "y"; // x-axis constraint (or unconstrained) touches x/w
-    const doY = axis !== "x"; // y-axis constraint (or unconstrained) touches y/h
-    if (member.plugin.moveBy) {
-      const s = member.rawItem ?? {};
-      const pairs = [];
-      for (const end of ["from", "to"])
-        for (const coord of ["x", "y"]) {
-          if (coord === "x" ? !doX : !doY) continue;
-          const v = s[end]?.[coord];
-          if (typeof v === "number") {
-            const cc = coord === "x" ? c.x : c.y;
-            pairs.push([["items", member.itemId, end, coord], cc + factor * (v - cc)]);
-          }
-        }
-      return pairs;
-    }
-    const rawItem = member.rawItem ?? {};
-    const w = typeof rawItem.w === "number" ? rawItem.w : null;
-    const h = typeof rawItem.h === "number" ? rawItem.h : null;
-    const pairs = [];
-    if (doX) pairs.push([["items", member.itemId, "x"], c.x + factor * (member.startX - c.x)]);
-    if (doY) pairs.push([["items", member.itemId, "y"], c.y + factor * (member.startY - c.y)]);
-    if (doX && w !== null) pairs.push([["items", member.itemId, "w"], w * factor]);
-    if (doY && h !== null) pairs.push([["items", member.itemId, "h"], h * factor]);
-    return pairs;
-  }
+  // scaledBoxAboutPoint / scaleMemberPairs / scalePairs — the exact
+  // rotation-aware scale-about-a-point math — are imported from
+  // ./canvas/dragKinds.js (the extracted pure drag geometry). scalePairs is the
+  // G/S-modal adapter; scaleMemberPairs the per-axis (multi-resize) form.
 
   /** Command. Confirms the modal transform: commit the preview as ONE undo unit
    * (the existing commitPreview) and leave the modal. Nulling app.modalXform
@@ -1612,7 +1767,16 @@
   // moment onPointerUp runs". A window blur clears it too — an alt-tab mid-
   // drag must not leave a stuck phantom hold for the NEXT unrelated release.
   $effect(() => {
-    const onKeydown = (e) => { if (e.key === "a" || e.key === "A") aHeld = true; };
+    // Ignore the A key while text is being typed into a field — otherwise typing
+    // "a" in the DBLCLICK TEXT EDIT textarea (or any input) would arm anchor-snap
+    // (App.onKeydown's document-level shortcut guard skips a focused TEXTAREA,
+    // but this window listener is CanvasView-level and needs its own guard). Same
+    // editable-target idiom as App.onKeydown.
+    const typingInField = (e) => {
+      const t = e.target;
+      return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+    };
+    const onKeydown = (e) => { if (!typingInField(e) && (e.key === "a" || e.key === "A")) aHeld = true; };
     const onKeyup = (e) => { if (e.key === "a" || e.key === "A") aHeld = false; };
     const onBlur = () => { aHeld = false; };
     window.addEventListener("keydown", onKeydown);
@@ -1628,8 +1792,8 @@
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandCandidates; modalCenter; app.crosshair; placeRect; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null, ghostOutlines: [], crosshairSegs: [], placeBox: null };
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandCandidates; modalCenter; app.crosshair; placeRect; placeLine; mouseWorld;
+    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, multiBoxOutline: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -1652,11 +1816,13 @@
     };
 
     // EVERY selected bbox node gets a selection outline (multi-select
-    // substrate); resize handles and edit points only for a SINGLE selection
-    // (manifest: "resize handles only for a single selection").
+    // substrate). Resize handles: a SINGLE selection gets handles on its own
+    // (rotation-aware) box; a MULTI selection gets handles on its COLLECTIVE
+    // world AABB (manifest UNDEFERRAL SWEEP: "multi-resize via handles" — the
+    // grabbed handle drags the collective box, members scale proportionally).
     const selSet = new Set(selectedIds);
     const outlines = nodes.filter((n) => selSet.has(n.itemId) && n.plugin.capabilities.bbox).map(outlineOf);
-    let handles = [], endpoints = [];
+    let handles = [], endpoints = [], multiBoxOutline = null;
     if (selectedIds.length === 1 && sel?.plugin.capabilities.bbox && sel.plugin.capabilities.resizable) {
       const w = sel.state.w ?? 0, h = sel.state.h ?? 0;
       const hs = [["tl", 0, 0], ["tm", w / 2, 0], ["tr", w, 0], ["mr", w, h / 2], ["br", w, h], ["bm", w / 2, h], ["bl", 0, h], ["ml", 0, h / 2]];
@@ -1664,6 +1830,18 @@
         const p = T.apply(sel.world, lx, ly);
         return { id, ...actions.worldToScreen(p.x, p.y) };
       });
+    } else if (selectedIds.length > 1) {
+      // Collective AABB of the selected nodes (only bbox/endpoint members it can
+      // scale contribute — selectionAABB's own rule). Handles + a dashed box
+      // outline mark the group the drag resizes.
+      const box = selectionAABB(app.selectedNodes());
+      if (box && box.w > 0 && box.h > 0) {
+        const corners = [[box.x, box.y], [box.x + box.w, box.y], [box.x + box.w, box.y + box.h], [box.x, box.y + box.h]];
+        multiBoxOutline = corners.map(([wx, wy]) => { const s = actions.worldToScreen(wx, wy); return `${s.x},${s.y}`; }).join(" ");
+        const hx = box.x, hy = box.y, hw = box.w, hh = box.h;
+        const hs = [["tl", hx, hy], ["tm", hx + hw / 2, hy], ["tr", hx + hw, hy], ["mr", hx + hw, hy + hh / 2], ["br", hx + hw, hy + hh], ["bm", hx + hw / 2, hy + hh], ["bl", hx, hy + hh], ["ml", hx, hy + hh / 2]];
+        handles = hs.map(([id, wx, wy]) => ({ id, ...actions.worldToScreen(wx, wy) }));
+      }
     }
     if (selectedIds.length <= 1 && sel?.plugin.editPoints) {
       const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
@@ -1765,7 +1943,44 @@
       placeBox = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
     }
 
-    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox };
+    // In-progress ENDPOINT-placement preview segment (arrow Add buttons): the
+    // from→to line a release right now would place, in screen space.
+    let placeSeg = null;
+    if (placeLine) {
+      const a = actions.worldToScreen(placeLine.x1, placeLine.y1);
+      const b = actions.worldToScreen(placeLine.x2, placeLine.y2);
+      placeSeg = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+    }
+
+    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox, placeSeg, multiBoxOutline };
+  });
+
+  // DBLCLICK TEXT EDIT overlay box (screen space) — SUPERSEDED BY SET-2. The
+  // <textarea> is positioned EXACTLY over the edited widget's screen rect and
+  // scaled so it visually matches: the world top-left maps through the SAME
+  // worldToScreen the outlines use; width/height are the widget's world w/h
+  // scaled by zoom × the node's own world scale; font-size is the widget's
+  // `size` scaled the same way; rotation is the node's world rotation (radians),
+  // applied via CSS about the top-left corner so the box lines up with a rotated
+  // widget. Recomputes on viewport/selection/doc change like `overlay` above.
+  let textEditor = $derived.by(() => {
+    app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
+    if (!textEdit || !actions) return null;
+    const n = app.nodes().find((nn) => nn.itemId === textEdit.itemId);
+    if (!n || n.type !== "text") return null; // widget purged/retyped mid-edit → box vanishes (commit still works off the textarea value)
+    const p = T.apply(n.world, 0, 0); // world top-left point
+    const s = actions.worldToScreen(p.x, p.y); // → screen (render-area frame)
+    const scale = viewport.zoom * (n.world.scale ?? 1); // world units → screen px
+    return {
+      x: s.x, y: s.y,
+      w: (n.state.w ?? 0) * scale,
+      h: (n.state.h ?? 0) * scale,
+      fontPx: (n.state.size ?? 0) * scale,
+      family: cssFamilyFor(n.state.font),
+      bold: n.state.bold ?? false,
+      color: n.state.color ?? "#000",
+      deg: (n.world.rotation ?? 0) * 180 / Math.PI, // CSS rotate() takes degrees
+    };
   });
 </script>
 
@@ -1799,6 +2014,7 @@
         onpointerup={onPointerUp}
         onpointercancel={onPointerUp}
         onpointerleave={onPointerLeave}
+        ondblclick={onDblClick}
         ondragover={onCanvasDragOver}
         ondrop={onCanvasDrop}
       >
@@ -1852,10 +2068,23 @@
         {#each overlay.outlines as o}
           <polygon class="selection" points={o} />
         {/each}
+        {#if overlay.multiBoxOutline}
+          <!-- The collective AABB a multi-selection resizes (manifest UNDEFERRAL
+               SWEEP: multi-resize via handles). Drawn as a selection outline so
+               it reads as the group's bounding box; the 8 handles sit on it. -->
+          <polygon class="selection multiselect-box" points={overlay.multiBoxOutline} />
+        {/if}
         {#if overlay.placeBox}
           <!-- In-progress CROSSHAIR PLACEMENT drag rect (manifest ARCHITECTURE
                PLAN #5): the exact box a release right now would place. -->
           <rect class="place-rect" x={overlay.placeBox.x} y={overlay.placeBox.y} width={overlay.placeBox.w} height={overlay.placeBox.h} />
+        {/if}
+        {#if overlay.placeSeg}
+          <!-- In-progress ENDPOINT PLACEMENT drag segment (arrow Add buttons,
+               manifest UNDEFERRAL SWEEP): the exact from→to line a release now
+               would place. Reuses the .place-rect skin (same gray placement
+               tone) so the two placement kinds read as one mechanism. -->
+          <line class="place-rect" x1={overlay.placeSeg.x1} y1={overlay.placeSeg.y1} x2={overlay.placeSeg.x2} y2={overlay.placeSeg.y2} />
         {/if}
         {#if overlay.band}
           <!-- The in-progress rubber band + preview outlines on the items the
@@ -1913,21 +2142,51 @@
           </g>
         {/if}
       </svg>
+      {#if textEditor}
+        <!-- DBLCLICK TEXT EDIT overlay (PLAIN-TEXT STOPGAP — SUPERSEDED BY THE
+             SET-2 RICH-TEXT EDITOR). A <textarea> laid EXACTLY over the edited
+             text widget's screen rect (textEditor box), scaled by zoom so it
+             visually matches. ENTER = newline (textEditKeydown leaves plain
+             Enter alone); Cmd/Ctrl+Enter or BLUR commits; Esc cancels. Inline
+             style carries only the DYNAMIC geometry/typography (position, size,
+             font — all derived from the live view); the static chrome is in
+             app.css .text-editor-overlay. -->
+        <textarea
+          class="text-editor-overlay"
+          bind:this={textEditEl}
+          style:left="{textEditor.x}px"
+          style:top="{textEditor.y}px"
+          style:width="{textEditor.w}px"
+          style:height="{textEditor.h}px"
+          style:font-size="{textEditor.fontPx}px"
+          style:font-family={textEditor.family}
+          style:font-weight={textEditor.bold ? "bold" : "normal"}
+          style:color={textEditor.color}
+          style:transform="rotate({textEditor.deg}deg)"
+          oninput={textEditInput}
+          onkeydown={textEditKeydown}
+          onblur={commitTextEdit}
+        ></textarea>
+      {/if}
       {#if app.minimapVisible}
         <div class="minimap-dock">
           <MiniMap
             {viewport}
             containerWidth={wrapW}
             containerHeight={wrapH}
-            worldBounds={{ x: 0, y: 0, w: app.doc.meta.slideW, h: app.doc.meta.slideH }}
+            worldBounds={{ x: minimapCamRect.x, y: minimapCamRect.y, w: minimapCamRect.w, h: minimapCamRect.h }}
           >
             {#snippet children()}
               {#if minimapThumb}
+                <!-- The camera-frame content, placed at the CAMERA rect's world
+                     coords (the MiniMap viewBox scales it). Rebased off the raw
+                     slide rect so the minimap shows what the camera frames. -->
                 <image
                   href={minimapThumb}
-                  x="0" y="0"
-                  width={app.doc.meta.slideW}
-                  height={app.doc.meta.slideH}
+                  x={minimapCamRect.x}
+                  y={minimapCamRect.y}
+                  width={minimapCamRect.w}
+                  height={minimapCamRect.h}
                   preserveAspectRatio="none"
                 />
               {/if}
