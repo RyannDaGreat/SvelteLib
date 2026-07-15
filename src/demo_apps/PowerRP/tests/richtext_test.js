@@ -13,6 +13,8 @@ import {
   NATURAL_LINE_HEIGHT, UNDERLINE_OFFSET_FRAC, STRIKE_OFFSET_FRAC,
   runsLength, styleOf, sameStyle, mergeAdjacentRuns, splitRunAt, applyRunStyle,
   runStyleAt, commonStyle,
+  // Round 15.6 — vertical align + paragraph-style application
+  valignOffset, VALIGN_VALUES, DEFAULT_VALIGN, paragraphRanges, applyParaStyle,
 } from "../core/richtext.js";
 
 let passed = 0;
@@ -375,6 +377,125 @@ test("commonStyle: shared value across selection, else undefined (mixed)", () =>
   const mixed = [{ text: "ab", bold: true }, { text: "cd", bold: false }];
   assert.equal(commonStyle(mixed, 0, 4, "bold"), undefined);
   assert.equal(commonStyle([{ text: "abcd", bold: true }], 1, 3, "bold"), true);
+});
+
+// ── Round 15.6: VERTICAL ALIGN (valign) ──────────────────────────────────────
+
+test("valignOffset: top=0; middle/bottom split slack; loud-rejects a bad value", () => {
+  assert.equal(valignOffset("top", 100, 40), 0);
+  approx(valignOffset("middle", 100, 40), 30); // slack 60, half above
+  approx(valignOffset("bottom", 100, 40), 60); // all slack above
+  assert.equal(valignOffset("middle", Infinity, 40), 0); // no box to center in
+  assert.equal(valignOffset("bottom", 30, 40), 0);       // content overflows ⇒ grows down, not up
+  assert.deepEqual(VALIGN_VALUES, ["top", "middle", "bottom"]);
+  assert.equal(DEFAULT_VALIGN, "top");
+  // ONE canonical form — no tolerant aliasing; a non-canonical value throws.
+  assert.throws(() => valignOffset("centre", 100, 40), /must be one of/);
+  assert.throws(() => valignOffset("center", 100, 40), /must be one of/); // horizontal word ≠ valign
+  assert.throws(() => valignOffset(undefined, 100, 40), /must be one of/);
+});
+
+test("layoutRichText: valign top is the historical no-op (y=0); backward-compatible", () => {
+  const rich = { runs: [{ text: "a", size: 10, color: "#000" }], paras: [{}] };
+  // default (no valign, no boxH) — unchanged
+  approx(layoutRichText(rich, Infinity, monoMeasure).lines[0].y, 0);
+  // explicit top with a boxH — still 0
+  approx(layoutRichText(rich, Infinity, monoMeasure, { valign: "top" }, 100).lines[0].y, 0);
+});
+
+test("layoutRichText: valign middle/bottom shift the whole line stack within boxH", () => {
+  const rich = { runs: [{ text: "a", size: 10, color: "#000" }], paras: [{}] }; // one 10-tall line
+  approx(layoutRichText(rich, Infinity, monoMeasure, { valign: "middle" }, 100).lines[0].y, 45); // (100-10)/2
+  approx(layoutRichText(rich, Infinity, monoMeasure, { valign: "bottom" }, 100).lines[0].y, 90); // 100-10
+});
+
+test("layoutRichText: valign shifts decorations AND highlights by the same offset", () => {
+  const rich = { runs: [{ text: "a", size: 10, color: "#000", underline: true, highlight: "#ff0" }], paras: [{}] };
+  const top = layoutRichText(rich, Infinity, monoMeasure, { valign: "top" }, 100);
+  const bot = layoutRichText(rich, Infinity, monoMeasure, { valign: "bottom" }, 100);
+  const dOff = bot.decorations[0].y - top.decorations[0].y;
+  const hOff = bot.highlights[0].y - top.highlights[0].y;
+  approx(dOff, 90); // same offset the lines got
+  approx(hOff, 90);
+  approx(bot.highlights[0].y, 90); // highlight box top now at the box bottom minus its own height... top+offset
+});
+
+test("layoutRichText: valign accounts for MULTI-LINE (wrap) + MULTI-PARAGRAPH stacks", () => {
+  // Two paragraphs, the first wraps into two lines: total height 3 lines × 10 = 30.
+  const rich = { runs: [{ text: "aa bb\ncc", size: 10, color: "#000" }], paras: [{}, {}] };
+  const wrapW = 30; // "aa"=20, " "=10, "bb"=20 ⇒ wraps to 2 lines
+  const top = layoutRichText(rich, wrapW, monoMeasure, { valign: "top" }, 100);
+  assert.equal(top.lines.length, 3); // 2 wrapped + 1 for para 2
+  approx(top.height, 30);
+  const bot = layoutRichText(rich, wrapW, monoMeasure, { valign: "bottom" }, 100);
+  // bottom offset = boxH - contentH = 100 - 30 = 70; every line shifts by 70.
+  for (let i = 0; i < top.lines.length; i++) approx(bot.lines[i].y, top.lines[i].y + 70);
+  approx(bot.height, 30); // reported content height is unchanged (extent, not placement)
+});
+
+test("layoutRichText: valign middle preserves horizontal align (orthogonal axes)", () => {
+  const rich = { runs: [{ text: "ab", size: 10, color: "#000" }], paras: [{ align: "right" }] };
+  const out = layoutRichText(rich, 100, monoMeasure, { valign: "middle" }, 100);
+  approx(out.lines[0].glyphRuns[0].x, 100 - 20); // right align intact
+  approx(out.lines[0].y, 45);                    // vertical center intact
+});
+
+test("richTextDraws: boxH threads into the layout so valign offsets the draws", () => {
+  const cmd = {
+    rich: { runs: [{ text: "a", size: 10, color: "#000" }], paras: [{}] },
+    x: 5, y: 3, boxW: Infinity, boxH: 100,
+    boxStyle: { valign: "bottom" }, opacity: 1,
+  };
+  const d = richTextDraws(cmd, monoMeasure);
+  // baseline = op y (3) + line top (0 + valign offset 90) + baseline (8) = 101
+  approx(d.textDraws[0].baselineY, 3 + 90 + 8);
+});
+
+// ── Round 15.6: paragraph ranges + applyParaStyle (horizontal-align UI substrate)
+
+test("paragraphRanges: char ranges per paragraph; separator owned by none", () => {
+  assert.deepEqual(paragraphRanges([{ text: "ab" }]), [{ start: 0, end: 2 }]);
+  assert.deepEqual(paragraphRanges([{ text: "ab\ncd" }]), [{ start: 0, end: 2 }, { start: 3, end: 5 }]);
+  assert.deepEqual(paragraphRanges([{ text: "a\n" }]), [{ start: 0, end: 1 }, { start: 2, end: 2 }]);
+  assert.deepEqual(paragraphRanges([]), [{ start: 0, end: 0 }]);
+  // ranges agree with splitParagraphs' paragraph COUNT (the shared invariant)
+  const runs = [{ text: "one\ntwo\nthree" }];
+  assert.equal(paragraphRanges(runs).length, splitParagraphs(runs).length);
+});
+
+test("applyParaStyle: overlays a delta on touched paragraphs, leaves others", () => {
+  // single paragraph fully selected
+  assert.equal(applyParaStyle([{}], [{ text: "ab" }], 0, 2, { align: "center" })[0].align, "center");
+  // two paragraphs; select only the first → second untouched (raw entry, no default)
+  const out = applyParaStyle([{}, {}], [{ text: "ab\ncd" }], 0, 2, { align: "right" });
+  assert.equal(out[0].align, "right");
+  assert.equal(out[1].align, undefined);
+  // selection spanning both → both set
+  const both = applyParaStyle([{}, {}], [{ text: "ab\ncd" }], 1, 4, { align: "right" });
+  assert.equal(both[0].align, "right");
+  assert.equal(both[1].align, "right");
+});
+
+test("applyParaStyle: an empty caret selects its containing paragraph only", () => {
+  // caret at offset 4 (inside para 2 "cd", which spans [3,5]) → only para 2
+  const out = applyParaStyle([{}, {}], [{ text: "ab\ncd" }], 4, 4, { align: "center" });
+  assert.equal(out[0].align, undefined);
+  assert.equal(out[1].align, "center");
+  // caret at the "\n" (offset 2, the end of para 1 [0,2]) → para 1 (end inclusive)
+  const b = applyParaStyle([{}, {}], [{ text: "ab\ncd" }], 2, 2, { align: "right" });
+  assert.equal(b[0].align, "right");
+  assert.equal(b[1].align, undefined);
+});
+
+test("applyParaStyle: does not mutate the input paras; backfills a short paras array", () => {
+  const paras = [{ align: "left" }];
+  const runs = [{ text: "ab\ncd" }]; // 2 paragraphs, but paras has 1 entry
+  const out = applyParaStyle(paras, runs, 0, 5, { align: "center" });
+  assert.equal(out.length, 2);           // backfilled to the paragraph count
+  assert.equal(out[0].align, "center");
+  assert.equal(out[1].align, "center");
+  assert.equal(paras.length, 1);         // input untouched
+  assert.equal(paras[0].align, "left");
 });
 
 console.log(`\n${passed} richtext tests passed`);

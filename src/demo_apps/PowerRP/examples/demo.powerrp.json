@@ -145,7 +145,8 @@
               "radius": 10,
               "strength": 0
             },
-            "blendMode": "normal"
+            "blendMode": "normal",
+            "valign": "top"
           },
           "510eda10": {
             "type": "arrow",

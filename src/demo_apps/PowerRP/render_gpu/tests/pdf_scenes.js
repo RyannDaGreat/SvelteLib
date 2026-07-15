@@ -625,6 +625,29 @@ export function scenes() {
         })),
     ], 20, { font: true }), // per-paragraph alignment + justify parity; floor 20 committed-font baseline; measured + margin next live run. PENDING USER RATIFICATION.
 
+    // Round 15.6: VERTICAL alignment (valign) parity — three tall boxes, each
+    // shorter-than-box multi-paragraph text placed top / middle / bottom, with
+    // MIXED per-paragraph horizontal aligns inside (left + right). Proves the
+    // core valign offset (layoutRichText shifts the whole line stack) lands at
+    // the SAME pixels/operators in BOTH backends (they consume richTextDraws, so
+    // the vertical offset is inherited with zero backend code) AND that valign is
+    // orthogonal to the per-paragraph horizontal align.
+    s("richtext-valign", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      ...["top", "middle", "bottom"].map((valign, i) =>
+        text({
+          text: "V-align", x: 8 + i * 130, y: 10, size: 14, color: INK,
+          rich: normalizeRichText({
+            runs: [{ text: "Top line\nbottom line", font: "inter", size: 14, color: INK }],
+            // mixed per-paragraph align: para 0 left, para 1 right — tests the
+            // orthogonality of vertical (box) and horizontal (paragraph) axes.
+            paras: [{ align: "left" }, { align: "right" }],
+          }, {}),
+          boxW: 120, boxH: SCENE_H - 20, // tall box ⇒ real vertical slack
+          boxStyle: { align: "left", lineSpacing: 1.2, charSpacing: 0, wordSpacing: 0, valign },
+        })),
+    ], 20, { font: true }), // valign parity; the same committed-font text-AA class as its richtext siblings (floor 20 = the committed-font baseline; richtext-wrapped/align run ~3 dB above 20). Measured + measured-minus-margin land in the next live parity run. PENDING USER RATIFICATION.
+
     // Round 13.4: per-run OUTLINE (glyph stroke) + HIGHLIGHT (background) parity.
     // GPU: atlas strokeText cell + rect-SDF background; PDF: Tr 2 stroke + re/f
     // rect; SVG: paint-order="stroke" + background <rect>. One run of each so the

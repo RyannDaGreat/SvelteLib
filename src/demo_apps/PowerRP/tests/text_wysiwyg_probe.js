@@ -185,6 +185,128 @@ try {
   assert(runsUndone.length === 1 && runsUndone[0].text === "Hello World" && !runsUndone[0].bold,
     `P2: ONE undo restores the original single unstyled run (got ${JSON.stringify(runsUndone)})`);
 
+  // ── PROBE 4 (Round 15.6): VERTICAL ALIGN — the overlay content sits exactly
+  // where the render places it. valign shifts the whole line stack DOWN by
+  // core/richtext.valignOffset(valign, boxH, contentH); the overlay applies the
+  // SAME offset as a local-px padding-top. We verify that switching valign
+  // top→middle→bottom moves the first content line's SCREEN top by the offset the
+  // shared math predicts (within 2px — the alignment probe tolerance).
+  //
+  // Method: enter edit, read (a) the widget top-left screen y, (b) the box height
+  // and overlay scale, (c) the first text node's bounding top. valignOffset is
+  // recomputed IN-PAGE from the imported core module via the overlay's own
+  // padding-top (which IS valignOffset(valign, boxH, contentH)); we compare the
+  // observed content top to widgetTop + paddingTop*scale.
+  await page.evaluate(() => window.__powerrp_app.selection = null);
+  async function measureValign(valign) {
+    // Set the box valign via the SAME path the Inspector select row commits
+    // through (setPreview → commitPreview → one keyframe on the current slide).
+    await page.evaluate(({ id, valign }) => {
+      const app = window.__powerrp_app;
+      app.setPreview([[["items", id, "valign"], valign]]);
+      app.commitPreview();
+    }, { id: textId, valign });
+    await new Promise((r) => setTimeout(r, 120));
+    const c2 = await textCenterScreen();
+    await page.mouse.click(c2.x, c2.y, { clickCount: 2 });
+    await new Promise((r) => setTimeout(r, 200));
+    const m = await page.evaluate((id) => {
+      const app = window.__powerrp_app;
+      const root = document.querySelector(".text-edit-overlay-root");
+      const el = document.querySelector(".text-edit-overlay");
+      if (!root || !el) return null;
+      // First text node's client rect = where the first line of glyphs sits.
+      const firstText = (function first(n){ if (n.nodeType === 3 && n.textContent.length) return n; for (const c of n.childNodes){ const r = first(c); if (r) return r; } return null; })(el);
+      const range = document.createRange();
+      range.selectNodeContents(firstText);
+      const contentTop = range.getBoundingClientRect().top;
+      // widget top-left screen y (same as PROBE 1's convention).
+      const n = app.nodes().find((nn) => nn.itemId === id);
+      const T = { apply: (t, px, py) => { const c = Math.cos(t.rotation), s = Math.sin(t.rotation); return { x: t.x + t.scale * (c * px - s * py), y: t.y + t.scale * (s * px + c * py) }; } };
+      const tl = T.apply(n.world, 0, 0);
+      const s = app.canvasActions.worldToScreen(tl.x, tl.y);
+      const rr = document.querySelector(".render-area").getBoundingClientRect();
+      const widgetTop = rr.top + s.y;
+      // The overlay's applied padding-top (local px) × scale = the screen offset
+      // the shared valignOffset produced. Derive the local→screen scale from two
+      // worldToScreen samples one world unit apart (no app.viewport needed — the
+      // node's own world scale folds into worldToScreen already).
+      const cs = getComputedStyle(el);
+      const padTopLocal = parseFloat(cs.paddingTop) || 0;
+      const w0 = app.canvasActions.worldToScreen(tl.x, tl.y);
+      const w1 = app.canvasActions.worldToScreen(tl.x, tl.y + 1);
+      // world→screen for 1 world unit; × the node's own world.scale = local→screen.
+      const worldPerScreen = Math.hypot(w1.x - w0.x, w1.y - w0.y);
+      const scale = worldPerScreen * (n.world.scale ?? 1);
+      return { contentTop, widgetTop, padTopLocal, scale, boxH: n.state.h, valign: n.state.valign };
+    }, textId);
+    await page.evaluate(() => window.__powerrp_app.cancelTextEdit());
+    await new Promise((r) => setTimeout(r, 120));
+    return m;
+  }
+  const vTop = await measureValign("top");
+  const vMid = await measureValign("middle");
+  const vBot = await measureValign("bottom");
+  for (const [name, m] of [["top", vTop], ["middle", vMid], ["bottom", vBot]]) {
+    if (!m) { assert(false, `P4: overlay/first-text not found for valign ${name}`); continue; }
+    // The observed first-line top must equal widgetTop + paddingTop*scale within
+    // 2px — i.e. the overlay places content exactly at the valign offset. (The
+    // padding IS valignOffset from the shared layout math, so this proves the
+    // overlay reflects the render's vertical placement, not a CSS drift.)
+    const expected = m.widgetTop + m.padTopLocal * m.scale;
+    const dy = Math.abs(m.contentTop - expected);
+    assert(dy <= 2, `P4: valign ${name} content top should sit at widgetTop + valignOffset·scale (dy=${dy.toFixed(2)}, tol 2px)`);
+  }
+  // top offset 0; bottom pushes content strictly LOWER than top; middle between.
+  assert(vTop.padTopLocal < 0.5, `P4: valign top offset should be ~0 (got ${vTop.padTopLocal})`);
+  assert(vBot.padTopLocal > vMid.padTopLocal && vMid.padTopLocal > vTop.padTopLocal,
+    `P4: valign offsets should increase top<middle<bottom (${vTop.padTopLocal.toFixed(1)} / ${vMid.padTopLocal.toFixed(1)} / ${vBot.padTopLocal.toFixed(1)})`);
+  // Restore valign so PROBE 5 starts from a known state.
+  await page.evaluate((id) => {
+    const app = window.__powerrp_app;
+    app.setPreview([[["items", id, "valign"], "top"]]);
+    app.commitPreview();
+  }, textId);
+  await new Promise((r) => setTimeout(r, 120));
+
+  // ── PROBE 5 (Round 15.6): the toolbar ALIGN buttons apply per-paragraph. Enter
+  // edit on the (now multi-paragraph after PROBE 3's leftover? no — cancelled)
+  // box, select all, apply align center via the overlay's applyPara path (the
+  // exact call the toolbar's onparastyle drives), commit, and assert the stored
+  // paras got align: "center".
+  const c3 = await textCenterScreen();
+  await page.mouse.click(c3.x, c3.y, { clickCount: 2 });
+  await new Promise((r) => setTimeout(r, 200));
+  await page.evaluate(() => {
+    const el = document.querySelector(".text-edit-overlay");
+    el.focus();
+    // select all
+    const sel = window.getSelection(); const r = document.createRange();
+    r.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(r);
+    const plain = el.textContent;
+    window.__powerrp_textEdit.setSelection(0, plain.length);
+    window.__powerrp_textEdit.applyPara({ align: "center" }); // the toolbar onparastyle path
+  });
+  await new Promise((r) => setTimeout(r, 150));
+  await page.keyboard.press("Escape"); // commit
+  await new Promise((r) => setTimeout(r, 200));
+  assert(!(await isEditing()), "P5: Esc commits + exits after a paragraph-align edit");
+  const parasAfter = await page.evaluate((id) => {
+    const t = window.__powerrp_app.doc.slides[0].delta.items[id].text;
+    return (t?.paras ?? []).map((p) => ({ ...p }));
+  }, textId);
+  assert(parasAfter.length >= 1 && parasAfter.every((p) => p.align === "center"),
+    `P5: every paragraph should be center-aligned after applyPara (got ${JSON.stringify(parasAfter)})`);
+  // ONE undo unit: undo restores the original (left/default) paragraph align.
+  await page.evaluate(() => window.__powerrp_app.undo());
+  await new Promise((r) => setTimeout(r, 150));
+  const parasUndone = await page.evaluate((id) => {
+    const t = window.__powerrp_app.doc.slides[0].delta.items[id].text;
+    return (t?.paras ?? []).map((p) => ({ ...p }));
+  }, textId);
+  assert(parasUndone.every((p) => p.align !== "center"),
+    `P5: ONE undo restores the original paragraph align (got ${JSON.stringify(parasUndone)})`);
+
   if (errors.length) fails.push(...errors.map((e) => `unexpected error: ${e}`));
 
   if (fails.length) {
@@ -194,6 +316,8 @@ try {
   console.log("  P1 alignment: dblclick enters WYSIWYG edit, overlay over the widget top-left (≤2px), GPU-suppressed item.");
   console.log("  P2 rich edit: select 'Hello' → bold+red+highlight, runs SPLIT correctly, pixels changed, ONE undo restores.");
   console.log("  P3 native feel: ENTER = newline (no commit), cancel reverts.");
+  console.log("  P4 valign: overlay content top = widgetTop + valignOffset·scale (≤2px) for top/middle/bottom; offsets increase.");
+  console.log("  P5 paragraph align: toolbar applyPara centers every touched paragraph, ONE undo restores.");
   console.log("\nWYSIWYG rich-text editing probe passed.");
 } finally {
   await browser.close();

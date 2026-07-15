@@ -103,7 +103,7 @@
 
 <script>
   import * as T from "../core/transform.js";
-  import { applyRunStyle, commonStyle, runStyleAt, normalizeRichText, richTextToPlain } from "../core/richtext.js";
+  import { applyRunStyle, applyParaStyle, commonStyle, runStyleAt, normalizeRichText, richTextToPlain, valignOffset, paraStyleFor } from "../core/richtext.js";
   import TextFormatToolbar from "./TextFormatToolbar.svelte";
 
   // app = the app store; node = the derived render node of the edited item;
@@ -136,6 +136,52 @@
     font: node.state.font, size: node.state.size, color: node.state.color, bold: node.state.bold,
   }));
 
+  // ── VERTICAL ALIGN reflection (Round 15.6): the contenteditable content must
+  // sit exactly where the GPU render puts it. The render offsets the whole line
+  // stack by core/richtext.valignOffset(valign, boxH, contentH) — so the overlay
+  // computes THE SAME offset (NOT a CSS approximation that can drift) and applies
+  // it as a local-px padding-top on the editable. contentH is the editable's
+  // natural laid-out height, which equals the core layout's height by the WYSIWYG
+  // guarantee (same faces, same sizes, same wrap width) — so browser-measured
+  // contentH ⇄ core contentH, and the shared valignOffset makes the two placements
+  // identical. Measured in LOCAL units directly: the editable's internal layout is
+  // local px (font-size = each run's world size), the scale lives on the ROOT's
+  // CSS transform, so scrollHeight is already pre-scale local px. min-height sits
+  // on the ROOT (not the editable) so the editable stays NATURAL height and
+  // scrollHeight is the true content height, never floored to h. ──
+  let contentHLocal = $state(0);
+  function measureContentH() {
+    if (!editEl) return;
+    // scrollHeight is the content box INCLUDING the applied valign padding-top;
+    // subtract that padding to recover the NATURAL content height (local px,
+    // pre-scale). Subtracting the CURRENTLY-applied padding makes the measurement
+    // a stable fixed point (natural = scrollHeight − padding; padding =
+    // valignOffset(valign, boxH, natural)) — no divergent feedback loop.
+    const padTop = parseFloat(getComputedStyle(editEl).paddingTop) || 0;
+    contentHLocal = editEl.scrollHeight - padTop;
+  }
+  // The box-level valign; missing/old ⇒ "top" (a no-op — historical placement).
+  let valign = $derived(node.state.valign ?? "top");
+  // The local-px top padding that pushes the content stack to top/middle/bottom.
+  let vPad = $derived(valignOffset(valign, box.h, contentHLocal));
+
+  // ── HORIZONTAL ALIGN reflection: set the editable's text-align to the box's
+  // common paragraph align so a centered/right box reads WYSIWYG-correctly while
+  // editing (the single-paragraph and uniform-box cases — the overwhelming
+  // majority). FLAG: a box with DIFFERING per-paragraph aligns still edits with
+  // one text-align on the overlay (the browser wraps lines into <div> blocks, not
+  // one block per paragraph, so per-paragraph text-align in the editable is not
+  // reliable); the COMMITTED GPU render is always per-paragraph exact via the
+  // model. justify maps to the CSS "justify" the browser supports. ──
+  let boxAlign = $derived(node.state.align ?? "left");
+  let editAlign = $derived.by(() => {
+    // The align shared by every paragraph (via its effective paraStyleFor), else
+    // the box default when they differ — a reasonable WYSIWYG choice for a mixed
+    // box (the majority case is uniform).
+    const aligns = new Set(rich.paras.map((_, i) => paraStyleFor(rich.paras, i, { align: boxAlign }).align));
+    return aligns.size === 1 ? [...aligns][0] : boxAlign;
+  });
+
   // ── seed the contenteditable ONCE on mount (subsequent edits flow DOM→runs;
   // re-seeding would fight the browser's live caret/IME state). ──
   $effect(() => {
@@ -144,8 +190,18 @@
       editEl.focus();
       placeCaretEnd(editEl);
       readSelection();
+      measureContentH(); // seed the valign content-height measurement
       seeded = true;
     }
+  });
+
+  // Re-measure the content height whenever anything that changes the laid-out
+  // height changes — the wrap width (box.w), the editable alignment, or the rich
+  // value (a run/paragraph edit). Keeps vPad exact after every edit so valign
+  // holds while typing. Reads editEl + these deps so Svelte re-runs it.
+  $effect(() => {
+    void box.w; void editAlign; void rich; // deps
+    if (editEl && seeded) measureContentH();
   });
 
   /** Command. Reads the contenteditable back into a run list, rebuilds the rich
@@ -160,6 +216,7 @@
     for (let i = 0; i < paraCount; i++) paras.push(rich.paras[i] ?? rich.paras[0] ?? {});
     app.previewTextValue({ runs, paras });
     readSelection();
+    measureContentH(); // content height may have changed (a new line) → update vPad
   }
 
   /** Query. Reads the contenteditable DOM back into runs. Walks recursively so the
@@ -278,6 +335,23 @@
     readSelection();
   }
 
+  /** Command. Applies a PARAGRAPH-style delta (e.g. {align: "center"}) to every
+   * paragraph the current selection touches (the align buttons' primitive —
+   * core/richtext.applyParaStyle). Reads the CURRENT runs from the DOM (so the
+   * live paragraph structure — any typed "\n"s — is honored), overlays the delta
+   * on the current paras, and previews the new {runs, paras} value as ONE undo
+   * unit (commit on exit). Unlike applyStyle it does NOT re-seed the editable DOM:
+   * paragraph align changes no run spans, so the caret/selection stay put; the
+   * horizontal reflection is the editable's text-align ($derived editAlign),
+   * which re-derives from the previewed paras automatically. */
+  export function applyPara(delta) {
+    const runs = readRunsFromDom(editEl);
+    const { start, end } = selRange;
+    const newParas = applyParaStyle(rich.paras, runs, start, end, delta);
+    app.previewTextValue({ runs, paras: newParas });
+    readSelection();
+  }
+
   /** Command. Restores a char-offset selection [start,end) after re-seeding. */
   function restoreSelection(start, end) {
     const sel = window.getSelection();
@@ -385,7 +459,11 @@
   // component methods through this while the overlay is mounted. Cleared on
   // unmount so it never dangles. Not used by the app itself.
   $effect(() => {
-    window.__powerrp_textEdit = { applyStyle, setSelection: (a, b) => { selRange = { start: a, end: b }; } };
+    window.__powerrp_textEdit = {
+      applyStyle,
+      applyPara, // paragraph-align edit path (Round 15.6 — the toolbar's onparastyle)
+      setSelection: (a, b) => { selRange = { start: a, end: b }; },
+    };
     return () => { if (window.__powerrp_textEdit) delete window.__powerrp_textEdit; };
   });
 </script>
@@ -401,8 +479,14 @@
   class="text-edit-overlay-root"
   style:left="{box.x}px"
   style:top="{box.y}px"
+  style:min-height="{box.h}px"
   style:transform="rotate({box.deg}deg) scale({box.scale})"
 >
+  <!-- VERTICAL align (Round 15.6): min-height sits on the ROOT (so the editable
+       stays natural height and scrollHeight is the true content height), and the
+       editable carries a padding-top of vPad (the SAME core valignOffset the GPU
+       render uses) to push the stack top/middle/bottom. text-align reflects the
+       box's horizontal align so editing reads WYSIWYG. -->
   <div
     class="text-edit-overlay"
     contenteditable="true"
@@ -411,9 +495,19 @@
     aria-multiline="true"
     bind:this={editEl}
     style:width="{box.w}px"
-    style:min-height="{box.h}px"
+    style:padding-top="{vPad}px"
+    style:text-align={editAlign}
     oninput={onInput}
     onkeydown={onKeydown}
   ></div>
-  <TextFormatToolbar {app} boxScale={box.scale} onstyle={applyStyle} {selRange} runsAt={() => readRunsFromDom(editEl)} />
+  <TextFormatToolbar
+    {app}
+    boxScale={box.scale}
+    onstyle={applyStyle}
+    onparastyle={applyPara}
+    {selRange}
+    runsAt={() => readRunsFromDom(editEl)}
+    parasAt={() => rich.paras}
+    {boxAlign}
+  />
 </div>

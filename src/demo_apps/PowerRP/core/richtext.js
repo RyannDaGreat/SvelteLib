@@ -64,6 +64,53 @@ export const PARA_STYLE_KEYS = ["align", "lineSpacing", "charSpacing", "wordSpac
  * add device-independent px between chars/words). */
 export const DEFAULT_PARA = { align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 };
 
+// ── vertical alignment (box-level; Round 15.6) ───────────────────────────────
+
+/** The THREE canonical vertical-alignment values, in visual order. valign is a
+ * BOX-level property (not per-paragraph, unlike the horizontal `align`): it
+ * places the WHOLE laid-out line stack within the box height h. "top" (the
+ * default) reproduces the historical behavior exactly (stack at y=0), so old
+ * docs render byte-identically. ONE canonical form — the exact three strings;
+ * anything else is rejected loudly at the layout entry (valignOffset), never
+ * silently aliased (house rule: no tolerant aliasing). */
+export const VALIGN_VALUES = ["top", "middle", "bottom"];
+export const DEFAULT_VALIGN = "top";
+
+/**
+ * Pure function. The vertical offset (local px, y-down) to add to EVERY laid-out
+ * line's y so the text stack sits top / middle / bottom within a box of height
+ * boxH. contentH is the stack's total laid-out height (layoutRichText's `height`).
+ * "top" → 0 (historical behavior; old docs unchanged). "middle" → centered slack.
+ * "bottom" → all slack above. An unbounded box (boxH Infinity) or overflowing
+ * content (contentH ≥ boxH) yields 0 — there is no room to push down, and text
+ * grows DOWNWARD past h (the manifest OVERFLOW-vs-h rule: never clip, never push
+ * content off the top). REJECTS a non-canonical valign LOUDLY (house rule: one
+ * canonical form, no tolerant aliasing) so a typo can never silently fall back
+ * to top.
+ *
+ * Args:
+ *   valign (string): exactly "top" | "middle" | "bottom"
+ *   boxH (number): box height in local units (Infinity ⇒ no vertical box)
+ *   contentH (number): total laid-out text height (layoutRichText.height)
+ *
+ * Returns:
+ *   number: local-px y offset to add to every line (≥ 0)
+ *
+ * @example valignOffset("top", 100, 40) // 0
+ * @example valignOffset("middle", 100, 40) // 30 (slack 60, half above)
+ * @example valignOffset("bottom", 100, 40) // 60 (all slack above)
+ * @example valignOffset("middle", Infinity, 40) // 0 (no box to center in)
+ * @example valignOffset("bottom", 30, 40) // 0 (content overflows — grows down, not up)
+ */
+export function valignOffset(valign, boxH, contentH) {
+  if (!VALIGN_VALUES.includes(valign))
+    throw new Error(`valignOffset: "valign" must be one of ${JSON.stringify(VALIGN_VALUES)}, got ${JSON.stringify(valign)}`);
+  if (valign === "top" || boxH === Infinity) return 0;
+  const slack = boxH - contentH;
+  if (slack <= 0) return 0; // content taller than the box ⇒ no room (grows down)
+  return valign === "middle" ? slack / 2 : slack; // "bottom" ⇒ all slack above
+}
+
 // ── the string→runs migration + normalization ────────────────────────────────
 
 /**
@@ -225,6 +272,92 @@ export function splitParagraphs(runs) {
   return paras;
 }
 
+/**
+ * Pure function. The half-open CHARACTER range [start, end) of each paragraph in
+ * the concatenated run text (richTextToPlain), where paragraphs are separated by
+ * "\n". The separator "\n" belongs to NO paragraph — paragraph i ends at the "\n"
+ * and paragraph i+1 starts after it. Used to map a linear character selection
+ * onto the paragraph indices it touches (applyParaStyle) — the paragraph twin of
+ * the run-offset math applyRunStyle uses. Always returns at least one range (an
+ * empty text ⇒ [{start:0,end:0}], a trailing "\n" ⇒ a trailing empty range) so
+ * it agrees with splitParagraphs' paragraph count exactly.
+ *
+ * Args:
+ *   runs (object[]): canonical runs (each carries text; "\n" splits paragraphs)
+ *
+ * Returns:
+ *   {start, end}[]: one char range per paragraph, in order
+ *
+ * @example paragraphRanges([{text: "ab"}]) // [{start: 0, end: 2}]
+ * @example paragraphRanges([{text: "ab\ncd"}]) // [{start: 0, end: 2}, {start: 3, end: 5}]
+ * @example paragraphRanges([{text: "a\n"}]) // [{start: 0, end: 1}, {start: 2, end: 2}]
+ * @example paragraphRanges([]) // [{start: 0, end: 0}]
+ */
+export function paragraphRanges(runs) {
+  const text = (runs ?? []).map((r) => r.text ?? "").join("");
+  const ranges = [];
+  let start = 0;
+  const chars = [...text];
+  for (let i = 0; i <= chars.length; i++) {
+    if (i === chars.length || chars[i] === "\n") {
+      ranges.push({ start, end: i });
+      start = i + 1; // the "\n" itself is the separator, owned by no paragraph
+    }
+  }
+  return ranges;
+}
+
+/**
+ * Pure function. Applies a paragraph-style delta (a partial paragraph-style
+ * object, e.g. {align: "center"}) to EVERY paragraph the selection [start, end)
+ * intersects, returning a NEW paras array (never mutates the input). This is the
+ * paragraph twin of applyRunStyle — but paragraphs do NOT split/merge (a "\n" is
+ * the only paragraph boundary and it lives in the run text, not in paras), so
+ * this is a straight per-entry overlay: touched entries get {...entry, ...delta}.
+ *
+ * A paragraph is "touched" iff its character range overlaps [lo, hi), OR the
+ * selection is an empty caret (lo === hi) sitting inside/at the paragraph (a
+ * caret with no characters still selects its containing paragraph — aligning a
+ * paragraph with the cursor merely placed in it is the universal editor
+ * convention, unlike a character-style caret which is a no-op). The `paras`
+ * array is normalized to `paraCount` entries first (backfilling DEFAULT_PARA)
+ * so an under-populated paras (a run edit added a "\n" before paras caught up)
+ * still receives the override on the right index.
+ *
+ * Args:
+ *   paras (object[]): current paragraph styles (may be shorter than paraCount)
+ *   runs (object[]): canonical runs (define the paragraph ranges via "\n")
+ *   start (number): selection start char offset
+ *   end (number): selection end char offset
+ *   styleDelta (object): partial paragraph style to overlay (e.g. {align:"right"})
+ *
+ * Returns:
+ *   object[]: new paras array (one entry per paragraph; touched ones carry delta)
+ *
+ * @example applyParaStyle([{}], [{text: "ab"}], 0, 2, {align: "center"})[0].align // "center"
+ * @example applyParaStyle([{}, {}], [{text: "ab\ncd"}], 0, 2, {align: "right"})[1].align // undefined (2nd para untouched — raw entry, no default applied)
+ * @example applyParaStyle([{}, {}], [{text: "ab\ncd"}], 1, 4, {align: "right"})[1].align // "right" (selection spans both)
+ * @example applyParaStyle([{}, {}], [{text: "ab\ncd"}], 4, 4, {align: "center"})[1].align // "center" (empty caret in para 2)
+ * @example applyParaStyle([{}, {}], [{text: "ab\ncd"}], 4, 4, {align: "center"})[0].align // undefined (para 1 untouched by the caret)
+ */
+export function applyParaStyle(paras, runs, start, end, styleDelta) {
+  const ranges = paragraphRanges(runs);
+  const paraCount = ranges.length;
+  const lo = Math.min(start, end);
+  const hi = Math.max(start, end);
+  const out = [];
+  for (let i = 0; i < paraCount; i++) {
+    const base = paras?.[i] ?? paras?.[0] ?? {};
+    const { start: ps, end: pe } = ranges[i];
+    // Overlap for a non-empty selection: [lo,hi) ∩ [ps,pe] nonempty (pe inclusive
+    // so a paragraph selected exactly up to its end "\n" still counts). Empty
+    // caret: it sits in paragraph i iff ps ≤ lo ≤ pe.
+    const touched = lo === hi ? (lo >= ps && lo <= pe) : (lo <= pe && hi > ps);
+    out.push(touched ? { ...base, ...styleDelta } : { ...base });
+  }
+  return out;
+}
+
 /** Pure function. Paragraph i's effective style, layering (lowest→highest):
  * DEFAULT_PARA ‹ the widget-level box defaults (align/spacing set on the text
  * item itself — the SET-1 Inspector's one-alignment-per-box control) ‹ this
@@ -342,6 +475,14 @@ export const STRIKE_OFFSET_FRAC = -0.3;
  * wordSpacing are applied HERE (added per char / per space) so measureRun stays
  * a pure advance query.
  *
+ * VERTICAL ALIGNMENT (Round 15.6): boxStyle.valign ∈ top|middle|bottom (default
+ * top) places the WHOLE line stack within the box height boxH — the entire
+ * layout (every line, decoration, highlight) is shifted DOWN by valignOffset()
+ * as a final pass. "top" is a no-op (offset 0), so old docs render byte-
+ * identically. Because ALL THREE backends consume this positioned output
+ * (richTextDraws), the vertical offset is inherited by GPU/PDF/SVG with zero
+ * backend changes — the parity lever, extended vertically.
+ *
  * Args:
  *   rich (object): canonical {runs, paras} (run normalizeRichText first)
  *   boxW (number): wrap width in local units; Infinity ⇒ no wrap
@@ -349,6 +490,9 @@ export const STRIKE_OFFSET_FRAC = -0.3;
  *   boxStyle (object): widget-level paragraph defaults (align/lineSpacing/
  *     charSpacing/wordSpacing set on the text item — the SET-1 one-alignment-
  *     per-box control); underlies each paragraph's own paras[i] overrides.
+ *     boxStyle.valign (box-level) drives the vertical placement (see above).
+ *   boxH (number): box height in local units for vertical alignment; Infinity
+ *     ⇒ no vertical box (valign is a no-op). Only "middle"/"bottom" read it.
  *
  * Returns:
  *   {
@@ -366,8 +510,9 @@ export const STRIKE_OFFSET_FRAC = -0.3;
  * @example layoutRichText({runs: [{text: "ab", size: 10, color: "#000"}], paras: [{align: "left"}]}, Infinity, monoMeasure).lines.length // 1
  * @example layoutRichText({runs: [{text: "a\nb", size: 10, color: "#000"}], paras: [{}, {}]}, Infinity, monoMeasure).lines.length // 2
  * @example layoutRichText({runs: [], paras: []}, 100, monoMeasure).lines.length // 1
+ * @example layoutRichText({runs: [{text: "a", size: 10, color: "#000"}], paras: [{}]}, Infinity, monoMeasure, {valign: "bottom"}, 100).lines[0].y // 90 (10-tall line pushed to the box bottom of 100)
  */
-export function layoutRichText(rich, boxW, measureRun, boxStyle = {}) {
+export function layoutRichText(rich, boxW, measureRun, boxStyle = {}, boxH = Infinity) {
   const { runs, paras } = rich;
   const paragraphs = splitParagraphs(runs);
   const lines = [];
@@ -447,6 +592,18 @@ export function layoutRichText(rich, boxW, measureRun, boxStyle = {}) {
     });
   });
 
+  // VERTICAL ALIGNMENT (Round 15.6): shift the WHOLE laid-out stack down so it
+  // sits top/middle/bottom within boxH. `y` is now the total content height.
+  // Applied as one final pass over lines/decorations/highlights so every
+  // coordinate the backends consume already carries the offset (they never
+  // re-derive a y-origin — the parity lever, inherited by GPU/PDF/SVG).
+  const vOffset = valignOffset(boxStyle.valign ?? DEFAULT_VALIGN, boxH, y);
+  if (vOffset !== 0) {
+    for (const line of lines) line.y += vOffset;
+    for (const d of decorations) d.y += vOffset;
+    for (const h of highlights) h.y += vOffset;
+  }
+
   return { lines, highlights, decorations, width: maxWidth, height: y };
 }
 
@@ -481,7 +638,10 @@ export function layoutRichText(rich, boxW, measureRun, boxStyle = {}) {
  * @example richTextDraws({rich: {runs: [{text: "a", size: 10, color: "#000", underline: true}], paras: [{}]}, x: 0, y: 0, boxW: Infinity, opacity: 1}, monoMeasure).lines.length // 1
  */
 export function richTextDraws(cmd, measureRun) {
-  const layout = layoutRichText(cmd.rich, cmd.boxW ?? Infinity, measureRun, cmd.boxStyle ?? {});
+  // boxH (Round 15.6) flows into the layout for VERTICAL alignment (valign lives
+  // in cmd.boxStyle). The IR text() op carries boxH; a hand-built cmd without it
+  // ⇒ Infinity (no vertical box ⇒ valign is a no-op, top-anchored as before).
+  const layout = layoutRichText(cmd.rich, cmd.boxW ?? Infinity, measureRun, cmd.boxStyle ?? {}, cmd.boxH ?? Infinity);
   const ox = cmd.x, oy = cmd.y, opacity = cmd.opacity ?? 1;
   const textDraws = [];
   for (const line of layout.lines) {

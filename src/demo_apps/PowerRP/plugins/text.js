@@ -73,6 +73,13 @@ export const textPlugin = {
     // Paragraph-level defaults for the whole box (each paragraph may override in
     // paras[i] via the SET-2 UX). align ∈ left|center|right|justify.
     align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0,
+    // VERTICAL alignment of the whole line stack within the box height h
+    // (Round 15.6). BOX-level (not per-paragraph, unlike `align`): top|middle|
+    // bottom. Default "top" reproduces the historical top-anchored layout
+    // exactly, so old docs render byte-identically (core/richtext.valignOffset
+    // returns 0 for "top"). A plain-string leaf → repair's missingDefaults
+    // fills it with "top" on old text items (no render change).
+    valign: "top",
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // `category` groups rows into the Inspector's collapsible accordion regions.
@@ -96,6 +103,11 @@ export const textPlugin = {
     // Paragraph props (box-level; the "one alignment per box" control — SET-2
     // adds per-paragraph). align is a select over the four alignments.
     { key: "align", label: "Align", kind: "select", options: ["left", "center", "right", "justify"], optionLabels: { left: "Left", center: "Center", right: "Right", justify: "Justify" }, category: "text" },
+    // VERTICAL alignment is BOX-level (one value per box — the whole line stack
+    // moves within h), so a single select row is the right control (unlike the
+    // per-paragraph horizontal `align`, whose primary surface is the WYSIWYG
+    // toolbar; this box-level valign has no toolbar equivalent). Round 15.6.
+    { key: "valign", label: "V-Align", kind: "select", options: ["top", "middle", "bottom"], optionLabels: { top: "Top", middle: "Middle", bottom: "Bottom" }, category: "text" },
     { key: "lineSpacing", label: "Line spacing", kind: "number", min: 0, category: "text" },
     { key: "charSpacing", label: "Char spacing", kind: "number", category: "text" },
     { key: "wordSpacing", label: "Word spacing", kind: "number", category: "text" },
@@ -138,8 +150,10 @@ export const textPlugin = {
       // the rich payload the backend actually lays out:
       rich,
       boxW: (s.w ?? 0) > 0 ? s.w : Infinity, // wrap to the box width; 0/absent ⇒ no wrap
-      boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
-      boxStyle: { align: s.align ?? "left", lineSpacing: s.lineSpacing ?? 1, charSpacing: s.charSpacing ?? 0, wordSpacing: s.wordSpacing ?? 0 },
+      boxH: (s.h ?? 0) > 0 ? s.h : Infinity, // box height ⇒ VERTICAL align room (Round 15.6)
+      // boxStyle carries the box-level paragraph defaults + the box-level valign
+      // (top|middle|bottom) that layoutRichText offsets the line stack by.
+      boxStyle: { align: s.align ?? "left", lineSpacing: s.lineSpacing ?? 1, charSpacing: s.charSpacing ?? 0, wordSpacing: s.wordSpacing ?? 0, valign: s.valign ?? "top" },
     })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).

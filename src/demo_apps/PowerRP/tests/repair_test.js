@@ -358,4 +358,30 @@ test("repairedDocument neutralizes an old-default dormant shadow with a loud rep
   sceneIR(deriveRenderTree(state, registry));
 });
 
+// ── Round 15.6: the box-level `valign` default fills on OLD text docs ─────────
+
+test("an OLD text item (no valign key) gets valign filled to 'top' — old docs unchanged", () => {
+  // A pre-15.6 text item carries every text default EXCEPT `valign` (it did not
+  // exist). missingDefaults must report it, and the fill must write "top" — the
+  // no-op value (core/richtext.valignOffset returns 0 for "top"), so the render
+  // is byte-identical. This is the repair-path proof for the new plain-string
+  // box property.
+  const textDefaults = registry.get("text").defaults;
+  const { valign, ...oldTextDefaults } = textDefaults; // strip valign → the old shape
+  const [d1, id] = withNewItem(newDocument(), 0, { ...oldTextDefaults, active: true });
+  // valign is reported missing (a plain-string default, NOT a self.-equation, so
+  // it IS materialized — unlike rotationAnchor).
+  const report = missingDefaults(d1, registry).find((r) => r.id === id);
+  assert.ok(report, "old text item should be reported for missing defaults");
+  assert.ok(report.missing.some((m) => m.path.join(".") === "valign"), "valign should be reported missing");
+  const { doc: fixed } = withMissingDefaultsFilled(d1, registry);
+  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
+  assert.equal(state.items[id].valign, "top"); // filled with the no-op default
+  sceneIR(deriveRenderTree(state, registry)); // must not throw with valign present
+  // idempotent: a COMPLETE text item (valign present) does not report valign.
+  const [complete, cid] = withNewItem(newDocument(), 0, { ...textDefaults, active: true });
+  const textRep = missingDefaults(complete, registry).find((r) => r.id === cid);
+  assert.ok(!textRep || !textRep.missing.some((m) => m.path.join(".") === "valign"), "a complete text item does not report valign");
+});
+
 console.log(`\n${passed} repair tests passed`);

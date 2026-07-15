@@ -8,9 +8,12 @@
 
   Controls (the PPT target subset built now): Bold · Italic · Underline ·
   Strikethrough · font-size stepper · font family · font Color · text HIGHLIGHT ·
-  glyph OUTLINE (color + width). Toggles reflect the selection's COMMON value
-  (indeterminate when mixed). Buttons follow the app's .btn-icon standard; hover
-  help uses SvelteLib's Tooltip (native title= is banned — manifest).
+  glyph OUTLINE (color + width) · paragraph ALIGN left/center/right (Round 15.6).
+  Character toggles reflect the selection's COMMON value (indeterminate when
+  mixed) via `onstyle`; the align buttons are PARAGRAPH-level and go through
+  `onparastyle` (they set every paragraph the selection touches), reflecting the
+  common paragraph align. Buttons follow the app's .btn-icon standard; hover help
+  uses SvelteLib's Tooltip (native title= is banned — manifest).
 
   It floats in the overlay's ROOT frame (already world-transformed), so it counter-
   scales by 1/boxScale to stay a fixed on-screen size (a toolbar should not rotate/
@@ -25,12 +28,16 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import ColorPicker from "../../../lib/ColorPicker.svelte";
-  import { commonStyle } from "../core/richtext.js";
+  import { commonStyle, paragraphRanges, paraStyleFor } from "../core/richtext.js";
   import { fontOptions } from "../render_gpu/fonts.js";
 
   // app, boxScale (world→screen scale to counter), onstyle(delta), selRange,
-  // runsAt() → current runs (read fresh so the toggle reflects the live DOM).
-  let { app, boxScale, onstyle, selRange, runsAt } = $props();
+  // runsAt() → current runs (read fresh so the toggle reflects the live DOM),
+  // onparastyle(delta) applies a PARAGRAPH-style delta (align) to the touched
+  // paragraphs, parasAt() → current paras + boxAlign (the box-level align default
+  // underlying paragraphs with no own override — so an unset paragraph reflects
+  // the box, not a bare undefined).
+  let { app, boxScale, onstyle, selRange, runsAt, onparastyle, parasAt, boxAlign } = $props();
 
   // Which inline color popover is open (font | highlight | outline | null).
   let openPicker = $state(null);
@@ -57,6 +64,29 @@
   });
 
   const fonts = fontOptions().map((o) => ({ value: o.value, label: o.label }));
+
+  // The common paragraph ALIGN across every paragraph the selection touches
+  // (undefined ⇒ mixed → no button lit; the PPT indeterminate convention). Each
+  // paragraph's EFFECTIVE align layers the box-level default under its own paras
+  // override (paraStyleFor), so a paragraph that never set align reflects the box
+  // — the button reads what the user actually SEES.
+  let commonAlign = $derived.by(() => {
+    const runs = runsAt(), paras = parasAt();
+    const ranges = paragraphRanges(runs);
+    const { start, end } = selRange;
+    const lo = Math.min(start, end), hi = Math.max(start, end);
+    let value, seen = false;
+    ranges.forEach((r, i) => {
+      const touched = lo === hi ? (lo >= r.start && lo <= r.end) : (lo <= r.end && hi > r.start);
+      if (!touched) return;
+      const a = paraStyleFor(paras, i, { align: boxAlign }).align;
+      if (!seen) { value = a; seen = true; }
+      else if (a !== value) value = undefined; // mixed
+    });
+    return value;
+  });
+
+  function setAlign(align) { onparastyle({ align }); }
 
   function toggle(key) { onstyle({ [key]: common[key] === true ? false : true }); }
   function stepSize(delta) {
@@ -91,6 +121,27 @@
   <Tooltip text="Strikethrough">
     <button class="btn-icon" class:active={common.strike === true} aria-pressed={common.strike === true} aria-label="Strikethrough" onclick={() => toggle("strike")}>
       <iconify-icon icon="mdi:format-strikethrough" width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
+
+  <span class="text-format-sep"></span>
+
+  <!-- Paragraph ALIGN (Round 15.6): left/center/right applied to every paragraph
+       the selection touches (onparastyle → applyParaStyle). The lit button
+       reflects the common effective align (indeterminate → none lit). -->
+  <Tooltip text="Align left">
+    <button class="btn-icon" class:active={commonAlign === "left"} aria-pressed={commonAlign === "left"} aria-label="Align left" onclick={() => setAlign("left")}>
+      <iconify-icon icon="mdi:format-align-left" width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
+  <Tooltip text="Align center">
+    <button class="btn-icon" class:active={commonAlign === "center"} aria-pressed={commonAlign === "center"} aria-label="Align center" onclick={() => setAlign("center")}>
+      <iconify-icon icon="mdi:format-align-center" width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
+  <Tooltip text="Align right">
+    <button class="btn-icon" class:active={commonAlign === "right"} aria-pressed={commonAlign === "right"} aria-label="Align right" onclick={() => setAlign("right")}>
+      <iconify-icon icon="mdi:format-align-right" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
 
