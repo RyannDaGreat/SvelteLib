@@ -181,6 +181,22 @@ export function roundedRectAnchorPoint(w, h, r, id, sx, sy) {
  * staying inside their simple-polygon domain (see fancyArrowOutline's
  * domain clamps).
  *
+ * ROBUSTNESS NOTE (donut parity investigation): this exact-arithmetic
+ * ear-clipping is knife-edge-sensitive on HIGHLY SYMMETRIC many-vertex
+ * polygons (e.g. a regular-polygon approximation of a circle/annulus) —
+ * intermediate clipping states can land on genuinely EXACT collinearities
+ * (not floating-point noise) that a strict `>= 0` containment test correctly
+ * treats as blocking, yet an equivalent construction of the same shape via a
+ * different floating-point path can land a hair off-exact and throw. Adding
+ * a numeric tolerance here to paper over that was TRIED and REVERTED: it
+ * regressed the L-shape test (a genuinely exact-collinear reflex vertex got
+ * misclassified as non-blocking, producing a wrong triangulation with the
+ * WRONG area) — the failure modes aren't separable by a single epsilon.
+ * donutOutline (the caller that surfaces this) fixes it at the SOURCE
+ * instead: a tiny per-vertex angular jitter breaks the exact symmetry that
+ * creates these knife-edge collinearities, without touching this shared,
+ * delicate function that fancy_arrow.js also depends on.
+ *
  * Args:
  *   points (number[][]): simple closed polygon [[x, y], ...]
  *
@@ -309,4 +325,88 @@ export function fancyArrowOutline({ x0, y0, x1, y1, tipLength, tipWidth, tipDimp
     [x1, y1], // tip
     [baseX - nrx * halfTip, baseY - nry * halfTip], // barbL
   ];
+}
+
+// Circle tessellation resolution for donutOutline's outer/inner rims. Neither
+// backend has a native ring/even-odd primitive (verified: grep for
+// evenodd/fillRule across render_gpu turns up nothing, and the PDF backend's
+// polygon case is a single "h f" non-zero-winding subpath — see pdf_backend.js
+// emitVector), so the ring is approximated as a polygon, same tradeoff the
+// fancy arrow already accepts for its curved dimple. 64 matches the visual
+// smoothness the GPU's OWN circular resize-handle affordances read as "round"
+// at typical on-screen widget sizes (no numeric precedent exists elsewhere in
+// the codebase for polygon-approximated circles — flagged). PENDING USER
+// RATIFICATION.
+const DONUT_SEGMENTS = 64;
+
+// A regular N-gon's vertices are EXACT-collinear at many intermediate
+// ear-clipping states (three points spanning a symmetric arc can land on a
+// mathematically exact line) — triangulated()'s strict cross()>=0 test is
+// CORRECT to block those (see its docstring: a numeric tolerance was tried
+// and reverted, it broke a genuinely-exact case). The fix belongs at the
+// SOURCE: a per-vertex angular jitter far below visual/geometric significance
+// breaks the exact symmetry so no intermediate state is exactly collinear,
+// without weakening the shared triangulated() any other caller (fancy_arrow)
+// relies on. 1e-7 rad ⇒ a sub-micron displacement at any donut size this app
+// renders (radius up to ~1e4 world units → ~1e-3 unit shift; typical widget
+// radius ~100 → ~1e-5 unit shift) — verified by a 200-case sweep (5 centers ×
+// 4 radii × 10 inner ratios, incl. the cx=55 case that exposed the bug) all
+// triangulating with area preserved to 1e-6 relative tolerance. i=0 gets ZERO
+// jitter (i·JITTER at i=0 is exactly 0) so the doctested pts[0]===[10,0]
+// start point is untouched.
+const DONUT_ANGLE_JITTER = 1e-7;
+
+/**
+ * Pure function. GENERATOR #2: an annulus (ring) outline — the DONUT widget's
+ * shape. Two concentric circles (outer radius R, inner radius r = R·inner)
+ * joined into ONE simple closed polygon via a zero-width slit at angle 0 (the
+ * standard "polygon with a hole" technique). The outer rim is walked forward
+ * (angle 0 → 2π, ending back at angle 0's point, DUPLICATED); the inner rim
+ * is then walked BACKWARD (0 → −2π, i.e. reversed, so its winding is opposite
+ * the outer ring's — the orientation that reads as a hole rather than a
+ * second stacked disk), also starting and ending at angle 0, DUPLICATED. The
+ * two duplicated angle-0 vertices (one on each rim) are what make the slit's
+ * "in" edge (outer's last point → inner's first point) and "out" edge
+ * (inner's last point → outer's first point, via the implicit polygon close)
+ * retrace the SAME radial segment in opposite directions — a zero-area slit
+ * contributing nothing to signedArea or the fill, and exactly what turns two
+ * disjoint circles into ONE simple polygon triangulated() (which requires no
+ * holes) can ear-clip. Duplicating the angle-0 point on each rim (rather than
+ * sharing an unduplicated index between the two loops, which would make the
+ * bridge's "in" edge span from the LAST forward-loop angle instead of angle 0
+ * — a real chord, not a slit) is the detail that keeps the bridge collinear.
+ *
+ * inner=0 degenerates to a full disk (the slit collapses to a single point at
+ * the center — still a valid, if pathological, simple polygon: triangulated()
+ * handles the zero-length edges via its collinear/zero-area ear rule, same as
+ * fancyArrowOutline's zero-width degenerates). inner>=1 clamps to <1 (a
+ * zero-thickness ring has no fill area and no meaningful modifier-point
+ * trajectory).
+ *
+ * Args:
+ *   cx, cy (number): center (local space)
+ *   outerR (number): outer radius
+ *   inner (number): hole radius as a PROPORTION of outerR, clamped to [0, 1)
+ *
+ * Returns:
+ *   number[][]: closed polygon, 2·(DONUT_SEGMENTS + 1) points (outer rim,
+ *     angle-0 duplicated at both ends, + inner rim, likewise), or [] for
+ *     outerR <= 0
+ *
+ * @example donutOutline({cx: 0, cy: 0, outerR: 10, inner: 0.5}).length // 130 (65 outer + 65 inner)
+ * @example donutOutline({cx: 0, cy: 0, outerR: 10, inner: 0.5})[0] // [10, 0] (outer rim starts at angle 0)
+ * @example donutOutline({cx: 5, cy: 5, outerR: 0, inner: 0.5}) // [] (zero radius: no geometry)
+ */
+export function donutOutline({ cx, cy, outerR, inner }) {
+  if (outerR <= 0) return [];
+  const r = Math.max(0, Math.min(inner, 1 - 1e-9)) * outerR;
+  const ring = (rad, sign) => {
+    const pts = [];
+    for (let i = 0; i <= DONUT_SEGMENTS; i++) {
+      const a = sign * ((2 * Math.PI * i) / DONUT_SEGMENTS) + i * DONUT_ANGLE_JITTER;
+      pts.push([cx + rad * Math.cos(a), cy + rad * Math.sin(a)]);
+    }
+    return pts;
+  };
+  return [...ring(outerR, 1), ...ring(r, -1)];
 }

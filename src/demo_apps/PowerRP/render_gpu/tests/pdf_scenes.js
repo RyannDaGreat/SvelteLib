@@ -21,6 +21,8 @@ import { rect, ellipse, polyline, polygon, text, image, video, pushTransform, po
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
 import { STILL_VIDEO_MP4_DATA_URI, STILL_VIDEO_FRAME_DATA_URI } from "../../tests/fixtures/still_video.js";
 import { filmstripLayout } from "../../plugins/filmstrip.js";
+import { donutPlugin } from "../../plugins/donut.js";
+import { cropboxPlugin } from "../../plugins/cropbox.js";
 
 /** Standard parity canvas: small enough for fast suites, big enough for detail. */
 export const SCENE_W = 400;
@@ -261,5 +263,81 @@ export function scenes() {
         popTransform(),
       ];
     })(), 25), // image-class parity: same edge-AA divergence as image-basic (GPU bilinear vs poppler step). floor PENDING USER RATIFICATION
+
+    // ── DONUT widget parity (SA1 — modifier-point substrate's first consumer) ─
+    // Neither backend has a native ring/even-odd primitive (see
+    // core/outline.js's DONUT_SEGMENTS comment), so donutPlugin.emit() ear-
+    // clips the annulus into convex triangles (core/outline.js donutOutline +
+    // triangulated) — the SAME polygon op fancy_arrow.js already proves
+    // through both backends. Because both backends consume the IDENTICAL
+    // triangle list from ONE emit() call, this scene tests real widget glue
+    // (defaults, inner proportions, stroke, rotation, overlap), not
+    // hand-written IR — the same rigor as calling filmstripLayout() above.
+    // Three donuts: default proportions, a thin ring (inner near 1 — the
+    // modifier point's near-degenerate extreme) at a rotation (proves the
+    // ring's pushTransform wrap + stroke polylines survive rotation), and a
+    // thick ring (inner near 0, close to a filled disk) overlapping a
+    // rect so the polygon fill's edges are visually checkable against a
+    // straight-edged neighbor.
+    s("donut-basic", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      pushTransform({ x: 40, y: 40 }),
+      ...donutPlugin.emit({ ...donutPlugin.defaults, w: 120, h: 120, inner: 0.5, fill: "#bb9af7", stroke: INK, strokeWidth: 3 }),
+      popTransform(),
+      pushTransform({ x: 230, y: 60, rotation: 0.5 }),
+      ...donutPlugin.emit({ ...donutPlugin.defaults, w: 100, h: 100, inner: 0.85, fill: "#9ece6a", stroke: INK, strokeWidth: 2 }),
+      popTransform(),
+      rect({ x: 190, y: 190, w: 140, h: 90, fill: "#7aa2f7" }),
+      pushTransform({ x: 260, y: 235 }),
+      ...donutPlugin.emit({ ...donutPlugin.defaults, w: 110, h: 110, inner: 0.15, fill: "#f7768e", opacity: 0.85 }),
+      popTransform(),
+    ], 32), // measured 37.42 dB (2026-07 run) — pure vector triangulated-polygon fill + stroke polylines, same class as arrows-crossing (37 floor, 41.32 measured); floor = measured − ~5.4 dB (the arrows-crossing scene's own measured-to-floor margin) for AA/rotation/translucency headroom. PENDING USER RATIFICATION (same convention as every other scene's floor in this file).
+
+    // ── CROP BOX parity (SA2 — manifest ARCHITECTURE PLAN #3) ─────────────────
+    // Built the SAME way as donut-basic above: real cropboxPlugin.emit() calls
+    // (not hand-written cropSubtree IR), so this exercises actual widget glue.
+    // `content` (emit()'s second arg) carries the target's ABSOLUTE world
+    // transform (see ports.sceneIR's doc comment) — a SEPARATE, independent
+    // pushTransform per crop box's `box()` wrap below, never nested inside
+    // it. This scene's rotated box (#2) is what caught a real PDF backend
+    // bug (fixed in pdf_backend.js's emitCrop): content re-emitted while the
+    // crop box's OWN cmSimilarity(world) was still on the CTM, double-
+    // applying its rotation — the fix resets the CTM to the page base frame
+    // (cmSimilarity(T.invert(world))) right after the clip, before content.
+    s("cropbox-basic", (() => {
+      const content = (wx, wy, rotation = 0) => [
+        pushTransform({ x: wx, y: wy, rotation }),
+        rect({ x: -55, y: -35, w: 90, h: 70, fill: "#7aa2f7", stroke: INK, strokeWidth: 2 }),
+        ellipse({ cx: 15, cy: 20, rx: 40, ry: 40, fill: "#f7768e", stroke: INK, strokeWidth: 2 }),
+        popTransform(),
+      ];
+      // A crop box's emit() returns LOCAL-space commands (x:0,y:0-relative —
+      // like every plugin), so EACH box still needs sceneIR's own
+      // pushTransform(node.world) wrap around it for ITS x/y/rotation to take
+      // effect. `content`, passed as emit()'s second arg, stays OUTSIDE that
+      // wrap (it is not nested — see above) and carries its own independent
+      // ABSOLUTE pushTransform, matching real sceneIR usage exactly.
+      const box = (state, contentAbs) => [pushTransform(state), ...cropboxPlugin.emit(state, contentAbs), popTransform()];
+      return [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        // 1. Axis-aligned rounded crop over a rect+circle pair straddling the
+        //    region boundary (proves the clip edge is exactly the rounded
+        //    rect, both backends' rounded-rect path — SHAPE_WGSL/CROP_WGSL's
+        //    shared sdRoundBox vs pdf_backend rectPath — must agree).
+        ...box({ ...cropboxPlugin.defaults, x: 20, y: 30, w: 100, h: 100, cornerRadius: 24, fill: "#eef1f8", stroke: INK, strokeWidth: 3 }, content(70, 80)),
+        // 2. The SAME crop rotated 45° (manifest verification requirement:
+        //    "crop clips at 45° rotation too") — the clip region rotates as
+        //    a rigid unit; its target's content is INDEPENDENTLY placed at
+        //    the box's rotated world center with the SAME rotation, so it
+        //    reads as "the same content, seen through a rotated window"
+        //    (exactly what a real target's suppressed-and-reattached render
+        //    looks like — the target itself doesn't move, but here there is
+        //    no shared document state, so this scene fakes a target that
+        //    happens to be centered and co-rotated with its crop box).
+        ...box({ ...cropboxPlugin.defaults, x: 210, y: 40, w: 90, h: 90, rotation: Math.PI / 4, cornerRadius: 18, fill: "#eef1f8", stroke: "#7a3a3a", strokeWidth: 3 }, content(255, 85, Math.PI / 4)),
+        // 3. Dangling target (content: []) — fill+border only.
+        ...box({ ...cropboxPlugin.defaults, x: 60, y: 190, w: 110, h: 80, cornerRadius: 12, fill: "#f4e9d8", stroke: INK, strokeWidth: 2 }, null),
+      ];
+    })(), 20), // measured 23.38 dB (2026-07-15 live parity run, after the emitCrop rotation-double-apply fix above) — floor = measured − ~3.4 dB, matching the codebase's measured-minus-margin convention. PENDING USER RATIFICATION (the floor-setting convention itself is flagged app-wide, not specific to this scene). Same clip-edge-AA divergence class as the magnifier-lens scenes (floor 20, measured 23.46-23.94) — expected, since crop box reuses that machinery.
   ];
 }

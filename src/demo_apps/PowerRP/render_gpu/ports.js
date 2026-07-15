@@ -39,6 +39,27 @@ export function videoIR(s) {
  * commands wrapped in its world transform. The display-list analogue of the
  * canvas compositor's per-node save/transform/paint/restore loop.
  *
+ * A crop-box node (core/derive.resolveCropTargets attaches `.cropTarget`, a
+ * full render node or null) is the ONE exception to "plugin.emit() alone
+ * decides a node's IR": sceneIR — the one place that sees the WHOLE node
+ * list — builds its target subtree's commands here (the crop box plugin
+ * can't reach another node) and hands them to the plugin as an argument so
+ * cropbox.js still owns the fill/border/region IR shape (manifest fence:
+ * derive.js does suppression + ordering, the plugin file owns the box's own
+ * visual properties).
+ *
+ * IMPORTANT: the target's commands are wrapped in its own ABSOLUTE
+ * `.world` transform (pushTransform(node.cropTarget.world)), NOT a transform
+ * relative to the crop box. cropSubtree's `content` is a SEPARATE,
+ * self-contained, independently-flattened IR list (both backends
+ * flattenIR() it fresh, from identity — render_gpu/gpu/compositor.js's
+ * packList and pdf_backend.js's emitRegion never nest it inside the crop
+ * box's own pushTransform), so it must carry the SAME absolute world every
+ * other node's commands do — that is what lets the crop box's re-render use
+ * the SAME outer view/camera mapping as the rest of the scene (no relative-
+ * transform math needed, and no risk of double-composing against the box's
+ * own transform).
+ *
  * Args:
  *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
  *
@@ -52,7 +73,10 @@ export function sceneIR(nodes) {
   const out = [];
   for (const node of nodes) {
     if (!node.plugin?.emit) throw new Error(`sceneIR: plugin "${node.type}" has no emit()`);
-    const cmds = node.plugin.emit(node.state);
+    const targetWorldIR = node.type === "cropbox" && node.cropTarget
+      ? [pushTransform(node.cropTarget.world), ...node.cropTarget.plugin.emit(node.cropTarget.state), popTransform()]
+      : null;
+    const cmds = node.plugin.emit(node.state, targetWorldIR);
     if (cmds.length === 0) continue;
     out.push(pushTransform(node.world), ...cmds, popTransform());
   }

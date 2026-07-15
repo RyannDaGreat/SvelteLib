@@ -24,7 +24,16 @@
  *      samples THAT texture 1:1 (sharp: a true re-render at display
  *      resolution). The encode loop is re-entrant (_encodeScene); recursion
  *      is capped at MAX_SUPERSAMPLE_DEPTH — a lens replayed inside another
- *      lens's re-render falls back to backdrop sampling.
+ *      lens's re-render falls back to backdrop sampling. A "crop" batch
+ *      (manifest ARCHITECTURE PLAN #3, cropSubtree op) is the SAME re-render-
+ *      into-a-shared-lens-texture machinery, minimally extended: no
+ *      magnification (its view is the outer view, shifted only), a
+ *      ROUNDED-RECT SDF mask instead of a circle (gpu/shaders.js CROP_WGSL),
+ *      and its "sub-scene" is always ONE self-contained IR list (the crop
+ *      target's own commands, packed into their OWN batch array by
+ *      _buildFrame's packList — never a slice of the OUTER batches, unlike a
+ *      lens, because the target's normal render was already suppressed at
+ *      the derivation stage; core/derive.resolveCropTargets).
  *   4. The scene is copied to the canvas swapchain texture.
  *
  * ANTIALIASING (browser setting "powerrp.antialiasing", DEFAULT ON, no UI —
@@ -53,9 +62,9 @@
  * uncaptured GPU errors throw on the next render().
  */
 
-import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop } from "../ir.js";
+import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree } from "../ir.js";
 import * as T from "../../core/transform.js";
-import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
+import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, CROP_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
 import { ensureImage, getImage } from "./image_registry.js";
 import { ensureVideo, getVideo } from "./video_registry.js";
@@ -75,10 +84,23 @@ const MSAA_SAMPLES = 4;
  * already scissor-bounded to its lens rect) — a user decision, not a tweak.
  */
 const MAX_SUPERSAMPLE_DEPTH = 1;
+/**
+ * Crop-box re-render recursion cap — same guard shape as
+ * MAX_SUPERSAMPLE_DEPTH, but a crop box's ONLY fallback for exceeding it is
+ * to draw nothing inside the region (unlike a lens, there is no backdrop-
+ * sampling soft path to fall back to — a crop box's content is one named
+ * subtree, not "everything below"). In practice a crop box's target is
+ * suppressed from the normal tree (core/derive.resolveCropTargets), so its
+ * own subtree contains no NESTED cropSubtree op targeting the SAME box —
+ * this cap exists only to bound a pathological document (e.g. two crop boxes
+ * each targeting the other's container) rather than recurse unboundedly.
+ */
+const MAX_CROP_DEPTH = 1;
 /** Floats per instance — must match the WGSL attribute layouts. */
 const SHAPE_FLOATS = 24; // 6 × vec4
 const QUAD_FLOATS = 20;  // 5 × vec4 (tex, video, magnify share this stride)
 const MESH_FLOATS = 6;   // pos.xy + rgba
+const CROP_FLOATS = 28;  // 7 × vec4 (own stride — see shaders.js CROP_WGSL header for why)
 
 /**
  * Pure function. Packs a similarity transform for the shaders' apply_xform:
@@ -223,10 +245,10 @@ export class GpuCompositor {
 
   /**
    * Command. Renders one tiny frame exercising every pipeline (shape, mesh,
-   * text/atlas, blur, magnifier) so Metal/D3D compile shaders at init instead
-   * of stalling the FIRST USER FRAME (~0.5-1.2s measured; FINDINGS). Called
-   * by create(); the frame is immediately overwritten by the first real
-   * render.
+   * text/atlas, blur, magnifier, crop box) so Metal/D3D compile shaders at
+   * init instead of stalling the FIRST USER FRAME (~0.5-1.2s measured;
+   * FINDINGS). Called by create(); the frame is immediately overwritten by
+   * the first real render.
    */
   warmup() {
     this.render([
@@ -237,6 +259,7 @@ export class GpuCompositor {
       text({ text: "w", x: 0, y: 0, size: 8, color: [0, 0, 0, 1] }),
       blurBackdrop({ radius: 1, opacity: 1 }),
       magnifyBackdrop({ cx: 1, cy: 1, r: 1, magnification: 2, rimColor: [0, 0, 0, 1], rimWidth: 1 }),
+      cropSubtree({ x: 0, y: 0, w: 2, h: 2, cornerRadius: 0.5, fill: [0, 0, 0, 1], stroke: [0, 0, 0, 1], strokeWidth: 1, content: [rect({ x: 0, y: 0, w: 2, h: 2, fill: [0, 0, 0, 1] })] }),
     ], { zoom: 1, panX: 0, panY: 0, dpr: 1 }, { background: [0, 0, 0, 0] });
   }
 
@@ -270,9 +293,11 @@ export class GpuCompositor {
     this.shapeArr = new GrowF32(INITIAL_FLOATS);
     this.quadArr = new GrowF32(INITIAL_FLOATS);  // tex + video + magnify instances
     this.meshArr = new GrowF32(INITIAL_FLOATS);
+    this.cropArr = new GrowF32(INITIAL_FLOATS);  // crop-box instances (own stride — CROP_FLOATS)
     this.shapeBuf = null;
     this.quadBuf = null;
     this.meshBuf = null;
+    this.cropBuf = null;
 
     this.viewBuf = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.viewBG = device.createBindGroup({
@@ -366,6 +391,12 @@ export class GpuCompositor {
     this.texPipe = make("ir-tex", TEX_WGSL, [this.viewBGL, this.texBGL], [cornerLayout, quadInstLayout]);
     this.videoPipe = make("ir-video", VIDEO_WGSL, [this.viewBGL, this.videoBGL], [cornerLayout, quadInstLayout]);
     this.magnifyPipe = make("ir-magnify", MAGNIFY_WGSL, [this.viewBGL, this.magnifyBGL], [cornerLayout, quadInstLayout]);
+    // Crop box: reuses magnifyBGL verbatim (identical group(1) shape: sampler +
+    // texture + sample-rect uniform — see shaders.js CROP_WGSL header) with its
+    // OWN instance layout (CROP_FLOATS; box+radius+fill+stroke don't fit the
+    // quad stride's 5 vec4s).
+    const cropInstLayout = { arrayStride: CROP_FLOATS * 4, stepMode: "instance", attributes: vec4attrs([1, 2, 3, 4, 5, 6, 7]) };
+    this.cropPipe = make("ir-crop", CROP_WGSL, [this.viewBGL, this.magnifyBGL], [cornerLayout, cropInstLayout]);
     // Blur V composites INTO the content target (MSAA attachment — content
     // sample count); blur H renders into the single-sampled TEMP and needs a
     // count-1 variant. Same shader; only the pipeline multisample state
@@ -617,6 +648,7 @@ export class GpuCompositor {
     this.shapeBuf = upload(this.shapeArr, this.shapeBuf, "ir-shape-inst");
     this.quadBuf = upload(this.quadArr, this.quadBuf, "ir-quad-inst");
     this.meshBuf = upload(this.meshArr, this.meshBuf, "ir-mesh-verts");
+    this.cropBuf = upload(this.cropArr, this.cropBuf, "ir-crop-inst");
 
     // Per-frame effect-use ordinals, shared across lens re-renders: every
     // blur/lens USE gets its own uniform buffers, because queue writes all
@@ -880,6 +912,55 @@ export class GpuCompositor {
           }
           break;
         }
+        case "crop": {
+          // Same visible-intersection bound as a lens (manifest: bound re-
+          // render work by lens ∩ viewport — the SAME rule applies to a crop
+          // box's re-render, it's just a rounded-rect region instead of a
+          // circle). Empty intersection = offscreen: skip entirely.
+          const cDevX = (batch.centerWorld.x * view.zoom + view.panX) * view.dpr;
+          const cDevY = (batch.centerWorld.y * view.zoom + view.panY) * view.dpr;
+          const padX = batch.halfWWorld * view.zoom * view.dpr + AA_MARGIN_DEVICE;
+          const padY = batch.halfHWorld * view.zoom * view.dpr + AA_MARGIN_DEVICE;
+          const visible = intersectRects(
+            { x: Math.floor(cDevX - padX), y: Math.floor(cDevY - padY), w: Math.ceil(padX * 2) + 1, h: Math.ceil(padY * 2) + 1 },
+            { x: 0, y: 0, w: cw, h: ch },
+          );
+          if (visible.w === 0 || visible.h === 0) break;
+          if (depth < MAX_CROP_DEPTH) {
+            endPass();
+            // No magnification (see shaders.js CROP_WGSL header) — the crop's
+            // own view IS the outer view, just shifted so the visible
+            // intersection's origin renders at the re-render texture's
+            // top-left (the same device-px-shift-⇒-pan-shift trick a lens
+            // uses, with magnification pinned to 1).
+            const cropView = { zoom: view.zoom, panX: view.panX - visible.x / view.dpr, panY: view.panY - visible.y / view.dpr, dpr: view.dpr };
+            let subScissor = { x: 0, y: 0, w: visible.w, h: visible.h };
+            if (scissor) subScissor = intersectRects(subScissor, deviceRectThroughViews(scissor, view, cropView));
+            const lens = this._lensTarget(depth); // shared pool — see gpu/shaders.js CROP_WGSL header
+            const use = this._lensUseEntry(this._lensOrdinal++, depth);
+            this._writeView(use.viewBuf, cropView);
+            d.queue.writeBuffer(use.rectBuf, 0, new Float32Array([visible.x, visible.y, this._texW, this._texH]));
+            this._encodeScene(encoder, batch.contentBatches, cropView, use.viewBG,
+              { tex: lens.tex, view: lens.view, msaaView: lens.msaaView, contentW: visible.w, contentH: visible.h },
+              { background: [0, 0, 0, 0], scissor: subScissor }, depth + 1);
+            const p = ensurePass();
+            p.setPipeline(this.cropPipe);
+            p.setBindGroup(1, use.bgByDepth[depth]);
+            p.setVertexBuffer(0, this.cornerBuf);
+            p.setVertexBuffer(1, this.cropBuf);
+            p.draw(6, 1, 0, batch.first);
+          } else {
+            // UNREACHABLE in practice: core/derive.resolveCropTargets forbids
+            // a crop box's target from itself being a crop box (and the
+            // target's OWN render is suppressed from the normal tree), so
+            // batch.contentBatches can never contain a NESTED "crop" batch
+            // recursing past MAX_CROP_DEPTH — this branch is a loud guard
+            // against a future regression of that invariant, not a real
+            // runtime path (no silent-fallback rendering here).
+            throw new Error("GpuCompositor: crop recursion exceeded MAX_CROP_DEPTH — core/derive.resolveCropTargets should make this impossible (a crop box's target may never be another crop box)");
+          }
+          break;
+        }
         default:
           throw new Error(`GpuCompositor: unknown batch type "${batch.type}"`);
       }
@@ -897,30 +978,53 @@ export class GpuCompositor {
     this.shapeArr.reset();
     this.quadArr.reset();
     this.meshArr.reset();
-    const batches = [];
-    let current = null; // {type, ref} accumulating batch
-
-    const shapeInstance = () => {
-      if (!(current?.type === "shape")) {
-        current = { type: "shape", first: this.shapeArr.used / SHAPE_FLOATS, count: 0 };
-        batches.push(current);
-      }
-      current.count++;
-      return this.shapeArr.alloc(SHAPE_FLOATS);
-    };
-    const quadInstance = (type, ref) => {
-      if (!(current?.type === type && current?.ref === ref) || type === "video") {
-        current = { type, ref, first: this.quadArr.used / QUAD_FLOATS, count: 0 };
-        batches.push(current);
-      }
-      current.count++;
-      return this.quadArr.alloc(QUAD_FLOATS);
-    };
+    this.cropArr.reset();
 
     const scaleDev = view.zoom * view.dpr;
     const NO_COLOR = [0, 0, 0, 0];
 
-    for (const { cmd, world } of flat) {
+    // packList packs one flattened IR list into its OWN batch array (so a
+    // cropSubtree's `content` — a SEPARATE self-contained IR list, the
+    // target's own commands, NOT a prefix of the outer command stream like a
+    // lens's z-order slice — gets batches the outer walk never iterates
+    // directly, only the crop's own re-render pass does) while sharing the
+    // SAME underlying staging float arrays (shapeArr/quadArr/meshArr/cropArr
+    // reset ONCE per _buildFrame call, at the top — see render()'s call
+    // site; a second reset mid-build would destroy everything packed so
+    // far, so content is packed by RECURSIVE CALL, never a second
+    // _buildFrame). Returns that content's own batch list.
+    const packList = (flatList) => {
+      const batches = [];
+      const box = { current: null }; // {type, ref} accumulating batch, scoped to THIS list
+      const shapeInstance = () => {
+        if (!(box.current?.type === "shape")) {
+          box.current = { type: "shape", first: this.shapeArr.used / SHAPE_FLOATS, count: 0 };
+          batches.push(box.current);
+        }
+        box.current.count++;
+        return this.shapeArr.alloc(SHAPE_FLOATS);
+      };
+      const quadInstance = (type, ref) => {
+        if (!(box.current?.type === type && box.current?.ref === ref) || type === "video") {
+          box.current = { type, ref, first: this.quadArr.used / QUAD_FLOATS, count: 0 };
+          batches.push(box.current);
+        }
+        box.current.count++;
+        return this.quadArr.alloc(QUAD_FLOATS);
+      };
+      const meshInstance = (vertexCount) => {
+        if (!(box.current?.type === "mesh")) {
+          box.current = { type: "mesh", firstVertex: this.meshArr.used / MESH_FLOATS, vertexCount: 0 };
+          batches.push(box.current);
+        }
+        box.current.vertexCount += vertexCount;
+        return this.meshArr.alloc(vertexCount * MESH_FLOATS);
+      };
+      for (const flatCmd of flatList) packOne(flatCmd, batches, box, shapeInstance, quadInstance, meshInstance);
+      return batches;
+    };
+
+    const packOne = ({ cmd, world }, batches, box, shapeInstance, quadInstance, meshInstance) => {
       const xf = packXform(world);
       const aaLocal = AA_MARGIN_DEVICE / Math.max(scaleDev * world.scale, 1e-6);
       switch (cmd.op) {
@@ -972,12 +1076,7 @@ export class GpuCompositor {
           const [cr, cg, cb] = cmd.fill;
           const pts = cmd.points.map(([x, y]) => T.apply(world, x, y));
           const triCount = pts.length - 2;
-          if (!(current?.type === "mesh")) {
-            current = { type: "mesh", firstVertex: this.meshArr.used / MESH_FLOATS, vertexCount: 0 };
-            batches.push(current);
-          }
-          const at = this.meshArr.alloc(triCount * 3 * MESH_FLOATS);
-          current.vertexCount += triCount * 3;
+          const at = meshInstance(triCount * 3);
           const f = this.meshArr.f32;
           for (let i = 0; i < triCount; i++) {
             const tri = [pts[0], pts[i + 1], pts[i + 2]];
@@ -1082,7 +1181,7 @@ export class GpuCompositor {
           break;
         }
         case "blurBackdrop": {
-          current = null;
+          box.current = null;
           // WORLD sigma: the device sigma is view-dependent, and the same
           // batch replays under a lens view inside a lens re-render.
           batches.push({ type: "blur", sigmaWorld: cmd.radius * world.scale, opacity: cmd.opacity });
@@ -1120,14 +1219,50 @@ export class GpuCompositor {
             magnification: cmd.magnification,
             centerWorld, rWorld,
           });
-          current = null; // effects never merge with a following batch
+          box.current = null; // effects never merge with a following batch
+          break;
+        }
+        case "cropSubtree": {
+          // ONE instance (no sharp/soft split — a crop box always re-renders
+          // its named target 1:1; see shaders.js CROP_WGSL header). `content`
+          // is a SEPARATE self-contained IR list (the target's own commands,
+          // already wrapped in the relative transform by sceneIR) — packed by
+          // a RECURSIVE packList call into its OWN batch array (contentBatches)
+          // so the outer walk (and _encodeScene's top-level loop) never draws
+          // it directly; only the crop's own re-render pass does. This is the
+          // structural difference from a magnify lens (whose sub-content is a
+          // PREFIX of the outer stream, legitimately drawn both normally and
+          // replayed) — a crop target's normal render was already SUPPRESSED
+          // at the derivation stage (core/derive.resolveCropTargets), so its
+          // IR exists ONLY inside this op.
+          const m = (cmd.strokeWidth ?? 0) / 2 + aaLocal;
+          const at = this.cropArr.alloc(CROP_FLOATS);
+          const f = this.cropArr.f32;
+          const cxWorld = cmd.x + cmd.w / 2, cyWorld = cmd.y + cmd.h / 2;
+          const centerWorld = T.apply(world, cxWorld, cyWorld);
+          f.set([cmd.x - m, cmd.y - m, cmd.w + 2 * m, cmd.h + 2 * m], at);
+          f.set(xf, at + 4);
+          f.set([centerWorld.x, centerWorld.y, (cmd.w / 2) * world.scale, (cmd.h / 2) * world.scale], at + 8);
+          f.set([cmd.cornerRadius * world.scale, 0, 0, 0], at + 12);
+          f.set(cmd.fill ?? NO_COLOR, at + 16);
+          f.set(cmd.stroke ?? NO_COLOR, at + 20);
+          f.set([(cmd.strokeWidth ?? 0) * world.scale, cmd.opacity, 0, 0], at + 24);
+          const contentBatches = packList(flattenIR(cmd.content));
+          batches.push({
+            type: "crop",
+            first: at / CROP_FLOATS,
+            centerWorld,
+            halfWWorld: cmd.w / 2, halfHWorld: cmd.h / 2,
+            contentBatches,
+          });
+          box.current = null; // effects never merge with a following batch
           break;
         }
         default:
           throw new Error(`GpuCompositor: unknown IR op "${cmd.op}" (known: ${DRAW_OPS.join(", ")})`);
       }
-    }
-    return { batches };
+    };
+    return { batches: packList(flat) };
   }
 
   /**

@@ -445,6 +445,8 @@ async function emitRegion(commands, region, out, ctx) {
     const { cmd, world } = flat[i];
     if (cmd.op === "magnifyBackdrop") {
       await emitLens(cmd, world, commands, rawIndexOf[i], region, out, ctx);
+    } else if (cmd.op === "cropSubtree") {
+      await emitCrop(cmd, world, region, out, ctx);
     } else {
       emitVector(cmd, world, out, ctx);
     }
@@ -498,6 +500,74 @@ async function emitLens(cmd, world, commands, rawIdx, region, out, ctx) {
     out.push(`${pdfNum(cmd.rimColor[0])} ${pdfNum(cmd.rimColor[1])} ${pdfNum(cmd.rimColor[2])} RG`);
     out.push(`${pdfNum(rimW)} w`);
     out.push(ellipsePath({ cx: center.x, cy: center.y, rx: rWorld, ry: rWorld }), "S", "Q");
+  }
+}
+
+/**
+ * Command (async; appends operators). One crop box (manifest ARCHITECTURE
+ * PLAN #3 — the vector-lens precedent, simplified): fill the rounded-rect
+ * region, clip to it, re-emit `cmd.content` (the target's OWN commands,
+ * already wrapped in the relative transform by sceneIR — a SELF-CONTAINED IR
+ * list, unlike a lens's "everything below in the raw stream", so this needs
+ * no balancedSlice/rawIdx), then stroke the border on top. No magnification
+ * (view is unchanged — the crop box re-renders its target 1:1, matching the
+ * GPU's CROP_WGSL) and no depth cap: `content` can never contain a NESTED
+ * cropSubtree targeting this same box (core/derive.resolveCropTargets
+ * forbids a crop box's target from being another crop box, and the target's
+ * own render is suppressed from the normal tree), so recursion is naturally
+ * bounded by the document's own crop-box count — no artificial cap needed
+ * here (unlike the GPU's MAX_CROP_DEPTH, which bounds re-render TEXTURE
+ * depth, a resource limit the PDF vector path doesn't share).
+ *
+ * ROTATION: unlike emitLens's circle (rotation-invariant — a rotated circle
+ * IS the same circle, so emitLens only ever needed the WORLD-space center),
+ * a rounded RECT genuinely has orientation. The clip/fill/stroke geometry is
+ * therefore emitted in LOCAL coordinates under an explicit cmSimilarity(world)
+ * — the SAME convention emitVector uses for rect/ellipse — instead of
+ * pre-transforming a single origin point (which silently drops rotation,
+ * the bug this comment replaced: a 45°-rotated crop box rendered as an
+ * axis-aligned square in early testing until this fix).
+ *
+ * CRITICAL: `content`'s commands carry their own ABSOLUTE world transforms
+ * (see ports.sceneIR's doc comment) — they must NOT be emitted while the
+ * crop box's OWN cmSimilarity(world) is still active on the CTM, or the
+ * box's rotation/translation composes ON TOP of content's already-absolute
+ * transform (double-applied — the bug THIS comment replaced: content
+ * appeared missing/mispositioned under a rotated box). The clip path
+ * survives a CTM change within the same q/Q block (PDF clip regions are
+ * fixed in DEVICE space once "W n" executes), so cmSimilarity(T.invert(world))
+ * immediately after the clip returns the CTM to the page's base frame
+ * before content re-emits in its own absolute space — exactly matching the
+ * GPU's cropView, which is the OUTER view unchanged (never composed with
+ * the crop box's own transform).
+ */
+async function emitCrop(cmd, world, region, out, ctx) {
+  const local = { x: 0, y: 0, w: cmd.w, h: cmd.h, cornerRadius: cmd.cornerRadius };
+
+  if (cmd.fill) {
+    const gs = ctx.gsAlphaPair(cmd.fill[3] * cmd.opacity, 1);
+    out.push("q", cmSimilarity(world), ...(gs ? [gs] : []));
+    out.push(`${pdfNum(cmd.fill[0])} ${pdfNum(cmd.fill[1])} ${pdfNum(cmd.fill[2])} rg`);
+    out.push(rectPath(local), "f", "Q");
+  }
+
+  out.push("q", cmSimilarity(world));
+  out.push(rectPath(local), "W n"); // clip, no paint — fixed in DEVICE space now
+  out.push(cmSimilarity(T.invert(world))); // undo the box's own transform: back to the page's base frame
+  // Content re-emits in ABSOLUTE world space exactly like the top-level
+  // region does (its commands carry their own absolute transforms), so
+  // `sub` reuses the SAME view/worldRect as the outer region, unchanged.
+  const sub = { view: region.view, worldRect: region.worldRect, depth: region.depth + 1, background: region.background };
+  await emitRegion(cmd.content, sub, out, ctx);
+  out.push("Q");
+
+  const strokeW = cmd.strokeWidth ?? 0;
+  if (cmd.stroke && strokeW > 0) {
+    const gs = ctx.gsAlphaPair(1, cmd.stroke[3] * cmd.opacity);
+    out.push("q", cmSimilarity(world), ...(gs ? [gs] : []));
+    out.push(`${pdfNum(cmd.stroke[0])} ${pdfNum(cmd.stroke[1])} ${pdfNum(cmd.stroke[2])} RG`);
+    out.push(`${pdfNum(strokeW)} w`);
+    out.push(rectPath(local), "S", "Q");
   }
 }
 

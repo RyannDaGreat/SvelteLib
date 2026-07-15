@@ -131,6 +131,12 @@ export class PowerRPApp {
   // Ruler). Persisted per-browser like the other viewer preferences above.
   gridEnabled = $state(localStorage.getItem("powerrp.grid") === "on");
   rulerEnabled = $state(localStorage.getItem("powerrp.ruler") === "on");
+  // BROWSER setting (viewer-local, default OFF — manifest ARCHITECTURE PLAN #2
+  // GHOST capability): shows/hides GHOST outlines (empty text, groups) on the
+  // CanvasView SVG overlay. Crop-box ghost outlines are NOT gated by this —
+  // they show ALWAYS (core/derive.isGhostNode + the "always" rule: a crop box
+  // is unclickable otherwise). Persisted like grid/ruler.
+  showGhosts = $state(localStorage.getItem("powerrp.showGhosts") === "on");
   // BROWSER setting (viewer-local, default OFF): the bottom-left FPS counter
   // (shows in the editor AND present mode — user spec, round 11).
   fpsVisible = $state(localStorage.getItem("powerrp.fps") === "on");
@@ -186,6 +192,11 @@ export class PowerRPApp {
   toggleRuler() {
     this.rulerEnabled = !this.rulerEnabled;
     localStorage.setItem("powerrp.ruler", this.rulerEnabled ? "on" : "off");
+  }
+
+  toggleGhosts() {
+    this.showGhosts = !this.showGhosts;
+    localStorage.setItem("powerrp.showGhosts", this.showGhosts ? "on" : "off");
   }
 
   /** Query. The effective devicePixelRatio for all raster rendering. */

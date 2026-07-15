@@ -17,6 +17,7 @@
  */
 
 import * as T from "./transform.js";
+import { reportOnce } from "./report.js";
 
 /**
  * Pure function. An item's LOCAL→WORLD similarity transform, with rotation
@@ -113,7 +114,63 @@ export function deriveRenderTree(state, registry) {
     plugin: registry.get(itemState.type),
   }));
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
-  return nodes;
+  return resolveCropTargets(nodes);
+}
+
+/**
+ * Pure function. Is this render node a GHOST (manifest ARCHITECTURE PLAN #2)?
+ * A ghost has no rendered volume of its own: crop boxes ALWAYS (a crop box
+ * with a dangling target renders nothing but its clip fill/border still
+ * counts as content — it stays a ghost so its phantom outline is always
+ * clickable per the spec: "A crop box is ALWAYS a ghost"), plus any plugin
+ * that declares the STATIC `capabilities.ghost` or the DYNAMIC `isGhost(state)`
+ * hook (e.g. an empty text box — text.js may opt in later; absent → never a
+ * ghost, so every existing plugin is unaffected).
+ *
+ * @example isGhostNode({type: "cropbox", state: {}, plugin: {capabilities: {}}}) // true
+ * @example isGhostNode({type: "rect", state: {}, plugin: {capabilities: {}}}) // false
+ * @example isGhostNode({type: "text", state: {text: ""}, plugin: {capabilities: {}, isGhost: (s) => !s.text}}) // true
+ */
+export function isGhostNode(node) {
+  if (node.type === "cropbox") return true;
+  if (node.plugin.capabilities.ghost) return true;
+  return node.plugin.isGhost ? !!node.plugin.isGhost(node.state) : false;
+}
+
+/**
+ * Pure function. Resolves crop-box `target` references against the SAME
+ * z-sorted node list (manifest ARCHITECTURE PLAN #3): the target's own render
+ * is SUPPRESSED at its normal z-slot, and the resolved target node is
+ * attached to the crop box as `.cropTarget` (a full render node — sceneIR
+ * wraps its `.world`/`.plugin.emit(.state)` inside the crop box's clip). A
+ * crop box is NOT itself a valid target (crop boxes render no subtree of
+ * their own to embed — a self/mutual reference is nonsensical, not merely
+ * unbounded) and a target that doesn't resolve (purged, wrong slide, or a
+ * crop-box target) yields `.cropTarget = null` plus ONE console note
+ * (reportOnce — the spec's "dangling target → ghost outline only, loud
+ * console note once"). Non-crop-box nodes pass through unchanged.
+ *
+ * Suppression removes the target from the returned array entirely (it is
+ * NOT independently painted, per spec: "the target's own render is
+ * SUPPRESSED") — sceneIR/hit-testing/anchors all see only the crop box.
+ *
+ * @example resolveCropTargets([{id: "r1", itemId: "r1", type: "rect", state: {}, plugin: {capabilities: {}}}, {id: "cb", itemId: "cb", type: "cropbox", state: {target: "r1"}, plugin: {capabilities: {}}}]).length // 1 (r1 suppressed, folded into cb)
+ * @example resolveCropTargets([{id: "cb", itemId: "cb", type: "cropbox", state: {target: "missing"}, plugin: {capabilities: {}}}])[0].cropTarget // null
+ */
+export function resolveCropTargets(nodes) {
+  const byId = new Map(nodes.map((n) => [n.itemId, n]));
+  const suppressed = new Set();
+  const withTargets = nodes.map((n) => {
+    if (n.type !== "cropbox") return n;
+    const targetId = n.state.target;
+    const target = typeof targetId === "string" ? byId.get(targetId) : null;
+    if (targetId && (!target || target.type === "cropbox")) {
+      reportOnce(`cropbox-dangling-${n.itemId}`, `PowerRP: crop box "${n.itemId}" target "${targetId}" is missing or is itself a crop box — showing ghost outline only`);
+    }
+    if (target && target.type !== "cropbox") suppressed.add(target.itemId);
+    return { ...n, cropTarget: target && target.type !== "cropbox" ? target : null };
+  });
+  return withTargets.filter((n) => !suppressed.has(n.itemId));
 }
 
 /**
@@ -167,6 +224,29 @@ export function nodeAnchors(node) {
   return (node.plugin.anchors?.(node.state) ?? []).map((a) => {
     const p = T.apply(node.world, a.x, a.y);
     return { id: a.id, x: p.x, y: p.y };
+  });
+}
+
+/**
+ * Pure function. A node's WORLD-space MODIFIER POINTS (manifest ARCHITECTURE
+ * PLAN #1 — the "PPT yellow squares"): [{id, x, y, apply}]. A modifier point
+ * is a highly-constrained draggable handle that writes ONE widget parameter
+ * along a restricted trajectory — NOT an anchor (not referencable in
+ * equations, not a snap feature). The plugin hook `modifierPoints(state)`
+ * returns LOCAL-space {id, x, y, apply(state, localPoint) → partial state}
+ * entries; this wraps their x/y through node.world for display/hit-testing,
+ * exactly like nodeAnchors wraps anchors — so consumers (the CanvasView
+ * overlay) never touch local space directly, and rotation is correct BY
+ * CONSTRUCTION: the point is drawn/hit in world space, and the drag handler
+ * inverts back through node.world before calling apply (see
+ * CanvasView.modifierDrag) — no plugin ever reasons about rotation itself.
+ *
+ * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {}}) // []
+ */
+export function nodeModifierPoints(node) {
+  return (node.plugin.modifierPoints?.(node.state) ?? []).map((m) => {
+    const p = T.apply(node.world, m.x, m.y);
+    return { id: m.id, x: p.x, y: p.y, apply: m.apply };
   });
 }
 

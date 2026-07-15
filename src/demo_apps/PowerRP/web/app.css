@@ -57,6 +57,25 @@
   --a-endpoint-stroke: 1.5px;
   --a-anchor-stroke: 1.5px;
   --a-anchor-opacity: 0.5; /* the spec's 50%-transparent X's */
+  /* MODIFIER POINTS (manifest ARCHITECTURE PLAN #1 — "the PPT yellow
+     squares"): a highly-constrained draggable handle, visually distinct from
+     the blue resize handles / amber endpoints. #ffc72c is PowerPoint's own
+     adjustment-handle yellow (the named precedent the manifest cites — "PPT-
+     yellow default"). PENDING USER RATIFICATION (the manifest flags this
+     exact value as unratified). Rim/stroke reuse the handle/endpoint sizing
+     tokens (--a-handle-rim/--a-handle-stroke) rather than inventing new ones —
+     only the fill color is new. */
+  --a-modifier: #ffc72c;
+  /* GHOST OBJECTS (manifest ARCHITECTURE PLAN #2): "a THIN 50%-GRAY BOUNDARY
+     OUTLINE". LINKED to --fg-dim, the existing per-theme neutral-gray token
+     (#8c8c8c graphite / #666 light / #94897b warm — already tuned per theme
+     for a "50%-ish" secondary-text gray), rather than inventing a fresh
+     color (manifest "no arbitrary constraints" rule) — this token exists so
+     ghost-outline styling has its own name/seam without hardcoding --fg-dim
+     directly into the overlay rule. Also reused as the "place" crosshair
+     tone (manifest CROSSHAIR MODE: "place = GRAY (--a-ghost tone)"). */
+  --a-ghost: var(--fg-dim);
+  --a-ghost-stroke: 1px; /* hairline-adjacent; LINKED to --a-guide-stroke's sizing precedent above */
 
   /* ── STANDARDIZED CONTROLS (manifest rule: a few standards, reused
      everywhere — never invent one-off button styles) ── */
@@ -408,10 +427,40 @@ body,
   cursor: grab;
 }
 
+/* MODIFIER POINTS (manifest ARCHITECTURE PLAN #1): yellow squares, drawn as
+   <rect> (not <circle> like .endpoint) so they read as visually distinct from
+   both the blue resize handles and the amber endpoint dots — a widget can
+   show endpoints AND modifier points at once (future arrow variants) and they
+   must not be confused at a glance. Rim/stroke reuse the handle sizing tokens
+   (only the fill color, --a-modifier, is new — see its :root definition). */
+.overlay .modifier {
+  fill: var(--a-modifier);
+  stroke: var(--a-handle-rim);
+  stroke-width: var(--a-handle-stroke);
+  cursor: grab;
+}
+
 .overlay .anchor {
   stroke: var(--a-anchor);
   stroke-width: var(--a-anchor-stroke);
   opacity: var(--a-anchor-opacity);
+  pointer-events: none;
+}
+
+/* GHOST-OUTLINE (manifest ARCHITECTURE PLAN #2): thin 50%-gray boundary for
+   widgets with no rendered volume (crop boxes always; other ghosts behind
+   the "Show Ghosts" toggle). pointer-events: none like every other overlay
+   decoration (.selection, .anchor, .guide) — the actual hit-test is
+   core/derive.pickNode's bbox fallback (a ghost with capabilities.bbox is
+   already clickable anywhere inside its box, same as any bbox widget); this
+   SVG element is purely the visual affordance so the box is DISCOVERABLE,
+   not the click target itself (an svg fill:none shape needs pointer-events
+   set to hit-test its interior anyway, which would duplicate/diverge from
+   the canvas's own world-space hit-testing — one hit-test path only). */
+.overlay .ghost-outline {
+  fill: none;
+  stroke: var(--a-ghost);
+  stroke-width: var(--a-ghost-stroke);
   pointer-events: none;
 }
 
@@ -871,7 +920,8 @@ audio.ae-preview-media {
 
 /* Label sits in the fixed first column; truncate (never wrap) so long labels
    ("Magnification") keep the value column's left edge aligned — the full text
-   is in the row's hover tooltip. */
+   is in the row's hover tooltip (now the canonical EQUATION PATH, not a
+   label echo — manifest "EQUATION DISCOVERABILITY"). */
 .inspector .label {
   color: var(--fg-dim);
   overflow: hidden;

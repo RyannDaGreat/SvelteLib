@@ -19,6 +19,7 @@
       ["add-arrow", "mdi:arrow-top-right", "Add Arrow"],
       ["add-magnifier", "mdi:magnify", "Add Magnifier"],
       ["add-blur", "mdi:blur", "Add Blur Layer"],
+      ["add-cropbox", "mdi:crop", "Add Crop Box"],
     ],
     [
       ["undo", "mdi:undo", "Undo (Cmd+Z)"],
@@ -104,6 +105,24 @@
       <span class="icon-stack">
         <iconify-icon icon="mdi:magnet" width="18" height="18"></iconify-icon>
         <iconify-icon class="icon-stack-overlay" icon="mdi:close" width="9" height="9"></iconify-icon>
+      </span>
+    </button>
+  </Tooltip>
+  <Tooltip text="Show Ghosts (crop box / empty-text / group outlines)">
+    <button
+      class="btn-icon"
+      class:active={app.showGhosts}
+      aria-label="Show Ghosts"
+      aria-pressed={app.showGhosts}
+      onclick={() => app.runCommand("toggle-ghosts")}
+    >
+      <!-- Composed eye + dashed-box (manifest ARCHITECTURE PLAN #2: "icon =
+           composed eye + dashed-box mdi, the magnet+anchor composition
+           precedent" — iconify-only rule, stacked mdi glyphs like the
+           anchor toggle above). -->
+      <span class="icon-stack">
+        <iconify-icon icon="mdi:square-outline" width="18" height="18"></iconify-icon>
+        <iconify-icon class="icon-stack-overlay" icon="mdi:eye-outline" width="11" height="11"></iconify-icon>
       </span>
     </button>
   </Tooltip>

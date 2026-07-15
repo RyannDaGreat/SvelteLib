@@ -382,3 +382,90 @@ fn fs(in: MagOut) -> @location(0) vec4f {
   return c * in.misc.y;
 }
 `;
+
+/**
+ * The crop-box pipeline (manifest ARCHITECTURE PLAN #3) — the SAME "re-render
+ * a sub-scene into a texture, then sample it through an SDF-masked quad" shape
+ * as MAGNIFY_WGSL, with two differences: the SDF is a ROUNDED RECT (the exact
+ * sdRoundBox formula SHAPE_WGSL's rect kind already uses — "reuse the lens
+ * clip+replay machinery with a rounded-rect region", extended minimally) in
+ * place of a circle, and there is no magnification (the crop box re-renders
+ * its target 1:1 — q = p always; the "backdrop sampling" soft path doesn't
+ * apply either, since a crop box's content is ONE named subtree, not
+ * everything below it — see gpu/compositor.js's cropSubtree batch, which
+ * therefore always re-renders and never falls back to a backdrop sample). A
+ * dedicated pipeline (not a MAGNIFY_WGSL branch) because the params differ in
+ * shape (half-size + corner radius vs. radius + magnification) and adding a
+ * shape discriminator to the shared QUAD_FLOATS stride would touch the
+ * tex/video pipelines that stride also serves — a fresh small instance layout
+ * is the minimal, lowest-risk extension.
+ */
+export const CROP_WGSL = VIEW_WGSL + /* wgsl */ `
+@group(1) @binding(0) var samp: sampler;
+@group(1) @binding(1) var content: texture_2d<f32>;
+// Same sample-rect convention as MAGNIFY_WGSL: (originX, originY, texW, texH)
+// of the device-px region the bound texture's content occupies.
+struct CropU { rect: vec4f };
+@group(1) @binding(2) var<uniform> u: CropU;
+
+struct CropOut {
+  @builtin(position) pos: vec4f,
+  @location(0) @interpolate(flat) box: vec4f,   // (centerDevX, centerDevY, halfWDev, halfHDev)
+  @location(1) @interpolate(flat) rDev: f32,
+  @location(2) @interpolate(flat) fill: vec4f,
+  @location(3) @interpolate(flat) stroke: vec4f,
+  @location(4) @interpolate(flat) misc: vec4f,  // (strokeWidthDev, opacity, 0, 0)
+};
+
+@vertex
+fn vs(
+  @location(0) corner: vec2f,
+  @location(1) i_quad: vec4f,
+  @location(2) i_xform: vec4f,
+  @location(3) i_box: vec4f,    // (centerWorldX, centerWorldY, halfWWorld, halfHWorld)
+  @location(4) i_rWorld: vec4f, // (cornerRadiusWorld, 0, 0, 0)
+  @location(5) i_fill: vec4f,
+  @location(6) i_stroke: vec4f,
+  @location(7) i_misc: vec4f,   // (strokeWidthWorld, opacity, 0, 0)
+) -> CropOut {
+  let local = i_quad.xy + corner * i_quad.zw;
+  var out: CropOut;
+  out.pos = world_to_clip(apply_xform(i_xform, local));
+  let center_dev = i_box.xy * view.scale_pan.x + view.scale_pan.yz;
+  out.box = vec4f(center_dev, i_box.zw * view.scale_pan.x);
+  out.rDev = i_rWorld.x * view.scale_pan.x;
+  out.fill = i_fill;
+  out.stroke = i_stroke;
+  out.misc = vec4f(i_misc.x * view.scale_pan.x, i_misc.yzw);
+  return out;
+}
+
+@fragment
+fn fs(in: CropOut) -> @location(0) vec4f {
+  let p = in.pos.xy;
+  let center = in.box.xy;
+  let half_size = in.box.zw;
+  // sdRoundBox (Inigo Quilez) — the SAME formula SHAPE_WGSL's rect kind uses,
+  // so a crop box's clip edge is pixel-identical to a plain rounded rect's.
+  let r = min(in.rDev, min(half_size.x, half_size.y));
+  let q = abs(p - center) - half_size + vec2f(r);
+  let d = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - r;
+
+  // The bound texture is the target's 1:1 re-render (no magnification — see
+  // header); q maps straight through to its UV space.
+  let uv = (p - u.rect.xy) / u.rect.zw;
+  let sw = in.misc.x;
+  let cov_region = coverage(d);
+  let cov_stroke = coverage(abs(d) - sw * 0.5);
+  // Fill first (premultiplied, like SHAPE_WGSL's fill_p), then the content
+  // re-render composites OVER it (a transparent target region shows the
+  // fill through, matching a plain box with nothing inside), then the stroke
+  // on top — SAME z-order as the emit() doc comment: [fill, clipped target, border].
+  var c = vec4f(in.fill.rgb, 1.0) * (in.fill.a * cov_region);
+  let content_s = textureSampleLevel(content, samp, uv, 0.0) * cov_region;
+  c = content_s + c * (1.0 - content_s.a);
+  let stroke_p = select(vec4f(0.0), vec4f(in.stroke.rgb, 1.0) * (in.stroke.a * cov_stroke), sw > 0.0);
+  c = stroke_p + c * (1.0 - stroke_p.a);
+  return c * in.misc.y;
+}
+`;

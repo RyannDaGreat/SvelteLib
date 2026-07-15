@@ -25,11 +25,17 @@
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
  *   {op:"magnifyBackdrop", cx, cy, r, magnification, rimColor, rimWidth, opacity, supersample}
+ *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
  *
  * Backdrop-effect nodes consume the composite-so-far (everything already
  * emitted), replacing the canvas2D full-canvas snapshot with a GPU texture
  * pass. Command order IS z-order: the scene compositor sorts nodes by z
  * before emitting, and backends never reorder across a backdrop boundary.
+ * cropSubtree is NOT a backdrop sampler (it doesn't read the composite-so-far
+ * — its `content` is a self-contained re-interpretable IR list, the target
+ * item's own commands) but backends implement it with the same "re-render a
+ * sub-list through a clip" machinery as magnifyBackdrop (manifest: reuse the
+ * lens clip+replay machinery with a rounded-rect region).
  *
  * `ref` keeps the IR JSON-serializable: raster backends resolve refs through
  * a media registry {ref → HTMLImageElement/HTMLVideoElement}; vector backends
@@ -272,6 +278,36 @@ export function magnifyBackdrop({ cx, cy, r, magnification, rimColor = null, rim
   };
 }
 
+/**
+ * Pure function. Crop-box effect node (manifest ARCHITECTURE PLAN #3): fills a
+ * rounded-rect region, then clips+re-emits `content` (the target item's OWN
+ * local-space commands, already wrapped in a pushTransform/popTransform pair
+ * mapping the target's local space into the crop box's local space — the
+ * caller, sceneIR, builds that composed transform since it alone knows both
+ * nodes' world transforms), then strokes the border. `content` is plain IR
+ * (JSON-serializable, re-interpretable) — the SAME "re-emit a sub-list
+ * through a clip" trick as magnifyBackdrop, generalized from a circle to a
+ * rounded-rect region and from "everything below in z-order" to ONE named
+ * subtree. An empty/absent `content` (dangling target) still paints the
+ * fill/border (the crop box's ghost outline covers pickability; this covers
+ * its visible chrome, matching a plain box with nothing inside it).
+ *
+ * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, content: []}).op // "cropSubtree"
+ * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, cornerRadius: 2, content: []}).cornerRadius // 2
+ * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, content: []}).fill // null
+ */
+export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null, strokeWidth = 0, opacity = 1, content = [] }) {
+  requireFinite("cropSubtree", { x, y, w, h, cornerRadius, strokeWidth, opacity });
+  if (!Array.isArray(content)) throw new Error(`cropSubtree: "content" must be an array, got ${JSON.stringify(content)}`);
+  return {
+    op: "cropSubtree", x, y, w, h,
+    cornerRadius: Math.max(0, cornerRadius),
+    fill: fill === null ? null : parseColor(fill),
+    stroke: stroke === null ? null : parseColor(stroke),
+    strokeWidth, opacity, content,
+  };
+}
+
 // ── flattening ───────────────────────────────────────────────────────────────
 
 /**
@@ -310,4 +346,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "text", "image", "video", "blurBackdrop", "magnifyBackdrop"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "text", "image", "video", "blurBackdrop", "magnifyBackdrop", "cropSubtree"];

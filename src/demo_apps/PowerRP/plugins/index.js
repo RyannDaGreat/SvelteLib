@@ -14,8 +14,10 @@ import { filmstripPlugin } from "./filmstrip.js";
 import { magnifierPlugin } from "./magnifier.js";
 import { blurPlugin } from "./blur.js";
 import { cameraPlugin } from "./camera.js";
+import { cropboxPlugin } from "./cropbox.js";
+import { donutPlugin } from "./donut.js";
 
-export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin];
+export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

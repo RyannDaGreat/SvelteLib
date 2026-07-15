@@ -12,7 +12,7 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
-  import { pickNode, nodeFeatures, nodeAnchors, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld } from "../core/derive.js";
+  import { pickNode, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { THUMB_W, worldViewRect, canSkipNode } from "../core/view.js";
@@ -567,6 +567,7 @@
     if (drag.kind === "move") moveDrag(e, w);
     else if (drag.kind === "resize") resizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
+    else if (drag.kind === "modifier") modifierDrag(w);
     else if (drag.kind === "band") bandDrag(w);
     // "shiftpick" = a deferred shift-click on a NON-draggable item: no drag
     // behavior, only the slop tracking above, so the pointer path does nothing.
@@ -1006,6 +1007,59 @@
     ]);
   }
 
+  // ── Modifier point drag (manifest ARCHITECTURE PLAN #1) ───────────────────
+  // A modifier point is a highly-constrained handle that writes ONE widget
+  // parameter along a restricted trajectory (donut's inner-radius proportion
+  // is the first consumer). The drag kind mirrors "endpoint" (a single-point
+  // grab captured on the overlay) but routes through the plugin's own
+  // apply(state, localPoint) instead of writing x/y directly — CanvasView
+  // never reasons about WHAT the point controls, only WHERE it is and how to
+  // invert a world-space drag back to local before handing it to the plugin.
+  // Rotation/scale are correct BY CONSTRUCTION: nodeModifierPoints already
+  // wrapped the point through node.world for display and hit-testing, and
+  // here the drag point is inverted back through the SAME node.world before
+  // apply() ever sees it — apply operates entirely in the item's own local
+  // frame, exactly as if it were unrotated.
+
+  function startModifier(id, e) {
+    const node = app.selectedNode();
+    if (!node) return;
+    e.stopPropagation();
+    overlayEl.setPointerCapture(e.pointerId);
+    hoverAnchor = null; // pre-drag hover tip must not linger stale
+    drag = { kind: "modifier", itemId: node.itemId, modifierId: id, world: node.world };
+    app.dragging = true;
+    app.dragKind = "modifier";
+  }
+
+  function modifierDrag(w) {
+    const node = app.nodes().find((n) => n.itemId === drag.itemId);
+    if (!node) return; // item vanished mid-drag (e.g. purged elsewhere) — nothing to preview
+    const mp = nodeModifierPoints(node).find((m) => m.id === drag.modifierId);
+    if (!mp?.apply) return;
+    const local = T.apply(T.invert(drag.world), w.x, w.y);
+    const pairs = Object.entries(mp.apply(node.state, local))
+      .map(([key, value]) => [["items", drag.itemId, key], value]);
+    if (pairs.length) app.setPreview(pairs);
+  }
+
+  /** Command. Esc-cancels an in-progress modifier-point drag (manifest: "Esc
+   * cancels"): drops the preview (reverting to the committed pose, exactly
+   * like modal cancelPreview) and releases drag bookkeeping. A no-op unless a
+   * modifier drag is actually live — called by the capture-phase keydown
+   * listener below (this task's fence keeps the Escape wiring self-contained
+   * in CanvasView rather than App.svelte's shortcut registry); guarding on
+   * dragKind === "modifier" means it never touches a move/resize/endpoint/
+   * band drag (those have no Esc-cancel yet — out of this task's fence). */
+  function cancelModifierDrag() {
+    if (drag?.kind !== "modifier") return;
+    drag = null;
+    hoverAnchor = null;
+    app.dragging = false;
+    app.dragKind = null;
+    app.cancelPreview();
+  }
+
   function onPointerLeave() {
     if (!drag && !modal) screenMouse = null; // hide ruler markers on leave (not mid-gesture)
   }
@@ -1280,11 +1334,35 @@
     app.modalBackspace = () => { if (modal) modalBackspace(); };
   });
 
+  // Modifier-point drag Esc-cancel (manifest ARCHITECTURE PLAN #1: "Esc
+  // cancels"). NOT routed through App.svelte's shortcut registry (out of this
+  // task's fence — CanvasView owns "modifier overlay + drag kind ONLY") — a
+  // dedicated CAPTURE-phase window listener, the SAME pattern SvelteLib's
+  // Dropdown.svelte uses for its outside-click dismiss (document.addEventListener
+  // with the capture flag). Capture matters here specifically: App.svelte's own
+  // "Escape" shortcut entries dispatch on the BUBBLE phase (its
+  // <svelte:window onkeydown>), and one of them (`deselect`, when:
+  // editSelection) has no drag-kind guard — it would clear app.selection out
+  // from under an in-progress modifier drag if it ran first. Capture always
+  // runs before bubble regardless of listener registration order, so
+  // stopPropagation here reliably pre-empts it — but ONLY while a modifier
+  // drag is actually live (every other key, and Escape with no modifier drag
+  // active, passes through untouched to App's normal dispatch).
+  $effect(() => {
+    const onKeydownCapture = (e) => {
+      if (e.key !== "Escape" || drag?.kind !== "modifier") return;
+      e.stopPropagation();
+      cancelModifierDrag();
+    };
+    window.addEventListener("keydown", onKeydownCapture, true);
+    return () => window.removeEventListener("keydown", onKeydownCapture, true);
+  });
+
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; sizeIndicators; bandRect; bandCandidates; modalCenter;
-    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null };
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandCandidates; modalCenter;
+    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null, ghostOutlines: [] };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -1326,6 +1404,15 @@
         endpoints.push({ which: p.key, ...actions.worldToScreen(p.x, p.y) });
     }
 
+    // MODIFIER POINTS (manifest ARCHITECTURE PLAN #1): the SELECTED item's
+    // yellow squares only — same single-selection scope as resize handles/
+    // edit points (a multi-selection has no single widget's parameter to
+    // scrub). nodeModifierPoints already wraps local→world through node.world,
+    // so rotation/scale need no special handling here — same as anchors.
+    const modifiers = selectedIds.length === 1 && sel
+      ? nodeModifierPoints(sel).map((m) => ({ id: m.id, ...actions.worldToScreen(m.x, m.y) }))
+      : [];
+
     // In-progress rubber band: the box itself (world-axis-aligned, so two
     // corners suffice) + preview outlines on the current candidates.
     let band = null, bandOutlines = [];
@@ -1339,6 +1426,16 @@
 
     const anchors = (app.anchorsVisible ? nodes : []).flatMap((n) =>
       nodeAnchors(n).map((a) => actions.worldToScreen(a.x, a.y)));
+
+    // GHOST-OUTLINE (manifest ARCHITECTURE PLAN #2): widgets with no rendered
+    // volume draw a thin outline so they stay selectable. Crop boxes show
+    // ALWAYS (unclickable otherwise — the spec's "outline always visible in
+    // the editor"); other ghosts (future: empty text, groups) only when the
+    // "Show Ghosts" toggle is on. Editor-only chrome — never reaches sceneIR/
+    // the GPU composite, so it never exports/presents.
+    const ghostOutlines = nodes
+      .filter((n) => isGhostNode(n) && n.plugin.capabilities.bbox && (n.type === "cropbox" || app.showGhosts))
+      .map(outlineOf);
 
     const guideSegs = guides.flatMap((g) => {
       if (g.kind === "point") {
@@ -1369,7 +1466,7 @@
     // affordance; no new styling).
     const scalePivot = modalCenter ? actions.worldToScreen(modalCenter.x, modalCenter.y) : null;
 
-    return { outlines, handles, anchors, guideSegs, endpoints, sizeArrows, band, bandOutlines, scalePivot };
+    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines };
   });
 </script>
 
@@ -1435,6 +1532,15 @@
             marker-end="url(#size-arrow-end)"
           />
         {/each}
+        <!-- GHOST-OUTLINE (manifest ARCHITECTURE PLAN #2): thin 50%-gray
+             boundary so ghosts (no rendered volume of their own — crop boxes
+             ALWAYS, other ghosts behind the "Show Ghosts" toggle) stay
+             clickable. Editor-only chrome — never reaches the GPU composite
+             (never exports/presents). Drawn BELOW the selection outline so a
+             selected ghost still reads as selected on top of it. -->
+        {#each overlay.ghostOutlines as o}
+          <polygon class="ghost-outline" points={o} />
+        {/each}
         {#each overlay.outlines as o}
           <polygon class="selection" points={o} />
         {/each}
@@ -1453,6 +1559,19 @@
             class="endpoint"
             cx={ep.x} cy={ep.y} r="6"
             onpointerdown={(e) => startEndpoint(ep.which, e)}
+          />
+        {/each}
+        {#each overlay.modifiers as m}
+          <!-- MODIFIER POINTS (manifest ARCHITECTURE PLAN #1 — "the PPT
+               yellow squares"): drawn as a square (not the endpoints' circle)
+               at the SAME 8px footprint as ResizeHandles, so the three handle
+               families (blue resize squares, amber endpoint dots, yellow
+               modifier squares) are each visually distinct at a glance. -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <rect
+            class="modifier"
+            x={m.x - 4} y={m.y - 4} width="8" height="8"
+            onpointerdown={(e) => startModifier(m.id, e)}
           />
         {/each}
         {#each overlay.anchors as a}

@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { signedArea, pointInPolygon, distToSegment, triangulated, fancyArrowOutline, closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
+import { signedArea, pointInPolygon, distToSegment, triangulated, fancyArrowOutline, closestPointOnRoundedRect, roundedRectAnchorPoint, donutOutline } from "../core/outline.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -189,6 +189,63 @@ test("roundedRectAnchorPoint: corners slide to the rim, edges/center stay, r=0 i
   assert.deepEqual(roundedRectAnchorPoint(RW, RH, ON_RIM_R, "cm", 100, 60), { x: 100, y: 60 });
   // r=0 → the square corner verbatim.
   assert.deepEqual(roundedRectAnchorPoint(RW, RH, 0, "tr", RW, 0), { x: RW, y: 0 });
+});
+
+// ── donutOutline (GENERATOR #2: the DONUT widget's annulus) ──────────────────
+
+test("donutOutline: area matches the annulus formula π(R²−r²) within tessellation error", () => {
+  const pts = donutOutline({ cx: 0, cy: 0, outerR: 10, inner: 0.5 });
+  const expected = Math.PI * (100 - 25); // R=10, r=5
+  // 64-gon approximation of a circle underestimates area slightly (inscribed
+  // polygon) — 1% tolerance comfortably covers the discretization error.
+  approx(Math.abs(signedArea(pts)), expected, expected * 0.01);
+});
+
+test("donutOutline: triangulates cleanly (simple polygon via the winding-reversed slit) and area partitions exactly", () => {
+  const pts = donutOutline({ cx: 0, cy: 0, outerR: 10, inner: 0.5 });
+  const tris = triangulated(pts);
+  approx(totalArea(tris), Math.abs(signedArea(pts)));
+});
+
+test("donutOutline: the hole is really empty (center outside) and the ring band is filled", () => {
+  const pts = donutOutline({ cx: 0, cy: 0, outerR: 10, inner: 0.5 });
+  // Off-axis (45°) query points avoid the zero-width slit lying on angle 0,
+  // which is a ray-casting edge case for any point exactly on the seam axis.
+  const at = (r) => [r * Math.SQRT1_2, r * Math.SQRT1_2];
+  assert.equal(pointInPolygon(pts, ...at(0)), false, "center is the hole");
+  assert.equal(pointInPolygon(pts, ...at(2)), false, "inside the hole (r=2 < inner 5)");
+  assert.equal(pointInPolygon(pts, ...at(7.5)), true, "in the ring band (5 < r=7.5 < 10)");
+  assert.equal(pointInPolygon(pts, ...at(12)), false, "outside the outer rim");
+});
+
+test("donutOutline: inner=0 degenerates to a filled disk (full area, no hole)", () => {
+  const pts = donutOutline({ cx: 0, cy: 0, outerR: 10, inner: 0 });
+  approx(Math.abs(signedArea(pts)), Math.PI * 100, Math.PI * 100 * 0.01);
+  const tris = triangulated(pts);
+  approx(totalArea(tris), Math.abs(signedArea(pts)));
+});
+
+test("donutOutline: inner clamps below 1 (near-zero ring band, never a zero-area polygon)", () => {
+  const pts = donutOutline({ cx: 0, cy: 0, outerR: 10, inner: 1 });
+  assert.ok(Math.abs(signedArea(pts)) > 0, "still has SOME fill area (clamped strictly below 1)");
+  assert.ok(Math.abs(signedArea(pts)) < Math.PI * 5, "but a thin band (clamped very close to 1)");
+});
+
+test("donutOutline: zero outer radius → [] (no geometry, matches fancyArrowOutline's zero-length convention)", () => {
+  assert.deepEqual(donutOutline({ cx: 5, cy: 5, outerR: 0, inner: 0.5 }), []);
+});
+
+test("donutOutline: triangulates at an off-origin center with a thick ring (regression — a symmetric 64-gon annulus centered away from the origin used to hit an EXACT-collinearity knife-edge in triangulated()'s ear-clipping that a mathematically-identical origin-centered construction did not; fixed by donutOutline's own per-vertex angular jitter, not by weakening triangulated())", () => {
+  // The exact reproduction: cx=cy=55, outerR=55, inner=0.15 (a small hole)
+  // used to throw "no ear found" at 69 vertices remaining, while the
+  // byte-different-but-mathematically-identical cx=cy=0 construction
+  // triangulated fine — a pure floating-point-path artifact, not a real
+  // self-intersection (independently verified: zero segment crossings).
+  for (const [cx, cy] of [[0, 0], [55, 55], [460, 200], [-300, 5000]]) {
+    const pts = donutOutline({ cx, cy, outerR: 55, inner: 0.15 });
+    const tris = triangulated(pts);
+    approx(totalArea(tris), Math.abs(signedArea(pts)), Math.abs(signedArea(pts)) * 1e-6);
+  }
 });
 
 console.log(`\n${passed} outline tests passed`);
