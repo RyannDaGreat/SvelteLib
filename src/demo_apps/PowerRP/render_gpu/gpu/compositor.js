@@ -58,6 +58,7 @@ import * as T from "../../core/transform.js";
 import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
 import { ensureImage, getImage } from "./image_registry.js";
+import { ensureVideo, getVideo } from "./video_registry.js";
 
 /** Extra device px around each SDF quad so antialiased edges never clip. */
 const AA_MARGIN_DEVICE = 2;
@@ -516,6 +517,32 @@ export class GpuCompositor {
     return null;
   }
 
+  /**
+   * Query+Command (near-pure: kicks idempotent element creation). The
+   * `<video>` element for a ref if it has a current frame, else null.
+   * Resolution order mirrors _imageSource:
+   *   1. this.media[ref] — a `<video>`/`<canvas>` the web layer registered
+   *      explicitly (the media-map override path; unused by the plugin today).
+   *   2. the shared video_registry — the `<video>` element for a src string,
+   *      THE path the video widget uses (no web-layer media plumbing). If the
+   *      element doesn't exist yet, ensureVideo creates it (default flags:
+   *      autoplay+loop+muted, the plugin defaults — a widget that overrode a
+   *      flag already called ensureVideo with its own, so this is a no-op
+   *      there) and this returns null (draw nothing this frame; the registry's
+   *      onVideoFrame wakes a repaint when a frame lands).
+   * Returns null instead of throwing on a not-yet-decoded src (in-flight is
+   * normal — the manifest async rule); a genuine load FAILURE is the registry's
+   * loud console.error, and stays null here.
+   */
+  _videoSource(ref) {
+    const explicit = this.media[ref];
+    if (explicit) return explicit;
+    const el = getVideo(ref);
+    if (el) return el;
+    ensureVideo(ref); // idempotent; default flags — a flagged widget created it first
+    return null;
+  }
+
   /** Query+Command (uploads on first use). GPU texture for a READY image ref
    * (caller guarantees _imageSource(ref) was non-null this frame). */
   _imageBindGroup(ref) {
@@ -707,11 +734,15 @@ export class GpuCompositor {
           break;
         }
         case "video": {
-          const source = this.media[batch.ref];
-          if (!source) throw new Error(`GpuCompositor: no media registered for video ref "${batch.ref}"`);
-          // No decoded frame yet (still loading/seeking) → nothing to draw,
-          // by design: the frame genuinely doesn't exist.
-          if (source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) break;
+          // The source resolves through the shared video_registry (or an
+          // explicit media-map override) — _videoSource returns the `<video>`
+          // ONLY when it has a current frame, else null (still loading/seeking:
+          // nothing to draw, by design — the frame genuinely doesn't exist; the
+          // registry's onVideoFrame nudges a repaint when it lands). Mirrors the
+          // image path's _imageSource skip-and-notify; NO media registration
+          // required, so no create() call site needs a media map.
+          const source = this._videoSource(batch.ref);
+          if (!source) break;
           const external = d.importExternalTexture({ source });
           const bindGroup = d.createBindGroup({
             layout: this.videoBGL,
@@ -979,7 +1010,7 @@ export class GpuCompositor {
           const snap = mb === 0 && Math.abs(devicePx / bucket - 1) < 0.01;
           let pen = cmd.x;
           for (const ch of cmd.text) {
-            const m = this.atlas.measure(ch, bucket, cmd.bold);
+            const m = this.atlas.measure(ch, bucket, cmd.bold, cmd.font);
             let qx = pen - m.pad * localScale, qy = cmd.y - m.pad * localScale;
             const qw = m.cellW * localScale, qh = m.cellH * localScale;
             pen += m.advance * localScale;
@@ -1001,7 +1032,7 @@ export class GpuCompositor {
               if (dy > maxDY) maxDY = dy;
             }
             if (maxDX < 0 || minDX > cW || maxDY < 0 || minDY > cH) continue;
-            const e = this.atlas.get(ch, bucket, cmd.bold);
+            const e = this.atlas.get(ch, bucket, cmd.bold, cmd.font);
             const at = quadInstance("tex", null);
             const f = this.quadArr.f32;
             f.set([qx, qy, qw, qh], at);
@@ -1029,8 +1060,14 @@ export class GpuCompositor {
           break;
         }
         case "video": {
-          // Video readiness is checked at ENCODE time (importExternalTexture
-          // needs a live decoded frame — see _encodeScene's "video" case).
+          // A video draws only once its element has a CURRENT frame. No frame
+          // yet → skip the instance entirely (nothing packed, no batch): the
+          // frame draws nothing for it, _videoSource has kicked element
+          // creation, and video_registry.onVideoFrame wakes a repaint when a
+          // frame lands (the manifest async rule — no silent placeholder). This
+          // mirrors the image op's skip; importExternalTexture re-checks
+          // readiness at encode time regardless (see _encodeScene's "video").
+          if (!this._videoSource(cmd.ref)) break;
           const at = quadInstance("video", cmd.ref);
           const f = this.quadArr.f32;
           f.set([cmd.x, cmd.y, cmd.w, cmd.h], at);

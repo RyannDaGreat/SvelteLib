@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import {
   pdfNum, cmSimilarity, rectPath, ellipsePath, pointsPath, paintOp,
   balancedSlice, magnifiedView, hasTextOp, tjHex, irToPDF, MAX_LENS_DEPTH,
-  imageRefs, decodeDataUri, base64ToBytes, imageFormat,
+  imageRefs, videoRefs, decodeDataUri, base64ToBytes, imageFormat,
 } from "../pdf_backend.js";
 import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video } from "../ir.js";
 import { scenes } from "./pdf_scenes.js";
@@ -107,9 +107,14 @@ test("imageFormat: PNG/JPEG magic, loud on else", () => {
 });
 
 // ── full-document structural assertions ─────────────────────────────────────
+// A video scene's current-frame resolver: the still-frame fixture stands in for
+// the browser's <video> grab (a STILL clip's frame is deterministic). The
+// checker PNG is a real, non-blank frame, so it embeds an XObject.
+const stubVideoFrame = async () => ({ mime: "image/png", bytes: base64ToBytes(CHECKER_PNG_DATA_URI.split(",")[1]) });
 const OPTS = (scene) => ({
   width: scene.width, height: scene.height, view: scene.view,
   background: scene.background, rasterize: stubRasterize,
+  videoFrame: scene.video ? stubVideoFrame : null,
 });
 
 for (const scene of scenes()) {
@@ -127,9 +132,10 @@ for (const scene of scenes()) {
     if (scene.vectorText) assert.ok(s.includes("Tf"), "font selection operator");
 
     // An image XObject exists iff the scene needs a raster region (any blur —
-    // the hybrid rule) OR embeds an image widget (a non-blank image op).
-    const wantsImage = scene.commands.some((c) => c.op === "blurBackdrop" || c.op === "image");
-    assert.equal(s.includes("/Subtype /Image"), wantsImage, `image XObject iff blur or image op (${scene.name})`);
+    // the hybrid rule) OR embeds an image widget (a non-blank image op) OR
+    // embeds a video's current frame (a non-blank video op, same XObject path).
+    const wantsImage = scene.commands.some((c) => c.op === "blurBackdrop" || c.op === "image" || c.op === "video");
+    assert.equal(s.includes("/Subtype /Image"), wantsImage, `image XObject iff blur or image/video op (${scene.name})`);
 
     const hasLens = scene.commands.some((c) => c.op === "magnifyBackdrop");
     if (hasLens) assert.ok(s.includes("W n"), "lens clip path present");
@@ -198,11 +204,37 @@ await atest("blank 1x1 transparent src draws nothing (no XObject)", async () => 
   );
   assert.ok(!latin1(bytes).includes(" Do"), "no XObject draw for a blank src");
 });
-await atest("video op still throws loudly (video plugin unbuilt)", async () => {
+await atest("video op WITHOUT a videoFrame resolver throws loudly (no silent drop)", async () => {
   await assert.rejects(
     () => irToPDF([video({ ref: "x", x: 0, y: 0, w: 10, h: 10 })], { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } }),
-    /not supported yet/,
+    /video op but no videoFrame resolver/,
   );
+});
+await atest("video op embeds its CURRENT FRAME as an XObject and places it", async () => {
+  // The resolver returns the current frame as PNG bytes (a real 64x48 fixture,
+  // so it is NOT the blank 1x1 that maps to null) — the browser grabs the
+  // <video> element's frame; here the still-frame fixture stands in.
+  const frameBytes = base64ToBytes(CHECKER_PNG_DATA_URI.split(",")[1]);
+  const videoFrame = async () => ({ mime: "image/png", bytes: frameBytes });
+  const bytes = await irToPDF(
+    [video({ ref: "clip", x: 10, y: 20, w: 80, h: 60 })],
+    { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff", videoFrame },
+  );
+  const s = latin1(bytes);
+  assert.ok(s.startsWith("%PDF-"), "is a PDF");
+  assert.ok(s.includes(" Do"), "places the video-frame XObject");
+});
+await atest("video op with a BLANK/undrawable current frame draws nothing (matches GPU skip)", async () => {
+  const videoFrame = async () => null; // resolver reports no drawable frame
+  const bytes = await irToPDF(
+    [video({ ref: "clip", x: 0, y: 0, w: 50, h: 50 })],
+    { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff", videoFrame },
+  );
+  assert.ok(!latin1(bytes).includes(" Do"), "no XObject draw for a blank frame");
+});
+test("videoRefs: distinct, order-preserving, deduped", () => {
+  assert.deepEqual(videoRefs([{ op: "video", ref: "a" }, { op: "rect" }, { op: "video", ref: "a" }, { op: "video", ref: "b" }]), ["a", "b"]);
+  assert.deepEqual(videoRefs([{ op: "rect" }]), []);
 });
 
 await atest("tjHex encodes and escapes via the font", async () => {

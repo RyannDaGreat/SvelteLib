@@ -219,6 +219,21 @@ export function imageRefs(commands) {
 }
 
 /**
+ * Pure function. The DISTINCT video refs in an IR list (each embeds ONE
+ * current-frame image, like image refs). Order-preserving, deduped.
+ *
+ * @example videoRefs([{op: "video", ref: "clip"}, {op: "rect"}, {op: "video", ref: "clip"}]) // ["clip"]
+ * @example videoRefs([{op: "rect"}]) // []
+ */
+export function videoRefs(commands) {
+  const seen = new Set();
+  const out = [];
+  for (const c of commands)
+    if (c.op === "video" && !seen.has(c.ref)) { seen.add(c.ref); out.push(c.ref); }
+  return out;
+}
+
+/**
  * Pure function. Decodes a `data:` URI to {mime, bytes}. Only base64 payloads
  * are supported (that is what the image widget and drops produce); a non-base64
  * or non-data URI is a loud error (callers fetch URLs separately).
@@ -297,6 +312,14 @@ async function loadImageBytes(ref) {
  *     the glyph atlas's font stack so PDF baselines land exactly where the
  *     GPU puts them; null → the PDF font's own AFM Ascender (correct for
  *     the PDF font, but a different face than the atlas's system-ui).
+ *   opts.videoFrame (async fn|null): (ref) → {mime, bytes} of the video's
+ *     CURRENT FRAME as a PNG/JPEG (the manifest rule: PDF export of a video
+ *     is a current-frame raster embed), or null for a blank/undrawable src.
+ *     This keeps the backend DOM-free: a browser caller grabs the `<video>`
+ *     element's current frame to a canvas → PNG here; node tests pass a
+ *     fixture resolver (a STILL video's frame is deterministic — the sparkler
+ *     rule). null → a scene containing a video op THROWS loudly (no silent
+ *     drop) — a video export needs its frame resolver.
  *
  * Returns:
  *   Promise<Uint8Array>: the PDF file bytes
@@ -304,12 +327,13 @@ async function loadImageBytes(ref) {
  * @example // await irToPDF(sceneIR(nodes), {width: 1280, height: 720, view: fitRectView(camRect, 1280, 720, 1), background: "#ffffff", rasterize}) → Uint8Array starting "%PDF-"
  * @example // no-effect scenes need no rasterize: await irToPDF([rect({...})], {width: 100, height: 100, view: {zoom: 1, panX: 0, panY: 0}})
  */
-export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = 2, textAscent = null }) {
+export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = 2, textAscent = null, videoFrame = null }) {
   const doc = await PDFDocument.create();
   const page = doc.addPage([width, height]);
-  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent);
+  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent, videoFrame);
   if (hasTextOp(commands)) await ctx.ensureFonts(); // sub-lists are slices, so scanning the top list covers lens re-emits
   await ctx.ensureImages(imageRefs(commands)); // embed image XObjects up-front — emit is synchronous per command (same seam as fonts)
+  await ctx.ensureVideoFrames(videoRefs(commands)); // grab + embed each video's current frame as an XObject (same up-front seam)
 
   const out = [];
   out.push("q");
@@ -485,11 +509,21 @@ function emitVector(cmd, world, out, ctx) {
       ops.push(`${n(cmd.w)} 0 0 ${n(-cmd.h)} ${n(cmd.x)} ${n(cmd.y + cmd.h)} cm`, `/${name} Do`);
       break;
     }
-    case "video":
-      // The video PLUGIN is out of scope (a separate future task): its PDF
-      // representation is a current-frame raster embed, which needs the media
-      // element the image path doesn't. Loud until then — no silent drop.
-      throw new Error(`pdf_backend: "video" op not supported yet (the video plugin's current-frame raster embed lands with that plugin)`);
+    case "video": {
+      // CURRENT-FRAME raster embed (manifest: a video exports to PDF as its
+      // current frame). The grabbed frame was pre-embedded as an image XObject
+      // by ensureVideoFrames; here we place it exactly like the image case
+      // (y-flip cm so the frame's top row lands at the rect's visual top,
+      // opacity via ExtGState). A CLI/deterministic export shows the
+      // poster/first frame (the sparkler rule) — the frame the resolver grabs.
+      const name = ctx.videoXObject(cmd.ref);
+      if (name === null) return; // src had no drawable frame (blank/undecoded) — draw nothing, matching the GPU skip
+      const gs = ctx.gsAlphaPair(cmd.opacity ?? 1, 1);
+      if (gs) ops.push(gs);
+      const n = pdfNum;
+      ops.push(`${n(cmd.w)} 0 0 ${n(-cmd.h)} ${n(cmd.x)} ${n(cmd.y + cmd.h)} cm`, `/${name} Do`);
+      break;
+    }
     default:
       throw new Error(`pdf_backend: unknown op "${cmd.op}"`);
   }
@@ -517,16 +551,18 @@ function paintSetup(fill, stroke, strokeWidth, opacity, ctx) {
  * (mutates the pdf-lib document).
  */
 class PdfAssembly {
-  constructor(doc, page, rasterize, rasterScale, textAscent = null) {
+  constructor(doc, page, rasterize, rasterScale, textAscent = null, videoFrame = null) {
     this.doc = doc;
     this.page = page;
     this.rasterize = rasterize;
     this.rasterScale = rasterScale;
     this.textAscent = textAscent;
+    this.videoFrame = videoFrame; // (ref) → {mime, bytes} of the current frame, or null
     this._fonts = {};     // F1 (regular) / F1B (bold) → PDFFont
     this._gs = new Map(); // "ca,CA" → ExtGState name
     this._imgCount = 0;
     this._imageXObjects = new Map(); // image ref → XObject name, or null (blank/undrawable src)
+    this._videoXObjects = new Map(); // video ref → XObject name, or null (blank/undrawable frame)
   }
 
   /**
@@ -558,6 +594,42 @@ class PdfAssembly {
     if (!this._imageXObjects.has(ref))
       throw new Error(`pdf_backend: image ref "${ref}" not embedded (image op outside the scanned command list?)`);
     return this._imageXObjects.get(ref);
+  }
+
+  /**
+   * Command (async). Grabs each video `ref`'s CURRENT FRAME (via the injected
+   * videoFrame resolver) and embeds it as a PDF image XObject, keyed by ref for
+   * the synchronous emit. Runs before the content walk — the same up-front seam
+   * as ensureImages/ensureFonts. A blank/undrawable frame (the widget's default
+   * transparent src, or a resolver that returns null) maps to null (draw
+   * nothing) rather than embedding a useless pixel. No videoFrame resolver +
+   * a video op present = a loud error (a video export needs its frame source;
+   * no silent drop).
+   */
+  async ensureVideoFrames(refs) {
+    if (refs.length === 0) return;
+    if (!this.videoFrame)
+      throw new Error(`pdf_backend: scene has a video op but no videoFrame resolver was provided (a video exports as its current frame — pass irToPDF opts.videoFrame)`);
+    for (const ref of refs) {
+      if (this._videoXObjects.has(ref)) continue;
+      const frame = await this.videoFrame(ref); // {mime, bytes} | null
+      if (!frame || !frame.bytes || frame.bytes.length === 0) { this._videoXObjects.set(ref, null); continue; }
+      const fmt = imageFormat(frame.bytes); // trust the bytes, not the mime label
+      const img = fmt === "png" ? await this.doc.embedPng(frame.bytes) : await this.doc.embedJpg(frame.bytes);
+      if (img.width <= 1 && img.height <= 1) { this._videoXObjects.set(ref, null); continue; } // 1×1 = no visible content
+      const name = `Vid${++this._imgCount}`;
+      this.page.node.setXObject(PDFName.of(name), img.ref);
+      this._videoXObjects.set(ref, name);
+    }
+  }
+
+  /** Query. The XObject name for a pre-embedded video current-frame ref, or
+   * null for a blank/undrawable frame. Throws if the ref was never embedded (a
+   * bug — emit only runs after ensureVideoFrames scanned the same list). */
+  videoXObject(ref) {
+    if (!this._videoXObjects.has(ref))
+      throw new Error(`pdf_backend: video ref "${ref}" not embedded (video op outside the scanned command list?)`);
+    return this._videoXObjects.get(ref);
   }
 
   /**

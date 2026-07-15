@@ -133,6 +133,7 @@ try {
     window.__mods = {
       compositor: await import("/src/demo_apps/PowerRP/render_gpu/gpu/compositor.js"),
       imageRegistry: await import("/src/demo_apps/PowerRP/render_gpu/gpu/image_registry.js"),
+      videoRegistry: await import("/src/demo_apps/PowerRP/render_gpu/gpu/video_registry.js"),
       pdf: await import("/src/demo_apps/PowerRP/render_gpu/pdf_backend.js"),
       ir: await import("/src/demo_apps/PowerRP/render_gpu/ir.js"),
       scenes: await import("/src/demo_apps/PowerRP/render_gpu/tests/pdf_scenes.js"),
@@ -176,6 +177,21 @@ try {
       for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
       return btoa(s);
     };
+    // Wait for a <video> element to have a drawable current frame (readyState ≥
+    // HAVE_CURRENT_DATA=2), so the compositor's importExternalTexture succeeds.
+    // Loud timeout: a codec headless Chromium can't decode fails the suite
+    // rather than hanging (H.264 needs the non-Chromium-for-Testing build; the
+    // report notes the codec caveat).
+    window.__awaitVideoFrame = (el) => new Promise((resolve, reject) => {
+      if (el.readyState >= 2) return resolve();
+      const t = setTimeout(() => reject(new Error(`video frame timeout (readyState ${el.readyState}, error ${el.error?.code ?? "none"}) — headless codec support?`)), 8000);
+      const done = () => { clearTimeout(t); resolve(); };
+      el.addEventListener("loadeddata", done, { once: true });
+      el.addEventListener("canplay", done, { once: true });
+      el.addEventListener("error", () => { clearTimeout(t); reject(new Error(`video error code ${el.error?.code}`)); }, { once: true });
+    });
+    // Fetch a data-URI/URL to raw bytes (the still-frame PNG for the PDF resolver).
+    window.__fetchBytes = async (src) => new Uint8Array(await (await fetch(src)).arrayBuffer());
 
     // Measured baseline parity: the GPU atlas top-anchors text at the canvas
     // fontBoundingBoxAscent of ITS font stack; hand the measured fraction to
@@ -205,12 +221,24 @@ try {
       // — the async rule — so a scene image must be loaded first to appear).
       await Promise.all([...new Set(s.commands.filter((c) => c.op === "image").map((c) => c.ref))]
         .map((ref) => window.__mods.imageRegistry.ensureImage(ref)));
+      // Video scenes: create the <video> element and WAIT for its first frame
+      // (the compositor imports the element's current frame; no frame = nothing
+      // drawn). A STILL clip's frame is deterministic, so the GPU render is
+      // stable. The PDF backend gets a videoFrame resolver returning the still
+      // frame bytes (the deterministic "grabbed current frame").
+      let videoFrame = null;
+      if (s.video) {
+        const el = window.__mods.videoRegistry.ensureVideo(s.video.ref, { autoplay: false, loop: false, muted: true });
+        await window.__awaitVideoFrame(el);
+        const frameBytes = await window.__fetchBytes(s.video.frameSrc);
+        videoFrame = async () => ({ mime: "image/png", bytes: frameBytes });
+      }
       const view = { zoom: s.view.zoom * k, panX: s.view.panX * k, panY: s.view.panY * k, dpr: 1 };
       const raw = await window.__renderRaw(s.commands, view, s.width * k, s.height * k, s.background);
       const expectedPng = await window.__rasterizePng(s.commands, view, s.width * k, s.height * k, s.background);
       const pdfBytes = await window.__mods.pdf.irToPDF(s.commands, {
         width: s.width, height: s.height, view: s.view, background: s.background,
-        rasterize: window.__rasterizePng, textAscent: window.__textAscent,
+        rasterize: window.__rasterizePng, textAscent: window.__textAscent, videoFrame,
       });
       return { raw: window.__b64(new Uint8Array(raw.buffer)), expectedPng: window.__b64(expectedPng), pdf: window.__b64(pdfBytes) };
     }, scene.name, K);
