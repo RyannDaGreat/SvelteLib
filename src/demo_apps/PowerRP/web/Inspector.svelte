@@ -356,7 +356,7 @@
            no top-level disabled prop, so a future disabled select would render
            the plain grayed value instead. -->
       <Dropdown
-        items={(row.options ?? []).map((o) => ({ value: o, label: o }))}
+        items={(row.options ?? []).map((o) => ({ value: o, label: row.optionLabels?.[o] ?? o }))}
         value={valueAt(state, row.key)}
         onchange={(v) => oncommit(row.key, "select", v)}
       />

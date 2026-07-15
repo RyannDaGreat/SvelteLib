@@ -14,10 +14,20 @@ import {
   pdfNum, cmSimilarity, rectPath, ellipsePath, pointsPath, paintOp,
   balancedSlice, magnifiedView, hasTextOp, tjHex, irToPDF, MAX_LENS_DEPTH,
   imageRefs, videoRefs, decodeDataUri, base64ToBytes, imageFormat,
+  textFaces, fontResName,
 } from "../pdf_backend.js";
 import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video } from "../ir.js";
+import { fontFileFor } from "../fonts.js";
 import { scenes } from "./pdf_scenes.js";
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+// Node seam for the committed-font tests: read the SAME TTF the browser loads
+// via ?url. fonts/ lives two dirs up from render_gpu/tests/.
+const FONTS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../fonts");
+const nodeLoadFontBytes = (basename) => new Uint8Array(readFileSync(resolve(FONTS_DIR, basename)));
 
 let passed = 0;
 function test(name, fn) {
@@ -243,6 +253,68 @@ await atest("tjHex encodes and escapes via the font", async () => {
   const font = await doc.embedFont(StandardFonts.Helvetica);
   assert.equal(tjHex(font, "Hi"), "<4869>");
   assert.ok(tjHex(font, "(x)").length > 0); // parens safe in hex form
+});
+
+// ── committed-font embedding (the fonts task) ────────────────────────────────
+test("textFaces: distinct (font, bold) faces, order-preserving, default font", () => {
+  assert.deepEqual(
+    textFaces([text({ text: "a", x: 0, y: 0, size: 10, color: "#000", font: "inter" }),
+               text({ text: "b", x: 0, y: 0, size: 10, color: "#000", font: "inter", bold: true }),
+               text({ text: "c", x: 0, y: 0, size: 10, color: "#000", font: "inter" })]),
+    [{ font: "inter", bold: false }, { font: "inter", bold: true }],
+  );
+  assert.deepEqual(textFaces([text({ text: "x", x: 0, y: 0, size: 10, color: "#000" })]), [{ font: "system", bold: false }]);
+  assert.deepEqual(textFaces([rect({ x: 0, y: 0, w: 1, h: 1, fill: "#fff" })]), []);
+});
+test("fontResName: valid PDF token per face", () => {
+  assert.equal(fontResName("inter", false), "F_inter_R");
+  assert.equal(fontResName("source-serif", true), "F_source_serif_B");
+  assert.equal(fontResName("system", false), "F_system_R");
+});
+await atest("system-font text still embeds standard-14 Helvetica (back-compat, no seams)", async () => {
+  const bytes = await irToPDF([text({ text: "System", x: 5, y: 5, size: 20, color: "#000" })],
+    { width: 120, height: 40, view: { zoom: 1, panX: 0, panY: 0 } });
+  const s = latin1(bytes);
+  assert.ok(s.startsWith("%PDF-"));
+  assert.ok(s.includes("Helvetica"), "system falls back to standard-14 Helvetica");
+  assert.ok(s.includes("/F_system_R "), "uses the per-font resource name");
+});
+await atest("committed font embeds the SAME TTF (fontkit + loadFontBytes) and is selectable", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const fontkit = (await import("@pdf-lib/fontkit")).default;
+  const bytes = await irToPDF(
+    [text({ text: "Embedded Inter", x: 8, y: 8, size: 24, color: "#000", font: "inter" }),
+     text({ text: "Bold Serif", x: 8, y: 40, size: 24, color: "#000", font: "source-serif", bold: true })],
+    { width: 260, height: 80, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff",
+      loadFontBytes: nodeLoadFontBytes, registerFontkit: fontkit },
+  );
+  const s = latin1(bytes);
+  assert.ok(s.startsWith("%PDF-"));
+  // Embedded (subset) fonts appear as FontFile2 + a subset tag; NOT the base-14 name.
+  assert.ok(s.includes("FontFile2") || s.includes("/Type0") || s.includes("Identity-H"),
+    "an embedded TrueType/composite font is present (FontFile2/Type0)");
+  assert.ok(s.includes("/F_inter_R ") && s.includes("/F_source_serif_B "), "per-font resource names present");
+  // pdftotext must still extract the text (selectability is the acceptance gate).
+  const dir = mkdtempSync(join(tmpdir(), "powerrp-font-"));
+  const pdfPath = join(dir, "embed.pdf");
+  writeFileSync(pdfPath, Buffer.from(bytes));
+  let txt = "";
+  try { txt = execFileSync("pdftotext", [pdfPath, "-"]).toString(); }
+  catch { console.log("    (pdftotext not on PATH — skipping the extraction assertion; install poppler)"); return; }
+  assert.ok(txt.includes("Embedded Inter"), `pdftotext extracts embedded text (got ${JSON.stringify(txt.trim().slice(0, 60))})`);
+});
+test("fontFileFor resolves committed basenames the loader reads", () => {
+  // Sanity: the registry names files that actually exist on disk (else the
+  // browser ?url glob and node reader both fail).
+  for (const [id, bold] of [["inter", false], ["inter", true], ["source-serif", false], ["jetbrains-mono", true], ["lora", false]]) {
+    const file = fontFileFor(id, bold);
+    assert.ok(file, `${id}/${bold} has a file`);
+    const bytes = nodeLoadFontBytes(file);
+    assert.ok(bytes.length > 1000, `${file} is a real TTF (${bytes.length} bytes)`);
+  }
 });
 
 console.log(`\npdf_backend tests: ${passed} passed`);

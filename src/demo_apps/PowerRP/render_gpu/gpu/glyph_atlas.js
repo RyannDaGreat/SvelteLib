@@ -20,10 +20,17 @@
  * cursor). Not pure. Browser-only (needs document.createElement("canvas")).
  */
 
+import { cssFamilyFor, DEFAULT_FONT } from "../fonts.js";
+
 /** Atlas texture is one fixed page. When it fills, the compositor evicts the
  * whole generation (reset()) and rebuilds the frame — see render()'s
  * rebuild-once policy. Well under device.limits.maxTextureDimension2D
- * (spec minimum 8192). */
+ * (spec minimum 8192). The per-run FONT id is part of each cell's key, so a
+ * document mixing F fonts holds up to F× the distinct glyphs of a single-font
+ * doc — but per-glyph culling still bounds what a FRAME rasterizes (only
+ * on-screen glyphs of the fonts actually visible), and the same
+ * generation-eviction path absorbs any genuine overflow, so no new capacity
+ * machinery is needed for multi-font pages. */
 const ATLAS_SIZE = 2048;
 /** Empty px around each glyph cell so linear sampling never bleeds neighbors. */
 const CELL_PAD = 2;
@@ -78,9 +85,21 @@ export function bucketFor(devicePx) {
   return Math.pow(2, Math.ceil(Math.log2(clamped) * HALF_OCTAVE) / HALF_OCTAVE);
 }
 
-/** The font stack the canvas plugins use — keep identical for visual parity. */
-export function fontString(sizePx, bold) {
-  return `${bold ? "bold " : ""}${sizePx}px system-ui, sans-serif`;
+/**
+ * Pure function. The canvas2D `ctx.font` string for a (size, bold, fontId) — the
+ * SINGLE SEAM that decides which face rasterizes. `fontId` selects a committed
+ * family from the registry (fonts.js); the default is the OS system stack, so
+ * old callers (and the `system` font) get the pre-fonts-task behavior verbatim.
+ * The chosen face must already be LOADED (web/fontLoader.js) or canvas2D
+ * silently substitutes — the compositor awaits font readiness before drawing.
+ *
+ * @example fontString(36, false) // "36px system-ui, sans-serif"
+ * @example fontString(36, true) // "bold 36px system-ui, sans-serif"
+ * @example fontString(36, false, "inter") // "36px \"PowerRP Inter\", sans-serif"
+ * @example fontString(36, true, "jetbrains-mono") // "bold 36px \"PowerRP JetBrains Mono\", monospace"
+ */
+export function fontString(sizePx, bold, fontId = DEFAULT_FONT) {
+  return `${bold ? "bold " : ""}${sizePx}px ${cssFamilyFor(fontId)}`;
 }
 
 export class GlyphAtlas {
@@ -102,8 +121,8 @@ export class GlyphAtlas {
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    this.entries = new Map(); // "char|bucket|bold" → {u0, v0, du, dv, cellW, cellH, advance, ascent, pad}
-    this.metrics = new Map(); // "char|bucket|bold" → measure-only metrics (never evicted — no atlas space)
+    this.entries = new Map(); // "char|bucket|bold|font" → {u0, v0, du, dv, cellW, cellH, advance, ascent, pad}
+    this.metrics = new Map(); // "char|bucket|bold|font" → measure-only metrics (never evicted — no atlas space)
     this.shelfX = 0;
     this.shelfY = 0;
     this.shelfH = 0;
@@ -116,13 +135,13 @@ export class GlyphAtlas {
    * offscreen glyphs on these — advances must accrue even for glyphs that
    * never draw, so measuring must never grow the atlas.
    */
-  measure(ch, bucket, bold) {
-    const key = `${ch}|${bucket}|${bold ? 1 : 0}`;
+  measure(ch, bucket, bold, font = DEFAULT_FONT) {
+    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}`;
     const entry = this.entries.get(key); // a rasterized entry carries the same metrics
     if (entry) return entry;
     let m = this.metrics.get(key);
     if (!m) {
-      this.ctx.font = fontString(bucket, bold);
+      this.ctx.font = fontString(bucket, bold, font);
       const t = this.ctx.measureText(ch);
       m = {
         cellW: Math.ceil(Math.max(t.width, 1)) + CELL_PAD * 2,
@@ -143,12 +162,12 @@ export class GlyphAtlas {
    * evicts the generation and rebuilds the frame ONCE on that marker; a
    * frame that still overflows genuinely exceeds one page and fails loudly.
    */
-  get(ch, bucket, bold) {
-    const key = `${ch}|${bucket}|${bold ? 1 : 0}`;
+  get(ch, bucket, bold, font = DEFAULT_FONT) {
+    const key = `${ch}|${bucket}|${bold ? 1 : 0}|${font}`;
     const hit = this.entries.get(key);
     if (hit) return hit;
 
-    const m = this.measure(ch, bucket, bold);
+    const m = this.measure(ch, bucket, bold, font);
     if (this.shelfX + m.cellW > ATLAS_SIZE) {
       this.shelfX = 0;
       this.shelfY += this.shelfH;
@@ -164,7 +183,7 @@ export class GlyphAtlas {
     this.shelfH = Math.max(this.shelfH, m.cellH);
 
     const ctx = this.ctx;
-    ctx.font = fontString(bucket, bold); // measure() may have hit its cache — set the font for fillText
+    ctx.font = fontString(bucket, bold, font); // measure() may have hit its cache — set the font for fillText
     ctx.fillStyle = "#ffffff"; // white mask — the shader tints
     ctx.textBaseline = "alphabetic";
     ctx.fillText(ch, x + CELL_PAD, y + CELL_PAD + m.ascent);

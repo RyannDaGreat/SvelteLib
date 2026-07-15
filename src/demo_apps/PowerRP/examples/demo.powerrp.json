@@ -83,6 +83,7 @@
             "size": 48,
             "color": "#1a1a2e",
             "bold": false,
+            "font": "system",
             "opacity": 1
           },
           "510eda10": {

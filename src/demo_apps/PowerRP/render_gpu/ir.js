@@ -18,7 +18,7 @@
  *   {op:"ellipse", cx, cy, rx, ry, fill, stroke, strokeWidth, opacity}
  *   {op:"polyline", points:[[x,y],...], width, color, opacity}   // round caps/joins
  *   {op:"polygon", points:[[x,y],...], fill, opacity}            // CONVEX fill (fan-triangulated)
- *   {op:"text", text, x, y, size, color, bold, opacity}          // top-left origin, single run
+ *   {op:"text", text, x, y, size, color, bold, opacity, font}    // top-left origin, single run; font = registry id (fonts.js)
  *   {op:"image", ref, x, y, w, h, opacity}                       // ref → media registry key
  *   {op:"video", ref, x, y, w, h, opacity}                       // ref → <video> registry key
  *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
@@ -37,6 +37,7 @@
  */
 
 import * as T from "../core/transform.js";
+import { DEFAULT_FONT } from "./fonts.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
 
@@ -171,13 +172,21 @@ export function polygon({ points, fill, opacity = 1 }) {
 /**
  * Pure function. Single-run text command, top-left origin (matches the canvas
  * plugin's textBaseline="top"). Layout (glyph advances) is backend work.
+ * `font` is a font-registry id (render_gpu/fonts.js); it defaults to "system"
+ * (the pre-fonts-task OS stack), so an omitted `font` is fully back-compatible.
+ * This field is per-RUN by design — rich text will emit one text op per styled
+ * run, each carrying its own font (manifest RICH TEXT), so nothing here needs
+ * to change when runs land.
  *
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000"}).size // 36
+ * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000"}).font // "system"
+ * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000", font: "inter"}).font // "inter"
  */
-export function text({ text: str, x, y, size, color, bold = false, opacity = 1 }) {
+export function text({ text: str, x, y, size, color, bold = false, opacity = 1, font = DEFAULT_FONT }) {
   if (typeof str !== "string") throw new Error(`text: "text" must be a string, got ${JSON.stringify(str)}`);
+  if (typeof font !== "string") throw new Error(`text: "font" must be a string id, got ${JSON.stringify(font)}`);
   requireFinite("text", { x, y, size, opacity });
-  return { op: "text", text: str, x, y, size, color: parseColor(color), bold: !!bold, opacity };
+  return { op: "text", text: str, x, y, size, color: parseColor(color), bold: !!bold, opacity, font };
 }
 
 /**

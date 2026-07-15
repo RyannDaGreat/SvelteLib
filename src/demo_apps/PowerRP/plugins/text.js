@@ -2,6 +2,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { text } from "../render_gpu/ir.js";
+import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
 
 export const textPlugin = {
   type: "text",
@@ -12,7 +13,11 @@ export const textPlugin = {
     // Rotation pivots about this WORLD point; default = own center (an equation
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    text: "Text", size: 36, color: "#1a1a2e", bold: false, opacity: 1,
+    // `font` defaults to the OS system stack (DEFAULT_FONT) so EXISTING docs —
+    // which have no `font` key — render byte-identically to before the fonts
+    // task (loud-migration-free by design: an absent `font` folds to the
+    // default, which IS the old behavior). Discrete-snap tweenable like `bold`.
+    text: "Text", size: 36, color: "#1a1a2e", bold: false, font: DEFAULT_FONT, opacity: 1,
   },
   // `category` groups rows into the Inspector's collapsible accordion regions
   // (manifest Round 12 "PROPERTY CATEGORIES"). The "text" category holds the
@@ -22,6 +27,10 @@ export const textPlugin = {
     { key: "x", label: "X", kind: "number", category: "positioning" },
     { key: "y", label: "Y", kind: "number", category: "positioning" },
     { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    // Font family: a `select` row over the registry (fonts.js). Uses the same
+    // SvelteLib Dropdown as the transition `curve` select; keyframeable (discrete
+    // snap) with the standard ‹ ◆ › diamonds like `bold`.
+    { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text" },
     { key: "size", label: "Size", kind: "number", min: 0, category: "text" },
     { key: "bold", label: "Bold", kind: "checkbox", category: "text" },
     { key: "color", label: "Color", kind: "color", category: "formatting" },
@@ -29,7 +38,7 @@ export const textPlugin = {
   ],
   /** Pure function. State → display-list commands (local space, top-left text origin). */
   emit(s) {
-    return [text({ text: s.text, x: 0, y: 0, size: s.size, color: s.color, bold: s.bold ?? false, opacity: s.opacity ?? 1 })];
+    return [text({ text: s.text, x: 0, y: 0, size: s.size, color: s.color, bold: s.bold ?? false, font: s.font ?? DEFAULT_FONT, opacity: s.opacity ?? 1 })];
   },
   anchors: standardBBoxAnchors,
   commands: [

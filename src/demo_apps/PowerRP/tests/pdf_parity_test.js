@@ -112,12 +112,13 @@ try {
   page.on("pageerror", (e) => { console.error(`  pageerror: ${e.message}`); failures++; });
   await page.goto(`${base}/index.html`, { waitUntil: "domcontentloaded" });
 
-  // Warm the module graph once. Vite pre-bundles pdf-lib on FIRST import and
-  // force-reloads the page, destroying the execution context mid-evaluate —
-  // an expected, one-time event (it prints "optimized dependencies changed.
-  // reloading"). Retry the warmup after the reload; any later navigation is
-  // a real failure (retries exhausted → the error propagates).
-  const WARMUP_TRIES = 3;
+  // Warm the module graph once. Vite pre-bundles each NEW dep on FIRST import
+  // and force-reloads the page, destroying the execution context mid-evaluate —
+  // an expected, one-time-per-dep event ("optimized dependencies changed.
+  // reloading"). The fonts task adds @pdf-lib/fontkit alongside pdf-lib, and
+  // vite optimizes them SEQUENTIALLY (one reload each), so allow one retry PER
+  // heavy dep plus margin; retries exhausted on a real navigation → propagate.
+  const WARMUP_TRIES = 5; // pdf-lib + @pdf-lib/fontkit each reload once, + margin
   for (let attempt = 1; ; attempt++) {
     try {
       await warmup(page);
@@ -125,7 +126,11 @@ try {
     } catch (e) {
       if (attempt >= WARMUP_TRIES || !/Execution context was destroyed/.test(String(e))) throw e;
       console.log(`  (vite re-optimized deps and reloaded — warmup retry ${attempt})`);
-      await page.goto(`${base}/index.html`, { waitUntil: "domcontentloaded" });
+      // Cold-cache re-optimization of the two heavy deps (pdf-lib ~395 KB +
+      // @pdf-lib/fontkit ~716 KB) can exceed the default 30 s navigation
+      // timeout, so allow generous headroom on the retry reload.
+      const RELOAD_TIMEOUT_MS = 90_000;
+      await page.goto(`${base}/index.html`, { waitUntil: "domcontentloaded", timeout: RELOAD_TIMEOUT_MS });
     }
   }
   async function warmup(page) {
@@ -145,7 +150,13 @@ try {
       registry: await import("/src/demo_apps/PowerRP/core/registry.js"),
       plugins: await import("/src/demo_apps/PowerRP/plugins/index.js"),
       commands: await import("/src/demo_apps/PowerRP/core/commands.js"),
+      fontLoader: await import("/src/demo_apps/PowerRP/web/fontLoader.js"),
+      pdfFonts: await import("/src/demo_apps/PowerRP/web/pdfFonts.js"),
     };
+    // Load the committed fonts before ANY text rasterizes — the atlas would
+    // otherwise substitute (manifest "Text fonts"). The font parity scenes depend
+    // on the real faces; even the system scenes need a settled document.fonts.
+    await window.__mods.fontLoader.loadFonts();
     const canvas = document.createElement("canvas");
     canvas.width = 2;
     canvas.height = 2;
@@ -193,14 +204,24 @@ try {
     // Fetch a data-URI/URL to raw bytes (the still-frame PNG for the PDF resolver).
     window.__fetchBytes = async (src) => new Uint8Array(await (await fetch(src)).arrayBuffer());
 
-    // Measured baseline parity: the GPU atlas top-anchors text at the canvas
-    // fontBoundingBoxAscent of ITS font stack; hand the measured fraction to
-    // the PDF backend so baselines coincide (irToPDF textAscent).
-    const { fontString } = await import("/src/demo_apps/PowerRP/render_gpu/gpu/glyph_atlas.js");
-    const mctx = document.createElement("canvas").getContext("2d");
-    const REF_SIZE = 100; // any size — the fraction is size-relative
-    mctx.font = fontString(REF_SIZE, false);
-    window.__textAscent = mctx.measureText("Mg").fontBoundingBoxAscent / REF_SIZE;
+    // Per-font baseline parity: the GPU atlas top-anchors text at the canvas
+    // fontBoundingBoxAscent of EACH face; measureTextAscent hands the backend a
+    // (fontId, bold) → fraction function so PDF baselines coincide per font
+    // (irToPDF textAscent). loadFontBytes + fontkit let the backend embed the
+    // SAME committed TTFs for the font scenes; system scenes fall to Helvetica.
+    window.__textAscent = window.__mods.pdfFonts.measureTextAscent();
+    window.__loadFontBytes = window.__mods.pdfFonts.loadFontBytes;
+    window.__fontkit = await window.__mods.pdfFonts.fontkit();
+    // Force vite to pre-bundle pdf-lib AND @pdf-lib/fontkit NOW, inside the
+    // retry-wrapped warmup: run one full committed-font irToPDF. Both deps are
+    // NEW → vite optimizes them and force-reloads the page on FIRST use; doing a
+    // complete embed here makes that reload land during warmup (caught by the
+    // retry) instead of mid-scene-loop (uncaught → "Execution context destroyed").
+    await window.__mods.pdf.irToPDF(
+      [window.__mods.ir.text({ text: "warm", x: 0, y: 0, size: 12, color: "#000", font: "inter" })],
+      { width: 40, height: 20, view: { zoom: 1, panX: 0, panY: 0 },
+        loadFontBytes: window.__loadFontBytes, registerFontkit: window.__fontkit, textAscent: window.__textAscent },
+    );
   });
   }
 
@@ -239,6 +260,7 @@ try {
       const pdfBytes = await window.__mods.pdf.irToPDF(s.commands, {
         width: s.width, height: s.height, view: s.view, background: s.background,
         rasterize: window.__rasterizePng, textAscent: window.__textAscent, videoFrame,
+        loadFontBytes: window.__loadFontBytes, registerFontkit: window.__fontkit,
       });
       return { raw: window.__b64(new Uint8Array(raw.buffer)), expectedPng: window.__b64(expectedPng), pdf: window.__b64(pdfBytes) };
     }, scene.name, K);
@@ -277,6 +299,7 @@ try {
       const pdfBytes = await M.pdf.irToPDF(ir, {
         width: rect.w, height: rect.h, view, background: rect.background,
         rasterize: window.__rasterizePng, textAscent: window.__textAscent,
+        loadFontBytes: window.__loadFontBytes, registerFontkit: window.__fontkit,
       });
       // Expected pixels through the same camera at k×
       const viewPx = { zoom: view.zoom * k, panX: view.panX * k, panY: view.panY * k, dpr: 1 };

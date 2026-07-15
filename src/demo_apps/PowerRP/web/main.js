@@ -2,6 +2,14 @@ import "../../../styles/theme.css";
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
+import { loadFonts } from "./fontLoader.js";
+
+// Load the committed font FILES (../fonts/) into the browser BEFORE any text
+// rasterizes — the WebGPU glyph atlas draws through canvas2D, which silently
+// substitutes any font that isn't loaded yet (manifest "Text fonts", offline
+// rule). Kicked at module load so BOTH the editor mount and the CLI render hook
+// share one memoized promise; each awaits it before its first frame.
+const fontsLoaded = loadFonts();
 import { deserialize, foldState, withCameraEnsured, withOrphanedItemsDropped, withMissingDefaultsFilled, withLegacyKeysRenamed } from "../core/document.js";
 import { cameraRect, deriveRenderTree } from "../core/derive.js";
 import { evaluateState, withBindingsMigrated } from "../core/expressions.js";
@@ -23,6 +31,7 @@ import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
  * post-present).
  */
 window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width = 1280, height = 720 } = {}) {
+  await fontsLoaded; // committed fonts must be loaded before the atlas rasterizes text (CLI path too)
   const registry = createRegistry();
   registerAll(registry, createCommands());
   // Same load-time migrations as the editor: drop orphaned items LOUDLY,
@@ -68,5 +77,12 @@ window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width
 // `?cli=1` skips mounting the editor UI — the page then exists only to host
 // __powerrp_render for the CLI (faster, and headless-safe).
 if (!new URLSearchParams(location.search).has("cli")) {
-  mount(App, { target: document.getElementById("app") });
+  // AWAIT fonts before the first mount so the editor's opening GPU frame never
+  // rasterizes text in a not-yet-loaded face (canvas2D would substitute with no
+  // repaint to fix it — there is no font-load repaint nudge on the canvas path,
+  // unlike images). Local files load in ~tens of ms; the GPU's ~1s Metal warmup
+  // dwarfs it, so this adds no perceptible boot delay while making correctness
+  // deterministic rather than timing-dependent. (A font that FAILS to load is
+  // reported loudly inside loadFonts and still lets the mount proceed.)
+  fontsLoaded.then(() => mount(App, { target: document.getElementById("app") }));
 }

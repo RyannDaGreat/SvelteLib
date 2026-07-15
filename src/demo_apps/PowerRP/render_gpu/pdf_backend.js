@@ -35,6 +35,7 @@
 import { flattenIR, parseColor, popTransform } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, StandardFonts } from "pdf-lib";
+import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 
 /**
  * Lens re-emit recursion cap — mirrors the GPU compositor's
@@ -204,6 +205,38 @@ export function hasTextOp(commands) {
 }
 
 /**
+ * Pure function. The DISTINCT (font id, bold) faces used by text ops — the set
+ * ensureFonts embeds. Order-preserving, deduped. A text op with no `font`
+ * defaults to DEFAULT_FONT (old IR / the system stack). Keyed "<fontId>|<0|1>".
+ *
+ * @example textFaces([{op: "text", font: "inter", bold: false}, {op: "text", font: "inter", bold: true}]) // [{font: "inter", bold: false}, {font: "inter", bold: true}]
+ * @example textFaces([{op: "text", bold: false}]) // [{font: "system", bold: false}]
+ * @example textFaces([{op: "rect"}]) // []
+ */
+export function textFaces(commands) {
+  const seen = new Set();
+  const out = [];
+  for (const c of commands) {
+    if (c.op !== "text") continue;
+    const font = c.font || DEFAULT_FONT;
+    const bold = !!c.bold;
+    const key = `${font}|${bold ? 1 : 0}`;
+    if (!seen.has(key)) { seen.add(key); out.push({ font, bold }); }
+  }
+  return out;
+}
+
+/** Pure function. The PDF resource name + dictionary key for a (fontId, bold)
+ * face — one per distinct face. Slugs the id so the name is a valid PDF token.
+ * @example fontResName("inter", false) // "F_inter_R"
+ * @example fontResName("source-serif", true) // "F_source_serif_B"
+ * @example fontResName("system", false) // "F_system_R"
+ */
+export function fontResName(fontId, bold) {
+  return `F_${fontId.replace(/[^A-Za-z0-9]/g, "_")}_${bold ? "B" : "R"}`;
+}
+
+/**
  * Pure function. The DISTINCT image refs in an IR list (each embeds once,
  * like a font). Order-preserving, deduped.
  *
@@ -306,12 +339,23 @@ async function loadImageBytes(ref) {
  *     a stub in node tests. null → scenes needing raster regions THROW.
  *   opts.rasterScale (number): raster-region px per page pt. Default 2 — the
  *     retina-dpr supersample cap precedent (manifest: browser-settings dpr).
- *   opts.textAscent (number|null): baseline offset as a FRACTION of font
- *     size (IR text is top-anchored; baseline = top + fraction·size).
- *     Browser callers pass the measured canvas fontBoundingBoxAscent/size of
- *     the glyph atlas's font stack so PDF baselines land exactly where the
- *     GPU puts them; null → the PDF font's own AFM Ascender (correct for
- *     the PDF font, but a different face than the atlas's system-ui).
+ *   opts.textAscent (number|fn|null): baseline offset as a FRACTION of font
+ *     size (IR text is top-anchored; baseline = top + fraction·size). Now that
+ *     each font is a DIFFERENT face, this is PER-FONT: pass a function
+ *     (fontId, bold) → fraction (the browser measures each committed face's
+ *     canvas fontBoundingBoxAscent/size so PDF baselines land exactly where the
+ *     GPU atlas puts them). A bare number still works (applies to every face —
+ *     legacy single-font callers); null → the embedded/AFM font's own Ascender.
+ *   opts.loadFontBytes (fn|null): (basename) → Uint8Array|Promise<Uint8Array>
+ *     of a committed TTF (../fonts/<basename>). The environment seam that keeps
+ *     this backend DOM-free (browser: fetch a Vite ?url; node: readFileSync);
+ *     null → committed fonts can't embed and fall back to standard-14 Helvetica
+ *     (with a loud warning) — only `system` text embeds cleanly without it.
+ *   opts.registerFontkit (fontkit|null): the @pdf-lib/fontkit instance, needed
+ *     for pdf-lib to embed a custom TTF (embedFont throws FontkitNotRegistered
+ *     otherwise). Injected (not hard-imported) so the backend stays dependency-
+ *     light and node tests can supply it; null → committed fonts fall back to
+ *     Helvetica (loud). `system` never needs it (standard-14).
  *   opts.videoFrame (async fn|null): (ref) → {mime, bytes} of the video's
  *     CURRENT FRAME as a PNG/JPEG (the manifest rule: PDF export of a video
  *     is a current-frame raster embed), or null for a blank/undrawable src.
@@ -327,11 +371,12 @@ async function loadImageBytes(ref) {
  * @example // await irToPDF(sceneIR(nodes), {width: 1280, height: 720, view: fitRectView(camRect, 1280, 720, 1), background: "#ffffff", rasterize}) → Uint8Array starting "%PDF-"
  * @example // no-effect scenes need no rasterize: await irToPDF([rect({...})], {width: 100, height: 100, view: {zoom: 1, panX: 0, panY: 0}})
  */
-export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = 2, textAscent = null, videoFrame = null }) {
+export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = 2, textAscent = null, videoFrame = null, loadFontBytes = null, registerFontkit = null }) {
   const doc = await PDFDocument.create();
+  if (registerFontkit) doc.registerFontkit(registerFontkit); // required for embedFont(customTTF)
   const page = doc.addPage([width, height]);
-  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent, videoFrame);
-  if (hasTextOp(commands)) await ctx.ensureFonts(); // sub-lists are slices, so scanning the top list covers lens re-emits
+  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent, videoFrame, loadFontBytes);
+  await ctx.ensureFonts(textFaces(commands)); // sub-lists are slices, so scanning the top list covers lens re-emits
   await ctx.ensureImages(imageRefs(commands)); // embed image XObjects up-front — emit is synchronous per command (same seam as fonts)
   await ctx.ensureVideoFrames(videoRefs(commands)); // grab + embed each video's current frame as an XObject (same up-front seam)
 
@@ -480,7 +525,11 @@ function emitVector(cmd, world, out, ctx) {
       break;
     }
     case "text": {
-      const font = ctx.font(cmd.bold);
+      // Per-RUN font (fonts.js id; absent → DEFAULT_FONT). The SAME committed
+      // TTF the glyph atlas rasterizes is embedded here (ensureFonts), so raster
+      // and vector text finally share a face and metrics.
+      const fontId = cmd.font || DEFAULT_FONT;
+      const font = ctx.font(fontId, cmd.bold);
       const [r, g, b, a] = cmd.color;
       const gs = ctx.gsAlphaPair(a * cmd.opacity, 1);
       if (gs) ops.push(gs);
@@ -488,8 +537,8 @@ function emitVector(cmd, world, out, ctx) {
       // Baseline from the font's own metrics (canvas textBaseline="top"
       // semantics: baseline = top + ascent). Tm re-flips locally (-1 d
       // entry) so glyphs stay upright inside the page's y-down space.
-      const baseline = cmd.y + ctx.ascentFraction(cmd.bold) * cmd.size;
-      ops.push("BT", `${ctx.fontName(cmd.bold)} ${pdfNum(cmd.size)} Tf`);
+      const baseline = cmd.y + ctx.ascentFraction(fontId, cmd.bold) * cmd.size;
+      ops.push("BT", `${ctx.fontName(fontId, cmd.bold)} ${pdfNum(cmd.size)} Tf`);
       ops.push(`1 0 0 -1 ${pdfNum(cmd.x)} ${pdfNum(baseline)} Tm`);
       ops.push(`${tjHex(font, cmd.text)} Tj`, "ET");
       break;
@@ -551,14 +600,16 @@ function paintSetup(fill, stroke, strokeWidth, opacity, ctx) {
  * (mutates the pdf-lib document).
  */
 class PdfAssembly {
-  constructor(doc, page, rasterize, rasterScale, textAscent = null, videoFrame = null) {
+  constructor(doc, page, rasterize, rasterScale, textAscent = null, videoFrame = null, loadFontBytes = null) {
     this.doc = doc;
     this.page = page;
     this.rasterize = rasterize;
     this.rasterScale = rasterScale;
-    this.textAscent = textAscent;
+    this.textAscent = textAscent; // number | (fontId, bold)=>fraction | null
     this.videoFrame = videoFrame; // (ref) → {mime, bytes} of the current frame, or null
-    this._fonts = {};     // F1 (regular) / F1B (bold) → PDFFont
+    this.loadFontBytes = loadFontBytes; // (basename) → Uint8Array | null (env seam)
+    this._fonts = new Map();  // "<fontId>|<0|1>" → PDFFont
+    this._fontNames = new Map(); // "<fontId>|<0|1>" → PDF resource name
     this._gs = new Map(); // "ca,CA" → ExtGState name
     this._imgCount = 0;
     this._imageXObjects = new Map(); // image ref → XObject name, or null (blank/undrawable src)
@@ -633,37 +684,74 @@ class PdfAssembly {
   }
 
   /**
-   * Command (async). Embeds Helvetica + Helvetica-Bold (standard-14; the
-   * committed-fonts task swaps this for embedFont(ttfBytes, {subset}) when
-   * font files land in the repo). Must run before emitting text — emit is
-   * synchronous per command, so irToPDF pre-embeds when the IR has text.
+   * Command (async). Embeds each distinct (fontId, bold) face the scene uses,
+   * keyed for the synchronous emit. A COMMITTED font (fonts.js has a file)
+   * embeds the SAME TTF the glyph atlas rasterizes — via embedFont(bytes,
+   * {subset}), which needs the injected fontkit + loadFontBytes; the atlas and
+   * PDF then share a face and metrics. `system` (no file), or any committed
+   * font when the byte/fontkit seam is absent, falls back to standard-14
+   * Helvetica/Bold (a loud warning in the latter case — a degradation, never
+   * silent). Runs before the content walk (emit is sync per command).
    */
-  async ensureFonts() {
-    if (this._fonts.F1) return;
-    this._fonts.F1 = await this.doc.embedFont(StandardFonts.Helvetica);
-    this._fonts.F1B = await this.doc.embedFont(StandardFonts.HelveticaBold);
-    this.page.node.setFontDictionary(PDFName.of("F1"), this._fonts.F1.ref);
-    this.page.node.setFontDictionary(PDFName.of("F1B"), this._fonts.F1B.ref);
+  async ensureFonts(faces) {
+    for (const { font: fontId, bold } of faces) {
+      const key = `${fontId}|${bold ? 1 : 0}`;
+      if (this._fonts.has(key)) continue;
+      const resName = fontResName(fontId, bold);
+      const embedded = await this._embedFace(fontId, bold);
+      this._fonts.set(key, embedded);
+      this._fontNames.set(key, resName);
+      this.page.node.setFontDictionary(PDFName.of(resName), embedded.ref);
+    }
   }
 
-  font(bold) {
-    const f = bold ? this._fonts.F1B : this._fonts.F1;
-    if (!f) throw new Error("pdf_backend: fonts not embedded (text op outside the scanned command list?)");
+  /** Command (async). The PDFFont for one (fontId, bold) — the committed TTF
+   * when embeddable (fontkit + loadFontBytes both present), else standard-14
+   * Helvetica. Command because it mutates the pdf-lib doc (embeds a font). */
+  async _embedFace(fontId, bold) {
+    const std = bold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica;
+    if (!hasEmbeddableFile(fontId)) return this.doc.embedFont(std); // `system` — standard-14
+    const basename = fontFileFor(fontId, bold);
+    if (!this.loadFontBytes) {
+      console.warn(`pdf_backend: font "${fontId}" has a committed file (${basename}) but no loadFontBytes seam was provided — falling back to Helvetica (baselines/metrics will differ). Pass irToPDF opts.loadFontBytes.`);
+      return this.doc.embedFont(std);
+    }
+    const bytes = await this.loadFontBytes(basename);
+    // subset:true = embed only the glyphs actually used (small PDFs); needs the
+    // fontkit registered on the doc (irToPDF opts.registerFontkit).
+    return this.doc.embedFont(bytes, { subset: true });
+  }
+
+  /** Query. The embedded PDFFont for a (fontId, bold). Throws if the face was
+   * never embedded (a bug — emit only runs after ensureFonts scanned the same
+   * list). */
+  font(fontId, bold) {
+    const f = this._fonts.get(`${fontId}|${bold ? 1 : 0}`);
+    if (!f) throw new Error(`pdf_backend: font "${fontId}" (${bold ? "bold" : "regular"}) not embedded (text op outside the scanned command list?)`);
     return f;
   }
 
-  fontName(bold) {
-    return bold ? "/F1B" : "/F1";
+  /** Query. The /resource-name for a (fontId, bold) face's Tf operator. */
+  fontName(fontId, bold) {
+    const n = this._fontNames.get(`${fontId}|${bold ? 1 : 0}`);
+    if (!n) throw new Error(`pdf_backend: font "${fontId}" (${bold ? "bold" : "regular"}) has no resource name (not embedded?)`);
+    return `/${n}`;
   }
 
-  /** Query. Baseline offset as a fraction of font size: the caller-measured
-   * canvas ascent when provided (GPU-atlas parity — see irToPDF textAscent),
-   * else the font's own AFM metrics (Helvetica Ascender = 718 per mille). */
-  ascentFraction(bold) {
+  /** Query. Baseline offset as a fraction of font size for (fontId, bold): the
+   * caller-measured canvas ascent when provided (GPU-atlas parity — see irToPDF
+   * textAscent), else the embedded/standard font's own metrics. textAscent may
+   * be a per-font FUNCTION (now that faces differ) or a legacy scalar. */
+  ascentFraction(fontId, bold) {
+    if (typeof this.textAscent === "function") return this.textAscent(fontId, bold);
     if (this.textAscent !== null) return this.textAscent;
-    const ascender = this.font(bold).embedder.font.Ascender;
-    if (typeof ascender !== "number") throw new Error("pdf_backend: font has no Ascender metric");
-    return ascender / 1000;
+    const embedder = this.font(fontId, bold).embedder.font;
+    // Committed TTFs expose ascent/unitsPerEm (fontkit); standard-14 exposes
+    // AFM Ascender (per-mille). Prefer the em-normalized TTF metric.
+    if (typeof embedder.ascent === "number" && typeof embedder.unitsPerEm === "number")
+      return embedder.ascent / embedder.unitsPerEm;
+    if (typeof embedder.Ascender === "number") return embedder.Ascender / 1000;
+    throw new Error(`pdf_backend: font "${fontId}" has no ascent metric`);
   }
 
   /** Command. ExtGState op for a (fill, stroke) alpha pair; "" when opaque. */

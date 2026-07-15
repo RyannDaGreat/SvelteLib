@@ -80,7 +80,7 @@ export function scenes() {
       text({ text: "Bold below", x: 40, y: 160, size: 30, color: INK, bold: true }),
       ellipse({ cx: 300, cy: 220, rx: 80, ry: 50, fill: "#9ece6a" }),
       text({ text: "on ellipse", x: 245, y: 205, size: 22, color: INK }),
-    ], 16), // measured 19.68 dB — text-heavy: standard-14 Helvetica vs the atlas's system-ui dominates; rises when the fonts task embeds one shared TTF
+    ], 16), // measured 19.67 dB — this scene uses the SYSTEM font (no committed file), so it stays the standard-14-Helvetica-vs-atlas-system-ui baseline. The fonts task's "shared TTF" jump is demonstrated by the committed-font scenes (font-bold-over-shapes ~28.8 dB) — system text legitimately can't share a face.
 
     s("arrows-crossing", [
       rect({ x: 60, y: 60, w: 120, h: 90, fill: "#7aa2f7" }),
@@ -172,6 +172,35 @@ export function scenes() {
       image({ ref: CHECKER_PNG_DATA_URI, x: 60, y: 40, w: 260, h: 200 }),
       magnifyBackdrop({ cx: 200, cy: 150, r: 70, magnification: 2.2, rimColor: INK, rimWidth: 5, supersample: true }),
     ], 22), // measured 26.07 dB — vector lens (Form-XObject clip + magnify) replays the image XObject; edge-AA divergence class as the other lens scenes. floor PENDING USER RATIFICATION
+
+    // ── COMMITTED-FONT text parity (fonts task, W2f) ─────────────────────────
+    // These use the COMMITTED fonts (fonts.js ids), so the glyph atlas and the
+    // PDF backend rasterize/embed the SAME TTF — the whole point of the fonts
+    // task. Floors JUMP well above the `system`/text-over-shapes scenes above
+    // (which still compare the atlas's system-ui against standard-14 Helvetica),
+    // because the two renderers now share a face; the residual is only AA and
+    // hinting differences between canvas2D and poppler. The parity harness
+    // passes loadFontBytes + registerFontkit + per-font textAscent for these.
+    // Floors are MEASURED (see the annotations); PENDING USER RATIFICATION.
+    s("font-families", [
+      rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+      text({ text: "Inter sans 123", x: 24, y: 30, size: 30, color: INK, font: "inter" }),
+      text({ text: "Source Serif", x: 24, y: 90, size: 30, color: INK, font: "source-serif" }),
+      text({ text: "JetBrains Mono", x: 24, y: 150, size: 28, color: INK, font: "jetbrains-mono" }),
+      text({ text: "Lora serif face", x: 24, y: 210, size: 30, color: INK, font: "lora" }),
+    ], 20, { font: true }), // measured 23.99 dB — shared committed face; residual is canvas2D-vs-poppler AA/hinting on 4 dense text rows. floor = measured − ~4 dB. PENDING USER RATIFICATION
+
+    // Bold committed faces + a committed font OVER a shape (the text-over-shapes
+    // analog, but with an embedded shared face) — this is the scene whose floor
+    // should visibly beat the system-font `text-over-shapes` (16 dB) once the
+    // faces match.
+    s("font-bold-over-shapes", [
+      rect({ x: 20, y: 30, w: 360, h: 100, fill: "#7aa2f7" }),
+      text({ text: "Inter Bold", x: 40, y: 55, size: 36, color: "#ffffff", font: "inter", bold: true }),
+      text({ text: "Serif Bold below", x: 40, y: 160, size: 30, color: INK, font: "source-serif", bold: true }),
+      ellipse({ cx: 300, cy: 220, rx: 80, ry: 50, fill: "#9ece6a" }),
+      text({ text: "mono on it", x: 240, y: 205, size: 20, color: INK, font: "jetbrains-mono" }),
+    ], 24, { font: true }), // measured 28.78 dB — the system-font analog (text-over-shapes) sits at 19.67 dB; embedding the SHARED committed face lifts it ~9 dB (the font-substitution delta is gone). floor = measured − ~4.8 dB. PENDING USER RATIFICATION
 
     // ── VIDEO PLAYER widget parity (Opus15/W2b) ──────────────────────────────
     // A STILL (constant-frame) mp4 fixture (still_video.js): the GPU imports the

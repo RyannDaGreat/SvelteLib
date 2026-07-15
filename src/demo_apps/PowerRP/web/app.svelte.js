@@ -1082,21 +1082,22 @@ export class PowerRPApp {
     const { irToPDF } = await import("../render_gpu/pdf_backend.js");
     const { sceneIR } = await import("../render_gpu/ports.js");
     const { fitRectView } = await import("../core/view.js");
-    const { fontString } = await import("../render_gpu/gpu/glyph_atlas.js");
+    const { loadFontBytes, fontkit, measureTextAscent } = await import("./pdfFonts.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
     const rect = cameraRect(state, this.doc.meta);
-    // Baseline parity with the GPU glyph atlas: measure ITS font stack's
-    // canvas ascent and hand the fraction to the backend (irToPDF textAscent).
-    const mctx = document.createElement("canvas").getContext("2d");
-    const REF_SIZE = 100; // any size — the fraction is size-relative
-    mctx.font = fontString(REF_SIZE, false);
+    // Embed the SAME committed fonts the glyph atlas rasterizes (manifest "Text
+    // fonts" / embedFont seam): registerFontkit + loadFontBytes let pdf-lib
+    // embed the TTFs; measureTextAscent gives per-font baseline parity with the
+    // atlas. `system` text still uses standard-14 Helvetica (no committed file).
     const bytes = await irToPDF(sceneIR(deriveRenderTree(state, this.registry)), {
       width: rect.w,
       height: rect.h,
       view: fitRectView(rect, rect.w, rect.h, 1),
       background: rect.background,
       rasterize: rasterizeIrPng,
-      textAscent: mctx.measureText("Mg").fontBoundingBoxAscent / REF_SIZE,
+      textAscent: measureTextAscent(),
+      loadFontBytes,
+      registerFontkit: await fontkit(),
     });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
