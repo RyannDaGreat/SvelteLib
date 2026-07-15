@@ -177,7 +177,7 @@ export function standardBBoxAnchors(state) {
  * instead define hitTestWorld(node, wx, wy, nodesById) for widgets whose
  * geometry lives in world space (arrows).
  */
-export function hitNode(node, wx, wy, nodesById, tol = 0) {
+function hitNode(node, wx, wy, nodesById, tol = 0) {
   const { plugin, state } = node;
   if (plugin.hitTestWorld) return plugin.hitTestWorld(node, wx, wy, nodesById);
   const local = T.apply(T.invert(node.world), wx, wy);

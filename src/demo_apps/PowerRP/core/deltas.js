@@ -78,10 +78,14 @@ export function blendApplied(state, delta, alpha) {
 }
 
 /**
- * Command (mutates `state` in place); internal engine of blendApplied.
- * Exported for the fold hot path where copying every step is wasteful.
+ * Command (mutates `state` in place) — blendApplied's internal recursion.
+ * Module-private on purpose: the fold (core/document.js slideState) uses the
+ * COPYING blendApplied because folded states are CACHED and shared — an
+ * in-place step would corrupt every earlier cached state. (A prior comment
+ * promised this as an exported "fold hot path" optimization; no such
+ * consumer exists, and the cache makes it unsound there.)
  */
-export function mutBlendApply(state, delta, alpha) {
+function mutBlendApply(state, delta, alpha) {
   for (const [key, val] of Object.entries(delta)) {
     if (val === NONE) {
       delete state[key];
