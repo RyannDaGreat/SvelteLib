@@ -49,7 +49,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, rgbaToCss } from "./ir.js";
+import { flattenIR, parseColor, rgbaToCss, pushTransform, popTransform } from "./ir.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -273,9 +273,13 @@ export async function emitRegionSVG(commands, region, out, ctx) {
     });
   }
 
-  // HYBRID RULE split — IDENTICAL to pdf_backend.emitRegion's `lastBlurFlat`.
+  // HYBRID RULE split — IDENTICAL to pdf_backend.emitRegion's `lastBlurFlat`
+  // (incl. Round 12D: an ADD-blend effect widget splits like a blur — true
+  // additive compositing needs the real backdrop pixels).
   let lastBlurFlat = -1;
-  flat.forEach((fc, i) => { if (fc.cmd.op === "blurBackdrop") lastBlurFlat = i; });
+  flat.forEach((fc, i) => {
+    if (fc.cmd.op === "blurBackdrop" || (fc.cmd.op === "effectSubtree" && fc.cmd.blend === "add")) lastBlurFlat = i;
+  });
 
   if (lastBlurFlat >= 0) {
     const below = balancedSlice(commands, rawIndexOf[lastBlurFlat] + 1);
@@ -292,6 +296,8 @@ export async function emitRegionSVG(commands, region, out, ctx) {
       out.push(await emitLensSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
     } else if (cmd.op === "cropSubtree") {
       out.push(await emitCropSVG(cmd, world, region, ctx));
+    } else if (cmd.op === "effectSubtree") {
+      out.push(await emitEffectSVG(cmd, world, region, ctx));
     } else {
       out.push(vectorCommandToSVG(cmd, world, ctx));
     }
@@ -299,56 +305,135 @@ export async function emitRegionSVG(commands, region, out, ctx) {
 }
 
 /**
- * Command (async; returns an SVG fragment). One magnifier lens — the SVG twin of
- * pdf_backend.emitLens: a circle <clipPath> + a magnify-about-center <g
- * transform> re-emit of the commands below the lens (depth-capped → raster
- * embed), then the vector rim ring. All geometry is in WORLD coordinates; the
- * enclosing view <g> maps them to output px. The magnify transform is
- * `translate(C·(1−M)) scale(M)` (fixed point C: page' = C + M·(page − C), the
- * same algebra as magnifiedView / the GPU lensRenderView), read left-to-right.
+ * Command (async; returns an SVG fragment). One EFFECTED widget (manifest
+ * Round 12D; ir.js effectSubtree): V1 renders the WHOLE effected widget
+ * (shadow + content + bloom + blend, GPU-composited) as ONE raster <image> —
+ * exact pixels, the safe hybrid path (same machinery as the blur split /
+ * deep-lens fallback). Multiply/screen against the page content below is
+ * approximated by baking the widget over transparency and compositing
+ * normally — a KNOWN, DOCUMENTED divergence for non-normal blends in SVG.
+ *
+ * NATIVE-FILTER UPGRADE PATH (spec'd for the SVG owner, deliberately not
+ * built here): shadow = <filter> feGaussianBlur(SourceAlpha) + feOffset +
+ * feFlood/feComposite under vector content; bloom = feGaussianBlur +
+ * feComposite(arithmetic k2=k3=1) or feBlend screen; blend = a
+ * `style="mix-blend-mode:multiply|screen"` group (needs `isolation` control
+ * on the parent). Registered through ctx.addDef like the lens clipPaths.
+ * Until then this raster path keeps SVG export CORRECT for every effect.
+ */
+export async function emitEffectSVG(cmd, world, region, ctx) {
+  if (cmd.blend === "add") throw new Error("svg_backend: an add-blend effectSubtree must be consumed by emitRegionSVG's raster split (no isolated-raster equivalent of additive compositing)");
+  const m = cmd.margin;
+  const corners = [
+    [cmd.x - m, cmd.y - m], [cmd.x + cmd.w + m, cmd.y - m],
+    [cmd.x - m, cmd.y + cmd.h + m], [cmd.x + cmd.w + m, cmd.y + cmd.h + m],
+  ].map(([lx, ly]) => T.apply(world, lx, ly));
+  const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
+  const placeRect = {
+    x: Math.min(...xs), y: Math.min(...ys),
+    w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys),
+  };
+  // Blend NEUTRALIZED inside the isolated raster: multiply/screen against a
+  // TRANSPARENT raster background would blacken/blow out the widget (the GPU
+  // would blend against zeros); the divergence-vs-page note is in the header.
+  return ctx.rasterRegion([pushTransform(world), { ...cmd, blend: "normal" }, popTransform()], {
+    placeRect, srcView: region.view, background: [0, 0, 0, 0],
+  });
+}
+
+/**
+ * Command (async; returns an SVG fragment). One SHAPED-LENS magnifier — the SVG
+ * twin of pdf_backend.emitLens (manifest "BOX-SHAPED MAGNIFIERS + magnifier
+ * ORIGIN"): a shaped <clipPath> (circle | rounded rect) + a magnify-about-ORIGIN
+ * <g transform> re-emit of the commands below the lens (depth-capped → raster
+ * embed), then the vector rim/border ring.
+ *
+ * ORIGIN: the magnify transform maps the origin to the lens CENTER —
+ * `translate(C − M·O) scale(M)` (page' = C + M·(page − O), the same algebra as
+ * magnifiedView / the GPU lensRenderView), read left-to-right. A default
+ * origin = center reduces to the pre-origin `translate(C·(1−M)) scale(M)`
+ * BYTE-IDENTICALLY (C − M·C = C·(1−M), same fmt output).
+ *
+ * SHAPE: a CIRCLE is rotation-invariant, so its clip circle + rim are emitted
+ * directly in WORLD coordinates about the world center (unchanged from before
+ * shapes existed — circle output stays byte-identical, reading rimColor/
+ * rimWidth). A ROUNDED RECT genuinely has orientation, so its clip path +
+ * border are emitted in LOCAL coordinates with the box's world transform baked
+ * onto the clip child / border group (the emitCropSVG rotation convention),
+ * reading the stroked-box bundle (stroke/strokeWidth).
  */
 export async function emitLensSVG(cmd, world, commands, rawIdx, region, ctx) {
+  const isBox = cmd.shape === "box";
   const center = T.apply(world, cmd.cx, cmd.cy);
-  const rWorld = cmd.r * world.scale;
+  const originWorld = T.apply(world, cmd.originX ?? cmd.cx, cmd.originY ?? cmd.cy);
   const m = Math.max(cmd.magnification, 0.01);
   const below = balancedSlice(commands, rawIdx);
-  const half = rWorld / m;
+  // Hybrid-raster source rect: centered on the ORIGIN (what shows at the lens
+  // center), sized by the lens extent / M (pdf_backend.emitLens's rule,
+  // generalized to the box's half-extents).
+  const halfSrcX = (isBox ? cmd.halfW : cmd.r) * world.scale / m;
+  const halfSrcY = (isBox ? cmd.halfH : cmd.r) * world.scale / m;
   const sub = {
-    view: magnifiedView(region.view, center, m),
-    worldRect: { x: center.x - half, y: center.y - half, w: half * 2, h: half * 2 },
+    view: magnifiedView(region.view, center, m, originWorld),
+    worldRect: { x: originWorld.x - halfSrcX, y: originWorld.y - halfSrcY, w: halfSrcX * 2, h: halfSrcY * 2 },
     depth: region.depth + 1,
     background: region.background,
   };
 
+  // Local-space rounded rect for the box lens (clip + border share it) — the
+  // (cx, cy)-centered half-extent form, oriented by the box's world transform.
+  const boxLocal = isBox
+    ? { x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2, cornerRadius: cmd.cornerRadius }
+    : null;
+  const boxT = isBox ? similarityTransform(world) : "";
+
   const clipId = ctx.nextId("lensclip");
-  const clip = `<clipPath id="${clipId}"><circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(rWorld)}"/></clipPath>`;
-  ctx.addDef(clip);
+  if (isBox) {
+    // Rounded-rect clip in the box's LOCAL frame, world transform baked onto the
+    // clip child (SVG clipPathUnits defaults to userSpaceOnUse, so the clipped
+    // group below stays in plain world space — the emitCropSVG convention).
+    const tAttr = boxT ? ` transform="${boxT}"` : "";
+    ctx.addDef(`<clipPath id="${clipId}"><path d="${roundedRectPathD(boxLocal)}"${tAttr}/></clipPath>`);
+  } else {
+    ctx.addDef(`<clipPath id="${clipId}"><circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(cmd.r * world.scale)}"/></clipPath>`);
+  }
 
   let inner;
   if (region.depth < MAX_LENS_DEPTH) {
-    // VECTOR lens: magnify about the center, re-emit the display list below.
+    // VECTOR lens: magnify about the origin (origin lands at center), re-emit
+    // the display list below.
     const sub2 = [];
     await emitRegionSVG(below, sub, sub2, ctx);
-    const magnify = `translate(${fmt(center.x * (1 - m))} ${fmt(center.y * (1 - m))}) scale(${fmt(m)})`;
+    const magnify = `translate(${fmt(center.x - m * originWorld.x)} ${fmt(center.y - m * originWorld.y)}) scale(${fmt(m)})`;
     inner = `<g transform="${magnify}">${sub2.join("")}</g>`;
   } else {
     // Depth cap (the GPU / PDF recursion bound): a lens inside a lens embeds as
-    // raster — the user-ratified pixelated fallback. Sample the SOURCE square,
-    // place it over the lens bbox (that placement IS the magnification).
+    // raster — the user-ratified pixelated fallback. Sample the SOURCE region
+    // (about the origin), place it over the lens bbox (that IS magnification).
+    const placeHalfX = (isBox ? cmd.halfW : cmd.r) * world.scale;
+    const placeHalfY = (isBox ? cmd.halfH : cmd.r) * world.scale;
     inner = await ctx.rasterRegion(below, {
-      placeRect: { x: center.x - rWorld, y: center.y - rWorld, w: rWorld * 2, h: rWorld * 2 },
+      placeRect: { x: center.x - placeHalfX, y: center.y - placeHalfY, w: placeHalfX * 2, h: placeHalfY * 2 },
       srcRect: sub.worldRect,
       srcView: region.view,
       background: region.background,
     });
   }
 
+  // Border: a circle lens reads rimColor/rimWidth (pre-shape props, output
+  // byte-identical); a box lens reads the stroked-box bundle (stroke/
+  // strokeWidth). Width 0 = NO ring (manifest spec), matching pdf emitLens.
+  // The box border's stroke-width stays LOCAL (its <g transform> scales it);
+  // the circle border is in WORLD coords so its width pre-multiplies the scale.
   let rim = "";
-  const rimW = cmd.rimColor ? cmd.rimWidth * world.scale : 0;
-  if (rimW > 0) { // rimWidth 0 = NO rim (manifest spec)
-    const rimColor = [...cmd.rimColor.slice(0, 3), cmd.rimColor[3] * cmd.opacity];
-    rim = `<circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(rWorld)}" fill="none" ` +
-      `stroke="${rgbaToCss(rimColor)}" stroke-width="${fmt(rimW)}"/>`;
+  const strokeColor = isBox ? cmd.stroke : cmd.rimColor;
+  const strokeW = strokeColor ? (isBox ? cmd.strokeWidth : cmd.rimWidth) * world.scale : 0;
+  if (strokeW > 0) {
+    const c = [...strokeColor.slice(0, 3), strokeColor[3] * cmd.opacity];
+    rim = isBox
+      ? groupWrap(boxT, `<path d="${roundedRectPathD(boxLocal)}" fill="none" stroke="${rgbaToCss(c)}" stroke-width="${fmt(cmd.strokeWidth)}"/>`)
+      : `<circle cx="${fmt(center.x)}" cy="${fmt(center.y)}" r="${fmt(cmd.r * world.scale)}" fill="none" ` +
+        `stroke="${rgbaToCss(c)}" stroke-width="${fmt(strokeW)}"/>`;
   }
   return `<g clip-path="url(#${clipId})">${inner}</g>${rim}`;
 }

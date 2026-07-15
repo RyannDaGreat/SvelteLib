@@ -27,7 +27,8 @@
  */
 
 import { polyline, polygon } from "../render_gpu/ir.js";
-import { bundle, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
+import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
 import { elbowRoute, elbowHandle, distToSegment } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES, SHAFT_GRAB_PAD } from "../core/endpoints.js";
 
@@ -47,6 +48,7 @@ export const elbowArrowPlugin = {
     from: { x: 200, y: 260 }, to: { x: 420, y: 380 },
     elbow: 0.5,
     stroke: "#1a1a2e", strokeWidth: 3, headLength: 14, headWidth: 12, headMode: "end", opacity: 1,
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
   // shared stroke/strokeWidth/opacity. Head geometry + the elbow position are
@@ -55,6 +57,7 @@ export const elbowArrowPlugin = {
     ...bundle("endpoints"),
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
+    ...bundle("effects"),
     { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
     { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
     { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start, just the end, or both." },
@@ -68,7 +71,7 @@ export const elbowArrowPlugin = {
    * always starts and ends with a horizontal leg), pulled back exactly like
    * the basic arrow's shaft.
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     // elbowRoute returns [x,y] pairs (render_gpu/ir.js's points convention);
     // convert to {x,y} objects here since every other function in this file
     // (headTriangle, the pullback helper) uses the {x,y} convention.
@@ -90,7 +93,11 @@ export const elbowArrowPlugin = {
     const cmds = [polyline({ points: shaftPts.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity })];
     if (ends.end) cmds.push(polygon({ points: headTriangle(p3, p2, s.headLength, s.headWidth), fill: s.stroke, opacity }));
     if (ends.start) cmds.push(polygon({ points: headTriangle(p0, p1, s.headLength, s.headWidth), fill: s.stroke, opacity }));
-    return cmds;
+    // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
+    // effects.js; all-off = pass-through). Effect region = padded AABB of the
+    // drawn geometry (no bbox state; world == identity). No cullMargin:
+    // non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
+    return applyEffects(cmds, s, world, paddedPointsBBox([p0, p1, p2, p3], Math.max(s.strokeWidth ?? 3, s.headWidth ?? 12)));
   },
   hitTestWorld(node, wx, wy) {
     const s = node.state;

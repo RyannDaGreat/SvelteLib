@@ -36,7 +36,8 @@
  */
 
 import { polyline, polygon } from "../render_gpu/ir.js";
-import { bundle, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
+import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES } from "../core/endpoints.js";
 
 export const arrowPlugin = {
@@ -49,6 +50,7 @@ export const arrowPlugin = {
     // headWidth 12 ≈ the old fixed-flare head's width (2·14·sin(0.44) = 11.93):
     // the default arrow renders visually unchanged by the re-parameterization.
     stroke: "#1a1a2e", strokeWidth: 3, headLength: 14, headWidth: 12, headMode: "end", opacity: 1,
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Legacy top-level state keys → their current names. headSize was really
   // the head LENGTH (manifest Round 11); color/width → stroke/strokeWidth
@@ -65,6 +67,7 @@ export const arrowPlugin = {
     ...bundle("endpoints"),
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
+    ...bundle("effects"),
     { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
     { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
     { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start (tail), just the end (tip), or both." },
@@ -76,7 +79,7 @@ export const arrowPlugin = {
    * A head triangle is emitted per ACTIVE end (headMode); the shaft's own
    * endpoints pull back only on the ends that have one (shaftPullback).
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     const { from, to } = s;
     const ends = headEnds(s.headMode);
     const opacity = s.opacity ?? 1;
@@ -89,7 +92,15 @@ export const arrowPlugin = {
     const cmds = [polyline({ points: [[shaftFrom.x, shaftFrom.y], [shaftTo.x, shaftTo.y]], width: s.strokeWidth, color: s.stroke, opacity })];
     if (ends.end) cmds.push(polygon({ points: headTriangle(to, from, s.headLength, s.headWidth), fill: s.stroke, opacity }));
     if (ends.start) cmds.push(polygon({ points: headTriangle(from, to, s.headLength, s.headWidth), fill: s.stroke, opacity }));
-    return cmds;
+    // Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE, render_gpu/
+    // effects.js) wrap the finished op list; all-off = pass-through. Arrows
+    // have no bbox state (world == identity), so the effect region is the
+    // padded AABB of the drawn geometry; the conservative full-width pad
+    // covers the capsule shaft's half-width and the head's lateral overhang
+    // with room to spare (over-padding only grows the offscreen region
+    // slightly — it never clips). No cullMargin: non-bbox widgets never
+    // cull-skip (core/view.js defaultCanSkip returns false without an AABB).
+    return applyEffects(cmds, s, world, paddedPointsBBox([from, to], Math.max(s.strokeWidth ?? 3, s.headWidth ?? 12)));
   },
   hitTestWorld(node, wx, wy) {
     return hitsShaft(node.state, wx, wy, node.state.strokeWidth ?? 3);

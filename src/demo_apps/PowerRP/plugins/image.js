@@ -36,10 +36,11 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
-import { bundle, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { image } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
+import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 /** A tiny 1×1 transparent PNG data URI — the default `src` so a freshly added
  * image widget is a valid (invisible-until-sourced) item rather than a broken
@@ -69,6 +70,7 @@ export const imagePlugin = {
     stroke: "#1a1a2e",
     ...defaults("strokeWidth", "cornerRadius", "opacity"), // strokeWidth:0, cornerRadius:0, opacity:1
     ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   inspector: [
     ...bundle("positioning"),
@@ -84,6 +86,7 @@ export const imagePlugin = {
     // side; all-0 default = byte-identical to no crop.
     ...bundle("cropInsets"),
     ...props("opacity"),
+    ...bundle("effects"),
   ],
   /**
    * Pure function. State → display-list commands (local space) — THE render
@@ -116,8 +119,13 @@ export const imagePlugin = {
     if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
     const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
     const quad = image({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
-    return decorateStrokedBox([quad], style, world);
+    // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
+    // rule): the shadow/bloom silhouette the FRAMED image, border included.
+    // The effect bbox is the CROPPED (drawn) rect — what the widget paints.
+    return applyEffects(decorateStrokedBox([quad], style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });
   },
+  // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
+  cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);

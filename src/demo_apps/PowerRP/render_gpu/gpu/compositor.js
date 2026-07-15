@@ -62,10 +62,11 @@
  * uncaptured GPU errors throw on the next render().
  */
 
-import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree, parseColor } from "../ir.js";
+import { flattenIR, DRAW_OPS, rect, ellipse, polyline, polygon, text, blurBackdrop, magnifyBackdrop, cropSubtree, effectSubtree, parseColor } from "../ir.js";
 import { richTextDraws } from "../../core/richtext.js";
+import { reportOnce } from "../../core/report.js";
 import * as T from "../../core/transform.js";
-import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, CROP_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
+import { SHAPE_WGSL, MESH_WGSL, TEX_WGSL, VIDEO_WGSL, BLUR_WGSL, MAGNIFY_WGSL, CROP_WGSL, EFFECT_WGSL, SHAPE_KIND, TEX_MODE, MAX_HALF_KERNEL } from "./shaders.js";
 import { GlyphAtlas, bucketFor } from "./glyph_atlas.js";
 import { ensureImage, getImage } from "./image_registry.js";
 import { ensureVideo, getVideo } from "./video_registry.js";
@@ -97,11 +98,64 @@ const MAX_SUPERSAMPLE_DEPTH = 1;
  * each targeting the other's container) rather than recurse unboundedly.
  */
 const MAX_CROP_DEPTH = 1;
+/**
+ * Effect (shadow/bloom/blend, ir.js effectSubtree) re-render recursion cap —
+ * MAX_SUPERSAMPLE_DEPTH + 1, LINKED: an effect must still render inside a
+ * lens's depth-1 replay (the manifest's "an effected widget under a lens must
+ * magnify with its effects"), one deeper than the lens cap. Depths past the
+ * cap are unreachable from plugin-emitted documents (a widget's effect
+ * content is its OWN ops — plugins cannot nest effectSubtree inside
+ * effectSubtree); only hand-built nested-effect IR gets here, and it skips
+ * LOUDLY (reportOnce) rather than recursing unboundedly.
+ */
+const MAX_EFFECT_DEPTH = MAX_SUPERSAMPLE_DEPTH + 1;
+/**
+ * The overall re-render nesting bound for CROP batches (replaces the old
+ * `depth < MAX_CROP_DEPTH else throw`, whose "unreachable" claim was wrong:
+ * a crop batch legitimately appears at depth ≥ 1 inside a supersampling
+ * lens's replay — the lens replays every batch below it, crops included —
+ * and inside an effect's content, e.g. a bordered image with a drop shadow;
+ * throwing there halted the paint loop for a plain crop-box-under-magnifier
+ * document). Derivation: the deepest LEGITIMATE chain is lens replay (1) →
+ * effect content (2) → stroked-box decoration crop (3), so 4 bounds every
+ * real composition with one level of headroom while still stopping a
+ * pathological hand-built recursion. PENDING RATIFICATION (a new constant,
+ * derived not precedented). At the cap the crop batch skips LOUDLY
+ * (reportOnce) — drawing its quad without a re-render would sample stale
+ * texels, and throwing bricks the frame for a document the model allows.
+ */
+const MAX_REENDER_DEPTH = 4;
 /** Floats per instance — must match the WGSL attribute layouts. */
 const SHAPE_FLOATS = 24; // 6 × vec4
-const QUAD_FLOATS = 20;  // 5 × vec4 (tex, video, magnify share this stride)
+const QUAD_FLOATS = 20;  // 5 × vec4 (tex, video, magnify, effect share this stride)
 const MESH_FLOATS = 6;   // pos.xy + rgba
 const CROP_FLOATS = 28;  // 7 × vec4 (own stride — see shaders.js CROP_WGSL header for why)
+
+/**
+ * The widget blend modes (ir.js BLEND_MODES) as FIXED-FUNCTION premultiplied
+ * blend states — no backdrop texture read needed (shaders.js EFFECT_WGSL
+ * header derives each): normal = the standard over; add = plain additive;
+ * multiply = s·d + d·(1−sa); screen = s + d·(1−s). Alpha channel composites
+ * OVER in all but add (coverage accumulates normally; add saturates).
+ */
+const EFFECT_BLEND_STATES = {
+  normal: {
+    color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+  },
+  add: {
+    color: { srcFactor: "one", dstFactor: "one" },
+    alpha: { srcFactor: "one", dstFactor: "one" },
+  },
+  multiply: {
+    color: { srcFactor: "dst", dstFactor: "one-minus-src-alpha" },
+    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+  },
+  screen: {
+    color: { srcFactor: "one", dstFactor: "one-minus-src" },
+    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+  },
+};
 
 /**
  * Pure function. Packs a similarity transform for the shaders' apply_xform:
@@ -281,6 +335,15 @@ export class GpuCompositor {
       blurBackdrop({ radius: 1, opacity: 1 }),
       magnifyBackdrop({ cx: 1, cy: 1, r: 1, magnification: 2, rimColor: [0, 0, 0, 1], rimWidth: 1 }),
       cropSubtree({ x: 0, y: 0, w: 2, h: 2, cornerRadius: 0.5, fill: [0, 0, 0, 1], stroke: [0, 0, 0, 1], strokeWidth: 1, content: [rect({ x: 0, y: 0, w: 2, h: 2, fill: [0, 0, 0, 1] })] }),
+      // Effects substrate: shadow + bloom + a non-normal blend in one op —
+      // compiles all four EFFECT_WGSL blend-variant pipelines + the blur path.
+      effectSubtree({
+        x: 0, y: 0, w: 2, h: 2,
+        shadow: { dx: 1, dy: 1, blur: 1, color: [0, 0, 0, 1], opacity: 0.5 },
+        bloom: { radius: 1, strength: 1 },
+        blend: "multiply",
+        content: [rect({ x: 0, y: 0, w: 2, h: 2, fill: [0, 0, 0, 1] })],
+      }),
     ], { zoom: 1, panX: 0, panY: 0, dpr: 1 }, { background: [0, 0, 0, 0] });
   }
 
@@ -330,6 +393,8 @@ export class GpuCompositor {
     this._blurPool = [];            // per-blur-use-ordinal {uboH, uboV, bgH, bgV}
     this._lensPool = [];            // per-recursion-depth {tex, view} lens re-render targets (canvas-sized, lazy)
     this._lensUsePool = [];         // per-lens-use-ordinal {viewBuf, viewBG, rectBuf, bgByDepth}
+    this._effectPool = [];          // per-recursion-depth {tex, view, msaaTex, msaaView, texB, viewB} effect targets (canvas-sized, lazy)
+    this._effectUsePool = [];       // per-effect-use-ordinal {viewBuf, viewBG, rectBuf, uboSH, uboSV, uboBH, uboBV, byDepth}
     this._texW = 0;
     this._texH = 0;
   }
@@ -383,13 +448,13 @@ export class GpuCompositor {
     // the MSAA attachment when antialiasing is on); a pipeline's multisample
     // state must match its pass's attachment, so pipelines that target
     // single-sampled textures (blur H → TEMP) get an explicit count of 1.
-    const make = (label, code, bgls, buffers, sampleCount = this.sampleCount) => {
+    const make = (label, code, bgls, buffers, sampleCount = this.sampleCount, blendState = null) => {
       const module = d.createShaderModule({ label, code });
       return d.createRenderPipeline({
         label,
         layout: d.createPipelineLayout({ bindGroupLayouts: bgls }),
         vertex: { module, entryPoint: "vs", buffers },
-        fragment: { module, entryPoint: "fs", targets: [target] },
+        fragment: { module, entryPoint: "fs", targets: [blendState ? { format: this.format, blend: blendState } : target] },
         primitive: { topology: "triangle-list" },
         multisample: { count: sampleCount },
       });
@@ -424,6 +489,15 @@ export class GpuCompositor {
     // differs. With antialiasing off the two are the same descriptor — reuse.
     this.blurPipe = make("ir-blur", BLUR_WGSL, [this.blurBGL], []);
     this.blurPipeTemp = this.sampleCount > 1 ? make("ir-blur-temp", BLUR_WGSL, [this.blurBGL], [], 1) : this.blurPipe;
+    // Effect composite quads (shaders.js EFFECT_WGSL — the Round-12D effects
+    // substrate): ONE shader, FOUR pipeline variants differing only in their
+    // fixed-function blend state (EFFECT_BLEND_STATES). The widget quad draws
+    // through effectPipes[batch.blend]; the shadow quad always through
+    // `normal` (a shadow composites over); bloom always through `add` (the
+    // manifest's ADD-composited own blur). Group(1) = magnifyBGL (the shared
+    // sampler + texture + sample-rect layout), instances in the QUAD stride.
+    this.effectPipes = Object.fromEntries(Object.entries(EFFECT_BLEND_STATES).map(([mode, blendState]) =>
+      [mode, make(`ir-effect-${mode}`, EFFECT_WGSL, [this.viewBGL, this.magnifyBGL], [cornerLayout, quadInstLayout], this.sampleCount, blendState)]));
 
     // Static unit-quad corner buffer (two triangles)
     this.cornerBuf = d.createBuffer({ size: 6 * 2 * 4, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -443,6 +517,7 @@ export class GpuCompositor {
     if (this._texW === w && this._texH === h) return;
     for (const t of [this.sceneTex, this.backdropTex, this.tempTex, this.msaaTex]) t?.destroy();
     for (const l of this._lensPool) { l.tex.destroy(); l.msaaTex?.destroy(); }
+    for (const e of this._effectPool) { e.tex.destroy(); e.msaaTex?.destroy(); e.texB.destroy(); }
     const mk = (label, usage) => this.device.createTexture({ label, size: [w, h], format: this.format, usage });
     const RT = GPUTextureUsage.RENDER_ATTACHMENT, TB = GPUTextureUsage.TEXTURE_BINDING;
     const CS = GPUTextureUsage.COPY_SRC, CD = GPUTextureUsage.COPY_DST;
@@ -473,6 +548,9 @@ export class GpuCompositor {
     this._lensPool = [];    // canvas-sized: recreated lazily at the new size
     for (const u of this._lensUsePool) { u.viewBuf.destroy(); u.rectBuf.destroy(); }
     this._lensUsePool = []; // bgByDepth entries referenced the old lens views
+    this._effectPool = []; // canvas-sized: recreated lazily at the new size
+    for (const u of this._effectUsePool) { u.viewBuf.destroy(); u.rectBuf.destroy(); u.uboSH.destroy(); u.uboSV.destroy(); u.uboBH.destroy(); u.uboBV.destroy(); }
+    this._effectUsePool = []; // byDepth entries referenced the old effect views
     this._texW = w;
     this._texH = h;
   }
@@ -542,6 +620,92 @@ export class GpuCompositor {
           { binding: 2, resource: { buffer: entry.rectBuf } },
         ],
       });
+    }
+    return entry;
+  }
+
+  /**
+   * Query+Command (allocates on first use). The EFFECT re-render targets for a
+   * recursion depth (the Round-12D effects substrate — ir.js effectSubtree):
+   * `tex` (A) holds the widget's own isolated render (+ MSAA companion, a
+   * content target like a lens); `texB` (B) holds its Gaussian-blurred copy
+   * (blur output — single-sampled, fullscreen passes have no geometric edges).
+   * A DISTINCT pool from _lensPool: an effect inside a lens replay runs at the
+   * SAME depth index the lens texture is mid-use at, so sharing would clobber.
+   * Canvas-sized + only the visible intersection rendered (corner convention),
+   * so cost is bounded by the screen exactly like a lens (the manifest
+   * lens ∩ viewport rule).
+   */
+  _effectTarget(depth) {
+    if (!this._effectPool[depth]) {
+      const limit = this.device.limits.maxTextureDimension2D;
+      let w = this._texW, h = this._texH;
+      if (w > limit || h > limit) {
+        console.error(`GpuCompositor: effect texture ${w}x${h} exceeds maxTextureDimension2D ${limit} — clamping (this should be impossible: effect work is bounded by the canvas)`);
+        w = Math.min(w, limit);
+        h = Math.min(h, limit);
+      }
+      const RT = GPUTextureUsage.RENDER_ATTACHMENT, TB = GPUTextureUsage.TEXTURE_BINDING;
+      const tex = this.device.createTexture({ label: `ir-effect-${depth}`, size: [w, h], format: this.format, usage: RT | TB });
+      const msaaTex = this.sampleCount > 1
+        ? this.device.createTexture({ label: `ir-effect-msaa-${depth}`, size: [w, h], format: this.format, usage: RT, sampleCount: this.sampleCount })
+        : null;
+      const texB = this.device.createTexture({ label: `ir-effect-blur-${depth}`, size: [w, h], format: this.format, usage: RT | TB });
+      this._effectPool[depth] = {
+        tex, view: tex.createView(),
+        msaaTex, msaaView: msaaTex?.createView() ?? null,
+        texB, viewB: texB.createView(),
+      };
+    }
+    return this._effectPool[depth];
+  }
+
+  /**
+   * Query+Command (allocates on first use). Per-effect-USE GPU resources for
+   * one frame (the _lensUseEntry pattern — every use needs its OWN uniform
+   * buffers because queue writes all land before the encoder executes):
+   * the content re-render's view uniform, the quads' shared sample-rect
+   * uniform, FOUR blur uniform buffers (shadow H/V + bloom H/V — two blurs
+   * with different sigmas may run in one use), and per-depth bind groups:
+   * bgA (sample the widget render), bgB (sample the blurred copy),
+   * bgBlurH (blur pass reading A), bgBlurV (blur pass reading TEMP).
+   */
+  _effectUseEntry(ordinal, depth) {
+    const d = this.device;
+    if (!this._effectUsePool[ordinal]) {
+      const viewBuf = d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const viewBG = d.createBindGroup({ layout: this.viewBGL, entries: [{ binding: 0, resource: { buffer: viewBuf } }] });
+      const rectBuf = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const mkUbo = () => d.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      this._effectUsePool[ordinal] = { viewBuf, viewBG, rectBuf, uboSH: mkUbo(), uboSV: mkUbo(), uboBH: mkUbo(), uboBV: mkUbo(), byDepth: [] };
+    }
+    const entry = this._effectUsePool[ordinal];
+    if (!entry.byDepth[depth]) {
+      const pool = this._effectTarget(depth);
+      const mkQuadBG = (texView) => d.createBindGroup({
+        layout: this.magnifyBGL,
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: texView },
+          { binding: 2, resource: { buffer: entry.rectBuf } },
+        ],
+      });
+      const mkBlurBG = (srcView, ubo) => d.createBindGroup({
+        layout: this.blurBGL,
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: srcView },
+          { binding: 2, resource: { buffer: ubo } },
+        ],
+      });
+      entry.byDepth[depth] = {
+        bgA: mkQuadBG(pool.view),
+        bgB: mkQuadBG(pool.viewB),
+        bgBlurSH: mkBlurBG(pool.view, entry.uboSH),
+        bgBlurSV: mkBlurBG(this.tempView, entry.uboSV),
+        bgBlurBH: mkBlurBG(pool.view, entry.uboBH),
+        bgBlurBV: mkBlurBG(this.tempView, entry.uboBV),
+      };
     }
     return entry;
   }
@@ -677,6 +841,7 @@ export class GpuCompositor {
     // a frame would make the last write win for every pass that reads it.
     this._blurOrdinal = 0;
     this._lensOrdinal = 0;
+    this._effectOrdinal = 0;
     const encoder = d.createCommandEncoder();
     this._encodeScene(encoder, batches, view, this.viewBG,
       { tex: this.sceneTex, view: this.sceneView, msaaView: this.msaaView, contentW: w, contentH: h },
@@ -956,7 +1121,7 @@ export class GpuCompositor {
             { x: 0, y: 0, w: cw, h: ch },
           );
           if (visible.w === 0 || visible.h === 0) break;
-          if (depth < MAX_CROP_DEPTH) {
+          if (depth < MAX_REENDER_DEPTH) {
             endPass();
             // No magnification (see shaders.js CROP_WGSL header) — the crop's
             // own view IS the outer view, just shifted so the visible
@@ -980,14 +1145,130 @@ export class GpuCompositor {
             p.setVertexBuffer(1, this.cropBuf);
             p.draw(6, 1, 0, batch.first);
           } else {
-            // UNREACHABLE in practice: core/derive.resolveCropTargets forbids
-            // a crop box's target from itself being a crop box (and the
-            // target's OWN render is suppressed from the normal tree), so
-            // batch.contentBatches can never contain a NESTED "crop" batch
-            // recursing past MAX_CROP_DEPTH — this branch is a loud guard
-            // against a future regression of that invariant, not a real
-            // runtime path (no silent-fallback rendering here).
-            throw new Error("GpuCompositor: crop recursion exceeded MAX_CROP_DEPTH — core/derive.resolveCropTargets should make this impossible (a crop box's target may never be another crop box)");
+            // Nesting cap (see MAX_REENDER_DEPTH's doc — the old throw's
+            // "unreachable" claim was wrong: crops legitimately replay inside
+            // lens re-renders and effect contents). Unreachable for real
+            // documents (deepest legit chain is 3); a pathological hand-built
+            // nesting skips the crop LOUDLY — its quad would sample stale
+            // texels without a re-render, and throwing would brick the frame.
+            reportOnce("crop-reender-depth", `GpuCompositor: crop re-render nesting exceeded MAX_REENDER_DEPTH (${MAX_REENDER_DEPTH}) — skipping the crop region (pathological nesting)`);
+          }
+          break;
+        }
+        case "effect": {
+          // THE EFFECTS SUBSTRATE (manifest Round 12D; ir.js effectSubtree):
+          // re-render the widget's own content into the effect texture A
+          // (crop's corner/device-shift convention, magnification 1), blur
+          // A→TEMP→B where needed, then composite quads: SHADOW (B, tinted,
+          // offset, over) UNDER → WIDGET (A, through the blend-mode pipeline)
+          // → BLOOM (B re-blurred, additive) ON TOP.
+          const zd = view.zoom * view.dpr;
+          const cDevX = (batch.centerWorld.x * view.zoom + view.panX) * view.dpr;
+          const cDevY = (batch.centerWorld.y * view.zoom + view.panY) * view.dpr;
+          const offDev = { x: batch.offsetWorld.x * zd, y: batch.offsetWorld.y * zd };
+          const marginDev = batch.marginWorld * zd;
+          const offLen = Math.hypot(offDev.x, offDev.y);
+          // Skip test: the drawn OUTPUT (widget + halo + shifted shadow) vs
+          // the content rect — empty = fully offscreen, free culling.
+          const padX = batch.halfWWorld * zd + marginDev + offLen + AA_MARGIN_DEVICE;
+          const padY = batch.halfHWorld * zd + marginDev + offLen + AA_MARGIN_DEVICE;
+          const outVisible = intersectRects(
+            { x: Math.floor(cDevX - padX), y: Math.floor(cDevY - padY), w: Math.ceil(padX * 2) + 1, h: Math.ceil(padY * 2) + 1 },
+            { x: 0, y: 0, w: cw, h: ch },
+          );
+          if (outVisible.w === 0 || outVisible.h === 0) break;
+          if (depth >= MAX_EFFECT_DEPTH) {
+            // Unreachable from plugin-emitted documents (see the constant's
+            // doc); pathological hand-built nesting skips LOUDLY.
+            reportOnce("effect-reender-depth", `GpuCompositor: effect re-render nesting exceeded MAX_EFFECT_DEPTH (${MAX_EFFECT_DEPTH}) — skipping the effected widget (pathological nesting)`);
+            break;
+          }
+          // Source region: the widget footprint ∩ the content rect INFLATED
+          // by the blur reach + shadow offset — the offscreen-but-nearby
+          // source pixels whose blurred halo / shifted shadow lands on
+          // screen. Bounded by the canvas texture size (integer-aligned,
+          // corner convention — the lens rule: cost ≤ one screen).
+          const sigmaSDev = batch.shadowSigmaWorld * zd;
+          const sigmaBDev = batch.bloomSigmaWorld * zd;
+          const reach = Math.min(Math.ceil(Math.max(sigmaSDev, sigmaBDev) * 3), MAX_HALF_KERNEL);
+          const srcPadX = batch.halfWWorld * zd + AA_MARGIN_DEVICE;
+          const srcPadY = batch.halfHWorld * zd + AA_MARGIN_DEVICE;
+          const inflate = Math.ceil(reach + offLen);
+          const rawSrc = intersectRects(
+            { x: Math.floor(cDevX - srcPadX), y: Math.floor(cDevY - srcPadY), w: Math.ceil(srcPadX * 2) + 1, h: Math.ceil(srcPadY * 2) + 1 },
+            { x: -inflate, y: -inflate, w: cw + 2 * inflate, h: ch + 2 * inflate },
+          );
+          // Cap at the texture size (the lens economics: a source region can
+          // never exceed one canvas of pixels; a truncated far edge only ever
+          // affects content already offscreen past the inflation band).
+          const srcVisible = { x: rawSrc.x, y: rawSrc.y, w: Math.min(rawSrc.w, this._texW), h: Math.min(rawSrc.h, this._texH) };
+          if (srcVisible.w === 0 || srcVisible.h === 0) break; // widget itself fully out of reach
+          endPass();
+          // Content re-render at the OUTER view, shifted so srcVisible's
+          // origin lands at the texture corner (the crop-view trick, mag 1).
+          const effView = { zoom: view.zoom, panX: view.panX - srcVisible.x / view.dpr, panY: view.panY - srcVisible.y / view.dpr, dpr: view.dpr };
+          let subScissor = { x: 0, y: 0, w: srcVisible.w, h: srcVisible.h };
+          if (scissor) {
+            // The incoming scissor is an OUTPUT bound (presenter letterbox, or
+            // a lens replay's visible-intersection). The effect's SOURCE
+            // legitimately extends (blur reach + shadow offset) beyond the
+            // output it feeds — a widget just past the bound still casts its
+            // shadow/halo into it — so inflate before mapping onto the source
+            // re-render (without this, a lens's carried scissor clipped the
+            // source to a sliver and the lens showed a blank effect).
+            const inflated = { x: scissor.x - inflate, y: scissor.y - inflate, w: scissor.w + 2 * inflate, h: scissor.h + 2 * inflate };
+            subScissor = intersectRects(subScissor, deviceRectThroughViews(inflated, view, effView));
+          }
+          const pool = this._effectTarget(depth);
+          const use = this._effectUseEntry(this._effectOrdinal++, depth);
+          this._writeView(use.viewBuf, effView);
+          d.queue.writeBuffer(use.rectBuf, 0, new Float32Array([srcVisible.x, srcVisible.y, this._texW, this._texH]));
+          this._encodeScene(encoder, batch.contentBatches, effView, use.viewBG,
+            { tex: pool.tex, view: pool.view, msaaView: pool.msaaView, contentW: srcVisible.w, contentH: srcVisible.h },
+            { background: [0, 0, 0, 0], scissor: subScissor }, depth + 1);
+          const bgs = use.byDepth[depth];
+          // Separable Gaussian A→TEMP→B at `sigma` (BLUR_WGSL, opacity 1 both
+          // passes — B holds the PLAIN blurred copy; strength/opacity apply on
+          // the composite quad). Whole-attachment clears keep out-of-region
+          // texels transparent; scissors pad by the tap reach so edge taps
+          // read valid blurred texels (the blurBackdrop scissor rule).
+          const blurAtoB = (sigma, uboH, uboV, bgH, bgV) => {
+            endPass(); // a content pass may be open (e.g. the widget quad before a bloom blur) — one pass at a time per encoder
+            d.queue.writeBuffer(uboH, 0, new Float32Array([1, 0, sigma, 0, 1, 0, 0, 0]));
+            d.queue.writeBuffer(uboV, 0, new Float32Array([0, 1, sigma, 0, 1, 0, 0, 0]));
+            const r = Math.min(Math.ceil(sigma * 3), MAX_HALF_KERNEL);
+            const sw = Math.min(this._texW, srcVisible.w + 2 * r), sh = Math.min(this._texH, srcVisible.h + 2 * r);
+            const runPass = (targetView, bg) => {
+              const pass = encoder.beginRenderPass({
+                colorAttachments: [{ view: targetView, loadOp: "clear", clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: "store" }],
+              });
+              pass.setPipeline(this.blurPipeTemp); // count-1: TEMP and B are single-sampled
+              pass.setBindGroup(0, bg);
+              pass.setScissorRect(0, 0, sw, sh);
+              pass.draw(3);
+              pass.end();
+            };
+            runPass(this.tempView, bgH);
+            runPass(pool.viewB, bgV);
+          };
+          const drawQuad = (pipe, bg, first) => {
+            const p = ensurePass();
+            p.setPipeline(pipe);
+            p.setBindGroup(1, bg);
+            p.setVertexBuffer(0, this.cornerBuf);
+            p.setVertexBuffer(1, this.quadBuf);
+            p.draw(6, 1, 0, first);
+          };
+          if (batch.firstShadow >= 0) {
+            blurAtoB(sigmaSDev, use.uboSH, use.uboSV, bgs.bgBlurSH, bgs.bgBlurSV);
+            drawQuad(this.effectPipes.normal, bgs.bgB, batch.firstShadow); // shadow composites OVER, under the widget
+          }
+          if (!batch.shadowOnly) {
+            drawQuad(this.effectPipes[batch.blend], bgs.bgA, batch.firstContent);
+            if (batch.firstBloom >= 0) {
+              blurAtoB(sigmaBDev, use.uboBH, use.uboBV, bgs.bgBlurBH, bgs.bgBlurBV);
+              drawQuad(this.effectPipes.add, bgs.bgB, batch.firstBloom); // ADD-composited own blur (Round 12D)
+            }
           }
           break;
         }
@@ -1385,6 +1666,62 @@ export class GpuCompositor {
             first: at / CROP_FLOATS,
             centerWorld,
             halfWWorld: cmd.w / 2, halfHWorld: cmd.h / 2,
+            contentBatches,
+          });
+          box.current = null; // effects never merge with a following batch
+          break;
+        }
+        case "effectSubtree": {
+          // THE EFFECTS SUBSTRATE (manifest Round 12D; shaders.js EFFECT_WGSL
+          // header). Up to THREE quad instances share the QUAD stride
+          // (shadow / widget / bloom — which draw is an encode-time choice,
+          // like the lens's sharp/soft split): local rect = the widget bbox
+          // inflated by the effect margin (blur halo; the shadow offset is
+          // inside `margin` too — ir.js computes it) + the AA hair. Instance
+          // lanes (EFFECT_WGSL): quad | xform | (offsetWorld, 0, 0) | tint |
+          // (mode, alpha, 0, 0). Offsets/sigmas are WORLD units scaled by
+          // world.scale — view-independent instances replay correctly inside
+          // lens re-renders (the shaped-lens nesting rule).
+          const m = cmd.margin + aaLocal;
+          const qx = cmd.x - m, qy = cmd.y - m, qw = cmd.w + 2 * m, qh = cmd.h + 2 * m;
+          const packEffectQuad = (offX, offY, tint, mode, alpha) => {
+            const at = this.quadArr.alloc(QUAD_FLOATS);
+            const f = this.quadArr.f32;
+            f.set([qx, qy, qw, qh], at);
+            f.set(xf, at + 4);
+            f.set([offX, offY, 0, 0], at + 8);
+            f.set(tint, at + 12);
+            f.set([mode, alpha, 0, 0], at + 16);
+            return at / QUAD_FLOATS;
+          };
+          const sh = cmd.shadow, bl = cmd.bloom;
+          const offsetWorld = sh ? { x: sh.dx * world.scale, y: sh.dy * world.scale } : { x: 0, y: 0 };
+          // mode 1 = shadow tint (B's blurred alpha × color); mode 0 = sample.
+          const firstShadow = sh ? packEffectQuad(offsetWorld.x, offsetWorld.y, sh.color, 1, sh.opacity) : -1;
+          const firstContent = packEffectQuad(0, 0, NO_COLOR, 0, 1);
+          const firstBloom = bl ? packEffectQuad(0, 0, NO_COLOR, 0, bl.strength) : -1;
+          // Rotation-aware conservative half-extents of the WIDGET footprint
+          // (no halo — the halo is OUTPUT, not source): the exact AABB of the
+          // rotated local bbox. The crop case skips this (its region rarely
+          // rotates); an effected widget rotates routinely, and an
+          // underestimated source rect would clip the re-render's corners.
+          const cxL = cmd.x + cmd.w / 2, cyL = cmd.y + cmd.h / 2;
+          const centerWorld = T.apply(world, cxL, cyL);
+          const co = Math.abs(Math.cos(world.rotation)), si = Math.abs(Math.sin(world.rotation));
+          const hwL = cmd.w / 2 + aaLocal, hhL = cmd.h / 2 + aaLocal;
+          const contentBatches = packList(flattenIR(cmd.content));
+          batches.push({
+            type: "effect",
+            firstShadow, firstContent, firstBloom,
+            shadowSigmaWorld: sh ? sh.blur * world.scale : 0,
+            bloomSigmaWorld: bl ? bl.radius * world.scale : 0,
+            offsetWorld,
+            marginWorld: cmd.margin * world.scale,
+            blend: cmd.blend ?? "normal",
+            shadowOnly: !!cmd.shadowOnly,
+            centerWorld,
+            halfWWorld: (hwL * co + hhL * si) * world.scale,
+            halfHWorld: (hwL * si + hhL * co) * world.scale,
             contentBatches,
           });
           box.current = null; // effects never merge with a following batch

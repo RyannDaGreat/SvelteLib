@@ -143,6 +143,34 @@ export const PROPS = {
   cropLeft: { label: "Crop left", kind: "number", min: 0, category: "formatting", default: 0, help: "Trims this many canvas units off the LEFT of the source media (a crop, not a squash) — the rest keeps its scale." },
   cropRight: { label: "Crop right", kind: "number", min: 0, category: "formatting", default: 0, help: "Trims this many canvas units off the RIGHT of the source media (a crop, not a squash) — the rest keeps its scale." },
   cropBottom: { label: "Crop bottom", kind: "number", min: 0, category: "formatting", default: 0, help: "Trims this many canvas units off the BOTTOM of the source media (a crop, not a squash) — the rest keeps its scale." },
+
+  // ── effects: the EFFECTS BUNDLE (manifest Round 12D — shadow/bloom/blend) ────
+  // ONE substrate, three effects, every drawn widget (render half:
+  // render_gpu/effects.js applyEffects — the module header there records which
+  // widgets compose this and why the rest are excluded). DEFAULTS = EFFECT-OFF
+  // (shadow blur 0 / bloom strength 0 / blendMode normal) so every old document
+  // renders byte-identically (the Round 12D requirement). Nested dotted keys,
+  // the rotationAnchor.{x,y} precedent — Inspector paths/keyframes/equations all
+  // split on "." (equations read them as shadow.dx etc.).
+  //
+  // Enabled-state defaults are LINKED PRECEDENTS (arbitrary-constants rule):
+  // dx/dy 3 = refs/Figures/scratchpad.py's shadow_dx=3 (the Figures drop-shadow
+  // demo); color black + opacity 0.5 = refs/Figures/paper_peacock.py's
+  // production call with_drop_shadows(color='black', opacity=.5); bloom radius
+  // 10 = rp with_drop_shadow's blur=10 default (the same Gaussian-sigma family;
+  // rp r.py:5002). Blur/radius are Gaussian SIGMAS in world units — the
+  // blurBackdrop radius convention (render_gpu/ir.js).
+  "shadow.dx": { label: "Shadow X", kind: "number", category: "effects", default: 3, help: "How far the drop shadow shifts horizontally, in canvas units (positive is right). The shadow appears once Shadow blur is above zero." },
+  "shadow.dy": { label: "Shadow Y", kind: "number", category: "effects", default: 3, help: "How far the drop shadow shifts vertically, in canvas units (positive is down). The shadow appears once Shadow blur is above zero." },
+  "shadow.blur": { label: "Shadow blur", kind: "number", min: 0, category: "effects", default: 0, help: "How soft the drop shadow is (Gaussian blur amount, canvas units). Zero means NO shadow — raise it to turn the shadow on." },
+  "shadow.color": { label: "Shadow color", kind: "color", category: "effects", default: "#000000", help: "The drop shadow's color — classically black, but any color works (a colored glow-like shadow, for instance)." },
+  "shadow.opacity": { label: "Shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0.5, help: "How dark the drop shadow is, from 0 (invisible) to 1 (fully solid shadow color)." },
+  "bloom.radius": { label: "Bloom radius", kind: "number", min: 0, category: "effects", default: 10, help: "How far the bloom glow spreads (Gaussian blur amount, canvas units). Takes effect once Bloom strength is above zero." },
+  "bloom.strength": { label: "Bloom strength", kind: "number", min: 0, category: "effects", default: 0, help: "How bright the glow is: a blurred copy of the widget added on top of itself. Zero means NO bloom; 1 adds a full-brightness copy; higher over-glows." },
+  // Options mirror render_gpu/ir.js BLEND_MODES (the validating home — kept a
+  // literal here because core/ never imports render_gpu/; the effects IR test
+  // asserts the two lists stay identical).
+  blendMode: { label: "Blend mode", kind: "select", options: ["normal", "multiply", "add", "screen"], category: "effects", default: "normal", help: "How the widget's pixels combine with what's behind it: normal paints over, multiply darkens, add/screen brighten (light-like)." },
 };
 
 /**
@@ -176,6 +204,11 @@ export const BUNDLES = {
   // trims. Media widgets (image/video) compose this; groups will too (their
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
   cropInsets: ["cropTop", "cropLeft", "cropRight", "cropBottom"],
+  // THE EFFECTS BUNDLE (manifest Round 12D): drop shadow + bloom + blend mode,
+  // composed by every DRAWN widget (render half: render_gpu/effects.js —
+  // exclusions justified in its header). Defaults are effect-OFF; use
+  // bundleNestedDefaults("effects") in plugin defaults (the keys are nested).
+  effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode"],
 };
 
 /**
@@ -304,4 +337,45 @@ export function bundleDefaults(name) {
   const keys = BUNDLES[name];
   if (!keys) throw new Error(`properties.bundleDefaults: unknown bundle "${name}"`);
   return defaults(...keys);
+}
+
+/**
+ * Pure function. A NESTED defaults fragment: like defaults(), but dotted keys
+ * expand into nested objects — "shadow.dx" becomes {shadow: {dx: ...}} — so a
+ * plugin can spread a bundle whose state shape is nested (the effects bundle:
+ * state.shadow.dx, the rotationAnchor.{x,y} nesting precedent). Sibling dotted
+ * keys merge into one object. Keys without a declared default are skipped,
+ * same as defaults().
+ *
+ * @example nestedDefaults("shadow.blur", "shadow.opacity", "blendMode")
+ * {"shadow":{"blur":0,"opacity":0.5},"blendMode":"normal"}
+ * @example nestedDefaults("opacity")
+ * {"opacity":1}
+ */
+export function nestedDefaults(...keys) {
+  const out = {};
+  for (const k of keys) {
+    const def = PROPS[k];
+    if (!def) throw new Error(`properties.nestedDefaults: unknown property "${k}"`);
+    if (!("default" in def)) continue;
+    const path = k.split(".");
+    let node = out;
+    for (const part of path.slice(0, -1)) node = node[part] ??= {};
+    node[path[path.length - 1]] = def.default;
+  }
+  return out;
+}
+
+/**
+ * Pure function. nestedDefaults for a named bundle — THE way a plugin spreads
+ * the effects bundle's effect-off defaults into its `defaults` dict:
+ * `...bundleNestedDefaults("effects")`.
+ *
+ * @example bundleNestedDefaults("effects")
+ * {"shadow":{"dx":3,"dy":3,"blur":0,"color":"#000000","opacity":0.5},"bloom":{"radius":10,"strength":0},"blendMode":"normal"}
+ */
+export function bundleNestedDefaults(name) {
+  const keys = BUNDLES[name];
+  if (!keys) throw new Error(`properties.bundleNestedDefaults: unknown bundle "${name}"`);
+  return nestedDefaults(...keys);
 }

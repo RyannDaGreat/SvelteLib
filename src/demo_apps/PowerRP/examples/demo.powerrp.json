@@ -46,7 +46,19 @@
             "stroke": "#1a1a2e",
             "strokeWidth": 2,
             "cornerRadius": 8,
-            "opacity": 1
+            "opacity": 1,
+            "shadow": {
+              "dx": 3,
+              "dy": 3,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0.5
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal"
           },
           "0f3d6775": {
             "type": "circle",
@@ -64,7 +76,19 @@
             "fill": "#f7768e",
             "stroke": "#1a1a2e",
             "strokeWidth": 2,
-            "opacity": 1
+            "opacity": 1,
+            "shadow": {
+              "dx": 3,
+              "dy": 3,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0.5
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal"
           },
           "5420a650": {
             "type": "text",
@@ -93,7 +117,12 @@
                 }
               ],
               "paras": [
-                { "align": "left", "lineSpacing": 1, "charSpacing": 0, "wordSpacing": 0 }
+                {
+                  "align": "left",
+                  "lineSpacing": 1,
+                  "charSpacing": 0,
+                  "wordSpacing": 0
+                }
               ]
             },
             "size": 48,
@@ -104,7 +133,19 @@
             "align": "left",
             "lineSpacing": 1,
             "charSpacing": 0,
-            "wordSpacing": 0
+            "wordSpacing": 0,
+            "shadow": {
+              "dx": 3,
+              "dy": 3,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0.5
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal"
           },
           "510eda10": {
             "type": "arrow",
@@ -122,7 +163,19 @@
             "headLength": 14,
             "headWidth": 12,
             "headMode": "end",
-            "opacity": 1
+            "opacity": 1,
+            "shadow": {
+              "dx": 3,
+              "dy": 3,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0.5
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal"
           }
         }
       }
@@ -183,10 +236,12 @@
             "h": 160,
             "z": 11,
             "magnification": 2.2,
-            "rimColor": "#1a1a2e",
-            "rimWidth": 4,
             "supersample": true,
-            "radius": 110
+            "radius": 110,
+            "stroke": "#1a1a2e",
+            "strokeWidth": 4,
+            "shape": "circle",
+            "cornerRadius": 0
           }
         }
       }

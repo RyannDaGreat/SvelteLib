@@ -6,9 +6,10 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { ellipse } from "../render_gpu/ir.js";
+import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 export const circlePlugin = {
   type: "circle",
@@ -21,6 +22,7 @@ export const circlePlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     fill: "#f7768e", stroke: "#1a1a2e", strokeWidth: 2,
     ...defaults("opacity"), // opacity:1
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: positioning + fill/stroke/
   // strokeWidth + opacity. NO cornerRadius — an ellipse has no square corners to
@@ -31,17 +33,22 @@ export const circlePlugin = {
     ...bundle("positioning"),
     ...props("fill", "stroke", "strokeWidth"),
     ...props("opacity"),
+    ...bundle("effects"),
   ],
-  /** Pure function. State → display-list commands (local space) — THE render API. */
-  emit(s) {
-    return [ellipse({
+  /** Pure function. State → display-list commands (local space) — THE render
+   * API. Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE,
+   * render_gpu/effects.js) wrap the emitted ops; all-off = pass-through. */
+  emit(s, _targetWorldIR, world) {
+    return applyEffects([ellipse({
       cx: s.w / 2, cy: s.h / 2, rx: s.w / 2, ry: s.h / 2,
       fill: s.fill,
       stroke: (s.strokeWidth ?? 0) > 0 ? s.stroke : null,
       strokeWidth: s.strokeWidth ?? 0,
       opacity: s.opacity ?? 1,
-    })];
+    })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },
+  // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
+  cullMargin: effectsCullMargin,
   hitTest(s, lx, ly) {
     const nx = (lx - s.w / 2) / (s.w / 2), ny = (ly - s.h / 2) / (s.h / 2);
     return nx * nx + ny * ny <= 1;

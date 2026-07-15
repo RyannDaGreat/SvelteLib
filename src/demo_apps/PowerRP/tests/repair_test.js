@@ -126,6 +126,13 @@ test("computed (self.-equation) defaults are NEVER injected into old docs", () =
   doc = keyframed(doc, 0, ["items", "old1"], {
     type: "rect", x: 1, y: 2, w: 10, h: 10, z: 0, rotation: 0.5, scale: 1,
     fill: "#fff", stroke: "#000", strokeWidth: 1, cornerRadius: 0, opacity: 1, active: true,
+    // The effects bundle's effect-off keys (Round 12D) — like cornerRadius/
+    // opacity above, plain data defaults that ARE filled on old docs; this
+    // fixture enumerates every non-computed default so the assertion below
+    // isolates exactly the self.-equation (rotationAnchor) injection question.
+    shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 },
+    bloom: { radius: 10, strength: 0 },
+    blendMode: "normal",
   });
   const report = missingDefaults(doc, registry).find((r) => r.id === "old1");
   assert.equal(report, undefined);
@@ -217,11 +224,17 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
   const renamed = withLegacyKeysRenamed(doc, registry).doc;
   const { doc: filled, filled: fills } = withMissingDefaultsFilled(renamed, registry);
   assert.equal(filled.slides[0].delta.items[id].headLength, 20); // preserved
-  // Only the genuinely-new headWidth/headMode get filled, not headLength
-  // (headMode is the arrow-variants task's new field — manifest ARCHITECTURE
-  // PLAN #6 — the fixture predates it, same "genuinely new" territory as headWidth).
+  // Only the genuinely-new headWidth/headMode + the Round-12D effects-bundle
+  // keys get filled, not headLength (headMode is the arrow-variants task's new
+  // field — manifest ARCHITECTURE PLAN #6; the effect-off shadow/bloom/
+  // blendMode keys are the effects bundle's — the fixture predates them all,
+  // the same "genuinely new" territory as headWidth).
   const arrowFill = fills.find((f) => f.id === id);
-  assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), ["headWidth", "headMode"]);
+  assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), [
+    "headWidth", "headMode",
+    "shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity",
+    "bloom.radius", "bloom.strength", "blendMode",
+  ]);
   const state = evaluateState(foldState(filled, 1, 1), registry).state;
   assert.equal(state.items[id].headLength, 40);
   sceneIR(deriveRenderTree(state, registry)); // renders through the strict IR

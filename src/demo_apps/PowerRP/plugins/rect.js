@@ -2,9 +2,10 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
-import { bundle, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { rect } from "../render_gpu/ir.js";
+import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 export const rectPlugin = {
   type: "rect",
@@ -26,6 +27,7 @@ export const rectPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2,
     ...defaults("cornerRadius", "opacity"), // cornerRadius:0 (square), opacity:1
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows organized into the Inspector's collapsible accordion regions via each
   // registry row's `category` (manifest Round 12 "PROPERTY CATEGORIES").
@@ -33,18 +35,24 @@ export const rectPlugin = {
     ...bundle("positioning"),
     ...bundle("strokedBox"),
     ...props("opacity"),
+    ...bundle("effects"),
   ],
-  /** Pure function. State → display-list commands (local space) — THE render API. */
-  emit(s) {
-    return [rect({
+  /** Pure function. State → display-list commands (local space) — THE render
+   * API. Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE,
+   * render_gpu/effects.js) wrap the emitted ops; all-off = pass-through. */
+  emit(s, _targetWorldIR, world) {
+    return applyEffects([rect({
       x: 0, y: 0, w: s.w, h: s.h,
       cornerRadius: s.cornerRadius ?? 0,
       fill: s.fill,
       stroke: (s.strokeWidth ?? 0) > 0 ? s.stroke : null,
       strokeWidth: s.strokeWidth ?? 0,
       opacity: s.opacity ?? 1,
-    })];
+    })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },
+  // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
+  // defaultCanSkip's cullMargin hook.
+  cullMargin: effectsCullMargin,
   // Anchors sit on the VISIBLE rim: for a rounded rect the four corner anchors
   // slide onto their arcs (the 45° rim point), so arrows meet the painted
   // rounded corner instead of the empty square corner (Round 12 bug). Edge

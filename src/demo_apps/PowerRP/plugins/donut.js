@@ -30,10 +30,11 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { donutOutline, triangulated, pointInPolygon } from "../core/outline.js";
 import { polygon, polyline } from "../render_gpu/ir.js";
+import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 /**
  * Pure function. The donut's outer-ellipse-fitted-to-bbox geometry, in LOCAL
@@ -72,6 +73,7 @@ export const donutPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     fill: "#bb9af7", stroke: "#1a1a2e", strokeWidth: 2,
     ...defaults("opacity"), // opacity:1
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
     inner: 0.5, // hole radius as a PROPORTION (0..1) of the outer radius
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: positioning + fill/stroke/
@@ -84,6 +86,7 @@ export const donutPlugin = {
     ...bundle("positioning"),
     ...props("fill", "stroke", "strokeWidth"),
     ...props("opacity"),
+    ...bundle("effects"),
     { key: "inner", label: "Inner radius", kind: "number", min: 0, max: 1, category: "formatting", help: "The hole's size as a fraction of the donut's radius, from 0 (a full disc) to 1 (a thin ring). Drag the yellow handle on canvas to set it." },
   ],
   /**
@@ -93,27 +96,36 @@ export const donutPlugin = {
    * outline ear-clips into convex triangles for the IR's convex-only polygon
    * op. A zero-size donut (w or h <= 0) emits nothing.
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     const geom = ringGeom(s);
     if (geom.rx <= 0 || geom.ry <= 0) return [];
     const outline = donutRingOutline(geom, s.inner ?? 0.5);
     const tris = triangulated(outline);
     const opacity = s.opacity ?? 1;
     const fillTris = tris.map((tri) => polygon({ points: tri, fill: s.fill, opacity }));
+    // Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE, render_gpu/
+    // effects.js) wrap the finished op list; all-off = pass-through. The
+    // effect bbox is the bbox (the ring's outer extent, stroke pad below).
+    const fx = (cmds) => applyEffects(cmds, s, world, {
+      x: -(s.strokeWidth ?? 0) / 2, y: -(s.strokeWidth ?? 0) / 2,
+      w: (s.w ?? 0) + (s.strokeWidth ?? 0), h: (s.h ?? 0) + (s.strokeWidth ?? 0),
+    });
     // Stroke: two polylines (outer rim + inner rim) — matches the IR's
     // polyline op (round caps/joins) rather than inventing a new stroked-
     // ring primitive; circle.js's ellipse stroke has no direct equivalent
     // for a ring, so this is thin, donut-specific glue.
-    if ((s.strokeWidth ?? 0) <= 0) return fillTris;
+    if ((s.strokeWidth ?? 0) <= 0) return fx(fillTris);
     const half = outline.length / 2;
     const outer = [...outline.slice(0, half), outline[0]];
     const inner = [...outline.slice(half), outline[half]];
-    return [
+    return fx([
       ...fillTris,
       polyline({ points: outer, width: s.strokeWidth, color: s.stroke, opacity }),
       polyline({ points: inner, width: s.strokeWidth, color: s.stroke, opacity }),
-    ];
+    ]);
   },
+  // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
+  cullMargin: effectsCullMargin,
   hitTest(s, lx, ly) {
     const geom = ringGeom(s);
     if (geom.rx <= 0 || geom.ry <= 0) return false;

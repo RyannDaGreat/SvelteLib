@@ -16,9 +16,11 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { bundle, bundleNestedDefaults } from "../core/properties.js";
 import { normalizeRichText } from "../core/richtext.js";
 import { text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
+import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 export const textPlugin = {
   type: "text",
@@ -50,6 +52,7 @@ export const textPlugin = {
     // Paragraph-level defaults for the whole box (each paragraph may override in
     // paras[i] via the SET-2 UX). align ∈ left|center|right|justify.
     align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0,
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // `category` groups rows into the Inspector's collapsible accordion regions.
   // NO `text` CONTENT row: rich content/run-style editing is the SET-2 in-canvas
@@ -77,6 +80,7 @@ export const textPlugin = {
     { key: "wordSpacing", label: "Word spacing", kind: "number", category: "text" },
     { key: "color", label: "Color", kind: "color", category: "formatting" },
     { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
+    ...bundle("effects"),
   ],
   /**
    * Pure function. State → ONE rich text IR op (local space, top-left origin).
@@ -84,12 +88,16 @@ export const textPlugin = {
    * paragraph defaults; the backend lays it out. `text`/`size`/`color`/`font`
    * also carry a plain-text fallback (richTextToPlain-ish via the first run) so
    * a backend that can't lay out still draws SOMETHING (never a silent blank).
+   * Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE,
+   * render_gpu/effects.js) wrap the op; all-off = pass-through. The shadow is
+   * the glyphs' own blurred silhouette (per-letter, not the box) since the
+   * effect texture holds exactly what the widget painted.
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     const inherited = { font: s.font ?? DEFAULT_FONT, size: s.size ?? 36, color: s.color ?? "#000000", bold: s.bold ?? false };
     const rich = normalizeRichText(s.text, inherited);
     const first = rich.runs[0] ?? {};
-    return [text({
+    return applyEffects([text({
       // plain-text fallback (single-run degrade): the first run's text/style
       text: first.text ?? "",
       x: 0, y: 0,
@@ -103,8 +111,10 @@ export const textPlugin = {
       boxW: (s.w ?? 0) > 0 ? s.w : Infinity, // wrap to the box width; 0/absent ⇒ no wrap
       boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
       boxStyle: { align: s.align ?? "left", lineSpacing: s.lineSpacing ?? 1, charSpacing: s.charSpacing ?? 0, wordSpacing: s.wordSpacing ?? 0 },
-    })];
+    })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },
+  // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
+  cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,
   commands: [
     { id: "add-text", title: "Add Text", icon: "mdi:format-text", run: (app) => app.armCrosshairPlacement(textPlugin) },

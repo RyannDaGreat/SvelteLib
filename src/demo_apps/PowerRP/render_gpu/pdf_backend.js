@@ -25,6 +25,11 @@
  *     trick as the GPU supersample). Recursion capped at MAX_LENS_DEPTH
  *     (the GPU compositor's MAX_SUPERSAMPLE_DEPTH bound); a lens beyond the
  *     cap embeds as a raster region (user: pixelated lens acceptable).
+ *   effectSubtree (Round 12D shadow/bloom/blend) — the hybrid rule per
+ *     effect: shadow = raster PNG under VECTOR content (the manifest's
+ *     verbatim case); bloom = the widget becomes a raster region; multiply/
+ *     screen blends = raster region under an exact /BM ExtGState; add blends
+ *     = the everything-below raster split (like blur). See emitEffect.
  *
  * Structure: content-stream generation is pure string work (bare-node
  * testable, doctested); pdf-lib assembles the document (fonts, images,
@@ -32,7 +37,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, popTransform } from "./ir.js";
+import { flattenIR, parseColor, pushTransform, popTransform } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -230,16 +235,25 @@ export function textFaces(commands) {
     const key = `${font || DEFAULT_FONT}|${bold ? 1 : 0}`;
     if (!seen.has(key)) { seen.add(key); out.push({ font: font || DEFAULT_FONT, bold: !!bold }); }
   };
-  for (const c of commands) {
-    if (c.op !== "text") continue;
-    // Always include the op-level (font, bold): it is the single-run FALLBACK
-    // face the text case uses when no measureText seam is present (rich op → its
-    // plain-text degrade), so it must be embedded even for a rich op.
-    add(c.font, c.bold);
-    if (c.rich && Array.isArray(c.rich.runs)) {
-      for (const r of c.rich.runs) add(r.font, r.bold);
+  const walk = (cmds) => {
+    for (const c of cmds) {
+      // Content-bearing ops re-emit their sub-list through the vector path
+      // (emitCrop / emitEffect's vector-preserving branch), so text inside a
+      // crop target or an effected widget needs its face embedded too — a
+      // flat scan would throw "font not embedded" at emit time (caught by
+      // the effects tests; the crop case was the same latent gap).
+      if ((c.op === "cropSubtree" || c.op === "effectSubtree") && Array.isArray(c.content)) walk(c.content);
+      if (c.op !== "text") continue;
+      // Always include the op-level (font, bold): it is the single-run FALLBACK
+      // face the text case uses when no measureText seam is present (rich op → its
+      // plain-text degrade), so it must be embedded even for a rich op.
+      add(c.font, c.bold);
+      if (c.rich && Array.isArray(c.rich.runs)) {
+        for (const r of c.rich.runs) add(r.font, r.bold);
+      }
     }
-  }
+  };
+  walk(commands);
   return out;
 }
 
@@ -274,7 +288,10 @@ export function refsOfOp(commands, op) {
   const walk = (cmds) => {
     for (const c of cmds) {
       if (c.op === op && !seen.has(c.ref)) { seen.add(c.ref); out.push(c.ref); }
-      if (c.op === "cropSubtree" && Array.isArray(c.content)) walk(c.content);
+      // Both content-carrying ops: a crop's clipped target subtree AND an
+      // effected widget's own ops (its vector path re-emits them — their
+      // media must be embedded like any other).
+      if ((c.op === "cropSubtree" || c.op === "effectSubtree") && Array.isArray(c.content)) walk(c.content);
     }
   };
   walk(commands);
@@ -474,12 +491,20 @@ async function emitRegion(commands, region, out, ctx) {
     });
   }
 
+  // The raster-split ops: blurBackdrop (the original hybrid case), and an
+  // ADD-blended effect widget (Round 12D) — true additive compositing needs
+  // the real backdrop pixels (PDF has no /Add blend mode; /Screen ≠ add), so
+  // it claims the same everything-below raster split a blur does. Multiply/
+  // screen blends do NOT split — PDF has exact /BM equivalents (emitEffect).
   let lastBlurFlat = -1;
-  flat.forEach((fc, i) => { if (fc.cmd.op === "blurBackdrop") lastBlurFlat = i; });
+  flat.forEach((fc, i) => {
+    if (fc.cmd.op === "blurBackdrop" || (fc.cmd.op === "effectSubtree" && fc.cmd.blend === "add")) lastBlurFlat = i;
+  });
 
   if (lastBlurFlat >= 0) {
-    // HYBRID RULE: the blurred composite below (and including) the last blur
-    // is raster by necessity; embed it as one image covering the region.
+    // HYBRID RULE: the blurred/add-composited result below (and including)
+    // the last split op is raster by necessity; embed it as one image
+    // covering the region.
     const below = balancedSlice(commands, rawIndexOf[lastBlurFlat] + 1);
     await ctx.emitRasterRegion(below, {
       placeRect: region.worldRect,
@@ -494,10 +519,80 @@ async function emitRegion(commands, region, out, ctx) {
       await emitLens(cmd, world, commands, rawIndexOf[i], region, out, ctx);
     } else if (cmd.op === "cropSubtree") {
       await emitCrop(cmd, world, region, out, ctx);
+    } else if (cmd.op === "effectSubtree") {
+      await emitEffect(cmd, world, region, out, ctx);
     } else {
       emitVector(cmd, world, out, ctx);
     }
   }
+}
+
+/**
+ * Command (async; appends operators). One EFFECTED widget (manifest Round
+ * 12D; ir.js effectSubtree) under the HYBRID RULE:
+ *
+ *   SHADOW — "compositing a shadow png under a vector thingy" (the manifest's
+ *     verbatim anticipated case): the shadow ALONE (the op re-issued
+ *     shadowOnly through the GPU rasterizer — same pixels as the editor)
+ *     embeds as one raster XObject placed under the widget; the widget's own
+ *     content then stays fully VECTOR (text stays text).
+ *   BLOOM — the widget becomes a hybrid raster region (spec: "documented;
+ *     loud, deliberate"): widget + bloom render together over transparency
+ *     and embed as one PNG. KNOWN DIVERGENCE (documented): inside the raster
+ *     the bloom halo carries alpha, so it OCCLUDES the page by its coverage
+ *     where the GPU's pure ADD only brightens — a small halo-area delta the
+ *     parity floor absorbs.
+ *   BLEND multiply/screen — the widget region rasters over transparency and
+ *     draws under a /BM Multiply|Screen ExtGState: PDF's blend semantics
+ *     match the GPU's fixed-function multiply/screen EXACTLY against the
+ *     page, and everything below stays vector. (A future upgrade could keep
+ *     the content vector inside a transparency-group Form XObject with the
+ *     same /BM — the group isolation is what makes per-op /BM correct;
+ *     raster-first per the spec.) KNOWN DIVERGENCE: bloom baked into a
+ *     multiplied/screened raster composites INSIDE the blend (GPU adds it
+ *     after) — bloom+non-normal-blend simultaneously is the edge case.
+ *   BLEND add — never reaches here: emitRegion's split detection claims the
+ *     whole below-region as raster (the blur precedent; PDF has no additive
+ *     blend mode, and screen ≠ add). Loud guard below.
+ */
+async function emitEffect(cmd, world, region, out, ctx) {
+  if (cmd.blend === "add") throw new Error("pdf_backend: an add-blend effectSubtree must be consumed by emitRegion's raster split — it cannot compose as a vector-adjacent region (no /Add blend mode in PDF)");
+  // The effect region's WORLD AABB: the local bbox inflated by the op's
+  // margin (blur spill + shadow offset — ir.js computes it), through the four
+  // rotated corners (conservative under rotation, exact unrotated).
+  const m = cmd.margin;
+  const corners = [
+    [cmd.x - m, cmd.y - m], [cmd.x + cmd.w + m, cmd.y - m],
+    [cmd.x - m, cmd.y + cmd.h + m], [cmd.x + cmd.w + m, cmd.y + cmd.h + m],
+  ].map(([lx, ly]) => T.apply(world, lx, ly));
+  const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
+  const placeRect = {
+    x: Math.min(...xs), y: Math.min(...ys),
+    w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys),
+  };
+  // Raster ops re-render through the GPU (the SAME effect substrate the
+  // editor uses — pixel-identical shadows/blooms) over TRANSPARENT background
+  // so the PNG's alpha composites onto the page.
+  const rasterOp = (op) => [pushTransform(world), op, popTransform()];
+  const transparent = [0, 0, 0, 0];
+  if (cmd.shadow) {
+    await ctx.emitRasterRegion(rasterOp({ ...cmd, shadowOnly: true }), {
+      placeRect, srcView: region.view, background: transparent,
+    }, out);
+  }
+  if (cmd.shadowOnly) return; // shadow-only re-issues never carry content
+  if (!cmd.bloom && cmd.blend === "normal") {
+    // Vector-preserving path: shadow (if any) is already down as raster;
+    // the widget's own commands re-emit as ordinary vectors (the content is
+    // self-contained with its own absolute world — the emitCrop convention).
+    await emitRegion(cmd.content, region, out, ctx);
+    return;
+  }
+  // Bloom and/or multiply/screen: the widget region becomes ONE raster
+  // (shadow already emitted above — stripped here so it isn't doubled).
+  await ctx.emitRasterRegion(rasterOp({ ...cmd, shadow: null, blend: "normal" }), {
+    placeRect, srcView: region.view, background: transparent,
+  }, out, ctx.gsBlend(cmd.blend));
 }
 
 /**
@@ -1025,6 +1120,32 @@ class PdfAssembly {
   }
 
   /**
+   * Command (registers an ExtGState on first use). A /BM blend-mode gs op for
+   * a widget blend mode (ir.js BLEND_MODES → PDF standard separable blend
+   * modes: multiply → /Multiply, screen → /Screen — EXACT equivalents of the
+   * GPU's fixed-function states). "normal" needs no gs (empty string, the
+   * gsAlphaPair convention). "add" throws: PDF has no additive blend mode
+   * (emitRegion's raster split consumes add-blend effects instead — see
+   * emitEffect's loud guard).
+   *
+   * @example // ctx.gsBlend("multiply") → "/GSbm1 gs" (registered once)
+   * @example // ctx.gsBlend("normal") → ""
+   */
+  gsBlend(mode) {
+    if (mode === "normal") return "";
+    const bm = { multiply: "Multiply", screen: "Screen" }[mode];
+    if (!bm) throw new Error(`pdf_backend: no PDF blend-mode mapping for "${mode}" (add-blend effects go through the raster split)`);
+    const key = `bm:${bm}`;
+    if (!this._gs.has(key)) {
+      const name = `GSbm${this._gs.size + 1}`;
+      const dict = this.doc.context.obj({ Type: "ExtGState", BM: bm });
+      this.page.node.setExtGState(PDFName.of(name), this.doc.context.register(dict));
+      this._gs.set(key, name);
+    }
+    return `/${this._gs.get(key)} gs`;
+  }
+
+  /**
    * Command (async). Rasterizes `rawCmds` through the injected callback and
    * appends an image XObject draw. `placeRect` (WORLD coords in the current
    * CTM frame) is where the image lands; `srcRect` (default placeRect) is
@@ -1033,9 +1154,9 @@ class PdfAssembly {
    * bbox IS the magnification. Resolution: placeRect at the region view's
    * page-pt density × rasterScale.
    */
-  async emitRasterRegion(rawCmds, { placeRect, srcRect = placeRect, srcView, background }, out) {
+  async emitRasterRegion(rawCmds, { placeRect, srcRect = placeRect, srcView, background }, out, gs = "") {
     if (!this.rasterize)
-      throw new Error("pdf_backend: scene needs a raster region (blur / deep lens) but no rasterize callback was provided");
+      throw new Error("pdf_backend: scene needs a raster region (blur / deep lens / effects) but no rasterize callback was provided");
     const density = srcView.zoom * this.rasterScale; // px per world unit at the placed location
     const wPx = Math.max(1, Math.round(placeRect.w * density));
     const hPx = Math.max(1, Math.round(placeRect.h * density));
@@ -1050,9 +1171,11 @@ class PdfAssembly {
     const name = `Im${++this._imgCount}`;
     this.page.node.setXObject(PDFName.of(name), img.ref);
     // Image unit square: v=1 is the image's TOP row; in y-down space the cm
-    // needs a -h so the top row lands at the rect's visual top.
+    // needs a -h so the top row lands at the rect's visual top. `gs` (an
+    // optional ExtGState op — a /BM blend for an effected widget region,
+    // gsBlend) rides inside the q/Q so it scopes to this draw only.
     const n = pdfNum;
-    out.push("q", `${n(placeRect.w)} 0 0 ${n(-placeRect.h)} ${n(placeRect.x)} ${n(placeRect.y + placeRect.h)} cm`, `/${name} Do`, "Q");
+    out.push("q", ...(gs ? [gs] : []), `${n(placeRect.w)} 0 0 ${n(-placeRect.h)} ${n(placeRect.x)} ${n(placeRect.y + placeRect.h)} cm`, `/${name} Do`, "Q");
   }
 
   /** Command. Registers the finished content stream on the page. */

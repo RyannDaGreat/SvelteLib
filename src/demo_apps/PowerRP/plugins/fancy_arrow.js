@@ -41,7 +41,8 @@
  */
 
 import { polygon } from "../render_gpu/ir.js";
-import { bundle, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
+import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
 import { fancyArrowOutline, triangulated, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
 import { reportOnce } from "../core/report.js";
@@ -70,6 +71,7 @@ export const fancyArrowPlugin = {
     // PER-SIDE barb offset there, so full tipWidth = 30 here; the rest map 1:1.
     tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
     stroke: "#1a1a2e", opacity: 1,
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // color → stroke only (manifest ARCHITECTURE PLAN #6, "arrows are
   // line-objects"): fancy_arrow has no generic `width` property, so
@@ -85,6 +87,7 @@ export const fancyArrowPlugin = {
   inspector: [
     ...bundle("endpoints"),
     ...props("stroke", "opacity"),
+    ...bundle("effects"),
     { key: "tipLength", label: "Tip length", kind: "number", min: 0, category: "arrow", help: "Length of the arrowhead along the shaft, from tip to the barbs' base, in canvas units." },
     { key: "tipWidth", label: "Tip width", kind: "number", min: 0, category: "arrow", help: "Full width across the arrowhead's barbs, in canvas units." },
     { key: "tipDimple", label: "Tip dimple", kind: "number", min: 0, category: "arrow", help: "How deeply the back of the arrowhead notches inward toward the tip, giving the head its swept-back look." },
@@ -104,7 +107,7 @@ export const fancyArrowPlugin = {
    * REPORTED and draws nothing — a bad state must never brick the render loop
    * (the app's loud-repair philosophy; evaluateState's fail-loud precedent).
    */
-  emit(s) {
+  emit(s, _targetWorldIR, world) {
     const outline = fancyArrowOutline(outlineParams(s));
     if (!outline) return []; // zero-length arrow: no geometry
     let tris;
@@ -117,7 +120,15 @@ export const fancyArrowPlugin = {
       return [];
     }
     const opacity = s.opacity ?? 1;
-    return tris.map((tri) => polygon({ points: tri, fill: s.stroke, opacity }));
+    // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
+    // effects.js; all-off = pass-through). Effect region = padded AABB of the
+    // drawn geometry (no bbox state; world == identity). No cullMargin:
+    // non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
+    // The outline vertices ([x, y] pairs) ARE the drawn extent — exact AABB,
+    // no stroke pad needed (a filled polygon has no stroke overhang).
+    return applyEffects(
+      tris.map((tri) => polygon({ points: tri, fill: s.stroke, opacity })),
+      s, world, paddedPointsBBox(outline.map(([x, y]) => ({ x, y })), 0));
   },
   hitTestWorld(node, wx, wy) {
     const s = node.state;

@@ -503,3 +503,90 @@ fn fs(in: CropOut) -> @location(0) vec4f {
   return c * in.misc.y;
 }
 `;
+
+/**
+ * The EFFECTS-SUBSTRATE composite quad (manifest Round 12D: drop shadow +
+ * bloom + blend modes — ONE per-widget render-to-texture substrate,
+ * render_gpu/ir.js effectSubtree). The widget's own IR was re-rendered into an
+ * offscreen texture (the effect pool's A; its Gaussian-blurred copy into B via
+ * the existing BLUR_WGSL passes); this ONE shader then draws every composite
+ * as an instanced quad sampling the bound texture:
+ *
+ *   SHADOW — mode 1, bound to B (the blurred copy): a tinted silhouette
+ *     (tint.rgb × blurred alpha), drawn at the canvas-space (dx, dy) offset,
+ *     alpha lane = shadow opacity. Composited with the plain OVER pipeline
+ *     (a shadow is an occluder), BEFORE the widget so it sits under it.
+ *   WIDGET — mode 0, bound to A: a straight sample, alpha lane 1. The
+ *     PIPELINE VARIANT selects the blend mode — all four widget blend modes
+ *     are fixed-function premultiplied blend states (no backdrop texture
+ *     read; see gpu/compositor.js EFFECT_BLEND_STATES):
+ *       normal   (one, one-minus-src-alpha)         — the standard over
+ *       add      (one, one)                          — plain additive
+ *       multiply (dst, one-minus-src-alpha)          — out = s·d + d·(1−sa)
+ *       screen   (one, one-minus-src)                — out = s + d·(1−s)
+ *   BLOOM — mode 0, bound to B (re-blurred at the bloom sigma): the widget's
+ *     own blurred copy, alpha lane = bloom strength, through the ADD pipeline
+ *     — the manifest's "own blur composited on top of itself with ADD blend".
+ *
+ * Group(1) reuses the magnify/crop bind layout verbatim (sampler + texture +
+ * sample-rect uniform): u.rect = (originX, originY, texW, texH) — which
+ * device-px region of the current target the texture's re-render covers (the
+ * effect re-render sits in the texture's corner, the lens convention).
+ *
+ * The OFFSET is stored in WORLD units (canvas-space — a shadow's direction
+ * does NOT rotate with the widget, matching Figma/PPT; it DOES scale with the
+ * widget's world scale, applied at pack time) and added POST-transform in the
+ * vertex shader; the fragment samples at p − offsetDev (the unshifted source).
+ * View-independent instances = the same batch replays correctly inside a
+ * lens re-render (the shaped-lens nesting rule).
+ *
+ * Out-of-rendered-region samples are masked to transparent (NOT clamped-to-
+ * edge smear): the re-render covers only the visible intersection, and a
+ * quad fragment whose source sits outside it must show nothing.
+ */
+export const EFFECT_WGSL = VIEW_WGSL + /* wgsl */ `
+@group(1) @binding(0) var samp: sampler;
+@group(1) @binding(1) var src: texture_2d<f32>;
+struct EffU { rect: vec4f };
+@group(1) @binding(2) var<uniform> u: EffU;
+
+struct EffOut {
+  @builtin(position) pos: vec4f,
+  @location(0) @interpolate(flat) tint: vec4f,
+  @location(1) @interpolate(flat) misc: vec4f, // (mode, alpha, offsetDevX, offsetDevY)
+};
+
+@vertex
+fn vs(
+  @location(0) corner: vec2f,
+  @location(1) i_quad: vec4f,   // local quad: widget bbox + effect margin
+  @location(2) i_xform: vec4f,
+  @location(3) i_off: vec4f,    // (offsetWorldX, offsetWorldY, 0, 0) — canvas-space, world.scale applied
+  @location(4) i_tint: vec4f,   // shadow tint color (mode 1)
+  @location(5) i_misc: vec4f,   // (mode, alpha, 0, 0)
+) -> EffOut {
+  // Offset applies AFTER the widget transform (canvas-space shadow direction
+  // — it does not rotate with the widget).
+  let world = apply_xform(i_xform, i_quad.xy + corner * i_quad.zw) + i_off.xy;
+  var out: EffOut;
+  out.pos = world_to_clip(world);
+  out.tint = i_tint;
+  out.misc = vec4f(i_misc.x, i_misc.y, i_off.xy * view.scale_pan.x);
+  return out;
+}
+
+@fragment
+fn fs(in: EffOut) -> @location(0) vec4f {
+  let p = in.pos.xy;              // framebuffer coords = device px
+  let q = p - in.misc.zw;         // un-offset source position
+  let uv = (q - u.rect.xy) / u.rect.zw;
+  let s = textureSampleLevel(src, samp, uv, 0.0);
+  // Mask samples outside the rendered region to transparent (sample first —
+  // fwidth-free, but keep control flow uniform anyway for consistency).
+  let inside = select(0.0, 1.0, all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0)));
+  // mode 0 = straight sample (widget / bloom); mode 1 = shadow tint
+  // (tint.rgb silhouette from the blurred alpha, premultiplied).
+  let sampled = select(s, vec4f(in.tint.rgb, 1.0) * (in.tint.a * s.a), in.misc.x > 0.5);
+  return sampled * (in.misc.y * inside);
+}
+`;

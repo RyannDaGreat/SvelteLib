@@ -40,10 +40,11 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
-import { bundle, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { image } from "../render_gpu/ir.js";
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
+import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { reportOnce } from "../core/report.js";
 
 /** Gap between adjacent frames, as a FRACTION of a cell's width. The Figures
@@ -92,6 +93,7 @@ export const filmstripPlugin = {
     // to its pre-bundle rendering).
     stroke: "#1a1a2e",
     ...defaults("strokeWidth", "cornerRadius", "opacity"),
+    ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   inspector: [
     ...bundle("positioning"),
@@ -106,6 +108,7 @@ export const filmstripPlugin = {
     // WHOLE strip (all cells), not each cell.
     ...bundle("strokedBorder"),
     ...props("opacity"),
+    ...bundle("effects"),
   ],
   /**
    * Near-pure function (console.errors ONCE when the strip is unresolved;
@@ -142,8 +145,12 @@ export const filmstripPlugin = {
     const cells = filmstripLayout(urls.length, style.w, style.h);
     const content = urls.map((ref, i) =>
       image({ ref, x: cells[i].x, y: 0, w: cells[i].w, h: cells[i].h, opacity }));
-    return decorateStrokedBox(content, style, world);
+    // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
+    // rule): shadow/bloom silhouette the FRAMED strip, border included.
+    return applyEffects(decorateStrokedBox(content, style, world), s, world, { x: 0, y: 0, w: style.w, h: style.h });
   },
+  // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
+  cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);

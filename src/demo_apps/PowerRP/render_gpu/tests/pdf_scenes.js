@@ -22,6 +22,8 @@ import { normalizeRichText } from "../../core/richtext.js";
 import { CHECKER_PNG_DATA_URI } from "../../tests/fixtures/checker_png.js";
 import { STILL_VIDEO_MP4_DATA_URI, STILL_VIDEO_FRAME_DATA_URI } from "../../tests/fixtures/still_video.js";
 import { filmstripLayout } from "../../plugins/filmstrip.js";
+import { rectPlugin } from "../../plugins/rect.js";
+import { circlePlugin } from "../../plugins/circle.js";
 import { donutPlugin } from "../../plugins/donut.js";
 import { cropboxPlugin } from "../../plugins/cropbox.js";
 import { magnifierPlugin } from "../../plugins/magnifier.js";
@@ -582,5 +584,80 @@ export function scenes() {
           boxStyle: { align, lineSpacing: 1.1, charSpacing: 0, wordSpacing: 0 },
         })),
     ], 20, { font: true }), // per-paragraph alignment + justify parity; floor 20 committed-font baseline; measured + margin next live run. PENDING USER RATIFICATION.
+
+    // ══ EFFECTS SUBSTRATE parity (manifest Round 12D — shadow/bloom/blend;
+    // render_gpu/effects.js). Every scene builds through the real plugin
+    // emit() (the node() sceneIR-wrap idiom), so the effect-wrapping path is
+    // the production one. Floors are measured − margin, PENDING RATIFICATION
+    // (values locked from the live parity run). ══
+
+    // DROP SHADOW: raster shadow PNG under VECTOR content (the hybrid rule's
+    // verbatim "compositing a shadow png under a vector thingy"). Includes a
+    // ROTATED shadowed rounded rect — the offset stays canvas-space (does not
+    // rotate with the widget, the Figma/PPT convention).
+    (() => {
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      return s("effects-shadow-rect", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        ...node(rectPlugin, { ...rectPlugin.defaults, x: 50, y: 45, w: 150, h: 95, shadow: { dx: 8, dy: 8, blur: 6, color: "#000000", opacity: 0.6 } }),
+        ...node(rectPlugin, { ...rectPlugin.defaults, x: 240, y: 130, w: 110, h: 85, rotation: Math.PI / 6, cornerRadius: 14, fill: "#9ece6a", shadow: { dx: 6, dy: 6, blur: 4, color: "#7a3a3a", opacity: 0.5 } }),
+      ], 37, {}); // measured 40.35 dB (2026-07-15 live run) — raster shadow region + vector rects; floor = measured − ~3.4 (the suite convention). PENDING USER RATIFICATION.
+    })(),
+
+    // BLOOM: the widget's own blurred copy ADD-composited on top; the widget
+    // becomes a hybrid raster region in the PDF (GPU-rendered pixels, so the
+    // residual is resample-only + the documented halo-alpha divergence).
+    (() => {
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      return s("effects-bloom-circle", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#1a1a2e" }), // dark bg: bloom reads as glow
+        ...node(circlePlugin, { ...circlePlugin.defaults, x: 80, y: 60, w: 130, h: 130, fill: "#e0af68", strokeWidth: 0, bloom: { radius: 12, strength: 1 } }),
+        ...node(circlePlugin, { ...circlePlugin.defaults, x: 250, y: 140, w: 90, h: 90, fill: "#7aa2f7", strokeWidth: 0, bloom: { radius: 6, strength: 0.6 } }),
+      ], 25, {}); // measured 28.27 dB (2026-07-15 live run) — GPU-rendered raster region + the documented bloom halo-alpha divergence; floor = measured − ~3.3. PENDING USER RATIFICATION.
+    })(),
+
+    // BLEND MODE multiply: an image multiplied against the page — GPU
+    // fixed-function (dst, one-minus-src-alpha) vs the PDF's exact
+    // /BM Multiply ExtGState on the raster region; the backdrop stays vector.
+    (() => {
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      return s("effects-multiply-image", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#ffffff" }),
+        rect({ x: 0, y: 0, w: SCENE_W / 2, h: SCENE_H, fill: "#9ece6a" }),   // left half green
+        rect({ x: SCENE_W / 2, y: 0, w: SCENE_W / 2, h: SCENE_H, fill: "#e0af68" }), // right half amber
+        ...node(imagePlugin, { ...imagePlugin.defaults, src: CHECKER_PNG_DATA_URI, x: 100, y: 70, w: 200, h: 150, blendMode: "multiply" }),
+      ], 34, {}); // measured 37.38 dB (2026-07-15 live run) — /BM Multiply is an exact PDF equivalent (resample-only residual); floor = measured − ~3.4. PENDING USER RATIFICATION.
+    })(),
+
+    // BLEND MODE add: true additive compositing needs the backdrop pixels —
+    // PDF has no /Add, so the whole below-region rasters (the blur split
+    // precedent; emitRegion's extended split detection). GPU renders the
+    // identical add, so the residual is resample-only.
+    (() => {
+      const node = (plugin, state) => {
+        const world = { x: state.x, y: state.y, rotation: state.rotation ?? 0, scale: state.scale ?? 1 };
+        const local = { ...state, x: 0, y: 0 };
+        return [pushTransform(world), ...plugin.emit(local, null, world), popTransform()];
+      };
+      return s("effects-add-blend", [
+        rect({ x: 0, y: 0, w: SCENE_W, h: SCENE_H, fill: "#1a1a2e" }),
+        rect({ x: 40, y: 40, w: 180, h: 140, fill: "#7a3a3a" }),
+        ...node(circlePlugin, { ...circlePlugin.defaults, x: 120, y: 80, w: 140, h: 140, fill: "#33557f", strokeWidth: 0, blendMode: "add" }),
+        // a vector shape ABOVE the split proves the region above stays vector
+        ellipse({ cx: 330, cy: 60, rx: 40, ry: 30, fill: "#9ece6a", stroke: INK, strokeWidth: 2 }),
+      ], 38, {}); // measured 41.67 dB (2026-07-15 live run) — everything-below raster (blur-split class, exact GPU add); floor = measured − ~3.7. PENDING USER RATIFICATION.
+    })(),
   ];
 }

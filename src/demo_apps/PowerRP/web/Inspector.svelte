@@ -127,9 +127,10 @@
     arrow: "Arrow",
     lens: "Lens",
     blur: "Blur",
+    effects: "Effects",
     other: "Other",
   };
-  const CATEGORY_ORDER = ["positioning", "formatting", "text", "arrow", "lens", "blur", "other"];
+  const CATEGORY_ORDER = ["positioning", "formatting", "effects", "text", "arrow", "lens", "blur", "other"];
 
   /** Pure function. Groups plugin inspector rows into ordered category buckets:
    * [{id, title, rows}]. Preserves row order within a category; known

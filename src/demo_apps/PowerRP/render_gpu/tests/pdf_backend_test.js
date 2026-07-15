@@ -172,8 +172,12 @@ for (const scene of scenes()) {
     // would say wantsImage=false while an XObject IS emitted (the crop box's own
     // target content likewise). Written as a generic nested-content walk so a
     // future effect subtree (drop shadow, etc.) doesn't re-break it.
-    const wantsImage = commandsDeep(scene.commands).some((c) => c.op === "blurBackdrop" || c.op === "image" || c.op === "video");
-    assert.equal(s.includes("/Subtype /Image"), wantsImage, `image XObject iff blur or image/video op (${scene.name})`);
+    // An effectSubtree ALWAYS produces a raster region (shadow PNG / bloom
+    // or blend widget raster / the add-blend below-split — every effect's
+    // hybrid form embeds at least one image; render_gpu/pdf_backend
+    // emitEffect). The Round-12D extension of this invariant.
+    const wantsImage = commandsDeep(scene.commands).some((c) => c.op === "blurBackdrop" || c.op === "image" || c.op === "video" || c.op === "effectSubtree");
+    assert.equal(s.includes("/Subtype /Image"), wantsImage, `image XObject iff blur/image/video/effect op (${scene.name})`);
 
     const hasLens = scene.commands.some((c) => c.op === "magnifyBackdrop");
     if (hasLens) assert.ok(s.includes("W n"), "lens clip path present");

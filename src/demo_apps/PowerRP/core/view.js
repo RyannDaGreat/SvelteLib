@@ -68,14 +68,29 @@ export function rectsIntersect(a, b) {
  * bound its contribution, so we can't prove it invisible). Backdrop widgets
  * are handled separately in canSkipNode and never reach this via the default.
  *
+ * CULL-MARGIN HOOK (manifest Round 12D: "an effect enlarges the node's
+ * effective AABB by blur radius + offset — extend the cull bounds"): a plugin
+ * may declare `cullMargin(state) → local-unit halo`; the AABB inflates by
+ * margin × world.scale on every side before the intersection test. Zero /
+ * absent → the plain AABB, unchanged. First user: the effects bundle
+ * (render_gpu/effects.js effectsCullMargin — a shadow/bloom halo must not be
+ * clipped away when the widget's box is just offscreen); generic so any
+ * future halo-drawing widget reuses it.
+ *
  * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 500, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}, {x: 0, y: 0, w: 100, h: 100}) // true
  * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 50, y: 50, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}, {x: 0, y: 0, w: 100, h: 100}) // false
  * @example defaultCanSkip({state: {}, world: {x: 9999, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: false}}}, {x: 0, y: 0, w: 100, h: 100}) // false
+ * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 105, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}, cullMargin: () => 20}}, {x: 0, y: 0, w: 100, h: 100}) // false (20-unit halo reaches back into view)
+ * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 105, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}, cullMargin: () => 0}}, {x: 0, y: 0, w: 100, h: 100}) // true (zero margin = plain AABB)
  */
 export function defaultCanSkip(node, viewRectWorld) {
   const aabb = rotatedBBoxAABB(node);
   if (!aabb) return false; // non-bbox: unbounded contribution, never skip
-  return !rectsIntersect(aabb, viewRectWorld);
+  const margin = (node.plugin.cullMargin?.(node.state) ?? 0) * node.world.scale;
+  const inflated = margin > 0
+    ? { x: aabb.x - margin, y: aabb.y - margin, w: aabb.w + 2 * margin, h: aabb.h + 2 * margin }
+    : aabb;
+  return !rectsIntersect(inflated, viewRectWorld);
 }
 
 /**

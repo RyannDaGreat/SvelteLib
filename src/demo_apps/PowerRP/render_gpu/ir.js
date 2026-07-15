@@ -26,6 +26,7 @@
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
  *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, originX, originY, magnification, rimColor, rimWidth, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
+ *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, shadowOnly, margin}  // Round 12D effects substrate
  *
  * Backdrop-effect nodes consume the composite-so-far (everything already
  * emitted), replacing the canvas2D full-canvas snapshot with a GPU texture
@@ -402,6 +403,87 @@ export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke 
   };
 }
 
+/** The widget-composite blend modes (manifest Round 12D "BLEND MODES"): how a
+ * widget's own draw composites against the backdrop. All four are expressible
+ * as FIXED-FUNCTION premultiplied blend states on the GPU (no backdrop texture
+ * read needed — see gpu/compositor.js effect pipelines) and as PDF /BM blend
+ * modes or the raster-below split in the vector backends. */
+export const BLEND_MODES = ["normal", "multiply", "add", "screen"];
+
+/**
+ * Pure function. The EFFECTS SUBSTRATE node (manifest Round 12D: "ALL FOUR
+ * reuse one substrate: per-widget render-to-texture + blurred/blended
+ * composite"). ONE op carries all three effects because they share ONE
+ * offscreen render of the widget: `content` (the widget's own ops) renders to
+ * a texture ONCE, then up to three composites read it —
+ *
+ *   SHADOW (shadow: {dx, dy, blur, color, opacity}) — the texture's blurred
+ *     alpha silhouette, tinted `color` × `opacity`, drawn UNDER the widget at
+ *     the canvas-space offset (dx, dy). Blur is a Gaussian SIGMA in world
+ *     units (the blurBackdrop radius convention).
+ *   BLOOM (bloom: {radius, strength}) — the texture's own Gaussian-blurred
+ *     copy (sigma `radius`, world units) scaled by `strength`, ADD-composited
+ *     ON TOP of the widget.
+ *   BLEND (blend: "normal"|"multiply"|"add"|"screen") — the composite op of
+ *     the widget's own draw against the backdrop (BLEND_MODES).
+ *
+ * (x, y, w, h) is the widget's LOCAL bbox (the render footprint); `margin` is
+ * computed here at build time — the local-unit halo the effects add around
+ * that bbox (blur spill = 3σ, the BLUR_WGSL kernel-support bound, plus the
+ * shadow offset length, which covers a canvas-space offset in every direction
+ * even under rotation) — so backends and culling read one consistent number
+ * instead of re-deriving it.
+ *
+ * `content` follows cropSubtree's contract exactly: a self-contained,
+ * independently-flattened IR list that carries its OWN absolute world
+ * (callers wrap it in pushTransform(world) — render_gpu/effects.js
+ * applyEffects does this; see decorate.js's absolute-world contract).
+ *
+ * `shadowOnly: true` renders ONLY the shadow composite (no widget, no bloom,
+ * no blend) — the PDF hybrid rule's vector-preserving split uses it to raster
+ * just the shadow region under the widget's untouched VECTOR content (the
+ * manifest's verbatim "compositing a shadow png under a vector thingy").
+ *
+ * The EFFECT-OFF pass-through lives in render_gpu/effects.js applyEffects
+ * (returns `content` unchanged when nothing is on), so this builder always
+ * has real work — mirroring decorateStrokedBox/isUndecorated.
+ *
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], shadow: {dx: 3, dy: 3, blur: 4, color: "#000", opacity: 0.5}}).op // "effectSubtree"
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 0.5}}).margin // 11 (3·2 blur spill + 5 offset length)
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], bloom: {radius: 5, strength: 1}}).margin // 15 (3·5 bloom spill)
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], blend: "multiply"}).margin // 0 (blend alone adds no halo)
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], blend: "multiply"}).shadow // null
+ */
+export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom = null, blend = "normal", shadowOnly = false }) {
+  requireFinite("effectSubtree", { x, y, w, h });
+  if (!Array.isArray(content)) throw new Error(`effectSubtree: "content" must be an array, got ${JSON.stringify(content)}`);
+  if (!BLEND_MODES.includes(blend)) throw new Error(`effectSubtree: unknown blend "${blend}" (known: ${BLEND_MODES.join(", ")})`);
+  if (shadow === null && bloom === null && blend === "normal") throw new Error("effectSubtree: no effect is on (shadow/bloom null, blend normal) — callers must pass content through instead (render_gpu/effects.js applyEffects)");
+  let sh = null;
+  if (shadow !== null) {
+    const { dx, dy, blur, color, opacity } = shadow;
+    requireFinite("effectSubtree.shadow", { dx, dy, blur, opacity });
+    sh = { dx, dy, blur: Math.max(0, blur), color: parseColor(color), opacity };
+  }
+  let bl = null;
+  if (bloom !== null) {
+    const { radius, strength } = bloom;
+    requireFinite("effectSubtree.bloom", { radius, strength });
+    bl = { radius: Math.max(0, radius), strength: Math.max(0, strength) };
+  }
+  // Blur spill is 3σ each side (the BLUR_WGSL kernel-support bound — sigma·3,
+  // see MAX_HALF_KERNEL's derivation); the shadow offset length covers the
+  // canvas-space (dx, dy) in every local direction (rotation-safe: a rotation
+  // preserves lengths, so a halo of hypot(dx, dy) contains the offset however
+  // the widget is turned).
+  const BLUR_SUPPORT_SIGMAS = 3;
+  const margin = Math.max(
+    sh ? sh.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(sh.dx, sh.dy) : 0,
+    bl ? bl.radius * BLUR_SUPPORT_SIGMAS : 0,
+  );
+  return { op: "effectSubtree", x, y, w, h, content, shadow: sh, bloom: bl, blend, shadowOnly: !!shadowOnly, margin };
+}
+
 // ── flattening ───────────────────────────────────────────────────────────────
 
 /**
@@ -440,4 +522,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "text", "image", "video", "blurBackdrop", "magnifyBackdrop", "cropSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "text", "image", "video", "blurBackdrop", "magnifyBackdrop", "cropSubtree", "effectSubtree"];
