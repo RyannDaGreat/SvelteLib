@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import {
   tokenize, parseExpression, compiled, evalAst,
-  slugify, slugMap, anchorRefName, parseStoredRef, resolveRef, mapRefTokens,
+  slugify, slugMap, anchorRefName, parseStoredRef, parseSelfRef, resolveRef, mapRefTokens,
   displayToStored, storedToDisplay, isNumericSlot,
   evaluateState, withBindingsMigrated, withVariableRenamed,
 } from "../core/expressions.js";
@@ -123,6 +123,28 @@ test("resolveRef: var / item-slug-first / last-underscore anchor rule", () => {
   assert.deepEqual(resolveRef("circle_top_tm.y", slugs), { kind: "anchor", itemId: "a1", anchorId: "tm", coord: "y" });
   assert.throws(() => resolveRef("ghost.x", slugs), /Unknown reference/);
 });
+test("self reference: props, anchors, center alias, base-frame flag, errors", () => {
+  // parseSelfRef: self.<prop> → owner prop; self.anchors.<id>.x|y → owner anchor.
+  assert.deepEqual(parseSelfRef("self.w", "a1"), { kind: "prop", itemId: "a1", path: ["w"] });
+  assert.deepEqual(parseSelfRef("self.from.x", "a1"), { kind: "prop", itemId: "a1", path: ["from", "x"] });
+  // "center" aliases the "cm" anchor; selfBase marks base-frame (rotation-zeroed) eval.
+  assert.deepEqual(parseSelfRef("self.anchors.center.x", "a1"),
+    { kind: "anchor", itemId: "a1", anchorId: "cm", coord: "x", selfBase: true });
+  assert.deepEqual(parseSelfRef("self.anchors.tm.y", "a1"),
+    { kind: "anchor", itemId: "a1", anchorId: "tm", coord: "y", selfBase: true });
+  assert.throws(() => parseSelfRef("self.anchors.center", "a1"), /self\.anchors\.<id>\.x\|y/); // missing coord
+  assert.throws(() => parseSelfRef("self", "a1"), /needs a property/);
+  assert.throws(() => parseSelfRef("self.w", null), /only valid in an item's own equation/);
+  // resolveRef threads selfId; self is stored VERBATIM (identity-stable, no @id).
+  const slugs = slugMap({ items: {} });
+  assert.deepEqual(resolveRef("self.w", slugs, "a1"), { kind: "prop", itemId: "a1", path: ["w"] });
+  assert.equal(displayToStored("self.w / 2", { items: {} }), "self.w / 2");
+  assert.equal(storedToDisplay("self.anchors.center.x + 5", { items: {} }), "self.anchors.center.x + 5");
+});
+test("isNumericSlot: self-prefixed computed-default strings are equation slots", () => {
+  assert.ok(isNumericSlot({ defaults: { rotationAnchor: { x: "self.anchors.center.x" } } }, ["rotationAnchor", "x"]));
+  assert.ok(!isNumericSlot({ defaults: { name: "Text" } }, ["name"])); // plain label, not self.
+});
 test("display ↔ stored conversion (spacing preserved, roundtrip)", () => {
   const state = { vars: { speed: 5 }, items: { a1: { type: "rect", name: "Box" }, b2: { type: "circle", name: "Moon" } } };
   assert.equal(displayToStored("box.x + 10", state), "@a1.x + 10");
@@ -181,6 +203,48 @@ test("evaluateState: anchors are variables (world coords, transform-aware)", () 
   assert.equal(errors.size, 0);
   assert.equal(s.items.a1.x, 110); // center of the circle
   assert.equal(s.items.a1.y, 100); // top edge midpoint
+});
+test("evaluateState: self resolves to the OWNING item (props + own anchor)", () => {
+  const state = {
+    items: {
+      // self.w/2 → half the box's own width; cornerRadius is a numeric slot.
+      r1: { ...rectPlugin.defaults, x: 10, y: 20, w: 300, h: 100, cornerRadius: "self.w / 2" },
+      // Two different rects reusing the SAME "self.w" text resolve to their OWN w.
+      r2: { ...rectPlugin.defaults, x: 0, y: 0, w: 40, h: 40, cornerRadius: "self.w" },
+    },
+  };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.r1.cornerRadius, 150); // 300/2 — self is r1
+  assert.equal(s.items.r2.cornerRadius, 40); // same text, self is r2
+});
+test("evaluateState: self.anchors.center pivot uses the BASE (rotation-zeroed) frame", () => {
+  // The default rotationAnchor equation. Even when the box is rotated, the self
+  // center must be the GEOMETRIC center (x+w/2, y+h/2), not a center that spins.
+  const state = { items: { r1: { ...rectPlugin.defaults, x: 100, y: 100, w: 240, h: 140, rotation: Math.PI / 2 } } };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  assert.deepEqual(s.items.r1.rotationAnchor, { x: 220, y: 170 }); // base-frame center, not rotated
+});
+test("evaluateState: self in a VARIABLE is an error (no owner item)", () => {
+  const state = { vars: { bad: "self.w" }, items: {} };
+  const { errors } = capturedErrorsResult(state);
+  assert.match(errors.get("vars.bad"), /only valid in an item's own equation/);
+});
+test("evaluateState: self-referential cycle via own property is LOUD", () => {
+  // cornerRadius = self.cornerRadius + 1 → a slot depending on itself.
+  const state = { items: { r1: { ...rectPlugin.defaults, cornerRadius: "self.cornerRadius + 1" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.match(errors.get("items.r1.cornerRadius"), /Cyclic/);
+  assert.equal(typeof s.items.r1.cornerRadius, "number"); // fallback, not NaN
+});
+test("evaluateState: rotationAnchor.x and .y don't falsely cycle on each other", () => {
+  // Both default to self.anchors.center.{x,y}; the base-frame dep rule must NOT
+  // make them depend on each other (that would be a spurious cycle).
+  const state = { items: { r1: { ...rectPlugin.defaults, x: 0, y: 0, w: 100, h: 60, rotation: 1 } } };
+  const { state: s, errors } = evaluateState(state, registry);
+  assert.equal(errors.size, 0);
+  assert.deepEqual(s.items.r1.rotationAnchor, { x: 50, y: 30 });
 });
 test("evaluateState: anchor deps on equation-valued item props (topo order)", () => {
   const state = {

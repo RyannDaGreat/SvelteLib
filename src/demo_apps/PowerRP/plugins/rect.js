@@ -11,6 +11,9 @@ export const rectPlugin = {
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {
     type: "rect", x: 100, y: 100, w: 240, h: 140, z: 0, rotation: 0, scale: 1,
+    // Rotation pivots about this WORLD point; default = own center (an equation
+    // — manifest Round 11). Absent on old docs → derive falls back to center.
+    rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     fill: "#7aa2f7", stroke: "#1a1a2e", strokeWidth: 2, cornerRadius: 8, opacity: 1,
   },
   inspector: [
@@ -19,6 +22,8 @@ export const rectPlugin = {
     { key: "w", label: "Width", kind: "number", min: 0 },
     { key: "h", label: "Height", kind: "number", min: 0 },
     { key: "rotation", label: "Rotation", kind: "number", display: "degrees" }, // core stores radians; field edits/shows degrees (round-10 ruling)
+    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number" }, // world pivot; default self.anchors.center
+    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number" },
     { key: "z", label: "Z order", kind: "number" },
     { key: "fill", label: "Fill", kind: "color" },
     { key: "stroke", label: "Stroke", kind: "color" },

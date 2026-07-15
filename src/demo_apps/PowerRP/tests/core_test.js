@@ -16,7 +16,7 @@ import {
   withSlideToggled, serialize, deserialize, allKeyframes, withNormalizedZ, bisectedZ,
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
-import { deriveRenderTree, nodeFeatures, nodeAnchors, pickNode, standardBBoxAnchors, cameraRect } from "../core/derive.js";
+import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, standardBBoxAnchors, cameraRect } from "../core/derive.js";
 import { evaluateState } from "../core/expressions.js";
 import { solveSnap, axisLock } from "../core/snap.js";
 import { createCommands } from "../core/commands.js";
@@ -26,6 +26,7 @@ import { createUndo } from "../core/undo.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { circlePlugin } from "../plugins/circle.js";
 import { arrowPlugin, distToSegment } from "../plugins/arrow.js";
+import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
 
 let passed = 0;
 function test(name, fn) {
@@ -90,6 +91,27 @@ test("similarity transform apply/compose/invert roundtrip", () => {
   const seq = T.apply(o, p.x, p.y);
   approx(both.x, seq.x);
   approx(both.y, seq.y);
+});
+test("aboutPivot: rotation 0 is identity; pivot is the fixed point under rotation", () => {
+  // rotation 0 → byte-identical to the input (unrotated content is untouched).
+  assert.deepEqual(T.aboutPivot({ x: 100, y: 100, rotation: 0, scale: 1 }, 220, 170),
+    { x: 100, y: 100, rotation: 0, scale: 1 });
+  // The world anchor stays fixed under ANY rotation (incl. >2π spins) and scale.
+  const t = { x: 100, y: 100, rotation: 0, scale: 1.5 };
+  const A = { x: 220, y: 170 };
+  const ref = T.apply(T.aboutPivot(t, A.x, A.y), (A.x - t.x) / t.scale, (A.y - t.y) / t.scale);
+  for (const rot of [0.1, 1, Math.PI / 2, Math.PI, 7.0]) {
+    const w = T.aboutPivot({ ...t, rotation: rot }, A.x, A.y);
+    const p = T.apply(w, (A.x - t.x) / t.scale, (A.y - t.y) / t.scale);
+    approx(p.x, ref.x);
+    approx(p.y, ref.y);
+    approx(w.rotation, rot); // rotation/scale are preserved (parametric form intact)
+    approx(w.scale, t.scale);
+  }
+  // Concrete 90° about a 240×140 box center: top-left orbits to (290, 50).
+  const tl = T.apply(T.aboutPivot({ x: 100, y: 100, rotation: Math.PI / 2, scale: 1 }, 220, 170), 0, 0);
+  approx(tl.x, 290);
+  approx(tl.y, 50);
 });
 
 // ── geometry ─────────────────────────────────────────────────────────────────
@@ -175,6 +197,7 @@ const registry = createRegistry();
 registry.register(rectPlugin);
 registry.register(circlePlugin);
 registry.register(arrowPlugin);
+registry.register(cameraPlugin);
 test("registry is loud", () => {
   assert.throws(() => registry.register(rectPlugin), /Duplicate/);
   assert.throws(() => registry.get("nope"), /Unknown widget type/);
@@ -193,6 +216,63 @@ test("derive: z-sort, anchors, features, pick", () => {
   assert.ok(nodeFeatures(nodes[1]).some((f) => f.kind === "line"));
   assert.equal(pickNode(nodes, 5, 5).id, "r1"); // topmost wins
   assert.equal(pickNode(nodes, 500, 500), null);
+});
+// ── rotation about an anchor (manifest Round 11) ─────────────────────────────
+test("rotation anchor: default self-center pivot; box rotates IN PLACE", () => {
+  // New item carries the equation default rotationAnchor = self.anchors.center.
+  const raw = { items: { r1: { ...rectPlugin.defaults, x: 100, y: 100, w: 240, h: 140, rotation: Math.PI / 2 } } };
+  const { state, errors } = evaluateState(raw, registry);
+  assert.equal(errors.size, 0);
+  assert.deepEqual(state.items.r1.rotationAnchor, { x: 220, y: 170 }); // equation → world center
+  const node = deriveRenderTree(state, registry)[0];
+  const center = T.apply(node.world, 240 / 2, 140 / 2);
+  approx(center.x, 220); // the visible center is unmoved by the rotation
+  approx(center.y, 170);
+});
+test("rotation anchor: rotation 0 world equals T.fromState (unrotated content byte-identical)", () => {
+  const raw = { items: { r1: { ...rectPlugin.defaults, x: 55, y: 66, w: 240, h: 140, rotation: 0 } } };
+  const node = deriveRenderTree(evaluateState(raw, registry).state, registry)[0];
+  assert.deepEqual(node.world, T.fromState({ x: 55, y: 66 }));
+  // worldTransform is the pure kernel; same result directly.
+  assert.deepEqual(worldTransform({ x: 55, y: 66, rotation: 0, scale: 1, w: 240, h: 140 }), T.fromState({ x: 55, y: 66 }));
+});
+test("rotation anchor: OLD doc without rotationAnchor falls back to center (no migration)", () => {
+  // An item predating rotation anchors — no rotationAnchor key at all.
+  const legacy = { items: { r1: { type: "rect", x: 100, y: 100, w: 240, h: 140, rotation: Math.PI / 2 } } };
+  const node = deriveRenderTree(evaluateState(legacy, registry).state, registry)[0];
+  const center = T.apply(node.world, 120, 70);
+  approx(center.x, 220); // pivots about center exactly like a fresh item
+  approx(center.y, 170);
+});
+test("rotation anchor: mid-tween rotation orbits the anchor (center fixed at every alpha)", () => {
+  let doc = newDocument();
+  let r1;
+  [doc, r1] = withNewItem(doc, 0, { ...rectPlugin.defaults, x: 100, y: 100, w: 240, h: 140, rotation: 0 });
+  [doc] = withNewSlide(doc, 0);
+  doc = keyframed(doc, 1, ["items", r1, "rotation"], Math.PI);
+  for (const a of [0, 0.25, 0.5, 0.75, 1]) {
+    const st = evaluateState(foldState(doc, 1, a), registry).state;
+    const node = deriveRenderTree(st, registry).find((n) => n.id === r1);
+    const center = T.apply(node.world, 120, 70);
+    approx(center.x, 220); // the center never leaves (220,170) as the box spins
+    approx(center.y, 170);
+  }
+});
+test("rotation anchor: custom / equation-valued pivot orbits an external point", () => {
+  // Numeric custom pivot at world (0,0): the whole box orbits the origin.
+  const numeric = { items: { r1: { ...rectPlugin.defaults, x: 100, y: 100, w: 240, h: 140, rotation: Math.PI / 2, rotationAnchor: { x: 0, y: 0 } } } };
+  const tl = T.apply(deriveRenderTree(evaluateState(numeric, registry).state, registry)[0].world, 0, 0);
+  approx(tl.x, -100); // (100,100) rotated 90° about the origin
+  approx(tl.y, 100);
+  // Equation-valued pivot referencing a variable: resolves, then pivots there.
+  const eqn = { vars: { px: 50, py: 50 }, items: { r1: { ...rectPlugin.defaults, x: 100, y: 100, w: 240, h: 140, rotation: Math.PI / 2, rotationAnchor: { x: "px", y: "py" } } } };
+  const ev = evaluateState(eqn, registry);
+  assert.equal(ev.errors.size, 0);
+  assert.deepEqual(ev.state.items.r1.rotationAnchor, { x: 50, y: 50 });
+  const node = deriveRenderTree(ev.state, registry)[0];
+  const pivot = T.apply(node.world, 50 - 100, 50 - 100); // pivot's local coords in the base frame
+  approx(pivot.x, 50); // the referenced point is the fixed point
+  approx(pivot.y, 50);
 });
 // ADAPTATION (THE UNIFICATION): {item, anchor} binding objects and
 // resolveBinding/resolveEndpoints no longer exist — anchor bindings are now

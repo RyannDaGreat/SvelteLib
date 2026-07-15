@@ -19,6 +19,42 @@
 import * as T from "./transform.js";
 
 /**
+ * Pure function. An item's LOCAL→WORLD similarity transform, with rotation
+ * pivoted about its ROTATION ANCHOR (manifest Round 11: "rotating an object
+ * rotates it relative to an anchor; the default rotation anchor is the object's
+ * center — self.anchors.center").
+ *
+ * The rotation anchor is a world point stored as the equation-valued property
+ * pair rotationAnchor.{x,y} (default `self.anchors.center.{x,y}`), which the
+ * expression pass has already evaluated to numbers by derivation time. When
+ * ABSENT — older documents predating rotation anchors, or the anchor was never
+ * set — the pivot falls back to the item's geometric center (w/2, h/2 in the
+ * rotation-zeroed base frame): this is EXACTLY what `self.anchors.center`
+ * evaluates to, so a defaults-FALLBACK is byte-identical to load-time
+ * injection while touching zero stored deltas (chosen over injection: the
+ * default is a pure function of geometry, so there is nothing to persist, and
+ * unrotated content — rotation 0 — is pixel-identical to before). Non-bbox
+ * items (no w/h) fall back to the plain top-left pivot.
+ *
+ * The result is a plain {x,y,rotation,scale} similarity transform — every
+ * consumer (compositor, GPU sceneIR wrap, hit-test invert, anchors, snap,
+ * culling AABB) reads node.world unchanged.
+ *
+ * @example worldTransform({x: 100, y: 100, rotation: 0, scale: 1, w: 240, h: 140}) // {x: 100, y: 100, rotation: 0, scale: 1}
+ * @example worldTransform({x: 100, y: 100, rotation: Math.PI / 2, scale: 1, w: 240, h: 140}) // {x: 290, y: 50, rotation: 1.5707963267948966, scale: 1}
+ */
+export function worldTransform(itemState) {
+  const base = T.fromState(itemState);
+  if ((itemState.rotation ?? 0) === 0) return base; // pivot is irrelevant at 0
+  const ra = itemState.rotationAnchor;
+  if (ra && typeof ra.x === "number" && typeof ra.y === "number")
+    return T.aboutPivot(base, ra.x, ra.y);
+  if (itemState.w == null || itemState.h == null) return base; // no bbox: top-left pivot
+  const c = T.apply({ ...base, rotation: 0 }, itemState.w / 2, itemState.h / 2);
+  return T.aboutPivot(base, c.x, c.y);
+}
+
+/**
  * Pure function. Derives the z-sorted render tree from a folded state.
  * Sort: ascending z (default 0), ties broken by id for determinism.
  * Callers pass an EVALUATED state (core/expressions.evaluateState — the
@@ -35,7 +71,7 @@ export function deriveRenderTree(state, registry) {
     itemId: id,
     type: itemState.type,
     state: itemState,
-    world: T.fromState(itemState),
+    world: worldTransform(itemState),
     plugin: registry.get(itemState.type),
   }));
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));

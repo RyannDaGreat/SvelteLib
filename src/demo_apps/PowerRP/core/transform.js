@@ -60,7 +60,9 @@ export function invert(t) {
 
 /**
  * Pure function. Reads an item state's transform, defaulting missing parts.
- * Items store x/y/rotation/scale flat in their state.
+ * Items store x/y/rotation/scale flat in their state. Rotation pivots about
+ * the LOCAL origin (0,0) = the bbox top-left; to pivot about another point,
+ * post-process with aboutPivot().
  *
  * @example fromState({x: 5, y: 6, type: "rect"}) // {x: 5, y: 6, rotation: 0, scale: 1}
  */
@@ -70,5 +72,39 @@ export function fromState(state) {
     y: state.y ?? 0,
     rotation: state.rotation ?? 0,
     scale: state.scale ?? 1,
+  };
+}
+
+/**
+ * Pure function. Re-parametrizes a similarity transform so its rotation pivots
+ * about the given WORLD point (ax, ay) instead of the local origin, WITHOUT
+ * changing its rotation/scale. Returns a transform with the same rotation and
+ * scale but a translation adjusted so (ax, ay) is the fixed point of rotation.
+ *
+ * WHY THIS SHAPE: PowerRP stores transforms parametrically {x,y,rotation,scale}
+ * (never a matrix, so components tween correctly). "Rotate an object about an
+ * anchor" (manifest Round 11) changes only the EFFECTIVE translation — the
+ * pivot leaves rotation/scale untouched — so the parametric form survives and
+ * the result is still a plain similarity transform every consumer already
+ * handles (compositor translate/rotate/scale, GPU wrap, hit-test invert,
+ * anchors, snap, culling AABB). At rotation 0 the result is byte-identical to
+ * the input, so unrotated content renders exactly as before.
+ *
+ * Derivation: let s=scale, θ=rotation, and (px,py) the anchor in the input
+ * transform's rotation-0 layout, i.e. px=(ax−t.x)/s, py=(ay−t.y)/s. The output
+ * translation is chosen so apply(out, px, py) === (ax, ay):
+ *   out.x = ax − s(cosθ·px − sinθ·py),  out.y = ay − s(sinθ·px + cosθ·py).
+ *
+ * @example aboutPivot({x: 100, y: 100, rotation: 0, scale: 1}, 220, 170) // {x: 100, y: 100, rotation: 0, scale: 1}
+ * @example aboutPivot({x: 100, y: 100, rotation: Math.PI / 2, scale: 1}, 220, 170) // {x: 290, y: 50, rotation: 1.5707963267948966, scale: 1}
+ */
+export function aboutPivot(t, ax, ay) {
+  const c = Math.cos(t.rotation), s = Math.sin(t.rotation);
+  const px = (ax - t.x) / t.scale, py = (ay - t.y) / t.scale;
+  return {
+    x: ax - t.scale * (c * px - s * py),
+    y: ay - t.scale * (s * px + c * py),
+    rotation: t.rotation,
+    scale: t.scale,
   };
 }

@@ -9,6 +9,9 @@ export const textPlugin = {
   capabilities: { bbox: true, transform: true, resizable: false, backdrop: false },
   defaults: {
     type: "text", x: 120, y: 80, w: 260, h: 48, z: 0, rotation: 0, scale: 1,
+    // Rotation pivots about this WORLD point; default = own center (an equation
+    // — manifest Round 11). Absent on old docs → derive falls back to center.
+    rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     text: "Text", size: 36, color: "#1a1a2e", bold: false, opacity: 1,
   },
   inspector: [

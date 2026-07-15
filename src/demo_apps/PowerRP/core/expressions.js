@@ -278,18 +278,58 @@ export function parseStoredRef(token) {
   return { kind: "anchor", itemId: head.slice(0, us), anchorId, coord: path[0] };
 }
 
+/** "center" reads far better than the internal "cm" anchor id in the default
+ * rotation pivot self.anchors.center — the two name the same point. */
+const CENTER_ANCHOR_ALIAS = "cm";
+
+/**
+ * Pure function. Parses a `self.…` reference for the item that OWNS the slot.
+ * `selfId` is that owner's itemId (the derivation stage knows it — the
+ * expression lives in items.<selfId>.…). `self` is IDENTITY-STABLE: it names
+ * the owner directly, so it needs NO document rewrite on rename (unlike a slug
+ * reference), and it is stored LITERALLY as "self" (never rewritten to @id).
+ *
+ * Forms:
+ *   self.<prop...>              → {kind: "prop", itemId: selfId, path}
+ *   self.anchors.<id>.x|y       → {kind: "anchor", itemId: selfId, anchorId,
+ *                                   coord, selfBase: true}
+ * "center" is an alias for the "cm" center anchor. selfBase marks the anchor
+ * for BASE-FRAME (rotation-zeroed) evaluation: a self anchor used as the
+ * rotation pivot must be a FIXED point, not one that spins with the object.
+ *
+ * @example parseSelfRef("self.w", "a1") // {kind: "prop", itemId: "a1", path: ["w"]}
+ * @example parseSelfRef("self.anchors.center.x", "a1") // {kind: "anchor", itemId: "a1", anchorId: "cm", coord: "x", selfBase: true}
+ */
+export function parseSelfRef(token, selfId) {
+  if (selfId == null) throw new Error(`"self" is only valid in an item's own equation: "${token}"`);
+  const parts = token.split(".");
+  const path = parts.slice(1); // drop "self"
+  if (path.length === 0) throw new Error(`"self" needs a property: "${token}"`);
+  if (path[0] === "anchors") {
+    const coord = path[path.length - 1];
+    if (path.length !== 3 || (coord !== "x" && coord !== "y"))
+      throw new Error(`Self anchor reference must be self.anchors.<id>.x|y: "${token}"`);
+    const anchorId = path[1] === "center" ? CENTER_ANCHOR_ALIAS : path[1];
+    return { kind: "anchor", itemId: selfId, anchorId, coord, selfBase: true };
+  }
+  return { kind: "prop", itemId: selfId, path };
+}
+
 /**
  * Pure function. Resolves any reference token (display or stored form) to a
  * descriptor: {kind: "var", name} | {kind: "prop", itemId, path} |
  * {kind: "anchor", itemId, anchorId, coord}. Throws with a helpful message
- * when nothing matches. `slugs` is a slugMap(state).
+ * when nothing matches. `slugs` is a slugMap(state). `selfId` (optional) is
+ * the owner item's id, enabling `self.…` references.
  *
  * @example resolveRef("speed", slugMap({items: {}})) // {kind: "var", name: "speed"}
  * @example resolveRef("box.x", slugMap({items: {a1: {type: "rect", name: "Box"}}})) // {kind: "prop", itemId: "a1", path: ["x"]}
  * @example resolveRef("box_tm.x", slugMap({items: {a1: {type: "rect", name: "Box"}}})) // {kind: "anchor", itemId: "a1", anchorId: "tm", coord: "x"}
+ * @example resolveRef("self.w", slugMap({items: {}}), "a1") // {kind: "prop", itemId: "a1", path: ["w"]}
  */
-export function resolveRef(token, slugs) {
+export function resolveRef(token, slugs, selfId = null) {
   if (token.startsWith("@")) return parseStoredRef(token);
+  if (token === "self" || token.startsWith("self.")) return parseSelfRef(token, selfId);
   const [head, ...path] = token.split(".");
   if (path.length === 0) return { kind: "var", name: token };
   if (slugs.toId.has(head)) return { kind: "prop", itemId: slugs.toId.get(head), path };
@@ -329,8 +369,12 @@ export function mapRefTokens(src, mapToken) {
  * vars that disappear later) — the equation field surfaces the throw as its
  * invalid affordance. A leading "=" (spreadsheet affordance) is stripped.
  *
+ * `self.…` tokens are IDENTITY-STABLE (they name the owner, not a slug) and
+ * are stored VERBATIM — no @id rewrite, so they survive renames untouched.
+ *
  * @example displayToStored("box.x + 10", {items: {a1: {type: "rect", name: "Box"}}}) // "@a1.x + 10"
  * @example displayToStored("speed * 2", {vars: {speed: 5}, items: {}}) // "speed * 2"
+ * @example displayToStored("self.w / 2", {items: {}}) // "self.w / 2"
  * @example // displayToStored("sped * 2", {vars: {speed: 5}}) throws: Unknown variable "sped"
  */
 export function displayToStored(src, state) {
@@ -338,6 +382,7 @@ export function displayToStored(src, state) {
   parseExpression(clean); // validate the full grammar, not just the tokens
   const slugs = slugMap(state);
   return mapRefTokens(clean, (token) => {
+    if (token === "self" || token.startsWith("self.")) return token; // stored verbatim
     const d = resolveRef(token, slugs); // throws on unknown refs
     if (d.kind === "var") {
       if (!(d.name in (state.vars ?? {}))) throw new Error(`Unknown variable "${d.name}"`);
@@ -388,14 +433,23 @@ export function storedToDisplay(src, state) {
 /**
  * Pure function. Is this (possibly nested) item property a NUMERIC slot —
  * i.e. may a string stored there be treated as an equation? True iff the
- * plugin's default for the path is a number (see module docs).
+ * plugin's default for the path is a NUMBER, or a COMPUTED-DEFAULT equation
+ * string (one beginning with "self." — e.g. rotationAnchor.x defaults to
+ * "self.anchors.center.x"). The "self." form is the ONLY string default that
+ * is itself an equation; every label/color default (name "Text", fill
+ * "#7aa2f7") is a plain string that is NOT self-prefixed, so this stays
+ * structural (derived from the default's form) with no per-plugin annotations
+ * — the rule that keeps name/text/fill out of the expression system holds.
  *
  * @example isNumericSlot({defaults: {x: 100, name: "?"}}, ["x"]) // true
  * @example isNumericSlot({defaults: {name: "?"}}, ["name"]) // false
  * @example isNumericSlot({defaults: {from: {x: 0}}}, ["from", "x"]) // true
+ * @example isNumericSlot({defaults: {rotationAnchor: {x: "self.anchors.center.x"}}}, ["rotationAnchor", "x"]) // true
  */
 export function isNumericSlot(plugin, path) {
-  return typeof getPath(plugin.defaults, path) === "number";
+  const def = getPath(plugin.defaults, path);
+  if (typeof def === "number") return true;
+  return typeof def === "string" && def.startsWith("self.");
 }
 
 /** Command (mutates tree in place). Sets a leaf at path, creating nodes. */
@@ -412,6 +466,9 @@ function mutSetPath(tree, path, value) {
 
 const evalMemo = new WeakMap(); // state object → {registry, result}
 const loggedErrors = new Set(); // messages already console.error'd (once each)
+// The geometry a base-frame self anchor (rotation pivot) reads — never
+// rotation or rotationAnchor, so the pivot is a stable fixed point.
+const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
 
 /**
  * Near-pure function (memoized on state identity; console.errors each NEW
@@ -490,11 +547,15 @@ function computeEvaluatedState(state, registry) {
     slot.deps = new Set();
     slot.descriptors = new Map(); // ref token → descriptor
     slot.hasClosest = false;
+    // `self` resolves to the item that OWNS this slot (its equations live in
+    // items.<selfId>.…). Variable slots have no self (self is meaningless
+    // there); a `self.…` token in a variable throws, reported per-slot.
+    const selfId = slot.path[0] === "items" ? slot.path[1] : null;
     try {
       const { ast, refs } = compiled(slot.src);
       slot.ast = ast;
       for (const token of refs) {
-        const d = resolveRef(token, slugs);
+        const d = resolveRef(token, slugs, selfId);
         slot.descriptors.set(token, d);
         if (d.kind === "var") {
           if (!(d.name in (state.vars ?? {})))
@@ -521,7 +582,17 @@ function computeEvaluatedState(state, registry) {
           } else if (!(plugin.anchors?.(item) ?? []).some((a) => a.id === d.anchorId)) {
             throw new Error(`"${slugs.toSlug.get(d.itemId)}" has no anchor "${d.anchorId}"`);
           }
-          for (const depKey of itemSlotKeys.get(d.itemId) ?? [])
+          // A self anchor (rotation pivot) evaluates in the ROTATION-ZEROED base
+          // frame from geometry only (x,y,w,h,scale) — never rotation or the
+          // rotationAnchor slots — so it depends only on those geometry slots,
+          // NOT conservatively on all of the owner's slots. This keeps the
+          // default rotationAnchor {x,y} (both = self center) from spuriously
+          // depending on each other (which would be a false cycle) and never
+          // pivots the pivot on itself.
+          const baseKeys = d.selfBase
+            ? (itemSlotKeys.get(d.itemId) ?? []).filter((k) => SELF_ANCHOR_DEP_PROPS.has(k.split(".")[2]))
+            : (itemSlotKeys.get(d.itemId) ?? []);
+          for (const depKey of baseKeys)
             if (depKey !== slot.key) slot.deps.add(depKey);
         }
       }
@@ -538,7 +609,10 @@ function computeEvaluatedState(state, registry) {
     if (d.kind === "prop") return getPath(out.items[d.itemId], d.path);
     const item = out.items[d.itemId];
     const plugin = registry.get(item.type);
-    const world = T.fromState(item);
+    // A self anchor used as a rotation pivot must be a FIXED point, so it maps
+    // through the ROTATION-ZEROED base frame (self.anchors.center of a rotated
+    // box is its geometric center, not a center that spins with the box).
+    const world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : T.fromState(item);
     if (d.anchorId === "closest") {
       const owner = getPath(out, slot.path.slice(0, 2));
       const ownerPlugin = slot.path[0] === "items" ? registry.get(owner.type) : null;
@@ -568,6 +642,13 @@ function computeEvaluatedState(state, registry) {
 
   // 4. Kahn topo sort + evaluate. Dep errors don't block consumers — the
   //    errored dep already holds its fallback number (reported at its source).
+  //    Prune deps that point to a slot which FAILED resolution and was deleted
+  //    from `slots` (e.g. a rotation anchor reading a sibling w that has a bad
+  //    reference): that dep already carries its fallback in `out`, so the edge
+  //    is dropped — otherwise its indegree could never reach 0 and Kahn would
+  //    stall, misreporting the survivor as a cycle.
+  for (const slot of slots.values())
+    slot.deps = new Set([...slot.deps].filter((dep) => slots.has(dep)));
   const dependents = new Map(); // key → [keys that depend on it]
   const indegree = new Map();
   for (const slot of slots.values()) indegree.set(slot.key, slot.deps.size);
