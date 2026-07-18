@@ -9,14 +9,16 @@ this repo); this file covers what a contributor to THIS directory must know.
 
 RenderTree = pure(document, [[slide, alpha]]).
 
-A document is ONLY `{meta, slides: [{id, name, duration, delta}]}` — no item
-table; slide 0's delta creates everything. Slide N's state = fold of deltas
-0..N over `{}`. Tween alpha applies a delta partially (numbers lerp from the
-CURRENT folded value — lazy start capture; discrete values switch at
-alpha > 0). Slides have permanent UUIDs; displayed numbers shift on insert.
-An item appearing across slides IS the "symlink". `active: false` (universal
-property) is how items exist on some slides and not others — Delete keyframes
-it; Purge actually removes.
+A serialized document is `{meta, slides: [{id, name, transition, delta, ...}]}`
+with no separate item table; slide 0's delta creates everything. `transition`
+is `{type, seconds, curve, sound}` and supersedes legacy `duration`, which the
+repair pipeline migrates loudly. Slides may also carry `enabled` and
+`autoAdvance`. Folding slide deltas yields `{items, vars}`. Tween alpha applies
+a delta partially (numbers lerp from the CURRENT folded value — lazy start
+capture; discrete values switch at alpha > 0). Slides have permanent UUIDs;
+displayed numbers shift on insert. An item appearing across slides IS the
+"symlink". `active: false` (universal property) is how items exist on some
+slides and not others — Delete keyframes it; Purge actually removes.
 
 ## Layout
 
@@ -29,12 +31,13 @@ it; Purge actually removes.
   defaults, inspector rows, emit(state) → display-list commands, anchors,
   snapFeatures, editPoints, commands. **No plugin may import another
   plugin** — composition happens through capabilities and document state.
-- `render_gpu/` — THE renderer (manifest RENDER MODES DECISION: WebGPU
-  raster + vector export only; canvas2D was deleted). ir.js = the
-  device-independent display-list builders; ports.js sceneIR walks a derived
-  tree through plugin emit(); gpu/ = the WebGPU compositor (instanced SDF
-  shapes, glyph-atlas text, blur/magnifier as shader passes, readPixels
-  readback); svg_backend.js = the vector serializer (growing).
+- `render_gpu/` — the display-list renderer family. WebGPU is the runtime
+  raster backend; `pdf_backend.js` and `svg_backend.js` are the current hybrid
+  vector exporters. Canvas2D remains an internal glyph/media/readback helper,
+  not a scene-renderer backend. `ir.js` builds the device-independent display
+  list; `ports.js` walks a derived tree through plugin `emit()`; `gpu/` owns the
+  WebGPU compositor (instanced SDF shapes, glyph-atlas text, shader effects,
+  and readback).
 - `core/view.js` — view math (fitRectView = THE camera mapping,
   worldViewRect) + the culling protocol (canSkipNode).
 - `web/` — Svelte 5 app shell. App components carry NO <style> blocks; all
@@ -43,10 +46,13 @@ it; Purge actually removes.
   (thumbnails, minimap, PNG export).
 - `cli/render.js` — headless PNG renderer (programmatic Vite + puppeteer;
   the page hook renders through the SAME GPU pipeline as the editor).
-- `examples/make_demo.js` — builds `demo.powerrp.json` via the core API.
-- `tests/` — `core_test.js` (node assert, no framework) and
-  `editor_smoke.js` (puppeteer boot + drag/palette/slide interactions with
-  mid-drag invariants).
+- `examples/make_demo.js` — a legacy worked example, not a safe canonical
+  fixture regenerator; it still emits legacy rich-text/magnifier fields. Any
+  regenerated fixture must pass `repairedDocument()` with zero repair reports.
+- `tests/` and `render_gpu/tests/` — node suites, Vite/Puppeteer browser probes,
+  Python server tests, GPU tests, and PDF/SVG parity gates. Existing green
+  suites do not cover the five frozen-baseline defects recorded in the dump's
+  Round 18 manifest.
 
 ## Command architecture
 
@@ -58,19 +64,24 @@ a shortcut that isn't registered there does not exist.
 
 ## Running
 
-- Editor: `npx vite --config src/demo_apps/PowerRP/web/vite.config.js` (port 3637)
+- Editor + project backend: `bash src/demo_apps/PowerRP/run_server.sh`, then use
+  the printed browser URL. The launcher uses trusted HTTPS when host TLS is
+  available because WebGPU is unavailable on non-loopback HTTP origins. Raw
+  Vite alone is frontend-only.
 - Core tests: `node src/demo_apps/PowerRP/tests/core_test.js`
+- Server lifecycle: `bash src/demo_apps/PowerRP/tests/server_launcher_test.sh`
 - Editor smoke: `node src/demo_apps/PowerRP/tests/editor_smoke.js <shot_dir>`
 - CLI render: `node src/demo_apps/PowerRP/cli/render.js <doc.json> <out.png>
   [--slide N] [--alpha A] [--width W] [--height H]`
 
 ## Known bounds (deliberate)
 
-Single selection only; no parent widgets/replicators yet (the derivation
-stage in core/derive.js is where they will land — see the dump manifest's
-design bounds before touching it); no video widgets yet (the IR video op and
-GPU external-texture pipeline are proven, the plugin isn't built); z-order
-UI = bisect then document-wide normalize (core/document.js). THE CAMERA is
-built and mandatory (exactly one, purgeable:false, owns the background and
-every view). Presentations are UNCAPPED — no frame caps exist (meta.fps is
-dead; one frame per rAF tick).
+Multi-selection, box selection, drag-all/multi-resize, alignment, and grouping
+exist; the heterogeneous multi-selection Inspector intersection remains
+unbuilt. Groups are flat-membership derivation parents, not nested object trees
+or compositing subtrees, and retain the five Round 18 frozen-baseline defects.
+The video player exists; the deterministic video scrubber and replicators do
+not. Z-order UI = bisect then document-wide normalize (core/document.js). THE
+CAMERA is built and mandatory (exactly one, `purgeable:false`, owns the
+background and every view). Presentations are UNCAPPED — no frame caps exist
+(`meta.fps` is dead; one frame per rAF tick).

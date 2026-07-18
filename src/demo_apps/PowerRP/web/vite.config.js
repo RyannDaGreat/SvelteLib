@@ -1,5 +1,6 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
 
@@ -13,6 +14,20 @@ import { dirname, resolve } from "path";
 const root = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(root, "../../../.."); // src/lib + src/styles live here
 const BACKEND = process.env.BACKEND_URL || "http://localhost:3638";
+const TLS_CERT = process.env.POWERRP_TLS_CERT;
+const TLS_KEY = process.env.POWERRP_TLS_KEY;
+const PUBLIC_HOST = process.env.POWERRP_PUBLIC_HOST;
+const APP_PORT = Number(process.env.POWERRP_APP_PORT || 0);
+if (Boolean(TLS_CERT) !== Boolean(TLS_KEY))
+  throw new Error("POWERRP_TLS_CERT and POWERRP_TLS_KEY must be set together");
+if (PUBLIC_HOST && !APP_PORT)
+  throw new Error("POWERRP_APP_PORT is required with POWERRP_PUBLIC_HOST");
+const HTTPS = TLS_CERT
+  ? { cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) }
+  : undefined;
+const HMR = PUBLIC_HOST
+  ? { host: PUBLIC_HOST, protocol: HTTPS ? "wss" : "ws", clientPort: APP_PORT }
+  : undefined;
 
 export default defineConfig({
   root,
@@ -29,6 +44,8 @@ export default defineConfig({
   server: {
     port: 3637,
     host: true,
+    https: HTTPS,
+    hmr: HMR,
     open: !process.env.NO_OPEN,
     fs: { allow: [repoRoot] },
     // NOTE the trailing slashes: the app's own modules are e.g. /main.js and

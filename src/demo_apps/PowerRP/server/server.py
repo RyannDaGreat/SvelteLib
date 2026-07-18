@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["rp==0.1.1421", "fire==0.7.1"]
+# dependencies = ["rp==0.1.1421", "fire==0.7.1", "numpy>=1.26"]
 # ///
 """
 PowerRP — project server.

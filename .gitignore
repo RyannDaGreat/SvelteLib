@@ -2,6 +2,7 @@ node_modules/
 dist/
 package-lock.json
 .claude_logs/
+.claude_vlm_checks/
 .claude_todo.md
 .claude_diffs/
 scratchpad*.py
