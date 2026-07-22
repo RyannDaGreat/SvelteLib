@@ -5,10 +5,11 @@
  * Run: node src/demo_apps/PowerRP/tests/cli_render_test.js
  *
  * Covers: (1) a supported slide yields a valid non-trivial PNG at the default
- * size and a mid-tween alpha; (2) the render rewrite's Phase-1a bound is LOUD,
- * not silent — a slide whose widgets emit a not-yet-implemented backdrop op
- * (blur/magnifier) throws with the offending op named (update this expectation
- * when paint_skia's Phase 1b lands).
+ * size and a mid-tween alpha; (2) Phase 1b has landed — a slide whose widgets
+ * emit backdrop ops (blur + magnifier) now renders a valid PNG through the same
+ * Skia path (paint_skia implements blurBackdrop/magnifyBackdrop/cropSubtree/
+ * effectSubtree/latexVector). This replaces the earlier Phase-1a "throws loudly"
+ * bound now that those ops are implemented.
  */
 
 import assert from "node:assert/strict";
@@ -28,10 +29,13 @@ function isPng(bytes) {
 
 const docJson = await readFile(DEMO, "utf8");
 
-// (1) Supported slides render to valid PNGs (slide 0 full, slide 1 mid-tween).
+// (1) Slides render to valid PNGs (slide 0 full, slide 1 mid-tween) and, with
+// Phase 1b landed, (2) slide 2's backdrop ops (blur + magnifier) render through
+// the SAME Skia path instead of throwing the old Phase-1a bound.
 for (const opts of [
   { slide: 0, alpha: 1, width: 1280, height: 720 },
   { slide: 1, alpha: 0.5, width: 640, height: 360 },
+  { slide: 2, alpha: 1, width: 1280, height: 720 },
 ]) {
   const png = await renderDocToPng(docJson, opts);
   assert.ok(png instanceof Uint8Array, `slide ${opts.slide}: expected Uint8Array`);
@@ -39,13 +43,4 @@ for (const opts of [
   assert.ok(png.length >= MIN_PNG_BYTES, `slide ${opts.slide}: PNG too small (${png.length} bytes)`);
 }
 
-// (2) Phase-1a bound is loud: slide 2 activates blur + magnifier, whose
-// backdrop ops paint_skia does not yet implement — it must THROW (never draw a
-// silent blank), naming the op.
-await assert.rejects(
-  () => renderDocToPng(docJson, { slide: 2, alpha: 1, width: 1280, height: 720 }),
-  /not implemented yet.*Phase 1b|blurBackdrop|magnifyBackdrop/,
-  "slide 2 should throw loudly on an unimplemented backdrop op",
-);
-
-console.log("OK cli_render_test — slides 0/1 render to valid PNGs; slide 2 fails loud (Phase-1a bound)");
+console.log("OK cli_render_test — slides 0/1/2 render to valid PNGs (Phase 1b backdrop ops implemented)");
