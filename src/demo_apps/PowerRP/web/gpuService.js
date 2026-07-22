@@ -1,14 +1,19 @@
 /**
- * Shared offscreen WebGPU raster service for PIXEL consumers — slide
- * thumbnails, the minimap, PNG export. The interactive viewport and the
- * presenter own their own swapchain compositors; everything that needs BYTES
- * shares this one device (pipelines are expensive) and reads back via
- * GpuCompositor.readPixels — the reliable path (drawImage from a WebGPU
- * canvas is not dependable post-present; FINDINGS).
+ * Shared offscreen Skia raster service for PIXEL consumers — slide thumbnails,
+ * the minimap, PNG export. The interactive viewport and the presenter own their
+ * own on-screen SkiaSurface; everything that needs BYTES shares this one CPU
+ * raster path, which — unlike the old WebGPU compositor — has NO adapter and NO
+ * secure-context requirement, so it works over plain HTTP (the whole point of
+ * the Skia rewrite: navigator.gpu was "no adapter" on a LAN IP). Renders go
+ * through the SAME paint_skia.paintIR the editor and the Node/CLI path use, so
+ * thumbnails match the viewport and the headless renderer byte-for-byte.
  *
- * Command module: owns one lazily-created compositor + canvas; renders are
- * SERIALIZED through a promise queue so concurrent callers can't resize the
- * shared canvas under each other's frames.
+ * Command module: inits CanvasKit + the committed typefaces once (shared with
+ * browser_surface.js via browser_canvaskit.js), and SERIALIZES renders through a
+ * promise queue so concurrent callers can't stomp each other mid-frame. Each job
+ * allocates a fresh CPU surface (cheap; CanvasKit/fonts are the expensive part
+ * and are cached) and reads its pixels back into a fresh 2D <canvas> — the exact
+ * return contract callers depend on (thumb.toDataURL, out.toBlob for PNG).
  */
 
 import { foldState } from "../core/document.js";
@@ -16,7 +21,8 @@ import { cameraRect } from "../core/derive.js";
 import { evaluateState } from "../core/expressions.js";
 import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
-import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+import { paintIR } from "../render_gpu/skia/paint_skia.js";
+import { ensureCanvasKit, loadTypefaces } from "../render_gpu/skia/browser_canvaskit.js";
 import { cameraFrameIR } from "./cameraFrame.js";
 
 /** Query. Evaluated folded state for (doc, slide, alpha) — the input both the
@@ -25,36 +31,49 @@ function evaluateStateFor(doc, slideIndex, alpha, registry) {
   return evaluateState(foldState(doc, slideIndex, alpha), registry).state;
 }
 
-let canvas = null;
-let gpuPromise = null;
+let ckPromise = null;
 let queue = Promise.resolve();
 
+/** Command (inits + memoizes CanvasKit and its typeface map). Returns {CanvasKit, typefaces}. */
 function ensure() {
-  if (!gpuPromise) {
-    canvas = document.createElement("canvas");
-    canvas.width = 2;
-    canvas.height = 2;
-    gpuPromise = GpuCompositor.create(canvas);
+  if (!ckPromise) {
+    ckPromise = ensureCanvasKit().then(async (CanvasKit) => ({
+      CanvasKit,
+      typefaces: await loadTypefaces(CanvasKit),
+    }));
   }
-  return gpuPromise;
+  return ckPromise;
 }
 
 /** Serialized render → fresh 2D canvas with the pixels (the shared core). */
 function renderJob(width, height, buildIR) {
   const job = queue.then(async () => {
-    const gpu = await ensure();
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
+    const { CanvasKit, typefaces } = await ensure();
+    const surface = CanvasKit.MakeSurface(width, height);
+    if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
+    try {
+      const { ir, view, background } = buildIR();
+      paintIR(CanvasKit, surface.getCanvas(), ir, view, { background, typefaces });
+      surface.flush();
+      const img = surface.makeImageSnapshot();
+      if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
+      const px = img.readPixels(0, 0, {
+        width,
+        height,
+        colorType: CanvasKit.ColorType.RGBA_8888,
+        alphaType: CanvasKit.AlphaType.Unpremul,
+        colorSpace: CanvasKit.ColorSpace.SRGB,
+      });
+      img.delete();
+      if (!px) throw new Error("gpuService: readPixels returned null");
+      const out = document.createElement("canvas");
+      out.width = width;
+      out.height = height;
+      out.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(px), width, height), 0, 0);
+      return out;
+    } finally {
+      surface.delete();
     }
-    const { ir, view, background } = buildIR();
-    gpu.render(ir, view, { background });
-    const px = await gpu.readPixels(0, 0, width, height);
-    const out = document.createElement("canvas");
-    out.width = width;
-    out.height = height;
-    out.getContext("2d").putImageData(new ImageData(px, width, height), 0, 0);
-    return out;
   });
   // The queue must survive a failed job (callers still see their rejection).
   queue = job.catch(() => {});

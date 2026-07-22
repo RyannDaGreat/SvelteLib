@@ -12,44 +12,8 @@
  * Node entry node_render.js, exactly as gpu/compositor.js is browser-only.
  */
 
-import CanvasKitInit from "canvaskit-wasm/bin/canvaskit.js";
-import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
 import { paintIR } from "./paint_skia.js";
-import { committedFaces, DEFAULT_FONT } from "../fonts.js";
-
-// Vite inlines every committed TTF at build time (offline-safe, hashed URLs) —
-// the same mechanism web/fontLoader.js uses, resolved relative to THIS file.
-const FONT_URLS = import.meta.glob("../../fonts/*.ttf", { query: "?url", import: "default", eager: true });
-
-let _ckPromise = null;
-/** Command (inits the WASM module once; memoized). Returns the CanvasKit module. */
-function ensureCanvasKit() {
-  if (!_ckPromise) _ckPromise = CanvasKitInit({ locateFile: () => canvaskitWasmUrl });
-  return _ckPromise;
-}
-
-/**
- * Query→build (fetches font files). Builds the `${id}:${bold}` → Typeface map.
- * A missing/failed face is reported loudly and skipped (fonts.js contract: a
- * missing font must never throw in the render path); `system` stands in as Inter.
- */
-async function loadTypefaces(CanvasKit) {
-  const map = new Map();
-  await Promise.all(
-    committedFaces().map(async (face) => {
-      const url = FONT_URLS[`../../fonts/${face.file}`];
-      if (!url) { console.error(`SkiaSurface: committed font "${face.file}" has no bundled URL — check fonts.js vs fonts/.`); return; }
-      const buf = await (await fetch(url)).arrayBuffer();
-      const tf = CanvasKit.Typeface.MakeTypefaceFromData(buf);
-      if (!tf) { console.error(`SkiaSurface: MakeTypefaceFromData failed for ${face.file}`); return; }
-      map.set(`${face.id}:${face.bold ? "b" : "r"}`, tf);
-    }),
-  );
-  const interR = map.get("inter:r"), interB = map.get("inter:b");
-  if (interR) map.set(`${DEFAULT_FONT}:r`, interR);
-  if (interB) map.set(`${DEFAULT_FONT}:b`, interB);
-  return map;
-}
+import { ensureCanvasKit, loadTypefaces } from "./browser_canvaskit.js";
 
 export class SkiaSurface {
   /**
