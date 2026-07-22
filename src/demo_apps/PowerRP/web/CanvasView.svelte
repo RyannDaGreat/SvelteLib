@@ -19,7 +19,7 @@
   import { selectInBox, rectFromCorners } from "../core/bandselect.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
-  import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+  import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onVideoFrame } from "../render_gpu/gpu/video_registry.js";
   import { renderCameraFrame } from "./gpuService.js";
@@ -195,21 +195,22 @@
 
   // Repaint whenever anything visible changes — INCLUDING the container size
   // (wrapW/wrapH), so pane resizes re-render instead of stretching the bitmap.
-  // THE renderer (manifest "RENDER MODES DECISION"): the content canvas is
-  // WebGPU — no canvas2D mode survives. Init is async; the first paint fires
+  // THE renderer (2026 render rewrite): the content canvas is Skia (CanvasKit)
+  // on WebGL2 — which, unlike WebGPU, needs no secure context, so the editor
+  // renders over plain HTTP (LAN IP, etc.). Init is async; the first paint fires
   // when `gpu` lands (it's a dep of the paint effect). Failure is LOUD and
-  // user-visible: no fallback by decree, the app shows what went wrong.
+  // user-visible.
   let gpu = $state(null);
   let gpuError = $state(null);
   $effect(() => {
     if (!canvasEl || gpu || gpuError) return;
-    // premultiplied: the editor's transparent clear must show the grid
-    // underlay + app background beneath the canvas (opaque rendered it black).
-    GpuCompositor.create(canvasEl, { alphaMode: "premultiplied" })
+    // premultiplied alpha: the transparent clear must show the grid underlay +
+    // app background beneath the canvas (opaque would render it black).
+    SkiaSurface.create(canvasEl)
       .then((g) => (gpu = g))
       .catch((e) => {
         gpuError = String(e?.message ?? e);
-        console.error("PowerRP: WebGPU init failed:", e);
+        console.error("PowerRP: Skia/WebGL init failed:", e);
       });
   });
 
@@ -2053,7 +2054,7 @@
       {#if gpuError}
         <!-- No render fallback by decree (manifest RENDER MODES DECISION) —
              the failure is loud and names itself. -->
-        <div class="gpu-error">WebGPU unavailable — cannot render. {gpuError}</div>
+        <div class="gpu-error">Renderer init failed — cannot render. {gpuError}</div>
       {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
