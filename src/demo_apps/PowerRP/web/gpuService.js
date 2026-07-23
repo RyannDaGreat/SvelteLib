@@ -18,6 +18,8 @@
 
 import { cameraRect } from "../core/derive.js";
 import { fitRectView } from "../core/view.js";
+import { clampSurfaceSize, MAX_SURFACE_DIM } from "../core/clip.js";
+import { reportOnce } from "../core/report.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
@@ -39,9 +41,16 @@ function ensure() {
 }
 
 /** Serialized render → fresh 2D canvas with the pixels (the shared core). */
-function renderJob(width, height, buildIR) {
+function renderJob(reqWidth, reqHeight, buildIR) {
   const job = queue.then(async () => {
     const { CanvasKit, fontCollection } = await ensure();
+    // Clamp BEFORE allocation: an oversized/invalid (width,height) would OOM the
+    // CanvasKit wasm heap at MakeSurface (the reported crash) and corrupt the
+    // instance. A CPU raster surface must fit the heap, so the cap is the static
+    // MAX_SURFACE_DIM (no GL context here to query). The clamped dims are used
+    // consistently for the surface, readback, and output canvas.
+    const { w: width, h: height, safe } = clampSurfaceSize(reqWidth, reqHeight, MAX_SURFACE_DIM);
+    if (!safe) reportOnce(`gpuService-clamp:${reqWidth}x${reqHeight}`, `gpuService: requested raster ${reqWidth}×${reqHeight} exceeds MAX_SURFACE_DIM ${MAX_SURFACE_DIM} (or is invalid) — clamped to ${width}×${height} to avoid a CanvasKit heap overrun.`);
     const surface = CanvasKit.MakeSurface(width, height);
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {

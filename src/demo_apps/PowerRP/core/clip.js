@@ -65,6 +65,48 @@ import { worldViewRect } from "./view.js";
 import { cropInsetsToSource } from "../render_gpu/decorate.js";
 
 /**
+ * THE hard ceiling (device px) for any single raster surface / texture edge —
+ * the guard EVERY CanvasKit surface-allocation site clamps to before calling
+ * MakeSurface / MakeRenderTarget / MakeOnScreenGLSurface (render_gpu/skia/
+ * browser_surface.js, web/gpuService.js) and the ceiling the PDF raster caps sit
+ * under (render_gpu/gpu/pdf_page_raster.js PDF_MAX_RASTER_DIM ≤ this).
+ *
+ * WHY: a CanvasKit raster surface allocates edge·edge·4 bytes IN THE WASM HEAP.
+ * An oversized (or non-finite) edge overruns the heap → the user-reported
+ * `RuntimeError: memory access out of bounds` at MakeSurface, which then
+ * CORRUPTS the whole CanvasKit instance (every later frame throws
+ * `table index is out of bounds`). Clamping the edge BEFORE the allocation keeps
+ * every request inside a safe envelope: 8192² · 4 = 256 MB, comfortably inside
+ * the wasm heap. 8192 is the conservative WebGL2 MAX_TEXTURE_SIZE every target
+ * browser guarantees; a site with a LIVE GL context should prefer the queried
+ * gl.MAX_TEXTURE_SIZE (larger displays are legitimate) and fall back to this.
+ */
+export const MAX_SURFACE_DIM = 8192;
+
+/**
+ * Pure function. Sanitizes a requested surface size (w, h in device px) into a
+ * SAFE allocation: each edge is coerced into [1, max]; a non-finite (NaN/±∞) or
+ * < 1 edge floors to 1; an oversized edge clamps to `max`. Returns
+ * {w, h, safe} where `safe` is false exactly when the request was invalid or
+ * oversized (so the caller reports loudly and degrades) — the single choke point
+ * ensuring no MakeSurface ever sees a heap-overrunning or NaN dimension.
+ *
+ * @example clampSurfaceSize(200, 100) // {w: 200, h: 100, safe: true}
+ * @example clampSurfaceSize(50000, 100, 8192) // {w: 8192, h: 100, safe: false}
+ * @example clampSurfaceSize(NaN, 100) // {w: 1, h: 100, safe: false}
+ * @example clampSurfaceSize(0, 100) // {w: 1, h: 100, safe: false}
+ */
+export function clampSurfaceSize(w, h, max = MAX_SURFACE_DIM) {
+  const edge = (v) => {
+    if (!Number.isFinite(v) || v < 1) return { v: 1, ok: false };
+    if (v > max) return { v: max, ok: false };
+    return { v: Math.floor(v), ok: true };
+  };
+  const ew = edge(w), eh = edge(h);
+  return { w: ew.v, h: eh.v, safe: ew.ok && eh.ok };
+}
+
+/**
  * Pure function. The axis-aligned intersection of two rects (x,y,w,h), or null
  * when they do not overlap (touching edges count as no interior overlap — a
  * zero-area intersection is "not visible").

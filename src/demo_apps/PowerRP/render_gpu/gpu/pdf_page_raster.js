@@ -327,18 +327,26 @@ export function ensurePdfPageRasterized(src, page, scale) {
     const doc = await ensurePdfDoc(src);
     if (!doc) throw new Error("PDF document failed to load"); // ensurePdfDoc already reported this
     const pdfPage = await doc.getPage(page);
-    const viewport = pdfPage.getViewport({ scale: roundPdfScale(scale) });
-    // Piggyback the point-size measurement (scale-1 viewport) onto this same
-    // page fetch — free, and fills pdfPagePointSize for the NEXT emit() call
-    // without a second doc.getPage() round trip.
+    // Piggyback the point-size measurement (scale-1 viewport) onto this same page
+    // fetch — free, and fills pdfPagePointSize for the NEXT emit() without a
+    // second doc.getPage() round trip. Also the basis for the fit-cap below.
+    const unit = pdfPage.getViewport({ scale: 1 });
     const sizeKey = `${src}|${page}`;
-    if (!pointSizes.has(sizeKey)) {
-      const unit = pdfPage.getViewport({ scale: 1 });
-      pointSizes.set(sizeKey, { w: unit.width, h: unit.height });
-    }
+    if (!pointSizes.has(sizeKey)) pointSizes.set(sizeKey, { w: unit.width, h: unit.height });
+    // CAP the raster scale so the WHOLE page fits within PDF_MAX_RASTER_DIM on
+    // BOTH edges — DOWNSCALE the page, never clip it. This is the whole-page twin
+    // of the region path's clampDim (which the whole-page path lacked): a page
+    // whose widget was resized far past PDF_MAX_RASTER_DIM points would otherwise
+    // mint a giant canvas + bitmap → a CanvasKit heap overrun when the bitmap
+    // uploads as a texture (the unbounded-allocation class this task fixes).
+    const requested = roundPdfScale(scale);
+    const fitScale = Math.min(PDF_MAX_RASTER_DIM / unit.width, PDF_MAX_RASTER_DIM / unit.height);
+    const effScale = Math.min(requested, fitScale);
+    if (effScale < requested) reportOnce(`pdf_page_raster:cap:${key}`, `PowerRP pdf_page_raster: whole-page raster for "${truncate(src)}" page ${page} @${requested}x would exceed ${PDF_MAX_RASTER_DIM}px/edge — capped to ${effScale.toFixed(3)}x (page shown at lower resolution).`);
+    const viewport = pdfPage.getViewport({ scale: effScale });
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(viewport.width));
-    canvas.height = Math.max(1, Math.round(viewport.height));
+    canvas.width = clampDim(viewport.width);
+    canvas.height = clampDim(viewport.height);
     const ctx = canvas.getContext("2d");
     await pdfPage.render({ canvasContext: ctx, canvas, viewport }).promise;
     const bitmap = await createImageBitmap(canvas);
@@ -469,13 +477,19 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
   return { ref };
 }
 
-/** Pure function. Clamps a raster canvas edge into [1, PDF_MAX_RASTER_DIM].
+/** Pure function. Clamps a raster canvas edge into [1, PDF_MAX_RASTER_DIM],
+ * flooring any non-finite (NaN/±∞) input to 1 — a NaN edge would otherwise pass
+ * through `Math.min(4096, NaN) === NaN` straight into canvas.width and produce a
+ * broken (0-area or heap-overrunning) raster. Rounds fractional edges.
  * @example clampDim(0) // 1
  * @example clampDim(9000) // 4096
  * @example clampDim(300) // 300
+ * @example clampDim(NaN) // 1
+ * @example clampDim(Infinity) // 4096
  */
-function clampDim(px) {
-  return Math.max(1, Math.min(PDF_MAX_RASTER_DIM, px));
+export function clampDim(px) {
+  if (Number.isNaN(px)) return 1; // NaN is meaningless; ±∞ flow through min/max below
+  return Math.max(1, Math.min(PDF_MAX_RASTER_DIM, Math.round(px)));
 }
 
 /** Command. Drops the oldest region-cache entry (Map insertion order = LRU-ish).

@@ -15,6 +15,8 @@
 import { paintIR } from "./paint_skia.js";
 import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
+import { clampSurfaceSize, MAX_SURFACE_DIM } from "../../core/clip.js";
+import { reportOnce } from "../../core/report.js";
 
 export class SkiaSurface {
   /**
@@ -37,10 +39,25 @@ export class SkiaSurface {
     if (!this.ctxHandle) throw new Error("SkiaSurface: GetWebGLContext returned 0 (WebGL2 unavailable in this browser)");
     this.grContext = CanvasKit.MakeWebGLContext(this.ctxHandle);
     if (!this.grContext) throw new Error("SkiaSurface: MakeWebGLContext returned null");
+    // THE per-instance surface-dim cap: this GL context's real MAX_TEXTURE_SIZE
+    // (a legitimately large display is honoured), never below the MAX_SURFACE_DIM
+    // floor. No surface (on-screen OR offscreen) may exceed it — a bigger edge
+    // OOMs the CanvasKit wasm heap (the reported crash), so it is clamped +
+    // reported instead of allocated. Queried off the SAME canvas CanvasKit bound
+    // its GL context to (getContext returns that same context).
+    const gl2 = canvasEl.getContext("webgl2");
+    const maxTex = gl2 ? gl2.getParameter(gl2.MAX_TEXTURE_SIZE) : 0;
+    this.maxDim = Math.max(MAX_SURFACE_DIM, Number.isFinite(maxTex) ? maxTex : 0);
     // GPU-backed offscreen factory for paintIR's backdrop/lens/effect surfaces —
     // keeps the magnifier/blur/effects on the GPU (MakeRenderTarget) instead of a
     // CPU software surface (the old per-frame killer). Falls back to CPU if null.
-    this._makeSurface = (w, h) => this.CanvasKit.MakeRenderTarget(this.grContext, w, h) || this.CanvasKit.MakeSurface(w, h);
+    // CLAMPED: every requested size is bounded to this.maxDim before allocation
+    // (never let MakeRenderTarget/MakeSurface see an oversized/invalid dim).
+    this._makeSurface = (w, h) => {
+      const c = clampSurfaceSize(w, h, this.maxDim);
+      if (!c.safe) reportOnce(`skia-offscreen-clamp:${w}x${h}`, `SkiaSurface: offscreen surface ${w}×${h} exceeds max ${this.maxDim} (or is invalid) — clamped to ${c.w}×${c.h} to avoid a CanvasKit heap overrun.`);
+      return this.CanvasKit.MakeRenderTarget(this.grContext, c.w, c.h) || this.CanvasKit.MakeSurface(c.w, c.h);
+    };
     this.surface = null;
     this._w = 0;
     this._h = 0;
@@ -49,14 +66,23 @@ export class SkiaSurface {
   /** Command. (Re)creates the on-screen GL surface when the canvas size changes.
    *  A zero-size canvas (a collapsed pane) is left with NO surface — render()
    *  early-returns — because MakeOnScreenGLSurface(…, 0, 0) returns null and
-   *  would throw every frame otherwise. */
+   *  would throw every frame otherwise. An oversized/invalid canvas is CLAMPED to
+   *  this.maxDim (+ reported) before allocation so it can never OOM the CanvasKit
+   *  wasm heap; a null result (even after clamping) leaves NO surface and reports
+   *  — render() then skips the frame rather than throwing on every rAF tick. */
   _ensureSurface() {
-    const w = this.canvasEl.width, h = this.canvasEl.height;
-    if (w === 0 || h === 0) { this.surface?.delete(); this.surface = null; this._w = w; this._h = h; return; }
+    const rawW = this.canvasEl.width, rawH = this.canvasEl.height;
+    if (rawW === 0 || rawH === 0) { this.surface?.delete(); this.surface = null; this._w = rawW; this._h = rawH; return; }
+    const { w, h, safe } = clampSurfaceSize(rawW, rawH, this.maxDim);
+    if (!safe) reportOnce(`skia-onscreen-clamp:${rawW}x${rawH}`, `SkiaSurface: on-screen canvas ${rawW}×${rawH} exceeds max ${this.maxDim} (or is invalid) — clamped to ${w}×${h} to avoid a CanvasKit heap overrun; the viewport is capped.`);
     if (this.surface && this._w === w && this._h === h) return;
     this.surface?.delete();
     this.surface = this.CanvasKit.MakeOnScreenGLSurface(this.grContext, w, h, this.CanvasKit.ColorSpace.SRGB);
-    if (!this.surface) throw new Error(`SkiaSurface: MakeOnScreenGLSurface(${w}x${h}) returned null`);
+    if (!this.surface) {
+      reportOnce(`skia-onscreen-null:${w}x${h}`, `SkiaSurface: MakeOnScreenGLSurface(${w}×${h}) returned null — skipping this frame's draw (no on-screen surface).`);
+      this._w = 0; this._h = 0;
+      return;
+    }
     this._w = w;
     this._h = h;
   }

@@ -48,7 +48,7 @@ import { visibleSourceRect } from "../core/clip.js";
 import { rotatedBBoxAABB, rectsIntersect } from "../core/view.js";
 import {
   ensurePdfDoc, pdfPageCount, pdfPagePointSize, ensurePdfPagePointSize,
-  ensurePdfPageRegionRasterized, clampPage,
+  ensurePdfPageRegionRasterized, clampPage, PDF_MAX_RASTER_DIM,
 } from "./gpu/pdf_page_raster.js";
 
 /**
@@ -153,6 +153,17 @@ export function preRasterizePdfPages(nodes, view, viewW, viewH) {
         if (lens.z > (s.z ?? 0) && rectsIntersect(lens.rect, pdfAabb)) boost = Math.max(boost, lens.m);
       }
     }
+    // BOUND THE BOOST (the reported crash's suspect): deviceRect is viewport-
+    // bounded at ANY zoom (core/clip proof), but the lens boost multiplies the
+    // raster scale — the region canvas the raster allocates is ≈ deviceRect·boost
+    // device px, which a large magnification could push past PDF_MAX_RASTER_DIM.
+    // Cap the boost so the requested raster stays within the cap on its larger
+    // edge. ensurePdfPageRegionRasterized's clampDim is the HARD backstop; capping
+    // here keeps the pdf.js viewport scale sane (no runaway offset math) and makes
+    // the bound provable at the boost site (a photo pixelates past its native res;
+    // a boosted PDF stays crisp up to the cap, then holds — never OOMs).
+    const projected = Math.max(vsr.deviceRect.w, vsr.deviceRect.h) * boost;
+    if (projected > PDF_MAX_RASTER_DIM) boost = Math.max(1, boost * (PDF_MAX_RASTER_DIM / projected));
     scale *= boost;
     const { ref } = ensurePdfPageRegionRasterized(s.src, page, vsr.sourceRect, scale, point);
     map.set(node.itemId, { ref, x: vsr.localRect.x, y: vsr.localRect.y, w: vsr.localRect.w, h: vsr.localRect.h });

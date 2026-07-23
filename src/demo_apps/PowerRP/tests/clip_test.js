@@ -11,8 +11,9 @@
  */
 
 import assert from "node:assert/strict";
-import { visibleSourceRect, intersectRect, aabbOfMappedRect } from "../core/clip.js";
+import { visibleSourceRect, intersectRect, aabbOfMappedRect, clampSurfaceSize, MAX_SURFACE_DIM } from "../core/clip.js";
 import { identity } from "../core/transform.js";
+import { clampDim, PDF_MAX_RASTER_DIM } from "../render_gpu/gpu/pdf_page_raster.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -95,6 +96,72 @@ test("BOUNDED RASTER: holds under dpr=2 and world.scale=3 (device ≤ viewport)"
     const r = visibleSourceRect(scaledBox, {}, { zoom, panX: 0, panY: 0, dpr: 2 }, { viewW, viewH });
     assert.ok(r.deviceRect.w <= viewW + 1e-6, `zoom ${zoom} dpr2 scale3: deviceRect.w ${r.deviceRect.w} > viewW ${viewW}`);
     assert.ok(r.deviceRect.h <= viewH + 1e-6, `zoom ${zoom} dpr2 scale3: deviceRect.h ${r.deviceRect.h} > viewH ${viewH}`);
+  }
+});
+
+// ── THE CRASH GUARD: deviceRect ≤ viewport ≤ MAX_SURFACE_DIM at extreme zoom ──
+// The user-reported "zoom into a placed PDF too far" wasm OOM: a Skia surface /
+// PDF region raster allocated at an oversized dim overruns the CanvasKit wasm
+// heap. These prove the pre-allocation bound holds at 1×/50×/500× — the raster
+// resolution never exceeds the viewport (device px), which is itself ≤ the
+// surface cap on any real canvas.
+test("CRASH GUARD: deviceRect ≤ viewport at 1×, 50×, 500× (no zoom-sized raster)", () => {
+  const viewW = 1400, viewH = 900; // a real editor canvas (device px)
+  for (const zoom of [1, 50, 500, 5000, 500000]) {
+    const r = visibleSourceRect(bigBox, {}, { zoom, panX: -3000 * zoom, panY: -3000 * zoom, dpr: 1 }, { viewW, viewH });
+    // Pan lands the window mid-page so it's a true interior sub-rect at high zoom.
+    if (!r.visible) continue; // panned fully off — still no oversized raster
+    assert.ok(r.deviceRect.w <= viewW + 1e-6, `zoom ${zoom}: deviceRect.w ${r.deviceRect.w} > viewW ${viewW}`);
+    assert.ok(r.deviceRect.h <= viewH + 1e-6, `zoom ${zoom}: deviceRect.h ${r.deviceRect.h} > viewH ${viewH}`);
+    assert.ok(r.deviceRect.w <= MAX_SURFACE_DIM, `zoom ${zoom}: deviceRect.w ${r.deviceRect.w} > MAX_SURFACE_DIM ${MAX_SURFACE_DIM}`);
+  }
+});
+
+test("CRASH GUARD: clampSurfaceSize bounds/sanitizes every edge before allocation", () => {
+  assert.deepEqual(clampSurfaceSize(200, 100), { w: 200, h: 100, safe: true });
+  assert.deepEqual(clampSurfaceSize(50000, 100, 8192), { w: 8192, h: 100, safe: false });
+  assert.deepEqual(clampSurfaceSize(NaN, 100), { w: 1, h: 100, safe: false });
+  // Non-finite (incl. ±Infinity) floors to 1 — the safe degrade (a bogus request
+  // renders nothing rather than allocating a heap-overrunning surface), reported.
+  assert.deepEqual(clampSurfaceSize(Infinity, Infinity, 8192), { w: 1, h: 1, safe: false });
+  assert.deepEqual(clampSurfaceSize(0, 100), { w: 1, h: 100, safe: false });
+  // Never returns a dim outside [1, max], for any input.
+  for (const v of [-5, 0, 0.4, 1, 4095, 8192, 9000, 1e9, NaN, Infinity, -Infinity]) {
+    const c = clampSurfaceSize(v, v, MAX_SURFACE_DIM);
+    assert.ok(c.w >= 1 && c.w <= MAX_SURFACE_DIM && Number.isFinite(c.w), `bad w for ${v}: ${c.w}`);
+    assert.ok(c.h >= 1 && c.h <= MAX_SURFACE_DIM && Number.isFinite(c.h), `bad h for ${v}: ${c.h}`);
+  }
+});
+
+test("CRASH GUARD: clampDim caps the PDF raster canvas and sanitizes non-finite", () => {
+  assert.equal(clampDim(300), 300);
+  assert.equal(clampDim(9000), PDF_MAX_RASTER_DIM);
+  assert.equal(clampDim(0), 1);
+  assert.equal(clampDim(NaN), 1);       // the old Math.min(4096, NaN)===NaN escape
+  assert.equal(clampDim(Infinity), PDF_MAX_RASTER_DIM);
+});
+
+// The magnifier scale-BOOST hypothesis: prove that boosting deviceRect by any
+// lens magnification, THEN applying pdf_display's boost pre-cap + the region
+// raster's clampDim, yields a canvas edge ≤ PDF_MAX_RASTER_DIM at every zoom.
+test("CRASH GUARD: magnifier boost can never push the region raster past the cap", () => {
+  const viewW = 1400, viewH = 900;
+  // pdf_display.preRasterizePdfPages boost-cap, replicated:
+  const boostCapped = (dw, dh, boost) => {
+    const projected = Math.max(dw, dh) * boost;
+    return projected > PDF_MAX_RASTER_DIM ? Math.max(1, boost * (PDF_MAX_RASTER_DIM / projected)) : boost;
+  };
+  for (const zoom of [1, 50, 500]) {
+    for (const mag of [1, 4, 8, 50, 500]) {
+      const r = visibleSourceRect(bigBox, {}, { zoom, panX: -2000 * zoom, panY: -2000 * zoom, dpr: 2 }, { viewW, viewH });
+      if (!r.visible) continue;
+      const b = boostCapped(r.deviceRect.w, r.deviceRect.h, mag);
+      // Region canvas edges ≈ deviceRect · effectiveBoost, then clampDim (hard cap).
+      const canvasW = clampDim(r.deviceRect.w * b);
+      const canvasH = clampDim(r.deviceRect.h * b);
+      assert.ok(canvasW <= PDF_MAX_RASTER_DIM, `zoom ${zoom} mag ${mag}: canvasW ${canvasW} > cap`);
+      assert.ok(canvasH <= PDF_MAX_RASTER_DIM, `zoom ${zoom} mag ${mag}: canvasH ${canvasH} > cap`);
+    }
   }
 });
 
