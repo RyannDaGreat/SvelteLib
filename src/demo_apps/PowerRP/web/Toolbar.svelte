@@ -17,6 +17,7 @@
       ["add-rect", "mdi:rectangle-outline", "Add Rectangle"],
       ["add-circle", "mdi:circle-outline", "Add Circle"],
       ["add-text", "mdi:format-text", "Add Text"],
+      ["add-qrcode", "mdi:qrcode", "Add QR Code"],
       ["add-arrow", "mdi:arrow-top-right", "Add Arrow"],
       ["add-magnifier", "mdi:magnify", "Add Magnifier"],
       ["add-blur", "mdi:blur", "Add Blur Layer"],
