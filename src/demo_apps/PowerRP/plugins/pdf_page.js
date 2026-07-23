@@ -89,7 +89,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { image } from "../render_gpu/ir.js";
+import { image, SUPERSAMPLE_DENSITY } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { reportOnce } from "../core/report.js";
@@ -99,12 +99,10 @@ import {
 } from "../render_gpu/gpu/pdf_page_raster.js";
 import { ensurePdfPageVector, pdfPageVectorIRFor } from "../render_gpu/gpu/pdf_page_vector.js";
 
-/** Device px per world (canvas) unit at this widget's OWN world-space size —
- * LINKED to render_gpu/svg_backend.js RASTER_SCALE / pdf_backend.js's
- * rasterScale default (both 2, "the retina-dpr 2× supersample precedent" per
- * svg_backend.js's own comment) — the same supersample factor every other
- * hybrid raster region in this codebase already uses, not a fresh guess. */
-const PDF_RASTER_DENSITY = 2;
+/** Device px per world (canvas) unit at this widget's OWN world-space size — the
+ * shared render_gpu/ir.js SUPERSAMPLE_DENSITY (the retina-dpr 2× precedent), the
+ * same supersample factor every other hybrid raster region in this codebase uses. */
+const PDF_RASTER_DENSITY = SUPERSAMPLE_DENSITY;
 
 /** No PDF asset chosen yet — the widget's default `src`. An empty string (NOT
  * a blank image data URI like image.js's BLANK_SRC): a PDF ref must be a real

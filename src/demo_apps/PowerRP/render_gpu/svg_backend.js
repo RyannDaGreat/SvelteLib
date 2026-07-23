@@ -49,7 +49,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, rgbaToCss, pushTransform, popTransform } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, pushTransform, popTransform, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -57,16 +57,16 @@ import { DEFAULT_TEXT_SIZE } from "./skia/text_layout.js";
 import { richTextDraws } from "../core/richtext.js";
 
 /**
- * Lens re-emit recursion cap — the SAME bound as pdf_backend.MAX_LENS_DEPTH
- * (and the GPU compositor's MAX_SUPERSAMPLE_DEPTH): one level of true vector
- * lens re-interpretation; a lens inside a lens falls back to a raster embed.
+ * Lens re-emit recursion cap — re-exported from ir.js (the single source: the
+ * SAME bound the PDF backend and the GPU/Skia compositors use). One level of true
+ * vector lens re-interpretation; a lens inside a lens falls back to a raster embed.
  */
-export const MAX_LENS_DEPTH = 1;
+export const MAX_LENS_DEPTH = LENS_DEPTH_CAP;
 
-/** Raster <image> px per output user-unit for hybrid regions — mirrors
- * pdf_backend's rasterScale default (the retina-dpr 2× supersample precedent),
- * so a PDF and an SVG of the same scene embed equal-resolution raster regions. */
-export const RASTER_SCALE = 2;
+/** Raster <image> px per output user-unit for hybrid regions — the shared
+ * ir.js SUPERSAMPLE_DENSITY (the retina-dpr 2× precedent), so a PDF and an SVG
+ * of the same scene embed equal-resolution raster regions. */
+export const RASTER_SCALE = SUPERSAMPLE_DENSITY;
 
 /**
  * Pure function. Escapes text for XML content (and, with the double-quote rule,
@@ -139,13 +139,53 @@ export function groupWrap(t, inner) {
  * @example paintAttrs({fill: [1, 0, 0, 1], stroke: null, strokeWidth: 0, opacity: 1}) // 'fill="rgba(255,0,0,1)"'
  * @example paintAttrs({fill: null, stroke: [0, 0, 0, 1], strokeWidth: 2, opacity: 0.5}) // 'fill="none" stroke="rgba(0,0,0,1)" stroke-width="2" opacity="0.5"'
  */
-export function paintAttrs(cmd) {
+export function paintAttrs(cmd, ctx) {
   const a = [];
-  a.push(cmd.fill ? `fill="${rgbaToCss(cmd.fill)}"` : `fill="none"`);
+  a.push(cmd.fill ? `fill="${paintRef(ctx, cmd.fill)}"` : `fill="none"`);
   if (cmd.stroke && cmd.strokeWidth > 0)
-    a.push(`stroke="${rgbaToCss(cmd.stroke)}" stroke-width="${fmt(cmd.strokeWidth)}"`);
+    a.push(`stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(cmd.strokeWidth)}"`);
   if ((cmd.opacity ?? 1) !== 1) a.push(`opacity="${fmt(cmd.opacity)}"`);
   return a.join(" ");
+}
+
+/**
+ * Command (may register a <defs> gradient on `ctx`). A fill/stroke Paint → an SVG
+ * paint value: a SOLID returns an rgba() string (byte-identical to the old
+ * rgbaToCss path); a GRADIENT registers a <linearGradient>/<radialGradient> def
+ * (objectBoundingBox — the SVG default, matching the Skia objectBoundingBox
+ * shader) and returns "url(#id)". `opacity` folds into the color/stop alpha (for
+ * the crop/lens paths that pre-fold item opacity; shape paths pass 1 and use the
+ * group `opacity` attr instead). A gradient requires `ctx` (to mint the def).
+ */
+export function paintRef(ctx, paint, opacity = 1) {
+  if (!isGradientPaint(paint)) {
+    const [r, g, b, a] = paint;
+    return rgbaToCss([r, g, b, a * opacity]);
+  }
+  if (!ctx || !ctx.nextId) throw new Error("svg_backend: a gradient paint needs the SvgAssembly ctx (to mint a <defs> gradient) — pass it to paintAttrs/paintRef");
+  const id = ctx.nextId(paint.type === "radialGradient" ? "rg" : "lg");
+  ctx.addDef(gradientDefSVG(paint, id, opacity));
+  return `url(#${id})`;
+}
+
+/**
+ * Pure function. A parsed gradient Paint → its SVG <linearGradient>/
+ * <radialGradient> def fragment (default gradientUnits="objectBoundingBox", so
+ * from/to/center are the same 0..1 numbers the Skia shader uses). `opacity` folds
+ * into each stop's stop-opacity.
+ *
+ * @example gradientDefSVG({type: "linearGradient", stops: [{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}, "lg1", 1) // '<linearGradient id="lg1" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="rgb(255,0,0)" stop-opacity="1"/><stop offset="1" stop-color="rgb(0,0,255)" stop-opacity="1"/></linearGradient>'
+ * @example gradientDefSVG({type: "radialGradient", stops: [{offset: 0, color: [1,1,1,1]}, {offset: 1, color: [0,0,0,1]}], center: {x: 0.5, y: 0.5}, r: 0.5}, "rg1", 1).startsWith('<radialGradient id="rg1" cx="0.5" cy="0.5" r="0.5">') // true
+ */
+export function gradientDefSVG(paint, id, opacity = 1) {
+  const stops = paint.stops.map((s) => {
+    const [r, g, b, a] = s.color;
+    const byte = (v) => Math.round(v * 255);
+    return `<stop offset="${fmt(s.offset)}" stop-color="rgb(${byte(r)},${byte(g)},${byte(b)})" stop-opacity="${fmt(a * opacity)}"/>`;
+  }).join("");
+  if (paint.type === "linearGradient")
+    return `<linearGradient id="${id}" x1="${fmt(paint.from.x)}" y1="${fmt(paint.from.y)}" x2="${fmt(paint.to.x)}" y2="${fmt(paint.to.y)}">${stops}</linearGradient>`;
+  return `<radialGradient id="${id}" cx="${fmt(paint.center.x)}" cy="${fmt(paint.center.y)}" r="${fmt(paint.r)}">${stops}</radialGradient>`;
 }
 
 /**
@@ -186,23 +226,23 @@ export function vectorCommandToSVG(cmd, world, ctx) {
     case "rect":
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
       return g(`<rect x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"` +
-        (cmd.cornerRadius > 0 ? ` rx="${fmt(cmd.cornerRadius)}"` : "") + ` ${paintAttrs(cmd)}/>`);
+        (cmd.cornerRadius > 0 ? ` rx="${fmt(cmd.cornerRadius)}"` : "") + ` ${paintAttrs(cmd, ctx)}/>`);
     case "ellipse":
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
-      return g(`<ellipse cx="${fmt(cmd.cx)}" cy="${fmt(cmd.cy)}" rx="${fmt(cmd.rx)}" ry="${fmt(cmd.ry)}" ${paintAttrs(cmd)}/>`);
+      return g(`<ellipse cx="${fmt(cmd.cx)}" cy="${fmt(cmd.cy)}" rx="${fmt(cmd.rx)}" ry="${fmt(cmd.ry)}" ${paintAttrs(cmd, ctx)}/>`);
     case "polyline":
       return g(`<polyline points="${pointsAttr(cmd.points)}" fill="none" ` +
         `stroke="${rgbaToCss(cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="round" stroke-linejoin="round"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "polygon":
-      return g(`<polygon points="${pointsAttr(cmd.points)}" fill="${rgbaToCss(cmd.fill)}"` +
+      return g(`<polygon points="${pointsAttr(cmd.points)}" fill="${paintRef(ctx, cmd.fill)}"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "path":
       // Generic vector path (Wave 2): the `d` string is already native SVG path
       // syntax → emitted verbatim (xml-escaped). fill/stroke/opacity via the
       // shared paintAttrs; fill-rule only when evenodd (nonzero is SVG's default).
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
-      return g(`<path d="${xmlEscape(cmd.d)}" ${paintAttrs(cmd)}` +
+      return g(`<path d="${xmlEscape(cmd.d)}" ${paintAttrs(cmd, ctx)}` +
         (cmd.fillRule === "evenodd" ? ` fill-rule="evenodd"` : "") + `/>`);
     case "text":
       return g(textToSVG(cmd, ctx));
@@ -285,7 +325,7 @@ export function textToSVG(cmd, ctx) {
     // top+ascent from the layout — no ascentFraction needed here).
     for (const d of draws.textDraws) {
       if (d.text.length === 0) continue;
-      out.push(richRunTextSVG(d));
+      out.push(richRunTextSVG(d, ctx));
     }
     // Underline / strike decoration bars (on TOP of glyphs), filled <rect>s.
     for (const ln of draws.lines) {
@@ -303,7 +343,7 @@ export function textToSVG(cmd, ctx) {
     `font-size="${fmt(cmd.size)}"`,
   ];
   if (cmd.bold) attrs.push(`font-weight="bold"`);
-  attrs.push(`fill="${rgbaToCss(cmd.color)}"`);
+  attrs.push(`fill="${paintRef(ctx, cmd.color)}"`);
   if ((cmd.opacity ?? 1) !== 1) attrs.push(`opacity="${fmt(cmd.opacity)}"`);
   attrs.push(`xml:space="preserve"`);
   return `<text ${attrs.join(" ")}>${xmlEscape(cmd.text)}</text>`;
@@ -321,9 +361,14 @@ export function textToSVG(cmd, ctx) {
  * units (the ancestor world <g> scales it with the glyphs — never
  * pre-multiplied, the concerns.md scale² guard).
  *
+ * A GRADIENT run fill (Axis-1 Paint) registers a <linearGradient>/<radialGradient>
+ * def on `ctx` and fills with url(#id) (objectBoundingBox = the <text>'s own bbox,
+ * matching the Skia glyph-gradient objectBoundingBox) — so gradient text survives
+ * vector export too. A solid run fill is the byte-identical rgba() path.
+ *
  * @example // richRunTextSVG({text:"Hi",x:5,baselineY:32,size:36,color:"#000",bold:false,italic:false,font:"system",opacity:1,outlineWidth:0}) → '<text x="5" y="32" ...>Hi</text>'
  */
-export function richRunTextSVG(d) {
+export function richRunTextSVG(d, ctx) {
   const attrs = [
     `x="${fmt(d.x)}"`, `y="${fmt(d.baselineY)}"`,
     `font-family="${xmlEscape(cssFamilyFor(d.font || DEFAULT_FONT))}"`,
@@ -331,7 +376,7 @@ export function richRunTextSVG(d) {
   ];
   if (d.bold) attrs.push(`font-weight="bold"`);
   if (d.italic) attrs.push(`font-style="italic"`);
-  attrs.push(`fill="${rgbaToCss(parseColor(d.color))}"`);
+  attrs.push(`fill="${paintRef(ctx, parsePaint(d.color))}"`);
   if ((d.outlineWidth ?? 0) > 0) {
     attrs.push(`stroke="${rgbaToCss(parseColor(d.outlineColor))}"`, `stroke-width="${fmt(d.outlineWidth)}"`, `paint-order="stroke"`);
   }
@@ -512,14 +557,13 @@ export async function emitLensSVG(cmd, world, commands, rawIdx, region, ctx) {
     });
   }
 
-  // Border: a circle lens reads rimColor/rimWidth (pre-shape props, output
-  // byte-identical); a box lens reads the stroked-box bundle (stroke/
-  // strokeWidth). Width 0 = NO ring (manifest spec), matching pdf emitLens.
-  // The box border's stroke-width stays LOCAL (its <g transform> scales it);
-  // the circle border is in WORLD coords so its width pre-multiplies the scale.
+  // Border: ONE stroke ring for both shapes (ir.js collapsed the legacy circle
+  // rim into stroke/strokeWidth). Width 0 = NO ring (manifest spec), matching pdf
+  // emitLens. The box border's stroke-width stays LOCAL (its <g transform> scales
+  // it); the circle border is in WORLD coords so its width pre-multiplies scale.
   let rim = "";
-  const strokeColor = isBox ? cmd.stroke : cmd.rimColor;
-  const strokeW = strokeColor ? (isBox ? cmd.strokeWidth : cmd.rimWidth) * world.scale : 0;
+  const strokeColor = cmd.stroke;
+  const strokeW = strokeColor ? cmd.strokeWidth * world.scale : 0;
   if (strokeW > 0) {
     const c = [...strokeColor.slice(0, 3), strokeColor[3] * cmd.opacity];
     rim = isBox
@@ -557,8 +601,7 @@ export async function emitCropSVG(cmd, world, region, ctx) {
   const parts = [];
 
   if (cmd.fill) {
-    const fill = [...cmd.fill.slice(0, 3), cmd.fill[3] * cmd.opacity];
-    parts.push(groupWrap(boxT, `<path d="${roundedRectPathD(local)}" fill="${rgbaToCss(fill)}"/>`));
+    parts.push(groupWrap(boxT, `<path d="${roundedRectPathD(local)}" fill="${paintRef(ctx, cmd.fill, cmd.opacity)}"/>`));
   }
 
   // Clip region in WORLD space: the rounded rect's path under the box's world
@@ -576,8 +619,7 @@ export async function emitCropSVG(cmd, world, region, ctx) {
 
   const strokeW = cmd.strokeWidth ?? 0;
   if (cmd.stroke && strokeW > 0) {
-    const stroke = [...cmd.stroke.slice(0, 3), cmd.stroke[3] * cmd.opacity];
-    parts.push(groupWrap(boxT, `<path d="${roundedRectPathD(local)}" fill="none" stroke="${rgbaToCss(stroke)}" stroke-width="${fmt(strokeW)}"/>`));
+    parts.push(groupWrap(boxT, `<path d="${roundedRectPathD(local)}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(strokeW)}"/>`));
   }
   return parts.join("");
 }

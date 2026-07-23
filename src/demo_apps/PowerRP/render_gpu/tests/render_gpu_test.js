@@ -250,8 +250,9 @@ test("magnifierIR: circle lens geometry from bbox (stroke = migrated rim)", () =
   assert.equal(m.cx, 80);
   assert.equal(m.r, 80);
   assert.equal(m.magnification, 2.5);
-  assert.ok(m.rimColor); // circle border feeds the rim slot (byte-identical IR path)
-  assert.equal(m.rimWidth, 4);
+  assert.ok(m.stroke); // circle border feeds the ONE stroke slot (rim collapsed into stroke)
+  assert.equal(m.strokeWidth, 4);
+  assert.equal(m.rimColor, undefined); // the op no longer carries a separate rim slot
   assert.equal(m.originX, 80); // no origin → lens center (byte-identical to pre-origin)
   assert.equal(m.originY, 80);
 });
@@ -265,7 +266,7 @@ test("magnifierIR: BOX lens geometry + stroked border + cornerRadius", () => {
   assert.equal(m.cornerRadius, 16);
   assert.ok(m.stroke); // box border feeds the stroke slot
   assert.equal(m.strokeWidth, 3);
-  assert.equal(m.rimColor, null); // box uses the stroke slot, not the rim slot
+  assert.equal(m.rimColor, undefined); // the op carries only the unified stroke slot
 });
 test("magnifierIR: origin retargets the magnified point (world→local via node world)", () => {
   // Node translated to world x=1000; origin at world (1080, 80) → local (80, 80).

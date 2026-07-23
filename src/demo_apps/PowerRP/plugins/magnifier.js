@@ -175,7 +175,7 @@ export const magnifierPlugin = {
     }
     return [magnifyBackdrop({
       ...common, shape: "circle", cx: g.cx, cy: g.cy, r: g.r,
-      rimColor: border, rimWidth: strokeW, // circle border = rim (byte-identical IR/shader path)
+      stroke: border, strokeWidth: strokeW, // ONE stroke bundle for both shapes (collapsed; the circle rim IS the border)
     })];
   },
   hitTest(s, lx, ly) {

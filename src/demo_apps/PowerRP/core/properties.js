@@ -24,7 +24,7 @@
  * A future stroke feature (dash/cap/join — the Figures stroke-style system) is
  * added to the `strokedBox` BUNDLE *once* (a new PROP def + its key appended to
  * the bundle's key list, plus the emit-decoration reading it in
- * core/strokeDecoration.js) and EVERY box-like consumer (rect, image, video,
+ * render_gpu/decorate.js) and EVERY box-like consumer (rect, image, video,
  * filmstrip, crop box, ...) inherits the property row, the default, AND the
  * render decoration together — no per-plugin edits. Likewise a brand-new
  * box-like widget composes the bundle and is stroke-complete for free. This is
@@ -117,8 +117,12 @@ export const PROPS = {
   // filmstrip and the crop box all compose. A future dash/cap/join aspect
   // (Figures stroke-style system) is added HERE (a new PROP + strokedBox key +
   // the emit decoration reading it) and every box inherits it (rule #4 above).
-  fill: { label: "Fill", kind: "color", category: "formatting", help: "The color that fills the widget's interior. Lower its alpha for a translucent fill, or set it fully transparent for outline-only." },
-  stroke: { label: "Stroke", kind: "color", category: "formatting", help: "The color of the outline drawn around the widget's edge. Only visible when stroke width is above zero." },
+  // `paint: true` marks a color row as PAINT-capable (Axis-1): the Inspector
+  // renders PaintField (solid | linear/radial gradient) instead of the plain
+  // ColorField. A stored solid string stays byte-identical; a gradient stores a
+  // {type,stops,from/to|center/r} object the render/export backends understand.
+  fill: { label: "Fill", kind: "color", paint: true, category: "formatting", help: "The color or gradient that fills the widget's interior. Lower a color's alpha for a translucent fill, pick a linear/radial gradient, or set it fully transparent for outline-only." },
+  stroke: { label: "Stroke", kind: "color", paint: true, category: "formatting", help: "The color or gradient of the outline drawn around the widget's edge. Only visible when stroke width is above zero." },
   strokeWidth: { label: "Stroke width", kind: "number", min: 0, category: "formatting", default: 0, help: "Thickness of the outline in canvas units. Zero means no outline." },
   cornerRadius: { label: "Corner radius", kind: "number", min: 0, category: "formatting", default: 0, help: "Rounds the widget's corners by this radius in canvas units. Zero is a sharp square corner; larger values round more." },
 
@@ -288,7 +292,7 @@ export const PROPS = {
  *
  * `positioning` — the nine bbox positioning rows every bbox widget shares.
  * `strokedBox` — the four-property box style (fill/stroke/strokeWidth/
- *   cornerRadius) + its render decoration (core/strokeDecoration.js). This is
+ *   cornerRadius) + its render decoration (render_gpu/decorate.js). This is
  *   THE bundle the user meant by "make the stroke composition inherit... I'd
  *   like everything to inherit them at once, including images and videos".
  * `media` — the shared media chrome: a `src` string row + `opacity`. Media

@@ -34,6 +34,7 @@
   import NumericField from "./NumericField.svelte";
   import BooleanField from "./BooleanField.svelte";
   import ColorField from "./ColorField.svelte";
+  import PaintField from "./PaintField.svelte";
   import AssetField from "./AssetField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
@@ -508,6 +509,18 @@
         oncommit={(v) => oncommit(row.key, "asset", v)}
         autoOpen={row.key === "src" && app.pendingVideoPickFor === pickedItemId}
         onpickerclose={() => { if (app.pendingVideoPickFor === pickedItemId) app.pendingVideoPickFor = null; }}
+      />
+    {:else if row.kind === "color" && row.paint}
+      <!-- PAINT rows (fill/stroke — Axis-1): PaintField edits a polymorphic paint
+           (solid | linear/radial gradient). A solid delegates to ColorField
+           verbatim (byte-identical to before); a gradient stores a {type,stops,
+           geometry} object at the SAME item path. Same commit contract. -->
+      <PaintField
+        {app}
+        path={["items", pickedItemId, ...row.key.split(".")]}
+        label={row.label}
+        value={valueAt(state, row.key)}
+        disabled={disabled}
       />
     {:else if row.kind === "color"}
       <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped

@@ -37,18 +37,18 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, pushTransform, popTransform } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, pushTransform, popTransform, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
-import { PDFDocument, PDFName, StandardFonts } from "pdf-lib";
+import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { richTextDraws } from "../core/richtext.js";
 
 /**
- * Lens re-emit recursion cap — mirrors the GPU compositor's
- * MAX_SUPERSAMPLE_DEPTH (gpu/compositor.js): one level of true lens
+ * Lens re-emit recursion cap — re-exported from ir.js (the single source shared
+ * with the SVG backend and the GPU/Skia compositors): one level of true lens
  * re-interpretation; deeper lenses fall back (here: to a raster embed).
  */
-export const MAX_LENS_DEPTH = 1;
+export const MAX_LENS_DEPTH = LENS_DEPTH_CAP;
 
 /**
  * Cubic-bezier circle constant k = 4(√2−1)/3 ≈ 0.5523: the standard 4-arc
@@ -130,6 +130,56 @@ export function ellipsePath({ cx, cy, rx, ry }) {
  */
 export function pointsPath(points) {
   return points.map(([x, y], i) => `${pdfNum(x)} ${pdfNum(y)} ${i === 0 ? "m" : "l"}`).join("\n");
+}
+
+/** Pure function. The bbox {x,y,w,h} of a point list (a polygon's gradient
+ * objectBoundingBox frame). Empty → a zero rect.
+ *
+ * @example pointsPathBounds([[0, 0], [10, 0], [5, 8]]) // {x: 0, y: 0, w: 10, h: 8}
+ */
+export function pointsPathBounds(points) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, w: 0, h: 0 };
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/**
+ * Pure function. An approximate bbox {x,y,w,h} of an SVG path `d` (its gradient
+ * objectBoundingBox frame), from every on-path AND control point (control points
+ * inflate the box slightly — a safe over-estimate for a gradient frame, no curve
+ * flattening needed). Walks tokenizeSvgPath tracking the current point so relative
+ * commands resolve. Covers the PDF-safe subset (M L H V C S Q T A Z, abs+rel).
+ *
+ * @example svgPathBounds("M0 0L10 0L5 8Z") // {x: 0, y: 0, w: 10, h: 8}
+ * @example svgPathBounds("M2 3h10v6") // {x: 2, y: 3, w: 10, h: 6}
+ */
+export function svgPathBounds(d) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let cx = 0, cy = 0;
+  const hit = (x, y) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
+  for (const tok of tokenizeSvgPath(d)) {
+    const cmd = tok[0], rel = cmd === cmd.toLowerCase(), a = tok.slice(1);
+    const up = cmd.toUpperCase();
+    if (up === "Z") continue;
+    if (up === "H") { cx = rel ? cx + a[0] : a[0]; hit(cx, cy); continue; }
+    if (up === "V") { cy = rel ? cy + a[0] : a[0]; hit(cx, cy); continue; }
+    // All other commands: coords are (x,y) pairs. An A's leading 5 args
+    // (rx,ry,rot,large,sweep) are NOT points — only its final (ex,ey) pair is.
+    const coords = up === "A" ? a.slice(5) : a;
+    for (let i = 0; i + 1 < coords.length; i += 2) {
+      const px = rel ? cx + coords[i] : coords[i];
+      const py = rel ? cy + coords[i + 1] : coords[i + 1];
+      hit(px, py);
+    }
+    // Advance the current point to the command's endpoint (last coord pair).
+    if (coords.length >= 2) {
+      cx = rel ? cx + coords[coords.length - 2] : coords[coords.length - 2];
+      cy = rel ? cy + coords[coords.length - 1] : coords[coords.length - 1];
+    }
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, w: 0, h: 0 };
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
 /**
@@ -562,7 +612,7 @@ async function loadImageBytes(ref) {
  * @example // await irToPDF(sceneIR(nodes), {width: 1280, height: 720, view: fitRectView(camRect, 1280, 720, 1), background: "#ffffff", rasterize}) → Uint8Array starting "%PDF-"
  * @example // no-effect scenes need no rasterize: await irToPDF([rect({...})], {width: 100, height: 100, view: {zoom: 1, panX: 0, panY: 0}})
  */
-export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = 2, textAscent = null, videoFrame = null, loadFontBytes = null, registerFontkit = null, measureText = null }) {
+export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = SUPERSAMPLE_DENSITY, textAscent = null, videoFrame = null, loadFontBytes = null, registerFontkit = null, measureText = null }) {
   const doc = await PDFDocument.create();
   if (registerFontkit) doc.registerFontkit(registerFontkit); // required for embedFont(customTTF)
   const page = doc.addPage([width, height]);
@@ -759,14 +809,14 @@ async function emitLens(cmd, world, commands, rawIdx, region, out, ctx) {
     background: region.background,
   };
   // The border geometry (circle path in world coords, or box path in local
-  // coords under the box's transform) + its stroke color/width. A circle reads
-  // rimColor/rimWidth; a box reads stroke/strokeWidth — both are one ring.
-  const strokeColor = isBox ? cmd.stroke : cmd.rimColor;
+  // coords under the box's transform) + its stroke color/width. ONE stroke ring
+  // for both shapes (ir.js collapsed the legacy circle rim into stroke/strokeWidth).
+  const strokeColor = cmd.stroke;
   // Pen width lives in the space its path is DRAWN in: the circle's path is in
   // base coords (scale by world), but the box strokes inside cm(world) — the cm
   // scales the pen at stroke time, so pre-multiplying by world.scale would
   // SQUARE it under scaled worlds. (Identical output at lens worlds' scale=1.)
-  const strokeW = isBox ? cmd.strokeWidth : cmd.rimWidth * world.scale;
+  const strokeW = isBox ? cmd.strokeWidth : cmd.strokeWidth * world.scale;
   const clipOps = () => isBox
     ? [cmSimilarity(world), rectPath({ x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2, cornerRadius: cmd.cornerRadius }), "W n", cmSimilarity(T.invert(world))]
     : [ellipsePath({ cx: center.x, cy: center.y, rx: cmd.r * world.scale, ry: cmd.r * world.scale }), "W n"];
@@ -889,8 +939,16 @@ function emitVector(cmd, world, out, ctx) {
     case "rect":
     case "ellipse": {
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return;
+      const pathStr = cmd.op === "rect" ? rectPath(cmd) : ellipsePath(cmd);
+      if (isGradientPaint(cmd.fill) || isGradientPaint(cmd.stroke)) {
+        const bounds = cmd.op === "rect"
+          ? { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }
+          : { x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry };
+        ops.push(...gradientShapeOps(pathStr, bounds, cmd, ctx, false));
+        break;
+      }
       ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
-      ops.push(cmd.op === "rect" ? rectPath(cmd) : ellipsePath(cmd));
+      ops.push(pathStr);
       ops.push(paintOp(cmd.fill, cmd.stroke, cmd.strokeWidth));
       break;
     }
@@ -901,6 +959,10 @@ function emitVector(cmd, world, out, ctx) {
       break;
     }
     case "polygon": {
+      if (isGradientPaint(cmd.fill)) {
+        ops.push(...gradientShapeOps(pointsPath(cmd.points) + " h", pointsPathBounds(cmd.points), cmd, ctx, false));
+        break;
+      }
       ops.push(...paintSetup(cmd.fill, null, 0, cmd.opacity, ctx));
       ops.push(pointsPath(cmd.points), "h f");
       break;
@@ -911,6 +973,10 @@ function emitVector(cmd, world, out, ctx) {
       // setup is the shared paintSetup; the paint operator gets its even-odd
       // variant (f*/B*) when the fill rule asks for it (nonzero is the default).
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return;
+      if (isGradientPaint(cmd.fill) || isGradientPaint(cmd.stroke)) {
+        ops.push(...gradientShapeOps(svgPathToPdfOps(cmd.d), svgPathBounds(cmd.d), cmd, ctx, cmd.fillRule === "evenodd"));
+        break;
+      }
       ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
       ops.push(svgPathToPdfOps(cmd.d));
       let po = paintOp(cmd.fill, cmd.stroke, cmd.strokeWidth);
@@ -1170,7 +1236,7 @@ export function groupedTextDraws(textDraws) {
 function textGroupOps(group, ctx) {
   const d0 = group[0];
   const font = ctx.font(d0.font, d0.bold);
-  const [r, g, b, a] = parseColor(d0.color);
+  const [r, g, b, a] = pdfTextInk(d0.color);
   const ops = [];
   const gs = ctx.gsAlphaPair(a * (d0.opacity ?? 1), 1);
   if (gs) ops.push(gs);
@@ -1227,7 +1293,9 @@ function textRunOps(str, x, baseline, size, bold, italic, color, opacity, fontId
   if (str.length === 0) return [];
   const ops = [];
   const font = ctx.font(fontId, bold);
-  const [r, g, b, a] = color;
+  // color is a parsed rgba array (solid) OR a gradient Paint (rare gradient text)
+  // — pdfTextInk degrades a gradient to its first stop (loud, one-time).
+  const [r, g, b, a] = pdfTextInk(color);
   const gs = ctx.gsAlphaPair(a * (opacity ?? 1), 1);
   if (gs) ops.push(gs);
   ops.push(`${pdfNum(r)} ${pdfNum(g)} ${pdfNum(b)} rg`);
@@ -1239,6 +1307,73 @@ function textRunOps(str, x, baseline, size, bold, italic, color, opacity, fontId
   ops.push(`1 0 ${pdfNum(c)} -1 ${pdfNum(x)} ${pdfNum(baseline)} Tm`);
   ops.push(`${tjHex(font, str)} Tj`, "ET");
   return ops;
+}
+
+/**
+ * Command (may register a /Shading + ExtGState via ctx). Emits a shape whose
+ * fill and/or stroke is a gradient Paint (Axis-1). `pathStr` is the shape's path
+ * construction ops (in local coords); `bounds` its local bbox (the gradient
+ * objectBoundingBox frame). A gradient FILL clips to the shape and paints the
+ * shading through a unit→bbox cm (CTM-relative `sh`); a gradient STROKE has no
+ * clean `sh` analogue, so it degrades to the gradient's first stop as a solid
+ * (a loud one-time report — PDF gradient strokes are the rare tail). Solid fill/
+ * stroke on the same shape take the byte-identical rg/RG path.
+ */
+function gradientShapeOps(pathStr, bounds, cmd, ctx, evenOdd) {
+  const ops = [];
+  const opacity = cmd.opacity ?? 1;
+  if (cmd.fill) {
+    if (isGradientPaint(cmd.fill)) {
+      const sh = ctx.shadingName(cmd.fill);
+      const gs = ctx.gsAlphaPair(opacity, 1);
+      ops.push("q");
+      if (gs) ops.push(gs);
+      ops.push(pathStr, evenOdd ? "W* n" : "W n"); // clip to the shape
+      ops.push(`${pdfNum(bounds.w)} 0 0 ${pdfNum(bounds.h)} ${pdfNum(bounds.x)} ${pdfNum(bounds.y)} cm`); // unit → local bbox
+      ops.push(`/${sh} sh`);
+      ops.push("Q");
+    } else {
+      const gs = ctx.gsAlphaPair(cmd.fill[3] * opacity, 1);
+      ops.push("q");
+      if (gs) ops.push(gs);
+      ops.push(`${pdfNum(cmd.fill[0])} ${pdfNum(cmd.fill[1])} ${pdfNum(cmd.fill[2])} rg`, pathStr, evenOdd ? "f*" : "f", "Q");
+    }
+  }
+  if (cmd.stroke && cmd.strokeWidth > 0) {
+    const stroke = isGradientPaint(cmd.stroke) ? gradientStrokeSolid(cmd.stroke) : cmd.stroke;
+    const gs = ctx.gsAlphaPair(1, stroke[3] * opacity);
+    ops.push("q");
+    if (gs) ops.push(gs);
+    ops.push(`${pdfNum(stroke[0])} ${pdfNum(stroke[1])} ${pdfNum(stroke[2])} RG`, `${pdfNum(cmd.strokeWidth)} w`, pathStr, "S", "Q");
+  }
+  return ops;
+}
+
+/** Query. A gradient stroke's representative solid (its first stop) — PDF has no
+ * clean stroked-gradient primitive, so a gradient STROKE degrades to this with a
+ * loud one-time report (the documented rare-tail deviation). */
+function gradientStrokeSolid(paint) {
+  reportOncePdf("pdf-gradient-stroke", "pdf_backend: gradient STROKE is not expressible as a PDF shading — degrading to the gradient's first stop as a solid stroke (fills use true shadings; gradient strokes are the rare tail)");
+  return paint.stops[0].color;
+}
+
+/** Query. A text run's ink color → an [r,g,b,a] solid. A solid (string or rgba)
+ * parses normally; a GRADIENT text fill degrades to its first stop with a loud
+ * one-time report (shapes get true PDF shadings; gradient TEXT export is the rare
+ * tail — SVG export keeps it via <text fill=url(#..)>). */
+function pdfTextInk(color) {
+  if (isGradientPaint(color)) {
+    reportOncePdf("pdf-gradient-text", "pdf_backend: gradient TEXT fill is not expressible as a PDF text color — degrading to the gradient's first stop (SVG export keeps gradient text via url(#..))");
+    return parsePaint(color).stops[0].color;
+  }
+  return parseColor(color);
+}
+
+const _pdfWarned = new Set();
+function reportOncePdf(key, msg) {
+  if (_pdfWarned.has(key)) return;
+  _pdfWarned.add(key);
+  console.warn(msg);
 }
 
 /** Command (may register an ExtGState via ctx). Color + alpha + width setup ops. */
@@ -1277,6 +1412,59 @@ class PdfAssembly {
     this._imgCount = 0;
     this._imageXObjects = new Map(); // image ref → XObject name, or null (blank/undrawable src)
     this._videoXObjects = new Map(); // video ref → XObject name, or null (blank/undrawable frame)
+    this._shadings = new Map(); // JSON(paint) → /Shading resource name (Axis-1 gradient shadings)
+  }
+
+  /**
+   * Command (registers a /Shading resource on first use). A parsed gradient Paint
+   * → its PDF Shading resource name. Coords are in the gradient's objectBoundingBox
+   * UNIT space (0..1); the emit clips to the shape and pushes a unit→bbox cm before
+   * `/name sh`, so the same 0..1 numbers render the same objectBoundingBox gradient
+   * as the Skia shader + SVG def. Axial (ShadingType 2) for linear, radial
+   * (ShadingType 3, two concentric circles r=0→r) for radial; Extend clamps both
+   * ends. Colors are DeviceRGB (per-stop alpha is not expressible in a PDF shading
+   * — the item opacity rides an ExtGState at the call site).
+   */
+  shadingName(paint) {
+    const key = JSON.stringify(paint);
+    if (this._shadings.has(key)) return this._shadings.get(key);
+    const ctx = this.doc.context;
+    const fnRef = this._gradientColorFn(paint.stops);
+    const dict = paint.type === "radialGradient"
+      ? { ShadingType: 3, ColorSpace: "DeviceRGB", Coords: [paint.center.x, paint.center.y, 0, paint.center.x, paint.center.y, paint.r], Function: fnRef, Extend: [true, true] }
+      : { ShadingType: 2, ColorSpace: "DeviceRGB", Coords: [paint.from.x, paint.from.y, paint.to.x, paint.to.y], Function: fnRef, Extend: [true, true] };
+    const ref = ctx.register(ctx.obj(dict));
+    const name = `Sh${this._shadings.size + 1}`;
+    this._shadingDict().set(PDFName.of(name), ref);
+    this._shadings.set(key, name);
+    return name;
+  }
+
+  /** Query→build. The page Resources /Shading subdictionary (created on demand,
+   * mirroring pdf-lib's normalizedEntries for Font/XObject/ExtGState). */
+  _shadingDict() {
+    const ctx = this.doc.context;
+    const Resources = this.page.node.normalizedEntries().Resources;
+    let Shading = Resources.lookupMaybe(PDFName.of("Shading"), PDFDict);
+    if (!Shading) { Shading = ctx.obj({}); Resources.set(PDFName.of("Shading"), Shading); }
+    return Shading;
+  }
+
+  /** Command (registers Function objects). A gradient's stops → a PDF color
+   * Function ref: a single exponential (FunctionType 2) for 2 stops, else a
+   * stitching (FunctionType 3) over per-gap exponentials with the interior stop
+   * offsets as Bounds. DeviceRGB triples (per-stop alpha dropped). */
+  _gradientColorFn(stops) {
+    const ctx = this.doc.context;
+    const rgb = (c) => [c[0], c[1], c[2]];
+    if (stops.length === 2)
+      return ctx.register(ctx.obj({ FunctionType: 2, Domain: [0, 1], C0: rgb(stops[0].color), C1: rgb(stops[1].color), N: 1 }));
+    const subs = [];
+    for (let i = 0; i < stops.length - 1; i++)
+      subs.push(ctx.register(ctx.obj({ FunctionType: 2, Domain: [0, 1], C0: rgb(stops[i].color), C1: rgb(stops[i + 1].color), N: 1 })));
+    const encode = [];
+    for (let i = 0; i < subs.length; i++) encode.push(0, 1);
+    return ctx.register(ctx.obj({ FunctionType: 3, Domain: [0, 1], Functions: subs, Bounds: stops.slice(1, -1).map((s) => s.offset), Encode: encode }));
   }
 
   /**

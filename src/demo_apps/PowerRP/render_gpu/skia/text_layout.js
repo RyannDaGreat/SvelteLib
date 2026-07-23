@@ -35,7 +35,8 @@
  * the module-level cache never mixes Paragraphs across instances.
  */
 
-import { parseColor } from "../ir.js";
+import { parseColor, parsePaint, isGradientPaint } from "../ir.js";
+import { skShaderForPaint } from "./gradient.js";
 import { fontFamilyChain } from "../fonts.js";
 import { splitParagraphs, paragraphRanges, paraStyleFor, valignOffset, DEFAULT_VALIGN, NATURAL_LINE_HEIGHT } from "../../core/richtext.js";
 
@@ -168,13 +169,110 @@ function buildTextLayout(CanvasKit, fc, norm, opacity) {
       textStart: ranges[i].start,
       charCount: ranges[i].end - ranges[i].start,
       yTop: 0,
+      // Per-piece shaped-glyph groups for the OUTLINE (and gradient-fill) glyph
+      // pass — EMPTY (fast path) unless a piece needs one (outline / gradient).
+      glyphGroups: glyphGroupsFor(CanvasKit, b.para, pieces),
     };
   });
   const totalH = built.reduce((s, b) => s + b.height, 0);
   const vOffset = valignOffset(boxStyle.valign ?? DEFAULT_VALIGN, boxH, totalH);
   let y = vOffset;
   for (const b of built) { b.yTop = y; y += b.height; }
-  return new TextLayout(CanvasKit, built, vOffset, totalH);
+  return new TextLayout(CanvasKit, built, vOffset, totalH, opacity);
+}
+
+// ── glyph pass (OUTLINE stroke + gradient fill) ───────────────────────────────
+// CanvasKit 0.41.1's Paragraph TextStyle exposes only foregroundColor (a COLOR,
+// NOT a Paint — verified empirically), so a per-run STROKE outline or a gradient
+// SHADER fill cannot ride the Paragraph. Instead we read the shaped glyph runs
+// (para.getShapedLines(): glyph ids + absolute positions + the resolved typeface)
+// and re-draw them with canvas.drawGlyphs + an arbitrary Paint (stroke for the
+// outline, MakeLinearGradient/MakeRadialGradient shader for gradient text). The
+// glyphs align EXACTLY with the Paragraph fill (same shaping), so the outline
+// sits under the fill (paint-order:stroke, matching the SVG/PDF export idiom).
+
+/** Pure function. UTF-16 char ranges of a paragraph's pieces (splitParagraphs
+ * output), concatenated in order: piece i spans [start, end) with its style.
+ * The shaped-run glyph `offsets` index this same paragraph text, so a glyph's
+ * offset locates its owning piece (styleAtOffset).
+ *
+ * @example pieceCharRanges([{text: "ab", style: {}}, {text: "cd", style: {}}]).map((r) => [r.start, r.end]) // [[0, 2], [2, 4]]
+ * @example pieceCharRanges([]) // []
+ */
+export function pieceCharRanges(pieces) {
+  const out = [];
+  let at = 0;
+  for (const p of pieces) {
+    const len = p.text.length; // UTF-16 units (matches getShapedLines offsets)
+    out.push({ start: at, end: at + len, style: p.style });
+    at += len;
+  }
+  return out;
+}
+
+/** Pure function. The style whose char range contains `offset` (the last range
+ * whose start <= offset, clamped to the final piece for a trailing offset). null
+ * if there are no ranges.
+ *
+ * @example styleAtOffset([{start: 0, end: 2, style: {a: 1}}, {start: 2, end: 4, style: {a: 2}}], 3).a // 2
+ * @example styleAtOffset([{start: 0, end: 2, style: {a: 1}}], 5).a // 1 (trailing → last piece)
+ * @example styleAtOffset([], 0) // null
+ */
+export function styleAtOffset(ranges, offset) {
+  if (ranges.length === 0) return null;
+  for (const r of ranges) if (offset >= r.start && offset < r.end) return r.style;
+  return ranges[ranges.length - 1].style;
+}
+
+/** Pure function. True iff a run style needs the glyph pass (an outline stroke,
+ * or a gradient fill the Paragraph can't render). A plain solid-fill, no-outline
+ * run needs nothing → the byte-identical drawParagraph-only fast path.
+ *
+ * @example styleNeedsGlyphPass({ outlineWidth: 2 }) // true
+ * @example styleNeedsGlyphPass({ color: { type: "linearGradient" } }) // true
+ * @example styleNeedsGlyphPass({ color: "#f00", outlineWidth: 0 }) // false
+ * @example styleNeedsGlyphPass({}) // false
+ */
+export function styleNeedsGlyphPass(style) {
+  if ((style.outlineWidth ?? 0) > 0) return true;
+  const c = style.color;
+  return !!(c && typeof c === "object" && !Array.isArray(c));
+}
+
+/**
+ * Query→build (reads shaped glyphs; allocates typed arrays, holds Paragraph-owned
+ * typeface refs). Splits a laid-out Paragraph's shaped glyph runs into contiguous
+ * groups sharing ONE piece style + typeface + size, so each group can be redrawn
+ * with drawGlyphs under a single Paint. Returns [] on the fast path (no piece
+ * needs an outline or gradient fill) — the Paragraph fill alone is then used and
+ * the render is byte-identical to before this pass existed.
+ *
+ * The returned typeface refs are owned by `para` (valid while the cached layout
+ * lives); the caller builds Fonts from them per draw and disposes those.
+ */
+function glyphGroupsFor(CanvasKit, para, pieces) {
+  if (!pieces.some((p) => styleNeedsGlyphPass(p.style))) return [];
+  const ranges = pieceCharRanges(pieces);
+  const groups = [];
+  for (const line of para.getShapedLines()) {
+    for (const run of line.runs) {
+      let cur = null;
+      for (let i = 0; i < run.glyphs.length; i++) {
+        const style = styleAtOffset(ranges, run.offsets[i]);
+        if (!cur || cur.style !== style) {
+          cur = { typeface: run.typeface, size: run.size, style, glyphs: [], positions: [] };
+          groups.push(cur);
+        }
+        cur.glyphs.push(run.glyphs[i]);
+        cur.positions.push(run.positions[2 * i], run.positions[2 * i + 1]);
+      }
+    }
+  }
+  return groups.map((g) => ({
+    typeface: g.typeface, size: g.size, style: g.style,
+    glyphs: Uint16Array.from(g.glyphs),
+    positions: Float32Array.from(g.positions),
+  }));
 }
 
 /**
@@ -222,8 +320,14 @@ export function buildParagraph(CanvasKit, fc, pieces, pstyle, boxW, fallbackStyl
  * paint_skia.js.) color/backgroundColor/decorationColor fold `opacity` into their
  * alpha; the RGB is never forced onto color-glyph (emoji) fonts. */
 function textStyle(CanvasKit, st, charSpacing, wordSpacing, opacity) {
+  // A GRADIENT fill can't ride the Paragraph (foregroundColor is a color, not a
+  // shader, in ckwasm 0.41.1) — draw the glyph fill TRANSPARENT here and let the
+  // gradient glyph pass (drawGlyphGradientFill) paint it. Decorations still use a
+  // representative SOLID (the first stop).
+  const gradient = isGradientPaint(st.color);
+  const solidInk = gradient ? st.color.stops[0].color : (st.color ?? "#000000");
   const spec = {
-    color: ckColor(CanvasKit, st.color ?? "#000000", opacity),
+    color: gradient ? CanvasKit.Color4f(0, 0, 0, 0) : ckColor(CanvasKit, st.color ?? "#000000", opacity),
     fontFamilies: fontFamilyChain(st.font ?? "system"),
     fontSize: st.size ?? DEFAULT_TEXT_SIZE,
     fontStyle: {
@@ -240,7 +344,7 @@ function textStyle(CanvasKit, st, charSpacing, wordSpacing, opacity) {
   if (st.strike) deco |= CanvasKit.LineThroughDecoration;
   if (deco !== CanvasKit.NoDecoration) {
     spec.decoration = deco;
-    spec.decorationColor = ckColor(CanvasKit, st.color ?? "#000000", opacity);
+    spec.decorationColor = ckColor(CanvasKit, solidInk, opacity);
     spec.decorationStyle = CanvasKit.DecorationStyle.Solid;
   }
   return new CanvasKit.TextStyle(spec);
@@ -271,17 +375,31 @@ function alignEnum(CanvasKit, align) {
  * LOCAL (op-relative) space with MODEL code-point offsets.
  */
 export class TextLayout {
-  constructor(CanvasKit, built, vOffset, totalH) {
+  constructor(CanvasKit, built, vOffset, totalH, opacity = 1) {
     this.CanvasKit = CanvasKit;
-    this.built = built;      // [{para, height, text, textStart, charCount, yTop}]
+    this.built = built;      // [{para, height, text, textStart, charCount, yTop, glyphGroups}]
     this.vOffset = vOffset;  // local y the whole stack is shifted by (valign)
     this.totalH = totalH;    // total laid-out height (pre-valign)
+    this.opacity = opacity;  // folded into the stroke/gradient glyph-pass alpha (Paragraph fill already folds it at build)
   }
 
   /** Command (draws each paragraph at its local yTop). Origin (ox,oy) is the op's
-   * top-left (cmd.x, cmd.y); yTop already carries the valign offset. */
+   * top-left (cmd.x, cmd.y); yTop already carries the valign offset.
+   *
+   * Draw order per paragraph (matches the SVG paint-order:stroke / PDF fill+stroke
+   * export idiom): the OUTLINE stroke glyph pass FIRST (behind), then the
+   * Paragraph (solid fill + decorations + highlight + emoji + fallback), then the
+   * gradient-FILL glyph pass on top of the (transparent-glyph) gradient pieces.
+   * With no outline/gradient piece every glyphGroups is empty and this is exactly
+   * the historical single drawParagraph call (byte-identical). */
   draw(canvas, ox, oy) {
-    for (const b of this.built) canvas.drawParagraph(b.para, ox, oy + b.yTop);
+    const CK = this.CanvasKit;
+    for (const b of this.built) {
+      const y = oy + b.yTop;
+      for (const g of b.glyphGroups) drawGlyphOutline(CK, canvas, g, y, ox, this.opacity);
+      canvas.drawParagraph(b.para, ox, y);
+      for (const g of b.glyphGroups) drawGlyphGradientFill(CK, canvas, g, y, ox, this.opacity);
+    }
   }
 
   /** Command (deletes the WASM Paragraphs). Called by the cache on eviction. */
@@ -416,4 +534,60 @@ export class TextLayout {
  */
 function firstRect(rects) {
   return rects && rects.length ? rects[0].rect : null;
+}
+
+/** Command (draws one glyph group's OUTLINE stroke, behind the fill). No-op when
+ * the group's piece has no outline (outlineWidth <= 0). Stroke width is in LOCAL
+ * units (the canvas is already view+world transformed) and the join is Skia's
+ * default MITER — matching the SVG export's unset stroke-linejoin. */
+function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity) {
+  const width = group.style.outlineWidth ?? 0;
+  if (!(width > 0)) return;
+  const rgba = parseColor(group.style.outlineColor ?? "#000000");
+  const paint = new CanvasKit.Paint();
+  paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
+  paint.setStyle(CanvasKit.PaintStyle.Stroke);
+  paint.setStrokeWidth(width);
+  paint.setAntiAlias(true);
+  const font = new CanvasKit.Font(group.typeface, group.size);
+  canvas.drawGlyphs(group.glyphs, group.positions, ox, y, font, paint);
+  font.delete();
+  paint.delete();
+}
+
+/** Command (draws one glyph group's GRADIENT fill, on top of the transparent-
+ * glyph Paragraph pass). No-op when the piece's fill is solid (a plain color) —
+ * that fill is handled by the Paragraph. The gradient shader is built from the
+ * group's glyph AABB (objectBoundingBox space) via the shared skShaderForPaint. */
+function drawGlyphGradientFill(CanvasKit, canvas, group, y, ox, opacity) {
+  if (!isGradientPaint(group.style.color)) return;
+  const paint = parsePaint(group.style.color); // model gradient (string stops) → rgba stops
+  const bounds = glyphGroupBounds(group, ox, y, CanvasKit);
+  const shader = skShaderForPaint(CanvasKit, paint, bounds, opacity);
+  const p = new CanvasKit.Paint();
+  p.setShader(shader);
+  p.setStyle(CanvasKit.PaintStyle.Fill);
+  p.setAntiAlias(true);
+  const font = new CanvasKit.Font(group.typeface, group.size);
+  canvas.drawGlyphs(group.glyphs, group.positions, ox, y, font, p);
+  font.delete();
+  p.delete();
+  shader.delete();
+}
+
+/** Pure function. The device-local AABB {x, y, w, h} covering a glyph group's
+ * glyph origins plus one em of headroom, used as the gradient's objectBoundingBox
+ * frame. Origins live in positions[]; a full glyph-outline bound would need per-
+ * glyph metrics, so the em-padded origin span is a cheap, stable approximation
+ * that keeps the gradient anchored to the drawn text. */
+function glyphGroupBounds(group, ox, y, CanvasKit) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const pos = group.positions;
+  for (let i = 0; i < pos.length; i += 2) {
+    minX = Math.min(minX, pos[i]); maxX = Math.max(maxX, pos[i]);
+    minY = Math.min(minY, pos[i + 1]); maxY = Math.max(maxY, pos[i + 1]);
+  }
+  if (!Number.isFinite(minX)) { minX = 0; maxX = 0; minY = 0; maxY = 0; }
+  const em = group.size;
+  return { x: ox + minX, y: y + minY - em, w: (maxX - minX) + em, h: (maxY - minY) + em };
 }

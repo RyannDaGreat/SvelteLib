@@ -26,7 +26,7 @@
  *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
- *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, originX, originY, magnification, rimColor, rimWidth, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"
+ *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, originX, originY, magnification, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box" (rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth)
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
  *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, shadowOnly, margin}  // Round 12D effects substrate
  *
@@ -110,6 +110,81 @@ export function rgbaToCss(rgba) {
   return `rgba(${byte(r)},${byte(g)},${byte(b)},${+a.toFixed(4)})`;
 }
 
+// ── paint (Axis-1 PAINT seam) ─────────────────────────────────────────────────
+// A Paint is the polymorphic value a fill/stroke field holds. SOLID stays the
+// plain [r,g,b,a] array parseColor returns (so every existing op, doctest and
+// baseline is byte-identical); a GRADIENT is a tagged object. Backends branch on
+// isGradientPaint(): array ⇒ solid setColor, object ⇒ setShader. pattern/image/
+// shader Paint variants are DECLARED but throw a loud "not implemented" (the
+// Axis-1 phasing: build the common cases, stub the fancy ones).
+
+export const GRADIENT_TYPES = ["linearGradient", "radialGradient"];
+const STUB_PAINT_TYPES = ["pattern", "image", "shader"];
+
+/**
+ * Pure function. True iff a (parsed) paint is a GRADIENT (a tagged object) rather
+ * than a SOLID ([r,g,b,a] array) or null. The one-line branch every backend uses
+ * to choose setShader vs setColor.
+ *
+ * @example isGradientPaint([1, 0, 0, 1]) // false (solid)
+ * @example isGradientPaint(null) // false
+ * @example isGradientPaint({type: "linearGradient", stops: [], from: {x: 0, y: 0}, to: {x: 1, y: 0}}) // true
+ */
+export function isGradientPaint(paint) {
+  return !!(paint && typeof paint === "object" && !Array.isArray(paint));
+}
+
+/**
+ * Pure function. Parses a Paint value — the Axis-1 PAINT seam. BACKWARD
+ * COMPATIBLE: a bare CSS string or rgba array is a SOLID paint and returns the
+ * SAME [r,g,b,a] array parseColor returns (existing ops/docs/baselines unchanged).
+ * A tagged object selects a gradient:
+ *   {type:"linearGradient", stops:[{offset,color},...], from:{x,y}, to:{x,y}}
+ *   {type:"radialGradient", stops:[{offset,color},...], center:{x,y}, r}
+ * from/to/center are in objectBoundingBox space — 0..1 over the shape's LOCAL
+ * bbox (the SVG default; editor-friendly + uniform across backends). Stops are
+ * normalized (offset clamped 0..1, color parseColor'd to rgba); a gradient needs
+ * >= 2 stops. pattern/image/shader types throw a loud not-implemented stub.
+ *
+ * @example parsePaint("#ff0000") // [1, 0, 0, 1]
+ * @example parsePaint([0.1, 0.2, 0.3]) // [0.1, 0.2, 0.3, 1]
+ * @example parsePaint(null) // null
+ * @example parsePaint({type: "linearGradient", stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}).stops[1].color // [1, 1, 1, 1]
+ * @example parsePaint({type: "radialGradient", stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}], center: {x: 0.5, y: 0.5}, r: 0.5}).r // 0.5
+ */
+export function parsePaint(paint) {
+  if (paint === null || paint === undefined) return null;
+  if (!isGradientPaint(paint)) return parseColor(paint); // string / rgba array ⇒ solid
+  const type = paint.type;
+  if (STUB_PAINT_TYPES.includes(type)) throw new Error(`parsePaint: "${type}" paint is not implemented yet (Axis-1 stub — only solid + ${GRADIENT_TYPES.join("/")} are wired)`);
+  if (!GRADIENT_TYPES.includes(type)) throw new Error(`parsePaint: unknown paint type ${JSON.stringify(type)} (known: ${GRADIENT_TYPES.join(", ")}, solid string/array)`);
+  const stops = normalizeStops(paint.stops);
+  if (type === "linearGradient") {
+    return { type, stops, from: requirePoint("linearGradient.from", paint.from), to: requirePoint("linearGradient.to", paint.to) };
+  }
+  const center = requirePoint("radialGradient.center", paint.center);
+  if (typeof paint.r !== "number" || !(paint.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(paint.r)}`);
+  return { type, stops, center, r: paint.r };
+}
+
+/** Pure function. Normalizes a gradient stop list: each {offset, color} → offset
+ * clamped 0..1, color parseColor'd to rgba. Requires >= 2 stops (a gradient with
+ * one color is a solid — caller should use a string instead). */
+function normalizeStops(stops) {
+  if (!Array.isArray(stops) || stops.length < 2) throw new Error(`parsePaint: a gradient needs >= 2 stops, got ${JSON.stringify(stops)}`);
+  return stops.map((s) => {
+    if (typeof s.offset !== "number" || !Number.isFinite(s.offset)) throw new Error(`parsePaint: stop "offset" must be a finite number, got ${JSON.stringify(s.offset)}`);
+    return { offset: Math.max(0, Math.min(1, s.offset)), color: parseColor(s.color) };
+  });
+}
+
+/** Pure function. Validates a {x, y} objectBoundingBox point (finite numbers). */
+function requirePoint(name, pt) {
+  if (!pt || typeof pt.x !== "number" || typeof pt.y !== "number" || !Number.isFinite(pt.x) || !Number.isFinite(pt.y))
+    throw new Error(`parsePaint: ${name} must be a {x, y} point with finite numbers, got ${JSON.stringify(pt)}`);
+  return { x: pt.x, y: pt.y };
+}
+
 // ── command builders ─────────────────────────────────────────────────────────
 // Each builder validates + normalizes (colors → rgba arrays, defaults filled)
 // so backends never re-check. Missing required fields throw loudly.
@@ -132,8 +207,8 @@ export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null,
   return {
     op: "rect", x, y, w, h,
     cornerRadius: Math.max(0, cornerRadius), // negative radii are meaningless (same domain clamp as the canvas plugin)
-    fill: fill === null ? null : parseColor(fill),
-    stroke: stroke === null ? null : parseColor(stroke),
+    fill: fill === null ? null : parsePaint(fill),
+    stroke: stroke === null ? null : parsePaint(stroke),
     strokeWidth, opacity,
   };
 }
@@ -147,8 +222,8 @@ export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidt
   requireFinite("ellipse", { cx, cy, rx, ry, strokeWidth, opacity });
   return {
     op: "ellipse", cx, cy, rx, ry,
-    fill: fill === null ? null : parseColor(fill),
-    stroke: stroke === null ? null : parseColor(stroke),
+    fill: fill === null ? null : parsePaint(fill),
+    stroke: stroke === null ? null : parsePaint(stroke),
     strokeWidth, opacity,
   };
 }
@@ -175,7 +250,7 @@ export function polyline({ points, width, color, opacity = 1 }) {
 export function polygon({ points, fill, opacity = 1 }) {
   if (!Array.isArray(points) || points.length < 3) throw new Error(`polygon: need >= 3 points, got ${JSON.stringify(points)}`);
   requireFinite("polygon", { opacity });
-  return { op: "polygon", points: points.map(([x, y]) => [x, y]), fill: parseColor(fill), opacity };
+  return { op: "polygon", points: points.map(([x, y]) => [x, y]), fill: parsePaint(fill), opacity };
 }
 
 /**
@@ -212,7 +287,7 @@ export function text({ text: str, x, y, size, color, bold = false, opacity = 1, 
   // boxW/boxH may be Infinity (no wrap / no height limit) — allowed, not a finite check.
   if (boxW !== Infinity && (typeof boxW !== "number" || !Number.isFinite(boxW))) throw new Error(`text: "boxW" must be a finite number or Infinity, got ${JSON.stringify(boxW)}`);
   return {
-    op: "text", text: str, x, y, size, color: parseColor(color), bold: !!bold, opacity, font,
+    op: "text", text: str, x, y, size, color: parsePaint(color), bold: !!bold, opacity, font,
     rich, boxW, boxH, boxStyle,
   };
 }
@@ -353,8 +428,8 @@ export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule 
   requireFinite("path", { strokeWidth, opacity });
   return {
     op: "path", d, fillRule,
-    fill: fill === null ? null : parseColor(fill),
-    stroke: stroke === null ? null : parseColor(stroke),
+    fill: fill === null ? null : parsePaint(fill),
+    stroke: stroke === null ? null : parsePaint(stroke),
     strokeWidth, opacity,
   };
 }
@@ -432,11 +507,12 @@ export function blurBackdrop({ radius, opacity = 1 }) {
  * SHAPE — `shape:"circle"` (default) uses (cx, cy, r); `shape:"box"` uses
  * (cx, cy) center + (halfW, halfH) half-extents + cornerRadius (a rounded-rect
  * lens, the SAME sdRoundBox region a crop box / a plain rect uses). The border
- * is the rim ring: a circle lens reads (rimColor, rimWidth) — kept byte-
- * identical to the pre-shape op; a box lens reads (stroke, strokeWidth) — the
- * shared stroked-box bundle (core/properties.js), migrated from the rim
- * (plugins/magnifier.js legacyKeys). Both render as the SAME centered stroke
- * band around the region edge.
+ * is ONE stroke ring for BOTH shapes: (stroke, strokeWidth), the shared
+ * stroked-box bundle (core/properties.js). `rimColor`/`rimWidth` are accepted as
+ * LEGACY INPUT ALIASES (the pre-shape circle rim) and FOLD into stroke/
+ * strokeWidth — the op itself carries only the unified stroke fields, so every
+ * backend reads one border regardless of shape (the circle rim IS the box
+ * border). A circle built from rimColor/rimWidth is byte-identical to before.
  *
  * ORIGIN — (originX, originY) is the LOCAL-space point the lens magnifies
  * AROUND (the manifest "magnifier target": defaults to the lens center, so the
@@ -445,34 +521,35 @@ export function blurBackdrop({ radius, opacity = 1 }) {
  * which is where the lens region SITS on screen: the origin decouples "what the
  * lens magnifies" from "where the lens is drawn".
  *
- * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).rimWidth // 0
+ * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).strokeWidth // 0
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).shape // "circle"
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).originX // 0 (defaults to the lens center cx)
  * @example magnifyBackdrop({cx: 10, cy: 20, r: 50, magnification: 2, originX: 5, originY: 8}).originY // 8
  * @example magnifyBackdrop({shape: "box", cx: 0, cy: 0, halfW: 80, halfH: 50, cornerRadius: 12, magnification: 2}).shape // "box"
+ * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, rimColor: "#000", rimWidth: 4}).strokeWidth // 4 (legacy rim folds into stroke)
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, supersample: false}).supersample // false
  */
 export function magnifyBackdrop({
   shape = "circle", cx, cy, r = 0, halfW = 0, halfH = 0, cornerRadius = 0,
   originX = cx, originY = cy, magnification,
-  rimColor = null, rimWidth = 0, stroke = null, strokeWidth = 0,
+  stroke = null, strokeWidth = 0, rimColor = null, rimWidth = 0,
   opacity = 1, supersample = true,
 }) {
   if (shape !== "circle" && shape !== "box")
     throw new Error(`magnifyBackdrop: shape must be "circle" or "box", got ${JSON.stringify(shape)}`);
   const geom = shape === "box" ? { halfW, halfH, cornerRadius } : { r };
-  requireFinite("magnifyBackdrop", { cx, cy, ...geom, originX, originY, magnification, rimWidth, strokeWidth, opacity });
+  // Collapse the legacy rim aliases into the ONE stroke bundle (stroke/strokeWidth
+  // win when given; else the pre-shape circle rim folds in). The op carries only
+  // stroke/strokeWidth — both shapes render one border ring.
+  const borderColor = stroke ?? rimColor;
+  const borderWidth = strokeWidth > 0 ? strokeWidth : rimWidth;
+  requireFinite("magnifyBackdrop", { cx, cy, ...geom, originX, originY, magnification, strokeWidth: borderWidth, opacity });
   if (magnification <= 0) throw new Error(`magnifyBackdrop: magnification must be > 0, got ${magnification}`);
   return {
     op: "magnifyBackdrop", shape, cx, cy, r, halfW, halfH,
     cornerRadius: Math.max(0, cornerRadius), originX, originY, magnification,
-    // Circle border = rim (rimColor/rimWidth, unchanged); box border = the
-    // stroked-box bundle (stroke/strokeWidth). The plugin's rim→stroke
-    // migration keeps these in sync; both backends render one stroke band.
-    rimColor: rimColor === null ? null : parseColor(rimColor),
-    rimWidth,
-    stroke: stroke === null ? null : parseColor(stroke),
-    strokeWidth,
+    stroke: borderColor === null ? null : parseColor(borderColor),
+    strokeWidth: borderWidth,
     opacity, supersample: !!supersample,
   };
 }
@@ -524,6 +601,28 @@ export const BLEND_MODES = ["normal", "multiply", "add", "screen"];
  * a local `= 3` in both, citing the retired gpu/shaders.js MAX_HALF_KERNEL.
  */
 export const BLUR_SUPPORT_SIGMAS = 3;
+
+/**
+ * The SUPERSAMPLE / raster density — device px per output px for every hybrid
+ * RASTER region (a vector backend's blurred/effected sub-image, a rasterized
+ * LaTeX/PDF-page quad). ONE shared value so a PDF and an SVG of the same scene,
+ * and the GPU's LaTeX/PDF rasters, all embed EQUAL-resolution raster regions.
+ * 2 = the retina-dpr precedent (a 2× supersample reads crisp on a 1× display).
+ * Was duplicated as a local `= 2` in svg_backend (RASTER_SCALE), pdf_backend
+ * (rasterScale default), gpu/latex_raster (LATEX_RASTER_DENSITY) and pdf_page
+ * (PDF_RASTER_DENSITY) — those now import this.
+ */
+export const SUPERSAMPLE_DENSITY = 2;
+
+/**
+ * The shaped-lens re-render recursion cap: ONE level of true vector/supersample
+ * lens re-interpretation; a lens NESTED inside a lens's replay falls back to a
+ * raster embed (vector backends) / backdrop sampling (GPU + Skia). ONE shared
+ * value across every backend's lens handler — was triplicated as MAX_LENS_DEPTH
+ * (svg_backend, pdf_backend) and MAX_SUPERSAMPLE_DEPTH (skia paint_skia), each
+ * citing the GPU compositor's bound; they now import this.
+ */
+export const MAX_LENS_DEPTH = 1;
 
 /**
  * Pure function. The EFFECTS SUBSTRATE node (manifest Round 12D: "ALL FOUR

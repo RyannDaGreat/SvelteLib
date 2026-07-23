@@ -112,17 +112,16 @@
 
 import { reserveImageSlot, registerRasterizedBitmap } from "./image_registry.js";
 import { reportOnce } from "../../core/report.js";
+import { SUPERSAMPLE_DENSITY } from "../ir.js";
 
 /**
- * Device px per world unit at the equation's rendered em size — LINKED to
- * pdf_page.js PDF_RASTER_DENSITY / svg_backend.js RASTER_SCALE / pdf_backend.js
- * rasterScale (all 2, "the retina-dpr 2× supersample precedent"): the SAME
- * supersample factor every hybrid raster region in this codebase uses, so a
- * LaTeX raster region compares against GPU pixels at the same density as PDF
- * pages, blur, and bloom. Not a fresh guess — the shared raster-density
- * constant.
+ * Device px per world unit at the equation's rendered em size — the shared
+ * ir.js SUPERSAMPLE_DENSITY (2, "the retina-dpr 2× supersample precedent"): the
+ * SAME supersample factor every hybrid raster region in this codebase uses (PDF
+ * pages, blur, bloom, SVG raster regions), so a LaTeX raster region compares
+ * against GPU pixels at the same density.
  */
-export const LATEX_RASTER_DENSITY = 2;
+export const LATEX_RASTER_DENSITY = SUPERSAMPLE_DENSITY;
 
 /**
  * Scale is rounded to this step before entering the cache key so a continuous

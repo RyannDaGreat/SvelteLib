@@ -148,15 +148,21 @@ export function isUndecorated({ cornerRadius = 0, stroke = null, strokeWidth = 0
  * build time); it only needs to catch the common "invisible fill" spellings so
  * a transparent-filled widget stays on the fast no-decoration path.
  *
+ * A GRADIENT Paint (a tagged {type,...} object — Axis-1) always paints something,
+ * so it counts as a visible fill (a fully-transparent-stop gradient is a
+ * degenerate case not worth a deep scan here).
+ *
  * @example fillIsVisible(null) // false
  * @example fillIsVisible("#7aa2f7") // true
  * @example fillIsVisible("#00000000") // false
  * @example fillIsVisible([0.1, 0.2, 0.3, 0]) // false
  * @example fillIsVisible([0.1, 0.2, 0.3, 1]) // true
+ * @example fillIsVisible({type: "linearGradient", stops: [], from: {x: 0, y: 0}, to: {x: 1, y: 0}}) // true (a gradient paints)
  */
 export function fillIsVisible(fill) {
   if (fill == null) return false;
   if (Array.isArray(fill)) return (fill[3] ?? 1) > 0;
+  if (typeof fill === "object") return true; // a gradient (or other tagged Paint) paints
   if (typeof fill === "string") {
     const hex8 = fill.match(/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})$/);
     if (hex8) return parseInt(hex8[1], 16) > 0;

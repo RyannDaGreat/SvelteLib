@@ -40,20 +40,21 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH } from "../ir.js";
 import { getTextLayout } from "./text_layout.js";
+import { skShaderForPaint } from "./gradient.js";
 import * as T from "../../core/transform.js";
 
 const RAD2DEG = 180 / Math.PI;
 
-// Recursion caps mirror the WebGPU compositor's guards (gpu/compositor.js):
-// a lens NESTED inside a lens replay falls back to backdrop sampling
-// (MAX_SUPERSAMPLE_DEPTH), and crop/effect content re-renders are bounded
-// (they are unreachable for plugin-emitted documents — the deepest legit chain
-// is ~3 — but a pathological hand-built nesting is skipped loudly, not crashed).
-const MAX_SUPERSAMPLE_DEPTH = 1; // compositor.js:89
-const MAX_REENDER_DEPTH = 4;     // compositor.js:128 (crop)
-const MAX_EFFECT_DEPTH = 2;      // compositor.js:112
+// Recursion caps: a lens NESTED inside a lens replay falls back to backdrop
+// sampling at MAX_SUPERSAMPLE_DEPTH (= the shared ir.js MAX_LENS_DEPTH, the SAME
+// bound every backend uses); crop/effect content re-renders are separately
+// bounded (unreachable for plugin-emitted documents — the deepest legit chain is
+// ~3 — but a pathological hand-built nesting is skipped loudly, not crashed).
+const MAX_SUPERSAMPLE_DEPTH = MAX_LENS_DEPTH; // shared lens-depth cap (ir.js)
+const MAX_REENDER_DEPTH = 4;     // crop re-render nesting bound
+const MAX_EFFECT_DEPTH = 2;      // effect re-render nesting bound
 
 /**
  * Command (draws on `canvas`). Paints the IR `commands` through `view`
@@ -193,14 +194,16 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection) {
   switch (cmd.op) {
     case "rect": {
       const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
-      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity), (p) => canvas.drawRRect(rr, p));
-      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity), (p) => canvas.drawRRect(rr, p));
+      const bounds = { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
+      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawRRect(rr, p));
+      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawRRect(rr, p));
       break;
     }
     case "ellipse": {
       const oval = CanvasKit.LTRBRect(cmd.cx - cmd.rx, cmd.cy - cmd.ry, cmd.cx + cmd.rx, cmd.cy + cmd.ry);
-      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity), (p) => canvas.drawOval(oval, p));
-      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity), (p) => canvas.drawOval(oval, p));
+      const bounds = { x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry };
+      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawOval(oval, p));
+      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawOval(oval, p));
       break;
     }
     case "polyline": {
@@ -214,7 +217,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection) {
     }
     case "polygon": {
       const path = buildPath(CanvasKit, cmd.points, true);
-      withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity), (p) => canvas.drawPath(path, p));
+      withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, pointsBounds(cmd.points)), (p) => canvas.drawPath(path, p));
       path.delete();
       break;
     }
@@ -266,8 +269,11 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity) {
   const skPath = CanvasKit.Path.MakeFromSVGString(cmd.d);
   if (!skPath) throw new Error(`paintIR(skia): path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
   skPath.setFillType(cmd.fillRule === "evenodd" ? CanvasKit.FillType.EvenOdd : CanvasKit.FillType.Winding);
-  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity), (p) => canvas.drawPath(skPath, p));
-  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity), (p) => canvas.drawPath(skPath, p));
+  // Gradient objectBoundingBox = the path's own tight bounds (getBounds → [l,t,r,b]).
+  const gb = skPath.getBounds();
+  const bounds = { x: gb[0], y: gb[1], w: gb[2] - gb[0], h: gb[3] - gb[1] };
+  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawPath(skPath, p));
+  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawPath(skPath, p));
   skPath.delete();
 }
 
@@ -443,11 +449,12 @@ function lensClipPath(CanvasKit, cmd, deviceM) {
   return path;
 }
 
-/** Command (draws the lens rim/border in local space). Circle ⇒ rimColor/rimWidth; box ⇒ stroke/strokeWidth. */
+/** Command (draws the lens rim/border in local space). ONE stroke ring for both
+ * shapes — the collapsed stroke/strokeWidth bundle (ir.js folded the legacy rim). */
 function drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity) {
   const isBox = cmd.shape === "box";
-  const color = isBox ? cmd.stroke : cmd.rimColor;
-  const width = isBox ? cmd.strokeWidth : cmd.rimWidth;
+  const color = cmd.stroke;
+  const width = cmd.strokeWidth;
   if (!color || !(width > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
@@ -475,11 +482,12 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   const canvas = target.canvas;
   const opacity = cmd.opacity ?? 1;
   const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
+  const bounds = { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
 
   if (cmd.fill) {
     canvas.save();
     applyView(canvas, view, world);
-    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity), (p) => canvas.drawRRect(rr, p));
+    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawRRect(rr, p));
     canvas.restore();
   }
 
@@ -497,7 +505,7 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   if (cmd.stroke && cmd.strokeWidth > 0) {
     canvas.save();
     applyView(canvas, view, world);
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity), (p) => canvas.drawRRect(rr, p));
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawRRect(rr, p));
     canvas.restore();
   }
 }
@@ -629,28 +637,64 @@ function reportOnce(key, msg) {
   console.warn(msg);
 }
 
-/** Pure-ish helper. A filled Paint (opacity folded into alpha). Caller deletes. */
-function fillPaint(CanvasKit, rgba, opacity) {
+/** Helper. A filled Paint for a solid rgba OR a gradient Paint (opacity folded
+ * into alpha / stop alpha). A gradient needs the op's LOCAL `bounds` ({x,y,w,h})
+ * — the objectBoundingBox the gradient maps onto. Any gradient shader is stashed
+ * on the paint as `_gradientShader` so withPaint disposes it. Caller deletes. */
+function fillPaint(CanvasKit, paint, opacity, bounds = null) {
   const p = new CanvasKit.Paint();
-  p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
   p.setStyle(CanvasKit.PaintStyle.Fill);
   p.setAntiAlias(true);
+  applyPaint(CanvasKit, p, paint, opacity, bounds);
   return p;
 }
 
-/** Helper. A stroked Paint (opacity folded into alpha). Caller deletes. */
-function strokePaint(CanvasKit, rgba, width, opacity) {
+/** Helper. A stroked Paint for a solid rgba OR a gradient Paint. `bounds` frames
+ * a gradient stroke's objectBoundingBox (see fillPaint). Caller deletes. */
+function strokePaint(CanvasKit, paint, width, opacity, bounds = null) {
   const p = new CanvasKit.Paint();
-  p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
   p.setStyle(CanvasKit.PaintStyle.Stroke);
   p.setStrokeWidth(width);
   p.setAntiAlias(true);
+  applyPaint(CanvasKit, p, paint, opacity, bounds);
   return p;
 }
 
-/** Helper. Runs `draw` with `paint`, then deletes the paint (WASM cleanup). */
+/** Command (mutates `p`). Sets a solid color OR a gradient shader on a Paint. A
+ * gradient (isGradientPaint) requires `bounds`; its shader is stashed on the
+ * paint as `_gradientShader` for withPaint to dispose. A solid folds opacity into
+ * alpha (byte-identical to the old fillPaint/strokePaint). */
+function applyPaint(CanvasKit, p, paint, opacity, bounds) {
+  if (isGradientPaint(paint)) {
+    if (!bounds) throw new Error("paintIR(skia): a gradient paint needs the op's local bounds (internal invariant)");
+    const shader = skShaderForPaint(CanvasKit, paint, bounds, opacity);
+    p.setShader(shader);
+    p._gradientShader = shader;
+  } else {
+    p.setColor(CanvasKit.Color4f(paint[0], paint[1], paint[2], paint[3] * opacity));
+  }
+}
+
+/** Pure function. The LOCAL bbox {x,y,w,h} of a list of [x,y] points (a polygon's
+ * gradient objectBoundingBox frame). Empty input → a zero rect.
+ *
+ * @example pointsBounds([[0, 0], [10, 0], [5, 8]]) // {x: 0, y: 0, w: 10, h: 8}
+ */
+function pointsBounds(points) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, w: 0, h: 0 };
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/** Helper. Runs `draw` with `paint`, then deletes the paint AND any gradient
+ * shader it carries (WASM cleanup). */
 function withPaint(CanvasKit, paint, draw) {
   draw(paint);
+  if (paint._gradientShader) paint._gradientShader.delete();
   paint.delete();
 }
 
