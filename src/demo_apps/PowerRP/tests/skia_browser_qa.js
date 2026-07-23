@@ -60,6 +60,14 @@ async function clickByTitle(page, title) {
   const asserts = [];
   const assertRenders = (name, ok, detail) => asserts.push({ name, ok, detail });
 
+  // Capture export blobs (Wave 2 shape SVG-export check) — must be installed
+  // before navigation so the app's exportSvg() createObjectURL is hooked.
+  await page.evaluateOnNewDocument(() => {
+    window.__blobs = [];
+    const orig = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (b) => { window.__blobs.push(b); return orig(b); };
+  });
+
   await step("load", () => page.goto(URL, { waitUntil: "networkidle2", timeout: 60000 }));
   await new Promise((r) => setTimeout(r, 3500)); // Skia wasm + fonts + first paint
   for (const tool of ["Add Rectangle", "Add Circle", "Add Text", "Add Arrow", "Add Magnifier", "Add Blur Layer", "Add Crop Box"]) {
@@ -105,6 +113,56 @@ async function clickByTitle(page, title) {
   }, sceneShot);
   assertRenders("image on editor canvas", media.canvas.magenta > 1000, `magenta ${media.canvas.magenta}/${media.canvas.px} px`);
   assertRenders("image in slide thumbnail", media.thumb.magenta > 50, `magenta ${media.thumb.magenta}/${media.thumb.px} px`);
+
+  // ── SHAPE (Wave 2): add a STAR via the new Shape-grid picker + prove it
+  // renders on the Skia canvas AND exports as a vector <path>. Opens the picker
+  // popover, clicks the Star tile (arms crosshair placement for a `shape` widget
+  // with preset "star"), then places it with a canvas drag near the view center.
+  await step("Add Shape (star via picker)", async () => {
+    await clickByTitle(page, "Add Shape");           // open the picker popover
+    await new Promise((r) => setTimeout(r, 250));
+    await clickByTitle(page, "Add Star");            // arm placement for the star preset
+    await new Promise((r) => setTimeout(r, 150));
+    // Placement gesture: drag a box near the canvas center (well inside the view).
+    const box = await page.evaluate(() => { const c = document.querySelector("canvas.scene"); const r = c.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+    const cx = box.x + box.w / 2, cy = box.y + box.h / 2;
+    await page.mouse.move(cx - 110, cy - 110); await page.mouse.down();
+    await page.mouse.move(cx + 110, cy + 110, { steps: 12 }); await page.mouse.up();
+    await new Promise((r) => setTimeout(r, 800));
+  });
+
+  // The picker armed the RIGHT preset + placement created a `shape` widget.
+  const shapeInfo = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const items = Object.values(app.state().items || {});
+    const shapes = items.filter((s) => s.type === "shape");
+    return { count: shapes.length, preset: shapes[0]?.shape };
+  });
+  assertRenders("shape widget created via picker (type=shape, preset=star)", shapeInfo.count >= 1 && shapeInfo.preset === "star", `count ${shapeInfo.count}, preset ${shapeInfo.preset}`);
+
+  // It renders on the Skia canvas: count the star's default purple fill
+  // (#bb9af7 = rgb(187,154,247)) — distinct from the magenta media above (g≈0).
+  const starShot = await (await page.$("canvas.scene")).screenshot({ encoding: "base64" });
+  const shapePx = await page.evaluate(async (shot) => {
+    const im = new Image(); im.src = "data:image/png;base64," + shot; await im.decode();
+    const c = document.createElement("canvas"); c.width = im.naturalWidth; c.height = im.naturalHeight;
+    const cx = c.getContext("2d"); cx.drawImage(im, 0, 0);
+    const d = cx.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] > 160 && d[i] < 215 && d[i + 1] > 125 && d[i + 1] < 185 && d[i + 2] > 225) n++;
+    return { purple: n, px: c.width * c.height };
+  }, starShot);
+  assertRenders("star shape renders on editor canvas", shapePx.purple > 500, `purple ${shapePx.purple}/${shapePx.px} px`);
+
+  // Vector EXPORT: the shape survives SVG export as a real <path> element.
+  await page.evaluate(async () => { await window.__powerrp_app.exportSvg(); });
+  await new Promise((r) => setTimeout(r, 900));
+  const shapeSvg = await page.evaluate(async () => {
+    const b = (window.__blobs || []).find((x) => (x.type || "").includes("svg"));
+    return b ? await b.text() : null;
+  });
+  if (shapeSvg) fs.writeFileSync(path.join(SHOTS, "qa_shape_export.svg"), shapeSvg);
+  assertRenders("SVG export of a shape contains <path", !!shapeSvg && /<path[\s>]/.test(shapeSvg), shapeSvg ? `${shapeSvg.length} bytes, <path ${/<path[\s>]/.test(shapeSvg)}` : "no SVG blob");
 
   await page.screenshot({ path: path.join(SHOTS, "qa_editor_all_widgets.png") });
   await step("Present (fullscreen)", () => clickByTitle(page, "Present (fullscreen)"));

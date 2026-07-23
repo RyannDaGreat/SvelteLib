@@ -7,6 +7,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import ShapePicker from "./ShapePicker.svelte";
 
   let { app } = $props();
 
@@ -63,6 +64,10 @@
         </button>
       </Tooltip>
     {/each}
+    <!-- The visual Shape-grid picker rides at the end of the INSERT group (the
+         Add buttons), beside Add Rectangle — another surfacing of the shape
+         plugin's placement, but a grid instead of a single command. -->
+    {#if gi === 0}<ShapePicker {app} />{/if}
   {/each}
   <span class="sep"></span>
   <!-- BOX SELECT (manifest Round 12B "Box select round 2": "A TOOLBAR BUTTON

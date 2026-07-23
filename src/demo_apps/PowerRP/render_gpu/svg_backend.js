@@ -196,6 +196,13 @@ export function vectorCommandToSVG(cmd, world, ctx) {
     case "polygon":
       return g(`<polygon points="${pointsAttr(cmd.points)}" fill="${rgbaToCss(cmd.fill)}"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
+    case "path":
+      // Generic vector path (Wave 2): the `d` string is already native SVG path
+      // syntax → emitted verbatim (xml-escaped). fill/stroke/opacity via the
+      // shared paintAttrs; fill-rule only when evenodd (nonzero is SVG's default).
+      if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
+      return g(`<path d="${xmlEscape(cmd.d)}" ${paintAttrs(cmd)}` +
+        (cmd.fillRule === "evenodd" ? ` fill-rule="evenodd"` : "") + `/>`);
     case "text":
       return g(textToSVG(cmd, ctx));
     case "image":

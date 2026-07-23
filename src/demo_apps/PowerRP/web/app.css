@@ -92,6 +92,11 @@
      column's LEFT edge so it aligns across every row (property + variable). Sized
      to the common labels; longer ones ("Magnification") ellipsis with a tooltip. */
   --a-kf-btn-w: 20px; /* one keyframe control button (16px icon + 2×--a-sp-1 pad) */
+  /* Shape-grid picker (Wave 2): one tile column width, its preview glyph size,
+     and the preview stroke weight (in the 100-unit shape viewBox — a light rim). */
+  --a-shape-tile: 60px;
+  --a-shape-tile-icon: 40px;
+  --a-shape-tile-stroke: 4;
   /* Trailing keyframe-controls column: fixes the value column's RIGHT edge so it
      aligns across every row, INCLUDING rows without controls (the Name row, the
      add row). Property rows carry 3 buttons (‹◆›); Variables rows carry 4 (‹◆›+✕),
@@ -547,6 +552,65 @@ body,
 
 .toolbar .spacer {
   flex: 1;
+}
+
+/* ── Shape-grid picker (Wave 2) ──────────────────────────────────────────────
+   A toolbar button that drops a grid popover of preset-shape tiles. The grid is
+   a floating surface (palette/dropdown convention): panel bg + hairline border +
+   the palette shadow. Tile previews inherit their color from --fg-dim so a shape
+   reads as neutral chrome; hover raises it to the selection accent, like every
+   other pickable control. */
+.shape-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.shape-picker-grid {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: var(--a-sp-2);
+  padding: var(--a-sp-3);
+  z-index: 3;
+  display: grid;
+  grid-template-columns: repeat(4, var(--a-shape-tile));
+  gap: var(--a-sp-2);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+  box-shadow: var(--a-palette-shadow);
+}
+
+.shape-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--a-sp-1);
+  width: var(--a-shape-tile);
+  padding: var(--a-sp-2);
+  background: transparent;
+  border: 0;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.shape-tile:hover {
+  background: var(--a-hover-bg);
+  color: var(--a-selection);
+}
+
+.shape-tile-svg {
+  width: var(--a-shape-tile-icon);
+  height: var(--a-shape-tile-icon);
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: var(--a-shape-tile-stroke);
+}
+
+.shape-tile-label {
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  text-align: center;
+  line-height: 1.1;
 }
 
 /* ── Canvas ──────────────────────────────────────────────────────────────── */

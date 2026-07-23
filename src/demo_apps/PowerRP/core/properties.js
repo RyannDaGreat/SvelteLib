@@ -43,6 +43,8 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
+import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
+
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
  * numeric rows — the seconds/time UNIT-KIND (manifest 14.6: "a time in seconds
@@ -128,6 +130,18 @@ export const PROPS = {
 
   // ── formatting: color (single-color widgets: camera background) ─────────────
   background: { label: "Background", kind: "color", category: "formatting", help: "The color painted behind everything in this camera's view — the slide's backdrop in exports and presentation." },
+
+  // ── shape: the PRESET-SHAPE selector + its adjustable knobs (Wave 2) ─────────
+  // Only the `shape` widget (plugins/shape.js) composes these — a single-consumer
+  // family that still lives in the registry so its rows/help/bounds are single-
+  // sourced like every other. `shape` is a select over the preset names (options
+  // + human labels single-sourced in core/shapes.js). `shapePoints` (star points
+  // / generic-polygon sides) and `shapeInnerRatio` (star inner-radius fraction)
+  // are the adjustable generator knobs; they have no effect on shapes that don't
+  // read them (heart, cloud, …) — harmless, like cornerRadius on a square rect.
+  shape: { label: "Shape", kind: "select", options: SHAPE_NAMES, optionLabels: SHAPE_LABELS, category: "formatting", default: "star", help: "Which preset silhouette this widget draws. All of them are one vector path, so shadow, glow and border apply the same as any other shape." },
+  shapePoints: { label: "Points / sides", kind: "number", min: 2, category: "formatting", default: 5, help: "How many points a star has, or sides a generic polygon has. Ignored by shapes with a fixed outline (heart, cloud, arrows, …)." },
+  shapeInnerRatio: { label: "Inner ratio", kind: "number", min: 0, max: 1, category: "formatting", default: 0.5, help: "For a star, how deep the notches cut: the inner radius as a fraction of the outer. Smaller is spikier. Ignored by non-star shapes." },
 
   // ── time: the SECONDS unit-kind (manifest 14.6) ─────────────────────────────
   // A duration in seconds. Its `scrub` (SECONDS_SCRUB, ~0.01 s/px) is the SANE
@@ -302,6 +316,9 @@ export const BUNDLES = {
   // exclusions justified in its header). Defaults are effect-OFF; use
   // bundleNestedDefaults("effects") in plugin defaults (the keys are nested).
   effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode"],
+  // THE PRESET-SHAPE bundle (Wave 2): the shape selector + its two generator
+  // knobs, composed only by plugins/shape.js. Order = Inspector row order.
+  shape: ["shape", "shapePoints", "shapeInnerRatio"],
   // THE PARTICLE EMITTER BUNDLE (manifest 13.5): the sparkler's emission
   // parameters, all equation-capable numbers read by the pure simulation
   // (core/particles.js). Composed only by plugins/particles.js (the sole

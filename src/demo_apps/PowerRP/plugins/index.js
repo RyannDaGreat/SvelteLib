@@ -4,6 +4,7 @@
  */
 
 import { rectPlugin } from "./rect.js";
+import { shapePlugin } from "./shape.js";
 import { circlePlugin } from "./circle.js";
 import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
@@ -25,7 +26,7 @@ import { pdfPagePlugin } from "./pdf_page.js";
 import { particlesPlugin } from "./particles.js";
 import { latexPlugin } from "./latex.js";
 
-export const allPlugins = [rectPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

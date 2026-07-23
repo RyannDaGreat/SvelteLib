@@ -905,6 +905,19 @@ function emitVector(cmd, world, out, ctx) {
       ops.push(pointsPath(cmd.points), "h f");
       break;
     }
+    case "path": {
+      // Generic vector path (Wave 2): the `d` string → PDF path operators via
+      // the existing svgPathToPdfOps (m/l/c; Q/T elevated to cubic). fill/stroke
+      // setup is the shared paintSetup; the paint operator gets its even-odd
+      // variant (f*/B*) when the fill rule asks for it (nonzero is the default).
+      if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return;
+      ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
+      ops.push(svgPathToPdfOps(cmd.d));
+      let po = paintOp(cmd.fill, cmd.stroke, cmd.strokeWidth);
+      if (cmd.fillRule === "evenodd" && (po === "f" || po === "B")) po += "*";
+      ops.push(po);
+      break;
+    }
     case "text": {
       if (cmd.rich && ctx.measureText) {
         // RICH TEXT: run the SHARED pure layout (core/richtext) with the PDF's

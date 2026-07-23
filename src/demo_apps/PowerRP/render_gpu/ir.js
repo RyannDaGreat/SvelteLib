@@ -318,6 +318,45 @@ export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx 
 }
 
 /**
+ * Pure function. Generic VECTOR PATH command (Wave 2 — unified path shapes). `d`
+ * is an SVG path-data string in the CURRENT LOCAL SPACE (same frame as rect/
+ * ellipse geometry); the transform stack maps it to world like every other op.
+ * The ONE op behind the preset-shape library (core/shapes.js) and any future
+ * arbitrary-path widget: paint_skia rasterizes it with CanvasKit.Path.
+ * MakeFromSVGString (the proven latexVector path), svg_backend emits a native
+ * `<path d>`, pdf_backend converts it through the existing svgPathToPdfOps. Fill
+ * and stroke are independent (either may be null); `fillRule` picks the winding
+ * rule for self-intersecting/holed paths ("nonzero" like a normal filled shape,
+ * "evenodd" for star/donut-style holes). Shadow/glow/border come FREE — a path
+ * widget wraps in applyEffects exactly like rect, and effects operate on the
+ * rendered silhouette.
+ *
+ * Args:
+ *   d (string): SVG path data (M L H V C S Q T Z … abs+rel), non-empty
+ *   fill (string|number[]|null): fill color, or null for no fill
+ *   stroke (string|number[]|null): stroke color, or null for no stroke
+ *   strokeWidth (number): stroke width in local units (0 ⇒ no stroke)
+ *   fillRule ("nonzero"|"evenodd"): winding rule for the fill
+ *   opacity (number): per-item group opacity
+ *
+ * @example path({d: "M0 0L10 0L5 8Z", fill: "#f00"}).op // "path"
+ * @example path({d: "M0 0L10 0L5 8Z", fill: "#f00"}).fill // [1, 0, 0, 1]
+ * @example path({d: "M0 0h10v10h-10z", fill: "#000", fillRule: "evenodd"}).fillRule // "evenodd"
+ * @example path({d: "M0 0L10 0", stroke: "#000", strokeWidth: 2}).fill // null
+ */
+export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule = "nonzero", opacity = 1 }) {
+  if (typeof d !== "string" || d.trim() === "") throw new Error(`path: "d" must be a non-empty SVG path string, got ${JSON.stringify(d)}`);
+  if (fillRule !== "nonzero" && fillRule !== "evenodd") throw new Error(`path: "fillRule" must be "nonzero" or "evenodd", got ${JSON.stringify(fillRule)}`);
+  requireFinite("path", { strokeWidth, opacity });
+  return {
+    op: "path", d, fillRule,
+    fill: fill === null ? null : parseColor(fill),
+    stroke: stroke === null ? null : parseColor(stroke),
+    strokeWidth, opacity,
+  };
+}
+
+/**
  * Pure function. Normalizes a source UV rect (sx, sy, sw, sh) to a
  * {sx, sy, sw, sh} object clamped into the unit square: origins to [0,1],
  * extents to [0, 1−origin] (so the rect can't spill past the texture). An empty
@@ -584,4 +623,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "cropSubtree", "effectSubtree"];

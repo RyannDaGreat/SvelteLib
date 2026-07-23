@@ -207,6 +207,9 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, typefaces) {
       path.delete();
       break;
     }
+    case "path":
+      drawPathOp(CanvasKit, canvas, cmd, opacity);
+      break;
     case "text": {
       // Phase 1a: single run only. A rich op degrades to its plain-text
       // fallback (never a silent blank); rich layout is a separate Phase 1b slice.
@@ -245,6 +248,24 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, typefaces) {
     default:
       throw new Error(`paintIR(skia): unknown op "${cmd.op}"`);
   }
+}
+
+/**
+ * Command (draws one generic vector-path op — Wave 2). Parses `d` (local-space
+ * SVG path) via CanvasKit.Path.MakeFromSVGString (the proven latexVector path),
+ * sets the winding rule for the fill (Winding == nonzero, the SkPath default;
+ * EvenOdd for holed/star fills), then fills and/or strokes with the SAME shared
+ * paint helpers as rect/ellipse (opacity folded into each paint's alpha). The
+ * op is transform-applied by the caller, so `d` draws in the current local
+ * space with no extra matrix here.
+ */
+function drawPathOp(CanvasKit, canvas, cmd, opacity) {
+  const skPath = CanvasKit.Path.MakeFromSVGString(cmd.d);
+  if (!skPath) throw new Error(`paintIR(skia): path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
+  skPath.setFillType(cmd.fillRule === "evenodd" ? CanvasKit.FillType.EvenOdd : CanvasKit.FillType.Winding);
+  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity), (p) => canvas.drawPath(skPath, p));
+  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity), (p) => canvas.drawPath(skPath, p));
+  skPath.delete();
 }
 
 /**
