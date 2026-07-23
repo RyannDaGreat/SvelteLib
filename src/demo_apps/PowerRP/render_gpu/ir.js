@@ -1,11 +1,12 @@
 /**
  * The draw-command IR — PowerRP's device-independent display list.
  *
- * THE SEAM of the two-render-mode architecture (manifest: RENDER MODES
- * DECISION): widgets emit these commands instead of painting a canvas2D ctx;
- * the WebGPU backend (gpu/compositor.js) rasterizes them, the vector backend
- * (svg_backend.js, future PDF) serializes them. The camera region is just the
- * `view` every backend maps world space through — no backend owns the camera.
+ * THE SEAM of the renderer architecture: widgets emit these commands instead of
+ * painting a ctx directly; the Skia backend (render_gpu/skia/paint_skia.js, on
+ * WebGL2 in the browser and a CPU surface in Node/CLI) rasterizes them, and the
+ * vector backends (svg_backend.js, pdf_backend.js) serialize them. The camera
+ * region is just the `view` every backend maps world space through — no backend
+ * owns the camera.
  *
  * This module is DOM-free pure JS (bare-node testable, like core/).
  *
