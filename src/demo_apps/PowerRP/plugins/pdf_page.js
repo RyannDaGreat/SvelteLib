@@ -25,10 +25,19 @@
  * getImage, and both backends' generic string-ref image-byte loaders), so
  * this widget needs ZERO new backend code. See pdf_page_raster.js's header
  * for the full reasoning (the manifest's "raster embed acceptable for v1,
- * the hybrid rule precedent" — a PDF-exported pdf_page widget is a raster
- * PNG region among the vector page content, exactly like the effects bundle's
- * hybrid raster regions; a future VECTOR re-embed of the source page is
- * FLAGGED future work in that module's footer, not built here).
+ * the hybrid rule precedent").
+ *
+ * ── VECTOR RE-EMBED (PDF P1 — the latexVector dual pattern) ───────────────────
+ * On top of that raster fallback, a placed page whose source content is pure
+ * vector graphics now ALSO renders as real vector: emit() prefers a stored
+ * sub-list of `path` IR ops (extracted once via render_gpu/gpu/pdf_page_vector.js
+ * from pdf.js's operator list, mapped by the pure render_gpu/pdf_vector.js) so a
+ * diagram/chart/figure is crisp at any zoom and exports as true vector to SVG/PDF
+ * — while the whole-page raster stays the ALWAYS-available fallback (async
+ * not-ready, or a page that must raster: text is P2, embedded-image raster-
+ * islands are P3, plus shadings/clips/blends/CMYK per classifyPdfPage). Still no
+ * new IR op and ZERO new backend code — a PDF page's vector content is just the
+ * existing `path` op, which all backends already render (core/shapes.js).
  *
  * ── RASTERIZATION SCALE (render at the DISPLAYED pixel density) ──────────────
  * emit() is a pure function of state with no viewport/dpr context (the same
@@ -90,6 +99,7 @@ import {
   ensurePdfDoc, ensurePdfPagePointSize, ensurePdfPageRasterized,
   pdfPageCount, pdfPagePointSize, pdfPageRef, clampPage,
 } from "../render_gpu/gpu/pdf_page_raster.js";
+import { ensurePdfPageVector, pdfPageVectorIRFor } from "../render_gpu/gpu/pdf_page_vector.js";
 
 /** Device px per world (canvas) unit at this widget's OWN world-space size —
  * LINKED to render_gpu/svg_backend.js RASTER_SCALE / pdf_backend.js's
@@ -212,14 +222,30 @@ export const pdfPagePlugin = {
     // reasonable first guess (US Letter/A4 are both ~1:1.3 world-unit-ish at
     // density 1) that self-corrects the instant pdfPagePointSize resolves.
     const scale = point && point.w > 0 ? (c.w * density) / point.w : density;
-    ensurePdfPageRasterized(s.src, page, scale); // idempotent; safe every emit()
+    ensurePdfPageRasterized(s.src, page, scale); // raster FALLBACK — always kept available (the dual vector/raster pattern)
+    ensurePdfPageVector(s.src, page); // VECTOR ingest (extract op list + classify; async, idempotent, safe every emit)
     const ref = pdfPageRef(s.src, page, scale);
 
     const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
-    const quad = image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+    // TRUE VECTOR (PDF P1 — the latexVector dual pattern): once the page has been
+    // extracted AND classified vector-safe (render_gpu/pdf_vector.classifyPdfPage),
+    // emit its `path` ops mapped into the box — crisp at any zoom, real vector in
+    // SVG/PDF export. Fall back to the raster image() quad (which honors the source
+    // sub-rect + opacity) when: the vector isn't ready yet (async — draw the raster
+    // meanwhile, never a blank), the page must raster (text/image/shading/clip/
+    // blend/… per classifyPdfPage), OR a crop inset / group opacity < 1 can't be
+    // faithfully represented as solid vector paths (rasterizing honors sx/sy/sw/sh
+    // and fades the page as one — the same "what can't cleanly vectorize,
+    // rasterize" hybrid rule latex.js uses for a cropped/partial equation).
+    const cropped = c.sw < 1 || c.sh < 1 || c.sx > 0 || c.sy > 0;
+    const opaque = (s.opacity ?? 1) >= 1;
+    const vectorOps = cropped || !opaque ? null : pdfPageVectorIRFor(s.src, page, { x: c.x, y: c.y, w: c.w, h: c.h });
+    const content = vectorOps
+      ? vectorOps
+      : [image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh })];
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED page, border included.
-    return applyEffects(decorateStrokedBox([quad], style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });
+    return applyEffects(decorateStrokedBox(content, style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
