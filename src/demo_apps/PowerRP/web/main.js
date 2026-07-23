@@ -18,53 +18,42 @@ import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
-import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+import { rasterizeIrPng } from "./gpuService.js";
 import { cameraFrameIR } from "./cameraFrame.js";
 
 /**
- * Headless render hook for cli/render.js (puppeteer awaits the promise):
- * renders one frame of a document at (slide, alpha) to width×height and
- * returns a PNG data URL. WebGPU is THE raster renderer (manifest "RENDER
- * MODES DECISION"); readback goes through GpuCompositor.readPixels — the
- * reliable path (FINDINGS: drawImage from a WebGPU canvas is not dependable
- * post-present).
+ * Browser render hook (a few in-browser pixel-parity probes await it via
+ * puppeteer): renders one frame of a document at (slide, alpha) to width×height
+ * and returns a PNG data URL — now through the Skia OFFSCREEN rasterizer
+ * (gpuService.rasterizeIrPng), so it is WebGPU-free like the rest of the app.
+ * The headless CLI no longer uses this hook (cli/render.js renders in Node via
+ * canvaskit); it remains only for in-browser probe parity.
  */
 window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width = 1280, height = 720 } = {}) {
-  await fontsLoaded; // committed fonts must be loaded before the atlas rasterizes text (CLI path too)
+  await fontsLoaded;
   const registry = createRegistry();
   registerAll(registry, createCommands());
   // EXACTLY the editor's load-boundary repair — the SAME repairedDocument the
-  // app's repaired() runs (orphans→renames→fps-strip→fill→duration→camera→
-  // bindings), so the CLI and editor can never drift. The cruft audit caught
-  // this pair drifting: the CLI used to MISS the meta.fps strip. Reports are
-  // console.errored (silent repairs are forbidden).
+  // app runs — so probe and editor can never drift (silent repairs forbidden).
   const raw = typeof docJson === "string" ? deserialize(docJson) : docJson;
   const { doc, reports } = repairedDocument(raw, registry);
   printRepairReports(reports);
-  // The one pipeline: fold → EVALUATE (equations become numbers) → derive → emit.
+  // fold → EVALUATE → derive → emit the SAME camera-frame IR the pixel service
+  // and editor thumbnails build, then rasterize it through Skia offscreen.
   const state = evaluateState(foldState(doc, slide, alpha), registry).state;
-  // The view is THE CAMERA's bbox at this (slide, alpha); its background
-  // clears the frame, letterbox edges included.
   const rect = cameraRect(state, doc.meta);
   const view = fitRectView(rect, width, height, 1);
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const gpu = await GpuCompositor.create(canvas);
-  // The SAME camera-frame IR the pixel service builds (cameraFrameIR: bg rect +
-  // scene) — so the CLI and the editor's thumbnails/export emit byte-identical
-  // frames. The bg rect is redundant with the clear here (fitRectView fills the
-  // canvas), so pixels are unchanged; parseColor returns render()'s float space.
-  gpu.render(cameraFrameIR(state, doc.meta, registry), view, { background: parseColor(rect.background) });
-  const px = await gpu.readPixels(0, 0, width, height);
-  // Encode via a plain 2D canvas fed the GPU pixels — an encode surface for
-  // toDataURL, not a render mode.
-  const out = document.createElement("canvas");
-  out.width = width;
-  out.height = height;
-  out.getContext("2d").putImageData(new ImageData(px, width, height), 0, 0);
-  return out.toDataURL("image/png");
+  const png = await rasterizeIrPng(cameraFrameIR(state, doc.meta, registry), view, width, height, parseColor(rect.background));
+  return pngBytesToDataUrl(png);
 };
+
+/** Pure function. PNG bytes → a data: URL (chunked base64 so large frames don't blow the call stack). */
+function pngBytesToDataUrl(bytes) {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  return "data:image/png;base64," + btoa(bin);
+}
 
 // `?cli=1` skips mounting the editor UI — the page then exists only to host
 // __powerrp_render for the CLI (faster, and headless-safe).

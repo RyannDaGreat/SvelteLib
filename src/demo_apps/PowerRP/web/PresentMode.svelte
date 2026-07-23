@@ -19,7 +19,7 @@
   import { fitRectView, canSkipNode } from "../core/view.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
-  import { GpuCompositor } from "../render_gpu/gpu/compositor.js";
+  import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
   import { assetUrl } from "./projectApi.js";
@@ -256,19 +256,19 @@
       if (!document.fullscreenElement) exit();
     };
     document.addEventListener("fullscreenchange", onFsChange);
-    // THE renderer, async init: frames before the device is ready are skipped
-    // (black); failure is LOUD — no canvas2D fallback by decree.
-    GpuCompositor.create(canvasEl)
+    // THE renderer (Skia/WebGL2), async init: frames before the surface is ready
+    // are skipped (black); failure is LOUD and exits present mode.
+    SkiaSurface.create(canvasEl)
       .then((g) => {
         gpu = g;
         paint();
-        // The initial goTo fired onFrame BEFORE the device existed (paint was a
+        // The initial goTo fired onFrame BEFORE the surface existed (paint was a
         // no-op then); re-sync now so a first slide that holds an animated
-        // widget starts its continuous render as soon as the GPU is up.
+        // widget starts its continuous render as soon as the renderer is up.
         syncIdleAnimation();
       })
       .catch((e) => {
-        console.error("PowerRP: WebGPU init failed in present mode:", e);
+        console.error("PowerRP: Skia/WebGL init failed in present mode:", e);
         exit();
         throw e;
       });
