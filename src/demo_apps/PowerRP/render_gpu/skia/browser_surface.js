@@ -77,9 +77,12 @@ export class SkiaSurface {
     if (!this.surface) return; // collapsed pane (zero-size canvas) — nothing to draw
     const canvas = this.surface.getCanvas();
     const built = media == null ? sceneMedia(this.CanvasKit, ir) : { media, release() {} };
-    paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, typefaces: this.typefaces, scissor });
-    this.surface.flush();
-    built.release(); // free per-paint video frame Images now the draw is submitted
+    try {
+      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, typefaces: this.typefaces, scissor });
+      this.surface.flush();
+    } finally {
+      built.release(); // free per-paint video frame Images even if paint throws (review MED)
+    }
   }
 
   /** Command. Frees WASM/GPU resources. */

@@ -332,7 +332,10 @@ export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx 
  * rendered silhouette.
  *
  * Args:
- *   d (string): SVG path data (M L H V C S Q T Z … abs+rel), non-empty
+ *   d (string): SVG path data, non-empty. PDF-export-safe subset: M L H V C Q T Z
+ *     (abs+rel). NOTE: S (smooth-cubic) and A (arc) rasterize in Skia + emit in
+ *     SVG, but pdf_backend's svgPathToPdfOps rejects them — a path intended for
+ *     PDF export must avoid S/A (every core/shapes.js preset does).
  *   fill (string|number[]|null): fill color, or null for no fill
  *   stroke (string|number[]|null): stroke color, or null for no stroke
  *   strokeWidth (number): stroke width in local units (0 ⇒ no stroke)

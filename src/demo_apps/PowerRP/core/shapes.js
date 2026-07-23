@@ -113,13 +113,17 @@ export function ellipsePoints(w, h, count, startAngle = TOP_UP) {
 /**
  * Pure function. A regular polygon inscribed in the bbox, pointing up.
  * sides 3 = triangle, 5 = pentagon, 6 = hexagon, 8 = octagon, …
+ * `sides` is rounded and clamped UP to 3 — fewer is not a polygon, and throwing
+ * inside a widget's emit() would blank the whole canvas (review HIGH: the shared
+ * shapePoints inspector row floors at 2 for star, which reaches this generator).
  *
  * @example regularPolygonPathD(100, 100, 4) // "M50 0 L100 50 L50 100 L0 50 Z"
  * @example regularPolygonPathD(100, 100, 3).split("L").length // 3
+ * @example regularPolygonPathD(100, 100, 2).split("L").length // 3 (clamped up to a triangle)
  */
 export function regularPolygonPathD(w, h, sides) {
-  if (!(sides >= 3)) throw new Error(`regularPolygonPathD: need >= 3 sides, got ${sides}`);
-  return polygonPathD(ellipsePoints(w, h, Math.round(sides)));
+  const n = Math.max(3, Math.round(sides));
+  return polygonPathD(ellipsePoints(w, h, n));
 }
 
 /**
