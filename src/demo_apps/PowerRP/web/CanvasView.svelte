@@ -19,6 +19,7 @@
   import { worldViewRect, canSkipNode } from "../core/view.js";
   import { selectInBox, rectFromCorners } from "../core/bandselect.js";
   import { sceneIR } from "../render_gpu/ports.js";
+  import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
   import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
@@ -287,9 +288,22 @@
     // outside the camera bbox the transparent clear keeps the app background
     // visible, exactly like the old clearRect + canvas2D path.
     const camRect = cameraRect(state, app.doc.meta);
+    // PDF DISPLAY RE-RASTER (manifest RENDER PIVOT): before building the IR,
+    // ensure every visible PDF page's ON-SCREEN region is rasterized at THIS
+    // zoom (crisp at any magnification, cost bounded by the viewport). Returns
+    // the per-item display descriptor map sceneIR threads into pdf_page emit();
+    // the region raster registers into the image registry, so onImageLoad
+    // (imageEpoch, above) already wakes the repaint when it lands.
+    // `window.__powerrp_noPdfReraster` is a dev/test seam (mirrors
+    // window.__powerrp_app): when set, the re-raster is skipped so a probe can
+    // capture the OLD whole-page-raster look for a before/after comparison. It
+    // has ZERO effect in production (nothing sets it).
+    const pdfDisplay = window.__powerrp_noPdfReraster
+      ? null
+      : preRasterizePdfPages(nodes, view, canvasEl.width, canvasEl.height);
     const ir = [
       rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: parseColor(camRect.background) }),
-      ...sceneIR(nodes),
+      ...sceneIR(nodes, { pdfDisplay }),
     ];
     gpu.render(ir, view, { background: [0, 0, 0, 0] });
     app.renderFrameCount += 1;

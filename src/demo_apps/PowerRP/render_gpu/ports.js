@@ -60,8 +60,22 @@ export function videoIR(s) {
  * transform math needed, and no risk of double-composing against the box's
  * own transform).
  *
+ * RENDER-TIME DISPLAY CONTEXT (manifest RENDER PIVOT 2026-07-23): a display
+ * surface that knows the live view (CanvasView, PresentMode) may pass
+ * `pdfDisplay` — a Map<itemId, descriptor> built by the PDF re-raster pre-pass
+ * (render_gpu/pdf_display.preRasterizePdfPages). sceneIR looks up THIS node's
+ * descriptor and hands it to emit() as a 4th argument (a per-node render
+ * context `{pdfDisplay}`). This is the ONLY view-derived data emit ever sees,
+ * and only pdf_page reads it (to draw the crisp visible-region raster instead of
+ * a whole-page bitmap); every other plugin ignores the 4th arg. Surfaces with no
+ * pre-pass (export, thumbnails, CLI, tests) pass nothing → emit takes its
+ * camera-free fallback (vector for export, whole-page raster otherwise). emit
+ * stays PURE (same args → same output); the map is a plain argument, never a
+ * global the walker reaches into.
+ *
  * Args:
  *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
+ *   ctx ({pdfDisplay?: Map}): optional render-time display context (see above)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
@@ -69,13 +83,15 @@ export function videoIR(s) {
  * @example // sceneIR(deriveRenderTree(evaluateState(state, registry).state, registry)) → [pushTransform, rect, popTransform, ...]
  * @example sceneIR([]) // []
  */
-export function sceneIR(nodes) {
+export function sceneIR(nodes, ctx = {}) {
+  const pdfDisplay = ctx.pdfDisplay ?? null;
   const out = [];
   for (const node of nodes) {
     if (!node.plugin?.emit) throw new Error(`sceneIR: plugin "${node.type}" has no emit()`);
     const targetWorldIR = node.type === "cropbox" && node.cropTarget
       ? [pushTransform(node.cropTarget.world), ...node.cropTarget.plugin.emit(node.cropTarget.state), popTransform()]
       : null;
+    const renderCtx = pdfDisplay ? { pdfDisplay: pdfDisplay.get(node.itemId) ?? null } : null;
     // emit() gets the node's ABSOLUTE world as a 3rd argument (the SHARED
     // STROKED-BOX BUNDLE seam — manifest "SHARED STYLE BUNDLES"): a box-like
     // media widget (image/video/filmstrip) decorates its content with a
@@ -87,7 +103,7 @@ export function sceneIR(nodes) {
     // carries pushTransform(node.cropTarget.world), never the box's own wrap).
     // Every plugin that doesn't decorate simply ignores this argument (they
     // destructure only `state`); cropbox uses arg 2 and ignores arg 3.
-    const cmds = node.plugin.emit(node.state, targetWorldIR, node.world);
+    const cmds = node.plugin.emit(node.state, targetWorldIR, node.world, renderCtx);
     if (cmds.length === 0) continue;
     out.push(pushTransform(node.world), ...cmds, popTransform());
   }

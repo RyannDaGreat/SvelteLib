@@ -367,6 +367,12 @@
   {@const itemMode = keyframes && !disabled}
   {@const pathText = pathTooltipText(pathState ?? state, itemId, row.key)}
   {@const helpText = row.help ?? null}
+  <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
+       FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
+       current src), not just a static number. Resolved here so the numeric field
+       still receives a plain number; `null` = unbounded. Static numbers pass
+       through unchanged. Extend to `min` the same way if a widget ever needs it. -->
+  {@const resolvedMax = typeof row.max === "function" ? row.max(state) : (row.max ?? null)}
   <div class="row" class:row-disabled={disabled}>
     <!-- Row-label hover chrome: PATH tooltip on the LABEL (never a label echo
          — banned) + two LEFT-side hover-only icons (round-11 field-chrome
@@ -433,7 +439,7 @@
           path={["items", pickedItemId, ...row.key.split(".")]}
           label={row.label}
           min={row.min ?? null}
-          max={row.max ?? null}
+          max={resolvedMax}
           display={row.display ?? null}
           scrub={row.scrub ?? null}
         />
@@ -458,7 +464,7 @@
             label={row.label}
             value={Number(valueAt(state, row.key) ?? 0)}
             min={row.min ?? null}
-            max={row.max ?? null}
+            max={resolvedMax}
             coefficient={row.scrub ?? 1}
             oninput={(n) => onpreview(row.key, row.kind, n)}
             onchange={(n) => oncommit(row.key, row.kind, n)}

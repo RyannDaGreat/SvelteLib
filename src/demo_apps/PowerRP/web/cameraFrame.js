@@ -12,14 +12,16 @@
  * cycle. This is the lowest layer that already imports fold + evaluate + IR.
  *
  * CONSUMERS NOW: web/gpuService.js (renderCameraFrame — thumbnails/export/PNG,
- * and the camera-rebased minimap via CanvasView) and web/main.js (the CLI hook)
- * — the ones the cruft-batch task scoped, whose outputs are asserted identical.
+ * and the camera-rebased minimap via CanvasView), web/main.js (the CLI hook),
+ * web/PresentMode.svelte (cameraFrameIR for the tween/instant GPU frame), and
+ * web/SlideNav.svelte + web/App.svelte (cameraRectAt) — outputs asserted
+ * identical to the hand-assembled idioms they replaced.
  *
- * TODO (flagged, out of this task's fence — contested files): CanvasView.svelte
- * and PresentMode.svelte hand-assemble the SAME bg-rect + sceneIR recipe (their
- * own idioms, with culling in CanvasView's case — cameraFrameIR already accepts
- * cullRect for exactly that). Swap them onto cameraFrameIR when their owners
- * (Opus26 / the CanvasView regions) are free, to retire the last copies.
+ * TODO (flagged, out of this task's fence — contested file): CanvasView.svelte
+ * still hand-assembles the SAME bg-rect + sceneIR recipe (its own idiom, with
+ * culling — cameraFrameIR already accepts cullRect for exactly that). Swap it
+ * onto cameraFrameIR when its owner (the CanvasView regions) is free, to retire
+ * the last copy.
  */
 
 import { foldState } from "../core/document.js";
@@ -27,12 +29,32 @@ import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { evaluateState } from "../core/expressions.js";
 import { canSkipNode } from "../core/view.js";
 import { sceneIR } from "../render_gpu/ports.js";
+import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
 import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
 
 /**
+ * Query (memoized fold + evaluate). THE evaluated folded state for
+ * (doc, slide, alpha): folds the slide deltas then evaluates every equation, so
+ * all properties are plain numbers. The ONE home for the
+ * `evaluateState(foldState(...)).state` idiom the pixel consumers, the
+ * presenter, and the CLI hook all repeat.
+ *
+ * @param {object} doc PowerRP document.
+ * @param {number} slideIndex Slide index.
+ * @param {number} alpha Tween alpha (default 1).
+ * @param {object} registry Plugin registry (for equation evaluation).
+ * @returns {object} Evaluated folded state ({items, vars} with numbers).
+ *
+ * @example // evaluatedStateAt(newDocument(), 0, 1, registry) // {items:{...}, vars:{...}}
+ */
+export function evaluatedStateAt(doc, slideIndex, alpha, registry) {
+  return evaluateState(foldState(doc, slideIndex, alpha), registry).state;
+}
+
+/**
  * Query (memoized fold + evaluate). THE camera rect for (doc, slide, alpha):
- * folds the state, evaluates its equations (the camera's own x/y/w/h/background
- * may be equations), and reads cameraRect. The ONE home for the
+ * evaluates the folded state (the camera's own x/y/w/h/background may be
+ * equations) and reads cameraRect. The ONE home for the
  * `cameraRect(evaluateState(foldState(...)).state, meta)` idiom.
  *
  * @param {object} doc PowerRP document.
@@ -44,12 +66,13 @@ import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
  * @example // cameraRectAt(newDocument(), 0, 1, registry) // {x:0, y:0, w:1280, h:720, background:"#ffffff"}
  */
 export function cameraRectAt(doc, slideIndex, alpha, registry) {
-  const state = evaluateState(foldState(doc, slideIndex, alpha), registry).state;
-  return cameraRect(state, doc.meta);
+  return cameraRect(evaluatedStateAt(doc, slideIndex, alpha, registry), doc.meta);
 }
 
 /**
- * Pure function. THE display-list for one camera frame of an EVALUATED state:
+ * Near-pure function (may idempotently kick async PDF region rasters when a live
+ * view is supplied; the returned IR is a deterministic function of the inputs +
+ * registry state). THE display-list for one camera frame of an EVALUATED state:
  * the camera's background as the first world-space rect (covers exactly the
  * camera rect — so an arbitrary view, like the minimap's, still paints the
  * camera region even where the frame's clear is transparent), followed by the
@@ -57,20 +80,31 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  * (world-space AABB) via the standard culling protocol; omit `cullRect` to
  * emit every node (the thumbnail/export/minimap consumers don't cull today).
  *
+ * PDF DISPLAY RE-RASTER (manifest RENDER PIVOT): when a caller that knows the
+ * live view passes `view` + `viewW/viewH` (device px), this runs the PDF
+ * re-raster pre-pass (render_gpu/pdf_display) so placed PDF pages are crisp at
+ * the current zoom, and threads the descriptor map into sceneIR. Consumers with
+ * NO view (thumbnails, CLI, PNG/SVG/PDF export) omit it → the whole-page raster
+ * / vector-export fallback, exactly as before (byte-identical to the pre-pivot
+ * output for those paths).
+ *
  * @param {object} state EVALUATED folded state (equations already numbers).
  * @param {object} meta doc.meta ({slideW, slideH}) — the camera-rect fallback.
  * @param {object} registry Plugin registry.
- * @param {{cullRect?: object}} [opts] Optional world-space cull rect.
+ * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number}} [opts]
+ *   Optional world-space cull rect + live view (view + device-px canvas size) to
+ *   drive the PDF display re-raster.
  * @returns {Array} IR command list: [cameraBgRect, ...sceneIR(nodes)].
  *
  * @example // cameraFrameIR(evaluatedState, {slideW:1280,slideH:720}, registry) // [rectCmd(bg), ...scene]
  */
-export function cameraFrameIR(state, meta, registry, { cullRect = null } = {}) {
+export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0 } = {}) {
   const rect = cameraRect(state, meta);
   let nodes = deriveRenderTree(state, registry);
   if (cullRect) nodes = nodes.filter((n) => !canSkipNode(n, cullRect));
+  const pdfDisplay = view && viewW > 0 && viewH > 0 ? preRasterizePdfPages(nodes, view, viewW, viewH) : null;
   return [
     rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: parseColor(rect.background) }),
-    ...sceneIR(nodes),
+    ...sceneIR(nodes, { pdfDisplay }),
   ];
 }

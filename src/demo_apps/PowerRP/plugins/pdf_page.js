@@ -27,34 +27,32 @@
  * for the full reasoning (the manifest's "raster embed acceptable for v1,
  * the hybrid rule precedent").
  *
- * ── VECTOR RE-EMBED (PDF P1 — the latexVector dual pattern) ───────────────────
- * On top of that raster fallback, a placed page whose source content is pure
- * vector graphics now ALSO renders as real vector: emit() prefers a stored
- * sub-list of `path` IR ops (extracted once via render_gpu/gpu/pdf_page_vector.js
- * from pdf.js's operator list, mapped by the pure render_gpu/pdf_vector.js) so a
- * diagram/chart/figure is crisp at any zoom and exports as true vector to SVG/PDF
- * — while the whole-page raster stays the ALWAYS-available fallback (async
- * not-ready, or a page that must raster: text is P2, embedded-image raster-
- * islands are P3, plus shadings/clips/blends/CMYK per classifyPdfPage). Still no
- * new IR op and ZERO new backend code — a PDF page's vector content is just the
- * existing `path` op, which all backends already render (core/shapes.js).
+ * ── DISPLAY = RE-RASTER AT DISPLAY RES (manifest RENDER PIVOT 2026-07-23) ─────
+ * The EDITOR/PRESENTER display re-rasterizes only the page's VISIBLE REGION at
+ * the CURRENT zoom (the Chrome model), so text/vectors stay crisp at any
+ * magnification while the cost stays bounded by the SCREEN. emit() stays PURE of
+ * the camera (sceneIR passes only state + the node's own local `world`, never
+ * the outer zoom/pan/dpr); the resolution decision lives in a RENDER-TIME
+ * pre-pass (render_gpu/pdf_display.preRasterizePdfPages) that the display
+ * surfaces run BEFORE sceneIR — it computes the visible region via the shared
+ * core/clip.visibleSourceRect primitive, rasterizes that sub-rect
+ * (pdf_page_raster.ensurePdfPageRegionRasterized), and hands emit() the
+ * resulting DISPLAY DESCRIPTOR as its 4th argument (renderCtx.pdfDisplay). emit()
+ * draws that crisp region bitmap when the descriptor is present.
  *
- * ── RASTERIZATION SCALE (render at the DISPLAYED pixel density) ──────────────
- * emit() is a pure function of state with no viewport/dpr context (the same
- * contract every plugin emit() has — sceneIR passes only state + the node's
- * own local `world` transform, never the outer camera zoom/dpr). So "render
- * at the displayed pixel density" is approximated the same way
- * render_gpu/pdf_backend.js's hybrid raster regions already do it (its
- * `rasterScale` constant, RASTER_SCALE=2 in svg_backend.js — "the retina-dpr
- * 2× supersample precedent"): rasterize at RASTER_SCALE device px per WORLD
- * unit at this widget's OWN world-space size (state.w/h × world.scale). A
- * resize or zoom-driven world.scale change lands a new rounded scale bucket
- * (pdf_page_raster's PDF_SCALE_STEP) and re-rasterizes; a resize that stays
- * within one bucket reuses the cached bitmap (same "re-render on page/size
- * change, cache by (src,page,scale)" spec as a bare pixel-scale change would
- * cost nothing extra visually). This mirrors the thumbnail/gpuService
- * "displayed size × dpr" convention (concerns.md dpr sweep) using the ONE
- * context emit() actually has: the node's own world transform.
+ * ── VECTOR = EXPORT-ONLY (PDF P1 — the latexVector dual pattern) ──────────────
+ * A page whose source content is pure vector graphics still renders as real
+ * vector `path` ops (extracted once via render_gpu/gpu/pdf_page_vector.js from
+ * pdf.js's operator list, mapped by the pure render_gpu/pdf_vector.js) — but ONLY
+ * on the CAMERA-FREE fallback path (no display descriptor): SVG/PDF export
+ * (a bitmap embedded in an SVG export would be wrong — manifest), thumbnails, the
+ * CLI, and the first display frame before the region raster lands. The
+ * interactive editor never takes this path (it always has a descriptor), so
+ * vector is gated OUT of the display path per the pivot. The whole-page raster
+ * stays the ALWAYS-available fallback (async not-ready, or a page that must
+ * raster: text is P2, images P3, shadings/clips/blends/CMYK per classifyPdfPage).
+ * Still no new IR op and ZERO backend changes — vector content is the existing
+ * `path` op, the region raster the existing `image` op.
  *
  * ── PAGE CLAMPING: LOUD, NOT SILENT (this task's flagged house-rule choice) ──
  * `page` is clamped into [1, pageCount] so the widget ALWAYS shows something
@@ -158,7 +156,13 @@ export const pdfPagePlugin = {
     // THE page control (manifest 13.1) — a plain number row; equation-capable
     // like every numeric property (no special-casing needed, the equation
     // grammar treats any plugin default that's a number as an equation slot).
-    { key: "page", label: "Page", kind: "number", min: 1, category: "formatting", help: "Which page of the PDF to show (page 1 is the first page). Out-of-range values are clamped to the nearest real page and reported in the console." },
+    // `max` is a STATE-DERIVED FUNCTION (the general dynamic-bounds mechanism —
+    // Inspector.svelte resolves `row.max` as `(state) => number` before passing
+    // it to the numeric field): the last valid page IS pageCount for the current
+    // src, so the field can't scrub past the last page. Null until the doc has
+    // loaded (pdfPageCount → null) — unbounded for that async window; emit()
+    // still clamps + loud-reports an out-of-range render meanwhile.
+    { key: "page", label: "Page", kind: "number", min: 1, max: (state) => pdfPageCount(state.src) ?? null, category: "formatting", help: "Which page of the PDF to show (page 1 is the first page). Out-of-range values are clamped to the nearest real page and reported in the console." },
     // The stroked-BORDER bundle (manifest "SHARED STYLE BUNDLES" — images,
     // videos, and now PDF pages inherit stroke/rounding at once). No `fill`
     // row: the page's own pixels ARE its interior, like an image.
@@ -192,7 +196,7 @@ export const pdfPagePlugin = {
    * registers into the SAME image_registry, so onImageLoad already covers
    * this) picks up the true density once known.
    */
-  emit(s, _targetWorldIR, world) {
+  emit(s, _targetWorldIR, world, renderCtx) {
     if (typeof s.src !== "string" || s.src.length === 0) return [];
     const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
     if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
@@ -212,41 +216,83 @@ export const pdfPagePlugin = {
       }
     }
 
+    const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
+    const bbox = { x: c.x, y: c.y, w: c.w, h: c.h };
+    const opacity = s.opacity ?? 1;
+    const opaque = opacity >= 1;
+
+    // THE WHOLE-PAGE RASTER (always kept available). Its scale is the "displayed
+    // pixel density at this widget's OWN world-space size" approximation emit can
+    // make with no camera (PDF_RASTER_DENSITY device px per world unit × world.scale,
+    // → a pdfjs scale via the native point size). It is BOTH the camera-free
+    // fallback (export/thumbnail/CLI) AND the smooth BASE the display path draws
+    // under the crisp region so a not-yet-ready region never flashes blank.
     const worldScale = world?.scale ?? 1;
     const density = worldScale * PDF_RASTER_DENSITY; // device px per world unit, the rasterScale precedent
     const point = pdfPagePointSize(s.src, page);
     ensurePdfPagePointSize(s.src, page); // idempotent; fills `point` for a LATER emit() once known
     // scale (pdfjs "device px per PDF point") = (world-space px we want) /
-    // (PDF points that fills). Falls back to plain `density` (treating one
-    // PDF point as one world unit) until the true point size is known — a
-    // reasonable first guess (US Letter/A4 are both ~1:1.3 world-unit-ish at
-    // density 1) that self-corrects the instant pdfPagePointSize resolves.
-    const scale = point && point.w > 0 ? (c.w * density) / point.w : density;
-    ensurePdfPageRasterized(s.src, page, scale); // raster FALLBACK — always kept available (the dual vector/raster pattern)
-    ensurePdfPageVector(s.src, page); // VECTOR ingest (extract op list + classify; async, idempotent, safe every emit)
-    const ref = pdfPageRef(s.src, page, scale);
+    // (PDF points that fills). Falls back to plain `density` (one PDF point ≈ one
+    // world unit) until the true point size is known — self-corrects the instant
+    // pdfPagePointSize resolves.
+    const wholeScale = point && point.w > 0 ? (c.w * density) / point.w : density;
+    ensurePdfPageRasterized(s.src, page, wholeScale); // whole-page raster — always kept available
+    const wholeRef = pdfPageRef(s.src, page, wholeScale);
+    const wholeQuad = image({ ref: wholeRef, x: c.x, y: c.y, w: c.w, h: c.h, opacity, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
 
-    const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
-    // TRUE VECTOR (PDF P1 — the latexVector dual pattern): once the page has been
+    // ── DISPLAY RE-RASTER (manifest RENDER PIVOT 2026-07-23, the Chrome model) ──
+    // A render-time pre-pass (render_gpu/pdf_display.preRasterizePdfPages, run by
+    // the surfaces that know the live view — CanvasView/PresentMode) supplied the
+    // crisp VISIBLE-REGION bitmap for THIS node, sized to the current display
+    // resolution and bounded to the on-screen window. Draw that bitmap at the
+    // descriptor's local rect: crisp at ANY zoom, cost bounded by the SCREEN.
+    // Crop is baked into the region (the pre-pass intersected box ∩ viewport ∩
+    // crop), so the op needs no source sub-rect; opacity is draw-time alpha. When
+    // OPAQUE, the whole-page raster is drawn UNDER as a base so a not-yet-ready
+    // region (first frame / zoom-bucket change) shows the (cached, lower-res)
+    // page instead of flashing blank — the region overdraws it crisply where
+    // ready (Chrome's blurry-then-sharp tile behavior). A TRANSLUCENT page draws
+    // the region ALONE (stacking two translucent layers would double-fade the
+    // overlap — the decorate.js opacity contract). This SUPERSEDES the vector
+    // path below for display — vector is now EXPORT-ONLY.
+    const disp = renderCtx?.pdfDisplay ?? null;
+    if (disp) {
+      const regionQuad = image({ ref: disp.ref, x: disp.x, y: disp.y, w: disp.w, h: disp.h, opacity });
+      const content = opaque ? [wholeQuad, regionQuad] : [regionQuad];
+      return applyEffects(decorateStrokedBox(content, style, world), s, world, bbox);
+    }
+
+    // ── NO pre-pass: the camera-free fallback (export / thumbnail / CLI / the
+    // first display frame before the region lands) ─────────────────────────────
+    ensurePdfPageVector(s.src, page); // VECTOR ingest — EXPORT-ONLY now (extract op list + classify; async, idempotent)
+    // TRUE VECTOR (EXPORT-ONLY — the latexVector dual pattern): once the page is
     // extracted AND classified vector-safe (render_gpu/pdf_vector.classifyPdfPage),
-    // emit its `path` ops mapped into the box — crisp at any zoom, real vector in
-    // SVG/PDF export. Fall back to the raster image() quad (which honors the source
-    // sub-rect + opacity) when: the vector isn't ready yet (async — draw the raster
-    // meanwhile, never a blank), the page must raster (text/image/shading/clip/
-    // blend/… per classifyPdfPage), OR a crop inset / group opacity < 1 can't be
-    // faithfully represented as solid vector paths (rasterizing honors sx/sy/sw/sh
-    // and fades the page as one — the same "what can't cleanly vectorize,
-    // rasterize" hybrid rule latex.js uses for a cropped/partial equation).
+    // emit its `path` ops mapped into the box — crisp AND real vector in SVG/PDF
+    // export (a bitmap embedded in an SVG export would be wrong — manifest). The
+    // interactive editor never reaches here (it always has a `disp` descriptor);
+    // this path serves the SVG/PDF exporters, thumbnails, and the CLI, plus the
+    // very first display frame before the region raster lands. Fall back to the
+    // whole-page raster quad (honoring the crop sub-rect + opacity) when the
+    // vector isn't ready, the page must raster (text is P2 / images / shadings /
+    // clips / blends / CMYK per classifyPdfPage), OR a crop inset / opacity < 1
+    // can't be faithfully drawn as solid vector paths (raster honors sx/sy/sw/sh
+    // and fades the page as one — the same hybrid rule latex.js uses).
     const cropped = c.sw < 1 || c.sh < 1 || c.sx > 0 || c.sy > 0;
-    const opaque = (s.opacity ?? 1) >= 1;
     const vectorOps = cropped || !opaque ? null : pdfPageVectorIRFor(s.src, page, { x: c.x, y: c.y, w: c.w, h: c.h });
-    const content = vectorOps
-      ? vectorOps
-      : [image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh })];
+    const content = vectorOps ? vectorOps : [wholeQuad];
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED page, border included.
-    return applyEffects(decorateStrokedBox(content, style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });
+    return applyEffects(decorateStrokedBox(content, style, world), s, world, bbox);
   },
+  // CLIP POLICY (manifest "OVERRIDABLE"): the DEFAULT shared bounded visible-
+  // region raster (core/clip.visibleSourceRect via render_gpu/pdf_display) — a
+  // PDF page needs no less/more-restrictive override (a shadow spilling past the
+  // ON-SCREEN window is itself off-screen, so widening the raster there buys
+  // nothing). Declared explicitly (returns the neutral default) so the widget's
+  // clip policy is visible AT the widget and the pre-pass has one hook to read;
+  // other raster widgets may return {margin} (less restrictive) or {full:true}
+  // (opt out of view-bounding).
+  clipPolicy: () => ({}),
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,

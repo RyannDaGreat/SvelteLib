@@ -355,6 +355,137 @@ export function ensurePdfPageRasterized(src, page, scale) {
   return entry.promise;
 }
 
+// ── DISPLAY RE-RASTER: a page SUB-RECT at display resolution (Chrome model) ───
+// The manifest RENDER PIVOT (2026-07-23): the editor DISPLAY re-rasterizes only
+// the VISIBLE region of a placed page at the CURRENT zoom, so text/vectors stay
+// crisp at any magnification while the cost stays bounded by the SCREEN (a
+// window into a huge virtual page), not the zoom. The whole-page raster above
+// stays the FALLBACK (thumbnails / CLI / export / the first frame before the
+// view-driven region lands, and any consumer with no pre-pass). This region
+// path is keyed by (src, page, normalized-sub-rect, scale) and driven by the
+// pure core/clip.visibleSourceRect primitive from the render-time pre-pass (the
+// only place that knows the live view) — see render_gpu/pdf_display.js.
+
+/** The largest region-raster canvas edge, device px. A hard allocation cap so a
+ * pathological box aspect (a page stretched far past its native proportions,
+ * where the derived height/width can outrun the viewport bound) can never mint a
+ * giant canvas. 4096 is the conservative floor of the WebGL2 MAX_TEXTURE_SIZE
+ * guaranteed by every target browser (the same ceiling the glyph atlas assumes)
+ * — a region needing more than this is downsized, staying crisp for every real
+ * PDF while bounding memory. */
+export const PDF_MAX_RASTER_DIM = 4096;
+
+/** Cap on distinct cached REGION rasters. v1 re-rasters the visible window on
+ * every pan/zoom change (TILING for smooth pan is backburnered — manifest), so
+ * a long pan/zoom session would otherwise accumulate one entry per distinct
+ * view. When the cache exceeds this, the OLDEST entries are evicted (Map keeps
+ * insertion order) — a crude bounded LRU. Sized for "a handful of PDF widgets ×
+ * a healthy scrollback of recent views" without unbounded growth. */
+export const PDF_REGION_CACHE_MAX = 64;
+
+/** "<src>|<page>|<sx>,<sy>,<sw>,<sh>|<roundedScale>" → {status, ref, error, promise} */
+const regions = new Map();
+
+/**
+ * Pure function. The synthetic image-registry ref for a rasterized page
+ * SUB-RECT. `sourceRect` is the normalized [0,1] region of the page; `scale`
+ * (device px per PDF point) is bucketed via roundPdfScale so sub-bucket zoom
+ * jitter reuses one raster. The normalized coords are fixed to 6 dp to kill
+ * float noise while keeping distinct views distinct.
+ *
+ * @example pdfPageRegionRef("blob:x", 1, {sx: 0, sy: 0, sw: 0.5, sh: 0.5}, 3) // "pdfregion:blob:x:1:0.000000,0.000000,0.500000,0.500000:3"
+ */
+export function pdfPageRegionRef(src, page, sourceRect, scale) {
+  const k = [sourceRect.sx, sourceRect.sy, sourceRect.sw, sourceRect.sh].map((v) => v.toFixed(6)).join(",");
+  return `pdfregion:${src}:${page}:${k}:${roundPdfScale(scale)}`;
+}
+
+/**
+ * Command (near-pure: idempotent, evicts on overflow). Ensures the page SUB-RECT
+ * `sourceRect` (normalized [0,1] of the whole page) is rasterized at `scale`
+ * (device px per PDF point) into the image registry under pdfPageRegionRef(...),
+ * and returns a DISPLAY DESCRIPTOR {ref} the caller places at its computed local
+ * rect. A no-op (returns the same ref) if that exact key is already loading/
+ * ready/errored — safe to call every frame from the render-time pre-pass.
+ *
+ * The sub-rect is rendered via a pdf.js OFFSET viewport: a full-page viewport at
+ * `scale` shifted by (-sx·pw·scale, -sy·ph·scale) device px so the region's
+ * top-left lands at the canvas origin, into a canvas sized to the region (its
+ * natural point-aspect at `scale`, clamped to PDF_MAX_RASTER_DIM). The widget's
+ * image op then STRETCHES this region bitmap into its local rect (handling any
+ * box-vs-page aspect distortion at draw time, so the raster itself is undistorted).
+ *
+ * `page` MUST already be clamped into [1, pageCount] by the caller — like
+ * ensurePdfPageRasterized, this is a dumb cache and does not re-clamp.
+ *
+ * Args:
+ *   src (string), page (number): the page.
+ *   sourceRect ({sx,sy,sw,sh}): normalized [0,1] sub-rect of the page.
+ *   scale (number): device px per PDF point (the display resolution).
+ *   point ({w,h}): the page's native size in PDF points (pdfPagePointSize).
+ *
+ * Returns:
+ *   {ref: string}: the image-registry ref for this region raster.
+ */
+export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, point) {
+  const ref = pdfPageRegionRef(src, page, sourceRect, scale);
+  const key = ref;
+  if (regions.has(key)) return { ref };
+
+  reserveImageSlot(ref); // synchronous, before any await — see the full-page path's reserve note
+  const roundedScale = roundPdfScale(scale);
+  const entry = { status: "loading", ref, error: null, promise: null };
+  entry.promise = (async () => {
+    const doc = await ensurePdfDoc(src);
+    if (!doc) throw new Error("PDF document failed to load"); // ensurePdfDoc already reported this
+    const pdfPage = await doc.getPage(page);
+    // Full-page viewport at the display scale, shifted so the sub-rect's
+    // top-left sits at the canvas origin (pdf.js viewport is already y-down,
+    // top-left origin — the same frame our normalized sourceRect uses).
+    const viewport = pdfPage.getViewport({
+      scale: roundedScale,
+      offsetX: -sourceRect.sx * point.w * roundedScale,
+      offsetY: -sourceRect.sy * point.h * roundedScale,
+    });
+    const canvasW = clampDim(Math.round(sourceRect.sw * point.w * roundedScale));
+    const canvasH = clampDim(Math.round(sourceRect.sh * point.h * roundedScale));
+    const canvas = document.createElement("canvas");
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+    const ctx = canvas.getContext("2d");
+    await pdfPage.render({ canvasContext: ctx, canvas, viewport }).promise;
+    const bitmap = await createImageBitmap(canvas);
+    entry.status = "ready";
+    registerRasterizedBitmap(ref, bitmap); // wakes image_registry.onImageLoad → repaint
+    return bitmap;
+  })().catch((e) => {
+    entry.status = "error";
+    entry.error = e instanceof Error ? e : new Error(String(e));
+    reportOnce(`pdf_page_raster:region:${key}`, `PowerRP pdf_page_raster: failed to rasterize "${truncate(src)}" page ${page} region @${roundedScale}x — ${entry.error.message}`);
+    return null;
+  });
+  regions.set(key, entry);
+  if (regions.size > PDF_REGION_CACHE_MAX) evictOldestRegion();
+  return { ref };
+}
+
+/** Pure function. Clamps a raster canvas edge into [1, PDF_MAX_RASTER_DIM].
+ * @example clampDim(0) // 1
+ * @example clampDim(9000) // 4096
+ * @example clampDim(300) // 300
+ */
+function clampDim(px) {
+  return Math.max(1, Math.min(PDF_MAX_RASTER_DIM, px));
+}
+
+/** Command. Drops the oldest region-cache entry (Map insertion order = LRU-ish).
+ * The evicted bitmap stays in the image registry (bounded by distinct refs, and
+ * cheap to re-register); this only bounds THIS module's per-key bookkeeping. */
+function evictOldestRegion() {
+  const oldest = regions.keys().next().value;
+  if (oldest !== undefined) regions.delete(oldest);
+}
+
 /** Pure function. Shortens a src for log messages (data URIs are huge).
  * @example truncate("data:application/pdf;base64," + "A".repeat(200)) // "data:application/pdf;base64,AA…(228 chars)"
  */
@@ -371,6 +502,7 @@ export function resetPdfPageRaster() {
   docs.clear();
   pages.clear();
   pointSizes.clear();
+  regions.clear();
 }
 
 // ── FUTURE WORK (flagged, not built here) ───────────────────────────────────

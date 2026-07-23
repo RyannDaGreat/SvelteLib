@@ -13,14 +13,11 @@
 <script>
   import { onMount } from "svelte";
   import { createPresenter } from "../core/presentation.js";
-  import { foldState } from "../core/document.js";
   import { cameraRect, deriveRenderTree } from "../core/derive.js";
-  import { evaluateState } from "../core/expressions.js";
   import { fitRectView, canSkipNode } from "../core/view.js";
-  import { sceneIR } from "../render_gpu/ports.js";
-  import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
+  import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
   import { assetUrl } from "./projectApi.js";
 
@@ -80,7 +77,7 @@
    *  line: filter !canSkipNode(n, rect)) is exactly "visible, including through a
    *  lens" — no separate lens-region math is needed or correct. */
   function currentSlideHasVisibleAnimated() {
-    const state = evaluateState(foldState(app.doc, frame.index, frame.alpha), app.registry).state;
+    const state = evaluatedStateAt(app.doc, frame.index, frame.alpha, app.registry);
     const rect = cameraRect(state, app.doc.meta);
     return deriveRenderTree(state, app.registry).some(
       (n) => n.state.animated === true && !canSkipNode(n, rect),
@@ -170,14 +167,15 @@
     // camera tweens between slides. Evaluated state: any property may be an
     // equation. Letterbox = black clear + scissor to the camera region (the
     // camera background is the first draw, since loadOp clear paints the bars).
-    const state = evaluateState(foldState(app.doc, frame.index, frame.alpha), app.registry).state;
+    // cameraFrameIR is THE shared camera-frame recipe (bg rect + culled scene);
+    // culling to the camera rect matches the editor/thumbnail path exactly.
+    const state = evaluatedStateAt(app.doc, frame.index, frame.alpha, app.registry);
     const rect = cameraRect(state, app.doc.meta);
     const view = fitRectView(rect, innerWidth, innerHeight, dpr);
-    const nodes = deriveRenderTree(state, app.registry).filter((n) => !canSkipNode(n, rect));
-    const ir = [
-      rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: parseColor(rect.background) }),
-      ...sceneIR(nodes),
-    ];
+    // Pass the live view + device size so cameraFrameIR re-rasters placed PDF
+    // pages at the presentation's display resolution (crisp when the camera
+    // zooms into a page), bounded to the on-screen region (manifest RENDER PIVOT).
+    const ir = cameraFrameIR(state, app.doc.meta, app.registry, { cullRect: rect, view, viewW: w, viewH: h });
     gpu.render(ir, view, {
       background: [0, 0, 0, 1], // letterbox bars
       scissor: {
@@ -199,7 +197,7 @@
     const w = Math.round(innerWidth * dpr), h = Math.round(innerHeight * dpr);
     // The camera rect at the completed NEW slide defines the fit + letterbox
     // (both endpoints share the deck's camera; the new slide's is the target).
-    const state = evaluateState(foldState(app.doc, frame.index, 1), app.registry).state;
+    const state = evaluatedStateAt(app.doc, frame.index, 1, app.registry);
     const rect = cameraRect(state, app.doc.meta);
     const view = fitRectView(rect, innerWidth, innerHeight, dpr);
     // Camera region in device px (the fit places the whole rect on screen).
