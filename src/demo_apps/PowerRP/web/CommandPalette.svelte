@@ -81,6 +81,35 @@
     }
   });
 
+  // ── Previewable commands (GENERAL protocol) ────────────────────────────────
+  // A command entry MAY declare `preview(app) -> revert`: a TEMPORARY, non-
+  // committing application of its effect, returning a closure that undoes it.
+  // The palette previews whichever entry is HIGHLIGHTED — hover (pointermove)
+  // and the arrow keys both drive `highlighted`, so ONE effect covers both the
+  // "hovered" and "arrow-focused" triggers. When the highlight moves to a
+  // different entry, or the palette closes without selecting (results empties),
+  // the active preview is reverted. Selecting an entry (activate → Enter/click)
+  // COMMITS: the pending revert is dropped WITHOUT being called (so the
+  // previewed change stays) and the entry's `run` makes it durable. Commands
+  // with no `preview` are unaffected. Theme entries are the first adopters
+  // (app.previewTheme — a non-persisted viewer-preference swap; the committing
+  // `run` = app.setTheme persists). Any future command opts in the same way.
+  //
+  // previewRevert/previewedId are PLAIN (non-$state) bridge variables: the
+  // effect reads/writes them imperatively but must NOT react to them — only
+  // `highlighted` and `results` may drive it.
+  let previewRevert = null; // closure that undoes the active preview, or null
+  let previewedId = null; // id of the entry currently previewed, or null
+
+  $effect(() => {
+    const cmd = results[highlighted];
+    const id = cmd?.id ?? null;
+    if (id === previewedId) return; // same entry still highlighted — nothing to do
+    if (previewRevert) previewRevert(); // roll back the previous preview
+    previewRevert = cmd?.preview ? cmd.preview(app) : null;
+    previewedId = id;
+  });
+
   function activate(cmd) {
     if (cmd.children) {
       stack = [...stack, cmd];
@@ -88,6 +117,16 @@
       resetHighlight();
       inputEl.focus();
     } else {
+      // COMMIT the previewable-command protocol: if we happened to be previewing
+      // a DIFFERENT entry, revert that one; then drop any pending revert for THIS
+      // entry WITHOUT calling it (its previewed change stays) so the effect —
+      // which fires when closing empties `results` — sees previewedId === null
+      // and reverts nothing. `run` then applies the change durably (e.g. persists
+      // the theme). In normal use the clicked/entered row is already highlighted,
+      // so previewedId === cmd.id and the first branch is a no-op.
+      if (previewRevert && previewedId !== cmd.id) previewRevert();
+      previewRevert = null;
+      previewedId = null;
       app.paletteOpen = false;
       app.runCommand(cmd.id); // routes through MRU tracking
     }

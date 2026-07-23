@@ -77,6 +77,14 @@ export const THEMES = [
   { id: "nord", title: "Nord" },
   { id: "gruvbox", title: "Gruvbox" },
   { id: "aurora", title: "Aurora" },
+  // Colorful set (user: "make some more colorful color themes") — six beloved
+  // editor palettes; full token overrides live in app.css alongside the others.
+  { id: "dracula", title: "Dracula" },
+  { id: "tokyonight", title: "Tokyo Night" },
+  { id: "catppuccin", title: "Catppuccin Mocha" },
+  { id: "rosepine", title: "Rosé Pine" },
+  { id: "monokai", title: "Monokai" },
+  { id: "synthwave", title: "Synthwave '84" },
 ];
 
 /**
@@ -681,10 +689,35 @@ export class PowerRPApp {
 
   // ── Theme (viewer preference — not document state, not undoable) ──────────
 
-  setTheme(id) {
+  /** Command. Applies theme `id` VISUALLY only: the reactive `theme` field +
+   * the documentElement data-attr the CSS cascade keys on. Does NOT persist —
+   * the shared core of both setTheme (which adds persistence) and previewTheme
+   * (which must not persist a transient hover). Mutates document.documentElement
+   * + this.theme. */
+  applyThemeVisual(id) {
     this.theme = id;
     document.documentElement.dataset.theme = id;
+  }
+
+  setTheme(id) {
+    this.applyThemeVisual(id);
     localStorage.setItem(THEME_KEY, id);
+  }
+
+  /**
+   * Command (viewer-preference preview — NOT persisted, NOT undoable). The
+   * previewable-command hook the palette calls when a theme entry is hovered/
+   * arrow-focused: applies theme `id` LIVE and returns a `revert` closure that
+   * restores whatever theme was applied before. Unlike setTheme it never writes
+   * localStorage — only a COMMITTED setTheme (the entry's `run`) persists, so
+   * scrubbing through themes leaves the saved preference untouched until the
+   * user actually picks one. See the general preview protocol in
+   * CommandPalette.svelte.
+   */
+  previewTheme(id) {
+    const prev = this.theme;
+    this.applyThemeVisual(id);
+    return () => this.applyThemeVisual(prev);
   }
 
   loadTheme() {

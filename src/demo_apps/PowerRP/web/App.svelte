@@ -89,6 +89,13 @@
     nord: "mdi:snowflake",
     gruvbox: "mdi:coffee-outline",
     aurora: "mdi:creation",
+    // Colorful set:
+    dracula: "mdi:bat",
+    tokyonight: "mdi:city-variant-outline",
+    catppuccin: "mdi:cat",
+    rosepine: "mdi:flower-outline",
+    monokai: "mdi:code-tags",
+    synthwave: "mdi:sine-wave",
   };
   const coreCommands = [
     { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", when: needsPurgeable, run: (a) => a.deleteSelection() },
@@ -210,6 +217,10 @@
         title: t.title,
         icon: THEME_ICONS[t.id],
         run: (a) => a.setTheme(t.id),
+        // Previewable-command hook (see CommandPalette.svelte): hovering/
+        // arrowing this entry applies the theme LIVE; moving off restores the
+        // previously-applied theme; selecting commits via `run` (which persists).
+        preview: (a) => a.previewTheme(t.id),
       })),
     },
     { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", run: (a) => a.exportPng() },

@@ -4,10 +4,19 @@
  * the palette is how "everything routes through the plugin system" surfaces
  * in the UI).
  *
- * Entry: {id, title, run?(app), when?(app) → bool, children?: [entry]}.
+ * Entry: {id, title, run?(app), when?(app) → bool, children?: [entry],
+ *         icon?, preview?(app) → revert}.
  * A command has `run` XOR `children`: children make it a SUBMENU the palette
  * drills into (e.g. "Color Theme →" listing themes). Child ids must still be
  * globally unique (they're registered flat for `get()`/shortcut reuse).
+ *
+ * OPTIONAL `preview(app) -> revert` (GENERAL previewable-command protocol,
+ * driven in CommandPalette.svelte): a temporary, non-committing application of
+ * the command's effect, returning a closure that undoes it. The palette calls
+ * it while the entry is hovered/arrow-focused and calls the returned revert
+ * when focus moves off or the palette closes without selecting; selecting the
+ * entry keeps the change and runs `run`. Purely additive — the registry treats
+ * it as opaque metadata (only the palette reads it).
  */
 
 import { rpFuzzyScore } from "./fuzzy.js";

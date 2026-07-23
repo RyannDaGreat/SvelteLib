@@ -443,6 +443,171 @@
   --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
 
+/* ── COLORFUL THEMES (user: "make some more colorful color themes … colorful
+   ones") — six beloved editor palettes ported onto our token structure, each a
+   FULL override (like the 14.11 set above) with a harmonized, per-theme accent
+   family so NO two dark themes read alike. Each maps its scheme onto the same
+   role tokens the whole UI/eq/code palette chains off:
+     --a-selection = the scheme's primary accent (functions/selection band),
+     --a-guide     = its red/pink (guides + danger + --a-eq-error),
+     --a-keyed     = keyframe-diamond / endpoint accent (a distinct bright hue),
+     --a-anchor    = on-canvas anchor X's (a muted secondary),
+     --a-modifier  = PPT-yellow squares + eq `self` + code keyword (re-based per
+                     scheme so keywords sit in-family, never a stray amber).
+   The --a-eq-* / --a-code-* palettes need NO per-theme entries (they chain off
+   the tokens above — same as the 14.11 set). Contrast-checked (WCAG relative-
+   luminance ratio) against BOTH --bg and --a-panel-bg: --fg-dim clears 4.3:1,
+   every chroma/accent token clears 3.4:1 (scratchpad_themes.py). */
+
+/* Dracula (draculatheme.com) — the canonical purple/pink dark. Purple
+   selection, pink keywords (--a-modifier), yellow diamonds, cyan anchors,
+   red danger. */
+:root[data-theme="dracula"] {
+  --bg: #282a36;
+  --fg: #f8f8f2;
+  --fg-dim: #a3abd6;
+  --accent: #bd93f9;
+  --border: rgba(248, 248, 242, 0.14);
+  --control-bg: #343746;
+  --a-panel-bg: #21222c;
+  --a-canvas-bg: #1b1c24;
+  --a-hover-bg: rgba(248, 248, 242, 0.1);
+  --a-selection: #bd93f9;
+  --a-guide: #ff5555;
+  --a-keyed: #f1fa8c;
+  --a-anchor: #8be9fd;
+  --a-modifier: #ff79c6; /* Dracula pink — eq `self` / code keyword family */
+  --a-scrollbar: rgba(248, 248, 242, 0.2);
+  --a-scrollbar-hover: rgba(248, 248, 242, 0.34);
+  --a-split-handle: #44475a;
+  --a-split-handle-hover: #6272a4;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* Tokyo Night (folke/tokyonight) — deep navy stage, cornflower-blue selection,
+   purple keywords, warm-gold diamonds, sky-cyan anchors, rose danger. */
+:root[data-theme="tokyonight"] {
+  --bg: #1a1b26;
+  --fg: #c0caf5;
+  --fg-dim: #8b95c4;
+  --accent: #7aa2f7;
+  --border: rgba(192, 202, 245, 0.14);
+  --control-bg: #24283b;
+  --a-panel-bg: #16161e;
+  --a-canvas-bg: #101018;
+  --a-hover-bg: rgba(192, 202, 245, 0.1);
+  --a-selection: #7aa2f7;
+  --a-guide: #f7768e;
+  --a-keyed: #e0af68;
+  --a-anchor: #7dcfff;
+  --a-modifier: #bb9af7; /* Tokyo Night purple — keywords */
+  --a-scrollbar: rgba(192, 202, 245, 0.18);
+  --a-scrollbar-hover: rgba(192, 202, 245, 0.32);
+  --a-split-handle: #2a2e42;
+  --a-split-handle-hover: #414868;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+/* Catppuccin Mocha (catppuccin.com) — soft pastel dark. Blue selection, mauve
+   keywords, pastel-yellow diamonds, teal anchors, pink danger. */
+:root[data-theme="catppuccin"] {
+  --bg: #1e1e2e;
+  --fg: #cdd6f4;
+  --fg-dim: #a6adc8;
+  --accent: #cba6f7;
+  --border: rgba(205, 214, 244, 0.14);
+  --control-bg: #313244;
+  --a-panel-bg: #181825;
+  --a-canvas-bg: #11111b;
+  --a-hover-bg: rgba(205, 214, 244, 0.1);
+  --a-selection: #89b4fa;
+  --a-guide: #f38ba8;
+  --a-keyed: #f9e2af;
+  --a-anchor: #94e2d5;
+  --a-modifier: #cba6f7; /* Mocha mauve — keywords */
+  --a-scrollbar: rgba(205, 214, 244, 0.18);
+  --a-scrollbar-hover: rgba(205, 214, 244, 0.32);
+  --a-split-handle: #313244;
+  --a-split-handle-hover: #45475a;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Rosé Pine (rosepinetheme.com) — muted, elegant. Foam-cyan selection, rose
+   keywords, gold diamonds, iris-purple anchors, love (rose-red) danger. The
+   surface tier sits ABOVE the base (Rosé Pine's own elevation), so --a-panel-bg
+   is lighter than --bg (canvas is darkest). */
+:root[data-theme="rosepine"] {
+  --bg: #191724;
+  --fg: #e0def4;
+  --fg-dim: #a09cbd;
+  --accent: #c4a7e7;
+  --border: rgba(224, 222, 244, 0.14);
+  --control-bg: #26233a;
+  --a-panel-bg: #1f1d2e;
+  --a-canvas-bg: #14121f;
+  --a-hover-bg: rgba(224, 222, 244, 0.08);
+  --a-selection: #9ccfd8;
+  --a-guide: #eb6f92;
+  --a-keyed: #f6c177;
+  --a-anchor: #c4a7e7;
+  --a-modifier: #ebbcba; /* Rosé Pine rose — keywords */
+  --a-scrollbar: rgba(224, 222, 244, 0.18);
+  --a-scrollbar-hover: rgba(224, 222, 244, 0.32);
+  --a-split-handle: #26233a;
+  --a-split-handle-hover: #403d52;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Monokai (the classic Sublime scheme) — warm olive-black stage, its two
+   signature loud hues split across the identity: LIME selection + MAGENTA
+   danger, yellow diamonds, cyan anchors, purple keywords. */
+:root[data-theme="monokai"] {
+  --bg: #272822;
+  --fg: #f8f8f2;
+  --fg-dim: #a89f8c;
+  --accent: #a6e22e;
+  --border: rgba(248, 248, 242, 0.14);
+  --control-bg: #34352c;
+  --a-panel-bg: #1f201b;
+  --a-canvas-bg: #191a15;
+  --a-hover-bg: rgba(248, 248, 242, 0.1);
+  --a-selection: #a6e22e;
+  --a-guide: #f92672;
+  --a-keyed: #e6db74;
+  --a-anchor: #66d9ef;
+  --a-modifier: #ae81ff; /* Monokai purple (constants) — kept distinct from the magenta danger */
+  --a-scrollbar: rgba(248, 248, 242, 0.18);
+  --a-scrollbar-hover: rgba(248, 248, 242, 0.32);
+  --a-split-handle: #414339;
+  --a-split-handle-hover: #75715e;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Synthwave '84 (robb0wen) — the LOUD neon option: deep-purple stage, glowing
+   neon-cyan selection, neon-pink keywords, electric-yellow diamonds, orchid
+   anchors, hot-red danger. Hover tint is pink (the retro glow). */
+:root[data-theme="synthwave"] {
+  --bg: #262335;
+  --fg: #f5eefb;
+  --fg-dim: #a99bcf;
+  --accent: #ff7edb;
+  --border: rgba(245, 238, 251, 0.16);
+  --control-bg: #2f2a45;
+  --a-panel-bg: #1e1b2e;
+  --a-canvas-bg: #171325;
+  --a-hover-bg: rgba(255, 126, 219, 0.12);
+  --a-selection: #36f9f6;
+  --a-guide: #fe4450;
+  --a-keyed: #fede5d;
+  --a-anchor: #b893ce;
+  --a-modifier: #ff7edb; /* neon pink — keywords / eq `self` */
+  --a-scrollbar: rgba(245, 238, 251, 0.2);
+  --a-scrollbar-hover: rgba(245, 238, 251, 0.34);
+  --a-split-handle: #34294f;
+  --a-split-handle-hover: #4d3a72;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.65);
+}
+
 html,
 body,
 #app {

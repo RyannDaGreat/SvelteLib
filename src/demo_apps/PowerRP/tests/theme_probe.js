@@ -44,7 +44,11 @@ const server = await createServer({
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
-const browser = await puppeteer.launch({ headless: "new" });
+// SwiftShader + --no-sandbox: this probe screenshots the WebGPU editor, so it
+// needs the SAME software-GL launch flags as the other GPU probes
+// (skia_browser_qa.js / caret_accuracy_qa.js) — a headless bare launch has no
+// GPU and, as root, refuses to start without --no-sandbox.
+const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
 const errors = [];
 try {
   const page = await browser.newPage();
