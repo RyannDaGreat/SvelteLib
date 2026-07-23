@@ -101,7 +101,7 @@ export const DEFAULT_LATEX = "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}";
 /** Default em size in canvas units. Matches the text widget's default `size`
  * (36) — an equation and a line of text at the same font size read at the same
  * visual scale, the least-surprising default (linked to text.js's size:36). */
-const DEFAULT_FONT_SIZE = 36;
+export const DEFAULT_FONT_SIZE = 36;
 
 /** Error-affordance colors — a LOUD, unmissable red treatment (the task's "not
  * silent, not a blank widget" requirement): a clearly red-tinted fill so the
@@ -209,6 +209,12 @@ export const latexPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     latex: DEFAULT_LATEX,
     fontSize: DEFAULT_FONT_SIZE,
+    // PRESERVE ASPECT (default ON, user directive): the equation UNIFORM-scales
+    // to FIT the widget box (centered/letterboxed), never squashing to the box
+    // aspect. OFF reverts to the legacy non-uniform box→box stretch (a resized
+    // box then distorts the equation). Threaded into the latexVector op so the
+    // live render AND the SVG/PDF vector exports all honor it identically.
+    preserveAspect: true,
     // INK — the equation glyph color (Round 15.4 "why cant i choose the color
     // for latx"). Keyframable like any color property; default = the INK
     // convention every stroked shape / the text widget uses (LATEX_DEFAULT_INK
@@ -238,6 +244,9 @@ export const latexPlugin = {
     // Font size (em) — the equation's rendered scale, like a text box's size.
     // The widget's natural w/h follow from this × the equation's aspect ratio.
     { key: "fontSize", label: "Font size", kind: "number", min: 1, category: "text", help: "The equation's rendered size in canvas units per em (like a text font size). Larger typesets the equation bigger; the box grows to fit." },
+    // Aspect-preservation toggle (default ON). ON = uniform scale-to-fit,
+    // centered in the box (no squash). OFF = stretch to fill the box aspect.
+    { key: "preserveAspect", label: "Preserve aspect", kind: "checkbox", category: "formatting", help: "Scale the equation uniformly to fit the box (centered, no distortion). Turn off to stretch it to the box's exact width and height." },
     // INK — the glyph color (Round 15.4). A standard color row (kind "color",
     // like text's Color / rect's Fill), keyframable; drives the live raster tint
     // AND the SVG/PDF vector fill.
@@ -318,6 +327,7 @@ export const latexPlugin = {
           sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh,
           viewBox: geom.viewBox,
           glyphs: geom.glyphs.map((g) => ({ d: g.d, fill: ink })),
+          preserveAspect: s.preserveAspect !== false, // default ON (user directive)
         })
       : image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order

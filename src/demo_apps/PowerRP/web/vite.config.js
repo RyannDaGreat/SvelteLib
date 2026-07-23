@@ -39,8 +39,11 @@ export default defineConfig({
   // Pre-bundling it at server start makes boot deterministic. `mathjax` (the
   // tex-svg bundle for the latex widget, Round 14.5) is the SAME lazy-dep flake
   // class — reached only through latex_raster's lazy `?url` script injection —
-  // so it is pre-bundled here too (append, per the same reasoning).
-  optimizeDeps: { include: ["pdfjs-dist", "mathjax"] },
+  // so it is pre-bundled here too (append, per the same reasoning). `mathlive`
+  // (the WYSIWYG equation EDITOR, imported eagerly at boot by CanvasView to
+  // pre-warm the <math-field> element + its bundled fonts) is likewise pre-
+  // bundled so its dep-discovery re-optimize never mid-session reloads the page.
+  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive"] },
   server: {
     port: 3637,
     host: true,

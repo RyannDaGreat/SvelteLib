@@ -34,6 +34,8 @@
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
+  import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
+  import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
 
   let { app } = $props();
 
@@ -222,7 +224,7 @@
   onDestroy(() => gpu?.dispose());
 
   $effect(() => {
-    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH; gpu; imageEpoch;
+    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; app.latexEditing; viewport; wrapW; wrapH; gpu; imageEpoch;
     paint();
   });
 
@@ -281,8 +283,14 @@
     // draws the caret/selection ON TOP from the SAME CanvasKit Paragraph the render
     // uses, so they land on the glyphs across mixed runs — no double image, and no
     // exit "jump" (the Skia render is identical during and after the edit).
+    // LATEX EDIT SUPPRESSION (the deliberate divergence from text): while a latex
+    // widget is edited, its canvas equation is DROPPED so only the MathLive DOM
+    // overlay is visible (MathJax has no caret to self-draw — see
+    // LatexEditController). During the `closing` crossfade the item is
+    // UN-suppressed so the re-typeset render appears beneath the fading field.
+    const latexSuppressId = app.latexEditing && !app.latexEditing.closing ? app.latexEditing.itemId : null;
     const nodes = deriveRenderTree(state, app.registry)
-      .filter((n) => !canSkipNode(n, viewRect));
+      .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== latexSuppressId);
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background
@@ -490,6 +498,10 @@
     if (drag || modal) return; // never open mid-gesture
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
+    // LaTeX widgets open the MathLive WYSIWYG editor (DOM overlay + canvas
+    // suppression); text opens the Skia-owned in-place editor. Other types fall
+    // through (a dblclick on a rect does nothing).
+    if (hit?.type === "latex") { app.beginLatexEdit(hit.itemId); return; }
     if (hit?.type !== "text") return;
     app.beginTextEdit(hit.itemId); // selects + mounts the controller (Skia keeps drawing the item)
   }
@@ -2061,6 +2073,18 @@
     const n = app.nodes().find((nn) => nn.itemId === app.textEditing.itemId);
     return (n && n.type === "text") ? n : null;
   });
+
+  // WYSIWYG LATEX EDIT: the derived node of the latex item being edited (or null).
+  // The LatexEditController mounts the MathLive field in this node's world pose.
+  // Stays non-null through the `closing` crossfade (latexEditing still set) so the
+  // field can fade out over the un-suppressed canvas render. Same reactive-deps
+  // pattern as textEditNode.
+  let latexEditNode = $derived.by(() => {
+    app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
+    if (!app.latexEditing || !actions) return null;
+    const n = app.nodes().find((nn) => nn.itemId === app.latexEditing.itemId);
+    return (n && n.type === "latex") ? n : null;
+  });
 </script>
 
 <!-- Rulers are chrome OUTSIDE the render area (user's structural fix): when the
@@ -2237,6 +2261,18 @@
           {gpu}
           worldToScreen={actions.worldToScreen}
           screenToWorld={actions.screenToWorld}
+          zoom={viewport.zoom}
+        />
+      {/if}
+      {#if latexEditNode && actions}
+        <!-- WYSIWYG LaTeX editor: a MathLive <math-field> DOM overlay at the
+             widget's world pose. The canvas equation is suppressed (see paint())
+             so the field is the only visible equation; commit re-typesets the
+             canvas through the normal emit() path and this fades out. -->
+        <LatexEditController
+          {app}
+          node={latexEditNode}
+          worldToScreen={actions.worldToScreen}
           zoom={viewport.zoom}
         />
       {/if}

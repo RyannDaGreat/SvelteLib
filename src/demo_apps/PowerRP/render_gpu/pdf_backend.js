@@ -42,6 +42,7 @@ import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { richTextDraws } from "../core/richtext.js";
+import { fitBox } from "../core/geometry.js";
 
 /**
  * Lens re-emit recursion cap — re-exported from ir.js (the single source shared
@@ -1043,9 +1044,17 @@ function emitVector(cmd, world, out, ctx) {
       // uses (imagePlacementOps), minus the flip.
       const vb = cmd.viewBox;
       if (cmd.glyphs.length === 0 || vb.w <= 0 || vb.h <= 0) return; // nothing to draw
-      const sxScale = cmd.w / vb.w, syScale = cmd.h / vb.h;
-      // box→box: glyph point (px,py) → (x + (px−minX)·sx, y + (py−minY)·sy).
-      const tx = cmd.x - vb.minX * sxScale, ty = cmd.y - vb.minY * syScale;
+      // preserveAspect (default): UNIFORM fit + center (letterbox) so export
+      // matches the on-screen render; else the legacy non-uniform box→box scale.
+      let sxScale, syScale, ox = 0, oy = 0;
+      if (cmd.preserveAspect !== false) {
+        const f = fitBox(vb.w, vb.h, cmd.w, cmd.h);
+        sxScale = syScale = f.scale; ox = f.offsetX; oy = f.offsetY;
+      } else {
+        sxScale = cmd.w / vb.w; syScale = cmd.h / vb.h;
+      }
+      // box→box: glyph point (px,py) → (x + ox + (px−minX)·sx, y + oy + (py−minY)·sy).
+      const tx = cmd.x + ox - vb.minX * sxScale, ty = cmd.y + oy - vb.minY * syScale;
       ops.push(`${pdfNum(sxScale)} 0 0 ${pdfNum(syScale)} ${pdfNum(tx)} ${pdfNum(ty)} cm`);
       // Group consecutive glyphs by fill color: set `rg` + alpha once per color
       // run, concatenate all that run's subpaths, fill once (the polygon/rich-

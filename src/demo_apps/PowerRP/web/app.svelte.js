@@ -133,7 +133,7 @@ export class PowerRPApp {
     return this.#slideIndex;
   }
   set slideIndex(i) {
-    this.dismissTextEdit();
+    this.dismissEdit();
     this.#slideIndex = i;
   }
   // PRIMARY selection — a single itemId or null. Kept as the primary for full
@@ -157,7 +157,7 @@ export class PowerRPApp {
     // beginTextEdit() itself writes `this.selection = itemId` to select the
     // item it is about to edit, and that write must NOT immediately cancel
     // the edit it is starting.
-    if (this.textEditing && id !== this.textEditing.itemId) this.dismissTextEdit();
+    if (this.editingItemId !== null && id !== this.editingItemId) this.dismissEdit();
     this.#selection = id;
     this.selectionSet = []; // single-select write drops the multi override
     if (id !== null) this.selectedTransition = null; // item and transition selection are mutually exclusive
@@ -225,6 +225,18 @@ export class PowerRPApp {
    * (Ctrl/Cmd+B/I/U + Cmd±). Selection-style edits flow through the preview/commit
    * system as ONE undo unit per logical edit, exactly like the Inspector rows. */
   textEditing = $state(null);
+  /** TRUE IN-PLACE LATEX EDITING (WYSIWYG equation editor). While a latex widget
+   * is edited in place, `latexEditing` = { itemId } (or { itemId, closing:true }
+   * during the exit crossfade), null otherwise. UNLIKE text (which is canvas-as-
+   * truth — never suppressed), a MathJax equation has NO caret model, so the edit
+   * is a DOM MathLive `<math-field>` OVERLAY at the widget's world pose and the
+   * canvas equation is SUPPRESSED in paint() for the duration (LatexEditController
+   * owns the field). Commit re-typesets through the normal emit() → latexVector
+   * path (no new IR). The MathLive(KaTeX) ↔ MathJax(tex-svg) glyph-metric
+   * difference is an IRREDUCIBLE small enter/exit "pop" with this overlay approach
+   * (both are Computer-Modern lineage — close, not identical); the `closing`
+   * crossfade (see commitLatexEdit) masks it as much as this design allows. */
+  latexEditing = $state(null);
   theme = $state("graphite");
   // BROWSER settings below: each = a SETTINGS descriptor's .initial (the
   // localStorage-or-default value) and a toggle*() using .persist. See the
@@ -479,7 +491,7 @@ export class PowerRPApp {
     // must commit+exit first. (In practice CanvasView's click-away guard
     // already dismisses before any band-select/shift-click logic runs; this
     // is the defensive second layer for any other caller, e.g. Select All.)
-    if (this.textEditing && !(filtered.length === 1 && filtered[0] === this.textEditing.itemId)) this.dismissTextEdit();
+    if (this.editingItemId !== null && !(filtered.length === 1 && filtered[0] === this.editingItemId)) this.dismissEdit();
     if (filtered.length === 0) {
       this.selection = null; // clears both (accessor path)
       return;
@@ -814,8 +826,88 @@ export class PowerRPApp {
    * path). The one `mode = "present"` write site (the palette/toolbar
    * "Present" command) routes through here instead of writing `mode` bare. */
   enterPresentMode() {
-    this.dismissTextEdit();
+    this.dismissEdit();
     this.mode = "present";
+  }
+
+  // ── WYSIWYG LaTeX editing (MathLive overlay) ───────────────────────────────
+  // Mirrors the text lifecycle (begin/preview/commit/cancel/dismiss) but with a
+  // canvas-SUPPRESSION + DOM-overlay model instead of canvas-as-truth (MathJax
+  // has no caret to self-draw from — see latexEditing's doc).
+
+  /** Command. Enters in-place edit on a latex item: selects it (Inspector
+   * reflects it) and sets `latexEditing`. CanvasView suppresses the canvas
+   * equation and mounts the LatexEditController `<math-field>` at its world
+   * pose. No-op if already editing this item. */
+  beginLatexEdit(itemId) {
+    if (this.latexEditing?.itemId === itemId) return;
+    this.selection = itemId;
+    this.latexEditing = { itemId };
+  }
+
+  /** Command. Live-stages the edited latex string into previewDelta (so the
+   * Inspector `latex` row reflects live and commit keyframes it as one undo
+   * unit). The canvas equation is suppressed during edit, so this does NOT
+   * re-typeset the canvas per keystroke — the visible math is the DOM field
+   * itself (the no-jank rule: MathJax runs once, on commit). */
+  previewLatexValue(latex) {
+    if (!this.latexEditing || this.latexEditing.closing) return;
+    this.setPreview([[["items", this.latexEditing.itemId, "latex"], latex]]);
+  }
+
+  /** Command. Commits the edit as ONE undo unit and enters the CLOSING phase.
+   * commitPreview keyframes the final latex + clears previewDelta; setting
+   * `closing:true` UN-suppresses the canvas equation (paint() stops skipping
+   * it) so the freshly re-typeset MathJax render appears BENEATH the still-
+   * mounted MathLive field, which the controller then fades out — a true
+   * crossfade that masks the KaTeX↔tex-svg glyph pop. The un-suppress itself
+   * fires the emit() → ensureLatexTypeset for the new value (no separate pre-
+   * warm needed); the fade gives it time to land. finishLatexEdit unmounts. */
+  commitLatexEdit() {
+    const editing = this.latexEditing;
+    if (!editing || editing.closing) return;
+    if (this.previewDelta) this.commitPreview();
+    this.latexEditing = { itemId: editing.itemId, closing: true };
+  }
+
+  /** Command. Ends the closing crossfade — unmounts the controller. Called by
+   * LatexEditController when its fade-out transition completes. */
+  finishLatexEdit() {
+    this.latexEditing = null;
+  }
+
+  /** Command. Cancels the edit (drops the live preview, no undo unit) and exits
+   * immediately (no crossfade — nothing changed on the canvas). */
+  cancelLatexEdit() {
+    this.latexEditing = null;
+    this.cancelPreview();
+  }
+
+  /** Command. The latex twin of dismissTextEdit: the ONE decision every mid-edit
+   * boundary calls — commit if the edited item still exists (one undo unit),
+   * else cancel. No-op when not editing or already closing (so a second dismiss
+   * during the fade is inert). */
+  dismissLatexEdit() {
+    if (!this.latexEditing || this.latexEditing.closing) return;
+    const stillExists = !!this.state().items?.[this.latexEditing.itemId];
+    if (stillExists) this.commitLatexEdit();
+    else this.cancelLatexEdit();
+  }
+
+  /** Query. The itemId of whichever in-place edit (text OR latex) is active, or
+   * null. The ONE thing every "selection/slide/mode changed mid-edit" guard
+   * reads so it need not know which editor is open. */
+  get editingItemId() {
+    return this.textEditing?.itemId ?? this.latexEditing?.itemId ?? null;
+  }
+
+  /** Command. Dismisses whichever in-place edit (text or latex) is active — the
+   * single gate slide-switch / selection-change / present-entry / delete /
+   * purge all call. Each dismiss is a no-op when its editor isn't open, so this
+   * is safe to call unconditionally. */
+  dismissEdit() {
+    this.dismissTextEdit();
+    this.dismissLatexEdit();
   }
 
   // ── Item operations ────────────────────────────────────────────────────────
@@ -1306,7 +1398,7 @@ export class PowerRPApp {
     // commit() below, which writes `this.doc` directly and does not know
     // about a live previewDelta (manifest: "item deletion while editing ...
     // must all commit ... never strand the overlay").
-    this.dismissTextEdit();
+    this.dismissEdit();
     let doc = this.doc;
     for (const id of ids) doc = keyframed(doc, this.slideIndex, ["items", id, "active"], false);
     this.commit(doc);
@@ -1367,8 +1459,9 @@ export class PowerRPApp {
     // OTHER item (not in `ids`) still gets the normal commit-before-mutate
     // (dismissTextEdit's existence check passes) so ITS in-progress text
     // survives an unrelated purge.
-    if (ids.includes(this.textEditing?.itemId)) this.cancelTextEdit();
-    else this.dismissTextEdit();
+    const editId = this.editingItemId;
+    if (editId !== null && ids.includes(editId)) { this.cancelTextEdit(); this.cancelLatexEdit(); }
+    else this.dismissEdit();
     let doc = this.doc;
     for (const id of ids) doc = withItemPurged(doc, id);
     this.commit(doc);

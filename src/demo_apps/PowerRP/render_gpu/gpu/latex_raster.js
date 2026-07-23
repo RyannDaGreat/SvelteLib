@@ -417,6 +417,28 @@ function resolveLatexGlyphs(svg) {
     const m = rootInv.multiply(useCTM); // screen-cancel → root viewBox coords
     glyphs.push({ d: transformSvgPathD(d, m) });
   }
+  // MathJax draws RULES (fraction bars, √ vinculums, \overline, matrix/array
+  // lines) as filled `<rect>`s — NOT <use> glyphs — so a use-only flattener drops
+  // every bar (invisible fraction/root in the vector render, while the raster +
+  // MathLive editor show them → the "editing looks right, static is missing bars"
+  // bug). Convert each rule <rect> to a filled-rect `d`, baked through its OWN CTM
+  // exactly like a glyph, into the SAME list (the plugin fills them with `ink`).
+  // Skip <defs> rects (clip/template geometry, not drawn) and zero-area rects.
+  for (const r of svg.querySelectorAll("rect")) {
+    if (r.closest("defs")) continue;
+    const x = parseFloat(r.getAttribute("x") || "0");
+    const y = parseFloat(r.getAttribute("y") || "0");
+    const w = parseFloat(r.getAttribute("width") || "0");
+    const h = parseFloat(r.getAttribute("height") || "0");
+    if (!(w > 0) || !(h > 0)) continue;
+    const rectCTM = r.getScreenCTM();
+    if (!rectCTM) continue;
+    const m = rootInv.multiply(rectCTM); // screen-cancel → root viewBox coords
+    // Explicit closed quad (H/V are transform-safe in transformSvgPathD, but the
+    // full path is unambiguous under any CTM including the root y-flip).
+    const d = `M${x} ${y}H${x + w}V${y + h}H${x}Z`;
+    glyphs.push({ d: transformSvgPathD(d, m) });
+  }
   return { glyphs, viewBox };
 }
 

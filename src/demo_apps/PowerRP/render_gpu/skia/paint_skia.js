@@ -44,6 +44,7 @@ import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH } from "../ir.js
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import * as T from "../../core/transform.js";
+import { fitBox } from "../../core/geometry.js";
 
 const RAD2DEG = 180 / Math.PI;
 
@@ -287,9 +288,18 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity) {
  */
 function drawLatexVector(CanvasKit, canvas, cmd, opacity) {
   const { viewBox, glyphs } = cmd;
-  const sx = cmd.w / viewBox.w, sy = cmd.h / viewBox.h;
+  // preserveAspect (default): UNIFORM scale-to-FIT the equation into the box,
+  // centered (letterbox) — no aspect squash. Otherwise a non-uniform box→box
+  // stretch (the legacy path, kept for preserveAspect === false).
+  let sx, sy, ox = 0, oy = 0;
+  if (cmd.preserveAspect !== false) {
+    const f = fitBox(viewBox.w, viewBox.h, cmd.w, cmd.h);
+    sx = sy = f.scale; ox = f.offsetX; oy = f.offsetY;
+  } else {
+    sx = cmd.w / viewBox.w; sy = cmd.h / viewBox.h;
+  }
   canvas.save();
-  canvas.translate(cmd.x, cmd.y);
+  canvas.translate(cmd.x + ox, cmd.y + oy);
   canvas.scale(sx, sy);
   canvas.translate(-viewBox.minX, -viewBox.minY);
   for (const g of glyphs) {

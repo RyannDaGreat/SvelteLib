@@ -205,6 +205,18 @@
      transparent-overlay WYSIWYG rewrite). Derived from --a-selection so it tracks
      the active theme, like --a-asset-dropzone above. */
   --a-text-edit-selection: color-mix(in srgb, var(--a-selection) 35%, transparent);
+  /* WYSIWYG latex editor enter/exit crossfade duration — masks the small
+     MathLive(KaTeX) ↔ MathJax(tex-svg) glyph-metric pop at the editor swap.
+     MUST equal LatexEditController's CROSSFADE_MS (JS drives the unmount timer;
+     this drives the opacity transition — they must agree). */
+  --a-latex-edit-crossfade: 140ms;
+  /* MathLive selection theming (derived from --a-selection, theme-tracking like
+     --a-text-edit-selection): a TRANSLUCENT selection band so the equation
+     glyphs read THROUGH it (the selection never repaints the text — the caret/
+     selection-color stay the ink, set inline — so there is never white-on-white),
+     and a fainter "contains" highlight for the enclosing group (fraction/root). */
+  --a-latex-edit-selection: color-mix(in srgb, var(--a-selection) 30%, transparent);
+  --a-latex-edit-contains: color-mix(in srgb, var(--a-selection) 14%, transparent);
   --a-key-chip-h: 18px; /* THE key-chip height (one standard; value PENDING USER RATIFICATION) */
 
   /* SplitPane handles — thin, per annotator reference */
@@ -823,6 +835,62 @@ body,
   pointer-events: none;
   opacity: 0;
 }
+
+/* WYSIWYG LATEX EDITING (MathLive overlay). Same world-pose ROOT convention as
+   the text editor: positioned at the item's world top-left (inline left/top),
+   CSS-transformed into the item's pose (rotate + scale, inline), transform-origin
+   TOP-LEFT, in the .render-area frame above the .scene canvas. UNLIKE text, the
+   canvas equation is SUPPRESSED while this is open (MathJax has no caret to
+   self-draw), so the <math-field> is the only visible equation; on commit the
+   canvas re-typesets and this fades out (masking the KaTeX↔tex-svg glyph pop). */
+.latex-edit-overlay-root {
+  position: absolute;
+  transform-origin: top left;
+  z-index: 2;
+}
+/* Fade layer = the widget box (inline w/h, LOCAL world units); the field is
+   absolutely positioned inside it. Opacity crossfades enter/exit (toggled by
+   .latex-edit-shown from the controller). */
+.latex-edit-fade {
+  position: relative;
+  opacity: 0;
+  transition: opacity var(--a-latex-edit-crossfade) ease;
+}
+.latex-edit-fade.latex-edit-shown {
+  opacity: 1;
+}
+/* The MathLive field host: strip its default chrome (border/background/padding)
+   so only the equation shows, matching the bare canvas render. Sizes to its
+   content (width:max-content → offsetWidth is the natural width the controller
+   measures), pinned top-left and scaled inline to FILL the box (box-fill scale,
+   transform-origin top-left to match the canvas box→box map). */
+.latex-edit-field {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: top left;
+  width: max-content;
+  border: none;
+  background: transparent;
+  padding: 0;
+  /* MathLive theming (its documented custom properties) so selection is ALWAYS
+     legible on our editor background — no browser-default white-on-white. The
+     selection BAND is a translucent accent (glyphs read through); the selection
+     TEXT color + caret are the equation ink (set inline, since ink is dynamic),
+     so selecting never changes the glyph color. */
+  --selection-background-color: var(--a-latex-edit-selection);
+  --contains-highlight-background-color: var(--a-latex-edit-contains);
+}
+/* Hide MathLive's built-in chrome (the virtual-keyboard + menu toggle buttons):
+   this is an EMBEDDED in-canvas editor, not a standalone widget, so the toggles
+   are unwanted UI AND — decisively — they'd inflate the field's measured natural
+   width, breaking the box-fill match against the canvas. Both are exported
+   shadow parts, so ::part reaches them from here. */
+.latex-edit-field::part(virtual-keyboard-toggle),
+.latex-edit-field::part(menu-toggle) {
+  display: none;
+}
+
 /* The floating PPT-style format toolbar, above the text box. It lives in the
    overlay root (world-transformed), so it COUNTER-SCALES by 1/scale (inline) to
    stay a fixed on-screen size — a toolbar must not rotate/zoom with the text.

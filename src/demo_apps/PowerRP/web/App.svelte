@@ -533,6 +533,10 @@
     { keys: ["Cmd", "Plus"], label: "Bigger", when: (c) => c.textEditing },
     { keys: ["Cmd", "Minus"], label: "Smaller", when: (c) => c.textEditing },
     { keys: ["Esc"], label: "Done editing", when: (c) => c.textEditing },
+    // WYSIWYG LATEX EDITING: while a MathLive field is open the bar announces the
+    // exit gesture. DISPLAY-ONLY (the field itself is a typing target, so
+    // onKeydown early-returns — LatexEditController's own Escape handler commits).
+    { keys: ["Esc"], label: "Done editing", when: (c) => c.latexEditing },
   ];
   /** Command. (Re)builds the shortcut registry from the keybinding registry +
    * hand entries — also how a rebind takes effect (createShortcuts has no
@@ -576,12 +580,15 @@
       // makes onKeydown below early-return, so these entries are DISPLAY-ONLY,
       // like the modifier/A-key hints — they announce the capability in the bar).
       textEditing: app.textEditing !== null,
+      // WYSIWYG latex editing (MathLive overlay): true while a latex field is
+      // open — gates the "Done editing" hint (the field owns its own keys).
+      latexEditing: app.latexEditing !== null,
       app,
     };
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged; app.textEditing;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged; app.textEditing; app.latexEditing;
     const base = app.shortcuts.hints(shortcutCtx());
     // While a modal transform is live, LEAD the bar with its announcement —
     // mode · active axis · typed buffer — so the live state is the first thing
@@ -622,19 +629,28 @@
    * click (color pickers, B/I/U, size stepper) never dismisses.
    */
   function onPointerDownCapture(e) {
-    if (!app.textEditing) return;
-    if (e.target.closest(".text-edit-overlay-root")) return; // inside the editor/toolbar — not a click-away
-    app.dismissTextEdit();
+    if (!app.textEditing && !app.latexEditing) return;
+    // Covers BOTH in-place editors' roots (the text overlay/toolbar AND the
+    // MathLive latex overlay) in one check — a click inside either is not a
+    // click-away. dismissEdit dismisses whichever is open (no-op otherwise).
+    if (e.target.closest(".text-edit-overlay-root, .latex-edit-overlay-root")) return;
+    app.dismissEdit();
+  }
+
+  /**
+   * Query. Is `el` a text-entry target that owns keystrokes, so app shortcuts
+   * must NOT fire while it is focused? Covers native inputs, contenteditable,
+   * AND the MathLive `<math-field>` custom element — its focused
+   * `document.activeElement` is the host tag (NOT an INPUT and NOT reporting
+   * isContentEditable), so without the MATH-FIELD case canvas shortcuts would
+   * fire while the user types math (a correctness bug, not just jank).
+   */
+  function isTypingTarget(el) {
+    return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.tagName === "MATH-FIELD" || el.isContentEditable);
   }
 
   function onKeydown(e) {
-    const el = document.activeElement;
-    // isContentEditable added alongside the SPACEBAR-opens-palette binding
-    // (manifest Round 12B): no contenteditable exists in the app YET (rich
-    // text is future work), but the guard is the general "am I typing text
-    // right now" check the spec calls for, so it belongs here rather than
-    // waiting for rich text to reintroduce the same gap.
-    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+    if (isTypingTarget(document.activeElement)) return;
     if (app.mode === "present") return; // PresentMode owns its keys
     if (app.paletteOpen) return; // palette owns its keys
     if (app.shortcuts.dispatch(e, shortcutCtx())) e.preventDefault();
@@ -653,8 +669,7 @@
    * palette-open). Hash-dedup is explicitly DEFERRED (user, 13.3).
    */
   function onPaste(e) {
-    const el = document.activeElement;
-    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+    if (isTypingTarget(document.activeElement)) return;
     if (app.mode === "present" || app.paletteOpen) return;
     const files = [...(e.clipboardData?.files ?? [])];
     if (!files.length) return; // no OS files — defer entirely to the existing Ctrl+V path

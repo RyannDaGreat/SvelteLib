@@ -103,6 +103,31 @@ export function unionRect(rects) {
 }
 
 /**
+ * Pure function. Scale-to-FIT: the largest content-aspect rectangle that fits
+ * inside boxW×boxH, CENTERED (letterbox). Returns the UNIFORM scale (so the
+ * content keeps its aspect — no squash) plus the top-left offset that centers
+ * the scaled content in the box. The complement of a box→box stretch: used to
+ * place a latex equation (or any fixed-aspect content) in an arbitrary widget
+ * box without distortion.
+ *
+ * Args:
+ *   contentW, contentH (number): the content's natural size (any units)
+ *   boxW, boxH (number): the target box size (same-ish units)
+ *
+ * Returns:
+ *   {scale, offsetX, offsetY} — draw the content at (offsetX, offsetY) scaled
+ *   uniformly by `scale` to sit centered inside the box.
+ *
+ * @example fitBox(100, 50, 400, 400) // {scale: 4, offsetX: 0, offsetY: 100}
+ * @example fitBox(50, 100, 400, 400) // {scale: 4, offsetX: 100, offsetY: 0}
+ * @example fitBox(10, 10, 100, 100) // {scale: 10, offsetX: 0, offsetY: 0}
+ */
+export function fitBox(contentW, contentH, boxW, boxH) {
+  const scale = Math.min(boxW / contentW, boxH / contentH);
+  return { scale, offsetX: (boxW - contentW * scale) / 2, offsetY: (boxH - contentH * scale) / 2 };
+}
+
+/**
  * Pure function. The target top-left `x` (or `y`, by passing h/height in
  * place of w/width) that makes a box of size `size` share the given `edge`
  * of a selection's union AABB span `[lo, hi]` (lo = union.x, hi = union.x+w

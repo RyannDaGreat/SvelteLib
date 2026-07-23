@@ -53,6 +53,7 @@ import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, pushTran
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
+import { fitBox } from "../core/geometry.js";
 import { DEFAULT_TEXT_SIZE } from "./skia/text_layout.js";
 import { richTextDraws } from "../core/richtext.js";
 
@@ -272,8 +273,16 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       // flip), the same shape emitLensSVG's `magnify` uses.
       const vb = cmd.viewBox;
       if (cmd.glyphs.length === 0 || vb.w <= 0 || vb.h <= 0) return "";
-      const sx = cmd.w / vb.w, sy = cmd.h / vb.h;
-      const boxT = `translate(${fmt(cmd.x - vb.minX * sx)} ${fmt(cmd.y - vb.minY * sy)}) scale(${fmt(sx)} ${fmt(sy)})`;
+      // preserveAspect (default): UNIFORM fit + center (letterbox) so export
+      // matches the on-screen render; else the legacy non-uniform box→box scale.
+      let sx, sy, ox = 0, oy = 0;
+      if (cmd.preserveAspect !== false) {
+        const f = fitBox(vb.w, vb.h, cmd.w, cmd.h);
+        sx = sy = f.scale; ox = f.offsetX; oy = f.offsetY;
+      } else {
+        sx = cmd.w / vb.w; sy = cmd.h / vb.h;
+      }
+      const boxT = `translate(${fmt(cmd.x + ox - vb.minX * sx)} ${fmt(cmd.y + oy - vb.minY * sy)}) scale(${fmt(sx)} ${fmt(sy)})`;
       const paths = cmd.glyphs
         .map((gl) => `<path d="${xmlEscape(gl.d)}" fill="${rgbaToCss(parseColor(gl.fill))}"/>`)
         .join("");

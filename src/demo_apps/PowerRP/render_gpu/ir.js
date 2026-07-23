@@ -370,8 +370,10 @@ export function video({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh
  * @example latexVector({ref: "latex:x^2:1", x: 0, y: 0, w: 40, h: 20, glyphs: [{d: "M0 0L10 10", fill: "#000"}], viewBox: {minX: 0, minY: 0, w: 100, h: 50}}).op // "latexVector"
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).glyphs // []
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [{d: "M0 0", fill: "#f00"}], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).preserveAspect // true
+ * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}, preserveAspect: false}).preserveAspect // false
  */
-export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1 }) {
+export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, preserveAspect = true }) {
   if (typeof ref !== "string") throw new Error(`latexVector: "ref" must be a string, got ${JSON.stringify(ref)}`);
   requireFinite("latexVector", { x, y, w, h, opacity, sx, sy, sw, sh });
   if (!Array.isArray(glyphs)) throw new Error(`latexVector: "glyphs" must be an array, got ${JSON.stringify(glyphs)}`);
@@ -386,6 +388,10 @@ export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx 
   });
   return {
     op: "latexVector", ref, x, y, w, h, opacity,
+    // preserveAspect (default TRUE): the backends UNIFORM-scale the equation to
+    // FIT the box (centered/letterboxed, no squash) instead of a non-uniform
+    // box→box stretch. The user's default for latex is aspect-preserved.
+    preserveAspect: preserveAspect !== false,
     src: sourceRect(sx, sy, sw, sh),
     glyphs: outGlyphs,
     viewBox: { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h },
