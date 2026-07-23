@@ -179,6 +179,27 @@
   --a-upload-bar-fill: var(--a-selection);
   --a-upload-spinner-size: 22px;
   --a-upload-spin-period: 0.8s; /* one full rotation of the indeterminate ring */
+  /* Asset THUMBNAIL + BADGE (manifest #25): a rendered preview bitmap (PDF page
+     1) is letterboxed on paper white (a document, not a photo — never cropped);
+     the corner badge is a dark chip (readable over any thumbnail) carrying
+     generic text (PDF page count, future video duration) + an optional glyph. */
+  --a-thumb-paper: #ffffff; /* PDF/doc thumbnails assume paper white behind the letterbox */
+  --a-badge-bg: rgba(0, 0, 0, 0.72); /* dark chip, reads over light OR dark thumbnails */
+  --a-badge-fg: #ffffff;
+  --a-badge-pad-y: var(--a-sp-1);
+  --a-badge-pad-x: var(--a-sp-2);
+  --a-badge-gap: 3px; /* icon↔text gap inside the badge; between --a-sp-1 (2) and --a-sp-2 (4) */
+  /* Self-rendering FONT picker (manifest #26): each option in its own face, a
+     larger preview beside the menu on hover. Option rows are a touch bigger than
+     UI text so a typeface actually READS; the preview steps up from name → sample
+     → pangram so shape, spacing, and rhythm are all visible. */
+  --a-fp-menu-w: calc(var(--a-control-h) * 6);
+  --a-fp-item-size: 1rem;
+  --a-fp-menu-max-h: 320px;
+  --a-fp-preview-w: 260px;
+  --a-fp-name-size: 1.9rem;
+  --a-fp-sample-size: 1.4rem;
+  --a-fp-pangram-size: 0.95rem;
   /* The text-edit ::selection band. Translucent so the SKIA glyphs beneath the
      transparent contenteditable read THROUGH a normal-looking selection (the
      transparent-overlay WYSIWYG rewrite). Derived from --a-selection so it tracks
@@ -838,6 +859,106 @@ body,
 .text-format-font {
   width: calc(var(--a-control-h) * 4);
 }
+
+/* ── Self-rendering FontPicker (manifest #26). Bespoke dropdown: trigger shows
+   the current font in its own face; the menu lists every option in ITS OWN
+   typeface; hovering/arrowing an option shows a larger preview panel beside the
+   menu. Styling here (no <style> block in the component — web/ convention). ── */
+.fontpicker {
+  position: relative;
+  width: 100%;
+}
+.fp-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  width: 100%;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: var(--a-hairline) solid var(--border);
+  cursor: pointer;
+}
+.fp-trigger:hover {
+  background: var(--a-hover-bg);
+}
+.fp-trigger-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.fp-caret {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+/* The popover holds the option menu and, beside it, the hover preview. */
+.fp-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: var(--a-sp-1);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+  box-shadow: var(--a-palette-shadow);
+}
+.fp-menu {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: var(--a-fp-menu-w);
+  max-height: var(--a-fp-menu-max-h);
+  overflow-y: auto;
+}
+.fp-item {
+  padding: var(--a-sp-2) var(--a-sp-3);
+  font-size: var(--a-fp-item-size);
+  line-height: 1.25;
+  color: var(--fg);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fp-item.active {
+  background: var(--a-hover-bg);
+}
+.fp-item.selected {
+  background: color-mix(in srgb, var(--a-selection) 22%, transparent);
+}
+/* Larger preview panel, beside the menu — name, sample, pangram in the face. */
+.fp-preview {
+  width: var(--a-fp-preview-w);
+  padding: var(--a-sp-4);
+  border-left: var(--a-hairline) solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+  color: var(--fg);
+  overflow: hidden;
+}
+.fp-preview-name {
+  font-size: var(--a-fp-name-size);
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fp-preview-sample {
+  font-size: var(--a-fp-sample-size);
+  line-height: 1.1;
+  color: var(--fg-dim);
+}
+.fp-preview-pangram {
+  font-size: var(--a-fp-pangram-size);
+  line-height: var(--a-text-line-height);
+}
 /* The small color chip inside a color/highlight button (over the checker for a
    transparent highlight). */
 .text-format-swatch {
@@ -1136,6 +1257,42 @@ body,
   aspect-ratio: 1 / 1;
   border: var(--a-hairline) solid var(--border);
   background: var(--control-bg);
+}
+
+/* Rendered PREVIEW bitmap (manifest #25 — a PDF first-page thumbnail). Unlike a
+   photo (cover-fit, cropped) a document page is letterboxed (contain) on paper
+   white so the whole page reads. Fills the tile like Thumbnail/.vidthumb-img. */
+.asset-explorer .ae-thumb-img,
+.assetfield .ae-thumb-img,
+.ae-thumb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--a-thumb-paper);
+  cursor: pointer;
+}
+
+/* Corner BADGE (manifest #25) — generic text (PDF page count) + optional glyph,
+   a dark chip in the TOP-LEFT (clear of the hover buttons: insert top-right,
+   trash bottom-right, copy-path bottom-left). Non-interactive overlay. */
+.ae-badge {
+  position: absolute;
+  top: var(--a-sp-1);
+  left: var(--a-sp-1);
+  display: flex;
+  align-items: center;
+  gap: var(--a-badge-gap);
+  padding: var(--a-badge-pad-y) var(--a-badge-pad-x);
+  background: var(--a-badge-bg);
+  color: var(--a-badge-fg);
+  font-size: var(--a-font-sm);
+  line-height: 1;
+  pointer-events: none;
+}
+
+.ae-badge-text {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Kind icon centered on video/sound tiles (no still image to show). */

@@ -26,7 +26,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import Dropdown from "../../../lib/Dropdown.svelte";
+  import FontPicker from "./FontPicker.svelte";
   import ColorPicker from "../../../lib/ColorPicker.svelte";
   import { commonStyle, paragraphRanges, paraStyleFor } from "../core/richtext.js";
   import { fontOptions } from "../render_gpu/fonts.js";
@@ -161,9 +161,10 @@
 
   <span class="text-format-sep"></span>
 
-  <!-- Font family: SvelteLib Dropdown (never native <select> — manifest). -->
+  <!-- Font family: self-rendering FontPicker — each option in its OWN typeface,
+       a larger preview on hover (manifest #26). Includes uploaded font assets. -->
   <div class="text-format-font">
-    <Dropdown items={fonts} value={common.font ?? "system"} onchange={(v) => onstyle({ font: v })} />
+    <FontPicker options={fonts} value={common.font ?? "system"} onchange={(v) => onstyle({ font: v })} />
   </div>
 
   <span class="text-format-sep"></span>

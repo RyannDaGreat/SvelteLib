@@ -29,6 +29,12 @@ import { registerAll } from "../plugins/index.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
 import { browserSetting } from "./settings.js";
+// Fonts-as-asset seam (#26): register an uploaded font file as a SELECTABLE
+// family (render_gpu/fonts.js dynamic registry) + load it into the browser.
+import { registerFontFamily, clearDynamicFonts, fontAssetId, fontDescriptor } from "../render_gpu/fonts.js";
+import { loadDynamicFont } from "./fontLoader.js";
+// Asset thumbnail generalization (#25): pure tile-presentation + page-count badge.
+import { assetTilePresentation, pageCountBadge } from "./assetThumbnail.js";
 // untrack: read/write the transient filmstripStatus overlay from inside the
 // #wireFilmstripFrames $effect WITHOUT registering it as a dependency (else the
 // effect would re-run on its own write — effect_update_depth_exceeded). $state/
@@ -83,18 +89,30 @@ export const THEMES = [
  *     file (File|Blob): a clipboard or drop file, read via its `.type`.
  *
  * Returns:
- *     "image" | "video" | "sound" | "other"
+ *     "image" | "video" | "sound" | "pdf" | "font" | "other"
+ *
+ * PDF and FONT have unreliable/empty MIME types across browsers, so they fall
+ * back to the filename extension (matching the server's asset_kind classes).
+ * This only picks the OPTIMISTIC upload tile's icon; the server list is the
+ * source of truth for the settled kind.
  *
  * Examples:
- *     >>> assetKindForFile({type: "image/png"})
+ *     >>> assetKindForFile({type: "image/png", name: "a.png"})
  *     'image'
- *     >>> assetKindForFile({type: "video/quicktime"})
+ *     >>> assetKindForFile({type: "video/quicktime", name: "clip.mov"})
  *     'video'
+ *     >>> assetKindForFile({type: "", name: "paper.pdf"})
+ *     'pdf'
+ *     >>> assetKindForFile({type: "", name: "Handwriting.ttf"})
+ *     'font'
  */
 function assetKindForFile(file) {
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("video/")) return "video";
   if (file.type.startsWith("audio/")) return "sound";
+  const ext = (file.name ?? "").split(".").pop()?.toLowerCase() ?? "";
+  if (file.type === "application/pdf" || ext === "pdf") return "pdf";
+  if (["ttf", "otf", "woff", "woff2"].includes(ext)) return "font";
   return "other";
 }
 
@@ -1623,12 +1641,81 @@ export class PowerRPApp {
   }
 
   /** Command. Load a project from the server by name into the editor (same
-   *  repair + binding migration as loadFile). UI resets mirror loadFile. */
+   *  repair + binding migration as loadFile). UI resets mirror loadFile. A new
+   *  project's font assets must re-register so a text run's `font` id resolves,
+   *  so dynamic fonts are cleared (drop the prior project's) then re-synced. */
   async loadProject(name) {
     const { doc } = await projectApi.loadProject(name);
+    clearDynamicFonts(); // drop the previous project's uploaded font families
     this.commit(this.repaired(doc)); // repaired() includes bindings migration
     this.slideIndex = 0;
     this.selection = null;
+    this.syncFontAssets(name); // fire-and-forget: register + load this project's font assets
+  }
+
+  // ── Fonts as an ASSET (#26): a project-uploaded font file becomes a
+  // SELECTABLE family. registerFontAssets makes each font-kind asset resolve
+  // (render_gpu/fonts.js dynamic registry) AND loads it into the browser so it
+  // actually renders. Called from the Asset Explorer's re-list (any project /
+  // upload change) and after loadProject — one registration pathway. ──────────
+
+  /** Command. Register every font-kind asset in `assetList` as a selectable
+   *  family and load its face into the browser. Idempotent (re-registering a
+   *  family overwrites; the loader skips an already-loaded face). An invalid
+   *  font file surfaces LOUDLY (console.error) but never blocks the others or
+   *  the asset list (#26 "loud on invalid font"). Returns the ids registered. */
+  registerFontAssets(assetList) {
+    const ids = [];
+    for (const a of assetList ?? []) {
+      if (a.kind !== "font") continue;
+      const id = fontAssetId(a.name);
+      const { cssFamily, url } = fontDescriptor(id).dynamic
+        ? fontDescriptor(id)
+        : registerFontFamily(id, { filename: a.name, url: projectApi.assetUrl(a.url), title: a.name });
+      ids.push(id);
+      loadDynamicFont(cssFamily, url ?? projectApi.assetUrl(a.url)).catch((e) => {
+        console.error(`registerFontAssets: ${e.message}`);
+      });
+    }
+    return ids;
+  }
+
+  /** Command. List the current project's assets and register its font assets
+   *  (loadProject path). Fire-and-forget; errors surface loudly. */
+  async syncFontAssets(name = this.projectName()) {
+    try {
+      this.registerFontAssets(await projectApi.listAssets(name));
+    } catch (e) {
+      console.error(`syncFontAssets: could not list assets for "${name}":`, e);
+    }
+  }
+
+  /** Command (browser: rasterizes via pdfjs, persists via the server thumb
+   *  cache). Ensure an asset has a cached {thumbnail, badge}. For a PDF with no
+   *  server-cached thumbnail yet, rasterize page 1 client-side + POST it so it
+   *  persists for next session. Returns {thumbnail, badge} for immediate tile
+   *  display, or null when nothing to render (already cached / not a
+   *  client-thumbnail kind). Rejects loudly on a rasterize/store failure so the
+   *  caller shows the plain kind icon (never a silently-blank tile). */
+  async ensureAssetThumbnail(asset, name = this.projectName()) {
+    const pres = assetTilePresentation(asset);
+    if (!pres.needsClientThumbnail) return null; // already cached, or a kind we don't rasterize
+    const { renderPdfThumbnail } = await import("../render_gpu/gpu/asset_thumbnail.js");
+    const { dataUrl, pageCount } = await renderPdfThumbnail(projectApi.assetUrl(asset.url));
+    const badge = pageCountBadge(pageCount);
+    // Persist for next session — BEST-EFFORT. The thumbnail is already rendered
+    // (returned below); a disk-cache write failure must not lose it. If the backend
+    // exposes no thumb route (e.g. a frontend-only harness / a backend hiccup), learn
+    // it ONCE and stop retrying — thumbnails still render in-session. A failed
+    // optional-cache write is non-fatal, so warn ONCE (not error, not per-asset).
+    if (!this._thumbPersistUnavailable) {
+      const png = await (await fetch(dataUrl)).blob();
+      projectApi.storeThumb(name, asset.name, asset.mtime, badge, png).catch((e) => {
+        this._thumbPersistUnavailable = true;
+        console.warn(`ensureAssetThumbnail: thumbnail disk-cache unavailable (${e?.message ?? e}); rendering in-session only.`);
+      });
+    }
+    return { thumbnail: dataUrl, badge };
   }
 
   /** Command. Download the current project as a .zip (server-built from the
@@ -1944,6 +2031,7 @@ export class PowerRPApp {
    * UI resets mirror loadFile: slide 0, nothing selected.
    */
   clearDoc() {
+    clearDynamicFonts(); // a fresh doc has no project → drop uploaded font families
     this.commit(newDocument());
     this.slideIndex = 0;
     this.selection = null;

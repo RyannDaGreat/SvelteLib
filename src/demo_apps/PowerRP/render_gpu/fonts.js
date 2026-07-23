@@ -77,7 +77,149 @@ export const FONTS = {
     fallback: "monospace",
     files: { regular: "JetBrainsMono-Regular.ttf", bold: "JetBrainsMono-Bold.ttf" },
   },
+  // ── Round 26 batch: well-known display/body families (OFL/Apache; see
+  // ../fonts/README.md). Each ships Regular + Bold static instances, so they
+  // flow through EVERY seam automatically (committedFaces → fontLoader +
+  // Skia providers + PDF/SVG embed), exactly like the originals above. ──
+  roboto: {
+    title: "Roboto",
+    kind: "sans",
+    cssFamily: "PowerRP Roboto",
+    fallback: "sans-serif",
+    files: { regular: "Roboto-Regular.ttf", bold: "Roboto-Bold.ttf" },
+  },
+  poppins: {
+    title: "Poppins",
+    kind: "sans",
+    cssFamily: "PowerRP Poppins",
+    fallback: "sans-serif",
+    files: { regular: "Poppins-Regular.ttf", bold: "Poppins-Bold.ttf" },
+  },
+  montserrat: {
+    title: "Montserrat",
+    kind: "sans",
+    cssFamily: "PowerRP Montserrat",
+    fallback: "sans-serif",
+    files: { regular: "Montserrat-Regular.ttf", bold: "Montserrat-Bold.ttf" },
+  },
+  oswald: {
+    title: "Oswald",
+    kind: "sans", // condensed display sans
+    cssFamily: "PowerRP Oswald",
+    fallback: "sans-serif",
+    files: { regular: "Oswald-Regular.ttf", bold: "Oswald-Bold.ttf" },
+  },
+  merriweather: {
+    title: "Merriweather",
+    kind: "serif",
+    cssFamily: "PowerRP Merriweather",
+    fallback: "serif",
+    files: { regular: "Merriweather-Regular.ttf", bold: "Merriweather-Bold.ttf" },
+  },
+  "playfair-display": {
+    title: "Playfair Display",
+    kind: "serif", // high-contrast display serif
+    cssFamily: "PowerRP Playfair Display",
+    fallback: "serif",
+    files: { regular: "PlayfairDisplay-Regular.ttf", bold: "PlayfairDisplay-Bold.ttf" },
+  },
 };
+
+/**
+ * DYNAMIC (project-uploaded) font registry — the "font as an ASSET" seam
+ * (manifest #26). A user uploads a font FILE; it becomes a project asset of
+ * kind "font" and is registered HERE at runtime so it resolves through the
+ * SAME pure functions the committed families use (fontDescriptor →
+ * cssFamilyFor/fontFamilyChain/fontOptions). This keeps ONE resolution point:
+ * glyph_atlas/text_layout/pdf/svg need NO change to render an uploaded family.
+ *
+ * A dynamic descriptor mirrors a committed one but carries `url` (the served
+ * asset path — its bytes live in the project's assets/, NOT ../fonts/) and
+ * `dynamic: true`, and its `files` are null (there is no bundled basename).
+ * The browser FontFace loader (web/fontLoader.js) and the Skia provider seam
+ * consume `dynamicFontFaces()` to actually LOAD the bytes from `url`.
+ *
+ * Keyed by font id (asset id, e.g. "font-asset:MyFace.ttf"). Module-level and
+ * viewer-local: cleared on project switch (clearDynamicFonts) so one project's
+ * uploaded fonts never leak into another.
+ */
+const DYNAMIC_FONTS = {};
+
+/** The font-id prefix marking a project-uploaded font asset (vs a committed id). */
+export const FONT_ASSET_PREFIX = "font-asset:";
+
+/**
+ * Pure function. The stable font id for an uploaded font asset filename — a
+ * prefixed, collision-free id a text run stores in its `font` property.
+ *
+ * @example fontAssetId("Handwriting.ttf") // "font-asset:Handwriting.ttf"
+ * @example fontAssetId("My Font.otf") // "font-asset:My Font.otf"
+ */
+export function fontAssetId(filename) {
+  return `${FONT_ASSET_PREFIX}${filename}`;
+}
+
+/**
+ * Pure function. The unique CSS/Skia family name for an uploaded font asset —
+ * prefixed so a local face can never collide with a committed or OS font.
+ *
+ * @example fontAssetCssFamily("Handwriting.ttf") // "PowerRP Font Handwriting.ttf"
+ */
+export function fontAssetCssFamily(filename) {
+  return `PowerRP Font ${filename}`;
+}
+
+/**
+ * Command (mutates the module-level DYNAMIC_FONTS map). Register an uploaded
+ * font asset as a SELECTABLE family. Idempotent: re-registering the same id
+ * (e.g. a project re-list) overwrites its descriptor. `kind` picks the generic
+ * fallback (serif/mono → serif/monospace, else sans-serif). Loud on a missing
+ * id/url (a caller bug — never a silent no-op).
+ *
+ * @param {string} id - the font id (fontAssetId(filename))
+ * @param {object} spec - {filename, url, kind?, title?}
+ * @returns {object} the stored descriptor
+ */
+export function registerFontFamily(id, spec) {
+  if (!id || !spec || !spec.url) {
+    throw new Error(`registerFontFamily: need a font id and a {url} — got id=${JSON.stringify(id)}, spec=${JSON.stringify(spec)}`);
+  }
+  const kind = spec.kind === "serif" || spec.kind === "mono" ? spec.kind : "sans";
+  const fallback = kind === "serif" ? "serif" : kind === "mono" ? "monospace" : "sans-serif";
+  const descriptor = {
+    title: spec.title || spec.filename || id,
+    kind,
+    cssFamily: fontAssetCssFamily(spec.filename ?? id),
+    fallback,
+    files: { regular: null, bold: null }, // bytes come from `url`, not ../fonts/
+    dynamic: true,
+    url: spec.url,
+  };
+  DYNAMIC_FONTS[id] = descriptor;
+  return descriptor;
+}
+
+/**
+ * Command (mutates DYNAMIC_FONTS). Drop every registered dynamic font — the
+ * project-switch reset (a new project's font assets re-register on load).
+ *
+ * @example // clearDynamicFonts(); fontOptions().every((o) => !o.value.startsWith("font-asset:")) // true
+ */
+export function clearDynamicFonts() {
+  for (const k of Object.keys(DYNAMIC_FONTS)) delete DYNAMIC_FONTS[k];
+}
+
+/**
+ * Query. The registered dynamic faces to LOAD at runtime: {id, cssFamily, url}
+ * per uploaded font asset. web/fontLoader.js turns these into FontFaces and the
+ * Skia provider seam registers them so an uploaded family renders (no tofu).
+ *
+ * @example // after registerFontFamily("font-asset:X.ttf", {filename:"X.ttf", url:"/asset/P/X.ttf"}):
+ * // dynamicFontFaces() // [{id:"font-asset:X.ttf", cssFamily:"PowerRP Font X.ttf", url:"/asset/P/X.ttf"}]
+ */
+export function dynamicFontFaces() {
+  return Object.entries(DYNAMIC_FONTS).map(([id, d]) => ({ id, cssFamily: d.cssFamily, url: d.url }));
+}
 
 /**
  * Pure function. The descriptor for a font id, falling back to DEFAULT_FONT for
@@ -89,7 +231,7 @@ export const FONTS = {
  * @example fontDescriptor("no-such-font").kind // "sans" (degrades to system)
  */
 export function fontDescriptor(id) {
-  return FONTS[id] || FONTS[DEFAULT_FONT];
+  return DYNAMIC_FONTS[id] || FONTS[id] || FONTS[DEFAULT_FONT];
 }
 
 /**
@@ -137,9 +279,12 @@ export function hasEmbeddableFile(id) {
  *
  * @example fontOptions()[0] // {value: "system", label: "System UI"}
  * @example fontOptions().some((o) => o.value === "jetbrains-mono") // true
+ * @example fontOptions().some((o) => o.value === "roboto") // true (Round 26 batch)
  */
 export function fontOptions() {
-  return Object.entries(FONTS).map(([value, d]) => ({ value, label: d.title }));
+  const committed = Object.entries(FONTS).map(([value, d]) => ({ value, label: d.title }));
+  const dynamic = Object.entries(DYNAMIC_FONTS).map(([value, d]) => ({ value, label: d.title }));
+  return [...committed, ...dynamic];
 }
 
 /**
@@ -147,7 +292,7 @@ export function fontOptions() {
  * loader turns into @font-face rules and the PDF backend can pre-embed. Excludes
  * `system` (no file).
  *
- * @example committedFaces().length // 8 (4 families x regular/bold)
+ * @example committedFaces().length // 20 (10 families x regular/bold)
  * @example committedFaces()[0].file.endsWith(".ttf") // true
  */
 export function committedFaces() {
@@ -259,6 +404,10 @@ export const FALLBACK_FACES = [
  */
 export function fontFamilyChain(id) {
   const d = fontDescriptor(id);
-  const primary = d.files.regular ? d.cssFamily : FONTS.inter.cssFamily;
+  // A face with a generic `fallback` has its OWN primary family (committed
+  // families + dynamic uploads); only `system` (empty fallback, no bundled
+  // file) stands in with Inter. So this is behavior-identical for every
+  // committed font AND lets an uploaded family lead its own chain.
+  const primary = d.fallback ? d.cssFamily : FONTS.inter.cssFamily;
   return [primary, ...FALLBACK_FAMILIES];
 }

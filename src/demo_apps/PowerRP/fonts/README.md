@@ -9,7 +9,7 @@ so raster text (WebGPU glyph atlas) and vector text (PDF) share metrics.
 The single home that names these files and maps them to CSS families is
 `web/fonts.js` (the FONTS registry). Nothing else should hardcode a font path.
 
-## Families (all SIL Open Font License 1.1 — redistribution permitted)
+## Families (SIL Open Font License 1.1 unless noted — redistribution permitted)
 
 | id             | Title          | Kind  | Regular / Bold files                              | License |
 |----------------|----------------|-------|---------------------------------------------------|---------|
@@ -19,8 +19,35 @@ The single home that names these files and maps them to CSS families is
 | `lora`         | Lora           | serif | `Lora-Regular.ttf` / `Lora-Bold.ttf`              | [OFL-Lora.txt](./OFL-Lora.txt) — Copyright 2011 The Lora Project Authors (https://github.com/cyrealtype/Lora-Cyrillic), RFN "Lora" |
 | `jetbrains-mono` | JetBrains Mono | mono | `JetBrainsMono-Regular.ttf` / `JetBrainsMono-Bold.ttf` | [OFL-JetBrainsMono.txt](./OFL-JetBrainsMono.txt) — Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono) |
 
-The OFL requires the license text to travel with the fonts — that is what the
-`OFL-*.txt` files are. Do NOT delete them.
+### Round 26 batch — well-known display/body families
+
+Added by the fonts task (#26): a batch of popular families so the dropdown has
+real range beyond the four originals. These are **full static instances** (not
+charset-subset like the originals — the rebuild recipe below subsets on demand)
+pulled from Google Fonts, each with Regular + Bold, so they flow through every
+seam automatically (`committedFaces()` → `web/fontLoader.js` + the Skia providers
++ the PDF/SVG embed path).
+
+| id                 | Title            | Kind  | Regular / Bold files                                    | License |
+|--------------------|------------------|-------|---------------------------------------------------------|---------|
+| `roboto`           | Roboto           | sans  | `Roboto-Regular.ttf` / `Roboto-Bold.ttf`                | [LICENSE-Roboto-Apache.txt](./LICENSE-Roboto-Apache.txt) — **Apache-2.0**, Copyright 2011 Google Inc. |
+| `poppins`          | Poppins          | sans  | `Poppins-Regular.ttf` / `Poppins-Bold.ttf`              | [OFL-Poppins.txt](./OFL-Poppins.txt) — Copyright 2020 The Poppins Project Authors (Indian Type Foundry) |
+| `montserrat`       | Montserrat       | sans  | `Montserrat-Regular.ttf` / `Montserrat-Bold.ttf`        | [OFL-Montserrat.txt](./OFL-Montserrat.txt) — Copyright The Montserrat Project Authors (Julieta Ulanovsky) |
+| `oswald`           | Oswald           | sans  | `Oswald-Regular.ttf` / `Oswald-Bold.ttf`                | [OFL-Oswald.txt](./OFL-Oswald.txt) — Copyright 2016 The Oswald Project Authors |
+| `merriweather`     | Merriweather     | serif | `Merriweather-Regular.ttf` / `Merriweather-Bold.ttf`    | [OFL-Merriweather.txt](./OFL-Merriweather.txt) — Copyright 2020 The Merriweather Project Authors, RFN "Merriweather" |
+| `playfair-display` | Playfair Display | serif | `PlayfairDisplay-Regular.ttf` / `PlayfairDisplay-Bold.ttf` | [OFL-PlayfairDisplay.txt](./OFL-PlayfairDisplay.txt) — Copyright 2017 The Playfair Display Project Authors, RFN "Playfair Display" |
+
+The OFL/Apache licenses require the license text to travel with the fonts — that
+is what the `OFL-*.txt` / `LICENSE-*.txt` files are. Do NOT delete them.
+
+### Font ASSETS (uploaded, per-project — NOT committed here)
+
+Beyond the committed families, a user can **upload a font file** (`.ttf`/`.otf`/
+`.woff`/`.woff2`) as a project asset (server kind `font`). It becomes a
+SELECTABLE family for that project only — registered at runtime through
+`render_gpu/fonts.js`'s dynamic registry (`registerFontFamily`) so it resolves
+through the same pure resolvers as the committed families, and loaded from its
+served asset URL (never bundled into `fonts/`). See `render_gpu/fonts.js`.
 
 ## Fallback faces (Skia text render — NOT user-selectable)
 

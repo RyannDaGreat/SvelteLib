@@ -73,3 +73,35 @@ export function loadFonts() {
   );
   return loadPromise;
 }
+
+// Which dynamic (uploaded) families are already loaded into document.fonts, so
+// re-listing a project's assets never re-fetches an already-registered face.
+const loadedDynamicFamilies = new Set();
+
+/**
+ * Command (registers ONE uploaded font-asset face on document.fonts; awaits its
+ * load). The browser twin of the committed-font loader for the "font as an
+ * ASSET" seam (#26): a project-uploaded family (render_gpu/fonts.js dynamic
+ * registry) becomes a real canvas2D/CSS face loaded from its SERVED asset URL
+ * (not the ../fonts/ glob — the bytes live in the project). Idempotent per
+ * cssFamily. Loud + REJECTS on an invalid font file (a corrupt upload must fail
+ * visibly, per the #26 "loud on invalid font" rule) — but returns early (no
+ * throw) for an already-loaded family or a non-DOM environment.
+ *
+ * @param {string} cssFamily unique family name (fonts.js fontAssetCssFamily)
+ * @param {string} url served asset URL of the font file
+ */
+export async function loadDynamicFont(cssFamily, url) {
+  if (typeof document === "undefined" || !document.fonts) return; // bare node / SSR — nothing to load
+  if (loadedDynamicFamilies.has(cssFamily)) return;
+  const face = new FontFace(cssFamily, `url("${url}")`, { style: "normal", display: "swap" });
+  try {
+    await face.load();
+  } catch (e) {
+    // An invalid/corrupt font file: report LOUDLY and re-raise so the upload
+    // gesture surfaces "not a valid font" (no silent accept of broken bytes).
+    throw new Error(`loadDynamicFont: "${cssFamily}" (${url}) is not a valid font file — ${e.message}`);
+  }
+  document.fonts.add(face);
+  loadedDynamicFamilies.add(cssFamily);
+}

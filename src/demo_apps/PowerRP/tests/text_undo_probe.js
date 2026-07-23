@@ -34,7 +34,9 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  page.on("console", (m) => { if (m.type() === "error") errors.push(`console.error: ${m.text()}`); });
+  // Ignore backend-absent noise: this probe self-spins a FRONTEND-ONLY Vite (no
+  // server.py), so best-effort thumbnail-persist POSTs 404. Orthogonal to undo.
+  page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|thumbnail|\/api\/thumb/i.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
   await sleep(3500); // Skia wasm + fonts + first paint

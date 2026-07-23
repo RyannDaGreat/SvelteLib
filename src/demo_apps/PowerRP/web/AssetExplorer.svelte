@@ -112,9 +112,9 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import Thumbnail from "../../../lib/Thumbnail.svelte";
   import Modal from "../../../lib/Modal.svelte";
-  import VideoThumbnail from "./VideoThumbnail.svelte";
+  import AssetThumb from "./AssetThumb.svelte";
+  import { KIND_ICON } from "./assetThumbnail.js";
   import { assetUrl, ASSET_DRAG_MIME } from "./projectApi.js";
 
   let { app } = $props();
@@ -134,10 +134,6 @@
   let confirmDelete = $state(null);
   let confirmOpen = $state(false);
   let fileInput; // hidden <input type=file> for the Upload button
-
-  // Per-kind fallback icon for assets with no still image (video/sound), and
-  // the small corner badge marking the kind. iconify only (manifest rule).
-  const KIND_ICON = { video: "mdi:play-circle-outline", sound: "mdi:music-note", image: "mdi:image-outline" };
 
   /** Query. Absolute (proxy-aware) URL for an asset's served path. */
   function urlOf(a) {
@@ -163,6 +159,9 @@
       // once its REAL tile is present in this fresh listing — so the swap has
       // no flicker gap (see app.reconcileUploads).
       app.reconcileUploads(assets);
+      // Register any FONT assets as selectable families (#26) — a manual folder
+      // drop or a returning project must offer its uploaded fonts in the dropdown.
+      app.registerFontAssets(assets);
     } catch (e) {
       error = String(e?.message ?? e);
       assets = null;
@@ -418,20 +417,12 @@
             <Tooltip text={`${a.name} (${a.kind}) — drag onto the canvas to insert at a point`}>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="ae-tile" draggable="true" ondragstart={(e) => onTileDragStart(e, a)}>
-                {#if a.kind === "image"}
-                  <Thumbnail src={urlOf(a)} title="" onclick={() => {}} />
-                {:else if a.kind === "video"}
-                  <!-- REAL frame thumbnail (manifest "the MOV doesnt have proper
-                       thumbnails") — client-side <video>+canvas capture, cached
-                       per src (web/VideoThumbnail.svelte). Its own onclick is a
-                       no-op here (double-click below owns the preview open,
-                       matching the image Thumbnail's onclick={() => {}}). -->
-                  <VideoThumbnail src={urlOf(a)} onclick={() => {}} />
-                {:else}
-                  <div class="ae-kind" aria-hidden="true">
-                    <iconify-icon icon={KIND_ICON[a.kind] ?? "mdi:file-outline"} width="28" height="28"></iconify-icon>
-                  </div>
-                {/if}
+                <!-- Generalized tile media + badge (manifest #25): image/video
+                     real thumbnails, a cached-or-rasterized PDF first-page preview
+                     with a page-count badge, else the kind glyph. See AssetThumb /
+                     assetThumbnail.js. onclick is a no-op (double-click below owns
+                     the preview open). -->
+                <AssetThumb {app} asset={a} onclick={() => {}} />
                 <!-- Double-click opens the Modal preview (whole tile is the target). -->
                 <button
                   class="ae-tile-hit"

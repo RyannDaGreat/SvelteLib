@@ -100,6 +100,23 @@ export function uploadAsset(name, file, filename = file.name, onProgress = null)
   });
 }
 
+/** Command. Persist a client-rendered asset THUMBNAIL (manifest #25). `png` is
+ *  the raster bytes (Blob/ArrayBuffer/Uint8Array); `mtime` is the asset's mtime
+ *  (the server cache key — a replaced file regenerates); `badge` is optional
+ *  corner text (e.g. a PDF's page count). The server has no PDF engine, so the
+ *  CLIENT rasterizes page 1 and POSTs it here to persist for next session.
+ *  Returns {ok, thumbnail:<url>, badge}. Throws loudly on a non-OK response. */
+export async function storeThumb(name, filename, mtime, badge, png) {
+  const q = new URLSearchParams({ mtime: String(mtime) });
+  if (badge != null) q.set("badge", String(badge));
+  const res = await fetch(`${BACKEND}/api/thumb/${enc(name)}/${enc(filename)}/?${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "image/png" },
+    body: png,
+  });
+  return jsonOrThrow(res, `storeThumb(${name}, ${filename})`);
+}
+
 /** Command. Delete one asset from a project's assets/ folder (the server also
  *  drops the asset's cached filmstrip frames). Returns {ok, name}. 404s (loud
  *  throw) if the asset does not exist — a stale list is a reportable state. */

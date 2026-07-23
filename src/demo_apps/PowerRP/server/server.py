@@ -68,6 +68,15 @@ ASSETS_SUBDIR = "assets"
 # the same (video, N) is a pure cache hit (no re-extraction). list_assets skips
 # subdirs (frames never pollute the asset library); the ZIP includes them.
 FRAMES_SUBDIR = "frames"
+# Asset THUMBNAIL cache (manifest #25): a small cached preview bitmap + a corner
+# badge for assets that need one rendered (PDF first-page raster + page count).
+# Lives under assets/.thumbs/<file>/ (a subdir, so list_assets skips it — never an
+# asset itself; the ZIP includes it). Keyed by the source asset's mtime so a
+# replaced file regenerates (stale thumbs are ignored, then overwritten on store).
+# The bitmap itself is rasterized CLIENT-SIDE (the server has no PDF engine) and
+# POSTed back here to persist; list_assets attaches a fresh cached thumb inline.
+THUMBS_SUBDIR = ".thumbs"
+THUMB_META_FILENAME = "meta.json"
 # Zero-padding width for cached frame filenames (frame_000.png). 3 digits covers
 # 1000 frames — a filmstrip control that exceeds that is nonsensical, and if it
 # ever needs more this is the single knob. Filenames sort lexicographically ==
@@ -82,12 +91,18 @@ ASSET_CONTENT_TYPES = {
     ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
     ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
     ".m4a": "audio/mp4", ".flac": "audio/flac", ".aac": "audio/aac",
+    ".pdf": "application/pdf",
+    ".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2",
     ".json": "application/json",
 }
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
 VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 SOUND_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
 PDF_EXTS = {".pdf"}
+# Uploadable FONT assets (manifest #26 "fonts as an asset"): a user-supplied
+# font file becomes a project asset of kind "font" and is registered as a
+# selectable family client-side (render_gpu/fonts.js dynamic registry).
+FONT_EXTS = {".ttf", ".otf", ".woff", ".woff2"}
 
 # A project/asset name component: no path separators, no traversal. Enforced on
 # every write path so a crafted name can never escape PROJECTS_DIR.
@@ -355,6 +370,8 @@ def asset_kind(filename):
         'sound'
         >>> asset_kind("paper.pdf")
         'pdf'
+        >>> asset_kind("Handwriting.ttf")
+        'font'
         >>> asset_kind("notes.txt")
         'other'
     """
@@ -367,6 +384,8 @@ def asset_kind(filename):
         return "sound"
     if ext in PDF_EXTS:
         return "pdf"
+    if ext in FONT_EXTS:
+        return "font"
     return "other"
 
 
@@ -405,13 +424,93 @@ def _slide_count(doc_json_path):
         return None
 
 
+def mtime_key(mtime):
+    """
+    Pure function. The canonical MICROSECOND-integer key for a file mtime, used
+    to key the thumbnail cache. Whole seconds are too coarse (a file replaced
+    within the same second would not invalidate); microseconds survive the
+    float→JSON→query-string→float round trip the client key makes.
+
+    Examples:
+        >>> mtime_key(1690000000.123456)
+        1690000000123456
+        >>> mtime_key(0)
+        0
+    """
+    return round(float(mtime) * 1_000_000)
+
+
+def thumbs_dir(name):
+    """Query. Absolute path of a project's asset-thumbnail cache folder."""
+    return os.path.join(assets_dir(name), THUMBS_SUBDIR)
+
+
+def thumb_entry_dir(name, filename):
+    """Query. Absolute path of ONE asset's thumbnail-cache folder (name+file
+    validated as single safe components — never a traversal)."""
+    return os.path.join(thumbs_dir(name), safe_name(filename))
+
+
+def asset_thumb(name, filename, mtime):
+    """
+    Query. The cached thumbnail metadata for an asset if one exists AND is fresh
+    (its stored mtime matches the asset's current mtime), else {} — a stale or
+    absent thumb is simply not attached (the client re-renders + re-stores it).
+
+    Returns {thumbnail: <served url>, badge: <str|None>} on a fresh hit.
+    """
+    meta_path = os.path.join(thumb_entry_dir(name, filename), THUMB_META_FILENAME)
+    if not os.path.isfile(meta_path):
+        return {}
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return {}  # a corrupt meta = a cache miss; the client rebuilds it
+    if int(meta.get("mtime", -1)) != mtime_key(mtime):
+        return {}  # stale: the asset was replaced since this thumb was cached
+    thumb_file = meta.get("thumb")
+    if not thumb_file or not os.path.isfile(os.path.join(thumb_entry_dir(name, filename), thumb_file)):
+        return {}
+    q = urllib.parse.quote
+    sub = f"{THUMBS_SUBDIR}/{filename}/{thumb_file}"
+    return {"thumbnail": f"/asset/{q(name)}/{q(sub, safe='/')}", "badge": meta.get("badge")}
+
+
+def save_thumb(name, filename, mtime, badge, data):
+    """
+    Command (mutates the filesystem). Persist a client-rendered thumbnail PNG for
+    an asset under assets/.thumbs/<file>/, keyed by the asset's mtime, plus a
+    meta.json ({mtime, badge, thumb}). Overwrites any prior thumb for the file
+    (only the freshest is kept). Returns the served thumbnail url.
+    """
+    entry = thumb_entry_dir(name, filename)
+    if os.path.isdir(entry):
+        shutil.rmtree(entry)  # drop the stale thumb + meta before writing the new one
+    os.makedirs(entry, exist_ok=True)
+    key = mtime_key(mtime)
+    thumb_file = f"{key}.png"
+    with open(os.path.join(entry, thumb_file), "wb") as f:
+        f.write(data)
+    meta = {"mtime": key, "badge": badge, "thumb": thumb_file}
+    with open(os.path.join(entry, THUMB_META_FILENAME), "w") as f:
+        json.dump(meta, f)
+    q = urllib.parse.quote
+    sub = f"{THUMBS_SUBDIR}/{filename}/{thumb_file}"
+    return f"/asset/{q(name)}/{q(sub, safe='/')}"
+
+
 def list_assets(name):
     """
     Query. Files directly in a project's assets/ folder (NOT recursive — the
-    frames/ cache subfolder is skipped). Each: {name, size, kind, url}. The
-    assets/ folder IS the source of truth, so this reflects manual drops too
-    (manifest Round 12B: "manually dropping a file into the folder must appear
-    in the library — a refresh button is acceptable").
+    frames/ and .thumbs/ cache subfolders are skipped). Each:
+    {name, size, mtime, kind, url, thumbnail?, badge?}. The assets/ folder IS the
+    source of truth, so this reflects manual drops too (manifest Round 12B:
+    "manually dropping a file into the folder must appear in the library — a
+    refresh button is acceptable"). `mtime` lets the client key its own thumbnail
+    cache and regenerate on a replaced file; `thumbnail`/`badge` are attached when
+    a FRESH cached thumb exists (manifest #25 — PDF first-page preview + page-count
+    badge), so a returning session shows the preview with no client re-render.
     """
     d = assets_dir(name)
     if not os.path.isdir(d):
@@ -420,13 +519,17 @@ def list_assets(name):
     for fn in sorted(os.listdir(d)):
         full = os.path.join(d, fn)
         if not os.path.isfile(full):
-            continue  # skip frames/ and any other subdir
-        out.append({
+            continue  # skip frames/, .thumbs/, and any other subdir
+        mtime = os.path.getmtime(full)
+        entry = {
             "name": fn,
             "size": os.path.getsize(full),
+            "mtime": mtime,
             "kind": asset_kind(fn),
             "url": f"/asset/{urllib.parse.quote(name)}/{urllib.parse.quote(fn)}",
-        })
+            **asset_thumb(name, fn, mtime),
+        }
+        out.append(entry)
     return out
 
 
@@ -495,6 +598,9 @@ def delete_asset(name, filename):
     frame_cache = os.path.join(assets_dir(name), FRAMES_SUBDIR, safe_name(filename))
     if os.path.isdir(frame_cache):
         shutil.rmtree(frame_cache)
+    thumb_cache = thumb_entry_dir(name, filename)
+    if os.path.isdir(thumb_cache):
+        shutil.rmtree(thumb_cache)  # a deleted asset's cached thumbnail would otherwise orphan
     return filename
 
 
@@ -566,6 +672,8 @@ class Handler(BaseHTTPRequestHandler):
       PUT  /api/project/<name>/      → body = doc JSON; {ok, name}
       GET  /api/assets/<name>/       → [{name, size, kind, url}]
       POST /api/upload/<name>/?filename=…  → raw body bytes; {ok, name: file}
+      POST /api/thumb/<name>/<file>/?mtime=&badge=  → raw PNG body; caches an
+                                     asset thumbnail (manifest #25); {ok, thumbnail}
       GET  /api/download/<name>/     → application/zip of the whole folder
       GET  /api/frames/<name>/<video>/<N>/  → {count, frames:[url,…]}
                                      (extract N evenly-spread frames, cached)
@@ -757,6 +865,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if len(parts) == 3 and parts[:2] == ["api", "upload"]:
                 return self._handle_upload(parts[2], parsed)
+            if len(parts) == 4 and parts[:2] == ["api", "thumb"]:
+                return self._handle_thumb_store(parts[2], parts[3], parsed)
             self._error(404, f"no POST route for {parsed.path}")
         except Exception as exc:
             traceback.print_exc()
@@ -805,6 +915,29 @@ class Handler(BaseHTTPRequestHandler):
         final = save_asset(name, filename, data)
         self._json({"ok": True, "name": final,
                     "url": f"/asset/{urllib.parse.quote(name)}/{urllib.parse.quote(final)}"})
+
+    def _handle_thumb_store(self, name, filename, parsed):
+        # Persist a client-rendered thumbnail PNG for an asset (manifest #25).
+        # The server has no PDF engine, so the CLIENT rasterizes page 1 (pdfjs)
+        # and POSTs the PNG here with ?mtime= (the asset's mtime, the cache key)
+        # and an optional ?badge= (e.g. the page count). The asset must exist.
+        q = urllib.parse.parse_qs(parsed.query)
+        mtime_str = q.get("mtime", [""])[0]
+        badge = q.get("badge", [None])[0]
+        if not mtime_str:
+            return self._error(400, "thumb store requires ?mtime=")
+        try:
+            mtime = float(mtime_str)  # save_thumb keys it to microseconds (mtime_key)
+        except ValueError:
+            return self._error(400, f"thumb mtime must be a number: {mtime_str!r}")
+        asset_path = os.path.join(assets_dir(name), safe_name(filename))
+        if not os.path.isfile(asset_path):
+            return self._error(404, f"asset not found: {name}/{filename}")
+        data = self._read_body()
+        if not data:
+            return self._error(400, "empty thumbnail body")
+        url = save_thumb(name, filename, mtime, badge, data)
+        self._json({"ok": True, "thumbnail": url, "badge": badge})
 
     def _handle_delete_asset(self, name, filename):
         # Asset delete (manifest Round 12C: trash can on the asset tile). A

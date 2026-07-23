@@ -101,10 +101,9 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import Thumbnail from "../../../lib/Thumbnail.svelte";
   import Modal from "../../../lib/Modal.svelte";
-  import VideoThumbnail from "./VideoThumbnail.svelte";
-  import { assetUrl, ASSET_DRAG_MIME } from "./projectApi.js";
+  import AssetThumb from "./AssetThumb.svelte";
+  import { ASSET_DRAG_MIME } from "./projectApi.js";
 
   let {
     app,
@@ -343,15 +342,8 @@
         <div class="ae-cell">
           <Tooltip text={a.name}>
             <div class="ae-tile">
-              {#if a.kind === "image"}
-                <Thumbnail src={assetUrl(a.url)} title="" onclick={() => pick(a)} />
-              {:else if a.kind === "video"}
-                <VideoThumbnail src={assetUrl(a.url)} onclick={() => pick(a)} />
-              {:else}
-                <button class="ae-tile-hit" aria-label={`Pick ${a.name}`} onclick={() => pick(a)}>
-                  <iconify-icon icon="mdi:music-note" width="28" height="28"></iconify-icon>
-                </button>
-              {/if}
+              <!-- Same generalized media + badge as the Asset Explorer (#25). -->
+              <AssetThumb {app} asset={a} onclick={() => pick(a)} />
             </div>
           </Tooltip>
           <div class="ae-name">{a.name}</div>
