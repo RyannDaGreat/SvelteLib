@@ -124,6 +124,38 @@
   function moveTo(newFocus, shift) { const f = clampOff(newFocus); focus = f; if (!shift) anchor = f; goalX = null; }
 
   // ── text mutation (previews the model; one undo unit on commit) ───────────────
+  // In-session undo/redo: a text-edit session is ONE doc-level undo unit
+  // (commitTextEdit), but WITHIN the session Cmd+Z/Cmd+Shift+Z must undo/redo
+  // keystrokes. The app's doc-level undo can't fire here (App.onKeydown early-returns
+  // on the focused sink), so we keep a session-local stack of {value, caret}
+  // snapshots taken BEFORE each mutation.
+  const MAX_EDIT_HISTORY = 500; // per-session undo depth cap (a session is bounded)
+  let editUndo = [];            // snapshots taken BEFORE each mutation (non-reactive)
+  let editRedo = [];
+  /** Command (mutates session history). Records the current value+caret, clears redo. */
+  function pushHistory() {
+    editUndo.push({ value: rich, anchor, focus });
+    if (editUndo.length > MAX_EDIT_HISTORY) editUndo.shift();
+    editRedo = [];
+  }
+  /** Command. Previews a new value AND records the prior one for in-session undo. */
+  function preview(v) { pushHistory(); app.previewTextValue(v); }
+  /** Command. Restores the previous in-session snapshot (value + caret). No-op at
+   *  session start — exit (Esc) then Cmd+Z undoes the whole edit at the doc level. */
+  function undoEdit() {
+    if (composing || !editUndo.length) return;
+    editRedo.push({ value: rich, anchor, focus });
+    const s = editUndo.pop();
+    app.previewTextValue(s.value); setSel(s.anchor, s.focus);
+  }
+  /** Command. Replays the next snapshot undone by undoEdit (value + caret). */
+  function redoEdit() {
+    if (composing || !editRedo.length) return;
+    editUndo.push({ value: rich, anchor, focus });
+    const s = editRedo.pop();
+    app.previewTextValue(s.value); setSel(s.anchor, s.focus);
+  }
+
   /** Command. Replaces [lo,hi) with `text`, inheriting the caret style (+ any
    * pending empty-caret style), then collapses the caret after the insert. */
   function replaceRange(lo, hi, text) {
@@ -134,20 +166,20 @@
     v = insertText(v, at, text);
     if (insLen > 0 && Object.keys(pendingStyle).length)
       v = { runs: applyRunStyle(v.runs, at, at + insLen, pendingStyle), paras: v.paras };
-    app.previewTextValue(v);
+    preview(v);
     collapse(at + insLen);
     pendingStyle = {};
   }
   function typeText(t) { replaceRange(selStart, selEnd, t); }
   function insertNewline() { replaceRange(selStart, selEnd, "\n"); }
-  function deleteSelection() { app.previewTextValue(deleteRange(rich, selStart, selEnd)); collapse(selStart); }
+  function deleteSelection() { preview(deleteRange(rich, selStart, selEnd)); collapse(selStart); }
   function backspace() {
     if (selEnd > selStart) return deleteSelection();
-    if (selStart > 0) { app.previewTextValue(deleteRange(rich, selStart - 1, selStart)); collapse(selStart - 1); }
+    if (selStart > 0) { preview(deleteRange(rich, selStart - 1, selStart)); collapse(selStart - 1); }
   }
   function deleteForward() {
     if (selEnd > selStart) return deleteSelection();
-    if (selStart < textLen()) { app.previewTextValue(deleteRange(rich, selStart, selStart + 1)); collapse(selStart); }
+    if (selStart < textLen()) { preview(deleteRange(rich, selStart, selStart + 1)); collapse(selStart); }
   }
 
   // ── navigation (all geometry from the shared layout) ──────────────────────────
@@ -175,13 +207,13 @@
    * applyRunStyle, offsets preserved), else stashed as the caret's pending style
    * for the next typed char (the PPT empty-caret convention). */
   function applyStyleToSelection(delta) {
-    if (selEnd > selStart) app.previewTextValue({ runs: applyRunStyle(rich.runs, selStart, selEnd, delta), paras: rich.paras });
+    if (selEnd > selStart) preview({ runs: applyRunStyle(rich.runs, selStart, selEnd, delta), paras: rich.paras });
     else pendingStyle = { ...pendingStyle, ...delta };
   }
   /** Command. Applies a paragraph-style delta to every paragraph the selection
    * touches (align etc.) via applyParaStyle — offsets/runs unchanged. */
   function applyParaToSelection(delta) {
-    app.previewTextValue({ runs: rich.runs, paras: applyParaStyle(rich.paras, rich.runs, selStart, selEnd, delta) });
+    preview({ runs: rich.runs, paras: applyParaStyle(rich.paras, rich.runs, selStart, selEnd, delta) });
   }
   function toggleStyle(key) {
     if (selEnd > selStart) {
@@ -207,6 +239,8 @@
     const shift = e.shiftKey;
     const k = e.key;
     if (k === "Escape") { e.preventDefault(); app.commitTextEdit(); return; }
+    if (mod && !shift && (k === "z" || k === "Z")) { e.preventDefault(); undoEdit(); return; }
+    if (mod && ((shift && (k === "z" || k === "Z")) || k === "y" || k === "Y")) { e.preventDefault(); redoEdit(); return; }
     if (mod && (k === "a" || k === "A")) { e.preventDefault(); setSel(0, textLen()); return; }
     if (mod && (k === "b" || k === "B")) { e.preventDefault(); toggleStyle("bold"); return; }
     if (mod && (k === "i" || k === "I")) { e.preventDefault(); toggleStyle("italic"); return; }
@@ -230,6 +264,7 @@
   // ── IME composition: mirror the composing string into the model as a PROVISIONAL
   // run so it renders in Skia at the caret (WYSIWYG); commit on end ──────────────
   function onCompositionStart() {
+    pushHistory(); // the whole IME composition is ONE in-session undo step
     composing = true;
     let base = rich;
     if (selEnd > selStart) { base = deleteRange(base, selStart, selEnd); app.previewTextValue(base); }
