@@ -67,6 +67,26 @@ export function closestPointOnRectBorder(rect, px, py) {
 }
 
 /**
+ * Pure function. Border-band ("hollow bbox") hit test: is LOCAL point (lx, ly)
+ * within a `s.w`×`s.h` rect's OUTER edge (padded by `tol`) but OUTSIDE its INNER
+ * edge (inset by `tol`) — i.e. within `tol` of the border, not deep in the
+ * interior? The shared "click the outline, not the fill" test for volume-less
+ * framing widgets (camera, group) whose interior clicks fall through to the
+ * content underneath. Missing w/h default to 0 (a zero-size frame is all
+ * border), so a caller that always has w/h is unaffected.
+ *
+ * @example borderBandHit({w: 100, h: 100}, 3, 50, 6) // true (near the left edge)
+ * @example borderBandHit({w: 100, h: 100}, 50, 50, 6) // false (deep interior)
+ * @example borderBandHit({w: 100, h: 100}, -3, 50, 6) // true (just outside the edge, within tol)
+ */
+export function borderBandHit(s, lx, ly, tol) {
+  const w = s.w ?? 0, h = s.h ?? 0;
+  const inOuter = lx >= -tol && lx <= w + tol && ly >= -tol && ly <= h + tol;
+  const inInner = lx >= tol && lx <= w - tol && ly >= tol && ly <= h - tol;
+  return inOuter && !inInner;
+}
+
+/**
  * Pure function. The union AABB {x, y, w, h} of a list of rects. Used to find
  * a multi-selection's collective extreme edges/center — the shared basis for
  * BOTH align (extreme-edge match) and mirror (reflect about center).

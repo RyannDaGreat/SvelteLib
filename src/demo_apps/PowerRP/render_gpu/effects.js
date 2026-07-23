@@ -50,7 +50,7 @@
  * DOM-free pure JS (bare-node testable, like ir.js and decorate.js).
  */
 
-import { effectSubtree, pushTransform, popTransform } from "./ir.js";
+import { effectSubtree, pushTransform, popTransform, BLUR_SUPPORT_SIGMAS } from "./ir.js";
 
 /**
  * Pure function. Is a widget's effects state visually a no-op? True iff the
@@ -161,10 +161,8 @@ export function applyEffects(content, state, world, bbox) {
  * @example effectsCullMargin({blendMode: "multiply"}) // 0 (blend alone adds no halo)
  */
 export function effectsCullMargin(state) {
-  // 3σ = the Gaussian kernel's support bound each side (gpu/shaders.js
-  // MAX_HALF_KERNEL's own derivation — sigma·3), matching effectSubtree's
-  // build-time margin exactly.
-  const BLUR_SUPPORT_SIGMAS = 3;
+  // BLUR_SUPPORT_SIGMAS·σ = the Gaussian kernel's support bound each side (the
+  // shared ir.js constant), matching effectSubtree's build-time margin exactly.
   const shadowOn = (state.shadow?.opacity ?? 0) > 0; // 14.8: opacity gates; a blur-0 shadow still offsets by (dx,dy)
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   return Math.max(

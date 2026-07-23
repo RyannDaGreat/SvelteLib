@@ -31,8 +31,8 @@
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
-import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline, distToSegment } from "../core/outline.js";
-import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, SHAFT_GRAB_PAD } from "../core/endpoints.js";
+import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline } from "../core/outline.js";
+import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The bezier generator's params for a state.
  * @example bendParams({from: {x: 0, y: 0}, to: {x: 100, y: 0}, bend: 0.3}) // {x0: 0, y0: 0, x1: 100, y1: 0, bend: 0.3}
@@ -49,7 +49,7 @@ export const curvedArrowPlugin = {
     type: "curved_arrow", z: 1,
     from: { x: 200, y: 440 }, to: { x: 420, y: 440 },
     bend: 0.25,
-    stroke: "#1a1a2e", strokeWidth: 3, headLength: 14, headWidth: 12, headMode: "end", opacity: 1,
+    stroke: "#1a1a2e", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
@@ -91,15 +91,12 @@ export const curvedArrowPlugin = {
     // drawn geometry (no bbox state; world == identity). No cullMargin:
     // non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
     // `pts` is the SAMPLED bezier — its AABB bounds the drawn curve exactly.
-    return applyEffects(cmds, s, world, paddedPointsBBox(pts, Math.max(s.strokeWidth ?? 3, s.headWidth ?? 12)));
+    return applyEffects(cmds, s, world, paddedPointsBBox(pts, Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH)));
   },
   hitTestWorld(node, wx, wy) {
     const s = node.state;
     const pts = curvedArrowPolyline(bendParams(s));
-    const radius = (s.strokeWidth ?? 3) / 2;
-    for (let i = 0; i < pts.length - 1; i++)
-      if (distToSegment(wx, wy, pts[i], pts[i + 1]) <= radius + SHAFT_GRAB_PAD) return true;
-    return false;
+    return hitsPolylineShaft(pts, wx, wy, (s.strokeWidth ?? ARROW_STROKE_WIDTH) / 2);
   },
   // editPoints / moveBy / closestToward — the shared endpoint-pair capability
   // (core/endpoints.js), identical semantics to the basic arrow.

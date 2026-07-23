@@ -29,8 +29,8 @@
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
-import { elbowRoute, elbowHandle, distToSegment } from "../core/outline.js";
-import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES, SHAFT_GRAB_PAD } from "../core/endpoints.js";
+import { elbowRoute, elbowHandle } from "../core/outline.js";
+import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The route generator's params for a state.
  * @example routeParams({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5}) // {x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5}
@@ -47,7 +47,7 @@ export const elbowArrowPlugin = {
     type: "elbow_arrow", z: 1,
     from: { x: 200, y: 260 }, to: { x: 420, y: 380 },
     elbow: 0.5,
-    stroke: "#1a1a2e", strokeWidth: 3, headLength: 14, headWidth: 12, headMode: "end", opacity: 1,
+    stroke: "#1a1a2e", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
@@ -97,16 +97,12 @@ export const elbowArrowPlugin = {
     // effects.js; all-off = pass-through). Effect region = padded AABB of the
     // drawn geometry (no bbox state; world == identity). No cullMargin:
     // non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
-    return applyEffects(cmds, s, world, paddedPointsBBox([p0, p1, p2, p3], Math.max(s.strokeWidth ?? 3, s.headWidth ?? 12)));
+    return applyEffects(cmds, s, world, paddedPointsBBox([p0, p1, p2, p3], Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH)));
   },
   hitTestWorld(node, wx, wy) {
     const s = node.state;
     const route = elbowRoute(routeParams(s)).map(([x, y]) => ({ x, y }));
-    const radius = (s.strokeWidth ?? 3) / 2;
-    for (let i = 0; i < route.length - 1; i++)
-      if (distToSegment(wx, wy, route[i], route[i + 1]) <= radius + SHAFT_GRAB_PAD)
-        return true;
-    return false;
+    return hitsPolylineShaft(route, wx, wy, (s.strokeWidth ?? ARROW_STROKE_WIDTH) / 2);
   },
   // editPoints / moveBy / closestToward — the shared endpoint-pair capability
   // (core/endpoints.js), identical semantics to the basic arrow.

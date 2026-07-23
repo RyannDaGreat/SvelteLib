@@ -38,7 +38,7 @@
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 export const arrowPlugin = {
   type: "arrow",
@@ -47,9 +47,9 @@ export const arrowPlugin = {
   defaults: {
     type: "arrow", z: 1,
     from: { x: 200, y: 300 }, to: { x: 420, y: 300 },
-    // headWidth 12 ≈ the old fixed-flare head's width (2·14·sin(0.44) = 11.93):
-    // the default arrow renders visually unchanged by the re-parameterization.
-    stroke: "#1a1a2e", strokeWidth: 3, headLength: 14, headWidth: 12, headMode: "end", opacity: 1,
+    // stroke width + head geometry: the shared simple-arrow defaults
+    // (core/endpoints.js ARROW_ENDPOINT_DEFAULTS — one home for basic/elbow/curved).
+    stroke: "#1a1a2e", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Legacy top-level state keys → their current names. headSize was really
@@ -100,10 +100,10 @@ export const arrowPlugin = {
     // with room to spare (over-padding only grows the offscreen region
     // slightly — it never clips). No cullMargin: non-bbox widgets never
     // cull-skip (core/view.js defaultCanSkip returns false without an AABB).
-    return applyEffects(cmds, s, world, paddedPointsBBox([from, to], Math.max(s.strokeWidth ?? 3, s.headWidth ?? 12)));
+    return applyEffects(cmds, s, world, paddedPointsBBox([from, to], Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH)));
   },
   hitTestWorld(node, wx, wy) {
-    return hitsShaft(node.state, wx, wy, node.state.strokeWidth ?? 3);
+    return hitsShaft(node.state, wx, wy, node.state.strokeWidth ?? ARROW_STROKE_WIDTH);
   },
   // editPoints / moveBy / closestToward — the shared endpoint-pair capability
   // (core/endpoints.js: draggable endpoint handles, free-coordinate shaft

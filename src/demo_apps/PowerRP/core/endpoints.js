@@ -102,6 +102,23 @@ export function hitsShaft(state, wx, wy, radius, keys = ["from", "to"]) {
 }
 
 /**
+ * Pure function. Padded multi-segment-shaft hit test: is world point (wx, wy)
+ * within `radius` + SHAFT_GRAB_PAD of ANY segment of the polyline `points`?
+ * The multi-segment generalization of hitsShaft — the elbow route and the
+ * sampled curved-arrow polyline both grab exactly like a straight shaft (same
+ * pad, same half-thickness), so the loop lives here ONCE rather than copied
+ * into elbow_arrow.js / curved_arrow.js.
+ *
+ * @example hitsPolylineShaft([{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}], 10, 3, 0) // true (on the second segment, within pad)
+ * @example hitsPolylineShaft([{x: 0, y: 0}, {x: 10, y: 0}], 5, 20, 0) // false (20 > 5 + pad)
+ */
+export function hitsPolylineShaft(points, wx, wy, radius) {
+  for (let i = 0; i < points.length - 1; i++)
+    if (distToSegment(wx, wy, points[i], points[i + 1]) <= radius + SHAFT_GRAB_PAD) return true;
+  return false;
+}
+
+/**
  * Pure function (factory returning pure hooks). The three plugin hooks an
  * endpoint-pair widget spreads into its definition — editPoints(node),
  * moveBy(state, dx, dy), closestToward(state, path) — all delegating to the
@@ -128,6 +145,19 @@ export function endpointPairHooks(keys = ["from", "to"]) {
  * @example HEAD_MODES // ["none", "start", "end", "both"]
  */
 export const HEAD_MODES = ["none", "start", "end", "both"];
+
+/**
+ * Shared defaults for the simple endpoint arrows (basic / elbow / curved — NOT
+ * the fancy arrow, which uses the property registry). These were copied verbatim
+ * into all three plugins' `defaults`; the numbers also recur as `?? N` fallbacks
+ * in their emit/hit-test code, so each is exported on its own to single-source
+ * both. headWidth 12 ≈ the pre-reparameterization fixed-flare head's width
+ * (2·14·sin(0.44) = 11.93), so the default arrow renders visually unchanged.
+ */
+export const ARROW_STROKE_WIDTH = 3; // px — a visible-but-slim default shaft
+export const ARROW_HEAD_LENGTH = 14; // px — tip-to-base length along the shaft
+export const ARROW_HEAD_WIDTH = 12; // px — full base width across the shaft axis
+export const ARROW_ENDPOINT_DEFAULTS = { strokeWidth: ARROW_STROKE_WIDTH, headLength: ARROW_HEAD_LENGTH, headWidth: ARROW_HEAD_WIDTH, headMode: "end" };
 
 /**
  * Pure function. Which ends of an endpoint-pair widget get an arrowhead, for

@@ -185,7 +185,7 @@ export function runFrom(r, inherited = {}) {
     italic: r.italic ?? inherited.italic ?? false,
     underline: r.underline ?? inherited.underline ?? false,
     strike: r.strike ?? inherited.strike ?? false,
-    size: r.size ?? inherited.size ?? 36,
+    size: r.size ?? inherited.size ?? DEFAULT_PARA_SIZE,
     font: r.font ?? inherited.font ?? "system",
     color: r.color ?? inherited.color ?? "#000000",
     // Glyph outline: a stroke around the letter shapes. width 0 ⇒ off.

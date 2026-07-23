@@ -32,6 +32,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { borderBandHit } from "../core/geometry.js";
 
 export const groupPlugin = {
   type: "group",
@@ -75,10 +76,7 @@ export const groupPlugin = {
   // the cursor (pickNode is topmost-first). `tol` is the editor's world-unit
   // grab tolerance (constant screen-space feel at any zoom).
   hitTest(s, lx, ly, tol = 6) {
-    const m = tol;
-    const inOuter = lx >= -m && lx <= (s.w ?? 0) + m && ly >= -m && ly <= (s.h ?? 0) + m;
-    const inInner = lx >= m && lx <= (s.w ?? 0) - m && ly >= m && ly <= (s.h ?? 0) - m;
-    return inOuter && !inInner;
+    return borderBandHit(s, lx, ly, tol);
   },
   anchors: standardBBoxAnchors,
   // NOTE: no `commands` here — "Group Selection" / "Ungroup" are registered as

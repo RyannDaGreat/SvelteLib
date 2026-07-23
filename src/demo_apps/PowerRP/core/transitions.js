@@ -144,7 +144,7 @@ export function transitionType(type) {
  * superclass defaults merged with that type's extras. This is the canonical
  * shape a fresh transition takes.
  *
- * @example defaultTransition("tween") // {seconds: 0.5, curve: "linear", sound: null, type: "tween"}
+ * @example defaultTransition("tween") // {seconds: 0.5, curve: "smooth", sound: null, type: "tween"}
  * @example defaultTransition("fade").type // "fade"
  */
 export function defaultTransition(type = DEFAULT_TRANSITION_TYPE) {
@@ -163,7 +163,7 @@ export function defaultTransition(type = DEFAULT_TRANSITION_TYPE) {
  * skip index 0 — this function still returns a record for it (inert), because
  * the navigator/inspector may still address the slice above slide 1 etc.
  *
- * @example resolveTransition({slides: [{}, {transition: {type: "fade"}}]}, 1) // {seconds: 0.5, curve: "linear", sound: null, type: "fade"}
+ * @example resolveTransition({slides: [{}, {transition: {type: "fade"}}]}, 1) // {seconds: 0.5, curve: "smooth", sound: null, type: "fade"}
  * @example resolveTransition({slides: [{}, {}]}, 1).type // "tween" (default when unset)
  * @example resolveTransition({slides: [{}, {transition: {type: "tween", seconds: 2, curve: "smooth"}}]}, 1).seconds // 2
  */

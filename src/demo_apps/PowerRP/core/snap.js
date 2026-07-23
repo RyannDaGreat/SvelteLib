@@ -11,6 +11,25 @@
 import { dist2 } from "./geometry.js";
 
 /**
+ * Floating-point slack, in world units. After a snap correction, an aligned
+ * distance is ~0 (real gaps are whole world-units), and a line's off-axis
+ * direction component is ~0 relative to its length — this tolerance separates
+ * "numerically zero" from a genuine miss. ONE value the whole solver shares
+ * (was re-declared as a local `EPS = 1e-6` in solveSnap / solveEdgeSnap /
+ * anchorSnapEquation — same number, same "float slack only" rationale).
+ */
+const SNAP_EPS = 1e-6;
+
+/**
+ * Shift-drag axis-lock hysteresis: how many times more dominant the OTHER axis
+ * must be before it steals the lock from the currently-locked one (>1 means the
+ * held axis is "sticky"). 1.5 = the other axis must be 50% larger to flip — big
+ * enough to kill the per-frame flip-flop near 45° (the Pixel-Aligner bug
+ * axisLock fixes) without feeling sluggish. Default for axisLock's `bias` arg.
+ */
+const AXIS_LOCK_HYSTERESIS = 1.5;
+
+/**
  * Pure function. Parses a node-feature id ("<itemId>:<featureId>" — see
  * derive.nodeFeatures) into PROVENANCE: which item and which named
  * point/edge produced a snap correction (manifest ARCHITECTURE PLAN #4:
@@ -139,11 +158,10 @@ export function solveSnap(probes, features, tol) {
 
   // "Snap to BOTH" (manifest): one deterministic correction, then EVERY line
   // that the corrected probes land on becomes a guide — top+bottom+middle
-  // light up together instead of flickering between winners. EPS is float
+  // light up together instead of flickering between winners. SNAP_EPS is float
   // slack only: aligned distances are ~0 after correction, misaligned ones
   // are real world-unit gaps.
   if (bestX || bestY) {
-    const EPS = 1e-6;
     const seen = new Set();
     for (const f of features) {
       if (f.kind !== "line" || seen.has(f.id)) continue;
@@ -152,7 +170,7 @@ export function solveSnap(probes, features, tol) {
       const nx = -f.dy / len, ny = f.dx / len;
       for (const probe of probes) {
         const dist = (probe.x + best.dx - f.x) * nx + (probe.y + best.dy - f.y) * ny;
-        if (Math.abs(dist) < EPS) {
+        if (Math.abs(dist) < SNAP_EPS) {
           best.guides.push({ kind: "line", ...pickLine(f) });
           seen.add(f.id);
           break;
@@ -194,7 +212,7 @@ function pickLine(f) {
  * equation-write source for the anchor-snap release). Like solveSnap, once a
  * correction is chosen EVERY line the corrected edges land on becomes a
  * guide ("snap to BOTH" — top+bottom+middle light up together instead of
- * flickering). EPS is float slack only: aligned distances are ~0 after
+ * flickering). SNAP_EPS is float slack only: aligned distances are ~0 after
  * correction.
  *
  * @example
@@ -211,7 +229,6 @@ function pickLine(f) {
 export function solveEdgeSnap(edges, features, tol) {
   const best = { dx: 0, dy: 0, guides: [], provenance: [] };
   let bestX = null, bestY = null; // {d, correction, feature}
-  const EPS = 1e-6; // float slack only (see solveSnap): aligned dist ≈ 0.
 
   for (const edge of edges) {
     for (const f of features) {
@@ -220,8 +237,8 @@ export function solveEdgeSnap(edges, features, tol) {
       if (len === 0) continue;
       // A line is "vertical" when its direction has ~no x-component (its
       // constant coordinate is x); "horizontal" when ~no y-component.
-      const vertical = Math.abs(f.dx) < EPS * len;
-      const horizontal = Math.abs(f.dy) < EPS * len;
+      const vertical = Math.abs(f.dx) < SNAP_EPS * len;
+      const horizontal = Math.abs(f.dy) < SNAP_EPS * len;
       if (edge.axis === "x" && vertical) {
         const d = f.x - edge.pos;
         if (Math.abs(d) <= tol && (!bestX || Math.abs(d) < bestX.d))
@@ -242,13 +259,13 @@ export function solveEdgeSnap(edges, features, tol) {
       if (f.kind !== "line" || seen.has(f.id)) continue;
       const len = Math.hypot(f.dx, f.dy);
       if (len === 0) continue;
-      const vertical = Math.abs(f.dx) < EPS * len;
-      const horizontal = Math.abs(f.dy) < EPS * len;
+      const vertical = Math.abs(f.dx) < SNAP_EPS * len;
+      const horizontal = Math.abs(f.dy) < SNAP_EPS * len;
       for (const edge of edges) {
         const corrected = edge.pos + (edge.axis === "x" ? best.dx : best.dy);
         const dist = edge.axis === "x" && vertical ? corrected - f.x
           : edge.axis === "y" && horizontal ? corrected - f.y : Infinity;
-        if (Math.abs(dist) < EPS) {
+        if (Math.abs(dist) < SNAP_EPS) {
           best.guides.push({ kind: "line", ...pickLine(f) });
           seen.add(f.id);
           break;
@@ -317,8 +334,7 @@ export function sizeMatches(size, candidates, tol) {
 export function anchorSnapEquation(sourceItemId, anchorId, coord, finalValue, anchorValue) {
   const ref = `@${sourceItemId}_${anchorId}.${coord}`;
   const offset = finalValue - anchorValue;
-  const EPS = 1e-6; // float slack only — see solveSnap's identical convention
-  if (Math.abs(offset) < EPS) return ref;
+  if (Math.abs(offset) < SNAP_EPS) return ref;
   return offset > 0 ? `${ref} + ${offset}` : `${ref} - ${-offset}`;
 }
 
@@ -375,7 +391,7 @@ export function resizeEdgeEquation(sourceItemId, anchorId, coord, sign, worldFix
  * @example axisLock(10, 12, "x") // "x" (12 < 10*1.5 — keeps lock)
  * @example axisLock(10, 20, "x") // "y" (clearly dominant — steals lock)
  */
-export function axisLock(dx, dy, prevAxis, bias = 1.5) {
+export function axisLock(dx, dy, prevAxis, bias = AXIS_LOCK_HYSTERESIS) {
   const ax = Math.abs(dx), ay = Math.abs(dy);
   if (prevAxis === "x") return ay > ax * bias ? "y" : "x";
   if (prevAxis === "y") return ax > ay * bias ? "x" : "y";

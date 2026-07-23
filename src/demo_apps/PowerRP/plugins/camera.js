@@ -14,6 +14,7 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { defaultCameraState } from "../core/document.js";
 import { props } from "../core/properties.js";
+import { borderBandHit } from "../core/geometry.js";
 
 
 export const cameraPlugin = {
@@ -44,10 +45,7 @@ export const cameraPlugin = {
   // clicks inside should select the content, not the camera. `tol` is the
   // editor's world-unit grab tolerance (constant screen-space feel).
   hitTest(s, lx, ly, tol = 6) {
-    const m = tol;
-    const inOuter = lx >= -m && lx <= s.w + m && ly >= -m && ly <= s.h + m;
-    const inInner = lx >= m && lx <= s.w - m && ly >= m && ly <= s.h - m;
-    return inOuter && !inInner;
+    return borderBandHit(s, lx, ly, tol);
   },
   anchors: standardBBoxAnchors,
 };

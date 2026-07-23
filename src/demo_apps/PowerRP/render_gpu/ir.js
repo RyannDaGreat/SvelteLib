@@ -515,6 +515,17 @@ export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke 
 export const BLEND_MODES = ["normal", "multiply", "add", "screen"];
 
 /**
+ * How many standard deviations of a Gaussian blur reach beyond its center — the
+ * kernel-support bound used to size an effect's halo margin. Beyond 3σ a
+ * Gaussian's weight is negligible (<0.3% total), so a halo of blur·3 contains
+ * essentially all the spill. ONE shared value for both this module's
+ * effectSubtree build-time margin and effects.js effectsCullMargin (they must
+ * agree, or culling clips a halo the compositor still draws). Was duplicated as
+ * a local `= 3` in both, citing the retired gpu/shaders.js MAX_HALF_KERNEL.
+ */
+export const BLUR_SUPPORT_SIGMAS = 3;
+
+/**
  * Pure function. The EFFECTS SUBSTRATE node (manifest Round 12D: "ALL FOUR
  * reuse one substrate: per-widget render-to-texture + blurred/blended
  * composite"). ONE op carries all three effects because they share ONE
@@ -575,12 +586,10 @@ export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom =
     requireFinite("effectSubtree.bloom", { radius, strength });
     bl = { radius: Math.max(0, radius), strength: Math.max(0, strength) };
   }
-  // Blur spill is 3σ each side (the BLUR_WGSL kernel-support bound — sigma·3,
-  // see MAX_HALF_KERNEL's derivation); the shadow offset length covers the
-  // canvas-space (dx, dy) in every local direction (rotation-safe: a rotation
-  // preserves lengths, so a halo of hypot(dx, dy) contains the offset however
-  // the widget is turned).
-  const BLUR_SUPPORT_SIGMAS = 3;
+  // Blur spill is BLUR_SUPPORT_SIGMAS·σ each side (the Gaussian kernel-support
+  // bound); the shadow offset length covers the canvas-space (dx, dy) in every
+  // local direction (rotation-safe: a rotation preserves lengths, so a halo of
+  // hypot(dx, dy) contains the offset however the widget is turned).
   const margin = Math.max(
     sh ? sh.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(sh.dx, sh.dy) : 0,
     bl ? bl.radius * BLUR_SUPPORT_SIGMAS : 0,

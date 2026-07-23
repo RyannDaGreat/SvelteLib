@@ -53,6 +53,7 @@ import { flattenIR, parseColor, rgbaToCss, pushTransform, popTransform } from ".
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
+import { DEFAULT_TEXT_SIZE } from "./skia/text_layout.js";
 import { richTextDraws } from "../core/richtext.js";
 
 /**
@@ -817,7 +818,7 @@ class SvgAssembly {
    * no seam was provided (a rich op needs real metrics — no silent default). */
   richMeasure() {
     if (!this.measureText) throw new Error("svg_backend: rich text layout needs a measureText seam (irToSVG opts.measureText)");
-    return (str, style) => this.measureText(str, { size: style.size ?? 36, bold: !!style.bold, font: style.font ?? DEFAULT_FONT, italic: !!style.italic });
+    return (str, style) => this.measureText(str, { size: style.size ?? DEFAULT_TEXT_SIZE, bold: !!style.bold, font: style.font ?? DEFAULT_FONT, italic: !!style.italic });
   }
 
   /**
