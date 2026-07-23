@@ -68,20 +68,29 @@ const MAX_EFFECT_DEPTH = 2;      // compositor.js:112
  *   opts.media (object): ref → CanvasKit Image (caller decodes)
  *   opts.background (string): CSS color cleared behind the scene
  *   opts.typefaces (Map): `${fontId}:${bold?"b":"r"}` → CanvasKit Typeface
+ *   opts.scissor ({x,y,w,h}|null): a device-px clip rect — the presenter's
+ *     letterbox. The whole surface is cleared to `background` (the bars); the
+ *     SCENE is clipped to this rect so off-camera content cannot bleed into the
+ *     bars. Absent ⇒ the scene draws across the full surface.
  */
-export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", typefaces } = {}) {
+export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", typefaces, scissor = null } = {}) {
   if (!typefaces) throw new Error("paintIR(skia): a typefaces map is required (fontId:bold → Typeface)");
   const flat = flattenIR(commands);
   const bg = parseColor(background);
   const bgColor = CanvasKit.Color4f(bg[0], bg[1], bg[2], bg[3]);
   const bounds = canvas.getDeviceClipBounds(); // [l, t, r, b] in device px; fresh canvas ⇒ full surface
   const ctx = { media, typefaces, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1] };
+  // The letterbox clip (device px), built once — applied AFTER the full-surface
+  // clear so the bars keep `background` and only the scene is clipped.
+  const scissorRect = scissor ? CanvasKit.LTRBRect(scissor.x, scissor.y, scissor.x + scissor.w, scissor.y + scissor.h) : null;
 
   const needsBackdrop = flat.some(({ cmd }) => cmd.op === "blurBackdrop" || cmd.op === "magnifyBackdrop");
   if (!needsBackdrop) {
     // Fast path: no backdrop sampler ⇒ draw straight onto the caller's canvas.
     canvas.clear(bgColor);
+    if (scissorRect) { canvas.save(); canvas.clipRect(scissorRect, CanvasKit.ClipOp.Intersect, true); }
     paintFlat(CanvasKit, { canvas, surface: null }, flat, view, ctx, 0);
+    if (scissorRect) canvas.restore();
     return;
   }
 
@@ -93,8 +102,10 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   paintFlat(CanvasKit, { canvas: sceneCanvas, surface: scene }, flat, view, ctx, 0);
   scene.flush();
   const img = scene.makeImageSnapshot();
-  canvas.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  canvas.clear(bgColor); // bars = background (transparent for the editor, opaque for the presenter letterbox)
+  if (scissorRect) { canvas.save(); canvas.clipRect(scissorRect, CanvasKit.ClipOp.Intersect, true); }
   blitImage(CanvasKit, canvas, img, 1);
+  if (scissorRect) canvas.restore();
   img.delete();
   scene.dispose();
 }
@@ -210,7 +221,14 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, typefaces) {
     case "image":
     case "video": {
       const img = media[cmd.ref];
-      if (!img) throw new Error(`paintIR(skia): no media Image for ref "${cmd.ref}"`);
+      // Absent media ⇒ draw NOTHING this frame (the async media contract): a
+      // genuinely FAILED asset is reported loudly by image_registry/video_registry
+      // (console.error), and an UNDECODED one is the normal in-flight state that
+      // repaints when it lands (onImageLoad/onVideoFrame nudge the reactive
+      // canvas). The caller-side media builder (skia/browser_media.js) omits an
+      // unresolved ref for exactly this reason — never a placeholder, never a
+      // blocking wait — matching the SVG/PDF backends' "blank ref → draw nothing".
+      if (!img) break;
       const iw = img.width(), ih = img.height();
       const s = cmd.src;
       const src = CanvasKit.LTRBRect(s.sx * iw, s.sy * ih, (s.sx + s.sw) * iw, (s.sy + s.sh) * ih);

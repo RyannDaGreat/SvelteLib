@@ -161,6 +161,7 @@
     if (!canvasEl || !gpu) return;
     const dpr = app.dpr(); // retina browser setting (manifest)
     const w = Math.round(innerWidth * dpr), h = Math.round(innerHeight * dpr);
+    if (w === 0 || h === 0) return; // collapsed viewport → a 0×0 GL surface is null (skip)
     if (canvasEl.width !== w || canvasEl.height !== h) {
       canvasEl.width = w;
       canvasEl.height = h;
@@ -281,6 +282,10 @@
       if (idleRaf !== null) { cancelAnimationFrame(idleRaf); idleRaf = null; } // stop the at-rest anim loop
       restingAnimated = false;
       if (transitionAudio) { transitionAudio.pause(); transitionAudio.src = ""; transitionAudio = null; } // release audio
+      // Free the Skia/WebGL surface on present→exit: a SkiaSurface owns a WebGL2
+      // context + GrContext + GL surface that otherwise leak on every present.
+      gpu?.dispose();
+      gpu = null;
     };
   });
 </script>

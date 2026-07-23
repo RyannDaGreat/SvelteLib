@@ -23,8 +23,20 @@
   import { evaluateState } from "../core/expressions.js";
   import { resolveTransition, transitionType } from "../core/transitions.js";
   import { renderCameraFrame } from "./gpuService.js";
+  import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
 
   let { app } = $props();
+
+  // Media (images) decode ASYNCHRONOUSLY, AFTER the commit that added the
+  // widget — so a thumbnail rendered at commit time draws the image as nothing
+  // (getSkiaImage returns null until decoded). onImageLoad bumps this epoch when
+  // a decode lands; it's folded into the thumbnails' dirty key below so the
+  // visible ones re-render and pick the image up — the SAME async-repaint nudge
+  // CanvasView uses for the main canvas. Video frames are deliberately NOT folded
+  // in (a playing clip must not re-render thumbnails every frame; a video's
+  // poster refreshes on the next commit).
+  let imageEpoch = $state(0);
+  $effect(() => onImageLoad(() => (imageEpoch += 1)));
 
   // Per-type icon for the between-rows slice (iconify only — manifest rule).
   // A third type adds one entry; unknown types fall back to a generic glyph.
@@ -77,6 +89,10 @@
   $effect(() => {
     if (!app.previewDelta) committedDoc = app.doc;
   });
+  // The thumbnails' dirty key: a stable object that changes ONLY when the
+  // committed doc flips (an edit) or an image decode lands (imageEpoch). A
+  // $derived so unrelated re-renders don't churn it (DirtyImage compares by !==).
+  let thumbDirty = $derived({ doc: committedDoc, epoch: imageEpoch });
 </script>
 
 <div class="slidenav">
@@ -125,7 +141,7 @@
           <DirtyImage
             class="thumb"
             render={renderThumb(i)}
-            dirtyKey={committedDoc}
+            dirtyKey={thumbDirty}
             aspect={thumbAspect(i)}
             alt={`Slide ${i + 1} preview`}
           />

@@ -82,6 +82,49 @@ export function getVideo(src) {
   return entry.el.readyState >= HAVE_CURRENT_DATA ? entry.el : null;
 }
 
+/** A single reused offscreen 2D canvas for grabbing video frames. Reused (not
+ * reallocated per paint) — the draw+read below is synchronous, so back-to-back
+ * getSkiaVideoFrame calls can share it without clobbering (JS is single-threaded
+ * and MakeImageFromCanvasImageSource reads the pixels before returning). */
+let _frameCanvas = null;
+
+/**
+ * Query→build (near-pure: idempotent element create + a per-call frame grab).
+ * The `<video>` element's CURRENT frame as a FRESH CanvasKit Image for the Skia
+ * paint path, or null when there is no drawable frame yet (draw NOTHING — the
+ * async contract). The video twin of image_registry.getSkiaImage, with the one
+ * shape difference the registries already carry: a video MOVES, so this grabs a
+ * NEW image every paint and NEVER caches — the CALLER MUST delete() the returned
+ * Image after the frame is painted (see render_gpu/skia/browser_media.js
+ * `release`). ensureVideo is kicked with the default playback flags
+ * (autoplay/loop/muted — the video PLAYER's shipped defaults); onVideoFrame
+ * drives the per-frame repaint that re-runs this.
+ *
+ * WHY the offscreen canvas (not MakeImageFromCanvasImageSource(el) directly):
+ * that helper sizes its internal read from the element's `.width`/`.height`
+ * ATTRIBUTES, which a bare `<video>` leaves at 0 — a getImageData(…, 0, …)
+ * IndexSizeError every frame. So we draw the element (whose FRAME size is
+ * `videoWidth`/`videoHeight`) onto a canvas sized to those, then make the image
+ * from the canvas (whose `.width`/`.height` ARE set). This is exactly the
+ * "draw the element to an offscreen 2d canvas → CanvasKit image" recipe.
+ *
+ * @param CanvasKit the shared browser CanvasKit module (the Image binds to it)
+ * @example // getSkiaVideoFrame(CK, url) // null until a frame decodes, then a fresh CanvasKit.Image the caller deletes
+ */
+export function getSkiaVideoFrame(CanvasKit, ref) {
+  ensureVideo(ref); // idempotent create with the player's default flags (autoplay/loop/muted)
+  const el = getVideo(ref); // <video> with a current frame, or null (loading/error)
+  if (!el) return null; // no drawable frame yet → draw nothing; onVideoFrame nudges repaints as frames land
+  const w = el.videoWidth, h = el.videoHeight;
+  if (!(w > 0 && h > 0)) return null; // frame dimensions not known yet → draw nothing
+  if (!_frameCanvas) _frameCanvas = document.createElement("canvas");
+  _frameCanvas.width = w; _frameCanvas.height = h;
+  _frameCanvas.getContext("2d").drawImage(el, 0, 0, w, h); // the current frame at native resolution
+  const img = CanvasKit.MakeImageFromCanvasImageSource(_frameCanvas);
+  if (!img) throw new Error(`getSkiaVideoFrame: MakeImageFromCanvasImageSource returned null for ref "${truncate(ref)}"`);
+  return img; // per-paint frame — the caller deletes it (never cached: a video moves)
+}
+
 /**
  * Query. The load status of `src`: "unloaded" (never requested), "loading",
  * "ready", or "error". "ready" means the element exists and has ≥1 frame; it

@@ -44,6 +44,20 @@
 /** src → {status: "loading"|"ready"|"error", bitmap: ImageBitmap|null, error: Error|null} */
 const registry = new Map();
 
+/**
+ * ref → CanvasKit.Image — the SKIA twin of `registry`. The Skia paint path
+ * (render_gpu/skia/paint_skia.js) draws from a {ref → CanvasKit.Image} map, so
+ * getSkiaImage() converts each ready ImageBitmap into a CanvasKit Image ONCE and
+ * caches it here (static sources ⇒ cache forever, exactly like the bitmaps). The
+ * conversion reuses the SAME registry+notify machinery: a real image widget's
+ * bitmap arrives via ensureImage()'s decode, and a synthetic ref (pdf-page/latex
+ * raster) arrives via registerRasterizedBitmap — both land in `registry`, and
+ * this layer just adapts the ready bitmap to Skia. Browser-only (a CanvasKit
+ * Image is bound to the ONE shared browser CanvasKit instance — browser_canvaskit
+ * .ensureCanvasKit — so keying by ref alone is valid; the Node CLI never uses
+ * this path). */
+const skiaImages = new Map();
+
 /** Repaint subscribers (see onImageLoad); notified when any decode resolves. */
 const listeners = new Set();
 
@@ -57,6 +71,33 @@ const listeners = new Set();
 export function getImage(src) {
   const entry = registry.get(src);
   return entry && entry.status === "ready" ? entry.bitmap : null;
+}
+
+/**
+ * Query→build (near-pure: idempotent decode kick + one-time conversion). The
+ * ref resolved to a CanvasKit Image for the Skia paint path, or null when it is
+ * not decoded yet (draw NOTHING this frame — the async contract). This is the
+ * Skia counterpart of getImage: it (1) kicks an idempotent decode via
+ * ensureImage — a no-op for an already-loading/ready/errored/synthetic ref
+ * (a reserved slot has no fetch), (2) reads the ready ImageBitmap via getImage,
+ * and (3) converts it to a CanvasKit Image ONCE (cached by ref). A not-yet-ready
+ * ref returns null; image_registry's onImageLoad already fires when the bitmap
+ * lands, so the reactive repaint re-runs this and gets the image. A genuine load
+ * FAILURE was reported loudly by ensureImage — this never re-reports it.
+ *
+ * @param CanvasKit the shared browser CanvasKit module (Images bind to it)
+ * @example // getSkiaImage(CK, dataUri) // null until decoded, then a CanvasKit.Image
+ */
+export function getSkiaImage(CanvasKit, ref) {
+  const cached = skiaImages.get(ref);
+  if (cached) return cached;
+  ensureImage(ref); // idempotent: kicks a data:/URL decode, no-op for reserved synthetic refs
+  const bitmap = getImage(ref); // ImageBitmap once ready, else null (loading/error)
+  if (!bitmap) return null; // undecoded/error → draw nothing; onImageLoad nudges a repaint on load
+  const img = CanvasKit.MakeImageFromCanvasImageSource(bitmap);
+  if (!img) throw new Error(`getSkiaImage: MakeImageFromCanvasImageSource returned null for ref "${truncate(ref)}"`);
+  skiaImages.set(ref, img);
+  return img;
 }
 
 /**
@@ -190,4 +231,6 @@ export function truncate(src) {
 export function resetImageRegistry() {
   for (const entry of registry.values()) entry.bitmap?.close?.();
   registry.clear();
+  for (const img of skiaImages.values()) img.delete?.(); // free the CanvasKit Images too
+  skiaImages.clear();
 }

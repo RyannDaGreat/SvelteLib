@@ -14,6 +14,7 @@
 
 import { paintIR } from "./paint_skia.js";
 import { ensureCanvasKit, loadTypefaces } from "./browser_canvaskit.js";
+import { sceneMedia } from "./browser_media.js";
 
 export class SkiaSurface {
   /**
@@ -41,9 +42,13 @@ export class SkiaSurface {
     this._h = 0;
   }
 
-  /** Command. (Re)creates the on-screen GL surface when the canvas size changes. */
+  /** Command. (Re)creates the on-screen GL surface when the canvas size changes.
+   *  A zero-size canvas (a collapsed pane) is left with NO surface — render()
+   *  early-returns — because MakeOnScreenGLSurface(…, 0, 0) returns null and
+   *  would throw every frame otherwise. */
   _ensureSurface() {
     const w = this.canvasEl.width, h = this.canvasEl.height;
+    if (w === 0 || h === 0) { this.surface?.delete(); this.surface = null; this._w = w; this._h = h; return; }
     if (this.surface && this._w === w && this._h === h) return;
     this.surface?.delete();
     this.surface = this.CanvasKit.MakeOnScreenGLSurface(this.grContext, w, h, this.CanvasKit.ColorSpace.SRGB);
@@ -55,12 +60,26 @@ export class SkiaSurface {
   /**
    * Command (draws to the canvas). Renders the IR display list — same signature
    * as GpuCompositor.render so CanvasView's paint() is unchanged.
+   *
+   * MEDIA: the caller normally passes no `media`, so we BUILD it from the scene
+   * here (render_gpu/skia/browser_media.sceneMedia) — resolving each image/video
+   * ref to a CanvasKit Image through the shared registries, and freeing the
+   * per-paint video frames after the draw is submitted. A caller that supplies
+   * `media` (node/tests) is respected verbatim (the no-media path stays intact).
+   *
+   * SCISSOR: an optional device-px clip rect ({x,y,w,h}) — the presenter's
+   * letterbox. Forwarded to paintIR, which clears the WHOLE surface to
+   * `background` (the bars) and clips the SCENE to it so off-camera content
+   * cannot bleed into the bars. Ignored (full surface) when absent.
    */
-  render(ir, view, { background = [0, 0, 0, 0], media = {} } = {}) {
+  render(ir, view, { background = [0, 0, 0, 0], media = null, scissor = null } = {}) {
     this._ensureSurface();
+    if (!this.surface) return; // collapsed pane (zero-size canvas) — nothing to draw
     const canvas = this.surface.getCanvas();
-    paintIR(this.CanvasKit, canvas, ir, view, { media, background, typefaces: this.typefaces });
+    const built = media == null ? sceneMedia(this.CanvasKit, ir) : { media, release() {} };
+    paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, typefaces: this.typefaces, scissor });
     this.surface.flush();
+    built.release(); // free per-paint video frame Images now the draw is submitted
   }
 
   /** Command. Frees WASM/GPU resources. */

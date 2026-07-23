@@ -23,6 +23,7 @@ import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
 import { ensureCanvasKit, loadTypefaces } from "../render_gpu/skia/browser_canvaskit.js";
+import { sceneMedia } from "../render_gpu/skia/browser_media.js";
 import { cameraFrameIR } from "./cameraFrame.js";
 
 /** Query. Evaluated folded state for (doc, slide, alpha) — the input both the
@@ -53,24 +54,32 @@ function renderJob(width, height, buildIR) {
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {
       const { ir, view, background } = buildIR();
-      paintIR(CanvasKit, surface.getCanvas(), ir, view, { background, typefaces });
-      surface.flush();
-      const img = surface.makeImageSnapshot();
-      if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
-      const px = img.readPixels(0, 0, {
-        width,
-        height,
-        colorType: CanvasKit.ColorType.RGBA_8888,
-        alphaType: CanvasKit.AlphaType.Unpremul,
-        colorSpace: CanvasKit.ColorSpace.SRGB,
-      });
-      img.delete();
-      if (!px) throw new Error("gpuService: readPixels returned null");
-      const out = document.createElement("canvas");
-      out.width = width;
-      out.height = height;
-      out.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(px), width, height), 0, 0);
-      return out;
+      // Resolve the scene's image/video refs to CanvasKit Images so thumbnails/
+      // minimap/PNG export show media too (the same seam the on-screen surface
+      // uses); release frees the per-paint video frames after readback.
+      const { media, release } = sceneMedia(CanvasKit, ir);
+      try {
+        paintIR(CanvasKit, surface.getCanvas(), ir, view, { media, background, typefaces });
+        surface.flush();
+        const img = surface.makeImageSnapshot();
+        if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
+        const px = img.readPixels(0, 0, {
+          width,
+          height,
+          colorType: CanvasKit.ColorType.RGBA_8888,
+          alphaType: CanvasKit.AlphaType.Unpremul,
+          colorSpace: CanvasKit.ColorSpace.SRGB,
+        });
+        img.delete();
+        if (!px) throw new Error("gpuService: readPixels returned null");
+        const out = document.createElement("canvas");
+        out.width = width;
+        out.height = height;
+        out.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(px), width, height), 0, 0);
+        return out;
+      } finally {
+        release();
+      }
     } finally {
       surface.delete();
     }

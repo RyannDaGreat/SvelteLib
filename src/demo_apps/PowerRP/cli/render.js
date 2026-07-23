@@ -22,10 +22,11 @@
  * engineer). Widgets with effects OFF (the default) render fine.
  *
  * Image/video media is not yet decoded on the Node side: an empty media map is
- * passed, so a document containing image/video widgets fails LOUDLY inside
- * paint_skia ("no media Image for ref ...") rather than drawing blanks. Wiring
- * node-side media decode (file/dataURL → CanvasKit.MakeImageFromEncoded) is a
- * follow-up.
+ * passed, so a document containing image/video widgets draws those widgets as
+ * NOTHING here (paint_skia's image/video op skips an unresolved ref — the async
+ * media contract — rather than throwing). Wiring node-side media decode
+ * (file/dataURL → CanvasKit.MakeImageFromEncoded) is a follow-up; the browser
+ * editor/thumbnails/export DO render media (render_gpu/skia/browser_media.js).
  *
  * Usage (from the SvelteLib repo root):
  *   node src/demo_apps/PowerRP/cli/render.js doc.powerrp.json out.png \

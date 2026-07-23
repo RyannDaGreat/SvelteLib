@@ -9,6 +9,7 @@
   (the Pixel-Aligner lesson).
 -->
 <script>
+  import { onDestroy } from "svelte";
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
@@ -213,6 +214,10 @@
         console.error("PowerRP: Skia/WebGL init failed:", e);
       });
   });
+  // Free the Skia/WebGL surface on teardown (remount / HMR / project switch):
+  // each SkiaSurface owns a WebGL2 context + GrContext + GL surface, which leak
+  // without an explicit dispose (SkiaSurface.dispose).
+  onDestroy(() => gpu?.dispose());
 
   $effect(() => {
     app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; viewport; wrapW; wrapH; gpu; imageEpoch;
@@ -229,7 +234,7 @@
   // not invented (user rule: base constants on precedent).
   const MINIMAP_MAX_PX = 150;
   $effect(() => {
-    app.doc; app.slideIndex; app.minimapVisible; minimapCamRect;
+    app.doc; app.slideIndex; app.minimapVisible; minimapCamRect; imageEpoch;
     if (!app.minimapVisible || app.previewDelta) return;
     const rect = minimapCamRect;
     if (!(rect.w > 0 && rect.h > 0)) return; // degenerate camera → no thumbnail
@@ -252,6 +257,7 @@
     if (!canvasEl || !containerEl || !gpu) return;
     const dpr = app.dpr(); // retina browser setting (manifest)
     const rect = containerEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return; // collapsed pane → a 0×0 GL surface is null (skip)
     if (canvasEl.width !== Math.round(rect.width * dpr) || canvasEl.height !== Math.round(rect.height * dpr)) {
       canvasEl.width = Math.round(rect.width * dpr);
       canvasEl.height = Math.round(rect.height * dpr);
