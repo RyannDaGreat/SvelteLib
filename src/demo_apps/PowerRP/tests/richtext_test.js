@@ -15,6 +15,8 @@ import {
   runStyleAt, commonStyle,
   // Round 15.6 — vertical align + paragraph-style application
   valignOffset, VALIGN_VALUES, DEFAULT_VALIGN, paragraphRanges, applyParaStyle,
+  // editing substrate — insert/delete at a character offset
+  insertText, deleteRange, countNewlines,
 } from "../core/richtext.js";
 
 let passed = 0;
@@ -496,6 +498,90 @@ test("applyParaStyle: does not mutate the input paras; backfills a short paras a
   assert.equal(out[1].align, "center");
   assert.equal(paras.length, 1);         // input untouched
   assert.equal(paras[0].align, "left");
+});
+
+// ── insertText / deleteRange (the editing substrate) ──────────────────────────
+
+test("insertText: inserts mid-run, inheriting the covering run's style", () => {
+  const v = insertText({ runs: [{ text: "ac", bold: true }], paras: [{}] }, 1, "b");
+  assert.equal(richTextToPlain(v), "abc");
+  assert.equal(v.runs.length, 1);           // re-merged to one run (same style)
+  assert.equal(v.runs[0].text, "abc");
+  assert.equal(v.runs[0].bold, true);
+});
+
+test("insertText: at a run boundary inherits the LEFT run (typing continues it)", () => {
+  const v = insertText({ runs: [{ text: "ab", bold: true }, { text: "cd", bold: false }], paras: [{}] }, 2, "X");
+  // X inserted between the runs inherits left (bold) → merges with the first run.
+  assert.equal(richTextToPlain(v), "abXcd");
+  const boldText = v.runs.filter((r) => r.bold).map((r) => r.text).join("");
+  assert.equal(boldText, "abX");
+});
+
+test("insertText: a newline adds a paragraph (paras stays 1:1)", () => {
+  const v = insertText({ runs: [{ text: "ab" }], paras: [{ align: "center" }] }, 1, "\n");
+  assert.equal(richTextToPlain(v), "a\nb");
+  assert.equal(v.paras.length, 2);
+  assert.equal(v.paras[0].align, "center"); // both halves inherit the split paragraph's style
+  assert.equal(v.paras[1].align, "center");
+  assert.equal(paragraphRanges(v.runs).length, v.paras.length); // invariant
+});
+
+test("insertText: multi-newline paste grows paras by the newline count", () => {
+  const v = insertText({ runs: [{ text: "XY" }], paras: [{}] }, 1, "a\nb\nc");
+  assert.equal(richTextToPlain(v), "Xa\nb\ncY");
+  assert.equal(v.paras.length, 3);
+  assert.equal(paragraphRanges(v.runs).length, 3);
+});
+
+test("insertText: into an empty value seeds the text; empty insert is a no-op", () => {
+  assert.equal(insertText({ runs: [{ text: "" }], paras: [{}] }, 0, "hi").runs[0].text, "hi");
+  const same = insertText({ runs: [{ text: "ab" }], paras: [{}] }, 1, "");
+  assert.equal(richTextToPlain(same), "ab");
+});
+
+test("insertText: does not mutate the input", () => {
+  const v = { runs: [{ text: "ab" }], paras: [{}] };
+  insertText(v, 1, "Z");
+  assert.equal(richTextToPlain(v), "ab");
+});
+
+test("deleteRange: removes a mid-run span, re-merging", () => {
+  const v = deleteRange({ runs: [{ text: "abc" }], paras: [{}] }, 1, 2);
+  assert.equal(richTextToPlain(v), "ac");
+  assert.equal(v.runs.length, 1);
+});
+
+test("deleteRange: deleting a newline merges paragraphs (keeps first's style)", () => {
+  const v = deleteRange({ runs: [{ text: "a\nb" }], paras: [{ align: "right" }, { align: "left" }] }, 1, 2);
+  assert.equal(richTextToPlain(v), "ab");
+  assert.equal(v.paras.length, 1);
+  assert.equal(v.paras[0].align, "right"); // the paragraph the deletion started in wins
+  assert.equal(paragraphRanges(v.runs).length, 1);
+});
+
+test("deleteRange: across multiple paragraphs shrinks paras by the newline count", () => {
+  // "a\nb\nc\nd" = a \n b \n c \n d (indices 0..6). Range [1,5) = "\nb\nc" spans 2 newlines.
+  const v = deleteRange({ runs: [{ text: "a\nb\nc\nd" }], paras: [{}, {}, {}, {}] }, 1, 5);
+  assert.equal(richTextToPlain(v), "a\nd");
+  assert.equal(v.paras.length, 2);
+  assert.equal(paragraphRanges(v.runs).length, 2);
+});
+
+test("deleteRange: empty range is a no-op; whole-range delete keeps one empty run", () => {
+  assert.equal(richTextToPlain(deleteRange({ runs: [{ text: "abc" }], paras: [{}] }, 1, 1)), "abc");
+  const gone = deleteRange({ runs: [{ text: "abcd" }], paras: [{}] }, 0, 4);
+  assert.equal(gone.runs.length, 1);
+  assert.equal(gone.runs[0].text, "");
+});
+
+test("insertText∘deleteRange round-trips text and paragraph count", () => {
+  const start = { runs: [{ text: "Hello", bold: true }, { text: " World" }], paras: [{}] };
+  const typed = insertText(start, 5, "!");        // "Hello! World"
+  assert.equal(richTextToPlain(typed), "Hello! World");
+  const back = deleteRange(typed, 5, 6);          // remove the "!"
+  assert.equal(richTextToPlain(back), "Hello World");
+  assert.equal(back.paras.length, 1);
 });
 
 console.log(`\n${passed} richtext tests passed`);

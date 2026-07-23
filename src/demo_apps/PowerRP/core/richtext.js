@@ -938,6 +938,136 @@ export function commonStyle(runs, start, end, key) {
   return value;
 }
 
+// ── text insert / delete at a character offset (the editing substrate) ─────────
+// The in-place editor mutates the MODEL (not the DOM) on every keystroke/paste/
+// delete. These two PURE primitives are all it needs: both reuse splitRunAt +
+// mergeAdjacentRuns (runs) and paragraphRanges (paras), so a typed character
+// inherits the caret's style (runStyleAt, left-wins) and an inserted/removed "\n"
+// grows/shrinks the paras array in lock-step with the paragraph count. Offsets are
+// CODE POINTS over the concatenated run text (richTextToPlain), "\n" included —
+// the SAME offset space applyRunStyle/applyParaStyle/commonStyle consume.
+
+/** Pure function. Number of "\n" characters in `text`.
+ *
+ * @example countNewlines("a\nb\nc") // 2
+ * @example countNewlines("abc") // 0
+ */
+export function countNewlines(text) {
+  let n = 0;
+  for (const ch of text) if (ch === "\n") n += 1;
+  return n;
+}
+
+/**
+ * Pure function. Inserts `text` (which may contain "\n") at character `offset`
+ * into a rich {runs, paras} value, returning a NEW value (never mutates). The
+ * inserted characters inherit the caret's style (runStyleAt at `offset` — the
+ * left-run-wins convention, so typing at a boundary continues the preceding run's
+ * style). Every "\n" in `text` splits the paragraph at `offset` into more
+ * paragraphs, each inheriting that paragraph's style — so the paras array grows by
+ * countNewlines(text) and stays 1:1 with the paragraph count. Runs are re-merged
+ * to canonical form (a typed char adjacent to an identically-styled run coalesces).
+ *
+ * Args:
+ *   value ({runs, paras}): canonical rich value
+ *   offset (number): character offset (clamped to [0, length])
+ *   text (string): the characters to insert (may include "\n")
+ *
+ * Returns:
+ *   {runs, paras}: new rich value
+ *
+ * @example insertText({runs: [{text: "ac"}], paras: [{}]}, 1, "b").runs[0].text // "abc"
+ * @example insertText({runs: [{text: "ab", bold: true}], paras: [{}]}, 2, "c").runs[0].bold // true (inherits left run's style)
+ * @example insertText({runs: [{text: "ab"}], paras: [{}]}, 1, "\n").paras.length // 2 (a newline adds a paragraph)
+ * @example insertText({runs: [{text: ""}], paras: [{}]}, 0, "hi").runs[0].text // "hi"
+ */
+export function insertText(value, offset, text) {
+  const runs = value.runs ?? [];
+  const paras = value.paras ?? [];
+  const len = runsLength(runs);
+  const at = Math.max(0, Math.min(offset, len));
+  if (text.length === 0) return { runs: mergeAdjacentRuns(runs), paras: [...paras] };
+  const style = runStyleAt(runs, at); // caret style (left wins at a boundary)
+  const split = splitRunAt(runs, at); // ensure a run boundary exactly at `at`
+  const out = [];
+  let pos = 0, inserted = false;
+  for (const r of split) {
+    if (!inserted && pos === at) { out.push({ text, ...style }); inserted = true; }
+    out.push({ ...r });
+    pos += [...(r.text ?? "")].length;
+  }
+  if (!inserted) out.push({ text, ...style }); // at === len (end of text)
+  return { runs: mergeAdjacentRuns(out), paras: paraInsert(paras, runs, at, countNewlines(text)) };
+}
+
+/**
+ * Pure function. Deletes the characters in [start, end) from a rich {runs, paras}
+ * value, returning a NEW value (never mutates). Splits runs at both boundaries,
+ * drops the fully-covered runs, and re-merges to canonical form. Every "\n" inside
+ * the deleted range merges two paragraphs, so the paras array shrinks by the
+ * number of deleted newlines (the surviving merged paragraph keeps the FIRST
+ * touched paragraph's style — the universal "delete-across-paragraphs joins into
+ * the first" convention). An empty range (start === end) is a no-op (canonicalized).
+ *
+ * Args:
+ *   value ({runs, paras}): canonical rich value
+ *   start (number): range start offset
+ *   end (number): range end offset
+ *
+ * Returns:
+ *   {runs, paras}: new rich value
+ *
+ * @example deleteRange({runs: [{text: "abc"}], paras: [{}]}, 1, 2).runs[0].text // "ac"
+ * @example deleteRange({runs: [{text: "a\nb"}], paras: [{}, {}]}, 1, 2).paras.length // 1 (the newline was deleted → paragraphs merge)
+ * @example deleteRange({runs: [{text: "abc"}], paras: [{}]}, 1, 1).runs[0].text // "abc" (empty range no-op)
+ * @example deleteRange({runs: [{text: "abcd"}], paras: [{}]}, 0, 4).runs[0].text // "" (all gone → one empty run kept)
+ */
+export function deleteRange(value, start, end) {
+  const runs = value.runs ?? [];
+  const paras = value.paras ?? [];
+  const len = runsLength(runs);
+  const lo = Math.max(0, Math.min(start, end, len));
+  const hi = Math.min(len, Math.max(start, end, 0));
+  if (lo >= hi) return { runs: mergeAdjacentRuns(runs), paras: [...paras] };
+  const split = splitRunAt(splitRunAt(runs, lo), hi);
+  const out = [];
+  let pos = 0;
+  for (const r of split) {
+    const rlen = [...(r.text ?? "")].length;
+    if (pos >= lo && pos + rlen <= hi) { pos += rlen; continue; } // fully inside → drop
+    out.push({ ...r });
+    pos += rlen;
+  }
+  const deletedNewlines = countNewlines([...richTextToPlain(value)].slice(lo, hi).join(""));
+  return { runs: mergeAdjacentRuns(out), paras: paraDelete(paras, runs, lo, deletedNewlines) };
+}
+
+/** Pure helper. The paras array after inserting `k` newlines inside the paragraph
+ * containing `at`: that paragraph's style entry is replaced by k+1 copies (each
+ * split piece inherits it), so the array grows by k and stays 1:1 with the new
+ * paragraph count. */
+function paraInsert(paras, oldRuns, at, k) {
+  if (k === 0) return [...paras];
+  const ranges = paragraphRanges(oldRuns);
+  let p = ranges.findIndex((r) => at <= r.end);
+  if (p < 0) p = ranges.length - 1;
+  const base = paras?.[p] ?? paras?.[0] ?? { ...DEFAULT_PARA };
+  const copies = Array.from({ length: k + 1 }, () => ({ ...base }));
+  return [...paras.slice(0, p), ...copies, ...paras.slice(p + 1)];
+}
+
+/** Pure helper. The paras array after deleting `m` newlines starting in the
+ * paragraph containing `lo`: paragraphs p..p+m merge into one (keeping p's style),
+ * so the array shrinks by m and stays 1:1 with the new paragraph count. */
+function paraDelete(paras, oldRuns, lo, m) {
+  if (m === 0) return [...paras];
+  const ranges = paragraphRanges(oldRuns);
+  let p = ranges.findIndex((r) => lo <= r.end);
+  if (p < 0) p = ranges.length - 1;
+  const kept = paras?.[p] ?? paras?.[0] ?? { ...DEFAULT_PARA };
+  return [...paras.slice(0, p), { ...kept }, ...paras.slice(p + 1 + m)];
+}
+
 // ── loud document migration (string `text` → runs) ────────────────────────────
 
 /**

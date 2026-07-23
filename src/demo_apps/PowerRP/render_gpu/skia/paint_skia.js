@@ -41,8 +41,7 @@
  */
 
 import { flattenIR, parseColor } from "../ir.js";
-import { fontFamilyChain } from "../fonts.js";
-import { splitParagraphs, paraStyleFor, valignOffset, DEFAULT_VALIGN, NATURAL_LINE_HEIGHT } from "../../core/richtext.js";
+import { getTextLayout } from "./text_layout.js";
 import * as T from "../../core/transform.js";
 
 const RAD2DEG = 180 / Math.PI;
@@ -686,138 +685,16 @@ function buildPath(CanvasKit, points, close) {
 // slightly (documented in fonts/README.md; the vector-export emoji/CJK work is a
 // separate follow-up).
 
-const DEFAULT_TEXT_SIZE = 36; // mirrors core/richtext DEFAULT_PARA_SIZE (a bare run/op with no size)
-const INFINITE_LAYOUT_WIDTH = 1e7; // an unbounded (boxW===Infinity) op lays out left-aligned at a width it can never fill (no wrap, no alignment slack)
-
 /**
  * Command (draws a text op on `canvas` in local space, top-left origin). Handles
  * BOTH the rich op ({rich:{runs,paras}, boxW, boxH, boxStyle}) and the legacy
- * single-run op (plain {text,size,color,bold,font}) by normalizing the latter to
- * a one-run rich value. Builds ONE CanvasKit Paragraph PER paragraph (so each
- * paragraph keeps its own alignment/line-spacing), stacks them vertically, and
- * shifts the whole stack by the box's vertical-alignment offset.
+ * single-run op (plain {text,size,color,bold,font}). Builds/reuses the ONE cached
+ * CanvasKit Paragraph stack through text_layout.getTextLayout — the SAME layout
+ * the in-place editor queries for caret/selection geometry, so render and editor
+ * can never disagree — then draws each paragraph at its local yTop (valign-shifted).
+ * The layout is CACHED (not deleted per frame); the cache bounds WASM lifetime.
  */
 function drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection) {
-  const rich = cmd.rich ?? singleRunRich(cmd);
-  const boxStyle = cmd.boxStyle ?? {};
-  const boxW = cmd.boxW ?? Infinity;
-  const boxH = cmd.boxH ?? Infinity;
-  const fallbackStyle = rich.runs[0] ?? { size: DEFAULT_TEXT_SIZE, font: "system", color: "#000000" };
-  const paragraphs = splitParagraphs(rich.runs);
-
-  const built = paragraphs.map((pieces, i) =>
-    buildParagraph(CanvasKit, fontCollection, pieces, paraStyleFor(rich.paras, i, boxStyle), boxW, fallbackStyle, opacity));
-  const totalH = built.reduce((s, b) => s + b.height, 0);
-  const vOffset = valignOffset(boxStyle.valign ?? DEFAULT_VALIGN, boxH, totalH);
-
-  let y = cmd.y + vOffset;
-  for (const b of built) {
-    canvas.drawParagraph(b.para, cmd.x, y);
-    y += b.height;
-    b.para.delete();
-  }
-}
-
-/** Pure-ish helper. A one-run rich value from a legacy single-run text op (its
- * fields ARE the run style; color may be an rgba array — ckColor handles both). */
-function singleRunRich(cmd) {
-  return {
-    runs: [{ text: cmd.text, size: cmd.size, color: cmd.color, bold: cmd.bold, italic: false, underline: false, strike: false, font: cmd.font, outlineColor: "#000000", outlineWidth: 0, highlight: "" }],
-    paras: [{}],
-  };
-}
-
-/**
- * Query→build (allocates a Paragraph; caller deletes .para). Builds one
- * CanvasKit Paragraph for a single paragraph's pieces. A forced STRUT pins the
- * line height to the paragraph's own text metrics so a tall COLOR-EMOJI face on
- * the line does NOT inflate the line height (its natural ascent/descent is ~2x a
- * text face). boxW===Infinity ⇒ left-aligned at INFINITE_LAYOUT_WIDTH (no wrap,
- * no alignment slack — matches the core layout's Infinity behavior).
- */
-function buildParagraph(CanvasKit, fc, pieces, pstyle, boxW, fallbackStyle, opacity) {
-  const infinite = boxW === Infinity;
-  const strutSize = pieces.length ? Math.max(...pieces.map((p) => p.style.size ?? DEFAULT_TEXT_SIZE)) : (fallbackStyle.size ?? DEFAULT_TEXT_SIZE);
-  const strutFont = (pieces[0]?.style ?? fallbackStyle).font ?? "system";
-  const lineSpacing = pstyle.lineSpacing ?? 1;
-  const strut = { strutEnabled: true, forceStrutHeight: true, fontFamilies: fontFamilyChain(strutFont), fontSize: strutSize };
-  // lineSpacing multiplies the NATURAL (~1.2) line height. Skia's strut
-  // heightMultiplier is a multiple of fontSize; only override when spacing != 1
-  // (natural strut metrics otherwise), scaled so lineSpacing 1.0 ≈ the core ratio.
-  if (lineSpacing !== 1) strut.heightMultiplier = lineSpacing * NATURAL_LINE_HEIGHT;
-
-  const pStyle = new CanvasKit.ParagraphStyle({
-    textStyle: { color: CanvasKit.BLACK, fontFamilies: fontFamilyChain(strutFont), fontSize: strutSize },
-    textAlign: infinite ? CanvasKit.TextAlign.Left : alignEnum(CanvasKit, pstyle.align),
-    strutStyle: strut,
-  });
-  const builder = CanvasKit.ParagraphBuilder.MakeFromFontCollection(pStyle, fc);
-  const charSpacing = pstyle.charSpacing ?? 0, wordSpacing = pstyle.wordSpacing ?? 0;
-  if (pieces.length === 0) {
-    // A blank paragraph (consecutive "\n") still advances one line — a zero-width
-    // space at the fallback style gives the line its strut height without ink.
-    builder.pushStyle(textStyle(CanvasKit, fallbackStyle, charSpacing, wordSpacing, opacity));
-    builder.addText("\u200b"); // U+200B zero-width space
-    builder.pop();
-  } else {
-    for (const p of pieces) {
-      builder.pushStyle(textStyle(CanvasKit, p.style, charSpacing, wordSpacing, opacity));
-      builder.addText(p.text);
-      builder.pop();
-    }
-  }
-  const para = builder.build();
-  para.layout(infinite ? INFINITE_LAYOUT_WIDTH : boxW);
-  const height = para.getHeight();
-  builder.delete();
-  return { para, height };
-}
-
-/**
- * Pure-ish helper. A run's style → CanvasKit TextStyle. color/backgroundColor/
- * decorationColor fold `opacity` into their alpha; the RGB is NEVER forced onto
- * color-glyph (emoji) fonts — Skia ignores the fill color for COLOR glyphs, so an
- * emoji at run color #000 keeps its own palette (only its alpha dims). letter/
- * wordSpacing come from the paragraph style (device-independent px).
- */
-function textStyle(CanvasKit, st, charSpacing, wordSpacing, opacity) {
-  const spec = {
-    color: ckColor(CanvasKit, st.color ?? "#000000", opacity),
-    fontFamilies: fontFamilyChain(st.font ?? "system"),
-    fontSize: st.size ?? DEFAULT_TEXT_SIZE,
-    fontStyle: {
-      weight: st.bold ? CanvasKit.FontWeight.Bold : CanvasKit.FontWeight.Normal,
-      slant: st.italic ? CanvasKit.FontSlant.Italic : CanvasKit.FontSlant.Upright,
-      width: CanvasKit.FontWidth.Normal,
-    },
-  };
-  if (charSpacing) spec.letterSpacing = charSpacing;
-  if (wordSpacing) spec.wordSpacing = wordSpacing;
-  if (typeof st.highlight === "string" && st.highlight.length > 0) spec.backgroundColor = ckColor(CanvasKit, st.highlight, opacity);
-  let deco = CanvasKit.NoDecoration;
-  if (st.underline) deco |= CanvasKit.UnderlineDecoration;
-  if (st.strike) deco |= CanvasKit.LineThroughDecoration;
-  if (deco !== CanvasKit.NoDecoration) {
-    spec.decoration = deco;
-    spec.decorationColor = ckColor(CanvasKit, st.color ?? "#000000", opacity);
-    spec.decorationStyle = CanvasKit.DecorationStyle.Solid;
-  }
-  return new CanvasKit.TextStyle(spec);
-}
-
-/** Pure-ish helper. A CanvasKit Color4f from a CSS string OR an rgba array (both
- * via ir.parseColor, 0..1), folding `opacity` into the alpha channel. */
-function ckColor(CanvasKit, c, opacity = 1) {
-  const rgba = parseColor(c);
-  return CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity);
-}
-
-/** Pure-ish helper. Paragraph horizontal-align string → CanvasKit TextAlign. */
-function alignEnum(CanvasKit, align) {
-  switch (align) {
-    case "center": return CanvasKit.TextAlign.Center;
-    case "right": return CanvasKit.TextAlign.Right;
-    case "justify": return CanvasKit.TextAlign.Justify;
-    default: return CanvasKit.TextAlign.Left;
-  }
+  const layout = getTextLayout(CanvasKit, fontCollection, cmd, opacity);
+  layout.draw(canvas, cmd.x, cmd.y);
 }

@@ -750,50 +750,63 @@ body,
   transform-origin: top left;
   z-index: 2;
 }
-/* TRANSPARENT-OVERLAY WYSIWYG (render-rewrite-skia): the SKIA render is now what
-   the user SEES while editing (CanvasView no longer suppresses the edited item),
-   so this contenteditable is a PURELY-BEHAVIORAL layer — it lays the text out at
-   the same per-run font/size/wrap-width as Skia (so the native caret/selection
-   track the visible glyphs) but paints NOTHING itself: its glyphs are transparent
-   (see the override rule below). It keeps NO background and NO border of its own.
-   Internal coords are LOCAL (world) units — font-size is set per-run in world px,
-   the root's scale maps to screen. line-height = --a-text-line-height (the
-   layout's NATURAL_LINE_HEIGHT 1.2, so wrapped lines advance the same as the Skia
-   layout). white-space: pre-wrap wraps at the box width like the pure layout. A
-   faint selection-colored outline marks the active edit surface; the caret is the
-   theme foreground so it stays visible over the (transparent) text. */
-.text-edit-overlay {
-  margin: 0;
-  padding: 0;
-  border: none;
+/* TRUE in-place editing (Skia-owned caret/selection): the caret + selection are
+   SELF-DRAWN divs positioned in the item's LOCAL space (inside the world-
+   transformed root), from the SAME CanvasKit Paragraph the render draws — so they
+   land on the visible glyphs across mixed size/font runs with no browser-layout
+   drift. The children below all use LOCAL (world-unit) coordinates; the root's
+   scale maps them to screen. */
+
+/* Transparent pointer hit-surface over the box + laid-out content: click-to-place
+   caret, drag-select, double-click word. cursor:text = an editable affordance. */
+.text-edit-hit {
+  position: absolute;
+  left: 0;
+  top: 0;
+  cursor: text;
   background: transparent;
-  line-height: var(--a-text-line-height);
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  outline: var(--a-hairline) dashed var(--a-selection);
-  caret-color: var(--fg);
 }
-/* Make ONLY the painted glyphs invisible so the Skia render beneath shows through:
-   the fill (color), the glyph-outline stroke (-webkit-text-stroke-color), and the
-   per-run highlight (background-color). text-decoration (underline/strike) paints
-   in currentColor, which is now transparent, so it vanishes too. These !important
-   painting overrides do NOT touch the inline style ATTRIBUTES that readRunsFromDom
-   reads back (el.style.color etc. is the inline value, unaffected by the
-   stylesheet), so the run⇄DOM round-trip is byte-identical — color/outline/
-   highlight survive edits and land in the model for Skia to draw. Layout-affecting
-   run styles (font-size/family/weight/style) stay live so the caret tracks the
-   Skia glyphs. */
-.text-edit-overlay,
-.text-edit-overlay * {
-  color: transparent !important;
-  -webkit-text-stroke-color: transparent !important;
-  background-color: transparent !important;
+
+/* Self-drawn caret at the focus offset. Thickness is set inline (LOCAL px that
+   render ~2px on screen). Blinks unless a range is selected (.has-selection). */
+.text-edit-caret {
+  position: absolute;
+  background: var(--fg);
+  pointer-events: none;
+  animation: text-edit-caret-blink 1s step-end infinite;
 }
-/* Selection band: translucent (never a text color) so the Skia glyphs read
-   through a normal-looking selection. */
-.text-edit-overlay::selection,
-.text-edit-overlay ::selection {
+.text-edit-caret.has-selection {
+  animation: none;
+}
+@keyframes text-edit-caret-blink {
+  50% { opacity: 0; }
+}
+
+/* Self-drawn selection band — translucent (never a text color) so the Skia
+   glyphs read through a normal-looking selection. One clean band per line
+   (RectHeightStyle.Max), correct across mixed run sizes. */
+.text-edit-selrect {
+  position: absolute;
   background: var(--a-text-edit-selection);
+  pointer-events: none;
+}
+
+/* Hidden contenteditable input sink at the caret — keystrokes + IME composition +
+   clipboard ONLY (its layout is never read; the model is the source of truth).
+   pointer-events:none so clicks pass through to the hit-surface; it is still
+   focusable programmatically. Positioned at the caret (inline) so the OS IME
+   candidate window appears there. Never display:none (IME needs a live element). */
+.text-edit-sink {
+  position: absolute;
+  color: transparent;
+  caret-color: transparent;
+  background: transparent;
+  border: none;
+  outline: none;
+  overflow: hidden;
+  white-space: pre;
+  pointer-events: none;
+  opacity: 0;
 }
 /* The floating PPT-style format toolbar, above the text box. It lives in the
    overlay root (world-transformed), so it COUNTER-SCALES by 1/scale (inline) to

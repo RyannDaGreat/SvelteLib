@@ -32,7 +32,7 @@
   import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, groupResizeState, creationRect, creationEndpoint } from "./canvas/dragKinds.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
-  import TextEditOverlay from "./TextEditOverlay.svelte"; // WYSIWYG in-place rich-text editor (Round 13.4)
+  import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
 
   let { app } = $props();
 
@@ -158,12 +158,12 @@
   // to create. Null outside an endpoint placement drag (and for bbox placements,
   // which use placeRect instead).
   let placeLine = $state(null); // {x1, y1, x2, y2} world, or null
-  // ── WYSIWYG TEXT EDIT (Round 13.4; transparent-overlay rewrite) ─────────────
-  // Edit state lives on the app store (app.textEditing = {itemId}) so the overlay
-  // and the shortcut context read the ONE source of truth. paint() no longer
-  // suppresses the edited item — Skia draws it live (the overlay is transparent
-  // and only supplies native caret/selection). onDblClick just calls
-  // app.beginTextEdit; the TextEditOverlay component (in the template) owns the rest.
+  // ── TRUE IN-PLACE TEXT EDIT (Skia-owned caret/selection) ────────────────────
+  // Edit state lives on the app store (app.textEditing = {itemId}) so the
+  // controller and the shortcut context read the ONE source of truth. paint()
+  // never suppresses the edited item — Skia draws it live; the TextEditController
+  // (in the template) self-draws the caret/selection from the SAME Paragraph the
+  // render uses. onDblClick just calls app.beginTextEdit; the controller owns the rest.
   // A-key live state (manifest ARCHITECTURE PLAN #4 "ANCHOR SNAP"): tracked
   // via window keydown/keyup (not e.getModifierState, which has patchy
   // cross-browser support for letter keys) so onPointerUp — which fires no
@@ -272,13 +272,13 @@
     const state = app.state();
     const view = { ...viewport, dpr };
     const viewRect = worldViewRect(view, canvasEl.width, canvasEl.height);
-    // TRANSPARENT-OVERLAY WYSIWYG (render-rewrite-skia): the item being edited is
+    // TRUE IN-PLACE EDITING (Skia-owned caret/selection): the item being edited is
     // drawn through Skia LIKE ANY OTHER — no suppression. Its shadow/glow/border/
     // exact layout are therefore what the user SEES while editing, and they update
     // live per keystroke because app.previewTextValue → app.previewDelta (a dep of
-    // this paint effect) re-blends the text leaf every input. The TextEditOverlay's
-    // contenteditable sits pixel-aligned ON TOP with TRANSPARENT text, contributing
-    // only the native caret/selection/IME — so there is no double image, and no
+    // this paint effect) re-blends the text leaf every input. The TextEditController
+    // draws the caret/selection ON TOP from the SAME CanvasKit Paragraph the render
+    // uses, so they land on the glyphs across mixed runs — no double image, and no
     // exit "jump" (the Skia render is identical during and after the edit).
     const nodes = deriveRenderTree(state, app.registry)
       .filter((n) => !canSkipNode(n, viewRect));
@@ -460,23 +460,24 @@
     }
   }
 
-  // ── DBLCLICK TEXT EDIT → WYSIWYG in-place editor (Round 13.4) ────────────────
-  // Double-clicking a TEXT widget enters IN-PLACE WYSIWYG edit mode: Skia keeps
-  // rendering the item (shadow/effects/exact layout, live per keystroke) and the
-  // TextEditOverlay (a contenteditable transformed into the item's world pose,
-  // with TRANSPARENT text) sits ON TOP purely for native caret/selection/IME —
-  // so what the user SEES is the real render, with no double image and no exit
-  // jump. The overlay + floating toolbar own the whole edit lifecycle (preview/
-  // commit/cancel, per-run style, Ctrl+B/I/U, Cmd±); this handler just ENTERS it.
+  // ── DBLCLICK TEXT EDIT → TRUE in-place editor (Skia-owned caret/selection) ──
+  // Double-clicking a TEXT widget enters IN-PLACE edit mode: Skia keeps rendering
+  // the item (shadow/effects/exact layout, live per keystroke) and the
+  // TextEditController draws the caret/selection ON TOP from the SAME CanvasKit
+  // Paragraph the render uses (glyph-accurate across mixed runs), with a hidden
+  // input sink for keys/IME/clipboard — so what the user SEES is the real render,
+  // no double image, no exit jump. The controller + floating toolbar own the whole
+  // edit lifecycle (preview/commit/cancel, per-run + per-paragraph style, Ctrl+B/
+  // I/U, Cmd±); this handler just ENTERS it.
 
-  /** Command. Enters WYSIWYG edit mode on the double-clicked TEXT widget (if any).
+  /** Command. Enters in-place edit mode on the double-clicked TEXT widget (if any).
    *  Non-text targets fall through (a dblclick on a rect does nothing). */
   function onDblClick(e) {
     if (drag || modal) return; // never open mid-gesture
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
     if (hit?.type !== "text") return;
-    app.beginTextEdit(hit.itemId); // selects + arms the transparent overlay (Skia keeps drawing the item)
+    app.beginTextEdit(hit.itemId); // selects + mounts the controller (Skia keeps drawing the item)
   }
 
   // ── Selection + drag ────────────────────────────────────────────────────────
@@ -2031,9 +2032,9 @@
     return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox, placeSeg, multiBoxOutline };
   });
 
-  // WYSIWYG TEXT EDIT (Round 13.4): the derived node of the item being edited (or
-  // null). The TextEditOverlay renders in the item's world pose off THIS node
-  // (preview-blended state, so live edits show as you type). Recomputes on
+  // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
+  // TextEditController renders in the item's world pose off THIS node (preview-
+  // blended state, so live edits show as you type). Recomputes on
   // doc/preview/slide/viewport change (the `overlay` reactive-deps pattern). Null
   // if the item was purged/retyped mid-edit — the overlay unmounts, the commit
   // still lands off the last preview.
@@ -2203,18 +2204,22 @@
           </g>
         {/if}
       </svg>
-      {#if textEditNode && actions}
-        <!-- WYSIWYG in-place rich-text editor (Round 13.4). The TextEditOverlay
-             IS the item's visual while editing (the GPU draw is suppressed in
-             paint()), so there is no background/double-image. It transforms itself
-             into the item's world pose off `textEditNode` and drives the whole
-             edit lifecycle (preview/commit/cancel, per-run style, the floating
-             toolbar). worldToScreen maps world→render-area px; zoom scales the
-             local font sizes to screen. -->
-        <TextEditOverlay
+      {#if textEditNode && actions && gpu}
+        <!-- TRUE in-place rich-text editor: caret + selection are SELF-DRAWN from
+             the SAME CanvasKit Paragraph the render draws (via the shared `gpu`
+             SkiaSurface's CanvasKit + fontCollection), so they land on the glyphs
+             across mixed runs with no browser-layout drift. Skia keeps rendering
+             the item live (paint() does NOT suppress it), so there is no double
+             image / exit jump. Drives the whole edit lifecycle (preview/commit/
+             cancel, per-run + per-paragraph style, the floating toolbar).
+             worldToScreen/screenToWorld are the camera maps; zoom·world.scale maps
+             the local layout to screen. -->
+        <TextEditController
           {app}
           node={textEditNode}
+          {gpu}
           worldToScreen={actions.worldToScreen}
+          screenToWorld={actions.screenToWorld}
           zoom={viewport.zoom}
         />
       {/if}

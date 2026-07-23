@@ -197,15 +197,15 @@ export class PowerRPApp {
    *  reads it and opens its picker, then clears it (on pick OR cancel — cancel
    *  leaves the empty ghost widget, per 14.3). null = no pending auto-open. */
   pendingVideoPickFor = $state(null);
-  /** WYSIWYG RICH-TEXT EDITING (Round 13.4). While a text box is being edited
-   * in place, `textEditing` = { itemId } (null otherwise). Drives: the
-   * TextEditOverlay (an in-canvas contenteditable that IS the visual — a real
-   * browser text layout using the SAME runs/box, so editing is glyph-for-glyph
-   * WYSIWYG, no background overlay); the GPU render SUPPRESSES this item (the
-   * overlay shows it — no double image); the floating format toolbar; and the
-   * textEditing shortcut context (Ctrl/Cmd+B/I/U + Cmd±). Selection-style edits
-   * flow through the preview/commit system as ONE undo unit per logical edit,
-   * exactly like the Inspector rows. */
+  /** TRUE IN-PLACE RICH-TEXT EDITING. While a text box is being edited in place,
+   * `textEditing` = { itemId } (null otherwise). The item keeps rendering LIVE
+   * through Skia (never suppressed) — the TextEditController draws only the caret
+   * + selection, sourced from the SAME CanvasKit Paragraph the render draws, so
+   * they are glyph-accurate across mixed runs with no browser-layout drift. Drives:
+   * the controller (self-drawn caret/selection + hidden input sink for keys/IME/
+   * clipboard); the floating format toolbar; and the textEditing shortcut context
+   * (Ctrl/Cmd+B/I/U + Cmd±). Selection-style edits flow through the preview/commit
+   * system as ONE undo unit per logical edit, exactly like the Inspector rows. */
   textEditing = $state(null);
   theme = $state("graphite");
   // BROWSER settings below: each = a SETTINGS descriptor's .initial (the
@@ -736,9 +736,9 @@ export class PowerRPApp {
   // ── WYSIWYG rich-text editing (Round 13.4) ─────────────────────────────────
 
   /** Command. Enters in-place edit mode on a text item: selects it (so the
-   * Inspector + toolbar reflect it) and sets `textEditing`. The GPU paint then
-   * suppresses this item (the overlay draws it) and the TextEditOverlay mounts.
-   * A no-op if already editing this item. */
+   * Inspector + toolbar reflect it) and sets `textEditing`. The item keeps
+   * rendering live through Skia; the TextEditController mounts and draws the
+   * caret/selection on top. A no-op if already editing this item. */
   beginTextEdit(itemId) {
     if (this.textEditing?.itemId === itemId) return;
     this.selection = itemId;
