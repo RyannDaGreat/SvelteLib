@@ -172,6 +172,11 @@
      slide-current border). */
   --a-asset-cell-min: 72px;
   --a-asset-dropzone: color-mix(in srgb, var(--a-selection) 14%, transparent);
+  /* The text-edit ::selection band. Translucent so the SKIA glyphs beneath the
+     transparent contenteditable read THROUGH a normal-looking selection (the
+     transparent-overlay WYSIWYG rewrite). Derived from --a-selection so it tracks
+     the active theme, like --a-asset-dropzone above. */
+  --a-text-edit-selection: color-mix(in srgb, var(--a-selection) 35%, transparent);
   --a-key-chip-h: 18px; /* THE key-chip height (one standard; value PENDING USER RATIFICATION) */
 
   /* SplitPane handles — thin, per annotator reference */
@@ -745,15 +750,18 @@ body,
   transform-origin: top left;
   z-index: 2;
 }
-/* The contenteditable IS the item's visual while editing (the GPU draw is
-   suppressed) — so it has NO background and NO border: the user sees ONLY their
-   text, exactly where it renders (the WYSIWYG requirement; the stopgap's panel
-   background was the thing the user rejected). Internal coords are LOCAL (world)
-   units — font-size is set per-run in world px, the root's scale maps to screen.
-   line-height = --a-text-line-height (the layout's NATURAL_LINE_HEIGHT 1.2, so
-   wrapped lines advance the same as the GPU layout). white-space: pre-wrap wraps
-   at the box width like the pure layout. A faint selection-colored outline (not a
-   filled background) marks the active edit surface without occluding the text. */
+/* TRANSPARENT-OVERLAY WYSIWYG (render-rewrite-skia): the SKIA render is now what
+   the user SEES while editing (CanvasView no longer suppresses the edited item),
+   so this contenteditable is a PURELY-BEHAVIORAL layer — it lays the text out at
+   the same per-run font/size/wrap-width as Skia (so the native caret/selection
+   track the visible glyphs) but paints NOTHING itself: its glyphs are transparent
+   (see the override rule below). It keeps NO background and NO border of its own.
+   Internal coords are LOCAL (world) units — font-size is set per-run in world px,
+   the root's scale maps to screen. line-height = --a-text-line-height (the
+   layout's NATURAL_LINE_HEIGHT 1.2, so wrapped lines advance the same as the Skia
+   layout). white-space: pre-wrap wraps at the box width like the pure layout. A
+   faint selection-colored outline marks the active edit surface; the caret is the
+   theme foreground so it stays visible over the (transparent) text. */
 .text-edit-overlay {
   margin: 0;
   padding: 0;
@@ -764,6 +772,28 @@ body,
   overflow-wrap: break-word;
   outline: var(--a-hairline) dashed var(--a-selection);
   caret-color: var(--fg);
+}
+/* Make ONLY the painted glyphs invisible so the Skia render beneath shows through:
+   the fill (color), the glyph-outline stroke (-webkit-text-stroke-color), and the
+   per-run highlight (background-color). text-decoration (underline/strike) paints
+   in currentColor, which is now transparent, so it vanishes too. These !important
+   painting overrides do NOT touch the inline style ATTRIBUTES that readRunsFromDom
+   reads back (el.style.color etc. is the inline value, unaffected by the
+   stylesheet), so the run⇄DOM round-trip is byte-identical — color/outline/
+   highlight survive edits and land in the model for Skia to draw. Layout-affecting
+   run styles (font-size/family/weight/style) stay live so the caret tracks the
+   Skia glyphs. */
+.text-edit-overlay,
+.text-edit-overlay * {
+  color: transparent !important;
+  -webkit-text-stroke-color: transparent !important;
+  background-color: transparent !important;
+}
+/* Selection band: translucent (never a text color) so the Skia glyphs read
+   through a normal-looking selection. */
+.text-edit-overlay::selection,
+.text-edit-overlay ::selection {
+  background: var(--a-text-edit-selection);
 }
 /* The floating PPT-style format toolbar, above the text box. It lives in the
    overlay root (world-transformed), so it COUNTER-SCALES by 1/scale (inline) to

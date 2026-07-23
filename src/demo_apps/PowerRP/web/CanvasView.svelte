@@ -158,11 +158,12 @@
   // to create. Null outside an endpoint placement drag (and for bbox placements,
   // which use placeRect instead).
   let placeLine = $state(null); // {x1, y1, x2, y2} world, or null
-  // ── WYSIWYG TEXT EDIT (Round 13.4) ──────────────────────────────────────────
-  // Edit state lives on the app store (app.textEditing = {itemId}) so the overlay,
-  // the GPU-suppression filter in paint(), and the shortcut context all read the
-  // ONE source of truth. onDblClick just calls app.beginTextEdit; the
-  // TextEditOverlay component (rendered in the template) owns the rest.
+  // ── WYSIWYG TEXT EDIT (Round 13.4; transparent-overlay rewrite) ─────────────
+  // Edit state lives on the app store (app.textEditing = {itemId}) so the overlay
+  // and the shortcut context read the ONE source of truth. paint() no longer
+  // suppresses the edited item — Skia draws it live (the overlay is transparent
+  // and only supplies native caret/selection). onDblClick just calls
+  // app.beginTextEdit; the TextEditOverlay component (in the template) owns the rest.
   // A-key live state (manifest ARCHITECTURE PLAN #4 "ANCHOR SNAP"): tracked
   // via window keydown/keyup (not e.getModifierState, which has patchy
   // cross-browser support for letter keys) so onPointerUp — which fires no
@@ -271,13 +272,16 @@
     const state = app.state();
     const view = { ...viewport, dpr };
     const viewRect = worldViewRect(view, canvasEl.width, canvasEl.height);
-    // SUPPRESS the item being WYSIWYG-edited (Round 13.4): the TextEditOverlay's
-    // contenteditable IS its visual while editing, so the GPU must NOT also draw
-    // it — that double image is exactly the "background on top of the text" the
-    // user rejected in the stopgap. One filter clause, no compositor change.
-    const editingId = app.textEditing?.itemId ?? null;
+    // TRANSPARENT-OVERLAY WYSIWYG (render-rewrite-skia): the item being edited is
+    // drawn through Skia LIKE ANY OTHER — no suppression. Its shadow/glow/border/
+    // exact layout are therefore what the user SEES while editing, and they update
+    // live per keystroke because app.previewTextValue → app.previewDelta (a dep of
+    // this paint effect) re-blends the text leaf every input. The TextEditOverlay's
+    // contenteditable sits pixel-aligned ON TOP with TRANSPARENT text, contributing
+    // only the native caret/selection/IME — so there is no double image, and no
+    // exit "jump" (the Skia render is identical during and after the edit).
     const nodes = deriveRenderTree(state, app.registry)
-      .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== editingId);
+      .filter((n) => !canSkipNode(n, viewRect));
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background
@@ -457,13 +461,13 @@
   }
 
   // ── DBLCLICK TEXT EDIT → WYSIWYG in-place editor (Round 13.4) ────────────────
-  // Double-clicking a TEXT widget enters IN-PLACE WYSIWYG edit mode: the
-  // TextEditOverlay (a contenteditable transformed into the item's world pose)
-  // becomes the item's visual — CanvasView.paint() suppresses the item's GPU draw
-  // while app.textEditing is set, so there is NO double image and NO background
-  // overlay (the two things the user rejected in the old <textarea> stopgap). The
-  // overlay + floating toolbar own the whole edit lifecycle (preview/commit/cancel,
-  // per-run style, Ctrl+B/I/U, Cmd±); this handler just ENTERS the mode.
+  // Double-clicking a TEXT widget enters IN-PLACE WYSIWYG edit mode: Skia keeps
+  // rendering the item (shadow/effects/exact layout, live per keystroke) and the
+  // TextEditOverlay (a contenteditable transformed into the item's world pose,
+  // with TRANSPARENT text) sits ON TOP purely for native caret/selection/IME —
+  // so what the user SEES is the real render, with no double image and no exit
+  // jump. The overlay + floating toolbar own the whole edit lifecycle (preview/
+  // commit/cancel, per-run style, Ctrl+B/I/U, Cmd±); this handler just ENTERS it.
 
   /** Command. Enters WYSIWYG edit mode on the double-clicked TEXT widget (if any).
    *  Non-text targets fall through (a dblclick on a rect does nothing). */
@@ -472,7 +476,7 @@
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
     if (hit?.type !== "text") return;
-    app.beginTextEdit(hit.itemId); // selects + arms the overlay (which suppresses the GPU draw)
+    app.beginTextEdit(hit.itemId); // selects + arms the transparent overlay (Skia keeps drawing the item)
   }
 
   // ── Selection + drag ────────────────────────────────────────────────────────

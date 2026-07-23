@@ -5,23 +5,29 @@
   WYSIWYG — it creates this background on top of the text". What the user LOVED
   and must be KEPT: "it does feel like native browser text editing... wonderful".
 
-  THE DESIGN: a `contenteditable` div positioned in CANVAS SPACE and CSS-
-  transformed by the edited item's FULL world transform (rotation + scale), so it
-  overlays the item PIXEL-FOR-PIXEL. The div's internal coordinates are the item's
-  LOCAL space: font-size = each run's own `size` (world units), width = the box
-  width `w`, `white-space: pre-wrap` — a real browser text layout with the SAME
-  committed fonts the GPU atlas rasterizes. Because both the browser here and the
-  shared pure layout (core/richtext) measure the SAME faces at the SAME sizes and
-  wrap at the SAME width, the editing text lines up glyph-for-glyph with what the
-  GPU renders — TRUE WYSIWYG, no background, no double image (CanvasView suppresses
-  the item's GPU draw while editing).
+  THE DESIGN (transparent-overlay rewrite, render-rewrite-skia): the SKIA canvas
+  render is what the user SEES while editing — CanvasView no longer suppresses the
+  edited item, so its shadow/glow/border/exact layout are live and update per
+  keystroke (app.previewTextValue → previewDelta → the reactive Skia paint). This
+  `contenteditable` div is positioned in CANVAS SPACE and CSS-transformed by the
+  edited item's FULL world transform (rotation + scale) so it overlays the item
+  PIXEL-FOR-PIXEL, but its TEXT is TRANSPARENT (app.css): it contributes ONLY the
+  native caret/selection/IME/spellcheck — the visible glyphs are Skia's. The div's
+  internal coordinates are the item's LOCAL space: font-size = each run's own
+  `size` (world units), width = the box width `w`, `white-space: pre-wrap`. Because
+  both the browser here and the shared pure layout (core/richtext) measure the SAME
+  faces at the SAME sizes and wrap at the SAME width, the transparent caret and
+  selection track the visible Skia glyphs closely; and because Skia is what shows
+  both DURING and AFTER edit, there is no exit "jump".
 
   Native caret/selection/IME behavior is the browser's own (the part the user
   loved). Rich per-character style (bold/italic/underline/strike/color/size/font/
   OUTLINE/HIGHLIGHT) is stored as RUNS (core/richtext); this component serializes
-  runs ⇄ styled <span>s both ways. Selection-range style edits (the floating
-  toolbar + Ctrl/Cmd+B/I/U + Cmd±) go through core/richtext.applyRunStyle and the
-  app preview/commit system as ONE undo unit.
+  runs ⇄ styled <span>s both ways — the inline span styles are read back verbatim
+  (el.style.*), so the transparent painting in app.css never disturbs the round-
+  trip. Selection-range style edits (the floating toolbar + Ctrl/Cmd+B/I/U + Cmd±)
+  go through core/richtext.applyRunStyle and the app preview/commit system as ONE
+  undo unit.
 
   Styling lives in app.css (.text-edit-overlay*; app convention: no <style>).
 -->
@@ -493,6 +499,7 @@
     role="textbox"
     tabindex="0"
     aria-multiline="true"
+    spellcheck="true"
     bind:this={editEl}
     style:width="{box.w}px"
     style:padding-top="{vPad}px"
