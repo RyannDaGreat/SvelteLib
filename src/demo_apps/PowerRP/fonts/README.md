@@ -22,6 +22,35 @@ The single home that names these files and maps them to CSS families is
 The OFL requires the license text to travel with the fonts — that is what the
 `OFL-*.txt` files are. Do NOT delete them.
 
+## Fallback faces (Skia text render — NOT user-selectable)
+
+These faces are the per-codepoint FALLBACK chain the Skia (CanvasKit) screen
+renderer appends behind every selectable family, so text the primary font lacks
+(Greek/Cyrillic beyond Inter, Arabic, and COLOR EMOJI) renders as real glyphs
+instead of `☐` tofu. They are registered into the CanvasKit `FontCollection`
+(see `render_gpu/skia/browser_canvaskit.js` + `node_render.js`); they do NOT
+appear in the font dropdown. Declared in `render_gpu/fonts.js` (`FALLBACK_FACES`).
+
+| Family            | Coverage                         | File(s)                                             | Bundle | License |
+|-------------------|----------------------------------|-----------------------------------------------------|--------|---------|
+| Noto Sans         | Latin / Greek / Cyrillic (+ bold)| `NotoSans-Regular.ttf` / `NotoSans-Bold.ttf`        | ~1.6 MB | [OFL-Noto.txt](./OFL-Noto.txt) — Copyright The Noto Project Authors |
+| Noto Sans Arabic  | Arabic (HarfBuzz shaping)        | `NotoSansArabic-Regular.ttf`                        | ~0.27 MB | [OFL-Noto.txt](./OFL-Noto.txt) |
+| Noto Color Emoji  | COLOR emoji (CBDT/CBLC bitmaps)  | `NotoColorEmoji.ttf`                                | ~10.7 MB | [OFL-Noto.txt](./OFL-Noto.txt) |
+
+`NotoColorEmoji.ttf` is the **color** build (CBDT/CBLC color-bitmap tables) — NOT
+the monochrome `NotoEmoji` outline font. Color glyphs keep their own multi-color
+palette and are never tinted by the run's text color (Skia ignores the fill color
+for color-glyph fonts). Total bundle cost of the fallback set: **~12.5 MB**.
+
+CJK (Chinese/Japanese/Korean) is deliberately NOT committed — a full CJK face is
+~16 MB. CJK codepoints render as tofu until a CJK fallback is added (drop a
+`NotoSansCJK*.ttf` into `FALLBACK_FACES`). This is a documented OPT-IN follow-up.
+
+These fallback faces feed ONLY the Skia screen render. The SVG/PDF vector
+exporters still layout through `core/richtext.js` + the committed selectable
+families, so emoji / Arabic / non-Inter Greek-Cyrillic in **vector export** is a
+separate documented follow-up (screen-vs-export parity risk).
+
 `system` has no file: it is the OS default stack (`system-ui, sans-serif`) that
 the app used before the fonts task. It stays the default `font` value on the
 text widget so existing documents render byte-identically (no migration). The

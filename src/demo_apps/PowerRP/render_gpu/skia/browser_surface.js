@@ -13,7 +13,7 @@
  */
 
 import { paintIR } from "./paint_skia.js";
-import { ensureCanvasKit, loadTypefaces } from "./browser_canvaskit.js";
+import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
 
 export class SkiaSurface {
@@ -23,14 +23,14 @@ export class SkiaSurface {
    */
   static async create(canvasEl) {
     const CanvasKit = await ensureCanvasKit();
-    const typefaces = await loadTypefaces(CanvasKit);
-    return new SkiaSurface(CanvasKit, canvasEl, typefaces);
+    const fontCollection = await loadFontCollection(CanvasKit);
+    return new SkiaSurface(CanvasKit, canvasEl, fontCollection);
   }
 
-  constructor(CanvasKit, canvasEl, typefaces) {
+  constructor(CanvasKit, canvasEl, fontCollection) {
     this.CanvasKit = CanvasKit;
     this.canvasEl = canvasEl;
-    this.typefaces = typefaces;
+    this.fontCollection = fontCollection;
     // alpha + premultiplied so the transparent clear lets the grid underlay +
     // app background show through (the editor's premultiplied-alpha contract).
     this.ctxHandle = CanvasKit.GetWebGLContext(canvasEl, { alpha: 1, premultipliedAlpha: 1, antialias: 1, majorVersion: 2 });
@@ -82,7 +82,7 @@ export class SkiaSurface {
     const canvas = this.surface.getCanvas();
     const built = media == null ? sceneMedia(this.CanvasKit, ir) : { media, release() {} };
     try {
-      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, typefaces: this.typefaces, scissor, makeSurface: this._makeSurface });
+      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface });
       this.surface.flush();
     } finally {
       built.release(); // free per-paint video frame Images even if paint throws (review MED)

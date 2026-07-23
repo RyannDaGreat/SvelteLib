@@ -158,3 +158,48 @@ export function committedFaces() {
   }
   return out;
 }
+
+// ── SKIA TEXT-RENDER FALLBACK CHAIN (per-codepoint fallback + COLOR EMOJI) ─────
+// The Skia (CanvasKit) screen renderer lays text out with the Paragraph API and a
+// FontCollection. Behind every SELECTABLE family it appends this fallback chain so
+// codepoints the primary font lacks — Greek/Cyrillic beyond Inter's coverage,
+// Arabic, and COLOR EMOJI — resolve to real glyphs instead of ☐ tofu. These faces
+// are NOT in the font dropdown; they exist only to catch missing glyphs.
+//
+// SCOPE: these feed ONLY the Skia render. SVG/PDF vector export still layouts via
+// core/richtext.js + the committed selectable families (fonts/README.md documents
+// the screen-vs-export parity follow-up). CJK is intentionally omitted (a full CJK
+// face is ~16 MB) — CJK renders as tofu until a NotoSansCJK face is added here.
+
+/** The fallback FAMILY names, in priority order, appended after the primary. */
+export const FALLBACK_FAMILIES = ["Noto Sans", "Noto Sans Arabic", "Noto Color Emoji"];
+
+/**
+ * The (family, bold, file) tuples the CanvasKit loaders register into the shared
+ * TypefaceFontProvider. `Noto Sans` carries both weights under ONE family (Skia
+ * matches the weight via the run's fontStyle); Arabic + Color Emoji are single
+ * faces. `Noto Color Emoji` is the CBDT/CBLC COLOR build (never tinted).
+ */
+export const FALLBACK_FACES = [
+  { family: "Noto Sans", bold: false, file: "NotoSans-Regular.ttf" },
+  { family: "Noto Sans", bold: true, file: "NotoSans-Bold.ttf" },
+  { family: "Noto Sans Arabic", bold: false, file: "NotoSansArabic-Regular.ttf" },
+  { family: "Noto Color Emoji", bold: false, file: "NotoColorEmoji.ttf" },
+];
+
+/**
+ * Pure function. The ordered CanvasKit `fontFamilies` chain for a font id: the
+ * id's own committed family first, then the broad fallback families. `system`
+ * (no committed file) resolves to Inter — the same stand-in the render path has
+ * always used for the OS default — so old docs render unchanged, just now with
+ * emoji/unicode fallback behind them.
+ *
+ * @example fontFamilyChain("inter")[0] // "PowerRP Inter"
+ * @example fontFamilyChain("system")[0] // "PowerRP Inter" (system → Inter stand-in)
+ * @example fontFamilyChain("jetbrains-mono") // ["PowerRP JetBrains Mono", "Noto Sans", "Noto Sans Arabic", "Noto Color Emoji"]
+ */
+export function fontFamilyChain(id) {
+  const d = fontDescriptor(id);
+  const primary = d.files.regular ? d.cssFamily : FONTS.inter.cssFamily;
+  return [primary, ...FALLBACK_FAMILIES];
+}

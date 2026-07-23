@@ -1,11 +1,17 @@
 /**
  * Shared browser CanvasKit bootstrap — inits the WASM module ONCE and builds the
- * committed-typeface map ONCE, for EVERY browser Skia consumer: the on-screen
+ * shared FontCollection ONCE, for EVERY browser Skia consumer: the on-screen
  * editor surface (browser_surface.js) AND the offscreen pixel service that feeds
  * thumbnails / minimap / PNG export (web/gpuService.js). Extracted so both share
- * one CanvasKit instance + one Typeface set rather than each spinning up its own
- * (WASM init is expensive, and the Typefaces are bound to a single CanvasKit
+ * one CanvasKit instance + one FontCollection rather than each spinning up its own
+ * (WASM init is expensive, and the font handles are bound to a single CanvasKit
  * instance — sharing keeps them valid for every consumer).
+ *
+ * The FontCollection wraps a TypefaceFontProvider holding the committed selectable
+ * families (registered under their unique cssFamily) PLUS the Noto fallback chain
+ * (Greek/Cyrillic/Arabic + COLOR EMOJI). The Paragraph text path in paint_skia.js
+ * resolves per-codepoint fallback through it, so missing glyphs render as real
+ * glyphs / color emoji instead of ☐ tofu.
  *
  * Browser-only (Vite `?url` asset imports, `import.meta.glob`, fetch). The Node
  * counterpart is render_gpu/skia/node_render.js, which does the same bootstrap
@@ -15,10 +21,12 @@
 
 import CanvasKitInit from "canvaskit-wasm/bin/canvaskit.js";
 import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
-import { committedFaces, DEFAULT_FONT } from "../fonts.js";
+import { committedFaces, FALLBACK_FACES } from "../fonts.js";
 
-// Vite inlines every committed TTF at build time (offline-safe, hashed URLs) —
-// the same mechanism web/fontLoader.js uses, resolved relative to THIS file.
+// Vite inlines every committed + fallback TTF at build time (offline-safe, hashed
+// URLs) — the same mechanism web/fontLoader.js uses, resolved relative to THIS
+// file. The Noto fallback set (~12.5 MB, mostly the 10.7 MB color-emoji face) is
+// bundled here so the editor works with no network.
 const FONT_URLS = import.meta.glob("../../fonts/*.ttf", { query: "?url", import: "default", eager: true });
 
 let _ckPromise = null;
@@ -28,33 +36,38 @@ export function ensureCanvasKit() {
   return _ckPromise;
 }
 
-let _typefacesPromise = null;
+let _fontCollectionPromise = null;
 /**
- * Query→build (fetches font files; memoized). Builds the `${id}:${bold}` →
- * Typeface map ONCE and caches the promise so every consumer shares one set.
- * A missing/failed face is reported loudly and skipped (fonts.js contract: a
- * missing font must never throw in the render path); `system` stands in as Inter.
+ * Query→build (fetches font files; memoized). Builds the shared FontCollection
+ * ONCE and caches the promise so every consumer shares one set. A missing/failed
+ * face is reported loudly and skipped (fonts.js contract: a missing font must
+ * never throw in the render path).
  */
-export function loadTypefaces(CanvasKit) {
-  if (!_typefacesPromise) _typefacesPromise = buildTypefaces(CanvasKit);
-  return _typefacesPromise;
+export function loadFontCollection(CanvasKit) {
+  if (!_fontCollectionPromise) _fontCollectionPromise = buildFontCollection(CanvasKit);
+  return _fontCollectionPromise;
 }
 
-/** Query→build (fetches font files). The uncached body of loadTypefaces. */
-async function buildTypefaces(CanvasKit) {
-  const map = new Map();
+/** Query→build (fetches font files). The uncached body of loadFontCollection. */
+async function buildFontCollection(CanvasKit) {
+  const provider = CanvasKit.TypefaceFontProvider.Make();
+  // (family, file): committed selectable families under their cssFamily (both
+  // weights share ONE family — Skia matches weight via the run's fontStyle), then
+  // the broad fallback faces under their own family names.
+  const faces = [
+    ...committedFaces().map((f) => ({ family: f.cssFamily, file: f.file })),
+    ...FALLBACK_FACES.map((f) => ({ family: f.family, file: f.file })),
+  ];
   await Promise.all(
-    committedFaces().map(async (face) => {
-      const url = FONT_URLS[`../../fonts/${face.file}`];
-      if (!url) { console.error(`browser_canvaskit: committed font "${face.file}" has no bundled URL — check fonts.js vs fonts/.`); return; }
+    faces.map(async ({ family, file }) => {
+      const url = FONT_URLS[`../../fonts/${file}`];
+      if (!url) { console.error(`browser_canvaskit: font "${file}" has no bundled URL — check fonts.js vs fonts/.`); return; }
       const buf = await (await fetch(url)).arrayBuffer();
-      const tf = CanvasKit.Typeface.MakeTypefaceFromData(buf);
-      if (!tf) { console.error(`browser_canvaskit: MakeTypefaceFromData failed for ${face.file}`); return; }
-      map.set(`${face.id}:${face.bold ? "b" : "r"}`, tf);
+      provider.registerFont(buf, family);
     }),
   );
-  const interR = map.get("inter:r"), interB = map.get("inter:b");
-  if (interR) map.set(`${DEFAULT_FONT}:r`, interR);
-  if (interB) map.set(`${DEFAULT_FONT}:b`, interB);
-  return map;
+  const fc = CanvasKit.FontCollection.Make();
+  fc.setDefaultFontManager(provider);
+  fc.enableFontFallback(); // resolve ANY registered face for a glyph outside the run's fontFamilies
+  return fc;
 }

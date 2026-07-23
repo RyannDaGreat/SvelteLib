@@ -8,7 +8,7 @@
  * through the SAME paint_skia.paintIR the editor and the Node/CLI path use, so
  * thumbnails match the viewport and the headless renderer byte-for-byte.
  *
- * Command module: inits CanvasKit + the committed typefaces once (shared with
+ * Command module: inits CanvasKit + the shared FontCollection once (shared with
  * browser_surface.js via browser_canvaskit.js), and SERIALIZES renders through a
  * promise queue so concurrent callers can't stomp each other mid-frame. Each job
  * allocates a fresh CPU surface (cheap; CanvasKit/fonts are the expensive part
@@ -22,7 +22,7 @@ import { evaluateState } from "../core/expressions.js";
 import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
-import { ensureCanvasKit, loadTypefaces } from "../render_gpu/skia/browser_canvaskit.js";
+import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
 import { sceneMedia } from "../render_gpu/skia/browser_media.js";
 import { cameraFrameIR } from "./cameraFrame.js";
 
@@ -35,12 +35,12 @@ function evaluateStateFor(doc, slideIndex, alpha, registry) {
 let ckPromise = null;
 let queue = Promise.resolve();
 
-/** Command (inits + memoizes CanvasKit and its typeface map). Returns {CanvasKit, typefaces}. */
+/** Command (inits + memoizes CanvasKit and its shared FontCollection). Returns {CanvasKit, fontCollection}. */
 function ensure() {
   if (!ckPromise) {
     ckPromise = ensureCanvasKit().then(async (CanvasKit) => ({
       CanvasKit,
-      typefaces: await loadTypefaces(CanvasKit),
+      fontCollection: await loadFontCollection(CanvasKit),
     }));
   }
   return ckPromise;
@@ -49,7 +49,7 @@ function ensure() {
 /** Serialized render → fresh 2D canvas with the pixels (the shared core). */
 function renderJob(width, height, buildIR) {
   const job = queue.then(async () => {
-    const { CanvasKit, typefaces } = await ensure();
+    const { CanvasKit, fontCollection } = await ensure();
     const surface = CanvasKit.MakeSurface(width, height);
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {
@@ -59,7 +59,7 @@ function renderJob(width, height, buildIR) {
       // uses); release frees the per-paint video frames after readback.
       const { media, release } = sceneMedia(CanvasKit, ir);
       try {
-        paintIR(CanvasKit, surface.getCanvas(), ir, view, { media, background, typefaces });
+        paintIR(CanvasKit, surface.getCanvas(), ir, view, { media, background, fontCollection });
         surface.flush();
         const img = surface.makeImageSnapshot();
         if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
