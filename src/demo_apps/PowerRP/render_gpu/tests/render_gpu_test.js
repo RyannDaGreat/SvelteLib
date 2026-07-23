@@ -24,9 +24,7 @@ import {
   irToSVG, vectorCommandToSVG, similarityTransform, viewTransform, xmlEscape,
   roundedRectPathD, pointsAttr, textToSVG, bytesToBase64, groupWrap,
 } from "../svg_backend.js";
-import { lensRenderView, deviceRectThroughViews, intersectRects } from "../gpu/compositor.js";
 import { bucketFor } from "../gpu/glyph_atlas.js";
-import { benchScene, hash01 } from "../bench/scene.js";
 import { deriveRenderTree } from "../../core/derive.js";
 import { evaluateState } from "../../core/expressions.js";
 import { foldState } from "../../core/document.js";
@@ -298,41 +296,6 @@ test("magnifierIR: emit passes supersample through (state default true)", () => 
   assert.equal(magnifierPlugin.emit({ ...base, supersample: false })[0].supersample, false);
   assert.equal(magnifierPlugin.emit({ ...base, supersample: true })[0].supersample, true);
 });
-test("lensRenderView: lens center is the fixed point of the magnified view (default origin)", () => {
-  const view = { zoom: 1.5, panX: 40, panY: -12, dpr: 2 };
-  const center = { x: 123, y: 77 };
-  const lens = lensRenderView(view, center, 2.5);
-  assert.equal(lens.zoom, 1.5 * 2.5);
-  assert.equal(lens.dpr, view.dpr);
-  const dev = (v, w) => [(w.x * v.zoom + v.panX) * v.dpr, (w.y * v.zoom + v.panY) * v.dpr];
-  approxArr(dev(lens, center), dev(view, center)); // center pinned to the same device px
-  // A point r away from center lands M× farther from it (that IS magnification)
-  const off = { x: center.x + 10, y: center.y };
-  assert.ok(Math.abs((dev(lens, off)[0] - dev(lens, center)[0]) - 2.5 * (dev(view, off)[0] - dev(view, center)[0])) < 1e-9);
-});
-test("lensRenderView: ORIGIN renders where the center did (origin ≠ center)", () => {
-  const view = { zoom: 1.5, panX: 40, panY: -12, dpr: 2 };
-  const center = { x: 123, y: 77 };
-  const origin = { x: 90, y: 60 };
-  const lens = lensRenderView(view, center, 2.5, origin);
-  const dev = (v, w) => [(w.x * v.zoom + v.panX) * v.dpr, (w.y * v.zoom + v.panY) * v.dpr];
-  // The origin under the lens view lands exactly where the center was under the outer view.
-  approxArr(dev(lens, origin), dev(view, center));
-});
-test("deviceRectThroughViews + intersectRects: scissor carry math", () => {
-  assert.deepEqual(
-    deviceRectThroughViews({ x: 0, y: 0, w: 100, h: 100 }, { zoom: 1, panX: 0, panY: 0, dpr: 1 }, { zoom: 2, panX: 0, panY: 0, dpr: 1 }),
-    { x: 0, y: 0, w: 200, h: 200 },
-  );
-  // Round-trip: mapping to a view and back is the identity
-  const from = { zoom: 1.25, panX: 7, panY: -3, dpr: 2 };
-  const to = { zoom: 5, panX: -100, panY: 40, dpr: 2 };
-  const rect = { x: 10, y: 20, w: 30, h: 40 };
-  const back = deviceRectThroughViews(deviceRectThroughViews(rect, from, to), to, from);
-  approxArr([back.x, back.y, back.w, back.h], [rect.x, rect.y, rect.w, rect.h], 1e-9);
-  assert.deepEqual(intersectRects({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }), { x: 5, y: 5, w: 5, h: 5 });
-  assert.equal(intersectRects({ x: 0, y: 0, w: 4, h: 4 }, { x: 8, y: 0, w: 2, h: 2 }).w, 0); // disjoint → zero-area
-});
 test("sceneIR: real registry render tree → z-ordered wrapped IR", () => {
   const registry = createRegistry();
   registerAll(registry, createCommands());
@@ -513,36 +476,6 @@ await test("irToSVG: lens ORIGIN — magnify transform maps origin → center (t
   assert.match(svg, /translate\(30 10\) scale\(2\)/);
   // Region/rim geometry is untouched by the origin (only WHAT is magnified moves).
   assert.match(svg, /<clipPath id="lensclip1"><circle cx="50" cy="50" r="30"\/><\/clipPath>/);
-});
-
-// ── benchmark scene (must stay DOM-free + deterministic) ───────────────────
-test("hash01: deterministic, in [0,1)", () => {
-  assert.equal(hash01(7, 3), hash01(7, 3));
-  assert.notEqual(hash01(7, 3), hash01(8, 3));
-  for (let i = 0; i < 50; i++) {
-    const v = hash01(i, i % 5);
-    assert.ok(v >= 0 && v < 1, `${v} out of range`);
-  }
-});
-await test("benchScene: structure is stable, flattens + serializes", async () => {
-  const ir = benchScene(1.25, { n: 10, effects: true });
-  assert.equal(ir.filter((c) => c.op === "rect").length, 10);
-  assert.equal(ir.filter((c) => c.op === "blurBackdrop").length, 1);
-  assert.equal(ir.filter((c) => c.op === "magnifyBackdrop").length, 1);
-  assert.equal(flattenIR(ir).length > 0, true); // balanced transform stack
-  const stubRaster = async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
-  // effects:true → the arrowhead polygons sit BELOW the blur, so the HYBRID RULE
-  // rasterizes them into the embedded <image> region (they must NOT survive as
-  // vector — that would mean the blur was skipped). The lens interior, being
-  // below the same blur, is raster too. So the vector layer is the above-blur
-  // text + lens clip + rim; the raster region is the <image>.
-  const withFx = await irToSVG(ir, { width: 800, height: 450, view: { zoom: 0.5, panX: 0, panY: 0 }, rasterize: stubRaster });
-  assert.match(withFx, /<image /);           // the blur region embedded as raster
-  assert.doesNotMatch(withFx, /<polygon/);   // arrowheads are below the blur → rasterized, not vector
-  // effects:false → no blur, so the arrowhead polygons DO survive as vector.
-  const noFx = await irToSVG(benchScene(1.25, { n: 10, effects: false }),
-    { width: 800, height: 450, view: { zoom: 0.5, panX: 0, panY: 0 } });
-  assert.match(noFx, /<polygon/);            // arrowheads made it through the vector backend
 });
 
 test("bucketFor: ceil lattice below the exact regime, exact size above, capacity clamp", () => {

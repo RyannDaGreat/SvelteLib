@@ -29,7 +29,17 @@
 
 import { ease } from "../core/interpolators.js";
 import { resolveTransition } from "../core/transitions.js";
-import { renderCameraFrame } from "./gpuService.js";
+
+// gpuService is browser-only (its Skia bootstrap uses Vite `?url` + import.meta.glob),
+// so import it LAZILY on first use. This keeps transitionRender's PURE planners
+// (fadeStrength, isFadeFrame) importable in bare node — their unit tests never call a
+// render function, so the browser rasterizer is never pulled into node module
+// resolution. The browser pays one dynamic import on the first transition frame.
+let _renderCameraFrame = null;
+async function renderCameraFrame(...args) {
+  if (!_renderCameraFrame) _renderCameraFrame = (await import("./gpuService.js")).renderCameraFrame;
+  return _renderCameraFrame(...args);
+}
 
 // ── Endpoint-snapshot memo (14.7 REOPENED root cause) ──────────────────────────
 // The two completed-state frames a fade blends depend ONLY on (doc, index, size)
