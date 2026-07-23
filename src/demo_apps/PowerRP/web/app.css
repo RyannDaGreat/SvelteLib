@@ -172,6 +172,16 @@
      slide-current border). */
   --a-asset-cell-min: 72px;
   --a-asset-dropzone: color-mix(in srgb, var(--a-selection) 14%, transparent);
+  /* Optimistic upload tile: scrim over the kind icon so the %/bytes caption
+     reads, a determinate progress bar (track + accent fill), and an
+     indeterminate spinner for when the browser can't report total bytes. */
+  --a-upload-scrim: color-mix(in srgb, var(--a-canvas-bg) 78%, transparent);
+  --a-upload-bar-h: 5px;
+  --a-upload-bar-track: color-mix(in srgb, var(--fg) 22%, transparent);
+  --a-upload-bar-fill: var(--a-selection);
+  --a-upload-spinner-size: 22px;
+  --a-upload-spinner-track: color-mix(in srgb, var(--fg) 22%, transparent);
+  --a-upload-spin-period: 0.8s; /* one full rotation of the indeterminate ring */
   /* The text-edit ::selection band. Translucent so the SKIA glyphs beneath the
      transparent contenteditable read THROUGH a normal-looking selection (the
      transparent-overlay WYSIWYG rewrite). Derived from --a-selection so it tracks
@@ -1234,6 +1244,90 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Optimistic upload tiles (this feature): a pending asset renders as a tile
+   with a live %/bytes overlay BEFORE it exists server-side, then the re-list
+   swaps in its real tile. The tile reuses .ae-tile/.ae-kind so it sits in the
+   grid identically to a real video/sound tile. ── */
+.asset-explorer .ae-uploads-grid {
+  margin-bottom: var(--a-sp-3); /* separate the pending row from the real grid */
+}
+
+.asset-explorer .ae-upload-failed {
+  border-color: var(--a-guide); /* danger/attention — a loud, visible failure */
+}
+
+/* Full-tile scrim carrying the progress bar/spinner + caption, bottom-aligned. */
+.asset-explorer .ae-upload-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-2);
+  background: var(--a-upload-scrim);
+  pointer-events: none;
+}
+
+.asset-explorer .ae-upload-overlay-error {
+  justify-content: center;
+  color: var(--a-guide);
+}
+
+/* Determinate bar: full-width track + accent fill driven by the inline
+   --ae-upload-fill percentage (runtime data, so it must be inline). */
+.asset-explorer .ae-upload-bar {
+  width: 100%;
+  height: var(--a-upload-bar-h);
+  background: var(--a-upload-bar-track);
+  overflow: hidden;
+}
+
+.asset-explorer .ae-upload-bar-fill {
+  height: 100%;
+  width: var(--ae-upload-fill, 0%);
+  background: var(--a-upload-bar-fill);
+  transition: width 0.1s linear; /* smooth the discrete onprogress steps */
+}
+
+/* Indeterminate ring: shown only when the browser can't report total bytes. */
+.asset-explorer .ae-upload-spinner {
+  width: var(--a-upload-spinner-size);
+  height: var(--a-upload-spinner-size);
+  border-radius: 50%;
+  border: var(--a-selection-stroke) solid var(--a-upload-spinner-track);
+  border-top-color: var(--a-upload-bar-fill);
+  animation: ae-upload-spin var(--a-upload-spin-period) linear infinite;
+}
+
+@keyframes ae-upload-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+.asset-explorer .ae-upload-caption {
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+  color: var(--fg);
+  text-align: center;
+  font-variant-numeric: tabular-nums; /* digits don't jitter as the % ticks up */
+  word-break: break-word;
+}
+
+/* Dismiss (×) for a failed upload — top-right, same overlay chrome as .ae-trash. */
+.asset-explorer .ae-upload-dismiss {
+  position: absolute;
+  top: var(--a-sp-1);
+  right: var(--a-sp-1);
+  width: auto;
+  height: auto;
+  padding: var(--a-sp-1);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
 }
 
 /* Modal preview media fills the dialog width (square corners, from the tokens). */

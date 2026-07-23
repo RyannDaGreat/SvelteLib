@@ -26,6 +26,47 @@
   help. The wrapping Panel (App.svelte) owns the region name + scroll body.
 -->
 <script module>
+  import { humanReadableFileSize } from "./fileSize.js";
+
+  /**
+   * Pure function. Integer percent of a pending upload (0–100), or null when the
+   * total is unknown (0) — the caller shows an INDETERMINATE state instead of
+   * dividing by zero. Clamped so a browser reporting loaded>total never overruns.
+   *
+   * @param {number} loaded - bytes sent so far
+   * @param {number} total - total bytes (0 = unknown)
+   * @returns {number|null}
+   *
+   * @example uploadPercent(0, 100)      // 0
+   * @example uploadPercent(45, 100)     // 45
+   * @example uploadPercent(12300000, 27100000) // 45
+   * @example uploadPercent(120, 100)    // 100  (clamped)
+   * @example uploadPercent(50, 0)       // null (total unknown → indeterminate)
+   */
+  export function uploadPercent(loaded, total) {
+    return total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : null;
+  }
+
+  /**
+   * Pure function. The overlay caption for a pending upload: determinate shows
+   * "45% · 11.7MB / 25.8MB" (percent · bytes-sent / total, sizes via rp-faithful
+   * humanReadableFileSize); indeterminate (total unknown) shows just the bytes
+   * sent so far — never a NaN% or a divide-by-zero.
+   *
+   * @param {number} loaded - bytes sent so far
+   * @param {number} total - total bytes (0 = unknown)
+   * @returns {string}
+   *
+   * @example uploadCaption(12300000, 27100000) // "45% · 11.7MB / 25.8MB"
+   * @example uploadCaption(0, 27100000)        // "0% · 0B / 25.8MB"
+   * @example uploadCaption(12300000, 0)        // "11.7MB"  (total unknown)
+   */
+  export function uploadCaption(loaded, total) {
+    const pct = uploadPercent(loaded, total);
+    if (pct === null) return humanReadableFileSize(loaded);
+    return `${pct}% · ${humanReadableFileSize(loaded)} / ${humanReadableFileSize(total)}`;
+  }
+
   /**
    * Pure function. Every item in the document that REFERENCES the given asset:
    * any slide's delta setting the item's `src` to the asset's served path
@@ -118,6 +159,10 @@
     error = null;
     try {
       assets = await app.listProjectAssets();
+      // A finished ("done") optimistic tile is dropped here — once, and only
+      // once its REAL tile is present in this fresh listing — so the swap has
+      // no flicker gap (see app.reconcileUploads).
+      app.reconcileUploads(assets);
     } catch (e) {
       error = String(e?.message ?? e);
       assets = null;
@@ -297,11 +342,60 @@
   </div>
 
   <div class="ae-body">
+    <!-- OPTIMISTIC UPLOAD TILES — always first, above the real grid. Each shows
+         a live percent + bytes overlay (uploadCaption); a failed upload becomes
+         a loud, dismissible error tile (never a swallowed failure). They appear
+         the instant uploadAsset is called and survive the post-upload re-list's
+         loading state (which is why they render OUTSIDE the error/loading/empty
+         chain below). -->
+    {#if app.uploads.length}
+      <div class="ae-grid ae-uploads-grid">
+        {#each app.uploads as u (u.id)}
+          <div class="ae-cell">
+            <div class="ae-tile ae-upload" class:ae-upload-failed={u.status === "error"}>
+              <div class="ae-kind" aria-hidden="true">
+                <iconify-icon icon={KIND_ICON[u.kind] ?? "mdi:file-outline"} width="28" height="28"></iconify-icon>
+              </div>
+              {#if u.status === "error"}
+                <div class="ae-upload-overlay ae-upload-overlay-error">
+                  <iconify-icon icon="mdi:alert-circle-outline" width="20" height="20"></iconify-icon>
+                  <div class="ae-upload-caption">Upload failed</div>
+                </div>
+                <Tooltip text={u.error}>
+                  <button class="btn-icon ae-upload-dismiss" aria-label={`Dismiss failed upload ${u.name}`} onclick={() => app.dismissUpload(u.id)}>
+                    <iconify-icon icon="mdi:close" width="14" height="14"></iconify-icon>
+                  </button>
+                </Tooltip>
+              {:else}
+                <div class="ae-upload-overlay">
+                  {#if uploadPercent(u.loaded, u.total) === null}
+                    <div class="ae-upload-spinner" aria-label="Uploading"></div>
+                  {:else}
+                    <div class="ae-upload-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={uploadPercent(u.loaded, u.total)}>
+                      <div class="ae-upload-bar-fill" style={`--ae-upload-fill:${uploadPercent(u.loaded, u.total)}%`}></div>
+                    </div>
+                  {/if}
+                  <div class="ae-upload-caption">{uploadCaption(u.loaded, u.total)}</div>
+                </div>
+              {/if}
+            </div>
+            <div class="ae-name">{u.name}</div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
     {#if error}
       <div class="ae-notice ae-error">
         <div class="ae-notice-title">Couldn't load assets</div>
         <div class="ae-notice-detail">{error}</div>
       </div>
+    {:else if app.uploads.length}
+      <!-- Uploads in flight: keep the real tiles visible UNDER the pending tiles
+           (no grid flash to a loading notice during the re-list) so a done tile
+           resolves smoothly into its real neighbor. Nothing extra when there are
+           no real assets yet — the pending tiles above already fill the pane. -->
+      {#if assets && assets.length > 0}{@render assetGrid()}{/if}
     {:else if loading}
       <div class="ae-notice">Loading assets…</div>
     {:else if assets === null}
@@ -313,6 +407,11 @@
         No assets yet — Upload, or drop a file onto this pane.
       </div>
     {:else}
+      {@render assetGrid()}
+    {/if}
+  </div>
+
+  {#snippet assetGrid()}
       <div class="ae-grid">
         {#each assets as a (a.name)}
           <div class="ae-cell">
@@ -374,8 +473,7 @@
           </div>
         {/each}
       </div>
-    {/if}
-  </div>
+  {/snippet}
 </div>
 
 <Modal bind:open={previewOpen} title={preview?.name ?? ""}>

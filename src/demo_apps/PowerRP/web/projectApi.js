@@ -64,14 +64,40 @@ export async function listAssets(name) {
 }
 
 /** Command. Upload one asset (raw bytes; filename rides in the query string).
- *  `file` is a File/Blob. Returns {ok, name, url} — name is the FINAL basename
- *  (de-collided server-side). */
-export async function uploadAsset(name, file, filename = file.name) {
-  const res = await fetch(`${BACKEND}/api/upload/${enc(name)}/?filename=${enc(filename)}`, {
-    method: "POST",
-    body: file,
+ *  `file` is a File/Blob. Returns a Promise<{ok, name, url}> — name is the FINAL
+ *  basename (de-collided server-side).
+ *
+ *  Uses XMLHttpRequest, NOT fetch: only xhr.upload.onprogress reports UPLOAD
+ *  progress in browsers (fetch exposes download progress only), and the
+ *  optimistic asset-tile overlay needs live bytes-sent. The request itself is
+ *  byte-identical to the old fetch (same URL, POST, raw-file body, JSON reply /
+ *  {error} on failure) so the server contract (server.py _handle_upload) is
+ *  unchanged. `onProgress(loaded, total)` is optional; `total` is 0 when the
+ *  browser can't compute it (lengthComputable false) — the caller shows an
+ *  indeterminate state rather than dividing by zero. Rejects LOUDLY on any
+ *  non-2xx, network error, or abort (no silent fallback). */
+export function uploadAsset(name, file, filename = file.name, onProgress = null) {
+  const label = `uploadAsset(${name}, ${filename})`;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BACKEND}/api/upload/${enc(name)}/?filename=${enc(filename)}`);
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => onProgress(e.loaded, e.lengthComputable ? e.total : 0);
+    }
+    xhr.onload = () => {
+      // Mirror jsonOrThrow: prefer the server's {error}, fall back to statusText.
+      let data = null;
+      try { data = JSON.parse(xhr.responseText); } catch {} // body may be empty/non-JSON
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        reject(new Error(`${label}: ${xhr.status} ${data?.error ?? xhr.statusText}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error(`${label}: network error (is the project server running?)`));
+    xhr.onabort = () => reject(new Error(`${label}: upload aborted`));
+    xhr.send(file);
   });
-  return jsonOrThrow(res, `uploadAsset(${name}, ${filename})`);
 }
 
 /** Command. Delete one asset from a project's assets/ folder (the server also

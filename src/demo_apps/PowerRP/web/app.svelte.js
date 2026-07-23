@@ -1645,14 +1645,71 @@ export class PowerRPApp {
    *  the pane without a manual Refresh. Monotonic, viewer-local, not undoable. */
   assetsVersion = $state(0);
 
-  /** Command. Upload a File/Blob into the current project's assets/ folder
-   *  (the source of truth for the asset library). Returns {ok, name, url}.
-   *  Saves the project first so the folder exists server-side. */
+  // ── Optimistic upload progress (this feature) ────────────────────────────
+  // Every in-flight/failed upload as a reactive tile the Asset Explorer renders
+  // BEFORE the real assets. Entry shape:
+  //   { id, name, kind, loaded, total, status: "uploading"|"done"|"error", error }
+  // The SINGLE source of upload progress: because every entry point (Asset
+  // Explorer button, AssetField button, Finder drop onto either surface, canvas
+  // drop, paste-to-upload) funnels through THIS uploadAsset, they all get the
+  // optimistic tile for free. Viewer-local, not undoable.
+  uploads = $state([]);
+  #uploadSeq = 0;
+
+  /** Command. Patch one upload entry by id (functional: a fresh array + object,
+   *  so Svelte's keyed {#each} updates the tile without me relying on deep-proxy
+   *  mutation of a nested $state object). No-op if the id is gone (dismissed). */
+  #patchUpload(id, patch) {
+    this.uploads = this.uploads.map((u) => (u.id === id ? { ...u, ...patch } : u));
+  }
+
+  /** Command. Upload a File/Blob into the current project's assets/ folder (the
+   *  source of truth for the asset library). Returns {ok, name, url}. Pushes an
+   *  optimistic upload tile IMMEDIATELY (before any await, so it appears the
+   *  instant the user clicks/drops), streams xhr.upload.onprogress into its
+   *  loaded/total, marks it "done" on success (the Asset Explorer's re-list then
+   *  swaps in the real tile via reconcileUploads) or "error" on ANY failure —
+   *  a loud, visible error tile, AND the error is re-thrown so direct-gesture
+   *  callers (AssetField) still surface their inline message (NO SILENT
+   *  FALLBACK). Saves the project first so the folder exists server-side. */
   async uploadAsset(file, filename = file.name, name = this.projectName()) {
-    await this.saveToServer(name);
-    const res = await projectApi.uploadAsset(name, file, filename);
-    this.assetsVersion++;
-    return res;
+    const id = `upload_${++this.#uploadSeq}`;
+    this.uploads = [
+      ...this.uploads,
+      { id, name: filename, kind: assetKindForFile(file), loaded: 0, total: file.size ?? 0, status: "uploading", error: null },
+    ];
+    try {
+      await this.saveToServer(name);
+      const res = await projectApi.uploadAsset(name, file, filename, (loaded, total) =>
+        this.#patchUpload(id, total ? { loaded, total } : { loaded })
+      );
+      // Final de-collided basename + full bar; the done tile lingers only until
+      // the Asset Explorer's assetsVersion re-list drops it (reconcileUploads).
+      this.uploads = this.uploads.map((u) =>
+        u.id === id ? { ...u, name: res.name, status: "done", loaded: u.total || u.loaded } : u
+      );
+      this.assetsVersion++;
+      return res;
+    } catch (e) {
+      this.#patchUpload(id, { status: "error", error: String(e?.message ?? e) });
+      console.error(`uploadAsset: upload of "${filename}" failed:`, e);
+      throw e; // re-raise — the tile shows it AND the calling gesture surfaces it
+    }
+  }
+
+  /** Command. Drop finished ("done") upload tiles whose real asset now appears
+   *  in `assetList` — called by the Asset Explorer right after a successful
+   *  re-list, so a pending tile is only removed once its REAL tile has arrived
+   *  (no flicker gap where the new asset shows in neither). Error tiles are left
+   *  standing (they persist, loudly, until the user dismisses them). */
+  reconcileUploads(assetList) {
+    const names = new Set((assetList ?? []).map((a) => a.name));
+    this.uploads = this.uploads.filter((u) => !(u.status === "done" && names.has(u.name)));
+  }
+
+  /** Command. Remove one upload tile by id — the error tile's dismiss (×). */
+  dismissUpload(id) {
+    this.uploads = this.uploads.filter((u) => u.id !== id);
   }
 
   /** Query. List the current project's assets from the server (reflects the
