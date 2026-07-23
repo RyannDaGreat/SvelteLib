@@ -572,6 +572,200 @@ export function donutOutline({ cx, cy, outerR, inner }) {
   return [...ring(outerR, 1), ...ring(r, -1)];
 }
 
+// ══ SHAPESHIFTER GEOMETRY (data-driven parametric shape FAMILIES) ═════════════
+// A family is ONE parametric shape that subsumes many concrete shapes (a Radial
+// Sweep IS circle/donut/pie/arc/gauge; a Polygon/Star IS triangle/N-gon/star/
+// burst). Each generator below is a PURE param → OUTLINE(s) function: it returns
+// an ARRAY OF SUBPATHS (each subpath a closed [x,y] point list), the SAME value
+// type donutOutline/fancyArrowOutline produce, so the shapeshifter plugin turns
+// them into a `path` IR op via subpathsPathD (core/shapes.js) and hit-tests them
+// via pointInOutlines. Two-subpath results (a true ring/frame/hole) render with
+// fillRule "evenodd" — the ONE path op supports it across all three backends
+// (GPU/SVG/PDF, verified), unlike the polygon op donut had to triangulate for.
+// NO `A` arc commands ever reach the backends: every curve is SAMPLED into a
+// polyline here (the pdf backend rejects `A`; core/shapes.js:12-17).
+
+// Arc tessellation resolution for a FULL sweep — same rationale/precedent as
+// DONUT_SEGMENTS (visual smoothness at typical widget sizes); partial sweeps
+// use a proportional fraction so a thin slice isn't over-tessellated.
+const ARC_SEGMENTS = 64;
+// Samples per rounded corner fillet (roundedVerts). A corner turns at most 180°
+// and reads as "round" at widget sizes with far fewer points than a full circle;
+// ARC_SEGMENTS/8 = 8, the same "no stronger numeric precedent" caveat as
+// DONUT_SEGMENTS/CURVE_SEGMENTS. PENDING USER RATIFICATION.
+const CORNER_SEGMENTS = 8;
+
+/**
+ * Pure function. `segments+1` points sampled along an ELLIPTICAL arc (center
+ * cx,cy, radii rx,ry) from angle a0 to a1 inclusive (radians, y-down screen
+ * convention: 0 = +x/3-o'clock, increasing angle turns clockwise on screen).
+ * The arc is a POLYLINE (never an `A` command) — the backend-safe way every
+ * shapeshifter curve is drawn.
+ *
+ * Args:
+ *   cx, cy (number): ellipse center (local space)
+ *   rx, ry (number): ellipse radii
+ *   a0, a1 (number): start/end angle in radians (a1 may be < a0 for a reverse walk)
+ *   segments (number): number of line segments (rounded, clamped >= 1)
+ *
+ * Returns:
+ *   number[][]: segments+1 points [[x, y], ...] from a0 to a1
+ *
+ * @example arcPoints({cx: 0, cy: 0, rx: 10, ry: 10, a0: 0, a1: Math.PI / 2, segments: 2}).map(([x, y]) => [Math.round(x), Math.round(y)]) // [[10, 0], [7, 7], [0, 10]]
+ * @example arcPoints({cx: 0, cy: 0, rx: 10, ry: 10, a0: 0, a1: Math.PI, segments: 4}).length // 5
+ */
+export function arcPoints({ cx, cy, rx, ry, a0, a1, segments }) {
+  const n = Math.max(1, Math.round(segments));
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + ((a1 - a0) * i) / n;
+    out.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
+  }
+  return out;
+}
+
+/**
+ * Pure function. THE RADIAL SWEEP family outline — the highest-coverage
+ * shapeshifter (circle / ellipse / disc / donut-ring / pie slice / arc band /
+ * letter-C / chord / semicircle / gauge / progress-ring), all from ONE
+ * generator. Returns 1 or 2 closed subpaths:
+ *   - FULL sweep (|a1−a0| ≥ 2π), inner 0  → [disc]                (1 subpath)
+ *   - FULL sweep, inner > 0               → [outerRing, innerRing] (2, evenodd hole)
+ *   - PARTIAL sweep, inner 0, cap "pie"   → [center + outer arc]   (wedge)
+ *   - PARTIAL sweep, inner 0, cap "chord" → [outer arc]            (segment; chord closes it)
+ *   - PARTIAL sweep, inner > 0            → [outer arc → inner arc back] (annular sector / gauge)
+ * `inner` is the hole radius as a PROPORTION (0..1) of the outer radius, so it
+ * scales with the widget (donut's convention). Partial sweeps tessellate
+ * proportionally to the swept fraction.
+ *
+ * Args:
+ *   cx, cy (number): center; rx, ry (number): outer radii (bbox-fitted ellipse)
+ *   inner (number): hole ratio 0..1 (clamped)
+ *   a0, a1 (number): start/end angle in radians (sweep = a1 − a0, signed)
+ *   cap ("pie"|"chord"): how an inner-0 partial slice closes (radial vs straight chord)
+ *
+ * Returns:
+ *   number[][][]: 1 or 2 closed subpaths
+ *
+ * @example ringSectorOutline({cx: 50, cy: 50, rx: 50, ry: 50, inner: 0.5, a0: 0, a1: 2 * Math.PI}).length // 2 (ring: outer + inner)
+ * @example ringSectorOutline({cx: 50, cy: 50, rx: 50, ry: 50, inner: 0, a0: 0, a1: 2 * Math.PI}).length // 1 (full disc)
+ * @example ringSectorOutline({cx: 50, cy: 50, rx: 50, ry: 50, inner: 0, a0: -Math.PI / 2, a1: 0, cap: "pie"})[0][0] // [50, 50] (pie apex = center)
+ * @example ringSectorOutline({cx: 50, cy: 50, rx: 50, ry: 50, inner: 0.5, a0: -Math.PI / 2, a1: Math.PI}).length // 1 (annular gauge band, single subpath)
+ */
+export function ringSectorOutline({ cx, cy, rx, ry, inner, a0, a1, cap = "pie" }) {
+  const hole = Math.max(0, Math.min(inner, 1 - 1e-9));
+  const sweep = a1 - a0;
+  const full = Math.abs(sweep) >= 2 * Math.PI - 1e-9;
+  const seg = Math.max(2, Math.ceil((Math.abs(sweep) / (2 * Math.PI)) * ARC_SEGMENTS));
+  if (full) {
+    // Drop the duplicated wrap-around endpoint (the closing Z re-adds it).
+    const outer = arcPoints({ cx, cy, rx, ry, a0, a1: a0 + 2 * Math.PI, segments: ARC_SEGMENTS }).slice(0, -1);
+    if (hole <= 0) return [outer];
+    const innerRing = arcPoints({ cx, cy, rx: rx * hole, ry: ry * hole, a0, a1: a0 + 2 * Math.PI, segments: ARC_SEGMENTS }).slice(0, -1);
+    return [outer, innerRing];
+  }
+  const outer = arcPoints({ cx, cy, rx, ry, a0, a1, segments: seg });
+  if (hole <= 0) {
+    if (cap === "chord") return [outer];
+    return [[[cx, cy], ...outer]]; // pie wedge: apex at center
+  }
+  const innerArc = arcPoints({ cx, cy, rx: rx * hole, ry: ry * hole, a0: a1, a1: a0, segments: seg });
+  return [[...outer, ...innerArc]]; // annular sector: outer forward, inner back, radial caps
+}
+
+/**
+ * Pure function. A polygon outline with SAMPLED rounded corners: each vertex is
+ * cut back by radius `r` along both incident edges and bridged by a quadratic
+ * fillet SAMPLED into CORNER_SEGMENTS+1 points (so the result stays a pure point
+ * list — the all-polyline shapeshifter convention — unlike roundedPolygonPathD
+ * which emits `Q` commands). `r` is clamped to half the shortest edge. r <= 0
+ * returns the input unchanged. Generalizes the corner-rounding used across the
+ * polygon-based families (polygon/star, cross, quad, corner rect).
+ *
+ * @example roundedVerts([[0, 0], [20, 0], [20, 20], [0, 20]], 0) // [[0, 0], [20, 0], [20, 20], [0, 20]] (r<=0 unchanged)
+ * @example roundedVerts([[0, 0], [20, 0], [20, 20], [0, 20]], 5)[0] // [0, 5] (first fillet starts 5 up the left edge)
+ * @example roundedVerts([[0, 0], [20, 0], [20, 20], [0, 20]], 5).length // 36 (4 corners x 9 samples)
+ */
+export function roundedVerts(points, r, seg = CORNER_SEGMENTS) {
+  if (!(r > 0) || points.length < 3) return points;
+  const n = points.length;
+  let minEdge = Infinity;
+  for (let i = 0; i < n; i++) {
+    const a = points[i], b = points[(i + 1) % n];
+    minEdge = Math.min(minEdge, Math.hypot(b[0] - a[0], b[1] - a[1]));
+  }
+  const rr = Math.min(r, minEdge / 2);
+  const trimTo = (from, to) => {
+    const dx = to[0] - from[0], dy = to[1] - from[1];
+    const len = Math.hypot(dx, dy) || 1;
+    return [from[0] + (dx / len) * rr, from[1] + (dy / len) * rr];
+  };
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const v = points[i], prev = points[(i - 1 + n) % n], next = points[(i + 1) % n];
+    const entry = trimTo(v, prev), exit = trimTo(v, next);
+    for (let k = 0; k <= seg; k++) {
+      const p = quadraticBezierPoint({ x: entry[0], y: entry[1] }, { x: v[0], y: v[1] }, { x: exit[0], y: exit[1] }, k / seg);
+      out.push([p.x, p.y]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure function. Even-odd containment across MULTIPLE subpaths: a point is
+ * inside the shape iff it is inside an ODD number of the closed subpaths — the
+ * fillRule:"evenodd" rule, so a point in a ring's hole (inside outer, inside
+ * inner) reads as OUTSIDE. THE hit test for every shapeshifter family (1 or 2
+ * subpaths).
+ *
+ * @example pointInOutlines([[[0, 0], [10, 0], [10, 10], [0, 10]]], 5, 5) // true
+ * @example pointInOutlines([[[0, 0], [10, 0], [10, 10], [0, 10]], [[3, 3], [7, 3], [7, 7], [3, 7]]], 5, 5) // false (in the hole)
+ * @example pointInOutlines([[[0, 0], [10, 0], [10, 10], [0, 10]], [[3, 3], [7, 3], [7, 7], [3, 7]]], 1, 5) // true (in the ring band)
+ */
+export function pointInOutlines(subpaths, px, py) {
+  let parity = false;
+  for (const sp of subpaths) if (pointInPolygon(sp, px, py)) parity = !parity;
+  return parity;
+}
+
+/**
+ * Pure function. The AABB of a set of subpaths: {minX, minY, maxX, maxY}. Empty
+ * input (no points) yields a zero box at the origin.
+ *
+ * @example subpathsBBox([[[0, 0], [10, 0], [10, 4]]]) // {minX: 0, minY: 0, maxX: 10, maxY: 4}
+ */
+export function subpathsBBox(subpaths) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const sp of subpaths) for (const [x, y] of sp) {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  if (!isFinite(minX)) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+  return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Pure function. Uniformly scales + centers subpaths to fit inside a w×h box
+ * (with `pad` margin), preserving aspect ratio — used by families defined in
+ * their own natural coordinates whose extent varies with a parameter (the
+ * curved arrow's arc), so the shape stays fully visible and centered in the
+ * bbox at every parameter value. Returns {subpaths, scale, ox, oy}: a fitted
+ * point maps as (ox + x·scale, oy + y·scale), and the inverse (used by a
+ * modifier point's apply) is ((X − ox)/scale, (Y − oy)/scale).
+ *
+ * @example bboxFitSubpaths([[[0, 0], [100, 0], [100, 10], [0, 10]]], 100, 100).subpaths[0][0] // [0, 45] (thin bar centered vertically, scale 1)
+ * @example bboxFitSubpaths([[[0, 0], [10, 0], [10, 10], [0, 10]]], 100, 100).scale // 10
+ */
+export function bboxFitSubpaths(subpaths, w, h, pad = 0) {
+  const { minX, minY, maxX, maxY } = subpathsBBox(subpaths);
+  const rw = maxX - minX || 1, rh = maxY - minY || 1;
+  const scale = Math.min((w - 2 * pad) / rw, (h - 2 * pad) / rh);
+  const ox = (w - rw * scale) / 2 - minX * scale;
+  const oy = (h - rh * scale) / 2 - minY * scale;
+  return { subpaths: subpaths.map((sp) => sp.map(([x, y]) => [ox + x * scale, oy + y * scale])), scale, ox, oy };
+}
+
 /**
  * Pure function. GENERATOR #3: an orthogonal H-V-H route between two points
  * (manifest ARCHITECTURE PLAN #6, ELBOW arrow — "PPT default H-V-H"): a
@@ -698,4 +892,295 @@ export function curvedArrowPolyline({ x0, y0, x1, y1, bend }) {
   const pts = [];
   for (let i = 0; i <= CURVE_SEGMENTS; i++) pts.push(quadraticBezierPoint(p0, c, p1, i / CURVE_SEGMENTS));
   return pts;
+}
+
+// ── SHAPESHIFTER FAMILY OUTLINE BUILDERS ──────────────────────────────────────
+// Each is a PURE (w, h, params) → subpaths generator (the value type ringSector/
+// donutOutline produce). All-polyline: rounded corners are SAMPLED (roundedVerts)
+// so there is ONE representation for BOTH the `path` d (subpathsPathD) and the
+// hit test (pointInOutlines) — and never an `A` command. Angle 0 points up
+// (−π/2 in screen radians), matching core/shapes.js's polygon/star convention.
+
+const SHAPE_TOP_UP = -Math.PI / 2;
+// Widest bend the curved arrow reaches at curvature 1: ~281°. Kept under a full
+// turn AND with headroom for the arrowhead's own angular reach, so at max
+// curvature the head stays clear of the tail (a clean "circular arrow" with a
+// visible gap) instead of overrunning it into a self-touching loop.
+const ARROW_MAX_BEND = 2 * Math.PI * 0.78;
+
+/**
+ * Pure function. POLYGON / STAR family (triangle → N-gon → star → burst,
+ * optionally corner-rounded). `innerRatio` 1 = a regular polygon; < 1 dents the
+ * odd vertices inward into a star (small = spiky burst). `points` is the point
+ * (or side) count. `startAngle` (radians) rotates vertex 0 off straight-up.
+ *
+ * @example polygonStarOutline(100, 100, {points: 3, innerRatio: 1})[0].map(([x, y]) => [Math.round(x), Math.round(y)]) // [[50, 0], [93, 75], [7, 75]]
+ * @example polygonStarOutline(100, 100, {points: 5, innerRatio: 0.5})[0].length // 10 (5 outer + 5 inner)
+ * @example polygonStarOutline(100, 100, {points: 6, innerRatio: 1})[0].length // 6 (hexagon)
+ */
+export function polygonStarOutline(w, h, { points = 5, innerRatio = 0.5, cornerRadius = 0, startAngle = 0 } = {}) {
+  const p = Math.max(2, Math.round(points));
+  const cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
+  const inner = Math.max(0, Math.min(1, innerRatio));
+  const start = SHAPE_TOP_UP + startAngle;
+  const verts = [];
+  if (inner >= 1) {
+    for (let i = 0; i < p; i++) {
+      const a = start + (i * 2 * Math.PI) / p;
+      verts.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
+    }
+  } else {
+    const step = Math.PI / p;
+    for (let i = 0; i < 2 * p; i++) {
+      const a = start + i * step;
+      const s = i % 2 === 0 ? 1 : inner;
+      verts.push([cx + rx * s * Math.cos(a), cy + ry * s * Math.sin(a)]);
+    }
+  }
+  return [roundedVerts(verts, cornerRadius * Math.min(rx, ry))];
+}
+
+/**
+ * Pure function. CORNER RECTANGLE family (rectangle → rounded-rect → pill →
+ * snipped/chamfered card). Per-corner radius ratios r0..r3 (TL, TR, BR, BL) as
+ * fractions of min(w,h)/2; `cornerStyle` bends every non-zero corner: "round"
+ * (sampled fillet), "snip"/"chamfer" (straight diagonal cut). r = 0 keeps a
+ * sharp square corner.
+ *
+ * @example cornerRectOutline(100, 100, {r0: 0, r1: 0, r2: 0, r3: 0})[0] // [[0, 0], [100, 0], [100, 100], [0, 100]]
+ * @example cornerRectOutline(100, 100, {r0: 0.4, r1: 0.4, r2: 0.4, r3: 0.4, cornerStyle: "snip"})[0].length // 8 (each corner cut to 2 points)
+ * @example cornerRectOutline(100, 100, {r0: 1, r1: 0, r2: 0, r3: 0, cornerStyle: "snip"})[0].length // 5 (one corner snipped)
+ */
+export function cornerRectOutline(w, h, { r0 = 0, r1 = 0, r2 = 0, r3 = 0, cornerStyle = "round" } = {}) {
+  const box = [[0, 0], [w, 0], [w, h], [0, h]];
+  const radii = [r0, r1, r2, r3];
+  const maxR = Math.min(w, h) / 2;
+  const out = [];
+  const n = 4;
+  for (let i = 0; i < n; i++) {
+    const v = box[i], prev = box[(i - 1 + n) % n], next = box[(i + 1) % n];
+    const rr = Math.max(0, Math.min(radii[i], 1)) * maxR;
+    if (rr <= 0) { out.push(v); continue; }
+    const trim = (from, to) => {
+      const dx = to[0] - from[0], dy = to[1] - from[1];
+      const len = Math.hypot(dx, dy) || 1;
+      const t = Math.min(rr, len / 2);
+      return [from[0] + (dx / len) * t, from[1] + (dy / len) * t];
+    };
+    const entry = trim(v, prev), exit = trim(v, next);
+    if (cornerStyle === "snip" || cornerStyle === "chamfer") { out.push(entry, exit); continue; }
+    for (let k = 0; k <= CORNER_SEGMENTS; k++) {
+      const pt = quadraticBezierPoint({ x: entry[0], y: entry[1] }, { x: v[0], y: v[1] }, { x: exit[0], y: exit[1] }, k / CORNER_SEGMENTS);
+      out.push([pt.x, pt.y]);
+    }
+  }
+  return [out];
+}
+
+/**
+ * Pure function. QUAD / WEDGE family (rectangle → parallelogram → trapezoid →
+ * triangle → rhombus/kite). `taper` is the top edge width as a fraction of the
+ * base (1 = rectangle, 0 = triangle apex, >1 = inverted); `shear` slants the top
+ * edge sideways (parallelogram) by that fraction of w; `topOffset` shifts the
+ * top edge's center (right-trapezoid/keystone). `cornerRadius` rounds all four.
+ *
+ * @example quadWedgeOutline(100, 100, {taper: 1, shear: 0})[0] // [[0, 0], [100, 0], [100, 100], [0, 100]]
+ * @example quadWedgeOutline(100, 100, {taper: 0, shear: 0})[0].map(([x, y]) => [Math.round(x), Math.round(y)]) // [[50, 0], [50, 0], [100, 100], [0, 100]]
+ * @example quadWedgeOutline(100, 100, {taper: 0.4, shear: 0})[0][0].map(Math.round) // [30, 0]
+ */
+export function quadWedgeOutline(w, h, { taper = 1, shear = 0, topOffset = 0, cornerRadius = 0 } = {}) {
+  const topW = Math.max(0, Math.min(taper, 2)) * w;
+  const cxTop = w / 2 + topOffset * w + shear * w;
+  const tl = cxTop - topW / 2, tr = cxTop + topW / 2;
+  const verts = [[tl, 0], [tr, 0], [w, h], [0, h]];
+  return [roundedVerts(verts, cornerRadius * Math.min(w, h) / 2)];
+}
+
+/**
+ * Pure function. CROSS / PLUS family (plus → thin/thick cross → medical cross →
+ * rounded plus). `armThickness` is each arm's width as a fraction of the box;
+ * `armLengthRatio` shortens the VERTICAL arm (1 = a symmetric Greek cross, < 1 =
+ * a squat plus). `cornerRadius` rounds the twelve corners.
+ *
+ * @example crossPlusOutline(90, 90, {armThickness: 1 / 3, armLengthRatio: 1})[0].map(([x, y]) => [Math.round(x), Math.round(y)]) // [[30, 0], [60, 0], [60, 30], [90, 30], [90, 60], [60, 60], [60, 90], [30, 90], [30, 60], [0, 60], [0, 30], [30, 30]]
+ * @example crossPlusOutline(90, 90, {armThickness: 1 / 3, armLengthRatio: 1})[0].length // 12
+ */
+export function crossPlusOutline(w, h, { armThickness = 1 / 3, armLengthRatio = 1, cornerRadius = 0 } = {}) {
+  const t = Math.max(0.02, Math.min(armThickness, 1));
+  const half = t / 2;
+  const x1 = (0.5 - half) * w, x2 = (0.5 + half) * w;
+  const y1 = (0.5 - half) * h, y2 = (0.5 + half) * h;
+  const lr = Math.max(0, Math.min(armLengthRatio, 1));
+  const top = (1 - lr) * (0.5 - half) * h, bot = h - top; // shorten vertical arm inward
+  const verts = [
+    [x1, top], [x2, top], [x2, y1], [w, y1], [w, y2], [x2, y2],
+    [x2, bot], [x1, bot], [x1, y2], [0, y2], [0, y1], [x1, y1],
+  ];
+  return [roundedVerts(verts, cornerRadius * Math.min(w, h) / 2)];
+}
+
+/**
+ * Pure function. FRAME / L-SHAPE family (picture frame → half-frame → L-shape →
+ * bar). `thickness` is the border width as a fraction of min(w,h). `sides`:
+ * "frame" = all four (a hole → 2 subpaths, evenodd); "corner" = an L (left +
+ * bottom); "half" = three sides (a U); "bar" = the top edge only.
+ *
+ * @example frameOutline(100, 100, {thickness: 0.15, sides: "frame"}).length // 2 (outer + inner hole)
+ * @example frameOutline(100, 100, {thickness: 0.15, sides: "bar"}).length // 1
+ * @example frameOutline(100, 100, {thickness: 0.5, sides: "corner"})[0].length // 6 (L polygon)
+ */
+export function frameOutline(w, h, { thickness = 0.15, sides = "frame" } = {}) {
+  const b = Math.max(0, Math.min(thickness, 0.5)) * Math.min(w, h);
+  const outer = [[0, 0], [w, 0], [w, h], [0, h]];
+  if (sides === "bar") return [[[0, 0], [w, 0], [w, b], [0, b]]];
+  if (sides === "corner") return [[[0, 0], [b, 0], [b, h - b], [w, h - b], [w, h], [0, h]]];
+  if (sides === "half") return [[[0, 0], [b, 0], [b, h - b], [w - b, h - b], [w - b, 0], [w, 0], [w, h], [0, h]]];
+  // frame: outer box + inner hole (reversed inner walk not required for evenodd)
+  const inner = [[b, b], [w - b, b], [w - b, h - b], [b, h - b]];
+  return [outer, inner];
+}
+
+/**
+ * Pure function. GEAR / COG family (gear → sprocket → settings icon →
+ * starburst → toothed ring). `teeth` N tooth count; `innerRatio` the root radius
+ * (valley between teeth) as a fraction of the outer radius; `toothWidth` the
+ * tooth-top angular width as a fraction of the pitch (→ 0 = sharp starburst,
+ * → 1 = teeth merge); `holeRatio` a center hole (> 0 → a 2nd evenodd subpath).
+ *
+ * @example gearOutline(100, 100, {teeth: 8, innerRatio: 0.7, toothWidth: 0.5})[0].length // 32 (4 points per tooth)
+ * @example gearOutline(100, 100, {teeth: 6, innerRatio: 0.7, toothWidth: 0.5, holeRatio: 0.3}).length // 2 (gear + center hole)
+ * @example gearOutline(100, 100, {teeth: 3, innerRatio: 0.6, toothWidth: 0.5})[0].length // 12
+ */
+export function gearOutline(w, h, { teeth = 8, innerRatio = 0.7, toothWidth = 0.5, holeRatio = 0 } = {}) {
+  const N = Math.max(3, Math.round(teeth));
+  const cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
+  const root = Math.max(0.05, Math.min(innerRatio, 0.98));
+  const tw = Math.max(0.02, Math.min(toothWidth, 0.98));
+  const pitch = (2 * Math.PI) / N;
+  const halfTop = (tw * pitch) / 2;
+  const at = (rad, a) => [cx + rx * rad * Math.cos(a), cy + ry * rad * Math.sin(a)];
+  const verts = [];
+  for (let i = 0; i < N; i++) {
+    const c = SHAPE_TOP_UP + i * pitch;
+    verts.push(at(root, c - pitch / 2 + halfTop)); // valley → rise (left of tooth)
+    verts.push(at(1, c - halfTop));                // outer, left top of tooth
+    verts.push(at(1, c + halfTop));                // outer, right top of tooth
+    verts.push(at(root, c + pitch / 2 - halfTop)); // fall → valley (right of tooth)
+  }
+  const hole = Math.max(0, Math.min(holeRatio, root - 0.02));
+  if (hole > 0) {
+    const inner = [];
+    for (let i = 0; i < ARC_SEGMENTS; i++) inner.push(at(hole, (i * 2 * Math.PI) / ARC_SEGMENTS));
+    return [verts, inner];
+  }
+  return [verts];
+}
+
+/**
+ * Pure function. CALLOUT / BUBBLE family (rect/rounded speech bubble → oval-ish
+ * → cloud-less pointer). A rounded-rect body with a triangular tail spliced into
+ * the BOTTOM edge, pointing to (tailX, tailY) in local space (free-drag: the tip
+ * may be anywhere). `tailWidth` is the tail base width as a fraction of w;
+ * `cornerRadius` rounds the body corners. The tail's own short edges auto-clamp
+ * to a near-sharp point.
+ *
+ * @example calloutOutline(100, 80, {cornerRadius: 0, tailX: 20, tailY: 100, tailWidth: 0.2})[0].some(([, y]) => y >= 99) // true (tail tip reaches y≈100)
+ * @example calloutOutline(100, 80, {cornerRadius: 0, tailX: 20, tailY: 100, tailWidth: 0.2}).length // 1
+ */
+export function calloutOutline(w, h, { cornerRadius = 0.2, tailX = null, tailY = null, tailWidth = 0.22 } = {}) {
+  const bodyH = h * 0.78; // body occupies the top; tail hangs below
+  const tipX = tailX == null ? w * 0.25 : tailX;
+  const tipY = tailY == null ? h : tailY;
+  const baseW = Math.max(2, Math.min(tailWidth, 0.9) * w);
+  const baseCx = Math.max(baseW / 2, Math.min(tipX, w - baseW / 2));
+  const baseL = baseCx - baseW / 2, baseR = baseCx + baseW / 2;
+  // Raw body corners CW from TL, with the tail spliced onto the bottom edge.
+  const verts = [
+    [0, 0], [w, 0], [w, bodyH], [baseR, bodyH], [tipX, tipY], [baseL, bodyH], [0, bodyH],
+  ];
+  return [roundedVerts(verts, cornerRadius * Math.min(w, bodyH) / 2)];
+}
+
+/**
+ * Pure function. BANNER / RIBBON family (flat banner → forked-end ribbon). A
+ * horizontal band filling the bbox; `endStyle` "flat" = straight ends, "forked"
+ * = a chevron notch cut into each end (depth `notchDepth` as a fraction of w).
+ *
+ * @example bannerOutline(100, 60, {endStyle: "flat"})[0] // [[0, 0], [100, 0], [100, 60], [0, 60]]
+ * @example bannerOutline(100, 60, {endStyle: "forked", notchDepth: 0.15})[0].length // 6
+ * @example bannerOutline(100, 60, {endStyle: "forked", notchDepth: 0.15})[0][2].map(Math.round) // [85, 30]
+ */
+export function bannerOutline(w, h, { endStyle = "forked", notchDepth = 0.15 } = {}) {
+  if (endStyle === "flat") return [[[0, 0], [w, 0], [w, h], [0, h]]];
+  const nd = Math.max(0, Math.min(notchDepth, 0.45)) * w;
+  return [[[0, 0], [w, 0], [w - nd, h / 2], [w, h], [0, h], [nd, h / 2]]];
+}
+
+/**
+ * Pure function. BRACKET / BRACE family (square bracket "[" → thick/thin). A
+ * filled thin outline: a full-height bar on the left with top and bottom arms
+ * reaching right by the same `thickness` (bar/arm width as a fraction of w).
+ * `orientation` is handled by the widget's rotation, so this always draws a
+ * left "[".
+ *
+ * @example bracketOutline(40, 100, {thickness: 0.25})[0] // [[0, 0], [40, 0], [40, 25], [10, 25], [10, 75], [40, 75], [40, 100], [0, 100]]
+ * @example bracketOutline(40, 100, {thickness: 0.25})[0].length // 8
+ */
+export function bracketOutline(w, h, { thickness = 0.2 } = {}) {
+  const t = Math.max(0.02, Math.min(thickness, 0.9)) * w;
+  const ty = Math.max(0.02, Math.min(thickness, 0.45)) * h;
+  return [[[0, 0], [w, 0], [w, ty], [t, ty], [t, h - ty], [w, h - ty], [w, h], [0, h]]];
+}
+
+/**
+ * Pure function. ARROW family (straight ↔ curved ↔ near-circular, single or
+ * double head, flat ↔ chevron tail). Built in a canonical (along ℓ, perp q)
+ * profile, bent onto a circular-arc centerline by `curvature` (0 = straight,
+ * 1 ≈ a 331° loop → circular arrow), then UNIFORMLY fitted to the bbox so the
+ * whole arrow stays visible at any curvature. `headRatio` head length / total;
+ * `headWidth` head half-width; `shaftRatio` shaft thickness / head width;
+ * `tailNotch` chevron cut at the tail; `doubleHead` a second head at the tail.
+ *
+ * @example arrowOutline(100, 100, {curvature: 0, headRatio: 0.4, headWidth: 0.6, shaftRatio: 0.4}).length // 1
+ * @example arrowOutline(100, 100, {curvature: 0, doubleHead: false})[0].length // 7 (single-head block arrow)
+ * @example arrowOutline(100, 100, {curvature: 0, doubleHead: true})[0].length // 10 (double-head)
+ * @example arrowOutline(100, 100, {curvature: 0.5})[0].length > 7 // true (bent = sampled centerline)
+ */
+export function arrowOutline(w, h, { headRatio = 0.4, headWidth = 0.6, shaftRatio = 0.4, tailNotch = 0, curvature = 0, doubleHead = false } = {}) {
+  const L = 100;
+  const Hh = Math.max(0.02, Math.min(headWidth, 1)) * L * 0.5;   // head half-width
+  const sh = Math.max(0.02, Math.min(shaftRatio, 1)) * Hh;        // shaft half-thickness
+  const headLen = Math.max(0.02, Math.min(headRatio, 0.95)) * L;
+  const headBase = L - headLen;
+  // Canonical profile as (ℓ, q) pairs, CCW.
+  let profile;
+  if (doubleHead) {
+    profile = [
+      [0, 0], [headLen, -Hh], [headLen, -sh], [headBase, -sh], [headBase, -Hh],
+      [L, 0], [headBase, Hh], [headBase, sh], [headLen, sh], [headLen, Hh],
+    ];
+  } else {
+    const tn = Math.max(0, Math.min(tailNotch, 0.9)) * headLen;
+    profile = [
+      [0, -sh], [headBase, -sh], [headBase, -Hh], [L, 0], [headBase, Hh], [headBase, sh], [0, sh],
+    ];
+    if (tn > 0) profile.push([tn, 0]); // chevron tail notch (between tail bottom and top)
+  }
+  const bend = Math.max(0, Math.min(curvature, 1)) * ARROW_MAX_BEND;
+  if (bend < 1e-4) return bboxFitSubpaths([profile], w, h, Math.min(w, h) * 0.06).subpaths;
+  // Bent: densify each edge along ℓ so the shaft follows the arc smoothly (a
+  // raw 7-point profile would bend into straight facets, not a curve).
+  const R = L / bend;
+  const map = (l, q) => {
+    const ang = SHAPE_TOP_UP + l / R;
+    return [(R + q) * Math.cos(ang), (R + q) * Math.sin(ang)];
+  };
+  const step = L / ARC_SEGMENTS;
+  const raw = [];
+  for (let i = 0; i < profile.length; i++) {
+    const [l0, q0] = profile[i], [l1, q1] = profile[(i + 1) % profile.length];
+    const n = Math.max(1, Math.ceil(Math.abs(l1 - l0) / step));
+    for (let k = 0; k < n; k++) raw.push(map(l0 + ((l1 - l0) * k) / n, q0 + ((q1 - q0) * k) / n));
+  }
+  return bboxFitSubpaths([raw], w, h, Math.min(w, h) * 0.06).subpaths;
 }

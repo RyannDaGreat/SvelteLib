@@ -54,6 +54,27 @@ export function polygonPathD(points) {
 }
 
 /**
+ * Pure function. Joins MULTIPLE closed polygon subpaths into ONE SVG path `d`
+ * ("M..Z M..Z") — the multi-subpath sibling of polygonPathD. THE bridge from the
+ * shapeshifter family outline builders (core/outline.js, which return an array
+ * of closed [x,y] subpaths) to the `path` IR op: a single-subpath result is a
+ * plain filled shape; a two-subpath result (ring / frame / gear-with-hole)
+ * renders as a hole under fillRule "evenodd". Every subpath is all M/L/Z (arcs
+ * are pre-sampled to polylines upstream), so the output is PDF-export-safe (no
+ * `A`). Empty subpaths are skipped; no subpaths at all throws (a widget that
+ * emits nothing should not reach here).
+ *
+ * @example subpathsPathD([[[0, 0], [10, 0], [5, 8]]]) // "M0 0 L10 0 L5 8 Z"
+ * @example subpathsPathD([[[0, 0], [10, 0], [10, 10], [0, 10]], [[3, 3], [7, 3], [7, 7], [3, 7]]]) // "M0 0 L10 0 L10 10 L0 10 Z M3 3 L7 3 L7 7 L3 7 Z"
+ * @example subpathsPathD([[[0, 0], [10, 0], [5, 8]]]).includes("A") // false (never an arc command)
+ */
+export function subpathsPathD(subpaths) {
+  const closed = (subpaths ?? []).filter((sp) => Array.isArray(sp) && sp.length >= 3);
+  if (closed.length === 0) throw new Error(`subpathsPathD: need >= 1 subpath with >= 3 points, got ${JSON.stringify(subpaths)}`);
+  return closed.map(polygonPathD).join(" ");
+}
+
+/**
  * Pure function. A closed polygon with ROUNDED corners: each vertex is cut back
  * by radius `r` along both incident edges and bridged by a quadratic bezier
  * (control point = the true vertex). `r` is clamped to half the shortest edge so
