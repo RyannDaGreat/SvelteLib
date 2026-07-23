@@ -27,7 +27,7 @@
   --a-selection: #3f9eff; /* selection/guides need chroma to read against art */
   --a-guide: #ff4d97;
   --a-keyed: #e3b341;
-  --a-endpoint: #e3b341;
+  --a-endpoint: var(--a-keyed); /* endpoints share the keyframe amber in EVERY theme — inherit, never restate */
   --a-anchor: #9aa5ce;
   --a-scrollbar: rgba(255, 255, 255, 0.18);
   --a-scrollbar-hover: rgba(255, 255, 255, 0.32);
@@ -55,10 +55,8 @@
   --a-selection-dash: 5 3;
   --a-guide-stroke: 1px;
   --a-handle-fill: var(--a-selection);
-  --a-handle-rim: #ffffff;
-  --a-handle-stroke: 1.5px;
-  --a-endpoint-rim: #ffffff;
-  --a-endpoint-stroke: 1.5px;
+  --a-handle-rim: #ffffff; /* white rim shared by resize handles, endpoints, modifier points */
+  --a-handle-stroke: 1.5px; /* rim stroke shared by handles/endpoints/modifiers */
   --a-anchor-stroke: 1.5px;
   --a-anchor-opacity: 0.5; /* the spec's 50%-transparent X's */
   /* MODIFIER POINTS (manifest ARCHITECTURE PLAN #1 — "the PPT yellow
@@ -177,10 +175,9 @@
      indeterminate spinner for when the browser can't report total bytes. */
   --a-upload-scrim: color-mix(in srgb, var(--a-canvas-bg) 78%, transparent);
   --a-upload-bar-h: 5px;
-  --a-upload-bar-track: color-mix(in srgb, var(--fg) 22%, transparent);
+  --a-upload-track: color-mix(in srgb, var(--fg) 22%, transparent); /* muted track behind the progress bar AND the spinner ring */
   --a-upload-bar-fill: var(--a-selection);
   --a-upload-spinner-size: 22px;
-  --a-upload-spinner-track: color-mix(in srgb, var(--fg) 22%, transparent);
   --a-upload-spin-period: 0.8s; /* one full rotation of the indeterminate ring */
   /* The text-edit ::selection band. Translucent so the SKIA glyphs beneath the
      transparent contenteditable read THROUGH a normal-looking selection (the
@@ -225,7 +222,6 @@
   --a-selection: #0b6bcb;
   --a-guide: #d0246f;
   --a-keyed: #9a6700;
-  --a-endpoint: #9a6700;
   --a-anchor: #5a6486;
   --a-scrollbar: rgba(0, 0, 0, 0.22);
   --a-scrollbar-hover: rgba(0, 0, 0, 0.4);
@@ -296,7 +292,6 @@
   --a-selection: #8a5a2b;
   --a-guide: #b0463f;
   --a-keyed: #6b7d3d;
-  --a-endpoint: #6b7d3d;
   --a-anchor: #5b6f7a;
   --a-scrollbar: rgba(58, 46, 31, 0.22);
   --a-scrollbar-hover: rgba(58, 46, 31, 0.38);
@@ -323,7 +318,6 @@
   --a-selection: #38a8f5;
   --a-guide: #ff5c7a;
   --a-keyed: #7cc7ff;
-  --a-endpoint: #7cc7ff;
   --a-anchor: #5e9fd4;
   --a-modifier: #a8d8ff; /* pale sky — keeps eq `self` / code keywords in the blue family */
   --a-scrollbar: rgba(255, 255, 255, 0.22);
@@ -351,7 +345,6 @@
   --a-selection: #88c0d0;
   --a-guide: #d88aa8; /* aurora rose — brightened past Nord's stock #bf616a for --a-eq-error legibility */
   --a-keyed: #a3be8c; /* aurora green diamonds — Nord's second hue, never gold */
-  --a-endpoint: #a3be8c;
   --a-anchor: #81a1c1; /* frost blue */
   --a-modifier: #b48ead; /* Nord purple — replaces the PPT-yellow base */
   --a-scrollbar: rgba(229, 233, 240, 0.18);
@@ -381,7 +374,6 @@
   --a-selection: #fe8019; /* gruvbox orange — the theme's unmistakable selection */
   --a-guide: #fb4934;
   --a-keyed: #fabd2f;
-  --a-endpoint: #fabd2f;
   --a-anchor: #b8bb26;
   --a-modifier: #ffc72c; /* the PPT-yellow base, restated: mustard family = gruvbox identity */
   --a-scrollbar: rgba(235, 219, 178, 0.2);
@@ -409,7 +401,6 @@
   --a-selection: #64e8d2; /* teal */
   --a-guide: #ff4d6d; /* red-pink danger — distinct from the magenta diamonds */
   --a-keyed: #ff6ec7; /* magenta diamonds — the loud identity mark */
-  --a-endpoint: #ff6ec7;
   --a-anchor: #a78bfa; /* violet */
   --a-modifier: #ffd166; /* gold — rare third accent (modifier points, eq `self`) */
   --a-scrollbar: rgba(237, 232, 250, 0.22);
@@ -477,24 +468,38 @@ body,
 
 /* ── THE standard controls — reuse these; do not invent new button styles ── */
 
-.btn {
+/* Shared base for both standard buttons (labeled .btn + square .btn-icon). */
+.btn,
+.btn-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   height: var(--a-control-h);
-  padding: 0 var(--a-sp-3);
   background: transparent;
   color: var(--fg);
-  border: 1px solid var(--border);
   cursor: pointer;
+}
+
+/* Labeled button adds horizontal padding, a 1px border, and text size. */
+.btn {
+  padding: 0 var(--a-sp-3);
+  border: 1px solid var(--border);
   font-size: var(--a-font-md);
 }
 
-.btn:hover {
+/* Icon button is square and borderless. */
+.btn-icon {
+  width: var(--a-control-h);
+  border: 0;
+}
+
+.btn:hover,
+.btn-icon:hover {
   background: var(--a-hover-bg);
 }
 
-.btn:disabled {
+.btn:disabled,
+.btn-icon:disabled {
   opacity: 0.35;
   cursor: default;
 }
@@ -502,27 +507,6 @@ body,
 .btn.danger {
   color: var(--a-guide);
   border-color: var(--a-guide);
-}
-
-.btn-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--a-control-h);
-  height: var(--a-control-h);
-  background: transparent;
-  color: var(--fg);
-  border: 0;
-  cursor: pointer;
-}
-
-.btn-icon:hover {
-  background: var(--a-hover-bg);
-}
-
-.btn-icon:disabled {
-  opacity: 0.35;
-  cursor: default;
 }
 
 .main {
@@ -744,8 +728,8 @@ body,
 
 .overlay .endpoint {
   fill: var(--a-endpoint);
-  stroke: var(--a-endpoint-rim);
-  stroke-width: var(--a-endpoint-stroke);
+  stroke: var(--a-handle-rim);
+  stroke-width: var(--a-handle-stroke);
   cursor: grab;
 }
 
@@ -1176,16 +1160,27 @@ body,
   cursor: pointer;
 }
 
-/* Insert affordance, top-right of image tiles. Above the hit target. */
-.asset-explorer .ae-insert {
+/* Corner-overlay buttons on a tile — insert (top-right of image tiles), trash
+   (bottom-right of every tile), copy-path (bottom-left), and the failed-upload
+   dismiss (top-right). ALL share the same overlay chrome (absolute, auto-sized,
+   panel-bg chip, hairline border); each rule below sets only its corner and the
+   at-rest opacity (0 for the hover-reveal trio; the dismiss stays visible). */
+.asset-explorer .ae-insert,
+.asset-explorer .ae-trash,
+.asset-explorer .ae-copy-path,
+.asset-explorer .ae-upload-dismiss {
   position: absolute;
-  top: var(--a-sp-1);
-  right: var(--a-sp-1);
   width: auto;
   height: auto;
   padding: var(--a-sp-1);
   background: var(--a-panel-bg);
   border: var(--a-hairline) solid var(--border);
+}
+
+/* Insert affordance, top-right of image tiles. Above the hit target. */
+.asset-explorer .ae-insert {
+  top: var(--a-sp-1);
+  right: var(--a-sp-1);
   opacity: 0;
 }
 
@@ -1198,14 +1193,8 @@ body,
    Same hover-reveal overlay chrome as .ae-insert; the glyph takes the danger
    color on hover (the .btn.danger / --a-guide precedent). */
 .asset-explorer .ae-trash {
-  position: absolute;
   bottom: var(--a-sp-1);
   right: var(--a-sp-1);
-  width: auto;
-  height: auto;
-  padding: var(--a-sp-1);
-  background: var(--a-panel-bg);
-  border: var(--a-hairline) solid var(--border);
   opacity: 0;
 }
 
@@ -1222,14 +1211,8 @@ body,
    "there should be a copy path option on the assets"). Same hover-reveal
    overlay chrome as .ae-insert/.ae-trash, opposite corner from the trash can. */
 .asset-explorer .ae-copy-path {
-  position: absolute;
   bottom: var(--a-sp-1);
   left: var(--a-sp-1);
-  width: auto;
-  height: auto;
-  padding: var(--a-sp-1);
-  background: var(--a-panel-bg);
-  border: var(--a-hairline) solid var(--border);
   opacity: 0;
 }
 
@@ -1282,7 +1265,7 @@ body,
 .asset-explorer .ae-upload-bar {
   width: 100%;
   height: var(--a-upload-bar-h);
-  background: var(--a-upload-bar-track);
+  background: var(--a-upload-track);
   overflow: hidden;
 }
 
@@ -1298,7 +1281,7 @@ body,
   width: var(--a-upload-spinner-size);
   height: var(--a-upload-spinner-size);
   border-radius: 50%;
-  border: var(--a-selection-stroke) solid var(--a-upload-spinner-track);
+  border: var(--a-selection-stroke) solid var(--a-upload-track);
   border-top-color: var(--a-upload-bar-fill);
   animation: ae-upload-spin var(--a-upload-spin-period) linear infinite;
 }
@@ -1320,14 +1303,8 @@ body,
 
 /* Dismiss (×) for a failed upload — top-right, same overlay chrome as .ae-trash. */
 .asset-explorer .ae-upload-dismiss {
-  position: absolute;
   top: var(--a-sp-1);
   right: var(--a-sp-1);
-  width: auto;
-  height: auto;
-  padding: var(--a-sp-1);
-  background: var(--a-panel-bg);
-  border: var(--a-hairline) solid var(--border);
 }
 
 /* Modal preview media fills the dialog width (square corners, from the tokens). */
@@ -1629,45 +1606,15 @@ audio.ae-preview-media {
   overflow: hidden;
 }
 
-/* Copy-path icon: LEFT of the label, HOVER-ONLY — mirrors .numfield .eq-open
-   (round-11 field-chrome minimalism: "it goes on the LEFT... hover-only").
-   Collapsed to zero width at rest so it never nudges the label or reserves
-   space; revealed on .row:hover as one continuous rule with the value-side
-   equation affordance. */
-.inspector .copy-path-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 0;
-  height: var(--a-control-h);
-  padding: 0;
-  overflow: hidden;
-  background: transparent;
-  color: var(--fg-dim);
-  border: 0;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.08s ease;
-}
-.inspector .copy-path-btn:hover {
-  color: var(--fg);
-}
-.inspector .row:hover .copy-path-btn {
-  width: 14px;
-  opacity: 1;
-}
-
-/* (?) property-help icon: same LEFT-side, HOVER-ONLY idiom as .copy-path-btn
-   above (manifest "property help tooltips": the (?) uses EXACTLY the copy-path
-   button's idiom and alignment). Collapsed to zero width at rest so it never
-   reserves space in the fixed label column or shifts the value edges; revealed
-   on .row:hover alongside copy-path. Hovering it shows the property's help text
-   through the Tooltip component (the MEANING; the label's tooltip shows the
-   PATH). Its 15px reveal = the 13px icon + breathing room, paralleling
-   copy-path's 14px = 12px + room. Rows without `help` never render the button,
-   so alignment across mixed help/no-help rows is identical (the grid column is
-   fixed; nothing here changes column geometry). */
+/* Row-label hover affordances, LEFT of the label, HOVER-ONLY — mirror
+   .numfield .eq-open (round-11 field-chrome minimalism: "it goes on the LEFT...
+   hover-only"). The copy-path icon and the (?) property-help icon (manifest
+   "property help tooltips": the (?) uses EXACTLY the copy-path idiom/alignment)
+   share ONE base — they differ only in cursor and reveal width. Collapsed to
+   zero width at rest so neither nudges the label or reserves space in the fixed
+   label column; revealed on .row:hover as one continuous rule with the
+   value-side equation affordance. */
+.inspector .copy-path-btn,
 .inspector .help-btn {
   display: inline-flex;
   align-items: center;
@@ -1680,12 +1627,28 @@ audio.ae-preview-media {
   background: transparent;
   color: var(--fg-dim);
   border: 0;
-  cursor: help;
   opacity: 0;
   transition: opacity 0.08s ease;
 }
+.inspector .copy-path-btn {
+  cursor: pointer;
+}
+/* The (?) shows the property's MEANING via Tooltip; the label's own tooltip
+   shows the PATH — hence the help cursor. */
+.inspector .help-btn {
+  cursor: help;
+}
+.inspector .copy-path-btn:hover,
 .inspector .help-btn:hover {
   color: var(--fg);
+}
+/* Reveal widths differ only by the icon glyph: copy-path 14px (12px icon +
+   room), help 15px (13px icon + room). Rows without `help` never render the
+   button, so alignment across mixed help/no-help rows is unaffected (the grid
+   label column is fixed; nothing here changes column geometry). */
+.inspector .row:hover .copy-path-btn {
+  width: 14px;
+  opacity: 1;
 }
 .inspector .row:hover .help-btn {
   width: 15px;
@@ -2882,11 +2845,11 @@ audio.ae-preview-media {
   gap: var(--a-sp-2);
 }
 .open-project-meta {
-  color: var(--a-fg-dim);
+  color: var(--fg-dim);
 }
 .open-project-empty,
 .open-project-error {
-  color: var(--a-fg-dim);
+  color: var(--fg-dim);
   font-size: var(--a-font-sm);
 }
 .open-project-error {
