@@ -168,22 +168,80 @@ export function committedFaces() {
 //
 // SCOPE: these feed ONLY the Skia render. SVG/PDF vector export still layouts via
 // core/richtext.js + the committed selectable families (fonts/README.md documents
-// the screen-vs-export parity follow-up). CJK is intentionally omitted (a full CJK
-// face is ~16 MB) — CJK renders as tofu until a NotoSansCJK face is added here.
+// the screen-vs-export parity follow-up). Coverage is deliberately BROAD (manifest
+// rule: bundle size is irrelevant — NO script should render as ☐ tofu): CJK
+// (Japanese / Simplified Chinese / Korean), Hebrew, Thai, and the major Indic +
+// Southeast-Asian + Caucasus + Ethiopic scripts are all committed and registered
+// here. Each is a static Regular instance (fonts/README.md rebuild recipe); only
+// `Noto Sans` (Latin/Greek/Cyrillic) carries a bold face too. COLOR EMOJI is last.
 
-/** The fallback FAMILY names, in priority order, appended after the primary. */
-export const FALLBACK_FAMILIES = ["Noto Sans", "Noto Sans Arabic", "Noto Color Emoji"];
+/**
+ * The fallback FAMILY names, in priority order, appended after the primary. Emoji
+ * is LAST on purpose: text scripts get first claim on any shared codepoint so a
+ * symbol with both a text and an emoji form renders as text; the color-emoji face
+ * only catches codepoints nothing else covers. Han (CJK) order — JP, SC, KR — sets
+ * which regional glyph shape wins for the ideographs the three share; every order
+ * is tofu-free, this one just favors Japanese shapes for unlabeled runs.
+ */
+export const FALLBACK_FAMILIES = [
+  "Noto Sans", // Latin / Greek / Cyrillic
+  "Noto Sans Arabic",
+  "Noto Sans Hebrew",
+  "Noto Sans Thai",
+  "Noto Sans Devanagari",
+  "Noto Sans Bengali",
+  "Noto Sans Tamil",
+  "Noto Sans Telugu",
+  "Noto Sans Kannada",
+  "Noto Sans Malayalam",
+  "Noto Sans Gujarati",
+  "Noto Sans Gurmukhi",
+  "Noto Sans Georgian",
+  "Noto Sans Armenian",
+  "Noto Sans Khmer",
+  "Noto Sans Sinhala",
+  "Noto Sans Lao",
+  "Noto Sans Myanmar",
+  "Noto Sans Ethiopic",
+  "Noto Sans JP", // CJK — kana + Han (Japanese shapes)
+  "Noto Sans SC", // CJK — Simplified Chinese Han
+  "Noto Sans KR", // CJK — Hangul + Han
+  "Noto Color Emoji", // COLOR emoji — LAST (catch-all for emoji-only codepoints)
+];
 
 /**
  * The (family, bold, file) tuples the CanvasKit loaders register into the shared
  * TypefaceFontProvider. `Noto Sans` carries both weights under ONE family (Skia
- * matches the weight via the run's fontStyle); Arabic + Color Emoji are single
- * faces. `Noto Color Emoji` is the CBDT/CBLC COLOR build (never tinted).
+ * matches the weight via the run's fontStyle); every other fallback family is a
+ * single static Regular face (Skia synthesizes bold if a run needs it). `Noto
+ * Color Emoji` is the CBDT/CBLC COLOR build (never tinted). The loaders register
+ * ALL of these and call enableFontFallback(), so a glyph missing from the run's
+ * families resolves to whichever registered face has it — no ☐ tofu.
  */
 export const FALLBACK_FACES = [
   { family: "Noto Sans", bold: false, file: "NotoSans-Regular.ttf" },
   { family: "Noto Sans", bold: true, file: "NotoSans-Bold.ttf" },
   { family: "Noto Sans Arabic", bold: false, file: "NotoSansArabic-Regular.ttf" },
+  { family: "Noto Sans Hebrew", bold: false, file: "NotoSansHebrew-Regular.ttf" },
+  { family: "Noto Sans Thai", bold: false, file: "NotoSansThai-Regular.ttf" },
+  { family: "Noto Sans Devanagari", bold: false, file: "NotoSansDevanagari-Regular.ttf" },
+  { family: "Noto Sans Bengali", bold: false, file: "NotoSansBengali-Regular.ttf" },
+  { family: "Noto Sans Tamil", bold: false, file: "NotoSansTamil-Regular.ttf" },
+  { family: "Noto Sans Telugu", bold: false, file: "NotoSansTelugu-Regular.ttf" },
+  { family: "Noto Sans Kannada", bold: false, file: "NotoSansKannada-Regular.ttf" },
+  { family: "Noto Sans Malayalam", bold: false, file: "NotoSansMalayalam-Regular.ttf" },
+  { family: "Noto Sans Gujarati", bold: false, file: "NotoSansGujarati-Regular.ttf" },
+  { family: "Noto Sans Gurmukhi", bold: false, file: "NotoSansGurmukhi-Regular.ttf" },
+  { family: "Noto Sans Georgian", bold: false, file: "NotoSansGeorgian-Regular.ttf" },
+  { family: "Noto Sans Armenian", bold: false, file: "NotoSansArmenian-Regular.ttf" },
+  { family: "Noto Sans Khmer", bold: false, file: "NotoSansKhmer-Regular.ttf" },
+  { family: "Noto Sans Sinhala", bold: false, file: "NotoSansSinhala-Regular.ttf" },
+  { family: "Noto Sans Lao", bold: false, file: "NotoSansLao-Regular.ttf" },
+  { family: "Noto Sans Myanmar", bold: false, file: "NotoSansMyanmar-Regular.ttf" },
+  { family: "Noto Sans Ethiopic", bold: false, file: "NotoSansEthiopic-Regular.ttf" },
+  { family: "Noto Sans JP", bold: false, file: "NotoSansJP-Regular.ttf" },
+  { family: "Noto Sans SC", bold: false, file: "NotoSansSC-Regular.ttf" },
+  { family: "Noto Sans KR", bold: false, file: "NotoSansKR-Regular.ttf" },
   { family: "Noto Color Emoji", bold: false, file: "NotoColorEmoji.ttf" },
 ];
 
@@ -196,7 +254,8 @@ export const FALLBACK_FACES = [
  *
  * @example fontFamilyChain("inter")[0] // "PowerRP Inter"
  * @example fontFamilyChain("system")[0] // "PowerRP Inter" (system → Inter stand-in)
- * @example fontFamilyChain("jetbrains-mono") // ["PowerRP JetBrains Mono", "Noto Sans", "Noto Sans Arabic", "Noto Color Emoji"]
+ * @example fontFamilyChain("jetbrains-mono").slice(0, 2) // ["PowerRP JetBrains Mono", "Noto Sans"]
+ * @example fontFamilyChain("inter").at(-1) // "Noto Color Emoji" (emoji catch-all is always last)
  */
 export function fontFamilyChain(id) {
   const d = fontDescriptor(id);

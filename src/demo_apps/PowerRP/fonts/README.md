@@ -31,20 +31,50 @@ instead of `☐` tofu. They are registered into the CanvasKit `FontCollection`
 (see `render_gpu/skia/browser_canvaskit.js` + `node_render.js`); they do NOT
 appear in the font dropdown. Declared in `render_gpu/fonts.js` (`FALLBACK_FACES`).
 
-| Family            | Coverage                         | File(s)                                             | Bundle | License |
-|-------------------|----------------------------------|-----------------------------------------------------|--------|---------|
-| Noto Sans         | Latin / Greek / Cyrillic (+ bold)| `NotoSans-Regular.ttf` / `NotoSans-Bold.ttf`        | ~1.6 MB | [OFL-Noto.txt](./OFL-Noto.txt) — Copyright The Noto Project Authors |
-| Noto Sans Arabic  | Arabic (HarfBuzz shaping)        | `NotoSansArabic-Regular.ttf`                        | ~0.27 MB | [OFL-Noto.txt](./OFL-Noto.txt) |
-| Noto Color Emoji  | COLOR emoji (CBDT/CBLC bitmaps)  | `NotoColorEmoji.ttf`                                | ~10.7 MB | [OFL-Noto.txt](./OFL-Noto.txt) |
+All Noto fallback faces share one license file, [OFL-Noto.txt](./OFL-Noto.txt)
+(SIL OFL 1.1, The Noto Project Authors — that file lists every per-family upstream).
+
+| Family            | Coverage                          | File(s)                                             | Bundle |
+|-------------------|-----------------------------------|-----------------------------------------------------|--------|
+| Noto Sans         | Latin / Greek / Cyrillic (+ bold) | `NotoSans-Regular.ttf` / `NotoSans-Bold.ttf`        | ~1.6 MB |
+| Noto Sans Arabic  | Arabic (HarfBuzz shaping)         | `NotoSansArabic-Regular.ttf`                        | ~0.27 MB |
+| Noto Sans Hebrew  | Hebrew                            | `NotoSansHebrew-Regular.ttf`                        | ~0.05 MB |
+| Noto Sans Thai    | Thai                              | `NotoSansThai-Regular.ttf`                          | ~0.05 MB |
+| Noto Sans Devanagari | Devanagari (Hindi/Sanskrit)    | `NotoSansDevanagari-Regular.ttf`                    | ~0.22 MB |
+| Noto Sans Bengali | Bengali                           | `NotoSansBengali-Regular.ttf`                       | ~0.14 MB |
+| Noto Sans Tamil   | Tamil                             | `NotoSansTamil-Regular.ttf`                         | ~0.08 MB |
+| Noto Sans Telugu  | Telugu                            | `NotoSansTelugu-Regular.ttf`                        | ~0.21 MB |
+| Noto Sans Kannada | Kannada                           | `NotoSansKannada-Regular.ttf`                       | ~0.17 MB |
+| Noto Sans Malayalam | Malayalam                       | `NotoSansMalayalam-Regular.ttf`                     | ~0.11 MB |
+| Noto Sans Gujarati | Gujarati                         | `NotoSansGujarati-Regular.ttf`                      | ~0.18 MB |
+| Noto Sans Gurmukhi | Gurmukhi (Punjabi)               | `NotoSansGurmukhi-Regular.ttf`                      | ~0.07 MB |
+| Noto Sans Georgian | Georgian                         | `NotoSansGeorgian-Regular.ttf`                      | ~0.07 MB |
+| Noto Sans Armenian | Armenian                         | `NotoSansArmenian-Regular.ttf`                      | ~0.05 MB |
+| Noto Sans Khmer   | Khmer                             | `NotoSansKhmer-Regular.ttf`                         | ~0.11 MB |
+| Noto Sans Sinhala | Sinhala                           | `NotoSansSinhala-Regular.ttf`                       | ~0.25 MB |
+| Noto Sans Lao     | Lao                               | `NotoSansLao-Regular.ttf`                           | ~0.05 MB |
+| Noto Sans Myanmar | Myanmar (Burmese)                 | `NotoSansMyanmar-Regular.ttf`                       | ~0.19 MB |
+| Noto Sans Ethiopic | Ethiopic (Amharic/Tigrinya)      | `NotoSansEthiopic-Regular.ttf`                      | ~0.37 MB |
+| Noto Sans JP      | CJK — kana + Han (Japanese)       | `NotoSansJP-Regular.ttf`                            | ~5.8 MB |
+| Noto Sans SC      | CJK — Simplified Chinese Han      | `NotoSansSC-Regular.ttf`                            | ~10.6 MB |
+| Noto Sans KR      | CJK — Hangul + Han (Korean)       | `NotoSansKR-Regular.ttf`                            | ~6.2 MB |
+| Noto Color Emoji  | COLOR emoji (CBDT/CBLC bitmaps)   | `NotoColorEmoji.ttf`                                | ~10.7 MB |
 
 `NotoColorEmoji.ttf` is the **color** build (CBDT/CBLC color-bitmap tables) — NOT
 the monochrome `NotoEmoji` outline font. Color glyphs keep their own multi-color
 palette and are never tinted by the run's text color (Skia ignores the fill color
-for color-glyph fonts). Total bundle cost of the fallback set: **~12.5 MB**.
+for color-glyph fonts). Total bundle cost of the fallback set: **~37 MB** (CJK is
+~22.6 MB of that).
 
-CJK (Chinese/Japanese/Korean) is deliberately NOT committed — a full CJK face is
-~16 MB. CJK codepoints render as tofu until a CJK fallback is added (drop a
-`NotoSansCJK*.ttf` into `FALLBACK_FACES`). This is a documented OPT-IN follow-up.
+Coverage is deliberately BROAD (manifest rule: **bundle size is irrelevant — no
+script should render as `☐` tofu**). CJK (Simplified Chinese / Japanese / Korean),
+Hebrew, Thai, and the major Indic + Southeast-Asian + Caucasus + Ethiopic scripts
+are all committed and registered. The CJK faces (SC/JP/KR) carry the shared Han
+ideographs; `FALLBACK_FAMILIES` orders them JP → SC → KR, so an unlabeled run's
+shared ideographs take Japanese shapes (every order is tofu-free — this only picks
+the regional glyph shape). To add another script: drop its static `NotoSans*.ttf`
+into `fonts/`, add a `FALLBACK_FACES` entry + a `FALLBACK_FAMILIES` name, and cite
+the upstream in `OFL-Noto.txt`.
 
 These fallback faces feed ONLY the Skia screen render. The SVG/PDF vector
 exporters still layout through `core/richtext.js` + the committed selectable

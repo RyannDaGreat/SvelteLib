@@ -69,5 +69,5 @@ for (const c of cases) {
   if (!ok) fail = true;
   console.log(`${ok ? "ok  " : "FAIL"} ${c.name}: colored=${colored} hueBuckets=${hueBuckets}  -> ${file}`);
 }
-console.log(fail ? "\nRESULT: FAIL — emoji not rendering in multiple colors" : "\nRESULT: PASS — Latin/Greek/Cyrillic/Arabic render + emoji in MULTIPLE COLORS (CJK is opt-in tofu)");
+console.log(fail ? "\nRESULT: FAIL — emoji not rendering in multiple colors" : "\nRESULT: PASS — Latin/Greek/Cyrillic/Arabic/CJK render + emoji in MULTIPLE COLORS");
 if (fail) process.exit(2);

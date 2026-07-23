@@ -1,4 +1,35 @@
-Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)
+Copyright The Noto Project Authors (https://github.com/notofonts)
+
+This single OFL 1.1 notice covers EVERY Noto face committed to fonts/. All are
+released by The Noto Project Authors under the SIL Open Font License 1.1; the
+per-family upstreams (from the Google Fonts mirror, https://github.com/google/fonts,
+under ofl/<family>/, and the notofonts project, https://github.com/notofonts) are:
+
+  Noto Sans (Latin/Greek/Cyrillic)  https://github.com/notofonts/latin-greek-cyrillic
+  Noto Sans Arabic                  https://github.com/notofonts/arabic
+  Noto Sans Hebrew                  https://github.com/notofonts/hebrew
+  Noto Sans Thai                    https://github.com/notofonts/thai
+  Noto Sans Devanagari              https://github.com/notofonts/devanagari
+  Noto Sans Bengali                 https://github.com/notofonts/bengali
+  Noto Sans Tamil                   https://github.com/notofonts/tamil
+  Noto Sans Telugu                  https://github.com/notofonts/telugu
+  Noto Sans Kannada                 https://github.com/notofonts/kannada
+  Noto Sans Malayalam               https://github.com/notofonts/malayalam
+  Noto Sans Gujarati                https://github.com/notofonts/gujarati
+  Noto Sans Gurmukhi                https://github.com/notofonts/gurmukhi
+  Noto Sans Georgian                https://github.com/notofonts/georgian
+  Noto Sans Armenian                https://github.com/notofonts/armenian
+  Noto Sans Khmer                   https://github.com/notofonts/khmer
+  Noto Sans Sinhala                 https://github.com/notofonts/sinhala
+  Noto Sans Lao                     https://github.com/notofonts/lao
+  Noto Sans Myanmar                 https://github.com/notofonts/myanmar
+  Noto Sans Ethiopic                https://github.com/notofonts/ethiopic
+  Noto Sans SC / JP / KR (CJK)      https://github.com/notofonts/noto-cjk
+  Noto Color Emoji                  https://github.com/googlefonts/noto-emoji
+
+The SC/JP/KR/Hebrew/Thai/Devanagari/Indic/SE-Asian faces committed here are static
+Regular (wght=400) instances of the upstream variable fonts (see fonts/README.md
+rebuild recipe). Instancing does not change the license.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
