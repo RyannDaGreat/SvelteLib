@@ -10,16 +10,15 @@ import { loadFonts } from "./fontLoader.js";
 // rule). Kicked at module load so BOTH the editor mount and the CLI render hook
 // share one memoized promise; each awaits it before its first frame.
 const fontsLoaded = loadFonts();
-import { deserialize, foldState, repairedDocument, printRepairReports } from "../core/document.js";
+import { deserialize, repairedDocument, printRepairReports } from "../core/document.js";
 import { cameraRect } from "../core/derive.js";
-import { evaluateState } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { rasterizeIrPng } from "./gpuService.js";
-import { cameraFrameIR } from "./cameraFrame.js";
+import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 
 /**
  * Browser render hook (a few in-browser pixel-parity probes await it via
@@ -40,7 +39,7 @@ window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width
   printRepairReports(reports);
   // fold → EVALUATE → derive → emit the SAME camera-frame IR the pixel service
   // and editor thumbnails build, then rasterize it through Skia offscreen.
-  const state = evaluateState(foldState(doc, slide, alpha), registry).state;
+  const state = evaluatedStateAt(doc, slide, alpha, registry);
   const rect = cameraRect(state, doc.meta);
   const view = fitRectView(rect, width, height, 1);
   const png = await rasterizeIrPng(cameraFrameIR(state, doc.meta, registry), view, width, height, parseColor(rect.background));

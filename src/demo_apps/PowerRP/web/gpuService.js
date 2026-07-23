@@ -16,21 +16,13 @@
  * return contract callers depend on (thumb.toDataURL, out.toBlob for PNG).
  */
 
-import { foldState } from "../core/document.js";
 import { cameraRect } from "../core/derive.js";
-import { evaluateState } from "../core/expressions.js";
 import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
 import { sceneMedia } from "../render_gpu/skia/browser_media.js";
-import { cameraFrameIR } from "./cameraFrame.js";
-
-/** Query. Evaluated folded state for (doc, slide, alpha) — the input both the
- *  camera rect and cameraFrameIR read (one fold+evaluate, memoized). */
-function evaluateStateFor(doc, slideIndex, alpha, registry) {
-  return evaluateState(foldState(doc, slideIndex, alpha), registry).state;
-}
+import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 
 let ckPromise = null;
 let queue = Promise.resolve();
@@ -98,7 +90,7 @@ function renderJob(width, height, buildIR) {
  */
 export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height }) {
   return renderJob(width, height, () => {
-    const state = evaluateStateFor(doc, slideIndex, alpha, registry);
+    const state = evaluatedStateAt(doc, slideIndex, alpha, registry);
     const rect = cameraRect(state, doc.meta);
     return {
       view: fitRectView(rect, width, height, 1),

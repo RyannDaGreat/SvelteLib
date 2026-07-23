@@ -39,25 +39,10 @@
   Styling lives in app.css (.colorfield; app convention: no <style>).
 -->
 <script module>
-  /**
-   * Pure function. True for the CSS hex forms this field round-trips:
-   * "#rgb", "#rgba", "#rrggbb", "#rrggbbaa" (case-insensitive). Mirrors the
-   * document tween code's isHexColor so what the field accepts is exactly what
-   * storage accepts.
-   *
-   * Examples:
-   *     >>> isHexColor("#7aa2f7")
-   *     true
-   *     >>> isHexColor("#7aa2f780")
-   *     true
-   *     >>> isHexColor("#f08")
-   *     true
-   *     >>> isHexColor("blue")
-   *     false
-   */
-  export function isHexColor(s) {
-    return typeof s === "string" && /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s);
-  }
+  // isHexColor is imported from core (the document tween code's canonical test)
+  // so what this field accepts is exactly what storage accepts — one source of
+  // truth, no drift between the field and the interpolator.
+  import { isHexColor } from "../core/interpolators.js";
 
   /**
    * Pure function. Normalizes any accepted hex to lowercase long form —

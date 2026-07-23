@@ -23,9 +23,8 @@
   import Panel from "./Panel.svelte";
   import Modal from "../../../lib/Modal.svelte";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
-  import { keyframed, foldState } from "../core/document.js";
-  import { cameraRect } from "../core/derive.js";
-  import { evaluateState } from "../core/expressions.js";
+  import { keyframed } from "../core/document.js";
+  import { cameraRectAt } from "./cameraFrame.js";
   import { createKeybindings } from "../core/keybindings.js";
   import { createShortcuts } from "../core/shortcuts.js";
   import { unionRect, alignedPosition, mirroredPosition } from "../core/geometry.js";
@@ -201,7 +200,7 @@
     },
     { id: "toggle-palette", title: "Toggle Command Palette", icon: "mdi:chevron-down-box-outline", run: (a) => (a.paletteOpen = !a.paletteOpen) },
     // Evaluated state: the camera's own properties may be equations.
-    { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRect(evaluateState(foldState(a.doc, a.slideIndex, 1), a.registry).state, a.doc.meta)) },
+    { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRectAt(a.doc, a.slideIndex, 1, a.registry)) },
     {
       id: "color-theme",
       title: "Color Theme",

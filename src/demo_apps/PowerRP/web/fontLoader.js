@@ -73,10 +73,3 @@ export function loadFonts() {
   );
   return loadPromise;
 }
-
-/** Query. Whether the committed faces have finished loading (the memoized
- * promise settled). The compositor can await loadFonts() directly; this is for
- * callers that want to check without awaiting. */
-export function fontsReady() {
-  return loadPromise != null;
-}
