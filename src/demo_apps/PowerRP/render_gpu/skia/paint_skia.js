@@ -73,18 +73,26 @@ const MAX_EFFECT_DEPTH = 2;      // compositor.js:112
  *     SCENE is clipped to this rect so off-camera content cannot bleed into the
  *     bars. Absent ⇒ the scene draws across the full surface.
  */
-export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", typefaces, scissor = null } = {}) {
+export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", typefaces, scissor = null, makeSurface = null } = {}) {
   if (!typefaces) throw new Error("paintIR(skia): a typefaces map is required (fontId:bold → Typeface)");
   const flat = flattenIR(commands);
   const bg = parseColor(background);
   const bgColor = CanvasKit.Color4f(bg[0], bg[1], bg[2], bg[3]);
   const bounds = canvas.getDeviceClipBounds(); // [l, t, r, b] in device px; fresh canvas ⇒ full surface
-  const ctx = { media, typefaces, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1] };
+  // Offscreen surfaces for backdrop/lens/effect. Browser passes a GPU-backed
+  // factory (MakeRenderTarget); Node defaults to CPU MakeSurface.
+  const mkSurface = makeSurface || ((w, h) => CanvasKit.MakeSurface(w, h));
+  const ctx = { media, typefaces, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface };
   // The letterbox clip (device px), built once — applied AFTER the full-surface
   // clear so the bars keep `background` and only the scene is clipped.
   const scissorRect = scissor ? CanvasKit.LTRBRect(scissor.x, scissor.y, scissor.x + scissor.w, scissor.y + scissor.h) : null;
 
-  const needsBackdrop = flat.some(({ cmd }) => cmd.op === "blurBackdrop" || cmd.op === "magnifyBackdrop");
+  // Only blur and SOFT (non-supersample) magnifiers read the composite-so-far, so
+  // only they need the whole-scene offscreen. A supersample magnifier RE-RENDERS
+  // just the content below it into a small lens-sized surface, so a scene whose
+  // only samplers are supersample lenses takes the fast direct-to-canvas path — no
+  // full-scene offscreen, no CPU→GPU blit.
+  const needsBackdrop = flat.some(({ cmd }) => cmd.op === "blurBackdrop" || (cmd.op === "magnifyBackdrop" && !cmd.supersample));
   if (!needsBackdrop) {
     // Fast path: no backdrop sampler ⇒ draw straight onto the caller's canvas.
     canvas.clear(bgColor);
@@ -95,8 +103,8 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   }
 
   // Backdrop path: own an offscreen surface so samplers can read composite-so-far.
-  const scene = CanvasKit.MakeSurface(ctx.deviceW, ctx.deviceH);
-  if (!scene) throw new Error("paintIR(skia): MakeSurface for backdrop compositing returned null");
+  const scene = ctx.makeSurface(ctx.deviceW, ctx.deviceH);
+  if (!scene) throw new Error("paintIR(skia): makeSurface for backdrop compositing returned null");
   const sceneCanvas = scene.getCanvas();
   sceneCanvas.clear(bgColor);
   paintFlat(CanvasKit, { canvas: sceneCanvas, surface: scene }, flat, view, ctx, 0);
@@ -351,20 +359,36 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
   const clip = lensClipPath(CanvasKit, cmd, deviceMatrix(CanvasKit, view, world));
 
   if (cmd.supersample && depth < MAX_SUPERSAMPLE_DEPTH) {
-    // Crisp: re-render the below-list under the lens view into a scratch surface.
-    const lensView = lensViewFor(view, centerWorld, cmd.magnification, originWorld);
-    const sub = CanvasKit.MakeSurface(ctx.deviceW, ctx.deviceH);
-    if (!sub) throw new Error("paintIR(skia): MakeSurface for lens re-render returned null");
-    sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
-    paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, lensView, ctx, depth + 1);
-    sub.flush();
-    const lensImg = sub.makeImageSnapshot();
-    canvas.save();
-    canvas.clipPath(clip, CanvasKit.ClipOp.Intersect, true);
-    blitImage(CanvasKit, canvas, lensImg, opacity);
-    canvas.restore();
-    lensImg.delete();
-    sub.dispose();
+    // Crisp AND CHEAP: re-render the below-list ONLY within the lens footprint —
+    // its device AABB clipped to the viewport, never the whole scene — into a
+    // small GPU-backed scratch surface, then draw it back at the footprint,
+    // clipped to the lens shape. This is render() applied to just the pixels the
+    // lens needs (a small loupe on a huge canvas costs a small render, not two
+    // full-device software renders).
+    const cb = clip.getBounds(); // device-px AABB of the lens region [l,t,r,b]
+    const x0 = Math.max(0, Math.floor(cb[0])), y0 = Math.max(0, Math.floor(cb[1]));
+    const x1 = Math.min(ctx.deviceW, Math.ceil(cb[2])), y1 = Math.min(ctx.deviceH, Math.ceil(cb[3]));
+    const rw = x1 - x0, rh = y1 - y0;
+    if (rw > 0 && rh > 0) {
+      const lensView = lensViewFor(view, centerWorld, cmd.magnification, originWorld);
+      // Shift the lens view so device (x0,y0) maps to the small surface's origin.
+      const shifted = { ...lensView, panX: lensView.panX - x0 / view.dpr, panY: lensView.panY - y0 / view.dpr };
+      const sub = ctx.makeSurface(rw, rh);
+      if (!sub) throw new Error("paintIR(skia): makeSurface for lens re-render returned null");
+      sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
+      paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shifted, ctx, depth + 1);
+      sub.flush();
+      const lensImg = sub.makeImageSnapshot();
+      canvas.save();
+      canvas.clipPath(clip, CanvasKit.ClipOp.Intersect, true);
+      const p = new CanvasKit.Paint();
+      p.setAlphaf(opacity);
+      canvas.drawImage(lensImg, x0, y0, p); // footprint origin, not (0,0)
+      p.delete();
+      canvas.restore();
+      lensImg.delete();
+      sub.dispose();
+    }
   } else {
     // Soft: sample the composite-so-far, magnified about the origin.
     if (!target.surface) throw new Error("paintIR(skia): magnifyBackdrop sampling requires an owned offscreen surface");
@@ -520,8 +544,8 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   const scale = world.scale * ds; // world value → device px
 
   // ONE offscreen render of the widget's own content (carries its own world).
-  const sub = CanvasKit.MakeSurface(ctx.deviceW, ctx.deviceH);
-  if (!sub) throw new Error("paintIR(skia): MakeSurface for effect content returned null");
+  const sub = ctx.makeSurface(ctx.deviceW, ctx.deviceH);
+  if (!sub) throw new Error("paintIR(skia): makeSurface for effect content returned null");
   sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
   paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, flattenIR(cmd.content), view, ctx, depth + 1);
   sub.flush();

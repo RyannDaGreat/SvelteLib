@@ -37,6 +37,10 @@ export class SkiaSurface {
     if (!this.ctxHandle) throw new Error("SkiaSurface: GetWebGLContext returned 0 (WebGL2 unavailable in this browser)");
     this.grContext = CanvasKit.MakeWebGLContext(this.ctxHandle);
     if (!this.grContext) throw new Error("SkiaSurface: MakeWebGLContext returned null");
+    // GPU-backed offscreen factory for paintIR's backdrop/lens/effect surfaces —
+    // keeps the magnifier/blur/effects on the GPU (MakeRenderTarget) instead of a
+    // CPU software surface (the old per-frame killer). Falls back to CPU if null.
+    this._makeSurface = (w, h) => this.CanvasKit.MakeRenderTarget(this.grContext, w, h) || this.CanvasKit.MakeSurface(w, h);
     this.surface = null;
     this._w = 0;
     this._h = 0;
@@ -78,7 +82,7 @@ export class SkiaSurface {
     const canvas = this.surface.getCanvas();
     const built = media == null ? sceneMedia(this.CanvasKit, ir) : { media, release() {} };
     try {
-      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, typefaces: this.typefaces, scissor });
+      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, typefaces: this.typefaces, scissor, makeSurface: this._makeSurface });
       this.surface.flush();
     } finally {
       built.release(); // free per-paint video frame Images even if paint throws (review MED)
