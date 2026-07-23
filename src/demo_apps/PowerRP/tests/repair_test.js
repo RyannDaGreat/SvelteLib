@@ -15,7 +15,7 @@ import {
   missingDefaults, withMissingDefaultsFilled, legacyKeyRenames, withLegacyKeysRenamed,
   dormantShadows, withDormantShadowsNeutralized,
   fancyArrowFillMigrations, withFancyArrowFillMigrated,
-  repairedDocument, defaultCameraState,
+  repairedDocument, defaultCameraState, withExtraCamerasDropped,
 } from "../core/document.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { deriveRenderTree } from "../core/derive.js";
@@ -469,6 +469,68 @@ test("fancyArrowPlugin.emit: strokeWidth > 0 draws ONE closed outline polyline a
   assert.deepEqual(pts[0], pts[pts.length - 1]); // closed loop (first vertex repeated)
   assert.equal(pts.length, 8); // the 7-vertex hull + the closing repeat
   assert.equal(polylines[0].width, 4);
+});
+
+// ── Round 18 audit F1: camera uniqueness (THE CAMERA — exactly one) ──────────
+
+/** Distinct camera item ids present anywhere in a doc's deltas. */
+function camerasIn(doc) {
+  const ids = new Set();
+  for (const s of doc.slides)
+    for (const [id, item] of Object.entries(s.delta.items ?? {}))
+      if (item && item.type === "camera") ids.add(id);
+  return [...ids];
+}
+
+test("withExtraCamerasDropped: keeps the first camera by id, purges the rest, leaves non-cameras (idempotent)", () => {
+  const doc = { meta: {}, slides: [{ id: "s0", delta: { items: {
+    aaa: { type: "camera", x: 0, y: 0, w: 100, h: 100 },
+    zzz: { type: "camera", x: 5, y: 5, w: 200, h: 200 },
+    rect1: { type: "rect", x: 1, y: 1, w: 10, h: 10 },
+  } } }] };
+  const { doc: out, dropped } = withExtraCamerasDropped(doc);
+  assert.deepEqual(dropped, ["zzz"]);            // first-by-id "aaa" wins
+  assert.ok(out.slides[0].delta.items.aaa);      // kept
+  assert.equal(out.slides[0].delta.items.zzz, undefined); // purged
+  assert.ok(out.slides[0].delta.items.rect1);    // non-camera untouched
+  // Idempotent: a single-camera doc comes back byte-identical (same ref), no drops.
+  const again = withExtraCamerasDropped(out);
+  assert.deepEqual(again.dropped, []);
+  assert.equal(again.doc, out);
+});
+
+test("withExtraCamerasDropped: a normal single-camera doc is unchanged", () => {
+  const doc = newDocument();
+  assert.equal(camerasIn(doc).length, 1);
+  const { doc: out, dropped } = withExtraCamerasDropped(doc);
+  assert.deepEqual(dropped, []);
+  assert.equal(out, doc); // no work → same reference
+});
+
+test("repairedDocument: a >=2-camera doc repairs to exactly one camera with a LOUD report (F1)", () => {
+  // A well-formed doc has one camera (a uuid id); inject an EXTRA camera whose
+  // id ('zzz…' > any hex uuid) sorts last, so the original survives and the
+  // extra is the one dropped — deterministic regardless of the uuid.
+  let doc = newDocument();
+  const origCam = camerasIn(doc)[0];
+  doc = keyframed(doc, 0, ["items", "zzz-extra-camera"], defaultCameraState(doc.meta));
+  assert.equal(camerasIn(doc).length, 2); // two before repair
+  const { doc: fixed, reports } = repairedDocument(doc, registry);
+  const cams = camerasIn(fixed);
+  assert.equal(cams.length, 1);            // exactly one after repair
+  assert.deepEqual(cams, [origCam]);       // the first-by-id original kept
+  assert.ok(
+    reports.some((r) => r.includes("dropped extra camera") && r.includes("zzz-extra-camera")),
+    `expected a loud extra-camera report, got: ${JSON.stringify(reports)}`,
+  );
+  // The repaired doc still renders through the strict IR.
+  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
+  sceneIR(deriveRenderTree(state, registry));
+});
+
+test("repairedDocument: a clean single-camera doc emits NO camera report", () => {
+  const { reports } = repairedDocument(newDocument(), registry);
+  assert.ok(!reports.some((r) => r.includes("camera")));
 });
 
 console.log(`\n${passed} repair tests passed`);

@@ -371,6 +371,7 @@
   const editAny = (c) => c.mode === "edit" && !c.modalActive && !c.crosshairArmed;
   const editMode = (c) => c.mode === "edit" && !c.paletteOpen && !c.modalActive && !c.crosshairArmed;
   const editSelection = (c) => editMode(c) && c.hasSelection;
+  const presentMode = (c) => c.mode === "present";
   const kb = createKeybindings([
     { command: "toggle-palette", keys: ["Cmd", "Shift", "P"], when: "editAny" },
     { command: "undo", keys: ["Ctrl", "Z"], when: "editMode" },
@@ -446,6 +447,13 @@
     // pair, not a command — nothing to run here; display-only, like the
     // Shift/Cmd resize-modifier hints above).
     { keys: ["A"], label: "Anchor snap", when: (c) => editMode(c) && (c.dragKind === "move" || c.dragKind === "resize") && c.snapEngaged },
+    // MODIFIER-DRAG CANCEL (Round 18 audit INV5). DISPLAY-ONLY, guarded on a live
+    // modifier drag: CanvasView owns the actual Escape→cancel via a CAPTURE-phase
+    // listener (it MUST pre-empt App's bubble-phase `deselect` Escape so the
+    // selection survives the cancel — see that listener's comment). This entry
+    // exists ONLY so the registry knows the input and the HintBar shows it, the
+    // same discoverability-parity treatment as the A-hold anchor-snap hint above.
+    { keys: ["Escape"], label: "Cancel drag", when: (c) => editMode(c) && c.dragKind === "modifier" },
     // Modifier hints auto-announce PER DRAG KIND (manifest "Drag/resize
     // modifiers": the axis-auto-lock hint pattern, extended) — same registry,
     // never a second pathway. Display-only: the pointer code reads the
@@ -496,8 +504,22 @@
     { keys: ["Backspace"], label: "Edit value", when: (c) => c.modalActive, run: () => app.modalBackspace() },
     { keys: ["mouse_scroll"], label: "Pan", when: editMode },
     { keys: ["Ctrl", "mouse_scroll"], label: "Zoom", when: editMode },
-    { keys: ["Left", "Right"], label: "Step slides", when: (c) => c.mode === "present" },
-    { keys: ["Esc"], label: "Exit", when: (c) => c.mode === "present" },
+    // PRESENT-MODE keys (Round 18 audit INV5). DISPLAY-ONLY: PresentMode.svelte
+    // owns the actual dispatch via its own CAPTURE-phase window listener (it
+    // stopPropagation()s to claim these keys during the fullscreen takeover and
+    // drives the presenter lifecycle) — the SAME registered-but-externally-
+    // dispatched pattern as the pointer/modifier/A-key hints (see shortcuts.js:
+    // "gestures handled by pointer code still REGISTER here for the HintBar").
+    // Registering EVERY present key (not just Left/Right/Esc) closes the audit
+    // gap where Space/PageDown/PageUp existed in the listener but NOT the
+    // registry ("a shortcut not in the registry does not exist"). Keep in sync
+    // with PresentMode.onkeydown.
+    { keys: ["Right"], label: "Next slide", when: presentMode },
+    { keys: ["Space"], label: "Next slide", hidden: true, when: presentMode },
+    { keys: ["PageDown"], label: "Next slide", hidden: true, when: presentMode },
+    { keys: ["Left"], label: "Prev slide", when: presentMode },
+    { keys: ["PageUp"], label: "Prev slide", hidden: true, when: presentMode },
+    { keys: ["Escape"], label: "Exit", when: presentMode },
     // WYSIWYG RICH-TEXT EDITING (Round 13.4): while a text box is being edited,
     // the bar announces the per-selection format shortcuts. DISPLAY-ONLY — the
     // TextEditOverlay's own keydown handles them (a focused contentEditable makes

@@ -214,4 +214,59 @@ test("isFadeFrame: only mid-transition fades on slides > 0", () => {
   assert.equal(isFadeFrame(tweenDoc, 1, 0.5), false); // a tween is never a crossfade
 });
 
+// ── Round 18 audit F5: presenter is bare-node runnable (scheduler injected) ──
+// core/presentation.js must import + run in BARE NODE (manifest: "core runs in
+// bare node"). requestAnimationFrame is a HOST concern (browser only), so the
+// frame scheduler is INJECTED — the instant path needs none; the animated path
+// takes one or fails loudly. These tests run under node with no rAF global.
+
+function twoSlideDoc(seconds) {
+  return { slides: [
+    { id: "s0", transition: defaultTransition("tween"), delta: {} },
+    { id: "s1", transition: { type: "tween", seconds, curve: "linear" }, delta: {} },
+  ] };
+}
+
+test("bare-node: instant playback runs with NO scheduler injected (no rAF in node)", () => {
+  const doc = twoSlideDoc(0); // seconds 0 → instant path never touches the scheduler
+  const frames = [];
+  const pres = createPresenter(() => doc, (f) => frames.push({ ...f })); // defaults; no scheduler args
+  pres.goTo(0);
+  pres.next(); // instant jump to slide 1
+  pres.prev(); // instant back
+  assert.equal(frames.at(-1).index, 0);
+  assert.equal(frames.at(-1).alpha, 1);
+});
+
+test("bare-node: an injected scheduler is NOT called on the instant path", () => {
+  const doc = twoSlideDoc(0);
+  let scheduleCalls = 0;
+  const pres = createPresenter(() => doc, () => {}, () => {}, (cb) => { scheduleCalls += 1; return 1; }, () => {});
+  pres.goTo(0);
+  pres.next(); // instant → no frame scheduled
+  assert.equal(scheduleCalls, 0);
+});
+
+test("bare-node: an ANIMATED transition runs to completion with an injected synchronous scheduler", () => {
+  const doc = twoSlideDoc(0.5); // nonzero → the rAF ramp path
+  const frames = [];
+  // A synchronous bare-node clock: invoke the tick with a timestamp past the
+  // transition so the ramp completes deterministically in one tick — no rAF.
+  const requestFrame = (cb) => { cb(performance.now() + 10_000); return 1; };
+  const pres = createPresenter(() => doc, (f) => frames.push({ ...f }), () => {}, requestFrame, () => {});
+  pres.goTo(0);
+  pres.next(); // drives requestFrame synchronously up to alpha 1
+  const last = frames.at(-1);
+  assert.equal(last.index, 1);
+  assert.equal(last.alpha, 1); // reached the completed state
+  assert.ok(frames.some((f) => f.index === 1 && f.alpha === 0)); // the ramp emitted its start frame
+});
+
+test("bare-node: an ANIMATED transition with NO scheduler fails LOUDLY (no silent rAF fallback)", () => {
+  const doc = twoSlideDoc(0.5);
+  const pres = createPresenter(() => doc, () => {}); // animated path, but no scheduler injected
+  pres.goTo(0);
+  assert.throws(() => pres.next(), /frame scheduler/);
+});
+
 console.log(`\n${passed} tests passed`);

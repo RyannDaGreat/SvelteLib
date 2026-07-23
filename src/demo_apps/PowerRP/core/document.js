@@ -612,8 +612,10 @@ export function withFancyArrowFillMigrated(doc, registry) {
  *      (only shadows that were already invisible — visible shadows untouched).
  *   5. duration → transition    — legacy per-slide `duration` becomes
  *      transition.seconds (round 12).
- *   6. camera ensured           — a doc predating the camera (or one whose camera
- *      was orphaned away in step 1) gets THE camera injected.
+ *   6. camera ensured + deduped — a doc predating the camera (or one whose
+ *      camera was orphaned away in step 1) gets THE camera injected; then any
+ *      EXTRA cameras (hand-authored/damaged docs) are loud-dropped so exactly
+ *      one survives (the camera invariant is exactly one — THE CAMERA).
  *   7. bindings migrated        — legacy {item, anchor} arrow bindings become
  *      equation pairs (THE UNIFICATION); runs LAST, on the now-clean doc.
  *
@@ -673,7 +675,14 @@ export function repairedDocument(doc, registry) {
   for (const m of migrated)
     reports.push(`PowerRP repair: slide ${m.index} legacy "duration" (${m.seconds}s) → transition.seconds${m.stale ? " (already had a transition — stale duration dropped)" : ""}`);
 
-  return { doc: withBindingsMigrated(withCameraEnsured(migratedDoc)), reports };
+  // Camera invariant (THE CAMERA): ensure at least one, then drop any extras
+  // loudly so exactly one survives (withCameraEnsured only ever ADDS — it never
+  // dedupes a doc that already has several cameras).
+  const { doc: cameraDeduped, dropped: extraCameras } = withExtraCamerasDropped(withCameraEnsured(migratedDoc));
+  for (const id of extraCameras)
+    reports.push(`PowerRP repair: dropped extra camera "${id}" — a document has exactly one camera (THE CAMERA); kept the first by id`);
+
+  return { doc: withBindingsMigrated(cameraDeduped), reports };
 }
 
 /**
@@ -737,6 +746,34 @@ export function withCameraEnsured(doc) {
       if (item && item.type === "camera") return doc;
   const cameraId = uuid();
   return keyframed(doc, 0, ["items", cameraId], defaultCameraState(doc.meta));
+}
+
+/**
+ * Pure function. Enforces the AT-MOST-ONE half of the camera invariant (THE
+ * CAMERA — manifest: "exactly one, purgeable:false"). withCameraEnsured
+ * guarantees at least one camera; this keeps the FIRST camera item (by id,
+ * matching cameraRect's deterministic pick) and purges every other camera from
+ * every slide, returning the deduped doc + the ids it dropped. REPORTING IS
+ * THE CALLER'S JOB — the repair never hides anything (mirrors
+ * withOrphanedItemsDropped). Idempotent; a normal single-camera doc comes back
+ * byte-identical with dropped = [].
+ *
+ * An id counts as a camera if ANY slide delta sets its type to "camera" (the
+ * creation keyframe on slide 0 for a well-formed doc; a hand-authored or
+ * damaged doc may carry several).
+ *
+ * @example withExtraCamerasDropped({slides: [{delta: {items: {a: {type: "camera"}, b: {type: "camera"}}}}]}).dropped // ["b"]
+ * @example // withExtraCamerasDropped(singleCameraDoc) → {doc: <unchanged>, dropped: []}
+ */
+export function withExtraCamerasDropped(doc) {
+  const cameraIds = new Set();
+  for (const s of doc.slides)
+    for (const [id, item] of Object.entries(s.delta.items ?? {}))
+      if (item && item.type === "camera") cameraIds.add(id);
+  const dropped = [...cameraIds].sort((a, b) => (a < b ? -1 : 1)).slice(1);
+  let out = doc;
+  for (const id of dropped) out = withItemPurged(out, id);
+  return { doc: out, dropped };
 }
 
 // ── Z-order maintenance ──────────────────────────────────────────────────────

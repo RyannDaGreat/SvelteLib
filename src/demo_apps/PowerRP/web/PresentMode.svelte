@@ -62,6 +62,11 @@
       syncIdleAnimation();
     },
     (transition) => playTransitionSound(transition), // fired ONCE per transition start
+    // Inject THE frame scheduler (core/presentation.js stays DOM-free/bare-node;
+    // the browser supplies rAF). Passed as the raw globals — requestAnimationFrame
+    // needs no `this` binding.
+    requestAnimationFrame,
+    cancelAnimationFrame,
   );
 
   /** Query. Does the slide at the CURRENT frame (evaluated, culled to the
@@ -221,6 +226,14 @@
     app.renderFrameCount += 1;
   }
 
+  // Present-mode key DISPATCH lives here: a CAPTURE-phase window listener (see
+  // onMount) that stopPropagation()s so present mode owns these keys during the
+  // fullscreen takeover — App.svelte's bubble-phase registry dispatch never
+  // sees them. This IS the mechanism; App.svelte registers the SAME keys as
+  // display-only shortcut entries (guarded on `presentMode`) purely so the
+  // single-source-of-truth registry KNOWS them and the HintBar reflects them
+  // ("a shortcut not in the registry does not exist"). Keep the two in sync:
+  //   ArrowRight / Space / PageDown → next; ArrowLeft / PageUp → prev; Escape → exit.
   function onkeydown(e) {
     if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") presenter.next();
     else if (e.key === "ArrowLeft" || e.key === "PageUp") presenter.prev();

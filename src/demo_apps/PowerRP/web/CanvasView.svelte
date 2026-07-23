@@ -1826,19 +1826,22 @@
   });
 
   // Modifier-point drag Esc-cancel (manifest ARCHITECTURE PLAN #1: "Esc
-  // cancels"). NOT routed through App.svelte's shortcut registry (out of this
-  // task's fence — CanvasView owns "modifier overlay + drag kind ONLY") — a
-  // dedicated CAPTURE-phase window listener, the SAME pattern SvelteLib's
-  // Dropdown.svelte uses for its outside-click dismiss (document.addEventListener
-  // with the capture flag). Capture matters here specifically: App.svelte's own
-  // "Escape" shortcut entries dispatch on the BUBBLE phase (its
-  // <svelte:window onkeydown>), and one of them (`deselect`, when:
+  // cancels"). The DISPATCH is a dedicated CAPTURE-phase window listener (the
+  // SAME pattern SvelteLib's Dropdown.svelte uses for its outside-click
+  // dismiss), NOT App.svelte's bubble-phase registry dispatch — capture matters
+  // specifically because App's own "Escape" entries dispatch on the BUBBLE
+  // phase (its <svelte:window onkeydown>), and one of them (`deselect`, when:
   // editSelection) has no drag-kind guard — it would clear app.selection out
   // from under an in-progress modifier drag if it ran first. Capture always
   // runs before bubble regardless of listener registration order, so
   // stopPropagation here reliably pre-empts it — but ONLY while a modifier
   // drag is actually live (every other key, and Escape with no modifier drag
   // active, passes through untouched to App's normal dispatch).
+  // INV5 (Round 18 audit): App.svelte registers a matching DISPLAY-ONLY "Cancel
+  // drag" Escape entry (guarded on dragKind === "modifier") so the single-source
+  // registry knows this input and the HintBar shows it — the capture listener
+  // here remains the mechanism (bubble ordering requires it), mirroring how the
+  // A-key/pointer hints are registered-but-externally-dispatched.
   $effect(() => {
     const onKeydownCapture = (e) => {
       if (e.key !== "Escape" || drag?.kind !== "modifier") return;

@@ -94,6 +94,9 @@ try {
     const presenter = createPresenter(
       () => docObj,
       (f) => frames.push({ ...f }),
+      () => {}, // no transition-sound seam in this probe
+      requestAnimationFrame, // inject THE frame scheduler (browser rAF) — core is scheduler-agnostic
+      cancelAnimationFrame,
     );
 
     presenter.goTo(0); // settle on slide 1 (red), alpha 1

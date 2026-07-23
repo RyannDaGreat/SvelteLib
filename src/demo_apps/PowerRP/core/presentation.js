@@ -14,6 +14,19 @@
 import { ease } from "./interpolators.js";
 import { resolveTransition } from "./transitions.js";
 
+/** Command (throws). The default frame scheduler: refuses loudly. An animated
+ * transition needs a real frame clock, which is a HOST concern (rAF in the
+ * browser) — core/ stays scheduler-agnostic and DOM-free, so a caller that
+ * wants animation MUST inject one. Reaching this means the animated path ran in
+ * an environment (bare node) with no scheduler passed — a bug, not a silent
+ * no-op. The instant path (seconds 0 / slide 0) never calls it, so bare-node
+ * instant-transition callers may omit the scheduler. */
+function noFrameScheduler() {
+  throw new Error(
+    "createPresenter: an animated transition needs a frame scheduler — pass requestFrame (browser: requestAnimationFrame) + cancelFrame as args. Core stays scheduler-agnostic (DOM-free); the instant path needs no scheduler.",
+  );
+}
+
 /**
  * @param getDoc  () → the live document.
  * @param onFrame (frame) → paints {index, alpha, transition}.
@@ -24,15 +37,31 @@ import { resolveTransition } from "./transitions.js";
  *   and the CLI never emits sound (the SPARKLER RULE: sounds are playback-only,
  *   never rendered; a headless render has no speaker and needs none). Absent in
  *   node/tests → no-op (sound is a browser-only concern).
+ * @param requestFrame (tickCallback) → handle. The injected FRAME SCHEDULER,
+ *   with requestAnimationFrame's contract: it calls `tickCallback(now)` with a
+ *   timestamp and returns a handle for cancelFrame. Kept out of core so
+ *   core/presentation.js runs in BARE NODE (the manifest's "core runs in bare
+ *   node" rule) — the browser injects rAF; a headless/test caller can inject a
+ *   synchronous clock or omit it entirely for instant-only playback. Defaults
+ *   to a loud refusal (only ever hit on the animated path — see noFrameScheduler).
+ * @param cancelFrame (handle) → cancels a pending scheduled frame (paired with
+ *   requestFrame; requestAnimationFrame's cancelAnimationFrame). Defaults to a
+ *   no-op — harmless when requestFrame was never called (instant playback).
  */
-export function createPresenter(getDoc, onFrame, onTransitionStart = () => {}) {
+export function createPresenter(
+  getDoc,
+  onFrame,
+  onTransitionStart = () => {},
+  requestFrame = noFrameScheduler,
+  cancelFrame = () => {},
+) {
   let index = 0;
   let alpha = 1;
   let raf = null;
   let autoTimer = null;
 
   function cancel() {
-    if (raf) cancelAnimationFrame(raf);
+    if (raf !== null) cancelFrame(raf);
     if (autoTimer) clearTimeout(autoTimer);
     raf = autoTimer = null;
   }
@@ -81,21 +110,22 @@ export function createPresenter(getDoc, onFrame, onTransitionStart = () => {}) {
       return;
     }
     // UNCAPPED, always (round 11: "No more optional caps") — one frame per
-    // rAF tick, so every monitor gets its native rate with no detection.
+    // scheduler tick, so every monitor gets its native rate with no detection.
     // Tweens are time-parameterized: more frames add smoothness, never speed.
     // (The removed fps cap's history — including the gap-comparison bug that
-    // halved 120Hz to 60 — lives in concerns.md.)
+    // halved 120Hz to 60 — lives in concerns.md.) requestFrame is the INJECTED
+    // scheduler (browser: rAF) so this path stays bare-node-runnable.
     const start = performance.now();
     function tick(now) {
       const t = Math.min((now - start) / duration, 1);
       alpha = easeFn(t);
       emit();
-      if (t < 1) raf = requestAnimationFrame(tick);
+      if (t < 1) raf = requestFrame(tick);
       else armAutoAdvance();
     }
     alpha = 0;
     emit();
-    raf = requestAnimationFrame(tick);
+    raf = requestFrame(tick);
   }
 
   /** Pure-ish query. Next enabled slide index in `dir`, or null. */

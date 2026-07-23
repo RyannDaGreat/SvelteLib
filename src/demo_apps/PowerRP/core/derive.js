@@ -460,8 +460,22 @@ export function cameraRect(state, meta) {
   const cams = Object.entries(state.items ?? {})
     .filter(([, s]) => s.type === "camera" && s.active !== false)
     .sort(([a], [b]) => (a < b ? -1 : 1));
-  if (cams.length === 0)
-    return { x: 0, y: 0, w: meta.slideW ?? 0, h: meta.slideH ?? 0, background: "#ffffff" };
+  if (cams.length === 0) {
+    // Repair (withCameraEnsured + withExtraCamerasDropped) guarantees THE
+    // CAMERA in every loaded doc, so a folded state with no active camera means
+    // the invariant was violated UPSTREAM (a doc derived without
+    // repairedDocument, or a camera deactivated). Fall back to the meta slide
+    // rect — still a usable view when meta carries dims (thumbnails, pre-fold
+    // contexts). But if meta has no dims the result is a degenerate 0×0 blank
+    // view: report it ONCE rather than silently painting nothing.
+    const w = meta.slideW ?? 0, h = meta.slideH ?? 0;
+    if (w === 0 || h === 0)
+      reportOnce(
+        "camerarect-degenerate",
+        "PowerRP: cameraRect found no active camera and no meta slide dimensions — degenerate 0×0 view. The camera invariant (THE CAMERA) was violated upstream (document not run through repairedDocument?).",
+      );
+    return { x: 0, y: 0, w, h, background: "#ffffff" };
+  }
   const s = cams[0][1];
   return { x: s.x ?? 0, y: s.y ?? 0, w: s.w ?? 0, h: s.h ?? 0, background: s.background ?? "#ffffff" };
 }
