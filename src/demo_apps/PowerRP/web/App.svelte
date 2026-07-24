@@ -223,6 +223,22 @@
         preview: (a) => a.previewTheme(t.id),
       })),
     },
+    // INSERT DEMO WIDGET — a submenu (exactly the color-theme `children` pattern
+    // above) surfacing the DEMO widgets (plugins/demo/): the showcase widget
+    // that proves the custom self.* property mechanism, plus the magnifier (the
+    // original "PowerPoint can't do this" demo). Each child arms the GENERIC
+    // crosshair placement for its type via the existing insert path — the plugin
+    // is resolved lazily from the registry at click time, so registration order
+    // is irrelevant. Reachable like every submenu: Cmd+Shift+P → drill in.
+    {
+      id: "insert-demo-widget",
+      title: "Insert Demo Widget",
+      icon: "mdi:flask-outline",
+      children: [
+        { id: "demo-insert-showcase", title: "Demo Showcase (custom self.* prop)", icon: "mdi:flask", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_showcase")) },
+        { id: "demo-insert-magnifier", title: "Magnifier", icon: "mdi:magnify", run: (a) => a.armCrosshairPlacement(a.registry.get("magnifier")) },
+      ],
+    },
     { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", run: (a) => a.exportPng() },
     { id: "export-pdf", title: "Export Slide as PDF", icon: "mdi:file-pdf-box", run: (a) => a.exportPdf() },
     { id: "export-svg", title: "Export Slide as SVG", icon: "mdi:svg", run: (a) => a.exportSvg() },

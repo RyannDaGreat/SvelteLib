@@ -137,9 +137,13 @@
     lens: "Lens",
     blur: "Blur",
     effects: "Effects",
+    // CUSTOM per-widget "self.*" properties (core/properties.js CUSTOM_CATEGORY):
+    // a widget's own declared knobs, grouped in a dedicated "Custom" region
+    // (Blender's "Custom Properties" panel) rather than the start-cased fallback.
+    custom: "Custom",
     other: "Other",
   };
-  const CATEGORY_ORDER = ["positioning", "formatting", "effects", "text", "arrow", "lens", "blur", "other"];
+  const CATEGORY_ORDER = ["positioning", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /** Pure function. Groups plugin inspector rows into ordered category buckets:
    * [{id, title, rows}]. Preserves row order within a category; known

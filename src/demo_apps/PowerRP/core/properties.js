@@ -506,3 +506,81 @@ export function bundleNestedDefaults(name) {
   if (!keys) throw new Error(`properties.bundleNestedDefaults: unknown bundle "${name}"`);
   return nestedDefaults(...keys);
 }
+
+// ── CUSTOM PER-WIDGET PROPERTIES ("self.*", Blender-style) ────────────────────
+// A plugin may declare its OWN properties beyond the shared PROPS table / the
+// named BUNDLES — the manifest "Demo widget" extensibility story: bespoke knobs
+// a widget owns, referenceable in its own equations as `self.<name>`. The
+// Inspector accordion group they default into: a dedicated "Custom" region
+// (Blender's "Custom Properties" panel), so a widget's own knobs never mix with
+// its shared-bundle rows. web/Inspector.svelte registers this id in its
+// CATEGORY_ORDER / CATEGORY_TITLES so the group renders titled + ordered (not
+// the start-cased fallback). A per-def `category` override still wins (a widget
+// may file a custom prop under an existing group instead).
+export const CUSTOM_CATEGORY = "custom";
+
+/**
+ * Pure function. A human label from a property NAME: split camelCase and
+ * snake/kebab-case into words, sentence-case the result (matching the registry's
+ * "Corner radius" style). The fallback when a custom-prop declaration omits an
+ * explicit `label`.
+ *
+ * @example defaultLabel("inset") // "Inset"
+ * @example defaultLabel("cornerCut") // "Corner cut"
+ * @example defaultLabel("edge_gap") // "Edge gap"
+ */
+export function defaultLabel(name) {
+  const spaced = name.replace(/[_-]+/g, " ").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
+/**
+ * Pure function. THE custom per-widget property mechanism ("self.*", Blender-
+ * style): expands a plugin's OWN property declarations into the {rows, defaults}
+ * a plugin spreads into its `inspector` and `defaults`. A declaration is
+ * {name, kind, default, label?, category?, ...aspects}; `name` is BOTH the
+ * item-state key AND the equation slug (referenceable as `self.<name>`). The
+ * row shape is byte-identical to a PROPS-composed row (the Inspector consumes
+ * rows purely by field name), and `default` is STRIPPED from the row (it belongs
+ * to `defaults`, exactly as row() drops it) while every other aspect flows
+ * through.
+ *
+ * WHY this is all it takes — NO evaluation-engine changes: the Inspector
+ * (web/Inspector.svelte) renders a row purely by its {key, label, kind,
+ * category, min, max, ...} fields, and evaluateState (core/expressions.js)
+ * evaluates ANY item-state leaf that is an equation value — the universal `=`
+ * gate is registration-free, and a NUMBER default additionally enables bare
+ * arithmetic + `self.<name>` references (isNumericSlot / numericPropertyPaths
+ * key off the default's type, not a PROPS entry; resultKindForSlot infers a
+ * `=` slot's result kind from the default when the key is unregistered). So a
+ * declared custom prop is at once (a) an Inspector row, (b) a default stored in
+ * item state, and (c) equation-capable — with zero edits to the eval path.
+ *
+ * Args:
+ *   defs (object[]): [{name, kind, default, label?, category?, min?, max?, ...}]
+ *
+ * Returns:
+ *   {rows: object[], defaults: object} — `rows` for `inspector`, `defaults` for
+ *   `defaults`. Declaration order preserved. Loud on a malformed def.
+ *
+ * @example customProps([{ name: "inset", kind: "number", default: 16 }]).rows[0]
+ * {"key":"inset","kind":"number","label":"Inset","category":"custom"}
+ * @example customProps([{ name: "inset", kind: "number", default: 16 }]).defaults
+ * {"inset":16}
+ * @example customProps([{ name: "gap", kind: "number", default: 8, label: "Gap", min: 0 }]).rows[0].min
+ * 0
+ */
+export function customProps(defs) {
+  const rows = [];
+  const defaultsOut = {};
+  for (const def of defs) {
+    if (!def || typeof def.name !== "string" || typeof def.kind !== "string")
+      throw new Error(`customProps: each def needs a string name + kind (got ${JSON.stringify(def)})`);
+    if (!("default" in def))
+      throw new Error(`customProps: def "${def.name}" needs a default value`);
+    const { name, kind, default: defaultValue, label, category, ...rest } = def;
+    rows.push({ key: name, kind, label: label ?? defaultLabel(name), category: category ?? CUSTOM_CATEGORY, ...rest });
+    defaultsOut[name] = defaultValue;
+  }
+  return { rows, defaults: defaultsOut };
+}

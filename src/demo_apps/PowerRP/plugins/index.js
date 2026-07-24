@@ -28,8 +28,12 @@ import { latexPlugin } from "./latex.js";
 import { mermaidPlugin } from "./mermaid.js";
 import { qrcodePlugin } from "./qrcode.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
+// DEMO widgets (plugins/demo/) — showcase the extensibility story (custom
+// self.* properties). Surfaced via the "Insert Demo Widget" submenu (App.svelte),
+// not the core Add menus.
+import { demoShowcasePlugin } from "./demo/showcase.js";
 
-export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, ...shapeshifterPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, ...shapeshifterPlugins, demoShowcasePlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {
