@@ -383,6 +383,30 @@ export function ensurePdfPageRasterized(src, page, scale) {
  * PDF while bounding memory. */
 export const PDF_MAX_RASTER_DIM = 4096;
 
+/** The largest FULL-PAGE DEVICE dimension (px per edge) we will ever drive
+ * pdf.js's getViewport at. THE deep-sub-region-zoom crash fix: the region path's
+ * `scale` (device px per PDF point) is computed upstream (pdf_display.js) as
+ * deviceRect.w / (sourceRect.sw · point.w); zoom deep into a small sub-rect and
+ * sourceRect.sw → 0, so `scale` explodes without bound (e.g. sw=0.001, a 600pt
+ * page → scale ≈ 3300, a ~2,000,000-px full-page transform). clampDim already
+ * bounds OUR output canvas (≤ PDF_MAX_RASTER_DIM), but pdf.js sizes its OWN
+ * internal scratch canvases (transparency groups / soft masks / tiling patterns /
+ * big embedded images) to the DEVICE transform — the whole page at `scale`,
+ * point.{w,h}·scale px — NOT to our clamped output. Left unbounded that mints a
+ * multi-million-px internal canvas → wasm heap OOM / tab crash (the one class the
+ * existing 4096/8192 output clamps never see). So we cap the effective scale to
+ * PDF_MAX_DEVICE_DIM / max(point.w, point.h): the full-page device extent can
+ * never exceed this many px/edge. 8192 = 2 × PDF_MAX_RASTER_DIM, matching the
+ * WebGL2 surface ceiling (MAX_SURFACE_DIM in core/clip.js) — a region spanning ≥
+ * half the page still reaches the 4096 output clamp (never under-resolved), while
+ * a deeper sub-region renders blurry-but-safe. That blurry-cap-instead-of-crash
+ * is exactly what native PDF viewers (Preview / Chrome PDFium) do: cap the zoom
+ * and show a progressive upscale rather than allocate an unbounded raster. The
+ * clamp is SILENT (no per-frame console.warn — deep zoom would spam it every
+ * frame; a deliberate quality/safety clamp is not an error, mirroring clampDim /
+ * clampSurfaceSize, which clamp silently for the same reason). */
+export const PDF_MAX_DEVICE_DIM = 2 * PDF_MAX_RASTER_DIM;
+
 /** Cap on distinct cached REGION rasters. v1 re-rasters the visible window on
  * every pan/zoom change (TILING for smooth pan is backburnered — manifest), so
  * a long pan/zoom session would otherwise accumulate one entry per distinct
@@ -393,6 +417,19 @@ export const PDF_REGION_CACHE_MAX = 64;
 
 /** "<src>|<page>|<sx>,<sy>,<sw>,<sh>|<roundedScale>" → {status, ref, error, promise} */
 const regions = new Map();
+
+/** "<src>|<page>" → monotonically increasing generation int, bumped each time a
+ * NEW region render is kicked for that page (never on a cache hit). The
+ * generation gate for stale in-flight renders: a fast zoom kicks many successive
+ * full-window region renders for one page (distinct sub-rect/scale keys), but by
+ * the time the CPU worker catches up only the LAST is still wanted. A resolving
+ * render whose snapshot generation is no longer current DISCARDS its bitmap
+ * instead of publishing a GPU texture for a view already zoomed past (the render
+ * stampede + never-evicted-texture growth of §3B in the pdf_perf research).
+ * Keyed PER (src,page), NOT globally, so two different pages/PDFs rendering at
+ * once never supersede each other (a global counter would make co-visible PDF
+ * widgets cascade on load). */
+const regionGenerations = new Map();
 
 /**
  * Pure function. The synthetic image-registry ref for a rasterized page
@@ -442,27 +479,56 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
 
   reserveImageSlot(ref); // synchronous, before any await — see the full-page path's reserve note
   const roundedScale = roundPdfScale(scale);
+  // FIX 1 — CAP THE DEVICE SCALE we drive pdf.js at (see PDF_MAX_DEVICE_DIM).
+  // roundedScale is unbounded at deep sub-region zoom; pdf.js sizes its internal
+  // scratch surfaces to the full-page device transform (point·scale), not to our
+  // clampDim-bounded output canvas, so an unbounded scale OOMs the wasm heap.
+  // Cap so the full-page device extent stays ≤ PDF_MAX_DEVICE_DIM px/edge. Every
+  // downstream dimension below (offset, canvas size, viewport) uses deviceScale,
+  // so the region is captured consistently at the (possibly capped) resolution —
+  // deep zoom renders blurry-but-safe, positioning is unaffected (the caller
+  // places {ref} by normalized sourceRect, not by raster pixel dims). The cache
+  // key stays keyed on the requested roundedScale (via ref/key above).
+  const deviceScale = Math.min(roundedScale, PDF_MAX_DEVICE_DIM / Math.max(point.w, point.h));
+  // FIX 2 — GENERATION GATE. Snapshot the generation this render is kicked at; a
+  // fast zoom kicks many successive region renders for this (src,page) and only
+  // the latest is still wanted. On resolve we compare against the current
+  // generation and DISCARD a superseded bitmap. (Identical-key stampede is
+  // already deduped by the regions.has(key) early-return above.)
+  const myGeneration = bumpRegionGeneration(src, page);
   const entry = { status: "loading", ref, error: null, promise: null };
   entry.promise = (async () => {
     const doc = await ensurePdfDoc(src);
     if (!doc) throw new Error("PDF document failed to load"); // ensurePdfDoc already reported this
     const pdfPage = await doc.getPage(page);
-    // Full-page viewport at the display scale, shifted so the sub-rect's
+    // Full-page viewport at the (capped) display scale, shifted so the sub-rect's
     // top-left sits at the canvas origin (pdf.js viewport is already y-down,
     // top-left origin — the same frame our normalized sourceRect uses).
     const viewport = pdfPage.getViewport({
-      scale: roundedScale,
-      offsetX: -sourceRect.sx * point.w * roundedScale,
-      offsetY: -sourceRect.sy * point.h * roundedScale,
+      scale: deviceScale,
+      offsetX: -sourceRect.sx * point.w * deviceScale,
+      offsetY: -sourceRect.sy * point.h * deviceScale,
     });
-    const canvasW = clampDim(Math.round(sourceRect.sw * point.w * roundedScale));
-    const canvasH = clampDim(Math.round(sourceRect.sh * point.h * roundedScale));
+    const canvasW = clampDim(Math.round(sourceRect.sw * point.w * deviceScale));
+    const canvasH = clampDim(Math.round(sourceRect.sh * point.h * deviceScale));
     const canvas = document.createElement("canvas");
     canvas.width = canvasW;
     canvas.height = canvasH;
     const ctx = canvas.getContext("2d");
     await pdfPage.render({ canvasContext: ctx, canvas, viewport }).promise;
     const bitmap = await createImageBitmap(canvas);
+    if (myGeneration !== currentRegionGeneration(src, page)) {
+      // STALE: a newer region render for this (src,page) was kicked while this
+      // one was in flight (fast-zoom stampede). We CREATED this ImageBitmap and
+      // have NOT published it (registerRasterizedBitmap not yet called), so
+      // closing it is safe and frees it immediately — NEVER close a bitmap already
+      // handed to the registry (use-after-free). Drop this module's cache entry
+      // too so revisiting this exact view re-renders instead of forever resolving
+      // to the reserved-but-empty registry slot.
+      bitmap.close();
+      regions.delete(key);
+      return null;
+    }
     entry.status = "ready";
     registerRasterizedBitmap(ref, bitmap); // wakes image_registry.onImageLoad → repaint
     return bitmap;
@@ -500,6 +566,22 @@ function evictOldestRegion() {
   if (oldest !== undefined) regions.delete(oldest);
 }
 
+/** Command. Bumps and returns the region-render generation for (src, page).
+ * Call exactly once per newly-kicked region render (never on a cache hit).
+ * Mutates regionGenerations — see that Map's doc for the stale-discard rationale. */
+function bumpRegionGeneration(src, page) {
+  const gkey = `${src}|${page}`;
+  const next = (regionGenerations.get(gkey) ?? 0) + 1;
+  regionGenerations.set(gkey, next);
+  return next;
+}
+
+/** Query. The current (latest-kicked) region-render generation for (src, page),
+ * or 0 if none has been kicked. Reads regionGenerations. */
+function currentRegionGeneration(src, page) {
+  return regionGenerations.get(`${src}|${page}`) ?? 0;
+}
+
 /** Pure function. Shortens a src for log messages (data URIs are huge).
  * @example truncate("data:application/pdf;base64," + "A".repeat(200)) // "data:application/pdf;base64,AA…(228 chars)"
  */
@@ -517,6 +599,7 @@ export function resetPdfPageRaster() {
   pages.clear();
   pointSizes.clear();
   regions.clear();
+  regionGenerations.clear();
 }
 
 // ── FUTURE WORK (flagged, not built here) ───────────────────────────────────
