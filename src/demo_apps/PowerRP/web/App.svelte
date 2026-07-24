@@ -593,11 +593,15 @@
     // as the modifier/A-key hints, which the pointer code reads directly). These
     // route THROUGH the registry so the HintBar knows them (the "only registered
     // inputs may exist" convention: an unregistered shortcut does not exist).
-    { keys: ["Cmd", "B"], label: "Bold", when: (c) => c.textEditing },
-    { keys: ["Cmd", "I"], label: "Italic", when: (c) => c.textEditing },
-    { keys: ["Cmd", "U"], label: "Underline", when: (c) => c.textEditing },
-    { keys: ["Cmd", "Plus"], label: "Bigger", when: (c) => c.textEditing },
-    { keys: ["Cmd", "Minus"], label: "Smaller", when: (c) => c.textEditing },
+    // Rich-text formatting shortcuts — gated on textEditingRich so they neither
+    // dispatch nor appear in the HintBar while a PLAINTEXT box is inline-edited
+    // (plain-string mode has no runs/styling; these would be no-ops + clutter).
+    { keys: ["Cmd", "B"], label: "Bold", when: (c) => c.textEditingRich },
+    { keys: ["Cmd", "I"], label: "Italic", when: (c) => c.textEditingRich },
+    { keys: ["Cmd", "U"], label: "Underline", when: (c) => c.textEditingRich },
+    { keys: ["Cmd", "Plus"], label: "Bigger", when: (c) => c.textEditingRich },
+    { keys: ["Cmd", "Minus"], label: "Smaller", when: (c) => c.textEditingRich },
+    // Esc applies to BOTH plain and rich editing (commit + exit).
     { keys: ["Esc"], label: "Done editing", when: (c) => c.textEditing },
     // WYSIWYG LATEX EDITING: while a MathLive field is open the bar announces the
     // exit gesture. DISPLAY-ONLY (the field itself is a typing target, so
@@ -650,6 +654,10 @@
       // makes onKeydown below early-return, so these entries are DISPLAY-ONLY,
       // like the modifier/A-key hints — they announce the capability in the bar).
       textEditing: app.textEditing !== null,
+      // RICH text editing only (not a plaintext box's plain-string inline edit):
+      // gates the Bold/Italic/Underline/± format shortcuts + hints, which have no
+      // meaning for a single plain string (plaintext sets app.textEditing.plain).
+      textEditingRich: app.textEditing !== null && !app.textEditing.plain,
       // WYSIWYG latex editing (MathLive overlay): true while a latex field is
       // open — gates the "Done editing" hint (the field owns its own keys).
       latexEditing: app.latexEditing !== null,
