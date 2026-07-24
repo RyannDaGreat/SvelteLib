@@ -40,6 +40,20 @@ seam automatically (`committedFaces()` → `web/fontLoader.js` + the Skia provid
 The OFL/Apache licenses require the license text to travel with the fonts — that
 is what the `OFL-*.txt` / `LICENSE-*.txt` files are. Do NOT delete them.
 
+### Futura (via Jost)
+
+Proper **Futura** is proprietary — not under the OFL, not distributable, and not
+on Google Fonts. So the `futura` family bundles **Jost**, the OFL geometric-sans
+**Futura revival** hosted on Google Fonts (a faithful geometric-sans alternative),
+and labels it honestly in the dropdown as **"Futura (Jost)"**. Built with the
+same static-instance recipe below (`instantiateVariableFont` on the upstream
+variable `Jost[wght].ttf` at wght 400 / 700), so it flows through every seam like
+the Round 26 batch.
+
+| id       | Title          | Kind | Regular / Bold files                  | License |
+|----------|----------------|------|---------------------------------------|---------|
+| `futura` | Futura (Jost)  | sans | `Jost-Regular.ttf` / `Jost-Bold.ttf`  | [OFL-Jost.txt](./OFL-Jost.txt) — Copyright 2020 The Jost Project Authors (https://github.com/indestructible-type/Jost) |
+
 ### Font ASSETS (uploaded, per-project — NOT committed here)
 
 Beyond the committed families, a user can **upload a font file** (`.ttf`/`.otf`/
