@@ -37,7 +37,7 @@
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
-  import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (mermaid `definition`, reusable for codeblock)
+  import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (reusable code-string editor; no widget binds it by default)
 
   let { app } = $props();
 
@@ -508,12 +508,10 @@
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
     // LaTeX widgets open the MathLive WYSIWYG editor (DOM overlay + canvas
     // suppression); text opens the Skia-owned in-place editor. Other types fall
-    // through (a dblclick on a rect does nothing).
+    // through (a dblclick on a rect does nothing). Mermaid is NOT double-click-
+    // editable: its `definition` is edited via the Inspector property (exactly
+    // like codeblock's `code`), never a floating canvas code-editor overlay.
     if (hit?.type === "latex") { app.beginLatexEdit(hit.itemId); return; }
-    // Mermaid opens the multi-line CODE editor overlay on its `definition`
-    // property (the CodeEditController; the code-property analog of the latex
-    // route). The controller is reusable for any code-string property.
-    if (hit?.type === "mermaid") { app.beginCodeEdit(hit.itemId, "definition", null); return; }
     if (hit?.type !== "text") return;
     app.beginTextEdit(hit.itemId); // selects + mounts the controller (Skia keeps drawing the item)
   }
@@ -1963,8 +1961,8 @@
       });
     } else if (selectedIds.length > 1) {
       // Collective AABB of the selected nodes (only bbox/endpoint members it can
-      // scale contribute — selectionAABB's own rule). Handles + a dashed box
-      // outline mark the group the drag resizes.
+      // scale contribute — selectionAABB's own rule). Handles + a solid half-
+      // opacity box outline (.multiselect-box) mark the group the drag resizes.
       const box = selectionAABB(app.selectedNodes());
       if (box && box.w > 0 && box.h > 0) {
         const corners = [[box.x, box.y], [box.x + box.w, box.y], [box.x + box.w, box.y + box.h], [box.x, box.y + box.h]];
@@ -2208,8 +2206,9 @@
         {/each}
         {#if overlay.multiBoxOutline}
           <!-- The collective AABB a multi-selection resizes (manifest UNDEFERRAL
-               SWEEP: multi-resize via handles). Drawn as a selection outline so
-               it reads as the group's bounding box; the 8 handles sit on it. -->
+               SWEEP: multi-resize via handles). A SOLID half-opacity rectangle
+               (.multiselect-box overrides .selection's dash) so it reads as one
+               calm group frame; the 8 handles sit on it. -->
           <polygon class="selection multiselect-box" points={overlay.multiBoxOutline} />
         {/if}
         {#if overlay.placeBox}

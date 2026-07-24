@@ -1,9 +1,10 @@
 /**
  * MERMAID DIAGRAM widget — a `definition` (Mermaid diagram source) renders to a
- * diagram on the canvas. `definition` is a multi-line CODE property (edited via
- * the canvas CodeEditController overlay on double-click, not a single-line
- * Inspector field); `theme` picks a Mermaid built-in theme; `preserveAspect`
- * (default ON) letterboxes the diagram into the widget box without distortion.
+ * diagram on the canvas. `definition` is a multi-line CODE property edited as an
+ * ordinary Inspector text row (exactly like codeblock's `code`) — there is NO
+ * floating canvas code-editor overlay; `theme` picks a Mermaid built-in theme;
+ * `preserveAspect` (default ON) letterboxes the diagram into the widget box
+ * without distortion.
  *
  * ── BOX SHAPE IS A GENERIC TERM (standing manifest ruling) ────────────────────
  * A rendered diagram is a BOX exactly like an image, a PDF page, or a typeset
@@ -271,13 +272,12 @@ export const mermaidPlugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    // THE diagram source — a multi-line STRING. Uses the "text" row kind (a
-    // single-line field that round-trips the whole string) for storage/undo, but
-    // the PRIMARY editor is the canvas CodeEditController overlay (double-click
-    // the widget) — the same reason latex/codeblock keep "text" here while adding
-    // an overlay. In EQUATION mode this text property uses the normal equation
-    // field; the code overlay is the LITERAL-mode interface.
-    { key: "definition", label: "Definition", kind: "text", category: "text", help: "The Mermaid diagram source (e.g. 'flowchart TD\\n A-->B'). Double-click the widget on the canvas to edit it in the multi-line code editor. Invalid syntax shows a red error box with the parser message." },
+    // THE diagram source — a multi-line STRING. Uses the "text" row kind (which
+    // round-trips the whole string) for storage/undo, edited directly in the
+    // Inspector — identical to how codeblock's `code` is edited (no floating
+    // canvas overlay). In EQUATION mode this text property uses the normal
+    // equation field; otherwise it is the LITERAL Mermaid source.
+    { key: "definition", label: "Definition", kind: "text", category: "text", help: "The Mermaid diagram source (e.g. 'flowchart TD\\n A-->B'), edited here in the Inspector. Invalid syntax shows a red error box with the parser message." },
     // Theme — a Mermaid built-in theme select.
     { key: "theme", label: "Theme", kind: "select", options: MERMAID_THEMES, category: "formatting", help: "Which Mermaid built-in theme to render with. 'default' is dark ink on a light card; 'dark' suits a dark fill." },
     // Aspect-preservation toggle (default ON).

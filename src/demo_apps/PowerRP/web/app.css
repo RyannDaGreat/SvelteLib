@@ -53,6 +53,9 @@
   /* Canvas overlay strokes/sizes */
   --a-selection-stroke: 1.5px;
   --a-selection-dash: 5 3;
+  /* Multi-select collective box: a SOLID rectangle at half opacity — one calm
+     frame that doesn't nest confusingly with per-item selection dashes. */
+  --a-multiselect-box-opacity: 0.5;
   --a-guide-stroke: 1px;
   --a-handle-fill: var(--a-selection);
   --a-handle-rim: #ffffff; /* white rim shared by resize handles, endpoints, modifier points */
@@ -879,6 +882,16 @@ body,
   stroke-width: var(--a-selection-stroke);
   stroke-dasharray: var(--a-selection-dash);
   pointer-events: none;
+}
+
+/* The multi-selection COLLECTIVE box (drawn with .selection too). Overrides the
+   dashed selection stroke with a single SOLID rectangle at half opacity so it
+   reads as one calm frame around the set — the per-item dashes nested inside a
+   dashed group box were visually confusing. Single-item outlines keep the dash
+   (they carry only .selection, not .multiselect-box). */
+.overlay .multiselect-box {
+  stroke-dasharray: none;
+  opacity: var(--a-multiselect-box-opacity);
 }
 
 .overlay .guide {
