@@ -304,8 +304,11 @@ function f16Info(CanvasKit, width, height) {
  *     F16 -> 8-bit downconvert onto `destSurface`, and flush.
  *
  * This is the single place the precision intermediate lives, so all three sinks
- * de-band identically. Throws LOUDLY if the F16 offscreen cannot be allocated (no
- * silent fallback to a broken 8-bit-only pass).
+ * de-band identically. If the F16 offscreen cannot be allocated (a WebGL2 context
+ * with no half-float color-buffer support — common in browsers), it degrades
+ * LOUDLY to a direct 8-bit paint (dither disabled here, reported once) rather
+ * than bricking the frame. F16 still works where supported (node/headless
+ * export), where dither de-bands as intended.
  *
  * @param {object} CanvasKit - the CanvasKit module
  * @param {object} destSurface - the real 8-bit output Surface
@@ -314,14 +317,39 @@ function f16Info(CanvasKit, width, height) {
  * @param {{mode: string, emphasis: number}} dither - camera dither settings
  * @param {(canvas: object) => void} paint - draws the scene into the given canvas
  */
+let _ditherUnavailableWarned = false;
+/**
+ * Command. Warns ONCE (never silent) that this context cannot allocate the F16
+ * dither intermediate, so dithering is off here while the frame still renders.
+ */
+function warnDitherUnavailableOnce() {
+  if (_ditherUnavailableWarned) return;
+  _ditherUnavailableWarned = true;
+  console.warn("renderWithDither: this GPU/WebGL2 context cannot allocate an RGBA16F render target (no half-float color buffer) — dithering is DISABLED here and the frame renders un-dithered. Dithering still works where F16 is supported (headless/node export).");
+}
+
 export function renderWithDither(CanvasKit, destSurface, width, height, dither, paint) {
   if (!ditherActive(dither)) {
     paint(destSurface.getCanvas());
     destSurface.flush();
     return;
   }
-  const scene = destSurface.makeSurface(f16Info(CanvasKit, width, height));
-  if (!scene) throw new Error(`renderWithDither: RGBA16F offscreen ${width}x${height} could not be allocated (makeSurface returned null) — dither needs a half-float intermediate.`);
+  // Dither needs an RGBA16F precision intermediate. Some WebGL2 contexts cannot
+  // allocate a half-float render target (no EXT_color_buffer_float): makeSurface
+  // then THROWS internally or returns null. Degrade LOUDLY to a direct 8-bit
+  // paint rather than bricking every frame — reported once, never silent.
+  let scene = null;
+  try {
+    scene = destSurface.makeSurface(f16Info(CanvasKit, width, height));
+  } catch {
+    scene = null;
+  }
+  if (!scene) {
+    warnDitherUnavailableOnce();
+    paint(destSurface.getCanvas());
+    destSurface.flush();
+    return;
+  }
   try {
     paint(scene.getCanvas());
     scene.flush();
