@@ -44,6 +44,7 @@ import { SKY_MATERIAL } from "./sky_shader.js";
 import { SKY_SUN_MATERIAL } from "./sky_sun_shader.js";
 import { SKY_MOON_MATERIAL } from "./sky_moon_shader.js";
 import { SKY_CLOUDS_MATERIAL } from "./sky_clouds_shader.js";
+import { LENS_FLARE_MATERIAL } from "./lens_flare_shader.js";
 
 /**
  * The MAGNIFY material — magnification, expressed as a member of the material
@@ -73,7 +74,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
 // Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
 const MATERIALS = Object.fromEntries(
-  [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, MAGNIFY_MATERIAL].map((m) => [m.id, m]),
+  [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL].map((m) => [m.id, m]),
 );
 
 /**

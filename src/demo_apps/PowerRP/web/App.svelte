@@ -18,6 +18,7 @@
   import Inspector from "./Inspector.svelte";
   import KeyframePanel from "./KeyframePanel.svelte";
   import VariablesPanel from "./VariablesPanel.svelte";
+  import PresetsPane from "./PresetsPane.svelte";
   import FpsCounter from "./FpsCounter.svelte";
   import CommandPalette from "./CommandPalette.svelte";
   import PresentMode from "./PresentMode.svelte";
@@ -159,8 +160,8 @@
   let hSplits = $state([0.16, 0.78]);
   // Left column: Slide Navigator (top) / Asset Explorer (bottom) — one split.
   let leftSplits = $state([0.62]);
-  // Right column: Property Panel / Variables Panel / Keyframe Panel.
-  let rightSplits = $state([0.45, 0.7]);
+  // Right column: Property Panel / Presets / Variables Panel / Keyframe Panel.
+  let rightSplits = $state([0.36, 0.54, 0.76]);
 
   // ── Core commands (plugins added theirs at registration) ──────────────────
   const needsSelection = (a) => a.selection !== null;
@@ -380,6 +381,10 @@
         // external tangents between its two equation-bindable shapes (A, B).
         { id: "add-tangent-lines", title: "Tangent Lines (two external tangents between two shapes)", icon: "mdi:vector-line", run: (a) => a.addItem(a.registry.get("tangent_lines").defaults) },
         { id: "demo-insert-raycast-dither", title: "Raycast Dither (animated grain gradient)", icon: "mdi:gradient-vertical", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_raycast_dither")) },
+        // Lens Flare inserts CAMERA-FILLING via addItem (its default x/y/w/h are `=
+        // camera.*` equations; the crosshair click-places-default path does arithmetic
+        // on defaults.w, which is an equation here — so it must NOT use crosshair).
+        { id: "demo-insert-lens-flare", title: "Lens Flare (generative material + presets)", icon: "mdi:flare", run: (a) => a.addItem(a.registry.get("demo_lens_flare").defaults) },
         { id: "demo-insert-rainy-window", title: "Rainy Window (animated backdrop rain-on-glass shader)", icon: "mdi:weather-pouring", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_rainy_window")) },
         // The `sky*` archetype — a physically-based sky family whose members INTERACT
         // (a skySun's position/colour drives the sky's scattering + the clouds' colour,
@@ -973,6 +978,10 @@
                     <Inspector {app} />
                   </Panel>
                 {:else if row === 1}
+                  <Panel {app} name="Presets">
+                    <PresetsPane {app} />
+                  </Panel>
+                {:else if row === 2}
                   <Panel {app} name="Variables Panel">
                     <VariablesPanel {app} />
                   </Panel>

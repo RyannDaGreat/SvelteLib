@@ -2845,10 +2845,57 @@ audio.ae-preview-media {
 }
 
 .inspector .empty,
-.varspanel .empty {
+.varspanel .empty,
+.presetspane .empty {
   color: var(--fg-dim);
   padding: var(--a-sp-4);
   text-align: center;
+}
+
+/* ── Presets Pane (generic preset tool) ─────────────────────────────────────
+   A scrollable column of clickable preset cards; the pane, like the others,
+   carries the panel surface + top seam. */
+.presetspane {
+  padding: var(--a-sp-3);
+  background: var(--a-panel-bg);
+  font-size: var(--a-font-md);
+  border-top: var(--a-hairline) solid var(--border); /* pane seam, same as .varspanel/.kfpanel */
+  overflow-y: auto;
+}
+
+.presetspane .preset-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+}
+
+/* A preset card: full-width button, name over an optional dim description. */
+.presetspane .preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  width: 100%;
+  text-align: left;
+  padding: var(--a-sp-3);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.presetspane .preset-card:hover {
+  background: var(--a-hover-bg);
+  border-color: var(--a-selection);
+}
+
+.presetspane .preset-name {
+  font-weight: 600;
+}
+
+.presetspane .preset-desc {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
 }
 
 /* The not-created-yet note under grayed rows reads as an inline caption, not a

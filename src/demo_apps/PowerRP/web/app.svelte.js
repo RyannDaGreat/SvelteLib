@@ -833,6 +833,28 @@ export class PowerRPApp {
     this.previewDelta = null;
   }
 
+  // ── Presets (the generic PRESETS tool — web/PresetsPane.svelte) ─────────────
+
+  /**
+   * Command. Applies a plugin PRESET's property-set to item `itemId` as keyframed
+   * writes on the CURRENT slide, in ONE undo unit — the exact Inspector-row commit
+   * path (setPreview → commitPreview). `preset.props` is a flat map of item-state
+   * keys (a plugin's self.* look knobs + shared props like blendMode) to values;
+   * each becomes a keyframe at ["items", itemId, key] on the current frame, so a
+   * preset is just "set these current-frame properties at once". No-op if itemId is
+   * null. Reusable for ANY plugin that declares `presets` — nothing here is
+   * lens-flare-specific.
+   *
+   * @param {string|null} itemId - the target item
+   * @param {{props: Object}} preset - a plugin preset descriptor ({name, props, ...})
+   */
+  applyPreset(itemId, preset) {
+    if (itemId === null || !preset?.props) return;
+    const pairs = Object.entries(preset.props).map(([key, value]) => [["items", itemId, key], value]);
+    this.setPreview(pairs);
+    this.commitPreview();
+  }
+
   // ── WYSIWYG rich-text editing (Round 13.4) ─────────────────────────────────
 
   /** Command. Enters in-place edit mode on a text item: selects it (so the
