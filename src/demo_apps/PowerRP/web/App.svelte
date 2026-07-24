@@ -24,6 +24,7 @@
   import Panel from "./Panel.svelte";
   import Modal from "../../../lib/Modal.svelte";
   import GridSizePicker from "./GridSizePicker.svelte";
+  import ExportMp4Modal from "./ExportMp4Modal.svelte";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed } from "../core/document.js";
   import { cameraRectAt } from "./cameraFrame.js";
@@ -143,6 +144,13 @@
     app.arrangeSelectionIntoGrid(rows, cols);
   }
 
+  // Export as MP4… modal: the "Export as MP4" command opens the options form
+  // (ExportMp4Modal) in the shared Modal (default 90% size). The form owns the
+  // encode + progress; the wrapper is here, mirroring the Built-in Assets modal.
+  let exportMp4Visible = $state(false);
+  app.showExportMp4 = () => {
+    exportMp4Visible = true;
+  };
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
@@ -413,6 +421,9 @@
     { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", run: (a) => a.exportPng() },
     { id: "export-pdf", title: "Export Slide as PDF", icon: "mdi:file-pdf-box", run: (a) => a.exportPdf() },
     { id: "export-svg", title: "Export Slide as SVG", icon: "mdi:svg", run: (a) => a.exportSvg() },
+    // Whole-presentation MP4 (deterministic, client-side). Opens an options
+    // modal (resolution/fps/quality/range/…); the encode runs there.
+    { id: "export-mp4", title: "Export as MP4…", icon: "mdi:movie-open-outline", run: (a) => a.showExportMp4() },
     { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, run: (a) => a.copySelection() },
     { id: "paste", title: "Paste", icon: "mdi:content-paste", run: (a) => a.pasteClipboard() },
     // 14.9: Duplicate = clone the selection in place (new UUIDs, one undo unit),
@@ -979,7 +990,7 @@
   </Modal>
   <!-- Save to Server: a NAME chooser with conflict/overwrite protection. Shares
        the one name model (doc.meta.name) with the title and Open. -->
-  <Modal bind:open={saveModalVisible} title="Save to Server">
+  <Modal bind:open={saveModalVisible} title="Save to Server" size="compact">
     <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmSave(); }}>
       <label class="name-modal-field">
         <span class="name-modal-label">Project name</span>
@@ -1011,7 +1022,7 @@
   </Modal>
   <!-- Rename Presentation: writes doc.meta.name (the toolbar title). Opened by
        the title's double-click and the "Rename Presentation" command. -->
-  <Modal bind:open={renameModalVisible} title="Rename Presentation">
+  <Modal bind:open={renameModalVisible} title="Rename Presentation" size="compact">
     <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmRename(); }}>
       <label class="name-modal-field">
         <span class="name-modal-label">Presentation name</span>
@@ -1041,7 +1052,14 @@
   <!-- Arrange-into-Grid picker: the Office "Insert Table" sweep selector. The
        Modal owns the overlay (backdrop/Escape/click-away/focus); GridSizePicker
        owns the sweep. Confirming runs the one-undo-unit bento arrange. -->
-  <Modal bind:open={gridPickerVisible} title="Arrange into Grid">
+  <Modal bind:open={gridPickerVisible} title="Arrange into Grid" size="compact">
     <GridSizePicker itemCount={gridPickerCount} onconfirm={confirmGrid} />
+  </Modal>
+  <!-- Export as MP4… — the shared Modal at its default ~90% size, hosting the
+       deterministic client-side export form (WebCodecs H.264 + mp4-muxer). -->
+  <Modal bind:open={exportMp4Visible} title="Export as MP4">
+    {#if exportMp4Visible}
+      <ExportMp4Modal {app} />
+    {/if}
   </Modal>
 </div>

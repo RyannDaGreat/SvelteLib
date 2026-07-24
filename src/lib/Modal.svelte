@@ -54,9 +54,17 @@
       :global(.modal-panel) { --modal-width: 640px; }
     </style>
 
+  Size (`size` prop): "large" (DEFAULT) fills ~90% of the viewport — the
+  app-wide convention that modals are a roomy work surface; "compact" is the old
+  fixed 520px dialog column; "auto" shrink-wraps content. Backward-safe: a
+  consumer that passes no `size` inherits "large". Per-size CSS below sets the
+  --modal-width / --modal-height / --modal-max-height tokens; override any of
+  them on `.modal-panel` for a one-off.
+
   CSS custom properties (chain to ambient tokens, then a standalone fallback):
-    --modal-width        panel width               (520px)
-    --modal-max-height   panel max height           (85vh)
+    --modal-width        panel width               (per size: 90vw/520px/auto)
+    --modal-height       panel height              (per size: 90vh/auto/auto)
+    --modal-max-height   panel max height          (per size: 90vh/85vh/85vh)
     --modal-bg           panel background           (← --control-bg → #1c1c24)
     --modal-fg           panel text color           (← --fg → #e8e8e8)
     --modal-border       panel border color         (← --border → rgba(255,255,255,0.14))
@@ -173,6 +181,13 @@
     closeOnBackdrop = true,
     /** @type {boolean} Pressing Escape closes the modal. */
     closeOnEscape = true,
+    /** @type {"large"|"compact"|"auto"} Panel sizing. DEFAULT "large" — the
+     *  app-wide convention that a modal fills ~90% of the viewport (a roomy work
+     *  surface, not a cramped dialog). "compact" is the old fixed 520px column
+     *  for a tiny confirm/pick dialog; "auto" shrink-wraps its content. Additive
+     *  + backward-safe: a consumer that passes no `size` inherits "large" (90%),
+     *  so every existing modal adopts the convention without changing its call. */
+    size = "large",
   } = $props();
 
   let panelEl = $state(null);
@@ -238,7 +253,7 @@
          svelte:window above) — the div itself is never a Tab stop. -->
     <div class="modal-backdrop" role="presentation" onpointerdown={onBackdropPointerDown}>
       <div
-        class="modal-panel"
+        class="modal-panel modal-{size}"
         bind:this={panelEl}
         role="dialog"
         aria-modal="true"
@@ -289,8 +304,12 @@
 
   .modal-panel {
     /* Chain to ambient theme tokens (light/dark aware), then a standalone
-       literal fallback — same pattern as DraggableNumber/Tooltip. */
+       literal fallback — same pattern as DraggableNumber/Tooltip. The three
+       sizing tokens (width/height/max-height) are set per SIZE class below;
+       these base values are the "compact" defaults so a panel with no size
+       class still renders sanely. */
     --modal-width: 520px;
+    --modal-height: auto;
     --modal-max-height: 85vh;
     --modal-bg: var(--control-bg, #1c1c24);
     --modal-fg: var(--fg, #e8e8e8);
@@ -306,6 +325,7 @@
     display: flex;
     flex-direction: column;
     width: var(--modal-width);
+    height: var(--modal-height);
     max-width: 100%;
     max-height: var(--modal-max-height);
     background: var(--modal-bg);
@@ -314,6 +334,27 @@
     border-radius: var(--modal-radius);
     box-shadow: var(--modal-shadow);
     outline: none; /* focus ring not needed on the panel container itself */
+  }
+
+  /* SIZE VARIANTS (app-wide convention). The backdrop already pads the viewport
+     by 24px and the panel is `max-width:100%`, so 90vw/90vh never overflow. */
+  .modal-large {
+    /* DEFAULT: fill ~90% of the viewport — the roomy work surface convention. */
+    --modal-width: 90vw;
+    --modal-height: 90vh;
+    --modal-max-height: 90vh;
+  }
+  .modal-compact {
+    /* The old fixed dialog column — for a tiny confirm/pick. */
+    --modal-width: 520px;
+    --modal-height: auto;
+    --modal-max-height: 85vh;
+  }
+  .modal-auto {
+    /* Shrink-wrap the content (e.g. an image preview sized by its own child). */
+    --modal-width: auto;
+    --modal-height: auto;
+    --modal-max-height: 85vh;
   }
 
   .modal-header {

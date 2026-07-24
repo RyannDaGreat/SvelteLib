@@ -2707,6 +2707,97 @@ export class PowerRPApp {
     URL.revokeObjectURL(a.href);
   }
 
+  /**
+   * Command (async). Exports the WHOLE presentation as a playable .mp4,
+   * DETERMINISTICALLY and entirely in-browser (no server). MP4-specific
+   * orchestration over the GENERAL video-export pipeline (web/videoExport.js):
+   * it builds the timeline PLAN (the presenter's hold + transition-in model),
+   * defines the deterministic frame renderer, wires the pluggable MP4/H.264
+   * encoder (web/mp4Encoder.js) and the controlled-time seam, and runs
+   * exportVideo(). Returns the "video/mp4" Blob and, when `download` (default),
+   * saves it. Dynamic imports keep WebCodecs/mp4-muxer out of the initial bundle
+   * and out of node (the exportPdf/exportSvg pattern).
+   *
+   * FRAME RENDER: each (slide, alpha) is rendered through the SAME deterministic
+   * path the presenter/CLI use (transitionRender.renderTransitionFrame — tween OR
+   * fade), composited over the chosen letterbox background. At the default
+   * (output size == camera size) the content fills the frame, so the result is
+   * byte-for-byte the presenter/CLI render.
+   *
+   * MOTION BLUR (`samples` > 1): exportVideo renders N sub-frames per output
+   * frame at evenly-subdivided sub-times and averages them. The controlled-time
+   * setter is render_gpu/particle_clock.setParticleTimeOverride, so the ambient
+   * animation clock (particle emitters, raycast-dither, any particleTime()
+   * consumer) samples each sub-time too — time-driven effects blur alongside the
+   * tween. samples=1 (default) is one render per frame (no blur, no extra cost),
+   * but STILL drives the clock so animated widgets animate over the video (like
+   * the presenter) rather than freezing.
+   *
+   * LOUD when WebCodecs is unavailable (secure-context gate): createMp4Encoder
+   * throws with the reason; the modal surfaces it. No MediaRecorder fallback.
+   *
+   * @param {object} o
+   * @param {number} o.width Output width in px (even).
+   * @param {number} o.height Output height in px (even).
+   * @param {number} o.fps Frames per second.
+   * @param {number} o.bitrate Target H.264 bitrate (bits/s).
+   * @param {number} [o.samples] Temporal subsamples for motion blur (default 1).
+   * @param {number} [o.startIndex] First slide index (default 0).
+   * @param {number} [o.endIndex] Last slide index inclusive (default last).
+   * @param {boolean} [o.includeTransitions] Animate transitions (default true).
+   * @param {number} [o.holdSeconds] Per-slide dwell fallback (default from videoExport).
+   * @param {string} [o.background] Letterbox fill CSS color (default black).
+   * @param {(f:number)=>void} [o.onProgress] 0..1 after each encoded frame.
+   * @param {AbortSignal} [o.signal] Cancels the encode.
+   * @param {boolean} [o.download] Save the blob (default true).
+   * @returns {Promise<Blob>}
+   */
+  async exportMp4({ width, height, fps, bitrate, samples = 1, startIndex = 0, endIndex = this.doc.slides.length - 1, includeTransitions = true, holdSeconds, background = "#000000", onProgress, signal, download = true }) {
+    const { exportVideo, timelinePlan, DEFAULT_HOLD_SECONDS } = await import("./videoExport.js");
+    const { createMp4Encoder } = await import("./mp4Encoder.js");
+    const { renderTransitionFrame } = await import("./transitionRender.js");
+    const { setParticleTimeOverride } = await import("../render_gpu/particle_clock.js");
+    const plan = timelinePlan(this.doc, {
+      startIndex, endIndex, includeTransitions,
+      holdSeconds: holdSeconds ?? DEFAULT_HOLD_SECONDS,
+    });
+    // One reusable backing canvas: fill the chosen background, then draw the
+    // camera content fitted (preserving the camera aspect) and centered — so a
+    // custom export aspect gets clean letterbox bars instead of a stretched
+    // frame. When the output size == the camera size (the default) the content
+    // fills the frame exactly, so the composite is a no-op over the camera's own
+    // background and the result is byte-for-byte the presenter/CLI render.
+    const out = document.createElement("canvas");
+    out.width = width;
+    out.height = height;
+    const ctx = out.getContext("2d");
+    const renderFrame = async (index, alpha) => {
+      const rect = cameraRect(evaluateState(foldState(this.doc, index, alpha), this.registry).state, this.doc.meta);
+      const scale = Math.min(width / rect.w, height / rect.h);
+      const cw = Math.max(1, Math.round(rect.w * scale));
+      const ch = Math.max(1, Math.round(rect.h * scale));
+      const content = await renderTransitionFrame(this.doc, index, alpha, this.registry, cw, ch);
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(content, Math.round((width - cw) / 2), Math.round((height - ch) / 2));
+      return out;
+    };
+    const encoder = await createMp4Encoder({ width, height, fps, bitrate });
+    const blob = await exportVideo({
+      plan, renderFrame, encoder, width, height, fps, samples,
+      setTime: setParticleTimeOverride, // controlled time → ambient-clock effects blur too
+      onProgress, signal,
+    });
+    if (download) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${this.doc.meta.name || "presentation"}.mp4`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+    return blob;
+  }
+
   // ── Copy selection as PNG/PDF (manifest Round 12B "Palette / selection
   // commands"): render ONLY the selected items, cropped to their collective
   // world AABB, onto the SYSTEM clipboard. Distinct from exportPng/exportPdf
