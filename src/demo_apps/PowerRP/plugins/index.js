@@ -9,6 +9,7 @@ import { svgPlugin } from "./svg.js";
 import { circlePlugin } from "./circle.js";
 import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
+import { linePlugin } from "./line.js"; // arrow-family: a straight stroke, no head
 import { fancyArrowPlugin } from "./fancy_arrow.js";
 import { elbowArrowPlugin } from "./elbow_arrow.js";
 import { curvedArrowPlugin } from "./curved_arrow.js";
@@ -45,7 +46,7 @@ import { textMorphPlugins } from "./demo/text_morph.js"; // dissolve / typewrite
 import { corkboardPlugins } from "./demo/corkboard.js"; // board / note / thumbtack / yarn (foreground materials)
 import { raycastDitherPlugin } from "./demo/raycast_dither.js"; // animated grain mesh-gradient (generative foreground material)
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, cursorPlugin, crtPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, cursorPlugin, crtPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

@@ -248,6 +248,11 @@
     // shapeshifter/demo precedent — armed via the generic crosshair-placement
     // path, resolving the plugin lazily from the registry at click time.
     { id: "add-number", title: "Add Number", icon: "mdi:numeric", run: (a) => a.armCrosshairPlacement(a.registry.get("number")) },
+    // ADD LINE — the simplest arrow-family widget (a straight stroke, no head).
+    // Top-level insert command like the arrow's own Add; owned HERE (App.svelte)
+    // matching the demo/shapeshifter inserts — one owner, since the command
+    // registry throws on a duplicate id. Arms the shared endpoint crosshair.
+    { id: "add-line", title: "Add Line", icon: "mdi:minus", run: (a) => a.armCrosshairPlacement(a.registry.get("line")) },
     // INSERT DEMO WIDGET — a submenu (exactly the color-theme `children` pattern
     // above) surfacing the DEMO widgets (plugins/demo/): the showcase widget
     // that proves the custom self.* property mechanism, plus the magnifier (the
