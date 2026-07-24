@@ -43,13 +43,14 @@ import { demoShowcasePlugin } from "./demo/showcase.js";
 import { glassPlugin } from "./demo/glass.js";
 import { cursorPlugin } from "./demo/cursor.js";
 import { crtPlugin } from "./demo/crt.js";
+import { metaballsPlugin } from "./demo/metaballs.js"; // Blender-style metaballs merged into water droplets (backdrop material)
 import { magnifyPlugin } from "./demo/magnify.js"; // sampler-family lens: circle / square / star silhouettes
 import { textMorphPlugins } from "./demo/text_morph.js"; // dissolve / typewriter / scramble
 import { corkboardPlugins } from "./demo/corkboard.js"; // board / note / thumbtack / yarn (foreground materials)
 import { raycastDitherPlugin } from "./demo/raycast_dither.js"; // animated grain mesh-gradient (generative foreground material)
 import { rainyWindowPlugin } from "./demo/rainy_window.js"; // animated rain-on-glass (backdrop refraction material)
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, cursorPlugin, crtPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {
