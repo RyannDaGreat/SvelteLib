@@ -11,13 +11,10 @@
   mechanics (backdrop, Escape, click-away, focus trap, portal). This component
   owns only the picker itself and its `onconfirm({rows, cols})` callback.
 
-  STYLE NOTE (deliberate, flagged): PowerRP web/ app-shell components normally
-  carry no <style> (all styling lives in app.css). This one keeps a SCOPED style
-  block so it stays a self-contained popover and so this lane adds ZERO edits to
-  app.css — which parallel lanes are actively touching (merge safety). It is
-  fully theme-following: every color/size chains to an --a-*/theme token (with a
-  literal fallback, the Modal.svelte pattern). Moving these rules into app.css
-  post-merge is a trivial, mechanical follow-up if the lead prefers.
+  STYLE: like every PowerRP web/ app-shell component, this carries NO <style> —
+  all styling lives in app.css (the `.grid-picker*` rules), fully theme-following
+  via --a-*/theme tokens. (It briefly kept a scoped block during the parallel
+  Arrange-into-Grid lane for merge safety; relocated to app.css in task #98.)
 -->
 <script module>
   // The grid never displays more than this many rows/cols. Overflow beyond a
@@ -137,69 +134,3 @@
   </div>
 </div>
 
-<style>
-  /* Local tokens chain to ambient theme tokens (--a-* and the base --fg/--border,
-     light/dark aware), with a literal fallback — the Modal.svelte pattern. */
-  .grid-picker {
-    --gp-cell-size: 22px;
-    --gp-cell-gap: var(--a-sp-1, 2px);
-    --gp-fg: var(--fg, #e6e6e6);
-    --gp-fg-dim: var(--fg-dim, #8c8c8c);
-    --gp-border: var(--border, rgba(255, 255, 255, 0.1));
-    --gp-accent: var(--a-selection, #3f9eff);
-    --gp-empty: var(--a-hover-bg, rgba(255, 255, 255, 0.12));
-    --gp-radius: var(--radius, 4px);
-    --gp-label-size: var(--a-font-md, 0.85rem);
-    --gp-hint-size: var(--a-font-sm, 0.72rem);
-
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--a-sp-3, 8px);
-    color: var(--gp-fg);
-    user-select: none;
-  }
-
-  .grid-picker-label {
-    font-size: var(--gp-label-size);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .grid-picker-grid {
-    display: grid;
-    grid-template-columns: repeat(var(--gp-cols), var(--gp-cell-size));
-    gap: var(--gp-cell-gap);
-    padding: var(--a-sp-2, 4px);
-    outline: none;
-    border-radius: var(--gp-radius);
-  }
-  .grid-picker-grid:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--gp-accent) 60%, transparent);
-    outline-offset: 2px;
-  }
-
-  .grid-picker-cell {
-    width: var(--gp-cell-size);
-    height: var(--gp-cell-size);
-    margin: 0;
-    padding: 0;
-    background: transparent;
-    border: 1px solid var(--gp-border);
-    border-radius: calc(var(--gp-radius) / 2);
-    cursor: pointer;
-  }
-  .grid-picker-cell:hover {
-    background: var(--gp-empty);
-  }
-  .grid-picker-cell.on {
-    background: var(--gp-accent);
-    border-color: var(--gp-accent);
-  }
-
-  .grid-picker-hint {
-    font-size: var(--gp-hint-size);
-    color: var(--gp-fg-dim);
-    font-variant-numeric: tabular-nums;
-  }
-</style>
