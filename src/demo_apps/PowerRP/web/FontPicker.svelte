@@ -20,6 +20,14 @@
   No <style> block (web/ app convention): classes live in app.css (.fontpicker,
   .fp-* via --a-* tokens). iconify for the caret.
 -->
+<script module>
+  // Session-persisted list/preview split: the list column width in px once the
+  // user has dragged the divider (null → the CSS default token width). MODULE
+  // scope so it survives the picker closing + reopening within a session (brief
+  // #5 "persist within the session"); a full page reload resets it.
+  let sessionListW = null;
+</script>
+
 <script>
   import "iconify-icon";
   import { cssFamilyFor } from "../render_gpu/fonts.js";
@@ -33,8 +41,41 @@
   let open = $state(false);
   let query = $state(""); // the search filter (case-insensitive, matched on label)
   let activeIndex = $state(-1); // keyboard/hover focus INTO `filtered` → drives the preview
-  let rootEl;
-  let searchEl;
+  // DOM refs (bind:this). $state so effects that read them re-run once bound —
+  // the Svelte 5 idiom for refs used in reactive contexts (menuEl in the
+  // scrollbar-sync effect; rootEl/searchEl in the focus + outside-click effects).
+  let rootEl = $state(null);
+  let searchEl = $state(null);
+  let listEl = $state(null); // the list COLUMN — the divider drag resizes its width
+  let menuEl = $state(null); // the SCROLLABLE option list — wheel + native scroll target
+
+  // The list-column width in px, or null → the CSS default token width. Seeded
+  // from the session-persisted split so a reopened picker keeps the last drag.
+  let listW = $state(sessionListW);
+  // Divider drag: null when idle, else {startX, startW, minW, maxW} (px).
+  let dragState = null;
+  let dragging = $state(false); // drives the .fp-divider highlight while dragging
+
+  // CUSTOM always-visible scrollbar (native overlay bars auto-hide on macOS —
+  // the user's "still no scrollbar" complaint). These mirror the menu's live
+  // scroll metrics; the thumb geometry derives from them.
+  let scrollTop = $state(0);
+  let scrollH = $state(0);
+  let clientH = $state(0);
+  let thumbDrag = null; // {startY, startTop} while dragging the thumb
+  let thumbDragging = $state(false);
+  const MIN_THUMB_FRAC = 0.12; // thumb never shorter than 12% of the track (stays grabbable)
+
+  let scrollable = $derived(scrollH > clientH + 1); // is there anything to scroll?
+  // Thumb height as a fraction of the track (clamped so it stays grabbable).
+  let thumbHeightFrac = $derived(scrollH > 0 ? Math.max(MIN_THUMB_FRAC, clientH / scrollH) : 1);
+  // Thumb top as a fraction of the track. Maps scrollTop∈[0, maxScroll] onto the
+  // travel room left by the (clamped) thumb height, so the thumb bottom never
+  // exceeds the track.
+  let thumbTopFrac = $derived.by(() => {
+    const maxScroll = scrollH - clientH;
+    return maxScroll > 0 ? (scrollTop / maxScroll) * (1 - thumbHeightFrac) : 0;
+  });
 
   let currentLabel = $derived(options.find((o) => o.value === value)?.label ?? value);
   // The visible options after the search filter — the menu AND keyboard nav use THIS.
@@ -49,6 +90,112 @@
   /** Pure-ish. The CSS font-family for an option id — the actual loaded face. */
   function faceOf(id) {
     return cssFamilyFor(id);
+  }
+
+  /**
+   * Pure function. Clamps v into [lo, hi].
+   *
+   * @example clamp(50, 120, 360) // 120
+   * @example clamp(500, 120, 360) // 360
+   * @example clamp(200, 120, 360) // 200
+   */
+  function clamp(v, lo, hi) {
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  /**
+   * Query. Reads a plain-px :root token off the picker root as a number.
+   *
+   * @param {string} name - The custom-property name, e.g. "--a-fp-list-min-w".
+   * @returns {number} The px value (NaN if the token is absent/non-px).
+   * @example // tokenPx("--a-fp-list-min-w") // 120
+   */
+  function tokenPx(name) {
+    return parseFloat(getComputedStyle(rootEl).getPropertyValue(name));
+  }
+
+  /** Command. Keeps a wheel gesture INSIDE the popover: the option list scrolls,
+   *  the canvas behind NEVER pans. The FontPicker mounts inside CanvasView's
+   *  PanZoom subtree, whose bubble-phase onwheel pans on any wheel that reaches
+   *  it — stopPropagation blocks that. Over the non-scrolling regions (search,
+   *  preview) we also preventDefault so nothing behind scroll-chains; over the
+   *  list itself we let native scroll run (overscroll-behavior:contain in CSS
+   *  stops it chaining out at the list's top/bottom boundary). */
+  function onWheel(e) {
+    e.stopPropagation();
+    if (!menuEl || !menuEl.contains(e.target)) e.preventDefault();
+  }
+
+  /** Command. Starts a divider drag: captures the list's current width + the
+   *  clamp bounds, marks `dragging`, and installs window pointer listeners
+   *  (capture phase, removed on up). Mutates dragState/dragging. */
+  function startDrag(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragState = {
+      startX: e.clientX,
+      startW: listEl.getBoundingClientRect().width,
+      minW: tokenPx("--a-fp-list-min-w"),
+      maxW: tokenPx("--a-fp-list-max-w")
+    };
+    dragging = true;
+    window.addEventListener("pointermove", onDragMove, true);
+    window.addEventListener("pointerup", endDrag, true);
+  }
+
+  /** Command. Resizes the list column as the pointer moves; writes listW AND the
+   *  session-persisted split so a reopened picker keeps the width. */
+  function onDragMove(e) {
+    if (!dragState) return;
+    listW = clamp(dragState.startW + (e.clientX - dragState.startX), dragState.minW, dragState.maxW);
+    sessionListW = listW;
+  }
+
+  /** Command. Ends the divider drag: clears dragState/dragging + the window
+   *  pointer listeners. */
+  function endDrag() {
+    dragState = null;
+    dragging = false;
+    window.removeEventListener("pointermove", onDragMove, true);
+    window.removeEventListener("pointerup", endDrag, true);
+  }
+
+  /** Command. Mirrors the menu's live scroll metrics into state so the custom
+   *  scrollbar thumb tracks it. Reads menuEl (DOM), writes scroll state. */
+  function syncScroll() {
+    if (!menuEl) return;
+    scrollTop = menuEl.scrollTop;
+    scrollH = menuEl.scrollHeight;
+    clientH = menuEl.clientHeight;
+  }
+
+  /** Command. Starts a scrollbar-thumb drag: captures the pointer origin + the
+   *  menu's scrollTop, installs window listeners (removed on up). Mutates
+   *  thumbDrag/thumbDragging. */
+  function startThumbDrag(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    thumbDrag = { startY: e.clientY, startTop: menuEl.scrollTop };
+    thumbDragging = true;
+    window.addEventListener("pointermove", onThumbMove, true);
+    window.addEventListener("pointerup", endThumbDrag, true);
+  }
+
+  /** Command. Scrolls the menu as the thumb is dragged — maps pointer dy through
+   *  the track→content ratio (scrollH / trackH). Writes menuEl.scrollTop + resyncs. */
+  function onThumbMove(e) {
+    if (!thumbDrag || !menuEl) return;
+    const trackH = menuEl.clientHeight;
+    menuEl.scrollTop = thumbDrag.startTop + (e.clientY - thumbDrag.startY) * (scrollH / trackH);
+    syncScroll();
+  }
+
+  /** Command. Ends the thumb drag: clears thumbDrag/thumbDragging + window listeners. */
+  function endThumbDrag() {
+    thumbDrag = null;
+    thumbDragging = false;
+    window.removeEventListener("pointermove", onThumbMove, true);
+    window.removeEventListener("pointerup", endThumbDrag, true);
   }
 
   function openMenu() {
@@ -94,6 +241,12 @@
   $effect(() => {
     if (activeIndex >= filtered.length) activeIndex = filtered.length ? 0 : -1;
   });
+  // Re-measure the custom scrollbar whenever the menu content or size could
+  // change (open, filter, split drag). rAF so the DOM has laid out first.
+  $effect(() => {
+    filtered; listW; open; // reactive deps (touch → re-run)
+    if (open && menuEl) requestAnimationFrame(syncScroll);
+  });
 
   // Outside-click close. Pointerdown (not click) so it fires before a blur race;
   // preventDefault is NOT used here — the toolbar's own keepFocus handles the
@@ -120,8 +273,10 @@
   </button>
 
   {#if open}
-    <div class="fp-pop">
-      <div class="fp-list">
+    <!-- onwheel CONSUMES the gesture (see onWheel): scroll the list, never pan
+         the canvas this popover floats over. -->
+    <div class="fp-pop" onwheel={onWheel}>
+      <div class="fp-list" bind:this={listEl} style:width={listW != null ? `${listW}px` : null}>
         <input
           class="fp-search"
           type="text"
@@ -130,27 +285,54 @@
           bind:this={searchEl}
           bind:value={query}
         />
-        <ul class="fp-menu" role="listbox">
-          {#each filtered as o, i (o.value)}
-            <li
-              class="fp-item"
-              class:active={i === activeIndex}
-              class:selected={o.value === value}
-              role="option"
-              aria-selected={o.value === value}
-              style:font-family={faceOf(o.value)}
-              onclick={() => choose(o.value)}
-              onpointerenter={() => (activeIndex = i)}
-            >
-              {o.label}
-            </li>
-          {:else}
-            <li class="fp-empty" role="presentation">No fonts match</li>
-          {/each}
-        </ul>
+        <!-- The scroll region + a CUSTOM always-visible scrollbar (native overlay
+             bars auto-hide; this one is painted at all times + draggable). -->
+        <div class="fp-menu-wrap">
+          <ul class="fp-menu" role="listbox" bind:this={menuEl} onscroll={syncScroll}>
+            {#each filtered as o, i (o.value)}
+              <li
+                class="fp-item"
+                class:active={i === activeIndex}
+                class:selected={o.value === value}
+                role="option"
+                aria-selected={o.value === value}
+                style:font-family={faceOf(o.value)}
+                onclick={() => choose(o.value)}
+                onpointerenter={() => (activeIndex = i)}
+              >
+                {o.label}
+              </li>
+            {:else}
+              <li class="fp-empty" role="presentation">No fonts match</li>
+            {/each}
+          </ul>
+          {#if scrollable}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div class="fp-scrolltrack" aria-hidden="true">
+              <div
+                class="fp-scrollthumb"
+                class:dragging={thumbDragging}
+                style:height={`${thumbHeightFrac * 100}%`}
+                style:top={`${thumbTopFrac * 100}%`}
+                onpointerdown={startThumbDrag}
+              ></div>
+            </div>
+          {/if}
+        </div>
       </div>
 
       {#if previewOption}
+        <!-- DRAGGABLE separator: drag left/right to repartition the list⟷preview
+             split (clamped + session-persisted). A full-height flex child. -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="fp-divider"
+          class:dragging
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize font list"
+          onpointerdown={startDrag}
+        ></div>
         <!-- LARGER preview of the focused font: name + sample, then the pangram
              in REGULAR, BOLD, and UNDERLINED (manifest #26 "a larger PREVIEW"). -->
         <div class="fp-preview" aria-hidden="true">

@@ -196,10 +196,19 @@
      larger preview beside the menu on hover. Option rows are a touch bigger than
      UI text so a typeface actually READS; the preview steps up from name → sample
      → pangram so shape, spacing, and rhythm are all visible. */
-  --a-fp-menu-w: calc(var(--a-control-h) * 6);
+  --a-fp-menu-w: calc(var(--a-control-h) * 6); /* DEFAULT list-column width (the divider drag overrides it) */
+  --a-fp-list-min-w: 120px; /* divider-drag clamp: list never narrower (names would truncate to nothing) */
+  --a-fp-list-max-w: 360px; /* divider-drag clamp: list never wider (the preview must keep room) */
   --a-fp-item-size: 1rem;
   --a-fp-menu-max-h: 320px;
-  --a-fp-preview-w: 260px;
+  --a-fp-preview-w: 338px; /* ~1.3× the prior 260px so the pangram breathes (coordinator ruling) */
+  --a-fp-divider-w: 5px; /* the draggable separator's hit width (a centered hairline lives inside it) */
+  --a-fp-divider-line: 1px; /* the visible line drawn down the middle of that hit width */
+  --a-fp-pop-w: calc(var(--a-fp-menu-w) + var(--a-fp-divider-w) + var(--a-fp-preview-w)); /* FIXED popover width; the drag only repartitions list⟷preview inside it */
+  --a-fp-scrollbar-w: 14px; /* the option list's OWN scrollbar — wider than the app's thin default so it's obviously present */
+  --a-fp-scrollbar-radius: 7px; /* half of --a-fp-scrollbar-w → a pill thumb */
+  --a-fp-scrollbar-inset: 3px; /* transparent border insetting the thumb so the track shows around it */
+  --a-fp-track: var(--a-hover-bg); /* the always-visible scrollbar gutter fill (reads on the dark menu) */
   --a-fp-name-size: 1.9rem;
   --a-fp-sample-size: 1.4rem;
   --a-fp-pangram-size: 0.95rem;
@@ -1252,24 +1261,29 @@ body,
   flex: 0 0 auto;
   opacity: 0.7;
 }
-/* The popover holds the list column (search + options) and, beside it, the
-   preview. align-items:stretch makes both columns the SAME height, so the
-   divider (the preview's border-left) always spans the FULL popover height and
-   the preview can never be shorter than its own content (no clipped pangram). */
+/* The popover is a 3-child flex row: [list column] [draggable divider] [preview],
+   at a FIXED width (--a-fp-pop-w) so dragging the divider only repartitions the
+   list⟷preview split. align-items:stretch makes ALL THREE children the SAME
+   height, so the divider element spans the FULL popover height in every state
+   (measured: list.bottom == divider.bottom == preview.bottom == pop.bottom). */
 .fp-pop {
   position: absolute;
   top: 100%;
   left: 0;
   margin-top: var(--a-sp-1);
   z-index: 1000;
+  width: var(--a-fp-pop-w);
   display: flex;
   align-items: stretch;
   background: var(--a-panel-bg);
   border: var(--a-hairline) solid var(--border);
   box-shadow: var(--a-palette-shadow);
 }
-/* The list column: a fixed search field above the scrolling option list. */
+/* The list column: a fixed search field above the scrolling option list. Its
+   width is the DEFAULT token; the divider drag overrides it inline (px), so it
+   must not grow/shrink on its own (flex:0 0 auto). */
 .fp-list {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   width: var(--a-fp-menu-w);
@@ -1287,14 +1301,58 @@ body,
 .fp-search::placeholder {
   color: var(--fg-dim);
 }
+/* The scroll region wraps the option list + a CUSTOM always-visible scrollbar.
+   Why custom, not the native bar: native overlay scrollbars (macOS default, and
+   headless Chromium) auto-hide at rest — so with `overflow-y:scroll` the user
+   STILL sees no scrollbar. A drawn track+thumb is painted at all times, in every
+   environment. Caps the list height here so a hundreds-long list scrolls instead
+   of growing the popover unboundedly. */
+.fp-menu-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: var(--a-fp-menu-max-h);
+  display: flex;
+}
 .fp-menu {
   flex: 1 1 auto;
-  min-height: 0; /* let the flex child shrink so its own max-height/scroll wins */
+  min-height: 0; /* let the flex child shrink so its own scroll wins */
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: var(--a-fp-menu-max-h);
-  overflow-y: auto;
+  padding-right: var(--a-fp-scrollbar-w); /* clear the custom track on the right edge */
+  overflow-y: scroll; /* native scroll ENGINE (wheel/keys/trackpad); native BAR hidden below */
+  overscroll-behavior: contain; /* a wheel at the top/bottom boundary never chains out to pan */
+  scrollbar-width: none; /* hide the native bar (Firefox) — the custom one replaces it */
+}
+.fp-menu::-webkit-scrollbar {
+  width: 0;
+  height: 0; /* hide the native bar (WebKit/Blink) — the custom one replaces it */
+}
+/* Custom scrollbar: an always-visible gutter (track) + a thumb sized/positioned
+   from the menu's live scroll metrics (FontPicker.svelte). Draggable. */
+.fp-scrolltrack {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--a-fp-scrollbar-w);
+  background: var(--a-fp-track);
+  border-radius: var(--a-fp-scrollbar-radius);
+}
+.fp-scrollthumb {
+  position: absolute;
+  right: 0;
+  width: 100%;
+  background: var(--a-scrollbar-hover);
+  border-radius: var(--a-fp-scrollbar-radius);
+  border: var(--a-fp-scrollbar-inset) solid transparent; /* inset so the track shows around the thumb */
+  background-clip: padding-box;
+  cursor: default;
+}
+.fp-scrollthumb:hover,
+.fp-scrollthumb.dragging {
+  background: var(--fg-dim);
 }
 .fp-item {
   padding: var(--a-sp-2) var(--a-sp-3);
@@ -1323,12 +1381,30 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* DRAGGABLE separator between the list and preview columns. A full-height flex
+   child (align-items:stretch on .fp-pop makes it span the whole popover), with a
+   thin centered line drawn inside a wider col-resize hit area. Dragging it
+   repartitions the list⟷preview split (FontPicker.svelte: clamped to
+   [--a-fp-list-min-w, --a-fp-list-max-w], persisted for the session). */
+.fp-divider {
+  flex: 0 0 var(--a-fp-divider-w);
+  align-self: stretch;
+  cursor: col-resize;
+  touch-action: none; /* the pointer drag owns the gesture — no scroll/zoom fights it */
+  background: linear-gradient(var(--border), var(--border)) center / var(--a-fp-divider-line) 100% no-repeat;
+}
+.fp-divider:hover,
+.fp-divider.dragging {
+  background: linear-gradient(var(--a-selection), var(--a-selection)) center / var(--a-fp-divider-line) 100% no-repeat;
+}
 /* Preview panel beside the list — name, sample, then the pangram in regular,
-   bold, and underlined so all three styles read in the actual face. */
+   bold, and underlined so all three styles read in the actual face. flex:1 fills
+   whatever width the divider drag leaves; min-width:0 lets it shrink so the
+   pangram WRAPS inside it (never overflows) even at the narrowest split. */
 .fp-preview {
-  width: var(--a-fp-preview-w);
+  flex: 1 1 auto;
+  min-width: 0;
   padding: var(--a-sp-4);
-  border-left: var(--a-hairline) solid var(--border);
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-3);
@@ -1346,7 +1422,12 @@ body,
 .fp-preview-line {
   font-size: var(--a-fp-pangram-size);
   line-height: var(--a-text-line-height);
-  overflow-wrap: anywhere; /* wrap the pangram inside the fixed preview width */
+  /* white-space:normal is LOAD-BEARING: .text-format-toolbar (this popover's
+     ancestor) sets white-space:nowrap, which INHERITS down here and forced the
+     pangram onto one overflowing line — this overrides it so the pangram WRAPS.
+     overflow-wrap:anywhere then breaks any token too long for a narrow split. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .fp-bold {
   font-weight: 700;
