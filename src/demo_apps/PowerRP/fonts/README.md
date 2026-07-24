@@ -54,6 +54,18 @@ the Round 26 batch.
 |----------|----------------|------|---------------------------------------|---------|
 | `futura` | Futura (Jost)  | sans | `Jost-Regular.ttf` / `Jost-Bold.ttf`  | [OFL-Jost.txt](./OFL-Jost.txt) — Copyright 2020 The Jost Project Authors (https://github.com/indestructible-type/Jost) |
 
+### Seven Segment (DSEG7 Classic)
+
+A **seven-segment digital display** face — the calculator / digital-clock
+readout look, each digit drawn as the seven lit/unlit bars of an LCD/LED. This
+is **DSEG7 Classic** by Keshikan (from the same font reference collection the
+committed Futura came from), bundled with its real Regular + Bold static
+instances so it flows through every seam like the families above.
+
+| id     | Title         | Kind | Regular / Bold files                                | License |
+|--------|---------------|------|-----------------------------------------------------|---------|
+| `seg7` | Seven Segment | mono | `DSEG7Classic-Regular.ttf` / `DSEG7Classic-Bold.ttf` | [OFL-DSEG.txt](./OFL-DSEG.txt) — Copyright 2020 keshikan (https://www.keshikan.net), RFN "DSEG" |
+
 ### Font ASSETS (uploaded, per-project — NOT committed here)
 
 Beyond the committed families, a user can **upload a font file** (`.ttf`/`.otf`/

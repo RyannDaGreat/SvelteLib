@@ -144,6 +144,19 @@ export const FONTS = {
     fallback: "sans-serif",
     files: { regular: "Jost-Regular.ttf", bold: "Jost-Bold.ttf" },
   },
+  // Seven Segment — DSEG7 Classic (Keshikan, OFL 1.1; see ../fonts/README.md):
+  // the calculator / digital-clock readout look, each digit drawn as the seven
+  // lit/unlit bars of an LCD/LED display. From the user's own font reference
+  // collection; ships Regular + Bold static instances, so it flows through every
+  // seam (glyph atlas + PDF/SVG embed) exactly like the families above. `mono`
+  // kind → monospace fallback for any glyph the segmented face lacks.
+  seg7: {
+    title: "Seven Segment",
+    kind: "mono", // fixed-pitch digital display
+    cssFamily: "PowerRP Seven Segment",
+    fallback: "monospace",
+    files: { regular: "DSEG7Classic-Regular.ttf", bold: "DSEG7Classic-Bold.ttf" },
+  },
 };
 
 /**
@@ -313,7 +326,7 @@ export function fontOptions() {
  * loader turns into @font-face rules and the PDF backend can pre-embed. Excludes
  * `system` (no file).
  *
- * @example committedFaces().length // 24 (12 families x regular/bold)
+ * @example committedFaces().length // 26 (13 families x regular/bold)
  * @example committedFaces()[0].file.endsWith(".ttf") // true
  */
 export function committedFaces() {
