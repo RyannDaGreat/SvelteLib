@@ -27,13 +27,12 @@ import { committedFaces } from "../render_gpu/fonts.js";
  */
 const FONT_URLS = import.meta.glob("../fonts/*.ttf", { query: "?url", import: "default", eager: true });
 
-/** Query. The hashed URL for a committed font basename (loud if missing — a
- * registry/file mismatch is a build error, never a silent fallback). */
+/** Query. The hashed URL for a committed font basename, or null if no bundled
+ * file matches — a registry/file mismatch, or (common in dev) a font added
+ * AFTER the running dev server last globbed ../fonts/*.ttf. Callers must skip a
+ * null face LOUDLY; a single missing font must never brick the editor. */
 function urlFor(basename) {
-  const key = `../fonts/${basename}`;
-  const url = FONT_URLS[key];
-  if (!url) throw new Error(`fontLoader: committed font "${basename}" is in the registry but no file was found at ${key} — commit the .ttf or fix fonts.js`);
-  return url;
+  return FONT_URLS[`../fonts/${basename}`] ?? null;
 }
 
 let loadPromise = null;
@@ -56,7 +55,17 @@ export function loadFonts() {
   }
   loadPromise = Promise.all(
     committedFaces().map(async ({ cssFamily, bold, file }) => {
-      const face = new FontFace(cssFamily, `url("${urlFor(file)}")`, {
+      const url = urlFor(file);
+      if (!url) {
+        // Missing bundled file — most often a font added AFTER the running dev
+        // server last globbed ../fonts/*.ttf (restart it to re-glob), or a
+        // fonts.js/file mismatch. Report LOUDLY and SKIP just this face: one
+        // missing font must NOT brick the whole editor (this module's contract).
+        // Its text falls back to the CSS generic — visible, not silent.
+        console.error(`fontLoader: committed font "${file}" (${cssFamily} ${bold ? "Bold" : "Regular"}) has no bundled file at ../fonts/${file} — SKIPPING (falls back to CSS generic). If you just added it, restart the dev server to re-glob.`);
+        return { cssFamily, bold, ok: false };
+      }
+      const face = new FontFace(cssFamily, `url("${url}")`, {
         weight: bold ? "700" : "400",
         style: "normal",
         display: "swap",
