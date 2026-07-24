@@ -24,26 +24,44 @@
 
 import * as T from "../../core/transform.js";
 import { stateXYForCenterPivotWorld } from "../../core/derive.js";
+import { diffState } from "../../core/deltas.js";
+
+/**
+ * Pure function. Turns a flat geometry delta {key: value, …} (as diffState
+ * returns) into the item-scoped [path, value] preview pairs CanvasView commits
+ * — the bridge from a MINIMAL delta to app.setPreview's pair list. Each key maps
+ * to a flat state path ["items", itemId, key]; an EMPTY delta yields no pairs
+ * (nothing changed → nothing to write, so no stored equation is disturbed).
+ *
+ * @example itemGeometryPairs("r", {x: 15, w: 120}) // [[["items","r","x"],15],[["items","r","w"],120]]
+ * @example itemGeometryPairs("r", {}) // []
+ */
+export function itemGeometryPairs(itemId, delta) {
+  return Object.entries(delta).map(([k, v]) => [["items", itemId, k], v]);
+}
 
 /**
  * Pure function. The path/value preview pairs that translate one member by a
  * world delta (dx, dy) — the ONE translation rule shared by DRAG-ALL body drags
  * and the modal grab. A moveBy widget (arrow) translates only its FREE numeric
  * coordinates via its plugin hook (bound endpoints stay anchored); a
- * bbox/transform widget writes plain numeric x/y (direct manipulation replaces
- * any equation on x/y outright — the established body-drag rule).
+ * bbox/transform widget writes plain numeric x/y, but ONLY on the axis that
+ * actually moved (diffState) — a pure-horizontal drag (dy === 0) writes x alone
+ * and leaves any equation stored on y untouched. Grabbing an axis that DID move
+ * replaces its equation with the new literal (the established body-drag rule).
  *
- * @example // translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 3)
- * //   → [[["items","r","x"], 15], [["items","r","y"], 23]]
+ * @example // dragged on both axes → both written:
+ * @example translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 3) // [[["items","r","x"], 15], [["items","r","y"], 23]]
+ * @example // pure-horizontal drag → only x (y OMITTED, its equation survives):
+ * @example translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 0) // [[["items","r","x"], 15]]
  */
 export function translationPairs(member, dx, dy) {
   if (member.plugin.moveBy)
     return member.plugin.moveBy(member.rawItem, dx, dy)
       .map(([p, v]) => [["items", member.itemId, ...p], v]);
-  return [
-    [["items", member.itemId, "x"], member.startX + dx],
-    [["items", member.itemId, "y"], member.startY + dy],
-  ];
+  const start = { x: member.startX, y: member.startY };
+  const next = { x: member.startX + dx, y: member.startY + dy };
+  return itemGeometryPairs(member.itemId, diffState(start, next, ["x", "y"]));
 }
 
 /**
@@ -187,8 +205,10 @@ export function scaledBoxAboutPoint(member, kx, ky, ax, ay) {
  * Pure function. Preview pairs that scale one member by PER-AXIS world factors
  * (kx, ky) about world point (ax, ay). `touch` ({x, y} booleans) selects which
  * axes are written (a constrained modal or an edge-only resize leaves the
- * untouched axis alone). A bbox/transform widget scales its w/h AND repositions
- * its x/y — EXACTLY, including rotated / non-unit-scale members
+ * untouched axis alone), and of those, only the keys that actually CHANGED
+ * (diffState) — so a single-axis scale on an unrotated member never clobbers
+ * the still axis's stored equation. A bbox/transform widget scales its w/h AND
+ * repositions its x/y — EXACTLY, including rotated / non-unit-scale members
  * (scaledBoxAboutPoint). A moveBy widget (arrow) scales each FREE numeric
  * endpoint about (ax, ay) per axis; equation-bound endpoints stay put. THE ONE
  * scale rule shared by the S-modal and multi-resize-by-handles.
@@ -216,12 +236,16 @@ export function scaleMemberPairs(member, kx, ky, ax, ay, touch = { x: true, y: t
   const hasW = typeof rawItem.w === "number";
   const hasH = typeof rawItem.h === "number";
   const nb = scaledBoxAboutPoint(member, kx, ky, ax, ay);
-  const pairs = [];
-  if (touch.x) pairs.push([["items", member.itemId, "x"], nb.x]);
-  if (touch.y) pairs.push([["items", member.itemId, "y"], nb.y]);
-  if (touch.x && hasW) pairs.push([["items", member.itemId, "w"], nb.w]);
-  if (touch.y && hasH) pairs.push([["items", member.itemId, "h"], nb.h]);
-  return pairs;
+  // Only the touched axes are candidates; of those, only the keys whose value
+  // actually changed are written (diffState) — a single-axis multi-resize
+  // (ky === 1 on an unrotated member) leaves that axis's stored equation intact.
+  const keys = [];
+  if (touch.x) keys.push("x");
+  if (touch.y) keys.push("y");
+  if (touch.x && hasW) keys.push("w");
+  if (touch.y && hasH) keys.push("h");
+  const start = { x: member.startX, y: member.startY, w: member.startW, h: member.startH };
+  return itemGeometryPairs(member.itemId, diffState(start, nb, keys));
 }
 
 /**

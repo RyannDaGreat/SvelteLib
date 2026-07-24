@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { NONE, applied, blendApplied, contains, setPath, deletePath, getPath, leaves } from "../core/deltas.js";
+import { NONE, applied, blendApplied, contains, setPath, deletePath, getPath, leaves, deepEqual, diffState } from "../core/deltas.js";
 import { interpolate, ease, isHexColor, hexToRgb, rgbToHex } from "../core/interpolators.js";
 import * as T from "../core/transform.js";
 import { clipLineToRect, closestPointOnRectBorder } from "../core/geometry.js";
@@ -65,6 +65,24 @@ test("path helpers", () => {
   assert.deepEqual(deletePath({ a: { b: 1 } }, ["a", "b"]), {});
   assert.equal(getPath({ a: { b: 7 } }, ["a", "b"]), 7);
   assert.deepEqual(leaves({ a: { x: 1 }, b: NONE }), [[["a", "x"], 1], [["b"], NONE]]);
+});
+test("deepEqual: primitives, strings, arrays, trees", () => {
+  assert.ok(deepEqual(5, 5));
+  assert.ok(deepEqual("=100+shape_2.x", "=100+shape_2.x"));
+  assert.ok(deepEqual([1, 2], [1, 2]));
+  assert.ok(deepEqual({ x: 1, y: 2 }, { x: 1, y: 2 }));
+  assert.ok(!deepEqual(5, "5")); // no coercion
+  assert.ok(!deepEqual({ x: 1, y: 2 }, { x: 1, y: 3 }));
+  assert.ok(!deepEqual([1, 2], [1, 2, 3]));
+});
+test("diffState: only CHANGED keys survive (unchanged ⇒ omitted, equation preserved)", () => {
+  // The interaction-commit rule: an unchanged key must be ABSENT so its stored
+  // raw value (literal OR "=equation") is left untouched.
+  assert.deepEqual(diffState({ x: 10, y: 20 }, { x: 15, y: 20 }, ["x", "y"]), { x: 15 });
+  assert.deepEqual(diffState({ x: 0, y: 0, w: 100, h: 50 }, { x: 0, y: 0, w: 120, h: 50 }, ["x", "y", "w", "h"]), { w: 120 });
+  assert.deepEqual(diffState({ x: 5 }, { x: 5 }, ["x"]), {}); // nothing changed
+  // `keys` scopes the comparison — an untouched key outside `keys` is ignored.
+  assert.deepEqual(diffState({ x: 1, rotation: 0 }, { x: 2, rotation: 9 }, ["x"]), { x: 2 });
 });
 
 // ── interpolators ────────────────────────────────────────────────────────────
@@ -293,6 +311,23 @@ test("derive: z-sort, anchors, features, pick", () => {
   assert.equal(pickNode(nodes, 5, 5).id, "r1"); // topmost wins
   assert.equal(pickNode(nodes, 500, 500), null);
 });
+// ── interaction commit preserves untouched-axis equations (the move/resize
+// equation-clobber bug) ──────────────────────────────────────────────────────
+test("commit round-trip: a move changing ONLY x leaves y's EQUATION intact", () => {
+  // End-to-end mirror of the fix: an item whose y is an equation. The FIXED
+  // move-only-x commit is a delta with x alone (diffState omits y), so
+  // commitPreview's keyframed walk touches only x — y's stored equation string
+  // must survive fold + evaluate, not be overwritten with a literal.
+  let doc = newDocument();
+  let id;
+  [doc, id] = withNewItem(doc, 0, { ...rectPlugin.defaults, x: 40, y: "=100+7", w: 100, h: 50, z: 0 });
+  doc = keyframed(doc, 0, ["items", id, "x"], 75); // the sole leaf a move-only-x preview commits
+  const rawState = foldState(doc, 0);
+  assert.equal(rawState.items[id].x, 75); // grabbed axis: literal committed
+  assert.equal(rawState.items[id].y, "=100+7"); // untouched axis: EQUATION SURVIVES (bug clobbered it to a number)
+  assert.equal(evaluateState(rawState, registry).state.items[id].y, 107); // still resolves
+});
+
 // ── rotation about an anchor (manifest Round 11) ─────────────────────────────
 test("rotation anchor: default self-center pivot; box rotates IN PLACE", () => {
   // New item carries the equation default rotationAnchor = self.anchors.center.

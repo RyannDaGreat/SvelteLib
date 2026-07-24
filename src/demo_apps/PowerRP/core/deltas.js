@@ -153,6 +153,62 @@ export function contains(state, delta) {
 }
 
 /**
+ * Pure function. Structural deep equality for state/delta leaf values —
+ * primitives by identity, arrays element-wise, plain-object trees key-wise. The
+ * comparison diffState uses to decide whether an interaction actually CHANGED a
+ * property. Covers every shape a state leaf can hold: numbers, `=equation`/
+ * literal strings, arrays (gradient stops, point lists), and nested trees.
+ *
+ * @example deepEqual(5, 5) // true
+ * @example deepEqual("=100+shape_2.x", "=100+shape_2.x") // true
+ * @example deepEqual([1, 2], [1, 2]) // true
+ * @example deepEqual({x: 1, y: 2}, {x: 1, y: 3}) // false
+ * @example deepEqual(5, "5") // false (no type coercion)
+ */
+export function deepEqual(a, b) {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b))
+    return a.length === b.length && a.every((v, i) => deepEqual(v, b[i]));
+  if (isTree(a) && isTree(b)) {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    return ka.length === kb.length && ka.every((k) => deepEqual(a[k], b[k]));
+  }
+  return false;
+}
+
+/**
+ * Pure function. The MINIMAL delta between two flat state objects over `keys`:
+ * a delta holding ONLY the keys whose `newState` value DIFFERS (deepEqual) from
+ * `startState`. Unchanged keys are OMITTED — so a commit built from this delta
+ * NEVER overwrites the document's stored raw value for them, and a literal OR
+ * an `=equation` string on an untouched key survives intact. This is how a drag
+ * that moves one axis (or a resize that stretches one dimension) leaves the
+ * equations bound to the axes it never touched alone (the interaction-commit
+ * rule: "only overwrite a property if it changed — that goes for ANY
+ * property"). A key that genuinely changed writes its new value, overriding any
+ * equation there — grabbing that axis is meant to.
+ *
+ * `startState` must be the RESOLVED start pose (the drag-start basis, e.g.
+ * node.state.*), so "did this axis move" compares the new value against what
+ * the axis actually SHOWED at grab time, not against a raw equation string.
+ *
+ * @param {object} startState - resolved start values (the drag-start basis)
+ * @param {object} newState - the interaction's computed new values
+ * @param {string[]} keys - the property keys to compare
+ * @returns {object} a flat delta containing only the changed keys
+ *
+ * @example diffState({x: 10, y: 20}, {x: 15, y: 20}, ["x", "y"]) // {x: 15} (y unchanged → OMITTED; its equation survives)
+ * @example diffState({x: 0, y: 0, w: 100, h: 50}, {x: 0, y: 0, w: 120, h: 50}, ["x", "y", "w", "h"]) // {w: 120}
+ * @example diffState({x: 5}, {x: 5}, ["x"]) // {} (no change → empty delta)
+ */
+export function diffState(startState, newState, keys) {
+  const out = {};
+  for (const key of keys)
+    if (!deepEqual(startState[key], newState[key])) out[key] = newState[key];
+  return out;
+}
+
+/**
  * Pure function. Reads the leaf at a key path, or undefined. Descends into
  * both object trees AND arrays (an integer-like path segment indexes a list —
  * e.g. a gradient stop's offset lives at [..., "stops", 1, "offset"]), so the

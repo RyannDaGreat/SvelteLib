@@ -30,7 +30,8 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, groupResizeState, creationRect, creationEndpoint } from "./canvas/dragKinds.js";
+  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, groupResizeState, creationRect, creationEndpoint, itemGeometryPairs } from "./canvas/dragKinds.js";
+  import { diffState } from "../core/deltas.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
@@ -964,8 +965,11 @@
     // (setPreview REPLACES previewDelta wholesale, it doesn't merge).
     drag.lastDx = dx;
     drag.lastDy = dy;
-    const pairs = drag.members.flatMap((m) => translationPairs(m, dx, dy));
-    if (pairs.length) app.setPreview(pairs);
+    // Each member's pairs now omit any axis that didn't move (diffState in
+    // translationPairs), so returning EXACTLY to the start yields NO pairs — set
+    // the (possibly empty) preview unconditionally so that case reverts to the
+    // committed pose instead of freezing at the last non-zero preview.
+    app.setPreview(drag.members.flatMap((m) => translationPairs(m, dx, dy)));
   }
 
   // ── Resize ──────────────────────────────────────────────────────────────────
@@ -1114,12 +1118,11 @@
       y = solved.y;
     }
 
-    app.setPreview([
-      [["items", drag.itemId, "x"], x],
-      [["items", drag.itemId, "y"], y],
-      [["items", drag.itemId, "w"], ww],
-      [["items", drag.itemId, "h"], hh],
-    ]);
+    // Commit ONLY the geometry keys that actually changed vs the resolved
+    // start pose (drag.startState) — an east-only stretch writes just `w`, so a
+    // stored equation on x/y/h survives untouched (interaction-commit rule).
+    // Grabbing an axis that DID move overrides its equation with the literal.
+    app.setPreview(itemGeometryPairs(drag.itemId, diffState(s, { x, y, w: ww, h: hh }, ["x", "y", "w", "h"])));
   }
 
   /**
@@ -1149,11 +1152,11 @@
       ? [(() => { const fW = T.apply(drag.world, a.fx, a.fy), gW = T.apply(drag.world, a.gx, a.gy); return { kind: "line", x: fW.x, y: fW.y, dx: gW.x - fW.x, dy: gW.y - fW.y }; })()]
       : [];
     sizeIndicators = [];
-    app.setPreview([
-      [["items", drag.itemId, "scale"], gs.scale],
-      [["items", drag.itemId, "x"], gs.x],
-      [["items", drag.itemId, "y"], gs.y],
-    ]);
+    // Only the changed keys vs the group's resolved start (startScale + start
+    // x/y) — a pure Cmd-symmetric scale, say, leaves x/y put, so their stored
+    // equations survive (interaction-commit rule).
+    const start = { scale: drag.startScale, x: drag.startState.x, y: drag.startState.y };
+    app.setPreview(itemGeometryPairs(drag.itemId, diffState(start, { scale: gs.scale, x: gs.x, y: gs.y }, ["scale", "x", "y"])));
   }
 
   // ── Multi-resize (manifest UNDEFERRAL SWEEP: handles on a multi-selection ────
@@ -1227,8 +1230,10 @@
     const a = resizeAnchors(b0, edges, mods);
     const ax = mods.symmetric ? a.cx : a.fx;
     const ay = mods.symmetric ? a.cy : a.fy;
-    const pairs = drag.members.flatMap((m) => scaleMemberPairs(m, kx, ky, ax, ay));
-    if (pairs.length) app.setPreview(pairs);
+    // Pairs omit unchanged keys (diffState in scaleMemberPairs), so a return to
+    // the exact start box yields none — set the preview unconditionally so that
+    // reverts rather than freezing at the last non-identity scale (see moveDrag).
+    app.setPreview(drag.members.flatMap((m) => scaleMemberPairs(m, kx, ky, ax, ay)));
   }
 
   /**
@@ -1488,6 +1493,11 @@
    * narrower call would silently drop every OTHER selected member's
    * translation on a multi-selection move. The grabbed item's pairs are
    * then overridden coordinate-by-coordinate with the equation string.
+   *
+   * translationPairs now OMITS an axis that netted to zero (diffState), so an
+   * axis a snap pulled exactly back to its start (raw drag == −snap on that
+   * axis) has no pair to override and stays a no-op — a negligible bound: the
+   * item ended where it began on that axis, so no rebind is the honest result.
    */
   function writeMoveAnchorSnap() {
     const prov = drag.snapProvenance;
@@ -1499,7 +1509,7 @@
       if (!anchorId) continue; // non-standard source feature — no anchor to bind; numeric stands
       for (const coord of p.axis === "both" ? ["x", "y"] : [p.axis]) {
         const grabbed = pairs.find(([path]) => path[1] === drag.itemId && path[2] === coord);
-        if (!grabbed || typeof grabbed[1] !== "number") continue; // moveBy widget (no plain x/y pair) — nothing to rewrite
+        if (!grabbed || typeof grabbed[1] !== "number") continue; // moveBy widget, or an axis that netted to zero — nothing to rewrite
         const anchorValue = anchorWorldCoord(p.sourceItemId, anchorId, coord);
         if (anchorValue == null) continue;
         overrides.set(coord, anchorSnapEquation(p.sourceItemId, anchorId, coord, grabbed[1], anchorValue));
@@ -1522,10 +1532,12 @@
    * committed geometry before this rewrite touches it) and the moving edge's
    * sign (east/south = +1, west/north = −1, drag.east/west/north/south).
    *
-   * REBUILDS all four x/y/w/h keys from the current preview (resizeDrag's
-   * last setPreview already wrote all four every move) rather than writing
-   * just the snapped size — setPreview REPLACES previewDelta wholesale, so a
-   * narrower call would silently drop the other three.
+   * REBUILDS from the current preview's PRESENT geometry keys (resizeDrag now
+   * writes only the axes that changed — the snapped size key is always among
+   * them, since a resize by definition moved it) rather than writing just the
+   * snapped size — setPreview REPLACES previewDelta wholesale, so a narrower
+   * call would silently drop the other keys the resize legitimately changed.
+   * Keys the resize left alone stay absent, so their stored equations survive.
    */
   function writeResizeAnchorSnap() {
     const prov = drag.snapProvenance;
@@ -1769,8 +1781,10 @@
         if (modal.axis === "x") dy = 0;
         else if (modal.axis === "y") dx = 0;
       }
-      const pairs = modal.members.flatMap((m) => translationPairs(m, dx, dy));
-      if (pairs.length) app.setPreview(pairs);
+      // Unconditional: translationPairs omits an unmoved axis, so a zero-delta
+      // grab (initial paint, or a return to origin) yields no pairs and must
+      // still set the (empty) preview to hold the committed pose (see moveDrag).
+      app.setPreview(modal.members.flatMap((m) => translationPairs(m, dx, dy)));
     } else {
       // SCALE: factor = typed buffer, else current/initial cursor distance from
       // the collective center (Blender precedent). Degenerate start distance

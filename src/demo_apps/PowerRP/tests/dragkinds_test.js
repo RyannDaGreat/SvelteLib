@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import * as T from "../core/transform.js";
 import { worldTransform } from "../core/derive.js";
+import { diffState } from "../core/deltas.js";
 import {
   translationPairs, resizeAnchors, resizedBox,
   scaledBoxAboutPoint, scaleMemberPairs, scalePairs, groupResizeState,
@@ -29,6 +30,43 @@ test("translationPairs: moveBy widget delegates to the plugin hook", () => {
   const plugin = { moveBy: (raw, dx, dy) => [[["from", "x"], raw.from.x + dx], [["to", "x"], raw.to.x + dx]] };
   eq(translationPairs({ itemId: "a", plugin, rawItem: { from: { x: 0 }, to: { x: 100 } } }, 5, 0),
     [[["items", "a", "from", "x"], 5], [["items", "a", "to", "x"], 105]]);
+});
+
+// ── Equation-preservation: an interaction commits ONLY the axes it moved, so a
+// stored "=equation" on an untouched axis is never clobbered (the reported bug:
+// moving/resizing on one axis destroyed equations on the axes left alone).
+test("translationPairs: pure-horizontal move writes x ONLY (y's equation survives)", () => {
+  // Item's stored y is the equation "=100+shape_2.x" (resolved to startY=20 at
+  // grab). A dy===0 drag must NOT emit a y pair — commit leaves y's raw string.
+  eq(translationPairs({ itemId: "r", plugin: {}, startX: 10, startY: 20 }, 5, 0),
+    [[["items", "r", "x"], 15]]);
+  // Vertical-only is the mirror; a zero-delta move writes nothing at all.
+  eq(translationPairs({ itemId: "r", plugin: {}, startX: 10, startY: 20 }, 0, 7),
+    [[["items", "r", "y"], 27]]);
+  eq(translationPairs({ itemId: "r", plugin: {}, startX: 10, startY: 20 }, 0, 0), []);
+});
+test("resize commit (east handle): delta has w ONLY — not x/y/h (their equations survive)", () => {
+  // Replays resizeDrag's UNROTATED geometry math, then diffs vs the resolved
+  // start (drag.startState) exactly as the commit does. Start x/y/h may hold
+  // equations; only `w` (the grabbed axis) must appear in the committed delta.
+  const s = { x: 300, y: 200, w: 100, h: 50 };
+  const world = worldTransform({ ...s, rotation: 0, scale: 1 });
+  const box = resizedBox([0, 0, s.w, s.h], { x: 20, y: 0 }, { east: true }, {}); // grow width by 20
+  const ww = box[2] - box[0], hh = box[3] - box[1];
+  const o = T.apply(world, 0, 0), p = T.apply(world, box[0], box[1]);
+  const next = { x: s.x + (p.x - o.x), y: s.y + (p.y - o.y), w: ww, h: hh };
+  eq(diffState(s, next, ["x", "y", "w", "h"]), { w: 120 });
+});
+test("resize commit (north handle): delta has y+h — not x/w", () => {
+  // North moves the top edge: stored y AND h change; x and w (their equations)
+  // are left untouched.
+  const s = { x: 300, y: 200, w: 100, h: 50 };
+  const world = worldTransform({ ...s, rotation: 0, scale: 1 });
+  const box = resizedBox([0, 0, s.w, s.h], { x: 0, y: -10 }, { north: true }, {}); // raise top by 10
+  const ww = box[2] - box[0], hh = box[3] - box[1];
+  const o = T.apply(world, 0, 0), p = T.apply(world, box[0], box[1]);
+  const next = { x: s.x + (p.x - o.x), y: s.y + (p.y - o.y), w: ww, h: hh };
+  eq(diffState(s, next, ["x", "y", "w", "h"]), { y: 190, h: 60 });
 });
 
 // ── resizeAnchors / resizedBox ────────────────────────────────────────────
@@ -89,6 +127,14 @@ test("scaleMemberPairs: bbox writes x/y/w/h; touch suppresses an axis", () => {
   eq(scaleMemberPairs(m, 2, 2, 0, 0),
     [[["items", "r", "x"], 20], [["items", "r", "y"], 40], [["items", "r", "w"], 200], [["items", "r", "h"], 100]]);
   eq(scaleMemberPairs(m, 2, 1, 0, 0, { x: true, y: false }),
+    [[["items", "r", "x"], 20], [["items", "r", "w"], 200]]);
+});
+test("scaleMemberPairs: single-axis multi-resize (ky=1) on an unrotated member writes x/w ONLY", () => {
+  // Dragging only the east edge of a multi-selection ⇒ kx≠1, ky===1. The still
+  // y-axis must NOT be rewritten, so a stored equation on y/h survives (the
+  // reported bug: a one-axis resize destroyed the other axis's equations).
+  const m = member({ rotation: 0, scale: 1, x: 10, y: 20, w: 100, h: 50 });
+  eq(scaleMemberPairs(m, 2, 1, 0, 0),
     [[["items", "r", "x"], 20], [["items", "r", "w"], 200]]);
 });
 test("scaleMemberPairs: moveBy scales free endpoints about the anchor", () => {
