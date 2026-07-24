@@ -98,6 +98,15 @@
   --a-shape-tile: 60px;
   --a-shape-tile-icon: 40px;
   --a-shape-tile-stroke: 4;
+  /* Floating CANVAS TOOLBAR (the general above-the-widget popover, e.g. the
+     macOS-cursor visual grid): one square tile, the columns the grid wraps at,
+     the scroll cap, and the gap between the panel and the widget it floats over.
+     Colors come from the shared panel/border/selection tokens (theme-following);
+     these are the toolbar's theme-independent geometry. */
+  --a-canvas-toolbar-tile: 40px;
+  --a-canvas-toolbar-cols: 8;
+  --a-canvas-toolbar-max-h: 296px;
+  --a-canvas-toolbar-gap: var(--a-sp-3);
   /* Trailing keyframe-controls column: fixes the value column's RIGHT edge so it
      aligns across every row, INCLUDING rows without controls (the Name row, the
      add row). Property rows carry 3 buttons (‹◆›); Variables rows carry 4 (‹◆›+✕),
@@ -847,6 +856,69 @@ body,
   color: var(--fg-dim);
   text-align: center;
   line-height: 1.1;
+}
+
+/* ── Floating canvas toolbar (general above-the-widget popover) ───────────── */
+/* The root pins to the widget's screen top-center (render-area frame); the panel
+   is transformed so it sits centered ABOVE that point with a gap. Near the top
+   edge CanvasToolbar adds .canvas-toolbar-below, which re-pins to the widget's
+   BOTTOM and flips the transform down. pointer-events on the panel so its tiles
+   are clickable; the root itself has zero footprint. */
+.canvas-toolbar-root {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.canvas-toolbar {
+  position: absolute;
+  left: 0;
+  transform: translate(-50%, calc(-100% - var(--a-canvas-toolbar-gap)));
+  pointer-events: auto;
+  padding: var(--a-sp-2);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+  box-shadow: var(--a-palette-shadow);
+}
+
+.canvas-toolbar-below .canvas-toolbar {
+  transform: translate(-50%, var(--a-canvas-toolbar-gap));
+}
+
+.canvas-toolbar-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--a-canvas-toolbar-cols), var(--a-canvas-toolbar-tile));
+  gap: var(--a-sp-1);
+  max-height: var(--a-canvas-toolbar-max-h);
+  overflow-y: auto;
+}
+
+.canvas-toolbar-tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-canvas-toolbar-tile);
+  height: var(--a-canvas-toolbar-tile);
+  padding: var(--a-sp-1);
+  background: transparent;
+  border: var(--a-hairline) solid transparent;
+  cursor: pointer;
+}
+
+.canvas-toolbar-tile:hover {
+  background: var(--a-hover-bg);
+}
+
+.canvas-toolbar-tile.selected {
+  border-color: var(--a-selection);
+  background: var(--a-hover-bg);
+}
+
+.canvas-toolbar-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 /* ── Canvas ──────────────────────────────────────────────────────────────── */

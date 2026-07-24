@@ -39,6 +39,7 @@
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
   import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (reusable code-string editor; no widget binds it by default)
+  import CanvasToolbar from "./CanvasToolbar.svelte"; // GENERAL floating canvas toolbar (double-click a widget that declares floatingToolbar); mounted as a canvas overlay
 
   let { app } = $props();
 
@@ -67,6 +68,11 @@
   // so zoom/pan under a stationary cursor updates the readout by construction
   // (manifest "Zoom/pan mouse invalidation"), for this and all future consumers.
   let screenMouse = $state(null); // {x, y} in PanZoom-container px, or null
+  // The itemId whose FLOATING TOOLBAR is open (opened by double-clicking a
+  // widget that declares floatingToolbar; closed on any canvas pointerdown or
+  // when the selection moves off it). Local to CanvasView — the overlay is a
+  // pure canvas-editor affordance, not app/document state.
+  let floatingToolbarItemId = $state(null);
 
   // Ruler target spacing = the ONE control-height token so labels never crowd
   // (min gap between labelled ticks). Read once from CSS; falls back if unset.
@@ -520,6 +526,11 @@
     // [LANE NOTE for lead: this + the textEditNode gate are the only CanvasView
     // touches — both additive; the existing latex/text routes are unchanged.]
     if (hit?.type === "latex") { app.beginLatexEdit(hit.itemId); return; }
+    // A widget that declares a FLOATING TOOLBAR (e.g. the cursor's visual grid)
+    // opens it on double-click — selected + anchored above the widget by the
+    // CanvasToolbar overlay. Takes precedence over inline text edit (a widget
+    // declares one or the other, never both).
+    if (hit?.plugin?.floatingToolbar) { app.selection = hit.itemId; floatingToolbarItemId = hit.itemId; return; }
     if (hit?.plugin?.inlineTextEdit) { app.beginTextEdit(hit.itemId, hit.plugin.inlineTextEdit); return; }
     if (hit?.type !== "text") return;
     app.beginTextEdit(hit.itemId); // selects + mounts the controller (Skia keeps drawing the item)
@@ -564,6 +575,11 @@
 
   function onPointerDown(e) {
     if (e.button !== 0 || app.mode !== "edit") return;
+    // Any canvas pointer-down dismisses an open floating toolbar (clicks INSIDE
+    // the toolbar land on its own DOM overlay, not this SVG, so they don't reach
+    // here — the toolbar stays open while you pick from it). A fresh double-click
+    // reopens it.
+    floatingToolbarItemId = null;
     // A left click CONFIRMS an active modal transform (Blender precedent) and
     // consumes the event — it must NOT start a new pick/drag underneath.
     if (modal) {
@@ -933,7 +949,12 @@
       app.addItem({ ...plugin.defaults, x: r.x, y: r.y, w: r.w, h: r.h });
     } else {
       const w = plugin.defaults.w ?? 0, h = plugin.defaults.h ?? 0;
-      app.addItem({ ...plugin.defaults, x: startWorld.x - w / 2, y: startWorld.y - h / 2 });
+      // The click lands the plugin's PLACEMENT ANCHOR at the click point.
+      // Default = the box center (the universal behavior); a plugin may override
+      // (the cursor returns its HOTSPOT/tip) so a click-placed cursor drops its
+      // TIP where you point, not its bounding-box center.
+      const pa = plugin.placementAnchor ? plugin.placementAnchor(plugin.defaults) : { x: w / 2, y: h / 2 };
+      app.addItem({ ...plugin.defaults, x: startWorld.x - pa.x, y: startWorld.y - pa.y });
     }
     placeRect = null;
     placeLine = null;
@@ -2172,6 +2193,18 @@
     if (!app.codeEditing || !actions) return null;
     return app.nodes().find((nn) => nn.itemId === app.codeEditing.itemId) ?? null;
   });
+
+  // FLOATING TOOLBAR: the derived node whose floating toolbar is open, or null.
+  // Stays open only while its item is still selected AND still declares a
+  // floatingToolbar (so a pick that retypes/purges it, or selecting elsewhere,
+  // closes it). Same reactive-deps pattern as the edit-node deriveds.
+  let floatingToolbarNode = $derived.by(() => {
+    app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
+    if (floatingToolbarItemId == null || !actions) return null;
+    const n = app.nodes().find((nn) => nn.itemId === floatingToolbarItemId);
+    if (!n || !n.plugin.floatingToolbar || !app.selectedIds().includes(n.itemId)) return null;
+    return n;
+  });
 </script>
 
 <!-- Rulers are chrome OUTSIDE the render area (user's structural fix): when the
@@ -2371,6 +2404,17 @@
         <CodeEditController
           {app}
           node={codeEditNode}
+          worldToScreen={actions.worldToScreen}
+          zoom={viewport.zoom}
+        />
+      {/if}
+      {#if floatingToolbarNode && actions}
+        <!-- GENERAL floating canvas toolbar (double-click a widget declaring
+             floatingToolbar): a theme-following popover anchored above the
+             widget. The cursor widget uses it for its visual cursor grid. -->
+        <CanvasToolbar
+          {app}
+          node={floatingToolbarNode}
           worldToScreen={actions.worldToScreen}
           zoom={viewport.zoom}
         />

@@ -138,8 +138,42 @@ export const CURSOR_NAMES = [
 ];
 
 /** The busy/spinner cursor whose ephemeral rotation the demo spins by default —
- * the recognizable macOS "beach ball" wait indicator. */
+ * the recognizable macOS "beach ball" wait indicator. This is the ONLY cursor
+ * that spins; every other cursor is static (the spin is gated on this name). */
 export const SPINNING_CURSOR = "beachball";
+
+/**
+ * The per-cursor HOTSPOT — the pointing tip, in the shared 0..32 viewBox
+ * coordinate frame (every built-in cursor SVG is `viewBox="0 0 32 32"`). This is
+ * the point a real macOS cursor "clicks with": the arrow's sharp tip, the
+ * I-beam's midline, the crosshair's center. The cursor widget maps it into
+ * box-local space (via the same fitBox letterbox the flatten uses) and uses it
+ * as the widget's PLACEMENT anchor + a bindable `hotspot` anchor — so placing a
+ * cursor lands the TIP where you point, not the bounding-box center.
+ *
+ * POINTER cursors (arrow/finger tips) carry their tip; symmetric cursors
+ * (cross, resize arrows, zoom, …) carry their artwork center (≈16,16). Values
+ * were computed offline from the flattened geometry (tests/…geom sweep) — the
+ * beach ball's true center is exactly (16.5, 16.5).
+ */
+export const CURSOR_HOTSPOTS = {
+  default: [10, 7], contextualmenu: [8, 7], copy: [7, 1], makealias: [11, 9],
+  notallowed: [7, 1], poof: [7, 1], busy: [7, 1],
+  cross: [16, 16], cell: [16, 16], help: [16, 16],
+  handopen: [15, 14], handgrabbing: [15, 16], handpointing: [13, 8],
+  textcursor: [3.5, 8], textcursorvertical: [8.5, 4],
+  zoomin: [16, 16], zoomout: [16, 16], move: [16, 16],
+  resizenorth: [16, 16], resizesouth: [16, 16], resizeeast: [16, 16], resizewest: [16, 16],
+  resizeup: [16, 16], resizedown: [16, 16], resizeleft: [16, 16], resizeright: [16, 16],
+  resizenortheast: [16, 16], resizenorthwest: [16, 16], resizesoutheast: [16, 16], resizesouthwest: [16, 16],
+  resizenorthsouth: [16, 16], resizewesteast: [16, 16], resizeleftright: [16, 16], resizeupdown: [16, 16],
+  resizenortheastsouthwest: [16, 16], resizenorthwestsoutheast: [16, 16],
+  screenshotselection: [16, 16], screenshotwindow: [16, 16], beachball: [16.5, 16.5],
+};
+
+/** The shared viewBox extent every built-in cursor is authored in (0..32). The
+ * cursor widget uses this to map a hotspot (viewBox coords) into box-local. */
+export const CURSOR_VIEWBOX = 32;
 
 let builtinCursorCache = null;
 /** Query (browser/CLI — LAZY glob). Loads the built-in cursor SVG strings keyed
