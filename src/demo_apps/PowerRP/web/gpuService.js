@@ -56,7 +56,7 @@ function renderJob(reqWidth, reqHeight, buildIR) {
     const surface = CanvasKit.MakeSurface(width, height);
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {
-      const { ir, view, background, dither = null, antialias = true } = buildIR();
+      const { ir, view, background, dither = null, antialias = true, quality = "full" } = buildIR();
       // Resolve the scene's image/video refs to CanvasKit Images so thumbnails/
       // minimap/PNG export show media too (the same seam the on-screen surface
       // uses); release frees the per-paint video frames after readback.
@@ -68,7 +68,7 @@ function renderJob(reqWidth, reqHeight, buildIR) {
         // dither settings; the PDF raster-region callback passes none (dither is a
         // RASTER post-pass — vector PDF/SVG export stays untouched).
         renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
-          paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection, antialias }));
+          paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection, antialias, quality }));
         const img = surface.makeImageSnapshot();
         if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
         const px = img.readPixels(0, 0, {
@@ -102,9 +102,20 @@ function renderJob(reqWidth, reqHeight, buildIR) {
  * device px → fresh 2D canvas. The camera rect defines the view and its
  * background is the first draw — thumbnail/export semantics.
  *
+ * `quality` picks the render path:
+ *   - "full" (default) — the editor/export path: THE camera's dither final pass
+ *     PLUS the full glass/material/magnify backdrop machinery. Byte-identical to
+ *     before this control existed, so every non-thumbnail caller (PNG export, the
+ *     presenter, the minimap, the CLI parity probe) stays exactly as it was.
+ *   - "proxy" — the CHEAP thumbnail/minimap path: NO dither (skips the RGBA16F
+ *     intermediate — the single biggest per-thumbnail cost) and cheap backdrop
+ *     stand-ins (paint_skia's proxy branch: no composite re-render, no full-screen
+ *     blur, no SkSL), with invisible quality loss at ~100px.
+ *
  * @example // renderCameraFrame(doc, {slideIndex: 0, alpha: 1, registry, width: 256, height: 144}) → Promise<canvas>
+ * @example // renderCameraFrame(doc, {slideIndex: 0, registry, width: 96, height: 54, quality: "proxy"}) → cheap thumbnail
  */
-export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height }) {
+export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height, quality = "full" }) {
   return renderJob(width, height, () => {
     const state = evaluatedStateAt(doc, slideIndex, alpha, registry);
     const rect = cameraRect(state, doc.meta);
@@ -112,8 +123,12 @@ export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width,
       view: fitRectView(rect, width, height, 1),
       background: parseColor(rect.background),
       ir: cameraFrameIR(state, doc.meta, registry),
-      dither: cameraDither(state), // THE camera's dither settings → the final pass
+      // PROXY skips the dither final pass entirely (dither:null ⇒ renderWithDither
+      // stays on the direct 8-bit paint — no RGBA16F intermediate). FULL keeps THE
+      // camera's dither settings, byte-identical to before.
+      dither: quality === "proxy" ? null : cameraDither(state),
       antialias: antialiasCoverage(cameraAntialias(state)), // THE camera's coverage-AA → setAntiAlias
+      quality,
     };
   });
 }

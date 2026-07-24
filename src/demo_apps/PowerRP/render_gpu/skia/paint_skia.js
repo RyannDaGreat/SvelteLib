@@ -60,6 +60,16 @@ const MAX_SUPERSAMPLE_DEPTH = MAX_LENS_DEPTH; // shared lens-depth cap (ir.js)
 const MAX_REENDER_DEPTH = 4;     // crop re-render nesting bound
 const MAX_EFFECT_DEPTH = 2;      // effect re-render nesting bound
 
+// PROXY quality: the backdrop ops replaced by a cheap stand-in at thumbnail size
+// (drawProxyBackdrop). materialFill (foreground, generative, NO re-render / NO
+// children) and the crop/effect subtrees are already cheap enough and stay on the
+// full path.
+const PROXY_BACKDROP_OPS = new Set(["blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop"]);
+// Frost alpha for the proxy stand-in of a backdrop panel with no tint of its own,
+// so the region still reads as a panel (not a hole) over the composited content.
+const PROXY_FROST_ALPHA = 0.14;
+const PROXY_FROST_RGBA = [1, 1, 1, PROXY_FROST_ALPHA]; // faint translucent white
+
 /**
  * Command (draws on `canvas`). Paints the IR `commands` through `view`
  * ({zoom, panX, panY, dpr}) onto a CanvasKit canvas.
@@ -85,8 +95,15 @@ const MAX_EFFECT_DEPTH = 2;      // effect re-render nesting bound
  *     control). true ⇒ setAntiAlias(true) on every shape/text/border paint
  *     (smooth, today's look); false ⇒ setAntiAlias(false) ⇒ crisp, jagged edges.
  *     Default true = byte-identical to before this control was wired.
+ *   opts.quality ("full"|"proxy"): the render QUALITY. "full" (default) is the
+ *     editor/export path — the full backdrop machinery, byte-identical to before
+ *     this flag. "proxy" is the CHEAP thumbnail/minimap path: every backdrop
+ *     sampler (glass/material/magnify/blur) is replaced by drawProxyBackdrop (a
+ *     cheap stand-in over the already-composited canvas — no composite read, no
+ *     below-content re-render, no full-screen blur, no SkSL), and image/video ops
+ *     sample through a mip chain. Invisible quality loss at ~100px.
  */
-export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true } = {}) {
+export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true, quality = "full" } = {}) {
   if (!fontCollection) throw new Error("paintIR(skia): a fontCollection is required (committed families + Noto fallback chain)");
   const flat = flattenIR(commands);
   const bg = parseColor(background);
@@ -97,7 +114,7 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   const mkSurface = makeSurface || ((w, h) => CanvasKit.MakeSurface(w, h));
   // `antialias` rides on ctx so every leaf/border draw reaches the ONE per-frame
   // coverage-AA setting without re-threading it through each helper signature.
-  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias };
+  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality };
   // The letterbox clip (device px), built once — applied AFTER the full-surface
   // clear so the bars keep `background` and only the scene is clipped.
   const scissorRect = scissor ? CanvasKit.LTRBRect(scissor.x, scissor.y, scissor.x + scissor.w, scissor.y + scissor.h) : null;
@@ -113,7 +130,12 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // (report Q3). It only re-renders when backdropScale > 1, and then only the
   // minimal region. materialBackdrop is NOT here: it stays on the full-surface
   // re-render (owns its own scratch surface) until per-material reach lands.
-  const needsBackdrop = flat.some(({ cmd }) => cmd.op === "blurBackdrop" || cmd.op === "glassBackdrop" || (cmd.op === "magnifyBackdrop" && !cmd.supersample));
+  // PROXY quality (thumbnails/minimap): every backdrop sampler is replaced by a
+  // cheap stand-in drawn over the already-composited canvas (paintFlat's proxy
+  // branch → drawProxyBackdrop), so NONE of them read the composite-so-far — the
+  // whole-scene offscreen is unnecessary and paintIR takes the fast direct path.
+  // FULL is untouched (byte-identical).
+  const needsBackdrop = quality !== "proxy" && flat.some(({ cmd }) => cmd.op === "blurBackdrop" || cmd.op === "glassBackdrop" || (cmd.op === "magnifyBackdrop" && !cmd.supersample));
   if (!needsBackdrop) {
     // Fast path: no backdrop sampler ⇒ draw straight onto the caller's canvas.
     canvas.clear(bgColor);
@@ -153,8 +175,17 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
  */
 function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
   const canvas = target.canvas;
+  const proxy = ctx.quality === "proxy";
   for (let i = 0; i < flat.length; i++) {
     const { cmd, world } = flat[i];
+    // PROXY: replace every backdrop sampler with a cheap stand-in over the
+    // already-composited canvas (proxy forces the fast direct path, so the
+    // below-content is already painted on `canvas` here) — no composite read, no
+    // re-render, no full-screen blur/SkSL. FULL never enters this branch.
+    if (proxy && PROXY_BACKDROP_OPS.has(cmd.op)) {
+      drawProxyBackdrop(CanvasKit, canvas, cmd, view, world, ctx);
+      continue;
+    }
     switch (cmd.op) {
       case "blurBackdrop":
         handleBlurBackdrop(CanvasKit, target, cmd, world, view);
@@ -186,7 +217,7 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
         const opacity = cmd.opacity ?? 1;
         canvas.save();
         applyView(canvas, view, world);
-        drawLeafOp(CanvasKit, canvas, cmd, opacity, ctx.media, ctx.fontCollection, ctx.antialias);
+        drawLeafOp(CanvasKit, canvas, cmd, opacity, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
         canvas.restore();
       }
     }
@@ -221,8 +252,10 @@ function deviceMatrix(CanvasKit, view, world) {
 
 /** Command (draws one leaf op on `canvas` in its already-transformed local
  *  space). `aa` is the camera's per-draw coverage-AA flag (ctx.antialias) —
- *  threaded into every fill/stroke/text paint so "off" produces crisp edges. */
-function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa = true) {
+ *  threaded into every fill/stroke/text paint so "off" produces crisp edges.
+ *  `quality` ("full"|"proxy", ctx.quality) only bites on the image/video op: proxy
+ *  samples through a mip chain to cap the raster-read resolution at thumbnail size. */
+function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa = true, quality = "full") {
   switch (cmd.op) {
     case "rect": {
       const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
@@ -276,7 +309,14 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       const dest = CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h);
       const p = new CanvasKit.Paint();
       p.setAlphaf(opacity);
-      canvas.drawImageRect(img, src, dest, p, false);
+      // PROXY caps the raster-read resolution: sampling THROUGH a mip chain
+      // (Linear filter + Linear mipmap) minifies a large source page/photo from a
+      // coarser level to the tiny thumbnail dest instead of reading every source
+      // texel per output pixel — cheaper for the big downscales thumbnails do, and
+      // no visible loss at ~100px (trilinear ≥ single-level linear on a downscale).
+      // FULL keeps the exact drawImageRect(fastSample=false) it always used.
+      if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
+      else canvas.drawImageRect(img, src, dest, p, false);
       p.delete();
       break;
     }
@@ -1070,6 +1110,49 @@ function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, ang
   canvas.drawRRect(rr, p);
   canvas.restore();
   p.delete();
+}
+
+// ── PROXY-quality backdrop stand-in (thumbnails / minimap) ────────────────────
+
+/**
+ * Command (draws on `canvas`). THE proxy-quality stand-in for a backdrop sampler:
+ * a CHEAP approximation over the ALREADY-composited canvas (proxy forces paintIR's
+ * fast direct path, so the below-content is already painted here). Runs NONE of the
+ * expensive machinery a ~100px thumbnail cannot show — no composite-so-far read, no
+ * below-content re-render, no full-screen blur, no SkSL, no dither. Dispatches by op:
+ *   - glassBackdrop    → a translucent frost rounded-rect (the panel's own tint, or
+ *                        a faint white) + its hairline border.
+ *   - materialBackdrop → a faint frost rounded-rect + its border (a material has no
+ *                        single representative color; the panel still reads as one).
+ *   - magnifyBackdrop  → just the lens rim (the content beneath shows un-magnified).
+ *   - blurBackdrop     → nothing (a whole-frame backdrop blur is imperceptible at
+ *                        thumbnail size; the sharp content beneath is a fair proxy).
+ * The overlays land ON TOP of the real backdrop content, so the region reads as a
+ * sensible preview, never a hole. `ctx` supplies the camera coverage-AA flag.
+ */
+function drawProxyBackdrop(CanvasKit, canvas, cmd, view, world, ctx) {
+  const opacity = cmd.opacity ?? 1;
+  const aa = ctx.antialias;
+  if (cmd.op === "blurBackdrop") return; // no geometry; the sharp content beneath is the proxy
+  if (cmd.op === "magnifyBackdrop") { drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); return; }
+  // glass / material: a translucent frosted rounded-rect in the panel's LOCAL space
+  // (applyView — rotation-safe, the same seam drawGlassBorder uses).
+  const tint = cmd.op === "glassBackdrop" && cmd.tint ? parseColor(cmd.tint) : PROXY_FROST_RGBA;
+  const materialize = cmd.materialize ?? 1; // glass fades in with materialize; a material has none ⇒ full
+  const a = tint[3] * opacity * materialize;
+  if (a > 0 && cmd.halfW > 0 && cmd.halfH > 0) {
+    canvas.save();
+    applyView(canvas, view, world);
+    const p = new CanvasKit.Paint();
+    p.setStyle(CanvasKit.PaintStyle.Fill);
+    p.setAntiAlias(aa);
+    p.setColor(CanvasKit.Color4f(tint[0], tint[1], tint[2], a));
+    const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
+    canvas.drawRRect(rr, p);
+    p.delete();
+    canvas.restore();
+  }
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); // glass + material both carry stroke/strokeWidth
 }
 
 // ── subtree re-renders (self-contained `content`) ─────────────────────────────

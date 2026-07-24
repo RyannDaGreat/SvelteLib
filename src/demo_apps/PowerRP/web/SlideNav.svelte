@@ -81,12 +81,18 @@
    * is exactly as crisp as the panel shows it (no fixed-256px upscale). Returns
    * a canvas; DirtyImage turns it into the <img>. Renders committed state only
    * (never the live drag preview), so a drag can't trigger thumbnail repaints.
+   *
+   * quality:"proxy" — thumbnails are ~100px, where the dither final pass and the
+   * glass/material/magnify backdrop machinery (below-content re-render + full-
+   * screen blur + SkSL) are invisible yet the dominant per-thumbnail cost. Proxy
+   * skips all of it for a cheap-but-faithful preview; the editor/export/presenter
+   * stay full quality (default).
    */
   function renderThumb(i) {
     // Async (GPU readback) — DirtyImage awaits the promise and drops stale
     // resolutions; wPx/hPx are already device px.
     return (wPx, hPx) =>
-      renderCameraFrame(app.doc, { slideIndex: i, alpha: 1, registry: app.registry, width: wPx, height: hPx });
+      renderCameraFrame(app.doc, { slideIndex: i, alpha: 1, registry: app.registry, width: wPx, height: hPx, quality: "proxy" });
   }
 
   /** The resolved transition INTO slide `i` (i > 0), for the slice label/icon. */
