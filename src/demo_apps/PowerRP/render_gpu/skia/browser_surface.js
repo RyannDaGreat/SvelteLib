@@ -57,6 +57,18 @@ export class SkiaSurface {
     // reported instead of allocated. Queried off the SAME canvas CanvasKit bound
     // its GL context to (getContext returns that same context).
     const gl2 = canvasEl.getContext("webgl2");
+    // DITHER NEEDS THIS: the dither final pass (dither_shader.renderWithDither)
+    // composites into an RGBA16F offscreen, and RGBA16F is only a COLOR-RENDERABLE
+    // FBO attachment once EXT_color_buffer_float is enabled (linear-filterable via
+    // OES_texture_float_linear). WITHOUT them, surface.makeSurface(f16) fails on
+    // this on-screen context, so renderWithDither degrades to no-dither and the
+    // camera's dither is INVISIBLE while editing (it worked in node/CLI export,
+    // which always has F16). Enable on THE context CanvasKit renders through
+    // (getContext returns the same one) so the F16 intermediate is allocatable and
+    // dither (a camera render setting) shows live in the viewport — one camera,
+    // one look, everywhere.
+    gl2?.getExtension("EXT_color_buffer_float");
+    gl2?.getExtension("OES_texture_float_linear");
     const maxTex = gl2 ? gl2.getParameter(gl2.MAX_TEXTURE_SIZE) : 0;
     this.maxDim = Math.max(MAX_SURFACE_DIM, Number.isFinite(maxTex) ? maxTex : 0);
     // GPU-backed offscreen factory for paintIR's backdrop/lens/effect surfaces —
