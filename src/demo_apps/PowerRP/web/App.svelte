@@ -267,6 +267,12 @@
         { id: "demo-insert-corkboard-yarn", title: "Corkboard Yarn (sagging string)", icon: "mdi:vector-line", run: (a) => a.armCrosshairPlacement(a.registry.get("corkboardYarn")) },
         { id: "demo-insert-magnifier", title: "Magnifier", icon: "mdi:magnify", run: (a) => a.armCrosshairPlacement(a.registry.get("magnifier")) },
         { id: "demo-insert-cursor", title: "macOS Cursor (built-in SVG + ephemeral spin)", icon: "mdi:cursor-default-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("cursor")) },
+        // A LIVE seven-segment digital clock preset: same clock_digital plugin,
+        // but its `time` is pre-bound to the shared `time` identifier (the folded
+        // presentation playback clock) so it TICKS during a presentation. The
+        // plain "Add Digital Clock" command (palette) drops a static 00:00 the
+        // user can set or bind themselves; this preset shows the live use up front.
+        { id: "demo-insert-clock-digital", title: "Digital Clock (seven-segment, live = time)", icon: "mdi:clock-digital", run: (a) => { const p = a.registry.get("clock_digital"); a.armCrosshairPlacement({ ...p, defaults: { ...p.defaults, time: "=time" } }); } },
       ],
     },
     // INSERT SHAPE — ONE submenu collecting the arbitrary parametric
