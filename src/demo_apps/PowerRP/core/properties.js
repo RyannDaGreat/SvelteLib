@@ -453,6 +453,23 @@ export const PROPS = {
   // asserts the two lists stay identical).
   blendMode: { label: "Blend mode", kind: "select", options: ["normal", "multiply", "add", "screen"], category: "effects", default: "normal", help: "How the widget's pixels combine with what's behind it: normal paints over, multiply darkens, add/screen brighten (light-like)." },
 
+  // ── effects: SOFT EDGES (the effects bundle's fifth effect — PowerPoint) ────
+  // FEATHERS the widget's silhouette: fades its ALPHA from full inside to 0 at
+  // the border over `softEdges` canvas units, so the edges softly dissolve to
+  // transparent (PowerPoint's "Soft Edges"). A modification of the widget's OWN
+  // coverage — applied to the ONE offscreen render BEFORE shadow/inner-shadow/
+  // bloom so those all follow the softened outline (render_gpu/skia/paint_skia.js
+  // handleEffectSubtree → featherEdges). It only ERODES inward (never spills
+  // outward), so it adds NO cull halo (effectSubtree.margin ignores it) and any
+  // vector widget inherits it for free through the shared effects bundle.
+  //
+  // GATE = the SIZE itself (unlike shadow/inner-shadow, which gate on opacity):
+  // softEdges default 0 is THE off state — 0 feathers nothing, so every old
+  // document renders byte-identically. A single scalar amount (like blendMode,
+  // not a nested {dx,dy,...} sub-object), so its equation slug is plain
+  // `softEdges`. min 0 (a negative feather is meaningless).
+  softEdges: { label: "Soft edges", kind: "number", min: 0, category: "effects", default: 0, help: "Feathers the widget's edges inward to transparent over this many canvas units, so its border softly dissolves (like PowerPoint's Soft Edges). Zero is a crisp edge (off); larger values fade a wider band." },
+
   // ── particles: the EMITTER bundle (manifest 13.5 PARTICLE EFFECT WIDGET) ──────
   // The sparkler's emission parameters — all equation-capable numeric properties
   // (kind "number"), read by the PURE simulation core/particles.js. There are no
@@ -527,11 +544,12 @@ export const BUNDLES = {
   // trims. Media widgets (image/video) compose this; groups will too (their
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
   cropInsets: ["cropTop", "cropLeft", "cropRight", "cropBottom"],
-  // THE EFFECTS BUNDLE (manifest Round 12D): drop shadow + bloom + blend mode,
-  // composed by every DRAWN widget (render half: render_gpu/effects.js —
-  // exclusions justified in its header). Defaults are effect-OFF; use
-  // bundleNestedDefaults("effects") in plugin defaults (the keys are nested).
-  effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode", "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity"],
+  // THE EFFECTS BUNDLE (manifest Round 12D): drop shadow + bloom + blend mode +
+  // inner shadow + soft edges, composed by every DRAWN widget (render half:
+  // render_gpu/effects.js — exclusions justified in its header). Defaults are
+  // effect-OFF; use bundleNestedDefaults("effects") in plugin defaults (the
+  // shadow/inner-shadow keys are nested, blendMode/softEdges are plain scalars).
+  effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode", "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity", "softEdges"],
   // THE PRESET-SHAPE bundle (Wave 2): the shape selector + its two generator
   // knobs, composed only by plugins/shape.js. Order = Inspector row order.
   shape: ["shape", "shapePoints", "shapeInnerRatio"],
@@ -718,7 +736,7 @@ export function nestedDefaults(...keys) {
  * `...bundleNestedDefaults("effects")`.
  *
  * @example bundleNestedDefaults("effects")
- * {"shadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"bloom":{"radius":10,"strength":0},"blendMode":"normal","innerShadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0}}
+ * {"shadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"bloom":{"radius":10,"strength":0},"blendMode":"normal","innerShadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"softEdges":0}
  */
 export function bundleNestedDefaults(name) {
   const keys = BUNDLES[name];

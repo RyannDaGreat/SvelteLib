@@ -3,9 +3,11 @@
  * shadow + bloom + blend mode — "ALL FOUR reuse one substrate ... the EFFECTS
  * BUNDLE joins the property registry; any widget composes it"). The property
  * half lives in core/properties.js (the `effects` bundle: shadow.{dx,dy,blur,
- * color,opacity}, bloom.{radius,strength}, blendMode, and the mirrored INNER
- * SHADOW innerShadow.{dx,dy,blur,color,opacity} — a recess cast inside the
- * widget silhouette); THIS module gives every composing widget the matching
+ * color,opacity}, bloom.{radius,strength}, blendMode, the mirrored INNER SHADOW
+ * innerShadow.{dx,dy,blur,color,opacity} — a recess cast inside the widget
+ * silhouette — and SOFT EDGES `softEdges`, a canvas-unit amount that feathers
+ * the widget's own coverage inward to transparency, PowerPoint-style); THIS
+ * module gives every composing widget the matching
  * render composition (all of them ride ONE effectSubtree) — one shared
  * function each plugin's emit() calls, exactly like decorate.js's
  * decorateStrokedBox (the stroked-box bundle's render half, the direct
@@ -58,8 +60,12 @@ import { effectSubtree, pushTransform, popTransform, BLUR_SUPPORT_SIGMAS } from 
  * Pure function. Is a widget's effects state visually a no-op? True iff the
  * shadow is off (OPACITY <= 0 — the manifest 14.8 gate: "shadow opacity = 0
  * gates whether we render it") AND bloom is off (strength <= 0) AND the blend
- * mode is normal/absent. Absent keys are OFF (old documents predate the
+ * mode is normal/absent AND the inner shadow is off (opacity <= 0) AND soft
+ * edges are off (amount <= 0). Absent keys are OFF (old documents predate the
  * bundle), so a pre-effects document is byte-identical by construction.
+ *
+ * SOFT EDGES gate on the AMOUNT itself (there is no separate opacity): a 0
+ * feather is a crisp, unchanged edge, so softEdges 0 is off.
  *
  * BLUR IS NOT PART OF THE GATE (manifest 14.8, user verbatim: "blur should be
  * allowed to be 0 and still visible"). blur 0 with opacity > 0 is a legal,
@@ -83,13 +89,16 @@ import { effectSubtree, pushTransform, popTransform, BLUR_SUPPORT_SIGMAS } from 
  * @example effectsOff({blendMode: "normal"}) // true
  * @example effectsOff({innerShadow: {dx: 0, dy: 0, blur: 4, color: "#000", opacity: 0}}) // true (opacity 0 = inner shadow off — the default)
  * @example effectsOff({innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000", opacity: 0.6}}) // false
+ * @example effectsOff({softEdges: 0}) // true (0 feather = crisp edge — the default)
+ * @example effectsOff({softEdges: 8}) // false (an 8-unit feather is a live effect)
  */
 export function effectsOff(state) {
   const shadowOn = (state.shadow?.opacity ?? 0) > 0;
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   const blendOn = (state.blendMode ?? "normal") !== "normal";
   const innerOn = (state.innerShadow?.opacity ?? 0) > 0; // mirror of the drop-shadow gate (14.8): opacity turns it on
-  return !shadowOn && !bloomOn && !blendOn && !innerOn;
+  const softOn = (state.softEdges ?? 0) > 0; // soft edges gate on the amount itself (0 = crisp/off)
+  return !shadowOn && !bloomOn && !blendOn && !innerOn && !softOn;
 }
 
 /**
@@ -127,6 +136,7 @@ export function effectsOff(state) {
  * @example applyEffects([{op: "rect"}], {}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10}) // [{op: "rect"}] (all off → pass-through)
  * @example applyEffects([{op: "rect"}], {shadow: {dx: 3, dy: 3, blur: 4, color: "#000000", opacity: 0.5}}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].op // "effectSubtree"
  * @example applyEffects([{op: "rect"}], {blendMode: "multiply"}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].blend // "multiply"
+ * @example applyEffects([{op: "rect"}], {softEdges: 6}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].softEdges // 6 (soft edges alone wraps in an effectSubtree)
  */
 export function applyEffects(content, state, world, bbox) {
   if (effectsOff(state)) return content;
@@ -134,6 +144,7 @@ export function applyEffects(content, state, world, bbox) {
   const shadowOn = (state.shadow?.opacity ?? 0) > 0; // 14.8: opacity is the gate, blur 0 stays visible
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   const innerOn = (state.innerShadow?.opacity ?? 0) > 0; // same gate as the drop shadow (blur 0 stays visible)
+  const softOn = (state.softEdges ?? 0) > 0; // soft edges gate on the amount (0 = off)
   return [effectSubtree({
     x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h,
     shadow: shadowOn ? {
@@ -149,6 +160,10 @@ export function applyEffects(content, state, world, bbox) {
       dx: state.innerShadow.dx ?? 0, dy: state.innerShadow.dy ?? 0, blur: state.innerShadow.blur,
       color: state.innerShadow.color ?? "#000000", opacity: state.innerShadow.opacity,
     } : null,
+    // SOFT EDGES rides the SAME effectSubtree (the bundle's fifth effect): the
+    // Skia backend feathers the widget's coverage inward BEFORE the other
+    // composites. Off (0) ⇒ 0, so a crisp widget is byte-identical.
+    softEdges: softOn ? state.softEdges : 0,
     content: [pushTransform(world), ...content, popTransform()],
   })];
 }

@@ -1232,15 +1232,25 @@ function deviceRRectPath(CanvasKit, cmd, deviceM) {
 /**
  * Command (draws on target.canvas). effectSubtree: render `content` ONCE to a
  * scratch surface, then compose SHADOW (blurred/tinted/offset alpha silhouette)
- * UNDER, the WIDGET through its BLEND mode, and BLOOM (blurred bright copy) ADD
- * on top. shadowOnly ⇒ only the shadow. All composites are device-root blits of
- * the one content image; the effect node's world scales the device sigmas/offset
- * (sigma = value·world.scale·zoom·dpr), matching gpu/compositor.js.
+ * UNDER, the WIDGET through its BLEND mode, INNER SHADOW inside it, and BLOOM
+ * (blurred bright copy) ADD on top. shadowOnly ⇒ only the shadow. All composites
+ * are device-root blits of the one content image; the effect node's world scales
+ * the device sigmas/offset (sigma = value·world.scale·zoom·dpr), matching
+ * gpu/compositor.js.
+ *
+ * COMPOSE ORDER (soft edges FIRST): if softEdges > 0 the one content image is
+ * FEATHERED (its alpha eroded inward + blurred → edges fade to transparent —
+ * featherEdges) BEFORE any composite, so the shadow is cast by the softened
+ * silhouette, the inner shadow is clipped to it, bloom glows it, and the widget
+ * draw itself has soft edges — the PowerPoint "Soft Edges" look, where the whole
+ * treatment follows the feathered outline. Then, over the backdrop: shadow (under)
+ * → widget (blend) → inner shadow (inside) → bloom (add, on top).
  *
  * `content` is opaque: a single widget's own ops, OR — the subtree-effects gap —
  * a GROUP's whole member subtree (plugins/group.emit), so the ONE offscreen
- * render is the composited group and the shadow/bloom/blend/inner-shadow apply to
- * the group silhouette as a unit. No branch needed — it's just more content.
+ * render is the composited group and the soft-edge feather + shadow/bloom/blend/
+ * inner-shadow apply to the group silhouette as a unit. No branch needed — it's
+ * just more content.
  *
  * PARITY NOTES vs the WebGPU compositor:
  *   - SHADOW uses ImageFilter.MakeDropShadowOnly — a Skia-faithful drop shadow,
@@ -1266,7 +1276,18 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
   paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, flattenIR(cmd.content), view, ctx, depth + 1);
   sub.flush();
-  const contentImg = sub.makeImageSnapshot();
+  let contentImg = sub.makeImageSnapshot();
+
+  // SOFT EDGES (before every composite): feather the widget's OWN coverage inward
+  // to transparency, so the shadow / widget / inner shadow / bloom below all read
+  // the softened silhouette (PowerPoint "Soft Edges"). softEdges 0 leaves
+  // contentImg untouched ⇒ byte-identical to a crisp widget. `scale` maps the
+  // world-unit feather to device px (same scaling as shadow blur/offset).
+  if (cmd.softEdges > 0) {
+    const feathered = featherEdges(CanvasKit, ctx, contentImg, cmd.softEdges * scale);
+    contentImg.delete();
+    contentImg = feathered;
+  }
 
   // SHADOW (under): blurred, offset, tinted alpha silhouette of the content.
   if (cmd.shadow) {
@@ -1307,6 +1328,62 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
 
   contentImg.delete();
   sub.dispose();
+}
+
+/**
+ * Query→build. A copy of `contentImg` whose ALPHA is feathered INWARD by
+ * `feather` device px — the edges fade to transparency (PowerPoint "Soft
+ * Edges"). Caller deletes the returned Image.
+ *
+ * TECHNIQUE (alpha-only, interior color stays crisp): build a FEATHER MASK from
+ * the content's own silhouette by ERODING it inward `feather` px (Skia
+ * morphology min) then Gaussian-blurring it with σ = feather / BLUR_SUPPORT_SIGMAS.
+ * A step edge eroded inward `feather` then blurred at that σ ramps its coverage
+ * from ≈0 at the ORIGINAL edge (the eroded boundary sits `feather` = 3σ inside,
+ * so the edge is 3σ out on the falling tail → ~0) up to ≈1 by `feather` inside
+ * (the 50% crossing) and fully opaque by ~2·`feather` inside — a smooth inward
+ * fade that reaches transparent exactly at the silhouette. The mask is then
+ * DstIn-multiplied onto a SHARP copy of the content (result.alpha =
+ * sharpAlpha · maskAlpha), so only the rim's alpha is softened while the
+ * interior keeps its crisp pixels. Because erosion only shrinks coverage, the
+ * feather never spills OUTSIDE the original silhouette (no outward halo — why
+ * effectSubtree.margin ignores soft edges).
+ *
+ * Erosion uses the FULL feather as its radius and the blur reuses the shared 3σ
+ * kernel-support constant (BLUR_SUPPORT_SIGMAS), so there is no free magic
+ * number — the two are tied to the codebase's existing "3σ = full support"
+ * convention. A feather wider than the widget erodes the whole silhouette away,
+ * dissolving it to transparent (a consistent over-feather, not an error).
+ *
+ * @param contentImg - the widget's device-size offscreen render (alpha = shape)
+ * @param feather - the inward feather amount in DEVICE px (> 0; caller gates 0)
+ */
+function featherEdges(CanvasKit, ctx, contentImg, feather) {
+  const sigma = feather / BLUR_SUPPORT_SIGMAS; // 3σ tail reaches ~0 at the original edge
+  // MASK = silhouette eroded inward `feather`, then softened by σ. Decal tiles
+  // treat outside as transparent so the blur can't invent coverage past the edge.
+  const erode = CanvasKit.ImageFilter.MakeErode(feather, feather, null);
+  const maskFilter = CanvasKit.ImageFilter.MakeBlur(sigma, sigma, CanvasKit.TileMode.Decal, erode);
+
+  const surf = ctx.makeSurface(ctx.deviceW, ctx.deviceH);
+  if (!surf) throw new Error("paintIR(skia): makeSurface for soft-edge feather returned null");
+  const c = surf.getCanvas();
+  c.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  // (1) SHARP content — keeps the interior color/detail unblurred.
+  c.drawImage(contentImg, 0, 0, null);
+  // (2) DstIn the feathered mask (dst · src.alpha) — multiplies the sharp
+  //     content's alpha by the inward fade, softening only the rim.
+  const p = new CanvasKit.Paint();
+  p.setImageFilter(maskFilter);
+  p.setBlendMode(CanvasKit.BlendMode.DstIn);
+  c.drawImage(contentImg, 0, 0, p);
+  p.delete();
+  maskFilter.delete(); erode.delete();
+
+  surf.flush();
+  const out = surf.makeImageSnapshot();
+  surf.dispose();
+  return out;
 }
 
 /**

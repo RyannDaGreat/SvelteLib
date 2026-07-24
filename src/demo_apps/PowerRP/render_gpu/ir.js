@@ -30,7 +30,7 @@
  *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, points, innerRatio, originX, originY, magnification, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"|"star" (points/innerRatio = star silhouette; rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth)
  *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
- *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow)
+ *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, softEdges, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow, +soft edges)
  *   {op:"materialBackdrop", material, cx, cy, halfW, halfH, cornerRadius, blurRadius, backdropScale, params, stroke, strokeWidth, opacity}  // registry-dispatched backdrop MATERIAL (SkSL); generalizes glassBackdrop
  *
  * Backdrop-effect nodes consume the composite-so-far (everything already
@@ -1138,6 +1138,14 @@ export const MAX_LENS_DEPTH = 1;
  *     interior near the edges instead of casting a silhouette beneath. Clipped
  *     to the shape ⇒ it adds NO outward halo (absent from `margin`).
  *
+ *   SOFT EDGES (softEdges: canvas-unit amount) — FEATHERS the widget's own
+ *     coverage: the offscreen render's ALPHA is eroded inward by `softEdges` and
+ *     blurred, so the edges fade to transparent over that band (PowerPoint "Soft
+ *     Edges"). Applied to the content BEFORE the shadow/inner-shadow/bloom
+ *     composites (the Skia backend feathers `contentImg` first), so every one of
+ *     them follows the softened silhouette. It only shrinks coverage INWARD ⇒ NO
+ *     outward halo, so it too is absent from `margin`. 0 = off (no feather).
+ *
  * The EFFECT-OFF pass-through lives in render_gpu/effects.js applyEffects
  * (returns `content` unchanged when nothing is on), so this builder always
  * has real work — mirroring decorateStrokedBox/isUndecorated.
@@ -1149,12 +1157,16 @@ export const MAX_LENS_DEPTH = 1;
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], blend: "multiply"}).shadow // null
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000", opacity: 0.6}}).margin // 0 (inner shadow is clipped inside → no halo)
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000000", opacity: 0.6}}).innerShadow.opacity // 0.6
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], softEdges: 6}).softEdges // 6 (soft edges alone is a valid effect)
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], softEdges: 6}).margin // 0 (soft edges only erodes inward → no halo)
  */
-export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom = null, blend = "normal", innerShadow = null, shadowOnly = false }) {
+export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom = null, blend = "normal", innerShadow = null, softEdges = 0, shadowOnly = false }) {
   requireFinite("effectSubtree", { x, y, w, h });
+  requireFinite("effectSubtree.softEdges", { softEdges });
   if (!Array.isArray(content)) throw new Error(`effectSubtree: "content" must be an array, got ${JSON.stringify(content)}`);
   if (!BLEND_MODES.includes(blend)) throw new Error(`effectSubtree: unknown blend "${blend}" (known: ${BLEND_MODES.join(", ")})`);
-  if (shadow === null && bloom === null && innerShadow === null && blend === "normal") throw new Error("effectSubtree: no effect is on (shadow/bloom/innerShadow null, blend normal) — callers must pass content through instead (render_gpu/effects.js applyEffects)");
+  const soft = Math.max(0, softEdges);
+  if (shadow === null && bloom === null && innerShadow === null && blend === "normal" && soft <= 0) throw new Error("effectSubtree: no effect is on (shadow/bloom/innerShadow null, blend normal, softEdges 0) — callers must pass content through instead (render_gpu/effects.js applyEffects)");
   let sh = null;
   if (shadow !== null) {
     const { dx, dy, blur, color, opacity } = shadow;
@@ -1181,12 +1193,14 @@ export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom =
   // bound); the shadow offset length covers the canvas-space (dx, dy) in every
   // local direction (rotation-safe: a rotation preserves lengths, so a halo of
   // hypot(dx, dy) contains the offset however the widget is turned). Inner shadow
-  // contributes nothing — it never reaches outside the widget's own bbox.
+  // and SOFT EDGES contribute nothing — inner shadow never reaches outside the
+  // widget's bbox, and soft edges only ERODES coverage inward (fades edges to
+  // transparent), so both leave the outward cull bound exactly as before.
   const margin = Math.max(
     sh ? sh.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(sh.dx, sh.dy) : 0,
     bl ? bl.radius * BLUR_SUPPORT_SIGMAS : 0,
   );
-  return { op: "effectSubtree", x, y, w, h, content, shadow: sh, bloom: bl, blend, innerShadow: inner, shadowOnly: !!shadowOnly, margin };
+  return { op: "effectSubtree", x, y, w, h, content, shadow: sh, bloom: bl, blend, innerShadow: inner, softEdges: soft, shadowOnly: !!shadowOnly, margin };
 }
 
 // ── flattening ───────────────────────────────────────────────────────────────

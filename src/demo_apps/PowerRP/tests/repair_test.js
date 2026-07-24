@@ -141,6 +141,7 @@ test("computed (self.-equation) defaults are NEVER injected into old docs", () =
     bloom: { radius: 10, strength: 0 },
     blendMode: "normal",
     innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    softEdges: 0, // the effects bundle's soft-edges amount (0 = off)
   });
   const report = missingDefaults(doc, registry).find((r) => r.id === "old1");
   assert.equal(report, undefined);
@@ -235,14 +236,15 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
   // Only the genuinely-new headWidth/headMode + the Round-12D effects-bundle
   // keys get filled, not headLength (headMode is the arrow-variants task's new
   // field — manifest ARCHITECTURE PLAN #6; the effect-off shadow/bloom/
-  // blendMode keys are the effects bundle's — the fixture predates them all,
-  // the same "genuinely new" territory as headWidth).
+  // blendMode/innerShadow/softEdges keys are the effects bundle's — the fixture
+  // predates them all, the same "genuinely new" territory as headWidth).
   const arrowFill = fills.find((f) => f.id === id);
   assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), [
     "headWidth", "headMode",
     "shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity",
     "bloom.radius", "bloom.strength", "blendMode",
     "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity",
+    "softEdges",
   ]);
   const state = evaluateState(foldState(filled, 1, 1), registry).state;
   assert.equal(state.items[id].headLength, 40);
