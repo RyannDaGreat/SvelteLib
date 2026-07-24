@@ -241,6 +241,13 @@
         preview: (a) => a.previewTheme(t.id),
       })),
     },
+    // ADD NUMBER — a numeric READOUT (plugins/number.js): a plaintext-like box
+    // whose value is a NUMBER, formatted (decimals / pad / group) and, above all,
+    // equation-bindable (= my_var, = box.w, …). Registered HERE (not via the
+    // plugin's own commands) so this is its ONE add-command registration — the
+    // shapeshifter/demo precedent — armed via the generic crosshair-placement
+    // path, resolving the plugin lazily from the registry at click time.
+    { id: "add-number", title: "Add Number", icon: "mdi:numeric", run: (a) => a.armCrosshairPlacement(a.registry.get("number")) },
     // INSERT DEMO WIDGET — a submenu (exactly the color-theme `children` pattern
     // above) surfacing the DEMO widgets (plugins/demo/): the showcase widget
     // that proves the custom self.* property mechanism, plus the magnifier (the
