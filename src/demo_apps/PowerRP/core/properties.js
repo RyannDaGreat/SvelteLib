@@ -169,7 +169,7 @@ export const PROPS = {
   antialias: { label: "Anti-aliasing", kind: "boolean", category: "rendering", default: true, help: "Smooths the jagged staircase edges of shapes and text by blending edge pixels. Off gives crisp, pixelated edges and renders a little faster." },
   retina: { label: "Retina (HiDPI)", kind: "boolean", category: "rendering", default: true, help: "Renders at the display's full pixel density (its device pixel ratio) so edges stay sharp on high-DPI screens. Off renders at 1:1 CSS pixels — softer on a Retina display but faster." },
   ditherMode: { label: "Dither", kind: "select", options: DITHER_MODES, optionLabels: DITHER_MODE_LABELS, category: "rendering", default: "off", help: "Scatters pixels between adjacent colors to hide the visible stair-step banding in smooth gradients. Bayer is a fixed ordered checkerboard; blue-noise is a softer irregular scatter; off disables it." },
-  ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, max: 1, category: "rendering", default: 1, help: "How strongly the dither pattern is applied, from 0 (none) to 1 (full). Higher hides banding better but adds more visible grain. Only matters when a dither mode is on." },
+  ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, category: "rendering", default: 1, help: "How strongly the dither pattern is applied. 0 is none, 1 is full strength; above 1 over-emphasizes into pronounced, gritty grain (no upper cap). Only matters when a dither mode is on." },
 
   // ── shape: the PRESET-SHAPE selector + its adjustable knobs (Wave 2) ─────────
   // Only the `shape` widget (plugins/shape.js) composes these — a single-consumer
@@ -272,6 +272,29 @@ export const PROPS = {
   "shadow.opacity": { label: "Shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0, help: "How dark the drop shadow is, from 0 (invisible — NO shadow, the default) to 1 (fully solid shadow color). This is the shadow's on/off gate: raise it above 0 to turn the shadow on." },
   "bloom.radius": { label: "Bloom radius", kind: "number", min: 0, category: "effects", default: 10, help: "How far the bloom glow spreads (Gaussian blur amount, canvas units). Takes effect once Bloom strength is above zero." },
   "bloom.strength": { label: "Bloom strength", kind: "number", min: 0, category: "effects", default: 0, help: "How bright the glow is: a blurred copy of the widget added on top of itself. Zero means NO bloom; 1 adds a full-brightness copy; higher over-glows." },
+
+  // ── effects: INNER SHADOW (the effects bundle's fourth effect) ──────────────
+  // A shadow cast INSIDE the widget's own silhouette (a recess/inset look — the
+  // shape appears pressed INTO the page), the exact mirror of the drop shadow
+  // above. It joins the SAME effects bundle so ANY drawn vector object inherits
+  // it for free, is rendered in the SAME per-widget effect pass (the render half:
+  // render_gpu/effects.js applyEffects wraps the content in ONE effectSubtree op;
+  // the Skia backend darkens the widget's interior edge from the offscreen
+  // silhouette — see render_gpu/skia/paint_skia.js drawInnerShadow), and its
+  // params are ordinary effect props (equation-bindable through the universal `=`
+  // path, no engine change). It adds NO outward halo (it is clipped INSIDE the
+  // shape), so it needs no cull-margin contribution.
+  //
+  // SAME GATE AS THE DROP SHADOW (manifest 14.8, mirrored): innerShadow.dx/dy
+  // default 0 (no offset), innerShadow.opacity default 0 (THE render gate — off,
+  // so every old document renders byte-identically), innerShadow.blur default 0
+  // is LEGAL AND VISIBLE (opacity>0, blur 0 = a hard-edged inset silhouette),
+  // color black (the with_drop_shadows(color='black') precedent).
+  "innerShadow.dx": { label: "Inner shadow X", kind: "number", category: "effects", default: 0, help: "How far the inner shadow shifts horizontally, in canvas units (positive is right). The inner shadow appears once Inner shadow opacity is above zero." },
+  "innerShadow.dy": { label: "Inner shadow Y", kind: "number", category: "effects", default: 0, help: "How far the inner shadow shifts vertically, in canvas units (positive is down). The inner shadow appears once Inner shadow opacity is above zero." },
+  "innerShadow.blur": { label: "Inner shadow blur", kind: "number", min: 0, category: "effects", default: 0, help: "How soft the inner shadow is (Gaussian blur amount, canvas units). Zero is a crisp inset edge; the inner shadow is on whenever Inner shadow opacity is above zero, softness is separate." },
+  "innerShadow.color": { label: "Inner shadow color", kind: "color", category: "effects", default: "#000000", help: "The inner shadow's color — classically black for a recessed look, but any color works (a colored inner glow, for instance)." },
+  "innerShadow.opacity": { label: "Inner shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0, help: "How dark the inner shadow is, from 0 (invisible — NO inner shadow, the default) to 1 (fully solid). This is its on/off gate: raise it above 0 to turn the inner shadow on." },
   // Options mirror render_gpu/ir.js BLEND_MODES (the validating home — kept a
   // literal here because core/ never imports render_gpu/; the effects IR test
   // asserts the two lists stay identical).
@@ -355,7 +378,7 @@ export const BUNDLES = {
   // composed by every DRAWN widget (render half: render_gpu/effects.js —
   // exclusions justified in its header). Defaults are effect-OFF; use
   // bundleNestedDefaults("effects") in plugin defaults (the keys are nested).
-  effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode"],
+  effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode", "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity"],
   // THE PRESET-SHAPE bundle (Wave 2): the shape selector + its two generator
   // knobs, composed only by plugins/shape.js. Order = Inspector row order.
   shape: ["shape", "shapePoints", "shapeInnerRatio"],
@@ -542,7 +565,7 @@ export function nestedDefaults(...keys) {
  * `...bundleNestedDefaults("effects")`.
  *
  * @example bundleNestedDefaults("effects")
- * {"shadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"bloom":{"radius":10,"strength":0},"blendMode":"normal"}
+ * {"shadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"bloom":{"radius":10,"strength":0},"blendMode":"normal","innerShadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0}}
  */
 export function bundleNestedDefaults(name) {
   const keys = BUNDLES[name];

@@ -44,6 +44,7 @@ import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH } from "../ir.js
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms } from "./glass_shader.js";
+import { getMaterial, materialEffect } from "./materials.js";
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
 
@@ -153,6 +154,10 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
       case "glassBackdrop":
         // "Below" (z-order) = everything emitted before this op at this level.
         handleGlassBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
+        break;
+      case "materialBackdrop":
+        // A registry-dispatched SkSL material (generalizes glass). "Below" = everything emitted before it.
+        handleMaterialBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
         break;
       case "cropSubtree":
         handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth);
@@ -693,6 +698,74 @@ function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity) {
   canvas.restore();
 }
 
+// ── the MATERIAL FRAMEWORK (generalizes glass to registry-dispatched SkSL) ────
+// A materialBackdrop op names a MATERIAL (render_gpu/skia/materials.js); this
+// handler is the ONE piece of machinery every material shares — the glass
+// groundwork, reused: re-render the below-content (glassBackdropImages) into a
+// sharp + a Gaussian-blurred child image shader, compile+cache the material's
+// SkSL (materialEffect, the generalized glassEffect memo), pack the material's
+// uniforms (device geometry + its own knobs), and draw the region. New materials
+// (CRT here; dirty-glass / magnify next) add NOTHING to this file.
+
+/**
+ * Command (draws on target.canvas). materialBackdrop: resolve the material by id,
+ * build the sharp + blurred backdrop children (the SAME below-content re-render
+ * glass uses — depth-capped, falling back to sampling the surface), pack the
+ * material's uniforms from the DEVICE-space region geometry + its own `params`,
+ * and draw the rounded-rect region through the material's RuntimeEffect (children
+ * {blurred, sharp}). Drawn at the DEVICE ROOT (no CTM), bounded to the panel's
+ * device AABB — the shader returns premultiplied zero outside its own SDF.
+ *
+ * World→device geometry (center, half-size, corner, rotation) + world→device
+ * length scaling (value·world.scale·zoom·dpr, the blurBackdrop convention) mirror
+ * handleGlassBackdrop exactly; `scale` (= sd) is handed to the material's packer
+ * for any world-unit knob it exposes.
+ */
+function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx, depth) {
+  const canvas = target.canvas;
+  const opacity = cmd.opacity ?? 1;
+  const material = getMaterial(cmd.material);
+
+  // Device-space region geometry (a similarity transform), identical to glass.
+  const ds = view.zoom * view.dpr;
+  const sd = world.scale * ds;                 // world length → device px
+  const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+  const cxDev = centerWorld.x * ds + view.panX * view.dpr;
+  const cyDev = centerWorld.y * ds + view.panY * view.dpr;
+  const halfWDev = cmd.halfW * sd, halfHDev = cmd.halfH * sd;
+  const cornerDev = cmd.cornerRadius * sd;
+  const angle = world.rotation;
+  const blurSigma = cmd.blurRadius * sd;
+
+  // Sharp + blurred backdrop children + the device→image sampleMatrix (glass's).
+  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma);
+
+  const effect = materialEffect(CanvasKit, material);
+  const blurChild = bd.blurred.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
+  const sharpChild = bd.sharp.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
+  // The framework's normalized uniform input: device geometry + world→device
+  // scale + the material's own (already-evaluated) knobs. The packer picks fields.
+  const u = { cx: cxDev, cy: cyDev, halfW: halfWDev, halfH: halfHDev, cornerRadius: cornerDev, angle, scale: sd, ...cmd.params };
+  const uniforms = material.pack(u);
+  const shader = effect.makeShaderWithChildren(uniforms, [blurChild, sharpChild]);
+  if (!shader) throw new Error(`paintIR(skia): material "${cmd.material}" makeShaderWithChildren returned null`);
+  const p = new CanvasKit.Paint();
+  p.setShader(shader);
+  p.setAlphaf(opacity);
+  const reach = Math.hypot(halfWDev, halfHDev) + GLASS_CLIP_SLOP_PX; // circumradius + AA slop covers any rotation
+  canvas.save();
+  canvas.clipRect(CanvasKit.LTRBRect(cxDev - reach, cyDev - reach, cxDev + reach, cyDev + reach), CanvasKit.ClipOp.Intersect, false);
+  canvas.drawPaint(p);
+  canvas.restore();
+
+  p.delete(); shader.delete(); blurChild.delete(); sharpChild.delete();
+  bd.blurred.delete(); bd.sharp.delete();
+
+  // Optional bright hairline border on top (reuses the glass border helper — the
+  // materialBackdrop op carries the same cx/halfW/cornerRadius/stroke fields).
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity);
+}
+
 // ── subtree re-renders (self-contained `content`) ─────────────────────────────
 
 /**
@@ -797,6 +870,13 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
     canvas.drawImage(contentImg, 0, 0, p);
     p.delete();
 
+    // INNER SHADOW (inside the widget): darkens the interior near the edges — a
+    // recess. Drawn AFTER the widget (over it) and clipped to its silhouette, so
+    // it never spills outside; UNDER bloom (bloom is a glow of the widget).
+    if (cmd.innerShadow) {
+      drawInnerShadow(CanvasKit, canvas, contentImg, cmd.innerShadow, scale, ctx);
+    }
+
     // BLOOM (on top): the content's own Gaussian-blurred copy × strength, ADD.
     if (cmd.bloom) {
       const filt = bloomFilter(CanvasKit, cmd.bloom.radius * scale, cmd.bloom.strength);
@@ -810,6 +890,78 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
 
   contentImg.delete();
   sub.dispose();
+}
+
+/**
+ * Command (draws on `canvas` at the device root). Composites an INNER SHADOW into
+ * the widget's own silhouette from its offscreen render `contentImg` (whose alpha
+ * IS the shape). The recipe, using only coverage blends (no ImageFilter branch):
+ *
+ *   1. FIELD = fill the surface with opaque shadow color, then DstOut the shape
+ *      OFFSET by (dx, dy) — leaving shadow color everywhere EXCEPT the offset
+ *      shape (a hole). Blur it (σ) so the hole edge is soft.
+ *   2. CLIP = keep the blurred field only where the ORIGINAL shape has alpha
+ *      (DstIn with `contentImg`) — so the darkness lives strictly INSIDE the
+ *      shape, concentrated at the edge the offset pushes toward and fading inward.
+ *   3. draw the result OVER the widget at alpha = colorAlpha·opacity.
+ *
+ * This is the exact mirror of the drop shadow (a blurred/offset silhouette), but
+ * clipped INSIDE instead of drawn under — a recessed/inset look for any vector
+ * object. `scale` = world.scale·zoom·dpr (world length → device px), so dx/dy/blur
+ * match the drop shadow's device scaling.
+ *
+ * @param contentImg - the widget's device-size offscreen render (alpha = shape)
+ * @param inner - {dx, dy, blur, color:[r,g,b,a], opacity} (world-unit dx/dy/blur)
+ * @param scale - world→device length factor
+ * @param ctx - {makeSurface, deviceW, deviceH}
+ */
+function drawInnerShadow(CanvasKit, canvas, contentImg, inner, scale, ctx) {
+  const alpha = (inner.color[3] ?? 1) * inner.opacity; // color alpha × the gate/strength
+  if (alpha <= 0) return;
+  const offX = inner.dx * scale, offY = inner.dy * scale;
+  const sigma = inner.blur * scale;
+  const [r, g, b] = inner.color;
+
+  // (1) FIELD: opaque shadow color minus the offset shape (a soft-edged hole).
+  const field = ctx.makeSurface(ctx.deviceW, ctx.deviceH);
+  if (!field) throw new Error("paintIR(skia): makeSurface for inner-shadow field returned null");
+  const fc = field.getCanvas();
+  fc.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  const fill = new CanvasKit.Paint();
+  fill.setColor(CanvasKit.Color4f(r, g, b, 1));
+  fc.drawPaint(fill);
+  fill.delete();
+  const punch = new CanvasKit.Paint();
+  punch.setBlendMode(CanvasKit.BlendMode.DstOut); // dst · (1 - srcAlpha): remove where the offset shape is
+  fc.drawImage(contentImg, offX, offY, punch);
+  punch.delete();
+  field.flush();
+  const fieldImg = field.makeImageSnapshot();
+  const blurred = blurredImageOf(CanvasKit, ctx, fieldImg, sigma, ctx.deviceW, ctx.deviceH);
+  fieldImg.delete();
+  field.dispose();
+
+  // (2) CLIP to the ORIGINAL shape interior (DstIn keeps dst where src alpha).
+  const clip = ctx.makeSurface(ctx.deviceW, ctx.deviceH);
+  if (!clip) throw new Error("paintIR(skia): makeSurface for inner-shadow clip returned null");
+  const cc = clip.getCanvas();
+  cc.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  cc.drawImage(blurred, 0, 0, null);
+  const keep = new CanvasKit.Paint();
+  keep.setBlendMode(CanvasKit.BlendMode.DstIn);
+  cc.drawImage(contentImg, 0, 0, keep);
+  keep.delete();
+  clip.flush();
+  const innerImg = clip.makeImageSnapshot();
+  blurred.delete();
+  clip.dispose();
+
+  // (3) draw over the widget at colorAlpha·opacity.
+  const out = new CanvasKit.Paint();
+  out.setAlphaf(Math.max(0, Math.min(1, alpha)));
+  canvas.drawImage(innerImg, 0, 0, out);
+  out.delete();
+  innerImg.delete();
 }
 
 /**

@@ -29,7 +29,8 @@
  *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, originX, originY, magnification, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box" (rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth)
  *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
- *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, shadowOnly, margin}  // Round 12D effects substrate
+ *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow)
+ *   {op:"materialBackdrop", material, cx, cy, halfW, halfH, cornerRadius, blurRadius, backdropScale, params, stroke, strokeWidth, opacity}  // registry-dispatched backdrop MATERIAL (SkSL); generalizes glassBackdrop
  *
  * Backdrop-effect nodes consume the composite-so-far (everything already
  * emitted), replacing the canvas2D full-canvas snapshot with a GPU texture
@@ -695,6 +696,64 @@ export function glassBackdrop({
 }
 
 /**
+ * Pure function. THE MATERIAL BACKDROP node — the reusable GENERALIZATION of
+ * glassBackdrop. A backdrop sampler (same family as blur/magnify/glass) that
+ * reads the composite-so-far, builds a BLURRED copy, and draws a rounded-rect
+ * region through a REGISTERED SkSL MATERIAL selected by `material` (a string id
+ * resolved by render_gpu/skia/materials.js). Every material shares ONE piece of
+ * machinery — the below-content re-render, the sharp+blurred child image
+ * shaders, and the RuntimeEffect compile+cache (paint_skia.js
+ * handleMaterialBackdrop, reusing the glass groundwork) — so a NEW material is
+ * just a new SkSL shader + a uniform packer + a one-line registry entry; it does
+ * NOT re-hack this op or the backend. (Liquid Glass predates this op and keeps
+ * its bespoke handleGlassBackdrop; new materials — CRT, and the follow-up
+ * dirty/distorted-glass + magnify materials — ride this general path.)
+ *
+ * `params` is the material's OWN flat knob map ({name: value}); numeric values
+ * must be finite, everything else (e.g. a color string a material's packer will
+ * parse) passes through untouched. Because `params` are ordinary
+ * already-evaluated item-state values, ANY of them may be authored as a `=`
+ * equation upstream (the universal eval path) with zero engine change — exactly
+ * like glass's self.* knobs.
+ *
+ * ALL LENGTHS ARE WORLD UNITS (halfW/halfH/cornerRadius/blurRadius) — the
+ * backend converts to device px/sigma by world.scale·zoom·dpr, like glass.
+ * `blurRadius` is the frost blur of the sampled backdrop (every material gets a
+ * sharp AND a blurred child). `backdropScale` is the below-content sample
+ * resolution factor (1 = device zoom res; clamped [0.25, 2]), like glass.
+ *
+ * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60}).op // "materialBackdrop"
+ * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60, params: {curvature: 0.2}}).params.curvature // 0.2
+ * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60, cornerRadius: -3}).cornerRadius // 0 (negative radii clamped)
+ * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60, backdropScale: 9}).backdropScale // 2 (clamped)
+ */
+export function materialBackdrop({
+  material, cx, cy, halfW, halfH, cornerRadius = 0,
+  blurRadius = 8, backdropScale = 1, params = {},
+  stroke = null, strokeWidth = 0, opacity = 1,
+}) {
+  if (typeof material !== "string" || material.length === 0) throw new Error(`materialBackdrop: "material" must be a non-empty id string, got ${JSON.stringify(material)}`);
+  requireFinite("materialBackdrop", { cx, cy, halfW, halfH, cornerRadius, blurRadius, backdropScale, strokeWidth, opacity });
+  if (params === null || typeof params !== "object" || Array.isArray(params)) throw new Error(`materialBackdrop: "params" must be a plain object, got ${JSON.stringify(params)}`);
+  // Numeric knobs must be finite (a NaN uniform silently blackens a whole shader
+  // region); non-numbers (a color string a packer will parse) pass through.
+  for (const [k, v] of Object.entries(params)) {
+    if (typeof v === "number" && !Number.isFinite(v)) throw new Error(`materialBackdrop: param "${k}" is a non-finite number (${v})`);
+  }
+  return {
+    op: "materialBackdrop", material,
+    cx, cy, halfW, halfH,
+    cornerRadius: Math.max(0, cornerRadius),
+    blurRadius: Math.max(0, blurRadius),
+    backdropScale: Math.max(0.25, Math.min(2, backdropScale)),
+    params: { ...params },
+    stroke: stroke === null ? null : parseColor(stroke),
+    strokeWidth: Math.max(0, strokeWidth),
+    opacity,
+  };
+}
+
+/**
  * Pure function. Crop-box effect node (manifest ARCHITECTURE PLAN #3): fills a
  * rounded-rect region, then clips+re-emits `content` (the target item's OWN
  * local-space commands, already wrapped in a pushTransform/popTransform pair
@@ -798,6 +857,12 @@ export const MAX_LENS_DEPTH = 1;
  * just the shadow region under the widget's untouched VECTOR content (the
  * manifest's verbatim "compositing a shadow png under a vector thingy").
  *
+ *   INNER SHADOW (innerShadow: {dx, dy, blur, color, opacity}) — the same
+ *     {dx, dy, blur, color, opacity} shape as SHADOW, but composited INSIDE the
+ *     widget's own silhouette (a recessed/inset look), so it darkens the
+ *     interior near the edges instead of casting a silhouette beneath. Clipped
+ *     to the shape ⇒ it adds NO outward halo (absent from `margin`).
+ *
  * The EFFECT-OFF pass-through lives in render_gpu/effects.js applyEffects
  * (returns `content` unchanged when nothing is on), so this builder always
  * has real work — mirroring decorateStrokedBox/isUndecorated.
@@ -807,12 +872,14 @@ export const MAX_LENS_DEPTH = 1;
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], bloom: {radius: 5, strength: 1}}).margin // 15 (3·5 bloom spill)
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], blend: "multiply"}).margin // 0 (blend alone adds no halo)
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], blend: "multiply"}).shadow // null
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000", opacity: 0.6}}).margin // 0 (inner shadow is clipped inside → no halo)
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000000", opacity: 0.6}}).innerShadow.opacity // 0.6
  */
-export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom = null, blend = "normal", shadowOnly = false }) {
+export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom = null, blend = "normal", innerShadow = null, shadowOnly = false }) {
   requireFinite("effectSubtree", { x, y, w, h });
   if (!Array.isArray(content)) throw new Error(`effectSubtree: "content" must be an array, got ${JSON.stringify(content)}`);
   if (!BLEND_MODES.includes(blend)) throw new Error(`effectSubtree: unknown blend "${blend}" (known: ${BLEND_MODES.join(", ")})`);
-  if (shadow === null && bloom === null && blend === "normal") throw new Error("effectSubtree: no effect is on (shadow/bloom null, blend normal) — callers must pass content through instead (render_gpu/effects.js applyEffects)");
+  if (shadow === null && bloom === null && innerShadow === null && blend === "normal") throw new Error("effectSubtree: no effect is on (shadow/bloom/innerShadow null, blend normal) — callers must pass content through instead (render_gpu/effects.js applyEffects)");
   let sh = null;
   if (shadow !== null) {
     const { dx, dy, blur, color, opacity } = shadow;
@@ -825,15 +892,26 @@ export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom =
     requireFinite("effectSubtree.bloom", { radius, strength });
     bl = { radius: Math.max(0, radius), strength: Math.max(0, strength) };
   }
+  // INNER SHADOW: the SAME {dx, dy, blur, color, opacity} shape as the drop
+  // shadow, but composited INSIDE the widget silhouette (a recess). It adds NO
+  // outward halo (clipped to the shape), so it is DELIBERATELY absent from the
+  // `margin` below — culling/source rects stay exactly as before.
+  let inner = null;
+  if (innerShadow !== null) {
+    const { dx, dy, blur, color, opacity } = innerShadow;
+    requireFinite("effectSubtree.innerShadow", { dx, dy, blur, opacity });
+    inner = { dx, dy, blur: Math.max(0, blur), color: parseColor(color), opacity };
+  }
   // Blur spill is BLUR_SUPPORT_SIGMAS·σ each side (the Gaussian kernel-support
   // bound); the shadow offset length covers the canvas-space (dx, dy) in every
   // local direction (rotation-safe: a rotation preserves lengths, so a halo of
-  // hypot(dx, dy) contains the offset however the widget is turned).
+  // hypot(dx, dy) contains the offset however the widget is turned). Inner shadow
+  // contributes nothing — it never reaches outside the widget's own bbox.
   const margin = Math.max(
     sh ? sh.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(sh.dx, sh.dy) : 0,
     bl ? bl.radius * BLUR_SUPPORT_SIGMAS : 0,
   );
-  return { op: "effectSubtree", x, y, w, h, content, shadow: sh, bloom: bl, blend, shadowOnly: !!shadowOnly, margin };
+  return { op: "effectSubtree", x, y, w, h, content, shadow: sh, bloom: bl, blend, innerShadow: inner, shadowOnly: !!shadowOnly, margin };
 }
 
 // ── flattening ───────────────────────────────────────────────────────────────
@@ -874,4 +952,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "cropSubtree", "effectSubtree"];

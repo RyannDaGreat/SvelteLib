@@ -136,6 +136,7 @@ test("computed (self.-equation) defaults are NEVER injected into old docs", () =
     shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 },
     bloom: { radius: 10, strength: 0 },
     blendMode: "normal",
+    innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
   });
   const report = missingDefaults(doc, registry).find((r) => r.id === "old1");
   assert.equal(report, undefined);
@@ -237,6 +238,7 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
     "headWidth", "headMode",
     "shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity",
     "bloom.radius", "bloom.strength", "blendMode",
+    "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity",
   ]);
   const state = evaluateState(foldState(filled, 1, 1), registry).state;
   assert.equal(state.items[id].headLength, 40);

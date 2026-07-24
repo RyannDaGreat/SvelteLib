@@ -3,8 +3,10 @@
  * shadow + bloom + blend mode — "ALL FOUR reuse one substrate ... the EFFECTS
  * BUNDLE joins the property registry; any widget composes it"). The property
  * half lives in core/properties.js (the `effects` bundle: shadow.{dx,dy,blur,
- * color,opacity}, bloom.{radius,strength}, blendMode); THIS module gives
- * every composing widget the matching render composition — one shared
+ * color,opacity}, bloom.{radius,strength}, blendMode, and the mirrored INNER
+ * SHADOW innerShadow.{dx,dy,blur,color,opacity} — a recess cast inside the
+ * widget silhouette); THIS module gives every composing widget the matching
+ * render composition (all of them ride ONE effectSubtree) — one shared
  * function each plugin's emit() calls, exactly like decorate.js's
  * decorateStrokedBox (the stroked-box bundle's render half, the direct
  * precedent for this module's shape).
@@ -79,12 +81,15 @@ import { effectSubtree, pushTransform, popTransform, BLUR_SUPPORT_SIGMAS } from 
  * @example effectsOff({bloom: {radius: 10, strength: 0}}) // true (strength 0 = bloom off)
  * @example effectsOff({blendMode: "multiply"}) // false
  * @example effectsOff({blendMode: "normal"}) // true
+ * @example effectsOff({innerShadow: {dx: 0, dy: 0, blur: 4, color: "#000", opacity: 0}}) // true (opacity 0 = inner shadow off — the default)
+ * @example effectsOff({innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000", opacity: 0.6}}) // false
  */
 export function effectsOff(state) {
   const shadowOn = (state.shadow?.opacity ?? 0) > 0;
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   const blendOn = (state.blendMode ?? "normal") !== "normal";
-  return !shadowOn && !bloomOn && !blendOn;
+  const innerOn = (state.innerShadow?.opacity ?? 0) > 0; // mirror of the drop-shadow gate (14.8): opacity turns it on
+  return !shadowOn && !bloomOn && !blendOn && !innerOn;
 }
 
 /**
@@ -128,6 +133,7 @@ export function applyEffects(content, state, world, bbox) {
   if (!world) throw new Error("applyEffects: an effected widget needs the node's absolute `world` (sceneIR passes it as emit's 3rd arg); got undefined");
   const shadowOn = (state.shadow?.opacity ?? 0) > 0; // 14.8: opacity is the gate, blur 0 stays visible
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
+  const innerOn = (state.innerShadow?.opacity ?? 0) > 0; // same gate as the drop shadow (blur 0 stays visible)
   return [effectSubtree({
     x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h,
     shadow: shadowOn ? {
@@ -136,6 +142,13 @@ export function applyEffects(content, state, world, bbox) {
     } : null,
     bloom: bloomOn ? { radius: state.bloom.radius ?? 0, strength: state.bloom.strength } : null,
     blend: state.blendMode ?? "normal",
+    // INNER SHADOW rides the SAME effectSubtree (the render half of the effects
+    // bundle's fourth effect); the Skia backend darkens the widget's interior
+    // edge. Off (opacity 0) ⇒ null, so an inner-shadow-free widget is byte-identical.
+    innerShadow: innerOn ? {
+      dx: state.innerShadow.dx ?? 0, dy: state.innerShadow.dy ?? 0, blur: state.innerShadow.blur,
+      color: state.innerShadow.color ?? "#000000", opacity: state.innerShadow.opacity,
+    } : null,
     content: [pushTransform(world), ...content, popTransform()],
   })];
 }
