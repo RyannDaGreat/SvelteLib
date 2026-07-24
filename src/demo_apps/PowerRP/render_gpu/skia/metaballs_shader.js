@@ -42,7 +42,14 @@
 // ── named constants (WHY each exists — no magic numbers) ─────────────────────
 // MAX_METABALLS/FIELDS_PER_BALL define the fixed uniform-array budget; the packer
 // asserts the same numbers so a mismatch fails loudly.
-export const MAX_METABALLS = 6;    // roster size (unused slots have ballCount gating)
+// MAX_METABALLS is a GENEROUS cap: since the metaball archetype FUSES every
+// metaball widget on the slide into one leader-emitted field (core/derive.
+// collectMetaballScene), the array must hold the balls of MANY copy-pasted
+// widgets, not one widget's roster. 32 ≈ 32 single-ball widgets melting together;
+// the per-pixel loop breaks at uBallCount, so an unused cap costs only array size,
+// not shader work. Overflow is clamped + reported LOUDLY by the plugin (never
+// silently dropped).
+export const MAX_METABALLS = 32;   // slide-wide fused-ball budget (ballCount gates the active prefix)
 export const FIELDS_PER_BALL = 6;  // per ball: [type, cx, cy, r, elong, angle]
 
 export const METABALLS_SKSL = `
@@ -63,18 +70,25 @@ uniform float2 uCenter;          // region center (device px)
 uniform float2 uHalfSize;        // region half-extents (device px)
 uniform float uAngle;            // widget rotation (radians): rotate the field frame so a rotated widget stays correct
 uniform float uBallCount;        // how many roster slots are active (0..MAX_METABALLS)
-uniform float uBalls[${MAX_METABALLS * FIELDS_PER_BALL}]; // per ball: type, cx, cy (0..1 of the box), r, elong (fraction of min half-size), angle(rad)
+uniform float uBalls[${MAX_METABALLS * FIELDS_PER_BALL}]; // per ball: type, cx, cy (0..1 of the region box), r, elong (fraction of region min half-size), angle(rad)
+// uUnit is the FIELD's BALL-INTRINSIC reference length (a fraction of the region's
+// min half-size = the MEAN ball radius). The merge/threshold/dome/refraction knobs
+// scale by this — NOT the region min half-size — so the look is invariant to how
+// big the fused UNION region is (two far-apart droplets in a huge region merge and
+// dome exactly like two in a tight one; region size cancels for ball GEOMETRY, but
+// would otherwise blow up these distance knobs). uUnit·minHalf = mean ball radius.
+uniform float uUnit;             // reference length (mean ball radius) as a fraction of the region min half-size
 // ── user-tweakable look knobs (self.* custom props) ──────────────────────────
-uniform float uSmoothK;          // smooth-union MERGE amount (fraction of the min half-size): 0 = hard union, larger = blobs fuse
-uniform float uThreshold;        // isosurface level (fraction of the min half-size): raises the "fluid level" so every blob fattens
-uniform float uRefraction;       // max lens displacement (fraction of the min half-size) of the refracted backdrop
+uniform float uSmoothK;          // smooth-union MERGE amount (fraction of the MEAN BALL RADIUS): 0 = hard union, larger = blobs fuse
+uniform float uThreshold;        // isosurface level (fraction of the MEAN BALL RADIUS): raises the "fluid level" so every blob fattens
+uniform float uRefraction;       // max lens displacement (fraction of the MEAN BALL RADIUS) of the refracted backdrop
 uniform float uChromatic;        // chromatic dispersion at the rim (R/B sample a fraction more/less than G)
 uniform float4 uTint;            // water tint color CAST (rgb, multiplies the body) + STRENGTH (a)
 uniform float uLightAngle;       // in-plane direction TO the light (radians; -PI/2 = above), screen space
 uniform float uSpecular;         // Blinn-Phong glint strength (the water sparkle)
 uniform float uShininess;        // Blinn-Phong exponent: higher = a tighter, sharper glint
 uniform float uFresnel;          // strength of the bright grazing rim
-uniform float uBulge;            // dome thickness (fraction of the min half-size): small = tall peaked beads, large = flat puddles
+uniform float uBulge;            // dome thickness (fraction of the MEAN BALL RADIUS): small = tall peaked beads, large = flat puddles
 uniform float uAmbient;          // contact shading on the unlit rim (0 = flat, higher = a rounder, seated bead)
 
 // Pure. Signed distance to a disk. <0 inside.
@@ -105,7 +119,8 @@ float sdRoundBox(float2 p, float2 c, float ang, float2 hs, float rad) {
 // this function is the surface normal regardless).
 float sceneField(float2 pl) {
   float minHalf = min(uHalfSize.x, uHalfSize.y);
-  float k = uSmoothK * minHalf;
+  float unit = uUnit * minHalf;         // mean ball radius (device px) — the ball-intrinsic scale
+  float k = uSmoothK * unit;            // merge width relative to a ball, NOT the (union) region
   float f = FIELD_FAR;
   for (int i = 0; i < MAX_METABALLS; i++) {
     if (float(i) >= uBallCount) break;
@@ -139,9 +154,10 @@ half4 main(float2 p) {
   float2 d0 = p - uCenter;
   float2 pl = float2(cba * d0.x + sba * d0.y, -sba * d0.x + cba * d0.y);
   float minHalf = min(uHalfSize.x, uHalfSize.y);
+  float unit = uUnit * minHalf;                   // mean ball radius (device px) — see uUnit
 
   float F = sceneField(pl);
-  float thresh = uThreshold * minHalf;
+  float thresh = uThreshold * unit;
   float field = F - thresh;                       // < 0 inside a droplet
   float cov = 1.0 - smoothstep(-AA_PX, AA_PX, field);
   if (cov <= 0.0) { return half4(0.0); }          // outside every droplet: contribute nothing
@@ -157,7 +173,7 @@ half4 main(float2 p) {
 
   // SPHERICAL-CAP dome coordinate ω: 1 at the rim (field ≈ 0), → 0 at the dome
   // peak (depth ≥ domeDepth). The 3D bead normal is (∇F·ω, √(1−ω²)).
-  float domeDepth = max(uBulge * minHalf, 1.0);
+  float domeDepth = max(uBulge * unit, 1.0);
   float t = max(-field, 0.0);                     // how deep inside the surface
   float omega = clamp(1.0 - t / domeDepth, 0.0, 1.0);
   float nz = sqrt(max(1.0 - omega * omega, 0.0));
@@ -170,7 +186,7 @@ half4 main(float2 p) {
   // and zero dead-centre, so the surroundings are pulled inward and enlarged
   // through the drop (a real convex water lens), clearest at its peak. Chromatic
   // dispersion splits R/B across the displacement (rim fringe).
-  float refr = uRefraction * minHalf;
+  float refr = uRefraction * unit;
   float2 disp = -Nxy * refr;
   float caAmt = uChromatic;
   half3 body = half3(
@@ -208,9 +224,9 @@ half4 main(float2 p) {
 // Uniform slot count — asserted by the packer so a shader edit that changes the
 // uniform block is caught loudly instead of packing a mis-sized array.
 //   float2 uCenter(2) + float2 uHalfSize(2) + uAngle(1) + uBallCount(1)
-//   + uBalls[36] + uSmoothK/uThreshold/uRefraction/uChromatic(4) + float4 uTint(4)
-//   + uLightAngle/uSpecular/uShininess/uFresnel/uBulge/uAmbient(6) = 56
-const METABALLS_UNIFORM_FLOATS = 2 + 2 + 1 + 1 + MAX_METABALLS * FIELDS_PER_BALL + 4 + 4 + 6;
+//   + uBalls[MAX·6] + uUnit(1) + uSmoothK/uThreshold/uRefraction/uChromatic(4)
+//   + float4 uTint(4) + uLightAngle/uSpecular/uShininess/uFresnel/uBulge/uAmbient(6)
+const METABALLS_UNIFORM_FLOATS = 2 + 2 + 1 + 1 + MAX_METABALLS * FIELDS_PER_BALL + 1 + 4 + 4 + 6;
 
 /** Pure. Asserts `v` is a finite number (a NaN uniform silently blackens a whole
  * shader region — fail loudly instead). Returns `v`. */
@@ -233,16 +249,18 @@ function num(name, v) {
  * by ballCount anyway). `u.tint` is a parsed [r, g, b, a] array.
  *
  * @param {object} u - {cx, cy, halfW, halfH, angle (device px/rad), balls:number[],
- *   ballCount, smoothK, threshold, refraction, chromatic, tint:[r,g,b,a],
- *   lightAngle, specular, shininess, fresnel, bulge, ambient}
- * @returns {Float32Array} length 56, in shader-uniform order
+ *   ballCount, unit, smoothK, threshold, refraction, chromatic, tint:[r,g,b,a],
+ *   lightAngle, specular, shininess, fresnel, bulge, ambient}. `unit` is the mean
+ *   ball radius as a fraction of the region's min half-size (the ball-intrinsic
+ *   scale the distance knobs ride, so a big fused region does not over-merge).
+ * @returns {Float32Array} length METABALLS_UNIFORM_FLOATS, in shader-uniform order
  *
  * @example
  * packMetaballsUniforms({cx:400,cy:300,halfW:380,halfH:210,angle:0,
- *   balls:[0,0.4,0.5,0.22,0,0, 0,0.6,0.55,0.2,0,0],ballCount:2,
- *   smoothK:0.35,threshold:0.05,refraction:0.18,chromatic:0.04,
+ *   balls:[0,0.4,0.5,0.22,0,0, 0,0.6,0.55,0.2,0,0],ballCount:2,unit:0.21,
+ *   smoothK:0.9,threshold:0.08,refraction:0.27,chromatic:0.04,
  *   tint:[0.85,0.95,1,0.12],lightAngle:-1.95,specular:0.9,shininess:40,
- *   fresnel:0.5,bulge:0.5,ambient:0.35}).length // 56
+ *   fresnel:0.5,bulge:0.8,ambient:0.35}).length // 213 (2+2+1+1+192+1+4+4+6, MAX_METABALLS=32)
  */
 export function packMetaballsUniforms(u) {
   const ballsIn = Array.isArray(u.balls) ? u.balls : [];
@@ -255,6 +273,7 @@ export function packMetaballsUniforms(u) {
     num("angle", u.angle),
     num("ballCount", u.ballCount),
     ...balls,
+    num("unit", u.unit),
     num("smoothK", u.smoothK),
     num("threshold", u.threshold),
     num("refraction", u.refraction),

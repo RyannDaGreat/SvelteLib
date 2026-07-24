@@ -18,7 +18,7 @@ import {
   allDocumentItems,
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
-import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, pointInNodeBox, standardBBoxAnchors, cameraRect } from "../core/derive.js";
+import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, pointInNodeBox, standardBBoxAnchors, cameraRect, collectMetaballScene, resolveMetaballScene } from "../core/derive.js";
 import { evaluateState, resolveRef, slugMap, displayToStored } from "../core/expressions.js";
 import { bentoPlugin, bentoAnchors } from "../plugins/bento.js";
 import { solveSnap, axisLock } from "../core/snap.js";
@@ -473,6 +473,42 @@ test("cameraRect: default camera in new docs, tweens, meta fallback", () => {
   doc2 = keyframed(doc2, 1, ["items", camId, "w"], 640);
   assert.equal(cameraRect(foldState(doc2, 1, 0.5), doc2.meta).w, 960); // camera tweens
   assert.deepEqual(cameraRect({ items: {} }, { slideW: 10, slideH: 5 }), { x: 0, y: 0, w: 10, h: 5, background: "#ffffff" });
+});
+
+// ── metaball archetype sibling query (cross-widget fusion) ────────────────────
+// The metaball twin of the sky sibling query: every metaball widget's balls are
+// collected in WORLD space, and ONE leader gets flagged to render the fused field.
+const mbPlugin = (localBalls) => ({ capabilities: { metaball: true }, localBalls });
+const mbNode = (itemId, world, balls) => ({ itemId, state: {}, world, plugin: mbPlugin(() => balls) });
+test("collectMetaballScene: lifts each widget's local balls into world (scale/rotation baked in)", () => {
+  assert.deepEqual(collectMetaballScene([]), { balls: [] });
+  // identity world: local ball passes through unchanged
+  assert.deepEqual(
+    collectMetaballScene([mbNode("m", { x: 0, y: 0, rotation: 0, scale: 1 }, [{ type: "sphere", cx: 100, cy: 100, r: 50, len: 0, ang: 0 }])]),
+    { balls: [{ type: "sphere", x: 100, y: 100, r: 50, len: 0, ang: 0 }] },
+  );
+  // world scale 2 + offset: centre translates+scales, radius scales, angle unchanged (no rotation)
+  assert.deepEqual(
+    collectMetaballScene([mbNode("m", { x: 10, y: 0, rotation: 0, scale: 2 }, [{ type: "sphere", cx: 5, cy: 0, r: 3, len: 0, ang: 0 }])]),
+    { balls: [{ type: "sphere", x: 20, y: 0, r: 6, len: 0, ang: 0 }] },
+  );
+});
+test("collectMetaballScene: sorted by source itemId (deterministic pure fn)", () => {
+  const w = { x: 0, y: 0, rotation: 0, scale: 1 };
+  const scene = collectMetaballScene([
+    mbNode("z", w, [{ type: "sphere", cx: 9, cy: 0, r: 1, len: 0, ang: 0 }]),
+    mbNode("a", w, [{ type: "sphere", cx: 1, cy: 0, r: 1, len: 0, ang: 0 }]),
+  ]);
+  assert.deepEqual(scene.balls.map((b) => b.x), [1, 9]); // "a" before "z"
+});
+test("resolveMetaballScene: first metaball is leader, rest false; non-metaball untouched", () => {
+  const w = { x: 0, y: 0, rotation: 0, scale: 1 };
+  const passthrough = resolveMetaballScene([{ itemId: "r", type: "rect", state: {}, plugin: { capabilities: {} } }]);
+  assert.equal(passthrough.length, 1);
+  assert.equal(passthrough[0].state.metaballScene, undefined); // non-participant unaffected
+  const nodes = resolveMetaballScene([mbNode("a", w, []), mbNode("b", w, [])]);
+  assert.deepEqual(nodes.map((n) => n.state.metaballLeader), [true, false]);
+  assert.ok(nodes.every((n) => n.state.metaballScene)); // every metaball carries the shared summary
 });
 
 // ── snap ─────────────────────────────────────────────────────────────────────

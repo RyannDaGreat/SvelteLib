@@ -150,7 +150,7 @@ export function deriveRenderTree(state, registry) {
     plugin: registry.get(itemState.type),
   }));
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
-  return resolveSkyScene(resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes))));
+  return resolveMetaballScene(resolveSkyScene(resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes)))));
 }
 
 /**
@@ -523,6 +523,83 @@ export function resolveSkyScene(nodes) {
   if (!nodes.some((n) => n.plugin?.capabilities?.skyReader)) return nodes;
   const scene = collectSkyScene(nodes);
   return nodes.map((n) => (n.plugin?.capabilities?.skyReader ? { ...n, state: { ...n.state, skyScene: scene } } : n));
+}
+
+/**
+ * Pure function. THE METABALL-ARCHETYPE SIBLING QUERY — the metaball family's crux,
+ * the exact twin of collectSkyScene. Metaballs are an ARCHETYPE that must INTERACT:
+ * every metaball widget's field FUSES with every other's on the slide (copy-paste
+ * two, they melt together). A widget reading its siblings is otherwise impossible
+ * (emit sees only its own state), so — like the sky suns — the balls are gathered
+ * HERE, the one stage that sees the whole z-sorted node list.
+ *
+ * Scans for active metaball SOURCES (nodes whose plugin declares
+ * `capabilities.metaball` AND exposes a pure `localBalls(state)` hook returning its
+ * balls in LOCAL widget units) and lifts every ball into WORLD space via the node's
+ * final `world` transform (group parenting — which runs earlier in deriveRenderTree
+ * — is already baked in). A LOCAL ball is `{type, cx, cy, r, len, ang}` (centre +
+ * radius/half-length in local px, angle radians); its world image is:
+ *
+ *   centre → world.apply(cx, cy);   r,len → ·world.scale;   ang → +world.rotation
+ *
+ * (a similarity scales lengths uniformly and adds rotation). The list is sorted by
+ * source itemId (then roster order within a source) so the summary is a
+ * deterministic pure function of the folded state — RenderTree = pure(document,
+ * [[slide, alpha]]) — and the leader's shader stays byte-stable.
+ *
+ *   { balls: [{ type, x, y, r, len, ang }] }   // world coords/lengths/radians
+ *
+ * @param {object[]} nodes - derived render nodes (each carries plugin/state/world)
+ * @returns {{balls: object[]}}
+ *
+ * @example collectMetaballScene([]) // {balls: []}
+ * @example collectMetaballScene([{itemId: "m", state: {}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {metaball: true}, localBalls: () => [{type: "sphere", cx: 100, cy: 100, r: 50, len: 0, ang: 0}]}}]) // {balls: [{type: "sphere", x: 100, y: 100, r: 50, len: 0, ang: 0}]}
+ * @example collectMetaballScene([{itemId: "m", state: {}, world: {x: 10, y: 0, rotation: 0, scale: 2}, plugin: {capabilities: {metaball: true}, localBalls: () => [{type: "sphere", cx: 5, cy: 0, r: 3, len: 0, ang: 0}]}}]) // {balls: [{type: "sphere", x: 20, y: 0, r: 6, len: 0, ang: 0}]} (world.scale 2 → centre and radius scale)
+ */
+export function collectMetaballScene(nodes) {
+  const balls = [];
+  const sources = nodes
+    .filter((n) => n.plugin?.capabilities?.metaball && typeof n.plugin.localBalls === "function")
+    .sort((a, b) => (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
+  for (const n of sources) {
+    const scale = n.world?.scale ?? 1, rot = n.world?.rotation ?? 0;
+    for (const b of n.plugin.localBalls(n.state)) {
+      const c = T.apply(n.world ?? { x: 0, y: 0, rotation: 0, scale: 1 }, b.cx, b.cy);
+      balls.push({ type: b.type, x: c.x, y: c.y, r: b.r * scale, len: b.len * scale, ang: b.ang + rot });
+    }
+  }
+  return { balls };
+}
+
+/**
+ * Pure function. Feeds the METABALL SIBLING QUERY to its readers — the twin of
+ * resolveSkyScene. Computes collectMetaballScene(nodes) ONCE and attaches it as a
+ * derived `state.metaballScene` field to every metaball node, plus a boolean
+ * `state.metaballLeader` marking the SINGLE leader (the first metaball in the
+ * already-z-sorted list — lowest z, ties by id). The leader's emit() maps the
+ * world-space balls into its own local frame and renders ONE backdrop over their
+ * union region; every non-leader emits nothing (a pure ghost, but still a draggable
+ * widget — its frame comes from the widget system, not emit). State is
+ * SHALLOW-CLONED so the input nodes stay pure; a scene with NO metaball node is
+ * returned byte-identical (every non-metaball document is unaffected).
+ *
+ * @param {object[]} nodes - derived render nodes (z-sorted)
+ * @returns {object[]} nodes, with metaball nodes carrying state.metaballScene + state.metaballLeader
+ *
+ * @example resolveMetaballScene([{itemId: "r", type: "rect", state: {}, plugin: {capabilities: {}}}]).length // 1 (no metaball: passthrough)
+ * @example resolveMetaballScene([{itemId: "m", state: {}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {metaball: true}, localBalls: () => []}}])[0].state.metaballLeader // true
+ * @example // The FIRST metaball in the (already z-then-id-sorted) list is the leader; the rest get false:
+ * @example resolveMetaballScene([{itemId: "a", state: {}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {metaball: true}, localBalls: () => []}}, {itemId: "b", state: {}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {metaball: true}, localBalls: () => []}}]).map((n) => n.state.metaballLeader) // [true, false]
+ */
+export function resolveMetaballScene(nodes) {
+  const participants = nodes.filter((n) => n.plugin?.capabilities?.metaball);
+  if (participants.length === 0) return nodes;
+  const scene = collectMetaballScene(nodes);
+  const leaderId = participants[0].itemId; // first in z-order (nodes already z-sorted)
+  return nodes.map((n) =>
+    n.plugin?.capabilities?.metaball
+      ? { ...n, state: { ...n.state, metaballScene: scene, metaballLeader: n.itemId === leaderId } }
+      : n);
 }
 
 /**
