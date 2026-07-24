@@ -13,6 +13,7 @@
   import Toolbar from "./Toolbar.svelte";
   import SlideNav from "./SlideNav.svelte";
   import AssetExplorer from "./AssetExplorer.svelte";
+  import BuiltinAssetBrowser from "./BuiltinAssetBrowser.svelte";
   import CanvasView from "./CanvasView.svelte";
   import Inspector from "./Inspector.svelte";
   import KeyframePanel from "./KeyframePanel.svelte";
@@ -55,6 +56,15 @@
     openModalVisible = false;
     await app.loadProject(name);
   }
+
+  // Built-in Assets… modal (task #68 follow-up): a SEPARATE, discovery-only
+  // browser for ship-with-the-app assets (cursors today), distinct from the
+  // project Asset Explorer. Wires app.browseBuiltinAssets()'s hook to the Modal;
+  // the catalog is web/builtinAssets.js (loaded lazily by the browser on open).
+  let builtinAssetsVisible = $state(false);
+  app.showBuiltinAssets = () => {
+    builtinAssetsVisible = true;
+  };
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
@@ -178,6 +188,10 @@
     { id: "save-to-server", title: "Save to Server (as project)", icon: "mdi:cloud-upload-outline", run: (a) => a.saveToServer() },
     { id: "open-project", title: "Open Project…", icon: "mdi:folder-network-outline", run: (a) => a.openProject() },
     { id: "download-zip", title: "Download Project (.zip)", icon: "mdi:folder-zip-outline", run: (a) => a.downloadZip() },
+    // Built-in Assets browser (task #68 follow-up): a SEPARATE surface for
+    // ship-with-the-app assets (cursors today) — never mixed into the project
+    // Asset Explorer. Discovery only; widgets read built-ins directly.
+    { id: "builtin-assets", title: "Built-in Assets…", icon: "mdi:package-variant-closed", run: (a) => a.browseBuiltinAssets() },
     { id: "undo", title: "Undo", icon: "mdi:undo", run: (a) => a.undo() },
     { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
     { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, run: (a) => (a.selection = null) },
@@ -844,5 +858,11 @@
         {/each}
       </ul>
     {/if}
+  </Modal>
+  <!-- Built-in Assets browser: a SEPARATE, discovery-only surface for ship-with-
+       the-app assets (cursors today). Distinct from the project Asset Explorer —
+       built-ins never appear in the user's project asset list. -->
+  <Modal bind:open={builtinAssetsVisible} title="Built-in Assets">
+    <BuiltinAssetBrowser {app} />
   </Modal>
 </div>

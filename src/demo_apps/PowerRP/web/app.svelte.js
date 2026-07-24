@@ -2292,6 +2292,20 @@ export class PowerRPApp {
     );
   }
 
+  // Built-in asset browser UI seam (mirrors showOpenModal): App.svelte sets this
+  // to a function that opens the "Built-in Assets" Modal. Built-in assets are
+  // ship-with-the-app (cursors today) and live in a SEPARATE surface from the
+  // project Asset Explorer — this is DISCOVERY only; widgets read built-ins
+  // directly (web/builtinAssets.js is the catalog).
+  showBuiltinAssets = null;
+
+  /** Command. Open the built-in asset browser (delegates to the modal hook once
+   *  wired by App.svelte). */
+  browseBuiltinAssets() {
+    if (this.showBuiltinAssets) return this.showBuiltinAssets();
+    console.error("Built-in Assets: the browser modal is not wired yet (App.svelte hook missing).");
+  }
+
   /**
    * Clears to a fresh document (round 11: "next to save and load I should be
    * able to clear the current thing"). Goes through commit() so it lands in

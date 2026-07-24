@@ -3601,3 +3601,121 @@ audio.ae-preview-media {
 .open-project-error {
   color: var(--a-guide);
 }
+
+/* ── Built-in Assets browser (BuiltinAssetBrowser.svelte) ─────────────────────
+   The discovery-only catalog of ship-with-the-app assets (cursors today),
+   rendered in a Modal — a SEPARATE surface from the project Asset Explorer.
+   Reuses the SAME shared tile classes (.ae-grid/.ae-cell/.ae-tile/.ae-name) and
+   --a-* tokens so it reads as one system with the Explorer, but is scoped under
+   its own .builtin-assets root (the Modal portals to <body>, where the
+   Explorer's .asset-explorer-scoped rules don't reach). The grid/tile geometry
+   is restated (not shared via a grouped selector) to keep this a purely ADDITIVE
+   block — every value still comes from a token, no magic numbers. */
+.builtin-assets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-4);
+}
+
+.builtin-assets .ba-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+}
+
+.builtin-assets .ba-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+}
+
+.builtin-assets .ba-section-title {
+  font-weight: 600;
+  font-size: var(--a-font-md);
+}
+
+/* Count chip — a dim, tabular badge after the category name. */
+.builtin-assets .ba-section-count {
+  padding: var(--a-badge-pad-y) var(--a-badge-pad-x);
+  background: var(--a-badge-bg);
+  color: var(--a-badge-fg);
+  font-size: var(--a-font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.builtin-assets .ba-section-desc {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+
+/* Loud notices (loading / empty / error) — mirrors .asset-explorer .ae-notice. */
+.builtin-assets .ae-notice {
+  padding: var(--a-sp-3);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  line-height: 1.4;
+}
+
+.builtin-assets .ae-error {
+  color: var(--a-guide);
+}
+
+.builtin-assets .ae-notice-title {
+  font-weight: 600;
+  margin-bottom: var(--a-sp-1);
+}
+
+.builtin-assets .ae-notice-detail {
+  color: var(--fg-dim);
+  word-break: break-word;
+}
+
+/* Same auto-fill square-tile grid as the Asset Explorer (shared tokens). */
+.builtin-assets .ae-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--a-asset-cell-min), 1fr));
+  gap: var(--a-sp-3);
+}
+
+.builtin-assets .ae-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  min-width: 0;
+}
+
+.builtin-assets .ae-tile {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border: var(--a-hairline) solid var(--border);
+  background: var(--control-bg);
+}
+
+/* Copy-name affordance, bottom-left on hover — the .ae-copy-path overlay chrome
+   (built-ins have no served path; their identifier is the useful thing). */
+.builtin-assets .ba-copy {
+  position: absolute;
+  bottom: var(--a-sp-1);
+  left: var(--a-sp-1);
+  width: auto;
+  height: auto;
+  padding: var(--a-sp-1);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+  opacity: 0;
+}
+
+.builtin-assets .ae-tile:hover .ba-copy,
+.builtin-assets .ba-copy:focus-visible {
+  opacity: 1;
+}
+
+.builtin-assets .ae-name {
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
