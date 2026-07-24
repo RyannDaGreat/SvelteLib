@@ -44,7 +44,7 @@ import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH } from "../ir.js
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms } from "./glass_shader.js";
-import { getMaterial, materialEffect } from "./materials.js";
+import { getMaterial, materialEffect, isBackdropMaterial } from "./materials.js";
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
 
@@ -158,6 +158,11 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
       case "materialBackdrop":
         // A registry-dispatched SkSL material (generalizes glass). "Below" = everything emitted before it.
         handleMaterialBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
+        break;
+      case "materialFill":
+        // A FOREGROUND registry material (the corkboard family): makeShader + fill,
+        // NO backdrop re-render, NO children. The additive sibling of materialBackdrop.
+        handleMaterialFill(CanvasKit, target, cmd, world, view);
         break;
       case "cropSubtree":
         handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth);
@@ -288,8 +293,15 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity) {
   // Gradient objectBoundingBox = the path's own tight bounds (getBounds → [l,t,r,b]).
   const gb = skPath.getBounds();
   const bounds = { x: gb[0], y: gb[1], w: gb[2] - gb[0], h: gb[3] - gb[1] };
-  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawPath(skPath, p));
-  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawPath(skPath, p));
+  // Optional soft MASK blur (the additive `blur` field — a general soft-path
+  // enhancement the corkboard YARN uses for its cast shadow). Sigma is in LOCAL
+  // units; respectCTM=true lets Skia scale it to device px by the CTM, so the
+  // softness tracks zoom. blur 0 (the default) ⇒ no filter, crisp as before.
+  const maskBlur = cmd.blur > 0 ? CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, cmd.blur, true) : null;
+  const drawWith = (p) => { if (maskBlur) p.setMaskFilter(maskBlur); canvas.drawPath(skPath, p); };
+  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), drawWith);
+  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), drawWith);
+  if (maskBlur) maskBlur.delete();
   skPath.delete();
 }
 
@@ -827,6 +839,82 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   // Optional bright hairline border on top (reuses the glass border helper — the
   // materialBackdrop op carries the same cx/halfW/cornerRadius/stroke fields).
   drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity);
+}
+
+/**
+ * Command (draws on target.canvas). materialFill: the FOREGROUND twin of
+ * handleMaterialBackdrop — a leaner handler with NO below-content re-render and NO
+ * children (the corkboard family). Resolves the material (LOUD if it is actually a
+ * backdrop material), draws the optional soft shadow BENEATH first, then fills the
+ * region through the material's RuntimeEffect via `effect.makeShader(uniforms)`
+ * (the shader returns premultiplied 0 outside its own SDF), clipped to the device
+ * AABB. World→device geometry + length scaling mirror handleMaterialBackdrop; `sd`
+ * (world length → device px) is handed to the packer as `scale`.
+ */
+function handleMaterialFill(CanvasKit, target, cmd, world, view) {
+  const canvas = target.canvas;
+  const opacity = cmd.opacity ?? 1;
+  const material = getMaterial(cmd.material);
+  if (isBackdropMaterial(material))
+    throw new Error(`paintIR(skia): materialFill names BACKDROP material "${cmd.material}" — use materialBackdrop (foreground materials carry backdrop:false)`);
+
+  // Device-space region geometry (a similarity transform), identical to glass/material backdrop.
+  const ds = view.zoom * view.dpr;
+  const sd = world.scale * ds;                 // world length → device px
+  const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+  const cxDev = centerWorld.x * ds + view.panX * view.dpr;
+  const cyDev = centerWorld.y * ds + view.panY * view.dpr;
+  const halfWDev = cmd.halfW * sd, halfHDev = cmd.halfH * sd;
+  const cornerDev = cmd.cornerRadius * sd;
+  const angle = world.rotation;
+
+  // (1) optional soft shadow BENEATH the fill (the glass drawGlassShadow precedent).
+  if (cmd.shadow) drawMaterialShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, angle, cmd.shadow, sd);
+
+  // (2) the FOREGROUND fill: pack uniforms, makeShader (NO children), clip AABB, drawPaint.
+  const effect = materialEffect(CanvasKit, material);
+  const u = { cx: cxDev, cy: cyDev, halfW: halfWDev, halfH: halfHDev, cornerRadius: cornerDev, angle, scale: sd, ...cmd.params };
+  const uniforms = material.pack(u);
+  const shader = effect.makeShader(uniforms);
+  if (!shader) throw new Error(`paintIR(skia): material "${cmd.material}" makeShader returned null`);
+  const p = new CanvasKit.Paint();
+  p.setShader(shader);
+  p.setAlphaf(opacity);
+  const reach = Math.hypot(halfWDev, halfHDev) + GLASS_CLIP_SLOP_PX; // circumradius + AA slop covers any rotation
+  canvas.save();
+  canvas.clipRect(CanvasKit.LTRBRect(cxDev - reach, cyDev - reach, cxDev + reach, cyDev + reach), CanvasKit.ClipOp.Intersect, false);
+  canvas.drawPaint(p);
+  canvas.restore();
+  p.delete(); shader.delete();
+
+  // (3) optional bright hairline border on top (reuses the glass border helper).
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity);
+}
+
+/**
+ * Command (draws on `canvas` at the device root). The materialFill op's optional
+ * soft shadow: the fill's rounded-rect GROWN by `grow`, offset by (dx, dy), mask-
+ * blurred by `blur`, filled black at `alpha` — all WORLD units scaled to device by
+ * `sd` (except the 0..1 alpha). Rotation-safe (rotate about the offset center, like
+ * drawGlassShadow). The plugin authors dx/dy/grow from the light + apparent height,
+ * so a proud tack's shadow is larger + more offset than a pressed-in one.
+ */
+function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle, shadow, sd) {
+  if (shadow.alpha <= 0 || halfW <= 0 || halfH <= 0) return;
+  const grow = shadow.grow * sd;
+  const sigma = shadow.blur * sd;
+  const p = new CanvasKit.Paint();
+  p.setColor(CanvasKit.Color4f(0, 0, 0, shadow.alpha));
+  p.setAntiAlias(true);
+  if (sigma > 0) p.setMaskFilter(CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, sigma, false));
+  canvas.save();
+  canvas.translate(cx + shadow.dx * sd, cy + shadow.dy * sd);
+  canvas.rotate(angle * RAD2DEG, 0, 0);
+  const hw = halfW + grow, hh = halfH + grow, cr = corner + grow; // grow the corner too so a disk stays a disk
+  const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(-hw, -hh, hw, hh), cr, cr);
+  canvas.drawRRect(rr, p);
+  canvas.restore();
+  p.delete();
 }
 
 // ── subtree re-renders (self-contained `content`) ─────────────────────────────

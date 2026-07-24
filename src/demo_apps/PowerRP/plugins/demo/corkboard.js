@@ -1,0 +1,349 @@
+/**
+ * CORKBOARD family — four DEMO WIDGETS (plugins/demo/, the showcase folder) that
+ * introduce the FOREGROUND half of the MATERIAL FRAMEWORK: skeuomorphic, lightweight-
+ * 3D cork, paper, pins and yarn drawn as SkSL height-field fills (design.md under
+ * `.frenzy/corkboard/`). Three of them (board, note, thumbtack) emit ONE
+ * `materialFill` op each, naming a `backdrop: false` material in
+ * render_gpu/skia/corkboard_shader.js; the fourth (yarn) is an ordinary
+ * two-endpoint connector emitting stroked `path` ops (the pseudo-3D lives only in
+ * the shaded fills — a cord is just a curve).
+ *
+ * PSEUDO-3D, NO 3D: every solid object is a HEIGHT FIELD lit by ONE directional
+ * light (uLightDir, upper-left) evaluated per pixel in the shader — domes bulge,
+ * pins press in, paper curls and self-shadows, all as flat 2D draws that composite +
+ * CLI-export through the exact path glass/CRT use. Contact/drop shadows are ordinary
+ * blurred Skia shapes drawn beneath (the materialFill `shadow` descriptor / the yarn
+ * shadow `path`); the note-curl SELF shadow is the one shadow that lives in-shader.
+ *
+ * Every look knob is a CUSTOM self.* property (core/properties.js customProps — the
+ * Blender-style mechanism): a literal, an expression, or a `= …` equation, with ZERO
+ * engine changes (the framework carries params straight to the SkSL uniforms). The
+ * flagship animations ALL fall out of the existing keyframe/equation machinery:
+ * pressing a tack in (domeGain↓) flattens its dome AND shrinks its contact shadow
+ * AND — because the yarn endpoints bind to tack anchors — MOVES the yarn; a note
+ * curls (curlAmount 0→1) with its self shadow growing.
+ *
+ * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte). Defined in
+ * ONE file exporting an ARRAY (the shapeshifter.js / text_morph.js precedent) — the
+ * three material widgets share a factory. No plugin imports another (composition is
+ * via anchors + document state: the yarn references tack anchors by equation).
+ * DOM-free / bare-node-safe at import time.
+ */
+
+import { standardBBoxAnchors } from "../../core/derive.js";
+import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { materialFill, path, parseColor } from "../../render_gpu/ir.js";
+import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../../core/endpoints.js";
+
+// The family's SINGLE light: direction TO the light in screen space, upper-left
+// (design Part 3). Exposed on every widget as `lightAngle` (radians) so the whole
+// family shares one look yet each is independently overridable / equation-bindable.
+const FAMILY_LIGHT_ANGLE = Math.atan2(-0.83, -0.55); // ≈ -2.157 rad; dir ≈ (-0.55, -0.83)
+
+// Corner selector for the note curl: each component ±1 picks a corner (y-down, so
+// top = -1). corner = (dir.x·halfW, dir.y·halfH).
+const CURL_CORNERS = { TL: [-1, -1], TR: [1, -1], BL: [-1, 1], BR: [1, 1] };
+const CURL_CORNER_OPTIONS = ["TL", "TR", "BL", "BR"];
+const CURL_CORNER_LABELS = { TL: "Top-left", TR: "Top-right", BL: "Bottom-left", BR: "Bottom-right" };
+
+/**
+ * Pure function. The SHADOW direction (unit screen vector) for a light angle — the
+ * family's shadows fall OPPOSITE the light (design Part 3: SHADOW_DIR = −uLightDir).
+ *
+ * @param {number} lightAngle - radians, direction TO the light
+ * @returns {[number, number]} unit vector pointing where shadows fall (down-right by default)
+ *
+ * @example shadowDir(0) // [-1, -0] (light to the right => shadow to the left)
+ */
+function shadowDir(lightAngle) {
+  return [-Math.cos(lightAngle), -Math.sin(lightAngle)];
+}
+
+/**
+ * Pure function. Lightens a CSS colour toward white and re-alphas it — used for the
+ * yarn's cylindrical top-highlight sheen (a brighter, semi-transparent copy of the
+ * cord colour). parseColor is the shared node-safe hex/rgb() parser.
+ *
+ * @param {string} color - any parseColor-able colour
+ * @param {number} add - amount (0..1) added to each channel, clamped at 1
+ * @param {number} alpha - the highlight's alpha (0..1)
+ * @returns {string} an "rgba(r,g,b,a)" string
+ *
+ * @example lightenCss("#c81e1e", 0.27, 0.6) // "rgba(269->255,...)" a pale-red sheen
+ */
+function lightenCss(color, add, alpha) {
+  const c = parseColor(color);
+  const byte = (v) => Math.round(Math.min(1, v + add) * 255);
+  return `rgba(${byte(c[0])},${byte(c[1])},${byte(c[2])},${alpha})`;
+}
+
+// ── shared factory for the three bbox MATERIAL widgets (board, note, tack) ──────
+/**
+ * Pure function (factory). Builds one bbox widget that emits a SINGLE materialFill
+ * op. The three material widgets are the same skeleton (positioning + opacity +
+ * their custom look knobs) differing only in: which registered material they name,
+ * their knob set, how their params + optional soft shadow are computed, their
+ * corner radius, and their anchors/hit test.
+ *
+ * @param {object} cfg
+ * @param {string} cfg.type - widget type id (e.g. "corkboardNote")
+ * @param {string} cfg.title - human title (Inspector + submenu)
+ * @param {string} cfg.material - registered material id (corkboard_shader.js)
+ * @param {object} cfg.positioning - default {x,y,w,h,z}
+ * @param {object} cfg.custom - a customProps() result ({rows, defaults})
+ * @param {(s: object) => object} cfg.toParams - state → the material's flat knob map
+ * @param {(s: object) => number} cfg.cornerRadius - state → WORLD-px corner radius
+ * @param {(s: object) => (object|null)} [cfg.toShadow] - state → materialFill shadow descriptor
+ * @param {(s: object) => object[]} [cfg.anchors] - anchors fn (default standard bbox)
+ * @param {boolean} [cfg.disk] - hit-test as a disk (the thumbtack) instead of the bbox
+ * @returns {object} a plugin object
+ */
+function makeMaterialWidget(cfg) {
+  return {
+    type: cfg.type,
+    title: cfg.title,
+    capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+    defaults: {
+      type: cfg.type, ...cfg.positioning, rotation: 0, scale: 1,
+      rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
+      ...defaults("opacity"), // opacity:1
+      ...cfg.custom.defaults, // the look knobs (self.*)
+    },
+    inspector: [
+      ...bundle("positioning"),
+      ...props("opacity"),
+      ...cfg.custom.rows, // the look knobs (Inspector "Custom" region)
+    ],
+    /**
+     * Pure function. State → ONE materialFill op. The bbox (w, h) IS the region;
+     * cx/cy/halfW/halfH are the local box (sceneIR wraps them in the node's world).
+     */
+    emit(s) {
+      return [materialFill({
+        material: cfg.material,
+        cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
+        cornerRadius: cfg.cornerRadius(s),
+        params: cfg.toParams(s),
+        shadow: cfg.toShadow ? cfg.toShadow(s) : null,
+        opacity: s.opacity ?? 1,
+      })];
+    },
+    hitTest(s, lx, ly) {
+      if (cfg.disk) {
+        const rx = s.w / 2, ry = s.h / 2, nx = (lx - rx) / rx, ny = (ly - ry) / ry;
+        return nx * nx + ny * ny <= 1;
+      }
+      return lx >= 0 && lx <= s.w && ly >= 0 && ly <= s.h;
+    },
+    snapFeatures(s) {
+      return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
+    },
+    anchors: cfg.anchors ?? standardBBoxAnchors,
+    // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  };
+}
+
+// ── CORKBOARD (the board) ───────────────────────────────────────────────────────
+const CORK_CUSTOM = customProps([
+  { name: "baseColor", kind: "color", default: "rgb(190,143,86)", help: "The warm tan base tone of the cork panel (before the granular texture)." },
+  { name: "grainScale", kind: "number", default: 0.2, min: 0, help: "Granule frequency (cycles per world unit) — the fine mm-scale speckle that is cork's dominant signature. Higher = finer, denser granules." },
+  { name: "mottleScale", kind: "number", default: 0.02, min: 0, help: "Coarse blotch frequency (cycles per world unit) — the gentle cm-scale tone drift beneath the granules." },
+  { name: "mottleStrength", kind: "number", default: 0.12, min: 0, max: 1, help: "How strong the coarse tone drift is. Keep LOW — too high and the board reads as smoke instead of cork." },
+  { name: "pitStrength", kind: "number", default: 0.34, min: 0, max: 1, help: "Density/darkness of the small dark pores between granules." },
+  { name: "fleckStrength", kind: "number", default: 0.24, min: 0, max: 1, help: "Brightness of the pale granule faces catching the light." },
+  { name: "vignette", kind: "number", default: 0.2, min: 0, max: 1, help: "Inner-edge darkening, so the board reads as an inset panel." },
+  { name: "frameWidth", kind: "number", default: 26, min: 0, help: "Width (world px) of the dark wood frame rim around the board. 0 = no frame." },
+  { name: "frameColor", kind: "color", default: "rgb(92,58,30)", help: "The colour of the wood frame rim." },
+  { name: "cornerRadius", kind: "number", default: 30, min: 0, help: "Rounded-corner radius of the board (world px)." },
+  { name: "seed", kind: "number", default: 7, help: "Texture seed — changes the granule pattern deterministically (NOT animated)." },
+  { name: "lightAngle", kind: "number", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the family light in radians (screen space; upper-left by default). Drives the shading + shadow direction of the whole family." },
+]);
+
+const corkboardPlugin = makeMaterialWidget({
+  type: "corkboard",
+  title: "Corkboard",
+  material: "corkboard",
+  positioning: { x: 80, y: 80, w: 900, h: 640, z: 0 },
+  custom: CORK_CUSTOM,
+  cornerRadius: (s) => s.cornerRadius,
+  toParams: (s) => ({
+    seed: s.seed, grainScale: s.grainScale, mottleScale: s.mottleScale,
+    mottleStrength: s.mottleStrength, pitStrength: s.pitStrength, fleckStrength: s.fleckStrength,
+    baseColor: s.baseColor, vignette: s.vignette,
+    frameWidth: s.frameWidth, frameColor: s.frameColor, lightAngle: s.lightAngle,
+  }),
+});
+
+// ── CORKBOARD NOTE (sticky / loose-leaf paper) ──────────────────────────────────
+const NOTE_SHADOW_CURL_GAIN = 0.6; // a curled note lifts, casting a larger/softer drop shadow (× this × curlAmount)
+const NOTE_SHADOW_GROW = 0;        // the note's drop shadow matches its footprint (no growth)
+
+const NOTE_CUSTOM = customProps([
+  { name: "paperColor", kind: "color", default: "rgb(248,246,238)", help: "The paper's colour — warm white (loose-leaf) or canary yellow (a sticky note)." },
+  { name: "ruleSpacing", kind: "number", default: 26, min: 0, help: "Distance (world px) between the ruled horizontal lines. 0 = unruled." },
+  { name: "ruleStrength", kind: "number", default: 0.5, min: 0, max: 1, help: "Darkness of the ruled lines (their 'ink' opacity)." },
+  { name: "ruleColor", kind: "color", default: "rgb(120,150,190)", help: "The ruled-line ink colour — pale blue-grey." },
+  { name: "marginX", kind: "number", default: 34, help: "Distance (world px) from the left edge to the red vertical margin line. Negative = no margin." },
+  { name: "marginColor", kind: "color", default: "rgb(200,90,90)", help: "The vertical margin line's colour — red." },
+  { name: "holeRadius", kind: "number", default: 0, min: 0, help: "Radius (world px) of the loose-leaf punched holes along the top edge. 0 = no holes (the cork shows through the holes)." },
+  { name: "holeSpacing", kind: "number", default: 60, min: 0, help: "Distance (world px) between punched-hole centres." },
+  { name: "holeInset", kind: "number", default: 22, min: 0, help: "Distance (world px) from the top edge down to the hole-centre row." },
+  { name: "ripStrength", kind: "number", default: 12, min: 0, help: "Amplitude (world px) of the ragged/ripped left edge (torn from a pad). 0 = a clean edge." },
+  { name: "ripScale", kind: "number", default: 0.1, min: 0, help: "Frequency (cycles per world unit) of the ragged-edge noise. Higher = finer tears." },
+  { name: "curlAmount", kind: "number", default: 0, min: 0, max: 1, help: "How far the corner has curled up, 0..1. ANIMATE this (keyframe 0→1) to peel the corner after pinning; its self-shadow grows with it." },
+  { name: "curlSize", kind: "number", default: 150, min: 0, help: "Maximum diagonal reach (world px) of the curling corner region at curlAmount 1." },
+  { name: "curlCorner", kind: "select", default: "TR", options: CURL_CORNER_OPTIONS, optionLabels: CURL_CORNER_LABELS, help: "Which corner curls up." },
+  { name: "cornerRadius", kind: "number", default: 4, min: 0, help: "The paper's own (small) rounded-corner radius (world px)." },
+  { name: "seed", kind: "number", default: 3, help: "Texture/rip seed — changes the fibre + ragged-edge pattern deterministically." },
+  { name: "shadowStrength", kind: "number", default: 0.32, min: 0, max: 1, help: "Darkness of the soft drop shadow the note casts on the board." },
+  { name: "shadowBlur", kind: "number", default: 16, min: 0, help: "Softness (world-px blur) of that drop shadow." },
+  { name: "shadowOffset", kind: "number", default: 12, min: 0, help: "How far (world px) the drop shadow is offset from the note, opposite the light." },
+  { name: "lightAngle", kind: "number", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (radians, screen space). Shared with the family; drives ruling shade, curl lighting, and shadow direction." },
+]);
+
+const corkboardNotePlugin = makeMaterialWidget({
+  type: "corkboardNote",
+  title: "Corkboard Note",
+  material: "corkboardNote",
+  positioning: { x: 220, y: 200, w: 340, h: 420, z: 10 },
+  custom: NOTE_CUSTOM,
+  cornerRadius: (s) => s.cornerRadius,
+  toParams: (s) => ({
+    seed: s.seed, paperColor: s.paperColor, lightAngle: s.lightAngle,
+    ruleSpacing: s.ruleSpacing, ruleStrength: s.ruleStrength, ruleColor: s.ruleColor,
+    marginX: s.marginX, marginColor: s.marginColor,
+    holeRadius: s.holeRadius, holeSpacing: s.holeSpacing, holeInset: s.holeInset,
+    ripStrength: s.ripStrength, ripScale: s.ripScale,
+    curlAmount: s.curlAmount, curlSize: s.curlSize,
+    curlDir: CURL_CORNERS[s.curlCorner] ?? CURL_CORNERS.TR,
+  }),
+  toShadow: (s) => {
+    const sdir = shadowDir(s.lightAngle);
+    const lift = 1 + NOTE_SHADOW_CURL_GAIN * (s.curlAmount ?? 0); // a curled note lifts => a bigger, softer shadow
+    const off = (s.shadowOffset ?? 0) * lift;
+    return { dx: sdir[0] * off, dy: sdir[1] * off, blur: (s.shadowBlur ?? 0) * lift, alpha: s.shadowStrength ?? 0, grow: NOTE_SHADOW_GROW };
+  },
+});
+
+// ── CORKBOARD THUMBTACK (a pin) ─────────────────────────────────────────────────
+// The head fills the (square) bbox; resize handles resize the pin. Contact-shadow
+// size/offset/darkness scale with domeGain (press-in DEPTH): a PROUD tack stands
+// off the board and casts a larger, more-offset, darker shadow than a PRESSED-IN one.
+const TACK_SHADOW_OFF_BASE = 0.10, TACK_SHADOW_OFF_GAIN = 0.55;  // offset as radius·(base + gain·proud)
+const TACK_SHADOW_BLUR_BASE = 0.30, TACK_SHADOW_BLUR_GAIN = 0.40; // blur sigma as radius·(...)
+const TACK_SHADOW_GROW_BASE = 0.05, TACK_SHADOW_GROW_GAIN = 0.14; // grow as radius·(...)
+const TACK_SHADOW_A_BASE = 0.30, TACK_SHADOW_A_GAIN = 0.14;      // alpha = base + gain·proud
+
+const TACK_CUSTOM = customProps([
+  { name: "color", kind: "color", default: "rgb(210,45,45)", help: "The plastic head colour of the pin." },
+  { name: "domeGain", kind: "number", default: 0.95, min: 0, max: 1, help: "Press-in DEPTH, 1 = fully out/proud (a tall glossy dome), low = pushed in flat. ANIMATE this: it flattens the dome AND shrinks the contact shadow." },
+  { name: "shininess", kind: "number", default: 20, min: 1, help: "Glossiness of the head's specular hotspot — higher = a tighter, brighter highlight." },
+  { name: "seed", kind: "number", default: 0, help: "Reserved seed (kept for uniform symmetry; no visible effect)." },
+  { name: "lightAngle", kind: "number", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (radians, screen space). Shared with the family; places the hotspot and the contact shadow." },
+]);
+
+const corkboardThumbtackPlugin = makeMaterialWidget({
+  type: "corkboardThumbtack",
+  title: "Corkboard Thumbtack",
+  material: "corkboardThumbtack",
+  positioning: { x: 380, y: 176, w: 44, h: 44, z: 30 },
+  custom: TACK_CUSTOM,
+  disk: true,
+  cornerRadius: (s) => Math.min(s.w, s.h) / 2, // a disk (the round head)
+  // The head centre is BOTH the standard center anchor and a named "head" anchor —
+  // the yarn attach / contact point (design Part 4: `= tackA.anchors.head`).
+  anchors: (s) => [...standardBBoxAnchors(s), { id: "head", x: (s.w ?? 0) / 2, y: (s.h ?? 0) / 2 }],
+  toParams: (s) => ({ domeGain: s.domeGain, color: s.color, shininess: s.shininess, lightAngle: s.lightAngle, seed: s.seed }),
+  toShadow: (s) => {
+    const sdir = shadowDir(s.lightAngle);
+    const proud = s.domeGain ?? 0;
+    const radius = (s.w ?? 0) / 2; // world px
+    const off = radius * (TACK_SHADOW_OFF_BASE + TACK_SHADOW_OFF_GAIN * proud);
+    return {
+      dx: sdir[0] * off, dy: sdir[1] * off,
+      blur: radius * (TACK_SHADOW_BLUR_BASE + TACK_SHADOW_BLUR_GAIN * proud),
+      alpha: TACK_SHADOW_A_BASE + TACK_SHADOW_A_GAIN * proud,
+      grow: radius * (TACK_SHADOW_GROW_BASE + TACK_SHADOW_GROW_GAIN * proud),
+    };
+  },
+});
+
+// ── CORKBOARD YARN (connecting string) ──────────────────────────────────────────
+// A two-endpoint connector (the arrow family's endpoint plumbing). Endpoints bind
+// by equation to tack head anchors (`= @<tackId>_head.x/y`) so a moved/pressed tack
+// drags the yarn. Renders as three strokes: a soft blurred cast SHADOW, the round
+// CORD, and a thin top HIGHLIGHT (cylindrical sheen). Sags via a quadratic Bézier
+// whose control point is pulled DOWN by gravity·span (design Part 5).
+const YARN_SHADOW_ALPHA = 0.28;      // darkness of the yarn's soft cast shadow
+const YARN_SHADOW_WIDTH_FRAC = 0.95; // shadow stroke width as a fraction of the cord width
+const YARN_SHADOW_OFF_FRAC = 0.9;    // shadow offset (along the light-opposite dir) as × cord width
+const YARN_SHADOW_DROP_FRAC = 0.45;  // extra straight-down shadow drop as × cord width
+const YARN_SHADOW_BLUR_FRAC = 0.7;   // shadow blur sigma as × cord width
+const YARN_HL_WIDTH_FRAC = 0.34;     // highlight stroke width as a fraction of the cord width
+const YARN_HL_LIFT_FRAC = 0.28;      // highlight offset UP the cord (toward the viewer/light) as × cord width
+const YARN_HL_LIGHTEN = 0.27;        // channel lift toward white for the highlight colour
+const YARN_HL_ALPHA = 0.6;           // highlight alpha
+
+const corkboardYarnPlugin = {
+  type: "corkboardYarn",
+  title: "Corkboard Yarn",
+  capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
+  defaults: {
+    type: "corkboardYarn", z: 20,
+    from: { x: 400, y: 200 }, to: { x: 700, y: 320 },
+    gravity: 0.14, color: "rgb(200,30,30)", width: 7,
+    lightAngle: FAMILY_LIGHT_ANGLE, opacity: 1,
+  },
+  inspector: [
+    ...bundle("endpoints"),
+    ...props("opacity"),
+    { key: "gravity", label: "Gravity", kind: "number", min: 0, category: "custom", help: "Sag coefficient: the string dips by gravity × span at its midpoint. 0 = taut/straight; higher = a deeper conspiracy-board droop." },
+    { key: "color", label: "Cord color", kind: "color", category: "custom", help: "The yarn colour — classic conspiracy red." },
+    { key: "width", label: "Cord width", kind: "number", min: 0, category: "custom", help: "Thickness (world px) of the cord." },
+    { key: "lightAngle", label: "Light angle", kind: "number", category: "custom", help: "Direction TO the light (radians). Places the cord's shadow and top sheen." },
+  ],
+  /**
+   * Pure function. State → three stroked `path` ops (shadow, cord, highlight). The
+   * cord is a quadratic from→to whose control point sinks the curve midpoint by
+   * gravity·span (design Part 5: C = (mid, midY + 2·gravity·span)). The shadow is
+   * the SAME curve offset opposite the light + down and mask-blurred (the new path
+   * `blur` field); the highlight is a thinner, paler copy lifted toward the light.
+   * World == identity (a connector), so these local commands ARE world coordinates.
+   *
+   * @param {object} s - folded, equation-evaluated item state
+   * @returns {object[]} display-list path commands (shadow, cord, highlight)
+   */
+  emit(s) {
+    const { from, to } = s;
+    const width = s.width ?? ARROW_STROKE_WIDTH;
+    const opacity = s.opacity ?? 1;
+    const span = Math.hypot(to.x - from.x, to.y - from.y);
+    const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2;
+    // Quadratic control point: sink the CURVE midpoint by gravity·span. The quad
+    // midpoint is ¼A + ½C + ¼B, so C_y = midY + 2·(gravity·span) drops it by that.
+    const cx = mx, cy = my + 2 * (s.gravity ?? 0) * span;
+    const d = (ox, oy) => `M ${from.x + ox} ${from.y + oy} Q ${cx + ox} ${cy + oy} ${to.x + ox} ${to.y + oy}`;
+    const sdir = shadowDir(s.lightAngle ?? FAMILY_LIGHT_ANGLE);
+    const shadowOx = sdir[0] * width * YARN_SHADOW_OFF_FRAC;
+    const shadowOy = sdir[1] * width * YARN_SHADOW_OFF_FRAC + width * YARN_SHADOW_DROP_FRAC;
+    return [
+      path({ d: d(shadowOx, shadowOy), stroke: `rgba(0,0,0,${YARN_SHADOW_ALPHA})`, strokeWidth: width * YARN_SHADOW_WIDTH_FRAC, blur: width * YARN_SHADOW_BLUR_FRAC, opacity }),
+      path({ d: d(0, 0), stroke: s.color ?? "rgb(200,30,30)", strokeWidth: width, opacity }),
+      path({ d: d(0, -width * YARN_HL_LIFT_FRAC), stroke: lightenCss(s.color ?? "rgb(200,30,30)", YARN_HL_LIGHTEN, YARN_HL_ALPHA), strokeWidth: width * YARN_HL_WIDTH_FRAC, opacity }),
+    ];
+  },
+  hitTestWorld(node, wx, wy) {
+    return hitsShaft(node.state, wx, wy, node.state.width ?? ARROW_STROKE_WIDTH);
+  },
+  // Endpoint plumbing (draggable handles, free-coordinate translation, closest-anchor
+  // context) — the shared arrow-family capability (core/endpoints.js).
+  ...endpointPairHooks(),
+  placement: "endpoints",
+  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+};
+
+/**
+ * The corkboard family, in submenu order (back → front: board, note, tack, yarn).
+ * Spread into plugins/index.js's allPlugins (the shapeshifter.js precedent).
+ */
+export const corkboardPlugins = [corkboardPlugin, corkboardNotePlugin, corkboardThumbtackPlugin, corkboardYarnPlugin];

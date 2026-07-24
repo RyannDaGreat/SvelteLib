@@ -569,15 +569,20 @@ export function mermaidVector({ ref, x, y, w, h, paths, texts, viewBox, opacity 
  * @example path({d: "M0 0h10v10h-10z", fill: "#000", fillRule: "evenodd"}).fillRule // "evenodd"
  * @example path({d: "M0 0L10 0", stroke: "#000", strokeWidth: 2}).fill // null
  */
-export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule = "nonzero", opacity = 1 }) {
+export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule = "nonzero", opacity = 1, blur = 0 }) {
   if (typeof d !== "string" || d.trim() === "") throw new Error(`path: "d" must be a non-empty SVG path string, got ${JSON.stringify(d)}`);
   if (fillRule !== "nonzero" && fillRule !== "evenodd") throw new Error(`path: "fillRule" must be "nonzero" or "evenodd", got ${JSON.stringify(fillRule)}`);
-  requireFinite("path", { strokeWidth, opacity });
+  requireFinite("path", { strokeWidth, opacity, blur });
   return {
     op: "path", d, fillRule,
     fill: fill === null ? null : parsePaint(fill),
     stroke: stroke === null ? null : parsePaint(stroke),
-    strokeWidth, opacity,
+    // `blur` (optional): a Gaussian MASK-blur radius in LOCAL units — a general
+    // soft-path enhancement any consumer can reuse (the corkboard YARN uses it for
+    // its soft cast shadow, a blurred stroke, avoiding a heavier effectSubtree
+    // wrap). 0 = crisp (byte-identical to a path built without the field). The
+    // backend scales the sigma by the CTM, so the softness tracks zoom.
+    strokeWidth, opacity, blur: Math.max(0, blur),
   };
 }
 
@@ -840,6 +845,70 @@ export function materialBackdrop({
 }
 
 /**
+ * Pure function. FOREGROUND-material fill — the sibling of `materialBackdrop` and
+ * the key architectural half the corkboard family adds. Draws a rounded-rect region
+ * through a REGISTERED SkSL material (a `backdrop: false` descriptor in
+ * render_gpu/skia/materials.js) that synthesizes its ENTIRE look from uniforms +
+ * procedural noise. Unlike `materialBackdrop` there is NO below-content re-render
+ * and NO children — so no `blurRadius` / `backdropScale`: paint_skia.js
+ * handleMaterialFill just compiles+caches the SkSL, `effect.makeShader(uniforms)`,
+ * clips to the AABB, and fills (the shader returns premultiplied 0 outside its own
+ * SDF).
+ *
+ * `params` is the material's OWN flat knob map ({name: value}); numeric values must
+ * be finite, everything else (a colour string a packer will parse) passes through
+ * — so ANY knob may be a `=` equation upstream (zero engine change), exactly like
+ * glass/CRT. ALL LENGTHS ARE WORLD UNITS (halfW/halfH/cornerRadius) — the backend
+ * scales to device by world.scale·zoom·dpr.
+ *
+ * `shadow` (optional) is a soft blurred rounded-rect drawn BENEATH the fill (the
+ * glass drawGlassShadow precedent, generalized): `{dx, dy, blur, alpha, grow}`, all
+ * WORLD units except the 0..1 `alpha` — the fill's own rounded-rect grown by `grow`,
+ * offset by (dx, dy), mask-blurred by `blur`, filled black at `alpha`. The PLUGIN
+ * computes dx/dy from the light direction and the object's apparent height (a proud
+ * tack casts a larger, more-offset shadow than a pressed-in one), so the handler
+ * stays a dumb draw. Absent ⇒ no handler-side shadow (the note curl's SELF shadow
+ * still lives in the shader).
+ *
+ * @example materialFill({material: "corkboard", cx: 0, cy: 0, halfW: 400, halfH: 300}).op // "materialFill"
+ * @example materialFill({material: "corkboardNote", cx: 0, cy: 0, halfW: 80, halfH: 100, params: {curlAmount: 0.7}}).params.curlAmount // 0.7
+ * @example materialFill({material: "corkboardThumbtack", cx: 0, cy: 0, halfW: 20, halfH: 20, cornerRadius: -3}).cornerRadius // 0 (negative radii clamped)
+ * @example materialFill({material: "corkboardThumbtack", cx: 0, cy: 0, halfW: 20, halfH: 20, shadow: {dx: 4, dy: 6, blur: 8, alpha: 0.3, grow: 2}}).shadow.grow // 2
+ */
+export function materialFill({
+  material, cx, cy, halfW, halfH, cornerRadius = 0, params = {},
+  shadow = null, stroke = null, strokeWidth = 0, opacity = 1,
+}) {
+  if (typeof material !== "string" || material.length === 0) throw new Error(`materialFill: "material" must be a non-empty id string, got ${JSON.stringify(material)}`);
+  requireFinite("materialFill", { cx, cy, halfW, halfH, cornerRadius, strokeWidth, opacity });
+  if (params === null || typeof params !== "object" || Array.isArray(params)) throw new Error(`materialFill: "params" must be a plain object, got ${JSON.stringify(params)}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (typeof v === "number" && !Number.isFinite(v)) throw new Error(`materialFill: param "${k}" is a non-finite number (${v})`);
+  }
+  let shadowOut = null;
+  if (shadow !== null) {
+    if (typeof shadow !== "object" || Array.isArray(shadow)) throw new Error(`materialFill: "shadow" must be a plain object or null, got ${JSON.stringify(shadow)}`);
+    requireFinite("materialFill.shadow", { dx: shadow.dx, dy: shadow.dy, blur: shadow.blur, alpha: shadow.alpha, grow: shadow.grow });
+    shadowOut = {
+      dx: shadow.dx, dy: shadow.dy,
+      blur: Math.max(0, shadow.blur),
+      alpha: Math.max(0, Math.min(1, shadow.alpha)),
+      grow: Math.max(0, shadow.grow),
+    };
+  }
+  return {
+    op: "materialFill", material,
+    cx, cy, halfW, halfH,
+    cornerRadius: Math.max(0, cornerRadius),
+    params: { ...params },
+    shadow: shadowOut,
+    stroke: stroke === null ? null : parseColor(stroke),
+    strokeWidth: Math.max(0, strokeWidth),
+    opacity,
+  };
+}
+
+/**
  * Pure function. Crop-box effect node (manifest ARCHITECTURE PLAN #3): fills a
  * rounded-rect region, then clips+re-emits `content` (the target item's OWN
  * local-space commands, already wrapped in a pushTransform/popTransform pair
@@ -1038,4 +1107,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];

@@ -33,9 +33,19 @@
  */
 
 import { CRT_MATERIAL } from "./crt_shader.js";
+import { CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL } from "./corkboard_shader.js";
 
 // id → descriptor. A new material appends ONE import above + ONE entry here.
-const MATERIALS = Object.fromEntries([CRT_MATERIAL].map((m) => [m.id, m]));
+// A descriptor's optional `backdrop` flag splits the framework in two:
+//   - BACKDROP material (glass, CRT) — `backdrop` absent/true: its SkSL declares
+//     the standard {blurredBackdrop, sharpBackdrop} children; the `materialBackdrop`
+//     op + handleMaterialBackdrop re-render the content beneath to feed them.
+//   - FOREGROUND material (the corkboard family) — `backdrop: false`: NO children,
+//     NO re-render; the `materialFill` op + handleMaterialFill just makeShader+fill.
+// Absence defaults to backdrop (back-compat: CRT/glass carry no flag).
+const MATERIALS = Object.fromEntries(
+  [CRT_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL].map((m) => [m.id, m]),
+);
 
 /**
  * Query. Resolves a material id to its descriptor. Throws LOUDLY on an unknown
@@ -56,6 +66,22 @@ export function getMaterial(id) {
  * @example materialIds().includes("crt") // true */
 export function materialIds() {
   return Object.keys(MATERIALS);
+}
+
+/**
+ * Pure function. Is `material` a BACKDROP material (samples the composite-so-far
+ * via children) rather than a FOREGROUND fill? Absence of the flag defaults to
+ * true (CRT/glass predate the flag). The two handlers use this to fail LOUDLY if
+ * an op names a material of the wrong half (a `materialFill` naming CRT, say).
+ *
+ * @param {{backdrop?: boolean}} material - a descriptor from getMaterial()
+ * @returns {boolean}
+ *
+ * @example isBackdropMaterial({id: "crt"}) // true (no flag => backdrop)
+ * @example isBackdropMaterial({id: "corkboard", backdrop: false}) // false
+ */
+export function isBackdropMaterial(material) {
+  return material.backdrop !== false;
 }
 
 // Compiled RuntimeEffect cache, keyed by material id + guarded by the CanvasKit
