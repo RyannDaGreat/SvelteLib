@@ -1877,6 +1877,28 @@ export class PowerRPApp {
     return this.doc.meta.name || "Untitled";
   }
 
+  /** Command (one undo unit). Rename the presentation — writes `doc.meta.name`,
+   *  the SINGLE source of the project name (toolbar title, Save default, and the
+   *  name Open sets). Trims; a blank or unchanged name is a no-op, so the title
+   *  can never be emptied. Undoable like any document edit (goes through commit).
+   *  Used by BOTH the toolbar title's double-click rename AND the Save-As path,
+   *  so title / open / save always agree on one name. */
+  renameProject(name) {
+    const trimmed = (name ?? "").trim();
+    if (!trimmed || trimmed === this.doc.meta.name) return;
+    this.commit({ ...this.doc, meta: { ...this.doc.meta, name: trimmed } });
+  }
+
+  /** Query. Whether a project FOLDER named `name` already exists on the server —
+   *  a case-sensitive exact match against the SAME list the Open modal renders
+   *  (listProjects). The Save modal reads this to WARN before overwriting, so a
+   *  save can never silently clobber a different project. Blank → false. */
+  async projectExists(name) {
+    const trimmed = (name ?? "").trim();
+    if (!trimmed) return false;
+    return (await this.listProjects()).some((p) => p.name === trimmed);
+  }
+
   /** Command. Save the current document to the server as a project FOLDER
    *  (doc.json under projects/<name>/). Creates the folder if new. Throws
    *  loudly on failure so the caller can surface it. */
@@ -1899,7 +1921,11 @@ export class PowerRPApp {
   async loadProject(name) {
     const { doc } = await projectApi.loadProject(name);
     clearDynamicFonts(); // drop the previous project's uploaded font families
-    this.commit(this.repaired(doc)); // repaired() includes bindings migration
+    // OPENING SETS THE NAME: the server folder is authoritative, so the title,
+    // any future Save, and a possibly-stale stored meta.name all agree on `name`
+    // (keeps title / open / save consistent — the one-name-model invariant).
+    const repaired = this.repaired(doc); // repaired() includes bindings migration
+    this.commit({ ...repaired, meta: { ...repaired.meta, name } });
     this.slideIndex = 0;
     this.selection = null;
     this.syncFontAssets(name); // fire-and-forget: register + load this project's font assets
@@ -2290,6 +2316,31 @@ export class PowerRPApp {
       "(Modal lib component pending). Use app.listProjects() / app.loadProject(name) " +
       "programmatically, or Load Presentation for a local file.",
     );
+  }
+
+  // Save + Rename UI seams (mirror showOpenModal): App.svelte sets these to
+  // functions that open the respective Modal. Both operate on ONE name model —
+  // doc.meta.name (renameProject) — so the title, Save, and Open never diverge.
+  // Until App.svelte wires them, each command reports LOUDLY (no ad-hoc dialog).
+  showSaveModal = null;
+  showRenameModal = null;
+
+  /** Command. Open the Save-to-Server modal: choose/confirm the name (default =
+   *  meta.name) and, if that name already exists on the server, warn + require
+   *  an explicit Overwrite (never a silent clobber). Delegates to the modal hook.
+   *  The low-level push (saveToServer) is unchanged and still used non-
+   *  interactively by asset upload / zip download. */
+  saveProjectAs() {
+    if (this.showSaveModal) return this.showSaveModal();
+    console.error("Save to Server: the save modal is not wired yet (App.svelte hook missing). Use app.saveToServer(name).");
+  }
+
+  /** Command. Open the Rename modal for the presentation title (writes
+   *  doc.meta.name via renameProject). Delegates to the modal hook; also the
+   *  target of the toolbar title's double-click (bug: the title was inert). */
+  renamePresentation() {
+    if (this.showRenameModal) return this.showRenameModal();
+    console.error("Rename: the rename modal is not wired yet (App.svelte hook missing). Use app.renameProject(name).");
   }
 
   // Built-in asset browser UI seam (mirrors showOpenModal): App.svelte sets this

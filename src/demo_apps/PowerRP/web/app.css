@@ -786,6 +786,10 @@ body,
   font-size: var(--a-font-md);
   color: var(--fg-dim);
   margin-right: var(--a-sp-4);
+  cursor: pointer; /* double-click renames (see Toolbar.svelte) */
+}
+.toolbar .doc-name:hover {
+  color: var(--fg);
 }
 
 .toolbar .sep {
@@ -3600,6 +3604,50 @@ audio.ae-preview-media {
 }
 .open-project-error {
   color: var(--a-guide);
+}
+
+/* ── Name modals (Rename Presentation / Save to Server) ───────────────────────
+   Shared chrome for the two presentation-name dialogs (App.svelte): a labeled
+   text field, an optional conflict/update line, and a right-aligned button row
+   reusing the standard .btn (.btn.danger = the loud Overwrite). One name model —
+   doc.meta.name — drives the toolbar title, Save, and Open. */
+.name-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-4);
+}
+.name-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+}
+.name-modal-label {
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+}
+.name-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-3);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0; /* square corners — never inherit a UA/rounded default */
+  font-size: var(--a-font-md);
+}
+.name-modal-warning {
+  font-size: var(--a-font-sm);
+  color: var(--a-guide);
+}
+.name-modal-note {
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+}
+.name-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--a-sp-2);
 }
 
 /* ── Built-in Assets browser (BuiltinAssetBrowser.svelte) ─────────────────────

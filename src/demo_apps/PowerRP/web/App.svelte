@@ -57,6 +57,67 @@
     await app.loadProject(name);
   }
 
+  // Save-to-Server modal (bug: "Save to server" gave no way to CHOOSE a name and
+  // silently overwrote). Choose/confirm a name (default = the current meta.name)
+  // with CONFLICT protection: if a project of that name already exists on the
+  // server — the SAME list the Open modal renders — the primary action becomes a
+  // loud "Overwrite" (destructive-action-confirm; never a silent clobber). On
+  // confirm the name is applied (renameProject → the title updates too) then
+  // pushed (saveToServer), so title / open / save all agree on one name.
+  let saveModalVisible = $state(false);
+  let saveName = $state("");
+  let saveProjectNames = $state([]); // existing project names, for the conflict check
+  let saveBusy = $state(false);
+  let saveError = $state(null);
+  app.showSaveModal = async () => {
+    saveName = app.projectName();
+    saveError = null;
+    saveBusy = false;
+    saveProjectNames = [];
+    saveModalVisible = true;
+    try {
+      saveProjectNames = (await app.listProjects()).map((p) => p.name);
+    } catch (e) {
+      // Non-fatal: without the list we can't warn, but the user can still save.
+      console.error("Save to Server: could not list existing projects (conflict check skipped):", e);
+    }
+  };
+  const saveTrimmed = $derived(saveName.trim());
+  const saveNameExists = $derived(saveProjectNames.includes(saveTrimmed));
+  const saveIsCurrent = $derived(saveTrimmed === app.projectName()); // re-saving the open project is expected, not a clobber
+  const saveWouldClobber = $derived(saveNameExists && !saveIsCurrent);
+  async function confirmSave() {
+    const name = saveTrimmed;
+    if (!name || saveBusy) return;
+    saveBusy = true;
+    saveError = null;
+    try {
+      app.renameProject(name); // one name model — applies to the title before the push
+      await app.saveToServer(name);
+      saveModalVisible = false;
+    } catch (e) {
+      saveError = String(e.message ?? e);
+      console.error("Save to Server failed:", e);
+    } finally {
+      saveBusy = false;
+    }
+  }
+
+  // Rename modal (bug: double-clicking the top-left title did nothing). A pure
+  // LOCAL edit — writes doc.meta.name via app.renameProject (undoable), no server
+  // round-trip, no conflict check (that is a Save concern). Opened by the toolbar
+  // title's double-click and the "Rename Presentation" command.
+  let renameModalVisible = $state(false);
+  let renameName = $state("");
+  app.showRenameModal = () => {
+    renameName = app.projectName();
+    renameModalVisible = true;
+  };
+  function confirmRename() {
+    app.renameProject(renameName);
+    renameModalVisible = false;
+  }
+
   // Built-in Assets… modal (task #68 follow-up): a SEPARATE, discovery-only
   // browser for ship-with-the-app assets (cursors today), distinct from the
   // project Asset Explorer. Wires app.browseBuiltinAssets()'s hook to the Modal;
@@ -182,10 +243,13 @@
     { id: "load-file", title: "Load Presentation", icon: "mdi:folder-open-outline", run: (a) => a.loadFile() },
     { id: "clear-doc", title: "Clear Document (new)", icon: "mdi:broom", run: (a) => a.clearDoc() },
     // Project server (manifest Round 12: projects are FOLDERS on the server;
-    // Download = a .zip of the folder). Save/Download need no UI; Open opens a
-    // project-picker modal — that UI lands in parallel (Sonnet1's Modal lib
-    // component), so open-project delegates to app.openProject()'s modal hook.
-    { id: "save-to-server", title: "Save to Server (as project)", icon: "mdi:cloud-upload-outline", run: (a) => a.saveToServer() },
+    // Download = a .zip of the folder). Save opens a NAME chooser with conflict/
+    // overwrite protection (a project of that name already on the server warns
+    // before clobbering); Open opens the project-picker modal; Rename edits the
+    // title (doc.meta.name) — all three delegate to App.svelte modal hooks and
+    // share the one name model.
+    { id: "rename-presentation", title: "Rename Presentation…", icon: "mdi:rename-outline", run: (a) => a.renamePresentation() },
+    { id: "save-to-server", title: "Save to Server (as project)…", icon: "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
     { id: "open-project", title: "Open Project…", icon: "mdi:folder-network-outline", run: (a) => a.openProject() },
     { id: "download-zip", title: "Download Project (.zip)", icon: "mdi:folder-zip-outline", run: (a) => a.downloadZip() },
     // Built-in Assets browser (task #68 follow-up): a SEPARATE surface for
@@ -883,6 +947,61 @@
         {/each}
       </ul>
     {/if}
+  </Modal>
+  <!-- Save to Server: a NAME chooser with conflict/overwrite protection. Shares
+       the one name model (doc.meta.name) with the title and Open. -->
+  <Modal bind:open={saveModalVisible} title="Save to Server">
+    <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmSave(); }}>
+      <label class="name-modal-field">
+        <span class="name-modal-label">Project name</span>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="name-modal-input"
+          type="text"
+          bind:value={saveName}
+          placeholder="Untitled"
+          autocomplete="off"
+          spellcheck="false"
+          autofocus
+        />
+      </label>
+      {#if saveError}
+        <div class="name-modal-warning">{saveError}</div>
+      {:else if saveWouldClobber}
+        <div class="name-modal-warning">A different project named “{saveTrimmed}” already exists — saving will OVERWRITE it.</div>
+      {:else if saveNameExists && saveIsCurrent}
+        <div class="name-modal-note">Updates the existing project “{saveTrimmed}”.</div>
+      {/if}
+      <div class="name-modal-actions">
+        <button type="button" class="btn" onclick={() => (saveModalVisible = false)}>Cancel</button>
+        <button type="submit" class="btn" class:danger={saveWouldClobber} disabled={!saveTrimmed || saveBusy}>
+          {saveWouldClobber ? "Overwrite" : "Save"}
+        </button>
+      </div>
+    </form>
+  </Modal>
+  <!-- Rename Presentation: writes doc.meta.name (the toolbar title). Opened by
+       the title's double-click and the "Rename Presentation" command. -->
+  <Modal bind:open={renameModalVisible} title="Rename Presentation">
+    <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmRename(); }}>
+      <label class="name-modal-field">
+        <span class="name-modal-label">Presentation name</span>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          class="name-modal-input"
+          type="text"
+          bind:value={renameName}
+          placeholder="Untitled"
+          autocomplete="off"
+          spellcheck="false"
+          autofocus
+        />
+      </label>
+      <div class="name-modal-actions">
+        <button type="button" class="btn" onclick={() => (renameModalVisible = false)}>Cancel</button>
+        <button type="submit" class="btn" disabled={!renameName.trim()}>Rename</button>
+      </div>
+    </form>
   </Modal>
   <!-- Built-in Assets browser: a SEPARATE, discovery-only surface for ship-with-
        the-app assets (cursors today). Distinct from the project Asset Explorer —

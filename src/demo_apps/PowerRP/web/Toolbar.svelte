@@ -48,7 +48,19 @@
 </script>
 
 <div class="toolbar">
-  <span class="doc-name">{app.doc.meta.name}</span>
+  <!-- The presentation TITLE. Double-click (or Enter/F2 when focused) opens the
+       Rename modal, which writes doc.meta.name — the one name model shared with
+       Save and Open. role/tabindex/onkeydown keep the double-click affordance
+       keyboard-accessible (it is the sole in-place rename trigger). -->
+  <Tooltip text="Double-click to rename">
+    <span
+      class="doc-name"
+      role="button"
+      tabindex="0"
+      ondblclick={() => app.renamePresentation()}
+      onkeydown={(e) => { if (e.key === "Enter" || e.key === "F2") { e.preventDefault(); app.renamePresentation(); } }}
+    >{app.doc.meta.name}</span>
+  </Tooltip>
   {#each groups as group, gi}
     {#if gi > 0}<span class="sep"></span>{/if}
     {#each group as [id, icon, tip]}
