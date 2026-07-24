@@ -28,6 +28,7 @@ import { createUndo } from "../core/undo.js";
 import { registerAll } from "../plugins/index.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
+import { builtinCursorAssets } from "../render_gpu/gpu/svg_raster.js"; // ship-with-the-app cursor library merged into the Asset Explorer
 import { browserSetting } from "./settings.js";
 // Fonts-as-asset seam (#26): register an uploaded font file as a SELECTABLE
 // family (render_gpu/fonts.js dynamic registry) + load it into the browser.
@@ -2003,10 +2004,17 @@ export class PowerRPApp {
   }
 
   /** Query. List the current project's assets from the server (reflects the
-   *  assets/ folder on disk — a manual drop appears after a refresh). This is
-   *  the refresh-button data source for the future Asset Explorer pane. */
+   *  assets/ folder on disk — a manual drop appears after a refresh), with the
+   *  ship-with-the-app BUILT-IN cursor library (render_gpu/gpu/svg_raster.js)
+   *  merged in FIRST so those SVGs appear in the Asset Explorer for every project
+   *  (marked builtin:true → the Explorer hides their delete affordance). A
+   *  server asset of the same name WINS (dropped from the built-in prefix) — no
+   *  duplicate-key clash and a user override is honoured. Throws loudly if the
+   *  server list fails (unchanged) — the built-ins ride along whenever it's up. */
   async listProjectAssets(name = this.projectName()) {
-    return projectApi.listAssets(name);
+    const server = await projectApi.listAssets(name);
+    const serverNames = new Set(server.map((a) => a.name));
+    return [...builtinCursorAssets().filter((a) => !serverNames.has(a.name)), ...server];
   }
 
   /** Command. Delete one asset from the current project (the server removes

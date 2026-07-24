@@ -454,15 +454,21 @@
                     <iconify-icon icon={justCopiedUrl === a.url ? "mdi:check" : "mdi:content-copy"} width="14" height="14"></iconify-icon>
                   </button>
                 </Tooltip>
-                <Tooltip text="Delete asset from the project">
-                  <button
-                    class="btn-icon ae-trash"
-                    aria-label={`Delete ${a.name}`}
-                    onclick={() => onTrashClick(a)}
-                  >
-                    <iconify-icon icon="mdi:trash-can-outline" width="14" height="14"></iconify-icon>
-                  </button>
-                </Tooltip>
+<!-- Built-in library assets (builtin:true — the ship-with-the-app cursors)
+                     are NOT user data: they ship with the app, so the delete
+                     affordance is hidden for them (there's nothing on disk to
+                     remove). Uploaded/project assets keep the trash can. -->
+                {#if !a.builtin}
+                  <Tooltip text="Delete asset from the project">
+                    <button
+                      class="btn-icon ae-trash"
+                      aria-label={`Delete ${a.name}`}
+                      onclick={() => onTrashClick(a)}
+                    >
+                      <iconify-icon icon="mdi:trash-can-outline" width="14" height="14"></iconify-icon>
+                    </button>
+                  </Tooltip>
+                {/if}
               </div>
             </Tooltip>
             <div class="ae-name">{a.name}</div>

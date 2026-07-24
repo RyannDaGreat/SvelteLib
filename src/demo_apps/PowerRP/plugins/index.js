@@ -5,6 +5,7 @@
 
 import { rectPlugin } from "./rect.js";
 import { shapePlugin } from "./shape.js";
+import { svgPlugin } from "./svg.js";
 import { circlePlugin } from "./circle.js";
 import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
@@ -34,8 +35,9 @@ import { shapeshifterPlugins } from "./shapeshifter.js";
 // not the core Add menus.
 import { demoShowcasePlugin } from "./demo/showcase.js";
 import { glassPlugin } from "./demo/glass.js";
+import { cursorPlugin } from "./demo/cursor.js";
 
-export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, cursorPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {
