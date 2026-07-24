@@ -528,6 +528,11 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
   const centerWorld = T.apply(world, cmd.cx, cmd.cy);
   const originWorld = T.apply(world, cmd.originX, cmd.originY);
   const clip = lensClipPath(CanvasKit, cmd, deviceMatrix(CanvasKit, view, world));
+  // Per-axis zoom (default to the isotropic magnification). aniso === false ⇒
+  // the ISOTROPIC path runs unchanged (byte-identical to pre-anisotropy).
+  const magX = cmd.magnificationX ?? cmd.magnification;
+  const magY = cmd.magnificationY ?? cmd.magnification;
+  const aniso = magX !== magY;
 
   if (cmd.supersample && depth < MAX_SUPERSAMPLE_DEPTH) {
     // Crisp AND CHEAP: re-render the below-list ONLY within the lens footprint —
@@ -541,13 +546,33 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
     const x1 = Math.min(ctx.deviceW, Math.ceil(cb[2])), y1 = Math.min(ctx.deviceH, Math.ceil(cb[3]));
     const rw = x1 - x0, rh = y1 - y0;
     if (rw > 0 && rh > 0) {
-      const lensView = lensViewFor(view, centerWorld, cmd.magnification, originWorld);
-      // Shift the lens view so device (x0,y0) maps to the small surface's origin.
-      const shifted = { ...lensView, panX: lensView.panX - x0 / view.dpr, panY: lensView.panY - y0 / view.dpr };
       const sub = ctx.makeSurface(rw, rh);
       if (!sub) throw new Error("paintIR(skia): makeSurface for lens re-render returned null");
       sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
-      paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shifted, ctx, depth + 1);
+      if (aniso) {
+        // Anisotropic: rasterize the below-list ONCE under a per-axis scale about
+        // the origin (crisp on BOTH axes — no isotropic view, no texture
+        // resampling). Pre-concat translate(-x0,-y0)·[centerDev]·scale(magX,magY)·
+        // [-originDev] onto the scratch canvas, then paint with the BASE view; each
+        // op's applyView composes with this, so vector ops rasterize at the true
+        // (magX·zoom, magY·zoom) device resolution and fill the lens footprint.
+        const ds = view.zoom * view.dpr;
+        const centerDev = { x: centerWorld.x * ds + view.panX * view.dpr, y: centerWorld.y * ds + view.panY * view.dpr };
+        const originDev = { x: originWorld.x * ds + view.panX * view.dpr, y: originWorld.y * ds + view.panY * view.dpr };
+        const subCanvas = sub.getCanvas();
+        subCanvas.concat(CanvasKit.Matrix.multiply(
+          CanvasKit.Matrix.translated(-x0, -y0),
+          CanvasKit.Matrix.translated(centerDev.x, centerDev.y),
+          CanvasKit.Matrix.scaled(magX, magY),
+          CanvasKit.Matrix.translated(-originDev.x, -originDev.y),
+        ));
+        paintFlat(CanvasKit, { canvas: subCanvas, surface: sub }, belowFlat, view, ctx, depth + 1);
+      } else {
+        const lensView = lensViewFor(view, centerWorld, magX, originWorld);
+        // Shift the lens view so device (x0,y0) maps to the small surface's origin.
+        const shifted = { ...lensView, panX: lensView.panX - x0 / view.dpr, panY: lensView.panY - y0 / view.dpr };
+        paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shifted, ctx, depth + 1);
+      }
       sub.flush();
       const lensImg = sub.makeImageSnapshot();
       canvas.save();
@@ -561,21 +586,21 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
       sub.dispose();
     }
   } else {
-    // Soft: sample the composite-so-far, magnified about the origin.
+    // Soft: sample the composite-so-far, magnified about the origin. scale(magX,
+    // magY) — with magX === magY this is the isotropic scale(M, M), byte-identical.
     if (!target.surface) throw new Error("paintIR(skia): magnifyBackdrop sampling requires an owned offscreen surface");
     target.surface.flush();
     const snap = target.surface.makeImageSnapshot();
     const ds = view.zoom * view.dpr;
     const centerDev = { x: centerWorld.x * ds + view.panX * view.dpr, y: centerWorld.y * ds + view.panY * view.dpr };
     const originDev = { x: originWorld.x * ds + view.panX * view.dpr, y: originWorld.y * ds + view.panY * view.dpr };
-    const M = cmd.magnification;
     canvas.save();
     canvas.clipPath(clip, CanvasKit.ClipOp.Intersect, true);
     // Device pixel q inside the lens samples the backdrop at
-    // origin + (q − center)/M ⇒ draw the snapshot under q = center + (s − origin)·M.
+    // origin + (q − center)/mag ⇒ draw the snapshot under q = center + (s − origin)·diag(magX,magY).
     canvas.concat(CanvasKit.Matrix.multiply(
       CanvasKit.Matrix.translated(centerDev.x, centerDev.y),
-      CanvasKit.Matrix.scaled(M, M),
+      CanvasKit.Matrix.scaled(magX, magY),
       CanvasKit.Matrix.translated(-originDev.x, -originDev.y),
     ));
     const p = new CanvasKit.Paint();

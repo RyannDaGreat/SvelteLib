@@ -9,16 +9,21 @@
  * derivation stage has evaluated every equation, so this plugin only ever sees
  * numbers (the line.js precedent).
  *
- * Two shape KINDS are handled with exact closed-form geometry, plus a general
- * fallback:
- *   - circle ↔ circle : the two external tangent lines (centers + radii).
- *   - box ↔ box       : the two outer connecting edges of the convex hull of
- *                       the two axis-aligned rectangles.
- *   - anything else   : each shape is replaced by its BOUNDING CIRCLE and the
- *                       circle formula is used (the general fallback).
- * When the shapes coincide or one contains the other, there is no external
- * tangent and NOTHING is drawn (a degenerate, not an error — expected control
- * flow at the identity end of a zoom-callout tween).
+ * ONE general "sandwich" handles EVERY convex shape — no shape-specific closed
+ * forms, so a STRETCHED circle (a true ellipse) or a rotated box is exact, not
+ * a bounding-circle approximation:
+ *   1. Represent each shape by its ACTUAL boundary as a world-space polygon
+ *      (a circle/ellipse → N points from its real halfW/halfH + rotation; a box
+ *      → its 4 rotated corners; an explicit `polygon` → ANY outline, incl.
+ *      concave stars / notched pies; anything else → its bounding box polygon).
+ *   2. Convex-hull BOTH shapes' boundary points together.
+ *   3. The exactly-two hull edges that bridge a vertex of shape A to a vertex of
+ *      shape B are the two outer tangent ("sandwich bread") lines.
+ * Because the outer tangents are SUPPORTING lines, they touch only each shape's
+ * CONVEX HULL — so a star's lines graze its tips and a notched pie's graze its
+ * outer arc (correct for a callout; a concavity matters only to an inner tangent,
+ * which this never uses). When the shapes coincide there is no bridge and
+ * NOTHING is drawn (a degenerate, not an error — the identity end of a tween).
  *
  * This file ALSO exports the pure TELESCOPIC-MAGNIFIER rig builder: the three
  * equation-valued property OVERRIDE dicts (source marker / magnify lens /
@@ -45,90 +50,103 @@ const COINCIDENT_EPS = 1e-6;
 const DEFAULT_DASH_LENGTH = 14;
 const DEFAULT_DASH_GAP = 9;
 const DEFAULT_STROKE_WIDTH = 2;
+// Boundary samples for a circle/ellipse hull. 64 keeps the tangent points within
+// a fraction of a pixel of the true tangent at any realistic on-canvas size,
+// while staying cheap (the hull is O(n log n) over 2·n points).
+const CIRCLE_SAMPLES = 64;
 
-// ── Pure tangent geometry ─────────────────────────────────────────────────────
-
-/**
- * Pure function. The bounding circle of a shape descriptor — the general
- * fallback used when a pair is not both-circle or both-box. A circle is its
- * own bounding circle; a box's bounding circle is the circumscribed one
- * (radius = the half-diagonal hypot(halfW, halfH)).
- *
- * @param {{kind:string,x:number,y:number,r?:number,halfW?:number,halfH?:number}} shape
- * @returns {{x:number,y:number,r:number}}
- *
- * @example boundingCircle({ kind: "circle", x: 0, y: 0, r: 5 }) // {x: 0, y: 0, r: 5}
- * @example boundingCircle({ kind: "box", x: 20, y: 0, halfW: 3, halfH: 4 }) // {x: 20, y: 0, r: 5}
- */
-export function boundingCircle(shape) {
-  if (shape.kind === "circle") return { x: shape.x, y: shape.y, r: shape.r };
-  return { x: shape.x, y: shape.y, r: Math.hypot(shape.halfW, shape.halfH) };
-}
+// ── Pure tangent geometry (the general "sandwich") ────────────────────────────
 
 /**
- * Pure function. The two EXTERNAL tangent segments of two circles a, b (each
- * {x, y, r}). Both circles lie on the same side of each external tangent line.
+ * Pure function. N points sampled counter-clockwise around an ELLIPSE
+ * (half-axes halfW, halfH) centered at (x, y) and rotated by `rotation` radians.
+ * A non-uniformly scaled circle IS an ellipse, so this honors the real
+ * halfW ≠ halfH (and rotation) — no bounding-circle approximation. i=0 is the
+ * +x axis endpoint (before rotation).
  *
- * Derivation: an external tangent has unit normal n with n·a - c = r_a and
- * n·b - c = r_b (SAME side), so n·(a-b) = r_a - r_b. With u = (a-b)/|a-b| and
- * d = |a-b|, this fixes the angle between n and u to ±φ where cos φ =
- * (r_a - r_b)/d — the two signs give the two tangents. The tangent point on
- * each circle is Cᵢ - rᵢ·n. Returns [] (degenerate) when the circles coincide
- * (d ≈ 0) or one contains the other (d ≤ |r_a - r_b|), where no external
- * tangent exists.
- *
- * @param {{x:number,y:number,r:number}} a
- * @param {{x:number,y:number,r:number}} b
- * @returns {Array<[{x:number,y:number},{x:number,y:number}]>} up to two [A-point, B-point] segments
- *
- * @example
- * // Equal circles → two parallel tangents offset by the radius:
- * circleExternalTangents({ x: 0, y: 0, r: 2 }, { x: 10, y: 0, r: 2 })
- * // [[{x:0,y:2},{x:10,y:2}],[{x:0,y:-2},{x:10,y:-2}]]
- * @example
- * // 3-4-5 case, first tangent:
- * circleExternalTangents({ x: 0, y: 0, r: 4 }, { x: 5, y: 0, r: 1 })[0]
- * // [{x:2.4,y:3.2},{x:5.6,y:0.8}]
- * @example circleExternalTangents({ x: 0, y: 0, r: 5 }, { x: 1, y: 0, r: 1 }) // [] (contained)
- */
-export function circleExternalTangents(a, b) {
-  const dx = a.x - b.x, dy = a.y - b.y;
-  const d = Math.hypot(dx, dy);
-  const dr = a.r - b.r;
-  if (d < COINCIDENT_EPS || d <= Math.abs(dr)) return [];
-  const ux = dx / d, uy = dy / d;
-  const cos = dr / d;
-  const sin = Math.sqrt(1 - cos * cos);
-  const out = [];
-  for (const s of [1, -1]) {
-    const nx = ux * cos - s * uy * sin; // n = u rotated by s·φ
-    const ny = uy * cos + s * ux * sin;
-    out.push([
-      { x: a.x - a.r * nx, y: a.y - a.r * ny },
-      { x: b.x - b.r * nx, y: b.y - b.r * ny },
-    ]);
-  }
-  return out;
-}
-
-/**
- * Pure function. The four corners of an axis-aligned box, clockwise from the
- * top-left. `tag` marks which box a corner came from (for hull bridge finding).
- *
- * @param {{x:number,y:number,halfW:number,halfH:number}} box
- * @param {number} tag - box identity (0 or 1)
+ * @param {{x:number,y:number,halfW:number,halfH:number,rotation?:number}} shape
+ * @param {number} n - sample count
+ * @param {number} tag - shape identity carried onto each point (hull bridging)
  * @returns {Array<{x:number,y:number,tag:number}>}
  *
- * @example boxCorners({ x: 0, y: 0, halfW: 1, halfH: 1 }, 0)[0] // {x: -1, y: -1, tag: 0}
+ * @example ellipseBoundaryPoints({ x: 0, y: 0, halfW: 4, halfH: 2 }, 4, 0).map((p) => [Math.round(p.x), Math.round(p.y)]) // [[4,0],[0,2],[-4,0],[0,-2]]
+ * @example ellipseBoundaryPoints({ x: 0, y: 0, halfW: 4, halfH: 2 }, 4, 7)[0].tag // 7
  */
-export function boxCorners(box, tag) {
-  const { x, y, halfW, halfH } = box;
-  return [
-    { x: x - halfW, y: y - halfH, tag },
-    { x: x + halfW, y: y - halfH, tag },
-    { x: x + halfW, y: y + halfH, tag },
-    { x: x - halfW, y: y + halfH, tag },
-  ];
+export function ellipseBoundaryPoints(shape, n, tag) {
+  const { x, y, halfW, halfH, rotation = 0 } = shape;
+  const cos = Math.cos(rotation), sin = Math.sin(rotation);
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * 2 * Math.PI;
+    const ex = halfW * Math.cos(a), ey = halfH * Math.sin(a);
+    pts.push({ x: x + ex * cos - ey * sin, y: y + ex * sin + ey * cos, tag });
+  }
+  return pts;
+}
+
+/**
+ * Pure function. The four corners of a box (half-extents halfW, halfH) centered
+ * at (x, y) and rotated by `rotation` radians — clockwise from the top-left.
+ *
+ * @param {{x:number,y:number,halfW:number,halfH:number,rotation?:number}} shape
+ * @param {number} tag - shape identity carried onto each point
+ * @returns {Array<{x:number,y:number,tag:number}>}
+ *
+ * @example boxBoundaryPoints({ x: 0, y: 0, halfW: 2, halfH: 1 }, 0)[0] // {x: -2, y: -1, tag: 0}
+ * @example boxBoundaryPoints({ x: 10, y: 0, halfW: 1, halfH: 1 }, 3)[2] // {x: 11, y: 1, tag: 3}
+ */
+export function boxBoundaryPoints(shape, tag) {
+  const { x, y, halfW, halfH, rotation = 0 } = shape;
+  const cos = Math.cos(rotation), sin = Math.sin(rotation);
+  return [[-halfW, -halfH], [halfW, -halfH], [halfW, halfH], [-halfW, halfH]].map(([ex, ey]) => ({
+    x: x + ex * cos - ey * sin, y: y + ex * sin + ey * cos, tag,
+  }));
+}
+
+/**
+ * Pure function. Places a LOCAL outline polygon into world space: each
+ * [ex, ey] (relative to the shape center, unrotated) rotated by `rotation` and
+ * translated to (x, y). This is how ARBITRARY / WEIRD shapes flow in — a star,
+ * a pie with a slice removed, any concave outline: the caller passes the real
+ * local vertices as `shape.polygon` and they are positioned exactly like the
+ * box corners. (See shapeBoundaryPoints / the convex-hull note below.)
+ *
+ * @param {{x:number,y:number,rotation?:number,polygon:Array<[number,number]>}} shape
+ * @param {number} tag
+ * @returns {Array<{x:number,y:number,tag:number}>}
+ *
+ * @example polygonBoundaryPoints({ x: 10, y: 5, polygon: [[0,-4],[1,-1],[4,0]] }, 0)[2] // {x: 14, y: 5, tag: 0}
+ */
+export function polygonBoundaryPoints(shape, tag) {
+  const { x, y, rotation = 0, polygon } = shape;
+  const cos = Math.cos(rotation), sin = Math.sin(rotation);
+  return polygon.map(([ex, ey]) => ({ x: x + ex * cos - ey * sin, y: y + ex * sin + ey * cos, tag }));
+}
+
+/**
+ * Pure function. A shape's ACTUAL boundary polygon (tagged): an explicit
+ * `shape.polygon` (local vertices) → ANY outline (star, notched pie, arbitrary
+ * concave shape); else kind "circle" → an ellipse sampled at n points; kind
+ * "box" → its 4 rotated corners; anything else → its bounding box polygon.
+ * Descriptor: {kind, x, y, halfW, halfH, rotation?, polygon?}.
+ *
+ * CONCAVE SHAPES: the two outer tangents are SUPPORTING lines, which (by
+ * definition) only ever touch a shape's CONVEX HULL — so for a star they graze
+ * the outer TIPS, and for a pie-with-a-slice-removed they graze the outer arc;
+ * they never dive into a concave notch. Feeding the real outline here is enough
+ * to get the correct outer callout lines for those shapes — the hull in
+ * externalTangents does the rest. (A concavity would only matter to an INNER
+ * tangent, which a zoom callout never uses.)
+ *
+ * @example shapeBoundaryPoints({ kind: "box", x: 0, y: 0, halfW: 1, halfH: 1 }, 8, 0).length // 4
+ * @example shapeBoundaryPoints({ kind: "circle", x: 0, y: 0, halfW: 5, halfH: 5 }, 16, 0).length // 16
+ * @example shapeBoundaryPoints({ kind: "blob", x: 0, y: 0, halfW: 2, halfH: 3 }, 8, 0).length // 4 (fallback: bounding box)
+ * @example shapeBoundaryPoints({ kind: "star", x: 0, y: 0, polygon: [[0,-10],[3,-3],[10,0],[3,3],[0,10],[-3,3],[-10,0],[-3,-3]] }, 8, 0).length // 8 (explicit outline wins)
+ */
+export function shapeBoundaryPoints(shape, n, tag) {
+  if (Array.isArray(shape.polygon)) return polygonBoundaryPoints(shape, tag);
+  if (shape.kind === "circle") return ellipseBoundaryPoints(shape, n, tag);
+  return boxBoundaryPoints(shape, tag); // "box" and the general bounding-box fallback
 }
 
 /**
@@ -160,27 +178,16 @@ export function convexHull(points) {
 }
 
 /**
- * Pure function. The two outer connecting edges between two axis-aligned boxes
- * (each {x, y, halfW, halfH}): the hull edges of the eight corners that BRIDGE
- * a corner of A to a corner of B. For two disjoint boxes there are exactly two.
- * Returns [] when the box centers coincide (the degenerate identity end).
+ * Pure function. The hull edges that BRIDGE a vertex tagged 0 to a vertex tagged
+ * 1 — the outer tangent "sandwich bread" between two convex shapes. For two
+ * disjoint convex shapes there are exactly two.
  *
- * @param {{x:number,y:number,halfW:number,halfH:number}} a
- * @param {{x:number,y:number,halfW:number,halfH:number}} b
- * @returns {Array<[{x:number,y:number},{x:number,y:number}]>} the bridge segments
+ * @param {Array<{x:number,y:number,tag:number}>} hull - a convex hull (CCW)
+ * @returns {Array<[{x:number,y:number},{x:number,y:number}]>} bridge segments
  *
- * @example
- * // Equal unit squares 10 apart → the top and bottom outer tangents:
- * boxExternalTangents({ x: 0, y: 0, halfW: 1, halfH: 1 }, { x: 10, y: 0, halfW: 1, halfH: 1 })
- * // [[{x:-1,y:-1},{x:11,y:-1}],[{x:11,y:1},{x:-1,y:1}]]
- * @example
- * // Small → big square: the fan connects the small corners to the big box's near face:
- * boxExternalTangents({ x: 0, y: 0, halfW: 1, halfH: 1 }, { x: 10, y: 0, halfW: 3, halfH: 3 })
- * // [[{x:-1,y:-1},{x:7,y:-3}],[{x:7,y:3},{x:-1,y:1}]]
+ * @example hullBridges([{x:0,y:0,tag:0},{x:10,y:0,tag:1},{x:10,y:5,tag:1},{x:0,y:5,tag:0}]) // [[{x:0,y:0},{x:10,y:0}],[{x:10,y:5},{x:0,y:5}]]
  */
-export function boxExternalTangents(a, b) {
-  if (Math.hypot(a.x - b.x, a.y - b.y) < COINCIDENT_EPS) return [];
-  const hull = convexHull([...boxCorners(a, 0), ...boxCorners(b, 1)]);
+export function hullBridges(hull) {
   const out = [];
   for (let i = 0; i < hull.length; i++) {
     const p = hull[i], q = hull[(i + 1) % hull.length];
@@ -190,27 +197,33 @@ export function boxExternalTangents(a, b) {
 }
 
 /**
- * Pure function. The two outer tangent segments connecting shapes a and b.
- * Dispatches: both circle → circleExternalTangents; both box →
- * boxExternalTangents; otherwise each shape's BOUNDING CIRCLE feeds the circle
- * formula (the general fallback). Descriptors: circle {kind:"circle",x,y,r},
- * box {kind:"box",x,y,halfW,halfH}.
+ * Pure function. The two outer tangent segments connecting convex shapes a and b
+ * — the general sandwich: hull the two shapes' boundary polygons together, take
+ * the two A→B bridge edges. Works for ANY convex boundary (stretched ellipse,
+ * rotated box, mixed pair) with no closed form. Descriptor:
+ * {kind:"circle"|"box"|…, x, y, halfW, halfH, rotation?}. Returns [] when the
+ * centers coincide (the degenerate identity end). `n` = ellipse sample count.
  *
  * @param {object} a - shape descriptor
  * @param {object} b - shape descriptor
+ * @param {number} [n] - ellipse boundary samples (default 64)
  * @returns {Array<[{x:number,y:number},{x:number,y:number}]>} up to two segments
  *
- * @example externalTangents({kind:"circle",x:0,y:0,r:4},{kind:"circle",x:5,y:0,r:1})[0] // [{x:2.4,y:3.2},{x:5.6,y:0.8}]
- * @example externalTangents({kind:"box",x:0,y:0,halfW:1,halfH:1},{kind:"box",x:10,y:0,halfW:1,halfH:1}).length // 2
  * @example
- * // Mixed kinds → bounding-circle fallback (box half 3,4 → r 5):
- * externalTangents({kind:"circle",x:0,y:0,r:5},{kind:"box",x:20,y:0,halfW:3,halfH:4})
- * // [[{x:0,y:5},{x:20,y:5}],[{x:0,y:-5},{x:20,y:-5}]]
+ * // Equal boxes 10 apart → the top + bottom outer tangents (exact, N-independent):
+ * externalTangents({kind:"box",x:0,y:0,halfW:1,halfH:1},{kind:"box",x:10,y:0,halfW:1,halfH:1})
+ * // [[{x:-1,y:-1},{x:11,y:-1}],[{x:11,y:1},{x:-1,y:1}]]
+ * @example
+ * // Small → big box: the fan connects the small corners to the big box's near face:
+ * externalTangents({kind:"box",x:0,y:0,halfW:1,halfH:1},{kind:"box",x:10,y:0,halfW:3,halfH:3})
+ * // [[{x:-1,y:-1},{x:7,y:-3}],[{x:7,y:3},{x:-1,y:1}]]
+ * @example externalTangents({kind:"circle",x:0,y:0,halfW:40,halfH:20},{kind:"circle",x:300,y:0,halfW:120,halfH:60}).length // 2 (stretched ellipses)
+ * @example externalTangents({kind:"circle",x:5,y:5,halfW:40,halfH:20},{kind:"circle",x:5,y:5,halfW:120,halfH:60}) // [] (coincident)
  */
-export function externalTangents(a, b) {
-  if (a.kind === "circle" && b.kind === "circle") return circleExternalTangents(a, b);
-  if (a.kind === "box" && b.kind === "box") return boxExternalTangents(a, b);
-  return circleExternalTangents(boundingCircle(a), boundingCircle(b));
+export function externalTangents(a, b, n = CIRCLE_SAMPLES) {
+  if (Math.hypot(a.x - b.x, a.y - b.y) < COINCIDENT_EPS) return [];
+  const hull = convexHull([...shapeBoundaryPoints(a, n, 0), ...shapeBoundaryPoints(b, n, 1)]);
+  return hullBridges(hull);
 }
 
 /**
@@ -257,22 +270,23 @@ export function pointSegmentDistance(px, py, p, q) {
 
 /**
  * Pure function. The [A, B] shape descriptors for a folded tangent-lines state
- * — the widget stores each shape as a center (x, y) + a single size `r`
- * (radius for a circle, half-side for a square box). `shapeKind` picks the
- * geometry both shapes use ("circle" | "box"); any other value falls back to
- * circles (bounding-circle treatment).
+ * — each shape is a center (x, y) + half-extents (halfW, halfH) + rotation, so
+ * a non-uniform pair is a true ellipse / rotated box (NOT a bounding circle).
+ * `shapeKind` picks the boundary both shapes use ("circle" | "box").
  *
- * @param {object} s - folded item state {a:{x,y,r}, b:{x,y,r}, shapeKind}
+ * @param {object} s - folded state {a:{x,y,halfW,halfH,rotation}, b:{…}, shapeKind}
  * @returns {[object, object]} descriptors for externalTangents
  *
- * @example shapeDescriptors({ a: {x:0,y:0,r:4}, b: {x:5,y:0,r:1}, shapeKind: "circle" }) // [{kind:"circle",x:0,y:0,r:4},{kind:"circle",x:5,y:0,r:1}]
- * @example shapeDescriptors({ a: {x:0,y:0,r:2}, b: {x:9,y:0,r:2}, shapeKind: "box" })[0] // {kind:"box",x:0,y:0,halfW:2,halfH:2}
+ * A shape may also carry an explicit `polygon` (local outline vertices) — a
+ * star, a notched pie, any weird shape — which is passed through and WINS over
+ * the ellipse/box boundary (see shapeBoundaryPoints).
+ *
+ * @example shapeDescriptors({ a: {x:0,y:0,halfW:4,halfH:2,rotation:0}, b: {x:5,y:0,halfW:1,halfH:1,rotation:0}, shapeKind: "circle" })[0] // {kind:"circle",x:0,y:0,halfW:4,halfH:2,rotation:0,polygon:undefined}
+ * @example shapeDescriptors({ a: {x:0,y:0,halfW:2,halfH:3,rotation:0}, b: {x:9,y:0,halfW:2,halfH:2,rotation:0}, shapeKind: "box" })[0].kind // "box"
  */
 export function shapeDescriptors(s) {
-  const desc = (shape) =>
-    s.shapeKind === "box"
-      ? { kind: "box", x: shape.x, y: shape.y, halfW: shape.r, halfH: shape.r }
-      : { kind: "circle", x: shape.x, y: shape.y, r: shape.r };
+  const kind = s.shapeKind === "box" ? "box" : "circle";
+  const desc = (shape) => ({ kind, x: shape.x, y: shape.y, halfW: shape.halfW, halfH: shape.halfH, rotation: shape.rotation ?? 0, polygon: shape.polygon });
   return [desc(s.a), desc(s.b)];
 }
 
@@ -282,24 +296,30 @@ export const tangentLinesPlugin = {
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   defaults: {
     type: "tangent_lines", z: 1,
-    // Shape A and shape B: each a center (x, y) + size r. All four numbers are
-    // ordinary equation slots (bind them to two widgets' anchors — THE
-    // UNIFICATION). Standalone defaults show a visible pair (small → large).
-    a: { x: 400, y: 380, r: 60 },
-    b: { x: 820, y: 380, r: 150 },
+    // Shape A and shape B: each a center (x, y) + half-extents (halfW, halfH) +
+    // rotation. Every number is an ordinary equation slot (bind them to two
+    // widgets' size/anchor — THE UNIFICATION), so a stretched/rotated widget
+    // makes a true ellipse/box, not a bounding circle. Standalone defaults show
+    // a visible pair (small round A → larger wide-ellipse B).
+    a: { x: 400, y: 380, halfW: 60, halfH: 60, rotation: 0 },
+    b: { x: 820, y: 380, halfW: 150, halfH: 100, rotation: 0 },
     shapeKind: "circle",
     stroke: "#e0af68", strokeWidth: DEFAULT_STROKE_WIDTH, opacity: 1,
     dashed: false, dashLength: DEFAULT_DASH_LENGTH, dashGap: DEFAULT_DASH_GAP,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
-    { key: "shapeKind", label: "Shape kind", kind: "select", options: ["circle", "box"], optionLabels: { circle: "Circle", box: "Box" }, category: "tangent", help: "The boundary geometry both shapes use: Circle (external tangent lines) or Box (outer hull edges). Any other pairing falls back to bounding circles." },
+    { key: "shapeKind", label: "Shape kind", kind: "select", options: ["circle", "box"], optionLabels: { circle: "Circle", box: "Box" }, category: "tangent", help: "The boundary both shapes use: Circle (an ellipse from halfW/halfH) or Box (a rotated rectangle). The two outer tangent lines are computed from the real boundary." },
     { key: "a.x", label: "A center X", kind: "number", category: "shape_a", help: "World X of shape A's center (bind to a widget's anchor with an = equation)." },
     { key: "a.y", label: "A center Y", kind: "number", category: "shape_a", help: "World Y of shape A's center." },
-    { key: "a.r", label: "A size", kind: "number", min: 0, category: "shape_a", help: "Shape A's radius (circle) or half-side (box)." },
+    { key: "a.halfW", label: "A half-width", kind: "number", min: 0, category: "shape_a", help: "Shape A's half-width (ellipse x-radius / box half-width)." },
+    { key: "a.halfH", label: "A half-height", kind: "number", min: 0, category: "shape_a", help: "Shape A's half-height (ellipse y-radius / box half-height)." },
+    { key: "a.rotation", label: "A rotation", kind: "number", category: "shape_a", help: "Shape A's rotation in radians (bind to a widget's rotation)." },
     { key: "b.x", label: "B center X", kind: "number", category: "shape_b", help: "World X of shape B's center." },
     { key: "b.y", label: "B center Y", kind: "number", category: "shape_b", help: "World Y of shape B's center." },
-    { key: "b.r", label: "B size", kind: "number", min: 0, category: "shape_b", help: "Shape B's radius (circle) or half-side (box)." },
+    { key: "b.halfW", label: "B half-width", kind: "number", min: 0, category: "shape_b", help: "Shape B's half-width." },
+    { key: "b.halfH", label: "B half-height", kind: "number", min: 0, category: "shape_b", help: "Shape B's half-height." },
+    { key: "b.rotation", label: "B rotation", kind: "number", category: "shape_b", help: "Shape B's rotation in radians." },
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
     { key: "dashed", label: "Dashed", kind: "boolean", category: "tangent", help: "Draw the tangent lines dashed instead of solid." },
@@ -350,13 +370,14 @@ export const tangentLinesPlugin = {
  * The rig is a function of a shared tween VARIABLE `t` (a document var,
  * default 0): at t=0 the lens coincides with the source at the origin at
  * magnification 1 (identity — "nothing happened"); at t=1 the lens has pulled
- * out by (PULL_X, PULL_Y), grown to LENS_SIZE, and zoomed to ZOOM×.
+ * out by (PULL_X, PULL_Y) and grown to LENS_SIZE. The ZOOM is NOT a constant —
+ * it EMERGES from the sizes (magX = lens.w/source.w, magY = lens.h/source.h),
+ * so a non-proportional source/lens pair squishes correctly.
  */
 export const TELESCOPIC = {
   TWEEN_VAR: "t",   // shared tween parameter (document variable), default 0
   SOURCE_SIZE: 96,  // source-marker + lens diameter at t=0 (the identity size)
-  LENS_SIZE: 340,   // lens diameter at t=1
-  ZOOM: 3,          // lens magnification at t=1 (1 at t=0)
+  LENS_SIZE: 340,   // lens diameter at t=1 (zoom = LENS_SIZE/SOURCE_SIZE emerges)
   PULL_X: 440,      // lens-center x displacement from the origin at t=1
   PULL_Y: -250,     // lens-center y displacement from the origin at t=1 (up-right)
   ORIGIN_X: 430,    // default world origin (the region being magnified) — the drop point
@@ -407,14 +428,16 @@ export function telescopicSourceOverrides({ shapeKind, originX, originY }) {
  * Pure function. The LENS override dict — a demo_magnify wired by `=` equations
  * to the source marker and the shared tween var. The lens SAMPLES from the
  * source center (`origin`) at every t, but its DISPLAY center travels from the
- * source out to (source + PULL)·t, its size grows SOURCE_SIZE → LENS_SIZE, and
- * its magnification grows 1 → ZOOM. At t=0 all three collapse to identity.
- * `sourceId` is the raw item id of the source marker (referenced as `@id…`).
+ * source out to (source + PULL)·t and its size grows SOURCE_SIZE → LENS_SIZE.
+ * The ZOOM is DERIVED, per-axis, from the box sizes: magnificationX = self.w /
+ * source.w, magnificationY = self.h / source.h — so it is redundant-free (never
+ * a separate constant) and squishes correctly when the aspect ratios differ. At
+ * t=0 the sizes are equal → mag 1 (identity). `sourceId` is the raw source id.
  *
  * @param {{sourceId:string, shapeKind:string}} opts
  * @returns {object} property overrides (equation strings)
  *
- * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle" }).magnification // "= 1 + (3 - 1) * t"
+ * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle" }).magnificationX // "= self.w / @ab12cd34.w"
  * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle" }).origin.x // "@ab12cd34_cm.x" (bare ref — see below)
  */
 export function telescopicLensOverrides({ sourceId, shapeKind }) {
@@ -435,29 +458,37 @@ export function telescopicLensOverrides({ sourceId, shapeKind }) {
     // string type and reject a numeric result). Bare = the same form the plugin
     // default uses; it evaluates as a numeric slot (isNumericSlot / self.-prefix).
     origin: { x: `@${sourceId}_cm.x`, y: `@${sourceId}_cm.y` },
-    magnification: `= 1 + (${TELESCOPIC.ZOOM} - 1) * ${t}`,
+    // Zoom EMERGES from the sizes — per axis, so a squished pair squishes.
+    magnificationX: `= self.w / @${sourceId}.w`,
+    magnificationY: `= self.h / @${sourceId}.h`,
   };
 }
 
 /**
  * Pure function. The TANGENT-LINES override dict — a tangent_lines widget whose
  * A tracks the source marker and B tracks the lens: centers bound to each
- * item's center anchor (`@id_cm`), sizes bound to each item's half-width
- * (`@id.w / 2`), shapeKind matched literally. So the two tangents fan open
- * exactly as the lens pulls out. `sourceId` / `lensId` are raw item ids.
+ * item's center anchor (`@id_cm`), half-extents bound to each item's half-width
+ * / half-height (`@id.w / 2`, `@id.h / 2`), rotation to `@id.rotation`, shapeKind
+ * matched literally. So the two tangents hug the real (possibly stretched)
+ * boundary of both and fan open exactly as the lens pulls out. `sourceId` /
+ * `lensId` are raw item ids.
  *
  * @param {{sourceId:string, lensId:string, shapeKind:string}} opts
  * @returns {object} property overrides (equation strings)
  *
  * @example telescopicTangentOverrides({ sourceId: "s1", lensId: "l1", shapeKind: "box" }).a.x // "= @s1_cm.x"
- * @example telescopicTangentOverrides({ sourceId: "s1", lensId: "l1", shapeKind: "box" }).b.r // "= @l1.w / 2"
+ * @example telescopicTangentOverrides({ sourceId: "s1", lensId: "l1", shapeKind: "box" }).b.halfH // "= @l1.h / 2"
  */
 export function telescopicTangentOverrides({ sourceId, lensId, shapeKind }) {
+  const shapeRefs = (id) => ({
+    x: `= @${id}_cm.x`, y: `= @${id}_cm.y`,
+    halfW: `= @${id}.w / 2`, halfH: `= @${id}.h / 2`, rotation: `= @${id}.rotation`,
+  });
   return {
     type: "tangent_lines",
     shapeKind,
-    a: { x: `= @${sourceId}_cm.x`, y: `= @${sourceId}_cm.y`, r: `= @${sourceId}.w / 2` },
-    b: { x: `= @${lensId}_cm.x`, y: `= @${lensId}_cm.y`, r: `= @${lensId}.w / 2` },
+    a: shapeRefs(sourceId),
+    b: shapeRefs(lensId),
     stroke: TELESCOPIC.RIM_COLOR, strokeWidth: TELESCOPIC.RIM_WIDTH,
   };
 }

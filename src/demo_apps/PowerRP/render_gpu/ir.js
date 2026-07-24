@@ -27,7 +27,7 @@
  *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
- *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, points, innerRatio, originX, originY, magnification, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"|"star" (points/innerRatio = star silhouette; rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth)
+ *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, points, innerRatio, originX, originY, magnification, magnificationX, magnificationY, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"|"star" (points/innerRatio = star silhouette; rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth; magnificationX/Y = per-axis zoom, default to magnification)
  *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
  *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, softEdges, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow, +soft edges)
@@ -769,6 +769,13 @@ export function blurBackdrop({ radius, opacity = 1 }) {
  * which is where the lens region SITS on screen: the origin decouples "what the
  * lens magnifies" from "where the lens is drawn".
  *
+ * ANISOTROPIC ZOOM — `magnification` is the ISOTROPIC zoom (both axes). For a
+ * per-axis zoom (a lens whose box aspect differs from the source region it
+ * shows — e.g. a WIDE region mapped into a TALL lens), pass `magnificationX` /
+ * `magnificationY`; each defaults to `magnification`, so an isotropic op is
+ * unchanged and renders BYTE-IDENTICALLY. The backend scales the sampled scene
+ * by (magX, magY) about the origin.
+ *
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).strokeWidth // 0
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).shape // "circle"
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).originX // 0 (defaults to the lens center cx)
@@ -778,11 +785,13 @@ export function blurBackdrop({ radius, opacity = 1 }) {
  * @example magnifyBackdrop({shape: "star", cx: 0, cy: 0, halfW: 60, halfH: 60, points: 6.4, magnification: 2}).points // 6 (rounded to a whole star)
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, rimColor: "#000", rimWidth: 4}).strokeWidth // 4 (legacy rim folds into stroke)
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, supersample: false}).supersample // false
+ * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).magnificationX // 2 (per-axis defaults to isotropic)
+ * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, magnificationX: 3, magnificationY: 1.5}).magnificationY // 1.5
  */
 export function magnifyBackdrop({
   shape = "circle", cx, cy, r = 0, halfW = 0, halfH = 0, cornerRadius = 0,
   points = 5, innerRatio = 0.5,
-  originX = cx, originY = cy, magnification,
+  originX = cx, originY = cy, magnification, magnificationX, magnificationY,
   stroke = null, strokeWidth = 0, rimColor = null, rimWidth = 0,
   opacity = 1, supersample = true,
 }) {
@@ -798,15 +807,20 @@ export function magnifyBackdrop({
   // stroke/strokeWidth — every shape renders one border ring.
   const borderColor = stroke ?? rimColor;
   const borderWidth = strokeWidth > 0 ? strokeWidth : rimWidth;
-  requireFinite("magnifyBackdrop", { cx, cy, ...geom, originX, originY, magnification, strokeWidth: borderWidth, opacity });
+  // Per-axis zoom, each defaulting to the isotropic magnification (so an op
+  // without the new params is unchanged → byte-identical render).
+  const magX = magnificationX ?? magnification;
+  const magY = magnificationY ?? magnification;
+  requireFinite("magnifyBackdrop", { cx, cy, ...geom, originX, originY, magnification, magnificationX: magX, magnificationY: magY, strokeWidth: borderWidth, opacity });
   if (magnification <= 0) throw new Error(`magnifyBackdrop: magnification must be > 0, got ${magnification}`);
+  if (magX <= 0 || magY <= 0) throw new Error(`magnifyBackdrop: per-axis magnification must be > 0, got (${magX}, ${magY})`);
   return {
     op: "magnifyBackdrop", shape, cx, cy, r, halfW, halfH,
     cornerRadius: Math.max(0, cornerRadius),
     // Star silhouette params (harmless defaults for circle/box): point count
     // clamped to a real star (≥2), inner-notch ratio to [0,1] — mirrors starPathD.
     points: Math.max(2, Math.round(points)), innerRatio: Math.max(0, Math.min(1, innerRatio)),
-    originX, originY, magnification,
+    originX, originY, magnification, magnificationX: magX, magnificationY: magY,
     stroke: borderColor === null ? null : parseColor(borderColor),
     strokeWidth: borderWidth,
     opacity, supersample: !!supersample,

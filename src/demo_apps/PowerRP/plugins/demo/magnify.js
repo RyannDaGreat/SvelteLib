@@ -41,7 +41,15 @@ const CUSTOM = customProps([
     optionLabels: { circle: "Circle", square: "Square", star: "Star" },
     help: "The lens silhouette the magnified backdrop is clipped to: a Circle (inscribed in the box), a sharp Square (the full box), or an n-pointed Star." },
   { name: "magnification", kind: "number", default: 2.5, min: 0.01,
-    help: "How much the lens enlarges what is beneath it. 2.5 shows a region 1/2.5 the lens size, blown up to fill the lens." },
+    help: "How much the lens enlarges what is beneath it. 2.5 shows a region 1/2.5 the lens size, blown up to fill the lens. Used when the per-axis overrides below are 0 (auto)." },
+  // Per-axis (anisotropic) zoom. 0 = AUTO → fall back to the isotropic
+  // `magnification` (so a plain magnifier is unchanged / byte-identical). Set
+  // both (e.g. = self.w/@source.w and = self.h/@source.h) to make the lens show
+  // a source region and STRETCH it to fill a differently-proportioned lens box.
+  { name: "magnificationX", kind: "number", default: 0, min: 0,
+    help: "Horizontal zoom. 0 = auto (use Magnification). Set independently of Y to squish/stretch the magnified content (anisotropic loupe)." },
+  { name: "magnificationY", kind: "number", default: 0, min: 0,
+    help: "Vertical zoom. 0 = auto (use Magnification). Set independently of X for an anisotropic loupe." },
   { name: "points", kind: "number", default: 5, min: 2,
     help: "STAR only: how many points the star has. Ignored by the circle and square lenses." },
   { name: "innerRatio", kind: "number", default: 0.5, min: 0, max: 1,
@@ -153,9 +161,13 @@ export const magnifyPlugin = {
     const g = lensGeom(s);
     const o = originLocal(s, g, world);
     const strokeW = s.strokeWidth ?? 0;
+    // Per-axis zoom: 0 = auto → the isotropic `magnification` (so a plain lens is
+    // byte-identical). When both resolve equal, the op stays isotropic.
+    const magX = s.magnificationX > 0 ? s.magnificationX : s.magnification;
+    const magY = s.magnificationY > 0 ? s.magnificationY : s.magnification;
     const common = {
       originX: o.x, originY: o.y,
-      magnification: s.magnification,
+      magnification: s.magnification, magnificationX: magX, magnificationY: magY,
       opacity: s.opacity ?? 1,
       supersample: s.supersample ?? true,
       stroke: strokeW > 0 ? s.stroke : null, strokeWidth: strokeW,

@@ -108,7 +108,7 @@ function assertEquationsResolve(doc, ids, t) {
   assert.equal(rigErrors.length, 0, `t=${t}: rig eval errors: ${rigErrors.map((k) => `${k}: ${errors.get(k)}`).join("; ")}`);
   const lens = state.items[ids.lensId];
   const tan = state.items[ids.tangentId];
-  for (const [label, v] of [["lens.x", lens.x], ["lens.y", lens.y], ["lens.w", lens.w], ["lens.magnification", lens.magnification], ["tan.a.x", tan.a.x], ["tan.b.x", tan.b.x], ["tan.b.r", tan.b.r]])
+  for (const [label, v] of [["lens.x", lens.x], ["lens.y", lens.y], ["lens.w", lens.w], ["lens.magnificationX", lens.magnificationX], ["lens.magnificationY", lens.magnificationY], ["tan.a.x", tan.a.x], ["tan.b.x", tan.b.x], ["tan.b.halfW", tan.b.halfW]])
     assert.ok(Number.isFinite(v), `t=${t}: ${label} did not resolve to a number (got ${JSON.stringify(v)})`);
   return { lens, tan };
 }
@@ -125,7 +125,7 @@ async function main() {
       const png = await renderDocToPng(docAtTween(doc, t), { slide: 0, alpha: 1, width: SLIDE_W, height: SLIDE_H });
       const outPath = resolve(OUT_DIR, `telescopic_${shapeKind}_t${String(t).replace(".", "_")}.png`);
       await writeFile(outPath, Buffer.from(png));
-      console.log(`  ok  t=${t}: eqs resolve (lens: x=${lens.x.toFixed(1)} y=${lens.y.toFixed(1)} w=${lens.w.toFixed(1)} mag=${lens.magnification.toFixed(2)}) -> ${outPath.split("/").slice(-2).join("/")}`);
+      console.log(`  ok  t=${t}: eqs resolve (lens: x=${lens.x.toFixed(1)} y=${lens.y.toFixed(1)} w=${lens.w.toFixed(1)} magX=${lens.magnificationX.toFixed(2)} magY=${lens.magnificationY.toFixed(2)}) -> ${outPath.split("/").slice(-2).join("/")}`);
     }
   }
   console.log("\nAll telescopic rig equations resolved; 6 PNGs written for VLM inspection.");
