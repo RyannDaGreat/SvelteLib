@@ -50,6 +50,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
 
@@ -185,15 +186,19 @@ export function isGradientPaint(paint) {
  * The active sub-state is read per `type` (nested wrapper preferred, else the
  * inline fields); the inactive sub-states are the editor's memory and are
  * IGNORED by the renderer. A "solid" object renders BYTE-IDENTICALLY to the
- * bare-string solid of the same color. from/to/center are objectBoundingBox
- * space (0..1 over the LOCAL bbox). Stops are normalized (offset clamped 0..1,
- * color parseColor'd to rgba); a gradient needs >= 2 stops. pattern/image/shader
- * types throw a loud not-implemented stub.
+ * bare-string solid of the same color. A linear gradient's from/to endpoints are
+ * DERIVED from its authoritative `angle` (degrees) via linearAxis — a keyframed
+ * angle tweens as a rotating axis; a stored from/to is only a fallback for an
+ * un-migrated in-memory paint. center/r are objectBoundingBox space (0..1 over
+ * the LOCAL bbox). Stops are normalized (offset clamped 0..1, color parseColor'd
+ * to rgba); a gradient needs >= 2 stops. pattern/image/shader types throw a loud
+ * not-implemented stub.
  *
  * @example parsePaint("#ff0000") // [1, 0, 0, 1]
  * @example parsePaint([0.1, 0.2, 0.3]) // [0.1, 0.2, 0.3, 1]
  * @example parsePaint(null) // null
  * @example parsePaint({type: "solid", solid: "#ff0000", linear: {stops: [], from: {x:0,y:0}, to: {x:1,y:0}}}) // [1, 0, 0, 1]
+ * @example parsePaint({type: "linearGradient", linear: {stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], angle: 90}}).from // {x: 0.5, y: 0} (endpoints derived from angle)
  * @example parsePaint({type: "linearGradient", linear: {stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}}).stops[1].color // [1, 1, 1, 1]
  * @example parsePaint({type: "linearGradient", stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}).stops[1].color // [1, 1, 1, 1] (legacy inline)
  * @example parsePaint({type: "radialGradient", radial: {stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}], center: {x: 0.5, y: 0.5}, r: 0.5}}).r // 0.5
@@ -216,7 +221,7 @@ export function parsePaint(paint) {
   const g = type === "linearGradient" ? (paint.linear ?? paint) : (paint.radial ?? paint);
   const stops = normalizeStops(g.stops);
   if (type === "linearGradient") {
-    return { type, stops, from: requirePoint("linearGradient.from", g.from), to: requirePoint("linearGradient.to", g.to) };
+    return { type, stops, ...linearAxis(g) };
   }
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
@@ -239,6 +244,36 @@ function requirePoint(name, pt) {
   if (!pt || typeof pt.x !== "number" || typeof pt.y !== "number" || !Number.isFinite(pt.x) || !Number.isFinite(pt.y))
     throw new Error(`parsePaint: ${name} must be a {x, y} point with finite numbers, got ${JSON.stringify(pt)}`);
   return { x: pt.x, y: pt.y };
+}
+
+/**
+ * Pure function. The objectBoundingBox {from, to} endpoints of a linear paint's
+ * axis. The stored `angle` (degrees) is AUTHORITATIVE — the render direction is
+ * derived from it via angleToLinearEndpoints, so a keyframed angle tweens as a
+ * ROTATING axis (0°→180° passes through 90°, a vertical gradient) instead of two
+ * endpoints lerping through a degenerate collapsed midpoint. Falls back to a
+ * stored from/to (un-migrated in-memory paints), then a GRADIENT_DEFAULT_ANGLE
+ * default, ONLY when `angle` is absent.
+ *
+ * Args:
+ *   g (object): the linear sub-state — {angle?, from?, to?, stops}
+ *
+ * Returns:
+ *   {from: {x, y}, to: {x, y}} — objectBoundingBox (0..1) endpoints
+ *
+ * @example linearAxis({angle: 90})  // {from: {x: 0.5, y: 0}, to: {x: 0.5, y: 1}}  (angle authoritative)
+ * @example linearAxis({from: {x: 0, y: 0}, to: {x: 1, y: 0}})  // {from: {x: 0, y: 0}, to: {x: 1, y: 0}}  (fallback: no angle)
+ * @example linearAxis({stops: []})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}}  (0° default: neither angle nor from/to)
+ */
+function linearAxis(g) {
+  if (g.angle !== null && g.angle !== undefined) {
+    if (typeof g.angle !== "number" || !Number.isFinite(g.angle))
+      throw new Error(`parsePaint: linearGradient "angle" must be a finite number, got ${JSON.stringify(g.angle)}`);
+    return angleToLinearEndpoints(g.angle);
+  }
+  if (g.from != null && g.to != null)
+    return { from: requirePoint("linearGradient.from", g.from), to: requirePoint("linearGradient.to", g.to) };
+  return angleToLinearEndpoints(GRADIENT_DEFAULT_ANGLE);
 }
 
 // ── command builders ─────────────────────────────────────────────────────────

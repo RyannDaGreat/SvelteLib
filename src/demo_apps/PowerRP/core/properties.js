@@ -109,16 +109,16 @@ export const ANTIALIAS_MODE_LABELS = { off: "Off (crisp)", standard: "Standard" 
 //
 // This is where the LINEAR-GRADIENT DIRECTION lives now. It used to be four
 // discrete preset buttons (→ ↓ ↘ ↗) that wrote objectBoundingBox from/to point
-// pairs; the user asked for a CONTINUOUS angle instead. The paint object still
-// stores objectBoundingBox `from`/`to` (that is what the renderer's parsePaint
-// consumes, render_gpu/ir.js), plus an authoritative `angle` alongside them; the
-// two are kept in lockstep by web/PaintField.svelte (every dial edit rewrites
-// both) and by the load-boundary migration (core/document.js
-// withLinearGradientAngleMigrated, which computes the angle of every legacy
-// from/to and stores it, leaving from/to untouched so old docs render
-// byte-identically). from/to is thus a render projection of `angle`; the reason
-// it is still stored (rather than parsePaint deriving it from `angle` directly)
-// is that render_gpu/ir.js is owned by another lane — see the migration header.
+// pairs; the user asked for a CONTINUOUS angle instead. `angle` (degrees) is now
+// the SINGLE SOURCE OF TRUTH: web/PaintField.svelte writes only `angle` on a dial
+// edit, and the renderer DERIVES the objectBoundingBox from/to endpoints from it
+// (render_gpu/ir.js linearAxis, via angleToLinearEndpoints). Because a keyframed
+// angle is what tweens, 0°→180° interpolates as a rotating axis through 90° (a
+// vertical gradient) instead of two endpoints lerping through a degenerate,
+// collapsed midpoint. The load-boundary migration (core/document.js
+// withLinearGradientAngleMigrated) stamps an `angle` onto every legacy from/to
+// doc so old documents render byte-identically; a stored from/to is otherwise
+// only a fallback parsePaint uses for an un-migrated in-memory paint.
 
 /** Full turn, in degrees — the modulus for angle wrapping. */
 export const FULL_TURN_DEG = 360;

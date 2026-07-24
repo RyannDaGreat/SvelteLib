@@ -37,7 +37,7 @@
   field adds no app.css classes; the house token convention is preserved).
 -->
 <script module>
-  import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
+  import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
 
@@ -91,17 +91,17 @@
 
   /**
    * Pure function. A fresh linear gradient sub-state seeded from a solid color:
-   * two stops (solid → white) sweeping left→right (GRADIENT_DEFAULT_ANGLE = 0°),
-   * objectBoundingBox space. Carries both the authoritative `angle` (degrees)
-   * and its from/to render projection (angleToLinearEndpoints), kept in lockstep.
+   * two stops (solid → white) sweeping left→right (GRADIENT_DEFAULT_ANGLE = 0°).
+   * `angle` (degrees) is the single source of truth for direction — the renderer
+   * derives the from/to endpoints from it (render_gpu/ir.js linearAxis), so no
+   * from/to is stored here.
    *
    * @example freshLinear("#f00").stops.length // 2
    * @example freshLinear("#f00").angle // 0
-   * @example freshLinear("#f00").from // {x: 0, y: 0.5}
+   * @example freshLinear("#f00").from // undefined (endpoints derived from angle at render time)
    */
   export function freshLinear(seed) {
-    const { from, to } = angleToLinearEndpoints(GRADIENT_DEFAULT_ANGLE);
-    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], angle: GRADIENT_DEFAULT_ANGLE, from, to };
+    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], angle: GRADIENT_DEFAULT_ANGLE };
   }
 
   /**
@@ -248,18 +248,14 @@
       : GRADIENT_DEFAULT_ANGLE,
   );
 
-  /** Command. Writes the linear DIRECTION from a dial heading (degrees): the
-   * authoritative `angle` PLUS its objectBoundingBox from/to render projection
-   * (angleToLinearEndpoints), kept in lockstep in ONE delta. `commit` settles it
-   * as one undo unit; otherwise it is a live preview (viewport re-renders while
-   * the user drags the dial). from/to is what the renderer's parsePaint reads. */
+  /** Command. Writes the linear DIRECTION from a dial heading (degrees): ONLY
+   * the authoritative `angle` — the single source of truth. The renderer derives
+   * the objectBoundingBox from/to endpoints from it (render_gpu/ir.js linearAxis),
+   * so keyframing the angle tweens as a ROTATING axis rather than lerping endpoints
+   * through a degenerate midpoint. `commit` settles it as one undo unit; otherwise
+   * it is a live preview (viewport re-renders while the user drags the dial). */
   function writeDirection(deg, commit) {
-    const { from, to } = angleToLinearEndpoints(deg);
-    app.setPreview([
-      [[...path, "linear", "angle"], deg],
-      [[...path, "linear", "from"], from],
-      [[...path, "linear", "to"], to],
-    ]);
+    app.setPreview([[[...path, "linear", "angle"], deg]]);
     if (commit) app.commitPreview();
   }
   const previewDirection = (deg) => writeDirection(deg, false);

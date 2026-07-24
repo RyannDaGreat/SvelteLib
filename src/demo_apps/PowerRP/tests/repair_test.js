@@ -555,10 +555,13 @@ test("repairedDocument: a gradient PAINT survives repair — not clobbered by th
 
 // ── Linear-gradient direction → angle migration (the "angle" property kind) ────
 // The gradient direction used to be four discrete presets that stored only
-// objectBoundingBox from/to; it is now a continuous `angle` in degrees. Repair
-// adds the angle beside every legacy from/to, leaving from/to untouched so the
-// render is byte-identical (parsePaint still reads from/to). The four presets
-// map to EXACT angles (→ 0°, ↓ 90°, ↘ 45°, ↗ 315°).
+// objectBoundingBox from/to; it is now a continuous `angle` in degrees — the
+// AUTHORITATIVE direction the renderer reads (parsePaint DERIVES from/to from it).
+// Repair adds the angle beside every legacy from/to, leaving from/to in the doc
+// as harmless legacy data. The four presets map to EXACT angles (→ 0°, ↓ 90°,
+// ↘ 45°, ↗ 315°) and render identically after migration: the diagonals recover
+// byte-exact endpoints, the axis-aligned ones recover a center-offset chord that
+// is render-equivalent (a shift perpendicular to a gradient's axis is invisible).
 const LEGACY_DIRECTION_PRESETS = [
   { name: "→ right", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, angle: 0 },
   { name: "↓ down", from: { x: 0, y: 0 }, to: { x: 0, y: 1 }, angle: 90 },
@@ -578,14 +581,16 @@ test("gradient direction migration: each legacy 4-preset from/to → the correct
 
     // (1) migrated to the correct angle …
     assert.equal(lin.angle, p.angle, `${p.name}: expected angle ${p.angle}, got ${lin.angle}`);
-    // (2) … with from/to LEFT UNTOUCHED (the byte-identical-render guarantee) …
+    // (2) … with the doc's from/to LEFT UNTOUCHED by the migration (now legacy
+    //     data — no longer what the renderer reads) …
     assert.deepEqual(lin.from, p.from, `${p.name}: from preserved`);
     assert.deepEqual(lin.to, p.to, `${p.name}: to preserved`);
-    // (3) … proven at the renderer seam: parsePaint's endpoints are unchanged.
-    const before = parsePaint(grad);
-    const after = parsePaint(fixed.slides[0].delta.items.g.fill);
-    assert.deepEqual(after.from, before.from, `${p.name}: parsed from unchanged`);
-    assert.deepEqual(after.to, before.to, `${p.name}: parsed to unchanged`);
+    // (3) … proven at the renderer seam: parsePaint DERIVES the endpoints from the
+    //     authoritative angle, so the exact points may slide along the axis, but
+    //     the rendered DIRECTION (axis heading) is identical to the pre-migration one.
+    const before = parsePaint(grad); // no angle ⇒ fallback reads the raw from/to
+    const after = parsePaint(fixed.slides[0].delta.items.g.fill); // angle-derived
+    assert.equal(linearEndpointsToAngle(after.from, after.to), linearEndpointsToAngle(before.from, before.to), `${p.name}: rendered direction unchanged`);
     // (4) LOUD report.
     assert.ok(reports.some((r) => r.includes(`angle ${p.angle}°`)), `${p.name}: loud migration report`);
     // (5) idempotent: a re-run migrates nothing (angle already present).
@@ -623,8 +628,9 @@ test("angle ↔ endpoints round-trip: legacy presets recover their exact angle; 
   }
   // The DIAGONAL presets are reproduced with byte-EXACT endpoints (corner to
   // corner); the horizontal/vertical presets are reproduced render-equivalently
-  // (same axis, center-offset chord). Either way the migration keeps the doc's
-  // ORIGINAL from/to (test above), so every migrated document renders identically.
+  // (same axis, center-offset chord). Either way the angle recovers the same
+  // rendered direction the renderer now derives from it, so every migrated
+  // document renders identically.
   assert.deepEqual(angleToLinearEndpoints(45), { from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }, "↘ 45° → exact corner-to-corner");
   assert.deepEqual(angleToLinearEndpoints(315), { from: { x: 0, y: 1 }, to: { x: 1, y: 0 } }, "↗ 315° → exact corner-to-corner");
 });

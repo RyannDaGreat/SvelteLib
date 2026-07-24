@@ -20,6 +20,7 @@ import { irToSVG } from "../svg_backend.js";
 import { irToPDF } from "../pdf_backend.js";
 import { renderToPng } from "../skia/node_render.js";
 import { keyframed, foldState } from "../../core/document.js";
+import { angleToLinearEndpoints } from "../../core/properties.js";
 
 let passed = 0;
 async function test(name, fn) {
@@ -61,6 +62,46 @@ await test("parsePaint: MULTI-SUB-STATE object — solid is byte-identical; acti
   const rad = parsePaint({ type: "radialGradient", ...sub });
   assert.equal(rad.r, 0.5);
   assert.throws(() => parsePaint({ type: "solid" }), /needs a "solid" color/); // loud, never a silent blank
+});
+
+// ── linear-gradient DIRECTION: `angle` is authoritative, from/to DERIVED (#80) ─
+await test("parsePaint: linear from/to are DERIVED from the authoritative `angle` (stale from/to ignored)", () => {
+  // angle present ⇒ endpoints computed from it via angleToLinearEndpoints; a
+  // CONTRADICTORY stored from/to is ignored (angle wins). 90° = a vertical axis.
+  const p = parsePaint({ type: "linearGradient", linear: {
+    stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }],
+    angle: 90, from: { x: 0, y: 0 }, to: { x: 1, y: 0 } } });
+  assert.deepEqual(p.from, angleToLinearEndpoints(90).from);
+  assert.deepEqual(p.to, angleToLinearEndpoints(90).to);
+  assert.equal(p.from.x, p.to.x); // vertical axis, NOT the stale horizontal from/to
+});
+await test("parsePaint: linear direction FALLS BACK to from/to (no angle), else a 0° default; bad angle is loud", () => {
+  // Un-migrated in-memory paint: no angle ⇒ the stored from/to render as-is.
+  const raw = parsePaint({ type: "linearGradient", stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], from: { x: 0.2, y: 0.3 }, to: { x: 0.8, y: 0.7 } });
+  assert.deepEqual(raw.from, { x: 0.2, y: 0.3 });
+  assert.deepEqual(raw.to, { x: 0.8, y: 0.7 });
+  // Neither angle nor from/to ⇒ the GRADIENT_DEFAULT_ANGLE (0°, left→right).
+  const def = parsePaint({ type: "linearGradient", stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }] });
+  assert.deepEqual(def.from, angleToLinearEndpoints(0).from);
+  assert.deepEqual(def.to, angleToLinearEndpoints(0).to);
+  // A non-finite angle is a loud error, never a silent NaN endpoint.
+  assert.throws(() => parsePaint({ type: "linearGradient", stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], angle: "nope" }), /"angle" must be a finite number/);
+});
+await test("parsePaint: a KEYFRAMED angle 0°→180° tweens as a ROTATING axis (90° at alpha 0.5), not a collapsed midpoint", () => {
+  // THE point of task #80: only `angle` is keyframed, so alpha 0.5 folds to 90°
+  // — a full-strength VERTICAL gradient — instead of two endpoints lerping to a
+  // degenerate horizontal midpoint (from ≈ to). from/to are DERIVED post-fold.
+  const mkfill = () => ({ type: "linearGradient", linear: {
+    stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], angle: 0 } });
+  let doc = { meta: {}, slides: [
+    { id: "s0", name: "s0", delta: { items: { r1: { type: "rect", fill: mkfill() } } } },
+    { id: "s1", name: "s1", delta: {} },
+  ] };
+  doc = keyframed(doc, 1, ["items", "r1", "fill", "linear", "angle"], 180);
+  const mid = parsePaint(foldState(doc, 1, 0.5).items.r1.fill);
+  assert.deepEqual(mid.from, angleToLinearEndpoints(90).from); // {x: 0.5, y: 0}
+  assert.deepEqual(mid.to, angleToLinearEndpoints(90).to);     // {x: 0.5, y: 1}
+  assert.notEqual(mid.from.y, mid.to.y); // a REAL axis (not a collapsed point)
 });
 await test("REGRESSION: parsePaint ACCEPTS a folded gradient after a single-stop keyframe (no numeric-keyed-object crash)", () => {
   // The live crash — keyframing one stop's offset across slides used to fold to
