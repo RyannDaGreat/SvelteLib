@@ -264,6 +264,9 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection) {
     case "latexVector":
       drawLatexVector(CanvasKit, canvas, cmd, opacity);
       break;
+    case "mermaidVector":
+      drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection);
+      break;
     default:
       throw new Error(`paintIR(skia): unknown op "${cmd.op}"`);
   }
@@ -324,6 +327,66 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity) {
     p.setAntiAlias(true);
     canvas.drawPath(path, p);
     p.delete(); path.delete();
+  }
+  canvas.restore();
+}
+
+/**
+ * Command (draws a flattened Mermaid diagram as crisp vector — the mirror of
+ * drawLatexVector). Establishes the SAME viewBox→box mapping (preserveAspect ⇒
+ * centered uniform fitBox scale; else box→box stretch), then draws each vector
+ * `path` (fill and/or stroke, per-path CSS colors parsed here, fillRule honored,
+ * group + per-path opacity folded into the paint alpha) followed by each `text`
+ * label (through the SHARED text layout, so it uses the same font stack + stays
+ * razor-sharp under the scaled CTM — Skia rasterizes glyphs in device space).
+ * The raster `ref` is ignored here (it exists only for the hybrid raster split
+ * that hands a mermaid UNDER a blur to the rasterize callback). Paths are drawn
+ * before texts so labels sit ON TOP of their node fills.
+ */
+function drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection) {
+  const { viewBox, paths, texts } = cmd;
+  let sx, sy, ox = 0, oy = 0;
+  if (cmd.preserveAspect !== false) {
+    const f = fitBox(viewBox.w, viewBox.h, cmd.w, cmd.h);
+    sx = sy = f.scale; ox = f.offsetX; oy = f.offsetY;
+  } else {
+    sx = cmd.w / viewBox.w; sy = cmd.h / viewBox.h;
+  }
+  canvas.save();
+  canvas.translate(cmd.x + ox, cmd.y + oy);
+  canvas.scale(sx, sy);
+  canvas.translate(-viewBox.minX, -viewBox.minY);
+  for (const p of paths) {
+    const skPath = CanvasKit.Path.MakeFromSVGString(p.d);
+    if (!skPath) throw new Error(`paintIR(skia): mermaidVector path "d" failed to parse: ${JSON.stringify(p.d).slice(0, 64)}`);
+    skPath.setFillType(p.fillRule === "evenodd" ? CanvasKit.FillType.EvenOdd : CanvasKit.FillType.Winding);
+    const op = opacity * (p.opacity ?? 1);
+    if (p.fill) {
+      const rgba = parseColor(p.fill);
+      const paint = new CanvasKit.Paint();
+      paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * op));
+      paint.setStyle(CanvasKit.PaintStyle.Fill);
+      paint.setAntiAlias(true);
+      canvas.drawPath(skPath, paint);
+      paint.delete();
+    }
+    if (p.stroke && p.strokeWidth > 0) {
+      const rgba = parseColor(p.stroke);
+      const paint = new CanvasKit.Paint();
+      paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * op));
+      paint.setStyle(CanvasKit.PaintStyle.Stroke);
+      paint.setStrokeWidth(p.strokeWidth);
+      paint.setAntiAlias(true);
+      canvas.drawPath(skPath, paint);
+      paint.delete();
+    }
+    skPath.delete();
+  }
+  for (const t of texts) {
+    // A single-run text op the shared layout understands (top-left origin at
+    // t.x/t.y in viewBox space; no wrap). Per-text opacity folds with the group.
+    const layout = getTextLayout(CanvasKit, fontCollection, { text: t.text, x: t.x, y: t.y, size: t.size, color: t.color, bold: t.bold, font: t.font }, opacity * (t.opacity ?? 1));
+    layout.draw(canvas, t.x, t.y);
   }
   canvas.restore();
 }

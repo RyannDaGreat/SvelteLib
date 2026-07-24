@@ -58,6 +58,7 @@
 
 import { reserveImageSlot, registerRasterizedBitmap } from "./image_registry.js";
 import { reportOnce } from "../../core/report.js";
+import { flattenMermaidSvg } from "./mermaid_vector.js";
 
 /** Supersample factor: raster at this many device px per diagram layout px (at
  * scale 1). Higher than the 2× latex/PDF SUPERSAMPLE_DENSITY because a diagram
@@ -96,6 +97,14 @@ const aspects = new Map();
 /** def → Mermaid syntax-error message when the definition failed to parse, else
  * absent. Read by mermaidErrorFor (theme-independent: syntax is syntax). */
 const parseErrors = new Map();
+/** "<def>|<theme>" → { paths, texts, viewBox } — the FLATTENED TRUE-VECTOR
+ * geometry (viewBox space) once a render lands and could be vectorized, else
+ * absent (an unflattenable diagram stays raster). Theme is part of the key
+ * because it drives the resolved colors. The plugin reads it via
+ * mermaidVectorGeom to emit the crisp mermaidVector op; null until the flatten
+ * lands, so emit() falls back to the raster image op meanwhile (the async
+ * contract, exactly like latex_raster.latexGlyphs). */
+const vectorGeoms = new Map();
 
 /**
  * Pure function. Rounds a raster scale to the MERMAID_SCALE_STEP grid (never
@@ -160,6 +169,21 @@ export function mermaidStatus(def, theme = DEFAULT_MERMAID_THEME, scale = 1) {
  */
 export function mermaidAspect(def, theme = DEFAULT_MERMAID_THEME) {
   return aspects.get(`${def}|${theme}`) ?? null;
+}
+
+/**
+ * Query. The FLATTENED TRUE-VECTOR geometry of a rendered diagram —
+ * `{ paths, texts, viewBox }` in the root viewBox frame — or null if not landed
+ * yet OR the diagram could not be vectorized (foreignObject; the plugin then
+ * rasterizes and a loud warning has already fired). The mermaid analog of
+ * latex_raster.latexGlyphs: the plugin's emit() builds the mermaidVector op from
+ * it, falling back to the raster image op while this is null (the async
+ * no-silent-placeholder contract). Theme-keyed (theme drives resolved colors).
+ *
+ * @example mermaidVectorGeom("nope", "default") // null
+ */
+export function mermaidVectorGeom(def, theme = DEFAULT_MERMAID_THEME) {
+  return vectorGeoms.get(`${def}|${theme}`) ?? null;
 }
 
 /**
@@ -255,51 +279,76 @@ export function ensureMermaidRendered(def, theme = DEFAULT_MERMAID_THEME, scale 
     }
 
     const svgText = await renderMermaidSvg(def, theme);
+    // ATTACH offscreen: the TRUE-VECTOR flatten below reads getScreenCTM /
+    // getBBox / getComputedStyle, which return null/garbage on a detached node
+    // (the resolveLatexGlyphs discipline). Removed in the finally.
     const holder = document.createElement("div");
-    holder.innerHTML = svgText; // HTML parser handles inline SVG; no attach needed (we read attrs + reserialize)
-    const svg = holder.querySelector("svg");
-    if (!svg) throw new Error("mermaid_raster: renderMermaidSvg produced no <svg> element");
+    holder.style.cssText = "position:absolute;left:-99999px;top:0;width:0;height:0;overflow:hidden";
+    holder.innerHTML = svgText; // HTML parser handles inline SVG
+    document.body.appendChild(holder);
+    try {
+      const svg = holder.querySelector("svg");
+      if (!svg) throw new Error("mermaid_raster: renderMermaidSvg produced no <svg> element");
 
-    const nat = svgNaturalSize(svg);
-    aspects.set(`${def}|${theme}`, nat);
+      const nat = svgNaturalSize(svg);
+      aspects.set(`${def}|${theme}`, nat);
 
-    // Supersampled pixel size at the item's world-scale bucket, capped uniformly.
-    const density = MERMAID_SUPERSAMPLE * roundedScale;
-    let pxW = Math.max(1, Math.round(nat.w * density));
-    let pxH = Math.max(1, Math.round(nat.h * density));
-    const over = Math.max(pxW, pxH) / MERMAID_MAX_RASTER_PX;
-    if (over > 1) { pxW = Math.max(1, Math.round(pxW / over)); pxH = Math.max(1, Math.round(pxH / over)); }
+      // TRUE VECTOR (the crisp-at-any-zoom path, mirroring latex_raster's glyph
+      // flatten): resolve the CSS-styled, transform-composed Mermaid tree to
+      // viewBox-space vector paths + text on the PRISTINE svg (before the raster
+      // width/height mutations below). A diagram that can't be vectorized
+      // (foreignObject) leaves vectorGeoms unset → the plugin rasterizes AND we
+      // warn LOUDLY (the task's no-silent-fallback rule); per-element punts are
+      // reported once too. The raster still lands regardless (the async ref + the
+      // HYBRID fallback for a diagram under a blur).
+      const geom = flattenMermaidSvg(svg);
+      for (const w of geom.warnings) reportOnce(`mermaid_vector:${w}`, `PowerRP mermaid_vector: ${w}`);
+      if (geom.unflattenable) {
+        reportOnce(`mermaid_vector:unflattenable:${key}`, `PowerRP mermaid_vector: cannot vectorize "${truncate(def)}" [${theme}] — ${geom.reason}; falling back to RASTER (pixelates on zoom)`);
+      } else {
+        vectorGeoms.set(`${def}|${theme}`, { paths: geom.paths, texts: geom.texts, viewBox: geom.viewBox });
+      }
 
-    // Embed the bundled label face so the isolated <img> raster context draws
-    // the SAME font Mermaid measured against (no network, faithful metrics).
-    const styleEl = document.createElementNS("http://www.w3.org/2000/svg", "style");
-    styleEl.textContent = await mermaidFontFaceCss();
-    svg.insertBefore(styleEl, svg.firstChild);
-    // Explicit intrinsic px for the <img>; drop any max-width cap Mermaid set.
-    svg.setAttribute("width", `${pxW}`);
-    svg.setAttribute("height", `${pxH}`);
-    svg.style.maxWidth = "none";
+      // Supersampled pixel size at the item's world-scale bucket, capped uniformly.
+      const density = MERMAID_SUPERSAMPLE * roundedScale;
+      let pxW = Math.max(1, Math.round(nat.w * density));
+      let pxH = Math.max(1, Math.round(nat.h * density));
+      const over = Math.max(pxW, pxH) / MERMAID_MAX_RASTER_PX;
+      if (over > 1) { pxW = Math.max(1, Math.round(pxW / over)); pxH = Math.max(1, Math.round(pxH / over)); }
 
-    // Serialize + base64 (more robust than percent-encoding for an <img> SVG
-    // data URI) → decode via <img> → draw to a 2D canvas → createImageBitmap
-    // (the latex_raster raster step verbatim: canvas-drawImage is far more
-    // reliable across browsers than createImageBitmap(svgImg) directly).
-    const svgOut = new XMLSerializer().serializeToString(svg);
-    const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgOut)))}`;
-    const img = new Image();
-    img.width = pxW;
-    img.height = pxH;
-    img.src = dataUri;
-    await img.decode();
-    const canvas = document.createElement("canvas");
-    canvas.width = pxW;
-    canvas.height = pxH;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, pxW, pxH);
-    const bitmap = await createImageBitmap(canvas);
-    entry.status = "ready";
-    registerRasterizedBitmap(ref, bitmap); // wakes image_registry.onImageLoad subscribers
-    return bitmap;
+      // Embed the bundled label face so the isolated <img> raster context draws
+      // the SAME font Mermaid measured against (no network, faithful metrics).
+      const styleEl = document.createElementNS("http://www.w3.org/2000/svg", "style");
+      styleEl.textContent = await mermaidFontFaceCss();
+      svg.insertBefore(styleEl, svg.firstChild);
+      // Explicit intrinsic px for the <img>; drop any max-width cap Mermaid set.
+      svg.setAttribute("width", `${pxW}`);
+      svg.setAttribute("height", `${pxH}`);
+      svg.style.maxWidth = "none";
+
+      // Serialize + base64 (more robust than percent-encoding for an <img> SVG
+      // data URI) → decode via <img> → draw to a 2D canvas → createImageBitmap
+      // (the latex_raster raster step verbatim: canvas-drawImage is far more
+      // reliable across browsers than createImageBitmap(svgImg) directly).
+      const svgOut = new XMLSerializer().serializeToString(svg);
+      const dataUri = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgOut)))}`;
+      const img = new Image();
+      img.width = pxW;
+      img.height = pxH;
+      img.src = dataUri;
+      await img.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = pxW;
+      canvas.height = pxH;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, pxW, pxH);
+      const bitmap = await createImageBitmap(canvas);
+      entry.status = "ready";
+      registerRasterizedBitmap(ref, bitmap); // wakes image_registry.onImageLoad subscribers
+      return bitmap;
+    } finally {
+      if (holder.parentNode) holder.parentNode.removeChild(holder);
+    }
   })().catch((e) => {
     entry.status = "error";
     entry.error = e instanceof Error ? e : new Error(String(e));
@@ -332,4 +381,5 @@ export function resetMermaidRaster() {
   renders.clear();
   aspects.clear();
   parseErrors.clear();
+  vectorGeoms.clear();
 }

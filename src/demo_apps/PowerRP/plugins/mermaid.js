@@ -13,16 +13,22 @@
  * framed diagram card), crop insets, and effects (shadow/bloom/blend) — so it
  * inherits every box feature for free with zero widget-specific decoration code.
  * This file is deliberately near-identical to plugins/latex.js; the only new
- * concerns are `definition`/`theme`/`preserveAspect` and the render→bitmap
- * pipeline underneath (render_gpu/gpu/mermaid_raster.js).
+ * concerns are `definition`/`theme`/`preserveAspect` and the render→vector(+raster)
+ * pipeline underneath (render_gpu/gpu/mermaid_raster.js + mermaid_vector.js).
  *
- * ── HOW IT REACHES THE RENDERER (reusing the image path, not a new IR op) ─────
- * A rendered diagram is a bitmap (Mermaid SVG → rasterized). emit() builds a
- * plain `image()` op whose `ref` is a SYNTHETIC key from mermaid_raster.js
- * (mermaidRef(def, theme, scale)) — the GPU compositor, PDF backend, and SVG
- * backend all resolve an image ref uniformly, so this widget needs ZERO new
- * backend code (the latex_raster/pdf_page precedent). v1 is RASTER; a true
- * vector flatten is deferred (see mermaid_raster's header).
+ * ── HOW IT REACHES THE RENDERER (TRUE VECTOR, mirroring latexVector) ──────────
+ * A rendered diagram is FLATTENED to real vector: mermaid_raster renders the
+ * Mermaid SVG, then mermaid_vector.flattenMermaidSvg (a getComputedStyle/
+ * getScreenCTM walk that REUSES core/svg_paths.js geometry) resolves it to
+ * viewBox-space vector `paths` (shapes/edges/arrowheads) + `texts` (label runs).
+ * emit() builds a `mermaidVector` IR op — the exact mirror of `latexVector` — that
+ * carries that vector geometry (SVG/PDF embed real vector; the GPU draws crisp at
+ * any zoom, no pixelation) AND the raster `ref` (mermaidRef(def, theme, scale)) as
+ * the HYBRID-RULE fallback (a mermaid UNDER a blur rasterizes like text). Until
+ * the async flatten lands — or if a diagram can't be vectorized (foreignObject;
+ * warned LOUDLY, never a silent fallback) — emit() degrades to a plain `image()`
+ * op on the same `ref` (the raster bitmap), then re-emits the vector op on the
+ * repaint once the geometry is cached (the async no-silent-placeholder contract).
  *
  * ── preserveAspect (default ON) — letterbox via core/geometry.fitBox ──────────
  * A diagram has a NATURAL aspect once laid out (mermaid_raster.mermaidAspect).
@@ -57,12 +63,12 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder, fitBox } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { image, rect, text } from "../render_gpu/ir.js";
+import { image, mermaidVector, rect, text } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import {
   ensureMermaidRendered, mermaidRef, mermaidAspect, mermaidErrorFor, mermaidIsEmpty,
-  MERMAID_THEMES, DEFAULT_MERMAID_THEME,
+  mermaidVectorGeom, MERMAID_THEMES, DEFAULT_MERMAID_THEME,
 } from "../render_gpu/gpu/mermaid_raster.js";
 
 /** The default diagram for a freshly added widget — a tiny flowchart that
@@ -332,15 +338,37 @@ export const mermaidPlugin = {
     const preserve = s.preserveAspect !== false;
     const cropped = c.sw < 1 || c.sh < 1 || c.sx > 0 || c.sy > 0;
     const aspect = mermaidAspect(def, theme);
-    // preserveAspect (uncropped, aspect known) → letterbox the full diagram into
-    // the box via fitBox (centered over the box fill). Otherwise stretch the
-    // (possibly cropped) source into the box — a cropped sub-rect cannot be
-    // cleanly letterboxed, the same faithful choice latex makes.
+    // TRUE VECTOR (crisp at any zoom): once the flatten lands (browser-side,
+    // async — null until then, OR when the diagram can't be vectorized, in which
+    // case mermaid_raster already warned LOUDLY), emit a mermaidVector op that
+    // draws the flattened shapes+text as real VECTOR (SVG/PDF embed vector; the
+    // GPU draws crisp at any zoom) AND carries the raster `ref` for the HYBRID
+    // RULE fallback (a mermaid UNDER a blur rasterizes like text). Before it lands
+    // — or when unflattenable — degrade to the plain raster `image` op (draws the
+    // bitmap; a repaint re-emits the vector op once the geometry is cached), the
+    // async no-silent-placeholder contract identical to latex. The vector op does
+    // its OWN preserveAspect letterbox (viewBox→box fitBox), mirroring latexVector.
+    // A CROPPED diagram (edge-crop shrinks the source) stays RASTER: the vector op
+    // maps all geometry into the box with no source-sub-rect clip, so it can't
+    // represent a partial crop — rasterizing (which honors sx/sy/sw/sh) is the
+    // faithful, no-divergence choice, exactly latex's hybrid rule.
+    const geom = cropped ? null : mermaidVectorGeom(def, theme);
     let quad;
-    if (preserve && !cropped && aspect && aspect.w > 0 && aspect.h > 0) {
+    if (geom) {
+      quad = mermaidVector({
+        ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity,
+        paths: geom.paths, texts: geom.texts, viewBox: geom.viewBox,
+        preserveAspect: preserve,
+      });
+    } else if (preserve && !cropped && aspect && aspect.w > 0 && aspect.h > 0) {
+      // RASTER fallback, letterboxed: uniform-scale the full diagram into the box
+      // via fitBox (centered over the box fill), the same faithful choice latex
+      // makes. Used only until the vector flatten lands (or if it can't).
       const fit = fitBox(aspect.w, aspect.h, c.w, c.h);
       quad = image({ ref, x: c.x + fit.offsetX, y: c.y + fit.offsetY, w: aspect.w * fit.scale, h: aspect.h * fit.scale, opacity });
     } else {
+      // RASTER fallback, stretched: a cropped sub-rect cannot be cleanly
+      // letterboxed, so stretch the (possibly cropped) source into the box.
       quad = image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
     }
     // Effects wrap OUTSIDE the border decoration (effects.js order rule).

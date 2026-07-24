@@ -23,6 +23,7 @@
  *   {op:"image", ref, x, y, w, h, opacity}                       // ref → media registry key
  *   {op:"video", ref, x, y, w, h, opacity}                       // ref → <video> registry key
  *   {op:"latexVector", ref, x, y, w, h, glyphs, viewBox, opacity}// dual: vector glyph <path>s (SVG/PDF) + raster ref (GPU/hybrid)
+ *   {op:"mermaidVector", ref, x, y, w, h, paths, texts, viewBox, opacity} // dual: vector shapes+text (SVG/PDF/GPU) + raster ref (hybrid); mirrors latexVector
  *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
@@ -449,6 +450,91 @@ export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx 
     preserveAspect: preserveAspect !== false,
     src: sourceRect(sx, sy, sw, sh),
     glyphs: outGlyphs,
+    viewBox: { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h },
+  };
+}
+
+// ── mermaidVector (TRUE-VECTOR MERMAID DIAGRAM) ───────────────────────────────
+// The mermaid analog of latexVector, and its direct mirror: the ONE display-list
+// command for a rendered Mermaid diagram, carrying both the flattened VECTOR
+// geometry (viewBox-space `paths` = filled/stroked shapes + edges + arrowheads,
+// and `texts` = positioned label runs — SVG/PDF backends embed real vector; the
+// GPU draws crisp vector at any zoom) AND the raster `ref` fallback (the HYBRID
+// RULE's raster split hands this raw op to the GPU/rasterize callback — a mermaid
+// UNDER a blurBackdrop rasterizes, exactly like latex/text). It differs from
+// latexVector ONLY in payload richness: a diagram has multi-color fills+strokes
+// and text labels, where an equation is single-ink fill-only glyphs. See
+// plugins/mermaid.js + render_gpu/gpu/mermaid_vector.js for how the geometry is
+// produced (a getComputedStyle/getScreenCTM flatten reusing core/svg_paths.js).
+
+/**
+ * Pure function. TRUE-VECTOR Mermaid diagram command — the mirror of latexVector.
+ * Draws the diagram as vector `paths` (shapes/edges/arrowheads) + `texts` (label
+ * runs) in SVG/PDF and on the GPU, and as the raster quad `ref` in every hybrid
+ * raster fallback. Geometry is in `viewBox` space and maps onto the local box
+ * {x, y, w, h} (preserveAspect ⇒ centered uniform fit; else a box→box stretch),
+ * y-DOWN already. Each path keeps its own CSS-string fill/stroke (parsed by the
+ * backends, the latexVector precedent); each text keeps its top-left origin +
+ * size + color + font id (render_gpu/fonts.js).
+ *
+ * `ref` (raster fallback) + `src` (edge-crop UV rect, image() semantics) let the
+ * GPU + hybrid split reuse the image path verbatim; a vector backend ignores
+ * `ref`/`src` and consumes `paths`/`texts`/`viewBox`/box.
+ *
+ * Args:
+ *   ref (string): raster media-registry key (hybrid raster fallback)
+ *   x, y, w, h (number): the diagram's local draw box
+ *   paths (array): [{d, fill, stroke, strokeWidth, fillRule, opacity}] in viewBox space
+ *   texts (array): [{text, x, y, size, color, bold, font}] in viewBox space, top-left
+ *   viewBox ({minX, minY, w, h}): the geometry coordinate frame (Mermaid layout units)
+ *   opacity (number), sx/sy/sw/sh (number): raster source-rect (image() crop)
+ *   preserveAspect (bool): uniform scale-to-fit (default true), else box→box stretch
+ *
+ * @example mermaidVector({ref: "mermaid:default:1:x", x: 0, y: 0, w: 40, h: 20, paths: [{d: "M0 0L10 0", stroke: "#333", strokeWidth: 1}], texts: [], viewBox: {minX: 0, minY: 0, w: 100, h: 50}}).op // "mermaidVector"
+ * @example mermaidVector({ref: "r", x: 0, y: 0, w: 4, h: 2, paths: [], texts: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).paths // []
+ * @example mermaidVector({ref: "r", x: 0, y: 0, w: 4, h: 2, paths: [], texts: [{text: "Hi", x: 1, y: 2, size: 16, color: "#333"}], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).texts[0].text // "Hi"
+ * @example mermaidVector({ref: "r", x: 0, y: 0, w: 4, h: 2, paths: [], texts: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).preserveAspect // true
+ */
+export function mermaidVector({ ref, x, y, w, h, paths, texts, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, preserveAspect = true }) {
+  if (typeof ref !== "string") throw new Error(`mermaidVector: "ref" must be a string, got ${JSON.stringify(ref)}`);
+  requireFinite("mermaidVector", { x, y, w, h, opacity, sx, sy, sw, sh });
+  if (!Array.isArray(paths)) throw new Error(`mermaidVector: "paths" must be an array, got ${JSON.stringify(paths)}`);
+  if (!Array.isArray(texts)) throw new Error(`mermaidVector: "texts" must be an array, got ${JSON.stringify(texts)}`);
+  if (!viewBox || typeof viewBox !== "object") throw new Error(`mermaidVector: "viewBox" must be a {minX,minY,w,h} object, got ${JSON.stringify(viewBox)}`);
+  requireFinite("mermaidVector.viewBox", { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h });
+  if (!(viewBox.w > 0) || !(viewBox.h > 0)) throw new Error(`mermaidVector: viewBox must have positive w/h, got ${JSON.stringify(viewBox)}`);
+  const outPaths = paths.map((p) => {
+    if (typeof p.d !== "string" || p.d.trim() === "") throw new Error(`mermaidVector: path "d" must be a non-empty string, got ${JSON.stringify(p.d)}`);
+    requireFinite("mermaidVector.path", { strokeWidth: p.strokeWidth ?? 0, opacity: p.opacity ?? 1 });
+    // fill/stroke kept as CSS strings (or null) — parsed by the backends via
+    // parseColor, exactly like latexVector's glyph fill; the op never rasterizes
+    // color itself. fillRule mirrors the `path` op's winding choice.
+    return {
+      d: p.d,
+      fill: p.fill ?? null,
+      stroke: p.stroke ?? null,
+      strokeWidth: p.strokeWidth ?? 0,
+      fillRule: p.fillRule === "evenodd" ? "evenodd" : "nonzero",
+      opacity: p.opacity ?? 1,
+    };
+  });
+  const outTexts = texts.map((t) => {
+    if (typeof t.text !== "string") throw new Error(`mermaidVector: text "text" must be a string, got ${JSON.stringify(t.text)}`);
+    requireFinite("mermaidVector.text", { x: t.x, y: t.y, size: t.size, opacity: t.opacity ?? 1 });
+    return {
+      text: t.text, x: t.x, y: t.y, size: t.size,
+      color: t.color ?? "#000000",
+      bold: !!t.bold,
+      font: typeof t.font === "string" ? t.font : DEFAULT_FONT,
+      opacity: t.opacity ?? 1,
+    };
+  });
+  return {
+    op: "mermaidVector", ref, x, y, w, h, opacity,
+    preserveAspect: preserveAspect !== false,
+    src: sourceRect(sx, sy, sw, sh),
+    paths: outPaths,
+    texts: outTexts,
     viewBox: { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h },
   };
 }
