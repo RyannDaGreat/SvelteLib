@@ -24,6 +24,12 @@
   `rootMargin` pre-renders tiles just before they scroll in). A tile that goes
   dirty while off-screen renders the moment it next becomes visible.
 
+  Scheduling: by default the render fires SYNCHRONOUSLY the instant a visible
+  tile goes dirty. A host with many tiles can pass a `schedule(run)` that defers
+  and rations the render (e.g. one per requestIdleCallback tick) so a burst never
+  blocks the main thread — the tile coalesces its own pending render and re-checks
+  visible+dirty when its turn comes, always rendering the LATEST state.
+
   render contract:
     render(widthPx, heightPx) → HTMLCanvasElement | string(dataURL/URL) | null
                                 | Promise of any of those (async renderers —
@@ -144,6 +150,15 @@
     settleMs = 120,
     /** @type {string} IntersectionObserver rootMargin — pre-render this far outside the viewport. */
     rootMargin = "200px",
+    /**
+     * @type {(run: () => void) => (() => void)|void} Optional scheduler for the actual render.
+     * Given a `run` thunk, it decides WHEN the render fires and returns an optional
+     * canceller. The default runs synchronously (the historical behavior); a host with
+     * MANY tiles (e.g. a slide navigator) can pass an idle-rationed scheduler so a burst
+     * of dirty tiles never blocks the main thread. The tile still coalesces its own
+     * requests (one in flight at a time) and re-checks visible+dirty when `run` fires.
+     */
+    schedule = (run) => run(),
     /** @type {string} Extra class on the outer box. */
     class: klass = "",
   } = $props();
@@ -169,6 +184,7 @@
   let renderedSize = null; // {w, h} device px of the current src, or null
   let renderedKey = Symbol("never"); // dirtyKey the current src reflects (never equals a real key at first)
   let settleTimer = 0;
+  let pendingCancel = null; // canceller for a scheduled-but-not-yet-run render, or null
 
   /** Query. The current devicePixelRatio (1 in non-browser test contexts). */
   function devicePixelRatioNow() {
@@ -216,8 +232,22 @@
    * Command. The dirty-tracking gate: render iff visible AND dirty. Off-screen
    * or clean tiles do nothing (the stale image stays). Called whenever any
    * input (visibility, size, dpr, dirtyKey) changes.
+   *
+   * The render goes through `schedule` (default synchronous). Coalescing: while
+   * a scheduled render is still pending we DON'T book another — the pending run
+   * re-reads visible+dirty and renders the LATEST state when it fires, so rapid
+   * dirtyKey changes fold into one render. The pending run re-checks the gate at
+   * fire time (a tile may have scrolled off, resized, or already rendered since).
    */
   function maybeRender() {
+    if (!visible || cssW <= 0 || !isDirty()) return;
+    if (pendingCancel) return; // a render is already scheduled — coalesce
+    pendingCancel = schedule(deferredRender) || null;
+  }
+
+  /** Command. The scheduled render body: clears the pending mark, then renders iff still needed. */
+  function deferredRender() {
+    pendingCancel = null;
     if (!visible || cssW <= 0 || !isDirty()) return;
     renderNow();
   }
@@ -277,6 +307,13 @@
   $effect(() => {
     dirtyKey; // subscribe
     maybeRender();
+  });
+
+  // ── Unmount: drop a scheduled-but-unrun render so a destroyed tile's turn is
+  // not wasted (and never renders into a dead component). No reactive reads, so
+  // this runs once; its teardown fires on destroy.
+  $effect(() => () => {
+    if (pendingCancel) pendingCancel();
   });
 </script>
 

@@ -9,10 +9,20 @@
 
   Thumbnails use the generic DirtyImage widget (src/lib): each renders THROUGH
   its slide's camera, at the size it's DISPLAYED (panel width × dpr) so it's
-  crisp, and only when it's on screen AND dirty. "Dirty" = the document changed
-  (app.doc identity flips on every commit) or the panel was resized. Editing
-  never re-renders every thumbnail — a commit marks them all dirty, but only the
-  ones scrolled into view repaint (scales to "5 million slides" — manifest).
+  crisp, and only when it's on screen AND dirty (scales to "5 million slides" —
+  manifest: only the handful scrolled into view ever repaint).
+
+  Editing is NON-BLOCKING and PER-SLIDE-dirty (thumbSchedule.js):
+    · PER-SLIDE KEYS — each thumbnail's dirty key is the cumulative fold of
+      deltas 0..i (+ enabled + meta + imageEpoch), not the whole document. Slide
+      deltas fold FORWARD and are reference-stable under structural sharing, so
+      editing slide N re-keys ONLY slides >= N (editing the last slide repaints
+      one thumbnail; only editing slide 0 repaints all).
+    · DEBOUNCED — a burst of commits coalesces into ONE render of the final
+      state (published after THUMB_SETTLE_MS of quiet), never one per keystroke.
+    · RATIONED — dirty renders drain at most THUMBS_PER_IDLE_TICK per idle/rAF
+      tick, off the critical path, so a burst never freezes input; each tile
+      keeps showing its last render until its turn.
 -->
 <script>
   import "iconify-icon";
@@ -22,8 +32,20 @@
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
+  import { makeSerialSource, thumbnailDirtyKeys, makeIdleThumbScheduler, browserTickDeps } from "./thumbSchedule.js";
 
   let { app } = $props();
+
+  // Thumbnail scheduling knobs (named — no magic numbers).
+  // How long edits must SETTLE before thumbnails re-render: a burst of commits
+  // (numeric scrub, rapid keyframing) folds into ONE render of the final state
+  // instead of one render per commit. Below the ~150ms "feels instant" bar, yet
+  // long enough to swallow frame-rate (16ms) commit bursts.
+  const THUMB_SETTLE_MS = 120;
+  // Max thumbnails to render per idle/rAF tick. Each render is a synchronous
+  // CanvasKit raster + readback; rationing to a small N per tick keeps the main
+  // thread responsive during a burst (the rest wait, showing their last render).
+  const THUMBS_PER_IDLE_TICK = 2;
 
   // Media (images) decode ASYNCHRONOUSLY, AFTER the commit that added the
   // widget — so a thumbnail rendered at commit time draws the image as nothing
@@ -73,24 +95,47 @@
     return { type: t.type, seconds: t.seconds, title: transitionType(t.type).title };
   }
 
-  // The document identity (app.doc changes on every commit) is the dirty key —
-  // a NEW object reference per commit, so every mounted thumbnail goes dirty on
-  // any edit (only the visible ones repaint). Per-slide identity is handled by
-  // the {#each ... (slide.id)} key: each tile instance is bound to one slide, so
-  // committedDoc alone is a stable, meaningful key.
-  // While a drag preview is active we FREEZE it (keep the last committed doc) so
-  // thumbnails never re-render at drag rate — the preview lives in previewDelta,
-  // not app.doc, and thumbnails show committed state only.
+  // While a drag preview is active we FREEZE the committed doc (the preview lives
+  // in previewDelta, not app.doc — thumbnails show committed state only, never at
+  // drag rate).
   // svelte-ignore state_referenced_locally — the initial value is immediately
   // reconciled by the effect below (previewDelta is null at mount).
   let committedDoc = $state(app.doc);
   $effect(() => {
     if (!app.previewDelta) committedDoc = app.doc;
   });
-  // The thumbnails' dirty key: a stable object that changes ONLY when the
-  // committed doc flips (an edit) or an image decode lands (imageEpoch). A
-  // $derived so unrelated re-renders don't churn it (DirtyImage compares by !==).
-  let thumbDirty = $derived({ doc: committedDoc, epoch: imageEpoch });
+
+  // PER-SLIDE DIRTY KEYS. The old key was the WHOLE-document identity, so every
+  // commit dirtied EVERY visible thumbnail. Instead, key each slide on the
+  // cumulative fold of deltas 0..i (+ enabled flags + meta + imageEpoch): a
+  // reference-stable serial per delta object means editing slide N re-keys ONLY
+  // slides >= N (structural sharing — core/document.js keyframed). serialOf lives
+  // for the component's life so identities stay comparable across commits.
+  const serialOf = makeSerialSource();
+  let liveKeys = $derived(thumbnailDirtyKeys(committedDoc, imageEpoch, serialOf));
+
+  // DEBOUNCED PUBLICATION. Tiles see `publishedKeys`, not `liveKeys` — republished
+  // only after edits SETTLE (THUMB_SETTLE_MS), so a burst of commits coalesces into
+  // one render of the final state. Scroll-in renders stay prompt (they key off the
+  // already-published value, not a fresh commit). Initialized to liveKeys so the
+  // first paint is immediate.
+  // svelte-ignore state_referenced_locally — seeded once; the effect below keeps it in sync.
+  let publishedKeys = $state(liveKeys);
+  let publishTimer = 0;
+  $effect(() => {
+    liveKeys; // subscribe to commits + image-decode epochs
+    // Cleanup runs before each re-run (and on destroy), clearing the prior
+    // timer — so successive commits keep pushing publication back until quiet.
+    publishTimer = setTimeout(() => (publishedKeys = liveKeys), THUMB_SETTLE_MS);
+    return () => clearTimeout(publishTimer);
+  });
+
+  // OFF-MAIN-THREAD RENDER RATIONING. A shared idle-batched scheduler drains at
+  // most THUMBS_PER_IDLE_TICK thumbnail renders per idle/rAF tick, so publishing a
+  // key (which dirties every visible tile at once) never fires N synchronous
+  // CanvasKit rasters in one flush. Disposed on unmount.
+  const thumbScheduler = makeIdleThumbScheduler({ ...browserTickDeps(), perTick: THUMBS_PER_IDLE_TICK });
+  $effect(() => () => thumbScheduler.dispose());
 </script>
 
 <div class="slidenav">
@@ -139,7 +184,8 @@
           <DirtyImage
             class="thumb"
             render={renderThumb(i)}
-            dirtyKey={thumbDirty}
+            dirtyKey={publishedKeys[i]}
+            schedule={thumbScheduler.request}
             aspect={thumbAspect(i)}
             alt={`Slide ${i + 1} preview`}
           />
