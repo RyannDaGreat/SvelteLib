@@ -82,6 +82,21 @@ export const plaintextPlugin = {
   // resizable:true → the standard 8 resize handles (same machinery as rect/text);
   // w constrains word-wrap, h gives the vertical-align stack its room.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // ── INLINE WYSIWYG EDITING (opt-in; REUSES the rich text widget's editor) ─────
+  // Double-clicking a plaintext box on the canvas enters the SAME Skia-owned
+  // in-place editor the rich text widget uses (web/TextEditController), but in
+  // PLAIN-STRING mode: it edits this widget's single `text` string directly (no
+  // {runs, paras}, NO floating format toolbar), committing the typed string as a
+  // keyframed change on the current slide — the box updates live per keystroke.
+  // CanvasView.onDblClick reads THIS descriptor to route the gesture (declarative
+  // opt-in, so any future single-string widget gets the editor by declaring it);
+  // the controller reads `plain` to flatten its rich editing model to a plain
+  // string at the stored-value boundary. An `=` equation-bound `text` is NOT
+  // opened this way (in-place editing would overwrite the equation with its
+  // computed value) — beginTextEdit no-ops it and routes the user to the
+  // Inspector's equation field (the mermaid/codeblock "equations live in the
+  // Inspector" precedent). `property` names WHICH string leaf the editor binds.
+  inlineTextEdit: { property: "text", plain: true },
   /**
    * Pure function. Is this box currently a GHOST? STATE-dependent — a plaintext
    * box is a ghost only while its string is empty/blank (plaintextIsEmpty, shared

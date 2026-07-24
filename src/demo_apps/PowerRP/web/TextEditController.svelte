@@ -53,6 +53,18 @@
 
   const SIZE_STEP = 2;   // px per Cmd+/- (the PPT default increment; matches the toolbar)
   const CARET_SCREEN_PX = 2; // caret thickness on screen (counter-scaled to LOCAL below)
+  // Fallback glyph size for a bare op with no explicit size — mirrors the shared
+  // text default (plugins/text.js + plugins/plaintext.js DEFAULT_TEXT_SIZE = 36u).
+  const DEFAULT_TEXT_SIZE = 36;
+
+  // PLAIN-STRING mode (a single-string widget like plaintext, routed here through
+  // its `inlineTextEdit` descriptor): the widget stores ONE plain string, not a
+  // {runs,paras} value, so this controller (a) shows NO format toolbar, (b) makes
+  // every run/paragraph STYLE op a no-op (there are no runs to style), and (c)
+  // flattens its rich editing model to a plain string at the app boundary
+  // (stageValue). All the caret/selection/IME/clipboard/undo machinery is shared
+  // verbatim. Rich mode (the text widget) is unchanged: `plain` is false.
+  let plain = $derived(!!app.textEditing?.plain);
 
   // ── selection = MODEL code-point offsets (anchor fixed, focus moving) ─────────
   let anchor = $state(0);
@@ -72,10 +84,12 @@
   let selEnd = $derived(Math.max(anchor, focus));
 
   // The widget-level fallbacks a legacy/partial value inherits — MUST match the
-  // text plugin emit() exactly so the editor's layout equals the render's.
+  // owning plugin's emit() exactly so the editor's layout equals the render's.
+  // The ink color reads a DIFFERENT state prop per mode: plaintext paints glyphs
+  // with `fill` (its paint-capable ink prop), the rich text widget with `color`.
   let inherited = $derived({
-    font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? 36,
-    color: node.state.color ?? "#000000", bold: node.state.bold ?? false,
+    font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? DEFAULT_TEXT_SIZE,
+    color: (plain ? node.state.fill : node.state.color) ?? "#000000", bold: node.state.bold ?? false,
   });
   let rich = $derived(normalizeRichText(node.state.text, inherited));
 
@@ -85,12 +99,27 @@
   let layout = $derived.by(() => {
     if (!gpu) return null;
     const s = node.state;
-    const cmd = {
-      rich,
-      boxW: (s.w ?? 0) > 0 ? s.w : Infinity,
-      boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
-      boxStyle: { align: s.align ?? "left", lineSpacing: s.lineSpacing ?? 1, charSpacing: s.charSpacing ?? 0, wordSpacing: s.wordSpacing ?? 0, valign: s.valign ?? "top" },
-    };
+    // PLAIN mode builds the SAME LEGACY single-run op the plaintext plugin emits
+    // (getTextLayout wraps it via singleRunRich) so the caret/selection geometry
+    // is byte-identical to the plaintext render; RICH mode passes the {runs,paras}
+    // value + full paragraph box style, as before.
+    const cmd = plain
+      ? {
+          text: richTextToPlain(rich),
+          size: s.size ?? DEFAULT_TEXT_SIZE,
+          color: s.fill ?? "#000000",
+          bold: s.bold ?? false,
+          font: s.font ?? DEFAULT_FONT,
+          boxW: (s.w ?? 0) > 0 ? s.w : Infinity,
+          boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
+          boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
+        }
+      : {
+          rich,
+          boxW: (s.w ?? 0) > 0 ? s.w : Infinity,
+          boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
+          boxStyle: { align: s.align ?? "left", lineSpacing: s.lineSpacing ?? 1, charSpacing: s.charSpacing ?? 0, wordSpacing: s.wordSpacing ?? 0, valign: s.valign ?? "top" },
+        };
     return getTextLayout(gpu.CanvasKit, gpu.fontCollection, cmd, s.opacity ?? 1);
   });
 
@@ -138,22 +167,28 @@
     if (editUndo.length > MAX_EDIT_HISTORY) editUndo.shift();
     editRedo = [];
   }
+  /** Command. The ONE boundary where this controller's rich editing model meets
+   *  the WIDGET's stored shape: in plain mode the {runs,paras} model is flattened
+   *  to a bare string (richTextToPlain) before it is staged, so a single-string
+   *  widget never receives a rich value; in rich mode the value passes through.
+   *  All preview writes (typing, IME, in-session undo/redo) go through here. */
+  function stageValue(v) { app.previewTextValue(plain ? richTextToPlain(v) : v); }
   /** Command. Previews a new value AND records the prior one for in-session undo. */
-  function preview(v) { pushHistory(); app.previewTextValue(v); }
+  function preview(v) { pushHistory(); stageValue(v); }
   /** Command. Restores the previous in-session snapshot (value + caret). No-op at
    *  session start — exit (Esc) then Cmd+Z undoes the whole edit at the doc level. */
   function undoEdit() {
     if (composing || !editUndo.length) return;
     editRedo.push({ value: rich, anchor, focus });
     const s = editUndo.pop();
-    app.previewTextValue(s.value); setSel(s.anchor, s.focus);
+    stageValue(s.value); setSel(s.anchor, s.focus);
   }
   /** Command. Replays the next snapshot undone by undoEdit (value + caret). */
   function redoEdit() {
     if (composing || !editRedo.length) return;
     editUndo.push({ value: rich, anchor, focus });
     const s = editRedo.pop();
-    app.previewTextValue(s.value); setSel(s.anchor, s.focus);
+    stageValue(s.value); setSel(s.anchor, s.focus);
   }
 
   /** Command. Replaces [lo,hi) with `text`, inheriting the caret style (+ any
@@ -207,15 +242,18 @@
    * applyRunStyle, offsets preserved), else stashed as the caret's pending style
    * for the next typed char (the PPT empty-caret convention). */
   function applyStyleToSelection(delta) {
+    if (plain) return; // plain-string widget: no runs to style (no format toolbar)
     if (selEnd > selStart) preview({ runs: applyRunStyle(rich.runs, selStart, selEnd, delta), paras: rich.paras });
     else pendingStyle = { ...pendingStyle, ...delta };
   }
   /** Command. Applies a paragraph-style delta to every paragraph the selection
    * touches (align etc.) via applyParaStyle — offsets/runs unchanged. */
   function applyParaToSelection(delta) {
+    if (plain) return; // plain-string widget: alignment lives on the Inspector row
     preview({ runs: rich.runs, paras: applyParaStyle(rich.paras, rich.runs, selStart, selEnd, delta) });
   }
   function toggleStyle(key) {
+    if (plain) return; // plain-string widget: no bold/italic/underline runs
     if (selEnd > selStart) {
       const cur = commonStyle(rich.runs, selStart, selEnd, key);
       applyStyleToSelection({ [key]: cur === true ? false : true });
@@ -225,7 +263,8 @@
     }
   }
   function stepSize(delta) {
-    const base = commonStyle(rich.runs, selStart, selEnd, "size") ?? runStyleAt(rich.runs, selStart).size ?? 36;
+    if (plain) return; // plain-string widget: size lives on the Inspector row
+    const base = commonStyle(rich.runs, selStart, selEnd, "size") ?? runStyleAt(rich.runs, selStart).size ?? DEFAULT_TEXT_SIZE;
     const size = Math.max(1, base + delta);
     if (selEnd > selStart) applyStyleToSelection({ size });
     else pendingStyle = { ...pendingStyle, size };
@@ -267,7 +306,7 @@
     pushHistory(); // the whole IME composition is ONE in-session undo step
     composing = true;
     let base = rich;
-    if (selEnd > selStart) { base = deleteRange(base, selStart, selEnd); app.previewTextValue(base); }
+    if (selEnd > selStart) { base = deleteRange(base, selStart, selEnd); stageValue(base); }
     compAnchor = selStart;
     compBase = base;
     collapse(compAnchor);
@@ -275,13 +314,13 @@
   function onCompositionUpdate(e) {
     if (!compBase) return;
     const data = e.data ?? "";
-    app.previewTextValue(insertText(compBase, compAnchor, data));
+    stageValue(insertText(compBase, compAnchor, data));
     const len = [...data].length;
     setSel(compAnchor + len, compAnchor + len);
   }
   function onCompositionEnd(e) {
     const data = e.data ?? "";
-    app.previewTextValue(insertText(compBase ?? rich, compAnchor, data));
+    stageValue(insertText(compBase ?? rich, compAnchor, data));
     collapse(compAnchor + [...data].length);
     composing = false; compBase = null;
     if (sinkEl) sinkEl.textContent = ""; // drop the native composing text (event source only)
@@ -440,14 +479,19 @@
     onpaste={onPaste}
   ></div>
 
-  <TextFormatToolbar
-    {app}
-    boxScale={box.scale}
-    onstyle={applyStyleToSelection}
-    onparastyle={applyParaToSelection}
-    selRange={{ start: selStart, end: selEnd }}
-    runsAt={() => rich.runs}
-    parasAt={() => rich.paras}
-    boxAlign={node.state.align ?? "left"}
-  />
+  <!-- The floating rich-text format toolbar is a RICH-mode affordance only: a
+       plain-string widget has no runs to style, so plain mode shows no toolbar
+       (its font/size/color/align live on the Inspector rows). -->
+  {#if !plain}
+    <TextFormatToolbar
+      {app}
+      boxScale={box.scale}
+      onstyle={applyStyleToSelection}
+      onparastyle={applyParaToSelection}
+      selRange={{ start: selStart, end: selEnd }}
+      runsAt={() => rich.runs}
+      parasAt={() => rich.paras}
+      boxAlign={node.state.align ?? "left"}
+    />
+  {/if}
 </div>

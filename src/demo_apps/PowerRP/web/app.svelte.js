@@ -15,7 +15,7 @@ import {
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { resolveTransition, retypedTransition } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld } from "../core/derive.js";
-import { evaluateState, withVariableRenamed, anchorRefName } from "../core/expressions.js";
+import { evaluateState, withVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
@@ -830,20 +830,40 @@ export class PowerRPApp {
   /** Command. Enters in-place edit mode on a text item: selects it (so the
    * Inspector + toolbar reflect it) and sets `textEditing`. The item keeps
    * rendering live through Skia; the TextEditController mounts and draws the
-   * caret/selection on top. A no-op if already editing this item. */
-  beginTextEdit(itemId) {
+   * caret/selection on top. A no-op if already editing this item.
+   *
+   * `opts.plain` selects PLAIN-STRING mode (a single-string widget like
+   * plaintext, via its `inlineTextEdit` descriptor): the editor edits one plain
+   * string at `opts.property` (default "text") with no runs/format toolbar, and
+   * the stored leaf is a bare string rather than a {runs,paras} value. In plain
+   * mode an `=` equation-bound value is REFUSED (in-place editing flattens the
+   * RESOLVED value back to a literal, which would silently overwrite the
+   * equation) — reported LOUDLY, then the user edits it in the Inspector (the
+   * mermaid/codeblock precedent). Rich mode (no opts) is unchanged. */
+  beginTextEdit(itemId, opts = {}) {
+    const plain = !!opts.plain;
+    const property = opts.property ?? "text";
+    if (plain) {
+      const plugin = this.registry.get(this.storedItemValue(itemId, ["type"]));
+      if (plugin && isEquationValue(plugin, [property], this.storedItemValue(itemId, [property]))) {
+        console.warn(`beginTextEdit: "${property}" is an = equation — edit it in the Inspector (in-place editing would overwrite the equation with its value).`);
+        return;
+      }
+    }
     if (this.textEditing?.itemId === itemId) return;
     this.selection = itemId;
-    this.textEditing = { itemId };
+    this.textEditing = { itemId, plain, property };
   }
 
-  /** Command. Live-previews the edited text value (the whole {runs,paras} leaf)
-   * — the viewport re-renders through the overlay in real time (the house
-   * live-preview rule; the Inspector-row commit path). Written as a single
-   * keyframable non-numeric leaf, exactly the stored shape. */
-  previewTextValue(rich) {
+  /** Command. Live-previews the edited text value — the viewport re-renders
+   * through the overlay in real time (the house live-preview rule; the
+   * Inspector-row commit path). Written as a single keyframable non-numeric leaf
+   * at the editing property, EXACTLY the stored shape: a {runs,paras} value in
+   * rich mode, a bare string in plain mode (the controller flattens before it
+   * calls here). */
+  previewTextValue(value) {
     if (!this.textEditing) return;
-    this.setPreview([[["items", this.textEditing.itemId, "text"], rich]]);
+    this.setPreview([[["items", this.textEditing.itemId, this.textEditing.property ?? "text"], value]]);
   }
 
   /** Command. Commits the edit as ONE undo unit (setPreview already holds the

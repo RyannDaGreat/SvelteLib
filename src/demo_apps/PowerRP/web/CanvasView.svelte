@@ -511,11 +511,16 @@
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
     // LaTeX widgets open the MathLive WYSIWYG editor (DOM overlay + canvas
-    // suppression); text opens the Skia-owned in-place editor. Other types fall
-    // through (a dblclick on a rect does nothing). Mermaid is NOT double-click-
-    // editable: its `definition` is edited via the Inspector property (exactly
-    // like codeblock's `code`), never a floating canvas code-editor overlay.
+    // suppression); text opens the Skia-owned in-place editor. A widget that
+    // DECLARES `inlineTextEdit` (e.g. plaintext) opts into that SAME Skia editor
+    // in plain-string mode — a declarative opt-in, so no per-type branch is added
+    // here per new widget. Other types fall through (a dblclick on a rect does
+    // nothing). Mermaid is NOT double-click-editable: its `definition` is edited
+    // via the Inspector property (exactly like codeblock's `code`).
+    // [LANE NOTE for lead: this + the textEditNode gate are the only CanvasView
+    // touches — both additive; the existing latex/text routes are unchanged.]
     if (hit?.type === "latex") { app.beginLatexEdit(hit.itemId); return; }
+    if (hit?.plugin?.inlineTextEdit) { app.beginTextEdit(hit.itemId, hit.plugin.inlineTextEdit); return; }
     if (hit?.type !== "text") return;
     app.beginTextEdit(hit.itemId); // selects + mounts the controller (Skia keeps drawing the item)
   }
@@ -2098,7 +2103,9 @@
     app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
     if (!app.textEditing || !actions) return null;
     const n = app.nodes().find((nn) => nn.itemId === app.textEditing.itemId);
-    return (n && n.type === "text") ? n : null;
+    // Rich text OR any widget that opted into the in-place editor via
+    // `inlineTextEdit` (e.g. plaintext, edited in plain-string mode).
+    return (n && (n.type === "text" || n.plugin?.inlineTextEdit)) ? n : null;
   });
 
   // WYSIWYG LATEX EDIT: the derived node of the latex item being edited (or null).
