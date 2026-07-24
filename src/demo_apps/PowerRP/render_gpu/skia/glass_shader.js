@@ -32,6 +32,13 @@
  *       (SQUIRCLE_N > 2), Apple's rounded-corner construction, not a plain arc.
  */
 
+// The refraction PRE_BULGE (the materialize->0 backdrop bulge). Exported as a JS
+// constant AND interpolated into the SkSL below, so the shader and the JS
+// backdrop-region math (paint_skia.js maxGlassDisplacement) read the SAME value —
+// there is exactly one source of truth. String(1.7) === "1.7", so the compiled
+// shader text is byte-identical to the former inline literal.
+export const GLASS_PRE_BULGE = 1.7;
+
 // ── named constants (WHY each exists — no magic numbers) ─────────────────────
 // The MATERIAL-CHARACTER knobs (squircle, sheen, specular tightness, contact
 // shadow, caustic, edge light, tint adaptivity) are UNIFORMS, not constants —
@@ -41,7 +48,7 @@ export const GLASS_SKSL = `
 const float AA_PX = 1.0;            // coverage antialias half-width (~1 device px)
 const float SHEEN_POWER = 5.0;      // falloff SHAPE of the broad surface sheen (its STRENGTH is the uSheen uniform)
 const float RIM_WEIGHT = 1.15;      // relative weight of the thin edge hairline vs the broad sheen (the crisp top rim IS the signature highlight)
-const float PRE_BULGE = 1.7;        // extra refraction at materialize->0 (Stage 0: backdrop bulges before the glass settles)
+const float PRE_BULGE = ${GLASS_PRE_BULGE};        // extra refraction at materialize->0 (Stage 0: backdrop bulges before the glass settles)
 const float APPEAR_END = 0.8;       // materialize value by which the frosted skin is fully faded in
 const float PERIMETER_PX = 2.5;     // width of the crisp bright edge OUTLINE (its brightness is the uEdgeLight uniform)
 const float ADAPT_LO = 0.30;        // backdrop luminance at/below which the tint neutral is fully PALE (light glass over dark content)
@@ -214,4 +221,27 @@ export function packGlassUniforms(u) {
   if (out.length !== GLASS_UNIFORM_FLOATS)
     throw new Error(`packGlassUniforms: packed ${out.length} floats, expected ${GLASS_UNIFORM_FLOATS} (shader uniform block changed?)`);
   return out;
+}
+
+/**
+ * Pure function. The glass shader's MAXIMUM outward backdrop-sample displacement
+ * (device px) — exactly how far OUTSIDE the panel the refraction reads the
+ * backdrop. The refraction is strongest at the rim (edge weight = 1) with the
+ * materialize->0 PRE_BULGE, and chromatic aberration pushes the BLUE channel a
+ * further (1 + chromatic)x (see the SkSL `main`: the blue tap samples at
+ * `p + disp * (1 + caAmt)`, caAmt = uChromatic * edge <= chromatic). A backdrop
+ * region that clamps rendering to the panel must add this (plus the blur support)
+ * as margin, or the refracted rim would sample past the rendered pixels.
+ *
+ *   maxDisp = refractionDev · PRE_BULGE · (1 + chromatic)
+ *
+ * @param {number} refractionDev - refraction strength in DEVICE px (world·scale·zoom·dpr)
+ * @param {number} chromatic - chromatic aberration fraction (0..1)
+ * @returns {number} maximum outward displacement in device px
+ *
+ * @example maxGlassDisplacement(10, 0.08) // 18.36   (10 · 1.7 · 1.08)
+ * @example maxGlassDisplacement(0, 0) // 0
+ */
+export function maxGlassDisplacement(refractionDev, chromatic) {
+  return refractionDev * GLASS_PRE_BULGE * (1 + chromatic);
 }

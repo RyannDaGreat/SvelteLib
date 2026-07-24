@@ -40,10 +40,10 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
-import { GLASS_SKSL, packGlassUniforms } from "./glass_shader.js";
+import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
 import { getMaterial, materialEffect, isBackdropMaterial } from "./materials.js";
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
@@ -99,9 +99,13 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // just the content below it into a small lens-sized surface, so a scene whose
   // only samplers are supersample lenses takes the fast direct-to-canvas path — no
   // full-scene offscreen, no CPU→GPU blit.
-  // glassBackdrop RE-RENDERS the below-content itself (at its chosen resolution),
-  // like a supersample magnifier, so it does NOT force the owned-offscreen path.
-  const needsBackdrop = flat.some(({ cmd }) => cmd.op === "blurBackdrop" || (cmd.op === "magnifyBackdrop" && !cmd.supersample));
+  // glassBackdrop also needs the owned surface: for the common backdropScale <= 1
+  // it CROPS its minimal region out of the composite-so-far (target.surface
+  // snapshot) instead of re-walking the below-content — the redundant-walk win
+  // (report Q3). It only re-renders when backdropScale > 1, and then only the
+  // minimal region. materialBackdrop is NOT here: it stays on the full-surface
+  // re-render (owns its own scratch surface) until per-material reach lands.
+  const needsBackdrop = flat.some(({ cmd }) => cmd.op === "blurBackdrop" || cmd.op === "glassBackdrop" || (cmd.op === "magnifyBackdrop" && !cmd.supersample));
   if (!needsBackdrop) {
     // Fast path: no backdrop sampler ⇒ draw straight onto the caller's canvas.
     canvas.clear(bgColor);
@@ -633,9 +637,17 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
   const blurSigma = cmd.blurRadius * sd;
   const angle = world.rotation;
 
+  // The minimal device-px backdrop region this panel actually samples (panel
+  // circumradius + refraction/chromatic/blur reach, clamped to the surface). The
+  // backdrop is rendered/cropped + blurred over ONLY this box, not the whole
+  // device surface — the primary perf win. null ⇒ the panel is entirely
+  // off-surface, so nothing (backdrop, shader, shadow, border) is visible.
+  const region = glassRegion(cxDev, cyDev, halfWDev, halfHDev, refractionDev, cmd.chromatic, blurSigma, ctx.deviceW, ctx.deviceH);
+  if (!region) return;
+
   // (1)+(2) the backdrop images (sharp + blurred) + the localMatrix that maps a
   // DEVICE coordinate to the (possibly scaled) backdrop image's pixel space.
-  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma);
+  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma, region);
 
   // (3) soft drop shadow UNDER the panel (drawn AFTER the backdrop images so it
   // never bleeds into the refracted backdrop the shader samples).
@@ -678,31 +690,101 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
 }
 
 /**
- * Query→build. The glass backdrop images {sharp, blurred, sampleMatrix} at the
- * requested resolution factor. depth < cap ⇒ RE-RENDER the below-content at
- * `scale × device` resolution (true supersample/downsample — the distortion
- * samples a backdrop rendered at that resolution). depth ≥ cap ⇒ fall back to
- * sampling the surface being drawn into (device res, scale ignored; non-null at
- * depth ≥ 1, matching the magnifier's recursion guard). `sampleMatrix` maps a
- * device coordinate to the image's pixel space (scaled(1/scale) for the re-render;
- * identity for the fallback). Caller deletes sharp + blurred.
+ * Pure function. The minimal device-px backdrop rectangle a glass panel actually
+ * samples — everything OUTSIDE it is irrelevant to the refracted/blurred result,
+ * so rendering (or cropping) + blurring only this box instead of the whole device
+ * surface is the primary glass-backdrop perf win (~15-20x fewer pixels for a
+ * typical panel). Built from the panel's rotation-safe circumradius plus the
+ * shader's maximum OUTWARD reach (refraction + chromatic displacement via
+ * maxGlassDisplacement, the Gaussian blur kernel support, and the coverage AA
+ * slop), clamped to the surface.
+ *
+ *   reach  = hypot(halfWDev, halfHDev)                        // circumradius (covers any rotation)
+ *   margin = maxGlassDisplacement(refractionDev, chromatic)   // outward refraction + chromatic
+ *          + BLUR_SUPPORT_SIGMAS · blurSigma                  // Gaussian frost support
+ *          + GLASS_CLIP_SLOP_PX                               // coverage AA band
+ *
+ * @param {number} cxDev,cyDev - panel center (device px)
+ * @param {number} halfWDev,halfHDev - panel half-extents (device px)
+ * @param {number} refractionDev - refraction strength (device px)
+ * @param {number} chromatic - chromatic aberration fraction (0..1)
+ * @param {number} blurSigma - frost blur sigma (device px)
+ * @param {number} deviceW,deviceH - surface size (the clamp bounds)
+ * @returns {{x0:number,y0:number,x1:number,y1:number}|null} integer device-px
+ *   bounds fully containing the panel + its sample footprint, or null when the
+ *   clamped box is empty (panel entirely off-surface ⇒ nothing to draw).
+ *
+ * @example glassRegion(400, 300, 150, 100, 10, 0.08, 6, 1920, 1080)
+ * //        // {x0: 181, y0: 81, x1: 619, y1: 519}
+ * @example glassRegion(-500, 300, 100, 80, 10, 0.08, 6, 1920, 1080) // null (off-surface)
  */
-function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, scale, blurSigma) {
+function glassRegion(cxDev, cyDev, halfWDev, halfHDev, refractionDev, chromatic, blurSigma, deviceW, deviceH) {
+  const reach = Math.hypot(halfWDev, halfHDev);
+  const margin = maxGlassDisplacement(refractionDev, chromatic) + BLUR_SUPPORT_SIGMAS * blurSigma + GLASS_CLIP_SLOP_PX;
+  const half = reach + margin;
+  const x0 = Math.max(0, Math.floor(cxDev - half)), y0 = Math.max(0, Math.floor(cyDev - half));
+  const x1 = Math.min(deviceW, Math.ceil(cxDev + half)), y1 = Math.min(deviceH, Math.ceil(cyDev + half));
+  if (x1 <= x0 || y1 <= y0) return null;
+  return { x0, y0, x1, y1 };
+}
+
+/**
+ * Query→build. The glass backdrop images {sharp, blurred, sampleMatrix} for the
+ * `region` (device-px {x0,y0,x1,y1}) at the requested resolution factor. Only the
+ * region — not the whole device surface — is allocated, rendered/cropped, and
+ * blurred, which is the glass-backdrop perf win. `region` null ⇒ the whole surface
+ * (the material full-surface fallback, until per-material reach lands).
+ *
+ * depth < cap: two ways to produce the SHARP backdrop, both byte-equivalent for a
+ * backdrop that fully covers the region (a camera-backed / full-coverage scene —
+ * report Q3):
+ *   - backdropScale <= 1 with a snapshot-able composite surface ⇒ CROP the region
+ *     out of the composite-so-far (target.surface) and downsample (the redundant-
+ *     walk elimination — no re-render of the below-content at all).
+ *   - otherwise (backdropScale > 1, the true supersample; or no owned surface) ⇒
+ *     RE-RENDER the below-content into a `scale`-sized region surface, shifted so
+ *     region (x0,y0) maps to the surface origin.
+ * depth >= cap: fall back to sampling the WHOLE surface being drawn into (device
+ * res, scale ignored; non-null at depth >= 1, matching the magnifier's recursion
+ * guard).
+ *
+ * `sampleMatrix` maps an image texel to its DEVICE coordinate: translate(x0,y0)·
+ * scale(1/scale) (texel t → region origin + t/scale) for the region paths, null
+ * (identity, device px) for the whole-surface fallback. Caller deletes sharp +
+ * blurred.
+ */
+function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, scale, blurSigma, region) {
   if (depth < MAX_SUPERSAMPLE_DEPTH) {
-    const sw = Math.max(1, Math.round(ctx.deviceW * scale));
-    const sh = Math.max(1, Math.round(ctx.deviceH * scale));
-    const sub = ctx.makeSurface(sw, sh);
-    if (!sub) throw new Error("paintIR(skia): makeSurface for glass backdrop re-render returned null");
-    sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
-    // dpr·scale maps the same world region onto the scale-sized surface (every
-    // device point d → scale·d), so the re-render IS the device backdrop at `scale`.
-    const scaledView = { ...view, dpr: view.dpr * scale };
-    paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, scaledView, ctx, depth + 1);
-    sub.flush();
-    const sharp = sub.makeImageSnapshot();
-    sub.dispose();
+    const full = !region;
+    const x0 = full ? 0 : region.x0, y0 = full ? 0 : region.y0;
+    const x1 = full ? ctx.deviceW : region.x1, y1 = full ? ctx.deviceH : region.y1;
+    const sw = Math.max(1, Math.round((x1 - x0) * scale));
+    const sh = Math.max(1, Math.round((y1 - y0) * scale));
+    let sharp;
+    if (scale <= 1 && !full && target.surface) {
+      // CROP the minimal region out of the composite-so-far (exact for a covering
+      // backdrop; downsampled when scale < 1). No below-content re-render.
+      target.surface.flush();
+      const composite = target.surface.makeImageSnapshot();
+      sharp = cropDownsample(CanvasKit, ctx, composite, x0, y0, x1, y1, sw, sh);
+      composite.delete();
+    } else {
+      // RE-RENDER the below-content into the region surface. dpr·scale maps the
+      // world region onto the scale-sized surface; panX/panY shift by -x0/-y0
+      // (world units) so device (x0,y0) lands at the surface origin. (full ⇒
+      // x0=y0=0 ⇒ this reduces to the former whole-surface re-render exactly.)
+      const sub = ctx.makeSurface(sw, sh);
+      if (!sub) throw new Error("paintIR(skia): makeSurface for glass backdrop re-render returned null");
+      sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
+      const shiftedView = { ...view, dpr: view.dpr * scale, panX: view.panX - x0 / view.dpr, panY: view.panY - y0 / view.dpr };
+      paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shiftedView, ctx, depth + 1);
+      sub.flush();
+      sharp = sub.makeImageSnapshot();
+      sub.dispose();
+    }
     const blurred = blurredImageOf(CanvasKit, ctx, sharp, blurSigma * scale, sw, sh);
-    return { sharp, blurred, sampleMatrix: CanvasKit.Matrix.scaled(1 / scale, 1 / scale) };
+    const sampleMatrix = CanvasKit.Matrix.multiply(CanvasKit.Matrix.translated(x0, y0), CanvasKit.Matrix.scaled(1 / scale, 1 / scale));
+    return { sharp, blurred, sampleMatrix };
   }
   // Fallback (nested beyond the re-render cap): sample the surface we draw into.
   if (!target.surface) throw new Error("paintIR(skia): glassBackdrop fallback requires an owned offscreen surface (internal invariant)");
@@ -710,6 +792,26 @@ function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, sca
   const sharp = target.surface.makeImageSnapshot();
   const blurred = blurredImageOf(CanvasKit, ctx, sharp, blurSigma, ctx.deviceW, ctx.deviceH);
   return { sharp, blurred, sampleMatrix: null }; // null ⇒ identity local space (device px)
+}
+
+/**
+ * Query→build. Crops the device-px rect [x0,y0,x1,y1] out of `img` into a fresh
+ * `sw`×`sh` surface (a 1:1 pixel-aligned copy when sw==x1-x0; a linear downsample
+ * when smaller), and returns the snapshot. The SHARP glass backdrop for the
+ * backdropScale <= 1 crop path. Caller deletes the returned Image.
+ */
+function cropDownsample(CanvasKit, ctx, img, x0, y0, x1, y1, sw, sh) {
+  const surf = ctx.makeSurface(sw, sh);
+  if (!surf) throw new Error("paintIR(skia): makeSurface for glass backdrop crop returned null");
+  const c = surf.getCanvas();
+  c.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  const p = new CanvasKit.Paint();
+  c.drawImageRectOptions(img, CanvasKit.LTRBRect(x0, y0, x1, y1), CanvasKit.LTRBRect(0, 0, sw, sh), CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, p);
+  surf.flush();
+  const out = surf.makeImageSnapshot();
+  p.delete();
+  surf.dispose();
+  return out;
 }
 
 /** Query→build. A Gaussian-blurred `w`×`h` copy of `img` (σ px, in the image's
@@ -813,7 +915,14 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   const blurSigma = cmd.blurRadius * sd;
 
   // Sharp + blurred backdrop children + the device→image sampleMatrix (glass's).
-  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma);
+  // TODO(per-material reach): materials pass region=null ⇒ the FULL-surface
+  // re-render (the pre-optimization path), because a material's maximum outward
+  // sample displacement is not yet part of the descriptor contract (glass knows
+  // its own via maxGlassDisplacement; CRT's barrel warp + radial chromatic reach
+  // is material-specific). Clipping the backdrop to a WRONG bbox would clip the
+  // material, so until materials.js exposes a maxReach(u) we deliberately render
+  // the whole surface here. This is the SAME behavior as before this optimization.
+  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma, null);
 
   const effect = materialEffect(CanvasKit, material);
   const blurChild = bd.blurred.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
