@@ -608,7 +608,37 @@
       return;
     }
     const nodes = app.nodes();
-    const hit = pickNode(nodes, w.x, w.y, SNAP_PX / viewport.zoom);
+    const tol = SNAP_PX / viewport.zoom;
+    const hit = pickNode(nodes, w.x, w.y, tol);
+    // ── SELECTED-OBJECT DRAG PRIORITY (PowerPoint parity) ─────────────────────
+    // Precedence #2 (after resize/rotate handles, before the topmost hit-test):
+    // once objects are selected, grabbing ON the current selection's OWN
+    // geometry (fill/rim/bounds) moves THAT selection even when a DIFFERENT
+    // object is stacked ON TOP at the grab point — exactly how a handle already
+    // overrides the topmost pick (handles do it via a DOM overlay + stopPropagation;
+    // the body has no covering element, so the override lives here). `pickNode`
+    // restricted to the selected nodes IS the "point inside the selection's
+    // bounds" query (reused, not re-derived); it engages ONLY when the global
+    // topmost `hit` is some OTHER, non-selected object, so grabbing a selected
+    // object with nothing on top is byte-identical to before. Shift is excluded
+    // (its multi-select / axis-lock path is untouched). The top object is
+    // remembered in `clickSelectId`: a plain CLICK (no drag past the slop) still
+    // selects it on release (PPT lets a click cycle selection to the thing on
+    // top) — only a real DRAG keeps the priority.
+    let overrideSel = null;
+    let clickSelectId = null;
+    if (!e.shiftKey && hit) {
+      const selIds = app.selectedIds();
+      if (selIds.length && !selIds.includes(hit.itemId)) {
+        const selSet = new Set(selIds);
+        const onSel = pickNode(nodes.filter((n) => selSet.has(n.itemId)), w.x, w.y, tol);
+        if (onSel && (onSel.plugin.capabilities.transform || onSel.plugin.moveBy)) {
+          overrideSel = onSel;
+          clickSelectId = hit.itemId;
+        }
+      }
+    }
+    const grab = overrideSel ?? hit; // the object a body-drag actually grabs
     // DEFAULT EMPTY-SPACE DRAG = BOX SELECT (manifest Round 12B "Box select
     // round 2"): a pointer-down that hits nothing draggable AND nothing at
     // all (camera background is a non-hit — camera.hitTest is border-only —
@@ -643,11 +673,14 @@
     // (manifest Round 12 "DRAG-ALL"; PowerPoint/Figma precedent). Clicking any
     // OTHER item (or empty canvas) replaces the selection with just it. Shift is
     // deferred to release (toggle-vs-axis-lock — see below).
-    if (!e.shiftKey && !(hit && app.selectedIds().includes(hit.itemId)))
+    // `overrideSel` KEEPS the current selection (we are about to drag it, not
+    // replace it) — the topmost object is instead selected on click-release.
+    if (!e.shiftKey && !overrideSel && !(hit && app.selectedIds().includes(hit.itemId)))
       app.selection = hit?.itemId ?? null;
     // Draggable = has a transform (x/y) OR a moveBy hook (arrow shaft drag
-    // translates its endpoints — manifest round 5: "Both must work").
-    if (!hit || !(hit.plugin.capabilities.transform || hit.plugin.moveBy)) {
+    // translates its endpoints — manifest round 5: "Both must work"). `grab` is
+    // the selection-priority pick when overriding, else the topmost `hit`.
+    if (!grab || !(grab.plugin.capabilities.transform || grab.plugin.moveBy)) {
       // Nothing draggable under the pointer. A pending shift-click still needs a
       // gesture record so onPointerUp can toggle on release (with no capture,
       // since there's no drag) — but only when there's an item to toggle; a
@@ -661,20 +694,23 @@
     e.currentTarget.setPointerCapture(e.pointerId);
     drag = {
       kind: "move",
-      itemId: hit.itemId,
-      plugin: hit.plugin,
+      itemId: grab.itemId,
+      plugin: grab.plugin,
       // Pending shift-click toggle: set only when Shift is down. onPointerUp
       // toggles this item's membership IFF the gesture never crossed the slop
       // (a plain shift-DRAG leaves it untouched — it's an axis-locked move).
-      toggleId: e.shiftKey ? hit.itemId : null,
+      toggleId: e.shiftKey ? grab.itemId : null,
+      // Selection-priority override only: the topmost object to select if this
+      // gesture turns out to be a plain CLICK (see onPointerUp). null otherwise.
+      clickSelectId,
       downScreen: screenPoint(e),
       moved: false,
       // moveBy needs the RAW stored state: equation-bound coordinates must be
       // recognized (strings) so they stay anchored instead of translating.
-      rawItem: app.rawState().items?.[hit.itemId],
+      rawItem: app.rawState().items?.[grab.itemId],
       startWorld: w,
-      startX: hit.state.x ?? 0,
-      startY: hit.state.y ?? 0,
+      startX: grab.state.x ?? 0,
+      startY: grab.state.y ?? 0,
       // DRAG-ALL (manifest Round 12): dragging any selected member moves the
       // WHOLE selection — the move preview is built over EVERY translatable
       // member, all by the SAME (post-axis-lock, post-snap) world delta. The
@@ -690,8 +726,8 @@
       // Axis lock zeroes the cross-axis delta, so the center stays ON this
       // line for the whole locked drag. Non-bbox draggables (arrow shafts)
       // have no center; their guide anchors at the grab point instead.
-      centerWorld: hit.plugin.capabilities.bbox
-        ? T.apply(hit.world, (hit.state.w ?? 0) / 2, (hit.state.h ?? 0) / 2)
+      centerWorld: grab.plugin.capabilities.bbox
+        ? T.apply(grab.world, (grab.state.w ?? 0) / 2, (grab.state.h ?? 0) / 2)
         : null,
       axis: null,
     };
@@ -1637,6 +1673,13 @@
     // axis-locked move, already committed via commitPreview below. `toggleId` is
     // set on both the "move" (draggable) and "shiftpick" (non-draggable) records.
     if (drag.toggleId && !drag.moved) app.toggleInSelection(drag.toggleId);
+    // SELECTED-OBJECT DRAG PRIORITY (see onPointerDown): a plain click (no drag)
+    // on a selected object that had a DIFFERENT object stacked on top selects
+    // that top object on release — so a click still cycles selection to the
+    // thing on top while a DRAG moved the already-selected object. Set only on a
+    // non-shift override grab (never together with toggleId); a real drag
+    // (moved) skips it and keeps the selection it just moved.
+    if (drag.clickSelectId != null && !drag.moved) app.selection = drag.clickSelectId;
     drag = null;
     guides = [];
     sizeIndicators = [];
