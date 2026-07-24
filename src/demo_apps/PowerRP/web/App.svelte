@@ -242,6 +242,7 @@
         { id: "demo-insert-showcase", title: "Demo Showcase (custom self.* prop)", icon: "mdi:flask", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_showcase")) },
         { id: "demo-insert-glass", title: "Liquid Glass (backdrop refraction shader)", icon: "mdi:blur", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_glass")) },
         { id: "demo-insert-crt", title: "CRT (backdrop material shader)", icon: "mdi:television-classic", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_crt")) },
+        { id: "demo-insert-raycast-dither", title: "Raycast Dither (animated grain gradient)", icon: "mdi:gradient-vertical", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_raycast_dither")) },
         { id: "demo-insert-text-dissolve", title: "Text Dissolve (tween word → word)", icon: "mdi:transition", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_dissolve")) },
         { id: "demo-insert-text-type", title: "Text Typewriter (reveal by alpha)", icon: "mdi:cursor-text", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_type")) },
         { id: "demo-insert-text-scramble", title: "Text Scramble (decode by alpha)", icon: "mdi:shuffle-variant", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_scramble")) },

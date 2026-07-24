@@ -34,6 +34,7 @@
 
 import { CRT_MATERIAL } from "./crt_shader.js";
 import { CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL } from "./corkboard_shader.js";
+import { RAYCAST_DITHER_MATERIAL } from "./raycast_dither_shader.js";
 
 // id → descriptor. A new material appends ONE import above + ONE entry here.
 // A descriptor's optional `backdrop` flag splits the framework in two:
@@ -44,7 +45,7 @@ import { CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL } from "./corkboard_shader.
 //     NO re-render; the `materialFill` op + handleMaterialFill just makeShader+fill.
 // Absence defaults to backdrop (back-compat: CRT/glass carry no flag).
 const MATERIALS = Object.fromEntries(
-  [CRT_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL].map((m) => [m.id, m]),
+  [CRT_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL].map((m) => [m.id, m]),
 );
 
 /**
