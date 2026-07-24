@@ -5,22 +5,36 @@
  *
  * ── WHAT IT DOES ──────────────────────────────────────────────────────────────
  * Given the derived render tree + the live view, it finds every visible
- * `pdf_page` node, computes its on-screen VISIBLE REGION at the current display
- * resolution via the shared pure primitive core/clip.visibleSourceRect (widget
- * box ∩ viewport ∩ crop → {localRect, sourceRect, deviceRect}), and ensures that
- * SUB-RECT of the page is rasterized at that resolution
- * (pdf_page_raster.ensurePdfPageRegionRasterized). It returns a
- * Map<itemId, {ref, x, y, w, h}> — the DISPLAY DESCRIPTOR each pdf_page node's
- * emit() consumes (threaded through render_gpu/ports.sceneIR as emit's 4th arg)
- * to draw the crisp region bitmap at its local placement.
+ * `pdf_page` node and builds its DISPLAY DESCRIPTOR — a Map<itemId, {ref, x, y,
+ * w, h}> that each pdf_page node's emit() consumes (threaded through
+ * render_gpu/ports.sceneIR as emit's 4th arg) to draw the region bitmap at its
+ * local placement. HOW the descriptor's bitmap is produced depends on the
+ * widget's `renderMode` (below).
  *
- * ── RENDER MODES (the widget's `renderMode` property) ─────────────────────────
- * Each pdf_page picks how its interactive DISPLAY is produced (see the
- * PDF_RENDER_MODES block below): "raster" (unthrottled per-frame region
- * re-raster), "hybrid" (DEFAULT — persistent whole-page proxy + a hysteresis-
- * throttled region overlay, the native-viewer model), or "vector" (this pre-pass
- * SKIPS the node so emit() draws crisp GPU vector). The crash guards
- * (device-scale cap + generation-gate + graceful null-skip) hold in every mode.
+ * ── RENDER MODES (the pdf_page widget's `renderMode` property) ────────────────
+ * A placed PDF page picks HOW its interactive DISPLAY is produced. Both modes
+ * keep the crash guards intact (device-scale cap + generation-gate + clampDim,
+ * all in pdf_page_raster.ensurePdfPageRegionRasterized) — they only change WHICH
+ * region/resolution the display draws.
+ *
+ *   "live" (DEFAULT) — the Chrome model. Every frame re-rasterizes ONLY the
+ *     page's on-screen VISIBLE REGION at the CURRENT zoom (via the shared pure
+ *     primitive core/clip.visibleSourceRect → widget box ∩ viewport ∩ crop), so
+ *     text/vectors stay CRISP at ANY magnification while the cost stays bounded
+ *     by the SCREEN, not the zoom. A fast zoom re-kicks a fresh region per frame;
+ *     the generation gate discards the stale ones. This is the good single-path
+ *     GPU display (tasks #20/#37) that predated the reverted 3-mode experiment.
+ *   "raster" — render ONCE, cache, never re-render. The page's (crop-trimmed)
+ *     area is rasterized a single time at a FIXED resolution derived from the
+ *     widget's rasterWidth/rasterHeight/rasterDPI props (NOT the live view), so
+ *     the region ref is STABLE across zoom/pan and the compositor merely SCALES
+ *     the one cached bitmap. Very fast/cheap; it SOFTENS when zoomed past its DPI
+ *     — the documented speed trade-off. No per-frame re-raster, no zoom re-raster.
+ *
+ * renderMode governs the INTERACTIVE display only. Camera-free consumers
+ * (export/thumbnail/CLI) never run this pre-pass, so they are byte-identical
+ * across both modes (vector-if-safe else whole-page raster) — see
+ * plugins/pdf_page.js emit()'s fallback path.
  *
  * ── WHY A PRE-PASS (not inside emit) ──────────────────────────────────────────
  * A plugin's emit(state, …) is deliberately camera-free (sceneIR passes only
@@ -40,6 +54,7 @@
  * of view-bounding entirely (full: true — raster the whole cropped region). The
  * DEFAULT (no hook) is the exact viewport∩box∩crop window. This is the single
  * seam where a widget's clip policy is applied; the primitive itself is neutral.
+ * (Applies to "live" mode; "raster" mode always rasters the whole cropped page.)
  *
  * ── ASYNC ─────────────────────────────────────────────────────────────────────
  * A page whose native point size is not measured yet (doc still opening) is
@@ -54,194 +69,91 @@
 
 import { visibleSourceRect } from "../core/clip.js";
 import { rotatedBBoxAABB, rectsIntersect } from "../core/view.js";
+import { cropInsetsToSource } from "./decorate.js";
 import {
   ensurePdfDoc, pdfPageCount, pdfPagePointSize, ensurePdfPagePointSize,
-  ensurePdfPageRegionRasterized, pdfRegionReady, clampPage,
-  PDF_MAX_RASTER_DIM,
+  ensurePdfPageRegionRasterized, clampPage, PDF_MAX_RASTER_DIM,
 } from "./gpu/pdf_page_raster.js";
 
 // ── RENDER MODES (the pdf_page widget's `renderMode` property) ────────────────
-// A placed PDF page picks HOW its interactive DISPLAY is produced. All three
-// modes keep the crash guards (device-scale cap + generation-gate + graceful
-// null-skip) intact — they only change WHICH bitmap/vector the display draws.
-//
-//   "raster" — the re-raster pre-pass, unthrottled: every frame requests the
-//     EXACT visible region at the current zoom (crisp as soon as it lands; may
-//     re-kick a fresh region every frame of a fast zoom — the generation gate
-//     discards the stale ones). The whole-page raster (emit's wholeQuad) is the
-//     base drawn under it.
-//   "hybrid" (DEFAULT) — the user's native-viewer design. The persistent
-//     whole-page raster is the ALWAYS-instant proxy (drawn by emit under the
-//     region, transforms/zooms/rotates with zero wait); on top we overlay the
-//     highest-res region we have and RE-RASTER it asynchronously WITH HYSTERESIS
-//     (retargetNeeded below), so a fast zoom shows the proxy (a pixelated frame
-//     or two) then sharpens instead of thrashing one render per frame. Between
-//     retargets we keep showing the last READY region (glued to its own local
-//     rect — blurry-but-correct as the camera moves past it), swapping to the
-//     fresher one the instant it lands (even mid-zoom).
-//   "vector" — no descriptor is produced (this pre-pass skips the node), so
-//     pdf_page emit() takes its camera-free path and draws the crisp GPU VECTOR
-//     `path` ops (render_gpu/pdf_vector via gpu/pdf_page_vector) for a
-//     vector-safe page, falling back to the whole-page raster otherwise.
-//
-// renderMode governs the INTERACTIVE display only. Camera-free consumers
-// (export/thumbnail/CLI) never run this pre-pass, so they are byte-identical
-// across all three modes (vector-if-safe else whole-page raster) — see
-// plugins/pdf_page.js emit()'s fallback path.
-export const PDF_RENDER_MODES = ["raster", "hybrid", "vector"];
-export const PDF_RENDER_MODE_DEFAULT = "hybrid";
+// See the module header for the full rationale. "live" is the default single GPU
+// screen-resolution re-raster path (crisp at any zoom); "raster" renders once at
+// a fixed DPI/size and caches (fast, softens past its DPI).
+export const PDF_RENDER_MODES = ["live", "raster"];
+export const PDF_RENDER_MODE_DEFAULT = "live";
 
-/** HYBRID retarget threshold — the display scale (device px per PDF point) must
- * change by more than this FACTOR (either direction) before the in-flight region
- * target is moved to a sharper/coarser raster. 1.5 = a 50% resolution swing: big
- * enough that a continuous zoom re-kicks ~once per 1.5× (roughly log_1.5 kicks
- * across a zoom range, not one per frame), small enough that the transient
- * blur/sharpness of the held region stays modest. Named, tunable; the value is a
- * fluency/kick-rate trade-off, not a correctness constant. */
-export const REGION_RETARGET_SCALE_RATIO = 1.5;
+/** PDF's canonical unit: 72 points per inch (1 pt = 1/72"). The base density at
+ * which a page's point size equals its pixel size (its "native pixel size"). */
+export const PDF_POINTS_PER_INCH = 72;
 
-/** HYBRID retarget threshold — the desired visible sub-rect may pan/grow this
- * FRACTION of the current target region's extent past its edges before a fresh
- * region is kicked. 0.15 = a 15% margin of pan/zoom-out headroom, so small drags
- * reuse the held region (cache hit, no re-kick) and only a real move retargets.
- * Named, tunable; a fluency/kick-rate trade-off like the scale ratio. */
-export const REGION_RETARGET_MARGIN_FRAC = 0.15;
-
-/** Bound on distinct HYBRID hysteresis records (keyed per widget × display
- * surface). Each record is a few numbers/strings — this only bounds bookkeeping,
- * never a bitmap (the region bitmaps live in the image registry). Oldest-first
- * eviction (Map insertion order) when exceeded; a re-seen widget simply
- * re-seeds. Sized for a healthy count of PDF widgets across the editor, minimap,
- * and presenter surfaces. */
-export const HYBRID_STATE_MAX = 128;
-
-/** hysteresisKey → {target, shown} — the HYBRID mode's per-(widget, surface)
- * cross-frame memory. `target` = {sourceRect, scale, ref, local} of the region
- * currently kicked/awaited; `shown` = {ref, local} of the last region that
- * became READY (what we DISPLAY). Keyed also by the device canvas size so the
- * editor, minimap, and presenter (different sizes, different live views of the
- * SAME page) keep INDEPENDENT hysteresis and never fight over one slot; two
- * surfaces of identical size would share a record, which at worst causes a few
- * extra re-kicks (self-correcting) — never wrong pixels or a crash, because the
- * region CACHE + generation gate remain keyed on (src,page,sub-rect,scale). */
-const hybridState = new Map();
+/** Default "raster" mode render density (dots per inch). 96 is the CSS reference
+ * pixel density (1 CSS px = 1/96"), so a page rasters at ~screen resolution by
+ * default — crisp at 100% on a typical display, and the softening trade-off only
+ * shows past that. Named/overridable via the widget's rasterDPI prop. */
+export const PDF_RASTER_DEFAULT_DPI = 96;
 
 /**
- * Pure function. The HYBRID hysteresis key for a widget on a display surface. The
- * canvas device size (viewW×viewH) is the stable surface discriminator (it does
- * NOT change under zoom/pan, so a surface keeps ONE record across a whole
- * gesture) — see hybridState's doc for why surfaces must stay independent.
+ * Pure function. The "raster" mode whole-page render scale (device px per PDF
+ * point): the LARGEST uniform scale that fits the page into a rasterWidth ×
+ * rasterHeight PIXEL box at rasterDPI, preserving the page's native aspect. A
+ * non-positive rasterWidth/rasterHeight means "native" for that axis (the page's
+ * own point size, imposing no extra constraint); a non-positive rasterDPI falls
+ * back to PDF_RASTER_DEFAULT_DPI. rasterDPI multiplies the whole box (the density
+ * knob). Aspect is always preserved — a single uniform scale never distorts the
+ * page; the widget's box handles any box-vs-page aspect at draw time.
  *
- * @example hybridKey("pdf1", 1280, 720) // "pdf1|1280x720"
- */
-function hybridKey(itemId, viewW, viewH) {
-  return `${itemId}|${viewW}x${viewH}`;
-}
-
-/**
- * Pure function. Whether HYBRID must abandon the current region `target` and kick
- * a fresh one for `desired`. True when there is no target yet, OR the display
- * scale swung past REGION_RETARGET_SCALE_RATIO (need a sharper/coarser raster),
- * OR the desired visible sub-rect escaped the target's sub-rect expanded by
- * REGION_RETARGET_MARGIN_FRAC (panned/zoomed to page area the held region does
- * not cover). A `desired`/`target` that stays within BOTH thresholds is served by
- * the held region (a cache hit — no re-kick), which is the whole point of the
- * hysteresis: no per-frame thrash during a gesture.
- *
- * @param {{sourceRect:{sx,sy,sw,sh}, scale:number}|null} target current region, or null
- * @param {{sourceRect:{sx,sy,sw,sh}, scale:number}} desired region for this frame's view
- * @returns {boolean}
- *
- * @example retargetNeeded(null, {sourceRect:{sx:0,sy:0,sw:1,sh:1}, scale:2}) // true (no target yet)
- * @example retargetNeeded({sourceRect:{sx:0,sy:0,sw:1,sh:1}, scale:2}, {sourceRect:{sx:0,sy:0,sw:1,sh:1}, scale:2.1}) // false (5% scale swing, contained)
- * @example retargetNeeded({sourceRect:{sx:0,sy:0,sw:1,sh:1}, scale:2}, {sourceRect:{sx:0,sy:0,sw:1,sh:1}, scale:4}) // true (2x scale swing)
- * @example retargetNeeded({sourceRect:{sx:0.4,sy:0.4,sw:0.2,sh:0.2}, scale:5}, {sourceRect:{sx:0.7,sy:0.4,sw:0.2,sh:0.2}, scale:5}) // true (panned out of the region + margin)
- */
-export function retargetNeeded(target, desired) {
-  if (!target) return true;
-  const ratio = Math.max(desired.scale / target.scale, target.scale / desired.scale);
-  if (ratio > REGION_RETARGET_SCALE_RATIO) return true;
-  const t = target.sourceRect, d = desired.sourceRect;
-  const mx = t.sw * REGION_RETARGET_MARGIN_FRAC, my = t.sh * REGION_RETARGET_MARGIN_FRAC;
-  const contained =
-    d.sx >= t.sx - mx && d.sy >= t.sy - my &&
-    d.sx + d.sw <= t.sx + t.sw + mx && d.sy + d.sh <= t.sy + t.sh + my;
-  return !contained;
-}
-
-/**
- * Command (near-pure: idempotently kicks the region raster). The RASTER render
- * mode's per-widget step: request the EXACT visible region at this frame's
- * display scale and return its descriptor immediately — the existing re-raster
- * behavior, no hysteresis. A not-yet-ready ref draws nothing until it lands
- * (emit's whole-page proxy shows meanwhile); a fast zoom re-kicks a fresh region
- * per frame and the generation gate discards the stale ones.
+ *   px box  = (rasterWidth·dpi/72, rasterHeight·dpi/72)   // native axis ⇒ point size
+ *   scale   = min(pxW / point.w, pxH / point.h)           // fit-box, aspect-preserving
  *
  * Args:
- *   src (string), page (number): the (already page-clamped) PDF page.
- *   sourceRect ({sx,sy,sw,sh}): the visible sub-rect. scale (number): display
- *     scale (device px per PDF point, already boosted + capped). point ({w,h}):
- *     native point size. localRect ({x,y,w,h}): widget-local placement.
+ *   point ({w,h}): native page size in PDF points (both > 0).
+ *   rasterWidth, rasterHeight (number): target pixel box; ≤ 0 ⇒ native for that axis.
+ *   rasterDPI (number): render density in DPI; ≤ 0 ⇒ PDF_RASTER_DEFAULT_DPI.
  *
  * Returns:
- *   {ref, x, y, w, h}: the region-raster ref + widget-local placement.
+ *   number — device px per PDF point (> 0).
+ *
+ * @example rasterModeScale({ w: 72, h: 144 }, 0, 0, 72) // 1 (native @72dpi: 1px/pt)
+ * @example rasterModeScale({ w: 72, h: 144 }, 0, 0, 144) // 2 (native @144dpi: 2px/pt)
+ * @example rasterModeScale({ w: 100, h: 200 }, 50, 400, 72) // 0.5 (width caps the fit: 50/100)
+ * @example rasterModeScale({ w: 612, h: 792 }, 0, 0, 96) // 1.3333333333333333 (native @96dpi ≈ screen)
  */
-function rasterDescriptor(src, page, sourceRect, scale, point, localRect) {
+export function rasterModeScale(point, rasterWidth, rasterHeight, rasterDPI) {
+  const dpi = rasterDPI > 0 ? rasterDPI : PDF_RASTER_DEFAULT_DPI;
+  const dpiFactor = dpi / PDF_POINTS_PER_INCH;
+  const pxW = (rasterWidth > 0 ? rasterWidth : point.w) * dpiFactor;
+  const pxH = (rasterHeight > 0 ? rasterHeight : point.h) * dpiFactor;
+  return Math.min(pxW / point.w, pxH / point.h);
+}
+
+/**
+ * Command (near-pure: idempotently kicks ONE cached whole-page raster). The
+ * "raster" render mode's per-widget step: rasterize the page's (crop-trimmed)
+ * area ONCE at the FIXED rasterModeScale resolution (from the widget's
+ * rasterWidth/rasterHeight/rasterDPI props — NOT the live view), so the region
+ * ref is STABLE across zoom/pan and the compositor merely SCALES the one cached
+ * bitmap. The region raster's own crash guards (device-scale cap + clampDim)
+ * bound the allocation even at an extreme rasterDPI.
+ *
+ * Args:
+ *   s (object): the pdf_page state — reads rasterWidth/rasterHeight/rasterDPI + crop insets.
+ *   src (string), page (number): the (already page-clamped) PDF page.
+ *   point ({w,h}): the page's native point size.
+ *
+ * Returns:
+ *   {ref, x, y, w, h}: the region-raster ref + widget-local (cropped-box)
+ *   placement, or null when the page is fully cropped away (nothing to draw).
+ */
+function rasterModeDescriptor(s, src, page, point) {
+  const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
+  if (!(c.w > 0) || !(c.h > 0)) return null; // fully cropped away → nothing to draw
+  const scale = rasterModeScale(point, s.rasterWidth ?? 0, s.rasterHeight ?? 0, s.rasterDPI ?? 0);
+  if (!(scale > 0) || !Number.isFinite(scale)) return null;
+  // The crop sub-rect is the normalized [0,1] page region to raster (the page
+  // fills the box 1:1, so cropInsetsToSource's sx..sh ARE the page sub-rect).
+  const sourceRect = { sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh };
   const { ref } = ensurePdfPageRegionRasterized(src, page, sourceRect, scale, point);
-  return { ref, x: localRect.x, y: localRect.y, w: localRect.w, h: localRect.h };
-}
-
-/**
- * Command (near-pure: mutates the bounded hybridState cache; idempotently kicks a
- * region raster only on a retarget). The HYBRID render mode's per-widget step:
- * given this frame's desired region, decide whether to kick a fresher raster
- * (hysteresis), promote a landed target to "shown", and return the display
- * DESCRIPTOR to draw THIS frame. ALWAYS returns a descriptor (so pdf_page emit()
- * takes its proxy+region display path, never the vector fallback): the last READY
- * region when we have one, else the (not-yet-ready) target ref — which draws
- * nothing until it lands, letting emit's whole-page proxy show through
- * meanwhile (the "instant proxy, sharpen later" behavior).
- *
- * Args:
- *   itemId (string), viewW/viewH (number): identify the widget + display surface.
- *   src (string), page (number): the (already page-clamped) PDF page.
- *   sourceRect ({sx,sy,sw,sh}): this frame's desired visible sub-rect.
- *   scale (number): this frame's desired display scale (device px per PDF point,
- *     already magnifier-boosted + device-scale-capped by the caller).
- *   localRect ({x,y,w,h}): this frame's desired widget-local placement rect.
- *   point ({w,h}): the page's native point size (passed through to the raster).
- *
- * Returns:
- *   {ref, x, y, w, h}: the region-raster ref + widget-local placement to draw.
- */
-function hybridDescriptor(itemId, viewW, viewH, src, page, sourceRect, scale, localRect, point) {
-  const key = hybridKey(itemId, viewW, viewH);
-  let st = hybridState.get(key);
-  if (!st) {
-    st = { target: null, shown: null };
-    if (hybridState.size >= HYBRID_STATE_MAX) hybridState.delete(hybridState.keys().next().value);
-    hybridState.set(key, st);
-  }
-  const desired = { sourceRect, scale };
-  if (retargetNeeded(st.target, desired)) {
-    const { ref } = ensurePdfPageRegionRasterized(src, page, sourceRect, scale, point); // idempotent kick
-    st.target = { sourceRect, scale, ref, local: { x: localRect.x, y: localRect.y, w: localRect.w, h: localRect.h } };
-  }
-  // Promote the awaited target to "shown" the instant its bitmap lands — even
-  // mid-zoom, so the crisp overlay refreshes without waiting for the gesture to
-  // settle. Until then keep the previous "shown" (blurry-but-correct) if we have
-  // one; otherwise fall through to the target ref (draws nothing → proxy shows).
-  if (pdfRegionReady(st.target.ref)) st.shown = { ref: st.target.ref, local: st.target.local };
-  const chosen = st.shown ?? st.target;
-  return { ref: chosen.ref, x: chosen.local.x, y: chosen.local.y, w: chosen.local.w, h: chosen.local.h };
-}
-
-/**
- * Command. Drops all HYBRID hysteresis records. For tests that need a clean
- * pre-pass; mirrors resetPdfPageRaster/resetPdfPageVector.
- */
-export function resetPdfDisplay() {
-  hybridState.clear();
+  return { ref, x: c.x, y: c.y, w: c.w, h: c.h };
 }
 
 /**
@@ -302,20 +214,14 @@ export function preRasterizePdfPages(nodes, view, viewW, viewH) {
   // replay-based lens recursion (a per-pass re-emit is the North-Star recursive
   // render(), out of this rewrite's scope). Photos legitimately pixelate at
   // extreme magnification (fixed native res); PDF is vector-source, so it stays
-  // crisp up to the cap.
+  // crisp up to the cap. (Applies to "live" mode; "raster" mode is fixed-DPI and
+  // deliberately ignores lenses — a magnifier over it scales the cached bitmap.)
   const lenses = nodes.filter((n) => n.type === "magnifier").map(lensSourceRegion).filter(Boolean);
 
   for (const node of nodes) {
     if (node.type !== "pdf_page") continue;
     const s = node.state;
     if (typeof s.src !== "string" || s.src.length === 0) continue;
-    const mode = s.renderMode ?? PDF_RENDER_MODE_DEFAULT;
-    // VECTOR mode is served by emit()'s camera-free vector path, so this pre-pass
-    // supplies NO descriptor for the node — sceneIR then hands emit() a null
-    // renderCtx.pdfDisplay and emit draws the crisp GPU `path` ops (or the
-    // whole-page raster when the page is not vector-safe). raster/hybrid fall
-    // through and get a region descriptor below.
-    if (mode === "vector") continue;
 
     ensurePdfDoc(s.src); // idempotent
     const pageCount = pdfPageCount(s.src);
@@ -327,6 +233,18 @@ export function preRasterizePdfPages(nodes, view, viewW, viewH) {
     ensurePdfPagePointSize(s.src, page); // idempotent; fills `point` for a later frame
     if (!point || !(point.w > 0) || !(point.h > 0)) continue; // not measured yet → emit's whole-page fallback covers this frame
 
+    // "raster" MODE: render the whole (cropped) page ONCE at a FIXED DPI/size and
+    // cache it — the descriptor is view-INDEPENDENT, so zoom/pan reuse the one
+    // bitmap (no re-raster). Falls through to the "live" path otherwise.
+    const mode = s.renderMode ?? PDF_RENDER_MODE_DEFAULT;
+    if (mode === "raster") {
+      const descriptor = rasterModeDescriptor(s, s.src, page, point);
+      if (descriptor) map.set(node.itemId, descriptor);
+      continue;
+    }
+
+    // ── "live" MODE (the Chrome model): re-raster the on-screen visible region at
+    // the current display resolution every frame ─────────────────────────────
     // OVERRIDE hook: the plugin may widen/shrink/opt-out its raster region.
     const policy = node.plugin.clipPolicy ? node.plugin.clipPolicy(s) : {};
     const vsr = visibleSourceRect(
@@ -365,16 +283,8 @@ export function preRasterizePdfPages(nodes, view, viewW, viewH) {
     const projected = Math.max(vsr.deviceRect.w, vsr.deviceRect.h) * boost;
     if (projected > PDF_MAX_RASTER_DIM) boost = Math.max(1, boost * (PDF_MAX_RASTER_DIM / projected));
     scale *= boost;
-    // RASTER requests the exact visible region every frame (crisp ASAP; the
-    // generation gate absorbs the fast-zoom re-kick stampede). HYBRID throttles
-    // re-kicks and keeps the last-ready region as the crisp overlay while the
-    // whole-page proxy shows through until a fresher region lands — the user's
-    // native-viewer design. Both hand emit() a region descriptor (proxy+region
-    // display path); only the region SELECTION differs.
-    const descriptor = mode === "raster"
-      ? rasterDescriptor(s.src, page, vsr.sourceRect, scale, point, vsr.localRect)
-      : hybridDescriptor(node.itemId, viewW, viewH, s.src, page, vsr.sourceRect, scale, vsr.localRect, point);
-    map.set(node.itemId, descriptor);
+    const { ref } = ensurePdfPageRegionRasterized(s.src, page, vsr.sourceRect, scale, point);
+    map.set(node.itemId, { ref, x: vsr.localRect.x, y: vsr.localRect.y, w: vsr.localRect.w, h: vsr.localRect.h });
   }
   return map;
 }

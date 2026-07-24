@@ -76,7 +76,7 @@
  * NOT part of the DOM-free `core/`.
  */
 
-import { reserveImageSlot, registerRasterizedBitmap, imageStatus } from "./image_registry.js";
+import { reserveImageSlot, registerRasterizedBitmap } from "./image_registry.js";
 import { reportOnce } from "../../core/report.js";
 
 // pdfjs-dist is loaded LAZILY (dynamic import, at first use inside
@@ -443,28 +443,6 @@ const regionGenerations = new Map();
 export function pdfPageRegionRef(src, page, sourceRect, scale) {
   const k = [sourceRect.sx, sourceRect.sy, sourceRect.sw, sourceRect.sh].map((v) => v.toFixed(6)).join(",");
   return `pdfregion:${src}:${page}:${k}:${roundPdfScale(scale)}`;
-}
-
-/**
- * Query. True once the region raster registered under `ref` has actually LANDED
- * as a drawable bitmap in the shared image registry (i.e. the compositor's
- * getImage(ref) would return it). Reads image_registry.imageStatus, NOT this
- * module's `regions` bookkeeping, on purpose: the bitmap OUTLIVES its `regions`
- * entry (that entry is LRU-evicted at PDF_REGION_CACHE_MAX while the registered
- * bitmap persists — see evictOldestRegion), so the registry is the authoritative
- * "is it displayable" source. A region that the generation gate stale-discarded
- * never registered its bitmap, so it stays non-ready here (correctly — it must
- * not be promoted). This is the HYBRID render mode's readiness probe
- * (render_gpu/pdf_display.js): it promotes an in-flight region to "shown" only
- * once this reports ready, so the crisp overlay never flips to a blank frame.
- *
- * @param {string} ref a pdfPageRegionRef(...) key
- * @returns {boolean}
- *
- * @example pdfRegionReady("pdfregion:nope:1:0,0,1,1:1") // false (never rasterized)
- */
-export function pdfRegionReady(ref) {
-  return imageStatus(ref) === "ready";
 }
 
 /**
