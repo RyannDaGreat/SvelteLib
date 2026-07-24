@@ -10,6 +10,7 @@ import { circlePlugin } from "./circle.js";
 import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
 import { linePlugin } from "./line.js"; // arrow-family: a straight stroke, no head
+import { tangentLinesPlugin } from "./tangent_lines.js"; // two external tangents between two shapes (zoom-callout bridge)
 import { fancyArrowPlugin } from "./fancy_arrow.js";
 import { elbowArrowPlugin } from "./elbow_arrow.js";
 import { curvedArrowPlugin } from "./curved_arrow.js";
@@ -52,7 +53,7 @@ import { raycastDitherPlugin } from "./demo/raycast_dither.js"; // animated grai
 import { rainyWindowPlugin } from "./demo/rainy_window.js"; // animated rain-on-glass (backdrop refraction material)
 import { skyPlugins } from "./demo/sky.js"; // sky / skySun / skyMoon / skyClouds — physically-based sky family that INTERACTS (derive-time sibling query)
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

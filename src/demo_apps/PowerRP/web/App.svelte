@@ -368,6 +368,17 @@
         { id: "demo-insert-metaball", title: "Metaball (merging water droplets — backdrop material shader)", icon: "mdi:water", run: (a) => a.armCrosshairPlacement(a.registry.get("metaball")) },
         { id: "demo-insert-frosted-glass", title: "Frosted Glass (basic backdrop blur + frost)", icon: "mdi:card-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_frosted_glass")) },
         { id: "demo-insert-magnify", title: "Magnifier (sampler material: circle / square / star lens)", icon: "mdi:magnify-expand", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_magnify")) },
+        // TELESCOPIC MAGNIFIER — a rig ASSEMBLED by a command from THREE items
+        // wired with `=` equations to a shared tween var `t` (default 0): a
+        // source marker at the origin, a demo_magnify lens that pulls out + zooms
+        // as t→1, and a tangent_lines widget bridging them (the "zoom into this"
+        // callout). Not a crosshair placement — the command mints the whole rig.
+        // Two shapeKinds prove the tangent geometry is general (circle + box).
+        { id: "demo-insert-telescopic-circle", title: "Telescopic Magnifier — Circle (zoom-callout rig, tween = t)", icon: "mdi:magnify-plus-outline", run: (a) => a.insertTelescopicMagnifier("circle") },
+        { id: "demo-insert-telescopic-box", title: "Telescopic Magnifier — Box (zoom-callout rig, tween = t)", icon: "mdi:magnify-plus-outline", run: (a) => a.insertTelescopicMagnifier("box") },
+        // The reusable two-tangent-line widget on its OWN (standalone): draws the
+        // external tangents between its two equation-bindable shapes (A, B).
+        { id: "add-tangent-lines", title: "Tangent Lines (two external tangents between two shapes)", icon: "mdi:vector-line", run: (a) => a.addItem(a.registry.get("tangent_lines").defaults) },
         { id: "demo-insert-raycast-dither", title: "Raycast Dither (animated grain gradient)", icon: "mdi:gradient-vertical", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_raycast_dither")) },
         { id: "demo-insert-rainy-window", title: "Rainy Window (animated backdrop rain-on-glass shader)", icon: "mdi:weather-pouring", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_rainy_window")) },
         // The `sky*` archetype — a physically-based sky family whose members INTERACT

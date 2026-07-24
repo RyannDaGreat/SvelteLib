@@ -32,6 +32,11 @@ import { createUndo } from "../core/undo.js";
 import { registerAll } from "../plugins/index.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
+// Telescopic-magnifier rig: the pure equation-override builders + rig constants.
+// The command below spreads these over the registry defaults to mint 3 wired items.
+import {
+  TELESCOPIC, telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
+} from "../plugins/tangent_lines.js";
 import { browserSetting } from "./settings.js";
 // Fonts-as-asset seam (#26): register an uploaded font file as a SELECTABLE
 // family (render_gpu/fonts.js dynamic registry) + load it into the browser.
@@ -1089,6 +1094,49 @@ export class PowerRPApp {
     // — any fresh empty filmstrip prompts for a video. Cancel leaves the empty
     // ghost as-is (the AssetField clears the signal on cancel too).
     if (state.type === "filmstrip" && !state.src) this.pendingVideoPickFor = id;
+  }
+
+  /**
+   * Command (one undo unit). Assembles the TELESCOPIC MAGNIFIER rig — a
+   * "zoom-into-this" detail-loupe callout — as THREE items wired by `=`
+   * equations to a shared tween VARIABLE `t` (default 0):
+   *   1. a SOURCE MARKER outline at the world origin (the region magnified),
+   *   2. a demo_magnify LENS that samples the source origin and, as t→1, pulls
+   *      outward + grows + zooms (identity at t=0), and
+   *   3. a TANGENT-LINES widget whose two shapes track the source and the lens.
+   * The user animates the rig by keyframing / binding the `t` variable (e.g.
+   * `= time`). shapeKind ∈ {"circle","box"} proves the geometry is general.
+   * Items are created source→lens→tangent so every `@id` reference is BACKWARD
+   * (points at an already-created item) — no dangling refs. Each item spreads
+   * its plugin's registry defaults FIRST, then the builder's equation overrides,
+   * so the rig loads with zero missing-default repairs. z: lens lowest of the
+   * three (so it samples only the backdrop below, not its own callout), then
+   * the tangents, then the source marker on top. Selects the lens.
+   *
+   * @param {"circle"|"box"} shapeKind - the source/lens/tangent geometry family
+   */
+  insertTelescopicMagnifier(shapeKind = "circle") {
+    // 1. the shared tween parameter — a document variable, default 0, on the
+    //    current slide. All rig motion is a function of it (bind it to = time).
+    let doc = keyframed(this.doc, this.slideIndex, ["vars", TELESCOPIC.TWEEN_VAR], 0);
+    const zs = this.nodes().map((n) => n.state.z ?? 0);
+    const baseZ = (zs.length ? Math.max(...zs) : 0) + 1; // above all existing content
+    const withDefaults = (overrides, z) => ({ ...this.registry.get(overrides.type).defaults, ...overrides, active: true, z });
+    // 2. SOURCE marker (no refs) — created first so the lens/tangents can point
+    //    back at it. z on TOP so the loupe never magnifies its own marker.
+    const sourceOv = telescopicSourceOverrides({ shapeKind, originX: TELESCOPIC.ORIGIN_X, originY: TELESCOPIC.ORIGIN_Y });
+    let sourceId;
+    [doc, sourceId] = withNewItem(doc, this.slideIndex, withDefaults(sourceOv, baseZ + 2));
+    // 3. LENS (refs the source) — lowest of the three so it samples only the
+    //    backdrop drawn below it.
+    const lensOv = telescopicLensOverrides({ sourceId, shapeKind });
+    let lensId;
+    [doc, lensId] = withNewItem(doc, this.slideIndex, withDefaults(lensOv, baseZ));
+    // 4. TANGENT lines (ref both) — between the lens and the marker in z.
+    const tangentOv = telescopicTangentOverrides({ sourceId, lensId, shapeKind });
+    [doc] = withNewItem(doc, this.slideIndex, withDefaults(tangentOv, baseZ + 1));
+    this.commit(withNormalizedZ(doc));
+    this.selection = lensId;
   }
 
   // ── Groups (manifest "GROUPS", rough draft — the armature-shaped parent) ────
