@@ -35,6 +35,7 @@
 import { CRT_MATERIAL } from "./crt_shader.js";
 import { CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL } from "./corkboard_shader.js";
 import { RAYCAST_DITHER_MATERIAL } from "./raycast_dither_shader.js";
+import { RAINY_WINDOW_MATERIAL } from "./rainy_window_shader.js";
 
 /**
  * The MAGNIFY material — magnification, expressed as a member of the material
@@ -64,7 +65,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
 // Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
 const MATERIALS = Object.fromEntries(
-  [CRT_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, MAGNIFY_MATERIAL].map((m) => [m.id, m]),
+  [CRT_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, MAGNIFY_MATERIAL].map((m) => [m.id, m]),
 );
 
 /**
