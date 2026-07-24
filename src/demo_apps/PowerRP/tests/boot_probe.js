@@ -13,10 +13,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
 const BOOT_SETTLE_MS = 4000; // Skia wasm + fonts + first paint
 
-const { createServer } = await import("vite");
-const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
-await server.listen();
-const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`;
+// If a URL is passed (argv[2]), probe that ALREADY-RUNNING server (reproduces a
+// real user session, incl. its backend-loaded doc). Otherwise self-spin a fresh
+// FRONTEND-ONLY Vite (empty doc, no backend).
+const externalUrl = process.argv[2] && /^https?:\/\//.test(process.argv[2]) ? process.argv[2] : null;
+let server = null, baseUrl = externalUrl;
+if (!externalUrl) {
+  const { createServer } = await import("vite");
+  server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+  await server.listen();
+  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`;
+}
 
 const { default: puppeteer } = await import("puppeteer");
 const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
@@ -29,9 +36,15 @@ const errors = [];
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
-  await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
+  // Capture EVERYTHING verbatim (pageerror w/ stack, unhandled rejections, all
+  // console) — attached BEFORE navigation so nothing is missed.
+  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}\n${e.stack ?? ""}`));
+  page.on("console", (m) => { if ((m.type() === "error" || m.type() === "warning") && !IGNORE.test(m.text())) errors.push(`console.${m.type()}: ${m.text()}`); });
+  await page.evaluateOnNewDocument(() => {
+    window.addEventListener("unhandledrejection", (ev) => console.error("UNHANDLED_REJECTION: " + (ev.reason?.stack || ev.reason?.message || ev.reason)));
+    window.addEventListener("error", (ev) => console.error("WINDOW_ERROR: " + (ev.error?.stack || ev.message)));
+  });
+  await page.goto(baseUrl.endsWith("/") ? baseUrl : baseUrl + "/", { waitUntil: "networkidle0" }).catch((e) => errors.push(`goto: ${e.message}`));
   await new Promise((r) => setTimeout(r, BOOT_SETTLE_MS));
   const alive = await page.evaluate(() => !!window.__powerrp_app);
   if (errors.length || !alive) {
@@ -41,5 +54,5 @@ try {
   console.log("BOOT OK — app initialized (__powerrp_app present), no page errors");
 } finally {
   await browser.close();
-  await server.close();
+  if (server) await server.close();
 }
