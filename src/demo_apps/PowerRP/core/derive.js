@@ -150,7 +150,59 @@ export function deriveRenderTree(state, registry) {
     plugin: registry.get(itemState.type),
   }));
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
-  return resolveCropTargets(applyGroupParenting(nodes));
+  return resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes)));
+}
+
+/**
+ * Pure function. Marks GROUP nodes that FOLD their member subtree into one
+ * composited unit — the subtree-effects gap. A group whose plugin says it carries
+ * active effects and/or a crop (plugins/group.foldsSubtree) should have its whole
+ * member subtree rendered into ONE texture so the effect/crop/blend applies to the
+ * composite (a drop shadow cast by the GROUP silhouette; a blend mode compositing
+ * the whole group; a crop clipping the whole group). For each such group this
+ * records — IN Z-ORDER (the node list is already z-sorted) — the present member
+ * node ids it wraps (`subtreeMemberIds`) and back-marks those members `foldedBy`
+ * the group.
+ *
+ * It does NOT remove any node (unlike resolveCropTargets, which suppresses a crop
+ * target): the members stay first-class render nodes so hit-testing / anchors /
+ * snap / band-select still see them — ONLY the render walk (render_gpu/ports.
+ * sceneIR) reads these marks, drawing the members INSIDE the group's effectSubtree/
+ * cropSubtree instead of independently at the top level. A group that folds nothing
+ * (no effects, no crop, or no present members) is returned untouched, so every
+ * effect-free group is byte-identical to before this feature.
+ *
+ * A member claimed by two folding groups binds to the FIRST in node (z) order
+ * (deterministic; nested/multi-group precedence stays out of the rough-draft
+ * scope, matching applyGroupParenting/groupMembership). Groups render this subtree
+ * via the SAME reused machinery a single vector object uses (effectSubtree /
+ * cropSubtree) — no new render op.
+ *
+ * @example resolveGroupSubtrees([{itemId: "g", type: "group", state: {members: ["r"], blendMode: "multiply"}, plugin: {foldsSubtree: () => true}}, {itemId: "r", type: "rect", state: {}, plugin: {}}]).find((n) => n.itemId === "g").subtreeMemberIds // ["r"]
+ * @example resolveGroupSubtrees([{itemId: "g", type: "group", state: {members: ["r"]}, plugin: {foldsSubtree: () => false}}, {itemId: "r", type: "rect", state: {}, plugin: {}}]).find((n) => n.itemId === "r").foldedBy // undefined (non-folding group → members untouched)
+ * @example resolveGroupSubtrees([{itemId: "r", type: "rect", state: {}, plugin: {}}]).length // 1 (no groups: passthrough)
+ */
+export function resolveGroupSubtrees(nodes) {
+  const folding = nodes.filter((n) => n.type === "group" && Array.isArray(n.state.members) && n.plugin?.foldsSubtree?.(n.state));
+  if (folding.length === 0) return nodes;
+  const foldedBy = new Map();       // memberId → owning group id (first claimer)
+  const membersByGroup = new Map(); // groupId → [memberId] in z-order
+  for (const g of folding) {
+    // Present member nodes in the node list's (z-sorted) order — the draw order
+    // inside the composite, not the members-list declaration order. Skip the
+    // group itself and any member already claimed by an earlier folding group.
+    const ids = nodes
+      .filter((n) => n.itemId !== g.itemId && !foldedBy.has(n.itemId) && g.state.members.includes(n.itemId))
+      .map((n) => n.itemId);
+    if (ids.length === 0) continue; // no present members → the group stays a pure ghost
+    for (const id of ids) foldedBy.set(id, g.itemId);
+    membersByGroup.set(g.itemId, ids);
+  }
+  if (membersByGroup.size === 0) return nodes;
+  return nodes.map((n) =>
+    membersByGroup.has(n.itemId) ? { ...n, subtreeMemberIds: membersByGroup.get(n.itemId) }
+      : foldedBy.has(n.itemId) ? { ...n, foldedBy: foldedBy.get(n.itemId) }
+        : n);
 }
 
 /**

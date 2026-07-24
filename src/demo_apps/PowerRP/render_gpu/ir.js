@@ -957,6 +957,12 @@ export function materialFill({
  * fill/border (the crop box's ghost outline covers pickability; this covers
  * its visible chrome, matching a plain box with nothing inside it).
  *
+ * GROUP SUBTREE CROP (the subtree-effects gap): the SAME op also clips a GROUP's
+ * whole member composite to the group's own (inset) region — `content` is then
+ * the members' already-absolute-world IR (render_gpu/ports.sceneIR), with no
+ * fill/border. Nothing here changes: content is opaque re-interpretable IR
+ * (plugins/group.emit reuses this op verbatim).
+ *
  * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, content: []}).op // "cropSubtree"
  * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, cornerRadius: 2, content: []}).cornerRadius // 2
  * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, content: []}).fill // null
@@ -1041,6 +1047,13 @@ export const MAX_LENS_DEPTH = 1;
  * independently-flattened IR list that carries its OWN absolute world
  * (callers wrap it in pushTransform(world) — render_gpu/effects.js
  * applyEffects does this; see decorate.js's absolute-world contract).
+ *
+ * GROUP SUBTREE (the subtree-effects gap): the SAME op also wraps a GROUP's
+ * WHOLE member subtree — `content` is then the members' already-absolute-world IR
+ * (built by render_gpu/ports.sceneIR), so one drop shadow is cast by the group
+ * silhouette, one blend composites the group against the backdrop, etc. Nothing
+ * here changes for that case: content is opaque re-interpretable IR either way
+ * (plugins/group.emit reuses this op verbatim through applyEffects).
  *
  * `shadowOnly: true` renders ONLY the shadow composite (no widget, no bloom,
  * no blend) — the PDF hybrid rule's vector-preserving split uses it to raster

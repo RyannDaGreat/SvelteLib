@@ -19,11 +19,14 @@ import * as T from "../core/transform.js";
 import {
   groupInfluence, groupBindWorld, applyGroupParenting, groupMembership,
   worldTransform, stateXYForCenterPivotWorld, snapExclusionSet,
-  composedMemberInfluence, memberOwnerGroups,
+  composedMemberInfluence, memberOwnerGroups, resolveGroupSubtrees,
 } from "../core/derive.js";
 import { groupFilteredSelection, dedupeGroupSelection } from "../core/bandselect.js";
 import { blockZToExtreme, ungroupBakeSlides } from "../core/document.js";
 import { groupResizeState } from "../web/canvas/dragKinds.js";
+import { groupPlugin, groupCropRect, groupFoldsSubtree } from "../plugins/group.js";
+import { sceneIR } from "../render_gpu/ports.js";
+import { flattenIR } from "../render_gpu/ir.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -457,6 +460,108 @@ test("ungroupBakeSlides: slides BEFORE the member's creation are excluded", () =
     { delta: { items: { g: { x: 5 } } } },                     // 2: group change
   ] };
   assert.deepEqual(ungroupBakeSlides(doc, "m", "g"), [1, 2]);
+});
+
+// ── SUBTREE EFFECTS (task #51): a group's effects/crop wrap its member SUBTREE ─
+// A group folding its member subtree into ONE composited unit — a drop shadow
+// cast by the group silhouette, a blend mode compositing the whole group, a crop
+// clipping the whole group. Covers the fold predicate (groupFoldsSubtree /
+// groupCropRect), the derive fold pass (resolveGroupSubtrees), and the render
+// emission through sceneIR + group.emit (ONE effectSubtree / cropSubtree wrapping
+// the members' absolute-world IR). A minimal fake member plugin emits one rect.
+
+const rectPlugin = { capabilities: { bbox: true }, emit: (s) => [{ op: "rect", x: 0, y: 0, w: s.w ?? 10, h: s.h ?? 10, fill: [1, 0, 0, 1], opacity: 1 }] };
+function memberNode(id, world = { x: 0, y: 0, rotation: 0, scale: 1 }) {
+  return { id, itemId: id, type: "rect", state: { w: 40, h: 40 }, world, plugin: rectPlugin };
+}
+function groupNode(state, world = { x: 100, y: 100, rotation: 0, scale: 1 }) {
+  return { id: "g", itemId: "g", type: "group", state: { members: ["a", "b"], ...state }, world, plugin: groupPlugin };
+}
+/** Flatten a sceneIR command list, returning the flat ops (cmd only). */
+function flatOps(commands) {
+  return flattenIR(commands).map((f) => f.cmd);
+}
+
+test("groupCropRect doctests: no insets → null; insets → inner rect", () => {
+  assert.equal(groupCropRect({ w: 200, h: 100 }), null);
+  assert.deepEqual(groupCropRect({ w: 200, h: 100, cropLeft: 20, cropRight: 30 }), { x: 20, y: 0, w: 150, h: 100 });
+  assert.deepEqual(groupCropRect({ w: 200, h: 100, cropTop: 10, cropBottom: 10 }), { x: 0, y: 10, w: 200, h: 80 });
+});
+
+test("groupFoldsSubtree doctests: off unless effects OR crop are active", () => {
+  assert.equal(groupFoldsSubtree({}), false);
+  assert.equal(groupFoldsSubtree({ blendMode: "multiply" }), true);
+  assert.equal(groupFoldsSubtree({ shadow: { opacity: 0.5, blur: 6 } }), true);
+  assert.equal(groupFoldsSubtree({ w: 200, h: 100, cropRight: 40 }), true);
+});
+
+test("resolveGroupSubtrees: effect group folds its members (subtreeMemberIds + foldedBy), z-ordered", () => {
+  const nodes = [groupNode({ blendMode: "multiply" }), memberNode("a"), memberNode("b")];
+  const out = resolveGroupSubtrees(nodes);
+  assert.deepEqual(out.find((n) => n.itemId === "g").subtreeMemberIds, ["a", "b"]);
+  assert.equal(out.find((n) => n.itemId === "a").foldedBy, "g");
+  assert.equal(out.find((n) => n.itemId === "b").foldedBy, "g");
+});
+
+test("resolveGroupSubtrees: an effect-free group folds NOTHING (byte-identical passthrough)", () => {
+  const nodes = [groupNode({}), memberNode("a"), memberNode("b")];
+  const out = resolveGroupSubtrees(nodes);
+  assert.equal(out.find((n) => n.itemId === "g").subtreeMemberIds, undefined);
+  assert.equal(out.find((n) => n.itemId === "a").foldedBy, undefined);
+});
+
+test("subtree SHADOW: sceneIR emits ONE effectSubtree wrapping BOTH members (group silhouette shadow)", () => {
+  const nodes = resolveGroupSubtrees([
+    groupNode({ w: 200, h: 120, shadow: { dx: 6, dy: 6, blur: 8, color: "#000000", opacity: 0.6 } }),
+    memberNode("a"), memberNode("b"),
+  ]);
+  const ops = flatOps(sceneIR(nodes));
+  const fx = ops.filter((c) => c.op === "effectSubtree");
+  assert.equal(fx.length, 1);
+  assert.equal(fx[0].shadow.opacity, 0.6);
+  // The members render INSIDE the effect (both rects live in its content), and
+  // NOT independently at the top level (only the effectSubtree is a top op).
+  assert.equal(ops.filter((c) => c.op === "rect").length, 0);
+  assert.equal(flatOps(fx[0].content).filter((c) => c.op === "rect").length, 2);
+});
+
+test("subtree BLEND: a blendMode group composites the whole group (effectSubtree.blend)", () => {
+  const nodes = resolveGroupSubtrees([groupNode({ blendMode: "multiply" }), memberNode("a"), memberNode("b")]);
+  const fx = flatOps(sceneIR(nodes)).filter((c) => c.op === "effectSubtree");
+  assert.equal(fx.length, 1);
+  assert.equal(fx[0].blend, "multiply");
+  assert.equal(flatOps(fx[0].content).filter((c) => c.op === "rect").length, 2);
+});
+
+test("subtree CROP: an inset group clips the whole member composite (cropSubtree, no effect)", () => {
+  const nodes = resolveGroupSubtrees([groupNode({ w: 200, h: 120, cropRight: 40, cropBottom: 20 }), memberNode("a"), memberNode("b")]);
+  const ops = flatOps(sceneIR(nodes));
+  assert.equal(ops.filter((c) => c.op === "effectSubtree").length, 0);
+  const crops = ops.filter((c) => c.op === "cropSubtree");
+  assert.equal(crops.length, 1);
+  // Region = bbox minus insets, in group-local space.
+  assert.deepEqual({ x: crops[0].x, y: crops[0].y, w: crops[0].w, h: crops[0].h }, { x: 0, y: 0, w: 160, h: 100 });
+  assert.equal(flatOps(crops[0].content).filter((c) => c.op === "rect").length, 2);
+});
+
+test("subtree EFFECT+CROP: the crop nests INSIDE the effect (shadow of the cropped group)", () => {
+  const nodes = resolveGroupSubtrees([
+    groupNode({ w: 200, h: 120, cropRight: 40, shadow: { dx: 4, dy: 4, blur: 6, color: "#000000", opacity: 0.5 } }),
+    memberNode("a"), memberNode("b"),
+  ]);
+  const fx = flatOps(sceneIR(nodes)).filter((c) => c.op === "effectSubtree");
+  assert.equal(fx.length, 1);
+  const inner = flatOps(fx[0].content);
+  const crops = inner.filter((c) => c.op === "cropSubtree");
+  assert.equal(crops.length, 1); // the crop lives inside the effect's content
+  assert.equal(flatOps(crops[0].content).filter((c) => c.op === "rect").length, 2);
+});
+
+test("subtree effects: an effect-FREE group stays a ghost (members render independently, no wrap)", () => {
+  const nodes = resolveGroupSubtrees([groupNode({}), memberNode("a"), memberNode("b")]);
+  const ops = flatOps(sceneIR(nodes));
+  assert.equal(ops.filter((c) => c.op === "effectSubtree" || c.op === "cropSubtree").length, 0);
+  assert.equal(ops.filter((c) => c.op === "rect").length, 2); // both members drawn at top level
 });
 
 console.log(`\n${passed} group tests passed.`);

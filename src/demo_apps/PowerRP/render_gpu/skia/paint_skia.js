@@ -1046,6 +1046,10 @@ function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, ang
  * border on top. Fill + border draw in the crop node's local space; the clip is
  * a device-space path (so `content`, which carries its own world, can render
  * from the device root through `view` while the clip persists).
+ *
+ * `content` is opaque re-interpretable IR: a crop box's single target, OR — the
+ * subtree-effects gap — a GROUP's whole member subtree (plugins/group.emit). The
+ * device-space clip + absolute-world content re-render handle both identically.
  */
 function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   const canvas = target.canvas;
@@ -1096,6 +1100,11 @@ function deviceRRectPath(CanvasKit, cmd, deviceM) {
  * on top. shadowOnly ⇒ only the shadow. All composites are device-root blits of
  * the one content image; the effect node's world scales the device sigmas/offset
  * (sigma = value·world.scale·zoom·dpr), matching gpu/compositor.js.
+ *
+ * `content` is opaque: a single widget's own ops, OR — the subtree-effects gap —
+ * a GROUP's whole member subtree (plugins/group.emit), so the ONE offscreen
+ * render is the composited group and the shadow/bloom/blend/inner-shadow apply to
+ * the group silhouette as a unit. No branch needed — it's just more content.
  *
  * PARITY NOTES vs the WebGPU compositor:
  *   - SHADOW uses ImageFilter.MakeDropShadowOnly — a Skia-faithful drop shadow,

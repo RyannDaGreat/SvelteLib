@@ -85,27 +85,61 @@ export function videoIR(s) {
  */
 export function sceneIR(nodes, ctx = {}) {
   const pdfDisplay = ctx.pdfDisplay ?? null;
+  const byId = new Map(nodes.map((n) => [n.itemId, n]));
   const out = [];
   for (const node of nodes) {
-    if (!node.plugin?.emit) throw new Error(`sceneIR: plugin "${node.type}" has no emit()`);
-    const targetWorldIR = node.type === "cropbox" && node.cropTarget
-      ? [pushTransform(node.cropTarget.world), ...node.cropTarget.plugin.emit(node.cropTarget.state), popTransform()]
-      : null;
-    const renderCtx = pdfDisplay ? { pdfDisplay: pdfDisplay.get(node.itemId) ?? null } : null;
-    // emit() gets the node's ABSOLUTE world as a 3rd argument (the SHARED
-    // STROKED-BOX BUNDLE seam — manifest "SHARED STYLE BUNDLES"): a box-like
-    // media widget (image/video/filmstrip) decorates its content with a
-    // cropSubtree border/rounded-clip via render_gpu/decorate.js, and
-    // cropSubtree's `content` is flattened INDEPENDENTLY (from identity), so it
-    // must carry its own absolute world — the outer pushTransform(node.world)
-    // wrap below reaches the emitted ops but NOT into a cropSubtree op's
-    // separately-flattened content (exactly as the crop-box target content
-    // carries pushTransform(node.cropTarget.world), never the box's own wrap).
-    // Every plugin that doesn't decorate simply ignores this argument (they
-    // destructure only `state`); cropbox uses arg 2 and ignores arg 3.
-    const cmds = node.plugin.emit(node.state, targetWorldIR, node.world, renderCtx);
-    if (cmds.length === 0) continue;
-    out.push(pushTransform(node.world), ...cmds, popTransform());
+    // A FOLDED GROUP MEMBER (core/derive.resolveGroupSubtrees marked it foldedBy)
+    // is NOT drawn at the top level — it renders INSIDE its owning group's
+    // composited subtree (built by emitNode below), so the group's shadow/bloom/
+    // blend/crop wraps it as one unit. Every non-folded node draws normally.
+    if (node.foldedBy) continue;
+    out.push(...emitNode(node, byId, pdfDisplay));
   }
   return out;
+}
+
+/**
+ * Pure function. Emits ONE render node's IR (its emitted ops wrapped in its world
+ * transform), resolving the two cross-node subtree seams sceneIR owns:
+ *
+ *   CROP BOX — the target's own IR (wrapped in the target's ABSOLUTE world), or
+ *     null, handed to cropbox.emit() as arg 2 (see the sceneIR doc for why the
+ *     target carries its own absolute world, not one relative to the box).
+ *   GROUP SUBTREE (the subtree-effects gap) — a group folding its member subtree
+ *     into one composited unit: its members' ABSOLUTE-world IR (each recursively
+ *     emitted — already wrapped in pushTransform(member.world)), handed to
+ *     group.emit() through the SAME arg-2 seam, which nests it in ONE
+ *     effectSubtree / cropSubtree. core/derive attaches subtreeMemberIds
+ *     (z-ordered, present members only); the members carry foldedBy so the
+ *     top-level walk skips them, but emitNode itself never skips — a member
+ *     looked up here always renders (nested folding groups fall out naturally).
+ *
+ * @param {object} node - a derive render node (carries .plugin/.state/.world)
+ * @param {Map} byId - itemId → node, for folded-member lookup
+ * @param {Map|null} pdfDisplay - per-node PDF re-raster descriptors (or null)
+ * @returns {object[]} IR (empty when the node emits nothing — a pure ghost)
+ */
+function emitNode(node, byId, pdfDisplay) {
+  if (!node.plugin?.emit) throw new Error(`sceneIR: plugin "${node.type}" has no emit()`);
+  // GROUP SUBTREE: build the folded members' absolute-world IR (recursively).
+  const subtreeIR = node.type === "group" && Array.isArray(node.subtreeMemberIds) && node.subtreeMemberIds.length
+    ? node.subtreeMemberIds.flatMap((id) => (byId.has(id) ? emitNode(byId.get(id), byId, pdfDisplay) : []))
+    : null;
+  const targetWorldIR = node.type === "cropbox" && node.cropTarget
+    ? [pushTransform(node.cropTarget.world), ...node.cropTarget.plugin.emit(node.cropTarget.state), popTransform()]
+    : null;
+  const renderCtx = pdfDisplay ? { pdfDisplay: pdfDisplay.get(node.itemId) ?? null } : null;
+  // emit() gets a subtree as arg 2 (a group's members' IR, or a crop box's target
+  // IR — mutually exclusive) and its ABSOLUTE world as arg 3 (the SHARED
+  // STROKED-BOX BUNDLE seam — manifest "SHARED STYLE BUNDLES"): a box-like media
+  // widget (image/video/filmstrip) decorates its content with a cropSubtree
+  // border/rounded-clip via render_gpu/decorate.js, and both a cropSubtree's and
+  // an effectSubtree's `content` is flattened INDEPENDENTLY (from identity), so it
+  // must carry its own absolute world — the outer pushTransform(node.world) wrap
+  // below reaches the emitted ops but NOT into a subtree op's separately-flattened
+  // content. Plugins that don't decorate ignore these args (they destructure only
+  // `state`); cropbox + group use arg 2, decorators use arg 3.
+  const cmds = node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, node.world, renderCtx);
+  if (cmds.length === 0) return [];
+  return [pushTransform(node.world), ...cmds, popTransform()];
 }
