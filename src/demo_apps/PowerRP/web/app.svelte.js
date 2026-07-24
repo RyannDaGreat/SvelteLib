@@ -13,6 +13,9 @@ import {
   repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
+import { unionRect } from "../core/geometry.js";
+// Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
+import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
 import { resolveTransition, retypedTransition } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld } from "../core/derive.js";
 import { evaluateState, withVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
@@ -2355,6 +2358,120 @@ export class PowerRPApp {
   browseBuiltinAssets() {
     if (this.showBuiltinAssets) return this.showBuiltinAssets();
     console.error("Built-in Assets: the browser modal is not wired yet (App.svelte hook missing).");
+  }
+
+  // ── ARRANGE SELECTION INTO GRID (bento box) ─────────────────────────────────
+  // Lays the selected widgets out as a BENTO GRID. This tool CONSUMES the bento
+  // widget (type "bento", parallel lane #86: a grid-layout widget with props
+  // {rows, cols, rowGap, colGap, padding} that emits per-cell anchors) — it does
+  // NOT rebuild it. The pure grid math (core/grid.js) is independent of the
+  // widget and fully tested; the create-and-place step below is guarded on the
+  // "bento" plugin being registered so this lane is safe to merge before/after
+  // #86. The UX is INTERACTIVE (palette commands take no args): the command opens
+  // a grid-size picker (Office "Insert Table" sweep) via the showGridPicker seam;
+  // the picker's confirm calls arrangeSelectionIntoGrid(rows, cols).
+
+  /** The widget type this tool creates. Consumed from parallel lane #86. */
+  static #BENTO_TYPE = "bento";
+
+  // Grid-size-picker UI seam (mirrors showOpenModal / showBuiltinAssets):
+  // App.svelte sets this to a function (itemCount) => void that opens the
+  // GridSizePicker popover; its confirm handler calls arrangeSelectionIntoGrid.
+  showGridPicker = null;
+
+  /**
+   * Query. The selected nodes that have a bounding box (own x/y/w/h), as
+   * {node, box} pairs in selection order — the same basis align/mirror/
+   * distribute use. Non-bbox items (arrows, endpoints) are excluded: placing a
+   * widget's CENTER in a cell needs a width/height.
+   */
+  #selectedBboxNodes() {
+    const ids = new Set(this.selectedIds());
+    return this.nodes()
+      .filter((n) => ids.has(n.itemId) && n.plugin.capabilities.bbox)
+      .map((n) => ({ node: n, box: { x: n.state.x ?? 0, y: n.state.y ?? 0, w: n.state.w ?? 0, h: n.state.h ?? 0 } }));
+  }
+
+  /** Query. Is the "bento" widget (lane #86) registered yet? Guards the
+   *  create-and-place step without tripping registry.get's loud throw. */
+  #bentoAvailable() {
+    return this.registry.all().some((p) => p.type === PowerRPApp.#BENTO_TYPE);
+  }
+
+  /** Command. "Arrange into Grid": opens the grid-size picker (delegates to the
+   *  App.svelte hook). The picker's confirm calls arrangeSelectionIntoGrid.
+   *  Gated to ≥2 bbox items by the command registration; this guard keeps a
+   *  direct/test call safe. */
+  arrangeIntoGrid() {
+    const count = this.#selectedBboxNodes().length;
+    if (count < 2) return;
+    if (this.showGridPicker) return this.showGridPicker(count);
+    console.error("Arrange into Grid: the grid-size picker UI is not wired yet (App.svelte hook missing).");
+  }
+
+  /**
+   * Command (ONE undo unit). Realizes the current selection as a BENTO GRID:
+   * creates ONE bento box sized to the selection's current union AABB (its
+   * width/height taken from where the items already are), with the chosen
+   * rows×cols, then moves each selected bbox item (row-major order) so its own
+   * CENTER sits on its cell's center. Overflow (more items than rows*cols) grows
+   * the row count to fit (effectiveRows). Selects the new bento. Placement is
+   * absolute x/y keyframes on the current slide — the same mechanism as align/
+   * distribute — so re-running the command re-flows.
+   *
+   * Gap defaults come from the bento plugin's OWN defaults (rowGap/colGap/
+   * padding) so the tool never invents grid spacing. The bento is layered just
+   * BEHIND the selected items (a container sits behind its contents) — a sensible
+   * default; final layering is a bento-integration detail.
+   *
+   * INTEGRATION POINT (#86): if "bento" is not registered yet, this reports
+   * LOUDLY and no-ops (the picker + pure math still work). FLAGGED for post-merge
+   * finalization: (a) whether to bind item x/y to the bento's cell-center anchors
+   * via `=` equations so editing rows/cols in the Inspector AUTO-reflows (needs
+   * the finalized cell-anchor naming from #86) rather than only re-running;
+   * (b) parenting items to the bento vs. absolute placement; (c) final z-order.
+   */
+  arrangeSelectionIntoGrid(rows, cols) {
+    const items = this.#selectedBboxNodes();
+    if (items.length < 2) return;
+    if (!this.#bentoAvailable()) {
+      console.error(
+        `Arrange into Grid: the "${PowerRPApp.#BENTO_TYPE}" widget is not registered yet ` +
+        "(parallel lane #86 pending). The grid-size picker and the pure grid math are wired; " +
+        "the bento create-and-place step finalizes once that lane merges.",
+      );
+      return;
+    }
+    const bento = this.registry.get(PowerRPApp.#BENTO_TYPE);
+    const bounds = unionRect(items.map((it) => it.box));
+    const usedRows = effectiveRows(items.length, rows, cols);
+    const gaps = {
+      rowGap: bento.defaults.rowGap ?? 0,
+      colGap: bento.defaults.colGap ?? 0,
+      padding: bento.defaults.padding ?? 0,
+    };
+    // 1. Create the bento sized to the union AABB, at the chosen grid shape,
+    //    layered behind the selection.
+    const zs = this.nodes().map((n) => n.state.z ?? 0);
+    const bentoState = {
+      ...bento.defaults,
+      x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h,
+      rows: usedRows, cols,
+      active: true,
+      z: (zs.length ? Math.min(...zs) : 0) - 1,
+    };
+    let [doc, bentoId] = withNewItem(this.doc, this.slideIndex, bentoState);
+    // 2. Place each item's CENTER on its cell center (row-major), as x/y
+    //    keyframes on the current slide.
+    const byCell = new Map(cellCenters(bounds, usedRows, cols, gaps).map((c) => [`${c.row},${c.col}`, c]));
+    const assignments = gridAssign(items.length, usedRows, cols);
+    items.forEach(({ node, box }, i) => {
+      const cell = byCell.get(`${assignments[i].row},${assignments[i].col}`);
+      doc = keyframed(doc, this.slideIndex, ["items", node.itemId, "x"], cell.x - box.w / 2);
+      doc = keyframed(doc, this.slideIndex, ["items", node.itemId, "y"], cell.y - box.h / 2);
+    });
+    this.commit(withNormalizedZ(doc));
+    this.selection = bentoId;
   }
 
   /**

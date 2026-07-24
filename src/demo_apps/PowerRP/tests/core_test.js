@@ -10,6 +10,7 @@ import { NONE, applied, blendApplied, contains, setPath, deletePath, getPath, le
 import { interpolate, ease, isHexColor, hexToRgb, rgbToHex } from "../core/interpolators.js";
 import * as T from "../core/transform.js";
 import { clipLineToRect, closestPointOnRectBorder } from "../core/geometry.js";
+import { gridAssign, cellCenters, nearSquareGrid, effectiveRows } from "../core/grid.js";
 import {
   newDocument, foldState, slideState, keyframed, unkeyframed, keyframeIndices,
   withNewItem, withNewSlide, withSlideDeleted, withSlideMoved,
@@ -673,6 +674,22 @@ test("bento: merged span drops covered cells and exposes anchors on the merged r
   assert.equal(at("c1x0cm"), undefined);
   // The right column cells are untouched.
   assert.deepEqual(at("c0x1cm"), { id: "c0x1cm", x: 75, y: 25 });
+});
+
+// ── grid layout (Arrange Selection into Grid / bento) ─────────────────────────
+// Mirrors core/grid.js @example doctests; grid_test.js has the full invariants.
+test("grid: gridAssign row-major + overflow, cellCenters tile bounds, nearSquare seed", () => {
+  assert.deepEqual(gridAssign(4, 2, 2), [{ row: 0, col: 0 }, { row: 0, col: 1 }, { row: 1, col: 0 }, { row: 1, col: 1 }]);
+  assert.deepEqual(gridAssign(7, 2, 3)[6], { row: 2, col: 0 }); // overflow → 3rd row
+  assert.equal(effectiveRows(7, 2, 3), 3);
+  assert.deepEqual(cellCenters({ x: 0, y: 0, w: 100, h: 100 }, 1, 2, {}), [
+    { row: 0, col: 0, x: 25, y: 50 }, { row: 0, col: 1, x: 75, y: 50 },
+  ]);
+  // Collective center of the cells == center of bounds (the re-flow-in-place property).
+  const cs = cellCenters({ x: 10, y: 20, w: 200, h: 120 }, 3, 4, { rowGap: 6, colGap: 8, padding: 5 });
+  approx(cs.reduce((s, c) => s + c.x, 0) / cs.length, 10 + 200 / 2);
+  approx(cs.reduce((s, c) => s + c.y, 0) / cs.length, 20 + 120 / 2);
+  assert.deepEqual(nearSquareGrid(9), { rows: 3, cols: 3 });
 });
 
 console.log(`\n${passed} tests passed`);

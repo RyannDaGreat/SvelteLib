@@ -23,6 +23,7 @@
   import PresentMode from "./PresentMode.svelte";
   import Panel from "./Panel.svelte";
   import Modal from "../../../lib/Modal.svelte";
+  import GridSizePicker from "./GridSizePicker.svelte";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed } from "../core/document.js";
   import { cameraRectAt } from "./cameraFrame.js";
@@ -126,6 +127,22 @@
   app.showBuiltinAssets = () => {
     builtinAssetsVisible = true;
   };
+
+  // Arrange-into-Grid picker (the bento tool). The "Arrange into Grid" command
+  // opens the Office-style grid-size picker via this hook (mirrors showOpenModal);
+  // confirming with rows×cols runs the one-undo-unit arrange. `gridPickerCount`
+  // seeds the picker's near-square default + item/overflow hint.
+  let gridPickerVisible = $state(false);
+  let gridPickerCount = $state(0);
+  app.showGridPicker = (count) => {
+    gridPickerCount = count;
+    gridPickerVisible = true;
+  };
+  function confirmGrid({ rows, cols }) {
+    gridPickerVisible = false;
+    app.arrangeSelectionIntoGrid(rows, cols);
+  }
+
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
@@ -221,6 +238,14 @@
     // selection through the app helpers (which own the AABB + keyframe baking).
     { id: "group", title: "Group Selection", icon: "mdi:group", when: (a) => a.canGroup(), run: (a) => a.groupSelection() },
     { id: "ungroup", title: "Ungroup", icon: "mdi:ungroup", when: (a) => a.selectedNodes().some((n) => n.type === "group"), run: (a) => a.ungroupSelection() },
+    // ARRANGE INTO GRID (the bento tool): lays the selection out as a BENTO GRID.
+    // Same ≥2-bbox gate as align/mirror. INTERACTIVE (palette commands take no
+    // args): `run` opens the Office-style grid-size picker; its confirm calls
+    // a.arrangeSelectionIntoGrid(rows, cols) — creating ONE bento sized to the
+    // selection's union AABB and re-flowing each item's center into a cell, in one
+    // undo unit. Consumes the bento widget (parallel lane #86); reports loudly
+    // if that lane hasn't merged yet (the picker + pure math still work).
+    { id: "arrange-grid", title: "Arrange into Grid", icon: "mdi:view-grid-plus-outline", when: needsMultiBbox, run: (a) => a.arrangeIntoGrid() },
     { id: "toggle-anchors", title: "Toggle Anchor Visibility", icon: "mdi:anchor", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },
@@ -1011,5 +1036,11 @@
        built-ins never appear in the user's project asset list. -->
   <Modal bind:open={builtinAssetsVisible} title="Built-in Assets">
     <BuiltinAssetBrowser {app} />
+  </Modal>
+  <!-- Arrange-into-Grid picker: the Office "Insert Table" sweep selector. The
+       Modal owns the overlay (backdrop/Escape/click-away/focus); GridSizePicker
+       owns the sweep. Confirming runs the one-undo-unit bento arrange. -->
+  <Modal bind:open={gridPickerVisible} title="Arrange into Grid">
+    <GridSizePicker itemCount={gridPickerCount} onconfirm={confirmGrid} />
   </Modal>
 </div>
