@@ -464,4 +464,83 @@ test("undo/redo", () => {
   assert.deepEqual([u.canUndo, u.canRedo], [true, false]);
 });
 
+test("structural keyframing: a gradient stop's offset+color tweens across 2 slides", () => {
+  // Slide 0 creates a rect with a linear-gradient fill (2 stops); slide 1
+  // SPARSE-keyframes stop[0]'s offset AND color by INDEX path. The tween must
+  // blend that stop element-wise (lazy start from the folded value) while the
+  // untouched sibling stop is preserved — and the shared/cached slide-0 array
+  // must NOT be corrupted (copy-on-write in mutBlendApply).
+  let doc = { meta: {}, slides: [
+    { id: "s0", name: "s0", delta: { items: { r1: { type: "rect", x: 0,
+      fill: { type: "linearGradient", linear: {
+        stops: [{ offset: 0.2, color: "#ff0000" }, { offset: 0.8, color: "#0000ff" }],
+        from: { x: 0, y: 0 }, to: { x: 1, y: 0 } } } } } } },
+    { id: "s1", name: "s1", delta: {} },
+  ] };
+  doc = keyframed(doc, 1, ["items", "r1", "fill", "linear", "stops", 0, "offset"], 0.6);
+  doc = keyframed(doc, 1, ["items", "r1", "fill", "linear", "stops", 0, "color"], "#00ff00");
+  const half = foldState(doc, 1, 0.5).items.r1.fill.linear.stops;
+  approx(half[0].offset, 0.4); // lerp(0.2, 0.6, 0.5)
+  assert.equal(half[0].color, "#808000"); // #ff0000 → #00ff00 midpoint
+  approx(half[1].offset, 0.8); // untouched sibling
+  assert.equal(half[1].color, "#0000ff");
+  const s0 = slideState(doc, 0).items.r1.fill.linear.stops;
+  assert.equal(s0[0].offset, 0.2, "cached slide-0 array uncorrupted");
+  assert.equal(s0[0].color, "#ff0000", "cached slide-0 array uncorrupted");
+  assert.equal(foldState(doc, 1, 1).items.r1.fill.linear.stops[0].offset, 0.6);
+  // hasKeyframe / getPath reach the sparse index leaf.
+  assert.ok(getPath(doc.slides[1].delta, ["items", "r1", "fill", "linear", "stops", 0, "offset"]) === 0.6);
+});
+test("structural keyframing: a WHOLE-list leaf keyframe tweens element-wise; length change is discrete", () => {
+  // Keyframing the ENTIRE stops array as one leaf (the coarse path) tweens
+  // per element when lengths match, and snaps discretely when they differ.
+  const A = [{ offset: 0.2, color: "#000000" }, { offset: 0.8, color: "#000000" }];
+  const B = [{ offset: 0.6, color: "#ffffff" }, { offset: 0.8, color: "#000000" }];
+  const mid = blendApplied({ stops: A }, { stops: B }, 0.5).stops;
+  approx(mid[0].offset, 0.4); // lerp(0.2, 0.6)
+  assert.equal(mid[0].color, "#808080");
+  // Length change (2 → 3 stops) is a STRUCTURAL switch: discrete at alpha > 0.
+  const grown = blendApplied({ stops: A }, { stops: [...B, { offset: 1, color: "#ff0000" }] }, 0.5).stops;
+  assert.equal(grown.length, 3, "length change snaps to target list");
+  assert.equal(grown[2].color, "#ff0000");
+});
+
+test("REGRESSION: keyframing a SINGLE gradient stop never yields a numeric-keyed object (array-aware setPath)", () => {
+  // The live crash: a per-index stop keyframe written into a slide delta that
+  // already holds the WHOLE stops array turned the ARRAY into {"2":{offset:…}}
+  // (setPath rebuilt the array as an object), dropping every other stop + the
+  // color → parsePaint "a gradient needs >= 2 stops". Both writes must keep an
+  // ARRAY of COMPLETE {offset,color} stops.
+  const mkfill = () => ({ type: "linearGradient", solid: "#111111", linear: {
+    stops: [{ offset: 0, color: "#ff0000" }, { offset: 0.5, color: "#00ff00" }, { offset: 1, color: "#0000ff" }],
+    from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, radial: { stops: [{ offset: 0, color: "#f00" }, { offset: 1, color: "#00f" }], center: { x: 0.5, y: 0.5 }, r: 0.5 } });
+  const complete = (stops) => Array.isArray(stops) && stops.every((s) => typeof s.offset === "number" && typeof s.color === "string");
+
+  // A) SAME-SLIDE per-index edit, where the delta already holds the whole array.
+  let a = { meta: {}, slides: [{ id: "s0", name: "s0", delta: { items: { r1: { type: "rect", fill: mkfill() } } } }] };
+  a = keyframed(a, 0, ["items", "r1", "fill", "linear", "stops", 2, "offset"], 0.74);
+  const same = a.slides[0].delta.items.r1.fill.linear.stops;
+  assert.ok(complete(same) && same.length === 3, "same-slide: stops stays a complete ARRAY (not a numeric-keyed object)");
+  assert.equal(same[2].offset, 0.74);
+  assert.equal(same[2].color, "#0000ff", "edited stop keeps its base COLOR");
+  assert.equal(same[0].color, "#ff0000", "sibling stop preserved");
+
+  // B) CROSS-SLIDE sparse keyframe (slide 1 empty) tweens offset+color, base
+  //    color of untouched stops preserved.
+  let b = { meta: {}, slides: [
+    { id: "s0", name: "s0", delta: { items: { r1: { type: "rect", fill: mkfill() } } } },
+    { id: "s1", name: "s1", delta: {} },
+  ] };
+  b = keyframed(b, 1, ["items", "r1", "fill", "linear", "stops", 1, "offset"], 0.9);
+  b = keyframed(b, 1, ["items", "r1", "fill", "linear", "stops", 1, "color"], "#ffffff");
+  const half = foldState(b, 1, 0.5).items.r1.fill.linear.stops;
+  assert.ok(complete(half) && half.length === 3, "cross-slide: folded stops is a complete ARRAY");
+  approx(half[1].offset, 0.7); // lerp(0.5, 0.9)
+  assert.equal(half[1].color, "#80ff80"); // #00ff00 → #ffffff midpoint
+  assert.equal(half[0].color, "#ff0000", "untouched stop's base color preserved");
+  // addStop's core op ([...stops, newStop]) must work on a folded gradient.
+  const grown = [...foldState(b, 1, 1).items.r1.fill.linear.stops, { offset: 1, color: "#ffffff" }];
+  assert.equal(grown.length, 4, "addStop-style spread of a folded gradient yields a valid array");
+});
+
 console.log(`\n${passed} tests passed`);

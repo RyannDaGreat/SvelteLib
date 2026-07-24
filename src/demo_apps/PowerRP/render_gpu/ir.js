@@ -71,6 +71,14 @@ export function parseColor(color) {
     if (color.length < 3 || color.length > 4) throw new Error(`parseColor: bad array length ${color.length}`);
     return [color[0], color[1], color[2], color[3] ?? 1];
   }
+  // A PAINT OBJECT reaching parseColor is a SINGLE-COLOR consumer (a magnifier /
+  // crop-box border, a shadow, a background) reading a property (fill/stroke)
+  // that is now a polymorphic paint. Those consumers cannot paint a gradient, so
+  // resolve the paint to its representative SOLID color and render THAT instead
+  // of throwing — the fill/stroke that SHOULD render as a gradient go through
+  // parsePaint (rect/ellipse builders), never here. (Genuinely-unrecognized
+  // objects still throw loudly inside paintSolidColor.)
+  if (color && typeof color === "object") return parseColor(paintSolidColor(color));
   if (typeof color !== "string") throw new Error(`parseColor: unsupported color ${JSON.stringify(color)}`);
   // Memoized per string (near-pure: cache lookup, result copied so callers
   // can't corrupt the cache). Scenes re-emit IR every frame; without this,
@@ -122,6 +130,27 @@ export const GRADIENT_TYPES = ["linearGradient", "radialGradient"];
 const STUB_PAINT_TYPES = ["pattern", "image", "shader"];
 
 /**
+ * Pure function. The representative SOLID color of a paint OBJECT (its remembered
+ * `solid`, else the active gradient's first stop, else a legacy inline gradient's
+ * first stop). This is how a SINGLE-COLOR consumer (parseColor) reduces a
+ * polymorphic paint it cannot render as a gradient — a magnifier/crop-box border,
+ * a shadow, a background. Throws LOUDLY on an object it cannot reduce (never a
+ * silent black). The returned color may be a hex string OR an already-parsed
+ * rgba array (a parsed gradient's stop) — parseColor handles both.
+ *
+ * @example paintSolidColor({type: "solid", solid: "#1a1a2e"}) // "#1a1a2e"
+ * @example paintSolidColor({type: "linearGradient", solid: "#1a1a2e", linear: {stops: [{offset: 0, color: "#f00"}]}}) // "#1a1a2e"
+ * @example paintSolidColor({type: "linearGradient", stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}]}) // "#f00" (legacy inline, no remembered solid)
+ */
+export function paintSolidColor(paint) {
+  if (typeof paint.solid === "string" || Array.isArray(paint.solid)) return paint.solid;
+  const g = paint.type === "radialGradient" ? (paint.radial ?? paint) : (paint.linear ?? paint);
+  const stops = Array.isArray(g?.stops) ? g.stops : Array.isArray(paint.stops) ? paint.stops : null;
+  if (stops && stops[0] && stops[0].color != null) return stops[0].color;
+  throw new Error(`parseColor: cannot resolve a solid color from paint ${JSON.stringify(paint)}`);
+}
+
+/**
  * Pure function. True iff a (parsed) paint is a GRADIENT (a tagged object) rather
  * than a SOLID ([r,g,b,a] array) or null. The one-line branch every backend uses
  * to choose setShader vs setColor.
@@ -138,33 +167,57 @@ export function isGradientPaint(paint) {
  * Pure function. Parses a Paint value — the Axis-1 PAINT seam. BACKWARD
  * COMPATIBLE: a bare CSS string or rgba array is a SOLID paint and returns the
  * SAME [r,g,b,a] array parseColor returns (existing ops/docs/baselines unchanged).
- * A tagged object selects a gradient:
- *   {type:"linearGradient", stops:[{offset,color},...], from:{x,y}, to:{x,y}}
- *   {type:"radialGradient", stops:[{offset,color},...], center:{x,y}, r}
- * from/to/center are in objectBoundingBox space — 0..1 over the shape's LOCAL
- * bbox (the SVG default; editor-friendly + uniform across backends). Stops are
- * normalized (offset clamped 0..1, color parseColor'd to rgba); a gradient needs
- * >= 2 stops. pattern/image/shader types throw a loud not-implemented stub.
+ * A tagged object selects a paint mode. TWO object shapes are accepted:
+ *
+ *   MULTI-SUB-STATE (what the PaintField now stores — every mode remembered at
+ *   once so switching type never forgets):
+ *     {type:"solid",          solid:"#rrggbb[aa]", linear?, radial?}
+ *     {type:"linearGradient", linear:{stops, from, to}, solid?, radial?}
+ *     {type:"radialGradient", radial:{stops, center, r}, solid?, linear?}
+ *   LEGACY INLINE (older docs / fixtures — the gradient fields sit on the object
+ *   itself, no sub-state wrapper):
+ *     {type:"linearGradient", stops:[{offset,color},...], from:{x,y}, to:{x,y}}
+ *     {type:"radialGradient", stops:[{offset,color},...], center:{x,y}, r}
+ *
+ * The active sub-state is read per `type` (nested wrapper preferred, else the
+ * inline fields); the inactive sub-states are the editor's memory and are
+ * IGNORED by the renderer. A "solid" object renders BYTE-IDENTICALLY to the
+ * bare-string solid of the same color. from/to/center are objectBoundingBox
+ * space (0..1 over the LOCAL bbox). Stops are normalized (offset clamped 0..1,
+ * color parseColor'd to rgba); a gradient needs >= 2 stops. pattern/image/shader
+ * types throw a loud not-implemented stub.
  *
  * @example parsePaint("#ff0000") // [1, 0, 0, 1]
  * @example parsePaint([0.1, 0.2, 0.3]) // [0.1, 0.2, 0.3, 1]
  * @example parsePaint(null) // null
- * @example parsePaint({type: "linearGradient", stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}).stops[1].color // [1, 1, 1, 1]
- * @example parsePaint({type: "radialGradient", stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}], center: {x: 0.5, y: 0.5}, r: 0.5}).r // 0.5
+ * @example parsePaint({type: "solid", solid: "#ff0000", linear: {stops: [], from: {x:0,y:0}, to: {x:1,y:0}}}) // [1, 0, 0, 1]
+ * @example parsePaint({type: "linearGradient", linear: {stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}}).stops[1].color // [1, 1, 1, 1]
+ * @example parsePaint({type: "linearGradient", stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}).stops[1].color // [1, 1, 1, 1] (legacy inline)
+ * @example parsePaint({type: "radialGradient", radial: {stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}], center: {x: 0.5, y: 0.5}, r: 0.5}}).r // 0.5
  */
 export function parsePaint(paint) {
   if (paint === null || paint === undefined) return null;
   if (!isGradientPaint(paint)) return parseColor(paint); // string / rgba array ⇒ solid
   const type = paint.type;
-  if (STUB_PAINT_TYPES.includes(type)) throw new Error(`parsePaint: "${type}" paint is not implemented yet (Axis-1 stub — only solid + ${GRADIENT_TYPES.join("/")} are wired)`);
-  if (!GRADIENT_TYPES.includes(type)) throw new Error(`parsePaint: unknown paint type ${JSON.stringify(type)} (known: ${GRADIENT_TYPES.join(", ")}, solid string/array)`);
-  const stops = normalizeStops(paint.stops);
-  if (type === "linearGradient") {
-    return { type, stops, from: requirePoint("linearGradient.from", paint.from), to: requirePoint("linearGradient.to", paint.to) };
+  // Multi-sub-state SOLID: parse the remembered solid color (byte-identical to a
+  // bare-string solid) — the render never sees the stashed linear/radial state.
+  if (type === "solid") {
+    if (typeof paint.solid !== "string" && !Array.isArray(paint.solid))
+      throw new Error(`parsePaint: a solid paint object needs a "solid" color, got ${JSON.stringify(paint.solid)}`);
+    return parseColor(paint.solid);
   }
-  const center = requirePoint("radialGradient.center", paint.center);
-  if (typeof paint.r !== "number" || !(paint.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(paint.r)}`);
-  return { type, stops, center, r: paint.r };
+  if (STUB_PAINT_TYPES.includes(type)) throw new Error(`parsePaint: "${type}" paint is not implemented yet (Axis-1 stub — only solid + ${GRADIENT_TYPES.join("/")} are wired)`);
+  if (!GRADIENT_TYPES.includes(type)) throw new Error(`parsePaint: unknown paint type ${JSON.stringify(type)} (known: solid, ${GRADIENT_TYPES.join(", ")}, solid string/array)`);
+  // Active gradient sub-state: the nested wrapper for this type, else the legacy
+  // inline fields on the paint object itself.
+  const g = type === "linearGradient" ? (paint.linear ?? paint) : (paint.radial ?? paint);
+  const stops = normalizeStops(g.stops);
+  if (type === "linearGradient") {
+    return { type, stops, from: requirePoint("linearGradient.from", g.from), to: requirePoint("linearGradient.to", g.to) };
+  }
+  const center = requirePoint("radialGradient.center", g.center);
+  if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
+  return { type, stops, center, r: g.r };
 }
 
 /** Pure function. Normalizes a gradient stop list: each {offset, color} → offset

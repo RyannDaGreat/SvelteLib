@@ -937,4 +937,33 @@ test("typeless-in-fold = NOT YET CREATED: Move Slide Down never crashes", () => 
   assert.equal(deriveRenderTree(late, reg).some((n) => n.itemId === id), true);
 });
 
+test("any-type equations: a leading = resolves color/string/select/number + validates result kind", () => {
+  const state = { items: {
+    ok: { ...rectPlugin.defaults, fill: "=#ff8800", opacity: "=0.25", blendMode: '="multiply"' },
+  } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.ok.fill, "#ff8800", "color literal");
+  assert.equal(s.items.ok.opacity, 0.25, "number literal");
+  assert.equal(s.items.ok.blendMode, "multiply", "select literal (an allowed option)");
+});
+test("any-type equations: a wrong-kind = result is LOUD and falls back to the property default", () => {
+  const state = { items: {
+    bad: { ...rectPlugin.defaults, fill: "=42", blendMode: '="not_an_option"' },
+  } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.match(errors.get("items.bad.fill"), /not a valid color/);
+  assert.equal(s.items.bad.fill, rectPlugin.defaults.fill, "color<-number → default fill (never a silent 42)");
+  assert.match(errors.get("items.bad.blendMode"), /not a valid select/);
+  assert.equal(s.items.bad.blendMode, rectPlugin.defaults.blendMode, "select not-in-options → default");
+});
+test("any-type equations: a bare (no =) string in a NON-numeric slot stays a literal, never an equation", () => {
+  // A plain color/name string must NOT be mistaken for an equation (only "="
+  // opts a non-numeric slot in). The legacy numeric-slot rule is untouched.
+  const state = { items: { r1: { ...rectPlugin.defaults, fill: "#123456" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.r1.fill, "#123456", "literal color untouched");
+});
+
 console.log(`\n${passed} expressions tests passed`);

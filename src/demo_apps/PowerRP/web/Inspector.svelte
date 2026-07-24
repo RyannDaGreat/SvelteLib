@@ -40,8 +40,15 @@
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import { canonicalPropPath } from "../core/expressions.js";
+  import { copyText } from "./clipboard.js";
 
   let { app } = $props();
+
+  // How long the copy-path button flashes its "Copied!" check after a
+  // successful copy (positive feedback — the button icon swaps to a check).
+  const COPY_FLASH_MS = 1200;
+  // The row `key` whose copy button is currently flashing "Copied!", or null.
+  let justCopiedKey = $state(null);
 
   // ── Selection-target dispatch (item | transition | none) ─────────────────────
   // app.selectionTarget is the agreed cross-target shape (owned by the app
@@ -208,19 +215,20 @@
     return self === absolute ? self : `${self}\n${absolute}`;
   }
 
-  /** Command. Best-effort copies the row's ABSOLUTE canonical path (the slug
-   * form — paste-ready from anywhere, unlike `self.…` which only resolves
-   * inside the item's own equations) to the system clipboard. A write
-   * failure is REPORTED loudly (no silent fallback) — matches the app
-   * controller's #writeClipboard precedent (web/app.svelte.js), but this is
-   * plain text (no in-app JSON fallback needed: nothing pastes a path back
-   * into document state, it's read-only discoverability). */
+  /** Command. Copies the row's ABSOLUTE canonical path (the slug form —
+   * paste-ready from anywhere, unlike `self.…` which only resolves inside the
+   * item's own equations) to the system clipboard via the shared clipboard
+   * helper (web/clipboard.js: secure-context writeText, else an execCommand
+   * fallback that works over plain HTTP — the reason the old unguarded
+   * navigator.clipboard call threw on this Workbench's non-localhost origin).
+   * ON SUCCESS the button flashes a "Copied!" check (positive feedback, the
+   * user's ask); a genuine failure is reported LOUDLY inside the helper and
+   * leaves no flash. */
   async function copyPath(state, itemId, key) {
     const { absolute } = canonicalPropPath(state, itemId, key);
-    try {
-      await navigator.clipboard.writeText(absolute);
-    } catch (e) {
-      console.error(`PowerRP: copy path failed for "${absolute}":`, e.message);
+    if (await copyText(absolute, "equation path")) {
+      justCopiedKey = key;
+      setTimeout(() => { if (justCopiedKey === key) justCopiedKey = null; }, COPY_FLASH_MS);
     }
   }
 
@@ -396,13 +404,14 @@
     {#if pathText != null || helpText != null}
       <span class="row-label-chrome">
         {#if pathText != null}
-          <Tooltip text="Copy equation path">
+          {@const copied = justCopiedKey === row.key}
+          <Tooltip text={copied ? "Copied!" : "Copy equation path"}>
             <button
               class="copy-path-btn"
-              aria-label={`Copy equation path for ${row.label}`}
+              aria-label={copied ? `Copied path for ${row.label}` : `Copy equation path for ${row.label}`}
               onclick={() => copyPath(pathState ?? state, itemId, row.key)}
             >
-              <iconify-icon icon="mdi:content-copy" width="12" height="12"></iconify-icon>
+              <iconify-icon icon={copied ? "mdi:check" : "mdi:content-copy"} width="12" height="12"></iconify-icon>
             </button>
           </Tooltip>
         {/if}

@@ -1,73 +1,154 @@
 <!--
   PaintField — the Axis-1 PAINT property field for fill/stroke rows. A paint is
-  polymorphic (render_gpu/ir.js parsePaint): a SOLID color string, or a LINEAR /
-  RADIAL gradient object {type, stops:[{offset,color}], from/to | center/r}. This
-  field is the editor for that union:
+  polymorphic (render_gpu/ir.js parsePaint): a SOLID color, or a LINEAR / RADIAL
+  gradient. This field is the editor for that union — rebuilt on the state
+  foundation so it fixes the three long-standing complaints:
 
-    • SOLID  → delegates to ColorField verbatim (the proven swatch+picker+alpha
-               control) — so a solid fill/stroke behaves EXACTLY as before and a
-               document that never touches a gradient never changes shape.
-    • LINEAR / RADIAL → a compact, FUNCTIONAL stop editor: pick the type, add /
-               remove color stops, set each stop's offset (0..1) and hex color,
-               and choose a direction (linear) or radius (radial). Any edit
-               commits the WHOLE gradient object to `path` as ONE undo unit
-               (app.setPreview + commitPreview — the same house commit contract
-               ColorField uses), so it keyframes like any other color leaf.
+    (1) TYPE-SWITCH NEVER FORGETS. A gradient paint is stored as ONE
+        multi-sub-state object {type, solid, linear, radial} that carries EVERY
+        mode's state at once. Switching Solid→Linear→Radial→Solid only flips
+        `type`; the other modes' colors/stops/geometry persist untouched. (A
+        paint that has never been a gradient stays a bare solid STRING, so a
+        document that never touches a gradient never changes shape — and a solid
+        renders byte-identically either way, parsePaint "solid" case.)
 
-  Not-polished-by-design (the task brief): stop colors are hex text inputs (no
-  per-stop picker), direction is a 4-way preset, radial center is fixed at the
-  bbox center. The RENDER path (Skia shader + SVG/PDF export) is the polished
-  half; this is the minimum viable authoring surface over it.
+    (2) STOPS ARE KEYFRAMABLE. Each stop's color + offset live at a real state
+        path (…fill.<mode>.stops.<i>.color / .offset), so the standard fields
+        and the shared KeyframeControls operate on them like any other property:
+        a stop's offset/color TWEENS across slides (core structural keyframing —
+        core/deltas.blendApplied applies the sparse per-element keyframe; the
+        offset lerps and the color blends). A per-slot ◆ keyframes that stop on
+        the current slide.
+
+    (3) STANDARD CONTROLS. Stop colors render through the app's standard
+        ColorField (swatch + inline picker + integral alpha); stop offsets
+        through NumericField (the DraggableNumber scrubber) — NOT hand-typed hex
+        or bare number inputs. Exactly the controls every other property uses.
+
+  KNOWN BOUND: an EQUATION typed into a stop offset/color (a leading "=") is not
+  evaluated — list elements are not equation slots (core leaves() keeps arrays
+  opaque for equation detection), so parsePaint reports it loudly rather than
+  silently. Gradient geometry (linear direction / radial radius) is edited here;
+  radius is a NumericField (keyframable), direction is a 4-way preset.
 
   Props mirror ColorField: app, path (["items", id, "fill"|"stroke"]), label,
-  value (the raw stored paint — string or gradient object), disabled.
+  value (the raw stored paint — string or multi-sub-state object), disabled.
   Styling: inline styles over existing app.css --a-*/--fg/--border tokens (this
   field adds no app.css classes; the house token convention is preserved).
 -->
 <script module>
   const DEFAULT_SOLID = "#7aa2f7";
+  const NEW_STOP_COLOR = "#ffffff";
 
   /**
-   * Pure function. The paint's mode id: "solid" for a string / null / rgba array,
-   * else the gradient object's own type ("linearGradient" | "radialGradient").
+   * Pure function. True iff the paint is an EQUATION — a string with a leading
+   * "=" (the UNIVERSAL any-type equation affordance; core/expressions). The whole
+   * fill is then a computed color, evaluated by evaluateState like any other
+   * "=" property.
+   *
+   * @example isEquationPaint("=#ff0000") // true
+   * @example isEquationPaint("= other.fill") // true
+   * @example isEquationPaint("#ff0000") // false (a literal color)
+   * @example isEquationPaint({type: "linearGradient"}) // false
+   */
+  export function isEquationPaint(value) {
+    return typeof value === "string" && /^\s*=/.test(value);
+  }
+
+  /**
+   * Pure function. The paint's mode id: "equation" for a leading-"=" string,
+   * "solid" for a plain string / null / rgba array or an object whose type is
+   * "solid", else the gradient object's own type.
    *
    * @example paintMode("#f00") // "solid"
+   * @example paintMode("=#f00") // "equation"
    * @example paintMode(null) // "solid"
+   * @example paintMode({type: "solid", solid: "#f00"}) // "solid"
    * @example paintMode({type: "linearGradient"}) // "linearGradient"
    */
   export function paintMode(value) {
+    if (isEquationPaint(value)) return "equation";
     if (value && typeof value === "object" && !Array.isArray(value) && value.type) return value.type;
     return "solid";
   }
 
   /**
-   * Pure function. A representative solid hex for a paint (its value if solid, its
-   * first stop if a gradient, DEFAULT_SOLID if empty) — used when switching a
-   * gradient back to solid, or seeding a new gradient's stops.
+   * Pure function. A representative solid hex for a paint (its value if a bare
+   * solid, its stored `solid` sub-state, else DEFAULT_SOLID) — the seed when a
+   * fresh gradient is built from the current solid.
    *
-   * @example firstSolid("#abc") // "#abc"
-   * @example firstSolid({type: "linearGradient", stops: [{offset: 0, color: "#123"}]}) // "#123"
-   * @example firstSolid(null) // "#7aa2f7"
+   * @example seedSolid("#abc") // "#abc"
+   * @example seedSolid({type: "linearGradient", solid: "#123"}) // "#123"
+   * @example seedSolid(null) // "#7aa2f7"
    */
-  export function firstSolid(value) {
+  export function seedSolid(value) {
+    if (isEquationPaint(value)) return DEFAULT_SOLID; // an equation string is not a color literal
     if (typeof value === "string" && value) return value;
-    if (value && typeof value === "object" && Array.isArray(value.stops) && value.stops[0]) return value.stops[0].color;
+    if (value && typeof value === "object" && typeof value.solid === "string") return value.solid;
     return DEFAULT_SOLID;
   }
 
   /**
-   * Pure function. Builds a fresh gradient object of `type` seeded from a solid
-   * color: two stops (the solid → white) and a default geometry (linear = a
-   * left→right sweep; radial = centered, r 0.5, objectBoundingBox space).
+   * Pure function. A fresh linear gradient sub-state seeded from a solid color:
+   * two stops (solid → white) sweeping left→right, objectBoundingBox space.
    *
-   * @example freshGradient("linearGradient", "#f00").stops.length // 2
-   * @example freshGradient("linearGradient", "#f00").from // {x: 0, y: 0}
-   * @example freshGradient("radialGradient", "#f00").center // {x: 0.5, y: 0.5}
+   * @example freshLinear("#f00").stops.length // 2
+   * @example freshLinear("#f00").from // {x: 0, y: 0}
    */
-  export function freshGradient(type, seedColor) {
-    const stops = [{ offset: 0, color: seedColor }, { offset: 1, color: "#ffffff" }];
-    if (type === "radialGradient") return { type, stops, center: { x: 0.5, y: 0.5 }, r: 0.5 };
-    return { type, stops, from: { x: 0, y: 0 }, to: { x: 1, y: 0 } };
+  export function freshLinear(seed) {
+    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], from: { x: 0, y: 0 }, to: { x: 1, y: 0 } };
+  }
+
+  /**
+   * Pure function. A fresh radial gradient sub-state seeded from a solid color:
+   * two stops (solid → white), centered, radius 0.5, objectBoundingBox space.
+   *
+   * @example freshRadial("#f00").center // {x: 0.5, y: 0.5}
+   * @example freshRadial("#f00").r // 0.5
+   */
+  export function freshRadial(seed) {
+    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], center: { x: 0.5, y: 0.5 }, r: 0.5 };
+  }
+
+  /**
+   * Pure function. Normalizes ANY stored paint value into the complete
+   * multi-sub-state record {type, solid, linear, radial} — filling missing
+   * sub-states with fresh defaults (seeded from the current solid) and lifting
+   * a LEGACY inline gradient ({type, stops, from/to|center/r}) into its wrapper.
+   * This is what a type-switch writes when the stored value is not yet a
+   * complete object, so no mode's state is ever lost.
+   *
+   * @example paintSubstates("#f00").type // "solid"
+   * @example paintSubstates("#f00").linear.stops[0].color // "#f00" (seeded)
+   * @example paintSubstates({type: "linearGradient", stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], from: {x: 0, y: 0}, to: {x: 1, y: 0}}).linear.stops.length // 2 (legacy inline lifted)
+   * @example paintSubstates({type: "radialGradient", solid: "#111", linear: {stops: []}, radial: {stops: [], center: {x: 0.5, y: 0.5}, r: 1}}).radial.r // 1
+   */
+  export function paintSubstates(value) {
+    const isObj = value && typeof value === "object" && !Array.isArray(value);
+    const type = paintMode(value);
+    const seed = seedSolid(value);
+    const solid = isObj && typeof value.solid === "string" ? value.solid : seed;
+    const linear = isObj && value.linear ? value.linear
+      : isObj && value.type === "linearGradient" && Array.isArray(value.stops) ? { stops: value.stops, from: value.from, to: value.to }
+      : freshLinear(seed);
+    const radial = isObj && value.radial ? value.radial
+      : isObj && value.type === "radialGradient" && Array.isArray(value.stops) ? { stops: value.stops, center: value.center, r: value.r }
+      : freshRadial(seed);
+    return { type, solid, linear, radial };
+  }
+
+  /**
+   * Pure function. True iff `value` is already a COMPLETE multi-sub-state object
+   * (all three sub-states present) — then a type switch only flips `type`
+   * (minimal delta); otherwise the full object is materialized first.
+   *
+   * @example isCompletePaint({type: "solid", solid: "#f00", linear: {}, radial: {}}) // true
+   * @example isCompletePaint("#f00") // false
+   * @example isCompletePaint({type: "linearGradient", stops: []}) // false (legacy inline)
+   */
+  export function isCompletePaint(value) {
+    return !!(value && typeof value === "object" && !Array.isArray(value)
+      && typeof value.solid === "string" && value.linear && value.radial);
   }
 
   // Linear direction presets (objectBoundingBox from→to), keyed by an arrow glyph.
@@ -81,55 +162,100 @@
 
 <script>
   import ColorField from "./ColorField.svelte";
+  import NumericField from "./NumericField.svelte";
+  import KeyframeControls from "./KeyframeControls.svelte";
+  import { getPath } from "../core/deltas.js";
 
   let { app, path, label, value, disabled = false } = $props();
 
-  let mode = $derived(paintMode(value));
-  let grad = $derived(mode === "solid" ? null : value);
+  // THE stored paint — read RAW (not the `value` prop, which the Inspector
+  // passes EVALUATED: a "=" equation paint is already resolved to a color there,
+  // so the raw read is the ONLY way to see the equation and drive Equation mode).
+  // Mirrors NumericField's stored/evaluated split. For solid/gradient paints raw
+  // == evaluated, so every other mode is unchanged.
+  let raw = $derived(getPath(app.rawState(), path));
+  let mode = $derived(paintMode(raw));
+  // The active gradient sub-state's key in the stored object ("linear"/"radial").
+  let subKey = $derived(mode === "radialGradient" ? "radial" : "linear");
+  let sub = $derived(paintSubstates(raw));
+  // The active stop list. A non-array here means the fold produced a corrupt
+  // (numeric-keyed object) stops value — a LOUD signal of a delta/fold bug, NOT
+  // something to silently coerce: report it and render no stops rather than
+  // exploding (`[...stops]`). With array-aware setPath this should never fire.
+  let stops = $derived.by(() => {
+    if (mode === "solid" || mode === "equation") return [];
+    const s = sub[subKey]?.stops;
+    if (Array.isArray(s)) return s;
+    console.error(`PaintField: ${subKey} gradient "stops" is not an array (delta/fold bug) — got ${JSON.stringify(s)}`);
+    return [];
+  });
+  // A solid that has NEVER been a gradient is a bare STRING: its ColorField
+  // edits `path` directly (byte-identical). Once the paint is the object form,
+  // solid lives at path+["solid"].
+  let solidIsBare = $derived(typeof raw === "string" || raw == null);
 
-  /** Command. Commits a paint value (string or gradient object) to `path` as one
-   * undo unit — the ColorField preview+commit contract. */
-  function commit(paint) {
+  /** Command. Commits the WHOLE paint object to `path` (one undo unit) — used
+   * only when the stored value must be MATERIALIZED into the object form. */
+  function commitWhole(paint) {
     app.setPreview([[path, paint]]);
     app.commitPreview();
   }
 
-  /** Command. Switches the paint mode, seeding a gradient from the current solid
-   * (or collapsing a gradient back to its first stop). */
+  /** Command. Commits a value at a SUB-PATH of the paint (one undo unit) — the
+   * minimal-delta write for type flips, stop add/remove, and geometry. */
+  function commitAt(subpath, val) {
+    app.setPreview([[[...path, ...subpath], val]]);
+    app.commitPreview();
+  }
+
+  /** Command. Switches the paint mode. EQUATION mode makes the WHOLE paint a
+   * "=" expression (a computed color, evaluated like any other any-type
+   * property — the UNIFICATION reaches paint). Leaving equation mode seeds a
+   * fresh paint from the default solid (the expression has no sub-states to keep).
+   * Between object modes only `type` flips when the object is complete (every
+   * sub-state persists — the fix for "switching forgets"); otherwise the full
+   * multi-sub-state object is materialized. */
   function setMode(next) {
     if (disabled || next === mode) return;
-    if (next === "solid") commit(firstSolid(value));
-    else commit(freshGradient(next, firstSolid(value)));
+    if (next === "equation") commitWhole(`=${seedSolid(raw)}`); // seed: a color-literal equation
+    else if (isCompletePaint(raw)) commitAt(["type"], next);
+    else commitWhole({ ...paintSubstates(raw), type: next });
   }
 
-  /** Command. Re-commits `grad` with `patch` shallow-merged (geometry edits). */
-  function patchGrad(patch) {
-    commit({ ...grad, ...patch });
+  /** Command. Commits the raw equation text (the whole fill becomes the "="
+   * expression string). A blank/"="-less entry is still stored verbatim so the
+   * evaluator reports it loudly rather than this field second-guessing it. */
+  function commitEquation(text) {
+    commitWhole(text);
   }
 
-  /** Command. Replaces stop `i` with the given partial ({offset?, color?}). */
-  function editStop(i, partial) {
-    const stops = grad.stops.map((s, j) => (j === i ? { ...s, ...partial } : s));
-    patchGrad({ stops });
-  }
-
-  /** Command. Appends a stop at offset 1 (white), so the list always grows in a
-   * predictable place; the user drags its offset afterward. */
+  /** Command. Appends a stop (white at offset 1) to the active gradient — a
+   * whole-list write (length change). The user drags its offset afterward. */
   function addStop() {
-    patchGrad({ stops: [...grad.stops, { offset: 1, color: "#ffffff" }] });
+    commitAt([subKey, "stops"], [...stops, { offset: 1, color: NEW_STOP_COLOR }]);
   }
 
   /** Command. Removes stop `i` (kept >= 2 — a gradient needs two stops). */
   function removeStop(i) {
-    if (grad.stops.length <= 2) return;
-    patchGrad({ stops: grad.stops.filter((_, j) => j !== i) });
+    if (stops.length <= 2) return;
+    commitAt([subKey, "stops"], stops.filter((_, j) => j !== i));
+  }
+
+  /** Command. Sets the linear direction preset (from/to as one undo unit). */
+  function setDirection(d) {
+    app.setPreview([[[...path, "linear", "from"], d.from], [[...path, "linear", "to"], d.to]]);
+    app.commitPreview();
   }
 
   const TYPES = [
     { id: "solid", label: "Solid" },
     { id: "linearGradient", label: "Linear" },
     { id: "radialGradient", label: "Radial" },
+    { id: "equation", label: "= Eq" },
   ];
+
+  const isDir = (d) => sub.linear.from?.x === d.from.x && sub.linear.from?.y === d.from.y
+    && sub.linear.to?.x === d.to.x && sub.linear.to?.y === d.to.y;
 </script>
 
 <div style="display:flex; flex-direction:column; gap:var(--a-sp-2); width:100%;">
@@ -148,29 +274,57 @@
   </div>
 
   {#if mode === "solid"}
-    <ColorField {app} {path} {label} {value} {disabled} />
+    <!-- SOLID → the standard ColorField. A bare-string paint edits `path`
+         directly (byte-identical); the object form edits path.solid. -->
+    {#if solidIsBare}
+      <ColorField {app} {path} {label} value={raw} {disabled} />
+    {:else}
+      <ColorField {app} path={[...path, "solid"]} label={`${label} color`} value={sub.solid} {disabled} />
+    {/if}
+  {:else if mode === "equation"}
+    <!-- EQUATION → the whole paint is a "=" expression (a computed color).
+         evaluateState resolves it and validates the result is a color; a
+         wrong-type/broken expr falls back LOUDLY (core/expressions). Minimal
+         monospace entry (the discoverable equation UX lives on numeric rows). -->
+    <input
+      type="text" value={typeof raw === "string" ? raw : ""} {disabled} spellcheck="false"
+      aria-label={`${label} equation`} placeholder="=#ff0000"
+      onchange={(e) => commitEquation(e.target.value)}
+      style="width:100%; box-sizing:border-box; font-family:var(--a-font-mono, monospace); font-size:var(--a-font-sm);
+             color:var(--fg); background:transparent; border:1px solid var(--border); border-radius:var(--radius);
+             padding:var(--a-sp-1) var(--a-sp-2);"
+    />
   {:else}
-    <!-- STOPS -->
-    <div style="display:flex; flex-direction:column; gap:var(--a-sp-1);">
-      {#each grad.stops as stop, i}
+    <!-- STOPS — each row: ColorField (standard) + NumericField offset (scrubber)
+         + per-slot ◆ KeyframeControls + remove. All operate on real state paths
+         (…stops.<i>.color / .offset), so each keyframes + tweens independently. -->
+    <div style="display:flex; flex-direction:column; gap:var(--a-sp-2);">
+      {#each stops as stop, i (i)}
         <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
-          <span style="width:var(--a-color-swatch, 18px); height:var(--a-color-swatch, 18px); border:1px solid var(--border);
-                       border-radius:var(--radius); background:{stop.color};"></span>
-          <input
-            type="number" min="0" max="1" step="0.05" value={stop.offset} {disabled}
-            onchange={(e) => editStop(i, { offset: Math.max(0, Math.min(1, Number(e.target.value))) })}
-            style="width:52px; font-size:var(--a-font-sm); color:var(--fg); background:transparent;
-                   border:1px solid var(--border); border-radius:var(--radius);"
-          />
-          <input
-            type="text" value={stop.color} {disabled} spellcheck="false"
-            onchange={(e) => editStop(i, { color: e.target.value })}
-            style="flex:1; min-width:0; font-size:var(--a-font-sm); color:var(--fg); background:transparent;
-                   border:1px solid var(--border); border-radius:var(--radius);"
-          />
+          <div style="flex:1.4; min-width:0;">
+            <ColorField
+              {app}
+              path={[...path, subKey, "stops", i, "color"]}
+              label={`${label} stop ${i + 1} color`}
+              value={stop.color}
+              {disabled}
+            />
+          </div>
+          <div style="flex:1; min-width:0;">
+            <NumericField
+              {app}
+              path={[...path, subKey, "stops", i, "offset"]}
+              label={`${label} stop ${i + 1} offset`}
+              min={0}
+              max={1}
+            />
+          </div>
+          <span style="display:inline-flex; align-items:center;">
+            <KeyframeControls {app} path={[...path, subKey, "stops", i]} />
+          </span>
           <button
             type="button" aria-label="Remove stop" title="Remove stop"
-            disabled={disabled || grad.stops.length <= 2}
+            disabled={disabled || stops.length <= 2}
             onclick={() => removeStop(i)}
             style="color:var(--fg-dim); background:transparent; border:none; cursor:pointer; padding:0 var(--a-sp-1);"
           >×</button>
@@ -190,23 +344,20 @@
         {#each LINEAR_DIRECTIONS as d}
           <button
             type="button" {disabled}
-            aria-pressed={grad.from?.x === d.from.x && grad.from?.y === d.from.y && grad.to?.x === d.to.x && grad.to?.y === d.to.y}
-            onclick={() => patchGrad({ from: d.from, to: d.to })}
+            aria-pressed={isDir(d)}
+            onclick={() => setDirection(d)}
             style="width:var(--a-control-h, 22px); font-size:var(--a-font-md); color:var(--fg); cursor:pointer;
                    border:1px solid var(--border); border-radius:var(--radius);
-                   background:{grad.from?.x === d.from.x && grad.from?.y === d.from.y && grad.to?.x === d.to.x && grad.to?.y === d.to.y ? 'var(--a-hover-bg)' : 'transparent'};"
+                   background:{isDir(d) ? 'var(--a-hover-bg)' : 'transparent'};"
           >{d.icon}</button>
         {/each}
       </div>
     {:else}
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
         <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Radius</span>
-        <input
-          type="number" min="0" max="1.5" step="0.05" value={grad.r} {disabled}
-          onchange={(e) => patchGrad({ r: Math.max(0, Number(e.target.value)) })}
-          style="width:64px; font-size:var(--a-font-sm); color:var(--fg); background:transparent;
-                 border:1px solid var(--border); border-radius:var(--radius);"
-        />
+        <div style="width:80px;">
+          <NumericField {app} path={[...path, "radial", "r"]} label={`${label} radius`} min={0} />
+        </div>
       </div>
     {/if}
   {/if}

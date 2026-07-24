@@ -45,6 +45,27 @@ export function copied(tree) {
 }
 
 /**
+ * Pure function. Deep-copies a subtree INCLUDING arrays and their elements —
+ * the copy-on-write clone used before mutating a keyframed LIST in place.
+ * `copied()` deliberately shares arrays (treating them as immutable leaves, the
+ * fast path for the fold cache), so a SPARSE per-element list keyframe (see
+ * mutBlendApply) must clone the whole list subtree first, or it would corrupt
+ * the shared/cached array.
+ *
+ * @example copiedDeep({stops: [{offset: 0}]}) // {stops: [{offset: 0}]} (all new)
+ * @example copiedDeep([[1, 2], [3, 4]]) // [[1, 2], [3, 4]] (nested arrays copied)
+ */
+export function copiedDeep(x) {
+  if (Array.isArray(x)) return x.map(copiedDeep);
+  if (isTree(x)) {
+    const out = {};
+    for (const [k, v] of Object.entries(x)) out[k] = copiedDeep(v);
+    return out;
+  }
+  return x;
+}
+
+/**
  * Pure function. Returns state with delta applied at full strength.
  * NONE leaves delete; tree leaves recurse; other leaves overwrite/add.
  *
@@ -90,7 +111,17 @@ function mutBlendApply(state, delta, alpha) {
     if (val === NONE) {
       delete state[key];
     } else if (isTree(val)) {
-      if (!isTree(state[key])) state[key] = {};
+      // STRUCTURAL keyframing — a sparse per-element LIST keyframe: an
+      // object-shaped delta over an ARRAY state addresses elements by index
+      // (e.g. delta {stops: {1: {offset: 0.8}}} over state {stops: [...]}). Keep
+      // the ARRAY shape (never rebuild it as an object) and recurse per index.
+      // The array is shared from copied() (which treats arrays as immutable
+      // leaves), so copy-on-write the whole list subtree before mutating.
+      if (Array.isArray(state[key])) {
+        state[key] = copiedDeep(state[key]);
+      } else if (!isTree(state[key])) {
+        state[key] = {};
+      }
       mutBlendApply(state[key], val, alpha);
     } else if (key in state) {
       state[key] = interpolate(state[key], val, alpha);
@@ -122,15 +153,19 @@ export function contains(state, delta) {
 }
 
 /**
- * Pure function. Reads the leaf at a key path, or undefined.
+ * Pure function. Reads the leaf at a key path, or undefined. Descends into
+ * both object trees AND arrays (an integer-like path segment indexes a list —
+ * e.g. a gradient stop's offset lives at [..., "stops", 1, "offset"]), so the
+ * keyframe path helpers reach individual list elements.
  *
  * @example getPath({items: {a: {x: 5}}}, ["items", "a", "x"]) // 5
+ * @example getPath({stops: [{offset: 0.2}, {offset: 0.8}]}, ["stops", 1, "offset"]) // 0.8
  * @example getPath({}, ["nope"]) // undefined
  */
 export function getPath(tree, path) {
   let cur = tree;
   for (const key of path) {
-    if (!isTree(cur) || !(key in cur)) return undefined;
+    if ((!isTree(cur) && !Array.isArray(cur)) || !(key in cur)) return undefined;
     cur = cur[key];
   }
   return cur;
@@ -140,30 +175,51 @@ export function getPath(tree, path) {
  * Pure function. Returns a new tree with `value` set at `path` (creating
  * intermediate nodes). Passing NONE as value records a deletion leaf.
  *
+ * ARRAY-AWARE (structural keyframing): descending through an EXISTING array
+ * segment CLONES the array (never rebuilds it as an object), so a per-index
+ * write (e.g. a gradient stop's [..., "stops", 2, "offset"]) updates that
+ * element IN PLACE — preserving the array shape, its sibling elements, and the
+ * touched element's other keys (a keyframed offset keeps the stop's color).
+ * (Was the bug behind `parsePaint: a gradient needs >= 2 stops, got
+ * {"2":{offset:…}}`: the old `isTree(tree) ? … : {}` turned the stops ARRAY
+ * into a numeric-keyed object, dropping every other stop + the color.) When the
+ * segment is ABSENT/non-container a fresh OBJECT is created — a sparse
+ * numeric-keyed delta patch, which blendApplied merges element-wise into the
+ * base array (never a holey array, which would corrupt whole-list interpolation).
+ *
  * @example setPath({}, ["items", "a", "x"], 5) // {items: {a: {x: 5}}}
  * @example setPath({a: 1}, ["b"], 2) // {a: 1, b: 2}
+ * @example setPath({stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}]}, ["stops", 1, "offset"], 0.7) // {stops: [{offset: 0, color: "#f00"}, {offset: 0.7, color: "#00f"}]}
+ * @example setPath({}, ["stops", 2, "offset"], 0.7) // {stops: {2: {offset: 0.7}}} (sparse patch: no base array)
  */
 export function setPath(tree, path, value) {
   if (path.length === 0) return value;
-  const out = isTree(tree) ? { ...tree } : {};
+  const out = Array.isArray(tree) ? tree.slice() : isTree(tree) ? { ...tree } : {};
   out[path[0]] = setPath(out[path[0]], path.slice(1), value);
   return out;
 }
 
 /**
  * Pure function. Returns a new tree with the leaf at `path` removed, pruning
- * empty intermediate nodes. Removing a missing path is a no-op.
+ * empty intermediate OBJECT nodes. Removing a missing path is a no-op.
+ *
+ * ARRAY-AWARE (structural keyframing): descends into arrays (clone), and a
+ * final array-index removal SPLICES the element out (reindexing — no hole),
+ * so unkeyframing one gradient stop leaves a well-formed list. Emptied ARRAYS
+ * are NOT pruned (an empty list is a valid leaf); emptied OBJECTS still are.
  *
  * @example deletePath({a: {x: 1, y: 2}}, ["a", "x"]) // {a: {y: 2}}
  * @example deletePath({a: {x: 1}}, ["a", "x"]) // {} (pruned)
+ * @example deletePath({stops: [{offset: 0}, {offset: 1}]}, ["stops", 0]) // {stops: [{offset: 1}]} (spliced)
  */
 export function deletePath(tree, path) {
-  if (!isTree(tree)) return tree;
+  if (!isTree(tree) && !Array.isArray(tree)) return tree;
   const [head, ...rest] = path;
   if (!(head in tree)) return tree;
-  const out = { ...tree };
+  const out = Array.isArray(tree) ? tree.slice() : { ...tree };
   if (rest.length === 0) {
-    delete out[head];
+    if (Array.isArray(out)) out.splice(Number(head), 1);
+    else delete out[head];
   } else {
     out[head] = deletePath(out[head], rest);
     if (isTree(out[head]) && Object.keys(out[head]).length === 0) delete out[head];

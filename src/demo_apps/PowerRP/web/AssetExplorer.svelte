@@ -116,6 +116,7 @@
   import AssetThumb from "./AssetThumb.svelte";
   import { KIND_ICON } from "./assetThumbnail.js";
   import { assetUrl, ASSET_DRAG_MIME } from "./projectApi.js";
+  import { copyText } from "./clipboard.js";
 
   let { app } = $props();
 
@@ -129,6 +130,12 @@
   let uploading = $state(false);
   let preview = $state(null); // {name, kind, url} being previewed in the Modal
   let previewOpen = $state(false);
+
+  // How long the copy-path button flashes its "Copied!" check after a
+  // successful copy; `justCopiedUrl` is the asset URL currently flashing (null
+  // = none). Mirrors the Inspector's copy-path feedback.
+  const COPY_FLASH_MS = 1200;
+  let justCopiedUrl = $state(null);
   // Pending delete-with-users confirmation: {asset, users} or null (Round 12C:
   // deleting an asset the document references asks first, listing the users).
   let confirmDelete = $state(null);
@@ -261,17 +268,15 @@
   /** Command. Copies an asset's served path (the project-relative URL every
    *  widget stores as `src`, e.g. "/asset/MyTalk/clip.mp4") to the system
    *  clipboard (manifest "ASSET UX ROUND 2": "there should be a copy path
-   *  option on the assets"). Plain text, best-effort — same precedent as the
-   *  Inspector's row-label copyPath (web/Inspector.svelte): a write failure is
-   *  REPORTED loudly (console.error) rather than silently swallowed; no in-app
-   *  clipboard fallback is needed here (nothing pastes a path back into
-   *  document state — it's read-only, paste-into-Finder/browser discoverability,
-   *  unlike app.svelte.js's #writeClipboard which backs an in-app Paste). */
+   *  option on the assets") via the shared clipboard helper (web/clipboard.js:
+   *  secure-context writeText, else an execCommand fallback that works over
+   *  plain HTTP — the fix for the unguarded navigator.clipboard call that threw
+   *  on this Workbench's non-localhost origin). ON SUCCESS the button flashes a
+   *  "Copied!" check; a genuine failure is reported LOUDLY inside the helper. */
   async function copyAssetPath(a) {
-    try {
-      await navigator.clipboard.writeText(a.url);
-    } catch (e) {
-      console.error(`AssetExplorer: copy path failed for "${a.url}":`, e.message);
+    if (await copyText(a.url, "asset path")) {
+      justCopiedUrl = a.url;
+      setTimeout(() => { if (justCopiedUrl === a.url) justCopiedUrl = null; }, COPY_FLASH_MS);
     }
   }
 
@@ -440,13 +445,13 @@
                     </button>
                   </Tooltip>
                 {/if}
-                <Tooltip text="Copy served path to clipboard">
+                <Tooltip text={justCopiedUrl === a.url ? "Copied!" : "Copy served path to clipboard"}>
                   <button
                     class="btn-icon ae-copy-path"
-                    aria-label={`Copy path for ${a.name}`}
+                    aria-label={justCopiedUrl === a.url ? `Copied path for ${a.name}` : `Copy path for ${a.name}`}
                     onclick={() => copyAssetPath(a)}
                   >
-                    <iconify-icon icon="mdi:content-copy" width="14" height="14"></iconify-icon>
+                    <iconify-icon icon={justCopiedUrl === a.url ? "mdi:check" : "mdi:content-copy"} width="14" height="14"></iconify-icon>
                   </button>
                 </Tooltip>
                 <Tooltip text="Delete asset from the project">

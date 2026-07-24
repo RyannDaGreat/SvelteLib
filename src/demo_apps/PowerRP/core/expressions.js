@@ -94,6 +94,8 @@ import * as T from "./transform.js";
 import { worldTransform, composedMemberInfluence, memberOwnerGroups } from "./derive.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
+import { isHexColor } from "./interpolators.js";
+import { PROPS } from "./properties.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
 
@@ -101,21 +103,29 @@ const OP_CHARS = "+-*/()";
 const NUM_RE = /^(?:\d+\.?\d*|\.\d+)/;
 // A reference token: optional "@" (stored item ref), then an identifier chain.
 const REF_RE = /^@?[A-Za-z0-9_]+(?:\.[A-Za-z_][A-Za-z0-9_]*)*/;
+// Typed-literal tokens (any-type `=` equations): a quoted string (\\ / \" / \'
+// escapes only) and a CSS hex color (3/4/6/8 digits — interpolators.isHexColor's set).
+const STR_RE = /^"(?:\\.|[^"\\])*"|^'(?:\\.|[^'\\])*'/;
+const COLOR_RE = /^#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})/;
 
 /**
  * Pure function. Tokenizes an expression source string.
  *
- * Returns [{kind: "num"|"ref"|"op"|"comma"|"dot", value, start, end}] with
- * source positions (so display↔stored conversion can rewrite refs in place).
- * "comma" separates function-call arguments; "dot" is a STANDALONE "." (member
- * projection after a call/paren, e.g. `f(a).x`) — dots INSIDE an identifier
- * chain (`a.b.c`) are eaten by REF_RE and never surface as a dot token, so a
- * lone dot only appears where a projection can. Throws on any character
+ * Returns [{kind: "num"|"ref"|"op"|"comma"|"dot"|"str"|"color", value, start,
+ * end}] with source positions (so display↔stored conversion can rewrite refs in
+ * place). "comma" separates function-call arguments; "dot" is a STANDALONE "."
+ * (member projection after a call/paren, e.g. `f(a).x`) — dots INSIDE an
+ * identifier chain (`a.b.c`) are eaten by REF_RE and never surface as a dot
+ * token, so a lone dot only appears where a projection can. "str" (a quoted
+ * literal, value = the unquoted contents) and "color" (a #hex literal) are the
+ * typed-value literals for any-type `=` equations. Throws on any character
  * outside the grammar.
  *
  * @example tokenize("speed * 2").map((t) => t.kind) // ["ref", "op", "num"]
  * @example tokenize("@ab12_tm.x + 10")[0].value // "@ab12_tm.x"
  * @example tokenize("f(a, b).x").map((t) => t.kind) // ["ref", "op", "ref", "comma", "ref", "op", "dot", "ref"]
+ * @example tokenize('"hi"')[0] // {kind: "str", value: "hi", start: 0, end: 4}
+ * @example tokenize("#ff0080")[0] // {kind: "color", value: "#ff0080", start: 0, end: 7}
  * @example // tokenize("3 $ 4") throws: Unexpected character "$" at 2
  */
 export function tokenize(src) {
@@ -141,6 +151,21 @@ export function tokenize(src) {
       const m = NUM_RE.exec(src.slice(i));
       if (!m) throw new Error(`Malformed number at ${i} in "${src}"`);
       tokens.push({ kind: "num", value: parseFloat(m[0]), start: i, end: i + m[0].length });
+      i += m[0].length;
+    } else if (ch === '"' || ch === "'") {
+      // STRING literal (typed `=` equations — text/enum results). Scans to the
+      // matching quote; \\ and \" / \' are the only escapes (kept minimal).
+      const m = STR_RE.exec(src.slice(i));
+      if (!m) throw new Error(`Unterminated string at ${i} in "${src}"`);
+      const raw = m[0].slice(1, -1).replace(/\\(["'\\])/g, "$1");
+      tokens.push({ kind: "str", value: raw, start: i, end: i + m[0].length });
+      i += m[0].length;
+    } else if (ch === "#") {
+      // HEX COLOR literal (typed `=` equations — color results). #rgb/#rgba/
+      // #rrggbb/#rrggbbaa, the same forms interpolators.isHexColor accepts.
+      const m = COLOR_RE.exec(src.slice(i));
+      if (!m) throw new Error(`Malformed color at ${i} in "${src}"`);
+      tokens.push({ kind: "color", value: m[0], start: i, end: i + m[0].length });
       i += m[0].length;
     } else if (ch === "@" || /[A-Za-z_]/.test(ch)) {
       const m = REF_RE.exec(src.slice(i));
@@ -354,8 +379,16 @@ export function parseExpression(src) {
     const t = peek();
     if (!t) throw new Error(`Unexpected end of expression in "${clean}"`);
     if (t.kind === "num") return { kind: "num", value: tokens[pos++].value };
+    if (t.kind === "str") return { kind: "str", value: tokens[pos++].value };
+    if (t.kind === "color") return { kind: "color", value: tokens[pos++].value };
     if (t.kind === "ref") {
       const tok = tokens[pos++];
+      // Reserved literals: `true`/`false` tokenize as identifiers but ARE the
+      // boolean literals (not variables) — a variable named `true` is disallowed
+      // by this shadowing, matching the loud-typo discipline (there is no such
+      // var). A following "(" still makes it a call name (never a bool).
+      if ((tok.value === "true" || tok.value === "false") && !(peek()?.kind === "op" && peek().value === "("))
+        return { kind: "bool", value: tok.value === "true" };
       if (peek()?.kind === "op" && peek().value === "(") return call(tok.value);
       // start/end are the source span of this ref token — lets the display↔
       // stored converters and the dependency collector locate widget-arg tokens.
@@ -417,10 +450,16 @@ export function compiled(src) {
  * @example evalAst(parseExpression("2 + x * 3"), () => 4) // 14
  * @example evalAst(parseExpression("-(1 + 1)"), () => 0) // -2
  * @example evalAst(parseExpression("f(a).x"), () => 0, () => ({x: 7, y: 9})) // 7
+ * @example evalAst(parseExpression("=#ff0000"), () => 0) // "#ff0000" (typed color literal)
+ * @example evalAst(parseExpression('="hello"'), () => 0) // "hello" (typed string literal)
+ * @example evalAst(parseExpression("=true"), () => 0) // true (typed boolean literal)
  */
 export function evalAst(ast, lookup, callFn = null) {
   switch (ast.kind) {
     case "num": return ast.value;
+    case "str": return ast.value;   // typed literal (string / enum result)
+    case "color": return ast.value; // typed literal (hex color result)
+    case "bool": return ast.value;  // typed literal (boolean result)
     case "ref": return lookup(ast.name);
     case "neg": return -evalAst(ast.arg, lookup, callFn);
     case "member": {
@@ -1077,6 +1116,81 @@ export function isNumericSlot(plugin, path) {
   return typeof def === "string" && def.startsWith("self.");
 }
 
+// A leading "=" marks ANY property as an equation (the UNIVERSAL any-type
+// affordance), regardless of its default kind. Whitespace before "=" is
+// tolerated (parseExpression strips `^\s*=\s*`).
+const EQ_PREFIX_RE = /^\s*=/;
+
+/**
+ * Pure function. Does this stored string value declare an equation? Either the
+ * UNIVERSAL leading "=" (any-type: color/string/bool/enum/number), OR — for
+ * back-compat — a bare string in a legacy NUMERIC slot (isNumericSlot).
+ *
+ * @example isEquationValue({defaults: {fill: "#000"}}, ["fill"], "=#ff0000") // true (universal "=")
+ * @example isEquationValue({defaults: {fill: "#000"}}, ["fill"], "#ff0000") // false (literal color, not an equation)
+ * @example isEquationValue({defaults: {x: 0}}, ["x"], "speed * 2") // true (legacy numeric slot)
+ * @example isEquationValue({defaults: {name: "?"}}, ["name"], "Box") // false (plain string)
+ */
+export function isEquationValue(plugin, path, value) {
+  if (typeof value !== "string") return false;
+  return EQ_PREFIX_RE.test(value) || isNumericSlot(plugin, path);
+}
+
+// PROPS.kind → the JS RESULT TYPE an `=` equation must evaluate to. "string"
+// covers text/select(enum)/asset — all string-valued; "select" adds an in-set
+// check on top (see resultMatchesKind, which reads the row's options).
+const KIND_RESULT = { number: "number", color: "color", boolean: "boolean", select: "select", asset: "string", text: "string" };
+
+/**
+ * Pure function. The RESULT TYPE an equation slot must evaluate to. Variables
+ * and legacy (non-"=") numeric slots are "number" — byte-identical to the
+ * pre-any-type engine. A UNIVERSAL "=" slot's kind comes from PROPS[key].kind
+ * (the shared property registry — the manifest's single source of truth) when
+ * the key is registered, else is INFERRED from the plugin default's own type
+ * (number/boolean, or a hex-vs-plain string → color/string) so a plugin-only
+ * property still validates without a PROPS entry.
+ *
+ * @example resultKindForSlot({defaults: {x: 0}}, ["x"], "speed * 2") // "number" (legacy)
+ * @example resultKindForSlot({defaults: {fill: "#000"}}, ["fill"], "=#f00") // "color" (PROPS.fill.kind)
+ * @example resultKindForSlot({defaults: {muted: true}}, ["muted"], "=true") // "boolean"
+ * @example resultKindForSlot({defaults: {foo: "bar"}}, ["foo"], "=\"x\"") // "string" (inferred: non-hex default)
+ */
+export function resultKindForSlot(plugin, path, value) {
+  if (!EQ_PREFIX_RE.test(value)) return "number"; // legacy numeric / self-anchor slot
+  const propDef = PROPS[path.join(".")];
+  if (propDef) return KIND_RESULT[propDef.kind] ?? "string";
+  const def = getPath(plugin.defaults, path);
+  if (typeof def === "number") return "number";
+  if (typeof def === "boolean") return "boolean";
+  if (typeof def === "string") return isHexColor(def) ? "color" : "string";
+  return "string";
+}
+
+/**
+ * Pure function. Does an evaluated value `v` satisfy the expected result kind?
+ * The LOUD-fallback gate for any-type equations: a "=" expr whose result type
+ * mismatches its property is reported and replaced by the default (never a
+ * silent bad value). `options` (a select row's allowed set) narrows "select".
+ *
+ * @example resultMatchesKind(5, "number") // true
+ * @example resultMatchesKind(Infinity, "number") // false (non-finite)
+ * @example resultMatchesKind("#ff0000", "color") // true
+ * @example resultMatchesKind("nope", "color") // false (not a hex color)
+ * @example resultMatchesKind(true, "boolean") // true
+ * @example resultMatchesKind("multiply", "select", ["normal", "multiply"]) // true
+ * @example resultMatchesKind("zzz", "select", ["normal", "multiply"]) // false (not an option)
+ */
+export function resultMatchesKind(v, kind, options = null) {
+  switch (kind) {
+    case "number": return typeof v === "number" && Number.isFinite(v);
+    case "color": return isHexColor(v);
+    case "boolean": return typeof v === "boolean";
+    case "select": return typeof v === "string" && (!options || options.includes(v));
+    case "string": return typeof v === "string";
+    default: return false;
+  }
+}
+
 /**
  * Pure function. Every referencable equation path on a plugin's own
  * properties, in CANONICAL DISPLAY (snake_case, dot-joined) form — the
@@ -1250,10 +1364,13 @@ function computeEvaluatedState(state, registry) {
     reportOnce(message, `PowerRP expression error at ${slot.key}: ${message}`);
   };
 
-  // 1. Collect equation slots (string-valued numeric leaves).
+  // 1. Collect equation slots. A slot carries its expected result `kind`:
+  //    variables + legacy numeric/self-anchor slots are "number" (the pre-
+    //  any-type engine, byte-identical); a UNIVERSAL leading "=" opens the slot
+  //    to ANY kind (color/string/boolean/select), validated post-eval (step 4).
   for (const [name, value] of Object.entries(state.vars ?? {}))
     if (typeof value === "string")
-      slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value });
+      slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value, kind: "number" });
   for (const [id, item] of Object.entries(state.items ?? {})) {
     // An item whose `type` hasn't folded in yet DOES NOT EXIST YET (the
     // imaginary-slide semantics) — legitimate mid-document state when a
@@ -1263,9 +1380,9 @@ function computeEvaluatedState(state, registry) {
     if (typeof item?.type !== "string") continue;
     const plugin = registry.get(item.type);
     for (const [path, value] of leaves(item))
-      if (typeof value === "string" && isNumericSlot(plugin, path)) {
+      if (isEquationValue(plugin, path, value)) {
         const key = ["items", id, ...path].join(".");
-        slots.set(key, { key, path: ["items", id, ...path], src: value });
+        slots.set(key, { key, path: ["items", id, ...path], src: value, kind: resultKindForSlot(plugin, path, value) });
       }
   }
 
@@ -1336,7 +1453,12 @@ function computeEvaluatedState(state, registry) {
           const raw = getPath(item, d.path);
           if (raw === undefined) throw new Error(`Item "${slugs.toSlug.get(d.itemId)}" has no property "${d.path.join(".")}"`);
           const depKey = ["items", d.itemId, ...d.path].join(".");
-          if (typeof raw === "string" && !slots.has(depKey))
+          // A NUMBER-kind slot keeps the strict rule: a string-valued property
+          // that is not itself an equation cannot feed arithmetic (loud, as
+          // before). A TYPED ("=") slot may reference a typed property (a
+          // literal color/string, or another "=" slot) — the post-eval kind
+          // check (step 4) is the loudness gate there, not this dep-time throw.
+          if (slot.kind === "number" && typeof raw === "string" && !slots.has(depKey))
             throw new Error(`"${token}" is not a numeric property`);
           if (slots.has(depKey)) slot.deps.add(depKey);
         } else {
@@ -1517,7 +1639,15 @@ function computeEvaluatedState(state, registry) {
   const evalSlot = (slot) => {
     try {
       const v = evalAst(slot.ast, lookupFor(slot), callFor(slot));
-      if (!Number.isFinite(v)) throw new Error(`evaluates to ${v}`);
+      // RESULT-KIND VALIDATION. Number-kind slots keep the exact legacy message
+      // ("evaluates to NaN/Infinity") for their non-finite failure; any-type
+      // "=" slots validate against the property kind and fail LOUDLY on a type
+      // mismatch (→ fallbackFor default, never a silent bad value).
+      if (slot.kind === "number") {
+        if (!Number.isFinite(v)) throw new Error(`evaluates to ${v}`);
+      } else if (!resultMatchesKind(v, slot.kind, PROPS[slot.path.slice(2).join(".")]?.options)) {
+        throw new Error(`= expression result ${JSON.stringify(v)} is not a valid ${slot.kind} value`);
+      }
       mutSetPath(out, slot.path, v);
     } catch (e) {
       fail(slot, e.message);

@@ -13,11 +13,13 @@
  * Run: node render_gpu/tests/paint_gradient_test.js
  */
 import assert from "assert";
-import { parsePaint, isGradientPaint, rect, ellipse, text } from "../ir.js";
+import { parsePaint, isGradientPaint, parseColor, paintSolidColor, magnifyBackdrop, rect, ellipse, text } from "../ir.js";
+import { magnifierPlugin } from "../../plugins/magnifier.js";
 import { pieceCharRanges, styleAtOffset, styleNeedsGlyphPass } from "../skia/text_layout.js";
 import { irToSVG } from "../svg_backend.js";
 import { irToPDF } from "../pdf_backend.js";
 import { renderToPng } from "../skia/node_render.js";
+import { keyframed, foldState } from "../../core/document.js";
 
 let passed = 0;
 async function test(name, fn) {
@@ -45,6 +47,62 @@ await test("parsePaint: radial gradient keeps center + r", () => {
   const p = parsePaint({ type: "radialGradient", stops: [{ offset: 0, color: "#f00" }, { offset: 1, color: "#00f" }], center: { x: 0.5, y: 0.5 }, r: 0.5 });
   assert.equal(p.type, "radialGradient");
   assert.equal(p.r, 0.5);
+});
+await test("parsePaint: MULTI-SUB-STATE object — solid is byte-identical; active gradient read from its wrapper", () => {
+  // The PaintField's {type, solid, linear, radial} shape: type "solid" renders
+  // byte-identically to the bare string (the stashed gradients are ignored);
+  // the active gradient sub-state is read from its own wrapper, not inline.
+  const sub = { solid: "#ff0000", linear: { stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, radial: { stops: [{ offset: 0, color: "#f00" }, { offset: 1, color: "#00f" }], center: { x: 0.5, y: 0.5 }, r: 0.5 } };
+  assert.deepEqual(parsePaint({ type: "solid", ...sub }), parsePaint("#ff0000"));
+  assert.equal(isGradientPaint(parsePaint({ type: "solid", ...sub })), false);
+  const lin = parsePaint({ type: "linearGradient", ...sub });
+  assert.equal(lin.type, "linearGradient");
+  assert.equal(lin.stops.length, 2);
+  const rad = parsePaint({ type: "radialGradient", ...sub });
+  assert.equal(rad.r, 0.5);
+  assert.throws(() => parsePaint({ type: "solid" }), /needs a "solid" color/); // loud, never a silent blank
+});
+await test("REGRESSION: parsePaint ACCEPTS a folded gradient after a single-stop keyframe (no numeric-keyed-object crash)", () => {
+  // The live crash — keyframing one stop's offset across slides used to fold to
+  // stops = {"2":{offset:…}} (numeric-keyed object), which parsePaint rejected
+  // as "a gradient needs >= 2 stops". The folded gradient must be a clean array
+  // of complete stops that parsePaint accepts.
+  const mkfill = () => ({ type: "linearGradient", solid: "#111111", linear: {
+    stops: [{ offset: 0, color: "#ff0000" }, { offset: 0.5, color: "#00ff00" }, { offset: 1, color: "#0000ff" }],
+    from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, radial: { stops: [{ offset: 0, color: "#f00" }, { offset: 1, color: "#00f" }], center: { x: 0.5, y: 0.5 }, r: 0.5 } });
+  let doc = { meta: {}, slides: [
+    { id: "s0", name: "s0", delta: { items: { r1: { type: "rect", fill: mkfill() } } } },
+    { id: "s1", name: "s1", delta: {} },
+  ] };
+  doc = keyframed(doc, 1, ["items", "r1", "fill", "linear", "stops", 2, "offset"], 0.74);
+  const p = parsePaint(foldState(doc, 1, 1).items.r1.fill); // must NOT throw
+  assert.equal(p.type, "linearGradient");
+  assert.equal(p.stops.length, 3);
+  assert.equal(p.stops[2].color[0], 0); // #0000ff base color survived the keyframe (b=1)
+  assert.equal(p.stops[2].color[2], 1);
+  // Same-slide per-index edit (the exact crash write) also stays parseable.
+  let doc2 = { meta: {}, slides: [{ id: "s0", name: "s0", delta: { items: { r1: { type: "rect", fill: mkfill() } } } }] };
+  doc2 = keyframed(doc2, 0, ["items", "r1", "fill", "linear", "stops", 2, "offset"], 0.74);
+  assert.doesNotThrow(() => parsePaint(doc2.slides[0].delta.items.r1.fill));
+});
+await test("REGRESSION: a SINGLE-COLOR consumer (magnifier border) renders when its stroke is a PAINT OBJECT", () => {
+  // The 2nd live crash — a widget (magnifier) whose stroke/fill is now the
+  // polymorphic multi-sub-state paint object flowed into parseColor (which only
+  // knew strings/arrays) and threw "unsupported color". parseColor must now
+  // RESOLVE a paint object to its representative solid color; a plain string
+  // must still work; genuine garbage must still throw.
+  const paintObj = { type: "linearGradient", solid: "#1a1a2e", linear: { stops: [{ offset: 0, color: "#111111" }, { offset: 1, color: "#fff" }], from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, radial: { stops: [{ offset: 0, color: "#f00" }, { offset: 1, color: "#00f" }], center: { x: 0.5, y: 0.5 }, r: 0.5 } };
+  assert.deepEqual(parseColor(paintObj), parseColor("#1a1a2e"), "paint object → its remembered solid");
+  assert.deepEqual(parseColor("#00ff00"), [0, 1, 0, 1], "plain string still parses");
+  assert.deepEqual(parseColor([0.5, 0.5, 0.5]), [0.5, 0.5, 0.5, 1], "array still parses");
+  assert.equal(paintSolidColor({ type: "linearGradient", stops: [{ offset: 0, color: "#0000ff" }] }), "#0000ff", "legacy inline → first stop");
+  assert.throws(() => parseColor("cornflowerblue"), /unsupported color/, "genuine garbage still throws");
+  assert.throws(() => parseColor({ nope: 1 }), /cannot resolve a solid color/, "unreducible object throws loudly");
+  // FULL PATH: magnifier.emit with a paint-object stroke → magnifyBackdrop op
+  // renders (no throw), border resolved to the paint's solid color.
+  const op = magnifierPlugin.emit({ shape: "circle", x: 0, y: 0, w: 160, h: 160, magnification: 2, stroke: paintObj, strokeWidth: 4 })[0];
+  assert.deepEqual(op.stroke, parseColor("#1a1a2e"), "magnifier border resolves the paint object to its solid");
+  assert.doesNotThrow(() => magnifyBackdrop({ cx: 0, cy: 0, r: 50, magnification: 2, stroke: paintObj, strokeWidth: 3 }));
 });
 await test("parsePaint: pattern/image/shader are loud stubs; <2 stops throws", () => {
   assert.throws(() => parsePaint({ type: "pattern" }), /not implemented/);

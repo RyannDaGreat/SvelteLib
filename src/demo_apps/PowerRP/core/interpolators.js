@@ -8,7 +8,37 @@
  * arrays blend elementwise, everything else is discrete (snaps to the target
  * as soon as alpha > 0 — matching tweenline/LIAC reference semantics; if you
  * want a fade, author one with opacity).
+ *
+ * STRUCTURAL RECURSION (the "structural keyframing" substrate): interpolate
+ * recurses through arrays AND plain-object trees so a WHOLE list/record leaf
+ * (e.g. a gradient's `stops` array, keyframed as one leaf) tweens element-wise.
+ * The rule is uniform with the discrete-for-unlike-values philosophy, lifted to
+ * SHAPE:
+ *   - SAME shape  (equal-length arrays / identical object key-set) → tween each
+ *     element/field recursively ("scalar keyframing" — values move, shape fixed).
+ *   - DIFFERENT shape (length differs / key-set differs) → DISCRETE: snap to the
+ *     target as soon as alpha > 0 ("structural keyframing" — the shape change is
+ *     a discrete switch, never a half-built intermediate). Unchanged SIBLING
+ *     leaves still tween, because the mismatch is localized to the sub-tree whose
+ *     shape actually changed.
+ * (Sparse per-element keyframes — a delta addressing `stops.<i>.offset` — are
+ * handled in core/deltas.blendApplied, not here; both mechanisms converge on the
+ * same rule.)
  */
+
+/**
+ * Pure function. True for plain object-literal trees (not arrays/class
+ * instances) — the structural-recursion gate, kept local so interpolators.js
+ * has NO import cycle with deltas.js (which imports interpolate). Identical
+ * semantics to deltas.isTree.
+ *
+ * @example isPlainObject({a: 1}) // true
+ * @example isPlainObject([1, 2]) // false
+ * @example isPlainObject(null) // false
+ */
+function isPlainObject(x) {
+  return x !== null && typeof x === "object" && Object.getPrototypeOf(x) === Object.prototype;
+}
 
 /**
  * Pure function. Linear interpolation.
@@ -75,6 +105,13 @@ export function rgbToHex(rgb) {
  * @example interpolate([0, 0], [10, 20], 0.5) // [5, 10]
  * @example interpolate("a", "b", 0.5) // "b" (discrete: alpha > 0 snaps)
  * @example interpolate(false, true, 0.2) // true (discrete)
+ * @example // same-length list of records tweens element-wise (gradient stops;
+ * @example // fractional offsets lerp — a 0↔1 pair would round per the int-rule):
+ * @example interpolate([{offset: 0.25, color: "#000000"}], [{offset: 0.75, color: "#ffffff"}], 0.5) // [{offset: 0.5, color: "#808080"}]
+ * @example // length change is STRUCTURAL → discrete snap to the target list:
+ * @example interpolate([{offset: 0.5}], [{offset: 0.5}, {offset: 1}], 0.5) // [{offset: 0.5}, {offset: 1}]
+ * @example // same key-set record tweens field-wise:
+ * @example interpolate({x: 0, y: 0}, {x: 10, y: 20}, 0.5) // {x: 5, y: 10}
  */
 export function interpolate(a, b, alpha) {
   if (alpha <= 0) return a;
@@ -93,9 +130,21 @@ export function interpolate(a, b, alpha) {
     }
     return rgbToHex(ca.map((c, i) => lerp(c, cb[i], alpha)));
   }
-  if (Array.isArray(a) && Array.isArray(b) && a.length === b.length
-      && a.every((v) => typeof v === "number") && b.every((v) => typeof v === "number")) {
-    return a.map((v, i) => lerp(v, b[i], alpha));
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return b; // STRUCTURAL: length change is discrete
+    // Pure-numeric arrays keep the historical plain-lerp path (NO int-rounding,
+    // so point/coord lists stay byte-identical); mixed/record lists recurse.
+    if (a.every((v) => typeof v === "number") && b.every((v) => typeof v === "number"))
+      return a.map((v, i) => lerp(v, b[i], alpha));
+    return a.map((v, i) => interpolate(v, b[i], alpha));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const ka = Object.keys(a);
+    // STRUCTURAL: any key-set difference is discrete (snap the whole record).
+    if (ka.length !== Object.keys(b).length || !ka.every((k) => k in b)) return b;
+    const out = {};
+    for (const k of ka) out[k] = interpolate(a[k], b[k], alpha);
+    return out;
   }
   return b; // discrete
 }
