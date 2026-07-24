@@ -13,6 +13,7 @@
  */
 
 import { paintIR } from "./paint_skia.js";
+import { renderWithDither } from "./dither_shader.js";
 import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
 import { clampSurfaceSize, MAX_SURFACE_DIM } from "../../core/clip.js";
@@ -111,15 +112,22 @@ export class SkiaSurface {
    * letterbox. Forwarded to paintIR, which clears the WHOLE surface to
    * `background` (the bars) and clips the SCENE to it so off-camera content
    * cannot bleed into the bars. Ignored (full surface) when absent.
+   *
+   * DITHER: THE camera's dither settings ({mode, emphasis} — dither_shader
+   * cameraDither), read from the scene by the caller (CanvasView) and applied as
+   * the whole-frame final pass right before present. Omitted / {mode:"off"} =
+   * no-op (today's behavior byte-for-byte).
    */
-  render(ir, view, { background = [0, 0, 0, 0], media = null, scissor = null } = {}) {
+  render(ir, view, { background = [0, 0, 0, 0], media = null, scissor = null, dither = null } = {}) {
     this._ensureSurface();
     if (!this.surface) return; // collapsed pane (zero-size canvas) — nothing to draw
-    const canvas = this.surface.getCanvas();
     const built = media == null ? sceneMedia(this.CanvasKit, ir) : { media, release() {} };
     try {
-      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface });
-      this.surface.flush();
+      // THE dither seam: renderWithDither composites into an RGBA16F intermediate
+      // and de-bands on the downconvert to this 8-bit GL surface (when dither is
+      // active); "off" paints straight in + flushes, byte-identical to before.
+      renderWithDither(this.CanvasKit, this.surface, this._w, this._h, dither, (canvas) =>
+        paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface }));
     } finally {
       built.release(); // free per-paint video frame Images even if paint throws (review MED)
     }

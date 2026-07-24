@@ -22,6 +22,7 @@ import { clampSurfaceSize, MAX_SURFACE_DIM } from "../core/clip.js";
 import { reportOnce } from "../core/report.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
+import { renderWithDither, cameraDither } from "../render_gpu/skia/dither_shader.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
 import { sceneMedia } from "../render_gpu/skia/browser_media.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
@@ -54,14 +55,19 @@ function renderJob(reqWidth, reqHeight, buildIR) {
     const surface = CanvasKit.MakeSurface(width, height);
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {
-      const { ir, view, background } = buildIR();
+      const { ir, view, background, dither = null } = buildIR();
       // Resolve the scene's image/video refs to CanvasKit Images so thumbnails/
       // minimap/PNG export show media too (the same seam the on-screen surface
       // uses); release frees the per-paint video frames after readback.
       const { media, release } = sceneMedia(CanvasKit, ir);
       try {
-        paintIR(CanvasKit, surface.getCanvas(), ir, view, { media, background, fontCollection });
-        surface.flush();
+        // THE dither seam: renderWithDither composites into an RGBA16F
+        // intermediate and de-bands on the downconvert (when dither is active).
+        // Camera-frame consumers (thumbnails/minimap/PNG export) pass the camera's
+        // dither settings; the PDF raster-region callback passes none (dither is a
+        // RASTER post-pass — vector PDF/SVG export stays untouched).
+        renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
+          paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection }));
         const img = surface.makeImageSnapshot();
         if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
         const px = img.readPixels(0, 0, {
@@ -105,6 +111,7 @@ export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width,
       view: fitRectView(rect, width, height, 1),
       background: parseColor(rect.background),
       ir: cameraFrameIR(state, doc.meta, registry),
+      dither: cameraDither(state), // THE camera's dither settings → the final pass
     };
   });
 }

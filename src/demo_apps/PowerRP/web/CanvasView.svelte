@@ -22,6 +22,7 @@
   import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
   import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
+  import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onVideoFrame } from "../render_gpu/gpu/video_registry.js";
   import { renderCameraFrame } from "./gpuService.js";
@@ -321,7 +322,10 @@
       rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: parsePaint(camRect.background) }),
       ...sceneIR(nodes, { pdfDisplay }),
     ];
-    gpu.render(ir, view, { background: [0, 0, 0, 0] });
+    // THE camera's dither settings drive the whole-frame final pass (scatters
+    // 8-bit banding into grain). Read from the SAME folded state the scene came
+    // from; "off" (the default) is a byte-for-byte no-op.
+    gpu.render(ir, view, { background: [0, 0, 0, 0], dither: cameraDither(state) });
     app.renderFrameCount += 1;
   }
 

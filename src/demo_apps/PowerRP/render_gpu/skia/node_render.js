@@ -19,6 +19,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { paintIR } from "./paint_skia.js";
+import { renderWithDither } from "./dither_shader.js";
 import { committedFaces, FALLBACK_FACES } from "../fonts.js";
 
 const require = createRequire(import.meta.url);
@@ -75,17 +76,21 @@ function buildFontCollection(CanvasKit) {
  *   opts.width, opts.height (number): surface size in DEVICE pixels
  *   opts.background (string): CSS clear color
  *   opts.media (object): ref → CanvasKit Image
+ *   opts.dither ({mode, emphasis}): THE camera's dither settings (dither_shader
+ *     cameraDither) — the whole-frame final pass. Omitted / {mode:"off"} = no-op.
  *
  * Returns:
  *   Promise<Uint8Array>: encoded PNG bytes
  */
-export async function renderToPng(commands, view, { width, height, background = "#ffffff", media = {} } = {}) {
+export async function renderToPng(commands, view, { width, height, background = "#ffffff", media = {}, dither = null } = {}) {
   const CanvasKit = await ensureCanvasKit();
   const surface = CanvasKit.MakeSurface(width, height);
   if (!surface) throw new Error("node_render: MakeSurface returned null");
-  const canvas = surface.getCanvas();
-  paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection });
-  surface.flush();
+  // THE dither seam: renderWithDither composites into an RGBA16F intermediate
+  // (when dither is active) and de-bands on the downconvert to this 8-bit
+  // surface; "off" paints straight in, byte-identical to before.
+  renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
+    paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection }));
   const img = surface.makeImageSnapshot();
   if (!img) throw new Error("node_render: makeImageSnapshot returned null");
   const png = img.encodeToBytes();
