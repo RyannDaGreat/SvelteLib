@@ -27,32 +27,51 @@
  * for the full reasoning (the manifest's "raster embed acceptable for v1,
  * the hybrid rule precedent").
  *
+ * ── RENDER MODE (the `renderMode` property — this task) ───────────────────────
+ * A placed page picks HOW its interactive display is produced (enum + full
+ * rationale in render_gpu/pdf_display.js PDF_RENDER_MODES):
+ *   "raster" — the re-raster pre-pass, unthrottled (crisp region every frame).
+ *   "hybrid" (DEFAULT) — the persistent whole-page proxy shown INSTANTLY under a
+ *     hysteresis-throttled sharpening region (the fluid native-viewer model:
+ *     zoom/pan shows the proxy — a pixelated frame or two — then sharpens, and
+ *     the held region never thrashes). raster + hybrid BOTH receive a display
+ *     descriptor and take the proxy+region path below.
+ *   "vector" — the pre-pass supplies NO descriptor, so emit() takes the
+ *     camera-free path and draws crisp GPU vector for a vector-safe page.
+ * renderMode governs the INTERACTIVE display ONLY; export/thumbnail/CLI never run
+ * the pre-pass, so their output is identical across modes (see the fallback path
+ * at the bottom of emit()).
+ *
  * ── DISPLAY = RE-RASTER AT DISPLAY RES (manifest RENDER PIVOT 2026-07-23) ─────
- * The EDITOR/PRESENTER display re-rasterizes only the page's VISIBLE REGION at
- * the CURRENT zoom (the Chrome model), so text/vectors stay crisp at any
- * magnification while the cost stays bounded by the SCREEN. emit() stays PURE of
- * the camera (sceneIR passes only state + the node's own local `world`, never
- * the outer zoom/pan/dpr); the resolution decision lives in a RENDER-TIME
- * pre-pass (render_gpu/pdf_display.preRasterizePdfPages) that the display
- * surfaces run BEFORE sceneIR — it computes the visible region via the shared
+ * For raster + hybrid, the EDITOR/PRESENTER display re-rasterizes only the page's
+ * VISIBLE REGION at the CURRENT zoom (the Chrome model), so text/vectors stay
+ * crisp at any magnification while the cost stays bounded by the SCREEN. emit()
+ * stays PURE of the camera (sceneIR passes only state + the node's own local
+ * `world`, never the outer zoom/pan/dpr); the resolution decision (and hybrid's
+ * hysteresis) lives in a RENDER-TIME pre-pass
+ * (render_gpu/pdf_display.preRasterizePdfPages) that the display surfaces run
+ * BEFORE sceneIR — it computes the visible region via the shared
  * core/clip.visibleSourceRect primitive, rasterizes that sub-rect
  * (pdf_page_raster.ensurePdfPageRegionRasterized), and hands emit() the
  * resulting DISPLAY DESCRIPTOR as its 4th argument (renderCtx.pdfDisplay). emit()
- * draws that crisp region bitmap when the descriptor is present.
+ * draws that crisp region bitmap under-lit by the whole-page proxy when the
+ * descriptor is present.
  *
- * ── VECTOR = EXPORT-ONLY (PDF P1 — the latexVector dual pattern) ──────────────
- * A page whose source content is pure vector graphics still renders as real
- * vector `path` ops (extracted once via render_gpu/gpu/pdf_page_vector.js from
- * pdf.js's operator list, mapped by the pure render_gpu/pdf_vector.js) — but ONLY
- * on the CAMERA-FREE fallback path (no display descriptor): SVG/PDF export
- * (a bitmap embedded in an SVG export would be wrong — manifest), thumbnails, the
- * CLI, and the first display frame before the region raster lands. The
- * interactive editor never takes this path (it always has a descriptor), so
- * vector is gated OUT of the display path per the pivot. The whole-page raster
- * stays the ALWAYS-available fallback (async not-ready, or a page that must
- * raster: text is P2, images P3, shadings/clips/blends/CMYK per classifyPdfPage).
- * Still no new IR op and ZERO backend changes — vector content is the existing
- * `path` op, the region raster the existing `image` op.
+ * ── VECTOR = "vector" MODE (display) + EXPORT (all modes) — the latexVector dual ─
+ * A page whose source content is pure vector graphics renders as real vector
+ * `path` ops (extracted once via render_gpu/gpu/pdf_page_vector.js from pdf.js's
+ * operator list, mapped by the pure render_gpu/pdf_vector.js), on the CAMERA-FREE
+ * path (no display descriptor). That path is reached BY: (1) renderMode="vector"
+ * in the editor/presenter (the pre-pass withholds the descriptor on purpose —
+ * crisp GPU vector display); (2) SVG/PDF export, thumbnails, and the CLI for ANY
+ * mode (a bitmap embedded in an SVG export would be wrong — manifest); and (3) the
+ * first raster/hybrid display frame before a region descriptor exists. The
+ * whole-page raster stays the ALWAYS-available fallback (async not-ready, or a
+ * page that must raster: text is P2, images P3, shadings/clips/blends/CMYK per
+ * classifyPdfPage) — so a "vector" page with text/images degrades to a full-page
+ * raster that pixelates on zoom (pick hybrid for those). Still no new IR op and
+ * ZERO backend changes — vector content is the existing `path` op, the region
+ * raster the existing `image` op.
  *
  * ── PAGE CLAMPING: LOUD, NOT SILENT (this task's flagged house-rule choice) ──
  * `page` is clamped into [1, pageCount] so the widget ALWAYS shows something
@@ -98,6 +117,7 @@ import {
   pdfPageCount, pdfPagePointSize, pdfPageRef, clampPage,
 } from "../render_gpu/gpu/pdf_page_raster.js";
 import { ensurePdfPageVector, pdfPageVectorIRFor } from "../render_gpu/gpu/pdf_page_vector.js";
+import { PDF_RENDER_MODES, PDF_RENDER_MODE_DEFAULT } from "../render_gpu/pdf_display.js";
 
 /** Device px per world (canvas) unit at this widget's OWN world-space size — the
  * shared render_gpu/ir.js SUPERSAMPLE_DENSITY (the retina-dpr 2× precedent), the
@@ -131,6 +151,12 @@ export const pdfPagePlugin = {
     // PDF yet just shows nothing (src is empty) until sourced, then shows
     // page 1 immediately with no extra step.
     page: 1,
+    // HOW the page is drawn interactively (see the module header "RENDER MODE"
+    // section + render_gpu/pdf_display.js). Default "hybrid": the persistent
+    // whole-page proxy + a hysteresis-throttled sharpening region (the fluid
+    // native-viewer model). A plain mode-string property (not a number, so not
+    // meaningfully equation-bindable) stored like every other default.
+    renderMode: PDF_RENDER_MODE_DEFAULT,
     // stroke COLOR default matches every other stroked shape (rect/circle/
     // donut/image/video all use INK #1a1a2e); it only paints once
     // strokeWidth > 0 (0 by default → an undecorated page is byte-identical
@@ -161,6 +187,10 @@ export const pdfPagePlugin = {
     // loaded (pdfPageCount → null) — unbounded for that async window; emit()
     // still clamps + loud-reports an out-of-range render meanwhile.
     { key: "page", label: "Page", kind: "number", min: 1, max: (state) => pdfPageCount(state.src) ?? null, category: "formatting", help: "Which page of the PDF to show (page 1 is the first page). Out-of-range values are clamped to the nearest real page and reported in the console." },
+    // RENDER MODE (this task) — how the page is drawn WHILE EDITING. A plain
+    // select; the render-time pre-pass (render_gpu/pdf_display.js) and emit()
+    // branch on it. Export/thumbnails ignore it (always best static output).
+    { key: "renderMode", label: "Render mode", kind: "select", options: PDF_RENDER_MODES, optionLabels: { raster: "Raster", hybrid: "Hybrid", vector: "Vector" }, category: "formatting", help: "How the page is drawn while you work. Hybrid (default): instantly shows a full-page proxy, then overlays a sharpening high-res region as you zoom/pan — fluid, like a native PDF viewer. Raster: re-rasterizes the visible region every frame (crisp as soon as it lands). Vector: draws the page as crisp GPU vector when its content is pure vector graphics (a page with text or images falls back to a full-page raster and pixelates on zoom — use Hybrid for those). Export and thumbnails are unaffected." },
     // The stroked-BORDER bundle (manifest "SHARED STYLE BUNDLES" — images,
     // videos, and now PDF pages inherit stroke/rounding at once). No `fill`
     // row: the page's own pixels ARE its interior, like an image.
@@ -251,8 +281,12 @@ export const pdfPagePlugin = {
     // page instead of flashing blank — the region overdraws it crisply where
     // ready (Chrome's blurry-then-sharp tile behavior). A TRANSLUCENT page draws
     // the region ALONE (stacking two translucent layers would double-fade the
-    // overlap — the decorate.js opacity contract). This SUPERSEDES the vector
-    // path below for display — vector is now EXPORT-ONLY.
+    // overlap — the decorate.js opacity contract). The descriptor is present for
+    // the "raster" and "hybrid" modes (the pre-pass withholds it for "vector",
+    // which falls to the vector path below); emit draws them IDENTICALLY here —
+    // only the region SELECTION differs (raster = the exact current region;
+    // hybrid = the hysteresis-held last-ready region, so its ref/local rect may
+    // trail the live view by a frame or two while the proxy shows through).
     const disp = renderCtx?.pdfDisplay ?? null;
     if (disp) {
       const regionQuad = image({ ref: disp.ref, x: disp.x, y: disp.y, w: disp.w, h: disp.h, opacity });
@@ -260,16 +294,16 @@ export const pdfPagePlugin = {
       return applyEffects(decorateStrokedBox(content, style, world), s, world, bbox);
     }
 
-    // ── NO pre-pass: the camera-free fallback (export / thumbnail / CLI / the
-    // first display frame before the region lands) ─────────────────────────────
-    ensurePdfPageVector(s.src, page); // VECTOR ingest — EXPORT-ONLY now (extract op list + classify; async, idempotent)
-    // TRUE VECTOR (EXPORT-ONLY — the latexVector dual pattern): once the page is
-    // extracted AND classified vector-safe (render_gpu/pdf_vector.classifyPdfPage),
-    // emit its `path` ops mapped into the box — crisp AND real vector in SVG/PDF
-    // export (a bitmap embedded in an SVG export would be wrong — manifest). The
-    // interactive editor never reaches here (it always has a `disp` descriptor);
-    // this path serves the SVG/PDF exporters, thumbnails, and the CLI, plus the
-    // very first display frame before the region raster lands. Fall back to the
+    // ── NO descriptor: the camera-free path (renderMode="vector" display, plus
+    // export / thumbnail / CLI / the first raster|hybrid frame) ─────────────────
+    ensurePdfPageVector(s.src, page); // VECTOR ingest (extract op list + classify; async, idempotent)
+    // TRUE VECTOR (the latexVector dual pattern): once the page is extracted AND
+    // classified vector-safe (render_gpu/pdf_vector.classifyPdfPage), emit its
+    // `path` ops mapped into the box — crisp AND real vector. This path is reached
+    // by renderMode="vector" (the pre-pass withholds the descriptor so the editor
+    // DISPLAYS vector), by SVG/PDF export (a bitmap embedded in an SVG export
+    // would be wrong — manifest), by thumbnails/CLI, and by the first raster|hybrid
+    // frame before a region descriptor exists. Fall back to the
     // whole-page raster quad (honoring the crop sub-rect + opacity) when the
     // vector isn't ready, the page must raster (text is P2 / images / shadings /
     // clips / blends / CMYK per classifyPdfPage), OR a crop inset / opacity < 1

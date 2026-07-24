@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import {
   parseColor, rgbaToCss, rect, ellipse, polyline, polygon, text, image, video,
-  latexVector, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, flattenIR, DRAW_OPS,
+  latexVector, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, glassBackdrop, flattenIR, DRAW_OPS,
 } from "../ir.js";
 import { videoIR, sceneIR } from "../ports.js";
 import { rectPlugin } from "../../plugins/rect.js";
@@ -433,6 +433,36 @@ await test("irToSVG: hybrid rule embeds ONE <image> for the blur region, vector 
   );
   assert.equal((svg.match(/<image /g) || []).length, 1); // exactly one raster region
   assert.match(svg, /<rect x="5" y="5" width="10" height="10" fill="rgba\(0,255,0,1\)"/); // the above-blur rect stays vector
+});
+await test("irToSVG: GENERAL FALLBACK — glassBackdrop (unrepresentable) rasterizes as <image>, does NOT throw 'unknown op'", async () => {
+  const stubRaster = async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
+  const svg = await irToSVG(
+    [rect({ x: 0, y: 0, w: 200, h: 120, fill: "#7aa2f7" }), glassBackdrop({ cx: 100, cy: 60, halfW: 60, halfH: 30, cornerRadius: 20 })],
+    { width: 200, height: 120, view: { zoom: 1, panX: 0, panY: 0 }, background: "#fff", rasterize: stubRaster },
+  );
+  assert.ok(svg.startsWith("<svg xmlns"));
+  assert.match(svg, /<image [^>]*href="data:image\/png;base64,/); // glass region embedded as an inline (offline) raster <image>
+  assert.ok(!/unknown op/.test(svg), "no unknown-op text leaked");
+});
+await test("irToSVG: GENERAL FALLBACK without a rasterize callback THROWS loudly (no silent drop)", async () => {
+  await assert.rejects(
+    irToSVG([rect({ x: 0, y: 0, w: 100, h: 100, fill: "#f00" }), glassBackdrop({ cx: 50, cy: 50, halfW: 30, halfH: 20 })],
+      { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } }),
+    /raster region/,
+  );
+});
+await test("irToSVG: GENERAL FALLBACK is LOCALIZED — glass = ONE <image>, a rect beside it stays vector", async () => {
+  // Only the glass component rasterizes: a rect OUTSIDE the glass tile stays a
+  // <rect>. A full-region raster split (blur-style) would swallow it → no <rect>.
+  const stubRaster = async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
+  const svg = await irToSVG(
+    [rect({ x: 0, y: 0, w: 200, h: 120, fill: "#7aa2f7" }),
+     rect({ x: 4, y: 4, w: 12, h: 12, fill: "#0f0" }),                 // below the glass, left of its tile
+     glassBackdrop({ cx: 100, cy: 60, halfW: 40, halfH: 25, cornerRadius: 12 })],
+    { width: 200, height: 120, view: { zoom: 1, panX: 0, panY: 0 }, background: "#fff", rasterize: stubRaster },
+  );
+  assert.equal((svg.match(/<image /g) || []).length, 1); // exactly the glass tile — NOT a whole-region raster
+  assert.match(svg, /<rect x="4" y="4" width="12" height="12" fill="rgba\(0,255,0,1\)"/); // the beside-glass rect stays vector
 });
 await test("irToSVG: magnifier lens = clipPath circle + magnify group (vector lens) — CIRCLE OUTPUT BYTE-IDENTITY REGRESSION (pre-shape strings preserved)", async () => {
   const svg = await irToSVG(

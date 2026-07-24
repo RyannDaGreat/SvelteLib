@@ -30,6 +30,13 @@
  *     verbatim case); bloom = the widget becomes a raster region; multiply/
  *     screen blends = raster region under an exact /BM ExtGState; add blends
  *     = the everything-below raster split (like blur). See emitEffect.
+ *   ANY OTHER unrepresentable op (glassBackdrop today; any future backdrop/
+ *     effect op with no vector form) — the GENERAL raster fallback: rasterize
+ *     JUST that op's own region (the content it samples + the op, through the
+ *     SAME GPU compositor the editor/thumbnails use), embed it as one image
+ *     XObject, keep everything around it vector. This is the hybrid rule
+ *     generalized from an enumerated list to "not in VECTOR_OPS → rasterize
+ *     the component" — see emitRasterOp. (The SVG backend needs the same.)
  *
  * Structure: content-stream generation is pure string work (bare-node
  * testable, doctested); pdf-lib assembles the document (fonts, images,
@@ -800,6 +807,14 @@ async function emitRegion(commands, region, out, ctx) {
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
+    } else if (!VECTOR_OPS.has(cmd.op)) {
+      // GENERAL RASTER FALLBACK (the HYBRID RULE, generalized): an op this vector
+      // backend cannot represent — a backdrop/effect op with no vector form
+      // (glassBackdrop today; any FUTURE such op automatically) — rasterizes JUST
+      // its own region instead of throwing. Everything vector-representable around
+      // it stays vector. This is the same rule blurBackdrop/bloom already follow,
+      // now applied to any unknown op rather than an enumerated list.
+      await emitRasterOp(cmd, world, commands, rawIndexOf[i], region, out, ctx);
     } else {
       emitVector(cmd, world, out, ctx);
     }
@@ -872,6 +887,109 @@ async function emitEffect(cmd, world, region, out, ctx) {
   await ctx.emitRasterRegion(rasterOp({ ...cmd, shadow: null, blend: "normal" }), {
     placeRect, srcView: region.view, background: transparent,
   }, out, ctx.gsBlend(cmd.blend));
+}
+
+/**
+ * A soft backdrop/effect (blur, drop shadow, refraction) spills PAST its
+ * geometric footprint, so the general raster fallback inflates the op's local
+ * bbox by this FRACTION of the footprint's larger half-extent on every side
+ * before rasterizing. Sized to comfortably cover the largest current spill — the
+ * Liquid Glass drop shadow, ≈ 0.12·h offset + 3·0.22·h blur ≈ 0.78·h (paint_skia
+ * GLASS_SHADOW_* constants) — so no effect edge is clipped. Op-agnostic (no
+ * effect-specific field is read); an op needing MORE than this can additionally
+ * declare a `margin` (world units, added on top — the effectSubtree convention).
+ */
+export const RASTER_OP_SPILL_FRAC = 0.9;
+
+/**
+ * Pure function. The intersection of two world-space AABBs, or null when they do
+ * not overlap. Used to clamp a raster-op tile to the visible region (a bounded
+ * raster — a huge off-region op never mints a giant canvas).
+ *
+ * @example intersectRect({x:0,y:0,w:10,h:10},{x:5,y:5,w:10,h:10}) // {x:5,y:5,w:5,h:5}
+ * @example intersectRect({x:0,y:0,w:2,h:2},{x:5,y:5,w:2,h:2}) // null
+ */
+export function intersectRect(a, b) {
+  const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.w, b.x + b.w), bottom = Math.min(a.y + a.h, b.y + b.h);
+  if (right <= x || bottom <= y) return null;
+  return { x, y, w: right - x, h: bottom - y };
+}
+
+/**
+ * Pure function. The WORLD-space placement rect for an op's general raster
+ * fallback: the op's LOCAL geometry bbox (detected from standard geometry fields,
+ * so it stays op-agnostic) inflated by the soft-spill margin, mapped through
+ * `world` (four rotated corners → AABB, conservative under rotation), then
+ * clamped to the visible region. An op with NO recognizable geometry rasterizes
+ * the WHOLE region (the safe catch-all — a page-level backdrop, like blur).
+ * Returns null when the (clamped) rect is empty — the op is off-region; draw
+ * nothing.
+ *
+ * Recognized geometry (in priority order): {cx,cy,halfW,halfH} (rounded box —
+ * glass, box lens), {cx,cy,r} (circle), {x,y,w,h} (axis rect).
+ *
+ * @param {object} cmd the IR op (may carry a `margin` world-unit spill hint)
+ * @param {number[]} world the op's absolute similarity transform (core/transform)
+ * @param {{worldRect:{x,y,w,h}}} region the enclosing region (visible AABB)
+ * @returns {{x,y,w,h}|null}
+ */
+export function rasterOpPlaceRect(cmd, world, region) {
+  let local = null, spill = 0;
+  if (Number.isFinite(cmd.halfW) && Number.isFinite(cmd.halfH)) {
+    local = { x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2 };
+    spill = Math.max(cmd.halfW, cmd.halfH);
+  } else if (Number.isFinite(cmd.r)) {
+    local = { x: cmd.cx - cmd.r, y: cmd.cy - cmd.r, w: cmd.r * 2, h: cmd.r * 2 };
+    spill = cmd.r;
+  } else if (Number.isFinite(cmd.w) && Number.isFinite(cmd.h)) {
+    local = { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
+    spill = Math.max(cmd.w, cmd.h) / 2;
+  }
+  if (!local) return region.worldRect; // no footprint → whole-region raster (page-level backdrop)
+  const m = spill * RASTER_OP_SPILL_FRAC + (cmd.margin ?? 0);
+  const corners = [
+    [local.x - m, local.y - m], [local.x + local.w + m, local.y - m],
+    [local.x - m, local.y + local.h + m], [local.x + local.w + m, local.y + local.h + m],
+  ].map(([lx, ly]) => T.apply(world, lx, ly));
+  const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
+  const worldAABB = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+  return intersectRect(worldAABB, region.worldRect);
+}
+
+/**
+ * Command (async; appends operators, registers an image XObject). The GENERAL
+ * raster fallback for an op the vector path cannot represent. It rasterizes the
+ * commands UP TO AND INCLUDING this op (balancedSlice through rawIdx) through the
+ * injected GPU rasterizer — so the GPU applies the op's real effect (e.g. the
+ * Liquid Glass SkSL) to exactly the below-content it samples — over the region's
+ * background, capturing only the op's own placement rect, and embeds that as one
+ * image XObject at that rect. Content around/below the rect stays fully VECTOR:
+ * only this component pixelates. The tile is bounded to the visible region
+ * (rasterOpPlaceRect), so an extreme-size op can never mint an unbounded canvas.
+ *
+ * Placing an OPAQUE tile (rendered over the opaque region background) at the op's
+ * z-position cleanly overpaints the vector below-content within the rect (the
+ * ground-truth pixels the editor shows), while later vector ops still draw ON TOP
+ * — the z-order is preserved.
+ *
+ * @param {object} cmd the unrepresentable op.
+ * @param {number[]} world its absolute transform.
+ * @param {object[]} commands the region's raw IR list.
+ * @param {number} rawIdx this op's index in `commands`.
+ * @param {object} region {view, worldRect, background, ...} — the enclosing region.
+ * @param {string[]} out the content-stream operator sink.
+ * @param {PdfAssembly} ctx the document assembler.
+ */
+async function emitRasterOp(cmd, world, commands, rawIdx, region, out, ctx) {
+  const placeRect = rasterOpPlaceRect(cmd, world, region);
+  if (!placeRect || !(placeRect.w > 0) || !(placeRect.h > 0)) return; // off-region → nothing to draw
+  const through = balancedSlice(commands, rawIdx + 1); // include this op so the GPU applies its effect
+  await ctx.emitRasterRegion(through, {
+    placeRect,
+    srcView: region.view,
+    background: region.background,
+  }, out);
 }
 
 /**
@@ -1033,6 +1151,18 @@ async function emitCrop(cmd, world, region, out, ctx) {
     out.push(rectPath(local), "S", "Q");
   }
 }
+
+/**
+ * The ops the VECTOR path (emitVector, below) can represent directly. THE single
+ * source of truth for "is this op vector-representable": emitRegion routes any op
+ * NOT in this set — and not one of its OWN compositing ops handled earlier
+ * (magnifyBackdrop / cropSubtree / effectSubtree, and blurBackdrop / add-blend,
+ * consumed by the raster split) — through the general raster fallback
+ * (emitRasterOp) rather than throwing. Keep in lockstep with emitVector's switch;
+ * its `default` stays a LOUD guard so a set/switch drift fails fast (no silent
+ * fallback) rather than mis-rendering.
+ */
+export const VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon", "path", "text", "latexVector", "image", "video"]);
 
 /** Command (appends operators, registers resources via ctx). One vector drawable. */
 function emitVector(cmd, world, out, ctx) {

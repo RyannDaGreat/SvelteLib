@@ -17,7 +17,7 @@ import {
   textFaces, fontResName, groupedTextDraws, tokenizeSvgPath, svgPathToPdfOps,
   isSyntheticImageRef, parsePdfPageRef, pdfPageEmbedRefs, pdfPageEmbedPlacementOps,
 } from "../pdf_backend.js";
-import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video, latexVector } from "../ir.js";
+import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, glassBackdrop, image, video, latexVector } from "../ir.js";
 import { normalizeRichText } from "../../core/richtext.js";
 import { fontFileFor } from "../fonts.js";
 import { scenes } from "./pdf_scenes.js";
@@ -254,6 +254,44 @@ await atest("nested lens beyond MAX_LENS_DEPTH becomes a raster embed", async ()
   ];
   const bytes = await irToPDF(cmds, { width: 200, height: 200, view: { zoom: 1, panX: 0, panY: 0 }, rasterize: stubRasterize });
   assert.ok(latin1(bytes).includes("/Subtype /Image"), "depth-capped inner lens embedded as raster");
+});
+
+// ── GENERAL raster fallback: any op the vector backend can't represent ────────
+const imageDraws = (s) => (s.match(/\/[A-Za-z]+\d+ Do/g) ?? []).length; // drawn XObjects: images (Img), raster tiles (Im), videos (Vid), page embeds (Pg)
+
+await atest("GENERAL FALLBACK: glassBackdrop (unrepresentable) rasterizes instead of throwing 'unknown op'", async () => {
+  const cmds = [
+    rect({ x: 0, y: 0, w: 200, h: 120, fill: "#7aa2f7" }),
+    glassBackdrop({ cx: 100, cy: 60, halfW: 60, halfH: 30, cornerRadius: 20 }),
+  ];
+  const bytes = await irToPDF(cmds, { width: 200, height: 120, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff", rasterize: stubRasterize });
+  const s = latin1(bytes);
+  assert.ok(s.startsWith("%PDF-"));
+  assert.ok(s.includes("/Subtype /Image"), "glass region embedded as a raster image XObject");
+  assert.ok(!/unknown op/.test(s), "no unknown-op text leaked");
+});
+
+await atest("GENERAL FALLBACK without a rasterize seam throws loudly (no silent drop)", async () => {
+  await assert.rejects(
+    () => irToPDF(
+      [rect({ x: 0, y: 0, w: 100, h: 100, fill: "#f00" }), glassBackdrop({ cx: 50, cy: 50, halfW: 30, halfH: 20 })],
+      { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } },
+    ),
+    /rasterize callback/,
+  );
+});
+
+await atest("GENERAL FALLBACK is LOCALIZED: an image BELOW the glass stays its own embed (not swallowed into a full-region raster)", async () => {
+  // A localized fallback draws the below image AS ITS OWN XObject (in z-order,
+  // before the glass) AND adds the glass tile → TWO drawn image XObjects. A
+  // full-region raster split (blur-style) would swallow the below image into one
+  // region raster → only ONE. Two draws proves only the glass component rasterized.
+  const cmds = [
+    image({ ref: CHECKER_PNG_DATA_URI, x: 10, y: 10, w: 80, h: 60 }), // below the glass
+    glassBackdrop({ cx: 100, cy: 60, halfW: 40, halfH: 25, cornerRadius: 12 }),
+  ];
+  const bytes = await irToPDF(cmds, { width: 200, height: 120, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff", rasterize: stubRasterize });
+  assert.equal(imageDraws(latin1(bytes)), 2, "below image drawn as vector-adjacent XObject + one glass raster tile");
 });
 
 await atest("lens rim: rimWidth 0 draws NO rim stroke (manifest spec)", async () => {

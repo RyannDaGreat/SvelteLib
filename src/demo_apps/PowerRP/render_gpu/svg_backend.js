@@ -42,6 +42,15 @@
  *   cropSubtree     — rounded-rect <clipPath> + re-emit of the target's OWN
  *                     content (the vector-lens precedent generalized to a
  *                     rounded rect and ONE named subtree — manifest ARCH #3).
+ *   ANY OTHER op that has no SVG vector form (glassBackdrop today; any future
+ *                     backdrop/effect op) — the GENERAL raster fallback
+ *                     (emitRasterOpSVG, the twin of pdf_backend.emitRasterOp):
+ *                     rasterize JUST that op's own region (the content it samples
+ *                     + the op, through the SAME GPU compositor the editor uses)
+ *                     and embed it as one <image> data URI, keeping everything
+ *                     around it vector. The hybrid rule generalized from an
+ *                     enumerated list to "not in SVG_VECTOR_OPS → rasterize the
+ *                     component". No rasterize seam → still throws loudly.
  *
  * DOM-free: the backend builds strings only (bare-node testable, doctested).
  * All environment-specific work (GPU rasterization, image/video bytes, font
@@ -51,7 +60,7 @@
 
 import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, pushTransform, popTransform, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
-import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri } from "./pdf_backend.js";
+import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { fitBox } from "../core/geometry.js";
 import { DEFAULT_TEXT_SIZE } from "./skia/text_layout.js";
@@ -214,12 +223,27 @@ export function roundedRectPathD({ x, y, w, h, cornerRadius = 0 }) {
 }
 
 /**
+ * The ops vectorCommandToSVG can represent directly — THE single source of truth
+ * for "is this op vector-representable in SVG". emitRegionSVG routes any op NOT in
+ * this set (and not one of its own compositing ops handled earlier —
+ * magnifyBackdrop / cropSubtree / effectSubtree, and blurBackdrop / add-blend,
+ * consumed by the raster split) through the general raster fallback
+ * (emitRasterOpSVG) rather than throwing. The SVG companion to
+ * pdf_backend.VECTOR_OPS (identical vocabulary today — the same IR); kept local
+ * because it must stay in lockstep with THIS file's switch below (whose `default`
+ * remains a LOUD guard for a set/switch drift — no silent geometry drop).
+ */
+export const SVG_VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon", "path", "text", "latexVector", "image", "video"]);
+
+/**
  * Pure function. Serializes one PLAIN VECTOR drawable command (no effects) to an
  * SVG fragment, positioned by its world transform. Effect ops (blur / magnify /
  * crop) are handled by the walker (emitRegionSVG), never here. Image and video
  * consult `ctx` for the resolved href (pre-loaded, like pdf_backend's XObjects).
  * Unknown ops throw — a backend must NEVER silently drop geometry (manifest: no
- * silent fallbacks).
+ * silent fallbacks). NB: emitRegionSVG routes unrepresentable ops to the raster
+ * fallback BEFORE reaching here, so this `default` is a defensive guard (it still
+ * fires for a direct call, e.g. the render_gpu_test unknown-op check).
  */
 export function vectorCommandToSVG(cmd, world, ctx) {
   const g = (inner) => groupWrap(similarityTransform(world), inner);
@@ -444,6 +468,13 @@ export async function emitRegionSVG(commands, region, out, ctx) {
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
+    } else if (!SVG_VECTOR_OPS.has(cmd.op)) {
+      // GENERAL RASTER FALLBACK (the HYBRID RULE generalized — the SVG twin of
+      // pdf_backend.emitRegion's emitRasterOp branch): an op with no SVG vector
+      // form (glassBackdrop today; any FUTURE such op automatically) rasterizes
+      // JUST its own region as an <image>, never throws. Vector content around it
+      // stays vector.
+      out.push(await emitRasterOpSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
     } else {
       out.push(vectorCommandToSVG(cmd, world, ctx));
     }
@@ -484,6 +515,41 @@ export async function emitEffectSVG(cmd, world, region, ctx) {
   // would blend against zeros); the divergence-vs-page note is in the header.
   return ctx.rasterRegion([pushTransform(world), { ...cmd, blend: "normal" }, popTransform()], {
     placeRect, srcView: region.view, background: [0, 0, 0, 0],
+  });
+}
+
+/**
+ * Command (async; returns an SVG fragment). The GENERAL raster fallback for an op
+ * the vector path cannot represent — the SVG twin of pdf_backend.emitRasterOp
+ * (identical strategy, `<image>` output instead of a Form XObject). It rasterizes
+ * the commands UP TO AND INCLUDING this op (balancedSlice through rawIdx) through
+ * the injected GPU rasterizer — so the GPU applies the op's REAL effect (e.g. the
+ * Liquid Glass SkSL) to exactly the below-content it samples — over the region
+ * background, capturing ONLY the op's own placeRect (rasterOpPlaceRect: the
+ * shared bbox+spill derivation, clamped to the visible region so an extreme-size
+ * op can never mint an unbounded raster), and embeds it as one `<image>` with a
+ * base64 PNG data URI (inline, OFFLINE — the same path image ops use). Content
+ * around/below the rect stays fully VECTOR: only this component pixelates. An
+ * OPAQUE tile (over the opaque region background) at the op's z-position cleanly
+ * overpaints the vector below within the rect, while later vector ops draw on top
+ * (SVG document order = z-order). Returns "" when the op is off-region.
+ *
+ * @param {object} cmd the unrepresentable op.
+ * @param {number[]} world its absolute transform.
+ * @param {object[]} commands the region's raw IR list.
+ * @param {number} rawIdx this op's index in `commands`.
+ * @param {object} region {view, worldRect, background, ...} — the enclosing region.
+ * @param {SvgAssembly} ctx the document assembler.
+ * @returns {Promise<string>} an `<image>` fragment, or "".
+ */
+export async function emitRasterOpSVG(cmd, world, commands, rawIdx, region, ctx) {
+  const placeRect = rasterOpPlaceRect(cmd, world, region);
+  if (!placeRect || !(placeRect.w > 0) || !(placeRect.h > 0)) return ""; // off-region → nothing to draw
+  const through = balancedSlice(commands, rawIdx + 1); // include this op so the GPU applies its effect
+  return ctx.rasterRegion(through, {
+    placeRect,
+    srcView: region.view,
+    background: region.background,
   });
 }
 
