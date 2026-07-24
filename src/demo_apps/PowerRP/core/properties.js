@@ -102,6 +102,17 @@ export const DITHER_MODE_LABELS = { off: "Off", bayer: "Bayer", blueNoise: "Blue
 export const ANTIALIAS_MODES = ["off", "standard"];
 export const ANTIALIAS_MODE_LABELS = { off: "Off (crisp)", standard: "Standard" };
 
+/**
+ * The video SCRUBBER's past-the-end behavior for its `scrubTime` (resolved
+ * against the real clip duration at decode time): "clamp" holds the last frame,
+ * "loop" wraps modulo the duration (the graceful "tweening a looping video"
+ * answer). Single-sourced here (the option-list home) so the `scrubWrap` row and
+ * the render layer (render_gpu/ir.videoFrame, video_registry.resolveScrubTime)
+ * agree on the exact ids; ir.js imports this list for its op validation.
+ */
+export const SCRUB_WRAP_MODES = ["clamp", "loop"];
+export const SCRUB_WRAP_LABELS = { clamp: "Clamp (hold last frame)", loop: "Loop" };
+
 // ── THE "angle" unit-kind + linear-gradient DIRECTION math ───────────────────
 // An ANGLE property (kind "angle") is a heading in DEGREES with the SCREEN
 // convention 0° = +x (right), 90° = +y (down) — the SAME convention the particle
@@ -351,6 +362,18 @@ export const PROPS = {
   // presenter — the presenter agent owns that consumption, this module supplies
   // the property.
   animated: { label: "Animated", kind: "boolean", category: "formatting", default: true, help: "Keeps the presenter redrawing every frame while this widget is on screen (needed for moving content). Turn off to save CPU and battery on a static widget." },
+  // THE SCRUBBER'S current time (seconds) — a keyframable, EQUATION-BINDABLE
+  // number (leading "=" like any prop). Unlike the video PLAYER (wall-clock
+  // playback, no state), the scrubber's displayed frame is the video decoded at
+  // THIS time, so it is pure(document, slide, alpha): keyframe it across slides
+  // to tween-scrub, or bind it to a shared doc variable so many scrubbers stay
+  // frame-locked. scrub = SECONDS_SCRUB (fine drag step, matches the transition
+  // "Seconds" row). Default 0 (first frame) — deterministic with no source yet.
+  scrubTime: { label: "Time (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", default: 0, help: "Which moment of the video to show, in seconds — the frame decoded at this time. Keyframe it across slides to scrub as the slide tweens, or bind it (=) to a shared variable so multiple scrubbers stay in sync." },
+  // Past-the-end behavior for scrubTime (resolved against the real clip duration
+  // at decode time). "clamp" holds the last frame; "loop" wraps modulo duration
+  // — the graceful answer to "tweening a looping video".
+  scrubWrap: { label: "Past end", kind: "select", options: SCRUB_WRAP_MODES, optionLabels: SCRUB_WRAP_LABELS, category: "formatting", default: "clamp", help: "What to show when the time goes past the end of the clip: Clamp holds the last frame; Loop wraps back to the start (so a tweening time scrubs the clip over and over)." },
 
   // ── formatting: EDGE-CROP INSETS (manifest "Edge-crop insets") ──────────────
   // Four per-edge inset amounts (canvas units) that trim the media's SOURCE from

@@ -50,7 +50,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, SCRUB_WRAP_MODES } from "../core/properties.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
 
@@ -421,6 +421,65 @@ export function video({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh
   if (typeof ref !== "string") throw new Error(`video: "ref" must be a string, got ${JSON.stringify(ref)}`);
   requireFinite("video", { x, y, w, h, opacity, sx, sy, sw, sh });
   return { op: "video", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh) };
+}
+
+// ── videoFrame (the SCRUBBER's deterministic frame-at-time op) ─────────────────
+// The video PLAYER's `video` op draws the element's WALL-CLOCK current frame
+// (non-deterministic while playing). The SCRUBBER's `videoFrame` op instead
+// names an EXPLICIT decode time — the displayed frame is pure(document, slide,
+// alpha) because `seekTime` is evaluated document state (a keyframed/equation-
+// bound number), so the SAME (slide, alpha) always decodes the SAME frame. The
+// two ops never mix: `video` = "this source's live frame", `videoFrame` = "this
+// source at exactly t seconds". A raster backend resolves it by PARKING a paused
+// decoder at `seekTime` and awaiting the decoded frame (video_registry
+// requestScrubFrame + the async seek-and-await in web/gpuService.js /
+// render_gpu/skia/browser_media.js), then draws the resolved frame exactly like
+// an image/video quad.
+
+/** How many decimal places of `seekTime` the media-cache key keeps. 4 = 0.1 ms,
+ * finer than any real video frame (≥1/240 s ≈ 4 ms) so two distinct frames never
+ * collapse, yet coarse enough to fold float jitter so IDENTICAL requested times
+ * (two scrubbers bound to the SAME equation) map to ONE key and share ONE decoded
+ * frame — the "multiple synchronized videos" property, by construction. */
+export const SCRUB_TIME_KEY_DECIMALS = 4;
+
+/**
+ * Pure function. The media-map KEY a scrubber frame is stored/looked up under.
+ * Distinct from a plain `ref` (the player's key) because two scrubbers can share
+ * ONE source at DIFFERENT times in one scene — the time (and wrap) must be part
+ * of the key. Two `videoFrame` ops with the SAME (ref, seekTime, wrap) therefore
+ * resolve to the SAME key and SAME decoded frame (frame-lockstep sync); the
+ * seekTime is quantized to SCRUB_TIME_KEY_DECIMALS so float-identical equations
+ * agree exactly.
+ *
+ * @example scrubFrameKey("clip.mp4", 1.5, "clamp") // "clip.mp4@1.5000@clamp"
+ * @example scrubFrameKey("clip.mp4", 1.50000001, "clamp") // "clip.mp4@1.5000@clamp" (jitter folded)
+ * @example scrubFrameKey("clip.mp4", 2, "loop") // "clip.mp4@2.0000@loop"
+ */
+export function scrubFrameKey(ref, seekTime, wrap) {
+  const t = Number.isFinite(seekTime) ? seekTime : 0;
+  return `${ref}@${t.toFixed(SCRUB_TIME_KEY_DECIMALS)}@${wrap === "loop" ? "loop" : "clamp"}`;
+}
+
+/**
+ * Pure function. Deterministic video FRAME-AT-TIME quad — the scrubber's op.
+ * Mirrors video()/image() (same x/y/w/h quad + sx/sy/sw/sh edge-crop source
+ * rect + opacity) but adds `seekTime` (seconds, the evaluated scrub time) and
+ * `wrap` ("clamp"|"loop", past-end behavior). A raster backend seeks a paused
+ * decoder to `seekTime` and awaits the frame before compositing; the displayed
+ * frame is a pure function of state, so a headless render at (slide, alpha)
+ * reproduces it exactly.
+ *
+ * @example videoFrame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 1.5}).op // "videoFrame"
+ * @example videoFrame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 1.5}).seekTime // 1.5
+ * @example videoFrame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0}).wrap // "clamp"
+ * @example videoFrame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ */
+export function videoFrame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1 }) {
+  if (typeof ref !== "string") throw new Error(`videoFrame: "ref" must be a string, got ${JSON.stringify(ref)}`);
+  requireFinite("videoFrame", { x, y, w, h, seekTime, opacity, sx, sy, sw, sh });
+  if (!SCRUB_WRAP_MODES.includes(wrap)) throw new Error(`videoFrame: "wrap" must be one of ${SCRUB_WRAP_MODES.join("/")}, got ${JSON.stringify(wrap)}`);
+  return { op: "videoFrame", ref, x, y, w, h, seekTime, wrap, opacity, src: sourceRect(sx, sy, sw, sh) };
 }
 
 // ── latexVector (Round 15.1 — TRUE VECTOR EQUATION EXPORT) ────────────────────
@@ -1168,4 +1227,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "videoFrame", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];

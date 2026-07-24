@@ -25,7 +25,8 @@
  */
 
 import { getSkiaImage } from "../gpu/image_registry.js";
-import { getSkiaVideoFrame } from "../gpu/video_registry.js";
+import { getSkiaVideoFrame, getScrubFrame, requestScrubFrame } from "../gpu/video_registry.js";
+import { scrubFrameKey } from "../ir.js";
 
 /**
  * Pure function. The DISTINCT refs of `op` in an IR list, recursing into the
@@ -48,6 +49,44 @@ export function refsForOp(commands, op) {
   };
   walk(commands);
   return [...seen];
+}
+
+/**
+ * Pure function. The DISTINCT scrubber requests in `commands` — one {ref,
+ * seekTime, wrap} per unique scrubFrameKey — recursing into cropSubtree/
+ * effectSubtree content like refsForOp (a bordered/cropped/effected scrubber
+ * nests its videoFrame op inside `content`). Deduped by key so N synced
+ * scrubbers (same source + time) collapse to ONE decode request.
+ *
+ * @example scrubOpsOf([{op: "videoFrame", ref: "a", seekTime: 1, wrap: "clamp"}]).length // 1
+ * @example scrubOpsOf([{op: "videoFrame", ref: "a", seekTime: 1, wrap: "clamp"}, {op: "videoFrame", ref: "a", seekTime: 1, wrap: "clamp"}]).length // 1 (same key)
+ * @example scrubOpsOf([{op: "cropSubtree", content: [{op: "videoFrame", ref: "c", seekTime: 2, wrap: "loop"}]}])[0].ref // "c"
+ */
+export function scrubOpsOf(commands) {
+  const byKey = new Map();
+  const walk = (cmds) => {
+    for (const c of cmds) {
+      if (c.op === "videoFrame") byKey.set(scrubFrameKey(c.ref, c.seekTime, c.wrap), { ref: c.ref, seekTime: c.seekTime, wrap: c.wrap });
+      if ((c.op === "cropSubtree" || c.op === "effectSubtree") && Array.isArray(c.content)) walk(c.content);
+    }
+  };
+  walk(commands);
+  return [...byKey.values()];
+}
+
+/**
+ * Command (async). Seeks + awaits EVERY scrubber frame the scene needs, so the
+ * one-shot pixel paths (web/gpuService.js: thumbnails, PNG export, the puppeteer
+ * render hook) are DETERMINISTIC — sceneMedia's sync getScrubFrame then finds
+ * each frame already in the LRU. A no-op for a scene with no scrubbers. Failed
+ * frames resolve null (reported loudly by the registry) and simply draw nothing.
+ *
+ * @example // await prepareSceneScrubFrames(CanvasKit, ir); const {media} = sceneMedia(CanvasKit, ir);
+ */
+export async function prepareSceneScrubFrames(CanvasKit, commands) {
+  const ops = scrubOpsOf(commands);
+  if (ops.length === 0) return;
+  await Promise.all(ops.map((o) => requestScrubFrame(CanvasKit, o.ref, o.seekTime, o.wrap)));
 }
 
 /**
@@ -74,6 +113,15 @@ export function sceneMedia(CanvasKit, commands) {
   for (const ref of refsForOp(commands, "video")) {
     const frame = getSkiaVideoFrame(CanvasKit, ref);
     if (frame) { media[ref] = frame; frames.push(frame); }
+  }
+  // SCRUBBER frames: keyed by scrubFrameKey (ref+time+wrap) so two scrubbers on
+  // one source at different times don't collide. getScrubFrame returns a CACHED
+  // (LRU-owned) Image or null (draw nothing + repaint on land) — so these are
+  // NOT pushed to `frames`: release() must NOT delete them (unlike per-paint
+  // player frames), the LRU owns their lifetime.
+  for (const o of scrubOpsOf(commands)) {
+    const frame = getScrubFrame(CanvasKit, o.ref, o.seekTime, o.wrap);
+    if (frame) media[scrubFrameKey(o.ref, o.seekTime, o.wrap)] = frame;
   }
   return { media, release() { for (const f of frames) f.delete(); } };
 }

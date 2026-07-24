@@ -25,7 +25,7 @@ import { paintIR } from "../render_gpu/skia/paint_skia.js";
 import { renderWithDither, cameraDither } from "../render_gpu/skia/dither_shader.js";
 import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
-import { sceneMedia } from "../render_gpu/skia/browser_media.js";
+import { sceneMedia, prepareSceneScrubFrames } from "../render_gpu/skia/browser_media.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 
 let ckPromise = null;
@@ -57,6 +57,12 @@ function renderJob(reqWidth, reqHeight, buildIR) {
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {
       const { ir, view, background, dither = null, antialias = true, quality = "full" } = buildIR();
+      // SCRUBBER seek-and-await: park + decode every video_scrub frame the scene
+      // needs BEFORE painting, so this one-shot pixel path (thumbnails / minimap /
+      // PNG export / the puppeteer render hook) is DETERMINISTIC — sceneMedia's
+      // sync getScrubFrame then finds each frame already in the LRU. No-op when
+      // the scene has no scrubbers.
+      await prepareSceneScrubFrames(CanvasKit, ir);
       // Resolve the scene's image/video refs to CanvasKit Images so thumbnails/
       // minimap/PNG export show media too (the same seam the on-screen surface
       // uses); release frees the per-paint video frames after readback.

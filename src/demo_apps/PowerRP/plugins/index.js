@@ -15,6 +15,7 @@ import { elbowArrowPlugin } from "./elbow_arrow.js";
 import { curvedArrowPlugin } from "./curved_arrow.js";
 import { imagePlugin } from "./image.js";
 import { videoPlugin } from "./video.js";
+import { videoScrubPlugin } from "./video_scrub.js";
 import { filmstripPlugin } from "./filmstrip.js";
 import { magnifierPlugin } from "./magnifier.js";
 import { blurPlugin } from "./blur.js";
@@ -47,7 +48,7 @@ import { textMorphPlugins } from "./demo/text_morph.js"; // dissolve / typewrite
 import { corkboardPlugins } from "./demo/corkboard.js"; // board / note / thumbtack / yarn (foreground materials)
 import { raycastDitherPlugin } from "./demo/raycast_dither.js"; // animated grain mesh-gradient (generative foreground material)
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, cursorPlugin, crtPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, cursorPlugin, crtPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

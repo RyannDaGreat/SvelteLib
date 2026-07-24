@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
@@ -315,6 +315,25 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       // texel per output pixel — cheaper for the big downscales thumbnails do, and
       // no visible loss at ~100px (trilinear ≥ single-level linear on a downscale).
       // FULL keeps the exact drawImageRect(fastSample=false) it always used.
+      if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
+      else canvas.drawImageRect(img, src, dest, p, false);
+      p.delete();
+      break;
+    }
+    case "videoFrame": {
+      // The scrubber's deterministic frame-at-time. Same quad draw as image/
+      // video, but resolved through the (ref+time+wrap) media key so two
+      // scrubbers on one source at DIFFERENT times don't collide. Absent media
+      // ⇒ draw nothing (the async seek contract): getScrubFrame kicked the seek
+      // and video_registry.notify() will nudge a repaint when the frame lands.
+      const img = media[scrubFrameKey(cmd.ref, cmd.seekTime, cmd.wrap)];
+      if (!img) break;
+      const iw = img.width(), ih = img.height();
+      const s = cmd.src;
+      const src = CanvasKit.LTRBRect(s.sx * iw, s.sy * ih, (s.sx + s.sw) * iw, (s.sy + s.sh) * ih);
+      const dest = CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h);
+      const p = new CanvasKit.Paint();
+      p.setAlphaf(opacity);
       if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
       else canvas.drawImageRect(img, src, dest, p, false);
       p.delete();

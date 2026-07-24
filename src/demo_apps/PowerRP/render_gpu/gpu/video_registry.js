@@ -236,11 +236,247 @@ export function truncate(src) {
   return src.length > 48 ? `${src.slice(0, 24)}…(${src.length} chars)` : src;
 }
 
+// ── THE SCRUBBER PATH (deterministic frame-at-time) ───────────────────────────
+// The PLAYER above hands back a live <video> whose playback clock advances the
+// frame. The SCRUBBER is the opposite: it PARKS a paused decoder at an exact
+// time and awaits that one frame. It therefore needs its OWN elements — a
+// player and a scrubber sharing one source must not fight over currentTime — so
+// scrub elements live in a SEPARATE registry (never autoplay, never loop).
+//
+// The render path is sync-shaped but a seek is async, so this mirrors the image
+// pipeline's async contract with a CACHE:
+//   getScrubFrame(ck, ref, t, wrap)  — SYNC: the cached CanvasKit.Image for that
+//     exact (ref, time, wrap) if decoded, else null AFTER kicking the async seek
+//     (draw nothing this frame; notify() nudges a repaint when it lands).
+//   requestScrubFrame(ck, ref, t, wrap) — ASYNC: seeks + awaits + caches the
+//     frame, resolving to the Image (or null on failure). The one-shot pixel
+//     paths (web/gpuService.js: thumbnails / PNG export / the puppeteer render
+//     hook) AWAIT this BEFORE painting, so their output is deterministic.
+// Unlike the player's per-paint frames, scrub frames are CACHED (a given
+// (ref, time) frame is static) in a bounded LRU — during a live tween `time`
+// sweeps continuously, so an unbounded cache would leak CanvasKit Images.
+
+import { scrubFrameKey } from "../ir.js";
+
+/** src → {status, el, error, ready:Promise, chain:Promise} for the paused
+ * scrub decoders (SEPARATE from `registry` so the player never fights them). */
+const scrubRegistry = new Map();
+
+/** LRU cache key(scrubFrameKey) → CanvasKit.Image. Bounded: a live scrub sweeps
+ * `time` continuously, so old frames must evict (and be .delete()d) or the wasm
+ * heap leaks. Insertion-ordered Map ⇒ first key is the least-recently-used. */
+const scrubCache = new Map();
+
+/** key → in-flight Promise<Image|null> — dedups concurrent requests for the
+ * SAME frame (N synced scrubbers → ONE seek). */
+const scrubInflight = new Map();
+
+/** Max decoded scrub frames kept at once. Comfortably exceeds the distinct
+ * (source, time) frames a single scene realistically shows (a handful of
+ * scrubbers), so a one-shot prepare pass never evicts a frame it still needs;
+ * a live tween churns within this bound. */
+export const SCRUB_CACHE_CAP = 64;
+
+/** Seeking exactly to `duration` is undefined (past the last frame); back off a
+ * hair so the last frame is what "the end" resolves to. Seconds. */
+export const SCRUB_END_EPSILON = 1e-3;
+
+/** A reused offscreen 2D canvas for the scrub frame grab (same reasoning as
+ * `_frameCanvas`: the draw+read is synchronous, so it can be shared). */
+let _scrubCanvas = null;
+
+/**
+ * Pure function. Resolves a requested scrub time against the real media
+ * duration + wrap mode. "clamp" holds [0, duration); "loop" wraps modulo the
+ * duration. An unknown duration (metadata not loaded / streaming) best-effort
+ * clamps to >= 0. Kept pure + exported so the mapping is unit-testable without
+ * a <video>.
+ *
+ * @example resolveScrubTime(1.5, 3, "clamp") // 1.5
+ * @example resolveScrubTime(5, 3, "clamp") // 2.999  (clamped to just under the end)
+ * @example resolveScrubTime(-1, 3, "clamp") // 0
+ * @example resolveScrubTime(4, 3, "loop") // 1  (4 mod 3)
+ * @example resolveScrubTime(-1, 3, "loop") // 2  (wraps positive)
+ */
+export function resolveScrubTime(t, duration, wrap) {
+  const time = Number.isFinite(t) ? t : 0;
+  if (!Number.isFinite(duration) || duration <= 0) return Math.max(0, time);
+  const end = Math.max(0, duration - SCRUB_END_EPSILON);
+  if (wrap === "loop") {
+    const m = ((time % duration) + duration) % duration;
+    return Math.min(m, end);
+  }
+  return Math.min(Math.max(0, time), end);
+}
+
+/**
+ * Command (near-pure: idempotent). Ensures a PAUSED scrub <video> exists for
+ * `src`. Separate from ensureVideo (the player) so the two never fight over
+ * currentTime. `entry.ready` resolves after the element has loaded AND a warm-up
+ * seek has primed the decoder — the FIRST seek after load decodes a black frame
+ * (a cold-decoder race proven in prototyping), so a throwaway warm-up seek to
+ * mid-clip fires before any real grab. Returns the entry.
+ */
+function ensureScrubElement(src) {
+  if (typeof src !== "string" || src.length === 0)
+    throw new Error(`ensureScrubElement: src must be a non-empty string, got ${JSON.stringify(src)}`);
+  const existing = scrubRegistry.get(src);
+  if (existing) return existing;
+
+  const el = document.createElement("video");
+  el.muted = true;          // no audio on a scrubber (it is not playing)
+  el.autoplay = false;      // NEVER plays — its time is document state
+  el.loop = false;
+  el.playsInline = true;
+  el.crossOrigin = "anonymous";
+  el.preload = "auto";
+  const entry = { status: "loading", el, error: null, ready: null, chain: Promise.resolve() };
+  scrubRegistry.set(src, entry);
+
+  el.addEventListener("error", () => {
+    entry.status = "error";
+    const mediaErr = el.error;
+    entry.error = new Error(mediaErr ? `MediaError code ${mediaErr.code}: ${mediaErr.message || "(no message)"}` : "unknown video error");
+    console.error(`PowerRP video_registry (scrub): failed to load "${truncate(src)}" — ${entry.error.message}`);
+    notify(src);
+  });
+
+  entry.ready = new Promise((resolve) => {
+    el.addEventListener("loadeddata", async () => {
+      if (entry.status !== "error") entry.status = "ready";
+      // WARM-UP: prime the cold decoder with one throwaway seek to a NON-ZERO
+      // time (guaranteed to fire `seeked`, unlike re-seeking to the current 0),
+      // so every real grab below is frame-accurate rather than black.
+      try {
+        const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
+        await seekTo(el, dur > 0 ? dur / 2 : 0);
+      } catch (e) {
+        console.error(`PowerRP video_registry (scrub): warm-up seek of "${truncate(src)}" failed — ${e?.message ?? e}`);
+      }
+      notify(src);
+      resolve();
+    }, { once: true });
+  });
+  el.src = src;
+  el.load();
+  return entry;
+}
+
+/**
+ * Command (async). Seeks `el` to `t` and resolves once the target frame is
+ * decoded. Uses the spec-reliable `el.seeking` flag: assigning currentTime sets
+ * `seeking` true iff a real seek is needed, so we await `seeked` only then (and
+ * grab immediately when the decoder is already parked there — re-seeking to the
+ * current time would never fire `seeked` and would hang). rVFC is deliberately
+ * NOT used: a PAUSED element never presents a frame headless, so rVFC never
+ * fires (proven — it hangs). Rejects on the element's error event.
+ */
+function seekTo(el, t) {
+  return new Promise((resolve, reject) => {
+    const onErr = () => { cleanup(); reject(new Error("video error during seek")); };
+    const onSeeked = () => { cleanup(); resolve(); };
+    const cleanup = () => { el.removeEventListener("seeked", onSeeked); el.removeEventListener("error", onErr); };
+    el.addEventListener("error", onErr, { once: true });
+    el.currentTime = t;
+    if (el.seeking) el.addEventListener("seeked", onSeeked);
+    else { cleanup(); resolve(); } // already parked at t — no seek, frame is current
+  });
+}
+
+/**
+ * Query→build (async). The decoded CanvasKit Image for `ref` at exactly
+ * `seekTime` (resolved by `wrap`), caching it in the LRU. Dedups concurrent
+ * identical requests, and SERIALIZES seeks per source (one <video> can only be
+ * at one time at a time). Resolves null on load/seek/decode failure (reported
+ * loudly, never silent). The caller MUST NOT delete the returned Image — the
+ * LRU owns its lifetime (a scrub frame is reused across paints, unlike a
+ * player frame).
+ *
+ * @param CanvasKit the shared CanvasKit module (the Image binds to it)
+ */
+export async function requestScrubFrame(CanvasKit, ref, seekTime, wrap) {
+  const key = scrubFrameKey(ref, seekTime, wrap);
+  const cached = scrubCache.get(key);
+  if (cached) { touchLru(key); return cached; }
+  const pending = scrubInflight.get(key);
+  if (pending) return pending;
+
+  const entry = ensureScrubElement(ref);
+  const job = (async () => {
+    await entry.ready;
+    if (entry.status === "error") return null;
+    const el = entry.el;
+    const effective = resolveScrubTime(seekTime, el.duration, wrap);
+    // Serialize this seek behind any other in-flight seek on the SAME element.
+    const run = entry.chain.then(async () => {
+      await seekTo(el, effective);
+      const w = el.videoWidth, h = el.videoHeight;
+      if (!(w > 0 && h > 0)) throw new Error("scrub frame has no dimensions");
+      if (!_scrubCanvas) _scrubCanvas = document.createElement("canvas");
+      _scrubCanvas.width = w; _scrubCanvas.height = h;
+      _scrubCanvas.getContext("2d").drawImage(el, 0, 0, w, h);
+      const img = CanvasKit.MakeImageFromCanvasImageSource(_scrubCanvas);
+      if (!img) throw new Error("MakeImageFromCanvasImageSource returned null");
+      return img;
+    });
+    entry.chain = run.catch(() => {}); // keep the chain alive past a failed seek
+    const img = await run;
+    cacheScrubFrame(key, img);
+    notify(ref);
+    return img;
+  })().catch((e) => {
+    console.error(`PowerRP video_registry (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${e?.message ?? e}`);
+    return null;
+  }).finally(() => scrubInflight.delete(key));
+
+  scrubInflight.set(key, job);
+  return job;
+}
+
+/**
+ * Query→build (near-pure: kicks an async seek on a miss). The SYNC render-path
+ * accessor: the cached CanvasKit Image for (ref, seekTime, wrap) if decoded,
+ * else null — kicking requestScrubFrame so the frame lands and notify() nudges
+ * a repaint (the image pipeline's async contract, applied to seeks). Draw
+ * NOTHING for a null (never a placeholder). The caller must NOT delete the
+ * Image (the LRU owns it).
+ *
+ * @param CanvasKit the shared CanvasKit module
+ * @example // getScrubFrame(CK, "clip.mp4", 1.5, "clamp") // null until decoded, then the cached frame
+ */
+export function getScrubFrame(CanvasKit, ref, seekTime, wrap) {
+  const key = scrubFrameKey(ref, seekTime, wrap);
+  const cached = scrubCache.get(key);
+  if (cached) { touchLru(key); return cached; }
+  requestScrubFrame(CanvasKit, ref, seekTime, wrap); // fire-and-forget; repaints on land
+  return null;
+}
+
+/** Command. Inserts `img` under `key` and evicts the least-recently-used frame
+ * (deleting its CanvasKit Image) when the cache exceeds SCRUB_CACHE_CAP. */
+function cacheScrubFrame(key, img) {
+  scrubCache.set(key, img);
+  while (scrubCache.size > SCRUB_CACHE_CAP) {
+    const oldest = scrubCache.keys().next().value;
+    const evicted = scrubCache.get(oldest);
+    scrubCache.delete(oldest);
+    evicted?.delete?.();
+  }
+}
+
+/** Command. Marks `key` most-recently-used (re-insert at the Map's tail). */
+function touchLru(key) {
+  const img = scrubCache.get(key);
+  scrubCache.delete(key);
+  scrubCache.set(key, img);
+}
+
 /**
  * Command. Tears down all cached elements (pause + drop the src so the browser
  * releases the buffer) and forgets all state. For tests that need a clean
  * registry; also the invalidation hook for a future mutable-source / flag-change
- * policy. Listeners are kept (they are wiring, not data).
+ * policy. Listeners are kept (they are wiring, not data). Also clears the
+ * scrubber's elements + LRU frame cache (deleting the cached Images).
  */
 export function resetVideoRegistry() {
   for (const entry of registry.values()) {
@@ -255,4 +491,16 @@ export function resetVideoRegistry() {
     }
   }
   registry.clear();
+  for (const entry of scrubRegistry.values()) {
+    try {
+      entry.el.removeAttribute("src");
+      entry.el.load?.();
+    } catch (e) {
+      console.error(`PowerRP video_registry (scrub): teardown failed — ${e?.message ?? e}`);
+    }
+  }
+  scrubRegistry.clear();
+  for (const img of scrubCache.values()) img?.delete?.();
+  scrubCache.clear();
+  scrubInflight.clear();
 }
