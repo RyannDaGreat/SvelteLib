@@ -32,6 +32,7 @@ import { blendApplied, copied, getPath, setPath, deletePath, leaves } from "./de
 import { defaultTransition, withDurationMigrated } from "./transitions.js";
 import { withBindingsMigrated } from "./expressions.js";
 import { withRichTextMigrated } from "./richtext.js";
+import { bundleDefaults } from "./properties.js";
 
 /** Query (reads crypto). Random 8-char id — short but collision-safe at presentation scale. */
 export function uuid() {
@@ -53,7 +54,7 @@ const DEFAULT_SLIDE_H = 720;
  * sizes it. `active:true` so it frames from slide 0; white background per the
  * user spec. `name` lets the picker/inspector label it.
  *
- * @example defaultCameraState() // {type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff"}
+ * @example defaultCameraState() // {type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff", antialias: true, retina: true, ditherMode: "off", ditherEmphasis: 1}
  * @example defaultCameraState({slideW: 800, slideH: 600}).w // 800
  */
 export function defaultCameraState(meta = {}) {
@@ -61,6 +62,12 @@ export function defaultCameraState(meta = {}) {
     type: "camera", name: "Camera",
     x: 0, y: 0, w: meta.slideW ?? DEFAULT_SLIDE_W, h: meta.slideH ?? DEFAULT_SLIDE_H,
     z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff",
+    // Rendering bundle (AA / retina / dither) is DECLARED on the camera plugin;
+    // spread its defaults so a fresh camera is born complete — otherwise
+    // missingDefaults flags them every load and the repair pipeline re-injects
+    // them (the pre-camera-lane regression this fixes). Spread (not literals) so
+    // any future rendering prop is included automatically, never drifting.
+    ...bundleDefaults("rendering"),
   };
 }
 
