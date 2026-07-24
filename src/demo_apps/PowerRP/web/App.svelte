@@ -1066,7 +1066,8 @@
     <GridSizePicker itemCount={gridPickerCount} onconfirm={confirmGrid} />
   </Modal>
   <!-- Export as MP4… — the shared Modal at its default ~90% size, hosting the
-       deterministic client-side export form (WebCodecs H.264 + mp4-muxer). -->
+       export form. Frames render deterministically CLIENT-side; the SERVER
+       encodes the H.264 MP4 (ffmpeg) so it works on plain HTTP everywhere. -->
   <Modal bind:open={exportMp4Visible} title="Export as MP4">
     {#if exportMp4Visible}
       <ExportMp4Modal {app} />

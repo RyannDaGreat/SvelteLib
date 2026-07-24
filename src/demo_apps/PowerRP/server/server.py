@@ -40,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import urllib.parse
@@ -355,6 +356,140 @@ def extract_frames(name, video, n, frame_h=None, frame_w=None):
             f"frame extraction produced {len(produced)} files, expected {n_eff} "
             f"(video {video}, total {total} frames)")
     return {"count": n_eff, "frames": urls(n_eff)}
+
+
+# -- Server-side MP4 export (client renders frames -> server encodes) ---------
+#
+# WHY this is server-side (the CORE reason): the browser renders every frame of
+# the presentation DETERMINISTICALLY (web/videoExport.js) but cannot ENCODE an
+# MP4 without the WebCodecs VideoEncoder API, which browsers expose ONLY in a
+# secure context (HTTPS / http://localhost). PowerRP runs on plain HTTP on a LAN
+# IP, so VideoEncoder is undefined there and in-browser MP4 export is impossible.
+# The fix: the client POSTs its rendered PNG frames here and the server encodes
+# them with libx264 via ffmpeg -- no secure context needed, works over plain HTTP
+# everywhere. This mirrors the frame-EXTRACTION ffmpeg idiom above (the same loud
+# "ffmpeg not found on PATH" + CalledProcessError-with-stderr error pattern).
+#
+# Per-export scratch is EPHEMERAL, so it lives under the OS temp dir (NOT a
+# project folder): one sub-folder per export SESSION (a server-minted uuid),
+# holding frame_000000.png ... and the produced out.mp4, all deleted the moment
+# the encode finishes (success OR failure).
+EXPORT_SESSIONS_DIR = os.path.join(tempfile.gettempdir(), "powerrp_mp4_export")
+EXPORT_OUTPUT_FILENAME = "out.mp4"
+# Zero-padding for uploaded frame filenames (frame_000000.png). 6 digits covers
+# 1_000_000 frames -- far beyond any sane presentation export -- and makes the
+# names sort lexicographically == numerically, which the ffmpeg %06d input
+# pattern relies on. The single knob if a longer export is ever needed.
+EXPORT_FRAME_PAD = 6
+# libx264 CRF (Constant Rate Factor) valid range: 0 = lossless (huge), 51 =
+# worst. The client sends a CRF in this range (ExportMp4Modal quality->CRF); the
+# server validates it defensively and rejects anything outside loudly.
+H264_CRF_MIN = 0
+H264_CRF_MAX = 51
+
+
+def export_session_dir(session_id):
+    """
+    Query. Absolute path of ONE export session's scratch folder under
+    EXPORT_SESSIONS_DIR. The id is validated as a single safe component AND
+    containment-checked (normpath startswith), so a crafted id can never escape
+    the base. Does not create the folder -- begin_export_session does.
+    """
+    safe = safe_name(session_id)
+    full = os.path.normpath(os.path.join(EXPORT_SESSIONS_DIR, safe))
+    if not full.startswith(EXPORT_SESSIONS_DIR + os.sep):
+        raise ValueError(f"unsafe export session id: {session_id!r}")
+    return full
+
+
+def begin_export_session():
+    """
+    Command (mutates the filesystem). Mint a fresh export session: create its
+    scratch folder under EXPORT_SESSIONS_DIR and return the new session id (a
+    uuid4 hex -- a single safe path component). The SERVER mints the id, not the
+    client, so the client needs no secure-context-only crypto (crypto.randomUUID
+    is unavailable on plain HTTP). The client then POSTs frames + an encode
+    request keyed by this id.
+    """
+    session_id = uuid.uuid4().hex
+    os.makedirs(export_session_dir(session_id), exist_ok=True)
+    return session_id
+
+
+def export_frame_path(session_id, index):
+    """
+    Query. Absolute path of frame `index` (0-based) in an export session:
+    <session>/frame_<index:06d>.png. Raises for a negative index or an unknown
+    session (the session dir must already exist -- begin_export_session made it).
+    """
+    if index < 0:
+        raise ValueError(f"frame index must be >= 0: {index}")
+    d = export_session_dir(session_id)
+    if not os.path.isdir(d):
+        raise FileNotFoundError(f"unknown export session: {session_id}")
+    return os.path.join(d, f"frame_{index:0{EXPORT_FRAME_PAD}d}.png")
+
+
+def save_export_frame(session_id, index, data):
+    """
+    Command (mutates the filesystem). Write one PNG frame (raw bytes `data`) as
+    frame `index` of an export session. Overwrites a re-POSTed index (an
+    idempotent retry). Raises loudly for an unknown session or a bad index.
+    """
+    with open(export_frame_path(session_id, index), "wb") as f:
+        f.write(data)
+
+
+def encode_export_mp4(session_id, fps, crf):
+    """
+    Command (reads the session's PNG frames, runs ffmpeg, then DELETES the
+    session scratch). Encode the session's frame_000000.png ... sequence into an
+    H.264 MP4 with libx264 at `fps` and Constant Rate Factor `crf`, and return
+    the .mp4 bytes. yuv420p + even dimensions (a scale guard) make the file play
+    universally; +faststart moves the moov atom to the front so the file is
+    instantly seekable/streamable (the old in-browser muxer's fastStart intent).
+
+    The session scratch dir is removed in a finally -- on success AND after a
+    failure's error is captured -- so a failed export never leaks temp frames.
+    Raises loudly if ffmpeg is missing, no frames were uploaded, or ffmpeg fails.
+
+    Args:
+        session_id (str): the session minted by begin_export_session
+        fps (float): output frames per second (> 0)
+        crf (int): libx264 CRF in [H264_CRF_MIN, H264_CRF_MAX] (lower = better)
+
+    Returns:
+        bytes: the encoded video/mp4 file
+    """
+    d = export_session_dir(session_id)
+    if not os.path.isdir(d):
+        raise FileNotFoundError(f"unknown export session: {session_id}")
+    try:
+        frames = [f for f in os.listdir(d) if f.startswith("frame_") and f.endswith(".png")]
+        if not frames:
+            raise RuntimeError(f"export session {session_id} has no frames to encode")
+        out_path = os.path.join(d, EXPORT_OUTPUT_FILENAME)
+        pattern = os.path.join(d, f"frame_%0{EXPORT_FRAME_PAD}d.png")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-framerate", str(fps), "-start_number", "0",
+                 "-i", pattern,
+                 "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                 "-crf", str(crf), "-movflags", "+faststart",
+                 "-loglevel", "error", out_path],
+                capture_output=True, text=True, check=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("ffmpeg not found on PATH -- install ffmpeg (brew install ffmpeg)")
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"ffmpeg MP4 encode failed: {exc.stderr.strip()[-500:]}")
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        # Ephemeral scratch: always cleaned. ignore_errors so a stray unlink can
+        # never mask (replace) the real ffmpeg error propagating out of the try.
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def asset_kind(filename):
@@ -674,6 +809,10 @@ class Handler(BaseHTTPRequestHandler):
       POST /api/upload/<name>/?filename=…  → raw body bytes; {ok, name: file}
       POST /api/thumb/<name>/<file>/?mtime=&badge=  → raw PNG body; caches an
                                      asset thumbnail (manifest #25); {ok, thumbnail}
+      POST /api/export-mp4/          → mint an MP4-export session; {ok, sessionId}
+      POST /api/export-mp4/<sid>/frame/<i>/  → raw PNG body; store frame i (0-based)
+      POST /api/export-mp4/<sid>/encode/     → body {fps, crf}; ffmpeg-encode the
+                                     session's PNGs → video/mp4 bytes; cleans up
       GET  /api/download/<name>/     → application/zip of the whole folder
       GET  /api/frames/<name>/<video>/<N>/  → {count, frames:[url,…]}
                                      (extract N evenly-spread frames, cached)
@@ -867,6 +1006,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_upload(parts[2], parsed)
             if len(parts) == 4 and parts[:2] == ["api", "thumb"]:
                 return self._handle_thumb_store(parts[2], parts[3], parsed)
+            if parts == ["api", "export-mp4"]:  # server-side MP4 export
+                return self._handle_export_begin()
+            if len(parts) == 5 and parts[:2] == ["api", "export-mp4"] and parts[3] == "frame":
+                return self._handle_export_frame(parts[2], parts[4])
+            if len(parts) == 4 and parts[:2] == ["api", "export-mp4"] and parts[3] == "encode":
+                return self._handle_export_encode(parts[2])
             self._error(404, f"no POST route for {parsed.path}")
         except Exception as exc:
             traceback.print_exc()
@@ -938,6 +1083,49 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, "empty thumbnail body")
         url = save_thumb(name, filename, mtime, badge, data)
         self._json({"ok": True, "thumbnail": url, "badge": badge})
+
+    def _handle_export_begin(self):
+        # Mint a server-side MP4-export session (the server owns the uuid so the
+        # client needs no secure-context crypto). The client POSTs frames + an
+        # encode request keyed by the returned id.
+        session_id = begin_export_session()
+        self._json({"ok": True, "sessionId": session_id})
+
+    def _handle_export_frame(self, session_id, index_str):
+        # Store one rendered PNG frame (raw body) as frame <index> (0-based) of
+        # the export session. Awaited per-frame by the client so RAM stays flat
+        # and frames land in order. Unknown session → 404 (an expected client
+        # state, e.g. a server restart between begin and frame).
+        try:
+            index = int(index_str)
+        except ValueError:
+            return self._error(400, f"frame index must be an integer: {index_str!r}")
+        data = self._read_body()
+        if not data:
+            return self._error(400, "empty frame body")
+        try:
+            save_export_frame(session_id, index, data)
+        except FileNotFoundError as exc:
+            return self._error(404, str(exc))
+        self._json({"ok": True, "index": index})
+
+    def _handle_export_encode(self, session_id):
+        # Encode the session's uploaded PNGs into an MP4 (libx264) and return the
+        # video/mp4 bytes; the session scratch is deleted by encode_export_mp4.
+        # fps/crf are validated defensively (never trust the client): fps must be
+        # a positive number, crf an integer in the codec's [0,51] range.
+        body = json.loads(self._read_body() or b"{}")
+        fps = body.get("fps")
+        crf = body.get("crf")
+        if not isinstance(fps, (int, float)) or isinstance(fps, bool) or fps <= 0:
+            return self._error(400, f"encode requires a positive numeric fps (got {fps!r})")
+        if not isinstance(crf, (int, float)) or isinstance(crf, bool) or crf < H264_CRF_MIN or crf > H264_CRF_MAX:
+            return self._error(400, f"encode requires a crf in [{H264_CRF_MIN},{H264_CRF_MAX}] (got {crf!r})")
+        try:
+            data = encode_export_mp4(session_id, fps, int(crf))
+        except FileNotFoundError as exc:
+            return self._error(404, str(exc))
+        self._send_bytes(data, "video/mp4")
 
     def _handle_delete_asset(self, name, filename):
         # Asset delete (manifest Round 12C: trash can on the asset tile). A

@@ -2709,14 +2709,21 @@ export class PowerRPApp {
 
   /**
    * Command (async). Exports the WHOLE presentation as a playable .mp4,
-   * DETERMINISTICALLY and entirely in-browser (no server). MP4-specific
-   * orchestration over the GENERAL video-export pipeline (web/videoExport.js):
-   * it builds the timeline PLAN (the presenter's hold + transition-in model),
-   * defines the deterministic frame renderer, wires the pluggable MP4/H.264
-   * encoder (web/mp4Encoder.js) and the controlled-time seam, and runs
-   * exportVideo(). Returns the "video/mp4" Blob and, when `download` (default),
-   * saves it. Dynamic imports keep WebCodecs/mp4-muxer out of the initial bundle
-   * and out of node (the exportPdf/exportSvg pattern).
+   * DETERMINISTICALLY. The client renders every frame; the SERVER encodes the
+   * H.264 MP4 (ffmpeg). MP4-specific orchestration over the GENERAL video-export
+   * pipeline (web/videoExport.js): it builds the timeline PLAN (the presenter's
+   * hold + transition-in model), defines the deterministic frame renderer, wires
+   * the pluggable server encoder (web/serverMp4Encoder.js) and the controlled-time
+   * seam, and runs exportVideo(). Returns the "video/mp4" Blob and, when
+   * `download` (default), saves it. Dynamic imports keep the export lane out of
+   * the initial bundle and out of node (the exportPdf/exportSvg pattern).
+   *
+   * WHY server-side: the browser's WebCodecs VideoEncoder is secure-context-only
+   * (HTTPS / localhost). PowerRP runs on plain HTTP on a LAN IP, so in-browser
+   * encoding is impossible there — the app's HTTPS-independence tenant demands the
+   * encode happen on the server. The frame RENDER stays fully client-side and
+   * deterministic; only the encode moves (serverMp4Encoder streams each PNG to the
+   * backend, which runs libx264 and returns the file).
    *
    * FRAME RENDER: each (slide, alpha) is rendered through the SAME deterministic
    * path the presenter/CLI use (transitionRender.renderTransitionFrame — tween OR
@@ -2725,22 +2732,23 @@ export class PowerRPApp {
    * byte-for-byte the presenter/CLI render.
    *
    * MOTION BLUR (`samples` > 1): exportVideo renders N sub-frames per output
-   * frame at evenly-subdivided sub-times and averages them. The controlled-time
-   * setter is render_gpu/particle_clock.setParticleTimeOverride, so the ambient
-   * animation clock (particle emitters, raycast-dither, any particleTime()
-   * consumer) samples each sub-time too — time-driven effects blur alongside the
-   * tween. samples=1 (default) is one render per frame (no blur, no extra cost),
-   * but STILL drives the clock so animated widgets animate over the video (like
-   * the presenter) rather than freezing.
+   * frame at evenly-subdivided sub-times and averages them (CLIENT-side, before a
+   * frame is shipped). The controlled-time setter is
+   * render_gpu/particle_clock.setParticleTimeOverride, so the ambient animation
+   * clock (particle emitters, raycast-dither, any particleTime() consumer) samples
+   * each sub-time too — time-driven effects blur alongside the tween. samples=1
+   * (default) is one render per frame (no blur, no extra cost), but STILL drives
+   * the clock so animated widgets animate over the video (like the presenter)
+   * rather than freezing.
    *
-   * LOUD when WebCodecs is unavailable (secure-context gate): createMp4Encoder
-   * throws with the reason; the modal surfaces it. No MediaRecorder fallback.
+   * LOUD when the server is unreachable or errors: createServerMp4Encoder /
+   * finalize throw with the reason; the modal surfaces it. No client fallback.
    *
    * @param {object} o
    * @param {number} o.width Output width in px (even).
    * @param {number} o.height Output height in px (even).
    * @param {number} o.fps Frames per second.
-   * @param {number} o.bitrate Target H.264 bitrate (bits/s).
+   * @param {number} o.crf libx264 Constant Rate Factor (0..51, lower = higher quality).
    * @param {number} [o.samples] Temporal subsamples for motion blur (default 1).
    * @param {number} [o.startIndex] First slide index (default 0).
    * @param {number} [o.endIndex] Last slide index inclusive (default last).
@@ -2752,9 +2760,9 @@ export class PowerRPApp {
    * @param {boolean} [o.download] Save the blob (default true).
    * @returns {Promise<Blob>}
    */
-  async exportMp4({ width, height, fps, bitrate, samples = 1, startIndex = 0, endIndex = this.doc.slides.length - 1, includeTransitions = true, holdSeconds, background = "#000000", onProgress, signal, download = true }) {
+  async exportMp4({ width, height, fps, crf, samples = 1, startIndex = 0, endIndex = this.doc.slides.length - 1, includeTransitions = true, holdSeconds, background = "#000000", onProgress, signal, download = true }) {
     const { exportVideo, timelinePlan, DEFAULT_HOLD_SECONDS } = await import("./videoExport.js");
-    const { createMp4Encoder } = await import("./mp4Encoder.js");
+    const { createServerMp4Encoder } = await import("./serverMp4Encoder.js");
     const { renderTransitionFrame } = await import("./transitionRender.js");
     const { setParticleTimeOverride } = await import("../render_gpu/particle_clock.js");
     const plan = timelinePlan(this.doc, {
@@ -2782,7 +2790,7 @@ export class PowerRPApp {
       ctx.drawImage(content, Math.round((width - cw) / 2), Math.round((height - ch) / 2));
       return out;
     };
-    const encoder = await createMp4Encoder({ width, height, fps, bitrate });
+    const encoder = await createServerMp4Encoder({ fps, crf });
     const blob = await exportVideo({
       plan, renderFrame, encoder, width, height, fps, samples,
       setTime: setParticleTimeOverride, // controlled time → ambient-clock effects blur too

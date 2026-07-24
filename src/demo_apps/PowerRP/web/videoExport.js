@@ -4,9 +4,10 @@
  * This module is FORMAT-AGNOSTIC. It owns the two things every video export
  * shares — (1) the DETERMINISTIC frame walk over the presentation timeline, and
  * (2) optional TEMPORAL-SUBSAMPLE motion blur — and drives a PLUGGABLE ENCODER.
- * MP4/WebCodecs (web/mp4Encoder.js) is merely the FIRST encoder; a WebM/VP9
- * encoder, an animated-GIF/APNG writer, or a server-side ffmpeg sink would each
- * just implement the same tiny Encoder interface and slot in with no change here.
+ * The server-side MP4 encoder (web/serverMp4Encoder.js — client renders, backend
+ * ffmpeg encodes) is one encoder; a WebM/VP9 encoder, an animated-GIF/APNG
+ * writer, or any other sink would each just implement the same tiny Encoder
+ * interface and slot in with no change here.
  *
  * ── PIPELINE (frame source → encoder) ─────────────────────────────────────────
  *   time  ──sampleTimeline──▶ (slide, alpha)  ──renderFrame──▶ canvas  ──encoder──▶ .mp4
@@ -19,7 +20,8 @@
  *   encoder.addFrame(canvasSource, { timestamp, duration }) → Promise|void
  *   encoder.finalize() → Promise<Blob>          // the container bytes
  * The encoder owns codec/keyframe/muxing concerns; the pipeline never mentions
- * them. See web/mp4Encoder.js:createMp4Encoder for the reference implementation.
+ * them. See web/serverMp4Encoder.js:createServerMp4Encoder for the reference
+ * implementation.
  *
  * ── MOTION BLUR (temporal subsampling) ────────────────────────────────────────
  * `samples` (integer, DEFAULT 1) is the exposure subsample count. With samples=1

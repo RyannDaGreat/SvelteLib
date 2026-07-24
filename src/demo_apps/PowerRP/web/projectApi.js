@@ -166,6 +166,51 @@ export async function getClipboard() {
   return payload ?? null;
 }
 
+/** Command. Begin a SERVER-SIDE MP4-export session; returns the server-minted
+ *  sessionId. The SERVER mints the id (not the client) so no secure-context-only
+ *  crypto (crypto.randomUUID) is needed — MP4 export must work on plain HTTP,
+ *  which is the whole reason it moved server-side. Throws loudly on a non-OK
+ *  response (or an unreachable server). */
+export async function beginMp4Export() {
+  const res = await fetch(`${BACKEND}/api/export-mp4/`, { method: "POST" });
+  const { sessionId } = await jsonOrThrow(res, "beginMp4Export");
+  return sessionId;
+}
+
+/** Command. Upload one rendered PNG frame (raw bytes `png`, a Blob) as frame
+ *  `index` (0-based) of an export session. The caller awaits this so frames land
+ *  in order and the browser holds only one PNG at a time (backpressure). Throws
+ *  loudly on a non-OK response. */
+export async function postMp4ExportFrame(sessionId, index, png) {
+  const res = await fetch(`${BACKEND}/api/export-mp4/${enc(sessionId)}/frame/${enc(String(index))}/`, {
+    method: "POST",
+    headers: { "Content-Type": "image/png" },
+    body: png,
+  });
+  return jsonOrThrow(res, `postMp4ExportFrame(${sessionId}, ${index})`);
+}
+
+/** Command. Finish an export: the server runs ffmpeg over the uploaded frames at
+ *  `fps`/`crf`, returns the encoded MP4, and deletes the session scratch.
+ *  Resolves to a "video/mp4" Blob. Throws loudly on a non-OK response — the body
+ *  is binary, so (like downloadProjectZip) the status is checked before .blob(),
+ *  preferring the server's JSON {error} on failure. */
+export async function encodeMp4Export(sessionId, { fps, crf }) {
+  const res = await fetch(`${BACKEND}/api/export-mp4/${enc(sessionId)}/encode/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fps, crf }),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).error ?? detail;
+    } catch {} // body may be empty/non-JSON — status text is enough
+    throw new Error(`encodeMp4Export(${sessionId}): ${res.status} ${detail}`);
+  }
+  return res.blob();
+}
+
 /** Command. Download the whole project as a .zip (browser save dialog). The
  *  ZIP is built server-side from the folder (doc.json + assets). */
 export async function downloadProjectZip(name) {

@@ -3,15 +3,15 @@
   Modal; App.svelte owns the <Modal> wrapper, mirroring BuiltinAssetBrowser).
 
   Presents the export knobs — resolution (presets + custom, defaulting to THE
-  CAMERA's size), fps, quality/bitrate, slide range, include-transitions, and a
+  CAMERA's size), fps, quality (CRF), slide range, include-transitions, and a
   letterbox background — then runs app.exportMp4() with a live progress bar. The
   encode is many frames (one per 1/fps of the presentation timeline), so it is
   cancellable (AbortController) and disables the form while running.
 
-  AVAILABILITY: WebCodecs VideoEncoder is a SECURE-CONTEXT API (https/localhost).
-  On a plain-HTTP LAN origin it is absent; this form then shows the loud reason
-  and disables Export rather than pretending to work (no MediaRecorder fallback —
-  that would be non-deterministic).
+  AVAILABILITY: the encode is SERVER-SIDE (the client renders frames, the backend
+  ffmpeg encodes) precisely so it works everywhere — including plain HTTP on a LAN
+  IP, where the browser's secure-context-only WebCodecs VideoEncoder is absent.
+  There is no secure-context gate: Export is always enabled.
 
   This component is self-contained (scoped <style> using theme tokens with
   fallbacks, like the SvelteLib lib components) rather than routing through the
@@ -23,18 +23,17 @@
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import { cameraRectAt } from "./cameraFrame.js";
   import { DEFAULT_FPS, DEFAULT_HOLD_SECONDS, DEFAULT_SAMPLES } from "./videoExport.js";
-  import { QUALITY_PRESETS, qualityBitrate, videoExportUnavailableReason } from "./mp4Encoder.js";
+  import { QUALITY_CRF, CRF_MIN, CRF_MAX, DEFAULT_CRF } from "./serverMp4Encoder.js";
 
   let { app } = $props();
 
   // Bounds (named, not magic): H.264 needs EVEN dimensions (4:2:0). Cap fps and
-  // dwell to sane authoring ranges; the encoder validates the real codec limits.
+  // dwell to sane authoring ranges; the server validates the real codec limits.
   const MIN_DIM = 16;
-  const MAX_DIM = 7680; // 8K wide — beyond any level we emit, the encoder rejects loudly
+  const MAX_DIM = 7680; // 8K wide — beyond that, encoding gets impractical
   const MIN_FPS = 1;
   const MAX_FPS = 120;
   const MAX_HOLD_SECONDS = 60;
-  const MAX_BITRATE_MBPS = 200;
   const MIN_SAMPLES = 1;
   const MAX_SAMPLES = 16; // temporal subsamples per frame (motion blur); >16 rarely worth the cost
 
@@ -47,9 +46,9 @@
   function clampSlide(n) {
     return Math.max(1, Math.min(slideCount, Math.round(n)));
   }
-  /** Pure. Round to one decimal (Mbps display). */
-  function round1(v) {
-    return Math.round(v * 10) / 10;
+  /** Pure. Clamp a CRF into the libx264 valid range [CRF_MIN, CRF_MAX]. */
+  function clampCrf(n) {
+    return Math.max(CRF_MIN, Math.min(CRF_MAX, Math.round(n)));
   }
 
   // THE CAMERA's size at the current slide = the default output size (the camera
@@ -60,9 +59,6 @@
   const camW = evenDim(cam.w);
   const camH = evenDim(cam.h);
   const slideCount = untrack(() => app.doc.slides.length);
-
-  // Secure-context availability (null ⇒ export can run here).
-  const unavailable = videoExportUnavailableReason();
 
   const RESOLUTIONS = [
     { value: "camera", label: `Camera size — ${camW}×${camH}`, w: camW, h: camH },
@@ -77,7 +73,7 @@
     { value: "low", label: "Low (smaller file)" },
     { value: "medium", label: "Medium" },
     { value: "high", label: "High (crisper)" },
-    { value: "custom", label: "Custom bitrate…" },
+    { value: "custom", label: "Custom (CRF)…" },
   ];
   const RANGE_MODES = [
     { value: "all", label: "All slides" },
@@ -90,7 +86,7 @@
   let customH = $state(camH);
   let fps = $state(DEFAULT_FPS);
   let quality = $state("medium");
-  let customMbps = $state(round1(qualityBitrate(camW, camH, DEFAULT_FPS, QUALITY_PRESETS.medium) / 1e6));
+  let customCrf = $state(DEFAULT_CRF); // libx264 CRF when quality === "custom"
   let rangeMode = $state("all");
   let rangeFrom = $state(1);
   let rangeTo = $state(slideCount);
@@ -109,14 +105,9 @@
   let preset = $derived(RESOLUTIONS.find((r) => r.value === resolution));
   let width = $derived(resolution === "custom" ? evenDim(customW) : preset.w);
   let height = $derived(resolution === "custom" ? evenDim(customH) : preset.h);
-  let bitrate = $derived(
-    quality === "custom"
-      ? Math.max(1, Math.round(Math.min(MAX_BITRATE_MBPS, customMbps) * 1e6))
-      : qualityBitrate(width, height, fps, QUALITY_PRESETS[quality]),
-  );
+  let crf = $derived(quality === "custom" ? clampCrf(customCrf) : QUALITY_CRF[quality]);
   let startIndex = $derived(rangeMode === "all" ? 0 : clampSlide(rangeFrom) - 1);
   let endIndex = $derived(rangeMode === "all" ? slideCount - 1 : clampSlide(rangeTo) - 1);
-  let effectiveMbps = $derived(round1(bitrate / 1e6));
 
   let busy = $derived(phase === "encoding");
   let progressPct = $derived(Math.round(progress * 100));
@@ -124,14 +115,14 @@
   /** Command (async). Runs the export with the current form values, tracking
    *  progress; cancellable. Loud on failure (also surfaced in the form). */
   async function runExport() {
-    if (unavailable || busy) return;
+    if (busy) return;
     phase = "encoding";
     progress = 0;
     errorMsg = null;
     controller = new AbortController();
     try {
       await app.exportMp4({
-        width, height, fps, bitrate, samples: Math.round(samples),
+        width, height, fps, crf, samples: Math.round(samples),
         startIndex, endIndex, includeTransitions, holdSeconds, background,
         onProgress: (f) => (progress = f),
         signal: controller.signal,
@@ -157,11 +148,7 @@
 </script>
 
 <div class="emx">
-  {#if unavailable}
-    <p class="emx-unavailable">{unavailable}</p>
-  {/if}
-
-  <div class="emx-form" class:emx-disabled={busy || !!unavailable}>
+  <div class="emx-form" class:emx-disabled={busy}>
     <label class="emx-row">
       <span class="emx-label">Resolution</span>
       <span class="emx-control"><Dropdown items={RESOLUTIONS} bind:value={resolution} /></span>
@@ -188,8 +175,11 @@
     </label>
     {#if quality === "custom"}
       <label class="emx-row">
-        <span class="emx-label">Bitrate</span>
-        <span class="emx-control"><DraggableNumber bind:value={customMbps} min={0.1} max={MAX_BITRATE_MBPS} step={0.1} suffix=" Mbps" label="Bitrate in megabits per second" /></span>
+        <span class="emx-label">CRF</span>
+        <span class="emx-control emx-inline">
+          <DraggableNumber bind:value={customCrf} min={CRF_MIN} max={CRF_MAX} step={1} label="H.264 constant rate factor" />
+          <span class="emx-hint">Constant rate factor — lower is higher quality &amp; larger (0 lossless … 51 worst)</span>
+        </span>
       </label>
     {/if}
 
@@ -239,7 +229,7 @@
   </div>
 
   <p class="emx-summary">
-    Output: {width}×{height} · {fps} fps · ~{effectiveMbps} Mbps
+    Output: {width}×{height} · {fps} fps · CRF {crf} (lower = higher quality)
   </p>
 
   {#if phase === "encoding"}
@@ -257,7 +247,7 @@
     {#if busy}
       <button type="button" class="emx-btn" onclick={cancelExport}>Cancel</button>
     {:else}
-      <button type="button" class="emx-btn emx-primary" disabled={!!unavailable} onclick={runExport}>
+      <button type="button" class="emx-btn emx-primary" onclick={runExport}>
         Export MP4
       </button>
     {/if}
@@ -292,16 +282,6 @@
     margin: 0 auto;
     color: var(--emx-fg);
     font-size: var(--emx-font);
-  }
-
-  .emx-unavailable {
-    margin: 0;
-    padding: var(--emx-pad);
-    border: 1px solid var(--emx-error);
-    border-radius: var(--emx-radius);
-    color: var(--emx-error);
-    font-size: var(--emx-font-sm);
-    line-height: 1.4;
   }
 
   .emx-form {
