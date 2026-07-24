@@ -17,7 +17,8 @@ import { resolveTransition, retypedTransition } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld } from "../core/derive.js";
 import { evaluateState, withVariableRenamed, anchorRefName } from "../core/expressions.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
-import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView } from "../core/view.js";
+import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
+import { bundleDefaults } from "../core/properties.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import * as projectApi from "./projectApi.js";
@@ -46,6 +47,14 @@ const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
 const BAND_MODE_KEY = "powerrp.bandMode";
 
+// Retina/HiDPI is CAMERA-ONLY (the scene-global "Rendering" bundle on THE
+// camera — core/properties.js). There is deliberately NO browser-level retina
+// setting: the camera prop is the single source of truth (app.dpr() reads it).
+// This default only backstops app.dpr()'s degenerate-doc path (no active
+// camera); sourcing it from the shared registry keeps it from drifting from
+// the Inspector's Rendering → Retina default.
+const CAMERA_RETINA_DEFAULT = bundleDefaults("rendering").retina;
+
 // THE settings repo (manifest "SETTINGS TAXONOMY"): every boolean BROWSER
 // setting declared ONCE here (key + default), consumed by a $state field
 // (`.initial`) + a toggle method (`.persist`) below. Adding a setting = one
@@ -53,7 +62,6 @@ const BAND_MODE_KEY = "powerrp.bandMode";
 const SETTINGS = {
   minimap: browserSetting("powerrp.minimap", true),
   panelNames: browserSetting("powerrp.panelNames", false),
-  retina: browserSetting("powerrp.retina", true),
   snap: browserSetting("powerrp.snap", true),
   snapSize: browserSetting("powerrp.snapSize", true),
   grid: browserSetting("powerrp.grid", false),
@@ -254,8 +262,6 @@ export class PowerRPApp {
   // Panel / Keyframe Panel) as a title bar. OFF by default (panels are not
   // first-class — manifest Round 7).
   panelNames = $state(SETTINGS.panelNames.initial);
-  // Render raster surfaces at devicePixelRatio. Default ON (manifest).
-  retina = $state(SETTINGS.retina.initial);
   // Master snap toggle (gates ALL snapping — move AND resize) and the
   // snap-size / matching-dimension toggle. Both default ON.
   snapEnabled = $state(SETTINGS.snap.initial);
@@ -326,10 +332,6 @@ export class PowerRPApp {
     this.fpsVisible = SETTINGS.fps.persist(!this.fpsVisible);
   }
 
-  toggleRetina() {
-    this.retina = SETTINGS.retina.persist(!this.retina);
-  }
-
   togglePanelNames() {
     this.panelNames = SETTINGS.panelNames.persist(!this.panelNames);
   }
@@ -354,9 +356,36 @@ export class PowerRPApp {
     this.showGhosts = SETTINGS.showGhosts.persist(!this.showGhosts);
   }
 
-  /** Query. The effective devicePixelRatio for all raster rendering. */
+  /**
+   * Query. THE camera's folded item state on the current slide as {id, state},
+   * or null on a degenerate pre-repair document with no active camera (the
+   * CAMERA invariant guarantees exactly one otherwise). Selected by the SAME
+   * deterministic rule as core/derive.cameraRect — the first active
+   * `type:"camera"` by id. Reads the memoized folded+evaluated state(), so a
+   * caller in a reactive scope (app.dpr() ← CanvasView's paint effect)
+   * recomputes when the document or slide changes; no render-tree derivation.
+   */
+  cameraState() {
+    const entry = Object.entries(this.state().items ?? {})
+      .filter(([, s]) => s.type === "camera" && s.active !== false)
+      .sort(([a], [b]) => (a < b ? -1 : 1))[0];
+    return entry ? { id: entry[0], state: entry[1] } : null;
+  }
+
+  /**
+   * Query. The effective devicePixelRatio for ALL raster rendering — the SOLE
+   * reader of the retina setting, which is CAMERA-ONLY: THE camera's `retina`
+   * prop (Inspector → Rendering → Retina) is the single source of truth.
+   * REACTIVE: flipping that prop reassigns this.doc, so the folded state() this
+   * reads changes and CanvasView's paint effect (a dep of app.doc) repaints and
+   * resizes the canvas backing store. retina ON → the display's device pixel
+   * ratio (crisp on HiDPI); OFF → 1 (1:1 CSS px, softer, faster). The
+   * camera-absent / missing-prop degenerate case falls back to the registry
+   * default, matching core/derive.cameraRect's `?? default` idiom.
+   */
   dpr() {
-    return this.retina ? window.devicePixelRatio || 1 : 1;
+    const retina = this.cameraState()?.state.retina ?? CAMERA_RETINA_DEFAULT;
+    return effectiveDpr(retina, window.devicePixelRatio || 1);
   }
 
   constructor() {

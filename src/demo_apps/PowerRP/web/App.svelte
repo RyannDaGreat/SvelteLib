@@ -154,7 +154,6 @@
     { id: "toggle-ruler", title: "Toggle Ruler", icon: "mdi:ruler", run: (a) => a.toggleRuler() },
     { id: "toggle-ghosts", title: "Show Ghosts", icon: "mdi:eye-outline", run: (a) => a.toggleGhosts() },
     { id: "toggle-panel-names", title: "Toggle Panel Names", icon: "mdi:format-title", run: (a) => a.togglePanelNames() },
-    { id: "toggle-retina", title: "Toggle Retina Rendering (browser setting)", icon: "mdi:monitor-eye", run: (a) => a.toggleRetina() },
     { id: "new-slide", title: "New Slide", icon: "mdi:plus-box-outline", run: (a) => a.addSlide() },
     { id: "new-blank-slide", title: "New Fresh Slide (hide everything)", icon: "mdi:plus-box", run: (a) => a.addBlankSlide() },
     { id: "delete-slide", title: "Delete Slide", icon: "mdi:file-remove-outline", when: (a) => a.doc.slides.length > 1, run: (a) => a.deleteSlide() },
@@ -237,6 +236,10 @@
       children: [
         { id: "demo-insert-showcase", title: "Demo Showcase (custom self.* prop)", icon: "mdi:flask", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_showcase")) },
         { id: "demo-insert-glass", title: "Liquid Glass (backdrop refraction shader)", icon: "mdi:blur", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_glass")) },
+        { id: "demo-insert-crt", title: "CRT (backdrop material shader)", icon: "mdi:television-classic", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_crt")) },
+        { id: "demo-insert-text-dissolve", title: "Text Dissolve (tween word → word)", icon: "mdi:transition", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_dissolve")) },
+        { id: "demo-insert-text-type", title: "Text Typewriter (reveal by alpha)", icon: "mdi:cursor-text", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_type")) },
+        { id: "demo-insert-text-scramble", title: "Text Scramble (decode by alpha)", icon: "mdi:shuffle-variant", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_scramble")) },
         { id: "demo-insert-magnifier", title: "Magnifier", icon: "mdi:magnify", run: (a) => a.armCrosshairPlacement(a.registry.get("magnifier")) },
         { id: "demo-insert-cursor", title: "macOS Cursor (built-in SVG + ephemeral spin)", icon: "mdi:cursor-default-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("cursor")) },
       ],
