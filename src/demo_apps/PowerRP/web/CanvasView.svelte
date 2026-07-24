@@ -284,8 +284,31 @@
   // MiniMap.svelte) — the longest CSS edge the content is displayed at; linked,
   // not invented (user rule: base constants on precedent).
   const MINIMAP_MAX_PX = 150;
+  // The minimap is a ~150px OVERVIEW — it does NOT need per-video-frame updates.
+  // Driving it off the raw `imageEpoch` (≈30/s while a clip plays) re-ran the whole
+  // offscreen slide render + full-res video CPU readback + PNG encode 30×/s on the
+  // main thread (the leftover "sluggish with a video" cost). So decouple it: EDITS
+  // refresh immediately (the effect's app.doc/slideIndex/minimapCamRect deps), while
+  // playing video refreshes it at most MINIMAP_REFRESH_MS apart via a trailing
+  // throttle of `imageEpoch` into `minimapVideoTick`.
+  const MINIMAP_REFRESH_MS = 125; // ≤ 8 fps — an overview cadence, never video-rate
+  let minimapVideoTick = $state(0);
+  let minimapLastTick = 0;   // performance.now() of the last emitted tick (non-reactive)
+  let minimapTimer = null;   // pending trailing-edge timer, or null (non-reactive)
   $effect(() => {
-    app.doc; app.slideIndex; app.minimapVisible; minimapCamRect; imageEpoch;
+    imageEpoch; // the raw per-on-screen-video-frame epoch (≈30/s while playing)
+    if (!app.minimapVisible) return; // hidden → schedule no offscreen work
+    const now = performance.now();
+    const since = now - minimapLastTick;
+    if (since >= MINIMAP_REFRESH_MS) { minimapLastTick = now; minimapVideoTick += 1; } // leading edge
+    else if (minimapTimer === null) { // one trailing tick catches the burst's last frame
+      minimapTimer = setTimeout(() => { minimapTimer = null; minimapLastTick = performance.now(); minimapVideoTick += 1; }, MINIMAP_REFRESH_MS - since);
+    }
+  });
+  onDestroy(() => { if (minimapTimer !== null) clearTimeout(minimapTimer); });
+  $effect(() => {
+    // minimapVideoTick (throttled), NOT the raw imageEpoch — see the throttle above.
+    app.doc; app.slideIndex; app.minimapVisible; minimapCamRect; minimapVideoTick;
     if (!app.minimapVisible || app.previewDelta) return;
     const rect = minimapCamRect;
     if (!(rect.w > 0 && rect.h > 0)) return; // degenerate camera → no thumbnail

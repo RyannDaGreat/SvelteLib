@@ -86,43 +86,59 @@ try {
   await page.waitForSelector("canvas.scene", { timeout: 20000 });
   await new Promise((r) => setTimeout(r, 3000)); // Skia init + first paint
 
-  /** Command (async). Load a doc, park the editor on `slideIndex`, fit the camera. */
-  async function load(doc, slideIndex) {
-    await page.evaluate((doc, slideIndex) => {
+  /** Command (async). Load a doc, park the editor on `slideIndex`, fit the camera,
+   * and set the minimap visibility (FIX 1 shows only when the minimap is on). */
+  async function load(doc, slideIndex, { minimap = false } = {}) {
+    await page.evaluate((doc, slideIndex, minimap) => {
       const app = window.__powerrp_app;
       app.commit(app.repaired(doc));
       app.slideIndex = slideIndex;
+      app.minimapVisible = minimap;
+      app.anchorsVisible = false;
       app.runCommand("reset-view");
-    }, doc, slideIndex);
+    }, doc, slideIndex, minimap);
     await new Promise((r) => setTimeout(r, 2500)); // let videos decode + start playing
   }
 
-  /** Query (async). rAF fps + editor paints over WINDOW_MS. High rAF fps = the
-   * main thread is responsive (not stalled by per-frame GPU→CPU readbacks). */
-  async function measure() {
-    return await page.evaluate((ms) => new Promise((resolve) => {
+  /** Query (async). Over WINDOW_MS: rAF fps (main-thread responsiveness), editor
+   * paints/s, and <video>→texture uploads/s. When `drag` is set, forces a paint
+   * every rAF tick (toggling app.anchorsVisible) to SIMULATE dragging while a clip
+   * plays — that is where the frame-advance gate (FIX 2) shows: uploads/s should
+   * stay ~video-rate while paints/s climbs toward display-rate. */
+  async function measure({ drag = false } = {}) {
+    return await page.evaluate((ms, drag) => new Promise((resolve) => {
       const app = window.__powerrp_app;
+      // Counter hook may be absent (a stashed BEFORE run) — then uploads/s = -1.
+      const uploadCount = () => (typeof window.__powerrp_videoUploadCount === "function" ? window.__powerrp_videoUploadCount() : NaN);
       const paints0 = app.renderFrameCount;
+      const uploads0 = uploadCount();
       let frames = 0; const t0 = performance.now(); let maxGap = 0, prev = t0;
       function tick(now) {
         frames++; maxGap = Math.max(maxGap, now - prev); prev = now;
+        if (drag) app.anchorsVisible = !app.anchorsVisible; // force a paint this frame
         if (now - t0 >= ms) {
           const secs = (now - t0) / 1000;
-          resolve({ fps: +(frames / secs).toFixed(1), paintsPerSec: +((app.renderFrameCount - paints0) / secs).toFixed(1), maxGapMs: +maxGap.toFixed(1) });
+          const du = uploadCount() - uploads0;
+          resolve({
+            fps: +(frames / secs).toFixed(1),
+            paintsPerSec: +((app.renderFrameCount - paints0) / secs).toFixed(1),
+            uploadsPerSec: Number.isNaN(du) ? -1 : +(du / secs).toFixed(1),
+            maxGapMs: +maxGap.toFixed(1),
+          });
           return;
         }
         requestAnimationFrame(tick);
       }
       requestAnimationFrame(tick);
-    }), WINDOW_MS);
+    }), WINDOW_MS, drag);
   }
 
   const rows = [];
-  async function scenario(label, doc, slideIndex) {
-    await load(doc, slideIndex);
-    const m = await measure();
+  async function scenario(label, doc, slideIndex, opts = {}) {
+    await load(doc, slideIndex, opts);
+    const m = await measure(opts);
     rows.push({ label, ...m });
-    console.log(`  ${label.padEnd(22)} fps=${String(m.fps).padStart(6)}  paints/s=${String(m.paintsPerSec).padStart(6)}  maxGap=${m.maxGapMs}ms`);
+    console.log(`  ${label.padEnd(26)} fps=${String(m.fps).padStart(6)}  paints/s=${String(m.paintsPerSec).padStart(6)}  uploads/s=${String(m.uploadsPerSec).padStart(6)}  maxGap=${m.maxGapMs}ms`);
     return m;
   }
 
@@ -145,7 +161,42 @@ try {
   await scenario("N=3 off-screen", makeDoc(videoItems(3, { offscreen: true }), {}), 0);
   await scenario("N=3 off-slide", makeDoc({ cam: videoItems(0).cam }, videoItems(3)), 0);
 
-  console.log("\nVLM shot: .claude_vlm_checks/video_perf_visible.png (should show the colorful testsrc pattern, not black)");
+  // FIX 1 — minimap visible + a playing video, IDLE. Before the throttle, the
+  // minimap re-rendered (offscreen slide render + full-res video CPU readback +
+  // PNG encode) 30×/s on the main thread; after, ≤ ~8×/s. Compare fps to
+  // "N=1 visible" (same scene, minimap OFF).
+  await scenario("N=1 +minimap idle", makeDoc(videoItems(1), {}), 0, { minimap: true });
+
+  // FIX 2 — a SMALL on-screen video (cheap raster ⇒ paints can outrun the 30 fps
+  // decode) while DRAGGING (forced repaint every rAF). uploads/s should stay
+  // ~video-rate (gate skips redundant re-uploads), NOT track paints/s.
+  const smallVideoDoc = makeDoc({
+    cam: videoItems(0).cam,
+    v0: { type: "video", src: SRCS[0], x: 20, y: 20, w: 160, h: 90, z: 1, rotation: 0, scale: 1, active: true },
+  }, {});
+  await scenario("N=1 small drag+video", smallVideoDoc, 0, { drag: true });
+
+  // MINIMAP CORRECTNESS (FIX 1 must keep it right, just refresh less): a 2-slide
+  // doc with DISTINCT camera backgrounds (dark + video, then red) — the minimap
+  // must show slide 0, and must UPDATE (differ) when the slide changes.
+  const minimapDoc = makeDoc(
+    { cam: { ...videoItems(1).cam }, v0: videoItems(1).v0 },
+    { cam: { background: "#ff2020" }, v0: { active: false } }, // slide-1 delta: red camera, video removed
+  );
+  await load(minimapDoc, 0, { minimap: true });
+  await new Promise((r) => setTimeout(r, 1200)); // minimap render (edit-driven, immediate)
+  const dock = await page.$(".minimap-dock");
+  const shot0 = await dock.screenshot();
+  await writeFile(resolve(vlmDir, "video_perf_minimap_slide0.png"), shot0);
+  await page.evaluate(() => { window.__powerrp_app.slideIndex = 1; window.__powerrp_app.runCommand("reset-view"); });
+  await new Promise((r) => setTimeout(r, 1200));
+  const shot1 = await (await page.$(".minimap-dock")).screenshot();
+  await writeFile(resolve(vlmDir, "video_perf_minimap_slide1.png"), shot1);
+  const minimapUpdated = !shot0.equals(shot1);
+  console.log(`\nminimap updates on slide change: ${minimapUpdated ? "YES" : "NO (FAIL)"}`);
+  if (!minimapUpdated) failed = true;
+
+  console.log("\nVLM shots: .claude_vlm_checks/video_perf_visible.png (3 distinct clips, not black) + video_perf_minimap_slide0.png (dark+video) / _slide1.png (red)");
   console.log(`\nDONE video_perf_probe (N=3 visible fps=${n3.fps}). Run again with the fix git-stashed for the BEFORE column.`);
 } catch (e) {
   console.error("\nFAIL video_perf_probe:", e?.stack ?? e);

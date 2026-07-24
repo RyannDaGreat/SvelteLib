@@ -206,13 +206,39 @@ export function videoElementToSkiaImage(uploader, videoEl) {
  * frames are fresh + caller-deleted per paint). */
 const _playerFrames = new Map();
 
+/** Diagnostic counter (read via videoUploadCount): total <video>→GPU-texture
+ * uploads (texImage2D — first creates AND in-place refreshes) since load. Lets a
+ * probe confirm the frame-advance gate below keeps uploads at ~video-rate, not
+ * paint-rate. Cheap (one integer add on the GPU path). */
+let _uploadCount = 0;
+
+/** Query. Total <video>→GPU-texture uploads so far (a diagnostic; see _uploadCount).
+ * @example videoUploadCount() // 0  (before any GPU player/scrub frame is grabbed) */
+export function videoUploadCount() { return _uploadCount; }
+
+/** Pure function. The frame-advance marker for a player entry/element: the rVFC
+ * `presentedFrames` count (increments once per DECODED frame — the precise "new
+ * frame" signal), falling back to `currentTime` before the first rVFC tick or
+ * where rVFC is unsupported. A texture is re-uploaded ONLY when this changes, so a
+ * repaint burst (drag/pan) that outruns the ~30 fps decode does not re-upload the
+ * SAME frame at paint-rate.
+ *
+ * @example playerFrameMarker({presentedFrames: 7}, {currentTime: 0.23}) // 7
+ * @example playerFrameMarker({presentedFrames: 0}, {currentTime: 0.23}) // 0.23 (pre-first-frame fallback)
+ */
+function playerFrameMarker(entry, el) {
+  if (entry && entry.presentedFrames > 0) return entry.presentedFrames;
+  return el.currentTime;
+}
+
 /**
  * Query→build (near-pure: idempotent element create + a per-paint frame grab).
  * The player's CURRENT frame as a CanvasKit Image via `uploader`, or null when
  * there is no drawable frame yet (draw NOTHING — the async contract). On a GPU
  * uploader the Image is REUSED across paints (one texture per scope+ref, refreshed
- * in place) so there is zero per-frame allocation — and the caller must NOT delete
- * it (the registry owns it). On a CPU uploader it is a FRESH image the caller
+ * in place ONLY when the frame advanced — playerFrameMarker) so there is zero
+ * per-frame allocation AND no redundant re-upload during a repaint burst — and the
+ * caller must NOT delete it (the registry owns it). On a CPU uploader it is a FRESH image the caller
  * deletes after the frame is painted (browser_media.release). ensureVideo is
  * kicked with the default playback flags (autoplay/loop/muted); onVideoFrame
  * drives the per-frame repaint that re-runs this.
@@ -228,15 +254,22 @@ export function getSkiaVideoFrame(uploader, ref) {
   const w = el.videoWidth, h = el.videoHeight;
   if (!(w > 0 && h > 0)) return null; // frame dimensions not known yet → draw nothing
   if (!uploader.isGpu) return videoElementToSkiaImage(uploader, el); // CPU: fresh per paint (caller deletes)
-  // GPU: reuse ONE texture-backed Image per (scope, ref); refresh it in place.
+  // GPU: reuse ONE texture-backed Image per (scope, ref); refresh it in place, but
+  // ONLY when the frame actually ADVANCED (playerFrameMarker) — a repaint burst
+  // (dragging/panning while a clip plays) would otherwise re-upload the SAME frame
+  // at paint-rate, wasted GPU bandwidth that caps interaction fps.
   const key = uploader.scopeId + "|" + ref;
+  const marker = playerFrameMarker(registry.get(ref), el);
   let slot = _playerFrames.get(key);
   if (slot && (slot.w !== w || slot.h !== h)) { slot.img.delete(); _playerFrames.delete(key); slot = null; } // dims changed → rebuild
   if (!slot) {
-    slot = { img: videoElementToSkiaImage(uploader, el), w, h };
+    slot = { img: videoElementToSkiaImage(uploader, el), w, h, marker };
     _playerFrames.set(key, slot);
-  } else {
-    uploader.refresh(slot.img, el); // re-upload the current frame into the existing texture — no readback, no alloc
+    _uploadCount += 1; // videoElementToSkiaImage did a texImage2D
+  } else if (slot.marker !== marker) {
+    uploader.refresh(slot.img, el); // frame ADVANCED → re-upload; an unchanged frame reuses the texture as-is
+    slot.marker = marker;
+    _uploadCount += 1;
   }
   return slot.img; // registry-owned; the caller must NOT delete it
 }
@@ -326,7 +359,9 @@ export function ensureVideo(src, { autoplay = true, loop = true, muted = true } 
   el.playsInline = true; // iOS/Safari: play in place, never fullscreen-hijack
   el.crossOrigin = "anonymous"; // allow importExternalTexture / canvas grab of cross-origin assets that permit it
   el.preload = "auto";
-  const entry = { status: "loading", el, error: null };
+  // presentedFrames: the rVFC decoded-frame counter (the frame-advance gate in
+  // getSkiaVideoFrame reads it so a paint burst doesn't re-upload the same frame).
+  const entry = { status: "loading", el, error: null, presentedFrames: 0 };
   registry.set(src, entry);
 
   // Loud failure: the element's error event (bad codec, 404, decode failure).
@@ -352,10 +387,13 @@ export function ensureVideo(src, { autoplay = true, loop = true, muted = true } 
 
   // Per-frame repaint nudge. requestVideoFrameCallback fires once per PAINTED
   // video frame (the precise signal); re-arm it each call so a playing clip
-  // keeps nudging. Where unsupported, "timeupdate" (coarser, but real) drives
-  // repaints as playback advances.
+  // keeps nudging. Its metadata.presentedFrames is the decoded-frame counter the
+  // frame-advance gate (playerFrameMarker) uses to skip redundant texture uploads.
+  // Where unsupported, "timeupdate" (coarser, but real) drives repaints as
+  // playback advances (the gate then falls back to currentTime).
   if (typeof el.requestVideoFrameCallback === "function") {
-    const pump = () => {
+    const pump = (_now, metadata) => {
+      if (metadata && Number.isFinite(metadata.presentedFrames)) entry.presentedFrames = metadata.presentedFrames;
       notify(src);
       el.requestVideoFrameCallback(pump);
     };
