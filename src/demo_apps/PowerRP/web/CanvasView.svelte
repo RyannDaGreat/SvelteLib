@@ -13,7 +13,7 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
-  import { pickNode, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
+  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { worldViewRect, canSkipNode } from "../core/view.js";
@@ -660,29 +660,40 @@
     const hit = pickNode(nodes, w.x, w.y, tol);
     // ── SELECTED-OBJECT DRAG PRIORITY (PowerPoint parity) ─────────────────────
     // Precedence #2 (after resize/rotate handles, before the topmost hit-test):
-    // once objects are selected, grabbing ON the current selection's OWN
-    // geometry (fill/rim/bounds) moves THAT selection even when a DIFFERENT
-    // object is stacked ON TOP at the grab point — exactly how a handle already
-    // overrides the topmost pick (handles do it via a DOM overlay + stopPropagation;
-    // the body has no covering element, so the override lives here). `pickNode`
-    // restricted to the selected nodes IS the "point inside the selection's
-    // bounds" query (reused, not re-derived); it engages ONLY when the global
-    // topmost `hit` is some OTHER, non-selected object, so grabbing a selected
-    // object with nothing on top is byte-identical to before. Shift is excluded
-    // (its multi-select / axis-lock path is untouched). The top object is
-    // remembered in `clickSelectId`: a plain CLICK (no drag past the slop) still
-    // selects it on release (PPT lets a click cycle selection to the thing on
-    // top) — only a real DRAG keeps the priority.
+    // once objects are selected, grabbing a selected object moves THAT selection
+    // even when a DIFFERENT object is stacked ON TOP at the grab point — exactly
+    // how a handle already overrides the topmost pick (handles do it via a DOM
+    // overlay + stopPropagation; the body has no covering element, so the
+    // override lives here). Two tiers of "grabbing a selected object":
+    //   2a — press ON its actual shape (fill/rim): `pickNode` restricted to the
+    //        selected nodes, reused not re-derived.
+    //   2b — press anywhere inside its BOUNDING BOX (the rotation-aware OBB the
+    //        handles frame) EVEN in the empty gaps a thin line / star /
+    //        circle-corner / rotated rect leaves — `pointInNodeBox`. Multi-select:
+    //        any selected member's box counts (topmost first, mirroring pickNode),
+    //        which naturally covers the collective box. moveBy-only widgets
+    //        (arrows: no w/h) have no box, so 2b skips them and they keep 2a.
+    // The override engages ONLY when the global topmost `hit` is NOT already a
+    // selected object (grabbing a selected object that is itself on top needs no
+    // override — `grab = hit` handles it), so behavior with nothing else stacked
+    // is byte-identical to before. Shift is excluded (its multi-select /
+    // axis-lock path is untouched). The top object (if any) is remembered in
+    // `clickSelectId`: a plain CLICK (no drag past the slop) still selects it on
+    // release (PPT lets a click cycle selection to the thing on top) — only a
+    // real DRAG keeps the priority. `hit === null` (empty box gap, nothing on
+    // top) leaves clickSelectId null, so a click there just keeps the selection.
     let overrideSel = null;
     let clickSelectId = null;
-    if (!e.shiftKey && hit) {
+    if (!e.shiftKey) {
       const selIds = app.selectedIds();
-      if (selIds.length && !selIds.includes(hit.itemId)) {
+      if (selIds.length && !(hit && selIds.includes(hit.itemId))) {
         const selSet = new Set(selIds);
-        const onSel = pickNode(nodes.filter((n) => selSet.has(n.itemId)), w.x, w.y, tol);
+        const selNodes = nodes.filter((n) => selSet.has(n.itemId));
+        // 2a shape, else 2b oriented box (scan top-down = pickNode's topmost rule).
+        const onSel = pickNode(selNodes, w.x, w.y, tol) ?? selNodes.findLast((n) => pointInNodeBox(n.state, w.x, w.y));
         if (onSel && (onSel.plugin.capabilities.transform || onSel.plugin.moveBy)) {
           overrideSel = onSel;
-          clickSelectId = hit.itemId;
+          clickSelectId = hit?.itemId ?? null;
         }
       }
     }
@@ -698,7 +709,11 @@
     // semantics (deselect-caught, see bandDrag/onPointerUp) only apply to a
     // gesture that is unambiguously a band drag from the start (toolbar/
     // palette-armed, or this empty-space default with no modifier).
-    if (!e.shiftKey && !hit) {
+    // `!overrideSel`: a press with no shape hit but INSIDE a selected object's
+    // box (2b above) is NOT empty space — it grabs that selection (falls through
+    // to the move-drag setup) instead of band-selecting. Only a press outside
+    // EVERY selected box (and no hit) reaches the band here.
+    if (!e.shiftKey && !hit && !overrideSel) {
       e.currentTarget.setPointerCapture(e.pointerId);
       drag = { kind: "band", mode: app.bandMode, startWorld: w, lastWorld: w };
       bandRect = rectFromCorners(w, w);

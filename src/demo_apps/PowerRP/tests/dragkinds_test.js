@@ -8,8 +8,13 @@
  */
 import assert from "node:assert/strict";
 import * as T from "../core/transform.js";
-import { worldTransform } from "../core/derive.js";
+import { worldTransform, deriveRenderTree, pickNode, pointInNodeBox } from "../core/derive.js";
 import { diffState } from "../core/deltas.js";
+import { newDocument, foldState, withNewItem } from "../core/document.js";
+import { evaluateState } from "../core/expressions.js";
+import { createRegistry } from "../core/registry.js";
+import { registerAll } from "../plugins/index.js";
+import { createCommands } from "../core/commands.js";
 import {
   translationPairs, resizeAnchors, resizedBox,
   scaledBoxAboutPoint, scaleMemberPairs, scalePairs, groupResizeState,
@@ -200,6 +205,90 @@ test("groupResizeState: an existing group scale multiplies (not overwrites)", ()
   // A group already at scale 2, resized ×1.5 about TL → 3.
   const gs = groupResizeState({ x: 0, y: 0, w: 100, h: 100, rotation: 0, scale: 2 }, { x: 0, y: 0, rotation: 0, scale: 2 }, { east: true, south: true }, {}, { x: 50, y: 50 });
   approx(gs.scale, 3);
+});
+
+// ── SELECTED-OBJECT DRAG PRIORITY: bounding-box grab (2b) ────────────────────
+// The onPointerDown precedence for a plain (non-shift) pointer-down, reproduced
+// against REAL derived nodes so the circle's ellipse hitTest / rect's full-bbox
+// hit / camera's border hit are all exercised end-to-end. This is a MIRROR of
+// CanvasView.svelte `onPointerDown` (the block ending `const grab = overrideSel
+// ?? hit`, plus the `!e.shiftKey && !hit && !overrideSel` band branch) — kept in
+// sync by hand, exactly as dragkinds mirrors dragKinds.js doctests. It returns
+// the decision that pointer-down reaches: "band" | "move"(itemId, clickSelectId)
+// | "none". `grabbable(n)` is CanvasView's draggable test.
+const registry = createRegistry();
+registerAll(registry, createCommands());
+const grabbable = (node) => !!node && !!(node.plugin.capabilities.transform || node.plugin.moveBy);
+
+function pointerDownDecision(nodes, selIds, wx, wy, tol = 0) {
+  const hit = pickNode(nodes, wx, wy, tol);
+  let overrideSel = null, clickSelectId = null;
+  if (selIds.length && !(hit && selIds.includes(hit.itemId))) {
+    const selSet = new Set(selIds);
+    const selNodes = nodes.filter((node) => selSet.has(node.itemId));
+    const onSel = pickNode(selNodes, wx, wy, tol) ?? selNodes.findLast((node) => pointInNodeBox(node.state, wx, wy));
+    if (grabbable(onSel)) { overrideSel = onSel; clickSelectId = hit?.itemId ?? null; }
+  }
+  const grab = overrideSel ?? hit;
+  if (!hit && !overrideSel) return { action: "band" };
+  if (!grabbable(grab)) return { action: "none" };
+  return { action: "move", itemId: grab.itemId, clickSelectId };
+}
+
+// A scene: a CIRCLE (ellipse hitTest — bbox corners are OFF-shape) placed clear
+// of the camera border, plus rects for the "object on top" and "other member".
+function scene() {
+  let doc = newDocument();
+  let circle, cover, other;
+  [doc, circle] = withNewItem(doc, 0, { type: "circle", active: true, x: 200, y: 200, w: 100, h: 100, rotation: 0, scale: 1, z: 1 });
+  [doc, cover] = withNewItem(doc, 0, { type: "rect", active: true, x: 202, y: 202, w: 6, h: 6, rotation: 0, scale: 1, z: 5 }); // covers the corner, on top
+  [doc, other] = withNewItem(doc, 0, { type: "rect", active: true, x: 400, y: 400, w: 50, h: 50, rotation: 0, scale: 1, z: 2 });
+  const nodes = deriveRenderTree(evaluateState(foldState(doc, 0, 1), registry).state, registry);
+  return { nodes, circle, cover, other };
+}
+// The circle's TOP-LEFT bbox corner (204,204) is inside the 100×100 box but
+// OUTSIDE the ellipse — the exact gap the fix closes.
+const CORNER_X = 204, CORNER_Y = 204;
+
+test("dragPriority: circle-corner press with pickNode MISSING confirms the gap 2b closes", () => {
+  const { nodes, circle } = scene();
+  const circleNode = nodes.find((node) => node.itemId === circle);
+  // Restricted to the circle alone: the ellipse hitTest misses its bbox corner
+  // (2a would fail), but the oriented box catches it (2b).
+  assert.equal(pickNode([circleNode], CORNER_X, CORNER_Y), null);
+  assert.ok(pointInNodeBox(circleNode.state, CORNER_X, CORNER_Y));
+});
+test("dragPriority: selected circle, press in empty box corner (nothing on top) MOVES it (was band-select)", () => {
+  const { nodes, circle, cover, other } = scene();
+  // Remove the cover so nothing is on top at the corner — the pure band-vs-grab case.
+  const bare = nodes.filter((node) => node.itemId !== cover && node.itemId !== other);
+  const d = pointerDownDecision(bare, [circle], CORNER_X, CORNER_Y);
+  assert.deepEqual(d, { action: "move", itemId: circle, clickSelectId: null });
+});
+test("dragPriority: NOT selected → same empty-corner press still BAND-selects (fix is gated on selection)", () => {
+  const { nodes, circle, cover, other } = scene();
+  const bare = nodes.filter((node) => node.itemId !== cover && node.itemId !== other);
+  assert.deepEqual(pointerDownDecision(bare, [], CORNER_X, CORNER_Y), { action: "band" });
+});
+test("dragPriority: selected circle, corner press with a DIFFERENT object ON TOP grabs the circle; click cycles to the top", () => {
+  const { nodes, circle, cover } = scene();
+  // `cover` (a small rect) sits on top at the corner. Dragging moves the selected
+  // circle (2b beats the topmost hit); a no-drag release selects `cover` (clickSelectId).
+  const d = pointerDownDecision(nodes, [circle], CORNER_X, CORNER_Y);
+  assert.deepEqual(d, { action: "move", itemId: circle, clickSelectId: cover });
+});
+test("dragPriority: press OUTSIDE every selected box (no hit) still starts BAND-select", () => {
+  const { nodes, circle, cover, other } = scene();
+  const bare = nodes.filter((node) => node.itemId !== cover && node.itemId !== other);
+  assert.deepEqual(pointerDownDecision(bare, [circle], 600, 400), { action: "band" }); // camera interior, off the circle box
+});
+test("dragPriority: MULTI-selection — a press in ANY selected member's box moves the set (grab is a selected member)", () => {
+  const { nodes, circle, cover, other } = scene();
+  const bare = nodes.filter((node) => node.itemId !== cover); // circle + other both selected, nothing on top
+  const d = pointerDownDecision(bare, [circle, other], CORNER_X, CORNER_Y);
+  assert.equal(d.action, "move");
+  assert.ok([circle, other].includes(d.itemId)); // grabbed a selected member (drag-all moves the whole set via translateMembers)
+  assert.equal(d.itemId, circle); // specifically the member whose box the point is in
 });
 
 console.log(`\ndragKinds tests: ${n} passed`);

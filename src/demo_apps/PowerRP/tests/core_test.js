@@ -17,7 +17,7 @@ import {
   allDocumentItems,
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
-import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, standardBBoxAnchors, cameraRect } from "../core/derive.js";
+import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, pointInNodeBox, standardBBoxAnchors, cameraRect } from "../core/derive.js";
 import { evaluateState } from "../core/expressions.js";
 import { solveSnap, axisLock } from "../core/snap.js";
 import { createCommands } from "../core/commands.js";
@@ -310,6 +310,43 @@ test("derive: z-sort, anchors, features, pick", () => {
   assert.ok(nodeFeatures(nodes[1]).some((f) => f.kind === "line"));
   assert.equal(pickNode(nodes, 5, 5).id, "r1"); // topmost wins
   assert.equal(pickNode(nodes, 500, 500), null);
+});
+// ── pointInNodeBox: rotation-aware point-in-OBB (selected-object drag priority
+// grabs a selection anywhere in its bounding box, not just its silhouette) ────
+test("pointInNodeBox: axis-aligned box — inside true, outside false", () => {
+  const s = { x: 100, y: 100, w: 200, h: 120, rotation: 0, scale: 1 };
+  assert.ok(pointInNodeBox(s, 150, 160)); // interior
+  assert.ok(pointInNodeBox(s, 100, 100)); // top-left corner (inclusive)
+  assert.ok(pointInNodeBox(s, 300, 220)); // bottom-right corner (inclusive)
+  assert.ok(!pointInNodeBox(s, 350, 160)); // right of the box
+  assert.ok(!pointInNodeBox(s, 150, 99)); // above the box
+});
+test("pointInNodeBox: THIN LINE — the empty sliver of its box is grabbable (the fix)", () => {
+  // A near-1D horizontal bar (h tiny): its silhouette is a hairline, but the
+  // WHOLE 200×4 box counts — pressing the empty box interior grabs it.
+  const line = { x: 100, y: 100, w: 200, h: 4, rotation: 0, scale: 1 };
+  assert.ok(pointInNodeBox(line, 250, 102)); // mid-box, off the hairline center
+  assert.ok(!pointInNodeBox(line, 250, 110)); // just below the thin box
+});
+test("pointInNodeBox: CIRCLE bbox corner — box hits where the ellipse hitTest misses", () => {
+  // The real gap the fix closes: circle.hitTest is the ellipse, so pickNode
+  // MISSES a bbox corner; pointInNodeBox (whole box) catches it.
+  const state = { items: { c1: { ...circlePlugin.defaults, x: 0, y: 0, w: 100, h: 100, z: 0 } } };
+  const node = deriveRenderTree(evaluateState(state, registry).state, registry)[0];
+  const cornerX = 4, cornerY = 4; // deep in the TL bbox corner, outside the ellipse
+  assert.equal(pickNode([node], cornerX, cornerY), null); // ellipse silhouette misses it
+  assert.ok(pointInNodeBox(node.state, cornerX, cornerY)); // but the OBB catches it
+});
+test("pointInNodeBox: rotation-anchor-aware (90° box pivots to its world center)", () => {
+  // A 200×120 box rotated 90° pivots about its center → world center (200,160),
+  // NOT its stored (100,100). The test must follow that pivot.
+  const s = { x: 100, y: 100, w: 200, h: 120, rotation: Math.PI / 2, scale: 1 };
+  assert.ok(pointInNodeBox(s, 200, 160)); // the pivoted world center is inside
+  assert.ok(!pointInNodeBox(s, 110, 110)); // near the STORED xy — outside the pivoted OBB
+});
+test("pointInNodeBox: no-w/h widget (arrow-like) has no box → always false", () => {
+  assert.ok(!pointInNodeBox({ x: 10, y: 10, rotation: 0, scale: 1 }, 10, 10));
+  assert.ok(!pointInNodeBox({ x: 10, y: 10, w: 50, rotation: 0, scale: 1 }, 20, 20)); // h missing
 });
 // ── interaction commit preserves untouched-axis equations (the move/resize
 // equation-clobber bug) ──────────────────────────────────────────────────────

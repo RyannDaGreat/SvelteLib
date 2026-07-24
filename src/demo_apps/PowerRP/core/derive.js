@@ -91,6 +91,42 @@ export function stateXYForCenterPivotWorld(target, w, h) {
 }
 
 /**
+ * Pure function. Is a world point inside an item's ORIENTED bounding box — the
+ * rotation-aware rectangle the resize handles frame? Brings the point into the
+ * item's local frame through invert(worldTransform(itemState)) — so the SAME
+ * rotation-anchor pivot every consumer sees is honored — then tests it against
+ * the local box [0..w]×[0..h] (worldTransform's own pivot math uses w/2,h/2,
+ * confirming the top-left local origin). This is the WHOLE box, not the shape's
+ * silhouette: the empty gaps a thin line / star / circle-corner / rotated rect
+ * leave inside their handles all count as inside (selection-grab parity with
+ * every design tool — a selected object is grabbable anywhere in its box).
+ *
+ * ONLY meaningful for bbox widgets (w AND h present). moveBy-only widgets
+ * (arrows: no w/h) have no box, so the test returns false and callers keep the
+ * shape hit-region for them. A degenerate scale-0 transform inverts to a
+ * scale-0 map (transform.invert's documented finite choice), collapsing the box
+ * to a point so nothing hits — a zero-area box has nothing to grab.
+ *
+ * @param {object} itemState - folded item state {x,y,rotation,scale,w,h,rotationAnchor?}
+ * @param {number} wx - world-space x
+ * @param {number} wy - world-space y
+ * @returns {boolean}
+ *
+ * @example pointInNodeBox({x: 100, y: 100, w: 200, h: 120, rotation: 0, scale: 1}, 150, 160) // true (inside the axis-aligned box)
+ * @example pointInNodeBox({x: 100, y: 100, w: 200, h: 120, rotation: 0, scale: 1}, 350, 160) // false (right of the box)
+ * @example pointInNodeBox({x: 100, y: 100, w: 200, h: 4, rotation: 0, scale: 1}, 150, 102) // true (thin line: the empty sliver of its box IS grabbable)
+ * @example // A 200×120 box rotated 90° about its center pivots to world center (200,160),
+ * @example // NOT its stored (100,100) — so the test is rotation-anchor-aware:
+ * @example pointInNodeBox({x: 100, y: 100, w: 200, h: 120, rotation: Math.PI / 2, scale: 1}, 200, 160) // true
+ * @example pointInNodeBox({x: 100, y: 100, rotation: 0, scale: 1}, 100, 100) // false (no w/h: not a box)
+ */
+export function pointInNodeBox(itemState, wx, wy) {
+  if (itemState.w == null || itemState.h == null) return false;
+  const local = T.apply(T.invert(worldTransform(itemState)), wx, wy);
+  return local.x >= 0 && local.x <= itemState.w && local.y >= 0 && local.y <= itemState.h;
+}
+
+/**
  * Pure function. Derives the z-sorted render tree from a folded state.
  * Sort: ascending z (default 0), ties broken by id for determinism.
  * Callers pass an EVALUATED state (core/expressions.evaluateState — the
