@@ -736,7 +736,7 @@ export function magnifyBackdrop({
  * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40}).materialize // 1 (settled by default)
  * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, tint: "rgba(255,255,255,0.14)"}).tint // [1, 1, 1, 0.14]
  * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, cornerRadius: -5}).cornerRadius // 0 (negative radii clamped)
- * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, backdropScale: 5}).backdropScale // 2 (clamped to max)
+ * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, backdropScale: 5}).backdropScale // 5 (no upper cap; min 0.25)
  */
 export function glassBackdrop({
   cx, cy, halfW, halfH, cornerRadius = 0,
@@ -778,7 +778,7 @@ export function glassBackdrop({
     tintAdaptivity: Math.max(0, Math.min(1, tintAdaptivity)),
     chromatic: Math.max(0, chromatic),
     // CPU-side render controls
-    backdropScale: Math.max(0.25, Math.min(2, backdropScale)),
+    backdropScale: Math.max(0.25, backdropScale),
     shadowStrength: Math.max(0, shadowStrength),
     stroke: stroke === null ? null : parseColor(stroke),
     strokeWidth: Math.max(0, strokeWidth),
@@ -816,7 +816,7 @@ export function glassBackdrop({
  * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60}).op // "materialBackdrop"
  * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60, params: {curvature: 0.2}}).params.curvature // 0.2
  * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60, cornerRadius: -3}).cornerRadius // 0 (negative radii clamped)
- * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60, backdropScale: 9}).backdropScale // 2 (clamped)
+ * @example materialBackdrop({material: "crt", cx: 0, cy: 0, halfW: 80, halfH: 60, backdropScale: 9}).backdropScale // 9 (no upper cap; min 0.25)
  */
 export function materialBackdrop({
   material, cx, cy, halfW, halfH, cornerRadius = 0,
@@ -836,7 +836,7 @@ export function materialBackdrop({
     cx, cy, halfW, halfH,
     cornerRadius: Math.max(0, cornerRadius),
     blurRadius: Math.max(0, blurRadius),
-    backdropScale: Math.max(0.25, Math.min(2, backdropScale)),
+    backdropScale: Math.max(0.25, backdropScale),
     params: { ...params },
     stroke: stroke === null ? null : parseColor(stroke),
     strokeWidth: Math.max(0, strokeWidth),

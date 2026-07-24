@@ -989,7 +989,7 @@ export function cornerRectOutline(w, h, { r0 = 0, r1 = 0, r2 = 0, r3 = 0, corner
  * @example quadWedgeOutline(100, 100, {taper: 0.4, shear: 0})[0][0].map(Math.round) // [30, 0]
  */
 export function quadWedgeOutline(w, h, { taper = 1, shear = 0, topOffset = 0, cornerRadius = 0 } = {}) {
-  const topW = Math.max(0, Math.min(taper, 2)) * w;
+  const topW = Math.max(0, taper) * w; // floor 0 (a width can't be negative); no upper cap — a wider-than-2× funnel is valid
   const cxTop = w / 2 + topOffset * w + shear * w;
   const tl = cxTop - topW / 2, tr = cxTop + topW / 2;
   const verts = [[tl, 0], [tr, 0], [w, h], [0, h]];
@@ -1112,7 +1112,7 @@ export function calloutOutline(w, h, { cornerRadius = 0.2, tailX = null, tailY =
  */
 export function bannerOutline(w, h, { endStyle = "forked", notchDepth = 0.15 } = {}) {
   if (endStyle === "flat") return [[[0, 0], [w, 0], [w, h], [0, h]]];
-  const nd = Math.max(0, Math.min(notchDepth, 0.45)) * w;
+  const nd = notchDepth * w; // unbounded: negative forks the ends outward, past ~0.5 the chevrons cross into a bowtie — both rasterize fine (fill rule)
   return [[[0, 0], [w, 0], [w - nd, h / 2], [w, h], [0, h], [nd, h / 2]]];
 }
 
@@ -1166,7 +1166,8 @@ export function arrowOutline(w, h, { headRatio = 0.4, headWidth = 0.6, shaftRati
     ];
     if (tn > 0) profile.push([tn, 0]); // chevron tail notch (between tail bottom and top)
   }
-  const bend = Math.max(0, Math.min(curvature, 1)) * ARROW_MAX_BEND;
+  // floor 0 (a negative bend would silently hit the straight-arrow guard below); no upper cap — curvature > 1 winds tighter into overlapping loops
+  const bend = Math.max(0, curvature) * ARROW_MAX_BEND;
   if (bend < 1e-4) return bboxFitSubpaths([profile], w, h, Math.min(w, h) * 0.06).subpaths;
   // Bent: densify each edge along ℓ so the shaft follows the arc smoothly (a
   // raw 7-point profile would bend into straight facets, not a curve).

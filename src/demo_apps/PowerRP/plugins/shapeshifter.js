@@ -94,7 +94,7 @@ export const FAMILIES = [
     rows: [
       N("inner", "Inner ratio", { min: 0, max: 1, help: "The hole's size as a fraction of the outer radius: 0 is a solid pie/disc, higher hollows it into a ring or arc band. Drag the inner yellow handle." }),
       N("startAngle", "Start angle", { display: "degrees", help: "Where the slice begins, in degrees clockwise from 3 o'clock. Drag the start handle on the rim to rotate the whole slice." }),
-      N("sweep", "Sweep", { min: 0, max: 360, display: "degrees", help: "How many degrees the slice covers: 360 is a full circle/ring, less carves a pie or gauge. Drag the end handle around the rim." }),
+      N("sweep", "Sweep", { display: "degrees", help: "How many degrees the slice covers: 360 is a full circle/ring, less carves a pie or gauge; beyond 360 wraps to a full ring and a negative sweep runs the slice the other way. Drag the end handle around the rim." }),
       SEL("cap", "Cap", ["pie", "chord"], { pie: "Pie (radial)", chord: "Chord (flat)" }, "How a solid partial slice closes: pie draws two straight edges to the center, chord draws a single straight line across the opening."),
     ],
     outline: (s) => ringSectorOutline({ ...ellipseGeom(s), inner: s.inner ?? 0.5, a0: (s.startAngle ?? -90) * DEG, a1: ((s.startAngle ?? -90) + (s.sweep ?? 360)) * DEG, cap: s.cap ?? "pie" }),
@@ -113,7 +113,7 @@ export const FAMILIES = [
     type: "ss_polygonStar", title: "Polygon / Star", icon: "mdi:star-outline", fill: "#bb9af7",
     defaults: { points: 5, innerRatio: 0.5, cornerRadius: 0, startAngle: 0 },
     rows: [
-      N("points", "Points / sides", { min: 3, max: 60, help: "Number of points on a star, or sides on a polygon. Drag the count handle around the rim, or type an exact value." }),
+      N("points", "Points / sides", { min: 3, help: "Number of points on a star, or sides on a polygon (three or more; no upper cap). Drag the count handle around the rim, or type an exact value." }),
       N("innerRatio", "Inner ratio", { min: 0, max: 1, help: "How far the notches cut in: 1 is a regular polygon, lower makes a sharper star, near 0 a spiky burst. Drag the inner handle." }),
       N("cornerRadius", "Corner radius", { min: 0, max: 0.5, help: "Rounds every point/notch by this fraction of the radius. 0 is sharp; higher gives a rounded polygon or blob." }),
       N("startAngle", "Rotation", { display: "degrees", help: "Spins the shape about its center, in degrees. 0 puts the first point straight up." }),
@@ -127,7 +127,7 @@ export const FAMILIES = [
       const innerA = start + Math.PI / p, countA = start + (2 * Math.PI) / p;
       return [
         { id: "innerRatio", x: g.cx + g.rx * inner * Math.cos(innerA), y: g.cy + g.ry * inner * Math.sin(innerA), apply(st, pt) { const gg = ellipseGeom(st); const pp = Math.max(2, Math.round(st.points ?? 5)); const a = -Math.PI / 2 + (st.startAngle ?? 0) * DEG + Math.PI / pp; return { innerRatio: clamp(radialT(gg, pt.x, pt.y, a), 0, 1) }; } },
-        { id: "points", x: g.cx + g.rx * Math.cos(countA), y: g.cy + g.ry * Math.sin(countA), apply(st, pt) { const gg = ellipseGeom(st); const s0 = -Math.PI / 2 + (st.startAngle ?? 0) * DEG; let da = (angleAt(gg, pt.x, pt.y) - s0) % (2 * Math.PI); da = (da + 2 * Math.PI) % (2 * Math.PI); if (da < 1e-3) da = 1e-3; return { points: clamp(Math.round((2 * Math.PI) / da), 3, 60) }; } },
+        { id: "points", x: g.cx + g.rx * Math.cos(countA), y: g.cy + g.ry * Math.sin(countA), apply(st, pt) { const gg = ellipseGeom(st); const s0 = -Math.PI / 2 + (st.startAngle ?? 0) * DEG; let da = (angleAt(gg, pt.x, pt.y) - s0) % (2 * Math.PI); da = (da + 2 * Math.PI) % (2 * Math.PI); if (da < 1e-3) da = 1e-3; return { points: Math.max(3, Math.round((2 * Math.PI) / da)) }; } },
       ];
     },
   },
@@ -167,18 +167,18 @@ export const FAMILIES = [
     type: "ss_quadWedge", title: "Quad / Wedge", icon: "mdi:vector-square", fill: "#e0af68",
     defaults: { taper: 0.6, shear: 0, topOffset: 0, cornerRadius: 0 },
     rows: [
-      N("taper", "Top width", { min: 0, max: 2, help: "Top edge width relative to the base: 1 is a rectangle, 0 is a triangle apex, above 1 flares outward (funnel)." }),
-      N("shear", "Shear", { min: -1, max: 1, help: "Slants the top edge sideways to make a parallelogram, as a fraction of the width. 0 is upright." }),
-      N("topOffset", "Top offset", { min: -1, max: 1, help: "Shifts the top edge's center sideways for a right-trapezoid or keystone, as a fraction of the width." }),
+      N("taper", "Top width", { min: 0, help: "Top edge width relative to the base: 1 is a rectangle, 0 is a triangle apex, above 1 flares outward into an ever-wider funnel (no upper cap)." }),
+      N("shear", "Shear", { help: "Slants the top edge sideways to make a parallelogram, as a fraction of the width. 0 is upright; magnitudes past 1 lean the top beyond the base." }),
+      N("topOffset", "Top offset", { help: "Shifts the top edge's center sideways for a right-trapezoid or keystone, as a fraction of the width; values past 1 push the top clear of the base." }),
       N("cornerRadius", "Corner radius", { min: 0, max: 0.5, help: "Rounds all four corners by this fraction of half the shorter side." }),
     ],
     outline: (s) => quadWedgeOutline(s.w, s.h, { taper: s.taper ?? 1, shear: s.shear ?? 0, topOffset: s.topOffset ?? 0, cornerRadius: s.cornerRadius ?? 0 }),
     modifierPoints(s) {
-      const topW = clamp(s.taper, 0, 2) * s.w;
+      const topW = Math.max(0, s.taper ?? 1) * s.w;
       const cxTop = s.w / 2 + (s.topOffset ?? 0) * s.w + (s.shear ?? 0) * s.w;
       return [
-        { id: "taper", x: cxTop + topW / 2, y: 0, apply(st, pt) { const base = st.w / 2 + ((st.topOffset ?? 0) + (st.shear ?? 0)) * st.w; return { taper: clamp((2 * (pt.x - base)) / st.w, 0, 2) }; } },
-        { id: "shear", x: cxTop, y: 0, apply(st, pt) { const off = st.w / 2 + (st.topOffset ?? 0) * st.w; return { shear: clamp((pt.x - off) / st.w, -1, 1) }; } },
+        { id: "taper", x: cxTop + topW / 2, y: 0, apply(st, pt) { const base = st.w / 2 + ((st.topOffset ?? 0) + (st.shear ?? 0)) * st.w; return { taper: Math.max(0, (2 * (pt.x - base)) / st.w) }; } },
+        { id: "shear", x: cxTop, y: 0, apply(st, pt) { const off = st.w / 2 + (st.topOffset ?? 0) * st.w; return { shear: (pt.x - off) / st.w }; } },
       ];
     },
   },
@@ -218,7 +218,7 @@ export const FAMILIES = [
     type: "ss_gear", title: "Gear / Cog", icon: "mdi:cog-outline", fill: "#7dcfff", fillRule: "evenodd",
     defaults: { teeth: 8, innerRatio: 0.72, toothWidth: 0.5, holeRatio: 0 },
     rows: [
-      N("teeth", "Teeth", { min: 3, max: 60, help: "Number of teeth around the gear. Type an exact count." }),
+      N("teeth", "Teeth", { min: 3, help: "Number of teeth around the gear (three or more; no upper cap). Type an exact count." }),
       N("innerRatio", "Root radius", { min: 0.05, max: 0.98, help: "How deep the valleys between teeth cut in, as a fraction of the outer radius. Drag the root handle." }),
       N("toothWidth", "Tooth width", { min: 0.02, max: 0.98, help: "Angular width of each tooth top as a fraction of the pitch: near 0 becomes a spiky starburst, near 1 the teeth merge. Drag the tooth handle." }),
       N("holeRatio", "Center hole", { min: 0, max: 0.9, help: "Radius of a hole through the center as a fraction of the outer radius. 0 is solid." }),
@@ -253,13 +253,13 @@ export const FAMILIES = [
     defaults: { endStyle: "forked", notchDepth: 0.15 },
     rows: [
       SEL("endStyle", "End style", ["flat", "forked"], { flat: "Flat", forked: "Forked" }, "The banner's ends: flat cuts them straight, forked cuts a chevron notch into each end (a ribbon)."),
-      N("notchDepth", "Notch depth", { min: 0, max: 0.45, help: "How deep the forked notch cuts in, as a fraction of the width. Drag the notch handle." }),
+      N("notchDepth", "Notch depth", { help: "How deep the forked notch cuts in, as a fraction of the width; a negative value forks the ends outward instead, and past ~0.5 the chevrons cross into a bowtie. Drag the notch handle." }),
     ],
     outline: (s) => bannerOutline(s.w, s.h, { endStyle: s.endStyle ?? "forked", notchDepth: s.notchDepth ?? 0.15 }),
     modifierPoints(s) {
       if ((s.endStyle ?? "forked") !== "forked") return [];
-      const nd = clamp(s.notchDepth, 0, 0.45) * s.w;
-      return [{ id: "notchDepth", x: s.w - nd, y: s.h / 2, apply(st, pt) { return { notchDepth: clamp((st.w - pt.x) / st.w, 0, 0.45) }; } }];
+      const nd = (s.notchDepth ?? 0.15) * s.w;
+      return [{ id: "notchDepth", x: s.w - nd, y: s.h / 2, apply(st, pt) { return { notchDepth: (st.w - pt.x) / st.w }; } }];
     },
   },
   {
@@ -282,7 +282,7 @@ export const FAMILIES = [
       N("headWidth", "Head width", { min: 0.05, max: 1, help: "How wide the arrowhead's barbs are as a fraction of the length." }),
       N("shaftRatio", "Shaft thickness", { min: 0.05, max: 1, help: "Shaft thickness as a fraction of the head width. Thin is a slender arrow, near 1 fills the head." }),
       N("tailNotch", "Tail notch", { min: 0, max: 0.9, help: "Cuts a chevron notch into the flat tail: 0 is a flat back, higher turns the tail into a chevron / striped arrow." }),
-      N("curvature", "Curvature", { min: 0, max: 1, help: "Bends the arrow along an arc: 0 is straight, higher curves it, and near 1 wraps it into a near-circular arrow." }),
+      N("curvature", "Curvature", { min: 0, help: "Bends the arrow along an arc: 0 is straight, higher curves it, near 1 wraps it into a near-circular arrow, and beyond 1 keeps winding it tighter into overlapping loops (no upper cap)." }),
       BOOL("doubleHead", "Double head", "Adds a second arrowhead at the tail (a double-headed arrow)."),
     ],
     outline: (s) => arrowOutline(s.w, s.h, { headRatio: s.headRatio ?? 0.4, headWidth: s.headWidth ?? 0.6, shaftRatio: s.shaftRatio ?? 0.4, tailNotch: s.tailNotch ?? 0, curvature: s.curvature ?? 0, doubleHead: s.doubleHead ?? false }),

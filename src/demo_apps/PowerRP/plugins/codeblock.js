@@ -239,7 +239,7 @@ export const codeblockPlugin = {
     { key: "code", label: "Code", kind: "text", category: "text", help: "The source code shown in the block. Multi-line text; a dedicated code editor control lands in a later update." },
     // Language: a select over the highlighter's supported grammars (+ Plain).
     { key: "language", label: "Language", kind: "select", options: languageOptions().map((o) => o.value), optionLabels: Object.fromEntries(languageOptions().map((o) => [o.value, o.label])), category: "text", help: "Which language's syntax colors to apply. Pick Plain text for no highlighting; an unknown language also renders plain." },
-    { key: "fontSize", label: "Font size", kind: "number", min: 1, category: "text", help: "Monospace font size for the code, in canvas units. Line height and column width scale with it." },
+    { key: "fontSize", label: "Font size", kind: "number", min: 0, category: "text", help: "Monospace font size for the code, in canvas units. Line height and column width scale with it." },
     { key: "lineNumbers", label: "Line numbers", kind: "checkbox", category: "text", help: "Show a dimmed line-number gutter down the left edge." },
     { key: "theme", label: "Code theme", kind: "select", options: Object.keys(CODE_PALETTES), category: "formatting", help: "The syntax color palette. Dark suits a dark box fill (the default); Light suits a light fill." },
     { key: "padding", label: "Padding", kind: "number", min: 0, category: "formatting", help: "Inner space between the box edge and the code, in canvas units." },

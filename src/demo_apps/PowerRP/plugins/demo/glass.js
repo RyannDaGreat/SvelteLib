@@ -54,7 +54,7 @@ const CUSTOM = customProps([
   { name: "tintAdaptivity", kind: "number", default: 1, min: 0, max: 1, help: "0 = a fixed frosted tint; 1 = fully luminance-adaptive (pale skin over dark content, smoky over light — the macOS content-adaptive look)." },
   { name: "shadowStrength", kind: "number", default: 0.3, min: 0, help: "Darkness of the soft drop shadow cast beneath the panel (0 = no shadow)." },
   // ── render control: the resolution the below-content is sampled at ───────────
-  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen (zoom) resolution, 2 = supersample (crisper refraction, slower), 0.5 = half res (faster, softer). Any GL-style backdrop effect must pick this trade-off." },
+  { name: "backdropScale", kind: "number", default: 1, min: 0.25, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen (zoom) resolution, 2 = supersample (crisper refraction, slower), 0.5 = half res (faster, softer), higher = sharper still. Any GL-style backdrop effect must pick this trade-off." },
 ]);
 
 export const glassPlugin = {
