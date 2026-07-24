@@ -15,6 +15,15 @@
  * rule: a headless/CLI render shows the video's poster/first frame, which is
  * deterministic and legitimate (a live clip has no single "correct" frame).
  *
+ * ── NO PLAYBACK-PROGRESS EXPORTS (deliberate) ─────────────────────────────────
+ * Unlike the SCRUBBER, the player exposes NO seconds/progress/duration exports.
+ * Its current time is the wall clock of a live `<video>` element — NOT document
+ * state and NOT pure(document, slide, alpha) — so a "how far along" value here
+ * would be non-deterministic and unrepeatable in the CLI/PDF paths. Rather than
+ * fabricate a time, the player has none: bind a progress bar to a video SCRUBBER
+ * (plugins/video_scrub.js), whose time IS deterministic state and which therefore
+ * carries the `seconds`/`progress`/`duration` exports.
+ *
  * ── STATE ─────────────────────────────────────────────────────────────────────
  * `src` holds the video SOURCE as a string — a `data:` URI, a URL, or an asset
  * URL. Self-contained by design (same rationale as the image widget): a plain

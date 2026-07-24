@@ -54,11 +54,39 @@
  * for free (core/view.js canSkipNode). NOT `animated`: the scrubber is
  * deterministic document state, not wall-clock motion, so the presenter has no
  * reason to spin for it (a tween already repaints; a resting keyframe is static).
+ *
+ * ── PLAYBACK-PROGRESS EXPORTS (seconds / progress / duration) ─────────────────
+ * Because the scrubber's time IS deterministic document state, it can export
+ * "how far along the clip is" as REFERENCEABLE, read-only values that OTHER
+ * widgets (e.g. a progress bar) bind to via `= @thisScrubber.progress`. Three
+ * exports, all derived purely from existing state:
+ *   - `seconds`  = the current decode time (`scrubTime`), in seconds.
+ *   - `duration` = the clip length in seconds — a USER-PROVIDED input (see below).
+ *   - `progress` = fraction 0..1 = clamp(scrubTime / duration); 0 when duration
+ *                  is unknown (0) — an HONEST "don't know yet", never a fake value.
+ *
+ * WHY PROPS, NOT ANCHORS: values referenced through the anchor grammar
+ * (`@item_anchorId.x`) are WORLD-TRANSFORMED before you read them
+ * (core/expressions.anchorValue → T.apply(world, ax, ay)) — a scalar ridden in an
+ * anchor's `.x` would come out corrupted by THIS widget's translation, scale, and
+ * rotation. A PROPERTY reference (`@item.prop`) reads the raw folded value with NO
+ * transform, so the exports are plain equation-bindable properties. `seconds` and
+ * `progress` are DERIVED — declared as bare `self.`-equation defaults, so they are
+ * (a) discoverable in the equation autocomplete (numericPropertyPaths lists every
+ * isNumericSlot leaf) and (b) materialized on creation (addItem spreads defaults),
+ * yet carry no editable Inspector row (they are outputs, not inputs).
+ *
+ * WHY `duration` IS AN INPUT: the real clip duration is only knowable at DECODE
+ * time in the browser (`<video>.duration`, gpu/video_registry.js) — it is NOT in
+ * the pure/CLI document state, so a pure(document, slide, alpha) derivation cannot
+ * know it. Rather than invent one, `duration` is an explicit number the user sets
+ * (or binds) to tell the scrubber its clip length; until set (default 0), progress
+ * stays 0. Deterministic by construction, and honest about what it does not know.
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
-import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props, SECONDS_SCRUB } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { videoFrame } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
@@ -73,6 +101,19 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 export const BLANK_SRC =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
+// ── PLAYBACK-PROGRESS EXPORTS (derived, read-only PROPS — see the header) ─────
+// Bare `self.`-equations so they are isNumericSlot leaves: discoverable in the
+// equation autocomplete AND real equation slots the derive/evaluate pass settles
+// to numbers. `self.scrub_time` / `self.duration` are the display (snake_case)
+// forms of the stored scrubTime / duration props. A cross-widget consumer reads
+// them with a PROPERTY reference: `= @thisScrubber.progress` (raw, un-transformed).
+//
+// `progress` = fraction 0..1: clamp(scrubTime / duration) once a positive duration
+// is known, else 0 (unknown duration → honest 0, never a fabricated fraction).
+export const SECONDS_EXPORT_EQ = "self.scrub_time";
+export const PROGRESS_EXPORT_EQ =
+  "self.duration > 0 ? Math.max(0, Math.min(1, self.scrub_time / self.duration)) : 0";
+
 export const videoScrubPlugin = {
   type: "video_scrub",
   title: "Video Scrubber",
@@ -86,6 +127,12 @@ export const videoScrubPlugin = {
     // from the shared property registry (core/properties.js). scrubTime defaults
     // to 0 (first frame); scrubWrap to "clamp".
     ...defaults("scrubTime", "scrubWrap", "opacity"),
+    // PLAYBACK-PROGRESS EXPORTS (see header). `duration` is the user-supplied clip
+    // length in seconds (0 = unknown → progress 0); `seconds`/`progress` are the
+    // derived, read-only exports other widgets bind to (`= @thisScrubber.progress`).
+    duration: 0,
+    seconds: SECONDS_EXPORT_EQ,
+    progress: PROGRESS_EXPORT_EQ,
     // stroke COLOR default matches every other stroked shape; paints only once
     // strokeWidth > 0 (0 by default → an undecorated scrubber is byte-identical
     // to its pre-bundle rendering). Same border look as the player.
@@ -100,6 +147,11 @@ export const videoScrubPlugin = {
     ...props("src", { src: { assetKinds: ["video"] } }),
     // THE scrub controls: the keyframable/equation-bindable time + wrap mode.
     ...props("scrubTime", "scrubWrap"),
+    // Clip DURATION (seconds) — a user-supplied INPUT (the real duration is only
+    // known at browser decode time, not in pure state; see header). Feeds the
+    // read-only `progress` export. `seconds`/`progress` themselves have NO row:
+    // they are derived OUTPUTS, referenceable via `= @thisScrubber.progress`.
+    { key: "duration", label: "Duration (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", help: "The clip's total length in seconds. Set this (or bind it) so the read-only `progress` export (scrubTime ÷ duration) is meaningful — a progress bar can then bind its fraction to `= @thisScrubber.progress`. Left 0 (unknown), progress stays 0. The real duration is only known once the video decodes in the browser, so it is a value you provide, not one derived from pure document state." },
     // The stroked-BORDER bundle (stroke/rounded corners), like the player — no
     // `fill` row (the frame's pixels are its interior).
     ...bundle("strokedBorder"),

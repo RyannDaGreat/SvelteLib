@@ -2208,6 +2208,46 @@ export class PowerRPApp {
     this.#insertMediaAt(videoPlugin.defaults, src, w, h, at);
   }
 
+  /**
+   * Command. Inserts a VIDEO SCRUBBER + a PROGRESS BAR, LINKED on creation: the
+   * bar's `fraction` is bound by a `=` equation to the scrubber's `progress`
+   * export (`= @<scrubberId>.progress`), so the bar fills to match how far along
+   * the clip the scrubber's deterministic `scrubTime` is (once the scrubber's
+   * `duration` is set — see plugins/video_scrub.js on why duration is a user
+   * input). The bar is placed directly beneath the scrubber, matching its width.
+   *
+   * Both items are created with withNewItem (each spreads its plugin defaults, so
+   * the scrubber's derived exports are materialized), keyframed active:true on the
+   * current slide, layered above the existing content, and committed as ONE undo
+   * unit. The bar is selected afterward (its fraction binding is the thing to
+   * inspect). Uses the STORED `@<id>` reference form so the link survives renames.
+   */
+  insertVideoWithProgressBar() {
+    const scrub = this.registry.get("video_scrub");
+    const bar = this.registry.get("progress_bar");
+    const vw = scrub.defaults.w, vh = scrub.defaults.h;
+    const barW = vw, barH = bar.defaults.h;
+    const GAP = 12; // world units between the scrubber and its bar
+    const totalH = vh + GAP + barH;
+    const c = this.#viewCenter();
+    const left = c.x - vw / 2, top = c.y - totalH / 2;
+    const zs = this.nodes().map((n) => n.state.z ?? 0);
+    const baseZ = zs.length ? Math.max(...zs) : 0;
+
+    const [docWithScrub, scrubId] = withNewItem(this.doc, this.slideIndex, {
+      ...scrub.defaults, active: true, z: baseZ + 1, x: left, y: top,
+    });
+    // The bar's fraction is bound to the scrubber's progress export on creation
+    // (STORED `@<id>` form → survives renames). This IS the "linked on creation".
+    const [doc, barId] = withNewItem(docWithScrub, this.slideIndex, {
+      ...bar.defaults, active: true, z: baseZ + 2,
+      x: left, y: top + vh + GAP, w: barW, h: barH,
+      fraction: `= @${scrubId}.progress`,
+    });
+    this.commit(withNormalizedZ(doc));
+    this.selection = barId; // the fraction binding is the thing to inspect
+  }
+
   // ── Filmstrip frames wiring (grep handles: fetchFrames / frameUrls). The
   // filmstrip plugin stores only (src, frames, frameH, frameW); frameUrls is
   // server-derived data this effect fills in (plugins/filmstrip.js documents the

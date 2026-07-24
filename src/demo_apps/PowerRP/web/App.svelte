@@ -407,6 +407,13 @@
         // Analog clock preset whose TIME is bound to the presentation clock var
         // (`= time`, seconds) — a LIVE clock that ticks in Present mode.
         { id: "demo-insert-clock-live", title: "Analog Clock (live — time = presentation clock)", icon: "mdi:clock-time-four-outline", run: (a) => a.armCrosshairPlacement({ ...a.registry.get("clock_analog"), defaults: { ...a.registry.get("clock_analog").defaults, time: "= time" } }) },
+        // PROGRESS BAR — two boxes (track + fill) whose `fraction` (0..1) is
+        // equation-bindable. Plain crosshair placement; bind its fraction later.
+        { id: "demo-insert-progress-bar", title: "Progress Bar (track + fill; fraction is equation-bindable)", icon: "mdi:gauge", run: (a) => a.armCrosshairPlacement(a.registry.get("progress_bar")) },
+        // VIDEO WITH PROGRESS BAR — creates a video SCRUBBER + a progress bar
+        // LINKED on creation (bar.fraction = `= @<scrubber>.progress`). Direct
+        // multi-item create (not crosshair): the cross-reference needs the runtime id.
+        { id: "demo-insert-video-progress", title: "Video with Progress Bar (scrubber + linked bar)", icon: "mdi:video-box", run: (a) => a.insertVideoWithProgressBar() },
       ],
     },
     // INSERT SHAPE — ONE submenu collecting the arbitrary parametric
