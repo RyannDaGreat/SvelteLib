@@ -37,6 +37,7 @@
   field adds no app.css classes; the house token convention is preserved).
 -->
 <script module>
+  import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
 
@@ -90,13 +91,17 @@
 
   /**
    * Pure function. A fresh linear gradient sub-state seeded from a solid color:
-   * two stops (solid → white) sweeping left→right, objectBoundingBox space.
+   * two stops (solid → white) sweeping left→right (GRADIENT_DEFAULT_ANGLE = 0°),
+   * objectBoundingBox space. Carries both the authoritative `angle` (degrees)
+   * and its from/to render projection (angleToLinearEndpoints), kept in lockstep.
    *
    * @example freshLinear("#f00").stops.length // 2
-   * @example freshLinear("#f00").from // {x: 0, y: 0}
+   * @example freshLinear("#f00").angle // 0
+   * @example freshLinear("#f00").from // {x: 0, y: 0.5}
    */
   export function freshLinear(seed) {
-    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], from: { x: 0, y: 0 }, to: { x: 1, y: 0 } };
+    const { from, to } = angleToLinearEndpoints(GRADIENT_DEFAULT_ANGLE);
+    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], angle: GRADIENT_DEFAULT_ANGLE, from, to };
   }
 
   /**
@@ -129,7 +134,7 @@
     const seed = seedSolid(value);
     const solid = isObj && typeof value.solid === "string" ? value.solid : seed;
     const linear = isObj && value.linear ? value.linear
-      : isObj && value.type === "linearGradient" && Array.isArray(value.stops) ? { stops: value.stops, from: value.from, to: value.to }
+      : isObj && value.type === "linearGradient" && Array.isArray(value.stops) ? { stops: value.stops, angle: value.angle, from: value.from, to: value.to }
       : freshLinear(seed);
     const radial = isObj && value.radial ? value.radial
       : isObj && value.type === "radialGradient" && Array.isArray(value.stops) ? { stops: value.stops, center: value.center, r: value.r }
@@ -150,19 +155,12 @@
     return !!(value && typeof value === "object" && !Array.isArray(value)
       && typeof value.solid === "string" && value.linear && value.radial);
   }
-
-  // Linear direction presets (objectBoundingBox from→to), keyed by an arrow glyph.
-  export const LINEAR_DIRECTIONS = [
-    { icon: "→", from: { x: 0, y: 0 }, to: { x: 1, y: 0 } },
-    { icon: "↓", from: { x: 0, y: 0 }, to: { x: 0, y: 1 } },
-    { icon: "↘", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } },
-    { icon: "↗", from: { x: 0, y: 1 }, to: { x: 1, y: 0 } },
-  ];
 </script>
 
 <script>
   import ColorField from "./ColorField.svelte";
   import NumericField from "./NumericField.svelte";
+  import AngleField from "./AngleField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import { getPath } from "../core/deltas.js";
 
@@ -241,11 +239,31 @@
     commitAt([subKey, "stops"], stops.filter((_, j) => j !== i));
   }
 
-  /** Command. Sets the linear direction preset (from/to as one undo unit). */
-  function setDirection(d) {
-    app.setPreview([[[...path, "linear", "from"], d.from], [[...path, "linear", "to"], d.to]]);
-    app.commitPreview();
+  // The linear DIRECTION as a heading in DEGREES — the authoritative stored
+  // `angle` if present, else derived from the from/to endpoints (old, un-migrated
+  // docs) so the dial always reflects what actually renders.
+  let linearAngle = $derived(
+    sub.linear.angle != null ? sub.linear.angle
+      : sub.linear.from && sub.linear.to ? linearEndpointsToAngle(sub.linear.from, sub.linear.to)
+      : GRADIENT_DEFAULT_ANGLE,
+  );
+
+  /** Command. Writes the linear DIRECTION from a dial heading (degrees): the
+   * authoritative `angle` PLUS its objectBoundingBox from/to render projection
+   * (angleToLinearEndpoints), kept in lockstep in ONE delta. `commit` settles it
+   * as one undo unit; otherwise it is a live preview (viewport re-renders while
+   * the user drags the dial). from/to is what the renderer's parsePaint reads. */
+  function writeDirection(deg, commit) {
+    const { from, to } = angleToLinearEndpoints(deg);
+    app.setPreview([
+      [[...path, "linear", "angle"], deg],
+      [[...path, "linear", "from"], from],
+      [[...path, "linear", "to"], to],
+    ]);
+    if (commit) app.commitPreview();
   }
+  const previewDirection = (deg) => writeDirection(deg, false);
+  const commitDirection = (deg) => writeDirection(deg, true);
 
   const TYPES = [
     { id: "solid", label: "Solid" },
@@ -253,9 +271,6 @@
     { id: "radialGradient", label: "Radial" },
     { id: "equation", label: "= Eq" },
   ];
-
-  const isDir = (d) => sub.linear.from?.x === d.from.x && sub.linear.from?.y === d.from.y
-    && sub.linear.to?.x === d.to.x && sub.linear.to?.y === d.to.y;
 </script>
 
 <div style="display:flex; flex-direction:column; gap:var(--a-sp-2); width:100%;">
@@ -339,18 +354,20 @@
 
     <!-- GEOMETRY -->
     {#if mode === "linearGradient"}
+      <!-- DIRECTION — a continuous rotary dial (AngleField) in place of the old
+           four ↑↓ preset buttons. It writes the paint's authoritative `angle`
+           plus the from/to render projection together (writeDirection). -->
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
         <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Direction</span>
-        {#each LINEAR_DIRECTIONS as d}
-          <button
-            type="button" {disabled}
-            aria-pressed={isDir(d)}
-            onclick={() => setDirection(d)}
-            style="width:var(--a-control-h, 22px); font-size:var(--a-font-md); color:var(--fg); cursor:pointer;
-                   border:1px solid var(--border); border-radius:var(--radius);
-                   background:{isDir(d) ? 'var(--a-hover-bg)' : 'transparent'};"
-          >{d.icon}</button>
-        {/each}
+        <AngleField
+          {app}
+          path={[...path, "linear", "angle"]}
+          label={`${label} direction`}
+          value={linearAngle}
+          {disabled}
+          onpreview={previewDirection}
+          oncommit={commitDirection}
+        />
       </div>
     {:else}
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">

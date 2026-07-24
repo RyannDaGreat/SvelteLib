@@ -32,7 +32,7 @@ import { blendApplied, copied, getPath, setPath, deletePath, leaves } from "./de
 import { defaultTransition, withDurationMigrated } from "./transitions.js";
 import { withBindingsMigrated } from "./expressions.js";
 import { withRichTextMigrated } from "./richtext.js";
-import { bundleDefaults } from "./properties.js";
+import { bundleDefaults, linearEndpointsToAngle } from "./properties.js";
 
 /** Query (reads crypto). Random 8-char id — short but collision-safe at presentation scale. */
 export function uuid() {
@@ -588,6 +588,83 @@ export function withFancyArrowFillMigrated(doc, registry) {
   return { doc: out, migrated };
 }
 
+/** Pure function. True iff `p` is an objectBoundingBox point {x, y} (finite
+ * numbers) — the shape a linear gradient's from/to endpoints have. */
+function isBBoxPoint(p) {
+  return !!p && typeof p === "object" && typeof p.x === "number" && typeof p.y === "number"
+    && Number.isFinite(p.x) && Number.isFinite(p.y);
+}
+
+/** Near-pure helper (mutates the passed `out` accumulator — its whole purpose).
+ * Recursively finds every LINEAR-GRADIENT sub-state inside a slide-delta item
+ * that still lacks an `angle`. A linear gradient is precisely an object with a
+ * `stops` ARRAY and both `from`/`to` POINTS — that gate excludes arrow endpoints
+ * (`from`/`to` with NO `stops` sibling) and radial gradients (`center`/`r`, no
+ * from/to). Records {relPath, from, to} where relPath locates the gradient
+ * object within the item. Recurses into plain-object children only (never into
+ * the `stops` array or the {x,y} points), so nested paints (fill.linear,
+ * legacy-inline fill, camera background) are all caught. */
+function collectLinearGradientsMissingAngle(node, relPath, out) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return;
+  if (Array.isArray(node.stops) && isBBoxPoint(node.from) && isBBoxPoint(node.to) && !("angle" in node))
+    out.push({ relPath, from: node.from, to: node.to });
+  for (const [k, v] of Object.entries(node))
+    if (v && typeof v === "object" && !Array.isArray(v)) collectLinearGradientsMissingAngle(v, [...relPath, k], out);
+}
+
+/**
+ * Pure function. Linear-gradient DIRECTION migrations the document needs: the
+ * gradient direction used to be four discrete presets that stored only
+ * objectBoundingBox `from`/`to`; it is now an `angle` in DEGREES (the "angle"
+ * property kind — core/properties.js). Every legacy linear gradient (a paint's
+ * `linear` sub-state, a legacy-inline linearGradient, or a camera background
+ * gradient) that carries from/to but no `angle` is a candidate; the angle is
+ * `linearEndpointsToAngle(from, to)`. from/to are LEFT UNTOUCHED (the renderer's
+ * parsePaint still reads them), so a migrated document renders byte-identically —
+ * the four presets map to exact angles (→ 0°, ↓ 90°, ↘ 45°, ↗ 315°).
+ *
+ * Args:
+ *   doc (object): document
+ *
+ * Returns:
+ *   {id, slideIndex, relPath, angle}[] (empty when nothing needs migrating).
+ *   `relPath` is the path to the gradient object WITHIN the item (e.g.
+ *   ["fill", "linear"] or ["fill"] for a legacy-inline gradient).
+ *
+ * @example linearGradientAngleMigrations({slides: [{delta: {items: {a: {type: "rect", fill: {type: "linearGradient", linear: {stops: [{offset:0,color:"#000"},{offset:1,color:"#fff"}], from: {x:0,y:0}, to: {x:1,y:1}}}}}}}]}) // [{id: "a", slideIndex: 0, relPath: ["fill", "linear"], angle: 45}]
+ * @example linearGradientAngleMigrations({slides: [{delta: {items: {a: {type: "arrow", from: {x:0,y:0}, to: {x:1,y:1}}}}}]}) // [] (arrow endpoints have no stops — not a gradient)
+ */
+export function linearGradientAngleMigrations(doc) {
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!item || typeof item !== "object") continue;
+      const found = [];
+      collectLinearGradientsMissingAngle(item, [], found);
+      for (const g of found) out.push({ id, slideIndex, relPath: g.relPath, angle: linearEndpointsToAngle(g.from, g.to) });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with an `angle` (degrees) added beside every legacy
+ * linear gradient's from/to (linearGradientAngleMigrations). from/to are kept —
+ * the render is byte-identical; the `angle` becomes the authoritative direction
+ * the AngleField dial edits going forward. REPORTING IS THE CALLER'S JOB.
+ * Idempotent (a gradient that already has `angle` is skipped).
+ *
+ * @example withLinearGradientAngleMigrated({slides: [{delta: {items: {a: {type: "rect", fill: {type: "linearGradient", linear: {stops: [{offset:0,color:"#000"},{offset:1,color:"#fff"}], from: {x:0,y:0}, to: {x:0,y:1}}}}}}}]}).doc.slides[0].delta.items.a.fill.linear.angle // 90
+ * @example withLinearGradientAngleMigrated({slides: [{delta: {items: {a: {type: "rect", fill: {type: "linearGradient", linear: {stops: [{offset:0,color:"#000"},{offset:1,color:"#fff"}], from: {x:0,y:0}, to: {x:1,y:0}, angle: 0}}}}}}]}).migrated.length // 0 (already migrated)
+ */
+export function withLinearGradientAngleMigrated(doc) {
+  const migrated = linearGradientAngleMigrations(doc);
+  let out = doc;
+  for (const { id, slideIndex, relPath, angle } of migrated)
+    out = keyframed(out, slideIndex, ["items", id, ...relPath, "angle"], angle);
+  return { doc: out, migrated };
+}
+
 // ── The load-boundary repair pipeline (ONE home) ─────────────────────────────
 // Both consumers of load-time repair — the editor (app.repaired via loadFile /
 // loadAutosave / loadProject / deleteSlide) and the CLI render hook
@@ -632,6 +709,10 @@ export function withFancyArrowFillMigrated(doc, registry) {
  *      camera was orphaned away in step 1) gets THE camera injected; then any
  *      EXTRA cameras (hand-authored/damaged docs) are loud-dropped so exactly
  *      one survives (the camera invariant is exactly one — THE CAMERA).
+ *  6b. gradient direction → angle — legacy linear gradients (4-preset from/to)
+ *      get an `angle` (degrees) added beside their from/to; from/to untouched
+ *      (byte-identical render). AFTER camera dedup so a camera-background
+ *      gradient on the surviving camera is migrated too.
  *   7. bindings migrated        — legacy {item, anchor} arrow bindings become
  *      equation pairs (THE UNIFICATION); runs LAST, on the now-clean doc.
  *
@@ -698,7 +779,14 @@ export function repairedDocument(doc, registry) {
   for (const id of extraCameras)
     reports.push(`PowerRP repair: dropped extra camera "${id}" — a document has exactly one camera (THE CAMERA); kept the first by id`);
 
-  return { doc: withBindingsMigrated(cameraDeduped), reports };
+  // Linear-gradient direction (4 presets) → an `angle` (degrees). from/to are
+  // kept, so the render is byte-identical; the angle becomes the value the new
+  // rotary dial edits (core/properties.js angle math; web/AngleField.svelte).
+  const { doc: gradientDoc, migrated: gradientAngles } = withLinearGradientAngleMigrated(cameraDeduped);
+  for (const { id, slideIndex, relPath, angle } of gradientAngles)
+    reports.push(`PowerRP repair: item "${id}" slide ${slideIndex}: legacy linear-gradient direction (${relPath.join(".")}) → angle ${angle}°`);
+
+  return { doc: withBindingsMigrated(gradientDoc), reports };
 }
 
 /**

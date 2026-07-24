@@ -35,6 +35,7 @@
   import BooleanField from "./BooleanField.svelte";
   import ColorField from "./ColorField.svelte";
   import PaintField from "./PaintField.svelte";
+  import AngleField from "./AngleField.svelte";
   import AssetField from "./AssetField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
@@ -522,6 +523,19 @@
         oncommit={(v) => oncommit(row.key, "asset", v)}
         autoOpen={row.key === "src" && app.pendingVideoPickFor === pickedItemId}
         onpickerclose={() => { if (app.pendingVideoPickFor === pickedItemId) app.pendingVideoPickFor = null; }}
+      />
+    {:else if row.kind === "angle"}
+      <!-- THE angle control (kind:"angle"): AngleField — a rotary DIAL (+ typed
+           degrees) that self-writes DEGREES to this item path, exactly like
+           ColorField (preview mid-drag, commit on release; the row's shared
+           KeyframeControls keyframe it like any other property). `disabled`
+           grays a not-yet-created item's row. -->
+      <AngleField
+        {app}
+        path={["items", pickedItemId, ...row.key.split(".")]}
+        label={row.label}
+        value={Number(valueAt(state, row.key) ?? 0)}
+        disabled={disabled}
       />
     {:else if row.kind === "color" && row.paint}
       <!-- PAINT rows (fill/stroke — Axis-1): PaintField edits a polymorphic paint

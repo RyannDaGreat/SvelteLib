@@ -15,8 +15,11 @@ import {
   missingDefaults, withMissingDefaultsFilled, legacyKeyRenames, withLegacyKeysRenamed,
   dormantShadows, withDormantShadowsNeutralized,
   fancyArrowFillMigrations, withFancyArrowFillMigrated,
+  linearGradientAngleMigrations, withLinearGradientAngleMigrated,
   repairedDocument, defaultCameraState, withExtraCamerasDropped,
 } from "../core/document.js";
+import { angleToLinearEndpoints, linearEndpointsToAngle } from "../core/properties.js";
+import { parsePaint } from "../render_gpu/ir.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { deriveRenderTree } from "../core/derive.js";
 import { sceneIR } from "../render_gpu/ports.js";
@@ -547,6 +550,82 @@ test("repairedDocument: a gradient PAINT survives repair — not clobbered by th
   const { doc: fixed } = repairedDocument(doc, registry);
   const fill = evaluateState(foldState(fixed, 0, 1), registry).state.items.grad1.fill;
   assert.ok(fill && fill.type === "linearGradient", `gradient fill must survive repair, got ${JSON.stringify(fill)}`);
+});
+
+// ── Linear-gradient direction → angle migration (the "angle" property kind) ────
+// The gradient direction used to be four discrete presets that stored only
+// objectBoundingBox from/to; it is now a continuous `angle` in degrees. Repair
+// adds the angle beside every legacy from/to, leaving from/to untouched so the
+// render is byte-identical (parsePaint still reads from/to). The four presets
+// map to EXACT angles (→ 0°, ↓ 90°, ↘ 45°, ↗ 315°).
+const LEGACY_DIRECTION_PRESETS = [
+  { name: "→ right", from: { x: 0, y: 0 }, to: { x: 1, y: 0 }, angle: 0 },
+  { name: "↓ down", from: { x: 0, y: 0 }, to: { x: 0, y: 1 }, angle: 90 },
+  { name: "↘ down-right", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, angle: 45 },
+  { name: "↗ up-right", from: { x: 0, y: 1 }, to: { x: 1, y: 0 }, angle: 315 },
+];
+
+test("gradient direction migration: each legacy 4-preset from/to → the correct angle, from/to preserved (renders identical), loud + idempotent", () => {
+  for (const p of LEGACY_DIRECTION_PRESETS) {
+    // An OLD linear-gradient paint: from/to present, NO angle (the 4-preset era).
+    const grad = { type: "linearGradient", solid: "#123456", linear: { stops: [{ offset: 0, color: "#111111" }, { offset: 1, color: "#eeeeee" }], from: p.from, to: p.to } };
+    let doc = newDocument();
+    doc = keyframed(doc, 0, ["items", "g"], { ...registry.get("rect").defaults, type: "rect", fill: grad });
+
+    const { doc: fixed, reports } = repairedDocument(doc, registry);
+    const lin = fixed.slides[0].delta.items.g.fill.linear;
+
+    // (1) migrated to the correct angle …
+    assert.equal(lin.angle, p.angle, `${p.name}: expected angle ${p.angle}, got ${lin.angle}`);
+    // (2) … with from/to LEFT UNTOUCHED (the byte-identical-render guarantee) …
+    assert.deepEqual(lin.from, p.from, `${p.name}: from preserved`);
+    assert.deepEqual(lin.to, p.to, `${p.name}: to preserved`);
+    // (3) … proven at the renderer seam: parsePaint's endpoints are unchanged.
+    const before = parsePaint(grad);
+    const after = parsePaint(fixed.slides[0].delta.items.g.fill);
+    assert.deepEqual(after.from, before.from, `${p.name}: parsed from unchanged`);
+    assert.deepEqual(after.to, before.to, `${p.name}: parsed to unchanged`);
+    // (4) LOUD report.
+    assert.ok(reports.some((r) => r.includes(`angle ${p.angle}°`)), `${p.name}: loud migration report`);
+    // (5) idempotent: a re-run migrates nothing (angle already present).
+    assert.equal(withLinearGradientAngleMigrated(fixed).migrated.length, 0, `${p.name}: idempotent`);
+  }
+});
+
+test("gradient direction migration: a legacy-INLINE linear gradient (from/to on the paint itself) migrates too; arrow endpoints are NOT touched", () => {
+  // Legacy-inline form: {type, stops, from, to} with NO sub-state wrapper.
+  const inlineGrad = { type: "linearGradient", stops: [{ offset: 0, color: "#000000" }, { offset: 1, color: "#ffffff" }], from: { x: 0, y: 0 }, to: { x: 1, y: 1 } };
+  let doc = newDocument();
+  doc = keyframed(doc, 0, ["items", "g"], { ...registry.get("rect").defaults, type: "rect", fill: inlineGrad });
+  // An arrow whose OWN from/to endpoints are {x,y} points but have NO stops —
+  // must NOT be mistaken for a gradient.
+  doc = keyframed(doc, 0, ["items", "arr"], { ...registry.get("arrow").defaults, type: "arrow", from: { x: 5, y: 5 }, to: { x: 9, y: 9 } });
+
+  const found = linearGradientAngleMigrations(doc);
+  assert.equal(found.length, 1, `only the inline gradient is a candidate, got ${JSON.stringify(found)}`);
+  assert.deepEqual(found[0].relPath, ["fill"], "inline gradient is located at the paint itself");
+  assert.equal(found[0].angle, 45, "inline (0,0)-(1,1) → 45°");
+
+  const { doc: fixed } = repairedDocument(doc, registry);
+  assert.equal(fixed.slides[0].delta.items.g.fill.angle, 45, "inline gradient got its angle");
+  const arr = fixed.slides[0].delta.items.arr;
+  assert.ok(!("angle" in arr.from) && !("angle" in arr.to), "arrow endpoints untouched (no angle injected)");
+});
+
+test("angle ↔ endpoints round-trip: legacy presets recover their exact angle; angle→endpoints→angle is stable", () => {
+  for (const p of LEGACY_DIRECTION_PRESETS) {
+    // Every legacy preset's endpoints recover its exact heading.
+    assert.equal(linearEndpointsToAngle(p.from, p.to), p.angle, `${p.name}: endpoints → ${p.angle}`);
+    // angle → endpoints → angle is stable (bijective on direction).
+    const e = angleToLinearEndpoints(p.angle);
+    assert.equal(linearEndpointsToAngle(e.from, e.to), p.angle, `${p.name}: ${p.angle}° round-trips`);
+  }
+  // The DIAGONAL presets are reproduced with byte-EXACT endpoints (corner to
+  // corner); the horizontal/vertical presets are reproduced render-equivalently
+  // (same axis, center-offset chord). Either way the migration keeps the doc's
+  // ORIGINAL from/to (test above), so every migrated document renders identically.
+  assert.deepEqual(angleToLinearEndpoints(45), { from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }, "↘ 45° → exact corner-to-corner");
+  assert.deepEqual(angleToLinearEndpoints(315), { from: { x: 0, y: 1 }, to: { x: 1, y: 0 } }, "↗ 315° → exact corner-to-corner");
 });
 
 console.log(`\n${passed} repair tests passed`);

@@ -80,6 +80,108 @@ export const SECONDS_SCRUB = 0.01;
 export const DITHER_MODES = ["off", "bayer", "blueNoise"];
 export const DITHER_MODE_LABELS = { off: "Off", bayer: "Bayer", blueNoise: "Blue noise" };
 
+// ── THE "angle" unit-kind + linear-gradient DIRECTION math ───────────────────
+// An ANGLE property (kind "angle") is a heading in DEGREES with the SCREEN
+// convention 0° = +x (right), 90° = +y (down) — the SAME convention the particle
+// emitter's `particleAngle` documents, so all headings in the app read alike.
+//
+// This is where the LINEAR-GRADIENT DIRECTION lives now. It used to be four
+// discrete preset buttons (→ ↓ ↘ ↗) that wrote objectBoundingBox from/to point
+// pairs; the user asked for a CONTINUOUS angle instead. The paint object still
+// stores objectBoundingBox `from`/`to` (that is what the renderer's parsePaint
+// consumes, render_gpu/ir.js), plus an authoritative `angle` alongside them; the
+// two are kept in lockstep by web/PaintField.svelte (every dial edit rewrites
+// both) and by the load-boundary migration (core/document.js
+// withLinearGradientAngleMigrated, which computes the angle of every legacy
+// from/to and stores it, leaving from/to untouched so old docs render
+// byte-identically). from/to is thus a render projection of `angle`; the reason
+// it is still stored (rather than parsePaint deriving it from `angle` directly)
+// is that render_gpu/ir.js is owned by another lane — see the migration header.
+
+/** Full turn, in degrees — the modulus for angle wrapping. */
+export const FULL_TURN_DEG = 360;
+// objectBoundingBox is the unit square [0,1]²; its center is (0.5, 0.5) and each
+// axis half-extent is 0.5. Named so the gradient-endpoint math reads clearly.
+const BBOX_CENTER = 0.5;
+/** Default linear-gradient direction (0° = left→right) — the old freshLinear "→". */
+export const GRADIENT_DEFAULT_ANGLE = 0;
+
+/** Rounds tiny floating-point dust so cos/sin of the cardinal angles land on
+ * exact 0/0.5/1 objectBoundingBox coordinates (e.g. cos(90°) ≈ 6e-17 → 0). */
+function tidy(v) {
+  return Math.round(v * 1e6) / 1e6;
+}
+
+/**
+ * Pure function. Wraps an angle in degrees into the canonical half-open range
+ * [0, 360). Negative and over-full-turn inputs fold in.
+ *
+ * @example wrapDegrees(370) // 10
+ * @example wrapDegrees(-90) // 270
+ * @example wrapDegrees(360) // 0
+ * @example wrapDegrees(45) // 45
+ */
+export function wrapDegrees(deg) {
+  return ((deg % FULL_TURN_DEG) + FULL_TURN_DEG) % FULL_TURN_DEG;
+}
+
+/**
+ * Pure function. The objectBoundingBox endpoints {from, to} of a linear gradient
+ * whose axis points at `deg` degrees (0° = +x/right, 90° = +y/down). The axis is
+ * the CHORD of the unit square through its center along the heading, so the
+ * gradient spans the whole box — this reproduces the four legacy presets EXACTLY
+ * (→ 0°, ↓ 90°, ↘ 45°, ↗ 315°), which is why migrated documents render
+ * unchanged. The chord half-length from the center along a unit direction
+ * (dx, dy) inside the unit square is 0.5 / max(|dx|, |dy|) (the nearer wall):
+ *
+ *     from = center − halfExtent·(dx, dy),   to = center + halfExtent·(dx, dy)
+ *
+ * Args:
+ *   deg (number): heading in degrees (any value; wrapped internally)
+ *
+ * Returns:
+ *   {from: {x, y}, to: {x, y}} — objectBoundingBox (0..1) endpoints
+ *
+ * @example angleToLinearEndpoints(0)   // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}}
+ * @example angleToLinearEndpoints(90)  // {from: {x: 0.5, y: 0}, to: {x: 0.5, y: 1}}
+ * @example angleToLinearEndpoints(45)  // {from: {x: 0, y: 0}, to: {x: 1, y: 1}}
+ * @example angleToLinearEndpoints(315) // {from: {x: 0, y: 1}, to: {x: 1, y: 0}}
+ */
+export function angleToLinearEndpoints(deg) {
+  const rad = (wrapDegrees(deg) * Math.PI) / 180;
+  const dx = Math.cos(rad);
+  const dy = Math.sin(rad);
+  const halfExtent = BBOX_CENTER / Math.max(Math.abs(dx), Math.abs(dy));
+  return {
+    from: { x: tidy(BBOX_CENTER - dx * halfExtent), y: tidy(BBOX_CENTER - dy * halfExtent) },
+    to: { x: tidy(BBOX_CENTER + dx * halfExtent), y: tidy(BBOX_CENTER + dy * halfExtent) },
+  };
+}
+
+/**
+ * Pure function. The heading in DEGREES [0, 360) of a linear gradient's axis
+ * from its objectBoundingBox endpoints — the inverse of angleToLinearEndpoints
+ * for DIRECTION (endpoint magnitude/extent is not recovered, only the heading).
+ * Used by the dial to show a stored gradient's angle and by the migration to
+ * convert legacy from/to → angle.
+ *
+ * Args:
+ *   from ({x, y}): axis start (objectBoundingBox)
+ *   to ({x, y}): axis end (objectBoundingBox)
+ *
+ * Returns:
+ *   number: heading in degrees, [0, 360)
+ *
+ * @example linearEndpointsToAngle({x: 0, y: 0.5}, {x: 1, y: 0.5}) // 0
+ * @example linearEndpointsToAngle({x: 0, y: 0}, {x: 0, y: 1}) // 90
+ * @example linearEndpointsToAngle({x: 0, y: 0}, {x: 1, y: 1}) // 45
+ * @example linearEndpointsToAngle({x: 0, y: 1}, {x: 1, y: 0}) // 315
+ */
+export function linearEndpointsToAngle(from, to) {
+  const deg = (Math.atan2(to.y - from.y, to.x - from.x) * 180) / Math.PI;
+  return wrapDegrees(tidy(deg));
+}
+
 /**
  * The property definition table. Each entry is keyed by its property key (the
  * state field / equation slug) and holds the DEFAULT row aspects + an optional
@@ -87,7 +189,13 @@ export const DITHER_MODE_LABELS = { off: "Off", bayer: "Bayer", blueNoise: "Blue
  * naming keys; per-widget overrides layer on top (see props()).
  *
  * `kind` — the Inspector control: "number" | "color" | "text" | "checkbox" |
- *   "boolean" | "select". `category` — the collapsible-accordion group
+ *   "boolean" | "select" | "angle" | "asset". The "angle" KIND is a value in
+ *   DEGREES (0..360, WRAPPING) edited by a rotary DIAL (web/AngleField.svelte)
+ *   that also accepts typed degrees; UNLIKE `rotation` (stored in RADIANS with
+ *   `display:"degrees"`), an angle kind STORES raw degrees, so no display-unit
+ *   conversion happens at the field boundary. Its heading convention matches
+ *   the particle emitter's: 0° = +x (right), 90° = +y (down). `category` — the
+ *   collapsible-accordion group
  *   (Inspector CATEGORY_ORDER). `min`/`max` — numeric bounds (also drive the
  *   NumericField range-scaled scrub). `scrub` — explicit per-property drag
  *   coefficient (units/px) for UNBOUNDED small-magnitude rows (manifest
