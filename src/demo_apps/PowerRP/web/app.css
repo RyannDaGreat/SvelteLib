@@ -3317,13 +3317,54 @@ audio.ae-preview-media {
   --hint-key-h: var(--a-key-chip-h);
 }
 
-/* Anchor hover tooltip (SVG-native, immediate). */
-.overlay .anchor-tip text {
+/* Anchor hover tooltip (SVG-native, immediate). The NAME label (direct child)
+   keeps its halo so it reads over art and is non-interactive; the copy chips
+   (task #41) below it draw on their own solid background. */
+.overlay .anchor-tip > text {
   fill: var(--fg);
   font-size: var(--a-font-sm);
   paint-order: stroke;
   stroke: var(--bg);
   stroke-width: 3px;
+  pointer-events: none;
+}
+
+/* ANCHOR COPY CHIPS (task #41 — anchor discoverability): the small .x / .y
+   buttons revealed on anchor hover; clicking one copies that anchor's equation
+   reference (`<slug>_<anchorId>.x|y`) to the clipboard. These are the ONLY
+   pointer-interactive overlay chrome (all other overlay marks are
+   pointer-events:none), so a click lands on the chip rather than the item
+   beneath. Square, hairline-bordered — same field-chrome language as the
+   Inspector controls. */
+.overlay .anchor-copy-chip {
+  cursor: pointer;
+}
+.overlay .anchor-copy-chip rect {
+  fill: var(--a-panel-bg);
+  stroke: var(--border);
+  stroke-width: var(--a-hairline);
+  pointer-events: all;
+}
+.overlay .anchor-copy-chip:hover rect {
+  fill: var(--a-hover-bg);
+  stroke: var(--fg-dim);
+}
+.overlay .anchor-copy-chip text {
+  fill: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+.overlay .anchor-copy-chip:hover text {
+  fill: var(--fg);
+}
+/* Positive "Copied!" feedback: the same accent used for live/selected state. */
+.overlay .anchor-copy-chip.copied rect {
+  stroke: var(--a-selection);
+}
+.overlay .anchor-copy-chip.copied text {
+  fill: var(--a-selection);
 }
 
 /* ── Panel title bar (optional; "Toggle Panel Names") ────────────────────────

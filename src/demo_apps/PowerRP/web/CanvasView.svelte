@@ -40,6 +40,7 @@
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
   import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (reusable code-string editor; no widget binds it by default)
   import CanvasToolbar from "./CanvasToolbar.svelte"; // GENERAL floating canvas toolbar (double-click a widget that declares floatingToolbar); mounted as a canvas overlay
+  import { copyText } from "./clipboard.js"; // HTTP-safe clipboard write (anchor-copy affordance, below)
 
   let { app } = $props();
 
@@ -146,10 +147,32 @@
   // {axis: "w"|"h", x, y, w, h} — the AABB the arrow is drawn across.
   let sizeIndicators = $state([]);
   // Anchor under the pointer → immediate SVG-native tooltip naming it
-  // (HTML Tooltip can't nest inside <svg>). {label, x, y} in world coords.
-  // During an ENDPOINT drag this is the live bind candidate (manifest Anchor
-  // UX: the nearest bindable anchor shows its referencable name mid-drag).
+  // (HTML Tooltip can't nest inside <svg>). {label, x, y} in world coords; the
+  // NON-drag hover path also carries {itemId, anchorId} so the copy affordance
+  // (below) can build the anchor's equation reference. During an ENDPOINT drag
+  // this is the live bind candidate (manifest Anchor UX: the nearest bindable
+  // anchor shows its referencable name mid-drag) and carries no itemId/anchorId.
   let hoverAnchor = $state(null);
+  // ── ANCHOR COPY DISCOVERABILITY (task #41) ─────────────────────────────────
+  // Hovering an anchor reveals two small copy chips (.x / .y); clicking one
+  // copies that anchor's VALID equation reference — the DISPLAY form
+  // "<itemSlug>_<anchorId>.x|y" (exactly what displayToStored rewrites to the
+  // stored "@<itemId>_<anchorId>.x|y" the evaluator resolves; the SAME grammar
+  // the Inspector's copy-equation-path affordance uses), so it can be pasted
+  // straight into any equation field. HYSTERESIS (below, in onPointerMove) keeps
+  // the tip alive within HOVER_KEEP_PX so the pointer can travel off the anchor
+  // onto the chips without dismissing it. Mirrors the Inspector's "Copied!" flash.
+  const HOVER_KEEP_PX = 72; // screen-px keep radius (> the SNAP_PX acquire zone); covers the chip footprint so travel-to-chip never dismisses the tip
+  const COPY_FLASH_MS = 1200; // how long a chip flashes its "copied" check (matches Inspector/AssetExplorer)
+  const ANCHOR_COPY_TIP_X = 10; // x offset of the tip from the anchor (matches the existing name-label x)
+  const ANCHOR_COPY_LABEL_Y = 13; // baseline of the anchor-name label
+  const ANCHOR_COPY_CHIP_Y = 18; // top of the chip row (below the label)
+  const ANCHOR_COPY_CHIP_W = 24; // one chip's width
+  const ANCHOR_COPY_CHIP_H = 16; // one chip's height
+  const ANCHOR_COPY_CHIP_GAP = 4; // gap between the .x and .y chips
+  // {itemId, anchorId, coord} of the chip currently flashing its "copied" check,
+  // or null. Identity-checked so a stale timeout never clears a newer flash.
+  let justCopiedAnchor = $state(null);
   // Computed ("dynamic") anchor candidate during an endpoint drag — a point
   // that is a live FUNCTION (the closest-point-on-perimeter tracking the
   // dragged endpoint), not a fixed preset: rendered as a # glyph, vs the
@@ -767,19 +790,25 @@
       const nodes = app.nodes();
       // Anchor hover tooltip (immediate; only while anchors are shown).
       // Shows the anchor's REFERENCABLE name ("circle_tm") — exactly what an
-      // equation types before .x/.y (THE UNIFICATION: anchors are variables).
-      hoverAnchor = null;
+      // equation types before .x/.y (THE UNIFICATION: anchors are variables) —
+      // plus the copy-.x/.y chips (task #41 anchor-copy discoverability).
+      // HYSTERESIS: a fresh anchor is acquired only inside the tight SNAP_PX
+      // zone, but the CURRENTLY-shown anchor is retained out to HOVER_KEEP_PX so
+      // the pointer can leave the anchor and reach its copy chips without the
+      // tip vanishing. Both radii are expressed in screen px (÷zoom → world).
+      let best = null;
       if (app.anchorsVisible) {
-        const tol = SNAP_PX / viewport.zoom;
-        let best = null;
+        const acquire = SNAP_PX / viewport.zoom;
+        const keep = HOVER_KEEP_PX / viewport.zoom;
         for (const n of nodes)
           for (const a of nodeAnchors(n)) {
             const d = Math.hypot(a.x - w.x, a.y - w.y);
-            if (d <= tol && (!best || d < best.d))
-              best = { d, label: app.anchorName(n.itemId, a.id), x: a.x, y: a.y };
+            const isCurrent = hoverAnchor?.itemId === n.itemId && hoverAnchor?.anchorId === a.id;
+            if (d <= (isCurrent ? keep : acquire) && (!best || d < best.d))
+              best = { d, label: app.anchorName(n.itemId, a.id), x: a.x, y: a.y, itemId: n.itemId, anchorId: a.id };
           }
-        if (best) hoverAnchor = best;
       }
+      hoverAnchor = best;
       return;
     }
     // Once the pointer travels past CLICK_SLOP_PX (screen px) the gesture is a
@@ -799,6 +828,32 @@
     else if (drag.kind === "place") placementDrag(e, w);
     // "shiftpick" = a deferred shift-click on a NON-draggable item: no drag
     // behavior, only the slop tracking above, so the pointer path does nothing.
+  }
+
+  // ── Anchor copy discoverability (task #41) ─────────────────────────────────
+
+  /**
+   * Command (mutates the system clipboard; flashes the "Copied!" affordance).
+   * Copies the currently-hovered anchor's VALID equation reference for one
+   * coordinate — the display form `<itemSlug>_<anchorId>.<coord>` built from the
+   * hover label (which is `anchorName(itemId, anchorId)` = the referencable
+   * base) plus ".x"/".y". This is the SAME grammar the equation field consumes:
+   * displayToStored rewrites it to the stored `@<itemId>_<anchorId>.<coord>` the
+   * evaluator resolves (verified against core/expressions.js resolveRef). On
+   * success the clicked chip flashes a check for COPY_FLASH_MS; a copy failure is
+   * reported LOUDLY inside copyText and leaves no flash (never swallowed).
+   *
+   * @param {"x"|"y"} coord - which coordinate of the anchor point to reference
+   */
+  async function copyAnchorRef(coord) {
+    const h = hoverAnchor;
+    if (h?.anchorId == null) return; // only genuine preset-anchor hovers carry itemId/anchorId
+    const ref = `${h.label}.${coord}`;
+    if (await copyText(ref, "anchor equation reference")) {
+      const flashed = { itemId: h.itemId, anchorId: h.anchorId, coord };
+      justCopiedAnchor = flashed;
+      setTimeout(() => { if (justCopiedAnchor === flashed) justCopiedAnchor = null; }, COPY_FLASH_MS);
+    }
   }
 
   // ── Rubber-band selection drag ─────────────────────────────────────────────
@@ -2362,7 +2417,30 @@
         {#if hoverAnchor && actions}
           {@const tp = actions.worldToScreen(hoverAnchor.x, hoverAnchor.y)}
           <g class="anchor-tip" transform={`translate(${tp.x} ${tp.y})`}>
-            <text x="10" y="18">{hoverAnchor.label}</text>
+            <text x={ANCHOR_COPY_TIP_X} y={ANCHOR_COPY_LABEL_Y}>{hoverAnchor.label}</text>
+            <!-- ANCHOR COPY CHIPS (task #41): only on a genuine anchor HOVER
+                 (itemId/anchorId present; the endpoint-drag bind path sets a
+                 label-only hoverAnchor and shows none). Each chip copies the
+                 anchor's valid equation ref `<label>.x|y` (pointerdown, not the
+                 svg's drag/select — hence stopPropagation). Interactive; the
+                 rest of the overlay is pointer-events:none. -->
+            {#if hoverAnchor.anchorId != null}
+              {#each ["x", "y"] as coord, i (coord)}
+                {@const chipX = ANCHOR_COPY_TIP_X + i * (ANCHOR_COPY_CHIP_W + ANCHOR_COPY_CHIP_GAP)}
+                {@const copied = justCopiedAnchor?.itemId === hoverAnchor.itemId && justCopiedAnchor?.anchorId === hoverAnchor.anchorId && justCopiedAnchor?.coord === coord}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <g
+                  class="anchor-copy-chip"
+                  class:copied
+                  onpointerdown={(e) => { e.stopPropagation(); e.preventDefault(); copyAnchorRef(coord); }}
+                >
+                  <!-- SVG-native accessible name + hover hint (no HTML Tooltip inside <svg>). -->
+                  <title>{copied ? "Copied!" : `Copy ${hoverAnchor.label}.${coord} to clipboard`}</title>
+                  <rect x={chipX} y={ANCHOR_COPY_CHIP_Y} width={ANCHOR_COPY_CHIP_W} height={ANCHOR_COPY_CHIP_H} />
+                  <text x={chipX + ANCHOR_COPY_CHIP_W / 2} y={ANCHOR_COPY_CHIP_Y + ANCHOR_COPY_CHIP_H / 2}>{copied ? "✓" : `.${coord}`}</text>
+                </g>
+              {/each}
+            {/if}
           </g>
         {/if}
       </svg>
