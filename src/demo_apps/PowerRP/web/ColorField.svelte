@@ -27,6 +27,15 @@
     Escape while open → app.cancelPreview() + close (reverts the preview)
   No Enter is ever required (Round-12 inspector ruling): selection applies live.
 
+  EYEDROPPER: the head also carries a small eyedropper button (mdi:eyedropper).
+  On click it opens the browser EyeDropper API (Chrome/Edge, secure context
+  only) so the user can sample a pixel from ANYWHERE on screen — including
+  outside the browser window — and the sampled #rrggbb is committed through the
+  SAME commit() path as the picker (one undo unit, keyframes like any picked
+  color). Where the API is unavailable (Firefox/Safari, or an insecure
+  non-localhost HTTP origin) the button is shown DISABLED with a tooltip saying
+  so — never a crash, never a silent no-op. A user-cancelled pick is swallowed.
+
   Storage format is #rrggbbaa (interpolators tween alpha), but a FULLY OPAQUE
   color is written back as 6-digit #rrggbb — so documents that never touch alpha
   never change shape (the composedHex invariant this field replaces). Legacy
@@ -123,6 +132,13 @@
 
   let open = $state(false);
 
+  // Browser EyeDropper API (Chrome/Edge, secure context only) — a STATIC
+  // capability, so a plain const suffices (it cannot change mid-session). When
+  // false the eyedropper button is shown disabled with an explanatory tooltip.
+  const eyedropperSupported = typeof window !== "undefined" && typeof window.EyeDropper === "function";
+  const EYEDROPPER_TIP = "Pick a color from anywhere on screen";
+  const EYEDROPPER_UNSUPPORTED_TIP = "Screen eyedropper needs Chrome or Edge on a secure (HTTPS/localhost) page";
+
   // Display readouts derived from the raw stored value.
   let norm = $derived(normalizedHex(value)); // null when unparseable
   let picker = $derived(toPicker(value)); // always #rrggbbaa for the picker
@@ -141,6 +157,25 @@
   function commit(picked) {
     app.setPreview([[path, toStored(picked)]]);
     app.commitPreview();
+  }
+
+  /**
+   * Command. Opens the OS eyedropper and commits the sampled screen color
+   * through the field's normal commit() path (so it lands as ONE undo unit and
+   * keyframes exactly like a picked color). No-op when the field is disabled or
+   * the API is unsupported. A user-cancelled pick (AbortError) is expected
+   * control flow and is swallowed; any other failure is re-thrown (no silent
+   * failure). Relies on the click's user gesture — invoked only from onclick.
+   */
+  async function pickFromScreen() {
+    if (disabled || !eyedropperSupported) return;
+    try {
+      const { sRGBHex } = await new window.EyeDropper().open();
+      commit(sRGBHex);
+    } catch (err) {
+      if (err && err.name === "AbortError") return; // user dismissed the picker
+      throw err;
+    }
   }
 
   function toggleOpen() {
@@ -176,6 +211,27 @@
       </button>
     </Tooltip>
     <span class="colorfield-hex" class:unknown={!norm}>{hexText}</span>
+    <Tooltip text={eyedropperSupported ? EYEDROPPER_TIP : EYEDROPPER_UNSUPPORTED_TIP}>
+      <!-- Eyedropper: sample a screen pixel into this field. When unsupported the
+           button stays hoverable (native `disabled` would swallow the tooltip that
+           explains WHY) but is greyed + aria-disabled; the click handler no-ops.
+           Styled inline with ambient/--a-* tokens — this change does not touch
+           app.css, mirroring PaintField's inline-token convention. -->
+      <button
+        type="button"
+        class="colorfield-eyedropper"
+        aria-label={`${label}: pick color from screen`}
+        aria-disabled={!eyedropperSupported}
+        {disabled}
+        onclick={pickFromScreen}
+        style="display:inline-flex; align-items:center; justify-content:center; flex:none;
+               padding:0; background:transparent; border:none; color:var(--fg-dim);
+               cursor:{eyedropperSupported ? 'pointer' : 'not-allowed'};
+               opacity:{eyedropperSupported ? 1 : 0.4};"
+      >
+        <iconify-icon icon="mdi:eyedropper" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
   </div>
   {#if open}
     <!-- The full picker, inline. oninput previews live per gesture, onchange
