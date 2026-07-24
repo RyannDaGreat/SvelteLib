@@ -1296,34 +1296,218 @@ const evalMemo = new WeakMap(); // state object → {registry, result}
 // rotation or rotationAnchor, so the pivot is a stable fixed point.
 const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
 
+// ── Full-JS evaluator plumbing (proxy scope + deterministic host) ────────────
+//
+// THE EVALUATOR (round: full-JS upgrade). An `=`-stripped equation is compiled
+// with `new Function("scope", "with(scope){ return (EXPR); }")` and run against
+// a Proxy `scope` whose `has` trap returns true for EVERY name — so bare
+// identifiers (`shape_2.x`, `speed`, `self.w`, `Math.sin`, plus IIFEs, locals,
+// loops, conditionals) all route through the proxy's `get`. `get` is the SINGLE
+// gate: it resolves references (recording each as a DYNAMIC dependency), hands
+// back a determinism-safe host (Math WITHOUT random, a controlled time/frame, a
+// SEEDED random, and the FUNCTIONS registry), and — because `has` is always
+// true — leaves NO path to the real globals (Date/window/globalThis/fetch
+// resolve to undefined, so `Date.now()` throws loudly rather than reaching the
+// wall clock). This keeps RenderTree = pure(document, alpha): evaluation is a
+// deterministic function of the folded state alone.
+//
+// UNTAKEN-BRANCH CAVEAT (by design): dependencies are captured by EXECUTION, not
+// by static parsing, so a reference in a branch that does NOT run this pass
+// (`cond ? a.x : b.x`) is not recorded until a pass takes that branch. This is
+// what lets reactivity survive control flow — the captured set is exactly the
+// refs actually read — at the cost that a not-yet-taken branch's refs are
+// absent until taken (each fold produces a new state identity, re-evaluated).
+//
+// BOOLEAN-CONTEXT CAVEAT: a raw reference used directly as a truth test
+// (`ref ? … : …`, `!ref`) is the lazy ref proxy (an object) and is therefore
+// always truthy; compare explicitly (`ref > 0`, `ref === "x"`). Arithmetic /
+// relational operators and the final returned value DO coerce through the proxy.
+
+/** A lazy ref proxy exposes its accumulated path under REF_SEGS (widget-arg
+ * extraction) and flags itself under IS_REF (final-result unwrap). */
+const REF_SEGS = Symbol("refSegs");
+const IS_REF = Symbol("isRef");
+
+/** Math with NO random (determinism): every Math member except `random`. */
+const SAFE_MATH = Object.freeze(Object.fromEntries(
+  Object.getOwnPropertyNames(Math)
+    .filter((k) => k !== "random")
+    .map((k) => [k, typeof Math[k] === "function" ? Math[k].bind(Math) : Math[k]]),
+));
+
+// Ambient globals that MUST stay unreachable (determinism + sandboxing). They
+// resolve to undefined so any member use (Date.now(), window.x) throws loudly;
+// `has: () => true` already blocks fall-through to the real globals, so this is
+// the explicit, self-documenting half of the guard. `self` is NOT here — it is
+// the owning-item keyword and is handled as a reference head.
+const BLOCKED_GLOBALS = new Set([
+  "Date", "window", "globalThis", "global", "fetch", "XMLHttpRequest", "WebSocket",
+  "process", "require", "eval", "Function", "import", "document", "navigator",
+  "performance", "setTimeout", "setInterval", "queueMicrotask", "Reflect",
+]);
+
+/**
+ * Pure function. A tiny deterministic string hash (FNV-1a) → uint32, used to
+ * SEED the evaluator's random from the folded state (so randomness is
+ * reproducible: same document ⇒ same sequence).
+ *
+ * @example typeof stringSeed("speed * 2") // "number"
+ * @example stringSeed("a") !== stringSeed("b") // true
+ */
+function stringSeed(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/**
+ * Pure function. mulberry32 PRNG: a uint32 seed → a function yielding the next
+ * uniform in [0, 1). Deterministic (same seed ⇒ same sequence) — the SEEDED
+ * random the evaluator exposes so equations may use randomness without breaking
+ * RenderTree = pure(document, alpha).
+ *
+ * @example // const r = mulberry32(1); const a = r(); 0 <= a && a < 1 // true
+ * @example // mulberry32(7)() === mulberry32(7)() // true (reproducible)
+ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Pure function. Rewrites a restricted-grammar equation into a JS-VALID
+ * expression: `#hex` color literals → quoted strings, and stored `@id` item
+ * refs → `$id` identifiers (JS-legal; the scope proxy maps `$id` back to `@id`).
+ * Bare display slugs (`shape_2.x`), variables, `self.…`, and function calls are
+ * already JS-valid and pass through. A source that is NOT restricted-grammar
+ * tokenizable (a full-JS expression — IIFE/loop/etc.) is returned verbatim.
+ *
+ * @example toJsExpr("@a1.x + 10") // "$a1.x + 10"
+ * @example toJsExpr("#ff0080") // "\"#ff0080\""
+ * @example toJsExpr("(function(){return 1})()") // "(function(){return 1})()" (verbatim — not restricted)
+ */
+function toJsExpr(clean) {
+  let toks;
+  try {
+    toks = tokenize(clean);
+  } catch {
+    return clean; // full-JS expression: not restricted-tokenizable, leave verbatim
+  }
+  let out = "";
+  let last = 0;
+  for (const t of toks) {
+    if (t.kind === "color") {
+      out += clean.slice(last, t.start) + JSON.stringify(t.value);
+      last = t.end;
+    } else if (t.kind === "ref" && t.value[0] === "@") {
+      out += clean.slice(last, t.start) + "$" + t.value.slice(1);
+      last = t.end;
+    }
+  }
+  return out + clean.slice(last);
+}
+
+const jsFnCache = new Map(); // clean src → compiled (scope) → value (pure compile; cache-safe)
+
+/**
+ * Near-pure function (memoizes into a module cache). Compiles an `=`-stripped
+ * equation into a `(scope) → value` function via `new Function` + `with(scope)`.
+ * BACK-COMPAT: when the source is a RESTRICTED-grammar syntax error, the
+ * restricted parser's message (e.g. "Unexpected end") is preferred over V8's; a
+ * source JS itself cannot compile but the restricted parser ACCEPTS (a bad
+ * `@id`, etc.) rethrows V8's. The `\n` before `)` neutralizes a trailing line
+ * comment. Throws on a genuine syntax error (→ the slot fails loud).
+ *
+ * @example // compileEquationFn("speed * 2")(scope) evaluates speed*2 against scope
+ */
+function compileEquationFn(clean) {
+  const cached = jsFnCache.get(clean);
+  if (cached) return cached;
+  let restrictedErr = null;
+  try {
+    parseExpression(clean); // restricted-grammar validation, for its nicer error message
+  } catch (e) {
+    restrictedErr = e;
+  }
+  let fn;
+  try {
+    fn = new Function("scope", `with(scope){ return (${toJsExpr(clean)}\n); }`);
+  } catch (jsErr) {
+    throw restrictedErr ?? jsErr; // prefer the back-compat restricted message
+  }
+  jsFnCache.set(clean, fn);
+  return fn;
+}
+
+/** Control-flow sentinel: a detected dependency cycle. Carries the exact chain
+ * of slot keys so evaluation aborts cleanly and the cycle's ORIGIN slot absorbs
+ * it. NOT an Error subclass — it is instanceof-caught, never shown as an
+ * equation message (the members are failed with the "Cyclic expressions" text). */
+class CycleAbort {
+  constructor(chain) {
+    this.chain = chain;
+  }
+}
+
+/**
+ * Pure function. Ref-proxy path segments → a resolver token for resolveRef: a
+ * `$`-mangled stored head becomes its `@id` form ("$a1" → "@a1"); display heads
+ * and every deeper segment pass through unchanged ("box", "self", "x").
+ *
+ * @example segsToToken(["$a1", "x"]) // "@a1.x"
+ * @example segsToToken(["box", "rotation_anchor", "x"]) // "box.rotation_anchor.x"
+ * @example segsToToken(["self", "w"]) // "self.w"
+ */
+function segsToToken(segs) {
+  const head = segs[0][0] === "$" ? "@" + segs[0].slice(1) : segs[0];
+  return [head, ...segs.slice(1)].join(".");
+}
+
 /**
  * Near-pure function (memoized on state identity; console.errors each NEW
  * error message once — never silently). THE derivation-stage expression
  * pass: folded state → same-shaped state with every equation slot replaced
- * by its evaluated number, plus an error map.
+ * by its evaluated value, plus an error map and the captured dependency graph.
  *
- * Returns {state, errors} where errors maps "items.a1.x"-style joined paths
- * to human messages. Errored slots (syntax errors, unknown references,
- * cycles, non-finite results) fall back to the plugin default for the key
- * (0 for variables) — deterministic, never a silent NaN; the UI renders the
- * error affordance from the map.
+ * Each `=`-stripped equation is compiled to FULL JavaScript (`new Function` +
+ * `with(scope)`) and evaluated LAZILY: a slot is settled on first read, so its
+ * dependencies (settled first, by recursion) are DISCOVERED as the expression
+ * runs — dynamic dep-capture, not static ref-parsing (see the "Full-JS
+ * evaluator plumbing" block for the proxy/determinism/untaken-branch details).
+ * A dependency cycle is detected on re-entry to an in-progress slot and is
+ * LOUD: every slot on the cycle gets the "Cyclic expressions: …" message and
+ * falls back to its default; slots merely downstream still evaluate.
  *
- * Dependency rules:
- *   - variable ref  → that vars slot (if it is itself an equation)
- *   - property ref  → that item-property slot (if it is an equation)
- *   - anchor ref    → ALL equation slots of the referenced item
- *     (conservative: anchors read the item's transform + bbox)
- *   - closest_to_rim(W, x, y) / a `@id_closest` ref toward a plain point →
- *     depends on W's geometry slots + the toward point's own slots (the
- *     point is a RIM-VS-POINT projection, so the point must evaluate first)
- *   - closest_to_rim(A, B) / a MUTUAL `@id_closest` pair → depends on BOTH
- *     rims' geometry slots and NOTHING else. The nearest PAIR is solved
- *     jointly from the two rims' GEOMETRY, so the two endpoints do NOT depend
- *     on each other — no fixpoint, no wobble (manifest USER REFINEMENT: "the
- *     rim-vs-rim solver computes the nearest PAIR internally as ONE joint
- *     problem … kills the observed mutual-closest wobble"). Identical solves
- *     within one pass are MEMOIZED, so from.x/from.y (and the symmetric
- *     to-side call) share ONE solve.
+ * Returns {state, errors, deps}. `errors` maps "items.a1.x"-style joined paths
+ * to human messages; errored slots (syntax errors, unknown references, cycles,
+ * wrong-kind or non-finite results, or ANY thrown expression) fall back to the
+ * plugin default for the key (0 for variables) — deterministic, never a silent
+ * NaN; the UI renders the error affordance from the map. `deps` maps each slot
+ * key to the Set of slot keys it read this pass (the dynamically captured
+ * dependency graph — the untaken-branch caveat applies: only refs on the
+ * executed path are present).
+ *
+ * Dependency behavior (now emergent from lazy recursion, not a static pass):
+ *   - variable / property ref → that slot (settled first if it is an equation)
+ *   - anchor ref → ALL equation slots of the referenced item (its transform +
+ *     bbox); a base-frame self anchor reads only x/y/w/h/scale (the pivot must
+ *     be a fixed point) plus, for a cross-item ref to a grouped member, the
+ *     owning groups' transforms (painted, group-influenced world)
+ *   - closest_to_rim(W, x, y) / `@id_closest` toward a point → W's geometry +
+ *     the toward point's own coordinate slots (a rim-vs-point projection)
+ *   - closest_to_rim(A, B) / a MUTUAL `@id_closest` pair → BOTH rims' geometry
+ *     and NOTHING else. The nearest PAIR is solved jointly from the two rims'
+ *     GEOMETRY, so the two endpoints do NOT depend on each other — no fixpoint,
+ *     no wobble. Identical solves within one pass are MEMOIZED, so from.x/from.y
+ *     (and the symmetric to-side call) share ONE solve.
  *
  * @example evaluateState({vars: {speed: 5}, items: {a1: {type: "rect", x: "speed * 2"}}}, registry).state.items.a1.x // 10
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
@@ -1336,47 +1520,30 @@ export function evaluateState(state, registry) {
   return result;
 }
 
-/** Pure-core of evaluateState (see its docs); uncached. */
+/** Pure-core of evaluateState (see its docs); uncached. Full-JS, lazy engine. */
 function computeEvaluatedState(state, registry) {
   const out = copied(state);
   const errors = new Map();
+  const deps = new Map(); // slotKey → Set(depKey): DYNAMIC dependency capture
   const slugs = slugMap(state);
-  const slots = new Map(); // key ("items.a1.x") → slot
-  // Round 17: memberId → [owning groupIds]. A CROSS-ITEM anchor ref to a grouped
-  // member must resolve at the member's GROUP-INFLUENCED world (the painted
-  // position — 17.1/17.2), and evaluateState runs BEFORE applyGroupParenting.
-  // So such a slot must (a) depend on each owning group's transform equations so
-  // the group evaluates first (added below), and (b) compose the group influence
-  // onto the member's world at lookup time (lookupFor). Empty for group-free
-  // documents — the common case adds zero edges and keeps the memo/fast path.
+  // memberId → [owning groupIds] (z-order). A CROSS-ITEM anchor ref to a grouped
+  // member resolves at the member's GROUP-INFLUENCED world (the painted position);
+  // the anchor read below settles each owning group's transform first (recursion)
+  // and composes its influence. Empty for group-free documents (the common case).
   const ownerGroups = memberOwnerGroups(state);
-
-  const fallbackFor = (path) => {
-    if (path[0] !== "items") return 0; // variables have no plugin defaults
-    const item = state.items[path[1]];
-    return getPath(registry.get(item.type).defaults, path.slice(2)) ?? 0;
-  };
-  const fail = (slot, message) => {
-    errors.set(slot.key, message);
-    mutSetPath(out, slot.path, fallbackFor(slot.path));
-    // Dedupe on the message, print the slot-prefixed line (core/report.js
-    // documents the once-per-session throttle semantics).
-    reportOnce(message, `PowerRP expression error at ${slot.key}: ${message}`);
-  };
 
   // 1. Collect equation slots. A slot carries its expected result `kind`:
   //    variables + legacy numeric/self-anchor slots are "number" (the pre-
-    //  any-type engine, byte-identical); a UNIVERSAL leading "=" opens the slot
-  //    to ANY kind (color/string/boolean/select), validated post-eval (step 4).
+  //    any-type engine, byte-identical); a UNIVERSAL leading "=" opens the slot
+  //    to ANY kind (color/string/boolean/select), validated post-eval.
+  const slots = new Map(); // key ("items.a1.x") → slot
   for (const [name, value] of Object.entries(state.vars ?? {}))
     if (typeof value === "string")
       slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value, kind: "number" });
   for (const [id, item] of Object.entries(state.items ?? {})) {
     // An item whose `type` hasn't folded in yet DOES NOT EXIST YET (the
-    // imaginary-slide semantics) — legitimate mid-document state when a
-    // creation slide sits BELOW a slide that keyframes the item (e.g. after
-    // Move Slide Down; Opus3's 3-keystroke crash repro). Skip, never throw:
-    // it "exists" again on folds that include its creation delta.
+    // imaginary-slide semantics) — legitimate mid-document state when a creation
+    // slide sits BELOW a slide that keyframes the item. Skip, never throw.
     if (typeof item?.type !== "string") continue;
     const plugin = registry.get(item.type);
     for (const [path, value] of leaves(item))
@@ -1385,156 +1552,39 @@ function computeEvaluatedState(state, registry) {
         slots.set(key, { key, path: ["items", id, ...path], src: value, kind: resultKindForSlot(plugin, path, value) });
       }
   }
-
-  // 2. Parse + resolve references → dependency edges.
-  const itemSlotKeys = new Map(); // itemId → [slot keys] (for anchor deps)
+  const itemSlotKeys = new Map(); // itemId → [slot keys] (geometry settling for anchors / rim / groups)
   for (const slot of slots.values())
     if (slot.path[0] === "items") {
       if (!itemSlotKeys.has(slot.path[1])) itemSlotKeys.set(slot.path[1], []);
       itemSlotKeys.get(slot.path[1]).push(slot.key);
     }
-  for (const slot of [...slots.values()]) {
-    slot.deps = new Set();
-    slot.descriptors = new Map(); // ref token → descriptor
-    // `self` resolves to the item that OWNS this slot (its equations live in
-    // items.<selfId>.…). Variable slots have no self (self is meaningless
-    // there); a `self.…` token in a variable throws, reported per-slot.
-    const selfId = slot.path[0] === "items" ? slot.path[1] : null;
-    // Depend on ALL of an item's equation slots (its transform + bbox) — the
-    // conservative geometry dependency anchors and rim solves need.
-    const dependOnItemGeometry = (itemId) => {
-      for (const depKey of itemSlotKeys.get(itemId) ?? [])
-        if (depKey !== slot.key) slot.deps.add(depKey);
-    };
-    try {
-      const { ast, refs, calls } = compiled(slot.src);
-      slot.ast = ast;
-      // A) Function CALLS (closest_to_rim, …): validate arity/kinds, resolve
-      //    widget args, and depend on each widget's geometry. The joint solve
-      //    reads only rim GEOMETRY, so a mutual pair's two endpoints never
-      //    depend on each other — that is what removes the fixpoint. (The eval
-      //    handler re-resolves widget ids from the AST + slugs; this pass only
-      //    needs the DEPS and the entry-time validation, not stored ids.)
-      const widgetArgNames = new Set(); // widget-arg tokens: handled here, skipped in the refs loop
-      for (const c of calls) {
-        const overload = resolveOverload(c.name, c.args.length); // loud on unknown fn / bad arity
-        c.args.forEach((arg, i) => {
-          if (overload.params[i] !== "widget") return;
-          const tok = widgetArgToken(arg);
-          if (tok === null) throw new Error(`Argument ${i + 1} of "${c.name}" must be a widget name`);
-          widgetArgNames.add(tok);
-          const wid = resolveWidgetArg(tok, slugs, selfId);
-          const witem = state.items?.[wid];
-          if (!witem || typeof witem.type !== "string") throw new Error(`Unknown widget "${tok}" in "${c.name}(…)"`);
-          const wplugin = registry.get(witem.type);
-          if (!wplugin.closestAnchor) throw new Error(`"${slugs.toSlug.get(wid) ?? wid}" has no rim (no closestAnchor) for ${c.name}`);
-          dependOnItemGeometry(wid);
-        });
-      }
-      for (const token of refs) {
-        // A widget-argument token (a bare item name inside a call) is resolved
-        // in the calls block above; skip it here UNLESS the same identifier also
-        // resolves to a variable (a name used both as a widget and a variable —
-        // pathological but possible), in which case it still needs its var dep.
-        // resolveRef of a bare item slug throws (no such var), so this check
-        // cleanly keeps genuine variables and drops pure widget names.
-        if (widgetArgNames.has(token)) {
-          if (!(token in (state.vars ?? {}))) continue; // pure widget name — handled by the calls block
-        }
-        const d = resolveRef(token, slugs, selfId);
-        slot.descriptors.set(token, d);
-        if (d.kind === "var") {
-          if (!(d.name in (state.vars ?? {})))
-            throw new Error(`Unknown variable "${d.name}"`);
-          if (slots.has(`vars.${d.name}`)) slot.deps.add(`vars.${d.name}`);
-        } else if (d.kind === "prop") {
-          const item = state.items?.[d.itemId];
-          if (!item) throw new Error(`Unknown item "@${d.itemId}" in "${token}"`);
-          const raw = getPath(item, d.path);
-          if (raw === undefined) throw new Error(`Item "${slugs.toSlug.get(d.itemId)}" has no property "${d.path.join(".")}"`);
-          const depKey = ["items", d.itemId, ...d.path].join(".");
-          // A NUMBER-kind slot keeps the strict rule: a string-valued property
-          // that is not itself an equation cannot feed arithmetic (loud, as
-          // before). A TYPED ("=") slot may reference a typed property (a
-          // literal color/string, or another "=" slot) — the post-eval kind
-          // check (step 4) is the loudness gate there, not this dep-time throw.
-          if (slot.kind === "number" && typeof raw === "string" && !slots.has(depKey))
-            throw new Error(`"${token}" is not a numeric property`);
-          if (slots.has(depKey)) slot.deps.add(depKey);
-        } else {
-          // anchor
-          const item = state.items?.[d.itemId];
-          if (!item) throw new Error(`Unknown item "@${d.itemId}" in "${token}"`);
-          const plugin = registry.get(item.type);
-          if (d.anchorId === "closest") {
-            // The `@id_closest` sugar. Route to the rim solver: rim-vs-point
-            // toward the arrow's OTHER endpoint, or (when that endpoint is also
-            // a closest ref to another rim) the JOINT rim-vs-rim nearest pair.
-            if (!plugin.closestAnchor)
-              throw new Error(`"${slugs.toSlug.get(d.itemId)}" has no computed closest anchor`);
-            const owner = state.items?.[selfId];
-            const ownerPlugin = selfId != null && typeof owner?.type === "string" ? registry.get(owner.type) : null;
-            const toward = ownerPlugin?.closestToward?.(owner, slot.path.slice(2));
-            if (!toward)
-              throw new Error(`"closest" anchor needs a toward context — only widgets with a closestToward hook (arrows) can use it`);
-            const otherRimId = closestPartnerRimId(toward, slugs); // set if the other endpoint is itself a closest ref
-            d.otherRimId = otherRimId; // read at eval time to pick joint vs point solve
-            dependOnItemGeometry(d.itemId); // this rim's geometry
-            if (otherRimId) {
-              dependOnItemGeometry(otherRimId); // the other rim's geometry (mutual: JOINT solve)
-            } else {
-              // Rim-vs-point: the toward endpoint's coordinates feed the
-              // projection, so they must evaluate FIRST. Find the sibling
-              // endpoint's key by object identity against the owner's state,
-              // and depend on its x/y equation slots (plain-number coords have
-              // no slot — nothing to wait on).
-              const siblingKey = siblingEndpointKey(owner, toward);
-              if (siblingKey)
-                for (const k of ["x", "y"]) {
-                  const towardKey = `items.${selfId}.${siblingKey}.${k}`;
-                  if (slots.has(towardKey)) slot.deps.add(towardKey);
-                }
-            }
-          } else {
-            if (!(plugin.anchors?.(item) ?? []).some((a) => a.id === d.anchorId))
-              throw new Error(`"${slugs.toSlug.get(d.itemId)}" has no anchor "${d.anchorId}"`);
-            // A self anchor (rotation pivot) evaluates in the ROTATION-ZEROED base
-            // frame from geometry only (x,y,w,h,scale) — never rotation or the
-            // rotationAnchor slots — so it depends only on those geometry slots,
-            // NOT conservatively on all of the owner's slots. This keeps the
-            // default rotationAnchor {x,y} (both = self center) from spuriously
-            // depending on each other (which would be a false cycle) and never
-            // pivots the pivot on itself.
-            const baseKeys = d.selfBase
-              ? (itemSlotKeys.get(d.itemId) ?? []).filter((k) => SELF_ANCHOR_DEP_PROPS.has(k.split(".")[2]))
-              : (itemSlotKeys.get(d.itemId) ?? []);
-            for (const depKey of baseKeys)
-              if (depKey !== slot.key) slot.deps.add(depKey);
-            // Round 17 (17.1/17.2): a CROSS-ITEM anchor ref to a GROUPED member
-            // resolves at the member's group-INFLUENCED world (lookupFor), so it
-            // must evaluate AFTER the owning group's transform — depend on each
-            // owning group's equation slots. selfBase (the member's own rotation
-            // pivot) stays in the member's OWN pre-influence frame (the group
-            // influence composes ON TOP in derive.js), so it takes NO group dep
-            // — applying influence to the pivot would double-count it.
-            if (!d.selfBase)
-              for (const gid of ownerGroups.get(d.itemId) ?? [])
-                dependOnItemGeometry(gid);
-          }
-        }
-      }
-    } catch (e) {
-      fail(slot, e.message);
-      slots.delete(slot.key);
-    }
-  }
 
-  // 3. Rim-solve MEMO (per evaluation pass). Keyed by a canonical string so
-  //    from.x and from.y of one closest ref share ONE solve, and the two
-  //    symmetric endpoints of a mutual pair share the SAME nearest-pair solve
-  //    (each reading its own side). This is what makes both endpoints land on
-  //    the true nearest pair with zero wobble across re-evaluations: the answer
-  //    is a deterministic function of the two rims' geometry, computed once.
+  const fallbackFor = (path) => {
+    if (path[0] !== "items") return 0; // variables have no plugin defaults
+    const item = state.items[path[1]];
+    return getPath(registry.get(item.type).defaults, path.slice(2)) ?? 0;
+  };
+  const status = new Map(); // slotKey → "eval" | "done" | "failed"
+  const stack = []; // slot keys currently on the evaluation stack (the cycle chain)
+  const fail = (slot, message) => {
+    if (status.get(slot.key) === "failed") return; // idempotent: a cycle fails its members once
+    errors.set(slot.key, message);
+    mutSetPath(out, slot.path, fallbackFor(slot.path));
+    status.set(slot.key, "failed");
+    reportOnce(message, `PowerRP expression error at ${slot.key}: ${message}`);
+  };
+
+  // Controlled clock + seeded random (determinism): sourced from the FOLDED
+  // state, never wall-clock. The host folds `time`/`frame` into state for
+  // animation; absent ⇒ 0. The random seed is a hash of the equation set, so a
+  // given document yields a reproducible sequence — RenderTree = pure(document).
+  const time = typeof state.time === "number" ? state.time : 0;
+  const frame = typeof state.frame === "number" ? state.frame : 0;
+  const seededRandom = mulberry32(stringSeed([...slots.keys()].sort().join("|") + "|powerrp"));
+
+  // Rim-solve MEMO (per pass): from.x/from.y of one closest ref share ONE solve;
+  // a mutual pair's two endpoints share the SAME joint solve (both read only
+  // geometry) — deterministic, wobble-free, computed once.
   const pairMemo = new Map(); // "pair:<idLo>|<idHi>" → {lo, hi} (world points, by sorted id)
   const pointMemo = new Map(); // "pt:<rimId>:<tx>:<ty>" → world point
   let capHit = false;
@@ -1564,176 +1614,255 @@ function computeEvaluatedState(state, registry) {
     return pt;
   };
 
-  // Function-call handler: `closest_to_rim` returns a POINT ({x, y}). Widget
-  // args are resolved by position from the arg ASTs (dep collection already
-  // validated arity/kinds); numeric args evaluate via the arithmetic lookup.
-  // Overloads: (widget, x, y) → rim-vs-point; (widgetA, widgetB) → the point on
-  // widgetA's rim of the joint nearest pair.
-  const selfIdFor = (slot) => (slot.path[0] === "items" ? slot.path[1] : null);
-  const callFor = (slot) => (name, argAsts, evalArg) => {
-    const overload = resolveOverload(name, argAsts.length); // loud on unknown fn / bad arity
-    // Resolve widget ids by position (dep-time already validated arity/kinds).
+  // ── Dependency-driven, lazy evaluation (recursion settles deps first) ──
+  const currentKey = () => stack[stack.length - 1];
+  const addDep = (from, to) => {
+    if (!deps.has(from)) deps.set(from, new Set());
+    deps.get(from).add(to);
+  };
+
+  /** Command. Ensures slot `key` is settled in `out` (value OR fallback),
+   * recording a dependency from the running slot and detecting cycles. Throws
+   * CycleAbort on re-entry to an in-progress slot (the whole chain is failed). */
+  const requireSlot = (key) => {
+    const from = currentKey();
+    if (from && from !== key) addDep(from, key);
+    const st = status.get(key);
+    if (st === "done" || st === "failed") return; // already settled (value / fallback in `out`)
+    if (st === "eval") {
+      const chain = stack.slice(stack.indexOf(key));
+      const message = `Cyclic expressions: ${[...chain, chain[0]].join(" → ")}`;
+      for (const k of chain) fail(slots.get(k), message);
+      throw new CycleAbort(chain);
+    }
+    evalSlot(slots.get(key));
+  };
+
+  /** Command. Settles every equation slot of `itemId` a transform/rim read
+   * needs, so worldTransform / closestAnchor read final numbers: all of them,
+   * or (base-frame self pivot) only x/y/w/h/scale — never rotation/rotationAnchor,
+   * keeping the pivot a fixed point and avoiding a false self-cycle. */
+  const requireItemGeometry = (itemId, selfBase) => {
+    const from = currentKey();
+    for (const depKey of itemSlotKeys.get(itemId) ?? []) {
+      if (depKey === from) continue; // never wait on the slot currently evaluating
+      if (selfBase && !SELF_ANCHOR_DEP_PROPS.has(depKey.split(".")[2])) continue;
+      requireSlot(depKey);
+    }
+  };
+  const requireGroups = (itemId) => {
+    for (const gid of ownerGroups.get(itemId) ?? []) requireItemGeometry(gid, false);
+  };
+
+  /** Query→value (records deps; may recurse). The value of a preset/self/closest
+   * anchor descriptor `d`, mapped through the correct frame. */
+  const anchorValue = (d, slot) => {
+    const item = out.items?.[d.itemId];
+    if (!item) throw new Error(`Unknown item "@${d.itemId}"`);
+    const plugin = registry.get(item.type);
+    if (d.anchorId === "closest") return closestSugar(d, slot);
+    if (!(plugin.anchors?.(item) ?? []).some((a) => a.id === d.anchorId))
+      throw new Error(`"${slugs.toSlug.get(d.itemId) ?? d.itemId}" has no anchor "${d.anchorId}"`);
+    requireItemGeometry(d.itemId, d.selfBase); // settle the target's geometry first
+    // selfBase (a self.anchors.<id> rotation pivot): ROTATION-ZEROED base frame —
+    // the pivot is a FIXED point. Otherwise (cross-item ref): the PAINTED
+    // worldTransform (pivoted about rotationAnchor), PLUS the group influence if
+    // the target is a grouped member — byte-identical to derive.js node.world.
+    let world = d.selfBase ? { ...T.fromState(out.items[d.itemId]), rotation: 0 } : worldTransform(out.items[d.itemId]);
+    if (!d.selfBase) {
+      requireGroups(d.itemId);
+      const influence = composedMemberInfluence(ownerGroups.get(d.itemId), out);
+      if (influence) world = T.compose(influence, world);
+    }
+    const anchor = plugin.anchors(out.items[d.itemId]).find((a) => a.id === d.anchorId);
+    return T.apply(world, anchor.x, anchor.y)[d.coord];
+  };
+
+  /** Query→value (records deps; may recurse). The `@id_closest` sugar → the rim
+   * solver: mutual (the toward endpoint is itself a closest ref) → JOINT nearest
+   * pair; otherwise a rim-vs-point projection toward the arrow's other endpoint. */
+  const closestSugar = (d, slot) => {
+    const plugin = registry.get(out.items[d.itemId].type);
+    if (!plugin.closestAnchor)
+      throw new Error(`"${slugs.toSlug.get(d.itemId) ?? d.itemId}" has no computed closest anchor`);
+    const selfId = slot.path[0] === "items" ? slot.path[1] : null;
+    const owner = selfId != null ? out.items?.[selfId] : null;
+    const ownerPlugin = owner && typeof owner.type === "string" ? registry.get(owner.type) : null;
+    const toward = ownerPlugin?.closestToward?.(owner, slot.path.slice(2));
+    if (!toward)
+      throw new Error(`"closest" anchor needs a toward context — only widgets with a closestToward hook (arrows) can use it`);
+    requireItemGeometry(d.itemId, false); // this rim's geometry
+    const otherRimId = closestPartnerRimId(toward, slugs); // set iff the other endpoint is itself a closest ref
+    if (otherRimId) {
+      requireItemGeometry(otherRimId, false); // the other rim's geometry (mutual: JOINT solve, no cross-dep)
+      return solvePair(d.itemId, otherRimId)[d.coord];
+    }
+    // Rim-vs-point: settle the sibling endpoint's own x/y slots, then read the
+    // (now numeric) toward point and project the rim onto it.
+    const siblingKey = siblingEndpointKey(owner, toward);
+    if (siblingKey)
+      for (const k of ["x", "y"]) {
+        const towardKey = `items.${selfId}.${siblingKey}.${k}`;
+        if (slots.has(towardKey)) requireSlot(towardKey);
+      }
+    const tw = ownerPlugin.closestToward(owner, slot.path.slice(2)); // re-read after settle (out mutated in place)
+    const tx = typeof tw.x === "number" ? tw.x : 0;
+    const ty = typeof tw.y === "number" ? tw.y : 0;
+    return solvePoint(d.itemId, tx, ty)[d.coord];
+  };
+
+  /** Query→value (records deps; may recurse). Resolves a ref-proxy path (display
+   * form, or `$`-mangled stored form) to its value, settling and recording every
+   * dependency. Throws loudly on unknown refs / wrong kinds (→ fail-loud). */
+  const refValue = (segs, slot) => {
+    const selfId = slot.path[0] === "items" ? slot.path[1] : null;
+    const token = segsToToken(segs);
+    const d = resolveRef(token, slugs, selfId); // handles @ (from $) / self / display
+    if (d.kind === "var") {
+      const depKey = `vars.${d.name}`;
+      if (slots.has(depKey)) requireSlot(depKey);
+      if (!(d.name in (out.vars ?? {}))) throw new Error(`Unknown variable "${d.name}"`);
+      return out.vars[d.name];
+    }
+    if (d.kind === "prop") {
+      if (!out.items?.[d.itemId]) throw new Error(`Unknown item "@${d.itemId}" in "${token}"`);
+      const spath = pathToStored(d.path); // display snake_case → stored camelCase (idempotent on camel)
+      const depKey = ["items", d.itemId, ...spath].join(".");
+      // A NUMBER-kind slot keeps the strict rule: a non-equation string property
+      // cannot feed arithmetic (loud). A TYPED ("=") slot may read a typed
+      // property (literal color/string, or another "=" slot) — the post-eval
+      // kind check is the loudness gate there, not this read-time throw.
+      const folded = getPath(state.items[d.itemId], spath);
+      if (slot.kind === "number" && typeof folded === "string" && !slots.has(depKey))
+        throw new Error(`"${token}" is not a numeric property`);
+      if (slots.has(depKey)) requireSlot(depKey);
+      const raw = getPath(out.items[d.itemId], spath);
+      if (raw === undefined)
+        throw new Error(`Item "${slugs.toSlug.get(d.itemId) ?? d.itemId}" has no property "${d.path.join(".")}"`);
+      return raw;
+    }
+    return anchorValue(d, slot); // anchor (preset / self / closest)
+  };
+
+  // A lazy ref proxy: bare `head` accumulates `.seg` accesses; coercion (arithmetic,
+  // final return, Number()/String()) resolves the whole path via refValue. A widget
+  // arg (a bare item ref passed to a function) is read via REF_SEGS, not coerced.
+  const makeRef = (segs, slot) => new Proxy(Object.create(null), {
+    get: (_t, prop) => {
+      if (prop === IS_REF) return true;
+      if (prop === REF_SEGS) return segs;
+      if (prop === Symbol.toPrimitive || prop === "valueOf") return () => refValue(segs, slot);
+      if (prop === "toString") return () => String(refValue(segs, slot));
+      if (typeof prop === "symbol") return undefined;
+      return makeRef([...segs, prop], slot);
+    },
+  });
+
+  // The function-library callable (closest_to_rim, …). Widget args arrive as
+  // ref proxies (read via REF_SEGS + validated); numeric args coerce via Number.
+  const makeFn = (name, slot, selfId) => (...args) => {
+    const overload = resolveOverload(name, args.length); // loud on unknown fn / bad arity
     const widgetIds = [];
     const nums = [];
-    argAsts.forEach((arg, i) => {
-      if (overload.params[i] === "widget")
-        widgetIds.push(resolveWidgetArg(widgetArgToken(arg), slugs, selfIdFor(slot)));
-      else nums.push(evalArg(arg));
+    args.forEach((arg, i) => {
+      if (overload.params[i] === "widget") {
+        const segs = arg == null ? null : arg[REF_SEGS];
+        const tok = segs ? widgetArgToken({ kind: "ref", name: segsToToken(segs) }) : null;
+        if (tok === null) throw new Error(`Argument ${i + 1} of "${name}" must be a widget name`);
+        const wid = resolveWidgetArg(tok, slugs, selfId);
+        const witem = out.items?.[wid];
+        if (!witem || typeof witem.type !== "string") throw new Error(`Unknown widget "${tok}" in "${name}(…)"`);
+        if (!registry.get(witem.type).closestAnchor)
+          throw new Error(`"${slugs.toSlug.get(wid) ?? wid}" has no rim (no closestAnchor) for ${name}`);
+        requireItemGeometry(wid, false); // widget geometry (deps + cycle detection)
+        widgetIds.push(wid);
+      } else {
+        nums.push(Number(arg)); // coerces a ref proxy (records its dep) or passes a numeric literal
+      }
     });
     if (overload.params.length === 3) return solvePoint(widgetIds[0], nums[0], nums[1]); // rim vs point
     return solvePair(widgetIds[0], widgetIds[1]); // rim vs rim (joint)
   };
 
-  // Round 17: the group influence for a grouped member, read from the EVOLVING
-  // `out` — computed from ONLY that member's owning groups (composedMemberInfluence
-  // reads just those group transforms, which the dep edges added in step 2 have
-  // already settled by the time this lookup runs, so it never reads an unsettled
-  // group). Null for ungrouped members → callers keep worldTransform(item)
-  // untouched (the no-group fast path). Composition order (later group outermost)
-  // is byte-identical to applyGroupParenting, so a cross-item anchor ref lands on
-  // the member's PAINTED (group-influenced) position (17.1/17.2).
-  const memberInfluenceFor = (memberId) => composedMemberInfluence(ownerGroups.get(memberId), out);
-
-  // 3b. Evaluation lookup (reads the evolving `out` state).
-  const lookupFor = (slot) => (token) => {
-    const d = slot.descriptors.get(token);
-    if (d.kind === "var") return out.vars[d.name];
-    if (d.kind === "prop") return getPath(out.items[d.itemId], d.path);
-    const item = out.items[d.itemId];
-    const plugin = registry.get(item.type);
-    if (d.anchorId === "closest") {
-      // The `@id_closest` sugar → the rim solver. Mutual (the other endpoint is
-      // itself a closest ref to another rim) → JOINT nearest pair; otherwise the
-      // rim-vs-point projection toward the arrow's evaluated other endpoint.
-      // Mutual: the joint solve reads only geometry (memoized, so from.x/from.y
-      // and the symmetric to-side share ONE solve) — no toward context needed.
-      if (d.otherRimId) return solvePair(d.itemId, d.otherRimId)[d.coord];
-      const owner = getPath(out, slot.path.slice(0, 2));
-      const ownerPlugin = slot.path[0] === "items" ? registry.get(owner.type) : null;
-      const toward = ownerPlugin?.closestToward?.(owner, slot.path.slice(2));
-      if (!toward)
-        throw new Error(`"closest" anchor needs a toward context — only widgets with a closestToward hook (arrows) can use it`);
-      const tx = typeof toward.x === "number" ? toward.x : 0;
-      const ty = typeof toward.y === "number" ? toward.y : 0;
-      return solvePoint(d.itemId, tx, ty)[d.coord];
+  // The scope proxy: `has: () => true` routes EVERY free identifier through `get`
+  // (no fall-through to real globals — the determinism guard). `get` returns the
+  // deterministic host, the function library, or a lazy ref proxy.
+  const scopeGet = (name, slot, selfId) => {
+    switch (name) {
+      case "undefined": return undefined;
+      case "NaN": return NaN;
+      case "Infinity": return Infinity;
+      case "Math": return SAFE_MATH; // no random
+      case "time": return time;
+      case "frame": return frame;
+      case "random": return seededRandom; // seeded, deterministic
     }
-    // WHICH FRAME a preset anchor maps through:
-    //   selfBase (a self.anchors.<id> used as the rotation pivot): the
-    //     ROTATION-ZEROED base frame — the pivot must be a FIXED point, not one
-    //     that spins with the object (self.anchors.center of a rotated box is
-    //     its geometric center).
-    //   otherwise (a CROSS-ITEM ref like box.anchors.tr): the item's PAINTED
-    //     transform = worldTransform(item), which pivots the rotation about the
-    //     item's rotationAnchor exactly as derive.js paints it (registry #2) —
-    //     PLUS, if the item is a GROUP MEMBER, the group influence composed onto
-    //     it (Round 17: byte-identical to the derived node.world, so the ref
-    //     lands on the painted position under group translate/rotate/scale).
-    let world = d.selfBase ? { ...T.fromState(item), rotation: 0 } : worldTransform(item);
-    if (!d.selfBase) {
-      const influence = memberInfluenceFor(d.itemId);
-      if (influence) world = T.compose(influence, world);
-    }
-    const anchor = plugin.anchors(item).find((a) => a.id === d.anchorId);
-    return T.apply(world, anchor.x, anchor.y)[d.coord];
+    if (name in FUNCTIONS) return makeFn(name, slot, selfId);
+    if (BLOCKED_GLOBALS.has(name)) return undefined; // Date/window/… → undefined → member use throws loud
+    return makeRef([name], slot); // a reference HEAD
   };
+  const makeScope = (slot) => {
+    const selfId = slot.path[0] === "items" ? slot.path[1] : null;
+    return new Proxy(Object.create(null), {
+      has: () => true,
+      get: (_t, prop) => (typeof prop === "symbol" ? undefined : scopeGet(prop, slot, selfId)),
+    });
+  };
+
+  const runExpression = (slot) => {
+    const clean = String(slot.src).replace(/^\s*=\s*/, ""); // spreadsheet leading "="
+    const fn = compileEquationFn(clean); // throws (syntax) → caught by evalSlot
+    const result = fn(makeScope(slot));
+    // A lone-ref result (`= box.x`, `speed`) is the ref proxy — coerce it once.
+    return result != null && result[IS_REF] ? result[Symbol.toPrimitive]("default") : result;
+  };
+
   const evalSlot = (slot) => {
+    status.set(slot.key, "eval");
+    stack.push(slot.key);
     try {
-      const v = evalAst(slot.ast, lookupFor(slot), callFor(slot));
+      const v = runExpression(slot);
       // RESULT-KIND VALIDATION. Number-kind slots keep the exact legacy message
-      // ("evaluates to NaN/Infinity") for their non-finite failure; any-type
-      // "=" slots validate against the property kind and fail LOUDLY on a type
-      // mismatch (→ fallbackFor default, never a silent bad value).
+      // ("evaluates to NaN/Infinity"); any-type "=" slots validate against the
+      // property kind and fail LOUDLY on a mismatch (→ default, never a silent
+      // bad value).
       if (slot.kind === "number") {
-        if (!Number.isFinite(v)) throw new Error(`evaluates to ${v}`);
+        if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`evaluates to ${v}`);
       } else if (!resultMatchesKind(v, slot.kind, PROPS[slot.path.slice(2).join(".")]?.options)) {
         throw new Error(`= expression result ${JSON.stringify(v)} is not a valid ${slot.kind} value`);
       }
       mutSetPath(out, slot.path, v);
+      status.set(slot.key, "done");
     } catch (e) {
-      fail(slot, e.message);
+      if (e instanceof CycleAbort) {
+        // Cycle members were already failed (fallbacks set in requireSlot). Keep
+        // unwinding until the cycle's ORIGIN slot absorbs it; downstream reads
+        // then continue with the fallbacks.
+        if (slot.key !== e.chain[0]) throw e;
+      } else {
+        fail(slot, e.message);
+      }
+    } finally {
+      stack.pop();
     }
   };
 
-  // 4. Kahn topo sort + evaluate. Dep errors don't block consumers — the
-  //    errored dep already holds its fallback number (reported at its source).
-  //    Prune deps that point to a slot which FAILED resolution and was deleted
-  //    from `slots` (e.g. a rotation anchor reading a sibling w that has a bad
-  //    reference): that dep already carries its fallback in `out`, so the edge
-  //    is dropped — otherwise its indegree could never reach 0 and Kahn would
-  //    stall, misreporting the survivor as a cycle.
-  for (const slot of slots.values())
-    slot.deps = new Set([...slot.deps].filter((dep) => slots.has(dep)));
-  const dependents = new Map(); // key → [keys that depend on it]
-  const indegree = new Map();
-  for (const slot of slots.values()) indegree.set(slot.key, slot.deps.size);
-  for (const slot of slots.values())
-    for (const dep of slot.deps) {
-      if (!dependents.has(dep)) dependents.set(dep, []);
-      dependents.get(dep).push(slot.key);
-    }
-  const remaining = new Set(slots.keys());
-  const queue = [...slots.values()].filter((s) => s.deps.size === 0).map((s) => s.key);
-  const settle = (key) => {
-    remaining.delete(key);
-    for (const next of dependents.get(key) ?? []) {
-      indegree.set(next, indegree.get(next) - 1);
-      if (indegree.get(next) === 0) queue.push(next);
-    }
-  };
-  for (;;) {
-    while (queue.length) {
-      const key = queue.shift();
-      if (!remaining.has(key)) continue; // already settled (failed cycle member)
-      evalSlot(slots.get(key));
-      settle(key);
-    }
-    if (remaining.size === 0) break;
-    // 5. A CYCLE blocks progress: fail exactly the slots ON the cycle (loud
-    //    error naming the chain), then resume — slots merely DOWNSTREAM of a
-    //    cycle still evaluate, reading the failed slots' fallback numbers.
-    const chain = cycleChain(slots, remaining, remaining.values().next().value);
-    const message = `Cyclic expressions: ${[...chain, chain[0]].join(" → ")}`;
-    for (const key of chain) {
-      fail(slots.get(key), message);
-      settle(key);
-    }
-  }
+  // Drive: evaluate every slot. Lazy recursion settles dependencies first and
+  // captures the dependency graph; each cycle's origin absorbs its CycleAbort,
+  // so this loop never throws.
+  for (const key of slots.keys())
+    if (!status.has(key)) evalSlot(slots.get(key));
 
-  // 6. Rim solves happen INLINE during the Kahn evaluation above (each closest
-  //    ref / closest_to_rim call reads the per-pass solve memo), so there is NO
-  //    fixpoint sweep anymore — the old Gauss-Seidel loop (which re-evaluated
-  //    closest slots until a residual estimate settled) is gone. The joint
-  //    nearest-pair solve reads only the two rims' GEOMETRY, so a mutual pair's
-  //    endpoints are topologically independent and evaluate exactly once each,
-  //    both landing on the true nearest pair with ZERO wobble across re-evals.
-  //    A rim pair that did not converge under the generic solver's iteration cap
-  //    (near-degenerate/tangent geometry) is REPORTED once, never silently — the
-  //    best iterate is kept (outline.nearestRimPair's documented behavior).
+  // Rim solves ran INLINE (each closest ref / closest_to_rim call read the
+  // per-pass memo) — no fixpoint sweep. A pair that did not converge under the
+  // solver's iteration cap (near-degenerate/tangent geometry) is REPORTED once,
+  // never silently (the best iterate is kept — nearestRimPair's behavior).
   if (capHit) {
     const message = `closest_to_rim nearest-pair solve hit the ${NEAREST_PAIR_MAX_ITERS}-iteration cap (near-degenerate geometry?) — keeping the best iterate`;
     reportOnce(message, `PowerRP expression warning: ${message}`);
   }
 
-  return { state: out, errors };
-}
-
-/**
- * Pure function. Walks unresolved deps from `start` until a key repeats,
- * returning exactly the slots ON the cycle (a start that merely depends on
- * the cycle walks into it and is not included), e.g. ["vars.a", "vars.b"].
- * Every unresolved slot has ≥1 unresolved dep (else Kahn would have
- * processed it), so the walk always terminates at a repeat within N steps.
- */
-function cycleChain(slots, remaining, start) {
-  const chain = [start];
-  let cur = start;
-  for (;;) {
-    const next = [...slots.get(cur).deps].find((d) => remaining.has(d));
-    const at = chain.indexOf(next);
-    if (at !== -1) return chain.slice(at);
-    chain.push(next);
-    cur = next;
-  }
+  return { state: out, errors, deps };
 }
 
 // ── Migration + variable rename ──────────────────────────────────────────────

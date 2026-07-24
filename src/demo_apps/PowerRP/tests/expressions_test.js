@@ -966,4 +966,67 @@ test("any-type equations: a bare (no =) string in a NON-numeric slot stays a lit
   assert.equal(s.items.r1.fill, "#123456", "literal color untouched");
 });
 
+// ── FULL-JS evaluator (new Function + with(proxy)) — determinism + dep-capture ─
+test("full-JS: an IIFE evaluates (locals + return)", () => {
+  const state = { items: { r: { ...rectPlugin.defaults, x: "(function () { return 123; })()" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.r.x, 123); // the exact spec example: (function(){return 123})()
+});
+test("full-JS: locals + a loop compute inside an IIFE", () => {
+  const state = { items: { r: { ...rectPlugin.defaults, x: "(function () { let s = 0; for (let i = 1; i <= 4; i++) s += i; return s; })()" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.r.x, 10); // 1 + 2 + 3 + 4
+});
+test("full-JS: conditionals + Math (deterministic members) are available", () => {
+  const state = { items: { r: { ...rectPlugin.defaults, x: "self.w > 0 ? Math.sqrt(144) + Math.max(1, 2, 3) : -1" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.r.x, 15); // self.w (default 100) > 0 → 12 + 3
+});
+test("full-JS: DYNAMIC dep-capture records a ref read inside a TAKEN `if` branch; the untaken branch is NOT captured", () => {
+  // src.y is an equation slot (= 6); dst.x reads it ONLY inside the if-branch.
+  const mk = (speed) => ({
+    vars: { speed },
+    items: {
+      src: { ...rectPlugin.defaults, name: "Src", y: "speed + 1" }, // slug "src"; itemId "src"
+      dst: { ...rectPlugin.defaults, name: "Dst", x: "(function () { if (speed > 0) { return src.y; } return 999; })()" },
+    },
+  });
+  const taken = evaluateState(mk(5), registry); // if (5 > 0) → reads src.y
+  assert.equal(taken.errors.size, 0);
+  assert.equal(taken.state.items.dst.x, 6);
+  assert.ok(taken.deps.get("items.dst.x").has("items.src.y"), "ref read inside the taken `if` IS captured");
+  const untaken = evaluateState(mk(0), registry); // if (0 > 0) false → returns 999, never reads src.y
+  assert.equal(untaken.errors.size, 0);
+  assert.equal(untaken.state.items.dst.x, 999);
+  assert.ok(!(untaken.deps.get("items.dst.x")?.has("items.src.y")), "untaken-branch ref is NOT captured (documented caveat)");
+});
+test("full-JS determinism: Date and Math.random are UNAVAILABLE — loud, fall back to default", () => {
+  const state = { items: {
+    d: { ...rectPlugin.defaults, x: "Date.now()" },
+    m: { ...rectPlugin.defaults, x: "Math.random()" },
+  } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.ok(errors.get("items.d.x"), "Date.now() is an error (Date routed to undefined)");
+  assert.ok(errors.get("items.m.x"), "Math.random() is an error (random removed)");
+  assert.equal(s.items.d.x, rectPlugin.defaults.x); // fell back — never the wall clock
+  assert.equal(s.items.m.x, rectPlugin.defaults.x);
+});
+test("full-JS: `random` is a SEEDED deterministic generator (identical across fresh states)", () => {
+  const mk = () => ({ items: { r: { ...rectPlugin.defaults, x: "random() * 1000" } } });
+  const a = evaluateState(mk(), registry).state.items.r.x; // fresh object → defeats the memo
+  const b = evaluateState(mk(), registry).state.items.r.x;
+  assert.equal(typeof a, "number");
+  assert.ok(a >= 0 && a < 1000);
+  assert.equal(a, b, "same document ⇒ same sequence (RenderTree stays pure(document))");
+});
+test("full-JS: a throwing expression fails LOUD and falls back (no silent NaN)", () => {
+  const state = { items: { r: { ...rectPlugin.defaults, x: "(function () { const a = null; return a.b; })()" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.ok(errors.get("items.r.x"), "the thrown error is reported");
+  assert.equal(s.items.r.x, rectPlugin.defaults.x); // fallback, never NaN/undefined
+});
+
 console.log(`\n${passed} expressions tests passed`);
