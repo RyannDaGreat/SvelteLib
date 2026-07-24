@@ -306,6 +306,12 @@
         run: (a) => a.armCrosshairPlacement(a.registry.get(fam.type)),
       })),
     },
+    // BENTO GRID — a layout scaffold whose value is its rich anchor set (cell
+    // centers/corners/edge-mids + grid-line intersections) that other widgets
+    // snap to or reference in `=` equations. Registered ONCE here (its Add menu
+    // entry; the plugin declares no `commands` to avoid a duplicate id); arms
+    // the generic crosshair placement like every other insert command.
+    { id: "add-bento", title: "Add Bento Grid (layout scaffold)", icon: "mdi:view-grid-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("bento")) },
     { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", run: (a) => a.exportPng() },
     { id: "export-pdf", title: "Export Slide as PDF", icon: "mdi:file-pdf-box", run: (a) => a.exportPdf() },
     { id: "export-svg", title: "Export Slide as SVG", icon: "mdi:svg", run: (a) => a.exportSvg() },

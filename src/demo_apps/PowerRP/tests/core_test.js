@@ -18,7 +18,8 @@ import {
 } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
 import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, pointInNodeBox, standardBBoxAnchors, cameraRect } from "../core/derive.js";
-import { evaluateState } from "../core/expressions.js";
+import { evaluateState, resolveRef, slugMap, displayToStored } from "../core/expressions.js";
+import { bentoPlugin, bentoAnchors } from "../plugins/bento.js";
 import { solveSnap, axisLock } from "../core/snap.js";
 import { createCommands } from "../core/commands.js";
 import { rpFuzzyScore } from "../core/fuzzy.js";
@@ -292,6 +293,7 @@ registry.register(rectPlugin);
 registry.register(circlePlugin);
 registry.register(arrowPlugin);
 registry.register(cameraPlugin);
+registry.register(bentoPlugin);
 test("registry is loud", () => {
   assert.throws(() => registry.register(rectPlugin), /Duplicate/);
   assert.throws(() => registry.get("nope"), /Unknown widget type/);
@@ -613,6 +615,64 @@ test("REGRESSION: keyframing a SINGLE gradient stop never yields a numeric-keyed
   // addStop's core op ([...stops, newStop]) must work on a folded gradient.
   const grown = [...foldState(b, 1, 1).items.r1.fill.linear.stops, { offset: 1, color: "#ffffff" }];
   assert.equal(grown.length, 4, "addStop-style spread of a folded gradient yields a valid array");
+});
+
+// ── BENTO GRID: grid-derived anchors + equation-ref round-trip ───────────────
+test("bento: 3x2 cell anchors (center/corners/edge-mids) at grid positions", () => {
+  // 200x300 bbox, 3 rows x 2 cols, no gap/pad -> 100x100 cells at (c*100, r*100).
+  const s = { w: 200, h: 300, rows: 3, cols: 2, padding: 0, rowGap: 0, colGap: 0 };
+  const A = bentoAnchors(s);
+  const at = (id) => A.find((a) => a.id === id);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) {
+    assert.deepEqual(at(`c${r}x${c}cm`), { id: `c${r}x${c}cm`, x: c * 100 + 50, y: r * 100 + 50 }); // CENTER
+    assert.deepEqual(at(`c${r}x${c}tl`), { id: `c${r}x${c}tl`, x: c * 100, y: r * 100 }); // top-left CORNER
+    assert.deepEqual(at(`c${r}x${c}br`), { id: `c${r}x${c}br`, x: c * 100 + 100, y: r * 100 + 100 }); // bottom-right CORNER
+    assert.deepEqual(at(`c${r}x${c}tm`), { id: `c${r}x${c}tm`, x: c * 100 + 50, y: r * 100 }); // top EDGE-MID
+    assert.deepEqual(at(`c${r}x${c}mr`), { id: `c${r}x${c}mr`, x: c * 100 + 100, y: r * 100 + 50 }); // right EDGE-MID
+  }
+  // Grid-line INTERSECTION lattice: (rows+1) x (cols+1) junctions.
+  assert.equal(A.filter((a) => /^j\d+x\d+$/.test(a.id)).length, 4 * 3);
+  assert.deepEqual(at("j0x0"), { id: "j0x0", x: 0, y: 0 }); // top-left junction
+  assert.deepEqual(at("j3x2"), { id: "j3x2", x: 200, y: 300 }); // bottom-right junction
+  // The widget's own bbox 9 are present too (bento composes them).
+  assert.deepEqual(at("cm"), { id: "cm", x: 100, y: 150 });
+});
+test("bento: anchor id round-trips through the equation ref grammar (resolveRef + evaluate)", () => {
+  // The bento's DEFAULT slug is `bento_<id[0:4]>` — it itself contains an "_",
+  // so this proves the last-"_" split peels the underscore-free anchor id while
+  // leaving the underscore-bearing slug intact.
+  const bento = { ...bentoPlugin.defaults, x: 100, y: 100, w: 200, h: 300, rows: 3, cols: 2, padding: 0, rowGap: 0, colGap: 0 };
+  const state0 = { items: { ab12cd34: bento } };
+  const slugs = slugMap(state0);
+  assert.equal(slugs.toSlug.get("ab12cd34"), "bento_ab12");
+  assert.deepEqual(resolveRef("bento_ab12_c2x0cm.x", slugs), { kind: "anchor", itemId: "ab12cd34", anchorId: "c2x0cm", coord: "x" });
+  // Full pipeline: a rect whose x/y bind to bento cell (2,0)'s center must
+  // evaluate to that cell's WORLD center — cell (2,0) center local (50,250) with
+  // the bento at world (100,100) -> world (150,350).
+  const state = { items: {
+    ab12cd34: bento,
+    r1: { ...rectPlugin.defaults, x: displayToStored("bento_ab12_c2x0cm.x", state0), y: displayToStored("bento_ab12_c2x0cm.y", state0), w: 20, h: 20, z: 1 },
+  } };
+  const ev = evaluateState(state, registry);
+  assert.equal(ev.errors.size, 0);
+  assert.equal(ev.state.items.r1.x, 150);
+  assert.equal(ev.state.items.r1.y, 350);
+  // nodeAnchors reports the SAME world coordinate the equation resolved to.
+  const bnode = deriveRenderTree(ev.state, registry).find((n) => n.id === "ab12cd34");
+  const wc = nodeAnchors(bnode).find((a) => a.id === "c2x0cm");
+  assert.deepEqual({ x: wc.x, y: wc.y }, { x: 150, y: 350 });
+});
+test("bento: merged span drops covered cells and exposes anchors on the merged rect", () => {
+  // A 2x2 grid with a span covering the whole left column (rows 0-1, col 0).
+  const s = { w: 100, h: 100, rows: 2, cols: 2, padding: 0, rowGap: 0, colGap: 0, spans: [{ r: 0, c: 0, rowSpan: 2, colSpan: 1 }] };
+  const A = bentoAnchors(s);
+  const at = (id) => A.find((a) => a.id === id);
+  // The merged cell keyed at its origin (0,0) spans 50x100 -> center (25,50).
+  assert.deepEqual(at("c0x0cm"), { id: "c0x0cm", x: 25, y: 50 });
+  // The covered non-origin cell (1,0) no longer exists.
+  assert.equal(at("c1x0cm"), undefined);
+  // The right column cells are untouched.
+  assert.deepEqual(at("c0x1cm"), { id: "c0x1cm", x: 75, y: 25 });
 });
 
 console.log(`\n${passed} tests passed`);
