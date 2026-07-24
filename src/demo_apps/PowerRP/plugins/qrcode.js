@@ -11,10 +11,13 @@
  * BitMatrix); this file NEVER touches the library's canvas/PNG renderers, only
  * its matrix, and rasterizes the grid to a vector path itself (qrMatrixToPathD).
  *
- * NO SILENT FALLBACK: a QR-generation failure (empty/over-capacity data) throws
- * loudly out of qrMatrix — the widget renders an error instead of silently
- * drawing a blank or a wrong code. The default data is always valid, so normal
- * use never throws.
+ * EMPTY vs INVALID (no silent fallback): blank/whitespace-only data is an
+ * EXPECTED "nothing to encode yet" state (a freshly-added widget, or one whose
+ * text the user cleared) — emit() GHOSTS it (draws nothing, stays selectable),
+ * matching the mermaid/text widgets, NOT a failure. Genuinely-invalid NON-empty
+ * data (over the format's capacity) still throws LOUDLY out of qrMatrix — never
+ * a silent blank or a wrong code. The default data is a valid URL, so normal use
+ * never throws.
  *
  * Structure mirrors plugins/shape.js: it composes the SHARED PROPERTY REGISTRY
  * (positioning + opacity + the effects bundle), rides the effects bundle for
@@ -158,10 +161,49 @@ export function isTransparentColor(color) {
   return false;
 }
 
+/**
+ * Pure function. Is QR `data` EMPTY — blank or whitespace-only, so there is
+ * nothing to encode yet? The ONE canonical predicate driving BOTH the ghost hook
+ * and emit()'s short-circuit (the mermaid/text ghost convention). An empty QR is
+ * an EXPECTED state (a freshly-added widget, or one the user cleared), NOT a
+ * failure — so it is guarded here as control flow rather than thrown out of
+ * qrMatrix (which keeps throwing LOUDLY for genuinely-invalid NON-empty data).
+ *
+ * Args:
+ *   data (string|null|undefined): the payload to encode
+ *
+ * Returns:
+ *   boolean
+ *
+ * Examples:
+ *   >>> qrDataIsEmpty("")            // true
+ *   >>> qrDataIsEmpty("   ")         // true (whitespace-only — nothing to encode)
+ *   >>> qrDataIsEmpty(null)          // true
+ *   >>> qrDataIsEmpty("https://x")   // false
+ */
+export function qrDataIsEmpty(data) {
+  return data === null || data === undefined || String(data).trim() === "";
+}
+
 export const qrcodePlugin = {
   type: "qrcode",
   title: "QR Code",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  /**
+   * Pure function. Is this QR widget currently a GHOST? STATE-dependent — a QR
+   * widget is a ghost only while its data is empty/blank (qrDataIsEmpty is the
+   * canonical predicate, shared with emit()'s short-circuit); core/derive.
+   * isGhostNode calls this hook to grant the dashed-outline/findable-when-Show-
+   * Ghosts affordance exactly while the widget would otherwise render nothing —
+   * the same opt-in the empty text/mermaid widgets make.
+   *
+   * Examples:
+   *   >>> qrcodePlugin.isGhost({ data: "" })                    // true
+   *   >>> qrcodePlugin.isGhost({ data: "https://netflix.com" }) // false
+   */
+  isGhost(state) {
+    return qrDataIsEmpty(state.data);
+  },
   // Composes the SHARED PROPERTY REGISTRY like shape/rect: positioning + opacity
   // + the effects bundle. The QR-specific rows (data/ecLevel/dark/light/
   // quietModules) are inline plain rows (the text.js precedent for widget-local
@@ -191,13 +233,22 @@ export const qrcodePlugin = {
     ...bundle("effects"),
   ],
   /** Near-pure function (delegates matrix generation to qrMatrix → the qrcode
-   * library; deterministic). State → display-list commands (local space): an
-   * optional light background rect (skipped when the light color is transparent)
-   * THEN ONE `path` op of all dark modules (vector — crisp at zoom, real vector
-   * in SVG/PDF export). Effects (the shared EFFECTS BUNDLE) wrap the ops,
-   * all-off = pass-through. A QR-generation failure throws loudly out of
-   * qrMatrix (no silent fallback). */
+   * library; deterministic). State → display-list commands (local space).
+   * GHOST short-circuit: empty/blank data draws NOTHING (returns []) via
+   * qrDataIsEmpty — the mermaid/text ghost convention — so a fresh or cleared
+   * widget never calls (and never crashes) qrMatrix. Otherwise: an optional light
+   * background rect (skipped when the light color is transparent) THEN ONE `path`
+   * op of all dark modules (vector — crisp at zoom, real vector in SVG/PDF
+   * export). Effects (the shared EFFECTS BUNDLE) wrap the ops, all-off =
+   * pass-through. A QR-generation failure on genuinely-invalid NON-empty data
+   * throws loudly out of qrMatrix (no silent fallback). */
   emit(s, _targetWorldIR, world) {
+    // GHOST short-circuit (the mermaid/text convention): blank/whitespace-only
+    // data has nothing to encode — an EXPECTED state, not a failure — so draw
+    // NOTHING before ever calling qrMatrix (which throws LOUDLY on empty).
+    // Guarding the empty case here is expected control flow, NOT a silent
+    // fallback; isGhost keeps the empty widget selectable/findable.
+    if (qrDataIsEmpty(s.data)) return [];
     const w = s.w ?? 0, h = s.h ?? 0;
     const matrix = qrMatrix(s.data ?? "", s.ecLevel ?? "M");
     const d = qrMatrixToPathD(matrix, { boxW: w, boxH: h, quietModules: s.quietModules ?? QR_SPEC_QUIET_ZONE_MODULES });

@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import jsQR from "jsqr";
 
-import { qrcodePlugin, qrMatrix, qrMatrixToPathD, isTransparentColor } from "../plugins/qrcode.js";
+import { qrcodePlugin, qrMatrix, qrMatrixToPathD, isTransparentColor, qrDataIsEmpty } from "../plugins/qrcode.js";
 import { renderToPng } from "../render_gpu/skia/node_render.js";
 import { renderDocToPng } from "../cli/render.js";
 import { irToSVG } from "../render_gpu/svg_backend.js";
@@ -119,6 +119,26 @@ for (const { data, ecLevel } of CASES) {
   assert.equal(registry.get("qrcode"), qrcodePlugin, "plugin registers under type 'qrcode'");
   assert.ok(commands.get("add-qrcode"), "add-qrcode command is registered");
   console.log("OK wiring — plugin + add-qrcode command registered");
+}
+
+// ── (5) EMPTY DATA IS A GHOST, NOT A CRASH (regression: canvas $effect crash) ──
+// A QR widget with empty/blank data (freshly cleared) used to reach qrMatrix,
+// which throws "No input text", crashing the render $effect and the whole
+// canvas. emit() now GHOSTS empty data (returns []) like mermaid/text; qrMatrix
+// itself STILL throws loudly on empty (guarded upstream, no silent fallback).
+{
+  assert.equal(qrDataIsEmpty(""), true);
+  assert.equal(qrDataIsEmpty("   "), true, "whitespace-only is empty (nothing to encode)");
+  assert.equal(qrDataIsEmpty("https://x"), false);
+  assert.equal(qrcodePlugin.isGhost({ data: "" }), true, "empty data → ghost (selectable/findable)");
+  assert.equal(qrcodePlugin.isGhost({ data: "https://netflix.com" }), false);
+  for (const data of ["", "   ", undefined]) {
+    const state = { ...qrcodePlugin.defaults, data, w: BOX, h: BOX };
+    assert.deepEqual(qrcodePlugin.emit(state, null, IDENTITY), [], `empty QR emit must ghost ([]) for ${JSON.stringify(data)}`);
+  }
+  const valid = qrcodePlugin.emit({ ...qrcodePlugin.defaults, data: "https://www.netflix.com", w: BOX, h: BOX }, null, IDENTITY);
+  assert.ok(valid.some((op) => op.op === "path" && op.d.length > 0), "valid data still emits a QR path op");
+  console.log("OK ghost — empty/blank QR data emits [] (no crash), valid data emits a path");
 }
 
 // ── VLM eyeball artifact ──────────────────────────────────────────────────────
