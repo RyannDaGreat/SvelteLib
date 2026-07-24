@@ -349,6 +349,9 @@
         // plain "Add Digital Clock" command (palette) drops a static 00:00 the
         // user can set or bind themselves; this preset shows the live use up front.
         { id: "demo-insert-clock-digital", title: "Digital Clock (seven-segment, live = time)", icon: "mdi:clock-digital", run: (a) => { const p = a.registry.get("clock_digital"); a.armCrosshairPlacement({ ...p, defaults: { ...p.defaults, time: "=time" } }); } },
+        // Analog clock preset whose TIME is bound to the presentation clock var
+        // (`= time`, seconds) — a LIVE clock that ticks in Present mode.
+        { id: "demo-insert-clock-live", title: "Analog Clock (live — time = presentation clock)", icon: "mdi:clock-time-four-outline", run: (a) => a.armCrosshairPlacement({ ...a.registry.get("clock_analog"), defaults: { ...a.registry.get("clock_analog").defaults, time: "= time" } }) },
       ],
     },
     // INSERT SHAPE — ONE submenu collecting the arbitrary parametric
