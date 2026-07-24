@@ -342,7 +342,16 @@ export function missingDefaults(doc, registry) {
       // injecting them contradicts the defaults-fallback migration design
       // and rewrites every pre-round-11 doc on load).
       if (typeof value === "string" && value.startsWith("self.")) continue;
-      if (path[0] !== "type" && !set.has(path.join("."))) missing.push({ path, value });
+      // A scalar default key is ALSO covered when the item wrote a nested OBJECT
+      // there (e.g. default `background: "#fff"` but the item holds a gradient
+      // PAINT object → the written set has `background.type`/`background.stops…`
+      // but not bare `background`). Without this, the scalar default would be
+      // keyframed OVER the gradient on load — silently wiping every gradient
+      // paint (background/fill/stroke) on repair. Treat "any written descendant"
+      // as coverage so paint objects survive a load/repair round-trip.
+      const key = path.join(".");
+      const coveredByNested = set.has(key) || [...set].some((w) => w.startsWith(key + "."));
+      if (path[0] !== "type" && !coveredByNested) missing.push({ path, value });
     }
     if (missing.length) out.push({ id, slideIndex, missing });
   }

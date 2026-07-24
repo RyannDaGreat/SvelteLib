@@ -69,6 +69,18 @@ import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 export const SECONDS_SCRUB = 0.01;
 
 /**
+ * THE camera's dither-pattern modes (manifest "CAMERA RENDERING"). "off"
+ * disables dithering; "bayer" is an ordered checkerboard threshold matrix;
+ * "blueNoise" is a softer, less regular precomputed scatter. The array VALUES
+ * are the stored state / equation slugs; DITHER_MODE_LABELS maps each to the
+ * human label the Inspector select shows. Single-sourced here so the future
+ * dither final-pass (a SEPARATE task — this module only declares the property)
+ * and the property row can never disagree on the exact ids.
+ */
+export const DITHER_MODES = ["off", "bayer", "blueNoise"];
+export const DITHER_MODE_LABELS = { off: "Off", bayer: "Bayer", blueNoise: "Blue noise" };
+
+/**
  * The property definition table. Each entry is keyed by its property key (the
  * state field / equation slug) and holds the DEFAULT row aspects + an optional
  * `default` value (the fragment default). A widget composes rows/defaults by
@@ -132,8 +144,32 @@ export const PROPS = {
   // sensitivity"). default 1 (fully opaque).
   opacity: { label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting", default: 1, help: "How see-through the whole widget is, from 0 (invisible) to 1 (fully solid)." },
 
-  // ── formatting: color (single-color widgets: camera background) ─────────────
-  background: { label: "Background", kind: "color", category: "formatting", help: "The color painted behind everything in this camera's view — the slide's backdrop in exports and presentation." },
+  // ── formatting: THE CAMERA BACKGROUND — a full PAINT (Axis-1) ────────────────
+  // The camera's background IS its fill, so it composes the SAME paint seam as
+  // fill/stroke (`paint: true` → the Inspector renders PaintField, not the plain
+  // ColorField): Solid / Linear / Radial / `=` equation. Rendered via parsePaint
+  // (gradients + equations), NOT parseColor (solid-only). BACK-COMPAT: a stored
+  // plain "#rrggbb" string still works untouched — parsePaint treats a bare
+  // string/rgba as a solid, byte-identically to the old ColorField behavior.
+  background: { label: "Background", kind: "color", paint: true, category: "formatting", help: "The color or gradient painted behind everything in this camera's view — the slide's backdrop in exports and presentation. Lower a stop's alpha for a translucent backdrop, or bind it to an equation." },
+
+  // ── rendering: SCENE-GLOBAL render settings on THE camera (manifest "CAMERA
+  // RENDERING") ────────────────────────────────────────────────────────────────
+  // These live on THE singleton camera (purgeable:false, exactly one) because
+  // they are WHOLE-SCENE render toggles, not per-widget style — a document has
+  // one render configuration. If multi-camera is ever introduced they RELOCATE
+  // to wherever the scene-global render config then lives (a MOVE, not a
+  // redesign). Category "rendering" is their own Inspector accordion group.
+  //
+  // DEFAULTS MATCH TODAY'S HARDCODED BEHAVIOR so every existing document renders
+  // byte-identically until a user changes a knob: antialias ON (browser_surface
+  // GetWebGLContext antialias:1), retina ON (core/view dpr = devicePixelRatio),
+  // dither OFF. The dither PROPERTIES are declared here; the final-pass that
+  // consumes them is a SEPARATE task.
+  antialias: { label: "Anti-aliasing", kind: "boolean", category: "rendering", default: true, help: "Smooths the jagged staircase edges of shapes and text by blending edge pixels. Off gives crisp, pixelated edges and renders a little faster." },
+  retina: { label: "Retina (HiDPI)", kind: "boolean", category: "rendering", default: true, help: "Renders at the display's full pixel density (its device pixel ratio) so edges stay sharp on high-DPI screens. Off renders at 1:1 CSS pixels — softer on a Retina display but faster." },
+  ditherMode: { label: "Dither", kind: "select", options: DITHER_MODES, optionLabels: DITHER_MODE_LABELS, category: "rendering", default: "off", help: "Scatters pixels between adjacent colors to hide the visible stair-step banding in smooth gradients. Bayer is a fixed ordered checkerboard; blue-noise is a softer irregular scatter; off disables it." },
+  ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, max: 1, category: "rendering", default: 1, help: "How strongly the dither pattern is applied, from 0 (none) to 1 (full). Higher hides banding better but adds more visible grain. Only matters when a dither mode is on." },
 
   // ── shape: the PRESET-SHAPE selector + its adjustable knobs (Wave 2) ─────────
   // Only the `shape` widget (plugins/shape.js) composes these — a single-consumer
@@ -336,6 +372,13 @@ export const BUNDLES = {
     "particleSizeMin", "particleSizeMax",
     "particleColor", "particleFade", "particleShrink", "particleSeed",
   ],
+  // THE CAMERA RENDERING bundle (manifest "CAMERA RENDERING"): the scene-global
+  // render toggles the singleton camera owns — anti-aliasing, retina/DPR, and
+  // the dither mode + its emphasis. Composed ONLY by plugins/camera.js (the sole
+  // camera), single-sourced here like every other family. Order = Inspector row
+  // order (the two on/off toggles first, then the dither pair). Spread its
+  // defaults with bundleDefaults("rendering") — every key has a scalar default.
+  rendering: ["antialias", "retina", "ditherMode", "ditherEmphasis"],
 };
 
 /**

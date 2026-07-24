@@ -533,4 +533,18 @@ test("repairedDocument: a clean single-camera doc emits NO camera report", () =>
   assert.ok(!reports.some((r) => r.includes("camera")));
 });
 
+test("repairedDocument: a gradient PAINT survives repair — not clobbered by the scalar default (regression)", () => {
+  // A rect with a gradient PAINT object as its fill. missingDefaults must treat
+  // the scalar-default key `fill` as COVERED because the item wrote nested paths
+  // (fill.type / fill.linear.stops…). Pre-fix it reported `fill` as missing and
+  // keyframed the "#…" default OVER the gradient — silently wiping every gradient
+  // paint (fill/stroke/background) on load.
+  const grad = { type: "linearGradient", solid: "#123456", linear: { stops: [{ offset: 0, color: "#111111" }, { offset: 1, color: "#eeeeee" }], from: { x: 0, y: 0 }, to: { x: 1, y: 0 } } };
+  let doc = newDocument();
+  doc = keyframed(doc, 0, ["items", "grad1"], { ...registry.get("rect").defaults, type: "rect", fill: grad });
+  const { doc: fixed } = repairedDocument(doc, registry);
+  const fill = evaluateState(foldState(fixed, 0, 1), registry).state.items.grad1.fill;
+  assert.ok(fill && fill.type === "linearGradient", `gradient fill must survive repair, got ${JSON.stringify(fill)}`);
+});
+
 console.log(`\n${passed} repair tests passed`);

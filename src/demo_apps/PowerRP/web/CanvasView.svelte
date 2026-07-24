@@ -20,7 +20,7 @@
   import { selectInBox, rectFromCorners } from "../core/bandselect.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
-  import { rect as rectCmd, parseColor } from "../render_gpu/ir.js";
+  import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onVideoFrame } from "../render_gpu/gpu/video_registry.js";
@@ -318,7 +318,7 @@
       ? null
       : preRasterizePdfPages(nodes, view, canvasEl.width, canvasEl.height);
     const ir = [
-      rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: parseColor(camRect.background) }),
+      rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: parsePaint(camRect.background) }),
       ...sceneIR(nodes, { pdfDisplay }),
     ];
     gpu.render(ir, view, { background: [0, 0, 0, 0] });

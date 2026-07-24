@@ -22,20 +22,30 @@ export class SkiaSurface {
   /**
    * Command (inits WASM + fonts + a WebGL2 context on canvasEl). The async
    * factory the editor awaits, mirroring GpuCompositor.create.
+   *
+   * `antialias` surfaces THE camera's "Anti-aliasing" render toggle (the
+   * scene-global setting, plugins/camera.js): it selects the WebGL2 context's
+   * MSAA flag (was hardcoded on). Default true = today's behavior (back-compat).
+   * The GL context is created ONCE, so the caller (CanvasView) must re-create
+   * the surface when the camera prop flips — see the lead-report threading note.
+   *
+   * @param {HTMLCanvasElement} canvasEl Target canvas.
+   * @param {{antialias?: boolean}} [opts] Render options (antialias: MSAA on/off).
    */
-  static async create(canvasEl) {
+  static async create(canvasEl, { antialias = true } = {}) {
     const CanvasKit = await ensureCanvasKit();
     const fontCollection = await loadFontCollection(CanvasKit);
-    return new SkiaSurface(CanvasKit, canvasEl, fontCollection);
+    return new SkiaSurface(CanvasKit, canvasEl, fontCollection, { antialias });
   }
 
-  constructor(CanvasKit, canvasEl, fontCollection) {
+  constructor(CanvasKit, canvasEl, fontCollection, { antialias = true } = {}) {
     this.CanvasKit = CanvasKit;
     this.canvasEl = canvasEl;
     this.fontCollection = fontCollection;
     // alpha + premultiplied so the transparent clear lets the grid underlay +
     // app background show through (the editor's premultiplied-alpha contract).
-    this.ctxHandle = CanvasKit.GetWebGLContext(canvasEl, { alpha: 1, premultipliedAlpha: 1, antialias: 1, majorVersion: 2 });
+    // `antialias` is the camera's Anti-aliasing toggle (was a hardcoded 1).
+    this.ctxHandle = CanvasKit.GetWebGLContext(canvasEl, { alpha: 1, premultipliedAlpha: 1, antialias: antialias ? 1 : 0, majorVersion: 2 });
     if (!this.ctxHandle) throw new Error("SkiaSurface: GetWebGLContext returned 0 (WebGL2 unavailable in this browser)");
     this.grContext = CanvasKit.MakeWebGLContext(this.ctxHandle);
     if (!this.grContext) throw new Error("SkiaSurface: MakeWebGLContext returned null");

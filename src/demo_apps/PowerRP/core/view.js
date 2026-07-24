@@ -153,3 +153,25 @@ export function fitRectView(rect, w, h, dpr = 1) {
     dpr,
   };
 }
+
+/**
+ * Pure function. The effective device-pixel-ratio for raster rendering, given
+ * THE camera's "Retina (HiDPI)" toggle (the scene-global render setting,
+ * plugins/camera.js) and the display's real device pixel ratio: `retina` ON
+ * renders at the display's density (crisp on HiDPI); OFF pins to 1:1 CSS pixels
+ * (softer on Retina, faster). This is the toggle math the `dpr` view parameter
+ * (fitRectView / worldViewRect) consumes — factored into the pure core so the
+ * live consumer (app.dpr(), which supplies window.devicePixelRatio) is a thin
+ * read of the camera prop, not a home for the branch.
+ *
+ * @param {boolean} retina The camera's retina toggle (true = use device density).
+ * @param {number} deviceDpr The display's device pixel ratio (window.devicePixelRatio, > 0).
+ * @returns {number} The dpr to pass as fitRectView's 4th arg / view.dpr.
+ *
+ * @example effectiveDpr(true, 2) // 2
+ * @example effectiveDpr(false, 2) // 1
+ * @example effectiveDpr(true, 1) // 1
+ */
+export function effectiveDpr(retina, deviceDpr) {
+  return retina ? deviceDpr : 1;
+}
