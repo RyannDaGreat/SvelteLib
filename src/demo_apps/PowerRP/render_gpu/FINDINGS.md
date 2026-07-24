@@ -1,5 +1,13 @@
 # WebGPU Rendering Prototype — Findings
 
+> **SUPERSEDED — HISTORICAL (2026-07-24).** This documents the original WebGPU
+> prototype. The runtime raster backend has since moved to Skia/CanvasKit
+> (`render_gpu/skia/`), and several files referenced below (`gpu/compositor.js`,
+> `gpu/shaders.js`, the `bench/` dir) no longer exist. Kept for the design "why"
+> (benchmark numbers, the glyph-atlas decision, rejected alternatives) — still
+> cited by comments in `gpu/glyph_atlas.js` and `gpu/image_registry.js`. Do NOT
+> read this as the current architecture.
+
 Prototype for the approved two-render-mode architecture (manifest: "RENDER
 MODES DECISION" / "Round 7"): widgets emit a device-independent **draw-command
 IR**; the **WebGPU** backend rasterizes it (the only runtime renderer), the
