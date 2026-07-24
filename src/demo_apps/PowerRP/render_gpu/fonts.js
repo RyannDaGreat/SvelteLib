@@ -123,14 +123,24 @@ export const FONTS = {
     fallback: "serif",
     files: { regular: "PlayfairDisplay-Regular.ttf", bold: "PlayfairDisplay-Bold.ttf" },
   },
-  // Futura — proper Futura is proprietary (not OFL, not on Google Fonts), so
-  // this bundles JOST, the OFL geometric-sans Futura revival on Google Fonts
-  // (see ../fonts/README.md). Labeled honestly as "Futura (Jost)"; ships Regular
-  // + Bold static instances so it flows through every seam like the others.
+  // Futura — the REAL Futura (Paul Renner's 1927 geometric sans). Regular is
+  // Futura Medium and Bold is Futura Bold, extracted as static .ttf instances
+  // from the system Futura collection, so it flows through every seam (glyph
+  // atlas + PDF/SVG embed) exactly like the OFL families above.
   futura: {
-    title: "Futura (Jost)",
+    title: "Futura",
     kind: "sans", // geometric sans
     cssFamily: "PowerRP Futura",
+    fallback: "sans-serif",
+    files: { regular: "Futura-Regular.ttf", bold: "Futura-Bold.ttf" },
+  },
+  // Jost — the OFL geometric-sans Futura revival (Google Fonts, see
+  // ../fonts/README.md). Kept as its OWN family next to the real Futura above
+  // (unique cssFamily so the two never collide); ships Regular + Bold instances.
+  jost: {
+    title: "Jost",
+    kind: "sans", // geometric sans
+    cssFamily: "PowerRP Jost",
     fallback: "sans-serif",
     files: { regular: "Jost-Regular.ttf", bold: "Jost-Bold.ttf" },
   },
@@ -303,7 +313,7 @@ export function fontOptions() {
  * loader turns into @font-face rules and the PDF backend can pre-embed. Excludes
  * `system` (no file).
  *
- * @example committedFaces().length // 22 (11 families x regular/bold)
+ * @example committedFaces().length // 24 (12 families x regular/bold)
  * @example committedFaces()[0].file.endsWith(".ttf") // true
  */
 export function committedFaces() {

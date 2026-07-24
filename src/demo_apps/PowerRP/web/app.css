@@ -200,6 +200,7 @@
   --a-fp-name-size: 1.9rem;
   --a-fp-sample-size: 1.4rem;
   --a-fp-pangram-size: 0.95rem;
+  --a-fp-display-lh: 1.1; /* tight leading for the big name + sample display lines */
   /* The text-edit ::selection band. Translucent so the SKIA glyphs beneath the
      transparent contenteditable read THROUGH a normal-looking selection (the
      transparent-overlay WYSIWYG rewrite). Derived from --a-selection so it tracks
@@ -1232,16 +1233,16 @@ body,
 .fp-trigger-label {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   text-align: left;
 }
 .fp-caret {
   flex: 0 0 auto;
   opacity: 0.7;
 }
-/* The popover holds the option menu and, beside it, the hover preview. */
+/* The popover holds the list column (search + options) and, beside it, the
+   preview. align-items:stretch makes both columns the SAME height, so the
+   divider (the preview's border-left) always spans the FULL popover height and
+   the preview can never be shorter than its own content (no clipped pangram). */
 .fp-pop {
   position: absolute;
   top: 100%;
@@ -1249,28 +1250,45 @@ body,
   margin-top: var(--a-sp-1);
   z-index: 1000;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   background: var(--a-panel-bg);
   border: var(--a-hairline) solid var(--border);
   box-shadow: var(--a-palette-shadow);
 }
+/* The list column: a fixed search field above the scrolling option list. */
+.fp-list {
+  display: flex;
+  flex-direction: column;
+  width: var(--a-fp-menu-w);
+}
+.fp-search {
+  flex: 0 0 auto;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-3);
+  border: none;
+  border-bottom: var(--a-hairline) solid var(--border);
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: var(--a-font-md);
+}
+.fp-search::placeholder {
+  color: var(--fg-dim);
+}
 .fp-menu {
+  flex: 1 1 auto;
+  min-height: 0; /* let the flex child shrink so its own max-height/scroll wins */
   list-style: none;
   margin: 0;
   padding: 0;
-  width: var(--a-fp-menu-w);
   max-height: var(--a-fp-menu-max-h);
   overflow-y: auto;
 }
 .fp-item {
   padding: var(--a-sp-2) var(--a-sp-3);
   font-size: var(--a-fp-item-size);
-  line-height: 1.25;
+  line-height: var(--a-text-line-height);
   color: var(--fg);
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .fp-item.active {
   background: var(--a-hover-bg);
@@ -1278,7 +1296,22 @@ body,
 .fp-item.selected {
   background: color-mix(in srgb, var(--a-selection) 22%, transparent);
 }
-/* Larger preview panel, beside the menu — name, sample, pangram in the face. */
+/* Empty state when the search filter matches nothing. */
+.fp-empty {
+  padding: var(--a-sp-2) var(--a-sp-3);
+  font-size: var(--a-font-md);
+  color: var(--fg-dim);
+}
+/* Shared single-line ellipsis (trigger label, option rows, preview name). */
+.fp-trigger-label,
+.fp-item,
+.fp-preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Preview panel beside the list — name, sample, then the pangram in regular,
+   bold, and underlined so all three styles read in the actual face. */
 .fp-preview {
   width: var(--a-fp-preview-w);
   padding: var(--a-sp-4);
@@ -1287,23 +1320,26 @@ body,
   flex-direction: column;
   gap: var(--a-sp-3);
   color: var(--fg);
-  overflow: hidden;
 }
 .fp-preview-name {
   font-size: var(--a-fp-name-size);
-  line-height: 1.1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: var(--a-fp-display-lh);
 }
 .fp-preview-sample {
   font-size: var(--a-fp-sample-size);
-  line-height: 1.1;
+  line-height: var(--a-fp-display-lh);
   color: var(--fg-dim);
 }
-.fp-preview-pangram {
+.fp-preview-line {
   font-size: var(--a-fp-pangram-size);
   line-height: var(--a-text-line-height);
+  overflow-wrap: anywhere; /* wrap the pangram inside the fixed preview width */
+}
+.fp-bold {
+  font-weight: 700;
+}
+.fp-underline {
+  text-decoration: underline;
 }
 /* The small color chip inside a color/highlight button (over the checker for a
    transparent highlight). */
