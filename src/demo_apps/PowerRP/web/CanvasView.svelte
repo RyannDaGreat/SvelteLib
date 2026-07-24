@@ -36,6 +36,7 @@
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
+  import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (mermaid `definition`, reusable for codeblock)
 
   let { app } = $props();
 
@@ -224,7 +225,7 @@
   onDestroy(() => gpu?.dispose());
 
   $effect(() => {
-    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; app.latexEditing; viewport; wrapW; wrapH; gpu; imageEpoch;
+    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; app.latexEditing; app.codeEditing; viewport; wrapW; wrapH; gpu; imageEpoch;
     paint();
   });
 
@@ -289,8 +290,14 @@
     // LatexEditController). During the `closing` crossfade the item is
     // UN-suppressed so the re-typeset render appears beneath the fading field.
     const latexSuppressId = app.latexEditing && !app.latexEditing.closing ? app.latexEditing.itemId : null;
+    // CODE EDIT SUPPRESSION (same divergence as latex): while a widget's code
+    // property is edited in the CodeEditController overlay, its canvas render is
+    // DROPPED (the opaque editor panel covers it, and dropping it means emit()
+    // never re-renders per keystroke — the async render fires ONCE on commit
+    // when the item is un-suppressed during the `closing` crossfade).
+    const codeSuppressId = app.codeEditing && !app.codeEditing.closing ? app.codeEditing.itemId : null;
     const nodes = deriveRenderTree(state, app.registry)
-      .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== latexSuppressId);
+      .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== latexSuppressId && n.itemId !== codeSuppressId);
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background
@@ -502,6 +509,10 @@
     // suppression); text opens the Skia-owned in-place editor. Other types fall
     // through (a dblclick on a rect does nothing).
     if (hit?.type === "latex") { app.beginLatexEdit(hit.itemId); return; }
+    // Mermaid opens the multi-line CODE editor overlay on its `definition`
+    // property (the CodeEditController; the code-property analog of the latex
+    // route). The controller is reusable for any code-string property.
+    if (hit?.type === "mermaid") { app.beginCodeEdit(hit.itemId, "definition", null); return; }
     if (hit?.type !== "text") return;
     app.beginTextEdit(hit.itemId); // selects + mounts the controller (Skia keeps drawing the item)
   }
@@ -2085,6 +2096,16 @@
     const n = app.nodes().find((nn) => nn.itemId === app.latexEditing.itemId);
     return (n && n.type === "latex") ? n : null;
   });
+
+  // CODE EDIT: the derived node of the widget whose code property is being
+  // edited (or null). The CodeEditController mounts the editor panel near this
+  // node's screen pose. Stays non-null through the `closing` crossfade. Same
+  // reactive-deps pattern as latexEditNode.
+  let codeEditNode = $derived.by(() => {
+    app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
+    if (!app.codeEditing || !actions) return null;
+    return app.nodes().find((nn) => nn.itemId === app.codeEditing.itemId) ?? null;
+  });
 </script>
 
 <!-- Rulers are chrome OUTSIDE the render area (user's structural fix): when the
@@ -2272,6 +2293,17 @@
         <LatexEditController
           {app}
           node={latexEditNode}
+          worldToScreen={actions.worldToScreen}
+          zoom={viewport.zoom}
+        />
+      {/if}
+      {#if codeEditNode && actions}
+        <!-- CODE editor: a monospace textarea + highlight overlay pinned over
+             the widget. The canvas render is suppressed (see paint()) so nothing
+             re-renders per keystroke; commit re-renders once and this fades. -->
+        <CodeEditController
+          {app}
+          node={codeEditNode}
           worldToScreen={actions.worldToScreen}
           zoom={viewport.zoom}
         />

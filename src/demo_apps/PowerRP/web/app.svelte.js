@@ -943,6 +943,83 @@ export class PowerRPApp {
     this.dismissLatexEdit();
   }
 
+  // ── WYSIWYG code editing (multi-line CodeEditController overlay) ────────────
+  // The code-property analog of the latex lifecycle (begin/preview/commit/
+  // cancel/dismiss) — a canvas-SUPPRESSION + DOM-overlay model. `codeEditing` =
+  // { itemId, property, language } (or { …, closing:true } during the exit
+  // crossfade). `property` names WHICH multi-line string is edited ("definition"
+  // for mermaid, "code" for codeblock); `language` drives the editor's syntax
+  // highlighting. The canvas render of the item is SUPPRESSED while editing (see
+  // CanvasView paint()), so the string stages into previewDelta with NO
+  // per-keystroke re-render; `closing:true` un-suppresses it so the freshly
+  // re-rendered content appears beneath the fading editor panel. APPENDED as a
+  // self-contained section (new field + new methods; no existing method touched)
+  // per the concurrent-edit constraint. dismissCodeEdit is reached from
+  // App.svelte's click-away and the controller's Escape/⌘⏎.
+
+  /** { itemId, property, language } while a widget's code string is edited in
+   * place (or { …, closing:true } during the exit crossfade), else null. A
+   * reactive $state field (CanvasView's codeEditNode + the paint suppression
+   * both derive from it), exactly like `latexEditing`. */
+  codeEditing = $state(null);
+
+  /** Command. Enters in-place code edit on a widget's `property` string: closes
+   * any other in-place edit, selects the item, and sets `codeEditing`.
+   * CanvasView suppresses the item's canvas render and mounts the
+   * CodeEditController. No-op if already editing this item+property. */
+  beginCodeEdit(itemId, property, language = null) {
+    if (this.codeEditing?.itemId === itemId && this.codeEditing?.property === property) return;
+    this.dismissTextEdit();  // close any other in-place editor first (no-op if none)
+    this.dismissLatexEdit();
+    this.selection = itemId;
+    this.codeEditing = { itemId, property, language };
+  }
+
+  /** Command. Live-stages the edited string into previewDelta (Inspector
+   * reflects live; commit keyframes it as one undo unit). The canvas render is
+   * suppressed during edit, so this does NOT re-render the item per keystroke —
+   * it re-renders once on commit (the no-jank rule). No-op while closing. */
+  previewCodeValue(value) {
+    if (!this.codeEditing || this.codeEditing.closing) return;
+    this.setPreview([[["items", this.codeEditing.itemId, this.codeEditing.property], value]]);
+  }
+
+  /** Command. Commits the edit as ONE undo unit and enters the CLOSING phase:
+   * commitPreview keyframes the staged string; setting `closing:true`
+   * un-suppresses the item's canvas render (which re-emits → re-renders the new
+   * value) beneath the still-mounted editor panel, which the controller fades
+   * out. finishCodeEdit unmounts. */
+  commitCodeEdit() {
+    const editing = this.codeEditing;
+    if (!editing || editing.closing) return;
+    if (this.previewDelta) this.commitPreview();
+    this.codeEditing = { ...editing, closing: true };
+  }
+
+  /** Command. Ends the closing crossfade — unmounts the controller. Called by
+   * CodeEditController when its fade-out transition completes. */
+  finishCodeEdit() {
+    this.codeEditing = null;
+  }
+
+  /** Command. Cancels the edit (drops the live preview, no undo unit) and exits
+   * immediately. Also the controller's forced-unmount safety (item left the
+   * slide mid-edit) so no dangling previewDelta survives. */
+  cancelCodeEdit() {
+    this.codeEditing = null;
+    this.cancelPreview();
+  }
+
+  /** Command. The code twin of dismissLatexEdit: commit if the edited item
+   * still exists (one undo unit), else cancel. No-op when not editing or already
+   * closing (so a second dismiss during the fade is inert). */
+  dismissCodeEdit() {
+    if (!this.codeEditing || this.codeEditing.closing) return;
+    const stillExists = !!this.state().items?.[this.codeEditing.itemId];
+    if (stillExists) this.commitCodeEdit();
+    else this.cancelCodeEdit();
+  }
+
   // ── Item operations ────────────────────────────────────────────────────────
 
   addItem(defaults) {

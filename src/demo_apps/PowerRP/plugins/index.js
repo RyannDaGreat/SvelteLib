@@ -25,10 +25,11 @@ import { anchorPointPlugin } from "./anchor_point.js";
 import { pdfPagePlugin } from "./pdf_page.js";
 import { particlesPlugin } from "./particles.js";
 import { latexPlugin } from "./latex.js";
+import { mermaidPlugin } from "./mermaid.js";
 import { qrcodePlugin } from "./qrcode.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
 
-export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, qrcodePlugin, ...shapeshifterPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, ...shapeshifterPlugins];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

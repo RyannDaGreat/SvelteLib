@@ -43,7 +43,11 @@ export default defineConfig({
   // (the WYSIWYG equation EDITOR, imported eagerly at boot by CanvasView to
   // pre-warm the <math-field> element + its bundled fonts) is likewise pre-
   // bundled so its dep-discovery re-optimize never mid-session reloads the page.
-  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive"] },
+  // `mermaid` (the diagram widget's render engine, reached only through
+  // web/mermaidRenderer.js's lazy `import "mermaid"`) is the SAME lazy-dep flake
+  // class as pdfjs/mathjax — pre-bundle it so its dep-discovery re-optimize
+  // never mid-session reloads the page (which aborts a puppeteer probe).
+  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive", "mermaid"] },
   server: {
     port: 3637,
     host: true,

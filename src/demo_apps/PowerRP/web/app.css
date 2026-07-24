@@ -217,6 +217,32 @@
      and a fainter "contains" highlight for the enclosing group (fraction/root). */
   --a-latex-edit-selection: color-mix(in srgb, var(--a-selection) 30%, transparent);
   --a-latex-edit-contains: color-mix(in srgb, var(--a-selection) 14%, transparent);
+  /* ── CODE-EDIT OVERLAY (CodeEditController: the mermaid `definition` /
+     codeblock `code` multi-line editor) ──
+     A floating monospace editor panel pinned over the edited widget. All values
+     CHAIN off existing tokens (never fresh colors — tracks every theme): the
+     panel is the opaque panel surface with the app border/radius/floating
+     shadow; the text is --fg on that surface; the caret + ::selection derive
+     from --a-selection like the text/latex editors. The crossfade MUST equal
+     CodeEditController's CROSSFADE_MS (JS unmount timer ↔ CSS opacity). */
+  --a-code-edit-crossfade: 120ms;
+  --a-code-edit-bg: var(--a-panel-bg);
+  --a-code-edit-fg: var(--fg);
+  --a-code-edit-border: var(--border);
+  --a-code-edit-radius: var(--radius);
+  --a-code-edit-shadow: var(--a-palette-shadow);
+  --a-code-edit-font: var(--a-mono);
+  --a-code-edit-font-size: var(--a-font-md);
+  --a-code-edit-line-height: 1.5; /* comfortable code leading (looser than the 1.2 render leading) */
+  --a-code-edit-pad: var(--a-sp-4);
+  --a-code-edit-min-w: 360px; /* clamp-up so a tiny widget still gives a usable editor */
+  --a-code-edit-min-h: 200px;
+  --a-code-edit-max-w: 560px; /* clamp-down so a huge widget's editor stays a panel, not a wall */
+  --a-code-edit-max-h: 60vh;
+  --a-code-edit-caret: var(--a-selection);
+  --a-code-edit-selection: color-mix(in srgb, var(--a-selection) 35%, transparent);
+  --a-code-edit-header-fg: var(--fg-dim);
+  --a-code-edit-header-size: var(--a-font-sm);
   --a-key-chip-h: 18px; /* THE key-chip height (one standard; value PENDING USER RATIFICATION) */
 
   /* SplitPane handles — thin, per annotator reference */
@@ -1054,6 +1080,93 @@ body,
 .latex-edit-field::part(virtual-keyboard-toggle),
 .latex-edit-field::part(menu-toggle) {
   display: none;
+}
+
+/* ── CODE-EDIT OVERLAY (CodeEditController) ──────────────────────────────────
+   A floating monospace editor panel pinned over the edited widget. The root is
+   absolutely positioned in the render-area frame (inline left/top from the
+   controller); the panel is a fixed-readable-size editor (NOT zoom-scaled, so
+   code stays legible), clamped between min/max tokens. The panel is OPAQUE (it
+   covers the suppressed canvas diagram). */
+.code-edit-overlay-root {
+  position: absolute;
+  z-index: 3; /* above the latex/text overlays' z-index:2 (only one edit is open, but keep it on top) */
+}
+.code-edit-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: var(--a-code-edit-min-w);
+  min-height: var(--a-code-edit-min-h);
+  max-width: var(--a-code-edit-max-w);
+  max-height: var(--a-code-edit-max-h);
+  background: var(--a-code-edit-bg);
+  border: 1px solid var(--a-code-edit-border);
+  border-radius: var(--a-code-edit-radius);
+  box-shadow: var(--a-code-edit-shadow);
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity var(--a-code-edit-crossfade) ease;
+}
+.code-edit-panel.code-edit-shown {
+  opacity: 1;
+}
+.code-edit-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--a-sp-3);
+  padding: var(--a-sp-2) var(--a-code-edit-pad);
+  border-bottom: 1px solid var(--a-code-edit-border);
+  color: var(--a-code-edit-header-fg);
+  font-size: var(--a-code-edit-header-size);
+}
+.code-edit-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.code-edit-hint {
+  flex: none;
+  opacity: 0.8;
+}
+/* The editing surface: an aria-hidden highlight <pre> with a transparent
+   <textarea> on top. Both share IDENTICAL font/size/leading/padding/wrapping so
+   the caret and the colored glyphs align exactly. */
+.code-edit-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.code-edit-highlight,
+.code-edit-input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: var(--a-code-edit-pad);
+  border: none;
+  font-family: var(--a-code-edit-font);
+  font-size: var(--a-code-edit-font-size);
+  line-height: var(--a-code-edit-line-height);
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+  box-sizing: border-box;
+}
+.code-edit-highlight {
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--a-code-edit-fg); /* fallback color for any un-spanned text */
+}
+.code-edit-input {
+  overflow: auto;
+  resize: none;
+  background: transparent;
+  color: transparent; /* the highlight <pre> beneath shows the colored glyphs */
+  caret-color: var(--a-code-edit-caret);
+  outline: none;
+}
+.code-edit-input::selection {
+  background: var(--a-code-edit-selection);
 }
 
 /* The floating PPT-style format toolbar, above the text box. It lives in the

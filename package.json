@@ -20,6 +20,7 @@
     "iconify-icon": "^3.0.2",
     "mathjax": "3.2.2",
     "mathlive": "^0.110.0",
+    "mermaid": "11.16.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.149",
     "qrcode": "^1.5.4"

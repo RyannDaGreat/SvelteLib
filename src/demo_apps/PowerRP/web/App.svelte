@@ -548,6 +548,10 @@
     // exit gesture. DISPLAY-ONLY (the field itself is a typing target, so
     // onKeydown early-returns — LatexEditController's own Escape handler commits).
     { keys: ["Esc"], label: "Done editing", when: (c) => c.latexEditing },
+    // CODE editing (CodeEditController overlay): DISPLAY-ONLY exit hint (the
+    // focused textarea makes onKeydown early-return, so the panel's own Escape/
+    // ⌘⏎ handler commits — this just announces the gesture in the bar).
+    { keys: ["Esc"], label: "Done editing", when: (c) => c.codeEditing },
   ];
   /** Command. (Re)builds the shortcut registry from the keybinding registry +
    * hand entries — also how a rebind takes effect (createShortcuts has no
@@ -594,12 +598,15 @@
       // WYSIWYG latex editing (MathLive overlay): true while a latex field is
       // open — gates the "Done editing" hint (the field owns its own keys).
       latexEditing: app.latexEditing !== null,
+      // CODE editing (CodeEditController overlay): true while the multi-line code
+      // editor is open — gates its "Done editing" hint (the textarea owns keys).
+      codeEditing: app.codeEditing !== null,
       app,
     };
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged; app.textEditing; app.latexEditing;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged; app.textEditing; app.latexEditing; app.codeEditing;
     const base = app.shortcuts.hints(shortcutCtx());
     // While a modal transform is live, LEAD the bar with its announcement —
     // mode · active axis · typed buffer — so the live state is the first thing
@@ -640,12 +647,14 @@
    * click (color pickers, B/I/U, size stepper) never dismisses.
    */
   function onPointerDownCapture(e) {
-    if (!app.textEditing && !app.latexEditing) return;
-    // Covers BOTH in-place editors' roots (the text overlay/toolbar AND the
-    // MathLive latex overlay) in one check — a click inside either is not a
-    // click-away. dismissEdit dismisses whichever is open (no-op otherwise).
-    if (e.target.closest(".text-edit-overlay-root, .latex-edit-overlay-root")) return;
+    if (!app.textEditing && !app.latexEditing && !app.codeEditing) return;
+    // Covers all in-place editors' roots (the text overlay/toolbar, the MathLive
+    // latex overlay, AND the code-editor panel) in one check — a click inside
+    // any is not a click-away. dismissEdit dismisses text/latex; dismissCodeEdit
+    // dismisses code (each a no-op when its editor isn't open).
+    if (e.target.closest(".text-edit-overlay-root, .latex-edit-overlay-root, .code-edit-overlay-root")) return;
     app.dismissEdit();
+    app.dismissCodeEdit();
   }
 
   /**
