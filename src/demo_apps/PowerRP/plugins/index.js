@@ -27,6 +27,7 @@ import { particlesPlugin } from "./particles.js";
 import { latexPlugin } from "./latex.js";
 import { mermaidPlugin } from "./mermaid.js";
 import { qrcodePlugin } from "./qrcode.js";
+import { plaintextPlugin } from "./plaintext.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
 // DEMO widgets (plugins/demo/) — showcase the extensibility story (custom
 // self.* properties). Surfaced via the "Insert Demo Widget" submenu (App.svelte),
@@ -34,7 +35,7 @@ import { shapeshifterPlugins } from "./shapeshifter.js";
 import { demoShowcasePlugin } from "./demo/showcase.js";
 import { glassPlugin } from "./demo/glass.js";
 
-export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, circlePlugin, textPlugin, arrowPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {
