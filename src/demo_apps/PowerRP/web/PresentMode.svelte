@@ -20,6 +20,8 @@
   import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
   import { assetUrl } from "./projectApi.js";
+  import { cameraDither } from "../render_gpu/skia/dither_shader.js";
+  import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 
   let { app } = $props();
 
@@ -189,6 +191,10 @@
         w: rect.w * view.zoom * dpr,
         h: rect.h * view.zoom * dpr,
       },
+      // The presenter honors the camera's render settings too (mirrors CanvasView):
+      // dither de-bands and the AA mode drives coverage AA in the fullscreen show.
+      dither: cameraDither(state),
+      antialias: antialiasCoverage(cameraAntialias(state)),
     });
     app.renderFrameCount += 1; // the FPS counter reads PRESENTATION frames (round 11)
   }
@@ -270,7 +276,7 @@
     document.addEventListener("fullscreenchange", onFsChange);
     // THE renderer (Skia/WebGL2), async init: frames before the surface is ready
     // are skipped (black); failure is LOUD and exits present mode.
-    SkiaSurface.create(canvasEl)
+    SkiaSurface.create(canvasEl, { antialias: antialiasCoverage(cameraAntialias(app.state())) })
       .then((g) => {
         gpu = g;
         paint();
