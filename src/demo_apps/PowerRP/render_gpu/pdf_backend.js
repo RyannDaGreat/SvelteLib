@@ -502,6 +502,40 @@ export function videoRefs(commands) {
 }
 
 /**
+ * Pure function. The DISTINCT `pdfpage:` image refs eligible for a LOSSLESS
+ * PAGE-EMBED (pdf-lib embedPdf — copies the source page's real vectors, text,
+ * fonts, images): a ref used ONLY in FULL-FRAME, OPAQUE `image` ops. A cropped
+ * (source sub-rect) or translucent placement is NOT a clean whole-page copy, so
+ * it rasters through the image XObject path instead; a ref that appears in ANY
+ * such non-eligible op is EXCLUDED here (one embedding kind per ref). Recurses
+ * into cropSubtree/effectSubtree content exactly like refsOfOp — a page under a
+ * stroked border (cropSubtree) or a shadow (effectSubtree's vector branch)
+ * re-emits its full-frame image op through emitVector, where the embed is placed.
+ *
+ * @example pdfPageEmbedRefs([{op: "image", ref: "pdfpage:a:1:1", opacity: 1, src: {sx:0,sy:0,sw:1,sh:1}}]) // Set(["pdfpage:a:1:1"])
+ * @example pdfPageEmbedRefs([{op: "image", ref: "pdfpage:a:1:1", opacity: 0.5, src: {sx:0,sy:0,sw:1,sh:1}}]).size // 0 (translucent → raster)
+ * @example pdfPageEmbedRefs([{op: "image", ref: "pdfpage:a:1:1", opacity: 1, src: {sx:0.1,sy:0,sw:0.9,sh:1}}]).size // 0 (cropped → raster)
+ * @example pdfPageEmbedRefs([{op: "image", ref: "data:image/png;base64,AA", opacity: 1, src: {sx:0,sy:0,sw:1,sh:1}}]).size // 0 (not a pdfpage ref)
+ */
+export function pdfPageEmbedRefs(commands) {
+  const eligible = new Set();
+  const excluded = new Set();
+  const isFullFrame = (c) => { const s = c.src; return !s || (s.sx === 0 && s.sy === 0 && s.sw === 1 && s.sh === 1); };
+  const walk = (cmds) => {
+    for (const c of cmds) {
+      if (c.op === "image" && typeof c.ref === "string" && c.ref.startsWith("pdfpage:")) {
+        if (isFullFrame(c) && (c.opacity ?? 1) >= 1) eligible.add(c.ref);
+        else excluded.add(c.ref);
+      }
+      if ((c.op === "cropSubtree" || c.op === "effectSubtree") && Array.isArray(c.content)) walk(c.content);
+    }
+  };
+  walk(commands);
+  for (const r of excluded) eligible.delete(r);
+  return eligible;
+}
+
+/**
  * Pure function. Decodes a `data:` URI to {mime, bytes}. Only base64 payloads
  * are supported (that is what the image widget and drops produce); a non-base64
  * or non-data URI is a loud error (callers fetch URLs separately).
@@ -545,14 +579,65 @@ export function imageFormat(bytes) {
 }
 
 /**
- * Query (async; may fetch). The raw bytes for an image `ref` (a data URI or a
- * URL). Data URIs decode in-module (DOM-free); a URL is fetched (global fetch,
- * browser + node ≥18). Loud on failure — no silent drop.
+ * Pure function. Is `ref` a SYNTHETIC image ref — a custom URL scheme that
+ * fetch() cannot load (pdfpage: / latex: / any future rasterized-source ref) —
+ * rather than a fetchable data:/http(s)/blob/file/path ref? The runtime resolves
+ * these through the image_registry (a bitmap injected via registerRasterizedBitmap,
+ * never fetched); the PDF exporter routes them to the resolveImageBytes seam.
+ *
+ * @example isSyntheticImageRef("pdfpage:blob:x:1:1") // true
+ * @example isSyntheticImageRef("latex:x^2:#000:1") // true
+ * @example isSyntheticImageRef("data:image/png;base64,AAAA") // false
+ * @example isSyntheticImageRef("https://x/a.png") // false
+ * @example isSyntheticImageRef("blob:https://h/uuid") // false
+ * @example isSyntheticImageRef("/assets/a.png") // false (path, no scheme)
  */
-async function loadImageBytes(ref) {
+export function isSyntheticImageRef(ref) {
+  const m = /^([a-z][a-z0-9+.-]*):/i.exec(ref);
+  if (!m) return false; // no scheme → a relative/absolute path, fetchable
+  return !["data", "http", "https", "blob", "file"].includes(m[1].toLowerCase());
+}
+
+/**
+ * Pure function. Parses a synthetic PDF-page image ref (the
+ * gpu/pdf_page_raster.pdfPageRef format "pdfpage:<src>:<page>:<scale>") into
+ * {src, page}, or null when `ref` is not a pdf_page ref. `page` and `scale` are
+ * the TRAILING numeric fields, so a `src` that itself contains ':' (a data:/blob:
+ * URI) parses correctly — the regex is right-anchored on :<int>:<number>.
+ *
+ * @example parsePdfPageRef("pdfpage:blob:x:3:2.3") // {src: "blob:x", page: 3}
+ * @example parsePdfPageRef("pdfpage:blob:x:1:1") // {src: "blob:x", page: 1}
+ * @example parsePdfPageRef("latex:eq:#000:1") // null
+ */
+export function parsePdfPageRef(ref) {
+  if (typeof ref !== "string" || !ref.startsWith("pdfpage:")) return null;
+  const m = /^pdfpage:(.*):(\d+):(\d+(?:\.\d+)?)$/.exec(ref);
+  if (!m) return null;
+  return { src: m[1], page: Number(m[2]) };
+}
+
+/**
+ * Query (async; may fetch or resolve). The raw bytes for an image `ref`. A
+ * `data:` URI decodes in-module (DOM-free); a fetchable URL (http(s)/blob/file/
+ * path) is fetched (global fetch, browser + node ≥18). A SYNTHETIC ref
+ * (isSyntheticImageRef — pdfpage:/latex:/…) is NOT fetchable: it is resolved
+ * through the injected `resolveImageBytes(ref)` seam (the image_registry
+ * bitmap → PNG bytes in browsers). A synthetic ref with NO seam is a loud
+ * error (this was the "URL scheme not supported" fetch crash); the seam may
+ * return null for a not-yet-rasterized source (draw nothing — a reported skip).
+ *
+ * Returns: Uint8Array of encoded image bytes, or null (resolver reported no
+ * drawable content).
+ */
+async function loadImageBytes(ref, resolveImageBytes = null) {
   if (typeof ref !== "string" || ref.length === 0)
     throw new Error(`pdf_backend: image ref must be a non-empty string, got ${JSON.stringify(ref)}`);
   if (ref.startsWith("data:")) return decodeDataUri(ref).bytes;
+  if (isSyntheticImageRef(ref)) {
+    if (!resolveImageBytes)
+      throw new Error(`pdf_backend: image ref "${ref}" is a synthetic scheme fetch() cannot load (pdfpage:/latex: are resolved via the image registry) but no resolveImageBytes seam was provided — pass irToPDF opts.resolveImageBytes`);
+    return await resolveImageBytes(ref); // Uint8Array | null (null = no drawable content)
+  }
   const res = await fetch(ref);
   if (!res.ok) throw new Error(`pdf_backend: failed to fetch image "${ref}" — HTTP ${res.status} ${res.statusText}`);
   return new Uint8Array(await res.arrayBuffer());
@@ -606,6 +691,22 @@ async function loadImageBytes(ref) {
  *     backends lay text out identically (the parity lever). null → a RICH text
  *     op falls back to its single-run plain-text draw (never a silent blank);
  *     legacy single-run text ops don't need it.
+ *   opts.resolveImageBytes (async fn|null): (ref) → Uint8Array of PNG/JPEG bytes
+ *     for a SYNTHETIC image ref (isSyntheticImageRef — pdfpage:/latex:/…, which
+ *     fetch() cannot load), or null for a source not yet rasterized (draw
+ *     nothing — a reported skip). The browser caller reads the image_registry
+ *     ImageBitmap → canvas → toBlob PNG (the SAME shape as videoFrame). null +
+ *     a synthetic ref in the scene → THROWS loudly (this was the "URL scheme
+ *     pdfpage not supported" crash). data:/URL image refs never touch this seam.
+ *   opts.resolvePdfPageEmbed (async fn|null): (ref) → {bytes, pageIndex} of the
+ *     SOURCE PDF a `pdfpage:` ref points at, for a LOSSLESS whole-page embed
+ *     (pdf-lib embedPdf — keeps the page's real vectors, selectable text, and
+ *     fonts on export), or null when the ref is not a page-embed candidate (a
+ *     non-pdf_page synthetic ref like latex:, or a source that can't be copied).
+ *     Only full-frame opaque `pdfpage:` placements are offered here
+ *     (pdfPageEmbedRefs); a null return (or an absent seam) falls the page back
+ *     to the raster image path via resolveImageBytes. Keeps the backend DOM-free
+ *     (the browser caller fetches/decodes the source bytes).
  *
  * Returns:
  *   Promise<Uint8Array>: the PDF file bytes
@@ -613,13 +714,13 @@ async function loadImageBytes(ref) {
  * @example // await irToPDF(sceneIR(nodes), {width: 1280, height: 720, view: fitRectView(camRect, 1280, 720, 1), background: "#ffffff", rasterize}) → Uint8Array starting "%PDF-"
  * @example // no-effect scenes need no rasterize: await irToPDF([rect({...})], {width: 100, height: 100, view: {zoom: 1, panX: 0, panY: 0}})
  */
-export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = SUPERSAMPLE_DENSITY, textAscent = null, videoFrame = null, loadFontBytes = null, registerFontkit = null, measureText = null }) {
+export async function irToPDF(commands, { width, height, view, background = null, rasterize = null, rasterScale = SUPERSAMPLE_DENSITY, textAscent = null, videoFrame = null, loadFontBytes = null, registerFontkit = null, measureText = null, resolveImageBytes = null, resolvePdfPageEmbed = null }) {
   const doc = await PDFDocument.create();
   if (registerFontkit) doc.registerFontkit(registerFontkit); // required for embedFont(customTTF)
   const page = doc.addPage([width, height]);
-  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent, videoFrame, loadFontBytes, measureText);
+  const ctx = new PdfAssembly(doc, page, rasterize, rasterScale, textAscent, videoFrame, loadFontBytes, measureText, resolveImageBytes, resolvePdfPageEmbed);
   await ctx.ensureFonts(textFaces(commands)); // sub-lists are slices, so scanning the top list covers lens re-emits
-  await ctx.ensureImages(imageRefs(commands)); // embed image XObjects up-front — emit is synchronous per command (same seam as fonts)
+  await ctx.ensureImages(imageRefs(commands), pdfPageEmbedRefs(commands)); // embed image XObjects + lossless page-embeds up-front — emit is synchronous per command (same seam as fonts)
   await ctx.ensureVideoFrames(videoRefs(commands)); // grab + embed each video's current frame as an XObject (same up-front seam)
 
   const out = [];
@@ -1090,6 +1191,18 @@ function emitVector(cmd, world, out, ctx) {
       // ExtGState so per-item opacity composites like every other op. A source
       // rect (edge-crop insets) becomes a clip-to-dest + scaled-up placement so
       // only the cropped sub-region shows (imagePlacementOps).
+      // LOSSLESS PAGE-EMBED (a pdf_page whose source page was copied whole via
+      // pdf-lib embedPdf — real vectors + selectable text + fonts): placed as a
+      // Form XObject, not the raster image XObject. ensureImages built it for a
+      // full-frame opaque `pdfpage:` ref (pdfPageEmbedRefs); the placement flips
+      // the page's y-UP point box onto the dest rect.
+      const embed = ctx.pdfPageEmbed(cmd.ref);
+      if (embed) {
+        const gsE = ctx.gsAlphaPair(cmd.opacity ?? 1, 1);
+        if (gsE) ops.push(gsE);
+        ops.push(...pdfPageEmbedPlacementOps(cmd, embed));
+        break;
+      }
       const name = ctx.imageXObject(cmd.ref);
       if (name === null) return; // src had no drawable bytes (empty/blank) — draw nothing, matching the GPU skip
       const gs = ctx.gsAlphaPair(cmd.opacity ?? 1, 1);
@@ -1162,6 +1275,25 @@ export function imagePlacementOps(cmd, name) {
     `${n(fullW)} 0 0 ${n(-fullH)} ${n(originX)} ${n(originYTop + fullH)} cm`,
     `/${name} Do`,
   ];
+}
+
+/**
+ * Pure function. The content-stream ops that place an embedded-PDF-page Form
+ * XObject `embed` ({name, width, height} — the source page's box in PDF points,
+ * y-UP) into the op's dest rect (cmd.x/y/w/h) in the page's y-DOWN space. The
+ * page content is y-UP in its own [0,width]×[0,height] box; the cm maps that box
+ * onto the dest rect with a -h/H entry so the page's TOP row lands at the rect's
+ * visual top — the SAME flip convention as imagePlacementOps' full-frame case,
+ * generalized from the image unit square (w, -h) to the page's point box
+ * (w/W, -h/H). Page-embeds are only built for full-frame opaque placements
+ * (pdfPageEmbedRefs), so there is no source sub-rect to honor.
+ *
+ * @example pdfPageEmbedPlacementOps({x: 10, y: 20, w: 100, h: 80}, {name: "Pg1", width: 200, height: 160}) // ["0.5 0 0 -0.5 10 100 cm", "/Pg1 Do"]
+ */
+export function pdfPageEmbedPlacementOps(cmd, embed) {
+  const n = pdfNum;
+  const sx = cmd.w / embed.width, sy = cmd.h / embed.height;
+  return [`${n(sx)} 0 0 ${n(-sy)} ${n(cmd.x)} ${n(cmd.y + cmd.h)} cm`, `/${embed.name} Do`];
 }
 
 /** Oblique shear (tan of the synthesized-italic slant angle) for PDF fake-italic
@@ -1406,7 +1538,7 @@ function paintSetup(fill, stroke, strokeWidth, opacity, ctx) {
  * (mutates the pdf-lib document).
  */
 class PdfAssembly {
-  constructor(doc, page, rasterize, rasterScale, textAscent = null, videoFrame = null, loadFontBytes = null, measureText = null) {
+  constructor(doc, page, rasterize, rasterScale, textAscent = null, videoFrame = null, loadFontBytes = null, measureText = null, resolveImageBytes = null, resolvePdfPageEmbed = null) {
     this.doc = doc;
     this.page = page;
     this.rasterize = rasterize;
@@ -1415,11 +1547,14 @@ class PdfAssembly {
     this.videoFrame = videoFrame; // (ref) → {mime, bytes} of the current frame, or null
     this.loadFontBytes = loadFontBytes; // (basename) → Uint8Array | null (env seam)
     this.measureText = measureText; // (text, {size,bold,font,italic}) → {width,ascent,descent} | null (rich layout seam)
+    this.resolveImageBytes = resolveImageBytes; // (ref) → Uint8Array | null — synthetic-ref (pdfpage:/latex:) byte resolver
+    this.resolvePdfPageEmbed = resolvePdfPageEmbed; // (ref) → {bytes, pageIndex} | null — lossless page-embed source
     this._fonts = new Map();  // "<fontId>|<0|1>" → PDFFont
     this._fontNames = new Map(); // "<fontId>|<0|1>" → PDF resource name
     this._gs = new Map(); // "ca,CA" → ExtGState name
     this._imgCount = 0;
     this._imageXObjects = new Map(); // image ref → XObject name, or null (blank/undrawable src)
+    this._pageEmbeds = new Map(); // pdfpage ref → {name, width, height} (lossless Form XObject page-embed)
     this._videoXObjects = new Map(); // video ref → XObject name, or null (blank/undrawable frame)
     this._shadings = new Map(); // JSON(paint) → /Shading resource name (Axis-1 gradient shadings)
   }
@@ -1477,16 +1612,27 @@ class PdfAssembly {
   }
 
   /**
-   * Command (async). Embeds each image `ref` as a PDF image XObject and
-   * registers it on the page, keyed by ref for the synchronous emit. Runs
-   * before the content walk (emit is sync per command — the same up-front seam
-   * as ensureFonts). A blank/undrawable transparent 1×1 (the widget's default
-   * src) maps to null (draw nothing) rather than embedding a useless pixel.
+   * Command (async). Embeds each image `ref` up-front, keyed by ref for the
+   * synchronous emit (the same seam as ensureFonts). A ref in `embedRefs`
+   * (pdfPageEmbedRefs — a full-frame opaque `pdfpage:` page) is offered to the
+   * LOSSLESS page-embed path first (pdf-lib embedPdf; keeps real vectors + text
+   * + fonts); on success it registers a Form XObject and skips the raster embed.
+   * Everything else embeds as an image XObject: data:/URL bytes via fetch/decode,
+   * a synthetic ref via the resolveImageBytes seam. A blank/undrawable transparent
+   * 1×1 (the widget's default src) — or a resolver that returns null (source not
+   * yet rasterized) — maps to null (draw nothing) rather than a useless pixel.
    */
-  async ensureImages(refs) {
+  async ensureImages(refs, embedRefs = new Set()) {
     for (const ref of refs) {
-      if (this._imageXObjects.has(ref)) continue;
-      const bytes = await loadImageBytes(ref);
+      if (this._imageXObjects.has(ref) || this._pageEmbeds.has(ref)) continue;
+      // LOSSLESS page-embed first for an eligible pdf_page ref when the source
+      // seam is wired and yields bytes; a null result falls through to raster.
+      if (embedRefs.has(ref) && this.resolvePdfPageEmbed) {
+        const embed = await this._embedPdfPage(ref);
+        if (embed) { this._pageEmbeds.set(ref, embed); continue; }
+      }
+      const bytes = await loadImageBytes(ref, this.resolveImageBytes);
+      if (bytes === null) { this._imageXObjects.set(ref, null); continue; } // resolver reported no drawable content
       // A 1×1 fully-transparent PNG (the widget's BLANK_SRC default) carries no
       // visible content — record null so emit draws nothing, matching the GPU.
       const fmt = imageFormat(bytes);
@@ -1496,6 +1642,38 @@ class PdfAssembly {
       this.page.node.setXObject(PDFName.of(name), img.ref);
       this._imageXObjects.set(ref, name);
     }
+  }
+
+  /**
+   * Command (async). Embeds the SOURCE page a `pdfpage:` ref points at as a
+   * LOSSLESS Form XObject (pdf-lib embedPdf copies the page's content stream
+   * whole — vectors, selectable text, fonts, images) and registers it on the
+   * page, returning {name, width, height} (the source box in PDF points), or
+   * null when the source can't be copied (the caller then rasters). The
+   * resolvePdfPageEmbed seam returns {bytes, pageIndex}; a resolver null (not a
+   * page-embed candidate) or an embedPdf failure (encrypted / malformed / no
+   * page contents) is a REPORTED fallback to raster — never a silent drop.
+   */
+  async _embedPdfPage(ref) {
+    const src = await this.resolvePdfPageEmbed(ref); // {bytes, pageIndex} | null
+    if (!src) return null;
+    try {
+      const [embeddedPage] = await this.doc.embedPdf(src.bytes, [src.pageIndex]);
+      const name = `Pg${++this._imgCount}`;
+      this.page.node.setXObject(PDFName.of(name), embeddedPage.ref);
+      return { name, width: embeddedPage.width, height: embeddedPage.height };
+    } catch (e) {
+      reportOncePdf(`pdf-embed:${ref}`, `pdf_backend: lossless page-embed failed for "${ref}" — falling back to a raster embed (${e instanceof Error ? e.message : String(e)})`);
+      return null;
+    }
+  }
+
+  /** Query. The registered lossless page-embed {name, width, height} for a
+   * `pdfpage:` ref, or null when the ref was not page-embedded (draw it via the
+   * image XObject path instead). Never throws — a non-embedded ref is the normal
+   * raster case. */
+  pdfPageEmbed(ref) {
+    return this._pageEmbeds.get(ref) ?? null;
   }
 
   /** Query. The XObject name for a pre-embedded image ref, or null for a

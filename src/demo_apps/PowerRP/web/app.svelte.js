@@ -2096,10 +2096,13 @@ export class PowerRPApp {
    *  un-registers itself. Not $state: nothing renders it. */
   #framesAttempted = new Set();
 
-  /** Runs during field initialization — i.e. at construction, which happens in
-   *  App.svelte's component init (the app's only construction site), so
-   *  $effect has an owner. A field (not a constructor statement) keeps the
-   *  whole asset region CONTIGUOUS. The effect body is scheduled by Svelte
+  /** Runs during field initialization — i.e. at construction. #wireFilmstripFrames
+   *  owns its effect via $effect.root, so it is valid whether construction
+   *  happens inside App.svelte's component init (fresh mount) OR outside any
+   *  effect context (Vite HMR re-instantiation) — the latter previously threw
+   *  effect_orphan and bricked the app. A field (not a constructor statement)
+   *  keeps the whole asset region CONTIGUOUS. Holds the root's DISPOSE fn (the
+   *  teardown hook if one is ever wired). The effect body is scheduled by Svelte
    *  post-mount, after the constructor finishes (this.registry is set). */
   #filmstripWiring = this.#wireFilmstripFrames();
 
@@ -2141,37 +2144,51 @@ export class PowerRPApp {
   }
 
   #wireFilmstripFrames() {
-    // Command (registers a reactive effect). Whenever the CURRENT slide's
-    // folded state shows a filmstrip whose (src, frames, frameH, frameW) has no
-    // matching frameUrls, fetch the frame URLs and keyframe them (ONE undo unit).
-    $effect(() => {
-      const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
-      const project = this.projectName();
-      for (const [id, s] of Object.entries(state.items ?? {})) {
-        if (s.type !== "filmstrip" || typeof s.src !== "string" || !s.src || !(s.frames >= 1)) continue;
-        // A src stored as a URL/path (not a bare filename) can NEVER resolve —
-        // the frames endpoint takes a bare basename (server safe_name rejects a
-        // slash). Surface it IN THE WIDGET (14.4 candidate b was console-only).
-        if (s.src.includes("/")) {
-          this.#setFilmstripStatus(id, { frameError: `video must be a project asset filename, not a path ("${s.src}")` });
-          continue;
+    // Command (registers a reactive effect INSIDE ITS OWN ROOT SCOPE). Whenever
+    // the CURRENT slide's folded state shows a filmstrip whose (src, frames,
+    // frameH, frameW) has no matching frameUrls, fetch the frame URLs and
+    // keyframe them (ONE undo unit).
+    //
+    // $effect.root gives the effect a valid owner regardless of instantiation
+    // context. A fresh component mount runs this field initializer inside
+    // App.svelte's init-effect (where a bare $effect is legal), but Vite HMR
+    // re-instantiates PowerRPApp OUTSIDE any component-effect context on every
+    // app.svelte.js save — a bare $effect there throws `effect_orphan` and
+    // bricks the app until a hard refresh. Owning the scope makes it valid
+    // either way. Returns the root's DISPOSE fn (held by #filmstripWiring) so a
+    // future teardown can stop the effect + free the scope; no teardown path
+    // exists today, so on HMR the prior root leaks (dev-only, bounded — one per
+    // save). `untrack` is unaffected: it lives inside #setFilmstripStatus.
+    return $effect.root(() => {
+      $effect(() => {
+        const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+        const project = this.projectName();
+        for (const [id, s] of Object.entries(state.items ?? {})) {
+          if (s.type !== "filmstrip" || typeof s.src !== "string" || !s.src || !(s.frames >= 1)) continue;
+          // A src stored as a URL/path (not a bare filename) can NEVER resolve —
+          // the frames endpoint takes a bare basename (server safe_name rejects a
+          // slash). Surface it IN THE WIDGET (14.4 candidate b was console-only).
+          if (s.src.includes("/")) {
+            this.#setFilmstripStatus(id, { frameError: `video must be a project asset filename, not a path ("${s.src}")` });
+            continue;
+          }
+          const frames = Math.round(s.frames);
+          const frameH = Number(s.frameH) || 0, frameW = Number(s.frameW) || 0;
+          // Staleness test: the stored URLs' DECODED cache path must name this
+          // exact (project, src, frames, resolution).
+          const want = this.#framesCachePath(project, s.src, frames, frameH, frameW);
+          const urls = Array.isArray(s.frameUrls) ? s.frameUrls : [];
+          if (urls.length > 0 && decodeURIComponent(urls[0]).includes(want)) {
+            this.#setFilmstripStatus(id, null); // resolved + current → clear any status
+            continue;
+          }
+          const key = `${id}|${want}`;
+          if (this.#framesAttempted.has(key)) continue;
+          this.#framesAttempted.add(key);
+          this.#setFilmstripStatus(id, { processing: true }); // 14.2 in-flight indicator
+          this.#fillFilmstripFrames(id, s.src, frames, frameH, frameW, project, want, key);
         }
-        const frames = Math.round(s.frames);
-        const frameH = Number(s.frameH) || 0, frameW = Number(s.frameW) || 0;
-        // Staleness test: the stored URLs' DECODED cache path must name this
-        // exact (project, src, frames, resolution).
-        const want = this.#framesCachePath(project, s.src, frames, frameH, frameW);
-        const urls = Array.isArray(s.frameUrls) ? s.frameUrls : [];
-        if (urls.length > 0 && decodeURIComponent(urls[0]).includes(want)) {
-          this.#setFilmstripStatus(id, null); // resolved + current → clear any status
-          continue;
-        }
-        const key = `${id}|${want}`;
-        if (this.#framesAttempted.has(key)) continue;
-        this.#framesAttempted.add(key);
-        this.#setFilmstripStatus(id, { processing: true }); // 14.2 in-flight indicator
-        this.#fillFilmstripFrames(id, s.src, frames, frameH, frameW, project, want, key);
-      }
+      });
     });
   }
 
@@ -2299,14 +2316,71 @@ export class PowerRPApp {
    * Exports the current slide as a VECTOR PDF (manifest "PDF export, round
    * 11"): shapes/text stay vector (text selectable), blur regions embed as
    * raster per the hybrid rule. The camera rect IS the page (pt = world px).
+   *
+   * EMBEDDED PDFs STAY VECTOR: (a) before deriving the scene, every pdf_page
+   * node's async VECTOR ingest is awaited (a one-shot export has no repaint loop
+   * to pick up the fire-and-forget result), so a vector-safe page emits its real
+   * `path` IR instead of the raster fallback; (b) a text/paper page — which the
+   * classifier rasterizes — is instead copied LOSSLESSLY via pdf-lib embedPdf
+   * (resolvePdfPageEmbed), keeping its real vectors, selectable text, and fonts.
+   * A synthetic pdfpage:/latex: ref that must raster (cropped / translucent /
+   * under an effect) is resolved to bytes through resolveImageBytes — the seam
+   * that replaces the old fetch("pdfpage:…") crash.
    */
   async exportPdf() {
-    const { irToPDF } = await import("../render_gpu/pdf_backend.js");
+    const { irToPDF, parsePdfPageRef } = await import("../render_gpu/pdf_backend.js");
     const { sceneIR } = await import("../render_gpu/ports.js");
     const { fitRectView } = await import("../core/view.js");
     const { loadFontBytes, fontkit, measureTextAscent, measureText } = await import("./pdfFonts.js");
+    const { getImage } = await import("../render_gpu/gpu/image_registry.js");
+    const { ensurePdfPageVector } = await import("../render_gpu/gpu/pdf_page_vector.js");
+    const { clampPage, pdfPageCount } = await import("../render_gpu/gpu/pdf_page_raster.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
     const rect = cameraRect(state, this.doc.meta);
+
+    // (a) WARM UP the vector ingest for every pdf_page node BEFORE deriving the
+    // scene. emit() reads pdfPageVectorIRFor synchronously; a fresh export never
+    // awaits the fire-and-forget ensurePdfPageVector, so without this the first
+    // read is always null → raster fallback. Clamp exactly like emit() so the
+    // warmed page is the one emit() will read.
+    await Promise.all(Object.values(state.items ?? {})
+      .filter((s) => s.type === "pdf_page" && typeof s.src === "string" && s.src.length > 0)
+      .map((s) => {
+        const requested = s.page ?? 1;
+        let page = Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : 1;
+        const count = pdfPageCount(s.src);
+        if (count != null) page = clampPage(requested, count).page;
+        return ensurePdfPageVector(s.src, page);
+      }));
+
+    // The synthetic-ref → PNG-bytes resolver (pdfpage:/latex: rasters): read the
+    // registry ImageBitmap and re-encode it (the exportSvg videoFrame pattern).
+    // A ref with no ready bitmap (source still rasterizing) reports and draws
+    // nothing rather than throwing — a reported skip, never a silent one.
+    const resolveImageBytes = async (ref) => {
+      const bitmap = getImage(ref);
+      if (!bitmap) {
+        console.warn(`exportPdf: synthetic ref "${ref.slice(0, 48)}…" has no rasterized bitmap yet — it exports blank. Re-export once the page/equation has finished rendering.`);
+        return null;
+      }
+      const c = document.createElement("canvas");
+      c.width = bitmap.width;
+      c.height = bitmap.height;
+      c.getContext("2d").drawImage(bitmap, 0, 0);
+      const blob = await new Promise((res) => c.toBlob(res, "image/png"));
+      return new Uint8Array(await blob.arrayBuffer());
+    };
+    // The LOSSLESS page-embed source for a full-frame opaque pdf_page: parse the
+    // ref back to (src, page) and hand pdf-lib the raw source-PDF bytes to copy.
+    // A non-pdf_page synthetic ref (latex:) returns null → the raster path above.
+    const resolvePdfPageEmbed = async (ref) => {
+      const parsed = parsePdfPageRef(ref);
+      if (!parsed) return null;
+      const res = await fetch(parsed.src); // fetch handles data:/blob:/http(s)/relative
+      if (!res.ok) throw new Error(`exportPdf: failed to fetch PDF source "${parsed.src.slice(0, 48)}…" for a lossless page-embed — HTTP ${res.status} ${res.statusText}`);
+      return { bytes: new Uint8Array(await res.arrayBuffer()), pageIndex: parsed.page - 1 };
+    };
+
     // Embed the SAME committed fonts the glyph atlas rasterizes (manifest "Text
     // fonts" / embedFont seam): registerFontkit + loadFontBytes let pdf-lib
     // embed the TTFs; measureTextAscent gives per-font baseline parity with the
@@ -2324,6 +2398,8 @@ export class PowerRPApp {
       measureText: measureText(),
       loadFontBytes,
       registerFontkit: await fontkit(),
+      resolveImageBytes,
+      resolvePdfPageEmbed,
     });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));

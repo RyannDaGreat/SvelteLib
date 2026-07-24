@@ -15,6 +15,7 @@ import {
   balancedSlice, magnifiedView, hasTextOp, tjHex, irToPDF, MAX_LENS_DEPTH,
   imageRefs, videoRefs, decodeDataUri, base64ToBytes, imageFormat,
   textFaces, fontResName, groupedTextDraws, tokenizeSvgPath, svgPathToPdfOps,
+  isSyntheticImageRef, parsePdfPageRef, pdfPageEmbedRefs, pdfPageEmbedPlacementOps,
 } from "../pdf_backend.js";
 import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, image, video, latexVector } from "../ir.js";
 import { normalizeRichText } from "../../core/richtext.js";
@@ -441,6 +442,131 @@ await atest("RICH TEXT EXTRACTION FIDELITY: verbatim text (spaces included) surv
   try { txt = execFileSync("pdftotext", [pdfPath, "-"]).toString(); }
   catch { console.log("    (pdftotext not on PATH — skipping the extraction assertion; install poppler)"); return; }
   assert.ok(txt.includes("PowerRP V1"), `pdftotext reproduces "PowerRP V1" verbatim incl. the space (got ${JSON.stringify(txt.trim().slice(0, 40))})`);
+});
+
+// ── synthetic-ref resolver seam + lossless PDF-page embed (pdf_page/latex) ───
+// FIXTURE: a real pdf-lib-authored PDF (page 1 is pure vector: a filled rect).
+const PDF_FIXTURE = new Uint8Array(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../tests/fixtures/pdf_vector_fixture.pdf")));
+const CHECKER_BYTES = base64ToBytes(CHECKER_PNG_DATA_URI.split(",")[1]);
+
+test("isSyntheticImageRef: custom scheme vs fetchable", () => {
+  assert.equal(isSyntheticImageRef("pdfpage:blob:x:1:1"), true);
+  assert.equal(isSyntheticImageRef("latex:x^2:#000:1"), true);
+  assert.equal(isSyntheticImageRef("data:image/png;base64,AAAA"), false);
+  assert.equal(isSyntheticImageRef("https://x/a.png"), false);
+  assert.equal(isSyntheticImageRef("blob:https://h/uuid"), false);
+  assert.equal(isSyntheticImageRef("/assets/a.png"), false); // path, no scheme
+});
+test("parsePdfPageRef: trailing page/scale, src may contain ':'", () => {
+  assert.deepEqual(parsePdfPageRef("pdfpage:blob:x:3:2.3"), { src: "blob:x", page: 3 });
+  assert.deepEqual(parsePdfPageRef("pdfpage:blob:x:1:1"), { src: "blob:x", page: 1 });
+  assert.deepEqual(parsePdfPageRef("pdfpage:data:application/pdf;base64,AAA:2:1.5"), { src: "data:application/pdf;base64,AAA", page: 2 });
+  assert.equal(parsePdfPageRef("latex:eq:#000:1"), null); // not a pdf_page ref
+  assert.equal(parsePdfPageRef("data:image/png;base64,AA"), null);
+});
+test("pdfPageEmbedRefs: full-frame opaque pdfpage only; cropped/translucent excluded", () => {
+  const full = (ref, over = {}) => image({ ref, x: 0, y: 0, w: 10, h: 10, ...over });
+  assert.deepEqual([...pdfPageEmbedRefs([full("pdfpage:a:1:1")])], ["pdfpage:a:1:1"]);
+  assert.equal(pdfPageEmbedRefs([full("pdfpage:a:1:1", { opacity: 0.5 })]).size, 0); // translucent → raster
+  assert.equal(pdfPageEmbedRefs([full("pdfpage:a:1:1", { sw: 0.5 })]).size, 0);      // cropped → raster
+  assert.equal(pdfPageEmbedRefs([full("data:image/png;base64,AA")]).size, 0);        // not a pdfpage ref
+  // a ref used in BOTH a full-frame AND a cropped op is excluded (one kind per ref)
+  assert.equal(pdfPageEmbedRefs([full("pdfpage:a:1:1"), full("pdfpage:a:1:1", { sw: 0.5 })]).size, 0);
+});
+test("pdfPageEmbedPlacementOps: point-box → dest rect, y-flip", () => {
+  assert.deepEqual(
+    pdfPageEmbedPlacementOps({ x: 10, y: 20, w: 100, h: 80 }, { name: "Pg1", width: 200, height: 160 }),
+    ["0.5 0 0 -0.5 10 100 cm", "/Pg1 Do"],
+  );
+});
+
+await atest("SYNTHETIC pdfpage:/latex: refs resolve via resolveImageBytes (no fetch crash)", async () => {
+  // The old bug: loadImageBytes fetch("pdfpage:…") → TypeError "URL scheme not
+  // supported". With the seam the same refs embed as raster image XObjects.
+  const resolveImageBytes = async (ref) => {
+    assert.ok(isSyntheticImageRef(ref), `only synthetic refs reach the seam (got ${ref})`);
+    return CHECKER_BYTES;
+  };
+  const bytes = await irToPDF(
+    [image({ ref: "pdfpage:blob:paper:1:1", x: 10, y: 10, w: 80, h: 60, opacity: 0.5 }), // translucent → raster, not page-embed
+     image({ ref: "latex:eq:#000:1", x: 0, y: 0, w: 20, h: 20 })],
+    { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff", resolveImageBytes },
+  );
+  const s = latin1(bytes);
+  assert.ok(s.startsWith("%PDF-"), "is a PDF (no crash)");
+  assert.ok(s.includes("/Subtype /Image"), "synthetic refs embed as raster image XObjects");
+  assert.ok(s.includes(" Do"), "placed");
+  assert.ok(!s.includes("not supported"), "no fetch-scheme error text");
+});
+
+await atest("SYNTHETIC ref WITHOUT resolveImageBytes throws loudly (crash → clear error)", async () => {
+  await assert.rejects(
+    () => irToPDF([image({ ref: "pdfpage:blob:x:1:1", x: 0, y: 0, w: 10, h: 10, opacity: 0.5 })],
+      { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 } }),
+    /no resolveImageBytes seam/,
+  );
+});
+
+await atest("EMBEDDED PDF page exports as LOSSLESS vector (Form XObject page-embed, not a raster image)", async () => {
+  // A full-frame opaque pdf_page ref is copied whole via pdf-lib embedPdf: the
+  // exported page carries the source page's real vectors (a /Subtype /Form
+  // XObject), NOT a rasterized /Subtype /Image. resolveImageBytes THROWS to
+  // prove the raster path is never taken for this page.
+  const resolvePdfPageEmbed = async (ref) => {
+    assert.equal(parsePdfPageRef(ref).page, 1);
+    return { bytes: PDF_FIXTURE, pageIndex: 0 };
+  };
+  const resolveImageBytes = async () => { throw new Error("raster path must NOT be used for a lossless page-embed"); };
+  const bytes = await irToPDF(
+    [image({ ref: "pdfpage:blob:paper:1:1", x: 10, y: 10, w: 100, h: 80 })],
+    { width: 200, height: 160, view: { zoom: 1, panX: 0, panY: 0 }, background: "#ffffff", resolveImageBytes, resolvePdfPageEmbed },
+  );
+  const s = latin1(bytes);
+  assert.ok(s.startsWith("%PDF-"), "is a PDF");
+  assert.ok(s.includes("/Subtype /Form"), "the source page is copied as a Form XObject (lossless vectors/text)");
+  assert.ok(!s.includes("/Subtype /Image"), "NOT a raster image embed");
+  assert.ok(s.includes(" Do"), "the embedded page is placed");
+});
+
+await atest("page-embed is PREFERRED over raster when both seams are wired", async () => {
+  let rasterUsed = false;
+  const bytes = await irToPDF(
+    [image({ ref: "pdfpage:blob:paper:1:1", x: 0, y: 0, w: 100, h: 80 })],
+    { width: 200, height: 160, view: { zoom: 1, panX: 0, panY: 0 },
+      resolvePdfPageEmbed: async () => ({ bytes: PDF_FIXTURE, pageIndex: 0 }),
+      resolveImageBytes: async () => { rasterUsed = true; return CHECKER_BYTES; } },
+  );
+  assert.ok(latin1(bytes).includes("/Subtype /Form"), "used the lossless page-embed");
+  assert.equal(rasterUsed, false, "did not touch the raster resolver");
+});
+
+await atest("page-embed failure falls back to raster LOUDLY (no silent drop)", async () => {
+  const errs = [];
+  const orig = console.warn; console.warn = (m) => errs.push(String(m));
+  try {
+    const bytes = await irToPDF(
+      [image({ ref: "pdfpage:blob:bad:1:1", x: 0, y: 0, w: 50, h: 50 })],
+      { width: 100, height: 100, view: { zoom: 1, panX: 0, panY: 0 },
+        resolvePdfPageEmbed: async () => ({ bytes: new Uint8Array([1, 2, 3, 4]), pageIndex: 0 }), // not a real PDF → embedPdf throws
+        resolveImageBytes: async () => CHECKER_BYTES },
+    );
+    const s = latin1(bytes);
+    assert.ok(s.includes("/Subtype /Image"), "fell back to a raster embed");
+    assert.ok(!s.includes("/Subtype /Form"), "no bogus Form XObject");
+  } finally { console.warn = orig; }
+  assert.ok(errs.some((m) => /page-embed failed/.test(m)), "the fallback was reported (loud, not silent)");
+});
+
+await atest("a CROPPED pdf_page rasters (page-embed skipped) even with the embed seam wired", async () => {
+  const bytes = await irToPDF(
+    [image({ ref: "pdfpage:blob:paper:1:1", x: 0, y: 0, w: 100, h: 80, sw: 0.5, sh: 0.5 })], // edge-crop → not a whole-page copy
+    { width: 200, height: 160, view: { zoom: 1, panX: 0, panY: 0 },
+      resolvePdfPageEmbed: async () => ({ bytes: PDF_FIXTURE, pageIndex: 0 }),
+      resolveImageBytes: async () => CHECKER_BYTES },
+  );
+  const s = latin1(bytes);
+  assert.ok(s.includes("/Subtype /Image"), "cropped page rasters");
+  assert.ok(!s.includes("/Subtype /Form"), "cropped page is NOT page-embedded");
 });
 
 console.log(`\npdf_backend tests: ${passed} passed`);
