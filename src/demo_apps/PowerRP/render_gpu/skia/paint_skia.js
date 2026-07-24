@@ -79,8 +79,13 @@ const MAX_EFFECT_DEPTH = 2;      // effect re-render nesting bound
  *     letterbox. The whole surface is cleared to `background` (the bars); the
  *     SCENE is clipped to this rect so off-camera content cannot bleed into the
  *     bars. Absent ⇒ the scene draws across the full surface.
+ *   opts.antialias (boolean): THE camera's per-draw COVERAGE anti-aliasing
+ *     (render_settings.cameraAntialias/antialiasCoverage — the LIVE edge-smoothing
+ *     control). true ⇒ setAntiAlias(true) on every shape/text/border paint
+ *     (smooth, today's look); false ⇒ setAntiAlias(false) ⇒ crisp, jagged edges.
+ *     Default true = byte-identical to before this control was wired.
  */
-export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null } = {}) {
+export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true } = {}) {
   if (!fontCollection) throw new Error("paintIR(skia): a fontCollection is required (committed families + Noto fallback chain)");
   const flat = flattenIR(commands);
   const bg = parseColor(background);
@@ -89,7 +94,9 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // Offscreen surfaces for backdrop/lens/effect. Browser passes a GPU-backed
   // factory (MakeRenderTarget); Node defaults to CPU MakeSurface.
   const mkSurface = makeSurface || ((w, h) => CanvasKit.MakeSurface(w, h));
-  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface };
+  // `antialias` rides on ctx so every leaf/border draw reaches the ONE per-frame
+  // coverage-AA setting without re-threading it through each helper signature.
+  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias };
   // The letterbox clip (device px), built once — applied AFTER the full-surface
   // clear so the bars keep `background` and only the scene is clipped.
   const scissorRect = scissor ? CanvasKit.LTRBRect(scissor.x, scissor.y, scissor.x + scissor.w, scissor.y + scissor.h) : null;
@@ -166,7 +173,7 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
       case "materialFill":
         // A FOREGROUND registry material (the corkboard family): makeShader + fill,
         // NO backdrop re-render, NO children. The additive sibling of materialBackdrop.
-        handleMaterialFill(CanvasKit, target, cmd, world, view);
+        handleMaterialFill(CanvasKit, target, cmd, world, view, ctx);
         break;
       case "cropSubtree":
         handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth);
@@ -178,7 +185,7 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
         const opacity = cmd.opacity ?? 1;
         canvas.save();
         applyView(canvas, view, world);
-        drawLeafOp(CanvasKit, canvas, cmd, opacity, ctx.media, ctx.fontCollection);
+        drawLeafOp(CanvasKit, canvas, cmd, opacity, ctx.media, ctx.fontCollection, ctx.antialias);
         canvas.restore();
       }
     }
@@ -211,26 +218,28 @@ function deviceMatrix(CanvasKit, view, world) {
   );
 }
 
-/** Command (draws one leaf op on `canvas` in its already-transformed local space). */
-function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection) {
+/** Command (draws one leaf op on `canvas` in its already-transformed local
+ *  space). `aa` is the camera's per-draw coverage-AA flag (ctx.antialias) —
+ *  threaded into every fill/stroke/text paint so "off" produces crisp edges. */
+function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa = true) {
   switch (cmd.op) {
     case "rect": {
       const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
       const bounds = { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
-      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawRRect(rr, p));
-      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawRRect(rr, p));
+      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
+      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
       break;
     }
     case "ellipse": {
       const oval = CanvasKit.LTRBRect(cmd.cx - cmd.rx, cmd.cy - cmd.ry, cmd.cx + cmd.rx, cmd.cy + cmd.ry);
       const bounds = { x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry };
-      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawOval(oval, p));
-      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawOval(oval, p));
+      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
+      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
       break;
     }
     case "polyline": {
       const path = buildPath(CanvasKit, cmd.points, false);
-      const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity);
+      const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity, null, aa);
       p.setStrokeCap(CanvasKit.StrokeCap.Round);
       p.setStrokeJoin(CanvasKit.StrokeJoin.Round);
       canvas.drawPath(path, p);
@@ -239,15 +248,15 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection) {
     }
     case "polygon": {
       const path = buildPath(CanvasKit, cmd.points, true);
-      withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, pointsBounds(cmd.points)), (p) => canvas.drawPath(path, p));
+      withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, pointsBounds(cmd.points), aa), (p) => canvas.drawPath(path, p));
       path.delete();
       break;
     }
     case "path":
-      drawPathOp(CanvasKit, canvas, cmd, opacity);
+      drawPathOp(CanvasKit, canvas, cmd, opacity, aa);
       break;
     case "text":
-      drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection);
+      drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa);
       break;
     case "image":
     case "video": {
@@ -271,10 +280,10 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection) {
       break;
     }
     case "latexVector":
-      drawLatexVector(CanvasKit, canvas, cmd, opacity);
+      drawLatexVector(CanvasKit, canvas, cmd, opacity, aa);
       break;
     case "mermaidVector":
-      drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection);
+      drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection, aa);
       break;
     default:
       throw new Error(`paintIR(skia): unknown op "${cmd.op}"`);
@@ -290,7 +299,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection) {
  * op is transform-applied by the caller, so `d` draws in the current local
  * space with no extra matrix here.
  */
-function drawPathOp(CanvasKit, canvas, cmd, opacity) {
+function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true) {
   const skPath = CanvasKit.Path.MakeFromSVGString(cmd.d);
   if (!skPath) throw new Error(`paintIR(skia): path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
   skPath.setFillType(cmd.fillRule === "evenodd" ? CanvasKit.FillType.EvenOdd : CanvasKit.FillType.Winding);
@@ -303,8 +312,8 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity) {
   // softness tracks zoom. blur 0 (the default) ⇒ no filter, crisp as before.
   const maskBlur = cmd.blur > 0 ? CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, cmd.blur, true) : null;
   const drawWith = (p) => { if (maskBlur) p.setMaskFilter(maskBlur); canvas.drawPath(skPath, p); };
-  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), drawWith);
-  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), drawWith);
+  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), drawWith);
+  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), drawWith);
   if (maskBlur) maskBlur.delete();
   skPath.delete();
 }
@@ -317,7 +326,7 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity) {
  * color; nonzero winding (MathJax counters are reverse-wound), which is
  * SkPath's default from MakeFromSVGString.
  */
-function drawLatexVector(CanvasKit, canvas, cmd, opacity) {
+function drawLatexVector(CanvasKit, canvas, cmd, opacity, aa = true) {
   const { viewBox, glyphs } = cmd;
   // preserveAspect (default): UNIFORM scale-to-FIT the equation into the box,
   // centered (letterbox) — no aspect squash. Otherwise a non-uniform box→box
@@ -340,7 +349,7 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity) {
     const p = new CanvasKit.Paint();
     p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
     p.setStyle(CanvasKit.PaintStyle.Fill);
-    p.setAntiAlias(true);
+    p.setAntiAlias(aa);
     canvas.drawPath(path, p);
     p.delete(); path.delete();
   }
@@ -359,7 +368,7 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity) {
  * that hands a mermaid UNDER a blur to the rasterize callback). Paths are drawn
  * before texts so labels sit ON TOP of their node fills.
  */
-function drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection) {
+function drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection, aa = true) {
   const { viewBox, paths, texts } = cmd;
   let sx, sy, ox = 0, oy = 0;
   if (cmd.preserveAspect !== false) {
@@ -382,7 +391,7 @@ function drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection) {
       const paint = new CanvasKit.Paint();
       paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * op));
       paint.setStyle(CanvasKit.PaintStyle.Fill);
-      paint.setAntiAlias(true);
+      paint.setAntiAlias(aa);
       canvas.drawPath(skPath, paint);
       paint.delete();
     }
@@ -392,7 +401,7 @@ function drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection) {
       paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * op));
       paint.setStyle(CanvasKit.PaintStyle.Stroke);
       paint.setStrokeWidth(p.strokeWidth);
-      paint.setAntiAlias(true);
+      paint.setAntiAlias(aa);
       canvas.drawPath(skPath, paint);
       paint.delete();
     }
@@ -402,7 +411,7 @@ function drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection) {
     // A single-run text op the shared layout understands (top-left origin at
     // t.x/t.y in viewBox space; no wrap). Per-text opacity folds with the group.
     const layout = getTextLayout(CanvasKit, fontCollection, { text: t.text, x: t.x, y: t.y, size: t.size, color: t.color, bold: t.bold, font: t.font }, opacity * (t.opacity ?? 1));
-    layout.draw(canvas, t.x, t.y);
+    layout.draw(canvas, t.x, t.y, aa);
   }
   canvas.restore();
 }
@@ -517,7 +526,7 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
     snap.delete();
   }
   clip.delete();
-  drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity);
+  drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity, ctx.antialias);
 }
 
 /**
@@ -551,15 +560,16 @@ function lensClipPath(CanvasKit, cmd, deviceM) {
 }
 
 /** Command (draws the lens rim/border in local space). ONE stroke ring for both
- * shapes — the collapsed stroke/strokeWidth bundle (ir.js folded the legacy rim). */
-function drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity) {
+ * shapes — the collapsed stroke/strokeWidth bundle (ir.js folded the legacy rim).
+ * `aa` is the camera's coverage-AA flag (ctx.antialias). */
+function drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true) {
   const isBox = cmd.shape === "box";
   const color = cmd.stroke;
   const width = cmd.strokeWidth;
   if (!color || !(width > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, color, width, opacity);
+  const p = strokePaint(CanvasKit, color, width, opacity, null, aa);
   if (isBox) {
     const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
     canvas.drawRRect(rr, p);
@@ -686,7 +696,7 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
   bd.blurred.delete(); bd.sharp.delete();
 
   // (5) optional bright hairline border on top (local space, rotation-safe).
-  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity);
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, ctx.antialias);
 }
 
 /**
@@ -851,7 +861,7 @@ function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle,
   const dy = halfH * GLASS_SHADOW_DY_FRAC;
   const p = new CanvasKit.Paint();
   p.setColor(CanvasKit.Color4f(0, 0, 0, strength * appear));
-  p.setAntiAlias(true);
+  p.setAntiAlias(true); // a mask-blurred silhouette — coverage AA is imperceptible under the blur, so this ignores the camera flag by design
   if (sigma > 0) p.setMaskFilter(CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, sigma, false));
   canvas.save();
   canvas.translate(cx, cy + dy);
@@ -863,12 +873,13 @@ function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle,
 }
 
 /** Command (draws the optional bright hairline border in local space — the glass
- * edge catch-light). One stroked rounded rect; skipped when strokeWidth is 0. */
-function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity) {
+ * edge catch-light). One stroked rounded rect; skipped when strokeWidth is 0.
+ * `aa` is the camera's coverage-AA flag (ctx.antialias). */
+function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true) {
   if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa);
   const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
   canvas.drawRRect(rr, p);
   p.delete();
@@ -947,7 +958,7 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
 
   // Optional bright hairline border on top (reuses the glass border helper — the
   // materialBackdrop op carries the same cx/halfW/cornerRadius/stroke fields).
-  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity);
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, ctx.antialias);
 }
 
 /**
@@ -958,9 +969,10 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
  * region through the material's RuntimeEffect via `effect.makeShader(uniforms)`
  * (the shader returns premultiplied 0 outside its own SDF), clipped to the device
  * AABB. World→device geometry + length scaling mirror handleMaterialBackdrop; `sd`
- * (world length → device px) is handed to the packer as `scale`.
+ * (world length → device px) is handed to the packer as `scale`. `ctx` carries
+ * the camera's coverage-AA flag (ctx.antialias) for the hairline border.
  */
-function handleMaterialFill(CanvasKit, target, cmd, world, view) {
+function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   const canvas = target.canvas;
   const opacity = cmd.opacity ?? 1;
   const material = getMaterial(cmd.material);
@@ -997,7 +1009,7 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view) {
   p.delete(); shader.delete();
 
   // (3) optional bright hairline border on top (reuses the glass border helper).
-  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity);
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, ctx.antialias);
 }
 
 /**
@@ -1014,7 +1026,7 @@ function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, ang
   const sigma = shadow.blur * sd;
   const p = new CanvasKit.Paint();
   p.setColor(CanvasKit.Color4f(0, 0, 0, shadow.alpha));
-  p.setAntiAlias(true);
+  p.setAntiAlias(true); // a mask-blurred silhouette — coverage AA is imperceptible under the blur, so this ignores the camera flag by design
   if (sigma > 0) p.setMaskFilter(CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, sigma, false));
   canvas.save();
   canvas.translate(cx + shadow.dx * sd, cy + shadow.dy * sd);
@@ -1044,7 +1056,7 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   if (cmd.fill) {
     canvas.save();
     applyView(canvas, view, world);
-    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds), (p) => canvas.drawRRect(rr, p));
+    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, ctx.antialias), (p) => canvas.drawRRect(rr, p));
     canvas.restore();
   }
 
@@ -1062,7 +1074,7 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   if (cmd.stroke && cmd.strokeWidth > 0) {
     canvas.save();
     applyView(canvas, view, world);
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds), (p) => canvas.drawRRect(rr, p));
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias), (p) => canvas.drawRRect(rr, p));
     canvas.restore();
   }
 }
@@ -1276,22 +1288,24 @@ function reportOnce(key, msg) {
 /** Helper. A filled Paint for a solid rgba OR a gradient Paint (opacity folded
  * into alpha / stop alpha). A gradient needs the op's LOCAL `bounds` ({x,y,w,h})
  * — the objectBoundingBox the gradient maps onto. Any gradient shader is stashed
- * on the paint as `_gradientShader` so withPaint disposes it. Caller deletes. */
-function fillPaint(CanvasKit, paint, opacity, bounds = null) {
+ * on the paint as `_gradientShader` so withPaint disposes it. `aa` is the camera's
+ * coverage-AA flag (ctx.antialias): false ⇒ crisp jagged edges. Caller deletes. */
+function fillPaint(CanvasKit, paint, opacity, bounds = null, aa = true) {
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Fill);
-  p.setAntiAlias(true);
+  p.setAntiAlias(aa);
   applyPaint(CanvasKit, p, paint, opacity, bounds);
   return p;
 }
 
 /** Helper. A stroked Paint for a solid rgba OR a gradient Paint. `bounds` frames
- * a gradient stroke's objectBoundingBox (see fillPaint). Caller deletes. */
-function strokePaint(CanvasKit, paint, width, opacity, bounds = null) {
+ * a gradient stroke's objectBoundingBox (see fillPaint); `aa` is the camera's
+ * coverage-AA flag. Caller deletes. */
+function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true) {
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Stroke);
   p.setStrokeWidth(width);
-  p.setAntiAlias(true);
+  p.setAntiAlias(aa);
   applyPaint(CanvasKit, p, paint, opacity, bounds);
   return p;
 }
@@ -1374,7 +1388,11 @@ function buildPath(CanvasKit, points, close) {
  * can never disagree — then draws each paragraph at its local yTop (valign-shifted).
  * The layout is CACHED (not deleted per frame); the cache bounds WASM lifetime.
  */
-function drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection) {
+function drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa = true) {
   const layout = getTextLayout(CanvasKit, fontCollection, cmd, opacity);
-  layout.draw(canvas, cmd.x, cmd.y);
+  // `aa` reaches the OUTLINE-stroke + gradient-fill glyph passes (text_layout
+  // draw). The plain Paragraph fill is drawn by CanvasKit's own glyph rasterizer,
+  // which has no per-draw coverage flag — so solid, un-outlined text keeps its
+  // internal AA regardless; the toggle bites on shapes, outlines, and vector text.
+  layout.draw(canvas, cmd.x, cmd.y, aa);
 }

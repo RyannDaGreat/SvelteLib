@@ -23,6 +23,7 @@ import { reportOnce } from "../core/report.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
 import { renderWithDither, cameraDither } from "../render_gpu/skia/dither_shader.js";
+import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
 import { sceneMedia } from "../render_gpu/skia/browser_media.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
@@ -55,7 +56,7 @@ function renderJob(reqWidth, reqHeight, buildIR) {
     const surface = CanvasKit.MakeSurface(width, height);
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {
-      const { ir, view, background, dither = null } = buildIR();
+      const { ir, view, background, dither = null, antialias = true } = buildIR();
       // Resolve the scene's image/video refs to CanvasKit Images so thumbnails/
       // minimap/PNG export show media too (the same seam the on-screen surface
       // uses); release frees the per-paint video frames after readback.
@@ -67,7 +68,7 @@ function renderJob(reqWidth, reqHeight, buildIR) {
         // dither settings; the PDF raster-region callback passes none (dither is a
         // RASTER post-pass — vector PDF/SVG export stays untouched).
         renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
-          paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection }));
+          paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection, antialias }));
         const img = surface.makeImageSnapshot();
         if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
         const px = img.readPixels(0, 0, {
@@ -112,6 +113,7 @@ export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width,
       background: parseColor(rect.background),
       ir: cameraFrameIR(state, doc.meta, registry),
       dither: cameraDither(state), // THE camera's dither settings → the final pass
+      antialias: antialiasCoverage(cameraAntialias(state)), // THE camera's coverage-AA → setAntiAlias
     };
   });
 }

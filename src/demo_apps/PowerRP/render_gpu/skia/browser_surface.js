@@ -117,8 +117,16 @@ export class SkiaSurface {
    * cameraDither), read from the scene by the caller (CanvasView) and applied as
    * the whole-frame final pass right before present. Omitted / {mode:"off"} =
    * no-op (today's behavior byte-for-byte).
+   *
+   * ANTIALIAS: THE camera's per-draw COVERAGE anti-aliasing boolean
+   * (render_settings.cameraAntialias/antialiasCoverage), read from the scene by
+   * the caller and forwarded to paintIR's setAntiAlias. This is the LIVE
+   * edge-smoothing control — it takes effect every frame with NO surface
+   * recreation. (The GL context's MSAA flag set in create() is a separate,
+   * coarser knob that only applies at surface creation.) Default true = today's
+   * smooth look; false ⇒ crisp, jagged edges.
    */
-  render(ir, view, { background = [0, 0, 0, 0], media = null, scissor = null, dither = null } = {}) {
+  render(ir, view, { background = [0, 0, 0, 0], media = null, scissor = null, dither = null, antialias = true } = {}) {
     this._ensureSurface();
     if (!this.surface) return; // collapsed pane (zero-size canvas) — nothing to draw
     const built = media == null ? sceneMedia(this.CanvasKit, ir) : { media, release() {} };
@@ -127,7 +135,7 @@ export class SkiaSurface {
       // and de-bands on the downconvert to this 8-bit GL surface (when dither is
       // active); "off" paints straight in + flushes, byte-identical to before.
       renderWithDither(this.CanvasKit, this.surface, this._w, this._h, dither, (canvas) =>
-        paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface }));
+        paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface, antialias }));
     } finally {
       built.release(); // free per-paint video frame Images even if paint throws (review MED)
     }

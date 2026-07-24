@@ -23,6 +23,7 @@
   import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
+  import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onVideoFrame } from "../render_gpu/gpu/video_registry.js";
   import { renderCameraFrame } from "./gpuService.js";
@@ -243,7 +244,13 @@
     if (!canvasEl || gpu || gpuError) return;
     // premultiplied alpha: the transparent clear must show the grid underlay +
     // app background beneath the canvas (opaque would render it black).
-    SkiaSurface.create(canvasEl)
+    // `antialias` sets the WebGL2 context's MSAA flag from THE camera's
+    // Anti-aliasing setting AT CREATION (read once here). This is the coarse,
+    // creation-time knob; the LIVE per-frame control is the coverage-AA flag
+    // threaded through paint() below, which needs no surface recreation. (A
+    // camera flip does not recreate the surface — out of scope; the coverage
+    // path is the live control the user sees.)
+    SkiaSurface.create(canvasEl, { antialias: antialiasCoverage(cameraAntialias(app.state())) })
       .then((g) => (gpu = g))
       .catch((e) => {
         gpuError = String(e?.message ?? e);
@@ -353,8 +360,10 @@
     ];
     // THE camera's dither settings drive the whole-frame final pass (scatters
     // 8-bit banding into grain). Read from the SAME folded state the scene came
-    // from; "off" (the default) is a byte-for-byte no-op.
-    gpu.render(ir, view, { background: [0, 0, 0, 0], dither: cameraDither(state) });
+    // from; "off" (the default) is a byte-for-byte no-op. `antialias` is THE
+    // camera's per-draw coverage-AA — the LIVE edge-smoothing control (no surface
+    // recreation): "off" ⇒ crisp jagged edges, "standard" ⇒ smooth (the default).
+    gpu.render(ir, view, { background: [0, 0, 0, 0], dither: cameraDither(state), antialias: antialiasCoverage(cameraAntialias(state)) });
     app.renderFrameCount += 1;
   }
 

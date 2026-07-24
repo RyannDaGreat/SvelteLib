@@ -80,6 +80,28 @@ export const SECONDS_SCRUB = 0.01;
 export const DITHER_MODES = ["off", "bayer", "blueNoise"];
 export const DITHER_MODE_LABELS = { off: "Off", bayer: "Bayer", blueNoise: "Blue noise" };
 
+/**
+ * THE camera's ANTI-ALIASING quality/algorithm modes (manifest "CAMERA
+ * RENDERING"). This SELECT replaces the old `antialias` BOOLEAN (true→"standard",
+ * false→"off"; migrated loudly in core/document.js). "off" disables per-draw
+ * COVERAGE anti-aliasing so shape/text edges are crisp and jagged (and renders a
+ * touch faster); "standard" is today's look — Skia coverage AA on every draw.
+ * The array VALUES are the stored state / select ids; ANTIALIAS_MODE_LABELS maps
+ * each to the human label. Single-sourced here so the reader
+ * (render_gpu/skia/render_settings.cameraAntialias) and the property row can
+ * never disagree on the exact ids.
+ *
+ * SUPERSAMPLE TODO ("high"): a third mode — render the frame at 2× into an
+ * offscreen and downsample (spatial supersampling, smoother than coverage AA) —
+ * is NOT shipped yet. It is deliberately absent (no fake option, per the user
+ * ruling): render_settings.js throws at import if a mode it does not implement
+ * appears here. To add it: append "high", give it a label, and thread a
+ * supersample factor from render_settings through the three raster sinks
+ * (CanvasView/gpuService/CLI) into a 2×-dpr offscreen render + downsample blit.
+ */
+export const ANTIALIAS_MODES = ["off", "standard"];
+export const ANTIALIAS_MODE_LABELS = { off: "Off (crisp)", standard: "Standard" };
+
 // ── THE "angle" unit-kind + linear-gradient DIRECTION math ───────────────────
 // An ANGLE property (kind "angle") is a heading in DEGREES with the SCREEN
 // convention 0° = +x (right), 90° = +y (down) — the SAME convention the particle
@@ -270,11 +292,11 @@ export const PROPS = {
   // redesign). Category "rendering" is their own Inspector accordion group.
   //
   // DEFAULTS MATCH TODAY'S HARDCODED BEHAVIOR so every existing document renders
-  // byte-identically until a user changes a knob: antialias ON (browser_surface
-  // GetWebGLContext antialias:1), retina ON (core/view dpr = devicePixelRatio),
-  // dither OFF. The dither PROPERTIES are declared here; the final-pass that
-  // consumes them is a SEPARATE task.
-  antialias: { label: "Anti-aliasing", kind: "boolean", category: "rendering", default: true, help: "Smooths the jagged staircase edges of shapes and text by blending edge pixels. Off gives crisp, pixelated edges and renders a little faster." },
+  // byte-identically until a user changes a knob: antialias "standard" (Skia
+  // coverage AA on every draw — paint_skia/text_layout setAntiAlias, wired via
+  // render_settings.cameraAntialias), retina ON (core/view dpr =
+  // devicePixelRatio), dither OFF.
+  antialias: { label: "Anti-aliasing", kind: "select", options: ANTIALIAS_MODES, optionLabels: ANTIALIAS_MODE_LABELS, category: "rendering", default: "standard", help: "How shape and text edges are smoothed. Standard blends edge pixels (the default look). Off gives crisp, pixelated staircase edges and renders a little faster. (A higher-quality supersample mode is planned.)" },
   retina: { label: "Retina (HiDPI)", kind: "boolean", category: "rendering", default: true, help: "Renders at the display's full pixel density (its device pixel ratio) so edges stay sharp on high-DPI screens. Off renders at 1:1 CSS pixels — softer on a Retina display but faster." },
   ditherMode: { label: "Dither", kind: "select", options: DITHER_MODES, optionLabels: DITHER_MODE_LABELS, category: "rendering", default: "off", help: "Scatters pixels between adjacent colors to hide the visible stair-step banding in smooth gradients. Bayer is a fixed ordered checkerboard; blue-noise is a softer irregular scatter; off disables it." },
   ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, category: "rendering", default: 1, help: "How strongly the dither pattern is applied. 0 is none, 1 is full strength; above 1 over-emphasizes into pronounced, gritty grain (no upper cap). Only matters when a dither mode is on." },

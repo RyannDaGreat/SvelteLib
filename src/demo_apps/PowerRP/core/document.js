@@ -54,7 +54,7 @@ const DEFAULT_SLIDE_H = 720;
  * sizes it. `active:true` so it frames from slide 0; white background per the
  * user spec. `name` lets the picker/inspector label it.
  *
- * @example defaultCameraState() // {type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff", antialias: true, retina: true, ditherMode: "off", ditherEmphasis: 1}
+ * @example defaultCameraState() // {type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff", antialias: "standard", retina: true, ditherMode: "off", ditherEmphasis: 1}
  * @example defaultCameraState({slideW: 800, slideH: 600}).w // 800
  */
 export function defaultCameraState(meta = {}) {
@@ -665,6 +665,55 @@ export function withLinearGradientAngleMigrated(doc) {
   return { doc: out, migrated };
 }
 
+/**
+ * Pure function. Anti-aliasing BOOLEAN → SELECT migrations the document needs.
+ * THE camera's `antialias` used to be a boolean (true = smooth, false = crisp
+ * edges); it is now a quality/algorithm SELECT (core/properties.ANTIALIAS_MODES:
+ * "off" | "standard"). Every slide-delta item that stores `antialias` as a
+ * BOOLEAN is a candidate: true → "standard" (today's coverage-AA look), false →
+ * "off" (crisp). Only the camera carries this property, so keying on the boolean
+ * TYPE is exact and also catches an `antialias` keyframed on a non-creation slide
+ * (no `type` there). A value already a string (migrated / fresh) is skipped.
+ *
+ * Args:
+ *   doc (object): document
+ *
+ * Returns:
+ *   {id, slideIndex, from, to}[] (empty when nothing needs migrating)
+ *
+ * @example antialiasSelectMigrations({slides: [{delta: {items: {c: {type: "camera", antialias: true}}}}]}) // [{id: "c", slideIndex: 0, from: true, to: "standard"}]
+ * @example antialiasSelectMigrations({slides: [{delta: {items: {c: {type: "camera", antialias: false}}}}]}) // [{id: "c", slideIndex: 0, from: false, to: "off"}]
+ * @example antialiasSelectMigrations({slides: [{delta: {items: {c: {type: "camera", antialias: "off"}}}}]}) // [] (already a select value)
+ */
+export function antialiasSelectMigrations(doc) {
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!item || typeof item !== "object") continue;
+      if (typeof item.antialias === "boolean") out.push({ id, slideIndex, from: item.antialias, to: item.antialias ? "standard" : "off" });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every legacy boolean `antialias` rewritten to its
+ * SELECT id (antialiasSelectMigrations): true → "standard", false → "off". This
+ * preserves each document's intent exactly — a doc that had AA off stays off,
+ * one that had it on becomes today's "standard". REPORTING IS THE CALLER'S JOB.
+ * Idempotent (a string value is left untouched).
+ *
+ * @example withAntialiasSelectMigrated({slides: [{delta: {items: {c: {type: "camera", antialias: false}}}}]}).doc.slides[0].delta.items.c.antialias // "off"
+ * @example withAntialiasSelectMigrated({slides: [{delta: {items: {c: {type: "camera", antialias: "standard"}}}}]}).migrated.length // 0
+ */
+export function withAntialiasSelectMigrated(doc) {
+  const migrated = antialiasSelectMigrations(doc);
+  let out = doc;
+  for (const { id, slideIndex, to } of migrated)
+    out = keyframed(out, slideIndex, ["items", id, "antialias"], to);
+  return { doc: out, migrated };
+}
+
 // ── The load-boundary repair pipeline (ONE home) ─────────────────────────────
 // Both consumers of load-time repair — the editor (app.repaired via loadFile /
 // loadAutosave / loadProject / deleteSlide) and the CLI render hook
@@ -694,6 +743,9 @@ export function withLinearGradientAngleMigrated(doc) {
  *      and BEFORE defaults-fill (same hazard class as rich text below: fill
  *      first and the old `stroke`-as-fill value would already be gone,
  *      replaced by the fill default, before this step could read it).
+ *  2c. antialias boolean→select — the camera's `antialias` boolean became a
+ *      quality SELECT (true→"standard", false→"off"). A VALUE migration; the key
+ *      is present either way so its order vs defaults-fill is not load-bearing.
  *   3. meta.fps stripped        — frame caps are dead (round 11); meta-only, so
  *      its position among the item/slide steps is free — placed here to match
  *      the editor's long-tested sequence.
@@ -740,7 +792,17 @@ export function repairedDocument(doc, registry) {
   for (const m of fancyArrowFilled)
     reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy fancy-arrow "stroke" (fill color) → "fill"; "stroke" now means outline`);
 
-  let out = fillMigratedDoc;
+  // Anti-aliasing BOOLEAN → SELECT: the camera's `antialias` used to be a boolean
+  // (true = smooth, false = crisp) and is now a quality SELECT (ANTIALIAS_MODES).
+  // true → "standard", false → "off", preserving each document's exact intent.
+  // A VALUE migration (like fancy-arrow fill above), so it runs here with the
+  // other value migrations — the key is present either way, so its order vs the
+  // defaults-fill below is not load-bearing; grouped with its peers for clarity.
+  const { doc: aaMigratedDoc, migrated: antialiasMigrated } = withAntialiasSelectMigrated(fillMigratedDoc);
+  for (const m of antialiasMigrated)
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy boolean antialias (${m.from}) → "${m.to}"`);
+
+  let out = aaMigratedDoc;
   if ("fps" in out.meta) {
     const meta = { ...out.meta };
     delete meta.fps;

@@ -391,14 +391,20 @@ export class TextLayout {
    * Paragraph (solid fill + decorations + highlight + emoji + fallback), then the
    * gradient-FILL glyph pass on top of the (transparent-glyph) gradient pieces.
    * With no outline/gradient piece every glyphGroups is empty and this is exactly
-   * the historical single drawParagraph call (byte-identical). */
-  draw(canvas, ox, oy) {
+   * the historical single drawParagraph call (byte-identical).
+   *
+   * `aa` is THE camera's coverage-AA flag (render_settings.cameraAntialias): it
+   * reaches the OUTLINE-stroke + gradient-FILL glyph passes so "off" gives crisp,
+   * jagged glyph edges. The plain Paragraph fill (canvas.drawParagraph) has no
+   * per-draw coverage flag in CanvasKit, so solid un-outlined text keeps its
+   * internal AA regardless — the toggle bites on outlines and gradient text. */
+  draw(canvas, ox, oy, aa = true) {
     const CK = this.CanvasKit;
     for (const b of this.built) {
       const y = oy + b.yTop;
-      for (const g of b.glyphGroups) drawGlyphOutline(CK, canvas, g, y, ox, this.opacity);
+      for (const g of b.glyphGroups) drawGlyphOutline(CK, canvas, g, y, ox, this.opacity, aa);
       canvas.drawParagraph(b.para, ox, y);
-      for (const g of b.glyphGroups) drawGlyphGradientFill(CK, canvas, g, y, ox, this.opacity);
+      for (const g of b.glyphGroups) drawGlyphGradientFill(CK, canvas, g, y, ox, this.opacity, aa);
     }
   }
 
@@ -539,8 +545,9 @@ function firstRect(rects) {
 /** Command (draws one glyph group's OUTLINE stroke, behind the fill). No-op when
  * the group's piece has no outline (outlineWidth <= 0). Stroke width is in LOCAL
  * units (the canvas is already view+world transformed) and the join is Skia's
- * default MITER — matching the SVG export's unset stroke-linejoin. */
-function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity) {
+ * default MITER — matching the SVG export's unset stroke-linejoin. `aa` is the
+ * camera's coverage-AA flag: false ⇒ crisp, jagged glyph edges. */
+function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
   const width = group.style.outlineWidth ?? 0;
   if (!(width > 0)) return;
   const rgba = parseColor(group.style.outlineColor ?? "#000000");
@@ -548,7 +555,7 @@ function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity) {
   paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
   paint.setStyle(CanvasKit.PaintStyle.Stroke);
   paint.setStrokeWidth(width);
-  paint.setAntiAlias(true);
+  paint.setAntiAlias(aa);
   const font = new CanvasKit.Font(group.typeface, group.size);
   canvas.drawGlyphs(group.glyphs, group.positions, ox, y, font, paint);
   font.delete();
@@ -558,8 +565,9 @@ function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity) {
 /** Command (draws one glyph group's GRADIENT fill, on top of the transparent-
  * glyph Paragraph pass). No-op when the piece's fill is solid (a plain color) —
  * that fill is handled by the Paragraph. The gradient shader is built from the
- * group's glyph AABB (objectBoundingBox space) via the shared skShaderForPaint. */
-function drawGlyphGradientFill(CanvasKit, canvas, group, y, ox, opacity) {
+ * group's glyph AABB (objectBoundingBox space) via the shared skShaderForPaint.
+ * `aa` is the camera's coverage-AA flag: false ⇒ crisp, jagged glyph edges. */
+function drawGlyphGradientFill(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
   if (!isGradientPaint(group.style.color)) return;
   const paint = parsePaint(group.style.color); // model gradient (string stops) → rgba stops
   const bounds = glyphGroupBounds(group, ox, y, CanvasKit);
@@ -567,7 +575,7 @@ function drawGlyphGradientFill(CanvasKit, canvas, group, y, ox, opacity) {
   const p = new CanvasKit.Paint();
   p.setShader(shader);
   p.setStyle(CanvasKit.PaintStyle.Fill);
-  p.setAntiAlias(true);
+  p.setAntiAlias(aa);
   const font = new CanvasKit.Font(group.typeface, group.size);
   canvas.drawGlyphs(group.glyphs, group.positions, ox, y, font, p);
   font.delete();

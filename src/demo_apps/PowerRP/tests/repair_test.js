@@ -16,6 +16,7 @@ import {
   dormantShadows, withDormantShadowsNeutralized,
   fancyArrowFillMigrations, withFancyArrowFillMigrated,
   linearGradientAngleMigrations, withLinearGradientAngleMigrated,
+  antialiasSelectMigrations, withAntialiasSelectMigrated,
   repairedDocument, defaultCameraState, withExtraCamerasDropped,
 } from "../core/document.js";
 import { angleToLinearEndpoints, linearEndpointsToAngle } from "../core/properties.js";
@@ -626,6 +627,69 @@ test("angle ↔ endpoints round-trip: legacy presets recover their exact angle; 
   // ORIGINAL from/to (test above), so every migrated document renders identically.
   assert.deepEqual(angleToLinearEndpoints(45), { from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }, "↘ 45° → exact corner-to-corner");
   assert.deepEqual(angleToLinearEndpoints(315), { from: { x: 0, y: 1 }, to: { x: 1, y: 0 } }, "↗ 315° → exact corner-to-corner");
+});
+
+// ── Round 19: anti-aliasing BOOLEAN → SELECT migration ───────────────────────
+// The camera's `antialias` was a boolean (true = smooth, false = crisp); it is
+// now a quality/algorithm SELECT (ANTIALIAS_MODES: "off"|"standard"). Repair
+// rewrites the legacy boolean to its select id, preserving each doc's exact
+// intent: true → "standard" (today's coverage-AA look), false → "off" (crisp).
+
+test("antialiasSelectMigrations: a boolean antialias is selected (true→standard, false→off); a string is not", () => {
+  const onDoc = { slides: [{ delta: { items: { c: { type: "camera", antialias: true } } } }] };
+  assert.deepEqual(antialiasSelectMigrations(onDoc), [{ id: "c", slideIndex: 0, from: true, to: "standard" }]);
+  const offDoc = { slides: [{ delta: { items: { c: { type: "camera", antialias: false } } } }] };
+  assert.deepEqual(antialiasSelectMigrations(offDoc), [{ id: "c", slideIndex: 0, from: false, to: "off" }]);
+  const migratedDoc = { slides: [{ delta: { items: { c: { type: "camera", antialias: "standard" } } } }] };
+  assert.deepEqual(antialiasSelectMigrations(migratedDoc), []); // already a select value — idempotent
+});
+
+test("withAntialiasSelectMigrated: boolean → select value, string left untouched, idempotent", () => {
+  const doc = { slides: [{ delta: { items: {
+    c: { type: "camera", antialias: false },        // → "off"
+    d: { type: "camera", antialias: true },         // → "standard"
+    e: { type: "camera", antialias: "standard" },   // untouched (already migrated)
+  } } }] };
+  const { doc: fixed, migrated } = withAntialiasSelectMigrated(doc);
+  assert.equal(fixed.slides[0].delta.items.c.antialias, "off");
+  assert.equal(fixed.slides[0].delta.items.d.antialias, "standard");
+  assert.equal(fixed.slides[0].delta.items.e.antialias, "standard");
+  assert.equal(migrated.length, 2);
+  // Idempotent: re-running finds nothing left to migrate.
+  assert.equal(withAntialiasSelectMigrated(fixed).migrated.length, 0);
+});
+
+test("withAntialiasSelectMigrated: a boolean keyframed on a LATER slide (animated AA) migrates there too", () => {
+  let doc = newDocument();
+  const cam = camerasIn(doc)[0];
+  const [d2] = withNewSlide(doc, 0);
+  const d3 = keyframed(d2, 1, ["items", cam, "antialias"], false); // AA toggled off on slide 2 (legacy boolean)
+  const { doc: fixed, migrated } = withAntialiasSelectMigrated(d3);
+  assert.equal(fixed.slides[1].delta.items[cam].antialias, "off");
+  assert.ok(migrated.some((m) => m.slideIndex === 1 && m.to === "off"));
+});
+
+test("repairedDocument: a legacy boolean antialias migrates to a select id with a LOUD report, and still renders", () => {
+  // A pre-select document: force the camera's antialias back to the old boolean.
+  let doc = newDocument();
+  const cam = camerasIn(doc)[0];
+  doc = keyframed(doc, 0, ["items", cam, "antialias"], false); // legacy "crisp" boolean
+  const { doc: fixed, reports } = repairedDocument(doc, registry);
+  assert.equal(fixed.slides[0].delta.items[cam].antialias, "off"); // false → "off"
+  assert.ok(
+    reports.some((r) => r.includes(cam) && r.includes("boolean antialias") && r.includes('"off"')),
+    `expected a loud antialias migration report, got: ${JSON.stringify(reports)}`,
+  );
+  // The repaired doc still renders through the strict IR (select value is valid).
+  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
+  sceneIR(deriveRenderTree(state, registry));
+});
+
+test("repairedDocument: a fresh document (antialias already the select default) emits NO antialias report", () => {
+  const { doc: fixed, reports } = repairedDocument(newDocument(), registry);
+  const cam = camerasIn(fixed)[0];
+  assert.equal(fixed.slides[0].delta.items[cam].antialias, "standard"); // the new select default
+  assert.ok(!reports.some((r) => r.includes("boolean antialias")));
 });
 
 console.log(`\n${passed} repair tests passed`);

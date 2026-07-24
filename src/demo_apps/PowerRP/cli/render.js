@@ -43,6 +43,7 @@ import { registerAll } from "../plugins/index.js";
 import { fitRectView } from "../core/view.js";
 import { cameraFrameIR } from "../web/cameraFrame.js";
 import { renderToPng } from "../render_gpu/skia/node_render.js";
+import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 
 const DEFAULTS = { slide: 0, alpha: 1, width: 1280, height: 720 };
 const DPR = 1; // one PNG pixel per device pixel — matches the editor's PNG export.
@@ -97,7 +98,11 @@ export async function renderDocToPng(docJson, { slide, alpha, width, height }) {
   const rect = cameraRect(state, doc.meta);
   const view = fitRectView(rect, width, height, DPR);
   const commands = cameraFrameIR(state, doc.meta, registry);
-  return renderToPng(commands, view, { width, height, background: rect.background, media: {} });
+  // Honor THE camera's Anti-aliasing setting in the headless path too (the same
+  // way gpuService reads it for thumbnails/PNG export), so the CLI never renders
+  // with a different edge treatment than the editor: "off" ⇒ crisp jagged edges.
+  const antialias = antialiasCoverage(cameraAntialias(state));
+  return renderToPng(commands, view, { width, height, background: rect.background, media: {}, antialias });
 }
 
 /** Command (reads doc file, writes PNG, prints a summary). The CLI entry. */
