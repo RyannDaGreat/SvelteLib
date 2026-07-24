@@ -27,6 +27,7 @@
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
  *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, originX, originY, magnification, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box" (rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth)
+ *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
  *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, shadowOnly, margin}  // Round 12D effects substrate
  *
@@ -614,6 +615,86 @@ export function magnifyBackdrop({
 }
 
 /**
+ * Pure function. Liquid Glass backdrop node — a rounded-rect region of macOS
+ * "Liquid Glass" material (design.md). A backdrop sampler in the SAME family as
+ * blurBackdrop/magnifyBackdrop: it reads the composite-so-far (everything below
+ * in z-order), builds a BLURRED copy, and draws the region through the REAL SkSL
+ * glass shader (render_gpu/skia/glass_shader.js) — edge-weighted refraction +
+ * luminance-adaptive tint + top-light specular + squircle corners. The op is a
+ * rounded BOX only (a capsule when cornerRadius >= min(halfW, halfH)); it reuses
+ * magnifyBackdrop's box geometry (cx, cy, halfW, halfH, cornerRadius) and stroke
+ * bundle (stroke/strokeWidth = the optional bright hairline border).
+ *
+ * ALL LENGTHS ARE WORLD UNITS (halfW/halfH/cornerRadius/edgeFalloff/
+ * refractionStrength/blurRadius) — the backend converts to device px/sigma at
+ * render time by world.scale·zoom·dpr, exactly like blurBackdrop's radius.
+ * `tint` is a PAINT (solid or gradient); the shader consumes its representative
+ * solid rgba as a color cast + strength (alpha). `lightAngle` is radians (screen
+ * space; -PI/2 = straight above). `materialize` (0..1) is the appear ramp.
+ *
+ * The MATERIAL-CHARACTER knobs (squircle, sheen, specularPower, contactShadow,
+ * caustic, edgeLight, tintAdaptivity, chromatic) are the shader-uniform tuning
+ * values, and `backdropScale` / `shadowStrength` are CPU-side render controls —
+ * the demo widget surfaces them all as self.* custom props so the material is
+ * user-tweakable. `backdropScale` is the RESOLUTION FACTOR the below-content is
+ * re-rendered at for sampling: 1 = device zoom resolution, 2 = supersample
+ * (crisper distortion, slower), 0.5 = half res (faster, softer). Clamped [0.25, 2].
+ *
+ * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, cornerRadius: 30}).op // "glassBackdrop"
+ * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40}).materialize // 1 (settled by default)
+ * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, tint: "rgba(255,255,255,0.14)"}).tint // [1, 1, 1, 0.14]
+ * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, cornerRadius: -5}).cornerRadius // 0 (negative radii clamped)
+ * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, backdropScale: 5}).backdropScale // 2 (clamped to max)
+ */
+export function glassBackdrop({
+  cx, cy, halfW, halfH, cornerRadius = 0,
+  blurRadius = 8, refractionStrength = 14, edgeFalloff = 22,
+  lightAngle = -Math.PI / 2, lightIntensity = 0.8,
+  tint = null, saturation = 0.92, materialize = 1,
+  squircle = 4, sheen = 0.1, specularPower = 8, contactShadow = 0.26,
+  caustic = 0.12, edgeLight = 0.14, tintAdaptivity = 1, chromatic = 0.08,
+  backdropScale = 1, shadowStrength = 0.3,
+  stroke = null, strokeWidth = 0, opacity = 1,
+}) {
+  requireFinite("glassBackdrop", {
+    cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength,
+    edgeFalloff, lightAngle, lightIntensity, saturation, materialize,
+    squircle, sheen, specularPower, contactShadow, caustic, edgeLight,
+    tintAdaptivity, chromatic, backdropScale, shadowStrength, strokeWidth, opacity,
+  });
+  return {
+    op: "glassBackdrop", cx, cy, halfW, halfH,
+    cornerRadius: Math.max(0, cornerRadius),
+    blurRadius: Math.max(0, blurRadius),
+    refractionStrength: Math.max(0, refractionStrength),
+    edgeFalloff: Math.max(0, edgeFalloff),
+    lightAngle, lightIntensity,
+    // tint is a PAINT (paint:true prop) but the shader is single-color: keep the
+    // full parsed paint here (parsePaint), and the backend reduces it to a solid
+    // rgba (parseColor) — the same single-color-consumer path a magnifier border
+    // or a shadow uses. Null tint ⇒ no skin overlay.
+    tint: tint === null ? null : parsePaint(tint),
+    saturation: Math.max(0, Math.min(1, saturation)),
+    materialize: Math.max(0, Math.min(1, materialize)),
+    // material-character knobs (shader uniforms) — clamped to sane domains
+    squircle: Math.max(2, squircle),          // >=2: never concave (2 == circular arc)
+    sheen: Math.max(0, sheen),
+    specularPower: Math.max(1, specularPower),
+    contactShadow: Math.max(0, contactShadow),
+    caustic: Math.max(0, caustic),
+    edgeLight: Math.max(0, edgeLight),
+    tintAdaptivity: Math.max(0, Math.min(1, tintAdaptivity)),
+    chromatic: Math.max(0, chromatic),
+    // CPU-side render controls
+    backdropScale: Math.max(0.25, Math.min(2, backdropScale)),
+    shadowStrength: Math.max(0, shadowStrength),
+    stroke: stroke === null ? null : parseColor(stroke),
+    strokeWidth: Math.max(0, strokeWidth),
+    opacity,
+  };
+}
+
+/**
  * Pure function. Crop-box effect node (manifest ARCHITECTURE PLAN #3): fills a
  * rounded-rect region, then clips+re-emits `content` (the target item's OWN
  * local-space commands, already wrapped in a pushTransform/popTransform pair
@@ -793,4 +874,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "cropSubtree", "effectSubtree"];

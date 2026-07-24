@@ -43,6 +43,7 @@
 import { flattenIR, parseColor, isGradientPaint, MAX_LENS_DEPTH } from "../ir.js";
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
+import { GLASS_SKSL, packGlassUniforms } from "./glass_shader.js";
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
 
@@ -97,6 +98,8 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // just the content below it into a small lens-sized surface, so a scene whose
   // only samplers are supersample lenses takes the fast direct-to-canvas path — no
   // full-scene offscreen, no CPU→GPU blit.
+  // glassBackdrop RE-RENDERS the below-content itself (at its chosen resolution),
+  // like a supersample magnifier, so it does NOT force the owned-offscreen path.
   const needsBackdrop = flat.some(({ cmd }) => cmd.op === "blurBackdrop" || (cmd.op === "magnifyBackdrop" && !cmd.supersample));
   if (!needsBackdrop) {
     // Fast path: no backdrop sampler ⇒ draw straight onto the caller's canvas.
@@ -146,6 +149,10 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
       case "magnifyBackdrop":
         // "Below" (z-order) = everything emitted before this op at this level.
         handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
+        break;
+      case "glassBackdrop":
+        // "Below" (z-order) = everything emitted before this op at this level.
+        handleGlassBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
         break;
       case "cropSubtree":
         handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth);
@@ -475,6 +482,213 @@ function drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity) {
   } else {
     canvas.drawOval(CanvasKit.LTRBRect(cmd.cx - cmd.r, cmd.cy - cmd.r, cmd.cx + cmd.r, cmd.cy + cmd.r), p);
   }
+  p.delete();
+  canvas.restore();
+}
+
+// ── Liquid Glass (the FIRST live SkSL RuntimeEffect) ──────────────────────────
+// macOS "Liquid Glass" material: sample the composite-so-far, build a blurred
+// copy, and draw the rounded-rect region through a RuntimeEffect whose children
+// are {blurredBackdrop, sharpBackdrop}. The SkSL (glass_shader.js) does the edge-
+// weighted refraction + luminance-adaptive tint + top-light specular + squircle
+// corners. Compiled + cached ONCE per CanvasKit instance.
+
+let _glassEffect = null;   // cached compiled RuntimeEffect
+let _glassEffectCK = null; // the CanvasKit instance it was compiled against
+
+// Drop-shadow tuning (device px, expressed relative to the panel so it scales
+// with size). Light is from above ⇒ the shadow sits below the panel. Its DARKNESS
+// is the per-widget cmd.shadowStrength; these fix its softness/offset shape.
+const GLASS_SHADOW_SIGMA_FRAC = 0.22; // blur σ as a fraction of the panel half-height (soft, diffuse)
+const GLASS_SHADOW_DY_FRAC = 0.12;    // downward offset as a fraction of half-height
+const GLASS_SHADOW_APPEAR_END = 0.8;  // matches the SkSL APPEAR_END: the shadow fades in with the skin
+const GLASS_CLIP_SLOP_PX = 2;         // AABB clip slack (device px) covering the coverage antialias band
+
+/**
+ * Query→build (compiles once, memoized per CanvasKit instance). Returns the
+ * compiled glass RuntimeEffect. Throws LOUDLY with the SkSL compiler error on
+ * failure (no silent fallback) — a shader that will not compile is a hard bug.
+ */
+function glassEffect(CanvasKit) {
+  if (_glassEffect && _glassEffectCK === CanvasKit) return _glassEffect;
+  let err = null;
+  const eff = CanvasKit.RuntimeEffect.Make(GLASS_SKSL, (e) => { err = e; });
+  if (!eff) throw new Error(`paintIR(skia): Liquid Glass SkSL failed to compile:\n${err}`);
+  _glassEffect = eff;
+  _glassEffectCK = CanvasKit;
+  return eff;
+}
+
+/**
+ * Command (draws on target.canvas). glassBackdrop: RE-RENDER the below-content
+ * (z-order sub-list) at the chosen RESOLUTION FACTOR (cmd.backdropScale) into a
+ * scratch surface = the SHARP backdrop; build a Gaussian-blurred copy = the frost;
+ * draw a soft drop shadow under; then draw the rounded-rect region with the glass
+ * SkSL, whose children are {blurred, sharp} device-space image shaders. Drawn at
+ * the DEVICE ROOT (no CTM) — the shader's SDF + the child image shaders all work
+ * in device px; world→device geometry (center, half-size, rotation) + world→device
+ * length scaling (value·world.scale·zoom·dpr, the blurBackdrop convention) are
+ * computed here and packed into the uniforms.
+ *
+ * The below-content re-render is depth-capped (MAX_SUPERSAMPLE_DEPTH, the shared
+ * lens bound): glass NESTED inside a re-render falls back to sampling the surface
+ * it is drawing into (guaranteed non-null at depth ≥ 1). This mirrors the
+ * supersample magnifier exactly.
+ */
+function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx, depth) {
+  const canvas = target.canvas;
+  const opacity = cmd.opacity ?? 1;
+
+  // Device-space geometry (a similarity transform: center + rotated box + uniform
+  // scale). ds = zoom·dpr (position); sd = world.scale·ds (world length → device px).
+  const ds = view.zoom * view.dpr;
+  const sd = world.scale * ds;
+  const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+  const cxDev = centerWorld.x * ds + view.panX * view.dpr;
+  const cyDev = centerWorld.y * ds + view.panY * view.dpr;
+  const halfWDev = cmd.halfW * sd, halfHDev = cmd.halfH * sd;
+  const cornerDev = cmd.cornerRadius * sd;
+  const edgeFalloffDev = cmd.edgeFalloff * sd;
+  const refractionDev = cmd.refractionStrength * sd;
+  const blurSigma = cmd.blurRadius * sd;
+  const angle = world.rotation;
+
+  // (1)+(2) the backdrop images (sharp + blurred) + the localMatrix that maps a
+  // DEVICE coordinate to the (possibly scaled) backdrop image's pixel space.
+  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma);
+
+  // (3) soft drop shadow UNDER the panel (drawn AFTER the backdrop images so it
+  // never bleeds into the refracted backdrop the shader samples).
+  drawGlassShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, angle, cmd.materialize, cmd.shadowStrength);
+
+  // (4) the glass shader — children {blurred, sharp}.
+  const effect = glassEffect(CanvasKit);
+  const blurChild = bd.blurred.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
+  const sharpChild = bd.sharp.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
+  const tint = cmd.tint === null ? [0, 0, 0, 0] : parseColor(cmd.tint); // paint → representative solid rgba; null ⇒ no skin
+  const uniforms = packGlassUniforms({
+    cx: cxDev, cy: cyDev, halfW: halfWDev, halfH: halfHDev,
+    cornerRadius: cornerDev, edgeFalloff: edgeFalloffDev, refractionStrength: refractionDev,
+    angle, lightAngle: cmd.lightAngle, lightIntensity: cmd.lightIntensity,
+    saturation: cmd.saturation, tint, materialize: cmd.materialize,
+    squircle: cmd.squircle, sheen: cmd.sheen, specPower: cmd.specularPower,
+    contactShadow: cmd.contactShadow, caustic: cmd.caustic, edgeLight: cmd.edgeLight,
+    adaptivity: cmd.tintAdaptivity, chromatic: cmd.chromatic,
+  });
+  const glass = effect.makeShaderWithChildren(uniforms, [blurChild, sharpChild]);
+  if (!glass) throw new Error("paintIR(skia): glass makeShaderWithChildren returned null");
+  const p = new CanvasKit.Paint();
+  p.setShader(glass);
+  p.setAlphaf(opacity);
+  // Bound the fill to the panel's device AABB. The shader returns premultiplied
+  // zero outside the SDF, so the rounded/squircle edge + antialias come from the
+  // shader itself; the circumradius (hypot of the half-extents) covers any
+  // rotation, plus a small slop for the coverage antialias band.
+  const reach = Math.hypot(halfWDev, halfHDev) + GLASS_CLIP_SLOP_PX;
+  canvas.save();
+  canvas.clipRect(CanvasKit.LTRBRect(cxDev - reach, cyDev - reach, cxDev + reach, cyDev + reach), CanvasKit.ClipOp.Intersect, false);
+  canvas.drawPaint(p);
+  canvas.restore();
+
+  p.delete(); glass.delete(); blurChild.delete(); sharpChild.delete();
+  bd.blurred.delete(); bd.sharp.delete();
+
+  // (5) optional bright hairline border on top (local space, rotation-safe).
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity);
+}
+
+/**
+ * Query→build. The glass backdrop images {sharp, blurred, sampleMatrix} at the
+ * requested resolution factor. depth < cap ⇒ RE-RENDER the below-content at
+ * `scale × device` resolution (true supersample/downsample — the distortion
+ * samples a backdrop rendered at that resolution). depth ≥ cap ⇒ fall back to
+ * sampling the surface being drawn into (device res, scale ignored; non-null at
+ * depth ≥ 1, matching the magnifier's recursion guard). `sampleMatrix` maps a
+ * device coordinate to the image's pixel space (scaled(1/scale) for the re-render;
+ * identity for the fallback). Caller deletes sharp + blurred.
+ */
+function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, scale, blurSigma) {
+  if (depth < MAX_SUPERSAMPLE_DEPTH) {
+    const sw = Math.max(1, Math.round(ctx.deviceW * scale));
+    const sh = Math.max(1, Math.round(ctx.deviceH * scale));
+    const sub = ctx.makeSurface(sw, sh);
+    if (!sub) throw new Error("paintIR(skia): makeSurface for glass backdrop re-render returned null");
+    sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
+    // dpr·scale maps the same world region onto the scale-sized surface (every
+    // device point d → scale·d), so the re-render IS the device backdrop at `scale`.
+    const scaledView = { ...view, dpr: view.dpr * scale };
+    paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, scaledView, ctx, depth + 1);
+    sub.flush();
+    const sharp = sub.makeImageSnapshot();
+    sub.dispose();
+    const blurred = blurredImageOf(CanvasKit, ctx, sharp, blurSigma * scale, sw, sh);
+    return { sharp, blurred, sampleMatrix: CanvasKit.Matrix.scaled(1 / scale, 1 / scale) };
+  }
+  // Fallback (nested beyond the re-render cap): sample the surface we draw into.
+  if (!target.surface) throw new Error("paintIR(skia): glassBackdrop fallback requires an owned offscreen surface (internal invariant)");
+  target.surface.flush();
+  const sharp = target.surface.makeImageSnapshot();
+  const blurred = blurredImageOf(CanvasKit, ctx, sharp, blurSigma, ctx.deviceW, ctx.deviceH);
+  return { sharp, blurred, sampleMatrix: null }; // null ⇒ identity local space (device px)
+}
+
+/** Query→build. A Gaussian-blurred `w`×`h` copy of `img` (σ px, in the image's
+ * OWN pixel space) — the SAME ImageFilter.MakeBlur the real blurBackdrop uses.
+ * σ=0 ⇒ a sharp copy. Caller deletes the returned Image. */
+function blurredImageOf(CanvasKit, ctx, img, sigma, w, h) {
+  const surf = ctx.makeSurface(w, h);
+  if (!surf) throw new Error("paintIR(skia): makeSurface for glass blur returned null");
+  const c = surf.getCanvas();
+  c.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  const p = new CanvasKit.Paint();
+  let filt = null;
+  if (sigma > 0) {
+    filt = CanvasKit.ImageFilter.MakeBlur(sigma, sigma, CanvasKit.TileMode.Clamp, null);
+    p.setImageFilter(filt);
+  }
+  c.drawImage(img, 0, 0, p);
+  surf.flush();
+  const out = surf.makeImageSnapshot();
+  p.delete();
+  if (filt) filt.delete();
+  surf.dispose();
+  return out;
+}
+
+/**
+ * Command (draws on `canvas` at the device root). A soft, diffuse drop shadow
+ * under the glass panel: a blurred dark rounded-rect, offset DOWN in screen space
+ * (light from above), darkness = `strength`, fading in with `materialize`.
+ * Rotation-safe (the box is rotated about the offset center; the screen-space
+ * downward offset is applied before the rotation so the shadow stays below).
+ */
+function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle, materialize, strength) {
+  const appear = Math.min(1, Math.max(0, materialize / GLASS_SHADOW_APPEAR_END));
+  if (appear <= 0 || strength <= 0 || halfW <= 0 || halfH <= 0) return;
+  const sigma = halfH * GLASS_SHADOW_SIGMA_FRAC;
+  const dy = halfH * GLASS_SHADOW_DY_FRAC;
+  const p = new CanvasKit.Paint();
+  p.setColor(CanvasKit.Color4f(0, 0, 0, strength * appear));
+  p.setAntiAlias(true);
+  if (sigma > 0) p.setMaskFilter(CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, sigma, false));
+  canvas.save();
+  canvas.translate(cx, cy + dy);
+  canvas.rotate(angle * RAD2DEG, 0, 0);
+  const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(-halfW, -halfH, halfW, halfH), corner, corner);
+  canvas.drawRRect(rr, p);
+  canvas.restore();
+  p.delete();
+}
+
+/** Command (draws the optional bright hairline border in local space — the glass
+ * edge catch-light). One stroked rounded rect; skipped when strokeWidth is 0. */
+function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity) {
+  if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
+  canvas.save();
+  applyView(canvas, view, world);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity);
+  const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
+  canvas.drawRRect(rr, p);
   p.delete();
   canvas.restore();
 }
