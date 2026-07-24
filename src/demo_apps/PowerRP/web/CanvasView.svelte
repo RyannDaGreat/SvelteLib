@@ -25,7 +25,7 @@
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
-  import { onVideoFrame } from "../render_gpu/gpu/video_registry.js";
+  import { onVideoFrame, setActiveVideoRefs } from "../render_gpu/gpu/video_registry.js";
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import * as T from "../core/transform.js";
@@ -217,8 +217,16 @@
   let imageEpoch = $state(0);
   $effect(() => onImageLoad(() => (imageEpoch += 1)));
   // Playing videos repaint per decoded frame (requestVideoFrameCallback via
-  // the registry) — same epoch, same reason (reactive paint, async frames).
-  $effect(() => onVideoFrame(() => (imageEpoch += 1)));
+  // the registry) — same epoch, same reason (reactive paint, async frames). BUT
+  // ONLY for a video the CURRENT frame actually draws: the video registry is
+  // shared, so thumbnails (SlideNav) spawn a playing <video> for EVERY video on
+  // EVERY slide, and each would otherwise pump this epoch and repaint the editor
+  // at the videos' combined framerate even when the current slide has none (the
+  // reported 120→~16-30 fps drop). `currentMediaRefs` (rebuilt each paint from
+  // the on-screen scene's video/scrubber sources) gates the wake to on-screen
+  // media only; off-slide/off-screen frames are ignored.
+  let currentMediaRefs = new Set(); // non-reactive: the last paint's on-screen video sources
+  $effect(() => onVideoFrame((src) => { if (currentMediaRefs.has(src)) imageEpoch += 1; }));
   // Active Blender-style modal transform bookkeeping (non-reactive, like drag).
   // {kind: "grab"|"scale", startWorld, members, center, axis, buffer}. Started
   // when app.modalXform is set (G/S shortcut) and captured by the effect below;
@@ -296,6 +304,23 @@
     }).then((thumb) => (minimapThumb = thumb.toDataURL("image/png")));
   });
 
+  /**
+   * Pure function. The distinct non-empty video SOURCE strings among `nodes`
+   * whose widget `type` is one of `types` (video player / scrubber). Both plugins
+   * key their `<video>` in the registry by `state.src`, so this is exactly the set
+   * of sources the registry tracks for those nodes.
+   *
+   * @param {Array} nodes derived render nodes ({type, state, ...})
+   * @param {...string} types widget types to include ("video", "video_scrub")
+   * @returns {Set<string>} distinct source strings
+   * @example videoSourcesOf([{type: "video", state: {src: "a.mp4"}}, {type: "rect", state: {}}], "video") // Set {"a.mp4"}
+   */
+  function videoSourcesOf(nodes, ...types) {
+    const set = new Set();
+    for (const n of nodes) if (types.includes(n.type) && typeof n.state.src === "string" && n.state.src.length > 0) set.add(n.state.src);
+    return set;
+  }
+
   function paint() {
     if (!canvasEl || !containerEl || !gpu) return;
     const dpr = app.dpr(); // retina browser setting (manifest)
@@ -334,8 +359,18 @@
     // never re-renders per keystroke — the async render fires ONCE on commit
     // when the item is un-suppressed during the `closing` crossfade).
     const codeSuppressId = app.codeEditing && !app.codeEditing.closing ? app.codeEditing.itemId : null;
-    const nodes = deriveRenderTree(state, app.registry)
+    const allNodes = deriveRenderTree(state, app.registry);
+    const nodes = allNodes
       .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== latexSuppressId && n.itemId !== codeSuppressId);
+    // VIDEO PLAYBACK GATE (off-slide storm fix): only PLAYER videos ON THIS SLIDE
+    // may play/decode/pump; a clip on another slide (kept alive by a thumbnail
+    // render) is paused. Pre-cull set (slide membership, not viewport) so panning
+    // a video off-screen doesn't restart it.
+    setActiveVideoRefs(videoSourcesOf(allNodes, "video"));
+    // WAKE SET (repaint gate above): the video/scrubber sources the CURRENT frame
+    // actually draws (post-cull) — an off-screen or off-slide frame must not wake
+    // the editor. Rebuilt every paint so a newly-shown clip is picked up at once.
+    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub");
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background

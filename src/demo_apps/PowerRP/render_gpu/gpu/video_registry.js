@@ -10,10 +10,11 @@
  * compositor.
  *
  * Why an ELEMENT, not a decoded bitmap (the one shape difference from the image
- * registry): a video is MOVING. The compositor imports the element's CURRENT
- * frame each render via importExternalTexture (zero-copy) — so the registry
- * hands back the live `<video>` element itself, and the browser's playback
- * clock advances the frame. The element owns playback (autoplay/loop/muted);
+ * registry): a video is MOVING. Each render grabs the element's CURRENT frame
+ * straight to a GPU texture (surface.makeImageFromTextureSource / updateTexture
+ * FromSource — no CPU readback; see the SHARED VIDEO-FRAME GRAB below) — so the
+ * registry hands back the live `<video>` element itself, and the browser's
+ * playback clock advances the frame. The element owns playback (autoplay/loop/muted);
  * document/tween state never does (manifest: the video PLAYER's playing does
  * NOT change document state).
  *
@@ -82,47 +83,204 @@ export function getVideo(src) {
   return entry.el.readyState >= HAVE_CURRENT_DATA ? entry.el : null;
 }
 
-/** A single reused offscreen 2D canvas for grabbing video frames. Reused (not
- * reallocated per paint) — the draw+read below is synchronous, so back-to-back
- * getSkiaVideoFrame calls can share it without clobbering (JS is single-threaded
- * and MakeImageFromCanvasImageSource reads the pixels before returning). */
+// ── THE SHARED VIDEO-FRAME GRAB (player + scrubber, one path) ─────────────────
+// A <video> element's current frame becomes a CanvasKit Image through an
+// "uploader". TWO uploaders, ONE grab helper (videoElementToSkiaImage):
+//   • GPU (browser on-screen / presenter surface): uploads the element STRAIGHT
+//     to a GL texture via surface.makeImageFromTextureSource — NO getImageData /
+//     no CPU readback. This is THE perf fix: the old path did drawImage(el → 2D
+//     canvas) → MakeImageFromCanvasImageSource, and that helper does a full-res
+//     getImageData (GPU→CPU) then re-uploads to a texture — a GPU→CPU→GPU
+//     roundtrip PER video PER paint (~8 MB each way at 1080p) that dropped the
+//     editor from 120 fps to ~16-30. updateTextureFromSource refreshes the
+//     texture in place (zero per-frame allocation on the reuse path).
+//   • CPU (offscreen pixel service, headless/CLI): no GL surface, so it KEEPS the
+//     drawImage → MakeImageFromCanvasImageSource readback. This is the GUARDED
+//     fallback — reached only when there is genuinely no surface (a software
+//     raster surface can't upload a texture), so a browser on-screen frame can
+//     never silently take the slow route.
+// Both the player (getSkiaVideoFrame, live per-paint) and the scrubber
+// (requestScrubFrame, after its seek settles) grab through videoElementToSkiaImage
+// — ONE source of truth for "video frame → CanvasKit Image".
+
+/** A single reused offscreen 2D canvas for the CPU-uploader readback. Shared by
+ * the player-CPU and scrubber-CPU grabs — the draw+read is synchronous
+ * (MakeImageFromCanvasImageSource reads the pixels before returning), so
+ * back-to-back grabs can share it without clobbering. */
 let _frameCanvas = null;
 
 /**
- * Query→build (near-pure: idempotent element create + a per-call frame grab).
- * The `<video>` element's CURRENT frame as a FRESH CanvasKit Image for the Skia
- * paint path, or null when there is no drawable frame yet (draw NOTHING — the
- * async contract). The video twin of image_registry.getSkiaImage, with the one
- * shape difference the registries already carry: a video MOVES, so this grabs a
- * NEW image every paint and NEVER caches — the CALLER MUST delete() the returned
- * Image after the frame is painted (see render_gpu/skia/browser_media.js
- * `release`). ensureVideo is kicked with the default playback flags
- * (autoplay/loop/muted — the video PLAYER's shipped defaults); onVideoFrame
+ * Query→build (per-scope stable). A GPU uploader bound to a CanvasKit surface.
+ * `getSurface` is a THUNK (not the surface itself) so the uploader survives the
+ * on-screen surface's recreation on resize — the GL context / GrContext (which
+ * OWNS the textures) is stable across that; only the surface OBJECT is remade.
+ * `scopeId` tags the Images this uploader creates: a texture-backed Image is
+ * usable ONLY on its own GL context (WebGL textures aren't cross-context), so the
+ * player + scrub caches key by scope to never hand one context's texture to
+ * another.
+ *
+ * @param CanvasKit the shared browser CanvasKit module (also read by the media
+ *   builder for still images — uploader.CanvasKit)
+ * @param {() => (object|null)} getSurface reads the live on-screen CanvasKit Surface
+ * @param {string} scopeId unique per GL context (per SkiaSurface instance)
+ * @returns {{isGpu: true, scopeId: string, CanvasKit: object, grab: Function, refresh: Function}}
+ * @example // makeGpuUploader(CK, () => surface, "gl:0").grab(videoEl) // texture-backed Image, no readback
+ */
+export function makeGpuUploader(CanvasKit, getSurface, scopeId) {
+  const need = () => {
+    const s = getSurface();
+    if (!s) throw new Error(`makeGpuUploader: no surface for scope "${scopeId}" (the GL surface is null — a collapsed pane must not reach the grab path)`);
+    return s;
+  };
+  return {
+    isGpu: true,
+    scopeId,
+    CanvasKit,
+    /** fresh texture-backed Image of el's CURRENT frame (throws on a null upload). */
+    grab(el) {
+      // makeImageFromTextureSource sizes from el.videoWidth/videoHeight by default
+      // (CanvasKit prefers videoWidth/videoHeight for a <video>), so NO ImageInfo
+      // and NO offscreen canvas are needed — the element uploads directly.
+      const img = need().makeImageFromTextureSource(el);
+      if (!img) throw new Error(`makeGpuUploader.grab: makeImageFromTextureSource returned null for a ${el.videoWidth}×${el.videoHeight} frame (scope "${scopeId}")`);
+      return img;
+    },
+    /** refresh img's existing texture in place from el (reuse; no readback, no alloc). */
+    refresh(img, el) {
+      need().updateTextureFromSource(img, el);
+    },
+  };
+}
+
+/**
+ * Query→build. A CPU uploader — the guarded readback fallback for surfaces with
+ * NO GL texture path (the offscreen pixel service's software surface; headless
+ * node). Produces context-PORTABLE Images (MakeImageFromCanvasImageSource reads
+ * pixels to CPU), so all CPU consumers share ONE scope ("cpu").
+ *
+ * @param CanvasKit the shared CanvasKit module
+ * @returns {{isGpu: false, scopeId: "cpu", CanvasKit: object, grab: Function}}
+ * @example // makeCpuUploader(CK).grab(videoEl) // a portable CanvasKit Image (drawImage→MakeImageFromCanvasImageSource)
+ */
+export function makeCpuUploader(CanvasKit) {
+  return {
+    isGpu: false,
+    scopeId: "cpu",
+    CanvasKit,
+    grab(el) {
+      const w = el.videoWidth, h = el.videoHeight;
+      if (!_frameCanvas) _frameCanvas = document.createElement("canvas");
+      _frameCanvas.width = w; _frameCanvas.height = h;
+      _frameCanvas.getContext("2d").drawImage(el, 0, 0, w, h); // the current frame at native resolution
+      const img = CanvasKit.MakeImageFromCanvasImageSource(_frameCanvas);
+      if (!img) throw new Error(`makeCpuUploader.grab: MakeImageFromCanvasImageSource returned null for a ${w}×${h} frame`);
+      return img;
+    },
+  };
+}
+
+/**
+ * Query→build. THE single video-frame grab: `videoEl`'s CURRENT frame → a
+ * CanvasKit Image via `uploader` (GPU texture upload with no readback, or the
+ * guarded CPU readback). Throws (never a silent null) when the element has no
+ * frame dimensions or the upload fails — a hidden failure here would mask the
+ * perf regression this replaces. BOTH the player and the scrubber grab through
+ * this one function (single source of truth).
+ *
+ * @param uploader a GPU or CPU uploader (makeGpuUploader / makeCpuUploader)
+ * @param videoEl an HTMLVideoElement with a decoded current frame
+ * @returns a CanvasKit Image (texture-backed on GPU, CPU-portable on the fallback)
+ * @example // videoElementToSkiaImage(gpuUploader, videoEl) // texture-backed Image of the current frame
+ */
+export function videoElementToSkiaImage(uploader, videoEl) {
+  const w = videoEl.videoWidth, h = videoEl.videoHeight;
+  if (!(w > 0 && h > 0)) throw new Error(`videoElementToSkiaImage: element has no frame dimensions (videoWidth×videoHeight = ${w}×${h})`);
+  return uploader.grab(videoEl);
+}
+
+/** "scope|ref" → {img, w, h}: the ONE reused texture-backed player frame per GPU
+ * uploader-scope per source. Refreshed in place each paint (updateTextureFromSource),
+ * recreated only on a dimension change. REGISTRY-OWNED (never deleted by the
+ * per-paint media release — that would destroy the reusable texture); freed by
+ * disposeUploaderScope / resetVideoRegistry. CPU uploaders do NOT use this (their
+ * frames are fresh + caller-deleted per paint). */
+const _playerFrames = new Map();
+
+/**
+ * Query→build (near-pure: idempotent element create + a per-paint frame grab).
+ * The player's CURRENT frame as a CanvasKit Image via `uploader`, or null when
+ * there is no drawable frame yet (draw NOTHING — the async contract). On a GPU
+ * uploader the Image is REUSED across paints (one texture per scope+ref, refreshed
+ * in place) so there is zero per-frame allocation — and the caller must NOT delete
+ * it (the registry owns it). On a CPU uploader it is a FRESH image the caller
+ * deletes after the frame is painted (browser_media.release). ensureVideo is
+ * kicked with the default playback flags (autoplay/loop/muted); onVideoFrame
  * drives the per-frame repaint that re-runs this.
  *
- * WHY the offscreen canvas (not MakeImageFromCanvasImageSource(el) directly):
- * that helper sizes its internal read from the element's `.width`/`.height`
- * ATTRIBUTES, which a bare `<video>` leaves at 0 — a getImageData(…, 0, …)
- * IndexSizeError every frame. So we draw the element (whose FRAME size is
- * `videoWidth`/`videoHeight`) onto a canvas sized to those, then make the image
- * from the canvas (whose `.width`/`.height` ARE set). This is exactly the
- * "draw the element to an offscreen 2d canvas → CanvasKit image" recipe.
- *
- * @param CanvasKit the shared browser CanvasKit module (the Image binds to it)
- * @example // getSkiaVideoFrame(CK, url) // null until a frame decodes, then a fresh CanvasKit.Image the caller deletes
+ * @param uploader a GPU or CPU uploader (makeGpuUploader / makeCpuUploader)
+ * @param {string} ref the video source string
+ * @example // getSkiaVideoFrame(gpuUploader, url) // null until a frame decodes, then a reused texture-backed Image
  */
-export function getSkiaVideoFrame(CanvasKit, ref) {
+export function getSkiaVideoFrame(uploader, ref) {
   ensureVideo(ref); // idempotent create with the player's default flags (autoplay/loop/muted)
   const el = getVideo(ref); // <video> with a current frame, or null (loading/error)
   if (!el) return null; // no drawable frame yet → draw nothing; onVideoFrame nudges repaints as frames land
   const w = el.videoWidth, h = el.videoHeight;
   if (!(w > 0 && h > 0)) return null; // frame dimensions not known yet → draw nothing
-  if (!_frameCanvas) _frameCanvas = document.createElement("canvas");
-  _frameCanvas.width = w; _frameCanvas.height = h;
-  _frameCanvas.getContext("2d").drawImage(el, 0, 0, w, h); // the current frame at native resolution
-  const img = CanvasKit.MakeImageFromCanvasImageSource(_frameCanvas);
-  if (!img) throw new Error(`getSkiaVideoFrame: MakeImageFromCanvasImageSource returned null for ref "${truncate(ref)}"`);
-  return img; // per-paint frame — the caller deletes it (never cached: a video moves)
+  if (!uploader.isGpu) return videoElementToSkiaImage(uploader, el); // CPU: fresh per paint (caller deletes)
+  // GPU: reuse ONE texture-backed Image per (scope, ref); refresh it in place.
+  const key = uploader.scopeId + "|" + ref;
+  let slot = _playerFrames.get(key);
+  if (slot && (slot.w !== w || slot.h !== h)) { slot.img.delete(); _playerFrames.delete(key); slot = null; } // dims changed → rebuild
+  if (!slot) {
+    slot = { img: videoElementToSkiaImage(uploader, el), w, h };
+    _playerFrames.set(key, slot);
+  } else {
+    uploader.refresh(slot.img, el); // re-upload the current frame into the existing texture — no readback, no alloc
+  }
+  return slot.img; // registry-owned; the caller must NOT delete it
+}
+
+/**
+ * Command. Perf gate on the PLAYER registry: pause every playing `<video>` whose
+ * src is NOT in `activeRefs`, and resume those that ARE (honoring the clip's
+ * autoplay intent). The editor calls this each paint with the CURRENT slide's
+ * video sources, so a clip on ANOTHER slide (e.g. created by a thumbnail render)
+ * stops decoding AND stops pumping onVideoFrame — killing the off-slide
+ * repaint/decode storm that dropped the editor to ~16-30 fps. Scrub elements (a
+ * separate, always-paused registry) are untouched. No-op for a src with no
+ * element yet.
+ *
+ * @param {Iterable<string>} activeRefs the current slide's video source strings
+ * @example // setActiveVideoRefs(["clip.mp4"]) // pauses every other player video, (re)plays clip.mp4
+ */
+export function setActiveVideoRefs(activeRefs) {
+  const active = activeRefs instanceof Set ? activeRefs : new Set(activeRefs);
+  for (const [src, entry] of registry) {
+    if (entry.status === "error") continue;
+    const el = entry.el;
+    if (active.has(src)) {
+      if (el.autoplay && el.paused) el.play?.().catch((e) => console.error(`PowerRP video_registry: resume of "${truncate(src)}" was blocked — ${e?.message ?? e}`));
+    } else if (!el.paused) {
+      el.pause?.();
+    }
+  }
+}
+
+/**
+ * Command. Frees the texture-backed player + scrub Images created under a GPU
+ * uploader's `scopeId`, to be called BEFORE its GL context is torn down
+ * (SkiaSurface.dispose) — a later eviction .delete() on a dead context would
+ * fault the wasm heap. Deletes and forgets every _playerFrames / scrubCache entry
+ * tagged with the scope. No-op for the "cpu" scope's portable images (they carry
+ * no GL context lifetime, and the shared CPU scope outlives any one job).
+ *
+ * @param {string} scopeId the disposed uploader's scope tag
+ */
+export function disposeUploaderScope(scopeId) {
+  const prefix = scopeId + "|";
+  for (const [k, slot] of _playerFrames) if (k.startsWith(prefix)) { slot.img.delete?.(); _playerFrames.delete(k); }
+  for (const [k, img] of scrubCache) if (k.startsWith(prefix)) { img?.delete?.(); scrubCache.delete(k); }
 }
 
 /**
@@ -281,9 +439,18 @@ export const SCRUB_CACHE_CAP = 64;
  * hair so the last frame is what "the end" resolves to. Seconds. */
 export const SCRUB_END_EPSILON = 1e-3;
 
-/** A reused offscreen 2D canvas for the scrub frame grab (same reasoning as
- * `_frameCanvas`: the draw+read is synchronous, so it can be shared). */
-let _scrubCanvas = null;
+/** Pure function. The scrub LRU key for an uploader: the (ref, time, wrap) frame
+ * key PREFIXED by the uploader scope, because a texture-backed scrub Image is
+ * usable only on its OWN GL context (a CPU uploader's images are portable and
+ * share the single "cpu" scope). The media-map key paint_skia reads is still the
+ * UNSCOPED scrubFrameKey (browser_media re-keys) — this scope tag is a CACHE
+ * concern only.
+ *
+ * @example // scopedScrubKey({scopeId: "gl:0"}, "clip.mp4", 1.5, "clamp") // "gl:0|clip.mp4@1.5#clamp"
+ */
+function scopedScrubKey(uploader, ref, seekTime, wrap) {
+  return uploader.scopeId + "|" + scrubFrameKey(ref, seekTime, wrap);
+}
 
 /**
  * Pure function. Resolves a requested scrub time against the real media
@@ -390,12 +557,15 @@ function seekTo(el, t) {
  * at one time at a time). Resolves null on load/seek/decode failure (reported
  * loudly, never silent). The caller MUST NOT delete the returned Image — the
  * LRU owns its lifetime (a scrub frame is reused across paints, unlike a
- * player frame).
+ * player frame). After the seek settles the frame is grabbed through the SAME
+ * videoElementToSkiaImage helper the player uses (GPU texture upload with no
+ * readback, or the guarded CPU fallback) — no duplicated grab code.
  *
- * @param CanvasKit the shared CanvasKit module (the Image binds to it)
+ * @param uploader a GPU or CPU uploader (makeGpuUploader / makeCpuUploader); its
+ *   scope keys the LRU entry, since a texture-backed Image is context-bound
  */
-export async function requestScrubFrame(CanvasKit, ref, seekTime, wrap) {
-  const key = scrubFrameKey(ref, seekTime, wrap);
+export async function requestScrubFrame(uploader, ref, seekTime, wrap) {
+  const key = scopedScrubKey(uploader, ref, seekTime, wrap);
   const cached = scrubCache.get(key);
   if (cached) { touchLru(key); return cached; }
   const pending = scrubInflight.get(key);
@@ -407,17 +577,11 @@ export async function requestScrubFrame(CanvasKit, ref, seekTime, wrap) {
     if (entry.status === "error") return null;
     const el = entry.el;
     const effective = resolveScrubTime(seekTime, el.duration, wrap);
-    // Serialize this seek behind any other in-flight seek on the SAME element.
+    // Serialize this seek behind any other in-flight seek on the SAME element,
+    // then grab the parked frame through the shared helper (no readback on GPU).
     const run = entry.chain.then(async () => {
       await seekTo(el, effective);
-      const w = el.videoWidth, h = el.videoHeight;
-      if (!(w > 0 && h > 0)) throw new Error("scrub frame has no dimensions");
-      if (!_scrubCanvas) _scrubCanvas = document.createElement("canvas");
-      _scrubCanvas.width = w; _scrubCanvas.height = h;
-      _scrubCanvas.getContext("2d").drawImage(el, 0, 0, w, h);
-      const img = CanvasKit.MakeImageFromCanvasImageSource(_scrubCanvas);
-      if (!img) throw new Error("MakeImageFromCanvasImageSource returned null");
-      return img;
+      return videoElementToSkiaImage(uploader, el);
     });
     entry.chain = run.catch(() => {}); // keep the chain alive past a failed seek
     const img = await run;
@@ -441,14 +605,14 @@ export async function requestScrubFrame(CanvasKit, ref, seekTime, wrap) {
  * NOTHING for a null (never a placeholder). The caller must NOT delete the
  * Image (the LRU owns it).
  *
- * @param CanvasKit the shared CanvasKit module
- * @example // getScrubFrame(CK, "clip.mp4", 1.5, "clamp") // null until decoded, then the cached frame
+ * @param uploader a GPU or CPU uploader (makeGpuUploader / makeCpuUploader)
+ * @example // getScrubFrame(gpuUploader, "clip.mp4", 1.5, "clamp") // null until decoded, then the cached frame
  */
-export function getScrubFrame(CanvasKit, ref, seekTime, wrap) {
-  const key = scrubFrameKey(ref, seekTime, wrap);
+export function getScrubFrame(uploader, ref, seekTime, wrap) {
+  const key = scopedScrubKey(uploader, ref, seekTime, wrap);
   const cached = scrubCache.get(key);
   if (cached) { touchLru(key); return cached; }
-  requestScrubFrame(CanvasKit, ref, seekTime, wrap); // fire-and-forget; repaints on land
+  requestScrubFrame(uploader, ref, seekTime, wrap); // fire-and-forget; repaints on land
   return null;
 }
 
@@ -491,6 +655,10 @@ export function resetVideoRegistry() {
     }
   }
   registry.clear();
+  // Free every reused player-frame texture Image (all scopes) — they are
+  // registry-owned (the per-paint media release never deletes them).
+  for (const slot of _playerFrames.values()) slot.img?.delete?.();
+  _playerFrames.clear();
   for (const entry of scrubRegistry.values()) {
     try {
       entry.el.removeAttribute("src");

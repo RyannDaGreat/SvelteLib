@@ -26,6 +26,7 @@ import { renderWithDither, cameraDither } from "../render_gpu/skia/dither_shader
 import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
 import { sceneMedia, prepareSceneScrubFrames } from "../render_gpu/skia/browser_media.js";
+import { makeCpuUploader } from "../render_gpu/gpu/video_registry.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 
 let ckPromise = null;
@@ -57,16 +58,23 @@ function renderJob(reqWidth, reqHeight, buildIR) {
     if (!surface) throw new Error(`gpuService: MakeSurface(${width}x${height}) returned null`);
     try {
       const { ir, view, background, dither = null, antialias = true, quality = "full" } = buildIR();
+      // A CPU UPLOADER: this is a SOFTWARE surface (MakeSurface), which has no GL
+      // texture path, so video frames take the guarded CPU readback fallback
+      // (drawImage → MakeImageFromCanvasImageSource — portable Images shared under
+      // the "cpu" scope). The on-screen editor/presenter surface uses a GPU
+      // uploader (no readback); this offscreen pixel path cannot, and that is the
+      // ONE legitimate slow route (never reached from the on-screen path).
+      const uploader = makeCpuUploader(CanvasKit);
       // SCRUBBER seek-and-await: park + decode every video_scrub frame the scene
       // needs BEFORE painting, so this one-shot pixel path (thumbnails / minimap /
       // PNG export / the puppeteer render hook) is DETERMINISTIC — sceneMedia's
       // sync getScrubFrame then finds each frame already in the LRU. No-op when
       // the scene has no scrubbers.
-      await prepareSceneScrubFrames(CanvasKit, ir);
+      await prepareSceneScrubFrames(uploader, ir);
       // Resolve the scene's image/video refs to CanvasKit Images so thumbnails/
       // minimap/PNG export show media too (the same seam the on-screen surface
       // uses); release frees the per-paint video frames after readback.
-      const { media, release } = sceneMedia(CanvasKit, ir);
+      const { media, release } = sceneMedia(uploader, ir);
       try {
         // THE dither seam: renderWithDither composites into an RGBA16F
         // intermediate and de-bands on the downconvert (when dither is active).

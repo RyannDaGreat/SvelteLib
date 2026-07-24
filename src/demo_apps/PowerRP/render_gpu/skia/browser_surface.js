@@ -16,8 +16,15 @@ import { paintIR } from "./paint_skia.js";
 import { renderWithDither } from "./dither_shader.js";
 import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
+import { makeGpuUploader, disposeUploaderScope } from "../gpu/video_registry.js";
 import { clampSurfaceSize, MAX_SURFACE_DIM } from "../../core/clip.js";
 import { reportOnce } from "../../core/report.js";
+
+/** Monotonic tag so each SkiaSurface's GPU uploader gets a UNIQUE cache scope:
+ * a texture-backed video Image is usable only on its own GL context (editor and
+ * presenter surfaces have different contexts), so the video registry must never
+ * share one surface's texture with another. */
+let _scopeSeq = 0;
 
 export class SkiaSurface {
   /**
@@ -84,6 +91,11 @@ export class SkiaSurface {
     this.surface = null;
     this._w = 0;
     this._h = 0;
+    // THE GPU media uploader for this context: uploads <video> frames STRAIGHT to
+    // GL textures (no CPU readback) for sceneMedia. A THUNK reads the live surface
+    // (recreated on resize; the GrContext that owns the textures is stable). Its
+    // scope is unique per instance so the video registry never crosses contexts.
+    this._uploader = makeGpuUploader(CanvasKit, () => this.surface, "gl:" + (_scopeSeq++));
   }
 
   /** Command. (Re)creates the on-screen GL surface when the canvas size changes.
@@ -141,7 +153,7 @@ export class SkiaSurface {
   render(ir, view, { background = [0, 0, 0, 0], media = null, scissor = null, dither = null, antialias = true } = {}) {
     this._ensureSurface();
     if (!this.surface) return; // collapsed pane (zero-size canvas) — nothing to draw
-    const built = media == null ? sceneMedia(this.CanvasKit, ir) : { media, release() {} };
+    const built = media == null ? sceneMedia(this._uploader, ir) : { media, release() {} };
     try {
       // THE dither seam: renderWithDither composites into an RGBA16F intermediate
       // and de-bands on the downconvert to this 8-bit GL surface (when dither is
@@ -155,6 +167,9 @@ export class SkiaSurface {
 
   /** Command. Frees WASM/GPU resources. */
   dispose() {
+    // Free this context's reused video textures BEFORE the GrContext dies — a
+    // later eviction .delete() on a torn-down context would fault the wasm heap.
+    disposeUploaderScope(this._uploader.scopeId);
     this.surface?.delete();
     this.grContext?.delete();
     if (this.ctxHandle) this.CanvasKit.deleteContext(this.ctxHandle);

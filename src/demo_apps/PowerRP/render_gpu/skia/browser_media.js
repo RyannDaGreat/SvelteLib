@@ -16,9 +16,18 @@
  *     paint_skia draws nothing for it and repaints when image_registry's
  *     onImageLoad fires (the async contract; never a placeholder, never a block).
  *   - VIDEOS resolve through video_registry.getSkiaVideoFrame, which grabs the
- *     <video> element's CURRENT frame — a FRESH CanvasKit Image per paint (a
- *     video moves), collected in `release()` and deleted after the frame is
- *     painted. onVideoFrame drives the per-frame repaint.
+ *     <video> element's CURRENT frame via the caller-supplied UPLOADER. On the
+ *     GPU uploader (on-screen/presenter surface) the frame is a REUSED
+ *     texture-backed Image (uploaded straight to a GL texture, no CPU readback)
+ *     the registry owns — NOT released here. On the CPU uploader (this offscreen
+ *     pixel service, headless) it is a FRESH readback Image, collected in
+ *     `release()` and deleted after the frame is painted. onVideoFrame drives the
+ *     per-frame repaint.
+ *
+ * THE UPLOADER (render_gpu/gpu/video_registry.makeGpuUploader / makeCpuUploader)
+ * is the seam that lets ONE grab path serve both a GPU surface (fast, no readback)
+ * and a software surface (the guarded CPU fallback); it also carries the shared
+ * `CanvasKit` module (uploader.CanvasKit) the still-image path reads.
  *
  * Browser-only (the registries need fetch/createImageBitmap/<video>). The Node
  * CLI passes its own media map (today: empty — see cli/render.js).
@@ -81,38 +90,47 @@ export function scrubOpsOf(commands) {
  * each frame already in the LRU. A no-op for a scene with no scrubbers. Failed
  * frames resolve null (reported loudly by the registry) and simply draw nothing.
  *
- * @example // await prepareSceneScrubFrames(CanvasKit, ir); const {media} = sceneMedia(CanvasKit, ir);
+ * @param uploader a GPU or CPU uploader (video_registry.makeGpuUploader / makeCpuUploader)
+ * @example // await prepareSceneScrubFrames(uploader, ir); const {media} = sceneMedia(uploader, ir);
  */
-export async function prepareSceneScrubFrames(CanvasKit, commands) {
+export async function prepareSceneScrubFrames(uploader, commands) {
   const ops = scrubOpsOf(commands);
   if (ops.length === 0) return;
-  await Promise.all(ops.map((o) => requestScrubFrame(CanvasKit, o.ref, o.seekTime, o.wrap)));
+  await Promise.all(ops.map((o) => requestScrubFrame(uploader, o.ref, o.seekTime, o.wrap)));
 }
 
 /**
  * Query→build (kicks async image decodes; grabs current video frames). Builds
  * the {ref → CanvasKit.Image} media map for every image/video ref present in
- * `commands`, using the shared browser `CanvasKit`. Returns {media, release}:
+ * `commands`, using the caller's `uploader` (which carries the shared
+ * `CanvasKit`). Returns {media, release}:
  *   media   — the map: a ready image / current video frame per resolvable ref.
  *             An undecoded image ref is OMITTED (paint_skia draws nothing and
  *             repaints on load); a genuinely failed asset was reported loudly by
  *             the registry, not here.
- *   release — Command. Deletes the per-paint VIDEO frame Images (still images
- *             are cached in the registry and must NOT be deleted). Call AFTER
- *             the frame is flushed / read back.
+ *   release — Command. Deletes ONLY the CPU-uploader per-paint video frame Images.
+ *             GPU player frames are REUSED texture Images the registry owns (never
+ *             deleted here — that would destroy the reusable texture); still images
+ *             and scrub frames are registry/LRU-owned too. Call AFTER the frame is
+ *             flushed / read back.
  *
- * @example // const {media, release} = sceneMedia(CanvasKit, ir); paintIR(CanvasKit, canvas, ir, view, {media, ...}); surface.flush(); release();
+ * @param uploader a GPU or CPU uploader (video_registry.makeGpuUploader / makeCpuUploader)
+ * @example // const {media, release} = sceneMedia(uploader, ir); paintIR(uploader.CanvasKit, canvas, ir, view, {media, ...}); surface.flush(); release();
  */
-export function sceneMedia(CanvasKit, commands) {
+export function sceneMedia(uploader, commands) {
+  const CanvasKit = uploader.CanvasKit;
   const media = {};
-  const frames = [];
+  const frames = []; // CPU per-paint player frames to delete after paint; GPU frames are registry-owned (reused in place)
   for (const ref of refsForOp(commands, "image")) {
     const img = getSkiaImage(CanvasKit, ref);
     if (img) media[ref] = img;
   }
   for (const ref of refsForOp(commands, "video")) {
-    const frame = getSkiaVideoFrame(CanvasKit, ref);
-    if (frame) { media[ref] = frame; frames.push(frame); }
+    const frame = getSkiaVideoFrame(uploader, ref);
+    if (frame) {
+      media[ref] = frame;
+      if (!uploader.isGpu) frames.push(frame); // CPU: fresh readback Image → release deletes it. GPU: reused in place → do NOT delete.
+    }
   }
   // SCRUBBER frames: keyed by scrubFrameKey (ref+time+wrap) so two scrubbers on
   // one source at different times don't collide. getScrubFrame returns a CACHED
@@ -120,7 +138,7 @@ export function sceneMedia(CanvasKit, commands) {
   // NOT pushed to `frames`: release() must NOT delete them (unlike per-paint
   // player frames), the LRU owns their lifetime.
   for (const o of scrubOpsOf(commands)) {
-    const frame = getScrubFrame(CanvasKit, o.ref, o.seekTime, o.wrap);
+    const frame = getScrubFrame(uploader, o.ref, o.seekTime, o.wrap);
     if (frame) media[scrubFrameKey(o.ref, o.seekTime, o.wrap)] = frame;
   }
   return { media, release() { for (const f of frames) f.delete(); } };
