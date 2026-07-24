@@ -350,7 +350,11 @@ export function makeFamilyPlugin(fam) {
     },
     modifierPoints: fam.modifierPoints,
   };
-  plugin.commands = [{ id: `add-${fam.type}`, title: `Add ${fam.title}`, icon: fam.icon, run: (app) => app.armCrosshairPlacement(plugin) }];
+  // No per-family top-level command: the `add-ss_*` ids are surfaced ONLY as
+  // children of the single `insert-shape` submenu (web/App.svelte), built from
+  // FAMILIES — one source of truth for both the palette and the toolbar
+  // ShapePicker. Re-adding a `plugin.commands` here would register each id
+  // twice (top-level AND submenu child) and registerFlat throws on a duplicate.
   return plugin;
 }
 

@@ -28,6 +28,8 @@
   import { createKeybindings } from "../core/keybindings.js";
   import { createShortcuts } from "../core/shortcuts.js";
   import { unionRect, alignedPosition, mirroredPosition } from "../core/geometry.js";
+  import { FAMILIES } from "../plugins/shapeshifter.js";
+  import { subpathsPathD } from "../core/shapes.js";
 
   const app = new PowerRPApp();
 
@@ -97,6 +99,9 @@
     monokai: "mdi:code-tags",
     synthwave: "mdi:sine-wave",
   };
+  // Local box the `insert-shape` family tile previews are generated in; matches
+  // ShapePicker's 100-unit tile viewBox content area (`-6 -6 112 112`).
+  const SHAPE_PREVIEW_DIM = 100;
   const coreCommands = [
     { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", when: needsPurgeable, run: (a) => a.deleteSelection() },
     { id: "purge-item", title: "Purge Item (remove from existence)", icon: "mdi:delete-forever-outline", when: needsPurgeable, run: (a) => a.purgeSelection() },
@@ -243,6 +248,30 @@
         { id: "demo-insert-magnifier", title: "Magnifier", icon: "mdi:magnify", run: (a) => a.armCrosshairPlacement(a.registry.get("magnifier")) },
         { id: "demo-insert-cursor", title: "macOS Cursor (built-in SVG + ephemeral spin)", icon: "mdi:cursor-default-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("cursor")) },
       ],
+    },
+    // INSERT SHAPE — ONE submenu collecting the arbitrary parametric
+    // shapeshifter families (star, gear, callout, banner, …); everyday
+    // primitives (rect/circle/text/arrow) stay top-level. FAMILIES is the single
+    // source of truth: these children feed BOTH the palette drill-down AND the
+    // toolbar ShapePicker grid (which reads this command's children). Each child
+    // arms generic crosshair placement for its family plugin (resolved lazily).
+    // `shapePreview` is opaque tile metadata (registry ignores it; only
+    // ShapePicker consumes it). Removing the per-family plugin.commands makes
+    // these children the ONLY registration of each add-ss_* id.
+    {
+      id: "insert-shape",
+      title: "Insert Shape",
+      icon: "mdi:shape-plus",
+      children: FAMILIES.map((fam) => ({
+        id: `add-${fam.type}`,
+        title: `Add ${fam.title}`,
+        icon: fam.icon,
+        shapePreview: {
+          d: subpathsPathD(fam.outline({ ...fam.defaults, w: SHAPE_PREVIEW_DIM, h: SHAPE_PREVIEW_DIM })),
+          fillRule: fam.fillRule ?? "nonzero",
+        },
+        run: (a) => a.armCrosshairPlacement(a.registry.get(fam.type)),
+      })),
     },
     { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", run: (a) => a.exportPng() },
     { id: "export-pdf", title: "Export Slide as PDF", icon: "mdi:file-pdf-box", run: (a) => a.exportPdf() },
