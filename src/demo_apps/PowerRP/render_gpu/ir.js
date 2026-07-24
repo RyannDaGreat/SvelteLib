@@ -27,7 +27,7 @@
  *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
- *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, originX, originY, magnification, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box" (rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth)
+ *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, points, innerRatio, originX, originY, magnification, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"|"star" (points/innerRatio = star silhouette; rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth)
  *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
  *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow)
@@ -693,8 +693,10 @@ export function blurBackdrop({ radius, opacity = 1 }) {
  *
  * SHAPE — `shape:"circle"` (default) uses (cx, cy, r); `shape:"box"` uses
  * (cx, cy) center + (halfW, halfH) half-extents + cornerRadius (a rounded-rect
- * lens, the SAME sdRoundBox region a crop box / a plain rect uses). The border
- * is ONE stroke ring for BOTH shapes: (stroke, strokeWidth), the shared
+ * lens, the SAME sdRoundBox region a crop box / a plain rect uses); `shape:"star"`
+ * uses (cx, cy) + (halfW, halfH) as the inscribing bbox plus (points, innerRatio)
+ * — an n-pointed star silhouette (core/shapes.js starPathD geometry). The border
+ * is ONE stroke ring for EVERY shape: (stroke, strokeWidth), the shared
  * stroked-box bundle (core/properties.js). `rimColor`/`rimWidth` are accepted as
  * LEGACY INPUT ALIASES (the pre-shape circle rim) and FOLD into stroke/
  * strokeWidth — the op itself carries only the unified stroke fields, so every
@@ -713,28 +715,39 @@ export function blurBackdrop({ radius, opacity = 1 }) {
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2}).originX // 0 (defaults to the lens center cx)
  * @example magnifyBackdrop({cx: 10, cy: 20, r: 50, magnification: 2, originX: 5, originY: 8}).originY // 8
  * @example magnifyBackdrop({shape: "box", cx: 0, cy: 0, halfW: 80, halfH: 50, cornerRadius: 12, magnification: 2}).shape // "box"
+ * @example magnifyBackdrop({shape: "star", cx: 0, cy: 0, halfW: 80, halfH: 80, points: 5, innerRatio: 0.5, magnification: 2}).shape // "star"
+ * @example magnifyBackdrop({shape: "star", cx: 0, cy: 0, halfW: 60, halfH: 60, points: 6.4, magnification: 2}).points // 6 (rounded to a whole star)
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, rimColor: "#000", rimWidth: 4}).strokeWidth // 4 (legacy rim folds into stroke)
  * @example magnifyBackdrop({cx: 0, cy: 0, r: 50, magnification: 2, supersample: false}).supersample // false
  */
 export function magnifyBackdrop({
   shape = "circle", cx, cy, r = 0, halfW = 0, halfH = 0, cornerRadius = 0,
+  points = 5, innerRatio = 0.5,
   originX = cx, originY = cy, magnification,
   stroke = null, strokeWidth = 0, rimColor = null, rimWidth = 0,
   opacity = 1, supersample = true,
 }) {
-  if (shape !== "circle" && shape !== "box")
-    throw new Error(`magnifyBackdrop: shape must be "circle" or "box", got ${JSON.stringify(shape)}`);
-  const geom = shape === "box" ? { halfW, halfH, cornerRadius } : { r };
+  if (shape !== "circle" && shape !== "box" && shape !== "star")
+    throw new Error(`magnifyBackdrop: shape must be "circle", "box" or "star", got ${JSON.stringify(shape)}`);
+  // Geometry validated per shape: circle → r; box → half-extents + corner; star →
+  // half-extents (bbox the star is inscribed in) + point count + inner-notch ratio.
+  const geom = shape === "box" ? { halfW, halfH, cornerRadius }
+    : shape === "star" ? { halfW, halfH, points, innerRatio }
+    : { r };
   // Collapse the legacy rim aliases into the ONE stroke bundle (stroke/strokeWidth
   // win when given; else the pre-shape circle rim folds in). The op carries only
-  // stroke/strokeWidth — both shapes render one border ring.
+  // stroke/strokeWidth — every shape renders one border ring.
   const borderColor = stroke ?? rimColor;
   const borderWidth = strokeWidth > 0 ? strokeWidth : rimWidth;
   requireFinite("magnifyBackdrop", { cx, cy, ...geom, originX, originY, magnification, strokeWidth: borderWidth, opacity });
   if (magnification <= 0) throw new Error(`magnifyBackdrop: magnification must be > 0, got ${magnification}`);
   return {
     op: "magnifyBackdrop", shape, cx, cy, r, halfW, halfH,
-    cornerRadius: Math.max(0, cornerRadius), originX, originY, magnification,
+    cornerRadius: Math.max(0, cornerRadius),
+    // Star silhouette params (harmless defaults for circle/box): point count
+    // clamped to a real star (≥2), inner-notch ratio to [0,1] — mirrors starPathD.
+    points: Math.max(2, Math.round(points)), innerRatio: Math.max(0, Math.min(1, innerRatio)),
+    originX, originY, magnification,
     stroke: borderColor === null ? null : parseColor(borderColor),
     strokeWidth: borderWidth,
     opacity, supersample: !!supersample,

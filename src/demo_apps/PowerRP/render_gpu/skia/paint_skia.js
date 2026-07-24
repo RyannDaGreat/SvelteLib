@@ -47,6 +47,7 @@ import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_sha
 import { getMaterial, materialEffect, isBackdropMaterial } from "./materials.js";
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
+import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
 
 const RAD2DEG = 180 / Math.PI;
 
@@ -448,8 +449,8 @@ function handleBlurBackdrop(CanvasKit, target, cmd, world, view) {
 }
 
 /**
- * Command (draws on target.canvas). magnifyBackdrop: a shaped lens (circle|box)
- * showing a magnified view about the ORIGIN.
+ * Command (draws on target.canvas). magnifyBackdrop: a shaped lens (circle|box|
+ * star) showing a magnified view about the ORIGIN.
  *
  *   supersample:true (default) — RE-RENDER the sub-list below the lens (z-order)
  *     into a scratch surface under the lens view (magnification·zoom about the
@@ -545,11 +546,41 @@ function lensViewFor(view, centerWorld, magnification, originWorld) {
   };
 }
 
-/** Query→build. The lens region as a device-space Path (circle or rounded box). Caller deletes. */
+/**
+ * Pure function. The LOCAL-space vertices of a STAR lens silhouette: an n-pointed
+ * star inscribed in the (halfW, halfH) box centered at (cx, cy), pointing up — the
+ * SAME geometry as core/shapes.js starPathD (outer tips on the box ellipse, inner
+ * notches scaled by innerRatio). Reuses ellipsePoints for the outer ring so the
+ * lens clip matches the star widget's outline exactly (shared angle math). Returns
+ * 2·points vertices, outer/inner alternating (even = tip, odd = notch).
+ *
+ * @param {{cx:number,cy:number,halfW:number,halfH:number,points:number,innerRatio:number}} cmd
+ * @returns {Array<[number,number]>}
+ *
+ * @example lensStarPoints({cx: 50, cy: 50, halfW: 50, halfH: 50, points: 5, innerRatio: 0.5}).length // 10
+ * @example lensStarPoints({cx: 50, cy: 50, halfW: 50, halfH: 50, points: 5, innerRatio: 0.5})[0].map(Math.round) // [50, 0] (top tip)
+ */
+function lensStarPoints(cmd) {
+  const ring = ellipsePoints(cmd.halfW * 2, cmd.halfH * 2, cmd.points * 2); // outer tips, TOP_UP start
+  const ecx = cmd.halfW, ecy = cmd.halfH;      // ellipsePoints' own bbox center
+  const dx = cmd.cx - ecx, dy = cmd.cy - ecy;  // shift the star to the lens center
+  return ring.map(([x, y], i) => {
+    const s = i % 2 === 0 ? 1 : cmd.innerRatio; // even = outer tip, odd = inner notch
+    return [ecx + (x - ecx) * s + dx, ecy + (y - ecy) * s + dy];
+  });
+}
+
+/** Query→build. The lens region as a device-space Path (circle, rounded box, or
+ * star silhouette). Caller deletes. */
 function lensClipPath(CanvasKit, cmd, deviceM) {
   const b = new CanvasKit.PathBuilder();
   if (cmd.shape === "box") {
     b.addRRect(CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius));
+  } else if (cmd.shape === "star") {
+    const v = lensStarPoints(cmd);
+    b.moveTo(v[0][0], v[0][1]);
+    for (let i = 1; i < v.length; i++) b.lineTo(v[i][0], v[i][1]);
+    b.close();
   } else {
     b.addOval(CanvasKit.LTRBRect(cmd.cx - cmd.r, cmd.cy - cmd.r, cmd.cx + cmd.r, cmd.cy + cmd.r));
   }
@@ -559,20 +590,23 @@ function lensClipPath(CanvasKit, cmd, deviceM) {
   return path;
 }
 
-/** Command (draws the lens rim/border in local space). ONE stroke ring for both
- * shapes — the collapsed stroke/strokeWidth bundle (ir.js folded the legacy rim).
- * `aa` is the camera's coverage-AA flag (ctx.antialias). */
+/** Command (draws the lens rim/border in local space). ONE stroke ring for EVERY
+ * shape (circle | box | star) — the collapsed stroke/strokeWidth bundle (ir.js
+ * folded the legacy rim). `aa` is the camera's coverage-AA flag (ctx.antialias). */
 function drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true) {
-  const isBox = cmd.shape === "box";
   const color = cmd.stroke;
   const width = cmd.strokeWidth;
   if (!color || !(width > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
   const p = strokePaint(CanvasKit, color, width, opacity, null, aa);
-  if (isBox) {
+  if (cmd.shape === "box") {
     const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
     canvas.drawRRect(rr, p);
+  } else if (cmd.shape === "star") {
+    const path = buildPath(CanvasKit, lensStarPoints(cmd), true);
+    canvas.drawPath(path, p);
+    path.delete();
   } else {
     canvas.drawOval(CanvasKit.LTRBRect(cmd.cx - cmd.r, cmd.cy - cmd.r, cmd.cx + cmd.r, cmd.cy + cmd.r), p);
   }

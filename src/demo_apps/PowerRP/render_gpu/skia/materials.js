@@ -36,16 +36,35 @@ import { CRT_MATERIAL } from "./crt_shader.js";
 import { CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL } from "./corkboard_shader.js";
 import { RAYCAST_DITHER_MATERIAL } from "./raycast_dither_shader.js";
 
+/**
+ * The MAGNIFY material — magnification, expressed as a member of the material
+ * FAMILY. Unlike glass/CRT it carries NO SkSL: a magnifier does not distort the
+ * composite-so-far in place, it SAMPLES it with a SCALE about an origin (and, on
+ * the crisp path, RE-RENDERS just the minimal lens footprint at magnified zoom) —
+ * something no in-place RuntimeEffect can do. It therefore keeps its own IR op
+ * (`magnifyBackdrop`) + handler (paint_skia handleMagnifyBackdrop, whose minimal-
+ * bbox footprint clamp must not regress). Registering it here is the third
+ * material KIND — a SAMPLER — beside BACKDROP-SkSL (glass/CRT) and FOREGROUND-fill
+ * (corkboard), so any widget can DISCOVER magnify through the ONE material
+ * registry (materialIds) and learn, via isSamplerMaterial, that it dispatches the
+ * `op` below rather than an SkSL effect. `sampler:true` keeps it out of the SkSL
+ * compile/backdrop paths (isBackdropMaterial → false; materialEffect throws LOUD).
+ */
+export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBackdrop" };
+
 // id → descriptor. A new material appends ONE import above + ONE entry here.
-// A descriptor's optional `backdrop` flag splits the framework in two:
+// A descriptor's `backdrop`/`sampler` flags split the framework in THREE:
 //   - BACKDROP material (glass, CRT) — `backdrop` absent/true: its SkSL declares
 //     the standard {blurredBackdrop, sharpBackdrop} children; the `materialBackdrop`
 //     op + handleMaterialBackdrop re-render the content beneath to feed them.
 //   - FOREGROUND material (the corkboard family) — `backdrop: false`: NO children,
 //     NO re-render; the `materialFill` op + handleMaterialFill just makeShader+fill.
-// Absence defaults to backdrop (back-compat: CRT/glass carry no flag).
+//   - SAMPLER material (magnify) — `sampler: true`: NO SkSL at all; it names its
+//     own IR `op` (magnifyBackdrop) + dedicated handler (it samples/re-scales the
+//     composite rather than shading it). Discoverable, but never SkSL-compiled.
+// Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
 const MATERIALS = Object.fromEntries(
-  [CRT_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL].map((m) => [m.id, m]),
+  [CRT_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, MAGNIFY_MATERIAL].map((m) => [m.id, m]),
 );
 
 /**
@@ -75,14 +94,31 @@ export function materialIds() {
  * true (CRT/glass predate the flag). The two handlers use this to fail LOUDLY if
  * an op names a material of the wrong half (a `materialFill` naming CRT, say).
  *
- * @param {{backdrop?: boolean}} material - a descriptor from getMaterial()
+ * @param {{backdrop?: boolean, sampler?: boolean}} material - a descriptor from getMaterial()
  * @returns {boolean}
  *
  * @example isBackdropMaterial({id: "crt"}) // true (no flag => backdrop)
  * @example isBackdropMaterial({id: "corkboard", backdrop: false}) // false
+ * @example isBackdropMaterial({id: "magnify", sampler: true}) // false (a sampler, not an SkSL backdrop)
  */
 export function isBackdropMaterial(material) {
-  return material.backdrop !== false;
+  return material.backdrop !== false && !material.sampler;
+}
+
+/**
+ * Pure function. Is `material` a SAMPLER material (magnify) — one that carries NO
+ * SkSL and instead names its own IR `op`, sampling/re-scaling the composite rather
+ * than shading it? These are registered for DISCOVERABILITY but must never reach
+ * the SkSL compile path (materialEffect throws on them).
+ *
+ * @param {{sampler?: boolean}} material - a descriptor from getMaterial()
+ * @returns {boolean}
+ *
+ * @example isSamplerMaterial({id: "magnify", sampler: true}) // true
+ * @example isSamplerMaterial({id: "crt"}) // false
+ */
+export function isSamplerMaterial(material) {
+  return material.sampler === true;
 }
 
 // Compiled RuntimeEffect cache, keyed by material id + guarded by the CanvasKit
@@ -100,6 +136,8 @@ const _effects = new Map(); // id → { effect, ck }
  * @param material - a descriptor from getMaterial()
  */
 export function materialEffect(CanvasKit, material) {
+  if (isSamplerMaterial(material))
+    throw new Error(`materials: "${material.id}" is a SAMPLER material (no SkSL) — dispatch its op "${material.op}", do not compile it as an effect`);
   const cached = _effects.get(material.id);
   if (cached && cached.ck === CanvasKit) return cached.effect;
   let err = null;
