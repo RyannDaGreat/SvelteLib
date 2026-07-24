@@ -22,6 +22,18 @@ BACKEND_READY_ATTEMPTS=120
 BACKEND_READY_SLEEP_SECONDS=0.5
 CHILD_MONITOR_SLEEP_SECONDS=0.25
 
+# HTTPS is OPT-IN; plain HTTP on 0.0.0.0 is the DEFAULT. The editor renders via
+# Skia/CanvasKit on a WebGL2 context and uses no secure-context-only browser API
+# (clipboard, UUID, and EyeDropper all have plain-HTTP fallbacks), so it works
+# fully over plain HTTP from any origin — including a LAN/remote machine opening
+# the box by IP. HTTPS previously auto-activated on a Workbench (BD_HOSTNAME +
+# host cert) to satisfy WebGPU's secure-context requirement; that requirement is
+# gone, so auto-HTTPS is retired to keep remote HTTP access frictionless.
+#
+# Two ways to turn HTTPS back on (neither is the default):
+#   1. Explicit certs: set POWERRP_TLS_CERT + POWERRP_TLS_KEY + POWERRP_PUBLIC_HOST.
+#   2. Workbench convenience: set POWERRP_USE_WORKBENCH_TLS=1 to reuse the host's
+#      trusted cert (/etc/certs/public_web.*) + $BD_HOSTNAME.
 TLS_CERT="${POWERRP_TLS_CERT:-}"
 TLS_KEY="${POWERRP_TLS_KEY:-}"
 PUBLIC_HOST="${POWERRP_PUBLIC_HOST:-}"
@@ -30,8 +42,14 @@ if [ -n "$TLS_CERT" ] || [ -n "$TLS_KEY" ] || [ -n "$PUBLIC_HOST" ]; then
     echo "ERROR: POWERRP_TLS_CERT, POWERRP_TLS_KEY, and POWERRP_PUBLIC_HOST must be set together." >&2
     exit 1
   fi
-elif [ -n "${BD_HOSTNAME:-}" ] \
-   && [ -r "$WORKBENCH_TLS_CERT" ] && [ -r "$WORKBENCH_TLS_KEY" ]; then
+elif [ -n "${POWERRP_USE_WORKBENCH_TLS:-}" ]; then
+  # Explicitly requested the Workbench cert — its absence is a loud error, never
+  # a silent fall-through to HTTP (the user asked for HTTPS on purpose).
+  if [ -z "${BD_HOSTNAME:-}" ] || [ ! -r "$WORKBENCH_TLS_CERT" ] || [ ! -r "$WORKBENCH_TLS_KEY" ]; then
+    echo "ERROR: POWERRP_USE_WORKBENCH_TLS is set but the Workbench TLS is unavailable" >&2
+    echo "       (need \$BD_HOSTNAME plus a readable $WORKBENCH_TLS_CERT and $WORKBENCH_TLS_KEY)." >&2
+    exit 1
+  fi
   TLS_CERT="$WORKBENCH_TLS_CERT"
   TLS_KEY="$WORKBENCH_TLS_KEY"
   PUBLIC_HOST="$BD_HOSTNAME"
@@ -134,7 +152,11 @@ if [ -n "$TLS_CERT" ]; then
   echo "    Secure: ${APP_URL}"
 else
   echo "    Local:  ${APP_URL}"
-  [ -n "${LAN_IP:-}" ] && echo "    LAN diagnostic only (WebGPU blocked on HTTP): http://${LAN_IP}:${APP_PORT}"
+  # Plain HTTP is fully supported (Skia/WebGL2 needs no secure context), so the
+  # LAN/remote URLs below are FIRST-CLASS entry points — open either from any
+  # other machine on the network by IP or by the box's hostname.
+  [ -n "${LAN_IP:-}" ] && echo "    LAN:    http://${LAN_IP}:${APP_PORT}   (open from another machine by IP)"
+  [ -n "${BD_HOSTNAME:-}" ] && echo "    Host:   http://${BD_HOSTNAME}:${APP_PORT}"
 fi
 echo "    (project backend on :${BACKEND_PORT} — don't open it directly)"
 echo "=================================================="
