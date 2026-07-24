@@ -96,6 +96,7 @@ import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 import { isHexColor } from "./interpolators.js";
 import { PROPS } from "./properties.js";
+import { textDissolve, textType, textScramble } from "./text_transitions.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
 
@@ -527,9 +528,17 @@ function evalCall(ast, lookup, callFn) {
 
 /**
  * The equation function library, keyed by canonical (snake_case) name. Each
- * value: {overloads: [{params: ("widget"|"number")[]}], doc}. Exported as the
- * ONE source of truth for autocomplete (equationFunctionNames) — nothing else
- * enumerates function names.
+ * value: {doc, overloads: [{params: ("widget"|"string"|"number")[]}]} and,
+ * OPTIONALLY, `impl` — a PURE (name, args…) → value function. An entry WITH an
+ * `impl` is a plain scalar/string library function: the evaluator coerces each
+ * arg to its declared param kind ("number" via Number, "string" via String,
+ * both recording ref dependencies) and calls `impl`; the result is validated
+ * against the SLOT's result kind like any expression (so a string-returning
+ * `impl` is valid in a string slot). An entry WITHOUT an `impl` (closest_to_rim)
+ * is a POINT-valued dynamic-anchor function solved in evaluateState's call
+ * handler (widget geometry + per-pass solve memo). Exported as the ONE source of
+ * truth for autocomplete (equationFunctionNames) — nothing else enumerates
+ * function names.
  */
 export const FUNCTIONS = {
   closest_to_rim: {
@@ -539,6 +548,23 @@ export const FUNCTIONS = {
       { params: ["widget", "widget"] },            // rim vs rim (joint solve)
     ],
   },
+  // STRING-TRANSITION functions (pure, deterministic — core/text_transitions.js).
+  // alpha-driven text animation usable from any "=" string slot (esp. plaintext).
+  text_dissolve: {
+    doc: "Crossfade one string into another by alpha 0..1 (a shuffled per-character swap).",
+    overloads: [{ params: ["string", "string", "number"] }],
+    impl: textDissolve,
+  },
+  text_type: {
+    doc: "Typewriter reveal — the first floor(alpha*length) characters of a string.",
+    overloads: [{ params: ["string", "number"] }],
+    impl: textType,
+  },
+  text_scramble: {
+    doc: "Resolve a string from deterministic scramble noise to clear text by alpha 0..1.",
+    overloads: [{ params: ["string", "number"] }],
+    impl: textScramble,
+  },
 };
 
 /**
@@ -547,7 +573,7 @@ export const FUNCTIONS = {
  * for equationSuggest"). Each entry is a ready-to-type stub with its first
  * overload's arity, e.g. "closest_to_rim(" — the caller appends args.
  *
- * @example equationFunctionNames() // ["closest_to_rim"]
+ * @example equationFunctionNames() // ["closest_to_rim", "text_dissolve", "text_type", "text_scramble"]
  */
 export function equationFunctionNames() {
   return Object.keys(FUNCTIONS);
@@ -1762,6 +1788,21 @@ function computeEvaluatedState(state, registry) {
   // ref proxies (read via REF_SEGS + validated); numeric args coerce via Number.
   const makeFn = (name, slot, selfId) => (...args) => {
     const overload = resolveOverload(name, args.length); // loud on unknown fn / bad arity
+    const spec = FUNCTIONS[name];
+    // Library functions with an `impl` (text_dissolve, text_type, …): coerce each
+    // arg to its declared param kind — "number" via Number, "string" via String,
+    // both of which resolve a ref proxy through refValue and so RECORD its
+    // dependency — then call the pure impl. The result rides evalSlot's normal
+    // result-kind validation (a string impl is valid in a string slot).
+    if (spec.impl) {
+      const argv = args.map((arg, i) => {
+        const kind = overload.params[i];
+        if (kind === "number") return Number(arg);
+        if (kind === "string") return String(arg);
+        throw new Error(`Argument ${i + 1} of "${name}" has unsupported kind "${kind}"`);
+      });
+      return spec.impl(...argv);
+    }
     const widgetIds = [];
     const nums = [];
     args.forEach((arg, i) => {

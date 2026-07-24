@@ -16,6 +16,7 @@ import {
   evaluateState, withBindingsMigrated, withVariableRenamed,
   FUNCTIONS, equationFunctionNames, resolveOverload, widgetArgToken, widgetArgSpans, resolveWidgetArg,
 } from "../core/expressions.js";
+import { textDissolve, textType, textScramble, shuffledOrder, hashText, clamp01 } from "../core/text_transitions.js";
 import { nearestPairCircleCircle, closestPointOnCircle, nearestRimPair } from "../core/outline.js";
 import { createRegistry } from "../core/registry.js";
 import { newDocument, withNewItem, withNewSlide, keyframed, foldState, withSlideMoved } from "../core/document.js";
@@ -29,6 +30,7 @@ import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { textPlugin } from "../plugins/text.js";
 import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
 import { anchorPointPlugin } from "../plugins/anchor_point.js";
+import { plaintextPlugin } from "../plugins/plaintext.js"; // a plain STRING slot — the string-transition target
 
 let passed = 0;
 function test(name, fn) {
@@ -59,6 +61,7 @@ registry.register(arrowPlugin);
 registry.register(fancyArrowPlugin);
 registry.register(textPlugin);
 registry.register(cameraPlugin);
+registry.register(plaintextPlugin);
 
 // ── tokenizer + parser ───────────────────────────────────────────────────────
 test("tokenize: kinds, positions, @refs, errors", () => {
@@ -605,7 +608,7 @@ test("grammar: call parsing + point .x/.y projection", () => {
   assert.equal(evalAst(parseExpression("f(a,b).y + 1"), () => 0, () => ({ x: 3, y: 4 })), 5);
 });
 test("function table: names, overloads, arity/kind/unknown errors", () => {
-  assert.deepEqual(equationFunctionNames(), ["closest_to_rim"]);
+  assert.deepEqual(equationFunctionNames(), ["closest_to_rim", "text_dissolve", "text_type", "text_scramble"]);
   assert.ok("closest_to_rim" in FUNCTIONS);
   assert.deepEqual(resolveOverload("closest_to_rim", 2).params, ["widget", "widget"]);
   assert.deepEqual(resolveOverload("closest_to_rim", 3).params, ["widget", "number", "number"]);
@@ -628,6 +631,90 @@ test("conversion: widget args round-trip slug↔@id; fn name + projection verbat
   assert.equal(resolveWidgetArg("box", slugMap(st)), "a1");
   // Unknown widget name is a loud entry error.
   assert.throws(() => displayToStored("closest_to_rim(nope, c).x", st), /Unknown widget "nope"/);
+});
+
+// ── STRING-TRANSITION FUNCTIONS (core/text_transitions.js + FUNCTIONS registry) ─
+test("text_transitions pure: textType typewriter reveal (endpoints + floor cut)", () => {
+  assert.equal(textType("Hello", 0), "");
+  assert.equal(textType("Hello", 1), "Hello");
+  assert.equal(textType("Hello", 0.5), "He"); // floor(0.5*5) = 2
+  assert.equal(textType("Hello", 0.6), "Hel"); // floor(0.6*5) = 3
+  assert.equal(textType("Hello", -1), ""); // clamped
+  assert.equal(textType("Hello", 2), "Hello"); // clamped
+});
+test("text_transitions pure: textScramble resolves scramble→clear, length + whitespace preserved", () => {
+  assert.equal(textScramble("Hello", 1), "Hello"); // fully resolved
+  assert.equal(textScramble("Hello", 0).length, 5); // same length when fully scrambled
+  assert.notEqual(textScramble("Hello", 0), "Hello"); // scramble glyphs are non-alphabetic
+  assert.equal(textScramble("Hi there", 1), "Hi there");
+  assert.equal(textScramble("Hi there", 0)[2], " "); // whitespace preserved at every alpha
+  assert.equal(textScramble("Decode", 0.5), textScramble("Decode", 0.5)); // deterministic (no Math.random)
+  assert.equal(textScramble("Decode", 0.5).length, 6);
+});
+test("text_transitions pure: textDissolve endpoints EXACT + deterministic scattered mid", () => {
+  assert.equal(textDissolve("cat", "dog", 0), "cat"); // alpha 0 → from, verbatim
+  assert.equal(textDissolve("cat", "dog", 1), "dog"); // alpha 1 → to, verbatim
+  assert.equal(textDissolve("cat", "dog", -0.5), "cat"); // clamped
+  assert.equal(textDissolve("cat", "dog", 5), "dog"); // clamped
+  const mid = textDissolve("cat", "dog", 0.5);
+  assert.equal(mid, textDissolve("cat", "dog", 0.5)); // deterministic given (from, to, alpha)
+  assert.equal(mid.length, 3);
+  assert.notEqual(mid, "cat"); // a real blend — not either endpoint
+  assert.notEqual(mid, "dog");
+  assert.equal(textDissolve("hi", "hello", 1), "hello"); // grows to the longer target
+  assert.equal(textDissolve("hello", "hi", 0), "hello"); // starts at the longer source
+});
+test("text_transitions pure: helpers (clamp01, hashText, shuffledOrder)", () => {
+  assert.equal(clamp01(-0.2), 0);
+  assert.equal(clamp01(0.5), 0.5);
+  assert.equal(clamp01(1.7), 1);
+  assert.equal(hashText(""), 2166136261); // the bare FNV-1a offset basis
+  assert.notEqual(hashText("a"), hashText("b"));
+  assert.deepEqual(shuffledOrder(0, 123), []);
+  assert.deepEqual(shuffledOrder(4, 7).slice().sort((a, b) => a - b), [0, 1, 2, 3]); // a permutation
+  assert.deepEqual(shuffledOrder(4, 7), shuffledOrder(4, 7)); // deterministic
+});
+test("string-transition registry: names + overloads + arity errors", () => {
+  assert.ok("text_dissolve" in FUNCTIONS && "text_type" in FUNCTIONS && "text_scramble" in FUNCTIONS);
+  assert.deepEqual(resolveOverload("text_dissolve", 3).params, ["string", "string", "number"]);
+  assert.deepEqual(resolveOverload("text_type", 2).params, ["string", "number"]);
+  assert.deepEqual(resolveOverload("text_scramble", 2).params, ["string", "number"]);
+  assert.throws(() => resolveOverload("text_type", 3), /has no 3-argument form/);
+  assert.equal(typeof FUNCTIONS.text_dissolve.impl, "function"); // a pure impl, not a point-solver
+});
+test("string-transition equation: an = call on a STRING slot resolves to a string (plaintext.text)", () => {
+  const state = { vars: {}, items: {
+    typed: { ...plaintextPlugin.defaults, text: '=text_type("Hello", 0.4)' },      // floor(0.4*5)=2
+    a: { ...plaintextPlugin.defaults, text: '=text_dissolve("cat", "dog", 0)' },   // → from
+    b: { ...plaintextPlugin.defaults, text: '=text_dissolve("cat", "dog", 1)' },   // → to
+  } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.typed.text, "He");
+  assert.equal(s.items.a.text, "cat");
+  assert.equal(s.items.b.text, "dog");
+});
+test("string-transition equation: alpha may be a VARIABLE and its dependency IS captured", () => {
+  const state = { vars: { base: 0.2, alpha: "base + 0.4" }, items: { // alpha slot = 0.6
+    d: { ...plaintextPlugin.defaults, name: "D", text: '=text_type("Hello", alpha)' },
+  } };
+  const { state: s, errors, deps } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0);
+  assert.equal(s.items.d.text, "Hel"); // floor(0.6*5) = 3
+  assert.ok(deps.get("items.d.text").has("vars.alpha"), "the string-arg's ref is a captured dependency");
+});
+test("string-transition equation: derivation is DETERMINISTIC across fresh states (no Math.random)", () => {
+  const mk = () => ({ vars: {}, items: { m: { ...plaintextPlugin.defaults, text: '=text_scramble("Decode", 0.5)' } } });
+  const first = capturedErrorsResult(mk()).state.items.m.text;
+  const second = capturedErrorsResult(mk()).state.items.m.text; // distinct state object → not memo-shared
+  assert.equal(first, second);
+  assert.equal(first.length, 6);
+});
+test("string-transition conversion: a call display↔stored round-trips (literals verbatim, var checked)", () => {
+  const st = { vars: { p: 0.5 }, items: {} };
+  assert.equal(displayToStored('=text_dissolve("a", "b", p)', st), 'text_dissolve("a", "b", p)');
+  assert.equal(displayToStored('text_type("Hi", 0.5)', st), 'text_type("Hi", 0.5)');
+  assert.throws(() => displayToStored('text_type("Hi", ghost)', st), /Unknown variable "ghost"/);
 });
 test("closest_to_rim(widget, x, y): rim-vs-point equals the plugin closestAnchor", () => {
   // A rect's x/y written as closest_to_rim to a fixed world point → the point on
