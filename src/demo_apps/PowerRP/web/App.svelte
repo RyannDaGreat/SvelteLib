@@ -370,6 +370,14 @@
         { id: "demo-insert-magnify", title: "Magnifier (sampler material: circle / square / star lens)", icon: "mdi:magnify-expand", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_magnify")) },
         { id: "demo-insert-raycast-dither", title: "Raycast Dither (animated grain gradient)", icon: "mdi:gradient-vertical", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_raycast_dither")) },
         { id: "demo-insert-rainy-window", title: "Rainy Window (animated backdrop rain-on-glass shader)", icon: "mdi:weather-pouring", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_rainy_window")) },
+        // The `sky*` archetype — a physically-based sky family whose members INTERACT
+        // (a skySun's position/colour drives the sky's scattering + the clouds' colour,
+        // via the derive-time sibling query). Insert `sky` first, then place suns/moon/
+        // clouds on top of it.
+        { id: "demo-insert-sky", title: "Sky (atmospheric scattering — reads suns/moon)", icon: "mdi:weather-sunny", run: (a) => a.armCrosshairPlacement(a.registry.get("sky")) },
+        { id: "demo-insert-sky-sun", title: "Sky Sun (drives the sky's colour — multiple allowed)", icon: "mdi:white-balance-sunny", run: (a) => a.armCrosshairPlacement(a.registry.get("skySun")) },
+        { id: "demo-insert-sky-moon", title: "Sky Moon (waxing/waning phases)", icon: "mdi:moon-waning-crescent", run: (a) => a.armCrosshairPlacement(a.registry.get("skyMoon")) },
+        { id: "demo-insert-sky-clouds", title: "Sky Clouds (lit by the sun — catch sunset colour)", icon: "mdi:weather-cloudy", run: (a) => a.armCrosshairPlacement(a.registry.get("skyClouds")) },
         { id: "demo-insert-text-dissolve", title: "Text Dissolve (tween word → word)", icon: "mdi:transition", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_dissolve")) },
         { id: "demo-insert-text-type", title: "Text Typewriter (reveal by alpha)", icon: "mdi:cursor-text", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_type")) },
         { id: "demo-insert-text-scramble", title: "Text Scramble (decode by alpha)", icon: "mdi:shuffle-variant", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_text_scramble")) },

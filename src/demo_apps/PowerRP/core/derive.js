@@ -150,7 +150,7 @@ export function deriveRenderTree(state, registry) {
     plugin: registry.get(itemState.type),
   }));
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
-  return resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes)));
+  return resolveSkyScene(resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes))));
 }
 
 /**
@@ -454,6 +454,75 @@ export function resolveCropTargets(nodes) {
     return { ...n, cropTarget: target && target.type !== "cropbox" ? target : null };
   });
   return withTargets.filter((n) => !suppressed.has(n.itemId));
+}
+
+/**
+ * Pure function. THE SKY-ARCHETYPE SIBLING QUERY (the `sky*` family's crux). Scans
+ * the derived, z-sorted render nodes for active LIGHT/OBJECT sources — nodes whose
+ * plugin declares `capabilities.skyLight` ("sun" | "moon") — and returns a
+ * WORLD-space scene summary the `sky`/`skyClouds`/`skyMoon` readers react to:
+ *
+ *   { suns:  [{ x, y, color, intensity, size }],   // x,y = world CENTRE
+ *     moons: [{ x, y, phase }] }
+ *
+ * Each source's world CENTRE is its local box centre (w/2, h/2) mapped through the
+ * node's final `world` transform (so group parenting, which runs earlier in
+ * deriveRenderTree, is already baked in). The lists are sorted by itemId so the
+ * summary is a deterministic pure function of the folded state (RenderTree =
+ * pure(document, [[slide, alpha]])) — a reader shader fed from it stays byte-stable.
+ * A widget reading its siblings is otherwise impossible (emit sees only its own
+ * state); collecting it HERE — the one stage that sees the whole node list — is the
+ * same seam crop boxes/groups already use.
+ *
+ * The summary field set IS the sky family's shared contract (like the "cropbox"/
+ * "group" types this module already knows). Colour is left as the stored string
+ * (a reader parses it); intensity/size/phase carry their neutral fallbacks so a
+ * source that omits a knob still resolves.
+ *
+ * @param {object[]} nodes - derived render nodes (each carries plugin/state/world)
+ * @returns {{suns: object[], moons: object[]}}
+ *
+ * @example collectSkyScene([]) // {suns: [], moons: []}
+ * @example collectSkyScene([{itemId: "s1", state: {w: 100, h: 100, color: "#ffddaa", intensity: 2}, world: {x: 40, y: 60, rotation: 0, scale: 1}, plugin: {capabilities: {skyLight: "sun"}}}]) // {suns: [{x: 90, y: 110, color: "#ffddaa", intensity: 2, size: 1}], moons: []}
+ * @example collectSkyScene([{itemId: "m1", state: {w: 200, h: 200, phase: 0.25}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {skyLight: "moon"}}}]) // {suns: [], moons: [{x: 100, y: 100, phase: 0.25}]}
+ */
+export function collectSkyScene(nodes) {
+  const suns = [], moons = [];
+  const sources = nodes
+    .filter((n) => n.plugin?.capabilities?.skyLight === "sun" || n.plugin?.capabilities?.skyLight === "moon")
+    .sort((a, b) => (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
+  for (const n of sources) {
+    const c = T.apply(n.world, (n.state.w ?? 0) / 2, (n.state.h ?? 0) / 2); // world centre
+    if (n.plugin.capabilities.skyLight === "sun")
+      suns.push({ x: c.x, y: c.y, color: n.state.color ?? "#ffffff", intensity: n.state.intensity ?? 1, size: n.state.size ?? 1 });
+    else
+      moons.push({ x: c.x, y: c.y, phase: n.state.phase ?? 0.5 });
+  }
+  return { suns, moons };
+}
+
+/**
+ * Pure function. Feeds the SKY SIBLING QUERY to its readers. Computes
+ * collectSkyScene(nodes) ONCE and attaches it as a derived `state.skyScene` field
+ * to every node whose plugin declares `capabilities.skyReader` (the `sky`,
+ * `skyClouds`, `skyMoon` widgets) — so their emit() can map the world-space suns/
+ * moons into their own local frame (via the `world` arg emit already receives) and
+ * pack them as shader uniforms. State is SHALLOW-CLONED, so the input nodes stay
+ * pure. Non-reader nodes pass through untouched, and — like resolveCropTargets /
+ * resolveGroupSubtrees — a scene with NO reader node is returned byte-identical (so
+ * every non-sky document is completely unaffected).
+ *
+ * @param {object[]} nodes - derived render nodes
+ * @returns {object[]} nodes, with readers carrying state.skyScene
+ *
+ * @example resolveSkyScene([{itemId: "r", type: "rect", state: {}, plugin: {capabilities: {}}}]).length // 1 (no reader: passthrough)
+ * @example resolveSkyScene([{itemId: "sky", state: {}, plugin: {capabilities: {skyReader: true}}}, {itemId: "s1", state: {w: 2, h: 2}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {skyLight: "sun"}}}]).find((n) => n.itemId === "sky").state.skyScene.suns.length // 1
+ * @example resolveSkyScene([{itemId: "r", type: "rect", state: {a: 1}, plugin: {capabilities: {}}}])[0].state.skyScene // undefined (untouched)
+ */
+export function resolveSkyScene(nodes) {
+  if (!nodes.some((n) => n.plugin?.capabilities?.skyReader)) return nodes;
+  const scene = collectSkyScene(nodes);
+  return nodes.map((n) => (n.plugin?.capabilities?.skyReader ? { ...n, state: { ...n.state, skyScene: scene } } : n));
 }
 
 /**
