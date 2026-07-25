@@ -65,7 +65,7 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { displayUnit } from "./displayUnits.js";
 
-  let { app, path, label, min = null, max = null, display = null, scrub = null } = $props();
+  let { app, path, label, min = null, max = null, display = null, scrub = null, defaultValue = null, step = null } = $props();
 
   // The equation's OWNING item id, enabling `self.` completion — mirrors
   // evaluateState's own selfId derivation (core/expressions.js: "self resolves
@@ -436,6 +436,8 @@
       min={min == null ? null : unit.toDisplay(min)}
       max={max == null ? null : unit.toDisplay(max)}
       coefficient={dragCoefficient}
+      {defaultValue}
+      {step}
       suffix={unit.suffix}
       oninput={previewRef}
       onchange={commitRef}
@@ -463,12 +465,20 @@
          works in DISPLAY units (degrees for rotation); previewNumber/
          commitNumber convert back to stored (radians). `suffix` shows the
          unit indicator ("°") inside the standardized box. -->
+    <!-- `defaultValue` feeds DraggableNumber's intelligent fallback step (no
+         explicit step here): the scrub/nudge increment matches the DEFAULT
+         value's decimal precision (default 0.25 → 0.01, 0.3 → 0.1, 5 → 1). It
+         is the prop's STORED-space default (a precision hint); display-unit
+         conversion is intentionally not applied — the sole display-unit prop,
+         rotation, defaults to 0, which yields no step regardless. -->
     <DraggableNumber
       {label}
       value={round3(unit.toDisplay(evaluated))}
       min={min == null ? null : unit.toDisplay(min)}
       max={max == null ? null : unit.toDisplay(max)}
       coefficient={dragCoefficient}
+      {defaultValue}
+      {step}
       suffix={unit.suffix}
       oninput={previewNumber}
       onchange={commitNumber}

@@ -457,6 +457,8 @@
           max={resolvedMax}
           display={row.display ?? null}
           scrub={row.scrub ?? null}
+          defaultValue={row.default ?? null}
+          step={row.step ?? null}
         />
       {:else if disabled}
         <!-- Grayed display of a not-yet-created item: read the value straight
@@ -481,6 +483,7 @@
             min={row.min ?? null}
             max={resolvedMax}
             coefficient={row.scrub ?? 1}
+            defaultValue={row.default ?? null}
             oninput={(n) => onpreview(row.key, row.kind, n)}
             onchange={(n) => oncommit(row.key, row.kind, n)}
           />

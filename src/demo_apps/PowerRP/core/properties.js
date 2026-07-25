@@ -283,7 +283,7 @@ export const PROPS = {
   // Bounded [0,1] → NumericField range-scales its scrub automatically (the fix
   // for opacity "flicking between 0 and 1"; manifest "Number slider
   // sensitivity"). default 1 (fully opaque).
-  opacity: { label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting", default: 1, help: "How see-through the whole widget is, from 0 (invisible) to 1 (fully solid)." },
+  opacity: { label: "Opacity", kind: "number", min: 0, max: 1, step: 0.01, category: "formatting", default: 1, help: "How see-through the whole widget is, from 0 (invisible) to 1 (fully solid)." },
 
   // ── formatting: THE CAMERA BACKGROUND — a full PAINT (Axis-1) ────────────────
   // The camera's background IS its fill, so it composes the SAME paint seam as
@@ -493,7 +493,7 @@ export const PROPS = {
   particleSizeMin: { label: "Size min", kind: "number", min: 0, category: "particles", default: 2, help: "The smallest a particle's radius can be at birth, in canvas units. Each particle picks a random size between min and max." },
   particleSizeMax: { label: "Size max", kind: "number", min: 0, category: "particles", default: 5, help: "The largest a particle's radius can be at birth, in canvas units. Set equal to Size min for uniform dots." },
   particleColor: { label: "Color", kind: "color", category: "particles", default: "#ffcc33", help: "The color of every particle. Lower its alpha for translucent sparks; combine with Fade to have them dim out over their life." },
-  particleFade: { label: "Fade", kind: "number", min: 0, max: 1, category: "particles", default: 1, help: "How much a particle fades out over its life, from 0 (stays solid then vanishes) to 1 (fades all the way to transparent by the end)." },
+  particleFade: { label: "Fade", kind: "number", min: 0, max: 1, step: 0.01, category: "particles", default: 1, help: "How much a particle fades out over its life, from 0 (stays solid then vanishes) to 1 (fades all the way to transparent by the end)." },
   particleShrink: { label: "Shrink", kind: "number", min: 0, max: 1, category: "particles", default: 0, help: "How much a particle shrinks over its life, from 0 (keeps its birth size) to 1 (shrinks down to nothing by the end)." },
   particleSeed: { label: "Seed", kind: "number", category: "particles", default: 1, help: "The randomness seed. The same seed always produces the exact same particle pattern (so renders reproduce); change it to reshuffle." },
 

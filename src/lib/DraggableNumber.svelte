@@ -42,6 +42,8 @@
     --dn-ridge, --dn-ridge-count, --dn-ridge-gap
 -->
 <script>
+  import { defaultStep } from "./numberStep.js";
+
   // -- Pure helpers (general) -------------------------------------------------
 
   /**
@@ -152,6 +154,12 @@
     max = null,
     /** @type {number|null} Round result to this step; null = continuous. */
     step = null,
+    /** @type {number|null} The control's DEFAULT value. Used ONLY to derive the
+     *  fallback step when `step` is not given: the step then matches the decimal
+     *  precision of this value (defaultStep — e.g. default 0.25 → step 0.01,
+     *  0.3 → 0.1, 5 → 1). Ignored entirely when `step` is explicit; a null/0
+     *  default leaves the control continuous. */
+    defaultValue = null,
     /** @type {boolean} Show the skeuomorphic grip wheel. */
     wheel = true,
     /** @type {string} Text shown before the number (e.g. "x:"). */
@@ -200,7 +208,10 @@
   let lastEmitted = value; // last value we told the consumer about via onchange
 
   const bounded = $derived(min != null && max != null);
-  const decimals = $derived(decimalsForStep(step, DEFAULT_DECIMALS));
+  // An explicit `step` always wins; otherwise fall back to the granularity
+  // implied by the default value's precision (null default → continuous).
+  const effectiveStep = $derived(step ?? defaultStep(defaultValue));
+  const decimals = $derived(decimalsForStep(effectiveStep, DEFAULT_DECIMALS));
   const display = $derived(formatValue(value, decimals));
 
   // The wheel scrolls its ridge pattern by the accumulated drag. Modulo keeps
@@ -212,7 +223,7 @@
 
   /** Command. Set value (clamp + step + reactive), firing oninput each time. */
   function applyValue(next) {
-    next = roundToStep(next, step, min ?? 0);
+    next = roundToStep(next, effectiveStep, min ?? 0);
     next = clamp(next, min, max);
     if (next === value) return;
     value = next;
@@ -443,7 +454,7 @@
   // -- Keyboard ---------------------------------------------------------------
 
   function nudge(dir, fine) {
-    const base = step ?? coefficient;
+    const base = effectiveStep ?? coefficient;
     dragStartValue = value; // applyValue reads no start, but keep parity for fine
     const amount = base * (fine ? FINE_FACTOR : 1);
     applyValue(value + dir * amount);
