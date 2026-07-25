@@ -1987,6 +1987,14 @@ export class PowerRPApp {
     return projectApi.listProjects();
   }
 
+  /** Query. Fetch a project's raw {doc, assets} from the server WITHOUT loading
+   *  it into the editor (loadProject mutates editor state — this does not). The
+   *  Open modal's preview grid uses this to rasterize each project's slide 0
+   *  off to the side. Throws loudly on a non-OK response (same as loadProject). */
+  async fetchProjectDoc(name) {
+    return projectApi.loadProject(name);
+  }
+
   /** Command. Load a project from the server by name into the editor (same
    *  repair + binding migration as loadFile). UI resets mirror loadFile. A new
    *  project's font assets must re-register so a text run's `font` id resolves,

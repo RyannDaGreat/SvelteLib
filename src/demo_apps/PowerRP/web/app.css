@@ -201,6 +201,12 @@
   --a-badge-pad-y: var(--a-sp-1);
   --a-badge-pad-x: var(--a-sp-2);
   --a-badge-gap: 3px; /* icon↔text gap inside the badge; between --a-sp-1 (2) and --a-sp-2 (4) */
+  /* Open Project preview GRID (the "load from server" browser): auto-fill cards,
+     each a first-slide thumbnail (fixed 16:9 tile, letterboxed) over the name +
+     meta line. Card min-width is a roomy preview (vs the 72px asset cell); the
+     tile aspect is the common slide ratio so mixed-aspect docs letterbox neatly. */
+  --a-project-card-min: 220px;
+  --a-project-card-aspect: 16 / 9;
   /* Self-rendering FONT picker (manifest #26): each option in its own face, a
      larger preview beside the menu on hover. Option rows are a touch bigger than
      UI text so a typeface actually READS; the preview steps up from name → sample
@@ -3624,25 +3630,68 @@ audio.ae-preview-media {
   stroke-width: 3px;
 }
 
-/* Open Project modal (the SvelteLib Modal wired to the project server) —
-   rows are full-width .btn entries; meta (slide count) sits right-aligned
-   in the muted color. Empty/loading/error states are plain captions. */
-.open-project-list {
+/* Open Project modal (the SvelteLib Modal wired to the project server) — a
+   PREVIEW GRID of saved projects. Each card is a first-slide thumbnail tile over
+   the name + a muted meta line (slide count · relative mtime); the thumbnail
+   streams in client-side, so a card shows a placeholder tile until its render
+   resolves (or if it fails). Empty/loading/error states are plain captions. */
+.open-project-grid {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--a-sp-1);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--a-project-card-min), 1fr));
+  gap: var(--a-sp-4);
 }
-.open-project-row {
+.open-project-card {
   width: 100%;
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   gap: var(--a-sp-2);
+  padding: var(--a-sp-3);
+  text-align: left;
+  background: var(--a-panel-bg);
+  color: inherit;
+  border: var(--a-hairline) solid var(--border);
+  cursor: pointer;
+  min-width: 0;
 }
-.open-project-meta {
+.open-project-card:hover,
+.open-project-card:focus-visible {
+  border-color: var(--a-selection);
+  outline: none;
+}
+.open-project-thumb {
+  position: relative;
+  aspect-ratio: var(--a-project-card-aspect);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  overflow: hidden;
+}
+.open-project-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+/* Placeholder tile (pending render / failed render): a centered muted glyph. */
+.open-project-thumb.is-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.open-project-thumb-icon {
   color: var(--fg-dim);
+}
+.open-project-card-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.open-project-card-meta {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
 }
 .open-project-empty,
 .open-project-error {

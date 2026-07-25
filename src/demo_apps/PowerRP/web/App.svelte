@@ -8,6 +8,7 @@
   — the single source of truth for "what inputs exist right now".
 -->
 <script>
+  import "iconify-icon"; // registers the <iconify-icon> web component (used in the Open Project grid's placeholder tiles)
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
   import Toolbar from "./Toolbar.svelte";
@@ -29,6 +30,14 @@
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed } from "../core/document.js";
   import { cameraRectAt } from "./cameraFrame.js";
+  import { renderCameraFrame } from "./gpuService.js";
+  import {
+    PROJECT_PREVIEW_CONCURRENCY,
+    PROJECT_PREVIEW_BASE_W,
+    previewRenderSize,
+    mapWithConcurrency,
+    projectMetaLine,
+  } from "./projectPreviews.js";
   import { createKeybindings } from "../core/keybindings.js";
   import { createShortcuts } from "../core/shortcuts.js";
   import { unionRect, alignedPosition, mirroredPosition } from "../core/geometry.js";
@@ -37,25 +46,84 @@
 
   const app = new PowerRPApp();
 
-  // Open Project… modal (manifest Round 12: Open brings up a modal listing
-  // previously saved server projects). Wires the app's showOpenModal hook to
-  // the SvelteLib Modal; the list loads fresh on every open (the server's
-  // projects folder is the source of truth). Errors surface in the list area.
+  // Open Project… modal — a PREVIEW GRID of every saved server project (was a
+  // bare name list). The list loads fresh on every open (the server's projects
+  // folder is the source of truth); each card then fills in a first-slide
+  // thumbnail rendered CLIENT-side (the server keeps no per-project thumb), so
+  // Open reads as "load from server, with previews". Clicking a card runs the
+  // SAME load path as before (app.loadProject). Errors surface in the grid area.
   let openModalVisible = $state(false);
-  let openProjects = $state(null); // null = loading; [] = none; strings = names
+  let openProjects = $state(null); // null = loading; [] = none; [{name,mtime,slideCount}] = ready
   let openError = $state(null);
+  // name → { status: "pending" | "ready" | "failed", src: dataURL|null }. Cards
+  // render immediately from openProjects; thumbnails stream in here as they
+  // resolve (a $state object → per-key reads in the grid are reactive).
+  let openPreviews = $state({});
+  let openNowMs = $state(Date.now()); // captured once per open, for the relative-mtime meta line
+  // Bumped on every open; async preview writes carrying a STALE generation (the
+  // modal was closed or reopened mid-render) are dropped — no cross-open bleed.
+  let openGeneration = 0;
+
   app.showOpenModal = async () => {
+    const gen = ++openGeneration;
     openModalVisible = true;
     openProjects = null;
     openError = null;
+    openPreviews = {};
+    openNowMs = Date.now();
+    let list;
     try {
-      openProjects = await app.listProjects();
+      list = await app.listProjects();
     } catch (e) {
+      if (gen !== openGeneration) return; // modal moved on while listing
       openError = String(e.message ?? e);
       console.error("Open Project: could not list server projects:", e);
+      return;
     }
+    if (gen !== openGeneration) return;
+    openProjects = list;
+    for (const p of list) openPreviews[p.name] = { status: "pending", src: null };
+    generateOpenPreviews(list, gen); // fire-and-forget: cards are already visible
   };
+
+  /**
+   * Command. Render each listed project's slide-0 preview into `openPreviews`,
+   * bounded to PROJECT_PREVIEW_CONCURRENCY at a time so N projects don't spawn N
+   * simultaneous CanvasKit rasters/fetches. Reads each project's doc read-only
+   * (app.fetchProjectDoc — NOT loadProject, which would mutate the editor),
+   * rasterizes slide 0 through the shared Skia pixel service at the proxy quality
+   * the slide thumbnails use, and stores a data URL. A degenerate/failed render →
+   * a name-only placeholder card + a console.warn (never a throw — the pool's
+   * worker swallows+reports so one bad project can't halt the rest). Writes
+   * carrying a stale `gen` are dropped.
+   */
+  function generateOpenPreviews(list, gen) {
+    const dpr = window.devicePixelRatio || 1;
+    mapWithConcurrency(list, PROJECT_PREVIEW_CONCURRENCY, async (p) => {
+      if (gen !== openGeneration) return; // modal closed/reopened — stop early
+      try {
+        const { doc } = await app.fetchProjectDoc(p.name);
+        if (gen !== openGeneration) return;
+        const repaired = app.repaired(doc); // match what opening it would show (idempotent on clean docs)
+        const rect = cameraRectAt(repaired, 0, 1, app.registry);
+        const size = previewRenderSize(rect, PROJECT_PREVIEW_BASE_W, dpr);
+        if (!size) throw new Error(`degenerate camera rect (${rect.w}×${rect.h})`);
+        const canvas = await renderCameraFrame(repaired, {
+          slideIndex: 0, alpha: 1, registry: app.registry,
+          width: size.width, height: size.height, quality: "proxy",
+        });
+        if (gen !== openGeneration) return;
+        openPreviews[p.name] = { status: "ready", src: canvas.toDataURL("image/png") };
+      } catch (e) {
+        if (gen !== openGeneration) return;
+        openPreviews[p.name] = { status: "failed", src: null };
+        console.warn(`Open Project: preview render failed for "${p.name}":`, e);
+      }
+    });
+  }
+
   async function pickProject(name) {
+    openGeneration++; // stop any in-flight preview renders — we're leaving the grid
     openModalVisible = false;
     await app.loadProject(name);
   }
@@ -1005,6 +1073,10 @@
   {#if app.fpsVisible}
     <FpsCounter {app} />
   {/if}
+  <!-- Open Project: a PREVIEW GRID of saved server projects (the "load from
+       server" browser). One card per project — a first-slide thumbnail (rendered
+       client-side, streamed in) + name + slide-count/relative-mtime meta. Click a
+       card to load it (same path as before). Empty/loading/error are captions. -->
   <Modal bind:open={openModalVisible} title="Open Project">
     {#if openError}
       <div class="open-project-error">{openError}</div>
@@ -1013,12 +1085,22 @@
     {:else if openProjects.length === 0}
       <div class="open-project-empty">No projects saved on the server yet — use "Save to Server" first.</div>
     {:else}
-      <ul class="open-project-list">
-        {#each openProjects as p}
+      <ul class="open-project-grid">
+        {#each openProjects as p (p.name)}
+          {@const preview = openPreviews[p.name]}
           <li>
-            <button type="button" class="btn open-project-row" onclick={() => pickProject(p.name)}>
-              <span>{p.name}</span>
-              <span class="open-project-meta">{p.slideCount} slides</span>
+            <button type="button" class="open-project-card" onclick={() => pickProject(p.name)} title={p.name}>
+              <span class="open-project-thumb" class:is-empty={!preview || preview.status !== "ready"}>
+                {#if preview?.status === "ready"}
+                  <img src={preview.src} alt={`Preview of ${p.name}`} loading="lazy" />
+                {:else if preview?.status === "failed"}
+                  <iconify-icon class="open-project-thumb-icon" icon="mdi:image-broken-variant" width="1.6em" height="1.6em"></iconify-icon>
+                {:else}
+                  <iconify-icon class="open-project-thumb-icon" icon="mdi:image-outline" width="1.6em" height="1.6em"></iconify-icon>
+                {/if}
+              </span>
+              <span class="open-project-card-name">{p.name}</span>
+              <span class="open-project-card-meta">{projectMetaLine(p, openNowMs)}</span>
             </button>
           </li>
         {/each}
