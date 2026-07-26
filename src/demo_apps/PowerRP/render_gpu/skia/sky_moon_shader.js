@@ -107,10 +107,55 @@ export function packSkyMoon(u) {
   return out;
 }
 
+// ── PROXY stand-in (thumbnail quality) ────────────────────────────────────────
+// skyMoon runs a 5-octave fbm (the maria) per pixel — ~0.17s per 256×144 CPU-raster
+// thumbnail. Like skySun it is a DISC on a transparent field, so its proxy is a
+// RADIAL (not the family's vertical gradient): a soft-edged albedo disc fading to
+// transparent, so the sky shows through and it reads as a moon. Phase / earthshine /
+// maria are dropped (invisible at thumbnail size). No SkSL; paint_skia.js draws it.
+const PROXY_MOON_SOLID_FRAC = 0.85;  // fraction of the disc radius that stays fully opaque before the soft edge
+
+/** Pure. Component-wise lerp of two rgb triples. @example moonMix3([0,0,0],[1,1,1],0.5) // [0.5,0.5,0.5] */
+function moonMix3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+
+/**
+ * Pure function. The skyMoon PROXY stand-in spec: a soft-edged disc of the moon's
+ * albedo tint, fading to transparent at the disc rim so the sky shows through.
+ * Coordinates are in the region's LOCAL space; colours are [r,g,b,a] in 0..1.
+ *
+ * @param {object} params - the moon's op params ({color, size})
+ * @param {{cx:number, cy:number, halfW:number, halfH:number}} region - local-space geometry
+ * @returns {{kind:"radial", cx:number, cy:number, radius:number, stops:Array<{offset:number, color:[number,number,number,number]}>}}
+ *
+ * @example skyMoonProxyFill({color: "#e8e6de", size: 0.74}, {cx: 110, cy: 110, halfW: 110, halfH: 110}).kind // "radial"
+ * @example skyMoonProxyFill({color: "#e8e6de", size: 0.5}, {cx: 0, cy: 0, halfW: 100, halfH: 100}).radius // 50
+ * @example skyMoonProxyFill({color: "#ffffff", size: 0.5}, {cx: 0, cy: 0, halfW: 100, halfH: 100}).stops[2].color[3] // 0 (transparent rim)
+ */
+export function skyMoonProxyFill(params, region) {
+  const c = parseColor(params.color ?? "#e8e6de");
+  const albedo = [c[0], c[1], c[2]];
+  const minHalf = Math.max(Math.min(region.halfW, region.halfH), 1);
+  const radius = Math.max((params.size ?? 0.74) * minHalf, 1);
+  // A hint of limb darkening: the rim of the solid disc is slightly dimmer.
+  const rim = moonMix3(albedo, [0, 0, 0], 0.25);
+  return {
+    kind: "radial",
+    cx: region.cx, cy: region.cy, radius,
+    stops: [
+      { offset: 0, color: [albedo[0], albedo[1], albedo[2], 1] },
+      { offset: PROXY_MOON_SOLID_FRAC, color: [rim[0], rim[1], rim[2], 1] },
+      { offset: 1, color: [rim[0], rim[1], rim[2], 0] },
+    ],
+  };
+}
+
+/** `proxyFill` gives the thumbnail/minimap (quality:"proxy") path a cheap radial-disc
+ * stand-in instead of the phase-lit, maria-fbm SkSL. */
 export const SKY_MOON_MATERIAL = {
   id: "skyMoon",
   sksl: SKY_MOON_SKSL,
   pack: packSkyMoon,
   uniformFloats: SKY_MOON_UNIFORM_FLOATS,
   backdrop: false,
+  proxyFill: skyMoonProxyFill,
 };

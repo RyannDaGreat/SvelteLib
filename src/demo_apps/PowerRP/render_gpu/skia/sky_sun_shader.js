@@ -86,10 +86,62 @@ export function packSkySun(u) {
   return out;
 }
 
+// ── PROXY stand-in (thumbnail quality) ────────────────────────────────────────
+// skySun is the lightest of the sky family (no fbm — a disc + an exp aureole), but
+// it is a sky-family GENERATIVE material and its size is camera-scale, so it takes a
+// proxy for consistency. RADIAL (not the family's usual vertical gradient) BECAUSE a
+// sun is a DISC on a transparent field: a box-filling linear gradient would occlude
+// the sky dome behind it, whereas a radial glow (hot centre → transparent rim) keeps
+// the transparency and reads as a sun. No SkSL. paint_skia.js draws the radial.
+const PROXY_SUN_REACH_FRAC = 0.95;   // aureole radius as a fraction of the shorter half-extent (mirrors the shader's compact-support halo)
+const PROXY_SUN_CORE_WHITEN = 0.5;   // how far the hot centre is pushed toward white (the shader's HDR core bloom)
+const PROXY_SUN_DISC_EDGE_ALPHA = 0.85; // alpha at the disc edge before the aureole falloff
+
+/** Pure. Clamp x into [lo,hi]. @example clampN(1.4, 0, 1) // 1 */
+function clampN(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }
+/** Pure. Component-wise lerp of two rgb triples. @example mix3([0,0,0],[1,1,1],0.5) // [0.5,0.5,0.5] */
+function mix3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+
+/**
+ * Pure function. The skySun PROXY stand-in spec: a radial glow at the box centre —
+ * a white-hot warm core (the sun colour pushed toward white), the disc body in the
+ * sun colour, fading to transparent at the aureole rim so the sky shows through.
+ * Coordinates are in the region's LOCAL space; colours are [r,g,b,a] in 0..1.
+ *
+ * @param {object} params - the sun's op params ({color, size})
+ * @param {{cx:number, cy:number, halfW:number, halfH:number}} region - local-space geometry
+ * @returns {{kind:"radial", cx:number, cy:number, radius:number, stops:Array<{offset:number, color:[number,number,number,number]}>}}
+ *
+ * @example skySunProxyFill({color: "#fff4d6", size: 0.26}, {cx: 80, cy: 80, halfW: 80, halfH: 80}).kind // "radial"
+ * @example skySunProxyFill({color: "#fff4d6", size: 0.26}, {cx: 80, cy: 80, halfW: 80, halfH: 80}).stops[2].color[3] // 0 (transparent rim)
+ * @example skySunProxyFill({color: "#ffffff", size: 0.26}, {cx: 0, cy: 0, halfW: 100, halfH: 100}).radius // 95
+ */
+export function skySunProxyFill(params, region) {
+  const pc = parseColor(params.color ?? "#fff4d6");
+  const color = [pc[0], pc[1], pc[2]];
+  const minHalf = Math.max(Math.min(region.halfW, region.halfH), 1);
+  const radius = PROXY_SUN_REACH_FRAC * minHalf;
+  const size = params.size ?? 0.26;
+  const discEdge = clampN(size / PROXY_SUN_REACH_FRAC, 0.05, 0.9);
+  const core = mix3(color, [1, 1, 1], PROXY_SUN_CORE_WHITEN);
+  return {
+    kind: "radial",
+    cx: region.cx, cy: region.cy, radius,
+    stops: [
+      { offset: 0, color: [core[0], core[1], core[2], 1] },
+      { offset: discEdge, color: [color[0], color[1], color[2], PROXY_SUN_DISC_EDGE_ALPHA] },
+      { offset: 1, color: [color[0], color[1], color[2], 0] },
+    ],
+  };
+}
+
+/** `proxyFill` gives the thumbnail/minimap (quality:"proxy") path a cheap radial-disc
+ * stand-in instead of the disc+aureole SkSL. */
 export const SKY_SUN_MATERIAL = {
   id: "skySun",
   sksl: SKY_SUN_SKSL,
   pack: packSkySun,
   uniformFloats: SKY_SUN_UNIFORM_FLOATS,
   backdrop: false,
+  proxyFill: skySunProxyFill,
 };

@@ -148,10 +148,54 @@ export function packSkyClouds(u) {
   return out;
 }
 
+// ── PROXY stand-in (thumbnail quality) ────────────────────────────────────────
+// skyClouds is the HEAVIEST generative material (domain-warped fbm sampled once per
+// pixel PLUS once per sun for the directional-derivative lighting → ~3s per 256×144
+// CPU-raster thumbnail) and camera-bound. Its proxy is a dead-simple vertical band
+// of the base cloud tint, TRANSLUCENT (peak alpha in the middle, feathered to near-
+// transparent at top/bottom) so the sky behind still reads — a soft "cloud haze"
+// preview, no fbm. paint_skia.js turns this spec into a Skia linear gradient.
+const PROXY_CLOUD_EDGE_ALPHA = 0.12; // near-transparent at the top/bottom of the band
+const PROXY_CLOUD_MID_ALPHA = 0.6;   // opacity of the cloud mass through the middle
+
+/**
+ * Pure function. The skyClouds PROXY stand-in spec: a vertical translucent band of
+ * the base cloud tint (transparent → cloud → transparent) so the region reads as a
+ * soft cloud haze over the sky beneath without occluding it. Coordinates are in the
+ * region's LOCAL space (paint_skia.js applies the view+world CTM); colours are
+ * [r,g,b,a] in 0..1.
+ *
+ * @param {object} params - the clouds' op params ({base, ...})
+ * @param {{cx:number, cy:number, halfW:number, halfH:number}} region - local-space geometry
+ * @returns {{kind:"linear", x0:number, y0:number, x1:number, y1:number, stops:Array<{offset:number, color:[number,number,number,number]}>}}
+ *
+ * @example skyCloudsProxyFill({base: "#eef1f6"}, {cx: 128, cy: 72, halfW: 128, halfH: 72}).kind // "linear"
+ * @example skyCloudsProxyFill({base: "#ffffff"}, {cx: 0, cy: 0, halfW: 100, halfH: 100}).stops[1].color[3] // 0.6 (opaque-ish middle)
+ * @example skyCloudsProxyFill({base: "#ffffff"}, {cx: 0, cy: 0, halfW: 100, halfH: 100}).stops[0].color[3] // 0.12 (feathered top)
+ */
+export function skyCloudsProxyFill(params, region) {
+  const base = rgb("base", params.base ?? "#eef1f6");
+  const top = region.cy - region.halfH, bot = region.cy + region.halfH;
+  const edge = [base[0], base[1], base[2], PROXY_CLOUD_EDGE_ALPHA];
+  const mid = [base[0], base[1], base[2], PROXY_CLOUD_MID_ALPHA];
+  return {
+    kind: "linear",
+    x0: region.cx, y0: top, x1: region.cx, y1: bot,
+    stops: [
+      { offset: 0, color: edge },
+      { offset: 0.5, color: mid },
+      { offset: 1, color: edge },
+    ],
+  };
+}
+
+/** `proxyFill` gives the thumbnail/minimap (quality:"proxy") path a cheap
+ * translucent-band stand-in instead of the domain-warped-fbm SkSL. */
 export const SKY_CLOUDS_MATERIAL = {
   id: "skyClouds",
   sksl: SKY_CLOUDS_SKSL,
   pack: packSkyClouds,
   uniformFloats: SKY_CLOUDS_UNIFORM_FLOATS,
   backdrop: false,
+  proxyFill: skyCloudsProxyFill,
 };

@@ -263,14 +263,58 @@ export function packRaycastDither(u) {
   return out;
 }
 
+// ── PROXY stand-in (thumbnail quality) ────────────────────────────────────────
+// raycast_dither is a per-pixel animated mesh gradient (5 gaussian metaballs +
+// domain-warp value noise + grain, every pixel) — heavy over a whole thumbnail. Its
+// look is diagonal colour STREAKS over a dark base, so the proxy is a linear gradient
+// along the streak axis: the dark background at both ends with the strongest palette
+// streaks as the middle stops. No SkSL, no metaballs. paint_skia.js draws the spec.
+const PROXY_MIN_WEIGHT = 0.05;   // ignore palette spots weaker than this (weight = the colour's alpha)
+const PROXY_MAX_STREAKS = 3;     // at most this many palette colours become mid stops (keep it a simple gradient)
+
+/**
+ * Pure function. The raycast_dither PROXY spec: a linear gradient along the streak
+ * axis — the dark background at both ends, the strongest palette colours as evenly
+ * spaced mid stops (so it reads as diagonal streaks over black). Falls back to a
+ * solid background fill when the palette is empty. Coordinates are in the region's
+ * LOCAL space; colours are [r,g,b,a] in 0..1 (opaque).
+ *
+ * @param {object} params - the op params ({background, color0..color4, streakAngle})
+ * @param {{cx:number, cy:number, halfW:number, halfH:number}} region - local-space geometry
+ * @returns {{kind:"linear"|"solid", ...}}
+ *
+ * @example raycastDitherProxyFill({background:"#050608", color0:"#ff5e73", color1:"#eb1f36", streakAngle:0.785}, {cx:0,cy:0,halfW:280,halfH:180}).kind // "linear"
+ * @example raycastDitherProxyFill({background:"#050608"}, {cx:0,cy:0,halfW:100,halfH:100}).kind // "solid" (empty palette)
+ */
+export function raycastDitherProxyFill(params, region) {
+  const bg = parseColor(params.background ?? "#050608");
+  const streaks = [params.color0, params.color1, params.color2, params.color3, params.color4]
+    .filter((v) => v != null)
+    .map((v) => parseColor(v))
+    .filter((c) => c[3] > PROXY_MIN_WEIGHT)
+    .sort((a, b) => b[3] - a[3])
+    .slice(0, PROXY_MAX_STREAKS);
+  if (streaks.length === 0) return { kind: "solid", color: [bg[0], bg[1], bg[2], 1] };
+  const a = params.streakAngle ?? 0.785;
+  const ext = Math.hypot(region.halfW, region.halfH);
+  const dx = Math.cos(a) * ext, dy = Math.sin(a) * ext;
+  // background at 0 and 1, streaks evenly spaced across the interior.
+  const stops = [{ offset: 0, color: [bg[0], bg[1], bg[2], 1] }];
+  streaks.forEach((c, i) => stops.push({ offset: (i + 1) / (streaks.length + 1), color: [c[0], c[1], c[2], 1] }));
+  stops.push({ offset: 1, color: [bg[0], bg[1], bg[2], 1] });
+  return { kind: "linear", x0: region.cx - dx, y0: region.cy - dy, x1: region.cx + dx, y1: region.cy + dy, stops };
+}
+
 // ── material descriptor (registry entry) ──────────────────────────────────────
 // FOREGROUND, GENERATIVE material: `backdrop: false` binds NO children and skips
 // the below-content re-render — handleMaterialFill just makeShader+fill. `id`
-// matches the plugin's `material` op field.
+// matches the plugin's `material` op field. `proxyFill` gives the thumbnail/minimap
+// (quality:"proxy") path a cheap streak-gradient stand-in instead of the SkSL.
 export const RAYCAST_DITHER_MATERIAL = {
   id: "raycast_dither",
   sksl: RAYCAST_DITHER_SKSL,
   pack: packRaycastDither,
   uniformFloats: RAYCAST_DITHER_UNIFORM_FLOATS,
   backdrop: false,
+  proxyFill: raycastDitherProxyFill,
 };

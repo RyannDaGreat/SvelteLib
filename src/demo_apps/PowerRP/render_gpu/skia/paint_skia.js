@@ -44,7 +44,7 @@ import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, MAX_LENS_DEPTH, 
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
-import { getMaterial, materialEffect, isBackdropMaterial } from "./materials.js";
+import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill } from "./materials.js";
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
@@ -184,6 +184,16 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
     // re-render, no full-screen blur/SkSL. FULL never enters this branch.
     if (proxy && PROXY_BACKDROP_OPS.has(cmd.op)) {
       drawProxyBackdrop(CanvasKit, canvas, cmd, view, world, ctx);
+      continue;
+    }
+    // PROXY: EVERY generative materialFill is replaced by a cheap Skia stand-in
+    // (materials.resolveProxyFill → a solid/linear/radial fill; the material's own
+    // proxyFill if it declares one, else a representative flat default) — NO SkSL
+    // compile or per-pixel raster on the thumbnail/minimap software surface. This is
+    // UNIVERSAL (not an allowlist), so a future materialFill can never silently
+    // regress thumbnails. FULL never enters this branch.
+    if (proxy && cmd.op === "materialFill") {
+      drawProxyMaterialFill(CanvasKit, canvas, cmd, view, world, ctx);
       continue;
     }
     switch (cmd.op) {
@@ -1197,6 +1207,64 @@ function drawProxyBackdrop(CanvasKit, canvas, cmd, view, world, ctx) {
     canvas.restore();
   }
   drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); // glass + material both carry stroke/strokeWidth
+}
+
+/**
+ * Query→build (allocates a CanvasKit Shader — caller deletes). Turns a GRADIENT
+ * proxyFill SPEC (materials.js: {kind:"linear"|"radial", …, stops:[{offset, color:
+ * [r,g,b,a]}]}) into a Skia gradient shader in the region's LOCAL space (the caller
+ * draws under the view+world CTM, so local coords land in device px). `opacity`
+ * folds into every stop's alpha (item/group opacity, like skShaderForPaint). The
+ * "solid" kind carries no gradient and is drawn via setColor by the caller, never
+ * here. Throws LOUDLY on any other kind (a bad spec must not silently draw nothing).
+ */
+function proxyGradientShader(CanvasKit, spec, opacity) {
+  const colors = spec.stops.map((s) => CanvasKit.Color4f(s.color[0], s.color[1], s.color[2], s.color[3] * opacity));
+  const positions = spec.stops.map((s) => s.offset);
+  if (spec.kind === "linear")
+    return CanvasKit.Shader.MakeLinearGradient([spec.x0, spec.y0], [spec.x1, spec.y1], colors, positions, CanvasKit.TileMode.Clamp);
+  if (spec.kind === "radial")
+    return CanvasKit.Shader.MakeRadialGradient([spec.cx, spec.cy], spec.radius, colors, positions, CanvasKit.TileMode.Clamp);
+  throw new Error(`paintIR(skia): proxyGradientShader got non-gradient spec kind "${spec.kind}"`);
+}
+
+/**
+ * Command (draws on `canvas`). THE proxy-quality stand-in for a generative
+ * materialFill (lens flare, sky family, corkboard, raycast_dither, and ANY future
+ * one): fills the material's rounded-rect region with the CHEAP spec
+ * materials.resolveProxyFill returns — the material's own proxyFill (a radial glow, a
+ * vertical sky gradient, a flat board colour, …) or a representative flat DEFAULT —
+ * INSTEAD of compiling + running its per-pixel SkSL. Runs in the region's LOCAL space
+ * (applyView — rotation-safe, the same seam handleMaterialFill uses), so a
+ * transparent-rimmed spec (sun/moon/flare/tack) composites over the scene beneath
+ * without occluding it. The material's hairline border (if any) is drawn on top,
+ * matching the full path. `ctx` supplies the camera coverage-AA flag.
+ */
+function drawProxyMaterialFill(CanvasKit, canvas, cmd, view, world, ctx) {
+  const opacity = cmd.opacity ?? 1;
+  const aa = ctx.antialias;
+  if (cmd.halfW > 0 && cmd.halfH > 0) {
+    const material = getMaterial(cmd.material);
+    const spec = resolveProxyFill(material, cmd.params, { cx: cmd.cx, cy: cmd.cy, halfW: cmd.halfW, halfH: cmd.halfH });
+    canvas.save();
+    applyView(canvas, view, world);
+    const p = new CanvasKit.Paint();
+    p.setAntiAlias(aa);
+    let shader = null;
+    if (spec.kind === "solid") {
+      p.setColor(CanvasKit.Color4f(spec.color[0], spec.color[1], spec.color[2], spec.color[3] * opacity));
+    } else {
+      shader = proxyGradientShader(CanvasKit, spec, opacity);
+      if (!shader) throw new Error(`paintIR(skia): proxyFill gradient for material "${cmd.material}" returned null`);
+      p.setShader(shader);
+    }
+    const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
+    canvas.drawRRect(rr, p);
+    p.delete();
+    if (shader) shader.delete();
+    canvas.restore();
+  }
+  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); // materialFill carries stroke/strokeWidth
 }
 
 // ── subtree re-renders (self-contained `content`) ─────────────────────────────

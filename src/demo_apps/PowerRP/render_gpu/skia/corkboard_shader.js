@@ -486,10 +486,72 @@ export function packTack(u) {
   return out;
 }
 
+// ── PROXY stand-ins (thumbnail quality) ─────────────────────────────────────────
+// The corkboard family is lighter than the sky/flare shaders but still runs 4-octave
+// fbm per pixel — non-trivial over a whole thumbnail. Their look is DOMINATED by one
+// flat colour, so the proxy is that colour: cork/note fill their rounded-rect box
+// (solid); the thumbtack is a DISC (radial → transparent rim, so it reads round and
+// does not occlude the board behind it). No SkSL. paint_skia.js draws the spec.
+const PROXY_TACK_RIM_ALPHA = 0.9; // alpha at the tack-disc rim before the soft transparent falloff
+
+/**
+ * Pure function. The corkboard PROXY spec: a solid fill of the board's base tan.
+ *
+ * @param {object} params - the board's op params ({baseColor, ...})
+ * @returns {{kind:"solid", color:[number,number,number,number]}}
+ *
+ * @example corkboardProxyFill({baseColor: "#be8f56"}).kind // "solid"
+ * @example corkboardProxyFill({}).color[3] // 1 (opaque board)
+ */
+export function corkboardProxyFill(params) {
+  const c = parseColor(params.baseColor ?? "#be8f56");
+  return { kind: "solid", color: [c[0], c[1], c[2], 1] };
+}
+
+/**
+ * Pure function. The corkboardNote PROXY spec: a solid fill of the paper tone.
+ *
+ * @param {object} params - the note's op params ({paperColor, ...})
+ * @returns {{kind:"solid", color:[number,number,number,number]}}
+ *
+ * @example corkboardNoteProxyFill({paperColor: "#f8f6ee"}).kind // "solid"
+ * @example corkboardNoteProxyFill({}).color[3] // 1 (opaque paper)
+ */
+export function corkboardNoteProxyFill(params) {
+  const c = parseColor(params.paperColor ?? "#f8f6ee");
+  return { kind: "solid", color: [c[0], c[1], c[2], 1] };
+}
+
+/**
+ * Pure function. The corkboardThumbtack PROXY spec: a small radial disc of the tack
+ * colour fading to transparent at the rim, so it reads as a round tack over the board
+ * rather than a coloured square. Coordinates are in the region's LOCAL space.
+ *
+ * @param {object} params - the tack's op params ({color, ...})
+ * @param {{cx:number, cy:number, halfW:number, halfH:number}} region - local-space geometry
+ * @returns {{kind:"radial", cx:number, cy:number, radius:number, stops:Array<{offset:number, color:[number,number,number,number]}>}}
+ *
+ * @example corkboardThumbtackProxyFill({color: "#d22d2d"}, {cx: 20, cy: 20, halfW: 20, halfH: 20}).kind // "radial"
+ * @example corkboardThumbtackProxyFill({color: "#d22d2d"}, {cx: 0, cy: 0, halfW: 20, halfH: 20}).radius // 20
+ */
+export function corkboardThumbtackProxyFill(params, region) {
+  const c = parseColor(params.color ?? "#d22d2d");
+  const radius = Math.max(Math.min(region.halfW, region.halfH), 1);
+  return {
+    kind: "radial",
+    cx: region.cx, cy: region.cy, radius,
+    stops: [
+      { offset: 0, color: [c[0], c[1], c[2], 1] },
+      { offset: PROXY_TACK_RIM_ALPHA, color: [c[0], c[1], c[2], PROXY_TACK_RIM_ALPHA] },
+      { offset: 1, color: [c[0], c[1], c[2], 0] },
+    ],
+  };
+}
+
 // ── material descriptors (registry entries) ─────────────────────────────────────
 // FOREGROUND materials: `backdrop: false` tells the framework to bind NO children
 // and the materialFill handler to skip the below-content re-render. `id` matches
-// the plugin's `material` op field.
-export const CORK_MATERIAL = { id: "corkboard", sksl: CORK_SKSL, pack: packCork, uniformFloats: CORK_UNIFORM_FLOATS, backdrop: false };
-export const NOTE_MATERIAL = { id: "corkboardNote", sksl: NOTE_SKSL, pack: packNote, uniformFloats: NOTE_UNIFORM_FLOATS, backdrop: false };
-export const TACK_MATERIAL = { id: "corkboardThumbtack", sksl: TACK_SKSL, pack: packTack, uniformFloats: TACK_UNIFORM_FLOATS, backdrop: false };
+// the plugin's `material` op field. `proxyFill` gives each a cheap thumbnail stand-in.
+export const CORK_MATERIAL = { id: "corkboard", sksl: CORK_SKSL, pack: packCork, uniformFloats: CORK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardProxyFill };
+export const NOTE_MATERIAL = { id: "corkboardNote", sksl: NOTE_SKSL, pack: packNote, uniformFloats: NOTE_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardNoteProxyFill };
+export const TACK_MATERIAL = { id: "corkboardThumbtack", sksl: TACK_SKSL, pack: packTack, uniformFloats: TACK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardThumbtackProxyFill };

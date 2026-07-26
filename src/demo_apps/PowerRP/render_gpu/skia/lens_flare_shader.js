@@ -405,14 +405,71 @@ export function packLensFlare(u) {
   return out;
 }
 
+// ── PROXY stand-in (thumbnail quality) ────────────────────────────────────────
+// The lens flare is HEAVY (a 21-knob per-pixel shader whose default size is
+// camera-bound → the full frame). At thumbnail size the SkSL is ~1.3s of CPU
+// raster per render, invisible detail no one reads at ~100px. The proxy stand-in is
+// a single soft RADIAL gradient GLOW centred at the light position — the ONE thing a
+// tiny flare thumbnail must convey ("a bright flare here"). No SkSL, no ghost chain,
+// no fbm. paint_skia.js turns this spec into a Skia radial gradient.
+const PROXY_GLOW_RADIUS_FRAC = 0.9;  // glow radius as a fraction of the region half-diagonal (broad, like the flare's veil)
+const PROXY_CORE_ALPHA = 0.85;       // opacity of the hot centre (× brightness), fading to 0 at the rim
+const PROXY_MID_STOP = 0.35;         // radial stop where the falloff transitions core→broad-veil
+const PROXY_MID_ALPHA_FRAC = 0.4;    // veil alpha at PROXY_MID_STOP as a fraction of the core alpha
+
+/** Pure. Clamp x into [0,1]. @example cl01(1.4) // 1 */
+function cl01(x) { return Math.min(1, Math.max(0, x)); }
+
+/**
+ * Pure function. The lens-flare PROXY stand-in spec: a soft RADIAL glow centred at
+ * the light source, warm-white (the light's tint × its colour temperature × its
+ * brightness), fading to transparent so the region reads as "a bright flare" over
+ * the scene beneath — never a hole, never the full shader. Coordinates are in the
+ * region's LOCAL space (paint_skia.js applies the view+world CTM). Colours are
+ * [r,g,b,a] in 0..1.
+ *
+ * The light position is a [0,1] fraction of the region (uLight semantics): its LOCAL
+ * point is (cx + (lightX·2−1)·halfW, cy + (lightY·2−1)·halfH).
+ *
+ * @param {object} params - the flare's op params ({lightX, lightY, tint, colorTemp, brightness, ...})
+ * @param {{cx:number, cy:number, halfW:number, halfH:number}} region - local-space geometry
+ * @returns {{kind:"radial", cx:number, cy:number, radius:number, stops:Array<{offset:number, color:[number,number,number,number]}>}}
+ *
+ * @example lensFlareProxyFill({lightX: 0.72, lightY: 0.3, tint: "#fff2e6", colorTemp: 5200, brightness: 1}, {cx: 128, cy: 72, halfW: 128, halfH: 72}).kind // "radial"
+ * @example lensFlareProxyFill({lightX: 1, lightY: 0, tint: "#ffffff", colorTemp: 6500, brightness: 1}, {cx: 128, cy: 72, halfW: 128, halfH: 72}).cx // 256 (light at the right edge)
+ * @example lensFlareProxyFill({lightX: 0.5, lightY: 0.5, tint: "#ffffff", colorTemp: 6500, brightness: 1}, {cx: 100, cy: 100, halfW: 100, halfH: 100}).stops.length // 3
+ */
+export function lensFlareProxyFill(params, region) {
+  const lightX = params.lightX ?? 0.5;
+  const lightY = params.lightY ?? 0.5;
+  const gx = region.cx + (lightX * 2 - 1) * region.halfW;
+  const gy = region.cy + (lightY * 2 - 1) * region.halfH;
+  const radius = PROXY_GLOW_RADIUS_FRAC * Math.hypot(region.halfW, region.halfH);
+  const tint = rgb("tint", params.tint ?? "#ffffff");
+  const temp = kelvinToRGB(params.colorTemp ?? 6500);
+  const c = [cl01(tint[0] * temp[0]), cl01(tint[1] * temp[1]), cl01(tint[2] * temp[2])];
+  const core = cl01(PROXY_CORE_ALPHA * (params.brightness ?? 1));
+  return {
+    kind: "radial",
+    cx: gx, cy: gy, radius,
+    stops: [
+      { offset: 0, color: [c[0], c[1], c[2], core] },
+      { offset: PROXY_MID_STOP, color: [c[0], c[1], c[2], core * PROXY_MID_ALPHA_FRAC] },
+      { offset: 1, color: [c[0], c[1], c[2], 0] },
+    ],
+  };
+}
+
 // ── material descriptor (registry entry) ──────────────────────────────────────
 // FOREGROUND, GENERATIVE material: `backdrop: false` binds NO children and skips
 // the below-content re-render — handleMaterialFill just makeShader+fill. `id`
-// matches the plugin's `material` op field.
+// matches the plugin's `material` op field. `proxyFill` gives the thumbnail/minimap
+// (quality:"proxy") path a cheap radial-glow stand-in instead of the 21-knob SkSL.
 export const LENS_FLARE_MATERIAL = {
   id: "lens_flare",
   sksl: LENS_FLARE_SKSL,
   pack: packLensFlare,
   uniformFloats: LENS_FLARE_UNIFORM_FLOATS,
   backdrop: false,
+  proxyFill: lensFlareProxyFill,
 };
