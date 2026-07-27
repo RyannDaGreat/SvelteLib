@@ -20,7 +20,7 @@ import { parseColor } from "../render_gpu/ir.js";
 import { rasterizeIrPng } from "./gpuService.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 import { videoUploadCount, videoPlaybackState } from "../render_gpu/gpu/video_registry.js";
-import { videoV5UploadCount, videoV5State } from "../render_gpu/skia/video_v5.js";
+import { videoV5UploadCount, videoV5State, videoV5ScrubState } from "../render_gpu/skia/video_v5.js";
 
 // Dev/test seams (like __powerrp_render / __powerrp_app): the running total of
 // <video>→GPU-texture uploads (probe confirms the frame-advance gate keeps uploads
@@ -34,6 +34,10 @@ window.__powerrp_videoState = videoPlaybackState;
 // (seq advances), off-view PAUSE/RESUME, and the active pipeline mode. Zero prod effect.
 window.__powerrp_videoV5UploadCount = videoV5UploadCount;
 window.__powerrp_videoV5State = videoV5State;
+// V5 SCRUBBER diagnostic (its own off-main-thread scrub decoder): a per-src
+// snapshot ({status, paused, currentTime, duration}) — a probe asserts a paused
+// decoder parks at the requested scrubTime deterministically. Zero prod effect.
+window.__powerrp_videoV5ScrubState = videoV5ScrubState;
 
 /**
  * Browser render hook (a few in-browser pixel-parity probes await it via

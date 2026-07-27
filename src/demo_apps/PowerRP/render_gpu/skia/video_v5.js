@@ -49,7 +49,17 @@
  *
  * Browser-only (needs <video>/createImageBitmap/Worker). The Node CLI never
  * imports it (it passes its own empty media map).
+ *
+ * Imports ONLY the shared pure IR key helper (scrubFrameKey) from ir.js — NOT
+ * render_gpu/gpu/video_registry.js. The "standalone alternative" invariant above
+ * is specifically that V5 does not depend on the CORE video registry, so the two
+ * PLAYER + SCRUBBER paths stay independently A/B-swappable; a pure IR key is not
+ * that dependency. The scrub section below deliberately RE-OWNS its infrastructure
+ * (its own paused decoders, LRU, time-resolver) in the same spirit as the player
+ * half re-owns truncate/HAVE_CURRENT_DATA/the uploader-reuse logic.
  */
+
+import { scrubFrameKey } from "../ir.js";
 
 /** src -> entry (see makeEntry). */
 const registry = new Map();
@@ -217,6 +227,25 @@ function deliverBitmap(entry, bitmap, w, h) {
 function notify(src) { for (const cb of listeners) cb(src); }
 
 /**
+ * Query→build. Uploads an ALREADY-RGBA ImageBitmap to a fresh CanvasKit Image via
+ * `uploader` — the colour convert already happened off the main thread (in the
+ * worker, or in createImageBitmap for the main/scrub paths), so this is a plain
+ * texture upload (GPU) / pixel wrap (CPU), no convert on this thread. GPU:
+ * makeImageFromTextureSource(bitmap). CPU: MakeImageFromCanvasImageSource(bitmap)
+ * (an ImageBitmap is a CanvasImageSource). Throws (never a silent null) on a null
+ * upload. The caller owns the returned Image's lifetime.
+ *
+ * @param uploader a GPU or CPU uploader (video_registry.makeGpuUploader / makeCpuUploader)
+ * @param bitmap an ImageBitmap of a decoded frame
+ */
+function uploadBitmap(uploader, bitmap) {
+  if (uploader.isGpu) return uploader.grab(bitmap);
+  const img = uploader.CanvasKit.MakeImageFromCanvasImageSource(bitmap);
+  if (!img) throw new Error(`video_v5: MakeImageFromCanvasImageSource returned null for a ${bitmap.width}×${bitmap.height} frame`);
+  return img;
+}
+
+/**
  * Query→build (near-pure: idempotent ensure + a per-paint upload). The V5 player's
  * current frame as a CanvasKit Image via `uploader`, or null when no frame exists
  * yet (draw NOTHING — the async contract). GPU: a REUSED texture-backed Image per
@@ -236,13 +265,7 @@ export function getVideoV5Frame(uploader, src) {
   if (!bitmap) return null; // no frame yet → draw nothing; onVideoV5Frame nudges repaints as they land
   const w = entry.latestW, h = entry.latestH;
   if (!(w > 0 && h > 0)) return null;
-  if (!uploader.isGpu) {
-    // CPU (offscreen/headless): a fresh portable Image (caller deletes). An
-    // ImageBitmap is a CanvasImageSource, so MakeImageFromCanvasImageSource takes it.
-    const img = uploader.CanvasKit.MakeImageFromCanvasImageSource(bitmap);
-    if (!img) throw new Error(`video_v5: MakeImageFromCanvasImageSource returned null for a ${w}×${h} frame`);
-    return img;
-  }
+  if (!uploader.isGpu) return uploadBitmap(uploader, bitmap); // CPU: fresh portable Image (caller deletes)
   const key = uploader.scopeId + "|" + src;
   let slot = playerImages.get(key);
   if (slot && (slot.w !== w || slot.h !== h)) { slot.img.delete(); playerImages.delete(key); slot = null; } // dims changed → rebuild
@@ -303,6 +326,9 @@ export function onVideoV5Frame(cb) {
 export function disposeVideoV5Scope(scopeId) {
   const prefix = scopeId + "|";
   for (const [k, slot] of playerImages) if (k.startsWith(prefix)) { slot.img.delete?.(); playerImages.delete(k); }
+  // The scrub LRU is scope-keyed too (a texture-backed scrub Image is context-
+  // bound), so free this scope's cached scrub frames on the same teardown.
+  for (const [k, img] of scrubCache) if (k.startsWith(prefix)) { img?.delete?.(); scrubCache.delete(k); }
 }
 
 /** Query. Total ImageBitmap->GPU-texture uploads so far (diagnostic; the seq gate
@@ -338,8 +364,269 @@ export function resetVideoV5Registry() {
   registry.clear();
   idToSrc.clear();
   playerImages.clear();
+  resetVideoV5ScrubRegistry();
 }
 
 /** Pure function. Shortens a src for a log line (a data: URI can be megabytes).
  *  @example truncate("data:video/mp4;base64,AAAABBBBCCCCDDDD...") // "data:video/mp4;base64,AAAABBBB…" */
 function truncate(src) { return typeof src === "string" && src.length > 32 ? src.slice(0, 32) + "…" : String(src); }
+
+// ── THE V5 SCRUBBER PATH (deterministic frame-at-time, off-main-thread convert) ─
+// The PLAYER above hands back a live, LOOPING <video> whose wall clock advances
+// the frame (non-deterministic). The V5 SCRUBBER is the opposite: it PARKS a
+// PAUSED decoder at an EXACT time (document state) and awaits THAT one frame.
+// This is the off-main-thread analogue of gpu/video_registry.js's scrubber — it
+// re-owns its own paused decoders + LRU (the standalone philosophy of this
+// module), and its ONE difference from the core scrubber is the frame grab: after
+// the seek settles it runs createImageBitmap(<video>) (the YUV->RGBA convert
+// resolves OFF the main thread — the same "V5 quality" the main-mode player loop
+// uses) and uploads the already-RGBA bitmap (uploadBitmap), rather than the core
+// path's makeImageFromTextureSource(<video>) main-thread convert.
+//
+// Scrub decoders are SEPARATE from the player registry (a player + a scrubber on
+// one source must not fight over currentTime) and NEVER autoplay/loop. The render
+// path is sync-shaped but a seek is async, so this mirrors the image pipeline's
+// async contract with a bounded LRU cache, exactly like the core scrubber.
+
+/** src → {status, el, error, ready:Promise, chain:Promise} for the PAUSED V5 scrub
+ *  decoders (separate from `registry` so the player never fights them). */
+const scrubRegistry = new Map();
+/** scopedV5ScrubKey → CanvasKit.Image: the bounded LRU of decoded scrub frames.
+ *  A live scrub sweeps `time` continuously, so old frames must evict (+ .delete())
+ *  or the wasm heap leaks. Insertion-ordered ⇒ first key is least-recently-used. */
+const scrubCache = new Map();
+/** scopedV5ScrubKey → in-flight Promise<Image|null> — dedups concurrent requests
+ *  for the SAME frame (N synced V5 scrubbers → ONE seek+decode). */
+const scrubInflight = new Map();
+
+/** Max decoded V5 scrub frames kept at once — comfortably exceeds the distinct
+ *  (source, time) frames a realistic scene shows, so a one-shot prepare pass never
+ *  evicts a frame it still needs; a live tween churns within this bound. */
+export const V5_SCRUB_CACHE_CAP = 64;
+/** Seeking exactly to `duration` is undefined (past the last frame); back off a
+ *  hair so "the end" resolves to the last real frame. Seconds. */
+export const V5_SCRUB_END_EPSILON = 1e-3;
+
+/**
+ * Pure function. Resolves a requested scrub time against the real media duration +
+ * wrap mode. "clamp" holds [0, duration); "loop" wraps modulo the duration; an
+ * unknown duration best-effort clamps to >= 0. A standalone twin of
+ * video_registry.resolveScrubTime (this module re-owns its scrub infrastructure);
+ * kept pure + exported so the mapping is unit-testable without a <video>.
+ *
+ * @example resolveV5ScrubTime(1.5, 3, "clamp") // 1.5
+ * @example resolveV5ScrubTime(5, 3, "clamp") // 2.999  (clamped to just under the end)
+ * @example resolveV5ScrubTime(-1, 3, "clamp") // 0
+ * @example resolveV5ScrubTime(4, 3, "loop") // 1  (4 mod 3)
+ * @example resolveV5ScrubTime(-1, 3, "loop") // 2  (wraps positive)
+ */
+export function resolveV5ScrubTime(t, duration, wrap) {
+  const time = Number.isFinite(t) ? t : 0;
+  if (!Number.isFinite(duration) || duration <= 0) return Math.max(0, time);
+  const end = Math.max(0, duration - V5_SCRUB_END_EPSILON);
+  if (wrap === "loop") {
+    const m = ((time % duration) + duration) % duration;
+    return Math.min(m, end);
+  }
+  return Math.min(Math.max(0, time), end);
+}
+
+/** Pure function. The scrub LRU key for an uploader: the shared media-map key
+ *  (videoV5FrameKey via scrubFrameKey) PREFIXED by the uploader scope, because a
+ *  texture-backed scrub Image is usable only on its OWN GL context (CPU images are
+ *  portable and share the single "cpu" scope). The media-map key paint_skia reads
+ *  is the UNSCOPED videoV5FrameKey (browser_media re-keys); this scope tag is a
+ *  CACHE concern only.
+ *
+ *  @example // scopedV5ScrubKey({scopeId: "gl:0"}, "clip.mp4", 1.5, "clamp") // "gl:0|clip.mp4@1.5000@clamp"
+ */
+function scopedV5ScrubKey(uploader, ref, seekTime, wrap) {
+  return uploader.scopeId + "|" + scrubFrameKey(ref, seekTime, wrap);
+}
+
+/**
+ * Command (near-pure: idempotent). Ensures a PAUSED scrub <video> exists for
+ * `src`. Separate from makeEntry/ensureVideoV5 (the player) so the two never fight
+ * over currentTime. `entry.ready` resolves after load AND a warm-up seek has
+ * primed the decoder — the FIRST seek after load on a cold decoder can decode a
+ * black frame (proven in the core scrubber), so a throwaway warm-up seek to
+ * mid-clip fires before any real grab. Returns the entry.
+ */
+function ensureV5ScrubElement(src) {
+  if (typeof src !== "string" || src.length === 0)
+    throw new Error(`ensureV5ScrubElement: src must be a non-empty string, got ${JSON.stringify(src)}`);
+  const existing = scrubRegistry.get(src);
+  if (existing) return existing;
+
+  const el = document.createElement("video");
+  el.muted = true;      // no audio on a scrubber (it never plays)
+  el.autoplay = false;  // NEVER plays — its time is document state
+  el.loop = false;
+  el.playsInline = true;
+  el.crossOrigin = "anonymous"; // let CORS assets feed createImageBitmap untainted
+  el.preload = "auto";
+  const entry = { status: "loading", el, error: null, ready: null, chain: Promise.resolve() };
+  scrubRegistry.set(src, entry);
+
+  el.addEventListener("error", () => {
+    entry.status = "error";
+    console.error(`PowerRP video_v5 (scrub): <video> failed to load "${truncate(src)}" — ${el.error?.message ?? "unknown media error"}`);
+    notify(src);
+  });
+
+  entry.ready = new Promise((resolve) => {
+    el.addEventListener("loadeddata", async () => {
+      if (entry.status !== "error") entry.status = "ready";
+      // WARM-UP: prime the cold decoder with one throwaway seek to a NON-ZERO time
+      // (guaranteed to fire `seeked`, unlike re-seeking to the current 0), so every
+      // real grab below is frame-accurate rather than black.
+      try {
+        const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
+        await seekV5(el, dur > 0 ? dur / 2 : 0);
+      } catch (e) {
+        console.error(`PowerRP video_v5 (scrub): warm-up seek of "${truncate(src)}" failed — ${e?.message ?? e}`);
+      }
+      notify(src);
+      resolve();
+    }, { once: true });
+  });
+  el.src = src;
+  el.load();
+  return entry;
+}
+
+/**
+ * Command (async). Seeks `el` to `t` and resolves once the target frame is
+ * decoded. Uses the spec-reliable `el.seeking` flag: assigning currentTime sets
+ * `seeking` true iff a real seek is needed, so we await `seeked` only then (and
+ * resolve immediately when the decoder is already parked there — re-seeking to the
+ * current time would never fire `seeked` and would hang). rVFC is deliberately NOT
+ * used: a PAUSED element never presents a frame headless, so rVFC never fires.
+ * Rejects on the element's error event.
+ */
+function seekV5(el, t) {
+  return new Promise((resolve, reject) => {
+    const onErr = () => { cleanup(); reject(new Error("video error during seek")); };
+    const onSeeked = () => { cleanup(); resolve(); };
+    const cleanup = () => { el.removeEventListener("seeked", onSeeked); el.removeEventListener("error", onErr); };
+    el.addEventListener("error", onErr, { once: true });
+    el.currentTime = t;
+    if (el.seeking) el.addEventListener("seeked", onSeeked);
+    else { cleanup(); resolve(); } // already parked at t — no seek, frame is current
+  });
+}
+
+/**
+ * Query→build (async). The decoded CanvasKit Image for `ref` at exactly `seekTime`
+ * (resolved by `wrap`), converted OFF the main thread and cached in the LRU. Dedups
+ * concurrent identical requests, and SERIALIZES seeks per source (one <video> can
+ * be at only one time at a time). Resolves null on load/seek/decode failure
+ * (reported loudly, never silent). The caller MUST NOT delete the returned Image —
+ * the LRU owns its lifetime. After the seek settles the frame is grabbed via
+ * createImageBitmap(<video>) (off-main-thread YUV->RGBA convert) then uploaded with
+ * uploadBitmap — the "V5 quality" the player's main loop uses, here for one frame.
+ *
+ * @param uploader a GPU or CPU uploader (video_registry.makeGpuUploader / makeCpuUploader);
+ *   its scope keys the LRU entry, since a texture-backed Image is context-bound
+ */
+export async function requestVideoV5ScrubFrame(uploader, ref, seekTime, wrap) {
+  const key = scopedV5ScrubKey(uploader, ref, seekTime, wrap);
+  const cached = scrubCache.get(key);
+  if (cached) { touchScrubLru(key); return cached; }
+  const pending = scrubInflight.get(key);
+  if (pending) return pending;
+
+  const entry = ensureV5ScrubElement(ref);
+  const job = (async () => {
+    await entry.ready;
+    if (entry.status === "error") return null;
+    const el = entry.el;
+    const effective = resolveV5ScrubTime(seekTime, el.duration, wrap);
+    // Serialize this seek behind any other in-flight seek on the SAME element,
+    // then convert the parked frame OFF the main thread and upload it.
+    const run = entry.chain.then(async () => {
+      await seekV5(el, effective);
+      const bitmap = await createImageBitmap(el); // OFF-main-thread YUV->RGBA convert
+      try { return uploadBitmap(uploader, bitmap); }
+      finally { bitmap.close(); } // the CanvasKit Image now owns the pixels; free the bitmap
+    });
+    entry.chain = run.catch(() => {}); // keep the chain alive past a failed seek
+    const img = await run;
+    cacheV5ScrubFrame(key, img);
+    notify(ref);
+    return img;
+  })().catch((e) => {
+    console.error(`PowerRP video_v5 (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${e?.message ?? e}`);
+    return null;
+  }).finally(() => scrubInflight.delete(key));
+
+  scrubInflight.set(key, job);
+  return job;
+}
+
+/**
+ * Query→build (near-pure: kicks an async seek on a miss). The SYNC render-path
+ * accessor: the cached CanvasKit Image for (ref, seekTime, wrap) if decoded, else
+ * null — kicking requestVideoV5ScrubFrame so the frame lands and notify() nudges a
+ * repaint (the image pipeline's async contract, applied to seeks). Draw NOTHING for
+ * a null (never a placeholder). The caller must NOT delete the Image (the LRU owns
+ * it).
+ *
+ * @param uploader a GPU or CPU uploader (video_registry.makeGpuUploader / makeCpuUploader)
+ * @example // getVideoV5ScrubFrame(gpuUploader, "clip.mp4", 1.5, "clamp") // null until decoded, then the cached frame
+ */
+export function getVideoV5ScrubFrame(uploader, ref, seekTime, wrap) {
+  const key = scopedV5ScrubKey(uploader, ref, seekTime, wrap);
+  const cached = scrubCache.get(key);
+  if (cached) { touchScrubLru(key); return cached; }
+  requestVideoV5ScrubFrame(uploader, ref, seekTime, wrap); // fire-and-forget; repaints on land
+  return null;
+}
+
+/** Command. Inserts `img` under `key` and evicts the least-recently-used frame
+ *  (deleting its CanvasKit Image) when the cache exceeds V5_SCRUB_CACHE_CAP. */
+function cacheV5ScrubFrame(key, img) {
+  scrubCache.set(key, img);
+  while (scrubCache.size > V5_SCRUB_CACHE_CAP) {
+    const oldest = scrubCache.keys().next().value;
+    const evicted = scrubCache.get(oldest);
+    scrubCache.delete(oldest);
+    evicted?.delete?.();
+  }
+}
+
+/** Command. Marks `key` most-recently-used (re-insert at the Map's tail). */
+function touchScrubLru(key) {
+  const img = scrubCache.get(key);
+  scrubCache.delete(key);
+  scrubCache.set(key, img);
+}
+
+/**
+ * Query. A V5 scrub decoder's state, or null if `src` has no scrub element yet — a
+ * probe asserts the paused decoder loaded and parked at a seeked time.
+ *
+ * @example videoV5ScrubState("nope://x") // null
+ * @returns {{status,paused,currentTime,duration}|null}
+ */
+export function videoV5ScrubState(src) {
+  const entry = scrubRegistry.get(src);
+  if (!entry) return null;
+  const el = entry.el;
+  return { status: entry.status, paused: el.paused, currentTime: el.currentTime, duration: el.duration };
+}
+
+/**
+ * Command. Tears down the V5 scrub registry + LRU (called from
+ * resetVideoV5Registry): drop every element's source and delete every cached
+ * Image. Not a silent bypass — part of the one documented reset hook.
+ */
+export function resetVideoV5ScrubRegistry() {
+  for (const [src, entry] of scrubRegistry) {
+    try { entry.el.removeAttribute("src"); entry.el.load?.(); } catch (e) { console.warn(`PowerRP video_v5 (scrub): teardown of "${truncate(src)}" —`, e?.message ?? e); }
+  }
+  scrubRegistry.clear();
+  for (const img of scrubCache.values()) img?.delete?.();
+  scrubCache.clear();
+  scrubInflight.clear();
+}

@@ -521,6 +521,54 @@ export function videoFrame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacity 
   return { op: "videoFrame", ref, x, y, w, h, seekTime, wrap, opacity, src: sourceRect(sx, sy, sw, sh) };
 }
 
+// ── videoV5Frame (the V5 scrubber's deterministic frame-at-time op) ────────────
+// The A/B twin of `videoFrame` for the OFF-MAIN-THREAD V5 pipeline, exactly as
+// `videoV5` is the A/B twin of `video`. Same deterministic contract (an EXPLICIT
+// decode time → pure(document, slide, alpha)) and same op SHAPE as videoFrame, so
+// paint_skia + the vector-export raster fallback draw it identically. It differs
+// ONLY in the media-resolution SOURCE: a videoV5Frame resolves through the V5
+// registry's OWN paused scrub decoders (render_gpu/skia/video_v5.js) — which
+// convert the seeked frame off the main thread via createImageBitmap — not through
+// gpu/video_registry.js. A DISTINCT media-map key (videoV5FrameKey) keeps a V5
+// scrubber and a core scrubber on the same (ref, time, wrap) in one scene from
+// colliding, since two different pipelines decode them into separate caches.
+
+/**
+ * Pure function. The media-map KEY a V5 scrubber frame is stored/looked up under.
+ * The core scrubber's scrubFrameKey PREFIXED by "v5|", so a V5 scrubber and a core
+ * scrubber pointed at the SAME (ref, seekTime, wrap) resolve to DISTINCT map
+ * entries (they are decoded by different pipelines into different caches) while two
+ * V5 scrubbers on the same (ref, seekTime, wrap) still share ONE key + ONE decoded
+ * frame (frame-lockstep sync, exactly like the core path).
+ *
+ * @example videoV5FrameKey("clip.mp4", 1.5, "clamp") // "v5|clip.mp4@1.5000@clamp"
+ * @example videoV5FrameKey("clip.mp4", 2, "loop") // "v5|clip.mp4@2.0000@loop"
+ */
+export function videoV5FrameKey(ref, seekTime, wrap) {
+  return "v5|" + scrubFrameKey(ref, seekTime, wrap);
+}
+
+/**
+ * Pure function. Deterministic V5-pipeline video FRAME-AT-TIME quad — the V5
+ * scrubber's op. Byte-identical SHAPE to videoFrame (same x/y/w/h quad +
+ * sx/sy/sw/sh edge-crop source rect + opacity + seekTime + wrap); only `op`
+ * differs so the media resolver routes it to the V5 scrub path (off-main-thread
+ * createImageBitmap convert of a paused, seeked decoder) instead of the core
+ * scrubber's path. The displayed frame is still a pure function of state, so a
+ * headless render at (slide, alpha) reproduces it exactly.
+ *
+ * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 1.5}).op // "videoV5Frame"
+ * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 1.5}).seekTime // 1.5
+ * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0}).wrap // "clamp"
+ * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ */
+export function videoV5Frame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1 }) {
+  if (typeof ref !== "string") throw new Error(`videoV5Frame: "ref" must be a string, got ${JSON.stringify(ref)}`);
+  requireFinite("videoV5Frame", { x, y, w, h, seekTime, opacity, sx, sy, sw, sh });
+  if (!SCRUB_WRAP_MODES.includes(wrap)) throw new Error(`videoV5Frame: "wrap" must be one of ${SCRUB_WRAP_MODES.join("/")}, got ${JSON.stringify(wrap)}`);
+  return { op: "videoV5Frame", ref, x, y, w, h, seekTime, wrap, opacity, src: sourceRect(sx, sy, sw, sh) };
+}
+
 // ── latexVector (Round 15.1 — TRUE VECTOR EQUATION EXPORT) ────────────────────
 // A DUAL-PAYLOAD op: the ONE display-list command for a typeset LaTeX equation,
 // carrying both the glyph VECTOR geometry (SVG/PDF backends embed real <path>s /
@@ -1294,4 +1342,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "videoV5", "videoFrame", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "videoV5", "videoFrame", "videoV5Frame", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];

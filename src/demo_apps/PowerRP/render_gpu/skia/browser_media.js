@@ -35,8 +35,8 @@
 
 import { getSkiaImage } from "../gpu/image_registry.js";
 import { getSkiaVideoFrame, getScrubFrame, requestScrubFrame } from "../gpu/video_registry.js";
-import { getVideoV5Frame } from "./video_v5.js"; // V5 off-main-thread video path (additive; its own registry)
-import { scrubFrameKey } from "../ir.js";
+import { getVideoV5Frame, getVideoV5ScrubFrame, requestVideoV5ScrubFrame } from "./video_v5.js"; // V5 off-main-thread video path (additive; its own registry)
+import { scrubFrameKey, videoV5FrameKey } from "../ir.js";
 
 /**
  * Pure function. The DISTINCT refs of `op` in an IR list, recursing into the
@@ -85,6 +85,31 @@ export function scrubOpsOf(commands) {
 }
 
 /**
+ * Pure function. The DISTINCT V5-scrubber requests in `commands` — the A/B twin of
+ * scrubOpsOf for the `videoV5Frame` op — one {ref, seekTime, wrap} per unique
+ * videoV5FrameKey, recursing into cropSubtree/effectSubtree content. Deduped by key
+ * so N synced V5 scrubbers (same source + time) collapse to ONE decode request.
+ * Keyed by videoV5FrameKey (the "v5|"-prefixed key) so it never dedups against a
+ * core scrubber on the same (ref, time, wrap) — the two are decoded by separate
+ * pipelines into separate caches.
+ *
+ * @example scrubV5OpsOf([{op: "videoV5Frame", ref: "a", seekTime: 1, wrap: "clamp"}]).length // 1
+ * @example scrubV5OpsOf([{op: "videoV5Frame", ref: "a", seekTime: 1, wrap: "clamp"}, {op: "videoV5Frame", ref: "a", seekTime: 1, wrap: "clamp"}]).length // 1 (same key)
+ * @example scrubV5OpsOf([{op: "cropSubtree", content: [{op: "videoV5Frame", ref: "c", seekTime: 2, wrap: "loop"}]}])[0].ref // "c"
+ */
+export function scrubV5OpsOf(commands) {
+  const byKey = new Map();
+  const walk = (cmds) => {
+    for (const c of cmds) {
+      if (c.op === "videoV5Frame") byKey.set(videoV5FrameKey(c.ref, c.seekTime, c.wrap), { ref: c.ref, seekTime: c.seekTime, wrap: c.wrap });
+      if ((c.op === "cropSubtree" || c.op === "effectSubtree") && Array.isArray(c.content)) walk(c.content);
+    }
+  };
+  walk(commands);
+  return [...byKey.values()];
+}
+
+/**
  * Command (async). Seeks + awaits EVERY scrubber frame the scene needs, so the
  * one-shot pixel paths (web/gpuService.js: thumbnails, PNG export, the puppeteer
  * render hook) are DETERMINISTIC — sceneMedia's sync getScrubFrame then finds
@@ -96,8 +121,12 @@ export function scrubOpsOf(commands) {
  */
 export async function prepareSceneScrubFrames(uploader, commands) {
   const ops = scrubOpsOf(commands);
-  if (ops.length === 0) return;
-  await Promise.all(ops.map((o) => requestScrubFrame(uploader, o.ref, o.seekTime, o.wrap)));
+  const v5Ops = scrubV5OpsOf(commands);
+  if (ops.length === 0 && v5Ops.length === 0) return;
+  await Promise.all([
+    ...ops.map((o) => requestScrubFrame(uploader, o.ref, o.seekTime, o.wrap)),
+    ...v5Ops.map((o) => requestVideoV5ScrubFrame(uploader, o.ref, o.seekTime, o.wrap)),
+  ]);
 }
 
 /**
@@ -151,6 +180,14 @@ export function sceneMedia(uploader, commands) {
   for (const o of scrubOpsOf(commands)) {
     const frame = getScrubFrame(uploader, o.ref, o.seekTime, o.wrap);
     if (frame) media[scrubFrameKey(o.ref, o.seekTime, o.wrap)] = frame;
+  }
+  // V5 SCRUBBER frames: same LRU-owned (do NOT release) contract as the core
+  // scrubber above, keyed by videoV5FrameKey (the "v5|"-prefixed key) so a V5 and a
+  // core scrubber on one source at one time never overwrite each other. Resolved
+  // through the V5 registry's own off-main-thread scrub decoder.
+  for (const o of scrubV5OpsOf(commands)) {
+    const frame = getVideoV5ScrubFrame(uploader, o.ref, o.seekTime, o.wrap);
+    if (frame) media[videoV5FrameKey(o.ref, o.seekTime, o.wrap)] = frame;
   }
   return { media, release() { for (const f of frames) f.delete(); } };
 }

@@ -489,6 +489,9 @@
         // multi-item create (not crosshair): the cross-reference needs the runtime id.
         { id: "demo-insert-video-progress", title: "Video with Progress Bar (scrubber + linked bar)", icon: "mdi:video-box", run: (a) => a.insertVideoWithProgressBar() },
         { id: "demo-insert-video-v5", title: "Video V5 (OffscreenCanvas/worker)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v5")) },
+        // The DETERMINISTIC V5 scrubber: video_scrub.js's scrubTime UX driven
+        // through the V5 off-main-thread scrub decoder (videoV5Frame op).
+        { id: "demo-insert-video-v5-scrub", title: "Video V5 Scrubber (deterministic scrubTime)", icon: "mdi:video-image", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v5_scrub")) },
         { id: "demo-insert-video-v6", title: "Video V6 (WebGPU external texture)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v6")) },
         // VIDEO V7 — a video PLAYER rendered by a PER-WIDGET WebGPU overlay
         // canvas (web/VideoV7Overlay.svelte), zero-copy external texture on a

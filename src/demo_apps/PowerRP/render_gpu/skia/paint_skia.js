@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, videoV5FrameKey, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
@@ -335,21 +335,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       // unresolved ref for exactly this reason — never a placeholder, never a
       // blocking wait — matching the SVG/PDF backends' "blank ref → draw nothing".
       if (!img) break;
-      const iw = img.width(), ih = img.height();
-      const s = cmd.src;
-      const src = CanvasKit.LTRBRect(s.sx * iw, s.sy * ih, (s.sx + s.sw) * iw, (s.sy + s.sh) * ih);
-      const dest = CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h);
-      const p = new CanvasKit.Paint();
-      p.setAlphaf(opacity);
-      // PROXY caps the raster-read resolution: sampling THROUGH a mip chain
-      // (Linear filter + Linear mipmap) minifies a large source page/photo from a
-      // coarser level to the tiny thumbnail dest instead of reading every source
-      // texel per output pixel — cheaper for the big downscales thumbnails do, and
-      // no visible loss at ~100px (trilinear ≥ single-level linear on a downscale).
-      // FULL keeps the exact drawImageRect(fastSample=false) it always used.
-      if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
-      else canvas.drawImageRect(img, src, dest, p, false);
-      p.delete();
+      drawSampledQuad(CanvasKit, canvas, img, cmd, opacity, quality);
       break;
     }
     case "videoFrame": {
@@ -360,15 +346,20 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       // and video_registry.notify() will nudge a repaint when the frame lands.
       const img = media[scrubFrameKey(cmd.ref, cmd.seekTime, cmd.wrap)];
       if (!img) break;
-      const iw = img.width(), ih = img.height();
-      const s = cmd.src;
-      const src = CanvasKit.LTRBRect(s.sx * iw, s.sy * ih, (s.sx + s.sw) * iw, (s.sy + s.sh) * ih);
-      const dest = CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h);
-      const p = new CanvasKit.Paint();
-      p.setAlphaf(opacity);
-      if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
-      else canvas.drawImageRect(img, src, dest, p, false);
-      p.delete();
+      drawSampledQuad(CanvasKit, canvas, img, cmd, opacity, quality);
+      break;
+    }
+    case "videoV5Frame": {
+      // The V5 scrubber's deterministic frame-at-time — the A/B twin of
+      // videoFrame, resolved through the "v5|"-prefixed videoV5FrameKey so it
+      // never collides with a core scrubber on the same (ref, time, wrap): the
+      // two are decoded by separate pipelines (V5's off-main-thread scrub
+      // decoder) into separate caches. Absent media ⇒ draw nothing (the async
+      // seek contract): getVideoV5ScrubFrame kicked the seek and video_v5's
+      // notify() will nudge a repaint when the frame lands.
+      const img = media[videoV5FrameKey(cmd.ref, cmd.seekTime, cmd.wrap)];
+      if (!img) break;
+      drawSampledQuad(CanvasKit, canvas, img, cmd, opacity, quality);
       break;
     }
     case "latexVector":
@@ -380,6 +371,36 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
     default:
       throw new Error(`paintIR(skia): unknown op "${cmd.op}"`);
   }
+}
+
+/**
+ * Command. Draws ONE image `img` as a sampled quad — the shared body of the
+ * image / video / videoV5 / videoFrame / videoV5Frame cases (all identical: a
+ * source sub-rect of `img` mapped to the dest box at `opacity`; only the
+ * media-map lookup that produced `img` differs). `cmd.src` is the normalized
+ * source rect ({sx, sy, sw, sh} in [0,1]) that ir.sourceRect built.
+ *
+ * PROXY caps the raster-read resolution: sampling THROUGH a mip chain (Linear
+ * filter + Linear mipmap) minifies a large source page/photo from a coarser
+ * level to the tiny thumbnail dest instead of reading every source texel per
+ * output pixel — cheaper for the big downscales thumbnails do, and no visible
+ * loss at ~100px (trilinear ≥ single-level linear on a downscale). FULL keeps
+ * the exact drawImageRect(fastSample=false) it always used.
+ *
+ * @param cmd a draw op carrying {x, y, w, h, src:{sx, sy, sw, sh}}
+ * @param opacity {number} folded into the paint's alpha
+ * @param quality {"full"|"proxy"} raster-read fidelity (see above)
+ */
+function drawSampledQuad(CanvasKit, canvas, img, cmd, opacity, quality) {
+  const iw = img.width(), ih = img.height();
+  const s = cmd.src;
+  const src = CanvasKit.LTRBRect(s.sx * iw, s.sy * ih, (s.sx + s.sw) * iw, (s.sy + s.sh) * ih);
+  const dest = CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h);
+  const p = new CanvasKit.Paint();
+  p.setAlphaf(opacity);
+  if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
+  else canvas.drawImageRect(img, src, dest, p, false);
+  p.delete();
 }
 
 /**
