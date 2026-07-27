@@ -392,11 +392,16 @@
     const allNodes = deriveRenderTree(state, app.registry);
     const nodes = allNodes
       .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== latexSuppressId && n.itemId !== codeSuppressId);
-    // VIDEO PLAYBACK GATE (off-slide storm fix): only PLAYER videos ON THIS SLIDE
-    // may play/decode/pump; a clip on another slide (kept alive by a thumbnail
-    // render) is paused. Pre-cull set (slide membership, not viewport) so panning
-    // a video off-screen doesn't restart it.
-    setActiveVideoRefs(videoSourcesOf(allNodes, "video"));
+    // VIDEO PLAYBACK GATE: only PLAYER videos actually VISIBLE this frame may
+    // play/decode/pump. Fed the POST-cull `nodes` (not the pre-cull slide set), so
+    // a clip that is off-view — off SCREEN (panned away, culled) OR on another
+    // slide — is PAUSED and the browser stops decoding it ("videos should not take
+    // any CPU if we're not looking at them"). el.pause()/play() PRESERVES
+    // currentTime, so re-entering view RESUMES from where it left off (not a
+    // restart); setActiveVideoRefs only toggles on a real paused-state change, so
+    // it never thrashes per paint. Scrubbers (paused, seek-driven — not autoplay)
+    // are untouched.
+    setActiveVideoRefs(videoSourcesOf(nodes, "video"));
     // WAKE SET (repaint gate above): the video/scrubber sources the CURRENT frame
     // actually draws (post-cull) — an off-screen or off-slide frame must not wake
     // the editor. Rebuilt every paint so a newly-shown clip is picked up at once.

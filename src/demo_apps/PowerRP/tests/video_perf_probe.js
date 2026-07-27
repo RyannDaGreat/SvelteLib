@@ -176,6 +176,36 @@ try {
   }, {});
   await scenario("N=1 small drag+video", smallVideoDoc, 0, { drag: true });
 
+  // FIX A (Round 3) — an OFF-VIEW player must PAUSE (zero decode CPU) and RESUME
+  // from its prior currentTime on re-entry. One clip: shown on-screen (plays) →
+  // moved OFF-screen (culled ⇒ must pause, paints/s + uploads/s = 0) → back
+  // on-screen (must resume, NOT restart). Moving the widget off-camera culls it
+  // exactly as panning the viewport would; the src (⇒ the <video> element) is
+  // unchanged, so currentTime carries across.
+  const onDoc = makeDoc({ cam: videoItems(0).cam, v0: { type: "video", src: SRCS[0], x: 20, y: 20, w: 300, h: 169, z: 1, rotation: 0, scale: 1, active: true } }, {});
+  const offDoc = makeDoc({ cam: videoItems(0).cam, v0: { type: "video", src: SRCS[0], x: 100000, y: 100000, w: 300, h: 169, z: 1, rotation: 0, scale: 1, active: true } }, {});
+  const move = async (doc) => { await page.evaluate((d) => { const a = window.__powerrp_app; a.commit(a.repaired(d)); a.slideIndex = 0; a.runCommand("reset-view"); }, doc); };
+  const stateOf = async () => page.evaluate((s) => window.__powerrp_videoState(s), SRCS[0]);
+
+  await load(onDoc, 0);
+  await new Promise((r) => setTimeout(r, 2500)); // play a while (currentTime climbs well past 0)
+  const sPlay = await stateOf();
+  await move(offDoc);
+  await new Promise((r) => setTimeout(r, 800)); // let the cull→pause paint settle
+  const sOff = await stateOf();
+  const offCost = await measure(); // paints/s + uploads/s while the clip is off-view
+  await move(onDoc);
+  await new Promise((r) => setTimeout(r, 400)); // resume + a little playback
+  const sBack = await stateOf();
+
+  const pass = sPlay && !sPlay.paused && sOff && sOff.paused && offCost.paintsPerSec === 0 && offCost.uploadsPerSec === 0 && sBack && !sBack.paused && sBack.currentTime >= sOff.currentTime - 0.1;
+  console.log(`\nFIX A off-view pause/resume:`);
+  console.log(`  visible → paused=${sPlay?.paused} t=${sPlay?.currentTime?.toFixed(2)}`);
+  console.log(`  off-screen → paused=${sOff?.paused} t=${sOff?.currentTime?.toFixed(2)}  (off-view cost: paints/s=${offCost.paintsPerSec} uploads/s=${offCost.uploadsPerSec}, rAF fps=${offCost.fps})`);
+  console.log(`  back in view → paused=${sBack?.paused} t=${sBack?.currentTime?.toFixed(2)}  (resumed from ~${sOff?.currentTime?.toFixed(2)}, not 0 ⇒ ${sBack && sBack.currentTime >= sOff.currentTime - 0.1 ? "RESUME" : "RESTART (FAIL)"})`);
+  console.log(`  ${pass ? "PASS" : "FAIL"}`);
+  if (!pass) failed = true;
+
   // MINIMAP CORRECTNESS (FIX 1 must keep it right, just refresh less): a 2-slide
   // doc with DISTINCT camera backgrounds (dark + video, then red) — the minimap
   // must show slide 0, and must UPDATE (differ) when the slide changes.

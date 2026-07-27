@@ -19,12 +19,14 @@ import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { rasterizeIrPng } from "./gpuService.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
-import { videoUploadCount } from "../render_gpu/gpu/video_registry.js";
+import { videoUploadCount, videoPlaybackState } from "../render_gpu/gpu/video_registry.js";
 
-// Dev/test seam (like __powerrp_render / __powerrp_app): the running total of
-// <video>→GPU-texture uploads, so a perf probe can confirm the frame-advance gate
-// keeps uploads at ~video-rate (not paint-rate). Zero production effect.
+// Dev/test seams (like __powerrp_render / __powerrp_app): the running total of
+// <video>→GPU-texture uploads (probe confirms the frame-advance gate keeps uploads
+// at ~video-rate, not paint-rate), and a per-src playback snapshot (probe confirms
+// off-view players PAUSE and RESUME from their prior currentTime). Zero prod effect.
 window.__powerrp_videoUploadCount = videoUploadCount;
+window.__powerrp_videoState = videoPlaybackState;
 
 /**
  * Browser render hook (a few in-browser pixel-parity probes await it via

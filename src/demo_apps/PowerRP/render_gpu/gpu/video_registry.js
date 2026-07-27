@@ -277,14 +277,16 @@ export function getSkiaVideoFrame(uploader, ref) {
 /**
  * Command. Perf gate on the PLAYER registry: pause every playing `<video>` whose
  * src is NOT in `activeRefs`, and resume those that ARE (honoring the clip's
- * autoplay intent). The editor calls this each paint with the CURRENT slide's
- * video sources, so a clip on ANOTHER slide (e.g. created by a thumbnail render)
- * stops decoding AND stops pumping onVideoFrame — killing the off-slide
- * repaint/decode storm that dropped the editor to ~16-30 fps. Scrub elements (a
- * separate, always-paused registry) are untouched. No-op for a src with no
- * element yet.
+ * autoplay intent). The editor calls this each paint with the currently VISIBLE
+ * video sources (the POST-cull set), so a clip that is off-view — off SCREEN
+ * (panned away) OR on another slide — has its browser decode STOPPED (no CPU
+ * "when we're not looking at it") and stops pumping onVideoFrame. pause()/play()
+ * preserves currentTime, so re-entering view RESUMES from where it left off, not a
+ * restart; the toggles fire only on a real paused-state change, so no per-paint
+ * thrash. Scrub elements (a separate, always-paused registry) are untouched.
+ * No-op for a src with no element yet.
  *
- * @param {Iterable<string>} activeRefs the current slide's video source strings
+ * @param {Iterable<string>} activeRefs the currently visible video source strings
  * @example // setActiveVideoRefs(["clip.mp4"]) // pauses every other player video, (re)plays clip.mp4
  */
 export function setActiveVideoRefs(activeRefs) {
@@ -328,6 +330,22 @@ export function videoStatus(src) {
   if (!entry) return "unloaded";
   if (entry.status === "error") return "error";
   return entry.el.readyState >= HAVE_CURRENT_DATA ? "ready" : "loading";
+}
+
+/**
+ * Query. A player element's live playback state — {paused, currentTime,
+ * presentedFrames} — or null if `src` has no element yet. A diagnostic (like
+ * videoUploadCount) so a probe can assert the off-view playback gate actually
+ * PAUSED a culled clip and RESUMED it (from its prior currentTime) on re-entry.
+ *
+ * @example videoPlaybackState("nope://x") // null
+ * @example // videoPlaybackState("clip.mp4") // {paused: false, currentTime: 1.2, presentedFrames: 36}
+ */
+export function videoPlaybackState(src) {
+  const entry = registry.get(src);
+  if (!entry) return null;
+  const el = entry.el;
+  return { paused: el.paused, currentTime: el.currentTime, presentedFrames: entry.presentedFrames };
 }
 
 /**
