@@ -13,6 +13,8 @@
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
+  import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
+  import { videoV7Descriptors } from "./videoV7Placement.js";
   import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
@@ -139,6 +141,9 @@
   // thumbnail freeze: the minimap tracks committed edits, not drag churn.
   let minimapCamRect = $derived(cameraRectAt(app.doc, app.slideIndex, 1, app.registry));
   let viewport = $state({ zoom: 1, panX: 0, panY: 0 });
+  // Per-widget WebGPU video overlay descriptors (video_v7), rebuilt each paint
+  // from the POST-cull node set so off-view clips are dropped (→ paused).
+  let videoV7Descs = $state([]);
   // PanZoom actions — deliberately NOT $state: it's bound during template
   // render (mutating $state there is forbidden), and every overlay that needs
   // it is also gated on reactive state (selection/guides/viewport) that can
@@ -434,6 +439,12 @@
     videoV6Nodes = nodes.filter((n) => n.type === "video_v6");
     videoV6View = view;
     videoV6Device = { w: canvasEl.width, h: canvasEl.height };
+    // VIDEO V7 OVERLAY: build the per-widget descriptors from the SAME post-cull
+    // `nodes` + viewport so its canvases stay pixel-aligned with the scene and
+    // an off-view (culled/off-slide) clip drops out → its <video> is paused.
+    // The overlay draws itself via requestVideoFrameCallback, independent of
+    // this paint loop; assigning a fresh array just re-runs its reconcile.
+    videoV7Descs = videoV7Descriptors(nodes, view);
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background
@@ -2405,6 +2416,9 @@
            .overlay SVG, and pointer-events:none, so all interaction still reaches
            the SVG below it. -->
       <VideoV6Overlay nodes={videoV6Nodes} view={videoV6View} deviceW={videoV6Device.w} deviceH={videoV6Device.h} />
+      <!-- Per-widget WebGPU video canvases, composited by the browser OVER the
+           Skia scene and UNDER the SVG selection overlay (video_v7). -->
+      <VideoV7Overlay descs={videoV7Descs} />
       {#if gpuError}
         <!-- No render fallback by decree (manifest RENDER MODES DECISION) —
              the failure is loud and names itself. -->

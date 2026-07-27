@@ -490,6 +490,11 @@
         { id: "demo-insert-video-progress", title: "Video with Progress Bar (scrubber + linked bar)", icon: "mdi:video-box", run: (a) => a.insertVideoWithProgressBar() },
         { id: "demo-insert-video-v5", title: "Video V5 (OffscreenCanvas/worker)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v5")) },
         { id: "demo-insert-video-v6", title: "Video V6 (WebGPU external texture)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v6")) },
+        // VIDEO V7 — a video PLAYER rendered by a PER-WIDGET WebGPU overlay
+        // canvas (web/VideoV7Overlay.svelte), zero-copy external texture on a
+        // secure context, 2D drawImage fallback on plain HTTP. Rendered OUTSIDE
+        // the Skia scene; the scene shows only its deterministic poster.
+        { id: "demo-insert-video-v7", title: "Video V7 (WebGPU per-widget canvas)", icon: "mdi:video-vintage", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v7")) },
       ],
     },
     // INSERT SHAPE — ONE submenu collecting the arbitrary parametric

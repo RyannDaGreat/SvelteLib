@@ -978,6 +978,32 @@ body,
   touch-action: none;
 }
 
+/* VIDEO V7 (WebGPU per-widget canvas overlay). A stacking layer sibling to
+   .scene, holding one <canvas> per video_v7 widget. `isolation: isolate` keeps
+   the per-canvas z-index (widget z-order) LOCAL, so the whole layer stays
+   beneath the later-in-DOM .overlay SVG (selection handles paint on top).
+   pointer-events:none — hit-testing stays on the SVG overlay. */
+.canvas-wrap .video-v7-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+  pointer-events: none;
+}
+
+/* Each video canvas: absolutely positioned at the layer origin, then mapped to
+   its on-screen quad by an inline CSS matrix() (transform-origin at the origin
+   so the matrix maps element-local coords directly). */
+.video-v7-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
 .overlay .selection {
   fill: none;
   stroke: var(--a-selection);
