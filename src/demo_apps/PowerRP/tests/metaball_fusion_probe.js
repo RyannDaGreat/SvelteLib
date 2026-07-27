@@ -15,6 +15,9 @@
  *   TALL-APART  — a droplet at EACH widget + an EMPTY midpoint band (Y axis correct).
  *   DIAG-WIDE   — droplets at the two diagonal corners, empty centre column.
  *   SINGLE      — exactly one blob at the widget's own location.
+ *   COLOR-BLEND — a RED + a BLUE widget merging over a LIGHT backdrop read as ABSOLUTE
+ *                 colours: red lobe, blue lobe, PURPLE neck (the per-widget fluid-color
+ *                 blend — the whole point of the one-ball-per-widget rewrite).
  * PNGs are written to .claude_vlm_checks/ for a VLM look. Bare node (CPU CanvasKit).
  */
 
@@ -44,16 +47,32 @@ const item = (type, over) => ({ ...registry.get(type).defaults, ...over });
 
 const BAR_COLORS = ["#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#00c7be", "#0a84ff", "#5e5ce6", "#bf5af2"];
 
-/** Query. A doc: THE camera sized to W×H, colourful bars (z=1), and (optionally) the metaball boxes. */
-function doc(W, H, boxes, withBalls) {
+const LIGHT_BG = "#e8e8e8"; // a light backdrop so a fluid COLOR reads as color (not against dark)
+
+/** Query. A camera sized to W×H (the shared head of every case doc). Returns [doc, camId]. */
+function baseDoc(W, H) {
   let d = newDocument();
   d = { ...d, meta: { ...d.meta, slideW: W, slideH: H } };
   const camId = Object.entries(foldState(d, 0).items).find(([, s]) => s.type === "camera")[0];
   d = keyframed(d, 0, ["items", camId, "w"], W);
   d = keyframed(d, 0, ["items", camId, "h"], H);
+  return [d, camId];
+}
+
+/** Query. A doc: THE camera sized to W×H, colourful bars (z=1), and (optionally) the metaball boxes. */
+function doc(W, H, boxes, withBalls) {
+  let [d] = baseDoc(W, H);
   const barW = W / BAR_COLORS.length;
   BAR_COLORS.forEach((fill, i) => { [d] = withNewItem(d, 0, item("rect", { x: i * barW, y: 0, w: barW, h: H, z: 1, strokeWidth: 0, cornerRadius: 0, fill })); });
   if (withBalls) for (const b of boxes) [d] = withNewItem(d, 0, item("metaball", b));
+  return serialize(d);
+}
+
+/** Query. A doc: THE camera sized to W×H, a LIGHT backdrop rect (z=1), and the metaball boxes (each with its own fluidColor). */
+function colorDoc(W, H, boxes) {
+  let [d] = baseDoc(W, H);
+  [d] = withNewItem(d, 0, item("rect", { x: 0, y: 0, w: W, h: H, z: 1, strokeWidth: 0, cornerRadius: 0, fill: LIGHT_BG }));
+  for (const b of boxes) [d] = withNewItem(d, 0, item("metaball", b));
   return serialize(d);
 }
 
@@ -80,6 +99,12 @@ function countRect(m, W, H, x0, x1, y0, y1) {
   let n = 0;
   for (let y = Math.max(0, y0 | 0); y < Math.min(H, y1 | 0); y++) for (let x = Math.max(0, x0 | 0); x < Math.min(W, x1 | 0); x++) if (m[y * W + x]) n++;
   return n;
+}
+/** Query. Average [r,g,b] (0..255) over a rect of an absolute (WITH-metaball) render. */
+function avgColor(px, W, x0, x1, y0, y1) {
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let y = y0 | 0; y < (y1 | 0); y++) for (let x = x0 | 0; x < (x1 | 0); x++) { const i = (y * W + x) * 4; r += px[i]; g += px[i + 1]; b += px[i + 2]; n++; }
+  return [r / n, g / n, b / n];
 }
 
 let fails = 0;
@@ -148,6 +173,30 @@ console.log("metaball fusion — pixel-level (droplet = differs from backdrop-on
   console.log(`DIAG-WIDE total=${total} UL=${ul} LR=${lr} centreCol=${midCol}`);
   check(ul >= CELL_MIN && lr >= CELL_MIN, "DIAG-WIDE: droplets at BOTH diagonal corners (both axes correct)");
   check(midCol <= GAP_MAX, "DIAG-WIDE: empty centre column (no collapse to region centre)");
+}
+
+// COLOR-BLEND — a RED droplet merging a BLUE droplet over a LIGHT backdrop: the
+// left lobe reads red, the right lobe reads blue, and the NECK reads PURPLE (both
+// R and B elevated + balanced, G low). Directly guards the per-widget fluid-color
+// blend (the whole point of the rewrite): each widget's color reaches the shader
+// and merges cross-fade. Robust to the added specular/fresnel WHITE (which lifts
+// all channels equally) because it tests channel DIFFERENCES.
+{
+  const W = 1280, H = 720;
+  const b0 = { x: 360, y: H / 2 - 150, w: 300, h: 300, fluidColor: "#ff0000ff" }; // full-strength red fluid
+  const b1 = { x: 560, y: H / 2 - 150, w: 300, h: 300, fluidColor: "#0000ffff" }; // full-strength blue fluid
+  const px = await pixels(colorDoc(W, H, [b0, b1]), W, H, path.join(OUT, "metaball_color_blend.png"));
+  const P = 20;   // half-size of the sampled colour patch (device px)
+  const MARGIN = 20; // channel-difference margin (0..255) a hue must clear
+  const mid = (cx(b0) + cx(b1)) / 2;
+  const left = avgColor(px, W, cx(b0) - P, cx(b0) + P, cy(b0) - P, cy(b0) + P).map((v) => v | 0);
+  const neck = avgColor(px, W, mid - P, mid + P, H / 2 - P, H / 2 + P).map((v) => v | 0);
+  const right = avgColor(px, W, cx(b1) - P, cx(b1) + P, cy(b1) - P, cy(b1) + P).map((v) => v | 0);
+  console.log(`COLOR-BLEND left=[${left}] neck=[${neck}] right=[${right}]`);
+  check(left[0] > left[2] + MARGIN, "COLOR-BLEND: left lobe reads RED (R > B)");
+  check(right[2] > right[0] + MARGIN, "COLOR-BLEND: right lobe reads BLUE (B > R)");
+  check(Math.abs(neck[0] - neck[2]) < MARGIN && neck[0] > neck[1] + MARGIN && neck[2] > neck[1] + MARGIN,
+    "COLOR-BLEND: neck reads PURPLE (R≈B, both > G)");
 }
 
 console.log(fails === 0 ? `\nAll fusion checks passed. PNGs in ${OUT}` : `\n${fails} FAILED`);

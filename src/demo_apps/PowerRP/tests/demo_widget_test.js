@@ -126,34 +126,45 @@ test("evaluateState: a bad equation fails LOUD + falls back to the default", () 
   assert.ok(errors.size >= 1);
 });
 
-// ── metaball archetype: single-ball default + leader/union fusion emit ────────
-test("metaball: defaults to a SINGLE centred droplet (count 1, ball 0 centred)", () => {
+// ── metaball archetype: ONE ball per widget + leader/union fusion emit ────────
+test("metaball: defaults to a SINGLE sphere droplet with a visible fluid color", () => {
   const d = metaballsPlugin.defaults;
-  assert.equal(d.count, 1);            // one ball by default (the atom you merge with others)
-  assert.equal(d.b0X, 0.5);            // centred
-  assert.equal(d.b0Y, 0.5);
-  assert.ok(d.b0R > 0);                // a visible droplet sized to the box
+  assert.equal(d.shape, "sphere");     // one ball; shape is the whole geometry knob
+  assert.equal(d.count, undefined);    // NO internal roster anymore
+  assert.equal(d.b0R, undefined);      // no Ball-0 rows
+  assert.equal(typeof d.fluidColor, "string"); // a per-widget fluid color
+  assert.ok(d.refraction > 0);         // a per-widget refraction
   assert.equal(metaballsPlugin.capabilities.metaball, true); // marked a fusion participant
   assert.equal(typeof metaballsPlugin.localBalls, "function"); // exposes the source hook for derive
+  // Inspector is simple: no "Ball N ·" rows.
+  assert.ok(!metaballsPlugin.inspector.some((r) => /^b\d/.test(r.key ?? "")));
 });
 
-test("localBalls: active-prefix balls in local px (fractions resolved against the box)", () => {
+test("localBalls: ONE ball fitted to the widget bbox (geometry only)", () => {
   assert.deepEqual(
-    localBalls({ w: 200, h: 200, count: 1, b0Type: "sphere", b0X: 0.5, b0Y: 0.5, b0R: 0.5, b0Len: 0, b0Ang: 0 }),
-    [{ type: "sphere", cx: 100, cy: 100, r: 50, len: 0, ang: 0 }],
+    localBalls({ w: 200, h: 200, shape: "sphere" }),
+    [{ type: "sphere", cx: 100, cy: 100, r: 100, len: 0, ang: 0 }], // fills the short half-size
   );
-  assert.deepEqual(localBalls({ w: 200, h: 200, count: 0, b0R: 0.5 }), []); // count 0 → no active balls
+  assert.deepEqual(
+    localBalls({ w: 400, h: 200, shape: "tube" }),
+    [{ type: "tube", cx: 200, cy: 100, r: 100, len: 100, ang: 0 }], // capsule spans the long axis
+  );
+  assert.deepEqual(localBalls({ w: 0, h: 0, shape: "sphere" }), []); // degenerate box → nothing
 });
 
-test("metaballRegion: single ball → tight region, geometry as region fractions", () => {
+test("metaballRegion: single ball → tight region, geometry + appearance as packed floats", () => {
+  // no appearance → no-tint fallback (color strength 0, refraction 0), 11 floats/ball
   const region = metaballRegion([{ type: "sphere", x: 0, y: 0, r: 100, len: 0, ang: 0 }], { x: 0, y: 0, rotation: 0, scale: 1 }, 0);
-  assert.deepEqual(region, { cx: 0, cy: 0, halfW: 100, halfH: 100, balls: [0, 0.5, 0.5, 1, 0, 0], count: 1, unit: 1 });
+  assert.deepEqual(region, { cx: 0, cy: 0, halfW: 100, halfH: 100, balls: [0, 0.5, 0.5, 1, 0, 0, 0, 0, 0, 0, 0], count: 1, unit: 1 });
+  // with appearance → the fluid color + refraction ride in the ball's packed floats
+  const colored = metaballRegion([{ type: "sphere", x: 0, y: 0, r: 100, len: 0, ang: 0, fluidColor: "#ff0000", refraction: 0.4 }], { x: 0, y: 0, rotation: 0, scale: 1 }, 0);
+  assert.deepEqual(colored.balls, [0, 0.5, 0.5, 1, 0, 0, 1, 0, 0, 1, 0.4]); // red, full strength, refr 0.4
   assert.equal(metaballRegion([], { x: 0, y: 0, rotation: 0, scale: 1 }, 0.6), null); // no balls → nothing
 });
 
 test("metaball emit: leader draws the fused union, non-leader draws nothing", () => {
   const world = { x: 0, y: 0, rotation: 0, scale: 1 };
-  const scene = { balls: [{ type: "sphere", x: 0, y: 0, r: 100, len: 0, ang: 0 }, { type: "sphere", x: 120, y: 0, r: 100, len: 0, ang: 0 }] };
+  const scene = { balls: [{ type: "sphere", x: 0, y: 0, r: 100, len: 0, ang: 0, fluidColor: "#ff0000", refraction: 0.3 }, { type: "sphere", x: 120, y: 0, r: 100, len: 0, ang: 0, fluidColor: "#0000ff", refraction: 0.1 }] };
   const nonLeader = metaballsPlugin.emit({ ...metaballsPlugin.defaults, metaballScene: scene, metaballLeader: false }, null, world);
   assert.deepEqual(nonLeader, []); // non-leader emits nothing (still a draggable widget)
   const leader = metaballsPlugin.emit({ ...metaballsPlugin.defaults, metaballScene: scene, metaballLeader: true }, null, world);
@@ -161,7 +172,9 @@ test("metaball emit: leader draws the fused union, non-leader draws nothing", ()
   assert.equal(leader[0].op, "materialBackdrop");
   assert.equal(leader[0].material, "metaballs");
   assert.equal(leader[0].params.ballCount, 2);                 // BOTH balls fused into the leader's region
-  assert.equal(leader[0].params.balls.length, 2 * 6);          // packed [type,cx,cy,r,len,ang] per ball
+  assert.equal(leader[0].params.balls.length, 2 * 11);         // packed [type,cx,cy,r,len,ang,colR,colG,colB,colA,refr] per ball
+  assert.equal(leader[0].params.refraction, undefined);        // refraction is PER-BALL now, not a global param
+  assert.equal(leader[0].params.tint, undefined);              // tint replaced by per-ball fluidColor
   assert.ok(leader[0].halfW >= 110);                           // union spans both balls (centres 120 apart, r 100)
 });
 

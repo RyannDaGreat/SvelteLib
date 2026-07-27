@@ -535,19 +535,25 @@ export function resolveSkyScene(nodes) {
  *
  * Scans for active metaball SOURCES (nodes whose plugin declares
  * `capabilities.metaball` AND exposes a pure `localBalls(state)` hook returning its
- * balls in LOCAL widget units) and lifts every ball into WORLD space via the node's
+ * ball in LOCAL widget units) and lifts every ball into WORLD space via the node's
  * final `world` transform (group parenting — which runs earlier in deriveRenderTree
  * — is already baked in). A LOCAL ball is `{type, cx, cy, r, len, ang}` (centre +
  * radius/half-length in local px, angle radians); its world image is:
  *
  *   centre → world.apply(cx, cy);   r,len → ·world.scale;   ang → +world.rotation
  *
- * (a similarity scales lengths uniformly and adds rotation). The list is sorted by
- * source itemId (then roster order within a source) so the summary is a
- * deterministic pure function of the folded state — RenderTree = pure(document,
- * [[slide, alpha]]) — and the leader's shader stays byte-stable.
+ * (a similarity scales lengths uniformly and adds rotation). Each world ball also
+ * carries its OWNING widget's FLUID APPEARANCE — `fluidColor` (a color string) and
+ * `refraction` (a number), read from the source's folded state and attached ONLY
+ * when present (a geometry-only source stays a pure `{type,x,y,r,len,ang}`). These
+ * are the material knobs the shader BLENDS per pixel across a merge (a red drop
+ * meeting a blue drop → a purple neck), so they travel with each widget's ball into
+ * the shared scene instead of being one global leader value. The list is sorted by
+ * source itemId so the summary is a deterministic pure function of the folded state
+ * — RenderTree = pure(document, [[slide, alpha]]) — and the leader's shader stays
+ * byte-stable.
  *
- *   { balls: [{ type, x, y, r, len, ang }] }   // world coords/lengths/radians
+ *   { balls: [{ type, x, y, r, len, ang, fluidColor?, refraction? }] }   // world coords/lengths/radians
  *
  * @param {object[]} nodes - derived render nodes (each carries plugin/state/world)
  * @returns {{balls: object[]}}
@@ -565,7 +571,12 @@ export function collectMetaballScene(nodes) {
     const scale = n.world?.scale ?? 1, rot = n.world?.rotation ?? 0;
     for (const b of n.plugin.localBalls(n.state)) {
       const c = T.apply(n.world ?? { x: 0, y: 0, rotation: 0, scale: 1 }, b.cx, b.cy);
-      balls.push({ type: b.type, x: c.x, y: c.y, r: b.r * scale, len: b.len * scale, ang: b.ang + rot });
+      const ball = { type: b.type, x: c.x, y: c.y, r: b.r * scale, len: b.len * scale, ang: b.ang + rot };
+      // Carry the owning widget's fluid material ALONGSIDE geometry (attached only
+      // when present, so a geometry-only source stays a bare geometry ball).
+      if (n.state?.fluidColor !== undefined) ball.fluidColor = n.state.fluidColor;
+      if (n.state?.refraction !== undefined) ball.refraction = n.state.refraction;
+      balls.push(ball);
     }
   }
   return { balls };
