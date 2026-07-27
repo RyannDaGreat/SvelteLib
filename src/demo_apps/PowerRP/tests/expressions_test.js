@@ -1073,9 +1073,14 @@ test("resultKindForSlot: an angle-kind PROPS row types as a NUMBER (raw degrees)
 test("resultKindForSlot: every PROPS kind in the registry is typed (no silent string guess)", () => {
   // The import-time guard in core/expressions.js enforces this; assert it here
   // too so the reason a new kind must be typed is visible from the test suite.
+  // "list" joined the set when list properties landed (core/lists.js): it is its
+  // OWN result type, not a coercion of a scalar one — an `=` on a whole list must
+  // evaluate to an ARRAY of the declared element shape, which the grammar can only
+  // produce by REFERENCING another list slot (`= other_poly.points`). Its element
+  // shape is then validated by listResultProblem. See tests/lists_test.js.
   for (const [key, def] of Object.entries(PROPS)) {
     const kind = resultKindForSlot({ defaults: {} }, key.split("."), "=1");
-    assert.ok(["number", "color", "boolean", "select", "string"].includes(kind), `PROPS."${key}" (kind ${def.kind}) → ${kind}`);
+    assert.ok(["number", "color", "boolean", "select", "string", "list"].includes(kind), `PROPS."${key}" (kind ${def.kind}) → ${kind}`);
   }
 });
 test("resultKindForSlot: PAINT sub-state leaves resolve (the gradient direction dial)", () => {

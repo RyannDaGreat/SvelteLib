@@ -445,7 +445,7 @@ export function extrapolatedFieldValue(edge, inner, field) {
  *   the new element, in the declaration's storage form
  *
  * @example insertedElement({element: {storage: "record", fields: [{name: "offset", kind: "number", min: 0, max: 1}, {name: "color", kind: "color"}]}, order: "sorted", orderKey: "offset"}, [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}], 1) // {offset: 0.5, color: "#808080"}
- * @example insertedElement({element: {storage: "tuple", fields: [{name: "x", kind: "number"}, {name: "y", kind: "number"}]}, order: "sequence"}, [[0, 0], [1, 0], [1, 1]], 2) // [1, 0]
+ * @example insertedElement({element: {storage: "tuple", fields: [{name: "x", kind: "number"}, {name: "y", kind: "number"}]}, order: "sequence"}, [[0, 0], [1, 0], [1, 1]], 2) // [1, 0.5] (the midpoint of the edge it splits)
  * @example insertedElement({element: {storage: "record", fields: [{name: "offset", kind: "number", min: 0, max: 1}, {name: "color", kind: "color"}]}, order: "sorted", orderKey: "offset"}, [{offset: 0, color: "#000000"}, {offset: 0.5, color: "#ffffff"}], 2) // {offset: 1, color: "#ffffff"} (extrapolated, clamped to max)
  * @example insertedElement({element: {storage: "tuple", fields: [{name: "x", kind: "number"}]}, order: "sequence"}, [[7]], 1) // [7] (a lone element is copied)
  */

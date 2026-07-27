@@ -30,7 +30,9 @@ import {
   openPathD, polygonChainPathD, withPointAt, distToChain, closestPointOnChain,
   angleSnappedPoint, closeLoopIndex, polygonFromWorldPoints, polygonInkRect,
   MIN_POLYGON_VERTICES, MIN_DRAWN_VERTICES, SHIFT_ANGLE_DIVISIONS,
+  POINTS_LIST, visiblePoints, closestChainProjection, withVertexInsertedNear,
 } from "../plugins/polygon.js";
+import { elementActive, withElementActive, withElementPurged, indexAfterPurge } from "../core/lists.js";
 import { pointInPolygon, signedArea } from "../core/outline.js";
 import { createRegistry } from "../core/registry.js";
 import { allPlugins } from "../plugins/index.js";
@@ -548,31 +550,196 @@ test("DETERMINISM: the same document derives byte-identical IR and serialization
   assert.equal(sceneIR(deriveRenderTree(foldState(doc, 1, 0.5), registry)).filter((c) => c.op === "effectSubtree").length, 1);
 });
 
-// ── the two REPORTED GAPS, pinned so a future fix is noticed ─────────────────
-test("GAP (pinned): a vertex is KEYFRAMABLE but NOT `=`-bindable (arrays are opaque leaves)", async () => {
-  const { isEquationValue, numericPropertyPaths, resultKindForSlot, resultMatchesKind } = await import("../core/expressions.js");
-  // No per-element slot exists at all: leaves() keeps arrays opaque.
-  const offered = numericPropertyPaths(registered);
-  assert.ok(!offered.some((p) => p.startsWith("points")), `points must not (yet) be offered as an equation slot: ${offered.filter((p) => p.startsWith("points"))}`);
-  assert.equal(isEquationValue(registered, ["points", 0, "x"], "= 5"), true, "the `=` MARKER is recognized…");
-  // …but the slot has no result KIND, so the value is rejected loudly rather
-  // than silently accepted. THIS is the Tier 0 hole reported in the header: fixing
-  // it needs a list result kind (core/expressions.js) + array-descending leaves()
-  // (core/deltas.js) + a list ROW_KIND (core/properties.js) — all contended core.
-  assert.equal(resultKindForSlot(registered, ["points"], "= [[0,0]]"), "unresolved");
-  assert.equal(resultMatchesKind([[0, 0]], "unresolved"), false);
-  // The KEYFRAME half, by contrast, works — which is what makes the gap partial.
+// ── THE TWO GAPS THIS SUITE USED TO PIN ARE CLOSED (core/lists.js) ───────────
+// They were pinned as "a future fix must be noticed", and it arrived: `points` is
+// now a DECLARED list property (core/properties.js PROPS.points), so the whole list
+// has an equation result kind and a row kind exists for it. These tests now pin the
+// NEW truth — including the one part that has NOT changed, so its absence is still
+// deliberate rather than forgotten.
+test("CLOSED GAP: `points` is a declared LIST property, so the whole list has a result kind", async () => {
+  const { isEquationValue, resultKindForSlot, resultMatchesKind } = await import("../core/expressions.js");
+  assert.equal(isEquationValue(registered, ["points", 0, "x"], "= 5"), true, "the `=` MARKER is recognized");
+  // The list ROOT now types as "list" instead of falling to UNRESOLVED, which is
+  // what made the old rejection loud-but-total.
+  assert.equal(resultKindForSlot(registered, ["points"], "= [[0,0]]"), "list");
+  assert.equal(resultMatchesKind([[0, 0]], "list"), true);
+  // The KEYFRAME half is unchanged (it always worked — that is what made the gap
+  // partial), and it must stay byte-exact: the whole list is ONE leaf.
   let doc = repairedDocument(oneSlideDoc(polyState({}), 1), registry).doc;
   doc = keyframed(doc, 1, ["items", "poly", "points"], SQUARE);
   assert.deepEqual(foldState(doc, 1, 1).items.poly.points, SQUARE);
 });
 
-test("GAP (pinned): no Inspector row for the vertex list (ROW_KINDS has no list control)", async () => {
-  const { ROW_KINDS } = await import("../core/properties.js");
-  assert.ok(!ROW_KINDS.some((k) => /list|points|array|vector/i.test(k)), `a list ROW_KIND appeared — give \`points\` its row: ${JSON.stringify(ROW_KINDS)}`);
+test("CLOSED GAP: a list ROW_KIND exists; the widget still declares NO points row (the UI half is not built here)", async () => {
+  const { ROW_KINDS, PROPS } = await import("../core/properties.js");
+  assert.ok(ROW_KINDS.includes("list"), `the list row kind must exist: ${JSON.stringify(ROW_KINDS)}`);
+  assert.equal(PROPS.points.kind, "list");
+  assert.equal(PROPS.points.order, "sequence", "the order IS the outline — sorting would be a different polygon");
+  assert.equal(PROPS.points.element.storage, "tuple", "tuples keep the tween on interpolate's plain-lerp branch");
+  // STILL FALSE, and deliberately: the Inspector's list CONTROL is a separate
+  // build. Declaring the row before the control exists renders a plain text box
+  // over an array, which is worse than no row. Flip this when the control lands.
   assert.equal(registered.inspector.some((r) => r.key === "points"), false, "declaring a row with no control would render a plain text box over an array");
   // `closed` DOES have one (a boolean), so the widget is not row-less.
   assert.equal(registered.inspector.find((r) => r.key === "closed").kind, "boolean");
+  // The plugin reads the SAME declaration back rather than re-typing it.
+  assert.equal(POINTS_LIST.key, "points");
+  assert.equal(POINTS_LIST.activeKey, "pointsActive");
+  assert.equal(POINTS_LIST.element, PROPS.points.element, "one declaration object, read by reference");
+});
+
+// ── PER-VERTEX VISIBILITY (hide) — the index-stable half of the pair ─────────
+
+test("HIDE: the outline closes over a hidden vertex, and every OTHER surface agrees", () => {
+  const all = [[0, 0], [1, 0], [1, 1], [0, 1]];
+  const visible = polyState({ points: all, pointsActive: [true, false, true, true], closed: true, w: 100, h: 100 });
+  // The DRAWN chain is the square minus vertex 1 — a triangle.
+  assert.deepEqual(visiblePoints(visible), [[0, 0], [1, 1], [0, 1]]);
+  assert.deepEqual(localPoints(visible), [[0, 0], [100, 100], [0, 100]]);
+  // …and it is EXACTLY the shape you would get by authoring three vertices: same
+  // path, same fill decision, same hit test. That is the "acts like it's not
+  // there" contract (core/lists.visibleElements), proved rather than asserted.
+  const authored = polyState({ points: [[0, 0], [1, 1], [0, 1]], closed: true, w: 100, h: 100 });
+  assert.equal(JSON.stringify(registered.emit(visible)), JSON.stringify(registered.emit(authored)));
+  assert.equal(registered.hitTest(visible, 90, 95, 0), registered.hitTest(authored, 90, 95, 0));
+  // A point inside the SQUARE but outside the triangle is now a miss, so the hide
+  // really changed the painted region (the comparison above is not vacuous).
+  assert.equal(registered.hitTest(polyState({ points: all, closed: true, w: 100, h: 100 }), 90, 10, 0), true);
+  assert.equal(registered.hitTest(visible, 90, 10, 0), false);
+  // ABSENT / SHORT / non-false companions all read as VISIBLE, which is what keeps
+  // every document written before the companion existed byte-identical.
+  assert.deepEqual(visiblePoints(polyState({ points: all })), all);
+  assert.deepEqual(visiblePoints(polyState({ points: all, pointsActive: [true] })), all);
+});
+
+test("HIDE does NOT RENUMBER: the handle set, and every vertex ADDRESS, survives it", () => {
+  const all = [[0, 0], [1, 0], [1, 1], [0, 1]];
+  const before = polyState({ points: all, closed: true, w: 100, h: 100 });
+  const after = polyState({ points: all, pointsActive: [true, false, true, true], closed: true, w: 100, h: 100 });
+  // A handle PER STORED VERTEX either way — a hidden vertex that lost its handle
+  // could never be shown again.
+  assert.deepEqual(registered.modifierPoints(before).map((m) => m.id), ["p0", "p1", "p2", "p3"]);
+  assert.deepEqual(registered.modifierPoints(after).map((m) => m.id), ["p0", "p1", "p2", "p3"]);
+  // Each handle still sits on ITS OWN stored vertex and names ITS OWN index — this
+  // is the invariant equations depend on: `points.3.x` still means vertex 3.
+  for (let i = 0; i < all.length; i++) {
+    assert.deepEqual(registered.modifierPoints(after)[i].element, { listKey: "points", index: i });
+    approx(registered.modifierPoints(after)[i].x, all[i][0] * 100);
+    approx(registered.modifierPoints(after)[i].y, all[i][1] * 100);
+  }
+  assert.deepEqual(registered.modifierPoints(after).map((m) => m.active), [true, false, true, true]);
+  // withElementActive writes ONLY the companion — the element list comes back BY
+  // IDENTITY, so there is nothing that could have been renumbered.
+  const hidden = withElementActive(POINTS_LIST, { list: all, active: undefined }, 1, false);
+  assert.equal(hidden.list, all, "the element list is returned by identity");
+  // Asserted through elementActive rather than against a literal array: how far the
+  // companion is padded is core/lists.js's own representation choice, and only the
+  // per-index ANSWER is the contract this widget depends on.
+  assert.deepEqual(all.map((_, i) => elementActive(hidden.active, i)), [true, false, true, true]);
+  // PURGE, by contrast, DOES renumber — the reason the two are separate buttons.
+  const purged = withElementPurged(POINTS_LIST, { list: all, active: undefined }, 1);
+  assert.deepEqual(purged.list, [[0, 0], [1, 1], [0, 1]]);
+  assert.equal(indexAfterPurge(3, 1), 2, "what was vertex 3 is now vertex 2 — an equation bound to it moved");
+});
+
+test("HIDE is a plain boolean KEYFRAME on the companion path (no new machinery)", () => {
+  let doc = repairedDocument(oneSlideDoc(polyState({ points: SQUARE, closed: true }), 1), registry).doc;
+  doc = keyframed(doc, 1, ["items", "poly", "pointsActive"], [true, false, true, true]);
+  const folded = foldState(doc, 1, 1).items.poly;
+  assert.deepEqual(folded.pointsActive, [true, false, true, true]);
+  assert.deepEqual(folded.points, SQUARE, "the vertex list itself is untouched");
+  assert.deepEqual(visiblePoints(folded), [[0, 0], [1, 1], [0, 1]]);
+  // Hiding EVERY vertex leaves a reachable GHOST rather than an invisible,
+  // unclickable item (the degenerate-honesty rule, extended to visibility).
+  const blind = polyState({ points: SQUARE, pointsActive: [false, false, false, false] });
+  assert.equal(registered.isGhost(blind), true);
+  assert.deepEqual(registered.emit(blind), []);
+  assert.equal(registered.hitTest(blind, 5, 5, 0), true, "a ghost polygon stays selectable via its bbox");
+});
+
+// ── ADD VERTEX — on the chain, so the shape does not jump ────────────────────
+
+test("closestChainProjection: reports the SEGMENT as well as the point, and closestPointOnChain reads it", () => {
+  assert.deepEqual(closestChainProjection([[0, 0], [10, 0], [10, 10]], 11, 6, false), { segment: 1, x: 10, y: 6 });
+  assert.deepEqual(closestChainProjection([[0, 0], [10, 0], [10, 10]], 5, -3, false), { segment: 0, x: 5, y: 0 });
+  // The CLOSING leg is segment N-1 and only exists when closed.
+  assert.equal(closestChainProjection([[0, 0], [10, 0], [10, 10]], -1, 6, true).segment, 2);
+  assert.equal(closestChainProjection([[0, 0], [10, 0], [10, 10]], -1, 6, false).segment, 0);
+  // No segment at all below two vertices — and the closest-point wrapper still
+  // answers for those cases, so its own contract is unchanged.
+  assert.equal(closestChainProjection([[3, 4]], 0, 0, true), null);
+  assert.equal(closestChainProjection([], 0, 0, true), null);
+  assert.deepEqual(closestPointOnChain([[3, 4]], 0, 0, false, { x: 9, y: 9 }), { x: 3, y: 4 });
+  assert.deepEqual(closestPointOnChain([], 1, 2, false, { x: 9, y: 9 }), { x: 9, y: 9 });
+});
+
+test("ADD VERTEX: lands ON the chain — the INK RECT and the painted region are unchanged", () => {
+  const state = polyState({ points: unitRegularPolygon(5), closed: true, w: 240, h: 240, strokeWidth: 2 });
+  const before = polygonInkRect(state);
+  // Click exactly on the midpoint of the first leg (in LOCAL units — what the
+  // activation hands over).
+  const lp = localPoints(state);
+  const mid = { x: (lp[0][0] + lp[1][0]) / 2, y: (lp[0][1] + lp[1][1]) / 2 };
+  const value = withVertexInsertedNear(state, mid.x, mid.y);
+  const after = polyState({ points: value.list, pointsActive: value.active, closed: true, w: 240, h: 240, strokeWidth: 2 });
+  assert.equal(value.list.length, state.points.length + 1, "one vertex was added");
+  // THE SHAPE DID NOT JUMP: same ink rect to floating-point tolerance, and the
+  // new vertex is exactly on the leg it was inserted into (collinear with its
+  // neighbours, i.e. zero triangle area).
+  for (const k of ["x", "y", "w", "h"]) approx(before[k], polygonInkRect(after)[k], 1e-9);
+  assert.deepEqual(value.list[0], state.points[0]);
+  assert.deepEqual(value.list[2], state.points[1], "the displaced vertex is INTACT, one index later");
+  const [a, b, c] = [lp[0], localPoints(after)[1], lp[1]];
+  approx((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]), 0, 1e-6);
+  // Anywhere the old polygon was painted, the new one still is (a denser outline
+  // of the same region) — checked on a grid rather than at one lucky point.
+  for (let gx = 5; gx < 240; gx += 17)
+    for (let gy = 5; gy < 240; gy += 17)
+      assert.equal(registered.hitTest(after, gx, gy, 0), registered.hitTest(state, gx, gy, 0), `hit parity at ${gx},${gy}`);
+});
+
+test("ADD VERTEX: the CLOSING leg appends; a chain with no leg refuses; the plugin hook names the keys", () => {
+  const tri = polyState({ points: [[0, 0], [1, 0], [1, 1]], closed: true, w: 100, h: 100 });
+  // The closing leg runs from the LAST vertex back to the first, so its insertion
+  // belongs at the END of the sequence (never after vertex 0).
+  const closing = withVertexInsertedNear(tri, 20, 90);
+  assert.equal(closing.list.length, 4);
+  assert.deepEqual(closing.list.slice(0, 3), tri.points, "the existing vertices are untouched and unmoved");
+  approx(closing.list[3][0], 0.55);
+  approx(closing.list[3][1], 0.55);
+  // Nothing to insert on below two vertices — reported as null, never a guess.
+  assert.equal(withVertexInsertedNear(polyState({ points: [[0, 0]], w: 100, h: 100 }), 5, 5), null);
+  assert.equal(registered.insertPointAt(polyState({ points: [], w: 100, h: 100 }), 5, 5), null);
+  // The hook the "insert_point" activation calls declares WHICH state keys to
+  // write, so the handler stays widget-agnostic.
+  const hook = registered.insertPointAt(tri, 50, 4);
+  assert.equal(hook.key, "points");
+  assert.equal(hook.activeKey, "pointsActive");
+  assert.equal(hook.value.list.length, 4);
+  // An insert into a list WITH a companion carries the companion along, aligned,
+  // with the new element visible.
+  const withHidden = polyState({ points: [[0, 0], [1, 0], [1, 1]], pointsActive: [true, false, true], closed: false, w: 100, h: 100 });
+  const kept = withVertexInsertedNear(withHidden, 100, 50);
+  assert.equal(kept.list.length, 4);
+  assert.equal(kept.active.length, 4);
+  assert.equal(kept.active.filter((f) => f === false).length, 1, "the hidden vertex is STILL hidden");
+});
+
+test("ADD VERTEX is ONE keyframe pair, and the widget declares the activation that drives it", async () => {
+  const { handlerFor, handlerIds, migrationPlan } = await import("../web/widget_handlers.js");
+  assert.equal(registered.activate, "insert_point");
+  assert.equal(handlerFor("activate", registered).id, "insert_point");
+  assert.ok(handlerIds("activate").includes("insert_point"));
+  // Every plugin that ships the CONTENT descriptor must also name the handler —
+  // the same gate tests/activation_migration_test.js applies globally.
+  assert.deepEqual(migrationPlan(allPlugins), []);
+  // The write itself is a plain list keyframe: one leaf, tweenable, undoable.
+  const state = polyState({ points: [[0, 0], [1, 0], [1, 1]], closed: false, w: 100, h: 100 });
+  const hook = registered.insertPointAt(state, 50, 4);
+  let doc = repairedDocument(oneSlideDoc(state, 1), registry).doc;
+  doc = keyframed(doc, 1, ["items", "poly", hook.key], hook.value.list);
+  assert.deepEqual(foldState(doc, 1, 1).items.poly.points, hook.value.list);
+  assert.equal(foldState(doc, 1, 1).items.poly.pointsActive, undefined, "no companion is minted when nothing was hidden");
 });
 
 console.log(`\n${passed} polygon tests passed`);
