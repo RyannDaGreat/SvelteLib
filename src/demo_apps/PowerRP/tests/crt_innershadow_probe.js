@@ -4,7 +4,7 @@
  *
  *  - CRT: the crt demo widget's materialBackdrop op over a recognizable test
  *    pattern (colour bars + text + shapes), so scanlines / curvature / phosphor /
- *    vignette / chromatic all read on real content.
+ *    vignette / convergence all read on real content.
  *  - INNER SHADOW: a light rounded rect WITH a strong inner shadow beside an
  *    identical one WITHOUT, so the recessed/inset look is obvious; plus an
  *    offset variant.
@@ -82,7 +82,7 @@ function innerShadowRect(px, py, w, h, inner, { fill = "#dfe4ea", cornerRadius =
   await renderScene("crt_strong", [
     ...testPattern(0, 0, W, H),
     ...crtPanel((W - PW) / 2, (H - PH) / 2, PW, PH, {
-      curvature: 0.30, scanlineDepth: 0.6, maskStrength: 0.6, apertureCount: 90, vignette: 0.55, glow: 0.4, chromatic: 0.04,
+      curvature: 0.30, scanlineStrength: 0.6, maskStrength: 0.6, maskPitch: 5, vignette: 0.55, halation: 0.35, diffusion: 0.3, convergence: 0.05,
     }),
   ], { W, H, background: "#05060a" });
 
@@ -90,7 +90,7 @@ function innerShadowRect(px, py, w, h, inner, { fill = "#dfe4ea", cornerRadius =
   await renderScene("crt_flat", [
     ...testPattern(0, 0, W, H),
     ...crtPanel((W - PW) / 2, (H - PH) / 2, PW, PH, {
-      curvature: 0, scanlineDepth: 0.15, maskStrength: 0, vignette: 0.15, chromatic: 0, bezel: 0.02,
+      curvature: 0, scanlineStrength: 0.15, maskStrength: 0, maskType: "none", vignette: 0.15, convergence: 0, bezel: 0.02, halation: 0, diffusion: 0,
     }),
   ], { W, H, background: "#05060a" });
 }

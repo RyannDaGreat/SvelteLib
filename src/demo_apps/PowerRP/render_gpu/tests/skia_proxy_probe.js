@@ -37,8 +37,17 @@ const W = 480, H = 300, DPR = 2;
 const VIEW = { zoom: 1, panX: 0, panY: 0, dpr: DPR };
 const TIMING_ITERS = 3; // renders per quality for a stable-ish average (the full path is seconds-per-render, so keep this small)
 // The CRT material's uniform knobs (materialBackdrop `params`); the full path's
-// packer requires all of them (curvature … bezel). The proxy path ignores them.
-const CRT_PARAMS = { curvature: 0.15, scanlineCount: 180, scanlineDepth: 0.35, apertureCount: 120, maskStrength: 0.3, chromatic: 0.02, vignette: 0.35, glow: 0.25, brightness: 1.25, bezel: 0.06 };
+// packer requires ALL of them. This probe bypasses the plugin's emit(), so
+// maskType is the NUMERIC shader code (0 = aperture grille), not the menu string.
+// The proxy path ignores these entirely (cheap frost stand-in).
+const CRT_PARAMS = {
+  sourceTVL: 300, gammaIn: 2.4, gammaOut: 2.2,
+  scanlineStrength: 0.4, scanlineCount: 240, brightBoost: 1.25, beamBloom: 0.4,
+  maskType: 0, maskStrength: 0.35, maskPitch: 3,
+  halation: 0.12, diffusion: 0.15,
+  curvature: 0.08, convergence: 0.02, vignette: 0.35, bezel: 0.05,
+  monochrome: 0, whiteBalance: 0, phosphorTint: "#ffffff",
+};
 
 const CanvasKit = await CanvasKitInit({ locateFile: (f) => path.join(BIN_DIR, f) });
 // These scenes carry NO text, so an empty FontCollection satisfies paintIR's
