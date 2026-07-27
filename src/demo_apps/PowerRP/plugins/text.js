@@ -29,6 +29,11 @@ export const textPlugin = {
   // machinery as rect — capabilities.bbox && capabilities.resizable; NO special
   // case). w/h are real box dimensions; w constrains word wrap.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the
+  // Skia-owned in-place RICH editor — it edits a {runs, paras} value with the
+  // floating format toolbar, which is what distinguishes it from the plain
+  // single-string "inline_text_edit" a plaintext box declares.
+  activate: "rich_text_edit",
   /**
    * Pure function. Is this text box currently a GHOST (manifest 13.6
    * CONDITIONAL GHOSTS: "same with text")? STATE-dependent, not
@@ -65,11 +70,11 @@ export const textPlugin = {
     // outlineColor/outlineWidth/highlight (Round 13.4) default OFF: no glyph
     // outline (width 0), no highlight background ("" sentinel). Old docs without
     // these keys get the same off defaults via core/richtext.runFrom.
-    text: { runs: [{ text: "Text", bold: false, italic: false, underline: false, strike: false, size: 36, font: DEFAULT_FONT, color: "#1a1a2e", outlineColor: "#000000", outlineWidth: 0, highlight: "" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] },
+    text: { runs: [{ text: "Text", bold: false, italic: false, underline: false, strike: false, size: 36, font: DEFAULT_FONT, color: "#000000", outlineColor: "#000000", outlineWidth: 0, highlight: "" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] },
     // Widget-level style the single migrated run inherits AND the per-paragraph
     // layout falls back to (font/size/color/bold are run-inherited; the para
     // keys below are the box's one-alignment-per-box defaults — SET-1 Inspector).
-    size: 36, color: "#1a1a2e", bold: false, font: DEFAULT_FONT, opacity: 1,
+    size: 36, color: "#000000", bold: false, font: DEFAULT_FONT, opacity: 1,
     // Paragraph-level defaults for the whole box (each paragraph may override in
     // paras[i] via the SET-2 UX). align ∈ left|center|right|justify.
     align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0,
@@ -88,18 +93,17 @@ export const textPlugin = {
   // input here can't represent runs and would clobber them. SET-1 exposes the
   // box/paragraph props only (the MODEL already supports per-run style).
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" },
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" },
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    // The eight shared bbox rows, COMPOSED from the registry rather than
+    // re-typed. They used to be hand-copied literals here — byte-identical to
+    // BUNDLES.positioning except for the `help` text they silently lacked, and
+    // exactly the copy-paste drift core/properties.js exists to end: the `angle`
+    // KIND that put the rotary dial on `rotation` reached every other bbox widget
+    // through the bundle and would have skipped this one.
+    ...bundle("positioning"),
     // Default typography for the box (runs inherit these; SET-2 sets them per-run).
     { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text" },
     { key: "size", label: "Size", kind: "number", min: 0, category: "text" },
-    { key: "bold", label: "Bold", kind: "checkbox", category: "text" },
+    { key: "bold", label: "Bold", kind: "boolean", category: "text" },
     // Paragraph props (box-level; the "one alignment per box" control — SET-2
     // adds per-paragraph). align is a select over the four alignments.
     { key: "align", label: "Align", kind: "select", options: ["left", "center", "right", "justify"], optionLabels: { left: "Left", center: "Center", right: "Right", justify: "Justify" }, category: "text" },

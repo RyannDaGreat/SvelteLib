@@ -13,13 +13,24 @@
   rows below it down; the panel scrolls. The grid itself is height-capped and
   scrolls internally so a 343-swatch library never runs off the panel.
 
+  HOVERING a swatch LIVE-PREVIEWS its gradient on the selected item, mirroring
+  ToolsPane's preset card grid: each pointerenter overwrites the last preview, and
+  leaving the GRID (not each swatch — moving between neighbours must not flicker
+  a revert) cancels it. The picker owns no document write of its own: it hands
+  the stop list to the callbacks, and the mount point (PaintField) stages it
+  through app.setPreview / app.cancelPreview, so the document is never mutated
+  and no undo entry is created until a click commits.
+
   No <style> block (web/ app convention): classes live in app.css
   (.gradient-presets / .gradient-swatch / … via --a-* tokens). Each swatch's
   gradient is DATA, not a design token, so it is passed as the --gp-swatch custom
   property exactly like ColorField passes its swatch color as --cf-swatch.
 
   Props: onpick(stops) — called with a fresh {offset, color}[] stop list when a
-  preset is chosen; disabled — greys out the toggle.
+  preset is chosen; onpreview(stops) — the same list, staged as a live preview
+  while a swatch is hovered; oncancelpreview() — revert that preview; disabled —
+  greys out the toggle. The two preview callbacks are optional and guarded at the
+  call site, following the sibling AngleField's onpreview/oncommit convention.
 -->
 <script module>
   import { GRADIENT_PRESETS } from "./gradient_presets.js";
@@ -61,44 +72,87 @@
 
 <script>
   import "iconify-icon";
+  import Tooltip from "../../../lib/Tooltip.svelte";
 
-  let { onpick, disabled = false } = $props();
+  let { onpick, onpreview = null, oncancelpreview = null, disabled = false } = $props();
 
   let open = $state(false);
   let query = $state("");
   let searchEl = $state(null);
+  let bodyEl = $state(null);
 
   let filtered = $derived(filterPresets(GRADIENT_PRESETS, query));
+
+  /**
+   * Pure function. A FRESH copy of a preset's stops — never the shared preset
+   * object, so neither the document nor a preview can alias author-time data.
+   *
+   * @param {{stops:{offset:number,color:string}[]}} preset
+   * @returns {{offset:number,color:string}[]}
+   *
+   * @example freshStops({name:"x", stops:[{offset:0,color:"#000000"}]}) // [{offset:0, color:"#000000"}]
+   */
+  function freshStops(preset) {
+    return preset.stops.map((s) => ({ offset: s.offset, color: s.color }));
+  }
+
+  /** Command. Reverts the hover preview (the mount point restores what the
+   * document actually holds). Safe to call when nothing is staged. */
+  function cancelPreview() {
+    if (oncancelpreview) oncancelpreview();
+  }
+
+  /** Command. Collapses the library, clears the search, and reverts any hover
+   * preview — the grid can unmount with the pointer still over a swatch, which
+   * fires no pointerleave, so the revert must not depend on one. */
+  function close() {
+    open = false;
+    query = "";
+    cancelPreview();
+  }
 
   /** Command. Toggles the library open/closed; a fresh open starts unfiltered. */
   function toggle() {
     if (disabled) return;
-    open = !open;
-    if (!open) query = "";
+    if (open) close();
+    else open = true;
   }
 
-  /** Command. Applies a preset: hands a FRESH copy of its stops to onpick (never
-   * the shared preset object, so the document can't alias author-time data) and
-   * collapses the library. */
+  /** Command. Live-previews `preset` on the selected item WITHOUT committing:
+   * the mount point stages the stops into app.previewDelta, so the viewport
+   * renders them while the document stays untouched and no undo entry is
+   * created. The next hover overwrites it; leaving the grid reverts it. */
+  function preview(preset) {
+    if (disabled || !onpreview) return;
+    onpreview(freshStops(preset));
+  }
+
+  /** Command. Applies a preset durably (one undo unit, via onpick) and collapses
+   * the library. The commit consumes the staged preview, so close()'s revert is
+   * a no-op here — it only guards the unmount-without-pointerleave case. */
   function pick(preset) {
-    onpick(preset.stops.map((s) => ({ offset: s.offset, color: s.color })));
-    open = false;
-    query = "";
+    onpick(freshStops(preset));
+    close();
   }
 
   /** Escape closes the library (mirrors ColorField's inline picker); stops
    * propagation so it doesn't also bubble into Deselect. */
   function onKeydown(e) {
     if (e.key === "Escape" && open) {
-      open = false;
-      query = "";
+      close();
       e.stopPropagation();
     }
   }
 
-  // Focus the search field the moment the library opens, so typing filters at once.
+  // On open: focus the search field so typing filters at once, and scroll the
+  // revealed body into view. The Inspector pane SCROLLS, and this field sits far
+  // down a long property list, so a library opened near the fold would otherwise
+  // have its bottom rows cut off by the pane edge. `block: "nearest"` scrolls the
+  // minimum needed (the EquationSuggest / CommandPalette scrollIntoView idiom).
   $effect(() => {
-    if (open && searchEl) searchEl.focus();
+    if (!open || !searchEl || !bodyEl) return;
+    searchEl.focus();
+    bodyEl.scrollIntoView({ block: "nearest" });
   });
 </script>
 
@@ -117,7 +171,7 @@
   </button>
 
   {#if open}
-    <div class="gradient-presets-body">
+    <div class="gradient-presets-body" bind:this={bodyEl}>
       <input
         class="gradient-presets-search"
         type="text"
@@ -126,18 +180,30 @@
         bind:this={searchEl}
         bind:value={query}
       />
-      <div class="gradient-presets-grid" role="listbox" aria-label="Gradient presets">
+      <!-- pointerleave on the GRID (not each swatch) reverts only when the
+           pointer leaves the tiles entirely; moving BETWEEN swatches fires each
+           one's pointerenter, overwriting the preview without a revert between
+           them (the ToolsPane preset card-grid precedent). -->
+      <div
+        class="gradient-presets-grid"
+        role="listbox"
+        aria-label="Gradient presets"
+        tabindex="-1"
+        onpointerleave={cancelPreview}
+      >
         {#each filtered as p (p.name)}
-          <button
-            type="button"
-            class="gradient-swatch"
-            role="option"
-            aria-selected="false"
-            title={p.name}
-            aria-label={p.name}
-            style:--gp-swatch={cssGradientFromStops(p.stops)}
-            onclick={() => pick(p)}
-          ></button>
+          <Tooltip text={p.name}>
+            <button
+              type="button"
+              class="gradient-swatch"
+              role="option"
+              aria-selected="false"
+              aria-label={p.name}
+              style:--gp-swatch={cssGradientFromStops(p.stops)}
+              onpointerenter={() => preview(p)}
+              onclick={() => pick(p)}
+            ></button>
+          </Tooltip>
         {:else}
           <div class="gradient-presets-empty">No presets match</div>
         {/each}

@@ -68,16 +68,26 @@
 
 import { parseColor } from "../ir.js";
 
+// The three constants the OUTWARD-REACH math (maxCrtSampleReach, below) shares with
+// the shader. Exported as JS constants AND interpolated into the SkSL, so the
+// backdrop-region bound and the shader that samples it read ONE source of truth —
+// the glass_shader.js GLASS_PRE_BULGE precedent. String(1.0) === "1", so the
+// compiled shader text keeps the same value it had as an inline literal.
+const AA_PX = 1.0;              // coverage antialias half-width (~1 device px)
+const BAND_SPAN_SIGMA = 2.5;    // the 7 band-limit taps span ±2.5σ (covers ~99% of the Gaussian)
+const BAND_K = 0.512;           // TVL→σ constant at M=0.1 limiting contrast: σ device px = BAND_K · pictureWidth / sourceTVL
+const MIN_BAND_SIGMA = 0.30;    // σ floor (device px): even a huge sourceTVL keeps a hair of softening
+
 // ── named constants (WHY each exists — no magic numbers) ─────────────────────
 export const CRT_SKSL = `
-const float AA_PX = 1.0;               // coverage antialias half-width (~1 device px)
+const float AA_PX = ${AA_PX};               // coverage antialias half-width (~1 device px)
 const float TWO_PI = 6.28318530718;    // 2π — one full phosphor-triad / scanline period
 const float THIRD_TURN = 2.09439510239;// TWO_PI/3 — 120° phase between the R, G, B phosphor stripes
 const float VIGNETTE_START = 0.55;     // normalized radius (0=center, 1=corner) at which the vignette begins to darken
 const float SCREEN_FEATHER_PX = 1.5;   // soft falloff (device px) of the curved lit-screen edge into the black tube face
-const float BAND_SPAN_SIGMA = 2.5;     // the 7 band-limit taps span ±2.5σ (covers ~99% of the Gaussian); kernel width scales WITH sigma so an extreme sourceTVL stays correct
-const float BAND_K = 0.512;            // TVL→σ constant at M=0.1 limiting-contrast (agent5): σ device px = BAND_K · pictureWidth / sourceTVL
-const float MIN_BAND_SIGMA = 0.30;     // σ floor (device px): even a huge sourceTVL keeps a hair of softening (and a nonzero step), never a hard 1:1
+const float BAND_SPAN_SIGMA = ${BAND_SPAN_SIGMA};     // the 7 band-limit taps span ±2.5σ (covers ~99% of the Gaussian); kernel width scales WITH sigma so an extreme sourceTVL stays correct
+const float BAND_K = ${BAND_K};            // TVL→σ constant at M=0.1 limiting-contrast (agent5): σ device px = BAND_K · pictureWidth / sourceTVL
+const float MIN_BAND_SIGMA = ${MIN_BAND_SIGMA};       // σ floor (device px): even a huge sourceTVL keeps a hair of softening (and a nonzero step), never a hard 1:1
 const float CONV_EPS = 0.0005;         // below this convergence, skip the 3× resample and take one band-limit call (R=G=B center)
 const float SCAN_HARD_DARK = -16.0;    // Lottes scanline hardness for a DARK line: tight beam, deep black gaps (exp2(hardness·d²))
 const float SCAN_HARD_BRIGHT = -6.0;   // ...for a FULLY-BRIGHT line: the beam blooms fat and nearly fills the gap (beamBloom eases dark→bright)
@@ -352,10 +362,62 @@ export function packCrtUniforms(u) {
 }
 
 /**
+ * Pure function. The CRT shader's MAXIMUM OUTWARD backdrop-sample displacement in
+ * DEVICE px, measured PAST THE PANEL'S CIRCUMRADIUS — the reach the material
+ * framework needs in order to bound the backdrop it builds (the CRT half of
+ * glass_shader.maxGlassDisplacement; see materials.materialSampleReach for why an
+ * under-estimate is a visible bug and why absence is the safe answer).
+ *
+ * A tube reads the backdrop through three displacements, all bounded by uniforms:
+ *
+ *   1. BARREL CURVATURE. `main` samples at wl = pl · (1 + curvature · r²), where
+ *      pl is the fragment in local device px and r² = |pl / halfSize|². Only
+ *      fragments the shader actually SHADES matter (it returns 0 outside its
+ *      rounded-rect coverage), and coverage extends at most AA_PX past the box on
+ *      each axis, so r² is bounded by uvMax below. The circumradius already
+ *      covers pl itself; the reach is what the bulge adds on top.
+ *   2. CONVERGENCE. The R/B taps are split radially by convergence · min(halfW,
+ *      halfH) · r², worst at the same corner.
+ *   3. INPUT BAND-LIMIT. Seven taps span ±BAND_SPAN_SIGMA · σ along the tube's
+ *      local x, σ = max(BAND_K · 2·halfW / max(sourceTVL, 1), MIN_BAND_SIGMA) —
+ *      the shader's own expression, from the shared constants above.
+ *
+ *   uvMax = ((halfW + AA_PX)/halfW, (halfH + AA_PX)/halfH)
+ *   r2max = uvMax.x² + uvMax.y²
+ *   R     = hypot(halfW, halfH)
+ *   reach = (R + AA_PX·√2)·(1 + curvature·r2max) − R      // barrel, past the circumradius
+ *         + convergence · min(halfW, halfH) · r2max        // radial R/B split
+ *         + BAND_SPAN_SIGMA · σ                            // horizontal band-limit taps
+ *
+ * The Gaussian support of the BLURRED child (halation/diffusion sample it at the
+ * same warped point) and the coverage-AA slop are added by the caller, not here —
+ * they are framework-wide, not CRT-specific.
+ *
+ * @param {object} u - the framework's normalized uniform input (device geometry +
+ *   the CRT knobs): {halfW, halfH, curvature, convergence, sourceTVL}
+ * @returns {number} maximum outward displacement past the circumradius, device px
+ *
+ * @example maxCrtSampleReach({halfW: 120, halfH: 80, curvature: 0, convergence: 0, sourceTVL: 1e9}) // 2.1642135623731065 (flat panel: just the AA slop + the σ floor)
+ * @example maxCrtSampleReach({halfW: 120, halfH: 80, curvature: 0.06, convergence: 0, sourceTVL: 1e9}) // 20.006628131286902 (a 6% bulge on a 240x160 panel)
+ * @example maxCrtSampleReach({halfW: 120, halfH: 80, curvature: 0.06, convergence: 0.02, sourceTVL: 240}) // 23.80365590906468
+ */
+export function maxCrtSampleReach(u) {
+  const uvX = (u.halfW + AA_PX) / u.halfW, uvY = (u.halfH + AA_PX) / u.halfH;
+  const r2max = uvX * uvX + uvY * uvY;
+  const R = Math.hypot(u.halfW, u.halfH);
+  const barrel = (R + AA_PX * Math.SQRT2) * (1 + u.curvature * r2max) - R;
+  const convergence = u.convergence * Math.min(u.halfW, u.halfH) * r2max;
+  const sigma = Math.max(BAND_K * 2 * u.halfW / Math.max(u.sourceTVL, 1), MIN_BAND_SIGMA);
+  return barrel + convergence + BAND_SPAN_SIGMA * sigma;
+}
+
+/**
  * THE CRT MATERIAL DESCRIPTOR — the registry entry (render_gpu/skia/materials.js).
  * `id` matches the plugin's `material` op field; `sksl` is the shader; `pack`
  * maps the framework's normalized `u` (device geometry + the material's own knobs)
  * to the uniform Float32Array. A BACKDROP material (no flag ⇒ defaults to
  * backdrop) — it needs no proxyFill (auto-covered by the generic frost stand-in).
+ * `maxSampleReach` is how far outside itself it READS, so the framework can bound
+ * the backdrop it builds instead of re-rendering + blurring the whole surface.
  */
-export const CRT_MATERIAL = { id: "crt", sksl: CRT_SKSL, pack: packCrtUniforms, uniformFloats: CRT_UNIFORM_FLOATS };
+export const CRT_MATERIAL = { id: "crt", sksl: CRT_SKSL, pack: packCrtUniforms, uniformFloats: CRT_UNIFORM_FLOATS, maxSampleReach: maxCrtSampleReach };

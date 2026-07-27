@@ -17,7 +17,10 @@ import { unionRect } from "../core/geometry.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
 import { resolveTransition, retypedTransition } from "../core/transitions.js";
-import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld } from "../core/derive.js";
+import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld, nodeModifierPoints } from "../core/derive.js";
+// The LIST-ELEMENT operations the HANDLE actions route through — one mechanism for
+// per-element hide and purge, shared with the Inspector's list control.
+import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
 import { evaluateState, withVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
@@ -29,6 +32,7 @@ import * as projectApi from "./projectApi.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
+import { DRAG_KINDS } from "./canvas/dragKinds.js"; // the dragKind setter's allowlist
 import { createUndo } from "../core/undo.js";
 import { registerAll } from "../plugins/index.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
@@ -36,7 +40,8 @@ import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses it
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
 // The command below spreads these over the registry defaults to mint 3 wired items.
 import {
-  TELESCOPIC, telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
+  TELESCOPIC, telescopicDefaultRects,
+  telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
 } from "../plugins/tangent_lines.js";
 import { browserSetting } from "./settings.js";
 // Fonts-as-asset seam (#26): register an uploaded font file as a SELECTABLE
@@ -159,6 +164,7 @@ export class PowerRPApp {
   }
   set slideIndex(i) {
     this.dismissEdit();
+    this.exitCanvasMode(); // a widget canvas mode is bound to an item on THIS slide
     this.#slideIndex = i;
   }
   // PRIMARY selection — a single itemId or null. Kept as the primary for full
@@ -183,8 +189,17 @@ export class PowerRPApp {
     // item it is about to edit, and that write must NOT immediately cancel
     // the edit it is starting.
     if (this.editingItemId !== null && id !== this.editingItemId) this.dismissEdit();
+    // Same rule for a widget CANVAS MODE (web/widget_handlers.js): selecting a
+    // different item leaves the mode (committing its pending gesture), so the mode
+    // can never outlive the item it belongs to. The handler's own `run` writes
+    // `selection = itemId` BEFORE entering, when canvasMode is still null, so this
+    // never cancels the mode it is about to start.
+    if (this.canvasMode !== null && id !== this.canvasMode.itemId) this.exitCanvasMode();
     this.#selection = id;
     this.selectionSet = []; // single-select write drops the multi override
+    // The OUTER scope owns the INNER one: handle ids belong to whichever item was
+    // selected, so any item-selection change invalidates them (see handleSelection).
+    this.handleSelection = [];
     if (id !== null) this.selectedTransition = null; // item and transition selection are mutually exclusive
   }
   // MULTI-select override: the FULL set of selected itemIds (band select /
@@ -193,6 +208,26 @@ export class PowerRPApp {
   // work. Empty → selectedIds() falls back to [selection]. Populated only by
   // selectMany(); cleared by any single-select `selection` write (see above).
   selectionSet = $state([]);
+  // HANDLE SELECTION — the SECOND, INNER selection scope: which of the primary
+  // selected item's MODIFIER POINTS (core/derive.nodeModifierPoints — "the PPT
+  // yellow squares") are selected, as an array of modifier ids. Universal, not
+  // polygon-specific: every widget that declares `modifierPoints` gets it.
+  //
+  // THE PRECEDENCE BETWEEN THE TWO SCOPES (the design's sharpest edge, stated once
+  // here so no surface has to guess):
+  //   1. ITEM selection is the OUTER scope and OWNS the inner one. Handles only
+  //      exist for a single selected item (CanvasView draws them only then), so a
+  //      selection change of any kind invalidates them — every write to
+  //      `selection`/selectMany clears this, via clearHandleSelection().
+  //   2. THE INNER SCOPE WINS A CONTESTED KEY. While handles are selected, Escape
+  //      clears THEM and leaves the item selected; Backspace hides THEM, not the
+  //      item. Both are enforced in core/shortcut_entries.js by `when` predicates
+  //      (handlesSelected vs the item entries' exclusion of it) rather than by
+  //      ordering, so exactly one meaning is ever live — and therefore exactly one
+  //      chip is ever on the HintBar, which is what makes the bar honest.
+  //   3. NOTHING here touches the item selection. Clearing handles never deselects
+  //      the item; that would make Escape destroy two things at once.
+  handleSelection = $state([]);
   // TRANSITION selection — the INCOMING slide's slideId whose between-rows
   // transition slice is selected, or null (manifest Round 12: transitions are
   // first-class SELECTABLE things whose properties show in the Property Panel).
@@ -204,11 +239,28 @@ export class PowerRPApp {
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
   dragging = $state(false); // canvas sets this; drives HintBar context
-  // Which drag gesture is live: null | "move" | "resize" — drives the
-  // HintBar's per-gesture modifier hints (manifest "Drag/resize modifiers":
-  // auto-announce while dragging). Endpoint drags leave it null (they have
-  // no modifier behaviors to announce).
-  dragKind = $state(null);
+  // Which drag gesture is live: null, or one of DRAG_KINDS (web/canvas/
+  // dragKinds.js) — drives the HintBar's per-gesture modifier hints (manifest
+  // "Drag/resize modifiers": auto-announce while dragging) AND the shortcut
+  // registry's per-gesture contexts.
+  //
+  // Backed by an accessor that THROWS on an undeclared kind, the same
+  // private-$state-behind-a-setter shape #slideIndex/#selection use. WHY: the
+  // hint set and the reachability prober are both DERIVED from DRAG_KIND_MODIFIERS,
+  // so a kind that is assigned here but missing there gets no modifier chips and
+  // is never probed — which is exactly how multi-selection resize shipped reading
+  // Shift/Cmd with nothing on the bar and no test able to see it. Failing loudly
+  // at the assignment makes that state unreachable: you cannot introduce a drag
+  // kind without declaring it, and declaring it wires the hints and the guard.
+  #dragKind = $state(null);
+  get dragKind() {
+    return this.#dragKind;
+  }
+  set dragKind(kind) {
+    if (kind !== null && !DRAG_KINDS.includes(kind))
+      throw new Error(`app.dragKind = ${JSON.stringify(kind)} is not a declared drag kind — add it to DRAG_KIND_MODIFIERS in web/canvas/dragKinds.js (with the held modifiers it reads) so its HintBar chips and the shortcut reachability prober cover it. Legal: null, ${DRAG_KINDS.join(", ")}.`);
+    this.#dragKind = kind;
+  }
   // Active Blender-style MODAL transform (manifest "G/S modal transforms round
   // 2": G grab / S scale + axis constraints + numeric entry), or null. Shape:
   // { kind: "grab"|"scale", axis: null|"x"|"y", buffer: string }. The geometry
@@ -235,10 +287,12 @@ export class PowerRPApp {
    *  console-only failure). Cleared when frames land or the widget changes. */
   filmstripStatus = $state({ items: {} });
   /** ITEM ID whose asset (video) picker should AUTO-OPEN (manifest 14.3: placing
-   *  a new filmstrip immediately opens the video-picker modal). Set by addItem
-   *  for a fresh filmstrip; the Inspector's AssetField for that item's `src` row
-   *  reads it and opens its picker, then clears it (on pick OR cancel — cancel
-   *  leaves the empty ghost widget, per 14.3). null = no pending auto-open. */
+   *  a new filmstrip immediately opens the video-picker modal). Set by the widget
+   *  handlers that ASK for an asset — the "bbox_then_asset" creation gesture and the
+   *  "asset_picker" double-click activation (web/widget_handlers.js); the Inspector's
+   *  AssetField for that item's `src` row reads it and opens its picker, then clears
+   *  it (on pick OR cancel — cancel leaves the empty ghost widget, per 14.3).
+   *  null = no pending auto-open. */
   pendingVideoPickFor = $state(null);
   /** TRUE IN-PLACE RICH-TEXT EDITING. While a text box is being edited in place,
    * `textEditing` = { itemId } (null otherwise). The item keeps rendering LIVE
@@ -304,6 +358,18 @@ export class PowerRPApp {
   //     the ENTIRE generalization surface: any future plugin opts in by
   //     arming with itself, no CanvasView changes needed.
   crosshair = $state(null);
+
+  // ── WIDGET CANVAS MODE (web/widget_handlers.js) ────────────────────────────
+  // While a widget's ACTIVATION has taken over canvas input, `canvasMode` =
+  // { handlerId, itemId } (null otherwise). The handler descriptor's `mode`
+  // (looked up by handlerId) owns what drags and the wheel DO; CanvasView routes
+  // the gestures; the HintBar shows that mode's own registered inputs, scoped by
+  // handlerId; Escape exits. This is the SAME shape as textEditing/latexEditing/
+  // codeEditing — one reactive record naming what is being edited and by what —
+  // except the mode's behaviour lives in the registry instead of a dedicated
+  // controller component, which is what lets a NEW kind of mode ship without
+  // touching this file.
+  canvasMode = $state(null);
   // Editor-only Blender-style background grid and top ruler strip. Both are
   // "options" defaulting OFF (manifest: Grid + Ruler).
   gridEnabled = $state(SETTINGS.grid.initial);
@@ -544,6 +610,7 @@ export class PowerRPApp {
     }
     this.#selection = filtered[0];
     this.selectionSet = [...filtered];
+    this.handleSelection = []; // the outer scope owns the inner one (see handleSelection)
     this.selectedTransition = null; // selecting items clears a transition selection
   }
 
@@ -560,6 +627,163 @@ export class PowerRPApp {
   toggleInSelection(id) {
     const ids = this.selectedIds();
     this.selectMany(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  }
+
+  // ── HANDLE SELECTION (the INNER selection scope) ────────────────────────────
+  // The vocabulary is deliberately the item scope's, one level down: selectHandle
+  // ≙ `selection =`, toggleHandleInSelection ≙ toggleInSelection, hide/show/purge
+  // ≙ deleteSelection/showSelection/purgeSelection. Copying the words is what makes
+  // the two scopes one idea rather than two. See `handleSelection` for the
+  // precedence rules between them.
+
+  /** Query. The selected item's WORLD-space modifier points (all of them), or []
+   * when the selection is not exactly one item — handles only exist for a single
+   * selection, the same scope CanvasView draws them in.
+   *
+   * Always a FRESH plain array (the selectedIds() rule: never the $state proxy, so
+   * a caller cannot mutate selection state through it and puppeteer can serialize
+   * it). */
+  handles() {
+    const ids = this.selectedIds();
+    if (ids.length !== 1) return [];
+    const node = this.nodes().find((n) => n.itemId === ids[0]);
+    return node ? nodeModifierPoints(node) : [];
+  }
+
+  /** Query. The selected handles, in the order the plugin declares them (NOT
+   * selection order) — so a set operation walks the widget's own element order and
+   * the toolbar's readout is stable as you add to the set. */
+  selectedHandles() {
+    const chosen = new Set(this.handleSelection);
+    return this.handles().filter((h) => chosen.has(h.id));
+  }
+
+  /** Command. Makes `id` THE selected handle (a plain click on a handle) —
+   * replacing whatever was selected, exactly as a plain item click replaces the
+   * item selection. Leaves the ITEM selection alone. */
+  selectHandle(id) {
+    this.handleSelection = [id];
+  }
+
+  /**
+   * Command. Toggles a handle's MEMBERSHIP in the handle selection — shift-click,
+   * the SAME semantics `toggleInSelection` gives items (PowerPoint/Figma: shift on
+   * an already-selected one REMOVES it). Order-preserving: an added id lands at the
+   * end. Removing the last id leaves the handle selection empty, which is not a
+   * deselect of the item — the two scopes are independent (see handleSelection).
+   */
+  toggleHandleInSelection(id) {
+    const ids = this.handleSelection;
+    this.handleSelection = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+  }
+
+  /** Command. Clears the handle selection, leaving the ITEM selection intact —
+   * Escape's inner-scope meaning (see handleSelection precedence rule 2). */
+  clearHandleSelection() {
+    this.handleSelection = [];
+  }
+
+  /**
+   * Query. The LIST DECLARATION (core/lists.js) behind a handle, or null when the
+   * handle is not a list element: `{decl, listKey, index}`.
+   *
+   * The declaration is read off the widget's own Inspector row for that key, which
+   * is where core/properties.js already put it — so the canvas actions, the
+   * Inspector's list control and the plugin's geometry all read ONE declaration and
+   * cannot disagree about the storage form or the visibility companion's name.
+   * A handle naming a key with no list row is a plugin bug, so it throws.
+   */
+  #handleElement(handle) {
+    if (!handle.element) return null;
+    const node = this.selectedNode();
+    const { listKey, index } = handle.element;
+    const row = (node?.plugin.inspector ?? []).find((r) => r.key === listKey && r.kind === LIST_ROW_KIND);
+    if (!row)
+      throw new Error(`app: handle "${handle.id}" of "${node?.type}" declares list element "${listKey}", but that widget has no kind:"list" Inspector row for it — declare the list (core/properties.js PROPS."${listKey}") or drop the handle's \`element\`.`);
+    return { decl: row, listKey, index };
+  }
+
+  /** Query. The selected handles that ARE list elements, grouped by list key and
+   *  sorted by DESCENDING index — the order a multi-element splice must run in, so
+   *  each purge cannot invalidate the indices still to come. Handles with no
+   *  element (a donut's inner radius) are absent, which is what makes the list
+   *  actions silently inapplicable to them rather than wrong. */
+  #selectedListElements() {
+    const byKey = new Map();
+    for (const h of this.selectedHandles()) {
+      const el = this.#handleElement(h);
+      if (!el) continue;
+      if (!byKey.has(el.listKey)) byKey.set(el.listKey, { decl: el.decl, indices: [] });
+      byKey.get(el.listKey).indices.push(el.index);
+    }
+    for (const entry of byKey.values()) entry.indices.sort((a, b) => b - a);
+    return byKey;
+  }
+
+  /**
+   * Command. Sets every selected handle's element VISIBILITY (hide/show) as ONE
+   * undo unit — the list-element form of the item eye toggle, and the same rule one
+   * level down: the element stops participating (a polygon draws straight past the
+   * corner) but keeps its place, so it can come back.
+   *
+   * INDEX-STABLE BY CONSTRUCTION: routed through core/lists.withElementActive,
+   * which writes ONLY the aligned visibility COMPANION and returns the element list
+   * by identity. `points.3.x` therefore still names the same vertex afterwards, and
+   * every equation bound to a later element keeps its meaning. That is the whole
+   * reason hide exists alongside purge.
+   *
+   * KEEPS the handle selection (the item-scope ruling verbatim: "you shouldn't
+   * deselect something when it's not visible anymore" — a hidden handle stays
+   * selected so the same button flips it back).
+   */
+  setHandleSelectionActive(active) {
+    const groups = this.#selectedListElements();
+    if (groups.size === 0) return;
+    const id = this.selection;
+    const state = this.state().items?.[id];
+    let doc = this.doc;
+    for (const [listKey, { decl, indices }] of groups) {
+      let value = { list: state[listKey], active: state[decl.activeKey] };
+      for (const index of indices) value = withElementActive(decl, value, index, active);
+      doc = keyframed(doc, this.slideIndex, ["items", id, decl.activeKey], value.active);
+    }
+    this.commit(doc);
+  }
+
+  /**
+   * Command. PURGES every selected handle's element — spliced out of the list for
+   * good — as ONE undo unit. The list-element form of purgeSelection, and like it
+   * the DESTRUCTIVE half of the pair: hide is setHandleSelectionActive and moves
+   * nothing.
+   *
+   * IT RENUMBERS, AND THAT IS USER-VISIBLE. Purge is one of the two renumbering
+   * operations (core/lists.js): every LATER element's address shifts down by one, so
+   * an equation bound to `points.4.x` comes to mean what was `points.5.x`. The
+   * document-wide equation rewrite that would make this safe is not built
+   * (core/lists.indexAfterPurge is the remap it needs), so the consequence is
+   * surfaced in the command's own title and in the toolbar's tooltip rather than
+   * hidden behind a button that looks like hide.
+   *
+   * Indices run DESCENDING (#selectedListElements' order) so each splice cannot
+   * invalidate the ones still to come. CLEARS the handle selection: those elements
+   * no longer exist, exactly as purgeSelection deselects a purged item.
+   */
+  purgeHandleSelection() {
+    const groups = this.#selectedListElements();
+    if (groups.size === 0) return;
+    const id = this.selection;
+    const state = this.state().items?.[id];
+    let doc = this.doc;
+    for (const [listKey, { decl, indices }] of groups) {
+      let value = { list: state[listKey], active: state[decl.activeKey] };
+      for (const index of indices) value = withElementPurged(decl, value, index);
+      doc = keyframed(doc, this.slideIndex, ["items", id, listKey], value.list);
+      // Only write the companion when there IS one: purging from a list that never
+      // hid anything must not mint an all-true companion into the document.
+      if (value.active) doc = keyframed(doc, this.slideIndex, ["items", id, decl.activeKey], value.active);
+    }
+    this.commit(doc);
+    this.handleSelection = [];
   }
 
   /**
@@ -683,6 +907,13 @@ export class PowerRPApp {
   modalAppendBuffer = () => {};
   modalBackspace = () => {};
 
+  // FINALIZE hook for a live multi-step CREATION mode — installed by CanvasView,
+  // which holds the in-flight session (a half-drawn polygon is not document state,
+  // so it cannot live here). The mode's own `finish` key routes through the shortcut
+  // registry to this, exactly as the modal's Enter routes to modalCommit; CanvasView
+  // guards it on a live session, so it is a no-op otherwise.
+  finishCanvasMode = () => {};
+
   /** Command. Arms a one-shot CROSSHAIR band-select drag in `mode`
    * ("inner"|"outer"|"regular"). "regular" resolves to the default bandMode
    * setting (the toolbar button's press — manifest Round 12B "TOOLBAR BUTTON
@@ -697,9 +928,76 @@ export class PowerRPApp {
    * click-drags the widget's rect into existence, or a plain click places it
    * at `plugin.defaults` size centered on the point (CanvasView.onPointerDown
    * / placementDrag / placementUp). Generalizes to ANY plugin — the widget
-   * type itself is the only per-plugin knowledge CanvasView needs. */
+   * type itself is the only per-plugin knowledge CanvasView needs.
+   *
+   * A plugin whose create handler declares a MULTI-STEP mode (polygon) arms the
+   * same way: the first press enters that mode instead of finishing, and the
+   * crosshair stays up for the whole session (see enterCanvasMode). */
   armCrosshairPlacement(plugin) {
     this.crosshair = { kind: "place", plugin };
+  }
+
+  /**
+   * Command. Arms a CROSSHAIR creation for a RIG — several items wired by `=`
+   * equations, which no single plugin can declare a creation gesture for (the
+   * telescopic magnifier is three items of three types). `handlerId` names the
+   * create-phase handler directly (web/widget_handlers.js) and `params` is whatever
+   * that handler's `finalize` needs (the telescopic rig's shapeKind).
+   *
+   * Deliberately a SECOND method rather than an optional argument on
+   * armCrosshairPlacement: the plugin-declares-its-own-gesture rule is what keeps
+   * the create phase honest for widgets, and an override channel on the widget path
+   * would invite using it for widgets. Every existing caller is untouched.
+   */
+  armCrosshairRig(handlerId, params = {}) {
+    this.crosshair = { kind: "place", handlerId, params };
+  }
+
+  // ── WIDGET CANVAS MODE lifecycle ───────────────────────────────────────────
+
+  /**
+   * Command. Enters a widget handler's sustained canvas mode: the widget owns canvas
+   * input until Escape. Dismisses any in-place edit first, for the reason
+   * enterPresentMode does — a takeover that leaves a stranded editor overlay has no
+   * exit path.
+   *
+   * `itemId` is null for a CREATION mode (a multi-step placement — nothing exists
+   * yet to belong to), and `step` is which of the mode's declared steps is current;
+   * CanvasView advances it as gestures land and the HintBar narrates off it. A mode
+   * with no sequence simply stays at 0.
+   */
+  enterCanvasMode(handlerId, itemId) {
+    this.dismissEdit();
+    this.canvasMode = { handlerId, itemId, step: 0 };
+  }
+
+  /** Command. Sets which step of a multi-step creation mode is current. Reassigns
+   * the whole record so every $derived tracking `canvasMode` invalidates (the
+   * syncModalXform pattern). A no-op with no mode active. */
+  setCanvasModeStep(step) {
+    if (!this.canvasMode) return;
+    this.canvasMode = { ...this.canvasMode, step };
+  }
+
+  /**
+   * Command. Leaves the canvas mode, COMMITTING any gesture still staged in the
+   * preview (a wheel gesture whose idle timer had not yet fired) as ONE undo unit
+   * — the dismissTextEdit ruling: an exit boundary commits, it never discards work
+   * the user can see. A no-op when no mode is active, so every "something else
+   * happened" gate can call it unconditionally.
+   *
+   * It also DISARMS the crosshair, because a CREATION mode's crosshair deliberately
+   * outlives the one-shot press that started it: a multi-step placement needs the
+   * placement cursor for every step, not just the first. Leaving the mode is the end
+   * of that session either way (finished or abandoned), so the cursor goes with it.
+   * Harmless for an activation mode, which never has one armed (entering a mode does
+   * not clear an arm, but nothing arms one to enter an activation).
+   */
+  exitCanvasMode() {
+    if (!this.canvasMode) return;
+    this.canvasMode = null;
+    this.crosshair = null;
+    if (this.previewDelta) this.commitPreview();
   }
 
   /** Command. Cancels an armed-but-not-yet-gestured crosshair mode (Esc,
@@ -834,7 +1132,7 @@ export class PowerRPApp {
     this.previewDelta = null;
   }
 
-  // ── Presets (the generic PRESETS tool — web/PresetsPane.svelte) ─────────────
+  // ── Presets (the generic PRESETS tool — web/ToolsPane.svelte) ─────────────
 
   /**
    * Command. Applies a plugin PRESET's property-set to item `itemId` as keyframed
@@ -940,6 +1238,7 @@ export class PowerRPApp {
    * "Present" command) routes through here instead of writing `mode` bare. */
   enterPresentMode() {
     this.dismissEdit();
+    this.exitCanvasMode(); // same reason: the presenter has no canvas for a mode to own
     this.mode = "present";
   }
 
@@ -1111,21 +1410,21 @@ export class PowerRPApp {
     const [doc, id] = withNewItem(this.doc, this.slideIndex, state);
     this.commit(withNormalizedZ(doc));
     this.selection = id;
-    // 14.3: placing a NEW filmstrip with no video yet auto-opens its video
-    // picker (the Inspector's AssetField for `src` reads pendingVideoPickFor).
-    // Covers BOTH the crosshair placement flow and the palette "Add Filmstrip"
-    // — any fresh empty filmstrip prompts for a video. Cancel leaves the empty
-    // ghost as-is (the AssetField clears the signal on cancel too).
-    if (state.type === "filmstrip" && !state.src) this.pendingVideoPickFor = id;
+    // NO WIDGET TYPE IS NAMED HERE, deliberately. The one that used to be — 14.3's
+    // "a fresh empty filmstrip auto-opens its video picker" — is a CREATION
+    // behaviour, so the filmstrip now declares `placement: "bbox_then_asset"` and
+    // web/widget_handlers.js owns it. Reading a type name in addItem made the prompt
+    // fire on every route in (paste, duplicate, a rig builder), not on the placement
+    // gesture 14.3 actually described.
   }
 
   /**
    * Command (one undo unit). Assembles the TELESCOPIC MAGNIFIER rig — a
    * "zoom-into-this" detail-loupe callout — as THREE items wired by `=`
    * equations to a shared tween VARIABLE `t` (default 0):
-   *   1. a SOURCE MARKER outline at the world origin (the region magnified),
-   *   2. a demo_magnify LENS that samples the source origin and, as t→1, pulls
-   *      outward + grows + zooms (identity at t=0), and
+   *   1. a SOURCE MARKER outline filling the `source` rect (the region magnified),
+   *   2. a demo_magnify LENS that samples the source centre and, as t→1, pulls
+   *      out to the `lens` rect + grows + zooms (identity at t=0), and
    *   3. a TANGENT-LINES widget whose two shapes track the source and the lens.
    * The user animates the rig by keyframing / binding the `t` variable (e.g.
    * `= time`). shapeKind ∈ {"circle","box"} proves the geometry is general.
@@ -1136,9 +1435,20 @@ export class PowerRPApp {
    * three (so it samples only the backdrop below, not its own callout), then
    * the tangents, then the source marker on top. Selects the lens.
    *
+   * THE TWO RECTS ARE THE GESTURE (#189: "I first click and drag to create the
+   * first one and then I click and drag again to create the second one"), supplied
+   * by the telescopic_rig creation mode. Omitting them falls back to
+   * telescopicDefaultRects() — the drop-in-place geometry the constants describe —
+   * so the palette entry, a script, and the gesture all go through this one command.
+   *
    * @param {"circle"|"box"} shapeKind - the source/lens/tangent geometry family
+   * @param {{x,y,w,h}} [source] - world rect of the region magnified
+   * @param {{x,y,w,h}} [lens] - world rect the lens occupies at t = 1
    */
-  insertTelescopicMagnifier(shapeKind = "circle") {
+  insertTelescopicMagnifier(shapeKind = "circle", source = null, lens = null) {
+    const rects = telescopicDefaultRects();
+    const sourceRect = source ?? rects.source;
+    const lensRect = lens ?? rects.lens;
     // 1. the shared tween parameter — a document variable, default 0, on the
     //    current slide. All rig motion is a function of it (bind it to = time).
     let doc = keyframed(this.doc, this.slideIndex, ["vars", TELESCOPIC.TWEEN_VAR], 0);
@@ -1147,12 +1457,12 @@ export class PowerRPApp {
     const withDefaults = (overrides, z) => ({ ...this.registry.get(overrides.type).defaults, ...overrides, active: true, z });
     // 2. SOURCE marker (no refs) — created first so the lens/tangents can point
     //    back at it. z on TOP so the loupe never magnifies its own marker.
-    const sourceOv = telescopicSourceOverrides({ shapeKind, originX: TELESCOPIC.ORIGIN_X, originY: TELESCOPIC.ORIGIN_Y });
+    const sourceOv = telescopicSourceOverrides({ shapeKind, source: sourceRect });
     let sourceId;
     [doc, sourceId] = withNewItem(doc, this.slideIndex, withDefaults(sourceOv, baseZ + 2));
     // 3. LENS (refs the source) — lowest of the three so it samples only the
     //    backdrop drawn below it.
-    const lensOv = telescopicLensOverrides({ sourceId, shapeKind });
+    const lensOv = telescopicLensOverrides({ sourceId, shapeKind, source: sourceRect, lens: lensRect });
     let lensId;
     [doc, lensId] = withNewItem(doc, this.slideIndex, withDefaults(lensOv, baseZ));
     // 4. TANGENT lines (ref both) — between the lens and the marker in z.
@@ -1913,17 +2223,30 @@ export class PowerRPApp {
     this.slideIndex = Math.max(0, Math.min(this.doc.slides.length - 1, this.slideIndex + offset));
   }
 
-  // ── Save / load ────────────────────────────────────────────────────────────
+  // ── Local-disk DOCUMENT import/export ──────────────────────────────────────
+  // These two move the DOCUMENT ONLY — the {meta, slides} JSON body — between
+  // the editor and a file on the user's disk. They do NOT touch the server and
+  // do NOT carry assets: an asset lives in the project folder and is referenced
+  // from the document as a /asset/<project>/<file> backend URL (#resolvedSrc),
+  // so a .powerrp.json alone is not self-contained. That is why the commands are
+  // titled "Export/Import Document … (no assets)" and why the with-assets round
+  // trip is Save Project to Server / Export Project as .zip instead.
 
+  /** Command (browser download). Write the DOCUMENT (no assets) to a
+   *  <name>.powerrp.json file on the user's disk. Surfaced as "Export Document
+   *  as .powerrp.json (no assets)". */
   saveFile() {
     const blob = new Blob([serialize(this.doc)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${this.doc.meta.name || "presentation"}.powerrp.json`;
+    a.download = `${this.projectName()}.powerrp.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
 
+  /** Command. Read a DOCUMENT (no assets) from a .powerrp.json file the user
+   *  picks, replacing the open document. Opens the OS file picker, hence the
+   *  ellipsis on its title "Import Document from .powerrp.json…". */
   async loadFile() {
     const input = document.createElement("input");
     input.type = "file";
@@ -1946,14 +2269,22 @@ export class PowerRPApp {
   // app's seam to it (thin client = web/projectApi.js). doc.meta.name is the
   // project name. The localStorage autosave (commit → AUTOSAVE_KEY) stays as
   // crash-safety and is INDEPENDENT of project storage — a project must be
-  // saved to the server explicitly (Save to Server). Errors surface loudly.
+  // saved to the server explicitly (Save Project to Server). Errors surface
+  // loudly. A PROJECT = document + assets/; a DOCUMENT = the JSON body alone
+  // (the local-disk region above) — the two nouns are different payloads, and
+  // every command title says which one it moves.
 
-  /** Query. The current project name (doc.meta.name), defaulting to "Untitled". */
+  /** Query. The current project name (doc.meta.name), defaulting to "Untitled".
+   *  ALSO the filename stem of every export (document/.zip/PNG/PDF/SVG/MP4), so
+   *  a downloaded file is named the same thing the toolbar title shows. Those
+   *  call sites each used to inline a separate `|| "presentation"` fallback,
+   *  which produced "presentation-slide1.png" for a project the UI was calling
+   *  "Untitled" — two names for one unnamed project. */
   projectName() {
     return this.doc.meta.name || "Untitled";
   }
 
-  /** Command (one undo unit). Rename the presentation — writes `doc.meta.name`,
+  /** Command (one undo unit). Rename the PROJECT — writes `doc.meta.name`,
    *  the SINGLE source of the project name (toolbar title, Save default, and the
    *  name Open sets). Trims; a blank or unchanged name is a no-op, so the title
    *  can never be emptied. Undoable like any document edit (goes through commit).
@@ -2080,8 +2411,11 @@ export class PowerRPApp {
     return { thumbnail: dataUrl, badge };
   }
 
-  /** Command. Download the current project as a .zip (server-built from the
-   *  folder). Saves the doc first so the ZIP reflects the live document. */
+  /** Command. Export the whole project (document + assets) to a .zip file on the
+   *  user's disk — the archive is built server-side from the project folder.
+   *  SAVES TO THE SERVER FIRST so the .zip reflects the live document; that
+   *  server write is stated in the command's title, since a title that only said
+   *  "Download" would have hidden it. */
   async downloadZip(name = this.projectName()) {
     await this.saveToServer(name);
     await projectApi.downloadProjectZip(name);
@@ -2436,9 +2770,9 @@ export class PowerRPApp {
   openProject() {
     if (this.showOpenModal) return this.showOpenModal();
     console.error(
-      "Open Project: the project-picker modal is not wired yet " +
+      "Open Project from Server: the project-picker modal is not wired yet " +
       "(Modal lib component pending). Use app.listProjects() / app.loadProject(name) " +
-      "programmatically, or Load Presentation for a local file.",
+      "programmatically, or Import Document from .powerrp.json for a local file.",
     );
   }
 
@@ -2449,22 +2783,25 @@ export class PowerRPApp {
   showSaveModal = null;
   showRenameModal = null;
 
-  /** Command. Open the Save-to-Server modal: choose/confirm the name (default =
-   *  meta.name) and, if that name already exists on the server, warn + require
-   *  an explicit Overwrite (never a silent clobber). Delegates to the modal hook.
-   *  The low-level push (saveToServer) is unchanged and still used non-
-   *  interactively by asset upload / zip download. */
+  /** Command. Open the "Save Project to Server" modal: choose/confirm the name
+   *  (default = meta.name) and, if that name already exists on the server, warn +
+   *  require an explicit Overwrite (never a silent clobber). Delegates to the
+   *  modal hook. The low-level push (saveToServer) is unchanged and still used
+   *  non-interactively by asset upload / project .zip export. */
   saveProjectAs() {
     if (this.showSaveModal) return this.showSaveModal();
-    console.error("Save to Server: the save modal is not wired yet (App.svelte hook missing). Use app.saveToServer(name).");
+    console.error("Save Project to Server: the save modal is not wired yet (App.svelte hook missing). Use app.saveToServer(name).");
   }
 
-  /** Command. Open the Rename modal for the presentation title (writes
-   *  doc.meta.name via renameProject). Delegates to the modal hook; also the
-   *  target of the toolbar title's double-click (bug: the title was inert). */
+  /** Command. Open the Rename modal for the PROJECT name (writes doc.meta.name
+   *  via renameProject — the name the toolbar shows as the title). Delegates to
+   *  the modal hook; also the target of the toolbar title's double-click (bug:
+   *  the title was inert). NAME KEPT: the two Toolbar.svelte call sites (a file
+   *  this agent does not own) call it, so renaming the METHOD to match the
+   *  command's "Rename Project…" title is a separate, coordinated patch. */
   renamePresentation() {
     if (this.showRenameModal) return this.showRenameModal();
-    console.error("Rename: the rename modal is not wired yet (App.svelte hook missing). Use app.renameProject(name).");
+    console.error("Rename Project: the rename modal is not wired yet (App.svelte hook missing). Use app.renameProject(name).");
   }
 
   // Built-in asset browser UI seam (mirrors showOpenModal): App.svelte sets this
@@ -2478,7 +2815,7 @@ export class PowerRPApp {
    *  wired by App.svelte). */
   browseBuiltinAssets() {
     if (this.showBuiltinAssets) return this.showBuiltinAssets();
-    console.error("Built-in Assets: the browser modal is not wired yet (App.svelte hook missing).");
+    console.error("Browse Built-in Assets: the browser modal is not wired yet (App.svelte hook missing).");
   }
 
   // ── ARRANGE SELECTION INTO GRID (bento box) ─────────────────────────────────
@@ -2660,7 +2997,7 @@ export class PowerRPApp {
     });
     const a = document.createElement("a");
     a.href = canvas.toDataURL("image/png");
-    a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.png`;
+    a.download = `${this.projectName()}-slide${this.slideIndex + 1}.png`;
     a.click();
   }
 
@@ -2755,7 +3092,7 @@ export class PowerRPApp {
     });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
-    a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.pdf`;
+    a.download = `${this.projectName()}-slide${this.slideIndex + 1}.pdf`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -2823,14 +3160,17 @@ export class PowerRPApp {
     });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-    a.download = `${this.doc.meta.name || "presentation"}-slide${this.slideIndex + 1}.svg`;
+    a.download = `${this.projectName()}-slide${this.slideIndex + 1}.svg`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
 
   /**
-   * Command (async). Exports the WHOLE presentation as a playable .mp4,
-   * DETERMINISTICALLY. The client renders every frame; the SERVER encodes the
+   * Command (async). Exports ALL SLIDES (the whole deck, or the modal's chosen
+   * startIndex..endIndex range) as one playable .mp4 file on the user's disk,
+   * DETERMINISTICALLY — surfaced as "Export All Slides as MP4…", the scope that
+   * distinguishes it from the one-slide Export Slide as PNG/PDF/SVG commands.
+   * The client renders every frame; the SERVER encodes the
    * H.264 MP4 (ffmpeg). MP4-specific orchestration over the GENERAL video-export
    * pipeline (web/videoExport.js): it builds the timeline PLAN (the presenter's
    * hold + transition-in model), defines the deterministic frame renderer, wires
@@ -2920,7 +3260,7 @@ export class PowerRPApp {
     if (download) {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${this.doc.meta.name || "presentation"}.mp4`;
+      a.download = `${this.projectName()}.mp4`;
       a.click();
       URL.revokeObjectURL(a.href);
     }
@@ -3076,7 +3416,7 @@ export class PowerRPApp {
     if (!wroteToClipboard) {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${this.doc.meta.name || "presentation"}-selection.pdf`;
+      a.download = `${this.projectName()}-selection.pdf`;
       a.click();
       URL.revokeObjectURL(a.href);
     }

@@ -333,6 +333,12 @@ export const filmstripPlugin = {
   type: "filmstrip",
   title: "Filmstrip",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // CREATION GESTURE (web/widget_handlers.js, phase "create"): drag a box, then
+  // prompt for the video (manifest 14.3) — a filmstrip with no source has nothing
+  // to draw, so asking is part of placing it. This was a `type === "filmstrip"`
+  // branch inside app.addItem, which fired on every route into addItem (paste and
+  // duplicate included) rather than on the gesture it described.
+  placement: "bbox_then_asset",
   /**
    * Pure function. Is this filmstrip a GHOST (manifest 13.6)? A filmstrip is a
    * ghost ONLY while it has NOTHING to show — no resolved frames AND not
@@ -468,8 +474,9 @@ export const filmstripPlugin = {
     return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
   },
   commands: [
-    // CROSSHAIR PLACEMENT (like every Add button): arm placement; CanvasView's
-    // placementUp creates the widget and (manifest 14.3) opens the video picker.
+    // CROSSHAIR PLACEMENT (like every Add button): arm placement; the finished
+    // gesture runs this widget's declared `placement` handler above, which creates
+    // it and (manifest 14.3) opens the video picker.
     { id: "add-filmstrip", title: "Add Filmstrip", icon: "mdi:filmstrip", run: (app) => app.armCrosshairPlacement(filmstripPlugin) },
   ],
 };

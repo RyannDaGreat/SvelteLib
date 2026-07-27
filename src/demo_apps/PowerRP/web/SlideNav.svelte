@@ -23,6 +23,12 @@
     · RATIONED — dirty renders drain at most THUMBS_PER_IDLE_TICK per idle/rAF
       tick, off the critical path, so a burst never freezes input; each tile
       keeps showing its last render until its turn.
+    · GESTURE-HELD — while a gesture is in flight (thumbRenderPaused: a canvas
+      drag, an Inspector scrub, a picker, a preset hover) NO thumbnail renders at
+      all; the queue drains on release, so the tile is correct once the gesture
+      settles. Two gates, because they cover different holes: the dirty-key
+      freeze stops the gesture DIRTYING tiles, the queue hold stops an
+      already-queued or scrolled-into-view render rastering mid-drag.
 -->
 <script>
   import "iconify-icon";
@@ -32,7 +38,7 @@
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
-  import { makeSerialSource, thumbnailDirtyKeys, makeIdleThumbScheduler, browserTickDeps } from "./thumbSchedule.js";
+  import { makeSerialSource, thumbnailDirtyKeys, makeIdleThumbScheduler, browserTickDeps, thumbRenderPaused } from "./thumbSchedule.js";
 
   let { app } = $props();
 
@@ -101,14 +107,16 @@
     return { type: t.type, seconds: t.seconds, title: transitionType(t.type).title };
   }
 
-  // While a drag preview is active we FREEZE the committed doc (the preview lives
+  // While a GESTURE is in flight we FREEZE the committed doc (a drag preview lives
   // in previewDelta, not app.doc — thumbnails show committed state only, never at
-  // drag rate).
+  // drag rate). thumbRenderPaused(app) is the ONE gesture predicate, shared with
+  // the queue hold below: previewDelta alone missed the pointer-down→first-move
+  // window and every preview-less gesture (band select, placement).
   // svelte-ignore state_referenced_locally — the initial value is immediately
-  // reconciled by the effect below (previewDelta is null at mount).
+  // reconciled by the effect below (no gesture is in flight at mount).
   let committedDoc = $state(app.doc);
   $effect(() => {
-    if (!app.previewDelta) committedDoc = app.doc;
+    if (!thumbRenderPaused(app)) committedDoc = app.doc;
   });
 
   // PER-SLIDE DIRTY KEYS. The old key was the WHOLE-document identity, so every
@@ -142,6 +150,25 @@
   // CanvasKit rasters in one flush. Disposed on unmount.
   const thumbScheduler = makeIdleThumbScheduler({ ...browserTickDeps(), perTick: THUMBS_PER_IDLE_TICK });
   $effect(() => () => thumbScheduler.dispose());
+
+  // GESTURE HOLD. The dirty-key freeze above stops a gesture from DIRTYING tiles,
+  // but a run already queued when the gesture began — or a tile scrolled into view
+  // mid-gesture, which is dirty on size alone — would still raster while the user
+  // drags. So hold the queue itself for the whole gesture and drain on release:
+  // zero thumbnail renders mid-drag, one render of the settled state after.
+  $effect(() => thumbScheduler.setPaused(thumbRenderPaused(app)));
+
+  // Dev/test seam (mirrors window.__powerrp_app). Idle-scheduled work is INVISIBLE
+  // to an attached profiler — keeping the main thread busy is exactly what starves
+  // requestIdleCallback — so expose the scheduler: with a profile recording, call
+  // window.__powerrp_thumbs.flush() to run every pending thumbnail render
+  // synchronously as ONE attributable task (it ignores the ration and the gesture
+  // hold). pending() reports the queue depth. Cleared on unmount so it never
+  // dangles. ZERO production effect — nothing in the app reads it.
+  $effect(() => {
+    window.__powerrp_thumbs = thumbScheduler;
+    return () => { if (window.__powerrp_thumbs === thumbScheduler) delete window.__powerrp_thumbs; };
+  });
 </script>
 
 <div class="slidenav">

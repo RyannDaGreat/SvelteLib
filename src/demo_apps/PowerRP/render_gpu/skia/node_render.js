@@ -82,11 +82,17 @@ function buildFontCollection(CanvasKit) {
  *     (render_settings.cameraAntialias/antialiasCoverage) — forwarded to paintIR's
  *     setAntiAlias. Default true = smooth (today's look); false ⇒ crisp jagged
  *     edges. The headless caller (cli/render.js) reads it off the camera.
+ *   opts.quality (string): paintIR's render tier, "full" (default — the editor's
+ *     render) or "proxy" (cheap material stand-ins). Threaded so the CLI can offer an
+ *     EXPLICIT escape hatch for a material-laden slide, which costs tens of seconds
+ *     to minutes on this SOFTWARE surface. It must stay a caller's decision: "full"
+ *     is the only default a headless renderer can honestly have, since a proxy PNG is
+ *     not what the editor shows (see cli/render.js's header).
  *
  * Returns:
  *   Promise<Uint8Array>: encoded PNG bytes
  */
-export async function renderToPng(commands, view, { width, height, background = "#ffffff", media = {}, dither = null, antialias = true } = {}) {
+export async function renderToPng(commands, view, { width, height, background = "#ffffff", media = {}, dither = null, antialias = true, quality = "full" } = {}) {
   const CanvasKit = await ensureCanvasKit();
   const surface = CanvasKit.MakeSurface(width, height);
   if (!surface) throw new Error("node_render: MakeSurface returned null");
@@ -94,7 +100,7 @@ export async function renderToPng(commands, view, { width, height, background = 
   // (when dither is active) and de-bands on the downconvert to this 8-bit
   // surface; "off" paints straight in, byte-identical to before.
   renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
-    paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection, antialias }));
+    paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection, antialias, quality }));
   const img = surface.makeImageSnapshot();
   if (!img) throw new Error("node_render: makeImageSnapshot returned null");
   const png = img.encodeToBytes();

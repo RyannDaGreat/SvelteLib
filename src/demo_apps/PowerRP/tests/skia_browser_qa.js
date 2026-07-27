@@ -20,7 +20,7 @@ import { STILL_VIDEO_MP4_DATA_URI } from "./fixtures/still_video.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOG = path.join(HERE, "..", "..", "..", "..", "..", ".claude_logs", "devserver.log");
-const SHOTS = path.join(HERE, "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const SHOTS = path.join(HERE, "..", ".claude_vlm_checks");
 const URL = process.argv[2] || fs.readFileSync(LOG, "utf8").match(/https?:\/\/localhost:\d+/)[0];
 
 // A console.error/pageerror matching this is a HARD failure (a pageerror always is).

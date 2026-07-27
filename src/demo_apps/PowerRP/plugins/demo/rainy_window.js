@@ -50,7 +50,7 @@ const CUSTOM = customProps([
   { name: "streakiness", kind: "number", default: 1.0, min: 0.1, max: 4, help: "Trail LENGTH / persistence behind each running drop's head: how far up the fading refractive streak survives. Low = drops with barely a tail; high = long, slow-fading dribble streaks." },
   { name: "refraction", kind: "number", default: 0.06, min: 0, help: "Droplet refraction strength, as a fraction of the widget's short half-size: how strongly each drop bends the background behind it (the lens). 0 = flat wet patches." },
   { name: "shine", kind: "number", default: 0.9, min: 0, help: "Droplet SHININESS — the strength of the specular glint + fresnel rim on each drop's curved surface. 0 = matte water." },
-  { name: "lightAngle", kind: "number", default: LIGHT_ANGLE_DEFAULT, help: "Direction TO the light in radians (screen space; -π/2 = straight above). Sets where the specular glints sit on each drop." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: LIGHT_ANGLE_DEFAULT, help: "Direction TO the light (screen space; -90° = straight above, 0° = from the right). Sets where the specular glints sit on each drop." },
   { name: "tint", kind: "color", default: "#dfe8f0", help: "The fog/steam colour cast — the tone the steamed-up glass is pulled toward (a cool near-white reads as cold-window condensation)." },
   // ── geometry / render controls (world units + the sample resolution) ─────────
   { name: "cornerRadius", kind: "number", default: 26, min: 0, help: "Rounded-corner radius of the window pane (world px). 0 = sharp corners." },

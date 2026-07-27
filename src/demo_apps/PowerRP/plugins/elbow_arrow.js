@@ -28,7 +28,7 @@
 
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
-import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
+import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { elbowRoute, elbowHandle } from "../core/outline.js";
 import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
@@ -39,6 +39,31 @@ function routeParams(s) {
   return { x0: s.from.x, y0: s.from.y, x1: s.to.x, y1: s.to.y, elbow: s.elbow };
 }
 
+/**
+ * Pure function. The LOCAL rect the elbow arrow's INK occupies: the AABB of its
+ * 4-point H-V-H route, padded on every side by the widest of the shaft width and
+ * the head width. World == identity for a connector, so this is also its world
+ * footprint.
+ *
+ * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
+ * precedent): the effect substrate in emit() below, and — via the `localBounds`
+ * declaration — culling plus rubber-band selection (core/view.js localBoundsOf).
+ * The route hull, not the endpoint hull: the vertical leg bends AWAY from the
+ * straight line between the endpoints for no elbow value, but the corners p1/p2
+ * always share their coordinates with p0/p3 in an H-V-H route, so the two hulls
+ * coincide — passing the whole route keeps that an observation rather than an
+ * assumption the day the generator learns a new route shape.
+ *
+ * @param {object} s - evaluated item state (from / to / elbow / strokeWidth / headWidth)
+ * @returns {{x: number, y: number, w: number, h: number}} local rect
+ *
+ * @example elbowArrowInkRect({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5, strokeWidth: 3, headWidth: 12}) // {x: -12, y: -12, w: 124, h: 74}
+ */
+export function elbowArrowInkRect(s) {
+  const route = elbowRoute(routeParams(s)).map(([x, y]) => ({ x, y }));
+  return paddedPointsBBox(route, Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH));
+}
+
 export const elbowArrowPlugin = {
   type: "elbow_arrow",
   title: "Elbow Arrow",
@@ -47,7 +72,7 @@ export const elbowArrowPlugin = {
     type: "elbow_arrow", z: 1,
     from: { x: 200, y: 260 }, to: { x: 420, y: 380 },
     elbow: 0.5,
-    stroke: "#1a1a2e", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
+    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
@@ -94,11 +119,19 @@ export const elbowArrowPlugin = {
     if (ends.end) cmds.push(polygon({ points: headTriangle(p3, p2, s.headLength, s.headWidth), fill: s.stroke, opacity }));
     if (ends.start) cmds.push(polygon({ points: headTriangle(p0, p1, s.headLength, s.headWidth), fill: s.stroke, opacity }));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
-    // effects.js; all-off = pass-through). Effect region = padded AABB of the
-    // drawn geometry (no bbox state; world == identity). No cullMargin:
-    // non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
-    return applyEffects(cmds, s, world, paddedPointsBBox([p0, p1, p2, p3], Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH)));
+    // effects.js; all-off = pass-through). Effect region = its ink rect, the
+    // SAME rect `localBounds` reports, so the substrate and the cull/band bounds
+    // can never disagree about where this widget is.
+    return applyEffects(cmds, s, world, elbowArrowInkRect(s));
   },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the route's min/max IS this
+  // widget's width and height, so it band-selects and culls like any box widget
+  // despite having no w/h state and no resize handles.
+  localBounds: elbowArrowInkRect,
+  // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
+  // defaultCanSkip's cullMargin hook. MANDATORY now that this widget HAS an AABB
+  // to be culled by: without it a shadowed route just off-view loses its halo.
+  cullMargin: effectsCullMargin,
   hitTestWorld(node, wx, wy) {
     const s = node.state;
     const route = elbowRoute(routeParams(s)).map(([x, y]) => ({ x, y }));

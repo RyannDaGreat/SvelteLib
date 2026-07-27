@@ -23,7 +23,7 @@ import { svgPathToPdfOps } from "../pdf_backend.js";
 import { SHAPE_NAMES, SHAPE_LABELS, shapePath } from "../../core/shapes.js";
 import { shapePlugin } from "../../plugins/shape.js";
 
-const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", "..", ".claude_vlm_checks", "skia_shapes_test.png");
+const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".claude_vlm_checks", "skia_shapes_test.png");
 const DPR = 2;
 const LOGICAL_W = 760, LOGICAL_H = 520;
 

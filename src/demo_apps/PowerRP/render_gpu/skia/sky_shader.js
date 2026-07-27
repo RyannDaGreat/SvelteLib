@@ -62,6 +62,20 @@ const float  STAR_MAG_POW = 3.2;  // magnitude distribution: high power = rare b
 const float  MW_SIGMA  = 0.24;    // Milky-Way band half-width (in sin-galactic-latitude)
 const float  EDGE_AA   = 1.0;     // rounded-rect coverage AA half-width (device px)
 const float  EPS       = 1e-3;
+// DIVIDE GUARD for the closed-form single-scatter ratio scatterCoef/betaTot below.
+// betaTot = uAtmosphere·(BETA_R + BETA_M·uTurbidity/3), so it is EXACTLY ZERO at
+// uAtmosphere = 0 — and scatterCoef carries the same uAtmosphere factor, so the ratio
+// is 0/0 there: an UNGUARDED NaN whose rendering is backend-defined (measured on the
+// raster backend: the whole dome comes out flat white, indistinguishable from a
+// blown-out exposure). The ratio itself is atmosphere-INVARIANT (the factor cancels),
+// so flooring the divisor cannot change any sky that renders: BETA_FLOOR sits seven
+// decades below the betaTot of the thinnest sky that still shows anything
+// (uAtmosphere 0.001 ⇒ betaTot.r ≈ 6e-5), and thinner ones already render exactly the
+// uAtmosphere = 0 frame. It turns uAtmosphere = 0 into its exact physical limit —
+// no scattering, a black airless sky — instead of a NaN. It also keeps the per-channel
+// pole a NEGATIVE uTurbidity would walk into (betaTot.r = 0 at uTurbidity = −8.2857…)
+// finite and deterministic rather than NaN.
+const float  BETA_FLOOR = 1e-12;
 
 // ── framework-set geometry (device px) — NOT user knobs ───────────────────────
 uniform float2 uCenter;
@@ -192,7 +206,7 @@ half4 main(float2 fragCoord) {
     float amS = airmass(dirS.y);
     float3 sunT = exp(-betaTot * amS * 1.1);                 // sunlight reddening by its airmass
     float3 scatterCoef = betaR * phaseR(mu) + betaM * phaseM(mu, MIE_G);
-    float3 inScatter = scatterCoef / betaTot * (1.0 - viewT); // closed-form single scatter
+    float3 inScatter = scatterCoef / max(betaTot, float3(BETA_FLOOR)) * (1.0 - viewT); // closed-form single scatter (guarded: see BETA_FLOOR)
     float3 sunCol = uSunColor[i].rgb;
     float  sunI = uSunColor[i].a;
     daySky += active * SUN_RADIANCE * sunI * sunCol * sunT * inScatter;

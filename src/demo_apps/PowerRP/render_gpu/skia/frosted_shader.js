@@ -143,4 +143,18 @@ export function packFrostedUniforms(u) {
  * `material` op field; `pack` maps the framework's normalized `u` to the uniform
  * Float32Array.
  */
-export const FROSTED_MATERIAL = { id: "frosted", sksl: FROSTED_SKSL, pack: packFrostedUniforms, uniformFloats: FROSTED_UNIFORM_FLOATS };
+export const FROSTED_MATERIAL = {
+  id: "frosted",
+  sksl: FROSTED_SKSL,
+  pack: packFrostedUniforms,
+  uniformFloats: FROSTED_UNIFORM_FLOATS,
+  // ZERO outward reach — the DEFINING property of the basic frost, not a tuning
+  // choice: `main` evaluates `blurredBackdrop.eval(p)` at the fragment's own device
+  // coordinate and nowhere else (see the SkSL comment "Sample the BLURRED backdrop
+  // STRAIGHT at p — no outward-normal displacement"), which is exactly what
+  // distinguishes it from glass. So the backdrop only has to cover the panel
+  // itself, and the framework adds the Gaussian support for the blurred child.
+  // Declaring it lets handleMaterialBackdrop bound the region instead of
+  // re-rendering + blurring the whole surface (materials.materialSampleReach).
+  maxSampleReach: () => 0,
+};

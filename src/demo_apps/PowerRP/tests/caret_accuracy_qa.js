@@ -26,7 +26,7 @@ import fs from "node:fs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
-const SHOTS = resolve(HERE, "../../../../../.claude_vlm_checks");
+const SHOTS = resolve(HERE, "../.claude_vlm_checks");
 fs.mkdirSync(SHOTS, { recursive: true });
 
 const { createServer } = await import("vite");

@@ -73,7 +73,7 @@ try {
   const pageBase = `http://127.0.0.1:${viteServer.httpServer.address().port}`;
 
   const { default: puppeteer } = await import("puppeteer");
-  browser = await puppeteer.launch({ headless: "new" });
+  browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
   page.on("pageerror", (e) => { console.error("[pageerror]", e.message); failures++; });

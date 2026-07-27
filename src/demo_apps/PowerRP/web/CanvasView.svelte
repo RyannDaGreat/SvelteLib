@@ -19,7 +19,11 @@
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { worldViewRect, canSkipNode } from "../core/view.js";
-  import { selectInBox, rectFromCorners } from "../core/bandselect.js";
+  import { ESC_CANCELABLE_DRAG_KINDS } from "../core/shortcut_entries.js";
+  // dedupeGroupSelection: the group invariant app.selectMany enforces at commit —
+  // imported here so the LIVE band preview shows the same set the commit will
+  // keep (see bandSelectionAt), never a superset the commit then filters.
+  import { selectInBox, rectFromCorners, dedupeGroupSelection } from "../core/bandselect.js";
   import { sceneIR } from "../render_gpu/ports.js";
   import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
   import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
@@ -36,6 +40,10 @@
   import { createVideoV8Overlay, videoV8SourcesOf } from "./videoV8Overlay.js";
   import { onVideoV8Frame, setActiveVideoV8Refs } from "./videoV8Registry.js";
   import { renderCameraFrame } from "./gpuService.js";
+  // thumbRenderPaused: THE shared "a gesture is in flight, hold offscreen renders"
+  // predicate (web/thumbSchedule.js) — the minimap gates on the same one SlideNav's
+  // thumbnails do, so there is one rule for "don't raster during a gesture".
+  import { thumbRenderPaused } from "./thumbSchedule.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import * as T from "../core/transform.js";
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
@@ -50,8 +58,18 @@
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
   import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (reusable code-string editor; no widget binds it by default)
   import CanvasToolbar from "./CanvasToolbar.svelte"; // GENERAL floating canvas toolbar (double-click a widget that declares floatingToolbar); mounted as a canvas overlay
+  import HandleToolbar from "./HandleToolbar.svelte"; // the SELECTED-HANDLE tools, on the shared FloatingCanvasPanel shell
   import VideoV6Overlay from "./VideoV6Overlay.svelte"; // ONE shared WebGPU external-texture canvas over the scene; draws live V6 video frames (WebGL2 upload fallback on plain HTTP)
   import { copyText } from "./clipboard.js"; // HTTP-safe clipboard write (anchor-copy affordance, below)
+  // THE WIDGET UI-HANDLER REGISTRY: what CREATION and DOUBLE-CLICK do is declared
+  // by each widget and implemented in web/widget_handlers.js, so neither dispatch
+  // below carries per-type branches (and a NEW kind of either needs no edit here).
+  import { findHandler, getHandler, handlerFor } from "./widget_handlers.js";
+  import { ZOOM_GESTURE_IDLE_MS } from "./interiorNav.js";
+  // The step-sequencing half of the create phase (multi-gesture placements: a
+  // polygon's click-click-click, the telescopic rig's two boxes). One pointer
+  // payload for every hook, so the host never shapes it per handler.
+  import { creationPointer, currentStepIndex } from "./creationSteps.js";
 
   let { app } = $props();
 
@@ -192,12 +210,67 @@
   // dragged endpoint), not a fixed preset: rendered as a # glyph, vs the
   // preset anchors' X. {x, y} world coords, or null.
   let dynamicAnchor = $state(null);
+  // ── BAND-SELECT MODIFIERS (add / subtract / invert) ────────────────────────
+  /**
+   * THE BAND-SELECT MODIFIER TABLE — the SINGLE place the held-modifier →
+   * selection-verb assignment lives. Every other line of band code asks for the
+   * VERB (bandVerb) and never reads a key flag, so re-assigning a modifier is a
+   * one-line edit here. ORDERED: the first held modifier wins, so this order IS
+   * the precedence for combinations (Alt+Shift = invert, because "alt" is
+   * listed first). `mod` is the platform-agnostic command/control modifier —
+   * the file's existing `e.metaKey || e.ctrlKey` idiom (placementDrag /
+   * resizeDrag's `symmetric`), never one platform's key.
+   *
+   * WHY THIS ASSIGNMENT — do not "fix" SHIFT to mean ADD:
+   *   SHIFT = SUBTRACT is a REQUIREMENT, not a convention guess. The manifest
+   *   ("Box select round 2") says verbatim "SHIFT during box select = DESELECT
+   *   the enclosed/touched items"; it is what this drag has done since
+   *   box-select round 2 (0675c81); and the user restated it while asking for
+   *   this feature ("shift will mean remove from selection"). It does NOT
+   *   contradict shift-CLICK, which TOGGLES membership
+   *   (app.toggleInSelection) — shift-clicking an already-selected item REMOVES
+   *   it, so "Shift takes things OUT of the selection" is the same story in
+   *   both gestures.
+   *   MOD = ADD and ALT = INVERT are likewise the user's own words ("holding
+   *   command will mean add to selection ... maybe alt will mean invert
+   *   selection").
+   */
+  const BAND_MODIFIER_VERBS = [
+    { held: "alt", verb: "invert" },
+    { held: "shift", verb: "subtract" },
+    { held: "mod", verb: "add" },
+  ];
+  /** The verb of a band drag with NO modifier held: the caught set BECOMES the
+   * selection (whatever was selected outside the box drops out) — the
+   * pre-existing plain-band behavior, unchanged. */
+  const BAND_VERB_UNMODIFIED = "replace";
+  /** No modifier held — the band record's rest state (init + window blur). */
+  const NO_MODIFIERS = { shift: false, alt: false, mod: false };
+  // Screen-px radius of a LANDED-VERTEX marker in a multi-step creation preview.
+  // LINKED to the .guide-point / snap-guide dot radius this same overlay already
+  // draws (r="4") — one dot size for the editor's transient point markers, so a
+  // polygon's vertices read at the same weight as a snap point rather than
+  // introducing a second scale of decoration.
+  const PLACE_DOT_R = 4;
+
   // In-progress rubber-band selection (armed via the palette "Select in Box"
-  // commands): the world-space band rect and the itemIds the current box
-  // would select (live preview — outlined before release so the user sees
-  // exactly what a drop selects). Both cleared on pointer-up.
+  // commands / the B key / the toolbar button, or started directly by an
+  // empty-space drag): the world-space band rect plus the TWO PREVIEW BUCKETS —
+  // the itemIds a release right now would ADD to the selection and the ones it
+  // would REMOVE from it. Both buckets are a DIFF of the current selection
+  // against the verb's outcome (refreshBandPreview), so the preview states the
+  // pending CHANGE, not just "what is in the box" — a subtract band can then
+  // look different from an add band. All three cleared on pointer-up.
   let bandRect = $state(null); // {x, y, w, h} world, or null
-  let bandCandidates = $state([]); // itemIds the current band would select
+  let bandAddIds = $state([]); // itemIds a release would ADD to the selection
+  let bandRemoveIds = $state([]); // itemIds a release would REMOVE from the selection
+  // The modifiers held RIGHT NOW for the live band drag — the verb the release
+  // will apply (BAND_MODIFIER_VERBS). $state, not plain bookkeeping like
+  // `aHeld`, because the preview repaints from it: pressing Alt with the pointer
+  // standing still must re-color the preview. Fed from three places (the
+  // pointer-down event, every pointer move, and window key events while a band
+  // drag is live) through the one `modifiersOf` reader.
+  let bandMods = $state(NO_MODIFIERS);
   // In-progress CROSSHAIR PLACEMENT preview (manifest ARCHITECTURE PLAN #5):
   // the world-space rect a drag-placement is about to create. Null outside a
   // placement drag (a plain click never sets it — see placementUp).
@@ -207,6 +280,13 @@
   // to create. Null outside an endpoint placement drag (and for bbox placements,
   // which use placeRect instead).
   let placeLine = $state(null); // {x1, y1, x2, y2} world, or null
+  // In-progress MULTI-STEP creation preview (web/creationSteps.js): whatever the
+  // live creation mode's `overlay(session)` returns, in WORLD units —
+  // {chains, rects, dots}. The generalization of placeRect/placeLine to a
+  // placement that accumulates: a polygon needs a CHAIN (placeLine covers one
+  // segment) plus a dot per landed vertex; the telescopic rig needs the first box
+  // to stay drawn while the second is dragged. Null outside a creation mode.
+  let placePreview = $state(null);
   // ── TRUE IN-PLACE TEXT EDIT (Skia-owned caret/selection) ────────────────────
   // Edit state lives on the app store (app.textEditing = {itemId}) so the
   // controller and the shortcut context read the ONE source of truth. paint()
@@ -352,10 +432,19 @@
     }
   });
   onDestroy(() => { if (minimapTimer !== null) clearTimeout(minimapTimer); });
+  // SETTLE before rendering the minimap = SlideNav's THUMB_SETTLE_MS (the same
+  // "wait for quiet, then render the final state ONCE" job; linked, not invented).
+  const MINIMAP_SETTLE_MS = 120;
   $effect(() => {
     // minimapVideoTick (throttled), NOT the raw imageEpoch — see the throttle above.
     app.doc; app.slideIndex; app.minimapVisible; minimapCamRect; minimapVideoTick;
-    if (!app.minimapVisible || app.previewDelta) return;
+    // GATE — thumbRenderPaused, the SAME predicate SlideNav's thumbnails gate on
+    // (web/thumbSchedule.js), instead of the previewDelta-only test this used to
+    // do. It takes BOTH `dragging` and `previewDelta`, which matters here
+    // specifically: previewDelta alone misses the pointer-down→first-move window
+    // AND every preview-less gesture — band select and crosshair placement stage
+    // no preview at all, so they were never gated before.
+    if (!app.minimapVisible || thumbRenderPaused(app)) return;
     const rect = minimapCamRect;
     if (!(rect.w > 0 && rect.h > 0)) return; // degenerate camera → no thumbnail
     const dpr = app.dpr(); // retina browser setting (manifest)
@@ -364,20 +453,35 @@
     const scale = MINIMAP_MAX_PX / Math.max(rect.w, rect.h);
     const width = Math.max(1, Math.round(rect.w * scale * dpr));
     const height = Math.max(1, Math.round(rect.h * scale * dpr));
-    renderCameraFrame(app.doc, {
-      slideIndex: app.slideIndex,
-      alpha: 1,
-      registry: app.registry,
-      width,
-      height,
-      // The minimap is a ~150px OVERVIEW — proxy quality (like SlideNav thumbnails),
-      // NOT full. Full quality ran heavy generative materialFill shaders (lens
-      // flare ~1.3s) on the CPU surface, and because this effect is gated off
-      // during drag (previewDelta) it fired that render on POINTER-UP → a ~1s
-      // freeze on drop (the reported lens-flare drag spike). Proxy routes it
-      // through the cheap material stand-ins (drawProxyMaterialFill, ~6ms).
-      quality: "proxy",
-    }).then((thumb) => (minimapThumb = thumb.toDataURL("image/png")));
+    // DEFERRAL — the gate alone is not enough. Un-gating happens ON POINTER-UP,
+    // inside the very task that commits the edit and queues the viewport repaint,
+    // so a synchronous render here put a GPU→CPU readback directly BEHIND that
+    // repaint on the shared raster device and then WAITED on the queue: a 150×90
+    // readback measured 67 ms on a material-heavy deck (84× its ~0.8 ms at-rest
+    // cost) — queue-wait, not pixels. Handing it to a timer moves the readback out
+    // of the triggering task so the repaint drains first. The effect's own cleanup
+    // clears a pending timer, so a BURST of commits coalesces into one render of
+    // the final state — SlideNav's publish-timer pattern. Every input the render
+    // needs is captured SYNCHRONOUSLY above/here; the timer body re-reads no
+    // reactive state (doing so would resubscribe this effect from a stale task).
+    const doc = app.doc, slideIndex = app.slideIndex, registry = app.registry;
+    const handle = setTimeout(() => {
+      renderCameraFrame(doc, {
+        slideIndex,
+        alpha: 1,
+        registry,
+        width,
+        height,
+        // The minimap is a ~150px OVERVIEW — proxy quality (like SlideNav thumbnails),
+        // NOT full. Full quality ran heavy generative materialFill shaders (lens
+        // flare ~1.3s) on the CPU surface, and because this effect is gated off
+        // during drag (previewDelta) it fired that render on POINTER-UP → a ~1s
+        // freeze on drop (the reported lens-flare drag spike). Proxy routes it
+        // through the cheap material stand-ins (drawProxyMaterialFill, ~6ms).
+        quality: "proxy",
+      }).then((thumb) => (minimapThumb = thumb.toDataURL("image/png")));
+    }, MINIMAP_SETTLE_MS);
+    return () => clearTimeout(handle);
   });
 
   /**
@@ -455,8 +559,11 @@
     // WAKE SET (repaint gate above): the video/scrubber sources the CURRENT frame
     // actually draws (post-cull) — an off-screen or off-slide frame must not wake
     // the editor. Rebuilt every paint so a newly-shown clip is picked up at once.
-    // Includes "video_v5" so the V5 frame nudge wakes only for on-screen V5 clips.
-    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5");
+    // Includes "video_v5" so the V5 frame nudge wakes only for on-screen V5 clips —
+    // and "video_v5_scrub", which rides the SAME V5 frame nudge (onVideoV5Frame):
+    // omitting it let a settled scrub's decoded frame be dropped by this gate, so
+    // the canvas kept a stale frame until some unrelated repaint happened.
+    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5", "video_v5_scrub");
     // VIDEO V6 OVERLAY FEED (additive): the post-cull visible video_v6 nodes + the
     // view + scene device size for VideoV6Overlay (its own WebGPU/WebGL2 canvas
     // above the scene). It gates + draws its own <video> elements; Skia draws only
@@ -688,31 +795,383 @@
   // edit lifecycle (preview/commit/cancel, per-run + per-paragraph style, Ctrl+B/
   // I/U, Cmd±); this handler just ENTERS it.
 
-  /** Command. Enters in-place edit mode on the double-clicked TEXT widget (if any).
-   *  Non-text targets fall through (a dblclick on a rect does nothing). */
+  // WHAT DOUBLE-CLICK DOES IS THE WIDGET'S OWN BUSINESS. This handler resolves
+  // the hit widget's declared ACTIVATION through web/widget_handlers.js and calls
+  // it with a context of canvas SERVICES — it knows no widget type and gains no
+  // branch when a new KIND of activation ships. The five behaviours that used to
+  // be an if-chain here (the equation editor, a canvas palette, the in-place text
+  // editors, the media asset picker) are now five entries in that registry, in
+  // the same precedence order, and interior explore mode is the sixth.
+
+  /**
+   * Pure function. A world point in a node's own LOCAL (pre-transform) frame —
+   * the frame a plugin's emit(), hitTest() and `interiorView` all speak. Inverts
+   * the node's world similarity transform (core/transform.js).
+   *
+   * @example // localPointOf({world: {x: 10, y: 0, rotation: 0, scale: 2}}, 16, 8) // {x: 3, y: 4}
+   */
+  function localPointOf(node, wx, wy) {
+    return T.apply(T.invert(node.world), wx, wy);
+  }
+
+  /**
+   * THE ACTIVATION CONTEXT — the services a widget's activation handler may use.
+   * Everything that touches the document goes through `app` (so preview/commit/
+   * undo semantics are the house ones and no handler invents its own); everything
+   * that needs the CANVAS is a named service here.
+   */
+  function activationContext(hit, e) {
+    const w = worldPoint(e);
+    return {
+      app,
+      node: hit,
+      plugin: hit.plugin,
+      pointer: { world: w, local: localPointOf(hit, w.x, w.y), screen: screenPoint(e) },
+      /** Command. Mounts the widget's own canvas-overlay palette (CanvasToolbar,
+       * built from the plugin's floatingToolbar descriptor). */
+      showOverlayPalette(itemId) {
+        floatingToolbarItemId = itemId;
+      },
+      /** Command. Hands canvas input to THIS handler's declared `mode` until Esc. */
+      enterMode() {
+        app.enterCanvasMode(handlerFor("activate", hit.plugin).id, hit.itemId);
+      },
+    };
+  }
+
+  /** Command. Runs the double-clicked widget's OWN activation — whatever it
+   *  declares. A widget declaring none does nothing (a dblclick on a rect). */
   function onDblClick(e) {
-    if (drag || modal) return; // never open mid-gesture
+    // A live multi-step CREATION owns the double-click: it is the second of the two
+    // finalize gestures the request names ("I hit enter to finalize or double click
+    // to finalize"). The clicks that made it already landed their vertices — the
+    // second one coincides with the first's, which the handler absorbs — so this
+    // only has to say "done".
+    if (creation) {
+      finishCreation();
+      return;
+    }
+    if (drag || modal || app.canvasMode) return; // never open mid-gesture or mid-mode
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
-    // LaTeX widgets open the MathLive WYSIWYG editor (DOM overlay + canvas
-    // suppression); text opens the Skia-owned in-place editor. A widget that
-    // DECLARES `inlineTextEdit` (e.g. plaintext) opts into that SAME Skia editor
-    // in plain-string mode — a declarative opt-in, so no per-type branch is added
-    // here per new widget. Other types fall through (a dblclick on a rect does
-    // nothing). Mermaid is NOT double-click-editable: its `definition` is edited
-    // via the Inspector property (exactly like codeblock's `code`).
-    // [LANE NOTE for lead: this + the textEditNode gate are the only CanvasView
-    // touches — both additive; the existing latex/text routes are unchanged.]
-    if (hit?.type === "latex") { app.beginLatexEdit(hit.itemId); return; }
-    // A widget that declares a FLOATING TOOLBAR (e.g. the cursor's visual grid)
-    // opens it on double-click — selected + anchored above the widget by the
-    // CanvasToolbar overlay. Takes precedence over inline text edit (a widget
-    // declares one or the other, never both).
-    if (hit?.plugin?.floatingToolbar) { app.selection = hit.itemId; floatingToolbarItemId = hit.itemId; return; }
-    if (hit?.plugin?.inlineTextEdit) { app.beginTextEdit(hit.itemId, hit.plugin.inlineTextEdit); return; }
-    if (hit?.type !== "text") return;
-    app.beginTextEdit(hit.itemId); // selects + mounts the controller (Skia keeps drawing the item)
+    if (!hit) return;
+    const handler = handlerFor("activate", hit.plugin);
+    if (!handler) return;
+    // A double-click leaves a DOCUMENT TEXT SELECTION behind (measured: 1 range of
+    // whitespace, from the canvas chrome around the click), and the next drag that
+    // starts on it makes the browser begin an HTML5 drag-and-drop of that selection
+    // — which fires `pointercancel` and kills our drag after ONE pointermove. It hit
+    // interior explore mode first (its pan begins right after the double-click that
+    // enters it), but it was never mode-specific: ANY canvas drag following ANY
+    // double-click loses itself the same way. Dropping the selection here fixes the
+    // class, in the one place double-clicks are handled. The in-place editors are
+    // unaffected — each owns its own field/caret and mounts AFTER this line.
+    window.getSelection()?.removeAllRanges();
+    handler.run(activationContext(hit, e));
   }
+
+  // ── WIDGET CANVAS MODE (an activation owning canvas input) ──────────────────
+  // While app.canvasMode is set, the mode's handler receives drags and the wheel
+  // instead of the canvas's own select/pan/zoom, and App.svelte's HintBar shows
+  // that mode's registered inputs. Both records are NON-reactive bookkeeping
+  // (like `drag`): nothing paints from them.
+  let modeDrag = null; // {lastWorld} while the pointer is down inside a mode
+  let modeZoomIdle = null; // pending wheel-idle timer (what ENDS a zoom gesture)
+
+  /** Query. The live ACTIVATION mode as {handler, mode, node}, or null when no mode
+   *  is active, the live mode belongs to another phase (a creation mode has no item
+   *  — see creationMode() below), its handler declares no mode, or its item has
+   *  vanished (purged / deactivated / slid away mid-mode). */
+  function activeMode() {
+    if (!app.canvasMode) return null;
+    const handler = findHandler(app.canvasMode.handlerId);
+    if (handler.phase !== "activate" || !handler.mode) return null;
+    const node = app.nodes().find((n) => n.itemId === app.canvasMode.itemId);
+    return node ? { handler, mode: handler.mode, node } : null;
+  }
+
+  /** The mode handler's context, rebuilt per event so `node` carries the CURRENT
+   *  (preview-inclusive) state each gesture step accumulates onto. */
+  function modeContext(active) {
+    return { app, node: active.node, plugin: active.node.plugin };
+  }
+
+  /** Command. Ends the live mode gesture: commits whatever the gesture staged as
+   *  ONE undo unit. Idempotent (commitPreview no-ops with nothing staged), so
+   *  pointer-up and the wheel-idle timer may both call it. */
+  function endModeGesture() {
+    if (modeZoomIdle !== null) {
+      clearTimeout(modeZoomIdle);
+      modeZoomIdle = null;
+    }
+    app.commitPreview();
+  }
+
+  /** Command. The wheel inside a canvas mode zooms the WIDGET, not the canvas:
+   *  stopPropagation keeps the event from the PanZoom container above. ONE undo
+   *  unit per gesture — every tick stages a preview, and the commit fires once the
+   *  wheel has been quiet for ZOOM_GESTURE_IDLE_MS (a wheel has no "up" event, so
+   *  a pause is what ends the gesture). Outside a mode this is inert and the
+   *  canvas's own wheel pan/zoom runs exactly as before. */
+  function onWheel(e) {
+    const active = activeMode();
+    if (!active?.mode.onZoom) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const w = worldPoint(e);
+    const local = localPointOf(active.node, w.x, w.y);
+    active.mode.onZoom(modeContext(active), { deltaY: e.deltaY, lx: local.x, ly: local.y });
+    if (modeZoomIdle !== null) clearTimeout(modeZoomIdle);
+    modeZoomIdle = setTimeout(() => { modeZoomIdle = null; app.commitPreview(); }, ZOOM_GESTURE_IDLE_MS);
+  }
+
+  /** Command. Pointer-down inside a canvas mode starts a PAN gesture (one undo
+   *  unit, committed on release). Returns true when it consumed the event. */
+  function modePointerDown(e) {
+    const active = activeMode();
+    if (!active?.mode.onPan) return false;
+    // preventDefault SUPPRESSES THE NATIVE DRAG, and this gesture is the one place
+    // in the app that needs it: a mode is entered by DOUBLE-CLICKING, a double-click
+    // leaves a document text selection behind, and dragging a selection starts an
+    // HTML5 drag-and-drop — which makes the browser fire `pointercancel` and hand
+    // us a pointerup after the FIRST move. Measured: without this, an interior pan
+    // travelled exactly one pointermove and then stopped (tests/activation_probe.js
+    // logs `DOC:dragstart | pointercancel`). The canvas's other drag kinds never
+    // follow a double-click, which is why they have never needed it.
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    modeDrag = { lastWorld: worldPoint(e) };
+    app.dragging = true; // the shared "a gesture is in flight" gate (thumbnails hold)
+    return true;
+  }
+
+  /** Command. Pointer-move inside a live mode pan: hands the handler the pointer
+   *  travel in the widget's LOCAL px frame (the frame its interior lives in), so a
+   *  rotated or scaled widget pans along its own axes. */
+  function modePointerMove(e) {
+    const active = activeMode();
+    if (!modeDrag || !active?.mode.onPan) return;
+    const w = worldPoint(e);
+    const a = localPointOf(active.node, modeDrag.lastWorld.x, modeDrag.lastWorld.y);
+    const b = localPointOf(active.node, w.x, w.y);
+    modeDrag.lastWorld = w;
+    active.mode.onPan(modeContext(active), { dLocalX: b.x - a.x, dLocalY: b.y - a.y });
+  }
+
+  /** Command. Release ends the pan gesture (one undo unit). */
+  function modePointerUp() {
+    if (!modeDrag) return;
+    modeDrag = null;
+    app.dragging = false;
+    endModeGesture();
+  }
+
+  // A pending wheel-idle timer must not outlive the component: unmounting (entering
+  // the presenter, closing the document) would otherwise let it commit into a doc
+  // nobody is looking at any more. app.exitCanvasMode() commits whatever was staged
+  // at the boundary itself, which is the honest place for it.
+  $effect(() => () => {
+    if (modeZoomIdle !== null) clearTimeout(modeZoomIdle);
+  });
+
+  // ── MULTI-STEP CREATION MODE (web/creationSteps.js) ─────────────────────────
+  // A create-phase handler may declare a `mode` with a STEP LIST instead of
+  // finishing on the first release: a polygon collects clicks until you say stop,
+  // the telescopic rig collects two boxes. While one is live it owns the pointer,
+  // its current step's `hint` is the HintBar's mouse chip, and Escape abandons.
+  //
+  // THE SESSION IS NOT DOCUMENT STATE and not a preview: mid-flow no item exists
+  // yet, so there is nothing to setPreview onto. It is a plain non-reactive record
+  // (like `drag`), and what PAINTS is `placePreview` — the same split every other
+  // gesture uses. That is what makes Escape leave the document byte-identical and
+  // the undo log untouched: nothing was ever written.
+  let creation = null; // {handler, mode, plugin, params, session, boxDrag} while live
+
+  /** Pure function. The step a live creation is on, clamped into the declared list
+   *  (a repeating final step never runs out — currentStepIndex). */
+  function currentStep() {
+    const steps = creation.mode.steps;
+    return steps[currentStepIndex(steps, creation.mode.step(creation.session))];
+  }
+
+  /** Query + command seam. The context a creation-mode hook receives: `app` for
+   *  every document write (so preview/commit/undo semantics stay the house ones),
+   *  the armed `plugin` (a widget's defaults) or `params` (a rig's options), and
+   *  `finish()` — a REQUEST, not a call: the host finalizes after the hook returns,
+   *  so a handler cannot re-enter finalize from inside its own onStep. */
+  function creationContext() {
+    const ctx = {
+      app,
+      plugin: creation.plugin,
+      params: creation.params,
+      finishRequested: false,
+      finish() { ctx.finishRequested = true; },
+    };
+    return ctx;
+  }
+
+  /** Command. Re-derives what the overlay paints from the live session. Called
+   *  after every session mutation — the refreshBandPreview pattern. */
+  function refreshCreationPreview() {
+    placePreview = creation ? creation.mode.overlay(creation.session) : null;
+  }
+
+  /**
+   * Command (updates the snap `guides`; returns the pointer payload). The ONE
+   * pointer reading every creation hook gets. The point is snapped through the
+   * SAME solveSnap creation placement already uses (snapPoint), so a polygon vertex
+   * lands on another widget's anchor exactly like a placed box corner does; the
+   * modifier flags are re-read from the event EVERY time (never frozen at press),
+   * which is what makes Shift live with no rebase bookkeeping.
+   *
+   * A "box" step keeps its START point's guide visible for the whole drag
+   * alongside the live one — placementDrag's own rule, and the reason this reads
+   * `creation.boxDrag`.
+   */
+  function creationPointerFor(e) {
+    const w = worldPoint(e);
+    const live = snapPoint(w.x, w.y);
+    guides = [...(creation.boxDrag?.startGuides ?? []), ...live.guides];
+    return creationPointer(
+      { x: live.x, y: live.y },
+      { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey },
+      SNAP_PX / viewport.zoom,
+      null,
+    );
+  }
+
+  /** Query (reads creation.boxDrag). The world rect an in-flight "box" step would
+   *  place right now: the dragged rect through the shared creationRect math
+   *  (so Shift/Cmd read exactly as they do for a single-gesture box), or — before
+   *  the click slop is crossed, i.e. a plain CLICK — the step's declared
+   *  `clickSize` centred on the press point (placeByBBox's centring rule). */
+  function creationBoxRect(p) {
+    const b = creation.boxDrag;
+    if (!b.moved) {
+      const size = currentStep().clickSize;
+      return { x: b.startWorld.x - size.w / 2, y: b.startWorld.y - size.h / 2, w: size.w, h: size.h };
+    }
+    const [x0, y0, x1, y1] = creationRect(b.startWorld.x, b.startWorld.y, p.world.x, p.world.y, p.mods);
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+
+  /** Command. Hands the handler ONE completed gesture, republishes which step is
+   *  now current (the HintBar narrates off app.canvasMode.step), and finalizes if
+   *  the handler asked to. */
+  function creationStep(p) {
+    const ctx = creationContext();
+    creation.mode.onStep(ctx, creation.session, p);
+    app.setCanvasModeStep(creation.mode.step(creation.session));
+    refreshCreationPreview();
+    if (ctx.finishRequested) finishCreation();
+  }
+
+  /**
+   * Command. Enters `handler`'s creation mode for the armed gesture and hands it
+   * the very pointer-down that started it — so the FIRST gesture takes exactly the
+   * same path as the second and the tenth, and there is no first-click special
+   * case to drift.
+   *
+   * The armed CROSSHAIR is deliberately NOT cleared (app.exitCanvasMode disarms it
+   * when the session ends): a multi-step placement wants the placement cursor for
+   * every step, and a mode already OUTRANKS an armed crosshair for both pointer
+   * routing and hints, which core/shortcut_entries.js `armedAny` documents.
+   */
+  function beginCreation(handler, armed, e) {
+    const params = armed.params ?? {};
+    app.enterCanvasMode(handler.id, null);
+    creation = {
+      handler,
+      mode: handler.mode,
+      plugin: armed.plugin ?? null,
+      params,
+      session: handler.mode.begin(params),
+      boxDrag: null,
+    };
+    creationPress(e);
+  }
+
+  /** Command. A press inside a live creation mode. A "point" step lands its result
+   *  HERE, on the DOWN — a vertex must appear under the finger, not on release. A
+   *  "box" step opens a sub-drag with the same click-vs-drag slop tracking every
+   *  other drag kind uses, and completes on the release. */
+  function creationPress(e) {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    hoverAnchor = null; // a hover tip must not linger frozen through the gesture
+    if (currentStep().gesture === "box") {
+      const p = creationPointerFor(e);
+      creation.boxDrag = { startWorld: p.world, startGuides: guides, downScreen: screenPoint(e), moved: false };
+      app.dragging = true; // the shared "a gesture is in flight" gate (thumbnails hold)
+      creationHover(e);
+      return;
+    }
+    creationStep(creationPointerFor(e));
+  }
+
+  /** Command. A move inside a live creation mode — with or without the button
+   *  down, because a chain's rubber band and a close-loop highlight must track a
+   *  bare hover. Deliberately sets NO app.dragKind: the modifier chips for a
+   *  creation step come from the step's own declaration (scoped to the mode), so
+   *  borrowing a drag kind would announce them through a predicate the mode
+   *  excludes and they would never show. */
+  function creationHover(e) {
+    const b = creation.boxDrag;
+    if (b && !b.moved) {
+      const s = screenPoint(e);
+      if (Math.hypot(s.x - b.downScreen.x, s.y - b.downScreen.y) > CLICK_SLOP_PX) b.moved = true;
+    }
+    const p = creationPointerFor(e);
+    creation.mode.onHover(creation.session, b ? { ...p, rect: creationBoxRect(p) } : p);
+    refreshCreationPreview();
+  }
+
+  /** Command. A release inside a live creation mode: completes a "box" step. A
+   *  "point" step already landed on the press, so the release is a no-op. */
+  function creationRelease(e) {
+    if (!creation.boxDrag) return;
+    const p = creationPointerFor(e);
+    const rect = creationBoxRect(p);
+    creation.boxDrag = null;
+    app.dragging = false;
+    creationStep({ ...p, rect });
+  }
+
+  /**
+   * Command (ONE undo unit, or nothing). Finalizes the live creation: the handler
+   * writes the document ONCE (its own `finalize`), or ABANDONS by writing nothing
+   * when the sequence is too short to mean anything.
+   *
+   * The session is dropped BEFORE finalize runs, because finalize's `addItem`
+   * selects what it created and the selection setter leaves the canvas mode — so
+   * the abandon effect below would otherwise fire in the middle of the commit and
+   * clear state finalize is still using.
+   */
+  function finishCreation() {
+    if (!creation) return;
+    const { mode, session } = creation;
+    const ctx = creationContext();
+    abandonCreation();
+    mode.finalize(ctx, session);
+    app.exitCanvasMode();
+  }
+
+  /** Command. Drops the in-flight creation, leaving NOTHING behind: no item, no
+   *  keyframe, no undo entry, no preview (none was ever staged) — only this
+   *  component's own scratch state and the overlay it painted. */
+  function abandonCreation() {
+    creation = null;
+    placePreview = null;
+    guides = [];
+    app.dragging = false;
+  }
+
+  // Leaving the canvas mode by ANY route drops the session: Escape (the mode's
+  // generated registry entry calls app.exitCanvasMode), a slide switch, entering
+  // the presenter, or the selection write inside finalize. Watching app.canvasMode
+  // is the ONE place that covers every route, rather than one hook per exit.
+  $effect(() => {
+    if (!app.canvasMode && creation) abandonCreation();
+  });
 
   // ── Selection + drag ────────────────────────────────────────────────────────
 
@@ -753,6 +1212,17 @@
 
   function onPointerDown(e) {
     if (e.button !== 0 || app.mode !== "edit") return;
+    // A widget CANVAS MODE owns the pointer: its handler decides what a press does
+    // (land a polygon vertex, start the rig's next box, pan a widget's interior),
+    // and the canvas's own pick/drag/band machinery below never sees the gesture.
+    // Checked FIRST for the same reason the modal-transform check is early: a
+    // takeover that let a stray selection happen underneath would defeat the point
+    // of taking over.
+    if (creation) {
+      creationPress(e);
+      return;
+    }
+    if (modePointerDown(e)) return;
     // Any canvas pointer-down dismisses an open floating toolbar (clicks INSIDE
     // the toolbar land on its own DOM overlay, not this SVG, so they don't reach
     // here — the toolbar stays open while you pick from it). A fresh double-click
@@ -772,14 +1242,32 @@
     // immediately (one-shot) so a second gesture needs a fresh arm/command.
     if (app.crosshair) {
       const armed = app.crosshair;
+      // A PLACEMENT whose create handler declares a MULTI-STEP mode takes over
+      // instead of running a one-gesture placement, and its arm survives the press
+      // (see beginCreation) — so this is resolved BEFORE the one-shot clear below.
+      // A RIG names its handler on the arm itself; a widget's comes from its plugin
+      // declaration, exactly as placementUp resolves it.
+      if (armed.kind === "place") {
+        const create = armed.plugin ? handlerFor("create", armed.plugin) : getHandler("create", armed.handlerId);
+        if (create.mode) {
+          beginCreation(create, armed, e);
+          return;
+        }
+      }
       e.currentTarget.setPointerCapture(e.pointerId);
       app.crosshair = null;
       hoverAnchor = null; // a hover tip must not linger frozen through the drag
       app.dragging = true;
       if (armed.kind === "band") {
         drag = { kind: "band", mode: armed.mode, startWorld: w, lastWorld: w };
-        bandRect = rectFromCorners(w, w);
-        bandCandidates = [];
+        // Seed the modifier record from the DOWN event: a mode armed by the B
+        // key / toolbar / palette and then shift- (or alt-/mod-) dragged must
+        // apply that verb from the very first frame, not only once a key event
+        // happens to fire. refreshBandPreview then states the pending change
+        // immediately (for a zero-size box that is "the current selection is
+        // about to be dropped" under the unmodified verb — honest, not blank).
+        bandMods = modifiersOf(e);
+        refreshBandPreview();
         app.dragKind = "band";
       } else {
         // downScreen/moved: the SAME click-vs-drag slop tracking every other
@@ -862,8 +1350,12 @@
     if (!e.shiftKey && !hit && !overrideSel) {
       e.currentTarget.setPointerCapture(e.pointerId);
       drag = { kind: "band", mode: app.bandMode, startWorld: w, lastWorld: w };
-      bandRect = rectFromCorners(w, w);
-      bandCandidates = [];
+      // Same seed as the armed path above. Shift is excluded from THIS entry
+      // point (see the comment above), so the record can only carry alt/mod
+      // here — a shift-held SUBTRACT band must be started from an armed mode
+      // (B key / toolbar / palette) or by pressing Shift after the drag begins.
+      bandMods = modifiersOf(e);
+      refreshBandPreview();
       hoverAnchor = null;
       app.dragging = true;
       app.dragKind = "band";
@@ -949,6 +1441,15 @@
     // Store ONLY the raw screen-space position (PanZoom render-area frame); the
     // ruler markers/readout are $derived from it + the view (see screenMouse).
     screenMouse = screenPoint(e);
+    // A live widget CANVAS MODE pan consumes the move (see modePointerDown).
+    if (creation) {
+      creationHover(e);
+      return;
+    }
+    if (modeDrag) {
+      modePointerMove(e);
+      return;
+    }
     const w = worldPoint(e);
     // A modal transform (G/S) follows the mouse with NO button held — the
     // pointer path drives it directly and nothing else runs.
@@ -994,7 +1495,7 @@
     else if (drag.kind === "multiresize") multiResizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
-    else if (drag.kind === "band") bandDrag(w, e.shiftKey);
+    else if (drag.kind === "band") bandDrag(w, e);
     else if (drag.kind === "place") placementDrag(e, w);
     // "shiftpick" = a deferred shift-click on a NON-draggable item: no drag
     // behavior, only the slop tracking above, so the pointer path does nothing.
@@ -1029,22 +1530,156 @@
   // ── Rubber-band selection drag ─────────────────────────────────────────────
 
   /**
-   * Command (updates band preview state). Recomputes the world-space band rect
-   * and the live CANDIDATE set — the items the current box would catch in the
-   * drag's mode (core/bandselect.js: INNER = fully enclosed by the box, OUTER =
-   * touching counts; bounds = the conservative rotated world AABB). Candidates
-   * render as preview outlines; the selection/deselection itself is applied on
-   * pointer-up. `shiftHeld` (manifest Round 12B "SHIFT during a band drag =
-   * DESELECT the caught items instead of select") is latched into drag.deselect
-   * on to EVERY move — it re-reads live so toggling Shift mid-drag flips the
-   * pending action, matching how the axis-lock/resize modifiers already
-   * re-read their event flags each move rather than freezing at grab time.
+   * Pure function. A pointer/keyboard event's modifier flags as the band
+   * modifier record. `mod` is the platform-agnostic command/control modifier —
+   * the SAME `e.metaKey || e.ctrlKey` idiom placementDrag/resizeDrag use for
+   * `symmetric`, so no single platform's key is hardcoded. Works on both event
+   * kinds because a KeyboardEvent carries the same four flags a PointerEvent
+   * does (that is what lets a bare modifier keypress update a live band drag).
+   *
+   * @param {{shiftKey: boolean, altKey: boolean, metaKey: boolean, ctrlKey: boolean}} e
+   * @returns {{shift: boolean, alt: boolean, mod: boolean}}
+   *
+   * @example modifiersOf({shiftKey: true, altKey: false, metaKey: false, ctrlKey: false}) // {shift: true, alt: false, mod: false}
+   * @example modifiersOf({shiftKey: false, altKey: false, metaKey: false, ctrlKey: true}) // {shift: false, alt: false, mod: true}
+   * @example modifiersOf({shiftKey: false, altKey: true, metaKey: false, ctrlKey: false}) // {shift: false, alt: true, mod: false}
    */
-  function bandDrag(w, shiftHeld) {
+  function modifiersOf(e) {
+    return { shift: e.shiftKey, alt: e.altKey, mod: e.metaKey || e.ctrlKey };
+  }
+
+  /**
+   * Pure function. The band-select verb the held modifiers imply, resolved
+   * through BAND_MODIFIER_VERBS (first listed match wins; nothing held →
+   * BAND_VERB_UNMODIFIED). The ONE reader of that table.
+   *
+   * @param {{shift: boolean, alt: boolean, mod: boolean}} mods
+   * @returns {"replace"|"add"|"subtract"|"invert"}
+   *
+   * @example bandVerb({shift: false, alt: false, mod: false}) // "replace"
+   * @example bandVerb({shift: true, alt: false, mod: false}) // "subtract"
+   * @example bandVerb({shift: false, alt: false, mod: true}) // "add"
+   * @example bandVerb({shift: false, alt: true, mod: false}) // "invert"
+   * @example bandVerb({shift: true, alt: true, mod: false}) // "invert" — alt is listed first, so it wins
+   */
+  function bandVerb(mods) {
+    for (const { held, verb } of BAND_MODIFIER_VERBS) if (mods[held]) return verb;
+    return BAND_VERB_UNMODIFIED;
+  }
+
+  /**
+   * Pure function. The selection a band VERB produces from the currently
+   * selected ids and the ids the box CAUGHT. Order/dedupe follow the existing
+   * selection helpers (core/bandselect.js groupFilteredSelection): first
+   * appearance wins, survivors keep their selection order, newly caught ids land
+   * at the END — the same rule app.toggleInSelection uses for a shift-click add.
+   *
+   *   replace  — the caught set BECOMES the selection (anything selected
+   *              outside the box drops out). The unmodified band, unchanged.
+   *   add      — caught ids join the selection; nothing already selected is lost.
+   *   subtract — caught ids leave the selection; an empty catch is a no-op
+   *              (NOT a deselect-all), matching the pre-existing shift band.
+   *   invert   — WITHIN THE BOX ONLY, each caught id flips: selected ids in the
+   *              box leave, unselected ids in the box join. Ids OUTSIDE the box
+   *              are left ALONE (neither dropped nor added), so a box over
+   *              nothing is a no-op and inverting the same box twice returns the
+   *              original selection.
+   *
+   * Throws on an unknown verb — there is no silent fallback selection.
+   *
+   * @param {string[]} selected - currently selected itemIds, in selection order
+   * @param {string[]} caught - itemIds the box caught, in scene order
+   * @param {"replace"|"add"|"subtract"|"invert"} verb
+   * @returns {string[]}
+   *
+   * @example applySelectionVerb(["a", "b"], ["b", "c"], "replace") // ["b", "c"]
+   * @example applySelectionVerb(["a", "b"], ["b", "c"], "add") // ["a", "b", "c"]
+   * @example applySelectionVerb(["a", "b"], ["b", "c"], "subtract") // ["a"]
+   * @example applySelectionVerb(["a", "b"], ["b", "c"], "invert") // ["a", "c"]
+   * @example applySelectionVerb(["a"], [], "subtract") // ["a"] — empty catch changes nothing
+   * @example applySelectionVerb(["a"], [], "invert") // ["a"] — outside-the-box ids are untouched
+   */
+  function applySelectionVerb(selected, caught, verb) {
+    const inBox = new Set(caught);
+    const isSelected = new Set(selected);
+    if (verb === "replace") return [...new Set(caught)];
+    if (verb === "add") return [...new Set([...selected, ...caught])];
+    if (verb === "subtract") return [...new Set(selected.filter((id) => !inBox.has(id)))];
+    if (verb === "invert")
+      return [...new Set([...selected.filter((id) => !inBox.has(id)), ...caught.filter((id) => !isSelected.has(id))])];
+    throw new Error(`Unknown band-select verb: ${verb}`);
+  }
+
+  /**
+   * Pure function. The pending CHANGE between two selections: which ids `after`
+   * gains and which it loses. The band preview's two buckets — derived by
+   * diffing against the SAME applySelectionVerb result the release commits, so
+   * the preview cannot drift from the outcome (one rule set, not two).
+   *
+   * @param {string[]} before
+   * @param {string[]} after
+   * @returns {{added: string[], removed: string[]}}
+   *
+   * @example selectionDelta(["a", "b"], ["a", "c"]) // {added: ["c"], removed: ["b"]}
+   * @example selectionDelta(["a"], ["a"]) // {added: [], removed: []}
+   * @example selectionDelta([], ["a", "b"]) // {added: ["a", "b"], removed: []}
+   */
+  function selectionDelta(before, after) {
+    const had = new Set(before);
+    const has = new Set(after);
+    return { added: after.filter((id) => !had.has(id)), removed: before.filter((id) => !has.has(id)) };
+  }
+
+  /**
+   * Query (reads the scene, the live selection and the held modifiers). The FULL
+   * selection a release with band rect `rect` would commit: the ids the box
+   * catches in the drag's mode (core/bandselect.js: INNER = fully enclosed,
+   * OUTER = touching counts; bounds = the conservative rotated world AABB),
+   * folded into the current selection by the modifier verb, then run through the
+   * SAME group invariant app.selectMany applies (dedupeGroupSelection) so the
+   * preview can never promise a set the commit would then filter away.
+   *
+   * Reading the CURRENT selection live is safe and deliberate: a band drag never
+   * writes the selection before release — both entry points in onPointerDown
+   * return before any selection assignment — so app.selectedIds() throughout the
+   * drag is exactly the pre-drag selection, with no baseline to capture and go
+   * stale.
+   */
+  function bandSelectionAt(rect) {
+    const nodes = app.nodes();
+    const caught = selectInBox(nodes, rect, drag.mode);
+    const next = applySelectionVerb(app.selectedIds(), caught, bandVerb(bandMods));
+    return dedupeGroupSelection(next, groupMembership(nodes));
+  }
+
+  /**
+   * Command (updates band preview state; never touches the document or the
+   * selection). Recomputes the world-space band rect from the drag's own
+   * endpoints and both preview buckets at the CURRENT modifiers. Called from
+   * pointer-down, every pointer move, AND the window key listener below — that
+   * last caller is what makes pressing or releasing a modifier update the
+   * preview with the pointer standing still (a keypress fires no pointer event,
+   * so a move-only recompute would silently lag a mid-drag verb change).
+   * A no-op unless a band drag is live.
+   */
+  function refreshBandPreview() {
+    if (drag?.kind !== "band") return;
+    bandRect = rectFromCorners(drag.startWorld, drag.lastWorld);
+    const { added, removed } = selectionDelta(app.selectedIds(), bandSelectionAt(bandRect));
+    bandAddIds = added;
+    bandRemoveIds = removed;
+  }
+
+  /**
+   * Command (updates band preview state). One pointer move of a band drag: the
+   * live corner and the modifier record are re-read from the event EVERY move
+   * (never frozen at grab time — the same live-modifier rule the axis-lock and
+   * resize/placement modifiers follow), then the preview is recomputed.
+   */
+  function bandDrag(w, e) {
     drag.lastWorld = w;
-    drag.deselect = shiftHeld;
-    bandRect = rectFromCorners(drag.startWorld, w);
-    bandCandidates = selectInBox(app.nodes(), bandRect, drag.mode);
+    bandMods = modifiersOf(e);
+    refreshBandPreview();
   }
 
   // ── Crosshair placement drag (manifest ARCHITECTURE PLAN #5 + ROUND 13.2
@@ -1159,28 +1794,19 @@
    */
   function placementUp() {
     const { plugin, startWorld } = drag;
-    if (plugin.placement === "endpoints") {
-      if (drag.moved) {
-        app.addItem({ ...plugin.defaults, from: drag.lastEndpoint.from, to: drag.lastEndpoint.to });
-      } else {
-        // Default length = the plugin's own shipped from→to extent (linked
-        // precedent), placed rightward from the click point.
-        const d = plugin.defaults;
-        const len = (d.to?.x ?? 0) - (d.from?.x ?? 0);
-        app.addItem({ ...d, from: { x: startWorld.x, y: startWorld.y }, to: { x: startWorld.x + len, y: startWorld.y } });
-      }
-    } else if (drag.moved) {
-      const r = drag.lastRect;
-      app.addItem({ ...plugin.defaults, x: r.x, y: r.y, w: r.w, h: r.h });
-    } else {
-      const w = plugin.defaults.w ?? 0, h = plugin.defaults.h ?? 0;
-      // The click lands the plugin's PLACEMENT ANCHOR at the click point.
-      // Default = the box center (the universal behavior); a plugin may override
-      // (the cursor returns its HOTSPOT/tip) so a click-placed cursor drops its
-      // TIP where you point, not its bounding-box center.
-      const pa = plugin.placementAnchor ? plugin.placementAnchor(plugin.defaults) : { x: w / 2, y: h / 2 };
-      app.addItem({ ...plugin.defaults, x: startWorld.x - pa.x, y: startWorld.y - pa.y });
-    }
+    // WHAT THE FINISHED GESTURE CREATES is the WIDGET's business: `placement` is
+    // its creation-phase declaration, resolved through web/widget_handlers.js
+    // (phase "create"; absent → "bbox", the default since crosshair placement
+    // landed). The two bodies moved there verbatim — the gesture GEOMETRY above
+    // (snap, Shift/Cmd modifiers, click-vs-drag slop) stays here because it is the
+    // same for every widget. A widget wanting a different creation behaviour (a
+    // multi-step placement, an asset prompt, a multi-item rig) registers a handler
+    // and names it here-independently: this function does not change.
+    handlerFor("create", plugin).place({
+      app,
+      plugin,
+      gesture: { moved: !!drag.moved, startWorld, rect: drag.lastRect, endpoint: drag.lastEndpoint },
+    });
     placeRect = null;
     placeLine = null;
   }
@@ -1655,6 +2281,13 @@
     hoverAnchor = null; // pre-drag hover tip must not linger stale
     drag = { kind: "endpoint", itemId: node.itemId, which };
     app.dragging = true;
+    // ANNOUNCED like every other drag kind (cleared by onPointerUp /
+    // cancelPointDrag with the rest of the bookkeeping). An endpoint drag has no
+    // modifier hints of its own, but leaving this null made the gesture INVISIBLE
+    // to every dragKind-guarded context — including the Escape guard below, so a
+    // mid-drag Escape reached App.svelte's `deselect` and cleared the selection
+    // out from under the live gesture (measured).
+    app.dragKind = "endpoint";
   }
 
   function endpointDrag(w) {
@@ -1722,25 +2355,78 @@
   // apply() ever sees it — apply operates entirely in the item's own local
   // frame, exactly as if it were unrotated.
 
+  // HANDLES ARE SELECTABLE (the INNER selection scope — app.svelte.js
+  // handleSelection). A press on a handle both SELECTS it and arms its drag, and
+  // the drag moves the WHOLE selected set by one shared local delta.
+  //
+  // SHIFT-CLICK TOGGLES MEMBERSHIP, verbatim from the item scope: the same
+  // click-vs-drag disambiguation (`toggleId` set at press, applied on release only
+  // if the pointer never passed CLICK_SLOP_PX) that onPointerUp already runs for
+  // items, so a shift-DRAG on a handle moves the set instead of toggling. Nothing
+  // about that release path is duplicated here — it is the same two lines of state.
+
   function startModifier(id, e) {
     const node = app.selectedNode();
     if (!node) return;
     e.stopPropagation();
     overlayEl.setPointerCapture(e.pointerId);
     hoverAnchor = null; // pre-drag hover tip must not linger stale
-    drag = { kind: "modifier", itemId: node.itemId, modifierId: id, world: node.world };
+    // A plain press on an UNSELECTED handle makes it the selection (so the drag that
+    // follows moves what you grabbed); pressing one that is already in the set keeps
+    // the set (so you can drag a multi-handle selection by any of its members) —
+    // the same "grab does not collapse the selection" rule a body drag follows.
+    if (!e.shiftKey && !app.handleSelection.includes(id)) app.selectHandle(id);
+    // Every selected handle's LOCAL start position, captured once: the drag applies
+    // ONE local delta to these, so the set translates rigidly and no member drifts
+    // by accumulating its own rounding.
+    const inverse = T.invert(node.world);
+    const grabbed = new Set(app.handleSelection.includes(id) ? app.handleSelection : [id]);
+    const startLocals = nodeModifierPoints(node)
+      .filter((m) => grabbed.has(m.id) && m.apply)
+      .map((m) => ({ id: m.id, ...T.apply(inverse, m.x, m.y) }));
+    drag = {
+      kind: "modifier", itemId: node.itemId, modifierId: id, world: node.world,
+      startLocals, downScreen: screenPoint(e),
+      // Shift on a handle means "toggle membership" — deferred to release exactly
+      // like the item-level shift-click (onPointerUp's `drag.toggleId && !drag.moved`).
+      toggleHandleId: e.shiftKey ? id : null,
+    };
     app.dragging = true;
     app.dragKind = "modifier";
   }
 
+  /**
+   * The modifier-point drag: translates EVERY selected handle by the local delta
+   * the grabbed one travelled, as one preview.
+   *
+   * Each handle's `apply(state, localPoint)` returns a PARTIAL state write, so the
+   * set is composed by CHAINING them — each apply reads the state the previous one
+   * produced. That is what makes a multi-handle drag work with no plugin changes and
+   * no knowledge of what the handles control: two vertices of one polygon both
+   * rewrite the whole `points` list, and chaining means the second sees the first's
+   * edit instead of clobbering it.
+   *
+   * The delta is measured in LOCAL space (both the grabbed handle's start and the
+   * live pointer are inverted through the SAME node.world), so rotation and scale
+   * are correct by construction — the existing single-handle guarantee, unchanged.
+   */
   function modifierDrag(w) {
     const node = app.nodes().find((n) => n.itemId === drag.itemId);
     if (!node) return; // item vanished mid-drag (e.g. purged elsewhere) — nothing to preview
-    const mp = nodeModifierPoints(node).find((m) => m.id === drag.modifierId);
-    if (!mp?.apply) return;
+    const grabbedStart = drag.startLocals.find((s) => s.id === drag.modifierId);
+    if (!grabbedStart) return; // the grabbed handle is gone (its element was purged mid-drag)
     const local = T.apply(T.invert(drag.world), w.x, w.y);
-    const pairs = Object.entries(mp.apply(node.state, local))
-      .map(([key, value]) => [["items", drag.itemId, key], value]);
+    const dx = local.x - grabbedStart.x, dy = local.y - grabbedStart.y;
+    const points = nodeModifierPoints(node);
+    let state = node.state, written = {};
+    for (const start of drag.startLocals) {
+      const mp = points.find((m) => m.id === start.id);
+      if (!mp?.apply) continue; // this handle's element vanished — the rest still move
+      const partial = mp.apply(state, { x: start.x + dx, y: start.y + dy });
+      state = { ...state, ...partial };
+      written = { ...written, ...partial };
+    }
+    const pairs = Object.entries(written).map(([key, value]) => [["items", drag.itemId, key], value]);
     if (pairs.length) app.setPreview(pairs);
   }
 
@@ -1861,18 +2547,38 @@
     app.setPreview(pairs);
   }
 
-  /** Command. Esc-cancels an in-progress modifier-point drag (manifest: "Esc
-   * cancels"): drops the preview (reverting to the committed pose, exactly
-   * like modal cancelPreview) and releases drag bookkeeping. A no-op unless a
-   * modifier drag is actually live — called by the capture-phase keydown
-   * listener below (this task's fence keeps the Escape wiring self-contained
-   * in CanvasView rather than App.svelte's shortcut registry); guarding on
-   * dragKind === "modifier" means it never touches a move/resize/endpoint/
-   * band drag (those have no Esc-cancel yet — out of this task's fence). */
-  function cancelModifierDrag() {
-    if (drag?.kind !== "modifier") return;
+  // ESC_CANCELABLE_DRAG_KINDS (imported above from core/shortcut_entries.js) is
+  // the drag kinds Escape CANCELS: the two single-point handle grabs, whose entire
+  // effect is a live preview, so dropping the preview IS the cancel. Membership is
+  // a PROMISE that cancelPointDrag fully undoes the kind — never add a kind without
+  // checking that every piece of state its *Drag() writes is cleared below. Kinds
+  // outside the list (move/resize/multiresize/band/place) still fall through to
+  // App.svelte's bubble-phase `deselect`, which clears the selection under the live
+  // gesture; closing THAT belongs in the registry's own `deselect` predicate (a live
+  // drag is not a deselect context) rather than in more capture-phase swallowing
+  // here — swallowing a key the HintBar still advertises would trade one wrong
+  // action for a lie.
+  // IMPORTED rather than redeclared here: the same list is what the registry's
+  // "Cancel drag" entry announces and what `deselectable` withholds the Deselect
+  // chip for. It used to be a second local copy with a scan-based drift guard over
+  // the two, which could only report a divergence after it had shipped; one copy
+  // means there is nothing to diverge.
+
+  /** Command. Esc-cancels an in-progress single-point handle drag (manifest:
+   * "Esc cancels"): drops the preview (reverting to the committed pose, exactly
+   * like modal cancelPreview) and releases drag bookkeeping — including the
+   * endpoint drag's live bind feedback (hoverAnchor/dynamicAnchor), which
+   * onPointerUp clears on the commit path. A no-op unless such a drag is
+   * actually live — called by the capture-phase keydown listener below (the
+   * Escape wiring stays self-contained in CanvasView rather than App.svelte's
+   * shortcut registry, which dispatches on the bubble phase). The still-captured
+   * pointer needs no release: with `drag` null the pointerup is a no-op, so the
+   * gesture cannot resurrect or commit. */
+  function cancelPointDrag() {
+    if (!ESC_CANCELABLE_DRAG_KINDS.includes(drag?.kind)) return;
     drag = null;
     hoverAnchor = null;
+    dynamicAnchor = null;
     app.dragging = false;
     app.dragKind = null;
     app.cancelPreview();
@@ -1882,25 +2588,31 @@
     if (!drag && !modal) screenMouse = null; // hide ruler markers on leave (not mid-gesture)
   }
 
-  function onPointerUp() {
+  function onPointerUp(e) {
+    if (creation) {
+      creationRelease(e);
+      return;
+    }
+    if (modeDrag) {
+      modePointerUp();
+      return;
+    }
     if (!drag) return;
     if (drag.kind === "band") {
-      // Apply the band: recomputed from the drag's own endpoints (not the
-      // render preview) so the result is deterministic. Caught = the items in
-      // the final box (INNER/OUTER per drag.mode). Plain drag SELECTS them
-      // (selectMany — empty result deselects); a SHIFT-held drag (manifest
-      // Round 12B "SHIFT during a band drag = DESELECT the caught items
-      // instead of select") removes them from whatever was already selected
-      // instead — an empty catch is then a no-op, not a deselect-all.
-      const caught = selectInBox(app.nodes(), rectFromCorners(drag.startWorld, drag.lastWorld), drag.mode);
-      if (drag.deselect) {
-        const remove = new Set(caught);
-        app.selectMany(app.selectedIds().filter((id) => !remove.has(id)));
-      } else {
-        app.selectMany(caught);
-      }
+      // Apply the band through the SAME query the live preview rendered from
+      // (bandSelectionAt), recomputed from the drag's own endpoints rather than
+      // the render state so the result is deterministic: the committed set is
+      // by construction the set the last preview frame showed. The verb comes
+      // from the modifiers held at THIS moment (bandMods, kept live by the
+      // pointer moves and the key listener) — releasing over a subtract preview
+      // therefore commits a subtract. ONE selectMany call = one selection
+      // change; no document write, so a band select adds no undo unit at all
+      // (selection is app state, not document state — see app.svelte.js).
+      app.selectMany(bandSelectionAt(rectFromCorners(drag.startWorld, drag.lastWorld)));
       bandRect = null;
-      bandCandidates = [];
+      bandAddIds = [];
+      bandRemoveIds = [];
+      bandMods = NO_MODIFIERS;
     } else if (drag.kind === "place") {
       placementUp();
     } else if (aHeld && drag.kind === "move") {
@@ -1919,6 +2631,11 @@
     // axis-locked move, already committed via commitPreview below. `toggleId` is
     // set on both the "move" (draggable) and "shiftpick" (non-draggable) records.
     if (drag.toggleId && !drag.moved) app.toggleInSelection(drag.toggleId);
+    // The HANDLE-scope form of exactly the same rule, one level down: a shift+press
+    // on a handle released within the slop toggles its membership in the handle
+    // selection; a shift-DRAG moved the set and is already committed below. Set only
+    // by startModifier, so it can never coexist with the item-level toggleId.
+    if (drag.toggleHandleId && !drag.moved) app.toggleHandleInSelection(drag.toggleHandleId);
     // SELECTED-OBJECT DRAG PRIORITY (see onPointerDown): a plain click (no drag)
     // on a selected object that had a DIFFERENT object stacked on top selects
     // that top object on release — so a click still cycles selection to the
@@ -2156,30 +2873,36 @@
     app.modalSetAxis = (axis) => { if (modal) modalSetAxis(axis); };
     app.modalAppendBuffer = (ch) => { if (modal) modalAppendBuffer(ch); };
     app.modalBackspace = () => { if (modal) modalBackspace(); };
+    // The finalize key of a live multi-step CREATION mode (a polygon's Enter),
+    // routed through the shortcut registry exactly as the modal's Enter is. The
+    // session lives here, so this is where the hook has to be.
+    app.finishCanvasMode = () => { if (creation) finishCreation(); };
   });
 
-  // Modifier-point drag Esc-cancel (manifest ARCHITECTURE PLAN #1: "Esc
+  // Point-handle drag Esc-cancel (manifest ARCHITECTURE PLAN #1: "Esc
   // cancels"). The DISPATCH is a dedicated CAPTURE-phase window listener (the
   // SAME pattern SvelteLib's Dropdown.svelte uses for its outside-click
   // dismiss), NOT App.svelte's bubble-phase registry dispatch — capture matters
   // specifically because App's own "Escape" entries dispatch on the BUBBLE
   // phase (its <svelte:window onkeydown>), and one of them (`deselect`, when:
   // editSelection) has no drag-kind guard — it would clear app.selection out
-  // from under an in-progress modifier drag if it ran first. Capture always
+  // from under an in-progress drag if it ran first. Capture always
   // runs before bubble regardless of listener registration order, so
-  // stopPropagation here reliably pre-empts it — but ONLY while a modifier
-  // drag is actually live (every other key, and Escape with no modifier drag
+  // stopPropagation here reliably pre-empts it — but ONLY while a cancelable
+  // drag is actually live (every other key, and Escape with no such drag
   // active, passes through untouched to App's normal dispatch).
   // INV5 (Round 18 audit): App.svelte registers a matching DISPLAY-ONLY "Cancel
-  // drag" Escape entry (guarded on dragKind === "modifier") so the single-source
-  // registry knows this input and the HintBar shows it — the capture listener
-  // here remains the mechanism (bubble ordering requires it), mirroring how the
-  // A-key/pointer hints are registered-but-externally-dispatched.
+  // drag" Escape entry so the single-source registry knows this input and the
+  // HintBar shows it — the capture listener here remains the mechanism (bubble
+  // ordering requires it), mirroring how the A-key/pointer hints are
+  // registered-but-externally-dispatched. That entry's `when` predicate reads the
+  // SAME imported ESC_CANCELABLE_DRAG_KINDS this listener does, so the bar cannot
+  // go quiet on a gesture Escape really does cancel.
   $effect(() => {
     const onKeydownCapture = (e) => {
-      if (e.key !== "Escape" || drag?.kind !== "modifier") return;
+      if (e.key !== "Escape" || !ESC_CANCELABLE_DRAG_KINDS.includes(drag?.kind)) return;
       e.stopPropagation();
-      cancelModifierDrag();
+      cancelPointDrag();
     };
     window.addEventListener("keydown", onKeydownCapture, true);
     return () => window.removeEventListener("keydown", onKeydownCapture, true);
@@ -2216,11 +2939,51 @@
     };
   });
 
+  // BAND-SELECT MODIFIER TRACKING (add/subtract/invert). A band drag's verb must
+  // follow the modifiers LIVE — including a press or release with the pointer
+  // STANDING STILL, which pointer moves alone can never deliver (a keypress
+  // fires no pointer event, so the preview would keep showing the old verb until
+  // the mouse twitched). Plain window keydown/keyup/blur listeners, the SAME
+  // shape as the A-key tracking above: no capture phase and no preventDefault
+  // are needed because a bare Shift/Alt/Cmd/Ctrl keydown matches no registry
+  // entry (core/shortcuts.js dispatch requires a non-modifier main key), so
+  // there is nothing to pre-empt. Two deliberate differences from `aHeld`:
+  // the record is $state (the preview repaints from it), and every handler
+  // early-returns unless a band drag is live, so no other gesture — and no
+  // idle keystroke — pays reactivity for it. Any key event refreshes the WHOLE
+  // record from its own flags, so the specific key pressed never has to be
+  // matched (a Shift keydown carries shiftKey:true, its keyup shiftKey:false) —
+  // which is also why this needs no typing-in-a-field guard, unlike the A-key
+  // tracking above: that matches a LETTER (so typing "a" would arm it), while
+  // reading e.shiftKey/altKey/metaKey is correct no matter what has focus.
+  // Blur resets, for the same reason aHeld does: an alt-tab mid-drag must not
+  // leave a phantom modifier latched onto the release.
+  $effect(() => {
+    const sync = (e) => {
+      if (drag?.kind !== "band") return;
+      bandMods = modifiersOf(e);
+      refreshBandPreview();
+    };
+    const onBlur = () => {
+      if (drag?.kind !== "band") return;
+      bandMods = NO_MODIFIERS;
+      refreshBandPreview();
+    };
+    window.addEventListener("keydown", sync);
+    window.addEventListener("keyup", sync);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", sync);
+      window.removeEventListener("keyup", sync);
+      window.removeEventListener("blur", onBlur);
+    };
+  });
+
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandCandidates; modalCenter; app.crosshair; placeRect; placeLine; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandOutlines: [], scalePivot: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, multiBoxOutline: null };
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
+    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], scalePivot: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -2281,19 +3044,36 @@
     // edit points (a multi-selection has no single widget's parameter to
     // scrub). nodeModifierPoints already wraps local→world through node.world,
     // so rotation/scale need no special handling here — same as anchors.
+    //
+    // Each carries the two flags the skin reads: `selected` (this handle is in the
+    // INNER selection scope) and `hidden` (its list element's visibility is off, so
+    // the outline draws straight past it — it still gets a handle, or it could never
+    // be shown again).
+    const chosenHandles = new Set(app.handleSelection);
     const modifiers = selectedIds.length === 1 && sel
-      ? nodeModifierPoints(sel).map((m) => ({ id: m.id, ...actions.worldToScreen(m.x, m.y) }))
+      ? nodeModifierPoints(sel).map((m) => ({
+        id: m.id,
+        selected: chosenHandles.has(m.id),
+        hidden: !m.active,
+        ...actions.worldToScreen(m.x, m.y),
+      }))
       : [];
 
     // In-progress rubber band: the box itself (world-axis-aligned, so two
-    // corners suffice) + preview outlines on the current candidates.
-    let band = null, bandOutlines = [];
+    // corners suffice) + the two PREVIEW BUCKETS as separate outline lists, so
+    // the template can skin "about to be ADDED" differently from "about to be
+    // REMOVED". `bandVerb` rides along so the box itself can carry the verb as a
+    // class (the crosshair `skin` precedent: state → class, styling in app.css).
+    let band = null, verb = null, bandAddOutlines = [], bandRemoveOutlines = [];
     if (bandRect) {
       const a = actions.worldToScreen(bandRect.x, bandRect.y);
       const b = actions.worldToScreen(bandRect.x + bandRect.w, bandRect.y + bandRect.h);
       band = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
-      const candSet = new Set(bandCandidates);
-      bandOutlines = nodes.filter((n) => candSet.has(n.itemId)).map(outlineOf);
+      verb = bandVerb(bandMods);
+      const addSet = new Set(bandAddIds);
+      const removeSet = new Set(bandRemoveIds);
+      bandAddOutlines = nodes.filter((n) => addSet.has(n.itemId)).map(outlineOf);
+      bandRemoveOutlines = nodes.filter((n) => removeSet.has(n.itemId)).map(outlineOf);
     }
 
     const anchors = (app.anchorsVisible ? nodes : []).flatMap((n) =>
@@ -2379,7 +3159,36 @@
       placeSeg = { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
     }
 
-    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox, placeSeg, multiBoxOutline };
+    // MULTI-STEP creation preview: whatever the live creation mode's overlay()
+    // returned, mapped to screen space here (the mode speaks WORLD only, like every
+    // plugin). Three primitives, drawn in the SAME gray placement skin as placeBox
+    // above so a multi-step placement reads as the same mechanism:
+    //   chains — a polyline through a vertex list (+ its closing edge when closed):
+    //            the committed chain plus the segment to the pointer
+    //   rects  — every box a multi-box sequence has placed, plus the live one
+    //   dots   — a marker per landed vertex; `hot` = clicking here closes the loop,
+    //            which is what makes the affordance visible BEFORE the click
+    let placeChains = [];
+    let placeRects = [];
+    let placeDots = [];
+    if (placePreview) {
+      const pt = (x, y) => actions.worldToScreen(x, y);
+      placeChains = placePreview.chains
+        .filter((c) => c.points.length >= 2)
+        .map((c) => {
+          const pts = c.points.map(([x, y]) => pt(x, y));
+          const ring = c.closed ? [...pts, pts[0]] : pts;
+          return ring.map((p) => `${p.x},${p.y}`).join(" ");
+        });
+      placeRects = placePreview.rects.map((r) => {
+        const a = pt(r.x, r.y);
+        const b = pt(r.x + r.w, r.y + r.h);
+        return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) };
+      });
+      placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
+    }
+
+    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -2417,6 +3226,17 @@
     app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
     if (!app.codeEditing || !actions) return null;
     return app.nodes().find((nn) => nn.itemId === app.codeEditing.itemId) ?? null;
+  });
+
+  // SELECTED HANDLES in world space, or [] — what the HandleToolbar hangs off.
+  // Read through app.selectedHandles() (the ONE query, shared with the actions), so
+  // the bar and the commands can never disagree about what is selected. Same
+  // reactive-deps pattern as the edit-node deriveds; app.handleSelection is the
+  // extra dep that opens and closes it.
+  let selectedHandles = $derived.by(() => {
+    app.doc; app.previewDelta; app.slideIndex; viewport; app.handleSelection; // reactive deps (match `overlay`)
+    if (!actions) return [];
+    return app.selectedHandles();
   });
 
   // FLOATING TOOLBAR: the derived node whose floating toolbar is open, or null.
@@ -2479,6 +3299,7 @@
         onpointercancel={onPointerUp}
         onpointerleave={onPointerLeave}
         ondblclick={onDblClick}
+        onwheel={onWheel}
         ondragover={onCanvasDragOver}
         ondrop={onCanvasDrop}
       >
@@ -2551,13 +3372,48 @@
                tone) so the two placement kinds read as one mechanism. -->
           <line class="place-rect" x1={overlay.placeSeg.x1} y1={overlay.placeSeg.y1} x2={overlay.placeSeg.x2} y2={overlay.placeSeg.y2} />
         {/if}
+        <!-- MULTI-STEP CREATION preview (web/creationSteps.js): the boxes a
+             multi-box sequence has placed plus its live one, the vertex CHAIN of a
+             click-click-click placement plus its rubber band to the pointer, and a
+             marker on each landed vertex. All three wear the same .place-rect gray
+             so an accumulating placement reads as the same mechanism as a
+             one-gesture one; a HOT vertex (clicking it closes the loop) is the one
+             thing that stands out, since it changes what the next click does. -->
+        {#each overlay.placeRects as r}
+          <rect class="place-rect" x={r.x} y={r.y} width={r.w} height={r.h} />
+        {/each}
+        {#each overlay.placeChains as points}
+          <polyline class="place-rect" {points} />
+        {/each}
+        {#each overlay.placeDots as d}
+          <circle class="place-dot" class:place-dot-hot={d.hot} cx={d.x} cy={d.y} r={PLACE_DOT_R} />
+        {/each}
         {#if overlay.band}
-          <!-- The in-progress rubber band + preview outlines on the items the
-               current box would select (live band-select feedback). -->
-          <rect class="band-rect" x={overlay.band.x} y={overlay.band.y} width={overlay.band.w} height={overlay.band.h} />
+          <!-- The in-progress rubber band. The held-modifier VERB rides as a
+               class (the crosshair `skin` precedent: state → class, all styling
+               in app.css) so the box you are dragging itself announces whether
+               a release adds, subtracts or inverts — the modifier's meaning is
+               readable WITHOUT moving the pointer or reading the HintBar. The
+               unmodified "replace" verb keeps the bare .band-rect look. -->
+          <rect
+            class="band-rect"
+            class:band-verb-add={overlay.bandVerb === "add"}
+            class:band-verb-subtract={overlay.bandVerb === "subtract"}
+            class:band-verb-invert={overlay.bandVerb === "invert"}
+            x={overlay.band.x} y={overlay.band.y} width={overlay.band.w} height={overlay.band.h}
+          />
         {/if}
-        {#each overlay.bandOutlines as o}
-          <polygon class="band-candidate" points={o} />
+        <!-- Live band-select feedback, split by PENDING CHANGE: .band-add marks
+             items a release would ADD to the selection, .band-remove items it
+             would REMOVE (a subtract band, an invert band's already-selected
+             half, or the plain band's replaced leftovers). Both carry the shared
+             .band-candidate base so the two skins differ only in their override
+             rule — one styling seam, not two. -->
+        {#each overlay.bandAddOutlines as o}
+          <polygon class="band-candidate band-add" points={o} />
+        {/each}
+        {#each overlay.bandRemoveOutlines as o}
+          <polygon class="band-candidate band-remove" points={o} />
         {/each}
         <ResizeHandles handles={overlay.handles} onstart={startResize} />
         {#each overlay.endpoints as ep}
@@ -2573,10 +3429,15 @@
                yellow squares"): drawn as a square (not the endpoints' circle)
                at the SAME 8px footprint as ResizeHandles, so the three handle
                families (blue resize squares, amber endpoint dots, yellow
-               modifier squares) are each visually distinct at a glance. -->
+               modifier squares) are each visually distinct at a glance.
+               Two state classes, styled in app.css: .selected marks membership in
+               the handle selection (the app's ONE selection colour, not a new one),
+               .hidden-element marks a list element whose visibility is off. -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <rect
             class="modifier"
+            class:selected={m.selected}
+            class:hidden-element={m.hidden}
             x={m.x - 4} y={m.y - 4} width="8" height="8"
             onpointerdown={(e) => startModifier(m.id, e)}
           />
@@ -2682,6 +3543,12 @@
           worldToScreen={actions.worldToScreen}
           zoom={viewport.zoom}
         />
+      {/if}
+      {#if selectedHandles.length && actions}
+        <!-- The SELECTED-HANDLE tools (hide/show, purge), on the same
+             FloatingCanvasPanel shell as the widget toolbar above. Universal: it
+             appears for any widget whose handles are list elements. -->
+        <HandleToolbar {app} handles={selectedHandles} worldToScreen={actions.worldToScreen} />
       {/if}
       {#if app.minimapVisible}
         <div class="minimap-dock">

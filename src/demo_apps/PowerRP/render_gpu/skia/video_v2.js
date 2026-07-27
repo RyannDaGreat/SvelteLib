@@ -63,7 +63,21 @@ const ACTIVE_GRACE_MS = 200;
 const _entries = new Map();
 
 /** ctx.makeSurface (factory identity ≙ one GrContext) → texture bucket
- * { helper: Surface, images: Map<src, {img, marker}> }. */
+ * { helper: Surface, images: Map<src, {img, marker}> }.
+ *
+ * CONTRACT ON CALLERS: whoever passes `makeSurface` into paintIR MUST pass an
+ * IDENTITY-STABLE function per GrContext — one closure created once, not a fresh
+ * closure per paint. Identity is the only handle this module has on "which GPU
+ * context", so a new closure means a new bucket: a helper render target plus a
+ * full-resolution video texture per paint, held in this strong Map and never
+ * reused or freed. That is exactly the leak web/gpuService.js caused when it minted
+ * its offscreen factory inside renderJob (fixed there by hoisting the factory to a
+ * service singleton). Surfaces may be recreated freely — only the FACTORY identity
+ * must hold, which is what lets an on-screen surface survive a resize.
+ *
+ * Entries are therefore bounded by the number of live GL contexts (the editor
+ * surface, the presenter surface, the offscreen pixel service), each holding one
+ * reused texture per distinct video source. */
 const _gpuBuckets = new Map();
 
 /** Monotonic count of real texture uploads (mint + refresh) — a diagnostic that

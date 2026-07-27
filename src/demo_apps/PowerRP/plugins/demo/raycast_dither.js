@@ -46,7 +46,7 @@ const STREAK_DIAGONAL = Math.PI / 4;
 const CUSTOM = customProps([
   { name: "speed", kind: "number", default: 1.0, min: 0, help: "Animation speed multiplier for the drifting streaks. 0 = a frozen still; higher = faster flow." },
   { name: "zoom", kind: "number", default: 0.58, min: 0.05, help: "Pattern zoom: bigger = fewer, larger streaks that fill more of the frame; smaller = more, tighter streaks." },
-  { name: "streakAngle", kind: "number", default: STREAK_DIAGONAL, help: "Streak direction in radians. π/4 ≈ 0.785 is the classic top-left → bottom-right diagonal; 0 = horizontal streaks." },
+  { name: "streakAngle", kind: "angle", display: "degrees", default: STREAK_DIAGONAL, help: "Streak direction. 45° is the classic top-left → bottom-right diagonal; 0° = horizontal streaks." },
   { name: "elongation", kind: "number", default: 4.2, min: 1, help: "How far the colour blobs stretch ALONG the streak axis. 1 = round blobs; higher = long diagonal streaks (the Raycast look)." },
   { name: "softness", kind: "number", default: 0.17, min: 0.01, help: "Gaussian blob radius — the softness/overlap of the streaks. Bigger = softer, blurrier, more overlap; smaller = crisper cores." },
   { name: "warp", kind: "number", default: 0.18, min: 0, help: "Domain-warp amount: how much an animated value-noise field wobbles the streak edges, so they read as organic aurora rather than perfect ellipses. 0 = clean edges." },

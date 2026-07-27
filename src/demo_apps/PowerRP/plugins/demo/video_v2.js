@@ -62,7 +62,7 @@ export const videoV2Plugin = {
     // (core/properties.js). muted:true is REQUIRED for autoplay to actually play;
     // animated:true keeps the presenter repainting so the V2 path plays live.
     ...defaults("autoplay", "loop", "muted", "animated", "opacity"),
-    stroke: "#1a1a2e",
+    stroke: "#000000",
     ...defaults("strokeWidth", "cornerRadius"),
     ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"),
     ...bundleNestedDefaults("effects"),

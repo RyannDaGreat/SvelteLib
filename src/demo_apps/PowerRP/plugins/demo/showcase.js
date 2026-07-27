@@ -51,7 +51,7 @@ export const demoShowcasePlugin = {
   defaults: {
     type: "demo_showcase", x: 140, y: 140, w: 240, h: 160, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#9ece6a", stroke: "#1a1a2e", strokeWidth: 2,
+    fill: "#9ece6a", stroke: "#000000", strokeWidth: 2,
     ...defaults("cornerRadius", "opacity"), // cornerRadius:0, opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
     ...CUSTOM.defaults, // inset — the custom self.* prop

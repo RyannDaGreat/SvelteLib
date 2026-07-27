@@ -100,7 +100,7 @@ function makeTextMorphPlugin({ type, title, wordProps, morph }) {
       type, x: 120, y: 80, w: 320, h: 60, z: 0, rotation: 0, scale: 1,
       rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
       font: DEFAULT_FONT, size: DEFAULT_TEXT_SIZE, bold: false,
-      fill: "#1a1a2e", align: "left", valign: "top",
+      fill: "#000000", align: "left", valign: "top",
       ...defaults("opacity"), // opacity:1
       ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
       ...custom.defaults, // the word input(s) + alpha (custom self.* props)
@@ -110,7 +110,7 @@ function makeTextMorphPlugin({ type, title, wordProps, morph }) {
       ...custom.rows, // the morph knobs FIRST (the point of the widget): words + alpha
       { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text", help: "The typeface the text is drawn in." },
       { key: "size", label: "Size", kind: "number", min: 0, category: "text", help: "Font size in canvas units." },
-      { key: "bold", label: "Bold", kind: "checkbox", category: "text", help: "Draw the text in the font's bold weight." },
+      { key: "bold", label: "Bold", kind: "boolean", category: "text", help: "Draw the text in the font's bold weight." },
       { key: "align", label: "Align", kind: "select", options: ALIGN_OPTIONS, optionLabels: ALIGN_LABELS, category: "text", help: "Horizontal alignment within the box width." },
       { key: "valign", label: "V-Align", kind: "select", options: VALIGN_OPTIONS, optionLabels: VALIGN_LABELS, category: "text", help: "Vertical placement of the line stack within the box height." },
       ...props("fill", { fill: { label: "Color", category: "formatting", help: "The color or gradient the glyphs are painted with." } }),

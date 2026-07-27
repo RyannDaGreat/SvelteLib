@@ -60,7 +60,7 @@
 
 import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, pushTransform, popTransform, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
-import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect } from "./pdf_backend.js";
+import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { fitBox } from "../core/geometry.js";
 import { DEFAULT_TEXT_SIZE } from "./skia/text_layout.js";
@@ -449,12 +449,14 @@ export async function emitRegionSVG(commands, region, out, ctx) {
     });
   }
 
-  // HYBRID RULE split — IDENTICAL to pdf_backend.emitRegion's `lastBlurFlat`
-  // (incl. Round 12D: an ADD-blend effect widget splits like a blur — true
-  // additive compositing needs the real backdrop pixels).
+  // HYBRID RULE split — IDENTICAL to pdf_backend.emitRegion's `lastBlurFlat`,
+  // through the SAME shared predicate: an effect widget whose blend has no
+  // vector-blend spelling (blendNeedsBelowRaster — "add" plus every Photoshop
+  // mode that only exists as SkSL) splits like a blur, because its composite
+  // needs the real backdrop pixels.
   let lastBlurFlat = -1;
   flat.forEach((fc, i) => {
-    if (fc.cmd.op === "blurBackdrop" || (fc.cmd.op === "effectSubtree" && fc.cmd.blend === "add")) lastBlurFlat = i;
+    if (fc.cmd.op === "blurBackdrop" || (fc.cmd.op === "effectSubtree" && blendNeedsBelowRaster(fc.cmd.blend))) lastBlurFlat = i;
   });
 
   if (lastBlurFlat >= 0) {
@@ -503,9 +505,21 @@ export async function emitRegionSVG(commands, region, out, ctx) {
  * `style="mix-blend-mode:multiply|screen"` group (needs `isolation` control
  * on the parent). Registered through ctx.addDef like the lens clipPaths.
  * Until then this raster path keeps SVG export CORRECT for every effect.
+ *
+ * WHY THERE IS NO vectorSafeEffects BRANCH HERE (and what guards it instead):
+ * pdf_backend gates its vector-preserving branch on the shared
+ * vectorSafeEffects predicate; V1 SVG has no such branch — it rasters EVERY
+ * effected widget — so it is correct for the whole predicate's domain by
+ * construction, and inventing a branch to "use" the predicate would change
+ * exported pixels for no gain. What IS shared is the anti-drop invariant below:
+ * this function re-spreads the op before rasterizing (exactly where pdf_backend's
+ * sibling silently lost softEdges/innerShadow for months), so it runs the SAME
+ * droppedRasterOnlyEffects check. When the native-filter upgrade above lands and
+ * SVG grows a vector-preserving branch, it MUST gate on vectorSafeEffects — the
+ * cross-backend test in render_gpu/tests/effects_export_guard_test.js pins that.
  */
 export async function emitEffectSVG(cmd, world, region, ctx) {
-  if (cmd.blend === "add") throw new Error("svg_backend: an add-blend effectSubtree must be consumed by emitRegionSVG's raster split (no isolated-raster equivalent of additive compositing)");
+  if (blendNeedsBelowRaster(cmd.blend)) throw new Error(`svg_backend: a "${cmd.blend}"-blend effectSubtree must be consumed by emitRegionSVG's raster split — an isolated raster cannot reproduce a composite with no vector-blend spelling (blendNeedsBelowRaster)`);
   const m = cmd.margin;
   const corners = [
     [cmd.x - m, cmd.y - m], [cmd.x + cmd.w + m, cmd.y - m],
@@ -519,7 +533,10 @@ export async function emitEffectSVG(cmd, world, region, ctx) {
   // Blend NEUTRALIZED inside the isolated raster: multiply/screen against a
   // TRANSPARENT raster background would blacken/blow out the widget (the GPU
   // would blend against zeros); the divergence-vs-page note is in the header.
-  return ctx.rasterRegion([pushTransform(world), { ...cmd, blend: "normal" }, popTransform()], {
+  const rasterCmd = { ...cmd, blend: "normal" };
+  const dropped = droppedRasterOnlyEffects(cmd, rasterCmd);
+  if (dropped.length) throw new Error(`svg_backend: emitEffectSVG's raster re-issue lost live effect(s) ${JSON.stringify(dropped)} — a raster-only effect must survive the re-spread or it exports as nothing`);
+  return ctx.rasterRegion([pushTransform(world), rasterCmd, popTransform()], {
     placeRect, srcView: region.view, background: [0, 0, 0, 0],
   });
 }
@@ -966,7 +983,12 @@ class SvgAssembly {
       panY: -srcRect.y * (hPx / srcRect.h),
       dpr: 1,
     };
-    const png = await this.rasterize(rawCmds, rasterView, wPx, hPx, background);
+    // The region background goes to the rasterizer BOTH as a drawn rect and as the
+    // clear — the pdf_backend.emitRasterRegion convention, imported not re-derived.
+    // A BACKDROP SAMPLER inside the region re-renders the below-content into its own
+    // offscreen and never sees a surface clear, so without the drawn rect a material
+    // (metaballs / comic halftone / glass) samples transparency and exports BLACK.
+    const png = await this.rasterize(regionOverBackground(rawCmds, srcRect, background), rasterView, wPx, hPx, background);
     const href = `data:image/png;base64,${bytesToBase64(png)}`;
     return `<image x="${fmt(placeRect.x)}" y="${fmt(placeRect.y)}" width="${fmt(placeRect.w)}" height="${fmt(placeRect.h)}"` +
       ` preserveAspectRatio="none" href="${href}"/>`;

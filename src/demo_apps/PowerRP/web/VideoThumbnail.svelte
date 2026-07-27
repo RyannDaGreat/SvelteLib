@@ -18,7 +18,9 @@
 
   LOUD FAILURE (no silent fallback): a video that fails to load or seek shows
   a visible error glyph + console.error — never a silently-blank tile and
-  never a silent revert to the old generic play icon. Cached per (src) in a
+  never a silent revert to the old generic play icon. The message itself is
+  readable by hovering the glyph, through SvelteLib's immediate Tooltip
+  (native title= is banned in app chrome — manifest). Cached per (src) in a
   module-level Map so re-rendering the same asset (grid re-list, reopening the
   picker) never re-decodes — decoding is the expensive part, not layout.
 
@@ -91,6 +93,8 @@
 </script>
 
 <script>
+  import Tooltip from "../../../lib/Tooltip.svelte";
+
   let { src = "", onclick = () => {} } = $props();
 
   let frameUrl = $state(null);
@@ -115,7 +119,9 @@
   {#if frameUrl}
     <img class="vidthumb-img" src={frameUrl} alt="" loading="lazy" />
   {:else if failed}
-    <div class="vidthumb-error" title={failed}><iconify-icon icon="mdi:alert-circle-outline" width="20" height="20"></iconify-icon></div>
+    <Tooltip text={failed}>
+      <div class="vidthumb-error"><iconify-icon icon="mdi:alert-circle-outline" width="20" height="20"></iconify-icon></div>
+    </Tooltip>
   {:else}
     <div class="vidthumb-loading"><iconify-icon icon="mdi:play-circle-outline" width="28" height="28"></iconify-icon></div>
   {/if}

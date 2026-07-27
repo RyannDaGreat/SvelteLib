@@ -30,7 +30,7 @@ import { rect, pushTransform, popTransform, materialFill } from "../ir.js";
 const require = createRequire(import.meta.url);
 const CanvasKitInit = require("canvaskit-wasm/bin/canvaskit.js");
 const BIN_DIR = path.dirname(require.resolve("canvaskit-wasm/bin/canvaskit.js"));
-const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".claude_vlm_checks");
 
 // THUMBNAIL sizes (device px; DPR 1 so surface px == local px, the minimap/grid case).
 const THUMB = { w: 256, h: 144 };  // the measured 256x144 case
@@ -42,8 +42,17 @@ const fontCollection = CanvasKit.FontCollection.Make(); // scenes carry no text
 
 // The full param sets each heavy material's packer requires (mirrors the plugins'
 // emit() defaults). The proxy path reads only a few (light pos + tint / sky colours).
+//
+// THESE ARE HAND-WRITTEN MIRRORS AND THEY DRIFT. Each packer validates every field
+// it reads and throws (no silent fallback), so when a plugin GAINS a shader param
+// the fixture below still type-checks as an object and this probe dies at render
+// time with `pack: "<name>" must be a finite number, got undefined`. That is
+// exactly how `flareScale` broke it: the lens-flare second-handle work added the
+// prop to the plugin, and nothing points here. The drift is structural, not a
+// typo — see the standing task to derive these fixtures from the plugins'
+// `defaults` so a new param cannot be missed.
 const LENS_FLARE_PARAMS = {
-  lightX: 0.72, lightY: 0.3, brightness: 1.0,
+  lightX: 0.72, lightY: 0.3, brightness: 1.0, flareScale: 1,
   ghostCount: 5, ghostSpacing: 0.32, ghostSize: 0.08, ghostIntensity: 0.25,
   anamorphic: 0.38, streakLength: 0.3, streakColor: "#8fb0ff",
   halo: 0.35, haloRadius: 0.45,

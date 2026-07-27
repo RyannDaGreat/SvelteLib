@@ -24,7 +24,7 @@
  * the last copy.
  */
 
-import { foldState } from "../core/document.js";
+import { tweenedState } from "../core/document.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { evaluateState } from "../core/expressions.js";
 import { canSkipNode } from "../core/view.js";
@@ -36,19 +36,24 @@ import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
  * Query (memoized fold + evaluate). THE evaluated folded state for
  * (doc, slide, alpha): folds the slide deltas then evaluates every equation, so
  * all properties are plain numbers. The ONE home for the
- * `evaluateState(foldState(...)).state` idiom the pixel consumers, the
+ * `evaluateState(tweenedState(...)).state` idiom the pixel consumers, the
  * presenter, and the CLI hook all repeat.
+ *
+ * THE FOLD IS `tweenedState`, NOT `foldState`: mid-transition, a widget whose own
+ * properties are COUPLED (the deep-zoom Mandelbrot's centre against its
+ * logarithmic zoom) gets to say how its state interpolates, which the leaf-wise
+ * lerp cannot express. At alpha 0 and 1 the two are identical by construction.
  *
  * @param {object} doc PowerRP document.
  * @param {number} slideIndex Slide index.
  * @param {number} alpha Tween alpha (default 1).
- * @param {object} registry Plugin registry (for equation evaluation).
+ * @param {object} registry Plugin registry (equation evaluation + the tween hook).
  * @returns {object} Evaluated folded state ({items, vars} with numbers).
  *
  * @example // evaluatedStateAt(newDocument(), 0, 1, registry) // {items:{...}, vars:{...}}
  */
 export function evaluatedStateAt(doc, slideIndex, alpha, registry) {
-  return evaluateState(foldState(doc, slideIndex, alpha), registry).state;
+  return evaluateState(tweenedState(doc, slideIndex, alpha, registry), registry).state;
 }
 
 /**

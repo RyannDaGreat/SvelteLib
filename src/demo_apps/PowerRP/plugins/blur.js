@@ -14,6 +14,14 @@ export const blurPlugin = {
   // backdrop:true also makes this widget uncullable — the renderer never
   // skips a backdrop sampler (it may read pixels anywhere on the canvas), so
   // blur needs no canSkip hook of its own (see core/view.js canSkipNode).
+  //
+  // NO `localBounds` HOOK, DELIBERATELY: this is the ONE widget that is honestly
+  // UNBOUNDABLE (core/view.js localBoundsOf → null). A full-canvas backdrop blur
+  // has no geometry whatsoever — there is genuinely no rect that describes where
+  // it is, which is exactly why null means "can't prove it invisible, never cull"
+  // and "nothing to enclose, not band-selectable". Every OTHER hookless widget in
+  // the tree has a box; every two-point widget declares its endpoint hull. If a
+  // future backdrop gains a region, it declares localBounds and joins the rest.
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: true },
   defaults: { type: "blur", z: 50, blur: 6, opacity: 1 },
   // Rows: the plugin-specific `blur` radius row (its own category), then the

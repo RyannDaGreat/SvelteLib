@@ -37,7 +37,7 @@
 import { polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { standardBBoxAnchors } from "../core/derive.js";
-import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
+import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 
 // Two shapes are "coincident" (no meaningful external tangent) when their
 // centers are within this distance — the identity end of a zoom-callout tween,
@@ -290,6 +290,59 @@ export function shapeDescriptors(s) {
   return [desc(s.a), desc(s.b)];
 }
 
+/**
+ * Pure function. The min and max corner of the axis-aligned square that
+ * circumscribes one shape at ANY rotation: its center ± hypot(halfW, halfH). The
+ * rotation-free bound — a rotated ellipse and a rotated box both fit inside the
+ * circle of that radius — so no trigonometry is needed to stay conservative.
+ *
+ * @param {{x: number, y: number, halfW: number, halfH: number}} shape - a shapeDescriptors entry
+ * @returns {Array<{x: number, y: number}>} the two opposite corners
+ *
+ * @example shapeCircumscribedCorners({x: 100, y: 100, halfW: 4, halfH: 3}) // [{x: 95, y: 95}, {x: 105, y: 105}]
+ */
+function shapeCircumscribedCorners(shape) {
+  const r = Math.hypot(shape.halfW, shape.halfH);
+  return [{ x: shape.x - r, y: shape.y - r }, { x: shape.x + r, y: shape.y + r }];
+}
+
+/**
+ * Pure function. The LOCAL rect this widget's INK occupies: the AABB of every
+ * tangent endpoint, padded on every side by the stroke width. World == identity
+ * (a connector), so this is also its world footprint.
+ *
+ * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
+ * precedent): the effect substrate in emit() below, and — via the `localBounds`
+ * declaration — culling plus rubber-band selection (core/view.js localBoundsOf).
+ * A tangent endpoint always sits ON a shape's boundary, so the endpoint hull is
+ * the tight bound on the drawn segments and a full-width pad covers the round
+ * caps with room to spare.
+ *
+ * NO TANGENT PAIR (coincident shapes, or one containing the other — the identity
+ * end of a zoom-callout tween): nothing is drawn, so the true ink is EMPTY, and
+ * the two shapes' own circumscribed extents are used instead. Empty ink fits
+ * inside any rect, so that stays conservative, and it says WHERE the widget is
+ * rather than parking its bounds at the world origin.
+ *
+ * @param {object} s - evaluated item state (shapes a/b, shapeKind, strokeWidth)
+ * @returns {{x: number, y: number, w: number, h: number}} local rect
+ *
+ * @example // two equal circles side by side: the two horizontal tangents run from
+ * @example // (0, ±10) to (100, ±10), so the hull is that box padded by the stroke.
+ * @example // (x lands on -2 to floating-point precision — the tangent points come
+ * @example // off a SAMPLED boundary, the same approximation emit() draws with.)
+ * @example tangentLinesInkRect({a: {x: 0, y: 0, halfW: 10, halfH: 10, rotation: 0}, b: {x: 100, y: 0, halfW: 10, halfH: 10, rotation: 0}, shapeKind: "circle", strokeWidth: 2}) // {x: -2, y: -12, w: 104, h: 24}
+ * @example // B swallows A → no tangents → the circumscribed hull of both shapes:
+ * @example // hypot(50, 50) = 70.71 circumscribes B, plus the 2-unit stroke pad.
+ * @example tangentLinesInkRect({a: {x: 0, y: 0, halfW: 1, halfH: 1, rotation: 0}, b: {x: 0, y: 0, halfW: 50, halfH: 50, rotation: 0}, shapeKind: "circle", strokeWidth: 2}) // {x: -72.71, y: -72.71, w: 145.42, h: 145.42}
+ */
+export function tangentLinesInkRect(s) {
+  const [a, b] = shapeDescriptors(s);
+  const ends = externalTangents(a, b).flatMap(([p, q]) => [p, q]);
+  const points = ends.length ? ends : [a, b].flatMap(shapeCircumscribedCorners);
+  return paddedPointsBBox(points, s.strokeWidth ?? DEFAULT_STROKE_WIDTH);
+}
+
 export const tangentLinesPlugin = {
   type: "tangent_lines",
   title: "Tangent Lines",
@@ -314,12 +367,12 @@ export const tangentLinesPlugin = {
     { key: "a.y", label: "A center Y", kind: "number", category: "shape_a", help: "World Y of shape A's center." },
     { key: "a.halfW", label: "A half-width", kind: "number", min: 0, category: "shape_a", help: "Shape A's half-width (ellipse x-radius / box half-width)." },
     { key: "a.halfH", label: "A half-height", kind: "number", min: 0, category: "shape_a", help: "Shape A's half-height (ellipse y-radius / box half-height)." },
-    { key: "a.rotation", label: "A rotation", kind: "number", category: "shape_a", help: "Shape A's rotation in radians (bind to a widget's rotation)." },
+    { key: "a.rotation", label: "A rotation", kind: "angle", display: "degrees", category: "shape_a", help: "Shape A's rotation — the dial shows degrees, storage is radians like every widget's rotation, so `= <widget>.rotation` binds straight across." },
     { key: "b.x", label: "B center X", kind: "number", category: "shape_b", help: "World X of shape B's center." },
     { key: "b.y", label: "B center Y", kind: "number", category: "shape_b", help: "World Y of shape B's center." },
     { key: "b.halfW", label: "B half-width", kind: "number", min: 0, category: "shape_b", help: "Shape B's half-width." },
     { key: "b.halfH", label: "B half-height", kind: "number", min: 0, category: "shape_b", help: "Shape B's half-height." },
-    { key: "b.rotation", label: "B rotation", kind: "number", category: "shape_b", help: "Shape B's rotation in radians." },
+    { key: "b.rotation", label: "B rotation", kind: "angle", display: "degrees", category: "shape_b", help: "Shape B's rotation — the dial shows degrees, storage is radians like every widget's rotation, so `= <widget>.rotation` binds straight across." },
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
     { key: "dashed", label: "Dashed", kind: "boolean", category: "tangent", help: "Draw the tangent lines dashed instead of solid." },
@@ -348,12 +401,20 @@ export const tangentLinesPlugin = {
     const opacity = s.opacity ?? 1;
     const spans = segments.flatMap(([p, q]) => (s.dashed ? dashSpans(p, q, s.dashLength, s.dashGap) : [[p, q]]));
     const cmds = spans.map(([p, q]) => polyline({ points: [[p.x, p.y], [q.x, q.y]], width, color: s.stroke, opacity }));
-    // Effect region = padded AABB of every tangent endpoint (empty when there
-    // are no tangents → applyEffects passes the empty op list through). No
-    // cullMargin: non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
-    const endpoints = segments.flatMap(([p, q]) => [p, q]);
-    return applyEffects(cmds, s, world, paddedPointsBBox(endpoints.length ? endpoints : [{ x: 0, y: 0 }], width));
+    // Effect region = its ink rect, the SAME rect `localBounds` reports, so the
+    // substrate and the cull/band bounds can never disagree about where this
+    // widget is (with no tangents there are no ops either, so applyEffects has an
+    // empty list to pass through).
+    return applyEffects(cmds, s, world, tangentLinesInkRect(s));
   },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the tangent endpoints'
+  // min/max IS this widget's width and height, so it band-selects and culls like
+  // any box widget despite having no w/h state and no resize handles.
+  localBounds: tangentLinesInkRect,
+  // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
+  // defaultCanSkip's cullMargin hook. MANDATORY now that this widget HAS an AABB
+  // to be culled by: without it a shadowed tangent just off-view loses its halo.
+  cullMargin: effectsCullMargin,
   hitTestWorld(node, wx, wy) {
     const [a, b] = shapeDescriptors(node.state);
     const grab = (node.state.strokeWidth ?? DEFAULT_STROKE_WIDTH) / 2 + DEFAULT_STROKE_WIDTH;
@@ -365,14 +426,17 @@ export const tangentLinesPlugin = {
 // ── Telescopic-magnifier rig (pure builder) ───────────────────────────────────
 
 /**
- * Telescopic-magnifier rig constants (world units). The ONE place the rig
- * geometry is defined, so it cannot drift across the builder's three items.
- * The rig is a function of a shared tween VARIABLE `t` (a document var,
- * default 0): at t=0 the lens coincides with the source at the origin at
- * magnification 1 (identity — "nothing happened"); at t=1 the lens has pulled
- * out by (PULL_X, PULL_Y) and grown to LENS_SIZE. The ZOOM is NOT a constant —
- * it EMERGES from the sizes (magX = lens.w/source.w, magY = lens.h/source.h),
- * so a non-proportional source/lens pair squishes correctly.
+ * Telescopic-magnifier rig constants (world units) — the DEFAULT geometry, for
+ * the drop-in-place entry point that has no gesture to read a box from.
+ * telescopicDefaultRects() turns them into the two rects the builders take, so
+ * they cannot drift across the builder's three items.
+ *
+ * The rig is a function of a shared tween VARIABLE `t` (a document var, default
+ * 0): at t=0 the lens coincides with the source at magnification 1 (identity —
+ * "nothing happened"); at t=1 the lens IS the second placed box (by default, the
+ * source pulled out by (PULL_X, PULL_Y) and grown to LENS_SIZE). The ZOOM is NOT
+ * a constant — it EMERGES from the sizes (magX = lens.w/source.w, magY =
+ * lens.h/source.h), so a non-proportional source/lens pair squishes correctly.
  */
 export const TELESCOPIC = {
   TWEEN_VAR: "t",   // shared tween parameter (document variable), default 0
@@ -382,7 +446,7 @@ export const TELESCOPIC = {
   PULL_Y: -250,     // lens-center y displacement from the origin at t=1 (up-right)
   ORIGIN_X: 430,    // default world origin (the region being magnified) — the drop point
   ORIGIN_Y: 500,    // chosen so the up-right pull-out stays inside a 1280×720 camera
-  RIM_COLOR: "#1a1a2e",
+  RIM_COLOR: "#000000",
   RIM_WIDTH: 4,     // lens rim + source-marker outline stroke width
   // Fully-transparent fill (#rrggbbaa, alpha 0): a real color value so the
   // load-boundary missing-default repair leaves it alone (a null fill would be
@@ -402,23 +466,67 @@ function lensShapeFor(shapeKind) {
 }
 
 /**
- * Pure function. The SOURCE-MARKER override dict — a small outline (no fill) at
- * the world origin (ORIGIN_X, ORIGIN_Y). type is a circle or a rect (spread
- * over that plugin's registry defaults by the command). It has no equations: it
- * is the fixed anchor the lens magnifies from and the tangents fan out of.
+ * Pure function. The rig's DEFAULT geometry as the two world rects the builders
+ * below take: the source at (ORIGIN_X, ORIGIN_Y) sized SOURCE_SIZE, and the lens
+ * where t=1 puts it — pulled by (PULL_X, PULL_Y) and grown to LENS_SIZE.
  *
- * @param {{shapeKind:string, originX:number, originY:number}} opts
+ * THE BUILDERS ARE PARAMETERIZED BY RECTS, NOT BY THE CONSTANTS, because the
+ * rig is now placeable by gesture ("drag the region to magnify, then drag where
+ * it appears" — web/telescopicRig.js). The constants remain THE drop-in-place
+ * default, expressed here as the rects that gesture would have produced, so both
+ * entry points go through ONE builder and cannot drift.
+ *
+ * @returns {{source: {x,y,w,h}, lens: {x,y,w,h}}} world rects
+ *
+ * @example telescopicDefaultRects().source // {x: 382, y: 452, w: 96, h: 96}
+ * @example telescopicDefaultRects().lens // {x: 700, y: 80, w: 340, h: 340}
+ */
+export function telescopicDefaultRects() {
+  const half = TELESCOPIC.SOURCE_SIZE / 2;
+  const lensHalf = TELESCOPIC.LENS_SIZE / 2;
+  return {
+    source: {
+      x: TELESCOPIC.ORIGIN_X - half, y: TELESCOPIC.ORIGIN_Y - half,
+      w: TELESCOPIC.SOURCE_SIZE, h: TELESCOPIC.SOURCE_SIZE,
+    },
+    lens: {
+      x: TELESCOPIC.ORIGIN_X + TELESCOPIC.PULL_X - lensHalf,
+      y: TELESCOPIC.ORIGIN_Y + TELESCOPIC.PULL_Y - lensHalf,
+      w: TELESCOPIC.LENS_SIZE, h: TELESCOPIC.LENS_SIZE,
+    },
+  };
+}
+
+/**
+ * Pure function. The centre of a rect — the ONE place the rig converts a placed
+ * box into the point its equations reference, so the pull vector and the marker
+ * position can never disagree about where a shape is.
+ *
+ * @param {{x:number, y:number, w:number, h:number}} r
+ * @returns {{x: number, y: number}}
+ *
+ * @example rectCenter({x: 10, y: 20, w: 100, h: 40}) // {x: 60, y: 40}
+ */
+export function rectCenter(r) {
+  return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+}
+
+/**
+ * Pure function. The SOURCE-MARKER override dict — an outline (no fill) filling
+ * the placed `source` rect. type is a circle or a rect (spread over that
+ * plugin's registry defaults by the command). It has no equations: it is the
+ * fixed anchor the lens magnifies from and the tangents fan out of.
+ *
+ * @param {{shapeKind:string, source:{x,y,w,h}}} opts
  * @returns {object} property overrides
  *
- * @example telescopicSourceOverrides({ shapeKind: "circle", originX: 430, originY: 470 }).type // "circle"
- * @example telescopicSourceOverrides({ shapeKind: "circle", originX: 430, originY: 470 }).w // 96
+ * @example telescopicSourceOverrides({ shapeKind: "circle", source: {x: 382, y: 422, w: 96, h: 96} }).type // "circle"
+ * @example telescopicSourceOverrides({ shapeKind: "box", source: {x: 0, y: 0, w: 200, h: 80} }) // {type: "rect", x: 0, y: 0, w: 200, h: 80, rotation: 0, scale: 1, fill: "#00000000", stroke: "#000000", strokeWidth: 4}
  */
-export function telescopicSourceOverrides({ shapeKind, originX, originY }) {
-  const half = TELESCOPIC.SOURCE_SIZE / 2;
+export function telescopicSourceOverrides({ shapeKind, source }) {
   return {
     type: shapeWidgetType(shapeKind),
-    x: originX - half, y: originY - half,
-    w: TELESCOPIC.SOURCE_SIZE, h: TELESCOPIC.SOURCE_SIZE,
+    x: source.x, y: source.y, w: source.w, h: source.h,
     rotation: 0, scale: 1,
     fill: TELESCOPIC.NO_FILL, stroke: TELESCOPIC.RIM_COLOR, strokeWidth: TELESCOPIC.RIM_WIDTH,
   };
@@ -428,30 +536,44 @@ export function telescopicSourceOverrides({ shapeKind, originX, originY }) {
  * Pure function. The LENS override dict — a demo_magnify wired by `=` equations
  * to the source marker and the shared tween var. The lens SAMPLES from the
  * source center (`origin`) at every t, but its DISPLAY center travels from the
- * source out to (source + PULL)·t and its size grows SOURCE_SIZE → LENS_SIZE.
+ * source centre to the LENS rect's centre and its size grows from the source
+ * box to the lens box, both linearly in t.
  * The ZOOM is DERIVED, per-axis, from the box sizes: magnificationX = self.w /
  * source.w, magnificationY = self.h / source.h — so it is redundant-free (never
  * a separate constant) and squishes correctly when the aspect ratios differ. At
  * t=0 the sizes are equal → mag 1 (identity). `sourceId` is the raw source id.
  *
- * @param {{sourceId:string, shapeKind:string}} opts
+ * BOTH AXES GET THEIR OWN SIZE EQUATION (`h` is no longer `= self.w`): the two
+ * rects a gesture places have independent aspect ratios, and a lens locked square
+ * could not land on the box the user dragged. For the square default rects the
+ * two equations evaluate identically at every t, so the drop-in-place rig is
+ * unchanged; only an anisotropic pair can tell the difference, and for that pair
+ * the per-axis form is the correct one (the per-axis magnification below already
+ * assumed it).
+ *
+ * @param {{sourceId:string, shapeKind:string, source:{x,y,w,h}, lens:{x,y,w,h}}} opts
  * @returns {object} property overrides (equation strings)
  *
- * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle" }).magnificationX // "= self.w / @ab12cd34.w"
- * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle" }).origin.x // "@ab12cd34_cm.x" (bare ref — see below)
+ * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle", source: {x: 0, y: 0, w: 96, h: 96}, lens: {x: 400, y: -300, w: 340, h: 340} }).magnificationX // "= self.w / @ab12cd34.w"
+ * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle", source: {x: 0, y: 0, w: 96, h: 96}, lens: {x: 400, y: -300, w: 340, h: 340} }).w // "= 96 + (244) * t"
+ * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle", source: {x: 0, y: 0, w: 96, h: 96}, lens: {x: 400, y: -300, w: 340, h: 340} }).x // "= @ab12cd34_cm.x + (522) * t - self.w / 2" (pull = lens centre − source centre)
+ * @example telescopicLensOverrides({ sourceId: "ab12cd34", shapeKind: "circle", source: {x: 0, y: 0, w: 96, h: 96}, lens: {x: 400, y: -300, w: 340, h: 340} }).origin.x // "@ab12cd34_cm.x" (bare ref — see below)
  */
-export function telescopicLensOverrides({ sourceId, shapeKind }) {
+export function telescopicLensOverrides({ sourceId, shapeKind, source, lens }) {
   const t = TELESCOPIC.TWEEN_VAR;
-  const grow = TELESCOPIC.LENS_SIZE - TELESCOPIC.SOURCE_SIZE;
+  const from = rectCenter(source), to = rectCenter(lens);
   return {
     type: "demo_magnify",
     shape: lensShapeFor(shapeKind),
     rotation: 0, scale: 1,
     stroke: TELESCOPIC.RIM_COLOR, strokeWidth: TELESCOPIC.RIM_WIDTH,
-    w: `= ${TELESCOPIC.SOURCE_SIZE} + ${grow} * ${t}`,
-    h: "= self.w",
-    x: `= @${sourceId}_cm.x + ${TELESCOPIC.PULL_X} * ${t} - self.w / 2`,
-    y: `= @${sourceId}_cm.y + (${TELESCOPIC.PULL_Y}) * ${t} - self.h / 2`,
+    // Parenthesized deltas: a lens SMALLER than its source, or pulled left/up,
+    // contributes a negative literal, and `+ -244 * t` is not an expression the
+    // evaluator should have to forgive.
+    w: `= ${source.w} + (${lens.w - source.w}) * ${t}`,
+    h: `= ${source.h} + (${lens.h - source.h}) * ${t}`,
+    x: `= @${sourceId}_cm.x + (${to.x - from.x}) * ${t} - self.w / 2`,
+    y: `= @${sourceId}_cm.y + (${to.y - from.y}) * ${t} - self.h / 2`,
     // origin is a demo_magnify COMPUTED-DEFAULT slot (its default is the bare
     // self-anchor "self.anchors.center.x"), so it takes a BARE reference — NOT a
     // leading `=` (a `=` slot would infer its result kind as the default's

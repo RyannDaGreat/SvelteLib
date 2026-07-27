@@ -6,14 +6,16 @@
  *   OUTER — touching/intersecting the box is enough.
  *
  * The object's bounds for the test is its world AABB from
- * core/view.js::rotatedBBoxAABB (conservative for rotated items — never
- * smaller than the true bounds, so a rotated item is treated by the box it
- * would occupy axis-aligned). This is the ONE geometry both culling and band
- * selection agree on; the predicates below reuse the same rect algebra
- * (rectContains mirrors rectsIntersect's edge-inclusive <= convention).
+ * core/view.js::rotatedBBoxAABB — the widget's own declared LOCAL bounds
+ * (localBoundsOf: its box, or a two-point widget's endpoint hull) mapped through
+ * its world transform, conservative for rotated items (never smaller than the
+ * true bounds, so a rotated item is treated by the box it would occupy
+ * axis-aligned). This is the ONE geometry culling, band selection and the
+ * copy/export capture rect all agree on; the predicates below reuse the same rect
+ * algebra (rectContains mirrors rectsIntersect's edge-inclusive <= convention).
  */
 
-import { rotatedBBoxAABB, rectsIntersect } from "./view.js";
+import { localBoundsOf, rotatedBBoxAABB, rectsIntersect } from "./view.js";
 
 /**
  * Pure function. Is rect `inner` fully contained by rect `outer`? Both are
@@ -32,22 +34,30 @@ export function rectContains(outer, inner) {
 }
 
 /**
- * Pure function. Is a render node band-selectable at all? A node qualifies
- * only when it has a boundable world AABB (bbox capability) AND is not the
- * camera. WHY exclude the camera: it is border-hit-only by design (clicks
+ * Pure function. Is a render node band-selectable at all? A node qualifies when
+ * it is BOUNDABLE (core/view.js localBoundsOf reports a local rect) AND is not
+ * the camera. WHY exclude the camera: it is border-hit-only by design (clicks
  * inside pass through to content — plugins/camera.js hitTest), it is
  * non-purgeable and always present, and it frames the scene rather than being
- * scene content — band-selecting it on every drag would be noise. Non-bbox
- * widgets (arrow, blur) have no world AABB to test against, so they are not
- * band-selectable (justified: rotatedBBoxAABB returns null for them — there is
- * nothing conservative to enclose; they remain selectable via click / picker).
+ * scene content — band-selecting it on every drag would be noise.
  *
- * @example bandSelectable({type: "rect", plugin: {capabilities: {bbox: true}}}) // true
- * @example bandSelectable({type: "camera", plugin: {capabilities: {bbox: true, purgeable: false}}}) // false
- * @example bandSelectable({type: "blur", plugin: {capabilities: {bbox: false}}}) // false
+ * The gate used to be `capabilities.bbox === true`, which excluded every
+ * TWO-POINT widget (line, arrow, elbow / curved / fancy arrow, tangent lines,
+ * yarn) on the grounds that "there is nothing conservative to enclose". That
+ * justification was true only of a full-canvas backdrop sampler and FALSE of a
+ * line: a line's height and width are just the min/max of its endpoints, which
+ * every one of those plugins already computes for its own effect substrate. They
+ * now declare `localBounds` and band-select like anything else, in both modes.
+ * blur remains excluded — honestly this time, because localBoundsOf reports null
+ * for it (no geometry at all); it stays reachable via click / the item picker.
+ *
+ * @example bandSelectable({type: "rect", state: {w: 50, h: 50}, plugin: {capabilities: {bbox: true}}}) // true
+ * @example bandSelectable({type: "camera", state: {w: 1280, h: 720}, plugin: {capabilities: {bbox: true, purgeable: false}}}) // false
+ * @example bandSelectable({type: "line", state: {from: {x: 0, y: 0}, to: {x: 10, y: 10}}, plugin: {capabilities: {bbox: false}, localBounds: () => ({x: 0, y: 0, w: 10, h: 10})}}) // true
+ * @example bandSelectable({type: "blur", state: {}, plugin: {capabilities: {bbox: false}}}) // false (unboundable)
  */
 export function bandSelectable(node) {
-  return node.plugin.capabilities.bbox === true && node.type !== "camera";
+  return localBoundsOf(node) !== null && node.type !== "camera";
 }
 
 /**

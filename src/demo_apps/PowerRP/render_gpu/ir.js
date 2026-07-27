@@ -50,7 +50,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, SCRUB_WRAP_MODES } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, SCRUB_WRAP_MODES, BLEND_MODES } from "../core/properties.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
 
@@ -98,11 +98,17 @@ const PARSE_COLOR_CACHE = new Map();
 
 /** Pure function. The actual string parsing behind parseColor's memo. */
 function parseColorUncached(color) {
-  const hex = color.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
+  const hex = color.match(/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
   if (hex) {
     const h = hex[1];
-    if (h.length === 3) return [...h].map((c) => parseInt(c + c, 16) / 255).concat([1]);
-    const bytes = h.match(/../g).map((b) => parseInt(b, 16) / 255);
+    // Shorthand #rgb / #rgba: every digit doubles ("#f08c" → "#ff0088cc").
+    // The 4-digit form MUST be accepted here because core/interpolators.js
+    // isHexColor has always accepted it, so a document can legitimately store
+    // one. Rejecting it threw inside CanvasView's render $effect, which tears
+    // down the Svelte reactive root and freezes the editor permanently.
+    const bytes = h.length <= 4
+      ? [...h].map((c) => parseInt(c + c, 16) / 255)
+      : h.match(/../g).map((b) => parseInt(b, 16) / 255);
     return bytes.length === 3 ? [...bytes, 1] : bytes;
   }
   const fn = color.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/);
@@ -1153,11 +1159,13 @@ export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke 
 }
 
 /** The widget-composite blend modes (manifest Round 12D "BLEND MODES"): how a
- * widget's own draw composites against the backdrop. All four are expressible
- * as FIXED-FUNCTION premultiplied blend states on the GPU (no backdrop texture
- * read needed — see gpu/compositor.js effect pipelines) and as PDF /BM blend
- * modes or the raster-below split in the vector backends. */
-export const BLEND_MODES = ["normal", "multiply", "add", "screen"];
+ * widget's own draw composites against the backdrop. RE-EXPORTED from
+ * core/properties.js, the option-list home — the same single-sourcing this module
+ * already uses for SCRUB_WRAP_MODES, replacing a hand-kept duplicate literal that
+ * a test had to police. `effectSubtree` validates `blend` against it; the raster
+ * mapping is render_gpu/skia/blend_modes.js and the export classification is
+ * pdf_backend.js (blendNeedsBelowRaster / gsBlend), both keyed off this list. */
+export { BLEND_MODES } from "../core/properties.js";
 
 /**
  * How many standard deviations of a Gaussian blur reach beyond its center — the
@@ -1206,8 +1214,8 @@ export const MAX_LENS_DEPTH = 1;
  *   BLOOM (bloom: {radius, strength}) — the texture's own Gaussian-blurred
  *     copy (sigma `radius`, world units) scaled by `strength`, ADD-composited
  *     ON TOP of the widget.
- *   BLEND (blend: "normal"|"multiply"|"add"|"screen") — the composite op of
- *     the widget's own draw against the backdrop (BLEND_MODES).
+ *   BLEND (blend: any BLEND_MODES id — Photoshop's set) — the composite op of
+ *     the widget's own draw against the backdrop.
  *
  * (x, y, w, h) is the widget's LOCAL bbox (the render footprint); `margin` is
  * computed here at build time — the local-unit halo the effects add around

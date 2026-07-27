@@ -32,14 +32,18 @@ const server = await createServer({
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
-const browser = await puppeteer.launch({ headless: "new" });
+const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
 const errors = [];
 const checks = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
 
 // Known INTERLEAVED-FLEET boot noise (documented in concerns.md, shared with
 // colorfield_probe.js) — NOT from the equation-discoverability path.
-const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i];
+// The last pattern is this container's headless graphics reality (the
+// tests/escape_propagation_probe.js allowlist precedent): the fixture's video widgets
+// probe for an adapter the software renderer does not expose and fall back. Named
+// specifically — the gate still fails on anything else.
+const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i, /no.*adapter|adapters/i];
 const isBootNoise = (s) => IGNORE_BOOT.some((re) => re.test(s));
 
 // EXPECTED mid-typing evaluation noise (NOT a bug): the autocomplete check

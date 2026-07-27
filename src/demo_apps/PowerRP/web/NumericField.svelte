@@ -63,9 +63,10 @@
     classifyEquation, equationTokenSpans, resolveRef, slugMap,
   } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
+  import { decimalPlaces, resolveScrub } from "../../../lib/numberStep.js";
   import { displayUnit } from "./displayUnits.js";
 
-  let { app, path, label, min = null, max = null, display = null, scrub = null, defaultValue = null, step = null } = $props();
+  let { app, path, label, min = null, max = null, display = null, scrub = null, step = null } = $props();
 
   // The equation's OWNING item id, enabling `self.` completion — mirrors
   // evaluateState's own selfId derivation (core/expressions.js: "self resolves
@@ -73,18 +74,72 @@
   // slot.path[0] === "items"). null for a Variables Panel row (path = ["vars", name]).
   let selfId = $derived(path[0] === "items" ? path[1] : null);
 
+  // ── The property's DEFAULT value: the precision evidence ────────────────────
+  // Read from THE PLUGIN, never from the row. A row cannot carry a default at
+  // all: core/properties.js `row()` destructures it away (`const {default:
+  // _drop, ...rowAspects}`, doctested as `row("cornerRadius").default //
+  // undefined`) and `customProps()` moves it into the plugin's defaults object.
+  // That strip is deliberate and older than this field — it landed with the
+  // shared property registry itself, whose whole claim was that composed rows are
+  // byte-identical to the hand-written rows they replaced, and whose reason for
+  // existing was that a default living in two places drifts (the same commit
+  // records having already lost rect's opacity default into a comment). So a
+  // plugin's own `defaults` IS the source of truth, and this reads it there,
+  // mirroring Inspector.svelte's existing `getPath(sel.plugin.defaults,
+  // row.key.split("."))` precedent (item → plugin via
+  // `registry.get(storedItemValue(id, ["type"]))`, app.svelte.js's own).
+  //
+  // There WAS a `defaultValue` prop here, taking precedence over this, wired from
+  // Inspector.svelte as `defaultValue={row.default ?? null}` — null at every one
+  // of the 1507 numeric rows, by the strip above, i.e. a branch that read as a
+  // live per-row override and could never be taken. It is gone rather than
+  // repaired: reinstating it would mean un-stripping `default` in `row()` and
+  // mirroring every plugin default onto its row.
+  //
+  // A non-number default (an `=` equation string) is no precision evidence, so it
+  // reads as absent.
+  let propDefault = $derived.by(() => {
+    if (path[0] !== "items") return null; // a Variables Panel row owns no plugin
+    const plugin = app.registry.get(app.storedItemValue(path[1], ["type"]));
+    const declared = plugin ? getPath(plugin.defaults, path.slice(2)) : undefined;
+    return typeof declared === "number" ? declared : null;
+  });
+
   // Scrub sensitivity (manifest "Number-slider sensitivity"): an explicit
   // per-row `scrub` coefficient wins (transition seconds = 0.1/px); otherwise
   // a BOUNDED row spans its full range across RANGE_DRAG_PX of drag — the fix
   // for opacity flicking 0↔1 (1px used to be a full unit). RANGE_DRAG_PX=100
   // is LINKED to the DraggableNumber demo's canonical 0..1 slider, which uses
-  // coefficient 0.01 (= 100px full range). Unbounded rows keep 1/px.
+  // coefficient 0.01 (= 100px full range).
+  //
+  // THIRD SOURCE (the fix for "palette offset is useless — I can't just do 0.1,
+  // 0.2, 0.3, 0.4"): an UNBOUNDED row whose default is FRACTIONAL now scrubs its
+  // own magnitude across the same RANGE_DRAG_PX run instead of falling back to a
+  // whole unit per pixel. 55 rows were unusable that way — a 1px twitch on
+  // `interiorThreshold` (default 1e-3) moved it by 1.0, i.e. by 1000× its own
+  // value. Rows with no fractional evidence (x/y/w/h, counts, a 0 default) are
+  // deliberately untouched at 1/px; the precedence and WHY live in
+  // ../../../lib/numberStep.js. The step comes from the SAME call so the grid can
+  // never be coarser than one pixel of drag (that pairing is the whole point of
+  // resolveScrub — see its header's step ≤ coefficient invariant).
   const RANGE_DRAG_PX = 100;
-  let dragCoefficient = $derived(
-    scrub != null ? scrub
-    : min != null && max != null ? (unit.toDisplay(max) - unit.toDisplay(min)) / RANGE_DRAG_PX
-    : 1,
+  let scrubbing = $derived(
+    resolveScrub({
+      step,
+      scrub,
+      // Bounds AND the default are converted to DISPLAY units (rotation edits in
+      // degrees though core stores radians), because the control they calibrate
+      // works in display units. resolveScrub reads `min`/`max` as a span, so a
+      // null bound must stay null rather than becoming toDisplay(null).
+      min: min == null ? null : unit.toDisplay(min),
+      max: max == null ? null : unit.toDisplay(max),
+      defaultValue: propDefault == null ? null : unit.toDisplay(propDefault),
+      dragPx: RANGE_DRAG_PX,
+    }),
   );
+  // A null coefficient means "nothing knowable" — keep DraggableNumber's own
+  // 1 unit/px, which is what an unbounded positional row has always used.
+  let dragCoefficient = $derived(scrubbing.coefficient ?? 1);
 
   // Display-unit transform (rotation edits in degrees though core stores
   // radians; identity for every other field). DISPLAY ONLY — never migrates
@@ -187,8 +242,22 @@
     if (highlighted >= candidates.length) highlighted = Math.max(0, candidates.length - 1);
   });
 
-  function round3(v) {
-    return typeof v === "number" ? Math.round(v * 1000) / 1000 : 0;
+  // Display rounding. Three decimals is the long-standing default for the shown
+  // value, the text-entry pre-fill and the evaluated badge — but a row whose
+  // resolved grid is FINER than that (a 1e-5 threshold) would have its value
+  // quantized by the DISPLAY, and the scrubber would then fight its own rounding
+  // (measured: interiorThreshold drifted 40% off its coefficient). So the shown
+  // precision is the finer of the two: never coarser than the step it moves in.
+  const SHOWN_DECIMALS = 3;
+  let shownDecimals = $derived(
+    Math.max(SHOWN_DECIMALS, scrubbing.step == null ? 0 : decimalPlaces(scrubbing.step)),
+  );
+
+  /** Pure-ish (reads the row's resolved grid). Rounds v for display; 0 for a
+   * non-number, which is what an unevaluated slot shows. */
+  function roundShown(v) {
+    const scale = 10 ** shownDecimals;
+    return typeof v === "number" ? Math.round(v * scale) / scale : 0;
   }
 
   // ── Number mode (DraggableNumber emits DISPLAY-unit numbers) ───────────────
@@ -277,10 +346,7 @@
       storedForm = toStored(draft);
     } catch (e) {
       console.error(`PowerRP: equation not committed: ${e.message}`);
-      app.cancelPreview();
-      invalid = false;
-      textEntry = false;
-      draft = isEquation ? storedToDisplay(stored, app.rawState()) : "";
+      revertDraft();
       return;
     }
     const { ast, refs } = compiled(storedForm);
@@ -292,7 +358,33 @@
     app.setPreview([[path, value]]);
     app.commitPreview();
     invalid = false;
+    endTextEntry();
+  }
+
+  /** Command. Closes the text editor and re-syncs the draft to what the document
+   * now holds — so the blur that FOLLOWS an Enter sees no change and does not
+   * commit a SECOND time (the one-undo-unit contract: keyframed() always returns a
+   * fresh doc, so a second commit is a real duplicate undo entry and one undo then
+   * only half-reverts). The AngleField.svelte endTextEntry precedent, verbatim. */
+  function endTextEntry() {
     textEntry = false;
+    focused = false;
+    draft = currentText();
+  }
+
+  /** Query. The document's own text for the current value — what an UNTOUCHED
+   * draft equals, so a focus/blur with no edit commits nothing (no undo entry).
+   * The NUMBER branch matches beginTextEntry's pre-fill exactly (display units,
+   * rounded), which is what "untouched" means for a number row. */
+  function currentText() {
+    return isEquation ? storedToDisplay(stored, app.rawState()) : String(roundShown(unit.toDisplay(evaluated)));
+  }
+
+  /** Command. Reverts to the document's value, discarding the live preview. */
+  function revertDraft() {
+    app.cancelPreview();
+    invalid = false;
+    endTextEntry();
   }
 
   /** Keyboard for the ONE text-entry path, autocomplete-aware:
@@ -322,20 +414,19 @@
       suggestionsOpen = false;
       e.stopPropagation(); // dismiss-only: field/draft untouched, don't bubble into Deselect
     } else if (e.key === "Escape") {
-      app.cancelPreview();
-      invalid = false;
-      textEntry = false;
-      draft = isEquation ? storedToDisplay(stored, app.rawState()) : "";
+      revertDraft();
       e.target.blur();
       e.stopPropagation(); // don't let Escape bubble into Deselect
     }
   }
 
+  /** Settles the field on blur — but ONLY if something actually changed, so
+   * tabbing through a field (or the blur that FOLLOWS an Enter/Escape, which
+   * already re-synced the draft) never writes a no-op undo entry. */
   function onEqBlur() {
     focused = false;
     suggestionsOpen = false;
-    const current = isEquation ? storedToDisplay(stored, app.rawState()) : null;
-    if (invalid || textEntry || draft !== current) commitText();
+    if (invalid || textEntry || draft !== currentText()) commitText();
   }
 
   /** Opens keyboard text entry pre-filled with the current value — the seam
@@ -344,7 +435,7 @@
    * number scrubber showed. */
   async function beginTextEntry() {
     textEntry = true;
-    draft = String(round3(unit.toDisplay(evaluated)));
+    draft = String(roundShown(unit.toDisplay(evaluated)));
     await Promise.resolve(); // let the input render before focusing it
     eqInputEl?.focus();
     eqInputEl?.select();
@@ -402,7 +493,7 @@
       {:else}
         <!-- Live evaluation, shown in DISPLAY units + suffix (degrees for
              rotation) so it matches the scrubber the field toggles from. -->
-        <span class="eq-badge">= {invalid ? "?" : round3(unit.toDisplay(evaluated))}{unit.suffix}</span>
+        <span class="eq-badge">= {invalid ? "?" : roundShown(unit.toDisplay(evaluated))}{unit.suffix}</span>
       {/if}
       <EquationSuggest
         {candidates}
@@ -432,12 +523,11 @@
     </Tooltip>
     <DraggableNumber
       label={`${label} (reference to ${storedToDisplay(stored, app.rawState())})`}
-      value={round3(unit.toDisplay(evaluated))}
+      value={roundShown(unit.toDisplay(evaluated))}
       min={min == null ? null : unit.toDisplay(min)}
       max={max == null ? null : unit.toDisplay(max)}
       coefficient={dragCoefficient}
-      {defaultValue}
-      {step}
+      step={scrubbing.step}
       suffix={unit.suffix}
       oninput={previewRef}
       onchange={commitRef}
@@ -465,20 +555,19 @@
          works in DISPLAY units (degrees for rotation); previewNumber/
          commitNumber convert back to stored (radians). `suffix` shows the
          unit indicator ("°") inside the standardized box. -->
-    <!-- `defaultValue` feeds DraggableNumber's intelligent fallback step (no
-         explicit step here): the scrub/nudge increment matches the DEFAULT
-         value's decimal precision (default 0.25 → 0.01, 0.3 → 0.1, 5 → 1). It
-         is the prop's STORED-space default (a precision hint); display-unit
-         conversion is intentionally not applied — the sole display-unit prop,
-         rotation, defaults to 0, which yields no step regardless. -->
+    <!-- `step` is RESOLVED here rather than left to DraggableNumber's own
+         defaultValue fallback: the grid and the per-pixel coefficient are one
+         decision (resolveScrub), so a row can never end up with a grid coarser
+         than one pixel of its own drag. DraggableNumber keeps that fallback for
+         standalone lib consumers; this field, which knows the row's scrub and
+         bounds too, supplies the answer outright. -->
     <DraggableNumber
       {label}
-      value={round3(unit.toDisplay(evaluated))}
+      value={roundShown(unit.toDisplay(evaluated))}
       min={min == null ? null : unit.toDisplay(min)}
       max={max == null ? null : unit.toDisplay(max)}
       coefficient={dragCoefficient}
-      {defaultValue}
-      {step}
+      step={scrubbing.step}
       suffix={unit.suffix}
       oninput={previewNumber}
       onchange={commitNumber}

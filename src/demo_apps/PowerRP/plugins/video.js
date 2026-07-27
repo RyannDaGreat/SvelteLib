@@ -79,6 +79,12 @@ export const videoPlugin = {
   type: "video",
   title: "Video",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the asset
+  // picker — choosing the Source is a media widget's primary edit action, the
+  // counterpart of double-click-to-edit-text. `primaryAsset` names WHICH property
+  // that picker fills; this string is what says the double-click opens it at all.
+  activate: "asset_picker",
+  primaryAsset: "src",
   defaults: {
     type: "video", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation
@@ -98,7 +104,7 @@ export const videoPlugin = {
     // stroke COLOR default matches every other stroked shape; paints only once
     // strokeWidth > 0 (0 by default → an undecorated video is byte-identical to
     // its pre-bundle rendering).
-    stroke: "#1a1a2e",
+    stroke: "#000000",
     ...defaults("strokeWidth", "cornerRadius"),
     ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)

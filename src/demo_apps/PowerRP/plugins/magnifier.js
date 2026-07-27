@@ -43,7 +43,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import * as T from "../core/transform.js";
-import { bundle, defaults } from "../core/properties.js";
+import { bundle, defaults, props } from "../core/properties.js";
 import { magnifyBackdrop } from "../render_gpu/ir.js";
 
 /**
@@ -109,8 +109,8 @@ export const magnifierPlugin = {
     magnification: 2.5, supersample: true,
     // Border = the shared stroked-box bundle (migrated from rimColor/rimWidth
     // via legacyKeys below). cornerRadius applies to the box shape only.
-    stroke: "#1a1a2e",
-    ...defaults("strokeWidth", "cornerRadius"), // strokeWidth 0, cornerRadius 0
+    stroke: "#000000",
+    ...defaults("strokeWidth", "cornerRadius", "opacity"), // strokeWidth 0, cornerRadius 0, opacity 1
     strokeWidth: 4, // the old rimWidth default (border shows by default)
   },
   // rimColor/rimWidth → stroke/strokeWidth: the circular rim IS the box border,
@@ -140,7 +140,7 @@ export const magnifierPlugin = {
     // ── SHAPE (this task's fence) ──────────────────────────────────────────
     { key: "shape", label: "Shape", kind: "select", options: ["circle", "box"], optionLabels: { circle: "Circle", box: "Box" }, category: "lens" },
     { key: "magnification", label: "Magnification", kind: "number", min: 0.01, category: "lens" },
-    { key: "supersample", label: "Supersample", kind: "checkbox", category: "lens" },
+    { key: "supersample", label: "Supersample", kind: "boolean", category: "lens" },
     // The stroked-BORDER bundle (stroke/strokeWidth/cornerRadius) in the lens
     // category — the rim/border ring. cornerRadius only affects the box shape.
     ...bundle("strokedBorder", {
@@ -148,6 +148,10 @@ export const magnifierPlugin = {
       strokeWidth: { label: "Rim width", category: "lens" },
       cornerRadius: { label: "Corner radius", category: "lens" },
     }),
+    // OPACITY: emit() has always sent `s.opacity ?? 1` to the op, but the widget
+    // had neither the default nor the row — the knob was unreachable AND absent
+    // from item state. (Found by the universal-effects sweep.)
+    ...props("opacity"),
   ],
   /**
    * Pure function. One shaped-lens op — the backend samples or re-renders its

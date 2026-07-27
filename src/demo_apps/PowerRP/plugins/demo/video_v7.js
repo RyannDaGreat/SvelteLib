@@ -57,7 +57,7 @@ export const BLANK_SRC =
  * fraction of the box's smaller dimension. */
 const POSTER_FILL = "#0c0c14";
 const POSTER_GLYPH = "#5a5a6e";
-const POSTER_STROKE = "#1a1a2e";
+const POSTER_STROKE = "#000000";
 const PLAY_TRIANGLE_FRAC = 0.34;
 
 /**

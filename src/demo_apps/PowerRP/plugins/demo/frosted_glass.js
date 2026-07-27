@@ -11,9 +11,21 @@
  *
  * Like CRT and Liquid Glass it is a BACKDROP SAMPLER (capabilities.backdrop) and
  * a bbox widget (standard resize handles). It emits ONE `materialBackdrop` op
- * naming the "frosted" material (render_gpu/skia/materials.js -> frosted_shader.js);
- * it does NOT compose the effects bundle (a backdrop sampler cannot be wrapped in
- * an effectSubtree, whose offscreen re-render would sample an empty surface).
+ * naming the "frosted" material (render_gpu/skia/materials.js -> frosted_shader.js).
+ *
+ * It DOES carry the shared EFFECTS BUNDLE (drop shadow / bloom / blend / inner
+ * shadow / soft edges) — injected by core/registry.js, applied by
+ * render_gpu/ports.js, so there is no line for this file to forget. The claim that
+ * used to stand here ("it does NOT compose the effects bundle: a backdrop sampler
+ * cannot be wrapped in an effectSubtree, whose offscreen re-render would sample an
+ * empty surface") was FALSE, and it is why the user asked "Why does Frosted Glass
+ * not have a soft edges option like all the other things? Why is there no drop
+ * shadow option on the Frosted Glass?". The panel's shader writes premultiplied
+ * ZERO outside its own SDF, so its offscreen ALPHA *is* the panel silhouette —
+ * exactly what those effects need. The only real defect was that the effect
+ * scratch gave a nested sampler nothing to read (a dark smear, rgb(51,51,51)
+ * instead of rgb(148,51,158)); paint_skia.js's `below` context now hands it the
+ * outer composite.
  *
  * Every look knob is a CUSTOM self.* property (core/properties.js customProps —
  * the Blender-style mechanism): each is an equation-capable widget-state key (edit

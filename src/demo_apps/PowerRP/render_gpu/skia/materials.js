@@ -48,6 +48,8 @@ import { SKY_CLOUDS_MATERIAL } from "./sky_clouds_shader.js";
 import { LENS_FLARE_MATERIAL } from "./lens_flare_shader.js";
 import { COMIC_MATERIAL } from "./comic_shader.js"; // comic-book Ben-Day halftone (CMYK/RGB/duotone/mono dots)
 import { GLITCH_MATERIAL } from "./glitch_shader.js"; // animated sci-fi datamosh / broken-signal glitch
+import { MANDELBROT_MATERIAL } from "./mandelbrot_shader.js"; // deep-zoom Mandelbrot (perturbation + rebasing, orbit-average colouring)
+import { BRIGHTNESS_CONTRAST_MATERIAL } from "./brightness_contrast_shader.js"; // tone adjustment (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB)
 
 /**
  * The MAGNIFY material — magnification, expressed as a member of the material
@@ -77,7 +79,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
 // Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
 const MATERIALS = Object.fromEntries(
-  [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL].map((m) => [m.id, m]),
+  [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL].map((m) => [m.id, m]),
 );
 
 /**
@@ -116,6 +118,76 @@ export function materialIds() {
  */
 export function isBackdropMaterial(material) {
   return material.backdrop !== false && !material.sampler;
+}
+
+/**
+ * Query. A BACKDROP material's MAXIMUM OUTWARD backdrop-sample displacement in
+ * DEVICE px — how far OUTSIDE its own panel the shader reads — or null when the
+ * material does not declare one.
+ *
+ * WHY IT EXISTS. handleMaterialBackdrop feeds its shader from a re-render of the
+ * content beneath, and until a material could answer this question that re-render
+ * (and its Gaussian blur) covered the WHOLE surface, because clipping the backdrop
+ * to a region SMALLER than the shader reads makes the sampler clamp at the region
+ * edge and visibly wrecks the material. Measured on a 240×160 panel over a 960×540
+ * frame: two full-surface offscreens (1,036,800 px) for a panel whose own footprint
+ * is 38,400 px. `glassBackdrop` never paid that — it has always known its own reach
+ * (glass_shader.maxGlassDisplacement) and so bounds its region (glassRegion).
+ * This is that same knowledge, generalized to the registry.
+ *
+ * NULL MEANS "REACH NOT DECLARED", AND KEEPS TODAY'S BEHAVIOR. Absence is the safe
+ * answer, not an error: the caller renders the whole surface exactly as before, so
+ * a material whose reach nobody has derived yet is slow but never wrong, and a
+ * material that genuinely samples without bound (a hypothetical whole-canvas
+ * environment sampler) has an honest way to say so. This is deliberately the
+ * OPPOSITE polarity to `usesBlurredBackdrop`, where absence means "build it":
+ * there, absence must keep the expensive-but-correct texture; here, absence must
+ * keep the expensive-but-correct region. Both default to correctness.
+ *
+ * The declared hook is `maxSampleReach(u) → device px`, taking the SAME normalized
+ * `u` the material's `pack` receives (device geometry + `scale` + the material's
+ * own knobs), so a reach is derived from exactly the uniforms that drive the
+ * displacement. It must be an OVER-estimate, never an under-estimate; the Gaussian
+ * blur support and the coverage-AA slop are added by the caller, not here.
+ *
+ * ── DECLARING A REACH IS NOT PIXEL-EXACT, AND THE REASON IS NOT THE REACH ─────
+ * A region-bounded backdrop re-renders the content beneath into a SMALLER surface
+ * at an integer device offset, and Skia's rasterization is not invariant under that
+ * change: rendering the identical scene into 640×360 and into 200×200 at (+220,+85)
+ * differs by 419 of 160,000 bytes in the overlap, max delta 52, ALL of it on a
+ * circle's antialiased rim (measured directly, with no material and no shader in the
+ * picture — .frenzy/render_cost/probe_rerender_shift.js). Skia picks its
+ * antialiasing scan converter partly from the clip extent, so a curved edge's
+ * coverage can land a level or two differently. This is a property of the region
+ * optimization itself, which `glassBackdrop` has always used, not of this protocol.
+ *
+ * What that costs depends entirely on HOW A MATERIAL USES THE SAMPLE, so the choice
+ * to declare is per-material and empirical, not automatic:
+ *   · A material that shades the sample (crt, frosted) passes the wobble through at
+ *     roughly its own size: measured ≤ 2 levels on ≤ 0.003% of a 640×360 frame,
+ *     against 3.1-3.9x fewer offscreen pixels. Declared.
+ *   · A material that DIVIDES BY THE SAMPLED ALPHA amplifies it enormously. The
+ *     brightness_contrast tone curve un-premultiplies (rgb / a) before grading, and
+ *     a one-level alpha wobble on a near-black rim pixel becomes up to 82 levels of
+ *     colour: measured 148-238 differing bytes at max delta 82. Its true reach is
+ *     zero and declaring it would be honest, yet it deliberately does NOT — see the
+ *     note on BRIGHTNESS_CONTRAST_MATERIAL. Fixing the seam (a rasterization-stable
+ *     region re-render) is what unblocks that one, not a bigger reach.
+ *
+ * @param {{id: string, maxSampleReach?: Function}} material - a descriptor from getMaterial()
+ * @param {object} u - the normalized uniform input handleMaterialBackdrop builds
+ * @returns {number|null} device-px outward reach, or null when undeclared
+ *
+ * @example materialSampleReach({id: "x"}, {halfW: 100, halfH: 80}) // null (undeclared ⇒ whole surface)
+ * @example materialSampleReach({id: "frosted", maxSampleReach: () => 0}, {}) // 0 (samples straight down, no displacement)
+ * @example materialSampleReach({id: "y", maxSampleReach: (u) => u.halfW * 0.1}, {halfW: 100}) // 10
+ */
+export function materialSampleReach(material, u) {
+  if (typeof material.maxSampleReach !== "function") return null;
+  const reach = material.maxSampleReach(u);
+  if (!Number.isFinite(reach) || reach < 0)
+    throw new Error(`materials: maxSampleReach for "${material.id}" must return a finite non-negative device-px reach, got ${reach}`);
+  return reach;
 }
 
 /**

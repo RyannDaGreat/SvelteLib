@@ -35,7 +35,10 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 // ── defaults (no magic numbers) ───────────────────────────────────────────────
 const DEFAULT_W = 240;          // a wide, short horizontal bar by default
 const DEFAULT_H = 20;
-const DEFAULT_TRACK_COLOR = "#2a2a3e"; // muted dark groove
+// Black groove (the shared INK default): it is the UNFILLED part of the bar, so
+// it must stay visible against the white default camera background — white here
+// would make an empty bar disappear.
+const DEFAULT_TRACK_COLOR = "#000000";
 const DEFAULT_FILL_COLOR = "#7aa2f7";  // accent (matches rect's default fill)
 const ORIENTATIONS = ["horizontal", "vertical"];
 const ORIENTATION_LABELS = { horizontal: "Horizontal", vertical: "Vertical" };

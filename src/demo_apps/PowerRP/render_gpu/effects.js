@@ -30,19 +30,53 @@
  * RULE: raster shadow PNG under vector content; bloom / non-normal blends
  * raster the widget region), svg_backend.js (raster region).
  *
- * ── WHICH WIDGETS COMPOSE THIS (and which are EXCLUDED, loudly) ───────────────
- * COMPOSED by every DRAWN widget: rect, circle, text, image, video,
- * filmstrip, donut, arrow, elbow_arrow, curved_arrow, fancy_arrow (and any
- * future drawn widget — compose the bundle, never re-implement).
- * EXCLUDED, deliberately (manifest Round 12D "justify any exclusion loudly"):
- *   - magnifier + blur: BACKDROP SAMPLERS (capabilities.backdrop). They have
- *     no self-silhouette to shadow or bloom — their pixels ARE the scene
- *     below them — and re-rendering "the widget alone" to a texture is
- *     ill-defined for an op whose content is everything beneath it.
- *   - cropbox + group: GHOSTS (capabilities.ghost). No rendered volume of
- *     their own — a crop box is a clip region (its TARGET can carry effects;
- *     they ride into the crop content), a group renders nothing.
- *   - camera: the view/background definition, not a drawn widget.
+ * ── WHICH WIDGETS COMPOSE THIS — now EVERY eligible one, by construction ──────
+ * Eligibility used to be FOUR HAND-COPIED LINES per plugin
+ * (bundleNestedDefaults("effects"), bundle("effects"), applyEffects(...) inside
+ * emit, cullMargin: effectsCullMargin) and nothing enforced them: 28 of 74
+ * plugins had ZERO effect rows, only three of them justifiably. The user's
+ * verbatim complaint — "Why does Frosted Glass not have a soft edges option like
+ * all the other things? ... Soft edges should be an option for everything that
+ * we can give it to. As well as drop shadows, etc." — is that gap.
+ *
+ * The bundle is now UNIVERSAL and a plugin cannot forget it:
+ *   PROPERTY half — core/registry.register() injects `bundle("effects")` rows +
+ *     `bundleNestedDefaults("effects")` + `cullMargin: effectsCullMargin` into
+ *     every ELIGIBLE plugin that does not already carry them, and marks the
+ *     plugin `effectsInjected: true`.
+ *   RENDER half — render_gpu/ports.js (the ONE walker every rendered node passes
+ *     through) calls applyNodeEffects below for exactly those marked plugins.
+ *     The 34 plugins that already call applyEffects inside emit() keep doing so
+ *     and the walker leaves them alone, so there is never a double wrap.
+ *
+ * EXCLUDED, deliberately — the honest boundary (core/registry.effectsInjectable):
+ *   - camera (capabilities.purgeable === false): the view/background
+ *     definition, not a drawn widget.
+ *   - cropbox + anchor_point (capabilities.ghost, no foldsSubtree): no rendered
+ *     volume of their own — a crop box is a clip region (its TARGET carries
+ *     effects; they ride into the crop content), an anchor point is editor
+ *     chrome. A group is ALSO a ghost but folds a composited subtree, so it
+ *     does compose the bundle (it always did).
+ *   - blur + corkboardYarn (no bbox, no effectBounds hook): no local render
+ *     footprint to bound the effect substrate. A full-screen backdrop blur has
+ *     no geometry at all; a yarn curve has geometry but declares no bounds —
+ *     it becomes injectable the day it declares an `effectBounds` hook.
+ * A node kind that cannot honour an effect gets NO ROW — never a fake one.
+ * (The ARROW FAMILY fails the same bbox test but is NOT excluded: each arrow
+ * composes the bundle in its own emit() and passes paddedPointsBBox of its drawn
+ * geometry, so the registry is never asked to do it for them.)
+ *
+ * BACKDROP SAMPLERS ARE NOT EXCLUDED ANY MORE. The old claim ("they have no
+ * self-silhouette; re-rendering the widget alone would sample an empty
+ * surface") was FALSE, and this file's own backend disproved it: a glass /
+ * material / magnify op writes premultiplied ZERO outside its own SDF, so its
+ * offscreen render's ALPHA *is* the panel silhouette — exactly what soft edges,
+ * the drop shadow, the inner shadow and bloom need. The one real defect was
+ * that the effect scratch surface was cleared transparent, so a nested
+ * sampler's below-content read nothing (a dark smear: rgb(51,51,51) where
+ * rgb(148,51,158) was correct). paint_skia.js now hands the scratch a `below`
+ * context (the OUTER composite surface + the outer below-list + the region
+ * offset), so a sampler inside an effect samples the real scene.
  *
  * ── ORDER vs decorateStrokedBox ───────────────────────────────────────────────
  * Effects wrap OUTSIDE the stroked-box decoration:
@@ -55,6 +89,24 @@
  */
 
 import { effectSubtree, pushTransform, popTransform, BLUR_SUPPORT_SIGMAS } from "./ir.js";
+// THE BOUNDS PROTOCOL, read by effectBoundsOf below so a plugin declares its ink
+// rect ONCE. core/view.js imports effectsCullMargin from this module in return, so
+// the two form an import cycle — safe and intentional: both sides export only
+// hoisted function declarations and neither calls the other at module-eval time,
+// so whichever module is entered first the bindings are live by first call. (The
+// render_gpu → core/view.js direction already had precedent in pdf_display.js.)
+import { localBoundsOf } from "../core/view.js";
+
+/**
+ * The TOP-LEVEL item-state keys the render half below actually implements — one
+ * per effect in the bundle. core/registry.js checks the property half
+ * (core/properties.js BUNDLES.effects, expanded through bundleNestedDefaults)
+ * against THIS list at import time, so a SIXTH effect added to the property
+ * bundle without a render implementation fails at boot instead of shipping a
+ * dead Inspector row (the render_settings.js "declared option with no
+ * implementation throws at import" precedent).
+ */
+export const EFFECT_STATE_KEYS = ["shadow", "bloom", "blendMode", "innerShadow", "softEdges"];
 
 /**
  * Pure function. Is a widget's effects state visually a no-op? True iff the
@@ -200,9 +252,21 @@ export function effectsCullMargin(state) {
 }
 
 /**
- * Pure function. The PER-SIDE-inflated effect SOURCE rect (in device px) that
- * the GPU "effect" batch must re-render the widget into, so the blur has valid
- * source texels on every side and the shifted shadow's own body is captured.
+ * Pure function. The PER-SIDE-inflated effect SOURCE rect (in device px) that a
+ * backend must re-render the widget into, so the effect passes have valid source
+ * texels on every side and an OFFSET silhouette's own body is captured.
+ *
+ * ── WHO CALLS IT ──────────────────────────────────────────────────────────────
+ * The Skia backend's effectRegion (render_gpu/skia/paint_skia.js) — the rect it
+ * returns, clamped to the surface, IS the offscreen every effect pass allocates,
+ * instead of a full-device surface per pass. There the per-side split serves the
+ * INNER SHADOW: its field is filled with opaque shadow colour, has the OFFSET
+ * silhouette punched out, and is blurred with TileMode.Clamp, so the field's
+ * boundary must clear that offset silhouette on the side it moves toward or the
+ * clamp replicates the hole. (`reach` = the inner blur support + the AA slop;
+ * `offDx/offDy` = the inner shadow offset.) The drop shadow and the bloom pass
+ * nothing here — they are ImageFilters applied at BLIT time, and a filter's
+ * output is drawn past the source image's rect, so their halo needs no source.
  *
  * ── WHY per-side, not a symmetric scalar (manifest 16.1) ──────────────────────
  * The offscreen texture holds ONE re-render of the widget; the separable
@@ -273,4 +337,110 @@ export function paddedPointsBBox(points, pad) {
   const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
   const minX = Math.min(...xs) - pad, minY = Math.min(...ys) - pad;
   return { x: minX, y: minY, w: Math.max(...xs) + pad - minX, h: Math.max(...ys) + pad - minY };
+}
+
+/**
+ * Pure function. WHERE a render node's effect substrate lives: its LOCAL render
+ * bbox plus the world its content must be wrapped in. The declarative seam for
+ * the universal walker wrap, in the style of the existing `cullMargin` /
+ * `canSkip` / `proxyFill` hooks:
+ *
+ *   effectBounds(state, world) → {bbox: {x, y, w, h}, world}
+ *
+ * DEFAULT (no hook): THE BOUNDS PROTOCOL — core/view.js localBoundsOf(node),
+ * wrapped in the node's own world. That one function is already the app's single
+ * answer to "what rect does this widget's ink occupy in its own coordinates"
+ * (culling, rubber-band selection, the copy/export capture rect all read it), and
+ * a plugin declares it ONCE as `localBounds(state)`. A `capabilities.bbox` widget
+ * with no hook still resolves to {0, 0, w, h} — localBoundsOf's own fallback — so
+ * every box widget's substrate is unchanged to the bit.
+ *
+ * WHY THIS IS THE DEFAULT (the duplication it removes). These two questions have
+ * the same answer for every widget that can answer either: the effect substrate is
+ * the offscreen the widget re-renders into, so an under-sized one CLIPS the widget
+ * — it must cover exactly the ink. Before this, a widget whose ink escaped its box
+ * had to say so TWICE, in two hooks, in two protocols (corkboard yarn:
+ * `localBounds: yarnInkRect` AND `effectBounds: (s, world) => ({bbox:
+ * yarnInkRect(s), world})`; polygon did the same with polygonInkRect), and nothing
+ * caught a pair that drifted apart. Now one declaration feeds both.
+ *
+ * ORTHOGONAL TO `cullMargin` — do not collapse these. `localBounds` is the
+ * widget's OWN INK; `cullMargin` is the EFFECT HALO that spills BEYOND that ink
+ * (shadow offset + blur, bloom). The halo is deliberately NOT part of the
+ * substrate rect: the substrate holds the widget's silhouette, and the compositor
+ * grows its own source rect from there (effectSourceRect). A widget that inflated
+ * `cullMargin` to cover ink instead of declaring `localBounds` is using the halo
+ * hook to fake bounds — it over-reports on all four sides (a max, not per-side)
+ * and it means the two numbers can no longer be reasoned about separately.
+ *
+ * A `effectBounds` hook still wins, and two uses remain legitimate:
+ *   - a GROUP whose members are already ABSOLUTE-world IR must wrap them in
+ *     T.identity() (not the group world) or they double-transform; only when a
+ *     group-LOCAL crop op rides inside does it need the group world. The WORLD,
+ *     not the bbox, is what the hook is for there.
+ *   - a bbox-less widget uses the hook's PRESENCE as its effects-eligibility
+ *     signal (core/registry.effectsInjectable tests `!caps.bbox &&
+ *     !plugin.effectBounds`), so corkboard yarn must keep declaring it even
+ *     though the default would now compute the same rect. Teaching that predicate
+ *     the localBounds protocol too is a separate change.
+ *
+ * A node that answers neither has no footprint to bound, and
+ * core/registry.effectsInjectable refuses to inject effect rows into such a plugin
+ * — so this throw is unreachable through the registry and exists to keep a
+ * hand-built node loud rather than silently unshadowed.
+ *
+ * @param {object} node - a core/derive render node ({plugin, state, world})
+ * @returns {{bbox: {x: number, y: number, w: number, h: number}, world: object}}
+ *
+ * @example effectBoundsOf({plugin: {capabilities: {bbox: true}}, state: {w: 200, h: 150}, world: {x: 10, y: 20, rotation: 0, scale: 1}})
+ * // {bbox: {x: 0, y: 0, w: 200, h: 150}, world: {x: 10, y: 20, rotation: 0, scale: 1}}
+ * @example effectBoundsOf({plugin: {capabilities: {bbox: true}, effectBounds: () => ({bbox: {x: -5, y: -5, w: 10, h: 10}, world: {x: 0, y: 0, rotation: 0, scale: 1}})}, state: {}, world: {}}).bbox.w // 10 (the hook wins)
+ * @example // the localBounds protocol supplies the bbox — no effectBounds hook needed:
+ * @example effectBoundsOf({plugin: {capabilities: {bbox: false}, localBounds: () => ({x: -20, y: 0, w: 140, h: 100})}, state: {}, world: {x: 3, y: 4, rotation: 0, scale: 1}})
+ * // {bbox: {x: -20, y: 0, w: 140, h: 100}, world: {x: 3, y: 4, rotation: 0, scale: 1}}
+ */
+export function effectBoundsOf(node) {
+  if (node.plugin.effectBounds) return node.plugin.effectBounds(node.state, node.world);
+  const bbox = localBoundsOf(node);
+  if (!bbox)
+    throw new Error(`effectBoundsOf: plugin "${node.plugin.type}" answers neither localBounds(state) nor capabilities.bbox, and has no effectBounds(state, world) hook, so its effect substrate has no local footprint`);
+  return { bbox, world: node.world };
+}
+
+/**
+ * Pure function. THE UNIVERSAL WALKER WRAP: one render node's emitted ops,
+ * wrapped in the shared effects composition when the plugin does NOT compose the
+ * bundle itself. Called from render_gpu/ports.js emitNode — the ONE place every
+ * rendered node passes through — so eligibility is structural instead of four
+ * hand-copied lines a plugin author can forget.
+ *
+ * Exactly one wrap, always:
+ *   plugin.effectsInjected (set by core/registry.register when it injected the
+ *     property half) ⇒ the walker owns the render half → wrap here.
+ *   otherwise ⇒ the plugin already calls applyEffects inside emit() (the 34
+ *     pre-universal call sites, which also own their own bbox/world choices) →
+ *     return `cmds` untouched. Never both.
+ *
+ * The order the hand-written sites established — applyEffects OUTSIDE
+ * decorateStrokedBox, so a bordered photo's shadow is the framed photo's shadow
+ * — is preserved automatically: `cmds` is whatever emit() finally returned,
+ * decoration included.
+ *
+ * BYTE-IDENTITY: effectsOff(state) short-circuits before any bounds are
+ * computed, so an effect-free document produces the exact same IR it did before
+ * the walker wrap existed — the established soft-edges precedent.
+ *
+ * @param {object} node - a core/derive render node ({plugin, state, world})
+ * @param {object[]} cmds - the node's emitted LOCAL-space ops
+ * @returns {object[]} `cmds`, or [effectSubtree(...)] wrapping it
+ *
+ * @example applyNodeEffects({plugin: {capabilities: {bbox: true}}, state: {softEdges: 8}, world: {}}, [{op: "rect"}]) // [{op: "rect"}] (plugin composes the bundle itself — not injected)
+ * @example applyNodeEffects({plugin: {capabilities: {bbox: true}, effectsInjected: true}, state: {w: 10, h: 10}, world: {x: 0, y: 0, rotation: 0, scale: 1}}, [{op: "rect"}]) // [{op: "rect"}] (all effects off → byte-identical pass-through)
+ * @example applyNodeEffects({plugin: {capabilities: {bbox: true}, effectsInjected: true}, state: {w: 10, h: 10, softEdges: 8}, world: {x: 0, y: 0, rotation: 0, scale: 1}}, [{op: "rect"}])[0].softEdges // 8
+ */
+export function applyNodeEffects(node, cmds) {
+  if (!node.plugin.effectsInjected) return cmds;
+  if (effectsOff(node.state)) return cmds;
+  const { bbox, world } = effectBoundsOf(node);
+  return applyEffects(cmds, node.state, world, bbox);
 }

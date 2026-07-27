@@ -80,14 +80,21 @@ export class SkiaSurface {
     const maxTex = gl2 ? gl2.getParameter(gl2.MAX_TEXTURE_SIZE) : 0;
     this.maxDim = Math.max(MAX_SURFACE_DIM, Number.isFinite(maxTex) ? maxTex : 0);
     // GPU-backed offscreen factory for paintIR's backdrop/lens/effect surfaces —
-    // keeps the magnifier/blur/effects on the GPU (MakeRenderTarget) instead of a
-    // CPU software surface (the old per-frame killer). Falls back to CPU if null.
+    // keeps the magnifier/blur/effects/materials on the GPU (MakeRenderTarget)
+    // instead of a software surface (the old per-frame killer).
     // CLAMPED: every requested size is bounded to this.maxDim before allocation
     // (never let MakeRenderTarget/MakeSurface see an oversized/invalid dim).
+    // A null render target used to fall back to a software surface SILENTLY, so a
+    // scene whose materials suddenly rastered per-pixel on the CPU looked like an
+    // unexplained freeze. The fallback still happens — a frame drawn slowly beats
+    // a frame not drawn — but it is REPORTED, so the cause is never a mystery.
     this._makeSurface = (w, h) => {
       const c = clampSurfaceSize(w, h, this.maxDim);
       if (!c.safe) reportOnce(`skia-offscreen-clamp:${w}x${h}`, `SkiaSurface: offscreen surface ${w}×${h} exceeds max ${this.maxDim} (or is invalid) — clamped to ${c.w}×${c.h} to avoid a CanvasKit heap overrun.`);
-      return this.CanvasKit.MakeRenderTarget(this.grContext, c.w, c.h) || this.CanvasKit.MakeSurface(c.w, c.h);
+      const target = this.CanvasKit.MakeRenderTarget(this.grContext, c.w, c.h);
+      if (target) return target;
+      reportOnce(`skia-offscreen-target-null:${c.w}x${c.h}`, `SkiaSurface: MakeRenderTarget(${c.w}×${c.h}) returned null — this frame's backdrop/material compositing falls back to a software surface, which rasters per-pixel shaders on the CPU and will stutter.`);
+      return this.CanvasKit.MakeSurface(c.w, c.h);
     };
     this.surface = null;
     this._w = 0;

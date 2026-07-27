@@ -66,6 +66,17 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(v ?? lo, hi));
 // edit to the shared registry). Category "formatting" places the shape knobs
 // with fill/stroke, before the effects accordion.
 const N = (key, label, extra = {}) => ({ key, label, kind: "number", category: "formatting", ...extra });
+// A HEADING row: the rotary dial (web/AngleField.svelte). NO `display` — this
+// family stores its angles in raw DEGREES (converted with DEG only at emit, see
+// `outline` below), so the dial shows exactly what is stored.
+//
+// BUG FIXED HERE (2026-07-27): these rows used to be N(..., {display: "degrees"}),
+// which asks the field to convert RADIANS→degrees. The values are already degrees,
+// so the Inspector multiplied them by 180/π and the default -90° start angle read
+// as "-5156.6°" — and typing a real angle back divided it by the same factor.
+// `display` is for a row whose STORAGE differs from what it shows (`rotation`,
+// which really is radians); it is not a unit label.
+const ANGLE = (key, label, extra = {}) => ({ key, label, kind: "angle", category: "formatting", ...extra });
 const SEL = (key, label, options, optionLabels, help) => ({ key, label, kind: "select", options, optionLabels, category: "formatting", help });
 const BOOL = (key, label, help) => ({ key, label, kind: "boolean", category: "formatting", help });
 
@@ -93,8 +104,12 @@ export const FAMILIES = [
     defaults: { inner: 0.5, startAngle: -90, sweep: 300, cap: "pie" },
     rows: [
       N("inner", "Inner ratio", { min: 0, max: 1, help: "The hole's size as a fraction of the outer radius: 0 is a solid pie/disc, higher hollows it into a ring or arc band. Drag the inner yellow handle." }),
-      N("startAngle", "Start angle", { display: "degrees", help: "Where the slice begins, in degrees clockwise from 3 o'clock. Drag the start handle on the rim to rotate the whole slice." }),
-      N("sweep", "Sweep", { display: "degrees", help: "How many degrees the slice covers: 360 is a full circle/ring, less carves a pie or gauge; beyond 360 wraps to a full ring and a negative sweep runs the slice the other way. Drag the end handle around the rim." }),
+      ANGLE("startAngle", "Start angle", { help: "Where the slice begins, in degrees clockwise from 3 o'clock. Drag the dial (or the start handle on the rim) to rotate the whole slice." }),
+      // NOT a dial: `sweep` is an EXTENT, not a heading. On a dial 0° and 360°
+      // point the same way, but a sweep of 0 draws nothing and a sweep of 360
+      // draws a whole ring — one needle position, two opposite meanings. A
+      // scrubber that reads "300" says what it means.
+      N("sweep", "Sweep", { help: "How many degrees the slice covers: 360 is a full circle/ring, less carves a pie or gauge; beyond 360 wraps to a full ring and a negative sweep runs the slice the other way. Drag the end handle around the rim." }),
       SEL("cap", "Cap", ["pie", "chord"], { pie: "Pie (radial)", chord: "Chord (flat)" }, "How a solid partial slice closes: pie draws two straight edges to the center, chord draws a single straight line across the opening."),
     ],
     outline: (s) => ringSectorOutline({ ...ellipseGeom(s), inner: s.inner ?? 0.5, a0: (s.startAngle ?? -90) * DEG, a1: ((s.startAngle ?? -90) + (s.sweep ?? 360)) * DEG, cap: s.cap ?? "pie" }),
@@ -116,7 +131,7 @@ export const FAMILIES = [
       N("points", "Points / sides", { min: 3, help: "Number of points on a star, or sides on a polygon (three or more; no upper cap). Drag the count handle around the rim, or type an exact value." }),
       N("innerRatio", "Inner ratio", { min: 0, max: 1, help: "How far the notches cut in: 1 is a regular polygon, lower makes a sharper star, near 0 a spiky burst. Drag the inner handle." }),
       N("cornerRadius", "Corner radius", { min: 0, max: 0.5, help: "Rounds every point/notch by this fraction of the radius. 0 is sharp; higher gives a rounded polygon or blob." }),
-      N("startAngle", "Rotation", { display: "degrees", help: "Spins the shape about its center, in degrees. 0 puts the first point straight up." }),
+      ANGLE("startAngle", "Rotation", { help: "Spins the shape about its center, in degrees. 0 puts the first point straight up." }),
     ],
     outline: (s) => polygonStarOutline(s.w, s.h, { points: s.points ?? 5, innerRatio: s.innerRatio ?? 0.5, cornerRadius: s.cornerRadius ?? 0, startAngle: (s.startAngle ?? 0) * DEG }),
     modifierPoints(s) {
@@ -313,7 +328,7 @@ export function makeFamilyPlugin(fam) {
     defaults: {
       type: fam.type, x: 120, y: 120, w: 200, h: 200, z: 0, rotation: 0, scale: 1,
       rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-      fill: fam.fill ?? "#7dcfff", stroke: "#1a1a2e", strokeWidth: 2,
+      fill: fam.fill ?? "#7dcfff", stroke: "#000000", strokeWidth: 2,
       ...defaults("opacity"),
       ...bundleNestedDefaults("effects"),
       ...fam.defaults,

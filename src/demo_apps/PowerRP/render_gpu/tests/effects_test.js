@@ -54,15 +54,25 @@ test("effectSubtree: margin = 3σ blur spill + shadow offset length", () => {
 test("effectSubtree: normalizes shadow color, clamps negatives, validates blend", () => {
   const op = effectSubtree({ x: 0, y: 0, w: 10, h: 10, content: [], shadow: { ...SHADOW_ON, color: "#ff0000" } });
   assert.deepEqual(op.shadow.color, [1, 0, 0, 1]);
-  assert.throws(() => effectSubtree({ x: 0, y: 0, w: 1, h: 1, content: [], blend: "overlay" }), /unknown blend/);
+  // "overlay" used to be the sentinel here; it is a REAL mode now (Photoshop
+  // parity), so the unknown-blend probe uses a name that can never be one.
+  assert.throws(() => effectSubtree({ x: 0, y: 0, w: 1, h: 1, content: [], blend: "notABlendMode" }), /unknown blend/);
+  assert.throws(() => effectSubtree({ x: 0, y: 0, w: 1, h: 1, content: [], blend: "linear-burn" }), /unknown blend/); // the camelCase id is "linearBurn"; a near-miss spelling must still throw
+  assert.equal(effectSubtree({ x: 0, y: 0, w: 1, h: 1, content: [], blend: "overlay" }).blend, "overlay");
   assert.throws(() => effectSubtree({ x: 0, y: 0, w: 1, h: 1, content: [] }), /no effect is on/);
   assert.throws(() => effectSubtree({ x: 0, y: NaN, w: 1, h: 1, content: [], blend: "add" }), /finite/);
 });
 
 test("BLEND_MODES: ir.js and the property registry's blendMode options agree", () => {
-  // The registry keeps a literal list (core/ never imports render_gpu/) —
-  // this assertion is the declared sync mechanism (see properties.js comment).
+  // No longer two literals kept in sync by this assertion: core/properties.js is
+  // THE home and ir.js re-exports it (the SCRUB_WRAP_MODES precedent). The check
+  // stays as the regression guard that ir.js never grows its own copy again.
   assert.deepEqual(PROPS.blendMode.options, BLEND_MODES);
+  assert.equal(PROPS.blendMode.options, BLEND_MODES, "must be the SAME array object — a copy means someone reintroduced a duplicate list");
+  // The four pre-Photoshop-parity spellings must survive verbatim, or every
+  // stored document silently changes blend mode (or fails ir.js validation).
+  for (const legacy of ["normal", "multiply", "add", "screen"])
+    assert.ok(BLEND_MODES.includes(legacy), `the legacy blend id "${legacy}" was renamed — existing documents store it`);
 });
 
 // ── render_gpu/effects.js ────────────────────────────────────────────────────

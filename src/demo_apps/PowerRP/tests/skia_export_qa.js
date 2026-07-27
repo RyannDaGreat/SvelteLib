@@ -14,7 +14,7 @@ import puppeteer from "puppeteer";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOG = path.join(HERE, "..", "..", "..", "..", "..", ".claude_logs", "devserver.log");
-const SHOTS = path.join(HERE, "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const SHOTS = path.join(HERE, "..", ".claude_vlm_checks");
 const URL_ = process.argv[2] || fs.readFileSync(LOG, "utf8").match(/https?:\/\/localhost:\d+/)[0];
 
 const fail = (m) => { console.error("EXPORT QA FAIL:", m); process.exit(2); };

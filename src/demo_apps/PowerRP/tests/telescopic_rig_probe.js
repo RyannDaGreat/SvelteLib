@@ -24,7 +24,8 @@ import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import {
-  TELESCOPIC, telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
+  TELESCOPIC, telescopicDefaultRects,
+  telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
 } from "../plugins/tangent_lines.js";
 import { renderDocToPng } from "../cli/render.js";
 
@@ -82,9 +83,14 @@ function withRig(doc, shapeKind) {
   const baseZ = (zs.length ? Math.max(...zs) : 0) + 1;
   const withDefaults = (ov, z) => ({ ...registry.get(ov.type).defaults, ...ov, active: true, z });
   let out = keyframed(doc, 0, ["vars", TELESCOPIC.TWEEN_VAR], 0);
-  const sourceOv = telescopicSourceOverrides({ shapeKind, originX: TELESCOPIC.ORIGIN_X, originY: TELESCOPIC.ORIGIN_Y });
+  // The rig builders take the two world RECTS the placement gesture drags (#189);
+  // telescopicDefaultRects() is the drop-in-place geometry the constants describe,
+  // which is what the command uses when there is no gesture — so this stays the
+  // same rig the command inserts.
+  const { source, lens } = telescopicDefaultRects();
+  const sourceOv = telescopicSourceOverrides({ shapeKind, source });
   let sourceId; [out, sourceId] = withNewItem(out, 0, withDefaults(sourceOv, baseZ + 2));
-  const lensOv = telescopicLensOverrides({ sourceId, shapeKind });
+  const lensOv = telescopicLensOverrides({ sourceId, shapeKind, source, lens });
   let lensId; [out, lensId] = withNewItem(out, 0, withDefaults(lensOv, baseZ));
   const tangentOv = telescopicTangentOverrides({ sourceId, lensId, shapeKind });
   let tangentId; [out, tangentId] = withNewItem(out, 0, withDefaults(tangentOv, baseZ + 1));

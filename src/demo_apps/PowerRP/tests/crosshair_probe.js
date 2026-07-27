@@ -37,12 +37,18 @@
  */
 import { readFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
 
-const repo = process.cwd();
-const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
-const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/demo.powerrp.json"), "utf8");
+// Resolved from THIS FILE, never from process.cwd(): the dump must run the same way
+// whether invoked from the repo root or from the PowerRP directory. A cwd-relative
+// path silently DOUBLED to .../PowerRP/src/demo_apps/PowerRP/... and the probe died on
+// ENOENT. Same bug, same fix as tests/lens_flare_scale_probe.js. tests/ -> PowerRP is
+// one level up.
+const appRoot = fileURLToPath(new URL("..", import.meta.url));
+const webRoot = resolve(appRoot, "web");
+const demoJson = await readFile(resolve(appRoot, "examples/demo.powerrp.json"), "utf8");
 const shots = process.argv[2] ?? "/tmp";
 await mkdir(shots, { recursive: true }); // screenshots must never fail on a missing artifact dir
 
@@ -55,7 +61,7 @@ const server = await createServer({ configFile: resolve(webRoot, "vite.config.js
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
-const browser = await puppeteer.launch({ headless: "new" });
+const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
 const checks = [];
 const errors = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
@@ -134,14 +140,27 @@ try {
   const segsAfterEsc = await page.evaluate(() => document.querySelectorAll(".overlay .crosshair").length);
   ok(segsAfterEsc === 0, `crosshair lines gone after Esc (got ${segsAfterEsc})`);
 
-  // ── Scenario 2: toolbar "Box select" button arms the band crosshair ───────
+  // ── Scenario 2: the toolbar's band-select button arms the band crosshair ──
+  // The label is READ FROM THE REGISTRY, never hardcoded. This probe used to look
+  // for a literal aria-label="Box select"; the Toolbar now derives every label from
+  // `app.commands.get(id).title` (so a toolbar tip can no longer disagree with the
+  // palette), and the title is "Select in Box (Regular — default mode)". A
+  // hardcoded copy here was a mirror of the registry's shape and drifted the moment
+  // the registry became the source — the same failure mode that had already bitten
+  // the drag-kind list, the material fixtures, the toolbar's own tips and the
+  // demo-insert list this round. Asking the registry cannot drift.
+  // Matched by READING each aria-label rather than building a selector: the title is
+  // prose (it contains an em dash and parentheses), and quoting prose into an
+  // attribute selector is a needless escaping hazard.
   const toolbarArmed = await page.evaluate(() => {
-    const btn = document.querySelector('[aria-label="Box select"]');
-    if (!btn) return { found: false, kind: null };
+    const app = window.__powerrp_app;
+    const label = app.commands.get("band-select-regular").title;
+    const btn = [...document.querySelectorAll("[aria-label]")].find((el) => el.getAttribute("aria-label") === label);
+    if (!btn) return { found: false, kind: null, label };
     btn.click();
-    return { found: true, kind: window.__powerrp_app.crosshair?.kind ?? null };
+    return { found: true, kind: app.crosshair?.kind ?? null, label };
   });
-  ok(toolbarArmed.found, "toolbar renders a Box select button (aria-label)");
+  ok(toolbarArmed.found, `toolbar renders the band-select button under its registry title (${JSON.stringify(toolbarArmed.label)})`);
   ok(toolbarArmed.kind === "band", `clicking it arms the band crosshair (got ${JSON.stringify(toolbarArmed.kind)})`);
   await page.keyboard.press("Escape"); // clean up the arm before the next scenario
   await new Promise((r) => setTimeout(r, 60));

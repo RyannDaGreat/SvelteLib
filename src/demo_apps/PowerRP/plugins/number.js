@@ -49,8 +49,8 @@ const DEFAULT_DECIMALS = 2;
 // Matches plugins/plaintext.js / plugins/text.js's 36u text size so a number box
 // reads at the same size as a text box out of the box (one shared convention).
 const DEFAULT_TEXT_SIZE = 36;
-// The glyph ink used by the sibling text widgets (plaintext/text #1a1a2e).
-const DEFAULT_INK = "#1a1a2e";
+// The glyph ink used by the sibling text widgets (plaintext/text #000000).
+const DEFAULT_INK = "#000000";
 
 // Padding STYLES (how a formatted number is widened to `padWidth`) and their
 // human labels. "zero" pads with leading zeros after the sign ("-07.50"); "space"
@@ -224,7 +224,7 @@ export const numberPlugin = {
     { key: "decimals", label: "Decimals", kind: "number", min: 0, category: "formatting", help: "How many digits to show after the decimal point. 0 shows a whole integer with no point." },
     { key: "pad", label: "Padding", kind: "select", options: PAD_OPTIONS, optionLabels: PAD_LABELS, category: "formatting", help: "How the number is widened to the minimum width: zero-pads with leading zeros (007.50), space-pads with spaces, or none." },
     { key: "padWidth", label: "Pad width", kind: "number", min: 0, category: "formatting", help: "The minimum total width (in characters) the number is padded to. Only matters when Padding is Zero or Space." },
-    { key: "group", label: "Thousands", kind: "checkbox", category: "formatting", help: "Group the integer part with thousands separators (1,234,567)." },
+    { key: "group", label: "Thousands", kind: "boolean", category: "formatting", help: "Group the integer part with thousands separators (1,234,567)." },
     { key: "prefix", label: "Prefix", kind: "text", category: "formatting", help: "Text placed before the number, e.g. a currency symbol like $." },
     { key: "suffix", label: "Suffix", kind: "text", category: "formatting", help: "Text placed after the number, e.g. a unit like % or px." },
     // Ink color reuses the PAINT-capable registry `fill` prop (solid OR gradient),
@@ -233,7 +233,7 @@ export const numberPlugin = {
     ...props("opacity"),
     { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text", help: "The typeface the digits are drawn in — including a seven-segment display face when one is registered." },
     { key: "size", label: "Size", kind: "number", min: 0, category: "text", help: "Font size in canvas units. Larger is bigger on the slide." },
-    { key: "bold", label: "Bold", kind: "checkbox", category: "text", help: "Draw the digits in the font's bold weight." },
+    { key: "bold", label: "Bold", kind: "boolean", category: "text", help: "Draw the digits in the font's bold weight." },
     { key: "align", label: "Align", kind: "select", options: ALIGN_OPTIONS, optionLabels: ALIGN_LABELS, category: "text", help: "Horizontal alignment of the number within the box: left, center, or right. Also chooses the side space-padding is added to." },
     { key: "valign", label: "V-Align", kind: "select", options: VALIGN_OPTIONS, optionLabels: VALIGN_LABELS, category: "text", help: "Vertical placement of the number within the box height: top, middle, or bottom." },
     ...bundle("effects"),

@@ -23,7 +23,7 @@ import {
   blurBackdrop, magnifyBackdrop, cropSubtree, effectSubtree, latexVector,
 } from "../ir.js";
 
-const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".claude_vlm_checks");
 const DPR = 2;
 const W = 720, H = 480;
 const VIEW = { zoom: 1, panX: 0, panY: 0, dpr: DPR };

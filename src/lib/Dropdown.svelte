@@ -31,6 +31,21 @@
     - When set, the row whose value === scrollToValue is scrolled into view
       (centered if possible) as the menu opens. Default (unset): no auto-scroll.
 
+  LIVE PREVIEW of the ACTIVE row (`onpreview` / `oncancelpreview`, both optional):
+    - Whenever the ACTIVE row changes, `onpreview(value)` fires for the newly
+      active row; when nothing is active any more (menu closed, or a non-
+      selectable row) `oncancelpreview()` fires. Consumers use this to show what
+      an option WOULD do before committing to it — the caller previews, the
+      Dropdown only reports which row is under consideration.
+    - "Active" is ONE notion driven by BOTH the pointer (hovering a row) and the
+      keyboard (↑/↓/Home/End), so hover and arrow-key navigation preview
+      identically for free — no separate hover path to drift.
+    - It is a PREVIEW, never a commit: `onchange` still fires only on a real
+      click/Enter. A consumer whose preview and commit paths are the same
+      function must NOT wire it (it would commit on hover).
+    - Opening the menu previews the CURRENTLY SELECTED row (that is the row the
+      menu opens active on), which is a no-op preview by construction.
+
   Extensibility hooks:
     - `trigger` snippet — override the closed-state button rendering
     - `item`    snippet — override per-row rendering
@@ -175,6 +190,10 @@
     scrollToValue = undefined,
     /** @type {(value:any)=>void} */
     onchange = undefined,
+    /** @type {(value:any)=>void} live-preview the ACTIVE row — never a commit */
+    onpreview = undefined,
+    /** @type {()=>void} revert the live preview (nothing active any more) */
+    oncancelpreview = undefined,
     /** @type {(values:any[], items:any[])=>string} multi-select trigger summary */
     summary = undefined,
 
@@ -277,6 +296,14 @@
     switch (e.key) {
       case "Escape":
         e.preventDefault();
+        /* CONSUMED: an Escape that closed this menu has been handled, so it must
+           not ALSO reach an outer handler. Without this it kept bubbling, and in
+           an app that binds Escape globally (PowerRP binds it to Deselect) one
+           Escape both closed the menu and deselected the item whose property the
+           menu was editing. The house precedent is explicit — NumericField and
+           AngleField both stopPropagation on Escape "so it doesn't bubble into
+           Deselect"; a popup owes the same courtesy. */
+        e.stopPropagation();
         closeMenu();
         break;
       case "ArrowDown":
@@ -313,6 +340,24 @@
     if (!open) return;
     document.addEventListener("pointerdown", handleDocPointer, true);
     return () => document.removeEventListener("pointerdown", handleDocPointer, true);
+  });
+
+  /* LIVE PREVIEW of the active row (see the header). ONE effect covers hover AND
+     keyboard because `activeIndex` is the single notion both drive — the
+     pointerenter handler and moveActive() write the same state, so there is no
+     second hover path that could drift from the arrow keys.
+
+     `previewedIndex` is a PLAIN variable, deliberately not $state: it is what the
+     effect has already reported, so making it reactive would re-run the effect on
+     its own write. The early return makes the effect idempotent — a re-run for an
+     unrelated reason (items changing identity, say) re-fires nothing. */
+  let previewedIndex = -1;
+  $effect(() => {
+    const i = open && isSelectable(items, activeIndex) ? activeIndex : -1;
+    if (i === previewedIndex) return;
+    if (previewedIndex >= 0) oncancelpreview?.();
+    if (i >= 0) onpreview?.(items[i].value);
+    previewedIndex = i;
   });
 </script>
 

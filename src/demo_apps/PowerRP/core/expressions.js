@@ -89,13 +89,17 @@
  * and left visible error near tangency).
  */
 
-import { isTree, copied, getPath, setPath, leaves } from "./deltas.js";
+import { isTree, copied, copiedDeep, getPath, setPath, leaves } from "./deltas.js";
 import * as T from "./transform.js";
 import { worldTransform, composedMemberInfluence, memberOwnerGroups } from "./derive.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 import { isHexColor } from "./interpolators.js";
-import { PROPS } from "./properties.js";
+import { PROPS, GRADIENT_STOPS_LIST } from "./properties.js";
+import {
+  LIST_ROW_KIND, ACTIVE_FIELD, elementFieldKind, elementFieldValue, elementStorageKey,
+  listPathKind, listStoragePath,
+} from "./lists.js";
 import { textDissolve, textType, textScramble } from "./text_transitions.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
@@ -103,7 +107,13 @@ import { textDissolve, textType, textScramble } from "./text_transitions.js";
 const OP_CHARS = "+-*/()";
 const NUM_RE = /^(?:\d+\.?\d*|\.\d+)/;
 // A reference token: optional "@" (stored item ref), then an identifier chain.
-const REF_RE = /^@?[A-Za-z0-9_]+(?:\.[A-Za-z_][A-Za-z0-9_]*)*/;
+// A segment AFTER the head may be all digits, so a DECLARED LIST's element can be
+// addressed (`self.points.3.x`, `fill.linear.stops.1.offset`). Only the HEAD must
+// start with a letter/underscore/@ — the tokenizer only reaches REF_RE for those
+// characters, so a bare number is still a number and `2.5` still lexes as one.
+// The strings this newly accepts (`a.5`) were a restricted-grammar SYNTAX ERROR
+// before, so nothing that used to parse changes meaning.
+const REF_RE = /^@?[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*/;
 // Typed-literal tokens (any-type `=` equations): a quoted string (\\ / \" / \'
 // escapes only) and a CSS hex color (3/4/6/8 digits — interpolators.isHexColor's set).
 const STR_RE = /^"(?:\\.|[^"\\])*"|^'(?:\\.|[^'\\])*'/;
@@ -180,6 +190,36 @@ export function tokenize(src) {
   return tokens;
 }
 
+// ── Reserved literals ────────────────────────────────────────────────────────
+//
+// `true` / `false` match REF_RE, so the tokenizer hands them back as ordinary
+// "ref" tokens — but they are BOOLEAN LITERALS, never references. THREE passes
+// walk ref tokens and each must agree on that: the parser (turns them into
+// {kind:"bool"}), the display↔stored mappers (must not resolve a literal as a
+// variable — that threw `Unknown variable "true"` and blocked every boolean
+// equation from round-tripping), and the highlighter (must not paint a literal
+// as an unknown-reference error). ONE table, consulted by all three: a second
+// keyword list in any of them is exactly the drift this shares away.
+const RESERVED_LITERALS = new Map([["true", true], ["false", false]]);
+
+/**
+ * Pure function. Is the ref token at index `i` a BOOLEAN LITERAL rather than a
+ * reference? True for `true`/`false` NOT immediately followed by "(" — the
+ * EXACT test the parser applies, since a following "(" makes the identifier a
+ * call NAME (`true(...)`), never a literal. Shared by the parser, the
+ * display↔stored mappers and the highlighter so the three can never disagree.
+ *
+ * @example booleanLiteralAt(tokenize("true"), 0) // true
+ * @example booleanLiteralAt(tokenize("false + 1"), 0) // true
+ * @example booleanLiteralAt(tokenize("true(1)"), 0) // false (a call name, not a literal)
+ * @example booleanLiteralAt(tokenize("speed"), 0) // false (an ordinary reference)
+ */
+function booleanLiteralAt(tokens, i) {
+  if (!RESERVED_LITERALS.has(tokens[i].value)) return false;
+  const next = tokens[i + 1];
+  return !(next?.kind === "op" && next.value === "(");
+}
+
 // ── Equation special forms + highlight spans (Opus25, round-3 equation field) ──
 // FLAG (Opus24 owns this file's grammar+outline): these two pure functions are
 // ADDITIVE and self-contained — they build ONLY on tokenize/resolveRef, add no
@@ -224,7 +264,15 @@ export function classifyEquation(src) {
 // Non-ref, non-call token → highlight class. Ref tokens get their class from
 // resolveRef (var/prop/anchor/self) — a real resolution, never a regex re-lex.
 // comma/dot are call/projection punctuation; parens are handled inline.
-const TOKEN_CLS = { num: "num", op: "op", comma: "punct", dot: "punct" };
+// EXHAUSTIVE over every kind tokenize() emits except "ref": the typed literals
+// "str" and "color" (any-type `=` equations) get their OWN classes rather than
+// falling through to the operator color, which is what made a quoted string or a
+// #hex read as punctuation once text/color equations existed.
+const TOKEN_CLS = { num: "num", op: "op", comma: "punct", dot: "punct", str: "str", color: "color" };
+// A token kind with no TOKEN_CLS entry is a REGISTRY GAP (a kind was added to
+// the tokenizer without a color). It shows as an ERROR span — visible in the
+// field rather than silently mis-colored as something it is not.
+const UNMAPPED_TOKEN_CLS = "error";
 
 /**
  * Pure function. Maps an equation's SOURCE positions to highlight classes for
@@ -238,7 +286,9 @@ const TOKEN_CLS = { num: "num", op: "op", comma: "punct", dot: "punct" };
  *
  * Returns [{start, end, cls}] over the (leading-"="-stripped) source, in order,
  * covering exactly the token characters (gaps = whitespace, rendered as plain
- * text by the caller). Classes: "num", "op", "paren" (a "("/")"), "punct"
+ * text by the caller). Classes: "num", "str" and "color" (typed literals — a
+ * quoted string, a #hex), "bool" (the reserved literals `true`/`false`, which
+ * are grammar, NOT references), "op", "paren" (a "("/")"), "punct"
  * (comma / projection dot), "call" (a ref immediately followed by "(" — a
  * function name, classified positionally EXACTLY as the parser decides so an
  * unknown function name never looks like an unknown variable), "self", "var",
@@ -258,6 +308,10 @@ const TOKEN_CLS = { num: "num", op: "op", comma: "punct", dot: "punct" };
  * @example equationTokenSpans("2 + ghost", {items: {}}) // [{start: 0, end: 1, cls: "num"}, {start: 2, end: 3, cls: "op"}, {start: 4, end: 9, cls: "error"}]
  * @example // a ref followed by "(" is a function CALL name (not a var/error)
  * @example equationTokenSpans("f(2)", {items: {}}).map((s) => s.cls) // ["call", "paren", "num", "paren"]
+ * @example // typed literals + the reserved booleans classify as themselves, never as punctuation/errors
+ * @example equationTokenSpans('"hi"', {items: {}}).map((s) => s.cls) // ["str"]
+ * @example equationTokenSpans("#ff0000", {items: {}}).map((s) => s.cls) // ["color"]
+ * @example equationTokenSpans("true", {items: {}}).map((s) => s.cls) // ["bool"]
  */
 export function equationTokenSpans(src, state, selfId = null) {
   const clean = String(src).replace(/^\s*=\s*/, "");
@@ -283,7 +337,7 @@ export function equationTokenSpans(src, state, selfId = null) {
   }
   return tokens.map((t, i) => {
     if (t.kind !== "ref") {
-      const cls = t.kind === "op" && (t.value === "(" || t.value === ")") ? "paren" : TOKEN_CLS[t.kind] ?? "op";
+      const cls = t.kind === "op" && (t.value === "(" || t.value === ")") ? "paren" : TOKEN_CLS[t.kind] ?? UNMAPPED_TOKEN_CLS;
       return { start: t.start, end: t.end, cls };
     }
     // A member-projection coord (the x/y right after a standalone "."): grammar.
@@ -293,6 +347,10 @@ export function equationTokenSpans(src, state, selfId = null) {
     // function name reads as a call, not as an unknown variable.
     const next = tokens[i + 1];
     if (next?.kind === "op" && next.value === "(") return { start: t.start, end: t.end, cls: "call" };
+    // A RESERVED LITERAL (`true`/`false`): the parser reads it as a boolean
+    // literal, so it is grammar — never an unknown variable (which is what it
+    // used to be painted as, showing a valid boolean equation entirely in red).
+    if (booleanLiteralAt(tokens, i)) return { start: t.start, end: t.end, cls: "bool" };
     // A WIDGET argument (bare item slug / "@id" at a widget param): an item ref.
     if (wSpans.has(`${t.start}:${t.end}`)) {
       const ok = t.value === "self" || t.value.startsWith("@") || slugs.toId.has(t.value);
@@ -387,9 +445,10 @@ export function parseExpression(src) {
       // Reserved literals: `true`/`false` tokenize as identifiers but ARE the
       // boolean literals (not variables) — a variable named `true` is disallowed
       // by this shadowing, matching the loud-typo discipline (there is no such
-      // var). A following "(" still makes it a call name (never a bool).
-      if ((tok.value === "true" || tok.value === "false") && !(peek()?.kind === "op" && peek().value === "("))
-        return { kind: "bool", value: tok.value === "true" };
+      // var). A following "(" still makes it a call name (never a bool). The
+      // test lives in booleanLiteralAt so the mappers and the highlighter apply
+      // the IDENTICAL rule.
+      if (booleanLiteralAt(tokens, pos - 1)) return { kind: "bool", value: RESERVED_LITERALS.get(tok.value) };
       if (peek()?.kind === "op" && peek().value === "(") return call(tok.value);
       // start/end are the source span of this ref token — lets the display↔
       // stored converters and the dependency collector locate widget-arg tokens.
@@ -883,13 +942,19 @@ export function resolveRef(token, slugs, selfId = null) {
  *
  * A ref that is a MEMBER PROJECTION coordinate (the `x`/`y` right after a
  * standalone "." — e.g. the `.x` in `f(a).x`) is GRAMMAR, not a reference, so
- * it is left verbatim (the mapper is never called for it). A function NAME ref
- * (before "(") IS passed to the mapper — the mapper decides what to do with it
- * (displayToStored/storedToDisplay pass known function names through verbatim).
+ * it is left verbatim (the mapper is never called for it). The RESERVED
+ * LITERALS `true`/`false` are grammar too (booleanLiteralAt — the parser reads
+ * them as boolean literals), so they are likewise left verbatim: without this,
+ * displayToStored resolved them as variables and threw `Unknown variable
+ * "true"`, which made a boolean equation impossible to store. A function NAME
+ * ref (before "(") IS passed to the mapper — the mapper decides what to do with
+ * it (displayToStored/storedToDisplay pass known function names through
+ * verbatim).
  *
  * @example mapRefTokens("a + b", (t) => t.toUpperCase()) // "A + B"
  * @example mapRefTokens("f(a).x", (t) => t.toUpperCase()) // "F(A).x" (name + arg mapped; the projection .x is grammar, untouched)
  * @example mapRefTokens("a + b", (v, tok) => `${v}@${tok.start}`) // "a@0 + b@4" (mapper gets the token for its span)
+ * @example mapRefTokens("true", (t) => t.toUpperCase()) // "true" (a reserved literal is grammar, never mapped)
  */
 export function mapRefTokens(src, mapToken) {
   let out = "";
@@ -899,6 +964,7 @@ export function mapRefTokens(src, mapToken) {
     const t = tokens[i];
     if (t.kind !== "ref") continue;
     if (tokens[i - 1]?.kind === "dot") continue; // member projection coord (.x/.y): grammar, not a ref
+    if (booleanLiteralAt(tokens, i)) continue; // reserved literal (true/false): grammar, not a ref
     out += src.slice(last, t.start) + mapToken(t.value, t);
     last = t.end;
   }
@@ -1010,6 +1076,7 @@ function pathToDisplay(path) {
  * @example displayToStored("speed * 2", {vars: {speed: 5}, items: {}}) // "speed * 2"
  * @example displayToStored("self.end_width / 2", {items: {}}) // "self.endWidth / 2"
  * @example displayToStored("closest_to_rim(box, c).x", {items: {a1: {type: "rect", name: "Box"}, a2: {type: "circle", name: "C"}}}) // "closest_to_rim(@a1, @a2).x"
+ * @example displayToStored("=true", {items: {}}) // "true" (a reserved literal is grammar, not an unknown variable)
  * @example // displayToStored("sped * 2", {vars: {speed: 5}}) throws: Unknown variable "sped"
  * @example // displayToStored("self.endWidth", {items: {}}) throws: Unknown property "endWidth" (self.endWidth) — camelCase is not accepted, one canonical form only
  */
@@ -1135,11 +1202,19 @@ export function storedToDisplay(src, state) {
  * @example isNumericSlot({defaults: {name: "?"}}, ["name"]) // false
  * @example isNumericSlot({defaults: {from: {x: 0}}}, ["from", "x"]) // true
  * @example isNumericSlot({defaults: {rotationAnchor: {x: "self.anchors.center.x"}}}, ["rotationAnchor", "x"]) // true
+ * @example isNumericSlot({defaults: {}}, ["points", 9, "x"]) // true (a DECLARED list's number field — index-independent)
+ * @example isNumericSlot({defaults: {}}, ["points"]) // false (the list itself is not a number)
  */
 export function isNumericSlot(plugin, path) {
   const def = getPath(plugin.defaults, path);
   if (typeof def === "number") return true;
-  return typeof def === "string" && def.startsWith("self.");
+  if (typeof def === "string" && def.startsWith("self.")) return true;
+  // A DECLARED LIST's numeric element field. Its kind comes from the DECLARATION,
+  // so the answer does not depend on how many elements the plugin's DEFAULT list
+  // happens to hold: `points.9.x` is a number slot on a five-vertex default, and
+  // the legacy bare-string equation rule therefore applies uniformly across every
+  // index instead of only the ones the default reaches.
+  return listSlotKind(path) === "number";
 }
 
 // A leading "=" marks ANY property as an equation (the UNIVERSAL any-type
@@ -1162,34 +1237,250 @@ export function isEquationValue(plugin, path, value) {
   return EQ_PREFIX_RE.test(value) || isNumericSlot(plugin, path);
 }
 
-// PROPS.kind → the JS RESULT TYPE an `=` equation must evaluate to. "string"
-// covers text/select(enum)/asset — all string-valued; "select" adds an in-set
-// check on top (see resultMatchesKind, which reads the row's options).
-const KIND_RESULT = { number: "number", color: "color", boolean: "boolean", select: "select", asset: "string", text: "string" };
+// PROPS.kind (an INSPECTOR CONTROL kind) → the JS RESULT TYPE an `=` equation
+// must evaluate to. "string" covers text/select(enum)/asset — all string-valued;
+// "select" adds an in-set check on top (see resultMatchesKind, which reads the
+// row's options). "angle" is a heading in RAW DEGREES (core/properties.js: an
+// angle kind stores degrees, unlike `rotation`, which is radians with a display
+// unit), so it validates as a plain number. The control vocabulary itself is
+// core/properties.js ROW_KINDS.
+// "list" is its OWN result type, not a coercion of any scalar one: an `=` on a
+// whole list must evaluate to an ARRAY of the declared element shape. WHAT SUCH
+// AN EQUATION MEANS: the grammar has no array literal, so the only list-valued
+// expression it can produce is a REFERENCE to another list slot — `= other.points`
+// mirrors one polygon's vertices onto another, `= other.fill.linear.stops` shares
+// one gradient's ramp. That is a real, useful binding and it needs no grammar
+// change; validation is Array.isArray PLUS a per-element shape check
+// (listResultProblem), so a wrong-shaped list is reported rather than rendered.
+// A per-ELEMENT slot (`points.3.x`) types as its declared field kind instead —
+// see resultKindForSlot / core/lists.js listPathKind.
+const KIND_RESULT = {
+  number: "number", angle: "number",
+  color: "color",
+  boolean: "boolean",
+  select: "select",
+  asset: "string", text: "string",
+  [LIST_ROW_KIND]: "list",
+};
+
+// LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent): a
+// kind declared in PROPS but missing from KIND_RESULT used to resolve to
+// "string" through a `?? "string"` fallback, so a perfectly good numeric result
+// was rejected with "is not a valid string value" — a silent wrong-kind guess,
+// which is exactly the class of fallback the house rules forbid. Cross-checking
+// at import makes the gap impossible to ship instead of merely unlikely: adding
+// a kind to core/properties.js without typing it here fails immediately, with
+// the fix in the message.
+for (const [key, def] of Object.entries(PROPS))
+  if (!(def.kind in KIND_RESULT))
+    throw new Error(`expressions: PROPS."${key}" declares kind "${def.kind}" but KIND_RESULT does not type it — add its equation RESULT type (one of ${JSON.stringify([...new Set(Object.values(KIND_RESULT))])}) so "=" on that property can be validated.`);
+
+// ── PAINT SUB-STATE kinds ────────────────────────────────────────────────────
+//
+// A `paint: true` property (PROPS fill / stroke / background) is the ONE
+// polymorphic value shape in item state: it does not store a scalar, it stores
+// the multi-sub-state record web/PaintField.svelte materializes —
+//   {type, solid, linear: {stops, angle, from, to}, radial: {stops, center, r}}
+// (a paint that has never been a gradient stays a bare hex STRING). Its LEAVES
+// are real keyframable, equation-bindable slots, but the plugin's `defaults`
+// for the paint key is that bare hex string, so getPath() finds NOTHING at
+// e.g. ["fill","linear","angle"] and the kind cannot be inferred from the
+// plugin at all. These two tables type them instead, keyed by the sub-path
+// BELOW the paint key. Gradient STOPS are NO LONGER absent: they are a declared
+// LIST property (core/properties.js GRADIENT_STOPS_LIST, resolved by listDeclAt
+// below), so a stop's offset/color IS an equation slot and so is its visibility
+// flag. (The old bound recorded here — "stops are ARRAY elements and leaves()
+// keeps arrays opaque, so a stop offset/color is never an equation slot" — was
+// the Tier 0 hole this round closed; leaves() still keeps arrays opaque and the
+// list DECLARATION is what reaches inside.)
+//
+// HOME: this describes the paint shape, so it belongs beside the `paint: true`
+// flag and the gradient-direction math in core/properties.js. It lives here
+// only because that file was owned by another agent when it was written — MOVE IT
+// there (exported from properties.js, imported here) as a self-contained cleanup;
+// the stop LIST declaration already lives there for exactly that reason.
+const PAINT_MODE_KEYS = ["linear", "radial"]; // the two gradient sub-state wrappers
+const PAINT_LEAF_KINDS = {
+  // Which mode is painted. A string id ("solid" | "linearGradient" |
+  // "radialGradient"); core has no options list for it, so it validates as a
+  // plain string rather than a select with a fake (empty) option set.
+  type: "string",
+  solid: "color",          // the solid sub-state's color
+  angle: "number",         // linear direction, DEGREES (properties.angleToLinearEndpoints)
+  r: "number",             // radial radius, objectBoundingBox units
+  "center.x": "number", "center.y": "number", // radial center, objectBoundingBox
+  // Legacy linear endpoints. Superseded by `angle` but still stored (the
+  // migration keeps them so old documents render byte-identically).
+  "from.x": "number", "from.y": "number",
+  "to.x": "number", "to.y": "number",
+};
+
+/**
+ * Pure function. The result kind of a leaf INSIDE a paint property's
+ * sub-state, or null when `path` is not such a leaf. The optional `linear`/
+ * `radial` mode segment is stripped first, so both the current wrapped form
+ * (fill.linear.angle) and the LEGACY inline form the angle migration also
+ * writes (fill.angle — core/document.js linearGradientAngleMigrations returns
+ * relPath ["fill"] for an un-wrapped gradient) resolve identically.
+ *
+ * @example paintSubKind(["fill", "linear", "angle"]) // "number"
+ * @example paintSubKind(["background", "angle"]) // "number" (legacy inline gradient)
+ * @example paintSubKind(["stroke", "radial", "center", "x"]) // "number"
+ * @example paintSubKind(["fill", "solid"]) // "color"
+ * @example paintSubKind(["fill"]) // null (the paint itself — PROPS types it)
+ * @example paintSubKind(["shadow", "color"]) // null (a plain color prop, not a paint)
+ */
+function paintSubKind(path) {
+  if (!PROPS[path[0]]?.paint) return null; // every paint: true key is single-segment
+  const rest = path.slice(1);
+  const leaf = PAINT_MODE_KEYS.includes(rest[0]) ? rest.slice(1) : rest;
+  return leaf.length ? PAINT_LEAF_KINDS[leaf.join(".")] ?? null : null;
+}
+
+// ── LIST PROPERTIES (core/lists.js) ──────────────────────────────────────────
+//
+// The DECLARED lists a state path can land in, and their visibility companions.
+// Two sources, exactly mirroring resultKindForSlot's own resolution order: the
+// shared property registry (a PROPS entry whose kind is "list" — `points`), and
+// the paint sub-state (GRADIENT_STOPS_LIST under fill/stroke/background
+// .linear|.radial .stops). Both are DECLARATIONS: nothing reaches inside an
+// UNDECLARED array, so adding a declaration is the one explicit act that opens a
+// list's elements to `=` — a rich-text run list or a frame-URL list does not
+// silently gain equation semantics.
+const LIST_PROPS = Object.fromEntries(Object.entries(PROPS).filter(([, def]) => def.kind === LIST_ROW_KIND));
+/** activeKey → the list key whose visibility companion it is. */
+const LIST_COMPANIONS = Object.fromEntries(Object.entries(LIST_PROPS).map(([key, def]) => [def.activeKey, key]));
+
+/**
+ * Pure function. The LIST DECLARATION a state path lands in, or null:
+ * {decl, rel, companion} where `rel` is the path BELOW the list key (or below the
+ * companion key) and `companion` says which of the two the path addressed.
+ * Longest prefix wins, so a dotted list key would resolve ahead of its own head.
+ *
+ * @example listDeclAt(["points"]).rel // []
+ * @example listDeclAt(["points", 3, "x"]).rel // [3, "x"]
+ * @example listDeclAt(["pointsActive", 2]).companion // true
+ * @example listDeclAt(["fill", "linear", "stops", 1, "offset"]).rel // [1, "offset"]
+ * @example listDeclAt(["fill", "linear", "stopsActive", 1]).companion // true
+ * @example listDeclAt(["w"]) // null
+ */
+export function listDeclAt(path) {
+  for (let n = path.length; n >= 1; n--) {
+    const key = path.slice(0, n).join(".");
+    if (LIST_PROPS[key]) return { decl: LIST_PROPS[key], rel: path.slice(n), companion: false };
+    if (LIST_COMPANIONS[key]) return { decl: LIST_PROPS[LIST_COMPANIONS[key]], rel: path.slice(n), companion: true };
+  }
+  if (!PROPS[path[0]]?.paint) return null;
+  const rest = path.slice(1);
+  const leaf = PAINT_MODE_KEYS.includes(rest[0]) ? rest.slice(1) : rest;
+  const head = path.length - leaf.length;
+  if (leaf[0] === "stops") return { decl: GRADIENT_STOPS_LIST, rel: path.slice(head + 1), companion: false };
+  if (leaf[0] === GRADIENT_STOPS_LIST.activeKey) return { decl: GRADIENT_STOPS_LIST, rel: path.slice(head + 1), companion: true };
+  return null;
+}
+
+/**
+ * Pure function. The result kind of a slot at/inside a DECLARED list, or null
+ * when the path lands in no list. The list itself is "list"; an element FIELD is
+ * its declared kind (from the DECLARATION, so index-independent); a whole ELEMENT
+ * is null (it has no declared kind of its own — its fields do, so an `=` there
+ * stays UNRESOLVED and says so); the visibility companion is a "list" of
+ * "boolean" flags.
+ *
+ * @example listSlotKind(["points"]) // "list"
+ * @example listSlotKind(["points", 3, "x"]) // "number" (canonical named field)
+ * @example listSlotKind(["points", 3, 0]) // "number" (storage spelling — same slot)
+ * @example listSlotKind(["points", 3]) // null (a whole element is not a slot)
+ * @example listSlotKind(["pointsActive", 2]) // "boolean"
+ * @example listSlotKind(["fill", "linear", "stops", 0, "color"]) // "color"
+ * @example listSlotKind(["opacity"]) // null
+ */
+export function listSlotKind(path) {
+  const found = listDeclAt(path);
+  if (!found) return null;
+  if (!found.companion) return listPathKind(found.decl, found.rel);
+  if (found.rel.length === 0) return KIND_RESULT[LIST_ROW_KIND]; // the whole flag list
+  return found.rel.length === 1 ? ACTIVE_FIELD.kind : null;
+}
+
+/**
+ * Pure function. A stored property path with a DECLARED-LIST element field
+ * segment converted from its canonical NAME to its STORAGE key
+ * (`points.3.x` → points[3][0]) — the ONE place an equation reference crosses
+ * that boundary. A path touching no list, or one already spelled with the raw
+ * storage index, is returned UNCHANGED: an index was always walkable (getPath
+ * descends arrays), so this adds the named spelling rather than aliasing it.
+ *
+ * @example storedListPath(["points", "3", "x"]) // ["points", "3", 0]
+ * @example storedListPath(["points", "3", "0"]) // ["points", "3", "0"] (raw index: already storage)
+ * @example storedListPath(["fill", "linear", "stops", "1", "offset"]) // ["fill", "linear", "stops", "1", "offset"] (a record: name IS the key)
+ * @example storedListPath(["w"]) // ["w"]
+ */
+export function storedListPath(path) {
+  const found = listDeclAt(path);
+  if (!found || found.companion || found.rel.length !== 2) return path;
+  if (elementFieldKind(found.decl.element, found.rel[1]) === null) return path;
+  return [...path.slice(0, -1), elementStorageKey(found.decl.element, found.rel[1])];
+}
+
+/**
+ * The result kind of a slot whose value kind NOTHING declares — no PROPS entry,
+ * no plugin default, no paint sub-state entry. It is deliberately a kind that
+ * resultMatchesKind never matches (its `default` case), so the equation FAILS
+ * LOUDLY through the normal report-and-fall-back path with an actionable
+ * message, instead of being guessed as "string" and rejecting a good value.
+ */
+const UNRESOLVED_KIND = "unresolved";
 
 /**
  * Pure function. The RESULT TYPE an equation slot must evaluate to. Variables
  * and legacy (non-"=") numeric slots are "number" — byte-identical to the
- * pre-any-type engine. A UNIVERSAL "=" slot's kind comes from PROPS[key].kind
- * (the shared property registry — the manifest's single source of truth) when
- * the key is registered, else is INFERRED from the plugin default's own type
- * (number/boolean, or a hex-vs-plain string → color/string) so a plugin-only
- * property still validates without a PROPS entry.
+ * pre-any-type engine. For a UNIVERSAL "=" slot the kind is resolved in this
+ * order, most-declared first:
+ *   1. PROPS[key].kind through KIND_RESULT (the shared property registry — the
+ *      manifest's single source of truth; the import guard above keeps every
+ *      declared kind typed here).
+ *   2. listSlotKind(path) — a slot at or inside a DECLARED LIST (core/lists.js):
+ *      the list itself is "list", an element FIELD is its declared kind, the
+ *      visibility companion's flags are "boolean". Taken from the DECLARATION, so
+ *      it is INDEX-INDEPENDENT — which is the point: reading the kind off the
+ *      plugin's default list (step 3) runs out of elements, so `points.9.x` on a
+ *      five-vertex default used to fall all the way to UNRESOLVED.
+ *   3. paintSubKind(path) — a leaf inside a paint property's sub-state, whose
+ *      shape the plugin's flat hex default cannot describe.
+ *   3. INFERRED from the plugin's own default at the path: a NUMERIC slot
+ *      (isNumericSlot — a number, or a "self."-prefixed COMPUTED default such
+ *      as magnifier `origin.x`) is "number"; else boolean, else a hex-vs-plain
+ *      string → color/string.
+ *   4. UNRESOLVED — nothing declares this slot's kind. It is NOT guessed:
+ *      evaluation reports it loudly and falls back, because a wrong guess
+ *      silently rejects a correct value (that is the bug this order fixes).
  *
  * @example resultKindForSlot({defaults: {x: 0}}, ["x"], "speed * 2") // "number" (legacy)
  * @example resultKindForSlot({defaults: {fill: "#000"}}, ["fill"], "=#f00") // "color" (PROPS.fill.kind)
  * @example resultKindForSlot({defaults: {muted: true}}, ["muted"], "=true") // "boolean"
  * @example resultKindForSlot({defaults: {foo: "bar"}}, ["foo"], "=\"x\"") // "string" (inferred: non-hex default)
+ * @example resultKindForSlot({defaults: {fill: "#000"}}, ["fill", "linear", "angle"], "=30") // "number" (gradient direction, degrees)
+ * @example resultKindForSlot({defaults: {origin: {x: "self.anchors.center.x"}}}, ["origin", "x"], "=self.w") // "number" (computed self. default)
+ * @example resultKindForSlot({defaults: {}}, ["mystery"], "=1") // "unresolved" (nothing declares its kind — reported, never guessed)
+ * @example resultKindForSlot({defaults: {}}, ["points"], "= other_poly.points") // "list" (a whole list, bound by reference)
+ * @example resultKindForSlot({defaults: {}}, ["points", 9, "x"], "= self.w / 2") // "number" (declared element field; index-independent)
+ * @example resultKindForSlot({defaults: {}}, ["points", 9], "= 1") // "unresolved" (a whole ELEMENT is not a slot — bind its fields)
+ * @example resultKindForSlot({defaults: {}}, ["pointsActive", 2], "= false") // "boolean" (per-element visibility)
  */
 export function resultKindForSlot(plugin, path, value) {
   if (!EQ_PREFIX_RE.test(value)) return "number"; // legacy numeric / self-anchor slot
   const propDef = PROPS[path.join(".")];
-  if (propDef) return KIND_RESULT[propDef.kind] ?? "string";
+  if (propDef) return KIND_RESULT[propDef.kind];
+  const listed = listSlotKind(path);
+  if (listed) return listed;
+  const painted = paintSubKind(path);
+  if (painted) return painted;
+  if (isNumericSlot(plugin, path)) return "number";
   const def = getPath(plugin.defaults, path);
-  if (typeof def === "number") return "number";
   if (typeof def === "boolean") return "boolean";
   if (typeof def === "string") return isHexColor(def) ? "color" : "string";
-  return "string";
+  return UNRESOLVED_KIND;
 }
 
 /**
@@ -1197,6 +1488,8 @@ export function resultKindForSlot(plugin, path, value) {
  * The LOUD-fallback gate for any-type equations: a "=" expr whose result type
  * mismatches its property is reported and replaced by the default (never a
  * silent bad value). `options` (a select row's allowed set) narrows "select".
+ * An UNKNOWN kind — including resultKindForSlot's "unresolved" — matches
+ * NOTHING, so an undeclared slot can never quietly accept a value.
  *
  * @example resultMatchesKind(5, "number") // true
  * @example resultMatchesKind(Infinity, "number") // false (non-finite)
@@ -1205,6 +1498,9 @@ export function resultKindForSlot(plugin, path, value) {
  * @example resultMatchesKind(true, "boolean") // true
  * @example resultMatchesKind("multiply", "select", ["normal", "multiply"]) // true
  * @example resultMatchesKind("zzz", "select", ["normal", "multiply"]) // false (not an option)
+ * @example resultMatchesKind(30, "unresolved") // false (an undeclared slot matches nothing)
+ * @example resultMatchesKind([[0, 0], [1, 1]], "list") // true (shape checked separately — listResultProblem)
+ * @example resultMatchesKind(5, "list") // false
  */
 export function resultMatchesKind(v, kind, options = null) {
   switch (kind) {
@@ -1213,8 +1509,42 @@ export function resultMatchesKind(v, kind, options = null) {
     case "boolean": return typeof v === "boolean";
     case "select": return typeof v === "string" && (!options || options.includes(v));
     case "string": return typeof v === "string";
+    // A LIST is an array; its ELEMENT SHAPE is checked by listResultProblem,
+    // which needs the declaration this signature does not carry (and which
+    // reports WHICH element/field is wrong instead of a bare false).
+    case "list": return Array.isArray(v);
     default: return false;
   }
+}
+
+/**
+ * Pure function. Why `value` is not a valid value for list `decl` — a specific,
+ * actionable message — or null when it is fine. The element-shape half of
+ * validating a whole-list `=` equation (resultMatchesKind only proves it is an
+ * array), kept loud and specific because "is not a valid list value" would not
+ * tell an author which element they got wrong.
+ *
+ * @example listResultProblem({element: {storage: "tuple", fields: [{name: "x", kind: "number"}]}}, [[0], [1]]) // null
+ * @example listResultProblem({element: {storage: "tuple", fields: [{name: "x", kind: "number"}]}}, 5) // "is not a list"
+ * @example listResultProblem({element: {storage: "tuple", fields: [{name: "x", kind: "number"}]}}, [[0], ["nope"]]) // 'element 1\'s "x" is "nope", not a valid number'
+ * @example listResultProblem({element: {storage: "record", fields: [{name: "offset", kind: "number"}]}, minLength: 2}, [{offset: 0}]) // "has 1 element, below the declared minimum of 2"
+ */
+export function listResultProblem(decl, value) {
+  if (!Array.isArray(value)) return "is not a list";
+  const floor = decl.minLength ?? 0;
+  if (value.length < floor)
+    return `has ${value.length} element${value.length === 1 ? "" : "s"}, below the declared minimum of ${floor}`;
+  for (let i = 0; i < value.length; i++) {
+    const el = value[i];
+    const shaped = decl.element.storage === "tuple" ? Array.isArray(el) : isTree(el);
+    if (!shaped) return `element ${i} is ${JSON.stringify(el)}, not a ${decl.element.storage}`;
+    for (const field of decl.element.fields) {
+      const fv = elementFieldValue(decl.element, el, field.name);
+      if (!resultMatchesKind(fv, KIND_RESULT[field.kind]))
+        return `element ${i}'s "${field.name}" is ${JSON.stringify(fv)}, not a valid ${field.kind}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -1237,12 +1567,103 @@ export function numericPropertyPaths(plugin) {
   return out;
 }
 
-/** Command (mutates tree in place). Sets a leaf at path, creating nodes. */
+/**
+ * Pure function. The plugin's DECLARED LIST properties, in canonical DISPLAY
+ * (snake_case, dot-joined) form — the type-level companion of
+ * numericPropertyPaths for a list slot's autocomplete. A list ROOT is offered
+ * because it exists on EVERY instance of the type and is bindable by reference
+ * (`= other_poly.points`).
+ *
+ * PER-ELEMENT PATHS ARE DELIBERATELY NOT HERE, and that is the type-vs-instance
+ * split, not an omission: `points.4.x` exists only for an item that currently has
+ * five vertices, so offering it from the plugin's DEFAULT list would suggest paths
+ * that a 3-vertex polygon does not have — worse than not offering them, since a
+ * reference to a missing element fails loudly. The Inspector enumerates the real
+ * ones from the VALUE instead (core/lists.js listSlotPaths).
+ *
+ * @example listPropertyPaths({defaults: {points: [[0, 0]], w: 10}}) // ["points"]
+ * @example listPropertyPaths({defaults: {w: 10}}) // [] (no list properties)
+ */
+export function listPropertyPaths(plugin) {
+  const out = [];
+  for (const key of Object.keys(plugin.defaults ?? {}))
+    if (Array.isArray(plugin.defaults[key]) && LIST_PROPS[key]) out.push(pathToDisplay([key]).join("."));
+  return out;
+}
+
+/**
+ * Pure generator. [path, value] for every element-FIELD leaf and every
+ * visibility-FLAG leaf of every DECLARED list inside `node` (an item state, or a
+ * slide delta's item subtree).
+ *
+ * WHY THIS EXISTS RATHER THAN AN ARRAY-DESCENDING `leaves()`. core/deltas.js
+ * leaves() keeps arrays OPAQUE, and it must: three consumers depend on that —
+ * core/document.js missingDefaults (which would see a 3-vertex polygon as
+ * "missing" the 4th and 5th vertices of the plugin's 5-vertex DEFAULT and FILL
+ * them in, silently appending vertices to the user's shape), the Keyframe Panel
+ * (one `points` diamond would become 2N diamonds, and a whole-list keyframe is
+ * exactly the leaf that must tween element-wise), and evaluateState. Only the
+ * third one wants to reach inside.
+ *
+ * So the descent is a SEPARATE walk, and it descends ONLY DECLARED lists: adding
+ * a declaration is the one explicit act that opens a list's elements to `=`, so no
+ * undeclared array (a rich-text run list, a filmstrip's frame URLs) silently gains
+ * equation semantics — a run whose text happens to begin with "=" is still text.
+ *
+ * @example // for {points: [[0, "=self.w"]], pointsActive: [true, false]} it yields
+ * @example //   [["points", 0, 0], 0], [["points", 0, 1], "=self.w"],
+ * @example //   [["pointsActive", 0], true], [["pointsActive", 1], false]
+ */
+function* declaredListLeaves(node, prefix = []) {
+  for (const [key, val] of Object.entries(node)) {
+    const path = [...prefix, key];
+    if (Array.isArray(val)) {
+      const found = listDeclAt(path);
+      if (!found || found.rel.length !== 0) continue;
+      if (found.companion) {
+        for (let i = 0; i < val.length; i++) yield [[...path, i], val[i]];
+        continue;
+      }
+      for (let i = 0; i < val.length; i++) {
+        const el = val[i];
+        // A non-record/tuple element (someone typed an `=` where a WHOLE ELEMENT
+        // goes) is yielded AS the element, so the slot is collected and fails
+        // loudly with the "bind one of its fields instead" message rather than
+        // being skipped and left in the value for a renderer to choke on.
+        if (el === null || typeof el !== "object") { yield [[...path, i], el]; continue; }
+        for (const field of found.decl.element.fields) {
+          const storageKey = elementStorageKey(found.decl.element, field.name);
+          if (storageKey in el) yield [[...path, i, storageKey], el[storageKey]];
+        }
+      }
+    } else if (isTree(val)) {
+      yield* declaredListLeaves(val, path);
+    }
+  }
+}
+
+/**
+ * Command (mutates tree in place). Sets a leaf at path, creating nodes.
+ *
+ * ARRAY-AWARE, with COPY-ON-WRITE — the same two rules core/deltas.js setPath and
+ * mutBlendApply already obey, and for the same two reasons:
+ *   (1) descending an EXISTING array keeps the ARRAY shape. Rebuilding it as an
+ *       object (the old `if (!isTree(...)) cur[key] = {}`) turned a `points` list
+ *       into `{2: {0: 0.5}}` the moment ONE per-element equation was written,
+ *       destroying every other vertex — the same class of bug deltas.setPath's
+ *       docstring records for gradient stops.
+ *   (2) the tree this walks is `copied(state)`, and copied() SHARES arrays
+ *       (treating them as immutable leaves — the fold cache's fast path), so an
+ *       in-place write into one would corrupt the cached folded state that
+ *       produced it. Clone the array subtree before descending.
+ */
 function mutSetPath(tree, path, value) {
   let cur = tree;
   for (let i = 0; i < path.length - 1; i++) {
-    if (!isTree(cur[path[i]])) cur[path[i]] = {};
-    cur = cur[path[i]];
+    const key = path[i];
+    if (Array.isArray(cur[key])) cur[key] = copiedDeep(cur[key]);
+    else if (!isTree(cur[key])) cur[key] = {};
+    cur = cur[key];
   }
   cur[path[path.length - 1]] = value;
 }
@@ -1408,16 +1829,44 @@ function mulberry32(seed) {
   };
 }
 
+/** Does a reference token contain an all-digits path segment (a LIST element
+ *  index)? `.0` is legal in the equation grammar but NOT in JavaScript, so such a
+ *  token must be rewritten to bracket form before compilation. */
+const NUMERIC_SEGMENT_RE = /\.\d+(?:\.|$)/;
+
+/**
+ * Pure function. One reference token → its JS-VALID spelling: a stored `@id`
+ * becomes `$id` (JS-legal; the scope proxy maps it back), and an all-digits path
+ * segment becomes a BRACKET index — `self.points.3.x` is valid in the equation
+ * grammar but `a.3` is a JavaScript syntax error, so it compiles as
+ * `self.points[3].x`. The ref PROXY accumulates a bracket access exactly like a
+ * dot access, so the segment list (and therefore the resolved reference) is
+ * identical either way.
+ *
+ * @example refToJs("@a1.x") // "$a1.x"
+ * @example refToJs("self.points.3.x") // "self.points[3].x"
+ * @example refToJs("fill.linear.stops.1.offset") // "fill.linear.stops[1].offset"
+ * @example refToJs("speed") // "speed"
+ */
+function refToJs(value) {
+  const head = value[0] === "@" ? `$${value.slice(1)}` : value;
+  const [first, ...rest] = head.split(".");
+  return first + rest.map((seg) => (/^\d+$/.test(seg) ? `[${seg}]` : `.${seg}`)).join("");
+}
+
 /**
  * Pure function. Rewrites a restricted-grammar equation into a JS-VALID
- * expression: `#hex` color literals → quoted strings, and stored `@id` item
- * refs → `$id` identifiers (JS-legal; the scope proxy maps `$id` back to `@id`).
- * Bare display slugs (`shape_2.x`), variables, `self.…`, and function calls are
- * already JS-valid and pass through. A source that is NOT restricted-grammar
- * tokenizable (a full-JS expression — IIFE/loop/etc.) is returned verbatim.
+ * expression: `#hex` color literals → quoted strings, stored `@id` item
+ * refs → `$id` identifiers (JS-legal; the scope proxy maps `$id` back to `@id`),
+ * and LIST ELEMENT INDEX segments → bracket form (`points.3.x` → `points[3].x`,
+ * which JS requires). Bare display slugs (`shape_2.x`), variables, `self.…`, and
+ * function calls are already JS-valid and pass through. A source that is NOT
+ * restricted-grammar tokenizable (a full-JS expression — IIFE/loop/etc.) is
+ * returned verbatim.
  *
  * @example toJsExpr("@a1.x + 10") // "$a1.x + 10"
  * @example toJsExpr("#ff0080") // "\"#ff0080\""
+ * @example toJsExpr("self.points.3.x / 2") // "self.points[3].x / 2"
  * @example toJsExpr("(function(){return 1})()") // "(function(){return 1})()" (verbatim — not restricted)
  */
 function toJsExpr(clean) {
@@ -1433,8 +1882,8 @@ function toJsExpr(clean) {
     if (t.kind === "color") {
       out += clean.slice(last, t.start) + JSON.stringify(t.value);
       last = t.end;
-    } else if (t.kind === "ref" && t.value[0] === "@") {
-      out += clean.slice(last, t.start) + "$" + t.value.slice(1);
+    } else if (t.kind === "ref" && (t.value[0] === "@" || NUMERIC_SEGMENT_RE.test(t.value))) {
+      out += clean.slice(last, t.start) + refToJs(t.value);
       last = t.end;
     }
   }
@@ -1572,7 +2021,11 @@ function computeEvaluatedState(state, registry) {
     // slide sits BELOW a slide that keyframes the item. Skip, never throw.
     if (typeof item?.type !== "string") continue;
     const plugin = registry.get(item.type);
-    for (const [path, value] of leaves(item))
+    // leaves() keeps arrays OPAQUE (three other consumers need that — see
+    // declaredListLeaves), so DECLARED LIST elements are walked separately. Their
+    // slots go through the IDENTICAL gate, so a per-element `=` is an equation on
+    // exactly the same terms as any other property.
+    for (const [path, value] of [...leaves(item), ...declaredListLeaves(item)])
       if (isEquationValue(plugin, path, value)) {
         const key = ["items", id, ...path].join(".");
         slots.set(key, { key, path: ["items", id, ...path], src: value, kind: resultKindForSlot(plugin, path, value) });
@@ -1752,8 +2205,17 @@ function computeEvaluatedState(state, registry) {
     }
     if (d.kind === "prop") {
       if (!out.items?.[d.itemId]) throw new Error(`Unknown item "@${d.itemId}" in "${token}"`);
-      const spath = pathToStored(d.path); // display snake_case → stored camelCase (idempotent on camel)
+      // display snake_case → stored camelCase (idempotent on camel), then a
+      // DECLARED-LIST element field's canonical NAME → its storage key
+      // (`points.3.x` → points[3][0] for a tuple element; a no-op otherwise).
+      const spath = storedListPath(pathToStored(d.path));
       const depKey = ["items", d.itemId, ...spath].join(".");
+      // A whole-LIST read settles the equation slots INSIDE the list too, so
+      // `= other.points` reads evaluated element values rather than the raw "="
+      // strings sitting in them. Cycle detection applies to each as usual.
+      if (listDeclAt(spath))
+        for (const innerKey of itemSlotKeys.get(d.itemId) ?? [])
+          if (innerKey.startsWith(`${depKey}.`)) requireSlot(innerKey);
       // A NUMBER-kind slot keeps the strict rule: a non-equation string property
       // cannot feed arithmetic (loud). A TYPED ("=") slot may read a typed
       // property (literal color/string, or another "=" slot) — the post-eval
@@ -1866,8 +2328,24 @@ function computeEvaluatedState(state, registry) {
       // RESULT-KIND VALIDATION. Number-kind slots keep the exact legacy message
       // ("evaluates to NaN/Infinity"); any-type "=" slots validate against the
       // property kind and fail LOUDLY on a mismatch (→ default, never a silent
-      // bad value).
-      if (slot.kind === "number") {
+      // bad value). An UNRESOLVED slot (nothing declares its kind) gets its own
+      // message naming the fix, rather than a confusing type mismatch against a
+      // kind that was only ever a guess.
+      if (slot.kind === UNRESOLVED_KIND) {
+        // A whole ELEMENT of a declared list lands here on purpose: it has no
+        // declared kind of its own, so the message names the slots that DO.
+        const inList = listDeclAt(slot.path.slice(2));
+        throw new Error(inList
+          ? `"${slot.path.slice(2).join(".")}" is a whole list ELEMENT, which has no value kind of its own — bind one of its fields instead (${inList.decl.element.fields.map((f) => f.name).join(", ")}), or bind the whole list by reference`
+          : `"${slot.path.slice(2).join(".")}" has no declared value kind, so an "=" equation cannot be validated here — give it a core/properties.js PROPS entry, or a plugin default at this path`);
+      } else if (slot.kind === "list") {
+        // TWO-PART, both loud: an array (resultMatchesKind) whose ELEMENTS match
+        // the declared shape (listResultProblem names which element and field is
+        // wrong, and the minLength floor).
+        const found = listDeclAt(slot.path.slice(2));
+        const problem = found ? listResultProblem(found.decl, v) : "has no list declaration to validate against";
+        if (problem) throw new Error(`= expression result ${problem}`);
+      } else if (slot.kind === "number") {
         if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`evaluates to ${v}`);
       } else if (!resultMatchesKind(v, slot.kind, PROPS[slot.path.slice(2).join(".")]?.options)) {
         throw new Error(`= expression result ${JSON.stringify(v)} is not a valid ${slot.kind} value`);
@@ -1985,7 +2463,12 @@ export function withVariableRenamed(doc, oldName, newName, registry) {
       const itemType = type ?? findItemType(doc, itemId);
       if (!itemType) continue;
       const plugin = registry.get(itemType);
-      for (const [path, value] of leaves(sub))
+      // Declared LIST elements are walked too (see declaredListLeaves): a
+      // per-element equation inside a WHOLE-LIST keyframe is invisible to
+      // leaves(), so a variable rename would have silently skipped it. A SPARSE
+      // per-element delta ({points: {3: {0: "=speed"}}}) is already covered —
+      // leaves() descends plain objects.
+      for (const [path, value] of [...leaves(sub), ...declaredListLeaves(sub)])
         if (typeof value === "string" && isNumericSlot(plugin, path)) {
           const renamed = renameRefs(value);
           if (renamed !== value) delta = setPath(delta, ["items", itemId, ...path], renamed);

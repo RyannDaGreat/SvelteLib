@@ -36,7 +36,7 @@ const server = await createServer({
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
-const browser = await puppeteer.launch({ headless: "new" });
+const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
 const errors = [];
 const checks = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
@@ -46,7 +46,12 @@ const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.pu
 // The probe ignores these at boot only; any error DURING the color interactions
 // (recorded after boot is cleared) still fails. If the demo fixture is
 // regenerated this list becomes dead and can be dropped.
-const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i];
+// This container's headless graphics reality, allowlisted the same way
+// tests/escape_propagation_probe.js and tests/lens_flare_scale_probe.js do it:
+// the demo fixture carries video widgets that probe for an adapter the software
+// renderer does not expose and fall back, which is EXPECTED here and is not this
+// suite's to own. Named specifically — the gate still fails on anything else.
+const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i, /no.*adapter|adapters/i];
 const isBootNoise = (s) => IGNORE_BOOT.some((re) => re.test(s));
 
 // Drive a picker strip (.cp-hue / .cp-alpha) or the .cp-square with synthetic

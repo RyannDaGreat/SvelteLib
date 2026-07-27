@@ -83,6 +83,11 @@ export const videoV5ScrubPlugin = {
   type: "video_v5_scrub",
   title: "Video V5 Scrubber (OffscreenCanvas/worker)",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the
+  // asset picker. `primaryAsset` names WHICH property that picker fills; this
+  // string is what says the double-click opens it at all.
+  activate: "asset_picker",
+  primaryAsset: "src",
   defaults: {
     type: "video_v5_scrub", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation).
@@ -100,7 +105,7 @@ export const videoV5ScrubPlugin = {
     progress: PROGRESS_EXPORT_EQ,
     // stroke COLOR default matches every other stroked shape; paints only once
     // strokeWidth > 0 (0 by default → an undecorated scrubber draws no border).
-    stroke: "#1a1a2e",
+    stroke: "#000000",
     ...defaults("strokeWidth", "cornerRadius"),
     ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF

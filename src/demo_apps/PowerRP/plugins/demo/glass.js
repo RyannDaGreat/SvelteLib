@@ -36,7 +36,7 @@ const CUSTOM = customProps([
   { name: "blurRadius", kind: "number", default: 8, min: 0, help: "Gaussian blur radius (world px) of the backdrop seen through the glass. Moderate keeps it readable — Liquid Glass is a frost, not an opaque blur." },
   { name: "refractionStrength", kind: "number", default: 14, min: 0, help: "Maximum edge displacement (world px). The defining Liquid Glass trait: surrounding content bends inward at the rim (strong at the border, ~0 in the interior)." },
   { name: "edgeFalloff", kind: "number", default: 22, min: 0, help: "How far inward (world px) the refraction + specular band decays. Larger = a wider bevelled rim." },
-  { name: "lightAngle", kind: "number", default: LIGHT_ANGLE_DEFAULT, help: "Direction TO the light in radians (screen space; -π/2 is straight above). The lit edge catches the thin bright highlight." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: LIGHT_ANGLE_DEFAULT, help: "Direction TO the light (screen space; -90° is straight above, 0° is from the right). The lit edge catches the thin bright highlight." },
   { name: "lightIntensity", kind: "number", default: 0.8, min: 0, help: "Strength of the top-light specular (the thin rim hairline + the broad soft sheen)." },
   { name: "tint", kind: "color", default: "rgba(255,255,255,0.14)", paint: true, help: "The glass skin's color CAST (rgb) and STRENGTH (alpha). The neutral is luminance-adaptive — pale over dark content, smoky over light — and this tints it; keep the alpha low for clarity." },
   { name: "saturation", kind: "number", default: 0.92, min: 0, max: 1, help: "How much backdrop color is kept (1 = unchanged, 0 = gray). Slightly below 1 for the subtle frosted desaturation." },

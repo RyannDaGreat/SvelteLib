@@ -54,7 +54,7 @@ const CUSTOM = customProps([
     help: "STAR only: how many points the star has. Ignored by the circle and square lenses." },
   { name: "innerRatio", kind: "number", default: 0.5, min: 0, max: 1,
     help: "STAR only: how deep the notches cut — the inner radius as a fraction of the outer. Smaller is spikier." },
-  { name: "supersample", kind: "checkbox", default: true,
+  { name: "supersample", kind: "boolean", default: true,
     help: "Re-render the content under the lens at magnified resolution (crisp). Off samples the already-drawn backdrop scaled up (softer, cheaper)." },
 ]);
 
@@ -139,7 +139,7 @@ export const magnifyPlugin = {
     // exactly like rotationAnchor.
     origin: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     // The rim/border — the shared stroked-box bundle. strokeWidth 0 = no rim.
-    stroke: "#1a1a2e", strokeWidth: 4,
+    stroke: "#000000", strokeWidth: 4,
     ...defaults("opacity"), // opacity:1
     ...CUSTOM.defaults,     // shape / magnification / points / innerRatio / supersample (self.*)
   },
@@ -149,6 +149,10 @@ export const magnifyPlugin = {
     { key: "origin.x", label: "Target X", kind: "number", category: "positioning" },
     { key: "origin.y", label: "Target Y", kind: "number", category: "positioning" },
     ...props("stroke", "strokeWidth", { stroke: { label: "Rim color" }, strokeWidth: { label: "Rim width" } }),
+    // OPACITY: the default is already spread above and emit() already sends it to
+    // the op — it simply had no Inspector row, so the knob existed and was
+    // unreachable. (Found by the universal-effects sweep.)
+    ...props("opacity"),
     ...CUSTOM.rows, // the lens knobs (Inspector "Custom" region)
   ],
   /**

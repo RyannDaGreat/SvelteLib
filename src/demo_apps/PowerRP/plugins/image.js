@@ -52,6 +52,11 @@ export const imagePlugin = {
   type: "image",
   title: "Image",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the
+  // asset picker. `primaryAsset` names WHICH property that picker fills; this
+  // string is what says the double-click opens it at all.
+  activate: "asset_picker",
+  primaryAsset: "src",
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
   // the positioning bundle, the stroked-BORDER slice (stroke/strokeWidth/
   // cornerRadius — a photo has a frame, not a fill), and opacity are inherited,
@@ -66,8 +71,8 @@ export const imagePlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     src: BLANK_SRC,
     // stroke COLOR default matches every other stroked shape (rect/circle/donut
-    // all use INK #1a1a2e); it only paints once strokeWidth > 0 (0 by default).
-    stroke: "#1a1a2e",
+    // all use INK #000000); it only paints once strokeWidth > 0 (0 by default).
+    stroke: "#000000",
     ...defaults("strokeWidth", "cornerRadius", "opacity"), // strokeWidth:0, cornerRadius:0, opacity:1
     ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)

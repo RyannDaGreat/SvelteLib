@@ -19,6 +19,7 @@
  */
 
 import { video, pushTransform, popTransform } from "./ir.js";
+import { applyNodeEffects } from "./effects.js";
 
 /**
  * Pure function. Video widget state → IR (local space). `ref` names an entry
@@ -141,5 +142,13 @@ function emitNode(node, byId, pdfDisplay) {
   // `state`); cropbox + group use arg 2, decorators use arg 3.
   const cmds = node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, node.world, renderCtx);
   if (cmds.length === 0) return [];
-  return [pushTransform(node.world), ...cmds, popTransform()];
+  // THE UNIVERSAL EFFECTS SEAM. This is the ONE place every rendered node passes
+  // through, so the shared effects bundle (shadow / bloom / blend / inner shadow
+  // / soft edges) is applied HERE for every plugin core/registry.js injected it
+  // into — a plugin CANNOT forget it, which is the whole point (28 of 74 plugins
+  // had no effect rows when eligibility was four hand-copied lines per file).
+  // applyNodeEffects returns `cmds` untouched both for the 34 plugins that call
+  // applyEffects inside their own emit() (never a double wrap) and whenever every
+  // effect is off (byte-identical to before this seam existed).
+  return [pushTransform(node.world), ...applyNodeEffects(node, cmds), popTransform()];
 }

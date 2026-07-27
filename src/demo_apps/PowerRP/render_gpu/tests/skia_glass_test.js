@@ -21,7 +21,7 @@ import { renderToPng } from "../skia/node_render.js";
 import { rect, ellipse, polygon, pushTransform, popTransform, glassBackdrop } from "../ir.js";
 import { glassPlugin } from "../../plugins/demo/glass.js";
 
-const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".claude_vlm_checks");
 const DPR = 2;
 const W = 760, H = 460;
 const VIEW = { zoom: 1, panX: 0, panY: 0, dpr: DPR };

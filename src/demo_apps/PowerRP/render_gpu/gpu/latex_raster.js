@@ -156,10 +156,10 @@ const glyphGeom = new Map();
 const mathErrors = new Map();
 
 /** The default ink color for a typeset equation — the INK convention every
- * stroked shape / the text widget uses (#1a1a2e), so an equation and a line of
+ * stroked shape / the text widget uses (#000000), so an equation and a line of
  * text read at the same color by default. Used when a caller omits an ink
- * override (keeps the pre-Round-15.4 pixel output byte-identical). */
-export const LATEX_DEFAULT_INK = "#1a1a2e";
+ * override. */
+export const LATEX_DEFAULT_INK = "#000000";
 
 // The MathJax UMD bundle is loaded LAZILY (a <script> tag pointing at Vite's
 // `?url`, done INSIDE this dynamic path so bare node never parses the Vite-only
@@ -307,10 +307,9 @@ export function latexIsEmpty(latex) {
  * roundLatexScale so the key is stable across a continuous resize/font-size
  * drag. The INK color is part of the key (Round 15.4): two colors of the same
  * equation are two distinct rasters. Omitting ink → LATEX_DEFAULT_INK, so an
- * un-colored equation's ref is stable and its pixels are byte-identical to the
- * pre-ink output. Mirrors pdf_page_raster.pdfPageRef.
+ * un-colored equation's ref is stable. Mirrors pdf_page_raster.pdfPageRef.
  *
- * @example latexRef("x^2", 1) // "latex:x^2:#1a1a2e:1"
+ * @example latexRef("x^2", 1) // "latex:x^2:#000000:1"
  * @example latexRef("\\frac{a}{b}", 2.34, "#ff0000") // "latex:\\frac{a}{b}:#ff0000:2.3"
  */
 export function latexRef(latex, scale, ink = LATEX_DEFAULT_INK) {

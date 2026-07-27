@@ -275,14 +275,14 @@ export const clockAnalogPlugin = {
     type: "clock_analog", x: 120, y: 120, w: 220, h: 220, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     // Face: a classic near-white dial with a dark rim.
-    fill: "#f7f7fa", stroke: "#1a1a2e", strokeWidth: 3,
+    fill: "#f7f7fa", stroke: "#000000", strokeWidth: 3,
     // TIME in seconds (0 = 12:00:00) — the equation-bindable time source.
     time: 0,
-    showNumerals: true, numeralFont: DEFAULT_FONT, numeralSize: 20, numeralColor: "#1a1a2e",
-    showTicks: true, tickColor: "#1a1a2e",
+    showNumerals: true, numeralFont: DEFAULT_FONT, numeralSize: 20, numeralColor: "#000000",
+    showTicks: true, tickColor: "#000000",
     showSecondHand: true,
-    hourHandColor: "#1a1a2e", hourHandWidth: 7, hourHandLength: 0.5,
-    minuteHandColor: "#1a1a2e", minuteHandWidth: 5, minuteHandLength: 0.72,
+    hourHandColor: "#000000", hourHandWidth: 7, hourHandLength: 0.5,
+    minuteHandColor: "#000000", minuteHandWidth: 5, minuteHandLength: 0.72,
     secondHandColor: "#e0245e", secondHandWidth: 2, secondHandLength: 0.85,
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blend/innerShadow, all EFFECT-OFF

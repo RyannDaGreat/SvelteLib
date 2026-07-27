@@ -31,7 +31,7 @@ import { rect, ellipse, pushTransform, popTransform, glassBackdrop, materialBack
 const require = createRequire(import.meta.url);
 const CanvasKitInit = require("canvaskit-wasm/bin/canvaskit.js");
 const BIN_DIR = path.dirname(require.resolve("canvaskit-wasm/bin/canvaskit.js"));
-const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".claude_vlm_checks");
 
 const W = 480, H = 300, DPR = 2;
 const VIEW = { zoom: 1, panX: 0, panY: 0, dpr: DPR };

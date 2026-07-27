@@ -27,6 +27,50 @@ import { stateXYForCenterPivotWorld } from "../../core/derive.js";
 import { diffState } from "../../core/deltas.js";
 
 /**
+ * THE drag-kind vocabulary: every value CanvasView may assign to `app.dragKind`,
+ * mapped to the HELD MODIFIERS that kind reads (semantic ids, worded once in
+ * core/shortcut_entries.js DRAG_MODIFIER_HINTS).
+ *
+ * WHY IT IS A TABLE AND NOT A COMMENT. This list was maintained by hand in TWO
+ * places that both drifted: the HintBar's modifier hints were scoped to
+ * "resize" only, and App.svelte's reachability prober walked a list that
+ * contained "endpoint" (which nothing assigned back then — the endpoint drag set
+ * only a LOCAL record, so it was invisible to every dragKind guard, which is how
+ * a mid-drag Escape deselected under it) and omitted "multiresize" (which
+ * everything did). Result: a multi-selection resize read Shift and Cmd, changed
+ * the outcome, and announced NOTHING — and the guard meant to catch exactly that
+ * was structurally blind to it. Both consumers now derive from here:
+ *   - app.svelte.js's `dragKind` setter THROWS on a value not in DRAG_KINDS, so a
+ *     new kind cannot exist without being declared; and
+ *   - the hint entries and the prober are GENERATED from this map, so declaring
+ *     a kind gets it probed, and declaring a modifier gets it a chip.
+ *
+ * A kind with NO modifiers still belongs here — it is a real drag state the
+ * prober must walk. "endpoint" and "modifier" — the two single-point handle
+ * grabs — read none (a lone point has nothing to relate to) and own ESCAPE
+ * instead: CanvasView cancels either from its capture-phase listener
+ * (ESC_CANCELABLE_DRAG_KINDS there lists exactly these two).
+ */
+export const DRAG_KIND_MODIFIERS = Object.freeze({
+  move: Object.freeze(["axisLock"]),
+  resize: Object.freeze(["uniform", "symmetric"]),
+  multiresize: Object.freeze(["uniform", "symmetric"]),
+  place: Object.freeze(["uniform", "symmetric"]),
+  band: Object.freeze(["bandAdd", "bandRemove", "bandInvert"]),
+  endpoint: Object.freeze([]),
+  modifier: Object.freeze([]),
+});
+
+/**
+ * Every legal `app.dragKind` value (null aside — null means "no drag"), derived
+ * from DRAG_KIND_MODIFIERS so the two can never disagree.
+ *
+ * @example DRAG_KINDS.includes("multiresize") // true
+ * @example DRAG_KINDS.length // 7
+ */
+export const DRAG_KINDS = Object.freeze(Object.keys(DRAG_KIND_MODIFIERS));
+
+/**
  * Pure function. Turns a flat geometry delta {key: value, …} (as diffState
  * returns) into the item-scoped [path, value] preview pairs CanvasView commits
  * — the bridge from a MINIMAL delta to app.setPreview's pair list. Each key maps

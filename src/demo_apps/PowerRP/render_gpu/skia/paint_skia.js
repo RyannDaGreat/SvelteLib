@@ -41,10 +41,12 @@
  */
 
 import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, videoV5FrameKey, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
-import { getTextLayout } from "./text_layout.js";
+import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
-import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill } from "./materials.js";
+import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill, materialSampleReach } from "./materials.js";
+import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
+import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
@@ -52,24 +54,74 @@ import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("vide
 
 const RAD2DEG = 180 / Math.PI;
 
-// Recursion caps: a lens NESTED inside a lens replay falls back to backdrop
-// sampling at MAX_SUPERSAMPLE_DEPTH (= the shared ir.js MAX_LENS_DEPTH, the SAME
-// bound every backend uses); crop/effect content re-renders are separately
-// bounded (unreachable for plugin-emitted documents — the deepest legit chain is
-// ~3 — but a pathological hand-built nesting is skipped loudly, not crashed).
+// ── RE-RENDER NESTING BUDGETS ────────────────────────────────────────────────
+// TWO INDEPENDENT counters (`depth` is {lens, subtree}) because the two kinds of
+// re-render have completely different cost shapes. They used to share ONE scalar,
+// and that conflation is exactly why wrapping a backdrop widget in an effect
+// broke it: the effect scratch spent the LENS budget, so the panel inside
+// instantly took its "nested too deep" fallback and sampled the (transparent)
+// scratch — the dark smear this file's `below` context now fixes.
+//
+//   depth.lens — BACKDROP re-renders: a lens/glass replay of the content BELOW
+//     it. THE nesting that MULTIPLIES work (a lens inside a lens's replay
+//     re-renders the scene again), so it keeps the hard shared bound and falls
+//     back to sampling a composited surface.
+//   depth.subtree — crop/effect CONTENT re-renders. Linear, not multiplicative:
+//     each subtree's content is painted exactly once, and a nested effect's
+//     region surface is CONTAINED BY its parent's (effectRegion clamps to the
+//     surface it draws on), so a level of nesting adds no work of its own. This
+//     counter is a stack-recursion guard, not a cost guard.
 const MAX_SUPERSAMPLE_DEPTH = MAX_LENS_DEPTH; // shared lens-depth cap (ir.js)
-const MAX_REENDER_DEPTH = 4;     // crop re-render nesting bound
-const MAX_EFFECT_DEPTH = 2;      // effect re-render nesting bound
+const MAX_REENDER_DEPTH = 4;     // crop content nesting bound
+// Was 2 — a number the UNIVERSAL effects bundle made reachable in ORDINARY
+// documents: an effected group holding an effected member already sits AT 2, so a
+// group inside a group would have silently dropped the innermost widget's
+// effects. Raised to a recursion guard now that the linear-cost argument above is
+// written down; 12 is deeper than any hand-authored group nesting and nowhere
+// near a stack limit. TOTAL work is bounded by EFFECT_PASS_BUDGET, not by depth.
+const MAX_EFFECT_DEPTH = 12;
+// Backstop on the TOTAL effect composites one paintIR call may run, so a
+// malformed or pathological IR cannot ask for unbounded offscreen allocation even
+// inside the depth bound. Two orders of magnitude above any real slide (a slide
+// with more than 4096 separately effected widgets is not a slide), so it cannot
+// bite a legitimate document; exhaustion degrades to drawing the widget WITHOUT
+// its effects and is reported, never silent.
+const EFFECT_PASS_BUDGET = 4096;
+
+/** The re-render depth at the top of a paintIR pass (nothing nested yet). */
+const ROOT_DEPTH = { lens: 0, subtree: 0 };
+
+/** Pure function. `d` one BACKDROP re-render deeper.
+ * @example deeperLens({lens: 0, subtree: 2}) // {lens: 1, subtree: 2}
+ */
+function deeperLens(d) {
+  return { lens: d.lens + 1, subtree: d.subtree };
+}
+
+/** Pure function. `d` one crop/effect CONTENT re-render deeper.
+ * @example deeperSubtree({lens: 1, subtree: 0}) // {lens: 1, subtree: 1}
+ */
+function deeperSubtree(d) {
+  return { lens: d.lens, subtree: d.subtree + 1 };
+}
 
 // PROXY quality: the backdrop ops replaced by a cheap stand-in at thumbnail size
-// (drawProxyBackdrop). materialFill (foreground, generative, NO re-render / NO
-// children) and the crop/effect subtrees are already cheap enough and stay on the
-// full path.
+// (drawProxyBackdrop). materialFill has its own universal stand-in
+// (drawProxyMaterialFill), and effectSubtree has drawProxyEffect. cropSubtree is
+// the only subtree that stays on the full path — it is a clip + a re-emit of
+// content already being drawn, with no offscreen and no per-pixel pass.
 const PROXY_BACKDROP_OPS = new Set(["blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop"]);
 // Frost alpha for the proxy stand-in of a backdrop panel with no tint of its own,
 // so the region still reads as a panel (not a hole) over the composited content.
 const PROXY_FROST_ALPHA = 0.14;
 const PROXY_FROST_RGBA = [1, 1, 1, PROXY_FROST_ALPHA]; // faint translucent white
+
+// Slack (device px) added around any rect that must fully contain a rasterized
+// shape: Skia's COVERAGE ANTIALIAS band reaches outside a shape's geometric edge,
+// and an integer-rounded rect can land flush against it. ONE constant for every
+// such rect here — the glass/material clip AABB and the effectSubtree source
+// region (effectRegion) — so the two can never drift apart.
+const COVERAGE_AA_SLOP_PX = 2;
 
 /**
  * Command (draws on `canvas`). Paints the IR `commands` through `view`
@@ -101,8 +153,11 @@ const PROXY_FROST_RGBA = [1, 1, 1, PROXY_FROST_ALPHA]; // faint translucent whit
  *     this flag. "proxy" is the CHEAP thumbnail/minimap path: every backdrop
  *     sampler (glass/material/magnify/blur) is replaced by drawProxyBackdrop (a
  *     cheap stand-in over the already-composited canvas — no composite read, no
- *     below-content re-render, no full-screen blur, no SkSL), and image/video ops
- *     sample through a mip chain. Invisible quality loss at ~100px.
+ *     below-content re-render, no full-screen blur, no SkSL), every effectSubtree
+ *     drops its per-pixel passes (drawProxyEffect: soft edges / inner shadow /
+ *     bloom go, the widget + its opacity + its blend mode + a shadow that reaches
+ *     at least a device pixel stay), and image/video ops sample through a mip
+ *     chain. Invisible quality loss at ~100px.
  */
 export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true, quality = "full" } = {}) {
   if (!fontCollection) throw new Error("paintIR(skia): a fontCollection is required (committed families + Noto fallback chain)");
@@ -111,16 +166,36 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   const bgColor = CanvasKit.Color4f(bg[0], bg[1], bg[2], bg[3]);
   const bounds = canvas.getDeviceClipBounds(); // [l, t, r, b] in device px; fresh canvas ⇒ full surface
   // Offscreen surfaces for backdrop/lens/effect. Browser passes a GPU-backed
-  // factory (MakeRenderTarget); Node defaults to CPU MakeSurface.
-  const mkSurface = makeSurface || ((w, h) => CanvasKit.MakeSurface(w, h));
+  // factory (MakeRenderTarget); Node/CLI has no GL context, so it falls back to a
+  // SOFTWARE surface (CanvasKit.MakeSurface).
+  //
+  // THE FALLBACK REPORTS, AND DELIBERATELY DOES NOT THROW. Bare-node rendering
+  // (cli/render.js, every node test) legitimately has no factory to pass, so this
+  // is EXPECTED there — but a BROWSER caller that forgets one silently allocates
+  // every backdrop/material/lens offscreen in software, rastering per-pixel
+  // material shaders on the CPU. That is the failure mode that froze a PDF export
+  // for 56 s and a fade for 105 s: real, and completely invisible without a signal.
+  // The two sibling fallbacks (browser_surface.js's null render target, and
+  // gpuService's software path) already report; this was the last silent one.
+  const mkSurface = makeSurface || ((w, h) => {
+    reportOnce("paintIR-no-surface-factory", "paintIR: no makeSurface factory was passed — backdrop/material/lens offscreens will be allocated as SOFTWARE surfaces (CanvasKit.MakeSurface), which rasters generative material shaders on the CPU and is very slow. Expected only in node/CLI.");
+    return CanvasKit.MakeSurface(w, h);
+  });
   // `antialias` rides on ctx so every leaf/border draw reaches the ONE per-frame
   // coverage-AA setting without re-threading it through each helper signature.
-  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality };
+  // bgColor rides on ctx because the backdrop RE-RENDER branch has to reproduce
+  // the composite it is standing in for, and a composite starts with THE CLEAR.
+  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality, bgColor };
   // liveGpu: was a real GPU factory passed in (editor/presenter on-screen or GPU
   // offscreen), or are we on a CPU surface (node/tests/gpuService)? The videoV2 op
   // uploads frames STRAIGHT to a GL texture only on the live path; on CPU it falls
   // back to a readback poster. `makeSurface !== null` is exactly that discriminator.
   ctx.liveGpu = makeSurface !== null;
+  // Effect composites spent so far this pass (the EFFECT_PASS_BUDGET backstop).
+  // Per-pass mutable state, like the surfaces above — never a module global. An
+  // OBJECT, not a number, because nested passes see a SPREAD COPY of ctx (the
+  // region-sized rctx): a counter must be shared by reference to be a total.
+  ctx.effectBudget = { used: 0 };
   // The letterbox clip (device px), built once — applied AFTER the full-surface
   // clear so the bars keep `background` and only the scene is clipped.
   const scissorRect = scissor ? CanvasKit.LTRBRect(scissor.x, scissor.y, scissor.x + scissor.w, scissor.y + scissor.h) : null;
@@ -134,19 +209,20 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // it CROPS its minimal region out of the composite-so-far (target.surface
   // snapshot) instead of re-walking the below-content — the redundant-walk win
   // (report Q3). It only re-renders when backdropScale > 1, and then only the
-  // minimal region. materialBackdrop is NOT here: it stays on the full-surface
-  // re-render (owns its own scratch surface) until per-material reach lands.
+  // minimal region. materialBackdrop is NOT here: it always owns its own scratch
+  // surface — region-bounded when the material DECLARES its outward sample reach
+  // (materials.materialSampleReach), full-surface when it does not.
   // PROXY quality (thumbnails/minimap): every backdrop sampler is replaced by a
   // cheap stand-in drawn over the already-composited canvas (paintFlat's proxy
   // branch → drawProxyBackdrop), so NONE of them read the composite-so-far — the
   // whole-scene offscreen is unnecessary and paintIR takes the fast direct path.
   // FULL is untouched (byte-identical).
-  const needsBackdrop = quality !== "proxy" && flat.some(({ cmd }) => cmd.op === "blurBackdrop" || cmd.op === "glassBackdrop" || (cmd.op === "magnifyBackdrop" && !cmd.supersample));
+  const needsBackdrop = quality !== "proxy" && readsComposite(commands);
   if (!needsBackdrop) {
     // Fast path: no backdrop sampler ⇒ draw straight onto the caller's canvas.
     canvas.clear(bgColor);
     if (scissorRect) { canvas.save(); canvas.clipRect(scissorRect, CanvasKit.ClipOp.Intersect, true); }
-    paintFlat(CanvasKit, { canvas, surface: null }, flat, view, ctx, 0);
+    paintFlat(CanvasKit, { canvas, surface: null }, flat, view, ctx, ROOT_DEPTH);
     if (scissorRect) canvas.restore();
     return;
   }
@@ -156,7 +232,7 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   if (!scene) throw new Error("paintIR(skia): makeSurface for backdrop compositing returned null");
   const sceneCanvas = scene.getCanvas();
   sceneCanvas.clear(bgColor);
-  paintFlat(CanvasKit, { canvas: sceneCanvas, surface: scene }, flat, view, ctx, 0);
+  paintFlat(CanvasKit, { canvas: sceneCanvas, surface: scene }, flat, view, ctx, ROOT_DEPTH);
   scene.flush();
   const img = scene.makeImageSnapshot();
   canvas.clear(bgColor); // bars = background (transparent for the editor, opaque for the presenter letterbox)
@@ -168,20 +244,126 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
 }
 
 /**
+ * Pure function. Does one op read an ALREADY-COMPOSITED surface (crop or
+ * snapshot) rather than re-rendering the content below it? `nested` is true
+ * inside an effectSubtree's content, where the op draws on a fresh scratch and
+ * must reach the OUTER composite instead.
+ *
+ * A SUPERSAMPLE magnifier is absent from both sets: it replays the below-LIST
+ * into its own small surface and never snapshots. `materialBackdrop` is absent
+ * from the top-level set for the same reason (its region is null, so it replays
+ * the whole below-list) but present when nested, because inside a scratch the
+ * region IS the widget footprint and cropping the outer composite is both exact
+ * and far cheaper than replaying the scene.
+ *
+ * @example opReadsComposite({op: "blurBackdrop"}, false) // true
+ * @example opReadsComposite({op: "magnifyBackdrop", supersample: true}, false) // false (it replays the below-list)
+ * @example opReadsComposite({op: "materialBackdrop"}, false) // false (top level: full-surface replay)
+ * @example opReadsComposite({op: "materialBackdrop"}, true) // true (nested: crops the outer composite)
+ */
+function opReadsComposite(cmd, nested) {
+  if (cmd.op === "blurBackdrop" || cmd.op === "glassBackdrop") return true;
+  if (cmd.op === "magnifyBackdrop") return !cmd.supersample;
+  return nested && cmd.op === "materialBackdrop";
+}
+
+/**
+ * Pure function. Must paintIR own an offscreen SCENE surface for this command
+ * list — i.e. does anything in it read the composite-so-far?
+ *
+ * RECURSES into subtree content, which the flat top-level scan it replaced did
+ * not: a sampler inside an effectSubtree needs the composite just as much as a
+ * top-level one, and the omission is precisely why a backdrop widget nested in an
+ * effect (a frosted panel with a drop shadow; any backdrop member of an effected
+ * group) rendered as a dark smear — it snapshotted the transparent effect scratch
+ * because no outer surface existed to crop.
+ *
+ * `cropSubtree` content draws on the SAME canvas/surface, so it inherits the
+ * top-level rule; `effectSubtree` content draws on a scratch, so it takes the
+ * nested rule.
+ *
+ * @param {object[]} commands - raw (unflattened) IR
+ * @param {boolean} nested - true when scanning inside an effectSubtree's content
+ * @returns {boolean}
+ *
+ * @example readsComposite([{op: "rect"}]) // false (fast path: no sampler)
+ * @example readsComposite([{op: "blurBackdrop"}]) // true
+ * @example readsComposite([{op: "effectSubtree", content: [{op: "materialBackdrop"}]}]) // true (nested sampler needs the outer composite)
+ */
+function readsComposite(commands, nested = false) {
+  for (const cmd of commands) {
+    if (opReadsComposite(cmd, nested)) return true;
+    if (cmd.op === "effectSubtree" && Array.isArray(cmd.content) && readsComposite(cmd.content, true)) return true;
+    if (cmd.op === "cropSubtree" && Array.isArray(cmd.content) && readsComposite(cmd.content, nested)) return true;
+  }
+  return false;
+}
+
+/**
+ * Query. WHICH surface holds the composite-so-far for `target`, and the DEVICE
+ * OFFSET from target's own device coordinates to that surface's. Inside an effect
+ * scratch that is the OUTER surface (target.below, offset by the effect region
+ * origin); otherwise it is the surface `target` draws on, at offset zero. Null
+ * when nothing owns a surface (paintIR's fast path) — a composite-reading op then
+ * throws its own loud internal-invariant error.
+ *
+ * @param {{surface: object|null, below?: {surface: object|null, dx: number, dy: number}}} target
+ * @returns {{surface: object, dx: number, dy: number}|null}
+ */
+function compositeSource(target) {
+  if (target.below?.surface) return target.below;
+  return target.surface ? { surface: target.surface, dx: 0, dy: 0 } : null;
+}
+
+/**
+ * Pure function. THE `below` context a subtree hands to its content: what a
+ * backdrop sampler inside it must treat as "everything beneath me".
+ *
+ *   flat    — the outer below-LIST (for a sampler that REPLAYS it, e.g. a crisp
+ *             supersample lens). A subtree's own content list starts empty, so
+ *             without this a lens inside a crop box or an effect replayed NOTHING.
+ *   surface — the composite-so-far SURFACE (for a sampler that CROPS or snapshots
+ *             it), resolved through compositeSource so nesting accumulates.
+ *   dx, dy  — the device offset from the CHILD's coordinates to that surface's
+ *             (an effect scratch shifts by its region origin; a crop box draws on
+ *             the same canvas, so it shifts by nothing).
+ *
+ * @param {object} target - the PARENT paint target
+ * @param {object[]} belowFlat - the outer below-list at the subtree op's position
+ * @param {number} dx - child→parent device x offset (0 for a crop box)
+ * @param {number} dy - child→parent device y offset
+ * @returns {{flat: object[], surface: object|null, dx: number, dy: number}}
+ *
+ * @example belowContext({canvas: {}, surface: null}, [], 0, 0) // {flat: [], surface: null, dx: 0, dy: 0}
+ * @example belowContext({canvas: {}, surface: null, below: {surface: "S", dx: 5, dy: 7, flat: []}}, [], 10, 20) // {flat: [], surface: "S", dx: 15, dy: 27}
+ */
+function belowContext(target, belowFlat, dx, dy) {
+  const outer = compositeSource(target);
+  return { flat: belowFlat, surface: outer?.surface ?? null, dx: (outer?.dx ?? 0) + dx, dy: (outer?.dy ?? 0) + dy };
+}
+
+/**
  * Command (draws on target.canvas). Walks the FLATTENED command list, drawing
  * each op in its already-resolved `world`. Leaf ops draw in local space (the
  * view+world CTM); backdrop/subtree ops are handled from the device root
  * (between-op state) where they control their own transforms and clips.
  *
  * Args:
- *   target ({canvas, surface}): the canvas to draw on and the Surface backing
- *     it (surface is null on the fast path; backdrop samplers require it)
+ *   target ({canvas, surface, below?}): the canvas to draw on, the Surface
+ *     backing it (surface is null on the fast path; backdrop samplers require
+ *     one), and — inside an effect scratch — the `below` context that names the
+ *     OUTER composite surface, its device offset, and the outer below-LIST
+ *     (see handleEffectSubtree).
  *   flat (object[]): flattenIR output — [{cmd, world}]
- *   depth (number): re-render recursion depth (for the compositor's caps)
+ *   depth ({lens, subtree}): re-render nesting levels (the two budgets above)
  */
 function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
   const canvas = target.canvas;
   const proxy = ctx.quality === "proxy";
+  // "Below" (z-order) for a backdrop sampler at index i = everything emitted
+  // before it AT THIS LEVEL, prefixed — inside an effect scratch — by the outer
+  // below-list, because the scratch itself holds nothing but the effected widget.
+  const belowOf = (i) => (target.below ? [...target.below.flat, ...flat.slice(0, i)] : flat.slice(0, i));
   for (let i = 0; i < flat.length; i++) {
     const { cmd, world } = flat[i];
     // PROXY: replace every backdrop sampler with a cheap stand-in over the
@@ -202,21 +384,29 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
       drawProxyMaterialFill(CanvasKit, canvas, cmd, view, world, ctx);
       continue;
     }
+    // PROXY: EVERY per-pixel effect pass is dropped (drawProxyEffect keeps only
+    // the widget, its opacity, its blend mode, and a drop shadow big enough to
+    // show at this size). Like the materialFill stand-in this is UNIVERSAL, not an
+    // allowlist — the reduced op is built field by field, so a SIXTH effect added
+    // to effectSubtree is dropped here by default and can never silently blow up
+    // thumbnails. FULL never enters this branch.
+    if (proxy && cmd.op === "effectSubtree") {
+      drawProxyEffect(CanvasKit, target, cmd, world, view, ctx, depth, belowOf(i));
+      continue;
+    }
     switch (cmd.op) {
       case "blurBackdrop":
         handleBlurBackdrop(CanvasKit, target, cmd, world, view);
         break;
       case "magnifyBackdrop":
-        // "Below" (z-order) = everything emitted before this op at this level.
-        handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
+        handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowOf(i), ctx, depth);
         break;
       case "glassBackdrop":
-        // "Below" (z-order) = everything emitted before this op at this level.
-        handleGlassBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
+        handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowOf(i), ctx, depth);
         break;
       case "materialBackdrop":
-        // A registry-dispatched SkSL material (generalizes glass). "Below" = everything emitted before it.
-        handleMaterialBackdrop(CanvasKit, target, cmd, world, view, flat.slice(0, i), ctx, depth);
+        // A registry-dispatched SkSL material (generalizes glass).
+        handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowOf(i), ctx, depth);
         break;
       case "materialFill":
         // A FOREGROUND registry material (the corkboard family): makeShader + fill,
@@ -236,10 +426,10 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
         break;
       }
       case "cropSubtree":
-        handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth);
+        handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belowOf(i));
         break;
       case "effectSubtree":
-        handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth);
+        handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belowOf(i));
         break;
       default: {
         const opacity = cmd.opacity ?? 1;
@@ -541,11 +731,18 @@ function drawMermaidVector(CanvasKit, canvas, cmd, opacity, fontCollection, aa =
  * PARITY NOTE: uses TileMode.Clamp (matches the GPU compositor's edge behavior)
  * rather than the transparent-edge CSS `filter:blur()` of the canvas2d bench —
  * avoids a darkened frame border on a full-screen blur.
+ *
+ * INSIDE AN EFFECT SCRATCH (a blur layer that is a member of an effected group)
+ * the composite lives on the OUTER surface, so the snapshot comes from
+ * compositeSource and is drawn shifted by -(dx, dy) — that lands outer device
+ * (dx, dy) at the scratch origin, which is where the scratch's own device (0, 0)
+ * is. Offset zero on the normal path ⇒ byte-identical.
  */
 function handleBlurBackdrop(CanvasKit, target, cmd, world, view) {
-  if (!target.surface) throw new Error("paintIR(skia): blurBackdrop requires an owned offscreen surface (internal invariant)");
-  target.surface.flush();
-  const snap = target.surface.makeImageSnapshot();
+  const src = compositeSource(target);
+  if (!src) throw new Error("paintIR(skia): blurBackdrop requires an owned offscreen surface (internal invariant)");
+  src.surface.flush();
+  const snap = src.surface.makeImageSnapshot();
   const sigma = cmd.radius * world.scale * view.zoom * view.dpr;
   const p = new CanvasKit.Paint();
   p.setAlphaf(cmd.opacity ?? 1);
@@ -554,7 +751,7 @@ function handleBlurBackdrop(CanvasKit, target, cmd, world, view) {
     filt = CanvasKit.ImageFilter.MakeBlur(sigma, sigma, CanvasKit.TileMode.Clamp, null);
     p.setImageFilter(filt);
   }
-  target.canvas.drawImage(snap, 0, 0, p);
+  target.canvas.drawImage(snap, -src.dx, -src.dy, p);
   p.delete();
   if (filt) filt.delete();
   snap.delete();
@@ -587,7 +784,7 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
   const magY = cmd.magnificationY ?? cmd.magnification;
   const aniso = magX !== magY;
 
-  if (cmd.supersample && depth < MAX_SUPERSAMPLE_DEPTH) {
+  if (cmd.supersample && depth.lens < MAX_SUPERSAMPLE_DEPTH) {
     // Crisp AND CHEAP: re-render the below-list ONLY within the lens footprint —
     // its device AABB clipped to the viewport, never the whole scene — into a
     // small GPU-backed scratch surface, then draw it back at the footprint,
@@ -619,12 +816,12 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
           CanvasKit.Matrix.scaled(magX, magY),
           CanvasKit.Matrix.translated(-originDev.x, -originDev.y),
         ));
-        paintFlat(CanvasKit, { canvas: subCanvas, surface: sub }, belowFlat, view, ctx, depth + 1);
+        paintFlat(CanvasKit, { canvas: subCanvas, surface: sub }, belowFlat, view, ctx, deeperLens(depth));
       } else {
         const lensView = lensViewFor(view, centerWorld, magX, originWorld);
         // Shift the lens view so device (x0,y0) maps to the small surface's origin.
         const shifted = { ...lensView, panX: lensView.panX - x0 / view.dpr, panY: lensView.panY - y0 / view.dpr };
-        paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shifted, ctx, depth + 1);
+        paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shifted, ctx, deeperLens(depth));
       }
       sub.flush();
       const lensImg = sub.makeImageSnapshot();
@@ -641,9 +838,13 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
   } else {
     // Soft: sample the composite-so-far, magnified about the origin. scale(magX,
     // magY) — with magX === magY this is the isotropic scale(M, M), byte-identical.
-    if (!target.surface) throw new Error("paintIR(skia): magnifyBackdrop sampling requires an owned offscreen surface");
-    target.surface.flush();
-    const snap = target.surface.makeImageSnapshot();
+    // compositeSource resolves WHICH surface holds that composite: the outer one
+    // when this lens sits inside an effect scratch (offset zero otherwise, so the
+    // ordinary path is untouched).
+    const src = compositeSource(target);
+    if (!src) throw new Error("paintIR(skia): magnifyBackdrop sampling requires an owned offscreen surface");
+    src.surface.flush();
+    const snap = src.surface.makeImageSnapshot();
     const ds = view.zoom * view.dpr;
     const centerDev = { x: centerWorld.x * ds + view.panX * view.dpr, y: centerWorld.y * ds + view.panY * view.dpr };
     const originDev = { x: originWorld.x * ds + view.panX * view.dpr, y: originWorld.y * ds + view.panY * view.dpr };
@@ -658,7 +859,10 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
     ));
     const p = new CanvasKit.Paint();
     p.setAlphaf(opacity);
-    canvas.drawImageOptions(snap, 0, 0, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, p);
+    // Placing the snapshot at -(dx, dy) makes outer texel (dx, dy) the scratch's
+    // own device origin, so the sampling relation above holds unchanged in the
+    // scratch's coordinates. (0, 0) on the normal path.
+    canvas.drawImageOptions(snap, -src.dx, -src.dy, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, p);
     p.delete();
     canvas.restore();
     snap.delete();
@@ -767,7 +971,6 @@ let _glassEffectCK = null; // the CanvasKit instance it was compiled against
 const GLASS_SHADOW_SIGMA_FRAC = 0.22; // blur σ as a fraction of the panel half-height (soft, diffuse)
 const GLASS_SHADOW_DY_FRAC = 0.12;    // downward offset as a fraction of half-height
 const GLASS_SHADOW_APPEAR_END = 0.8;  // matches the SkSL APPEAR_END: the shadow fades in with the skin
-const GLASS_CLIP_SLOP_PX = 2;         // AABB clip slack (device px) covering the coverage antialias band
 
 /**
  * Query→build (compiles once, memoized per CanvasKit instance). Returns the
@@ -857,7 +1060,7 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
   // zero outside the SDF, so the rounded/squircle edge + antialias come from the
   // shader itself; the circumradius (hypot of the half-extents) covers any
   // rotation, plus a small slop for the coverage antialias band.
-  const reach = Math.hypot(halfWDev, halfHDev) + GLASS_CLIP_SLOP_PX;
+  const reach = Math.hypot(halfWDev, halfHDev) + COVERAGE_AA_SLOP_PX;
   canvas.save();
   canvas.clipRect(CanvasKit.LTRBRect(cxDev - reach, cyDev - reach, cxDev + reach, cyDev + reach), CanvasKit.ClipOp.Intersect, false);
   canvas.drawPaint(p);
@@ -883,7 +1086,7 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
  *   reach  = hypot(halfWDev, halfHDev)                        // circumradius (covers any rotation)
  *   margin = maxGlassDisplacement(refractionDev, chromatic)   // outward refraction + chromatic
  *          + BLUR_SUPPORT_SIGMAS · blurSigma                  // Gaussian frost support
- *          + GLASS_CLIP_SLOP_PX                               // coverage AA band
+ *          + COVERAGE_AA_SLOP_PX                              // coverage AA band
  *
  * @param {number} cxDev,cyDev - panel center (device px)
  * @param {number} halfWDev,halfHDev - panel half-extents (device px)
@@ -900,9 +1103,39 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
  * @example glassRegion(-500, 300, 100, 80, 10, 0.08, 6, 1920, 1080) // null (off-surface)
  */
 function glassRegion(cxDev, cyDev, halfWDev, halfHDev, refractionDev, chromatic, blurSigma, deviceW, deviceH) {
-  const reach = Math.hypot(halfWDev, halfHDev);
-  const margin = maxGlassDisplacement(refractionDev, chromatic) + BLUR_SUPPORT_SIGMAS * blurSigma + GLASS_CLIP_SLOP_PX;
-  const half = reach + margin;
+  const margin = maxGlassDisplacement(refractionDev, chromatic) + BLUR_SUPPORT_SIGMAS * blurSigma + COVERAGE_AA_SLOP_PX;
+  return backdropRegion(cxDev, cyDev, halfWDev, halfHDev, margin, deviceW, deviceH);
+}
+
+/**
+ * Pure function. THE backdrop-region rectangle, shared by every panel-shaped
+ * backdrop sampler: the panel's rotation-safe circumradius plus the caller's
+ * `marginDev` (its shader's outward sample reach + blur support + AA slop), snapped
+ * outward to integer device px and clamped to the surface. Null when the clamped
+ * box is empty — the panel is entirely off-surface, so nothing it draws is visible.
+ *
+ *   half = hypot(halfWDev, halfHDev) + marginDev
+ *
+ * Factored out of glassRegion when materialBackdrop gained a declared reach
+ * (materials.materialSampleReach): the two callers differ ONLY in how they compute
+ * the margin, so the clamp/snap arithmetic — the part a second copy would drift on
+ * — lives here once. INTEGER bounds are load-bearing: the region origin becomes a
+ * device-pixel offset for the crop / re-render, and a fractional offset would
+ * resample the backdrop instead of translating it.
+ *
+ * @param {number} cxDev,cyDev - panel center (device px)
+ * @param {number} halfWDev,halfHDev - panel half-extents (device px)
+ * @param {number} marginDev - outward reach to add on every side (device px, >= 0)
+ * @param {number} deviceW,deviceH - surface size (the clamp bounds)
+ * @returns {{x0:number,y0:number,x1:number,y1:number}|null}
+ *
+ * @example backdropRegion(400, 300, 150, 100, 0, 1920, 1080) // {x0: 219, y0: 119, x1: 581, y1: 481}
+ * @example backdropRegion(400, 300, 150, 100, 20, 1920, 1080) // {x0: 199, y0: 99, x1: 601, y1: 501}
+ * @example backdropRegion(10, 10, 20, 20, 0, 1920, 1080) // {x0: 0, y0: 0, x1: 39, y1: 39} (clamped at the surface edge)
+ * @example backdropRegion(-500, 300, 100, 80, 0, 1920, 1080) // null (entirely off-surface)
+ */
+function backdropRegion(cxDev, cyDev, halfWDev, halfHDev, marginDev, deviceW, deviceH) {
+  const half = Math.hypot(halfWDev, halfHDev) + marginDev;
   const x0 = Math.max(0, Math.floor(cxDev - half)), y0 = Math.max(0, Math.floor(cyDev - half));
   const x1 = Math.min(deviceW, Math.ceil(cxDev + half)), y1 = Math.min(deviceH, Math.ceil(cyDev + half));
   if (x1 <= x0 || y1 <= y0) return null;
@@ -916,29 +1149,67 @@ function glassRegion(cxDev, cyDev, halfWDev, halfHDev, refractionDev, chromatic,
  * blurred, which is the glass-backdrop perf win. `region` null ⇒ the whole surface
  * (the material full-surface fallback, until per-material reach lands).
  *
- * depth < cap: two ways to produce the SHARP backdrop, both byte-equivalent for a
- * backdrop that fully covers the region (a camera-backed / full-coverage scene —
- * report Q3):
+ * INSIDE AN EFFECT SCRATCH (target.below — a frosted/CRT/glass panel carrying a
+ * drop shadow or soft edges, or any backdrop member of an effected group) the
+ * composite lives on the OUTER surface and the scratch itself is empty, so the
+ * region is CROPPED out of that outer surface at the effect region's offset. This
+ * is taken at ANY depth, because a crop recurses into nothing — it is the branch
+ * whose absence produced the dark smear (the old code fell through to
+ * snapshotting the transparent scratch). It is also the CHEAP branch: inside a
+ * scratch the "whole surface" IS the widget's own footprint, so even a material's
+ * region-less request costs the panel's pixels rather than the canvas's. A
+ * supersample request (backdropScale > 1) is clamped to 1 here — the outer
+ * composite only exists at device resolution, so upsampling it would cost pixels
+ * and add no detail.
+ *
+ * depth.lens < cap: two ways to produce the SHARP backdrop, both byte-equivalent
+ * for a backdrop that fully covers the region (a camera-backed / full-coverage
+ * scene — report Q3):
  *   - backdropScale <= 1 with a snapshot-able composite surface ⇒ CROP the region
  *     out of the composite-so-far (target.surface) and downsample (the redundant-
  *     walk elimination — no re-render of the below-content at all).
  *   - otherwise (backdropScale > 1, the true supersample; or no owned surface) ⇒
  *     RE-RENDER the below-content into a `scale`-sized region surface, shifted so
  *     region (x0,y0) maps to the surface origin.
- * depth >= cap: fall back to sampling the WHOLE surface being drawn into (device
- * res, scale ignored; non-null at depth >= 1, matching the magnifier's recursion
- * guard).
+ * depth.lens >= cap: fall back to sampling the WHOLE surface being drawn into
+ * (device res, scale ignored; non-null at depth >= 1, matching the magnifier's
+ * recursion guard).
  *
  * `sampleMatrix` maps an image texel to its DEVICE coordinate: translate(x0,y0)·
  * scale(1/scale) (texel t → region origin + t/scale) for the region paths, null
  * (identity, device px) for the whole-surface fallback. Caller deletes sharp +
- * blurred.
+ * blurred (blurred may be null — see below).
+ *
+ * `needBlur` (default true) is the OPT-OUT for a material that declares it never
+ * samples the blurred child (materials carry `usesBlurredBackdrop: false`; see
+ * handleMaterialBackdrop). When false the Gaussian pass is SKIPPED entirely and
+ * `blurred` comes back null — the expensive half of this function, measured at
+ * roughly two thirds of a comic-halftone widget's whole per-frame cost. It changes
+ * NO pixels for such a material by construction: the texture it skips is one the
+ * shader does not read, and the caller binds the sharp texture into the slot so
+ * the child count/contract is unchanged.
  */
-function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, scale, blurSigma, region) {
-  if (depth < MAX_SUPERSAMPLE_DEPTH) {
-    const full = !region;
-    const x0 = full ? 0 : region.x0, y0 = full ? 0 : region.y0;
-    const x1 = full ? ctx.deviceW : region.x1, y1 = full ? ctx.deviceH : region.y1;
+function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, scale, blurSigma, region, needBlur = true) {
+  const full = !region;
+  const x0 = full ? 0 : region.x0, y0 = full ? 0 : region.y0;
+  const x1 = full ? ctx.deviceW : region.x1, y1 = full ? ctx.deviceH : region.y1;
+  if (target.below?.surface) {
+    const s = Math.min(scale, 1); // the outer composite exists at device res only
+    const sw = Math.max(1, Math.round((x1 - x0) * s));
+    const sh = Math.max(1, Math.round((y1 - y0) * s));
+    const { surface, dx, dy } = target.below;
+    surface.flush();
+    const composite = surface.makeImageSnapshot();
+    const sharp = cropDownsample(CanvasKit, ctx, composite, x0 + dx, y0 + dy, x1 + dx, y1 + dy, sw, sh);
+    composite.delete();
+    const blurred = needBlur ? blurredImageOf(CanvasKit, ctx, sharp, blurSigma * s, sw, sh) : null;
+    // The shader works in THIS surface's device coordinates, so the matrix maps a
+    // texel back to (x0, y0) + texel/s exactly as on the ordinary crop path — the
+    // outer offset was consumed by the crop rect above.
+    const sampleMatrix = CanvasKit.Matrix.multiply(CanvasKit.Matrix.translated(x0, y0), CanvasKit.Matrix.scaled(1 / s, 1 / s));
+    return { sharp, blurred, sampleMatrix };
+  }
+  if (depth.lens < MAX_SUPERSAMPLE_DEPTH) {
     const sw = Math.max(1, Math.round((x1 - x0) * scale));
     const sh = Math.max(1, Math.round((y1 - y0) * scale));
     let sharp;
@@ -956,14 +1227,27 @@ function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, sca
       // x0=y0=0 ⇒ this reduces to the former whole-surface re-render exactly.)
       const sub = ctx.makeSurface(sw, sh);
       if (!sub) throw new Error("paintIR(skia): makeSurface for glass backdrop re-render returned null");
-      sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
+      // CLEAR TO THE SCENE BACKGROUND, not to transparency. This branch STANDS IN
+      // FOR the composite-so-far, and a composite begins with paintIR's clear — so
+      // clearing transparent here silently dropped it: a material over an otherwise
+      // empty page sampled pure transparency and exported BLACK (rgb(26,18,25)
+      // instead of rgb(220,204,184), 92% of opaque pixels near-black — pixel-proven
+      // by the export agent, PDF matching Skia exactly in both cases, i.e. the
+      // exporter was faithful and this line was the bug). The editor hid it because
+      // web/cameraFrame.js emits the camera background as a REAL rect op, which
+      // this re-render does draw; exportPdf/exportSvg pass sceneIR() alone, which
+      // has no such op. NOT to be copied to the EFFECT-content scratch: that one is
+      // correctly transparent, because its alpha IS the widget silhouette every
+      // composite reads (clearing it to the background would turn every shadow into
+      // a solid rect).
+      sub.getCanvas().clear(ctx.bgColor);
       const shiftedView = { ...view, dpr: view.dpr * scale, panX: view.panX - x0 / view.dpr, panY: view.panY - y0 / view.dpr };
-      paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shiftedView, ctx, depth + 1);
+      paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shiftedView, ctx, deeperLens(depth));
       sub.flush();
       sharp = sub.makeImageSnapshot();
       sub.dispose();
     }
-    const blurred = blurredImageOf(CanvasKit, ctx, sharp, blurSigma * scale, sw, sh);
+    const blurred = needBlur ? blurredImageOf(CanvasKit, ctx, sharp, blurSigma * scale, sw, sh) : null;
     const sampleMatrix = CanvasKit.Matrix.multiply(CanvasKit.Matrix.translated(x0, y0), CanvasKit.Matrix.scaled(1 / scale, 1 / scale));
     return { sharp, blurred, sampleMatrix };
   }
@@ -971,7 +1255,7 @@ function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, sca
   if (!target.surface) throw new Error("paintIR(skia): glassBackdrop fallback requires an owned offscreen surface (internal invariant)");
   target.surface.flush();
   const sharp = target.surface.makeImageSnapshot();
-  const blurred = blurredImageOf(CanvasKit, ctx, sharp, blurSigma, ctx.deviceW, ctx.deviceH);
+  const blurred = needBlur ? blurredImageOf(CanvasKit, ctx, sharp, blurSigma, ctx.deviceW, ctx.deviceH) : null;
   return { sharp, blurred, sampleMatrix: null }; // null ⇒ identity local space (device px)
 }
 
@@ -1096,36 +1380,69 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   const angle = world.rotation;
   const blurSigma = cmd.blurRadius * sd;
 
-  // Sharp + blurred backdrop children + the device→image sampleMatrix (glass's).
-  // TODO(per-material reach): materials pass region=null ⇒ the FULL-surface
-  // re-render (the pre-optimization path), because a material's maximum outward
-  // sample displacement is not yet part of the descriptor contract (glass knows
-  // its own via maxGlassDisplacement; CRT's barrel warp + radial chromatic reach
-  // is material-specific). Clipping the backdrop to a WRONG bbox would clip the
-  // material, so until materials.js exposes a maxReach(u) we deliberately render
-  // the whole surface here. This is the SAME behavior as before this optimization.
-  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma, null);
+  // THE BLURRED-CHILD OPT-OUT (a declared per-material capability). A material that
+  // DECLARES the standard {blurred, sharp} pair but never evals the blurred one
+  // (comic halftone: a print reads only the sharp tone) still paid a full-screen
+  // Gaussian blur of the composite-so-far EVERY FRAME for a texture nothing reads —
+  // measured at ~33 of the ~50 ms that widget cost per frame at 1400×900, i.e. two
+  // thirds of its total cost, with zero visual contribution.
+  //
+  // ABSENCE MEANS BUILD IT. Only an explicit `usesBlurredBackdrop === false` opts
+  // out, so glass / CRT / frosted / glitch / metaballs / rainy-window — every
+  // material that really does sample it — keep their blur untouched and a future
+  // material that forgets to declare anything can never silently lose it. The claim
+  // itself is cross-checked against the material's SkSL at import (comic_shader.js),
+  // so a material cannot declare false and then read the child.
+  //
+  // The CHILD SLOT IS STILL SUPPLIED — the contract is a fixed pair, and only the
+  // BLUR is skipped, not the shader signature. The stand-in is the SHARP texture,
+  // which is already built and therefore free; it is also the graceful choice if a
+  // material ever lied (an un-blurred backdrop, not a 1×1 smear).
+  const needBlur = material.usesBlurredBackdrop !== false;
+  // The framework's normalized uniform input: device geometry + world→device
+  // scale + the material's own (already-evaluated) knobs. The packer picks fields,
+  // and so does the DECLARED REACH below — both read the same `u`.
+  const u = { cx: cxDev, cy: cyDev, halfW: halfWDev, halfH: halfHDev, cornerRadius: cornerDev, angle, scale: sd, ...cmd.params };
+
+  // THE BACKDROP REGION — the minimal box the backdrop children must cover, which
+  // is the panel's circumradius plus how far outside itself this material's shader
+  // READS (its coverage is already bounded by its own SDF; only the sample
+  // displacement reaches out). A material that DECLARES that reach
+  // (materialSampleReach) gets glass's region-bounded backdrop; one that does not
+  // gets region=null, i.e. the historical FULL-surface re-render + full-surface
+  // Gaussian — expensive but never wrong, because a region smaller than the shader
+  // reads would make the child sampler clamp at the region edge and visibly wreck
+  // the material. Measured on a 240×160 panel over a 960×540 frame: 1,036,800
+  // offscreen px undeclared vs 68,644 declared (frosted), for a panel footprint of
+  // 38,400 px. Null region (not null reach) ⇒ the panel is entirely off-surface, so
+  // nothing it draws — backdrop, shader, border — is visible.
+  const reachDev = materialSampleReach(material, u);
+  let region = null;
+  if (reachDev !== null) {
+    region = backdropRegion(cxDev, cyDev, halfWDev, halfHDev,
+      reachDev + (needBlur ? BLUR_SUPPORT_SIGMAS * blurSigma : 0) + COVERAGE_AA_SLOP_PX, ctx.deviceW, ctx.deviceH);
+    if (!region) return;
+  }
+  const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma, region, needBlur);
 
   const effect = materialEffect(CanvasKit, material);
-  const blurChild = bd.blurred.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
+  const blurSource = bd.blurred ?? bd.sharp;
+  const blurChild = blurSource.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
   const sharpChild = bd.sharp.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
-  // The framework's normalized uniform input: device geometry + world→device
-  // scale + the material's own (already-evaluated) knobs. The packer picks fields.
-  const u = { cx: cxDev, cy: cyDev, halfW: halfWDev, halfH: halfHDev, cornerRadius: cornerDev, angle, scale: sd, ...cmd.params };
   const uniforms = material.pack(u);
   const shader = effect.makeShaderWithChildren(uniforms, [blurChild, sharpChild]);
   if (!shader) throw new Error(`paintIR(skia): material "${cmd.material}" makeShaderWithChildren returned null`);
   const p = new CanvasKit.Paint();
   p.setShader(shader);
   p.setAlphaf(opacity);
-  const reach = Math.hypot(halfWDev, halfHDev) + GLASS_CLIP_SLOP_PX; // circumradius + AA slop covers any rotation
+  const reach = Math.hypot(halfWDev, halfHDev) + COVERAGE_AA_SLOP_PX; // circumradius + AA slop covers any rotation
   canvas.save();
   canvas.clipRect(CanvasKit.LTRBRect(cxDev - reach, cyDev - reach, cxDev + reach, cyDev + reach), CanvasKit.ClipOp.Intersect, false);
   canvas.drawPaint(p);
   canvas.restore();
 
   p.delete(); shader.delete(); blurChild.delete(); sharpChild.delete();
-  bd.blurred.delete(); bd.sharp.delete();
+  bd.blurred?.delete(); bd.sharp.delete(); // blurred is null when the material opted out
 
   // Optional bright hairline border on top (reuses the glass border helper — the
   // materialBackdrop op carries the same cx/halfW/cornerRadius/stroke fields).
@@ -1172,7 +1489,7 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   const p = new CanvasKit.Paint();
   p.setShader(shader);
   p.setAlphaf(opacity);
-  const reach = Math.hypot(halfWDev, halfHDev) + GLASS_CLIP_SLOP_PX; // circumradius + AA slop covers any rotation
+  const reach = Math.hypot(halfWDev, halfHDev) + COVERAGE_AA_SLOP_PX; // circumradius + AA slop covers any rotation
   canvas.save();
   canvas.clipRect(CanvasKit.LTRBRect(cxDev - reach, cyDev - reach, cxDev + reach, cyDev + reach), CanvasKit.ClipOp.Intersect, false);
   canvas.drawPaint(p);
@@ -1310,6 +1627,67 @@ function drawProxyMaterialFill(CanvasKit, canvas, cmd, view, world, ctx) {
   drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); // materialFill carries stroke/strokeWidth
 }
 
+/**
+ * The smallest device-px reach a proxy-quality effect must have to be worth
+ * drawing: below one device pixel it cannot separate itself from the widget's own
+ * edge at thumbnail/minimap resolution.
+ */
+const PROXY_MIN_EFFECT_REACH_PX = 1;
+
+/**
+ * Pure function. A drop shadow's OUTWARD reach in device px: its Gaussian kernel
+ * support (BLUR_SUPPORT_SIGMAS·σ) plus the offset length (rotation-safe — a
+ * rotation preserves lengths). The same quantity ir.js bakes into effectSubtree's
+ * `margin`, recomputed here in DEVICE units because the proxy gate is a
+ * device-resolution question.
+ *
+ * @param shadow ({dx, dy, blur}) the op's shadow, world units
+ * @param scale (number) world length → device px (world.scale·zoom·dpr)
+ * @returns {number}
+ *
+ * @example shadowReachPx({dx: 0, dy: 0, blur: 0}, 4) // 0 (a hard shadow exactly under the widget)
+ * @example shadowReachPx({dx: 3, dy: 4, blur: 2}, 1) // 11 (3·2 blur support + 5 offset length)
+ * @example shadowReachPx({dx: 3, dy: 4, blur: 2}, 0.05) // 0.55 (zoomed out past a pixel — invisible)
+ */
+function shadowReachPx(shadow, scale) {
+  return (shadow.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(shadow.dx, shadow.dy)) * scale;
+}
+
+/**
+ * Command (draws on target.canvas). THE proxy-quality stand-in for an
+ * effectSubtree: the widget's own content, its opacity (which rides on the
+ * content ops) and its BLEND mode — plus a drop shadow when that shadow reaches
+ * at least one device pixel. Everything that needs a per-pixel pass over an
+ * offscreen (SOFT EDGES' morphology, the INNER SHADOW's field+blur+clip, BLOOM's
+ * blur) is dropped: each is a rim treatment a ~100px preview cannot resolve, and
+ * each costs more than the whole rest of the thumbnail.
+ *
+ * The reduction is built FIELD BY FIELD rather than by copying the op, so it is
+ * universal: an effect added to effectSubtree later is absent from the reduced op
+ * and is therefore dropped here automatically (the resolveProxyFill discipline —
+ * a new effect can never silently blow up thumbnails).
+ *
+ * When nothing survives the reduction (no visible shadow, normal blend) there is
+ * no reason to own an offscreen at all: the content draws STRAIGHT onto the
+ * canvas, which is the whole point of the proxy path.
+ */
+function drawProxyEffect(CanvasKit, target, cmd, world, view, ctx, depth, belowFlat = []) {
+  const scale = world.scale * view.zoom * view.dpr; // world length → device px
+  const shadow = cmd.shadow && shadowReachPx(cmd.shadow, scale) >= PROXY_MIN_EFFECT_REACH_PX ? cmd.shadow : null;
+  if (!shadow && cmd.blend === "normal") {
+    // A shadow-only subtree (the PDF hybrid split's re-issue) whose shadow was
+    // dropped has nothing left to draw.
+    if (!cmd.shadowOnly) paintFlat(CanvasKit, target, flattenIR(cmd.content), view, ctx, depth);
+    return;
+  }
+  handleEffectSubtree(CanvasKit, target, {
+    op: "effectSubtree",
+    x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h, margin: cmd.margin,
+    content: cmd.content, blend: cmd.blend, shadowOnly: cmd.shadowOnly,
+    shadow, bloom: null, innerShadow: null, softEdges: 0,
+  }, world, view, ctx, depth, belowFlat);
+}
+
 // ── subtree re-renders (self-contained `content`) ─────────────────────────────
 
 /**
@@ -1323,7 +1701,7 @@ function drawProxyMaterialFill(CanvasKit, canvas, cmd, view, world, ctx) {
  * subtree-effects gap — a GROUP's whole member subtree (plugins/group.emit). The
  * device-space clip + absolute-world content re-render handle both identically.
  */
-function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
+function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belowFlat = []) {
   const canvas = target.canvas;
   const opacity = cmd.opacity ?? 1;
   const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
@@ -1336,11 +1714,17 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
     canvas.restore();
   }
 
-  if (depth < MAX_REENDER_DEPTH) {
+  if (depth.subtree < MAX_REENDER_DEPTH) {
     const clip = deviceRRectPath(CanvasKit, cmd, deviceMatrix(CanvasKit, view, world));
     canvas.save();
     canvas.clipPath(clip, CanvasKit.ClipOp.Intersect, true);
-    paintFlat(CanvasKit, target, flattenIR(cmd.content), view, ctx, depth + 1);
+    // The content draws on THIS canvas/surface, so the below context carries no
+    // offset — but it does carry the outer below-LIST and the composite SURFACE,
+    // which the content's own (initially empty) list cannot supply. Without it a
+    // backdrop material inside a crop box replayed an empty below-list onto a
+    // transparent scratch and rendered BLACK in the editor (rgb(15,15,20)), and a
+    // supersample lens inside one magnified nothing.
+    paintFlat(CanvasKit, { ...target, below: belowContext(target, belowFlat, 0, 0) }, flattenIR(cmd.content), view, ctx, deeperSubtree(depth));
     canvas.restore();
     clip.delete();
   } else {
@@ -1388,29 +1772,83 @@ function deviceRRectPath(CanvasKit, cmd, deviceM) {
  * inner-shadow apply to the group silhouette as a unit. No branch needed — it's
  * just more content.
  *
+ * A BACKDROP SAMPLER IS ALSO JUST MORE CONTENT (the universal effects bundle: a
+ * frosted panel with soft edges, a magnifier with a drop shadow). It works
+ * because the scratch is cleared TRANSPARENT and these shaders write
+ * premultiplied ZERO outside their own SDF, so the scratch's alpha IS the panel
+ * silhouette — precisely what the feather, the shadow, the inner shadow and the
+ * bloom read. What such an op must NOT do is sample the scratch it is drawing
+ * into (it is empty), so `subTarget.below` points it at the OUTER composite and
+ * the outer below-LIST. Before that context existed a nested panel rendered as a
+ * dark smear (rgb(51,51,51) instead of rgb(148,51,158)) and a nested supersample
+ * lens replayed nothing.
+ *
+ * REGION CROP: every one of those offscreens covers only the effect's SOURCE
+ * REGION (effectRegion) — the device-px box the content can actually draw into,
+ * clamped to the surface — not the whole device. A 200×150 widget on a 1280×720
+ * canvas then costs its own pixels instead of the canvas's (the glassRegion /
+ * glassBackdropImages precedent, applied to the effect substrate). Every
+ * composite blits the content image at the region ORIGIN instead of (0, 0). The
+ * crop is a pure optimization: Skia draws an ImageFilter's output BEYOND the
+ * source image's rect (verified), so the shadow/bloom halo still spills exactly
+ * as far as it did over a device-sized source.
+ *
  * PARITY NOTES vs the WebGPU compositor:
  *   - SHADOW uses ImageFilter.MakeDropShadowOnly — a Skia-faithful drop shadow,
  *     soft on ALL FOUR sides by construction (fixes the old 16.1 top/left clip;
  *     the dormant analytic-erf path is unnecessary here).
- *   - BLEND multiply/screen are true separable Porter-Duff (Skia) vs the GPU's
- *     fixed-function factors; they differ where the backdrop is non-opaque.
- *   - No large-sigma source downscale (compositor's 15.3/15.5): the scratch
- *     surface is full device size, so extreme zoom is heavier but visually equal.
+ *   - BLEND is applyBlend: Photoshop's 26 modes, 17 as Skia's own SkBlendMode and
+ *     9 (Linear Burn, Darker/Lighter Color, Vivid/Linear/Pin Light, Hard Mix,
+ *     Subtract, Divide) as cached SkSL runtime blenders — see
+ *     render_gpu/skia/blend_modes.js. multiply/screen are true separable
+ *     Porter-Duff (Skia) vs the retired GPU path's fixed-function factors; they
+ *     differ where the backdrop is non-opaque.
+ *   - No large-sigma source downscale (compositor's 15.3/15.5): the source
+ *     region is at full device resolution, so extreme zoom is heavier but
+ *     visually equal.
  */
-function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
+function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belowFlat = []) {
   const canvas = target.canvas;
-  if (depth >= MAX_EFFECT_DEPTH) {
-    reportOnce("effect-reender-depth", `paintIR(skia): effect re-render nesting exceeded MAX_EFFECT_DEPTH (${MAX_EFFECT_DEPTH}) — skipping effected widget (pathological nesting)`);
-    return;
-  }
+  // The two guards DEGRADE to the widget without its effects (loudly) instead of
+  // dropping the widget: "no effect" is always a legal rendering of a widget, an
+  // invisible widget never is.
+  const bail = (key, msg) => {
+    reportOnce(key, msg);
+    if (!cmd.shadowOnly) paintFlat(CanvasKit, target, flattenIR(cmd.content), view, ctx, depth);
+    return null;
+  };
+  if (depth.subtree >= MAX_EFFECT_DEPTH)
+    return bail("effect-reender-depth", `paintIR(skia): effect nesting exceeded MAX_EFFECT_DEPTH (${MAX_EFFECT_DEPTH}) — drawing the widget without its effects (pathological nesting)`);
+  if (ctx.effectBudget.used >= EFFECT_PASS_BUDGET)
+    return bail("effect-pass-budget", `paintIR(skia): this pass exceeded EFFECT_PASS_BUDGET (${EFFECT_PASS_BUDGET}) effect composites — drawing further effected widgets without their effects`);
+  ctx.effectBudget.used++;
   const ds = view.zoom * view.dpr;
   const scale = world.scale * ds; // world value → device px
 
+  const flatContent = flattenIR(cmd.content);
+  const region = effectRegion(CanvasKit, cmd, flatContent, view, scale, ctx);
+  if (!region) return; // the content draws nothing on this surface (empty or fully off-screen)
+  // The region surface is its own little device: helpers that size themselves by
+  // deviceW/deviceH (featherEdges, drawInnerShadow, and any nested op) must see
+  // the REGION size, and the content must render shifted so device (x0, y0) lands
+  // at the surface origin — the glassBackdropImages shifted-view convention.
+  const rctx = { ...ctx, deviceW: region.w, deviceH: region.h };
+  const rview = { ...view, panX: view.panX - region.x0 / view.dpr, panY: view.panY - region.y0 / view.dpr };
+
   // ONE offscreen render of the widget's own content (carries its own world).
-  const sub = ctx.makeSurface(ctx.deviceW, ctx.deviceH);
+  const sub = ctx.makeSurface(region.w, region.h);
   if (!sub) throw new Error("paintIR(skia): makeSurface for effect content returned null");
   sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
-  paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, flattenIR(cmd.content), view, ctx, depth + 1);
+  // THE `below` CONTEXT — what makes a BACKDROP SAMPLER work inside an effect.
+  // The scratch is cleared TRANSPARENT (that is what makes its alpha the widget's
+  // silhouette, which every composite below needs), so a glass / material /
+  // magnify / blur op inside it must not read the scratch: it must read the OUTER
+  // composite. Handing down the outer surface + the device offset (region origin,
+  // accumulated through nesting) + the outer below-LIST gives it exactly that.
+  // Without this, such a panel sampled empty pixels and rendered as a dark smear
+  // — rgb(51,51,51) where rgb(148,51,158) was correct (pixel-proven).
+  const subTarget = { canvas: sub.getCanvas(), surface: sub, below: belowContext(target, belowFlat, region.x0, region.y0) };
+  paintFlat(CanvasKit, subTarget, flatContent, rview, rctx, deeperSubtree(depth));
   sub.flush();
   let contentImg = sub.makeImageSnapshot();
 
@@ -1420,7 +1858,7 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
   // contentImg untouched ⇒ byte-identical to a crisp widget. `scale` maps the
   // world-unit feather to device px (same scaling as shadow blur/offset).
   if (cmd.softEdges > 0) {
-    const feathered = featherEdges(CanvasKit, ctx, contentImg, cmd.softEdges * scale);
+    const feathered = featherEdges(CanvasKit, rctx, contentImg, cmd.softEdges * scale);
     contentImg.delete();
     contentImg = feathered;
   }
@@ -1433,22 +1871,22 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
     const filt = CanvasKit.ImageFilter.MakeDropShadowOnly(cmd.shadow.dx * scale, cmd.shadow.dy * scale, sig, sig, tint, null);
     const p = new CanvasKit.Paint();
     p.setImageFilter(filt);
-    canvas.drawImage(contentImg, 0, 0, p);
+    canvas.drawImage(contentImg, region.x0, region.y0, p);
     p.delete(); filt.delete();
   }
 
   if (!cmd.shadowOnly) {
     // WIDGET: the content itself, composited against the backdrop via blend mode.
     const p = new CanvasKit.Paint();
-    p.setBlendMode(blendModeFor(CanvasKit, cmd.blend));
-    canvas.drawImage(contentImg, 0, 0, p);
+    applyBlend(CanvasKit, p, cmd.blend);
+    canvas.drawImage(contentImg, region.x0, region.y0, p);
     p.delete();
 
     // INNER SHADOW (inside the widget): darkens the interior near the edges — a
     // recess. Drawn AFTER the widget (over it) and clipped to its silhouette, so
     // it never spills outside; UNDER bloom (bloom is a glow of the widget).
     if (cmd.innerShadow) {
-      drawInnerShadow(CanvasKit, canvas, contentImg, cmd.innerShadow, scale, ctx);
+      drawInnerShadow(CanvasKit, canvas, contentImg, cmd.innerShadow, scale, rctx, region.x0, region.y0);
     }
 
     // BLOOM (on top): the content's own Gaussian-blurred copy × strength, ADD.
@@ -1457,13 +1895,320 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
       const p2 = new CanvasKit.Paint();
       p2.setImageFilter(filt);
       p2.setBlendMode(CanvasKit.BlendMode.Plus);
-      canvas.drawImage(contentImg, 0, 0, p2);
+      canvas.drawImage(contentImg, region.x0, region.y0, p2);
       p2.delete(); filt.delete();
     }
   }
 
   contentImg.delete();
   sub.dispose();
+}
+
+/**
+ * The sentinel opLocalBounds returns for an op whose DRAWN extent this backend
+ * cannot bound from the op alone — text (paragraph ink needs a layout) and
+ * blurBackdrop (a whole-frame backdrop treatment with no geometry at all). It is
+ * not an error: it makes effectRegion fall back to the WHOLE surface, i.e. exactly
+ * the pre-crop behaviour. Conservative by construction — an unrecognized op can
+ * never lose a pixel, only the speed-up.
+ */
+const UNBOUNDED_EXTENT = Symbol("unbounded op extent");
+
+/** Pure function. A rounded-box op's LOCAL geometry rect (the {cx, cy, halfW,
+ * halfH} shape every glass / material / box-lens op carries).
+ * @example roundedBoxBounds({cx: 100, cy: 60, halfW: 40, halfH: 25}) // {x: 60, y: 35, w: 80, h: 50}
+ */
+function roundedBoxBounds(cmd) {
+  return { x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2 };
+}
+
+/**
+ * Pure function. How far the LIQUID GLASS auto drop shadow (drawGlassShadow)
+ * reaches past the panel, in the panel's own local units. Its offset and blur are
+ * FRACTIONS of the half-height, so the same fractions apply in any unit; the 3σ
+ * kernel support is the shared BLUR_SUPPORT_SIGMAS. Zero when the shadow is off
+ * (not yet materialized, or strength 0) — matching drawGlassShadow's own gate.
+ * Applied symmetrically because the offset is SCREEN-down and the panel may be
+ * rotated (a symmetric halo is rotation-safe, and only ever over-estimates).
+ *
+ * @example glassShadowReach({halfH: 100, materialize: 1, shadowStrength: 0.3}) // 78 (0.12·100 offset + 3·0.22·100 blur support)
+ * @example glassShadowReach({halfH: 100, materialize: 1, shadowStrength: 0}) // 0 (shadow off)
+ */
+function glassShadowReach(cmd) {
+  if (!(cmd.shadowStrength > 0) || !(cmd.materialize > 0)) return 0;
+  return cmd.halfH * (GLASS_SHADOW_DY_FRAC + BLUR_SUPPORT_SIGMAS * GLASS_SHADOW_SIGMA_FRAC);
+}
+
+/**
+ * Pure function. How far a materialFill's optional soft shadow (drawMaterialShadow)
+ * reaches past the fill, in local units: the rounded rect is GROWN by `grow`,
+ * offset by (dx, dy) and mask-blurred by `blur` (3σ support). Symmetric for the
+ * same rotation-safety reason as glassShadowReach. Zero for no shadow.
+ *
+ * @example materialShadowReach(null) // 0
+ * @example materialShadowReach({dx: 3, dy: 4, blur: 2, alpha: 0.4, grow: 1}) // 12 (1 grow + 5 offset + 3·2 blur)
+ * @example materialShadowReach({dx: 3, dy: 4, blur: 2, alpha: 0, grow: 1}) // 0 (alpha 0 paints nothing)
+ */
+function materialShadowReach(shadow) {
+  if (!shadow || !(shadow.alpha > 0)) return 0;
+  return shadow.grow + Math.hypot(shadow.dx, shadow.dy) + shadow.blur * BLUR_SUPPORT_SIGMAS;
+}
+
+/** Pure function. `r` grown by `m` on every side.
+ * @example inflateRect({x: 10, y: 20, w: 4, h: 6}, 1) // {x: 9, y: 19, w: 6, h: 8}
+ */
+function inflateRect(r, m) {
+  return m > 0 ? { x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m } : r;
+}
+
+// INK HEADROOM around laid-out glyph geometry, in ems of the largest font size in
+// the op. Text metrics bound the ADVANCE box, not the outline: an italic's overhang,
+// a swash, an emoji drawn past its cell, and the OUTLINE-stroke glyph pass all reach
+// outside it. One em is the headroom text_layout.js already uses for exactly this
+// question (glyphGroupBounds pads a glyph group's origin span by `group.size` to
+// frame a gradient), so this is that convention reused rather than a second guess.
+const TEXT_INK_PAD_EMS = 1;
+
+/**
+ * Pure function. The largest font size a text op can draw at: its own `size` plus
+ * every rich run's (a run always carries a resolved size — core/richtext.js
+ * normalizeRichText fills it from the widget style or DEFAULT_PARA_SIZE), falling
+ * back to text_layout's DEFAULT_TEXT_SIZE when an op carries none at all. Used only
+ * to scale the ink headroom, so an over-estimate is harmless and an under-estimate
+ * would clip.
+ *
+ * @param {object} cmd a `text` IR op
+ * @returns {number} the largest font size in local units
+ *
+ * @example textOpMaxFontSize({size: 36, rich: null}) // 36
+ * @example textOpMaxFontSize({size: 12, rich: {runs: [{size: 12}, {size: 48}]}}) // 48
+ * @example textOpMaxFontSize({}) // 36 (DEFAULT_TEXT_SIZE)
+ */
+function textOpMaxFontSize(cmd) {
+  let max = Number.isFinite(cmd.size) ? cmd.size : DEFAULT_TEXT_SIZE;
+  for (const run of cmd.rich?.runs ?? []) if (Number.isFinite(run.size) && run.size > max) max = run.size;
+  return max;
+}
+
+/**
+ * Query→build (builds/reuses the cached Paragraph stack). The LOCAL bounds of a
+ * `text` op's INK, padded by TEXT_INK_PAD_EMS.
+ *
+ * WHY THIS EXISTS. Text used to have no case in opLocalBounds, so an effected text
+ * widget — a drop shadow on a caption, a glow on a title — reported UNBOUNDED and
+ * handleEffectSubtree allocated and processed an offscreen THE SIZE OF THE WHOLE
+ * SURFACE for a few lines of type. Measured (a 240×60 caption over a 960×540 frame,
+ * .frenzy/render_cost/probe_region_cost.js): 518,400 offscreen px and 137.0 ms,
+ * against 40,836 px and 16.6 ms for the SAME shadow on a rect of the same size —
+ * 12.7x the pixels for 8.3x the time, and it scaled with the CANVAS rather than with
+ * the widget (34.4 / 137.0 / 311.0 ms at 480×270 / 960×540 / 1440×810).
+ *
+ * The bounds come from the SAME cached layout the draw uses (text_layout.getTextLayout),
+ * so they cannot describe a different stack than the one rasterized:
+ *   · WIDTH — the wrap box when finite, OR the longest intrinsic line, whichever is
+ *     larger. Neither alone is safe: a fixed box can be overrun by a single unbroken
+ *     word (which is why the intrinsic width matters), and a right/centre-aligned
+ *     paragraph places glyphs against the box edge (which is why the box matters).
+ *   · VERTICAL — from the vertical-align offset to the stack bottom. The offset is
+ *     NEGATIVE when the text overflows its box (a middle/bottom valign of a stack
+ *     taller than boxH), so the top is min(0, vOffset), never just 0.
+ * `boxH` is deliberately NOT a bound: the op carries it, but overflow is not clipped.
+ *
+ * The layout cache is keyed partly on opacity, and bounds are opacity-INDEPENDENT, so
+ * this passes the op's own opacity: worst case that is one extra cached build, never
+ * a wrong rect.
+ *
+ * @param CanvasKit the initialized CanvasKit module
+ * @param {object} cmd a `text` IR op
+ * @param fontCollection the shared FontCollection (the layout needs real metrics)
+ * @returns {{x: number, y: number, w: number, h: number}} local-unit bounds
+ */
+function textOpLocalBounds(CanvasKit, cmd, fontCollection) {
+  const layout = getTextLayout(CanvasKit, fontCollection, cmd, cmd.opacity ?? 1);
+  const pad = TEXT_INK_PAD_EMS * textOpMaxFontSize(cmd);
+  const width = Math.max(Number.isFinite(cmd.boxW) ? cmd.boxW : 0, layout.contentWidth());
+  const top = Math.min(0, layout.vOffset);
+  return inflateRect({ x: cmd.x, y: cmd.y + top, w: width, h: layout.contentBottom - top }, pad);
+}
+
+/**
+ * Pure function. The LOCAL bounds of a `mermaidVector` op: its own box, grown by the
+ * two things a diagram draws past the fitted viewBox — the centred half stroke of its
+ * widest path and one em of ink headroom for its largest text label — both mapped
+ * from viewBox units into local units by the same fit the draw uses (drawMermaidVector:
+ * fitBox when preserveAspect, else an independent stretch per axis).
+ *
+ * Same defect as text: with no case here a mermaid diagram carrying any effect
+ * reported UNBOUNDED and took a whole-surface effect substrate.
+ *
+ * @param {object} cmd a `mermaidVector` IR op
+ * @returns {{x: number, y: number, w: number, h: number}} local-unit bounds
+ *
+ * @example // a 100x50 viewBox fitted into a 200x200 box: scale 2, a 3-wide stroke reaches 3 local units out
+ * @example mermaidVectorLocalBounds({x: 0, y: 0, w: 200, h: 200, viewBox: {minX: 0, minY: 0, w: 100, h: 50}, paths: [{strokeWidth: 3}], texts: []}) // {x: -3, y: -3, w: 206, h: 206}
+ * @example mermaidVectorLocalBounds({x: 10, y: 10, w: 100, h: 100, viewBox: {minX: 0, minY: 0, w: 100, h: 100}, paths: [], texts: []}) // {x: 10, y: 10, w: 100, h: 100} (no strokes, no labels: exactly the box)
+ */
+function mermaidVectorLocalBounds(cmd) {
+  const scale = cmd.preserveAspect !== false
+    ? fitBox(cmd.viewBox.w, cmd.viewBox.h, cmd.w, cmd.h).scale
+    : Math.max(cmd.w / cmd.viewBox.w, cmd.h / cmd.viewBox.h);
+  let halfStroke = 0, labelEm = 0;
+  for (const p of cmd.paths) if (Number.isFinite(p.strokeWidth) && p.strokeWidth / 2 > halfStroke) halfStroke = p.strokeWidth / 2;
+  for (const t of cmd.texts) if (Number.isFinite(t.size) && t.size > labelEm) labelEm = t.size;
+  return inflateRect({ x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }, (halfStroke + TEXT_INK_PAD_EMS * labelEm) * scale);
+}
+
+/**
+ * Near-pure function (transiently allocates + frees one WASM Path to measure a
+ * `path` op, and builds/reuses the cached Paragraph stack for a `text` one;
+ * deterministic, nothing outside is read or written). The LOCAL bounds ONE IR op can
+ * draw into, in the op's own local units: its geometry grown by the HALF STROKE WIDTH
+ * (Skia centres a stroke on the path, so a bordered widget reaches strokeWidth/2
+ * OUTSIDE its declared box) and by the mask-blur support where an op carries one.
+ *
+ * Returns UNBOUNDED_EXTENT for anything it cannot bound (see that sentinel).
+ * Subtree ops are NOT handled here — contentDeviceBounds recurses into them.
+ *
+ * @param cmd one flattened IR op
+ * @param ctx the paint context (only `fontCollection` is read, to lay text out)
+ * @returns {{x, y, w, h}|symbol}
+ *
+ * @example opLocalBounds(CanvasKit, {op: "rect", x: 0, y: 0, w: 200, h: 150, strokeWidth: 0}, ctx) // {x: 0, y: 0, w: 200, h: 150}
+ * @example opLocalBounds(CanvasKit, {op: "rect", x: 0, y: 0, w: 200, h: 150, stroke: [0, 0, 0, 1], strokeWidth: 12}, ctx) // {x: -6, y: -6, w: 212, h: 162} (the centred border reaches 6 outside)
+ * @example opLocalBounds(CanvasKit, {op: "blurBackdrop", radius: 4}, ctx) // UNBOUNDED_EXTENT (a full-canvas sampler has no geometry)
+ */
+function opLocalBounds(CanvasKit, cmd, ctx) {
+  const halfStroke = cmd.stroke && cmd.strokeWidth > 0 ? cmd.strokeWidth / 2 : 0;
+  switch (cmd.op) {
+    case "text":
+      return textOpLocalBounds(CanvasKit, cmd, ctx.fontCollection);
+    case "mermaidVector":
+      return mermaidVectorLocalBounds(cmd);
+    case "rect":
+      return inflateRect({ x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }, halfStroke);
+    case "ellipse":
+      return inflateRect({ x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry }, halfStroke);
+    case "polygon":
+      return pointsBounds(cmd.points);
+    case "polyline":
+      // Round caps/joins reach exactly half the stroke width past every vertex.
+      return inflateRect(pointsBounds(cmd.points), cmd.width / 2);
+    case "path": {
+      const skPath = CanvasKit.Path.MakeFromSVGString(cmd.d);
+      if (!skPath) throw new Error(`paintIR(skia): path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
+      const b = skPath.getBounds();
+      skPath.delete();
+      // The optional soft mask blur spreads its kernel support past the geometry.
+      return inflateRect({ x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] },
+        halfStroke + (cmd.blur > 0 ? cmd.blur * BLUR_SUPPORT_SIGMAS : 0));
+    }
+    case "image": case "video": case "videoV5": case "videoFrame": case "videoV5Frame": case "videoV2":
+      return { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }; // a sampled quad, exactly its dest box
+    case "latexVector":
+      return { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }; // fitBox maps the glyph viewBox INSIDE the box
+    case "cropSubtree":
+      // The content is CLIPPED to this rounded rect, so the op's own box + border
+      // bounds the whole subtree — no recursion needed.
+      return inflateRect({ x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }, halfStroke);
+    // ── the BACKDROP / MATERIAL region ops ────────────────────────────────────
+    // Their COVERAGE is their own rounded box: every one of these shaders returns
+    // premultiplied ZERO outside its SDF, and the box-shaped clip each handler
+    // installs is only an outer bound on that. Their sample DISPLACEMENT
+    // (refraction, chromatic aberration, a barrel warp, magnification) reaches
+    // outward but only affects what they READ, never where they WRITE — which is
+    // why these used to be UNBOUNDED here and no longer need to be. Bounding them
+    // is what keeps an effected backdrop panel on the region-cropped effect
+    // substrate instead of a whole-canvas one.
+    case "glassBackdrop":
+      return inflateRect(roundedBoxBounds(cmd), halfStroke + glassShadowReach(cmd));
+    case "materialBackdrop":
+      return inflateRect(roundedBoxBounds(cmd), halfStroke);
+    case "materialFill":
+      return inflateRect(roundedBoxBounds(cmd), halfStroke + materialShadowReach(cmd.shadow));
+    case "magnifyBackdrop":
+      // The lens clip bounds the write: the box/star silhouette is inscribed in
+      // the (halfW, halfH) box, the circle in its radius.
+      return inflateRect(cmd.shape === "circle"
+        ? { x: cmd.cx - cmd.r, y: cmd.cy - cmd.r, w: cmd.r * 2, h: cmd.r * 2 }
+        : roundedBoxBounds(cmd), halfStroke);
+    default:
+      return UNBOUNDED_EXTENT;
+  }
+}
+
+/**
+ * Near-pure function (inherits opLocalBounds' transient WASM Path allocation).
+ * The DEVICE-px bounds the flattened content `flat` can draw into, as
+ * {x0, y0, x1, y1} — or null when ANY op is unbounded (the caller then uses the
+ * whole surface). An EMPTY result (x0 > x1) means the content draws nothing.
+ *
+ * Each op's local bounds (opLocalBounds) are mapped through its own absolute
+ * world by all four corners (rotation-safe, exact unrotated) and then through the
+ * view, mirroring applyView's device = (world·zoom + pan)·dpr. A nested
+ * effectSubtree contributes ITS content's bounds grown by its own halo `margin`
+ * (ir.js computes that from the nested blur support + shadow offset).
+ */
+function contentDeviceBounds(CanvasKit, flat, view, ctx) {
+  const ds = view.zoom * view.dpr, px = view.panX * view.dpr, py = view.panY * view.dpr;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const grow = (dx, dy) => { x0 = Math.min(x0, dx); y0 = Math.min(y0, dy); x1 = Math.max(x1, dx); y1 = Math.max(y1, dy); };
+  for (const { cmd, world } of flat) {
+    if (cmd.op === "effectSubtree") {
+      const inner = contentDeviceBounds(CanvasKit, flattenIR(cmd.content), view, ctx);
+      if (!inner) return null;
+      if (inner.x0 > inner.x1) continue; // the nested effect draws nothing
+      const m = cmd.margin * world.scale * ds; // its shadow/bloom halo, device px
+      grow(inner.x0 - m, inner.y0 - m);
+      grow(inner.x1 + m, inner.y1 + m);
+      continue;
+    }
+    const local = opLocalBounds(CanvasKit, cmd, ctx);
+    if (local === UNBOUNDED_EXTENT) return null;
+    for (const [lx, ly] of [[local.x, local.y], [local.x + local.w, local.y], [local.x, local.y + local.h], [local.x + local.w, local.y + local.h]]) {
+      const p = T.apply(world, lx, ly);
+      grow(p.x * ds + px, p.y * ds + py);
+    }
+  }
+  return { x0, y0, x1, y1 };
+}
+
+/**
+ * Near-pure function (inherits opLocalBounds' transient WASM Path allocation).
+ * The device-px SOURCE REGION handleEffectSubtree renders the content into: the
+ * content's own device bounds (contentDeviceBounds) plus the per-side margin the
+ * composites need, clamped to the surface. Returns integer
+ * {x0, y0, w, h}, or null when nothing of the effect can land on the surface.
+ *
+ * WHICH EFFECTS NEED SOURCE MARGIN — only the INNER SHADOW. The shadow and the
+ * bloom are Skia ImageFilters applied when the content image is BLITTED, and
+ * Skia draws a filter's output past the source image's rect, so their halo needs
+ * no room in the source. Soft edges only erode coverage inward and are clipped
+ * back to the sharp content (DstIn), so they need none either. The inner shadow
+ * DOES: drawInnerShadow fills its field surface with opaque shadow colour, punches
+ * the OFFSET silhouette out of it, and blurs that with TileMode.Clamp — the field
+ * boundary must lie outside the offset silhouette or the clamp replicates a hole
+ * instead of opaque colour. That is exactly effects.js effectSourceRect's per-side
+ * contract: `reach` every side, plus the offset on the side the shadow moves toward.
+ *
+ * CLAMPING TO THE SURFACE is what keeps the crop a pure optimization: the
+ * pre-crop code rendered the content into a device-sized surface, so content past
+ * the canvas edge was already clipped away (and could not blur back inward).
+ */
+function effectRegion(CanvasKit, cmd, flatContent, view, scale, ctx) {
+  const bounds = contentDeviceBounds(CanvasKit, flatContent, view, ctx);
+  // Unbounded content ⇒ the whole surface: the exact pre-crop source rect.
+  if (!bounds) return { x0: 0, y0: 0, w: ctx.deviceW, h: ctx.deviceH };
+  if (bounds.x0 > bounds.x1) return null; // draws nothing
+  const inner = cmd.innerShadow;
+  const reach = COVERAGE_AA_SLOP_PX + (inner ? inner.blur * scale * BLUR_SUPPORT_SIGMAS : 0);
+  const src = effectSourceRect(
+    (bounds.x0 + bounds.x1) / 2, (bounds.y0 + bounds.y1) / 2,
+    (bounds.x1 - bounds.x0) / 2, (bounds.y1 - bounds.y0) / 2,
+    reach, inner ? inner.dx * scale : 0, inner ? inner.dy * scale : 0);
+  const x0 = Math.max(0, Math.floor(src.x)), y0 = Math.max(0, Math.floor(src.y));
+  const x1 = Math.min(ctx.deviceW, Math.ceil(src.x + src.w)), y1 = Math.min(ctx.deviceH, Math.ceil(src.y + src.h));
+  if (x1 <= x0 || y1 <= y0) return null; // entirely off-surface
+  return { x0, y0, w: x1 - x0, h: y1 - y0 };
 }
 
 /**
@@ -1491,7 +2236,8 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth) {
  * convention. A feather wider than the widget erodes the whole silhouette away,
  * dissolving it to transparent (a consistent over-feather, not an error).
  *
- * @param contentImg - the widget's device-size offscreen render (alpha = shape)
+ * @param ctx - {makeSurface, deviceW, deviceH} sized to the effect SOURCE REGION
+ * @param contentImg - the widget's offscreen render over that region (alpha = shape)
  * @param feather - the inward feather amount in DEVICE px (> 0; caller gates 0)
  */
 function featherEdges(CanvasKit, ctx, contentImg, feather) {
@@ -1540,12 +2286,13 @@ function featherEdges(CanvasKit, ctx, contentImg, feather) {
  * object. `scale` = world.scale·zoom·dpr (world length → device px), so dx/dy/blur
  * match the drop shadow's device scaling.
  *
- * @param contentImg - the widget's device-size offscreen render (alpha = shape)
+ * @param contentImg - the widget's offscreen render over the effect SOURCE REGION (alpha = shape)
  * @param inner - {dx, dy, blur, color:[r,g,b,a], opacity} (world-unit dx/dy/blur)
  * @param scale - world→device length factor
- * @param ctx - {makeSurface, deviceW, deviceH}
+ * @param ctx - {makeSurface, deviceW, deviceH} sized to the source REGION, not the device
+ * @param originX, originY - the region's device-px origin (where contentImg sits)
  */
-function drawInnerShadow(CanvasKit, canvas, contentImg, inner, scale, ctx) {
+function drawInnerShadow(CanvasKit, canvas, contentImg, inner, scale, ctx, originX, originY) {
   const alpha = (inner.color[3] ?? 1) * inner.opacity; // color alpha × the gate/strength
   if (alpha <= 0) return;
   const offX = inner.dx * scale, offY = inner.dy * scale;
@@ -1586,10 +2333,10 @@ function drawInnerShadow(CanvasKit, canvas, contentImg, inner, scale, ctx) {
   blurred.delete();
   clip.dispose();
 
-  // (3) draw over the widget at colorAlpha·opacity.
+  // (3) draw over the widget at colorAlpha·opacity, at the region's origin.
   const out = new CanvasKit.Paint();
   out.setAlphaf(Math.max(0, Math.min(1, alpha)));
-  canvas.drawImage(innerImg, 0, 0, out);
+  canvas.drawImage(innerImg, originX, originY, out);
   out.delete();
   innerImg.delete();
 }
@@ -1615,14 +2362,22 @@ function bloomFilter(CanvasKit, sigma, strength) {
   return filt;
 }
 
-/** Pure-ish helper. IR blend name → CanvasKit BlendMode (add ⇒ Plus). */
-function blendModeFor(CanvasKit, blend) {
-  switch (blend) {
-    case "multiply": return CanvasKit.BlendMode.Multiply;
-    case "add": return CanvasKit.BlendMode.Plus;
-    case "screen": return CanvasKit.BlendMode.Screen;
-    default: return CanvasKit.BlendMode.SrcOver;
-  }
+/**
+ * Command (mutates `paint`). Sets the composite for an IR blend name — the ONE
+ * place a blend id becomes a Skia composite. Two dispatches, per
+ * skia/blend_modes.js: a mode Skia implements natively is one setBlendMode()
+ * (free), and one of Photoshop's nine Skia-less modes is a cached SkSL runtime
+ * blender via setBlender(). The blender is module-cached, so nothing to delete.
+ *
+ * An UNKNOWN name THROWS. It used to fall through a `default:` to SrcOver, which
+ * silently painted Normal — an invisible wrong render, and the one failure mode
+ * that makes a typo'd or unimplemented mode impossible to notice.
+ */
+function applyBlend(CanvasKit, paint, blend) {
+  const nativeKey = SKIA_NATIVE_BLEND_MODES[blend];
+  if (nativeKey) { paint.setBlendMode(CanvasKit.BlendMode[nativeKey]); return; }
+  if (blendNeedsSkSL(blend)) { paint.setBlender(blenderFor(CanvasKit, blend)); return; }
+  throw new Error(`paintIR(skia): unknown blend mode "${blend}" — no native CanvasKit.BlendMode and no SkSL body (see render_gpu/skia/blend_modes.js; ir.js effectSubtree validates against core/properties.js BLEND_MODES)`);
 }
 
 // ── small helpers ─────────────────────────────────────────────────────────────

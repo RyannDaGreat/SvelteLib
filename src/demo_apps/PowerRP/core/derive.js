@@ -681,12 +681,24 @@ export function nodeAnchors(node) {
  * inverts back through node.world before calling apply (see
  * CanvasView.modifierDrag) — no plugin ever reasons about rotation itself.
  *
+ * TWO OPTIONAL ASPECTS ride along untouched, because they are not geometry and
+ * this function's job is the local→world wrap:
+ *   `element: {listKey, index}` — the handle IS element `index` of the widget's
+ *     LIST property `listKey` (core/lists.js). That is what lets the UNIVERSAL
+ *     handle actions (hide/show, purge) operate on a handle without knowing which
+ *     widget it belongs to. A handle that controls a plain scalar parameter (a
+ *     donut's inner radius) omits it and simply has no list actions.
+ *   `active` — whether that element is VISIBLE (a plugin reads it through
+ *     core/lists.elementActive, so absent means visible). Defaults to true here so
+ *     a handle with no list element is never drawn as "hidden".
+ *
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {}}) // []
+ * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined}]
  */
 export function nodeModifierPoints(node) {
   return (node.plugin.modifierPoints?.(node.state) ?? []).map((m) => {
     const p = T.apply(node.world, m.x, m.y);
-    return { id: m.id, x: p.x, y: p.y, apply: m.apply };
+    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply };
   });
 }
 

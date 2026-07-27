@@ -19,6 +19,7 @@
 <script>
   import "iconify-icon";
   import Thumbnail from "../../../lib/Thumbnail.svelte";
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import VideoThumbnail from "./VideoThumbnail.svelte";
   import { assetUrl } from "./projectApi.js";
   import { assetTilePresentation } from "./assetThumbnail.js";
@@ -69,7 +70,11 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="ae-kind" role="button" tabindex="0" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)}>
     {#if failed}
-      <iconify-icon icon="mdi:alert-circle-outline" width="28" height="28" title={failed}></iconify-icon>
+      <!-- The message is readable by hovering the glyph, through SvelteLib's
+           immediate Tooltip (native title= is banned in app chrome — manifest). -->
+      <Tooltip text={failed}>
+        <iconify-icon icon="mdi:alert-circle-outline" width="28" height="28"></iconify-icon>
+      </Tooltip>
     {:else}
       <iconify-icon icon={pres.icon} width="28" height="28"></iconify-icon>
     {/if}

@@ -29,7 +29,7 @@
 
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
-import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
+import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
 
 /**
@@ -106,6 +106,34 @@ export function capRect(a, b, width, cap) {
   return [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]];
 }
 
+/**
+ * Pure function. The LOCAL rect the line's INK occupies: the AABB of its two
+ * endpoints, padded on every side by the full stroke width. The line has no
+ * transform of its own (world == identity), so this is also its world footprint.
+ *
+ * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
+ * precedent): the effect substrate in emit() below (an under-sized substrate
+ * CLIPS the widget, not just its halo), and — via the `localBounds` declaration
+ * — culling plus rubber-band selection (core/view.js localBoundsOf). Before that
+ * hook existed a line reported NO bounds at all, so it could never be
+ * band-selected and never culled however far off-screen it sat.
+ *
+ * A FULL-width pad is deliberately conservative rather than exact: the widest
+ * true overhang is a square cap's corner at strokeWidth/2·√2 ≈ 0.71·strokeWidth,
+ * so the ink can never escape this rect. Bounds may over-estimate (a widget is
+ * merely painted when it need not have been); under-estimating would pop a
+ * visible line out of view at the canvas edge.
+ *
+ * @param {object} s - evaluated item state (from / to / strokeWidth)
+ * @returns {{x: number, y: number, w: number, h: number}} local rect
+ *
+ * @example lineInkRect({from: {x: 10, y: 20}, to: {x: 110, y: 60}, strokeWidth: 5}) // {x: 5, y: 15, w: 110, h: 50}
+ * @example lineInkRect({from: {x: 0, y: 0}, to: {x: 0, y: 0}}) // {x: -3, y: -3, w: 6, h: 6} (zero-length: still a round dot of ink)
+ */
+export function lineInkRect(s) {
+  return paddedPointsBBox([s.from, s.to], s.strokeWidth ?? ARROW_STROKE_WIDTH);
+}
+
 export const linePlugin = {
   type: "line",
   title: "Line",
@@ -115,7 +143,7 @@ export const linePlugin = {
     from: { x: 200, y: 300 }, to: { x: 420, y: 300 },
     // stroke color + width reuse the shared registry props (single-sourced);
     // ARROW_STROKE_WIDTH (core/endpoints.js) is the arrow-family default shaft.
-    stroke: "#1a1a2e", strokeWidth: ARROW_STROKE_WIDTH, opacity: 1,
+    stroke: "#000000", strokeWidth: ARROW_STROKE_WIDTH, opacity: 1,
     cap: "round", dashed: false, dashLength: DEFAULT_DASH_LENGTH, dashGap: DEFAULT_DASH_GAP,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
@@ -157,11 +185,19 @@ export const linePlugin = {
         : polygon({ points: capRect(p, q, width, cap), fill: s.stroke, opacity }));
     // Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE) wrap the finished
     // op list; all-off = pass-through. The line has no bbox state (world ==
-    // identity), so the effect region is the padded AABB of the two endpoints
-    // (a full-width pad covers the cap overhang with room to spare). No
-    // cullMargin: non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
-    return applyEffects(cmds, s, world, paddedPointsBBox([from, to], width));
+    // identity), so the effect region is its ink rect — the SAME rect
+    // `localBounds` reports, so the substrate and the cull/band bounds can never
+    // disagree about where this widget is.
+    return applyEffects(cmds, s, world, lineInkRect(s));
   },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): a line's width and height
+  // are just the min/max of its endpoints, so it band-selects and culls like any
+  // box widget despite having no w/h state and no resize handles.
+  localBounds: lineInkRect,
+  // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
+  // defaultCanSkip's cullMargin hook. MANDATORY now that a line HAS an AABB to
+  // be culled by: without it a shadowed line just off-view loses its halo.
+  cullMargin: effectsCullMargin,
   hitTestWorld(node, wx, wy) {
     return hitsShaft(node.state, wx, wy, node.state.strokeWidth ?? ARROW_STROKE_WIDTH);
   },

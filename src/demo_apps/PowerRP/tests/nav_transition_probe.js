@@ -22,7 +22,7 @@ await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
 const { default: puppeteer } = await import("puppeteer");
-const browser = await puppeteer.launch({ headless: "new" });
+const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
 const errors = [];
 try {
   const page = await browser.newPage();

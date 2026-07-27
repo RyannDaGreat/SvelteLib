@@ -50,8 +50,8 @@ import { particleTime } from "../../render_gpu/particle_clock.js";
 const SPIN_DEFAULT_REVS_PER_SEC = 0.75;
 
 /** Ink for any `currentColor` cursor (the built-in cursors use explicit colors,
- * so this is only a fallback) — the shared INK convention (#1a1a2e). */
-const CURSOR_INK = "#1a1a2e";
+ * so this is only a fallback) — the shared INK convention (#000000). */
+const CURSOR_INK = "#000000";
 
 /**
  * Pure function. Maps a cursor's HOTSPOT (its pointing tip, in the shared 0..32
@@ -128,7 +128,7 @@ const CUSTOM = customProps([
     help: "Which built-in macOS-style cursor to draw, as crisp vector. The beach ball is the classic busy spinner.",
   },
   {
-    name: "spin", kind: "checkbox", default: true, label: "Spin", category: "formatting",
+    name: "spin", kind: "boolean", default: true, label: "Spin", category: "formatting",
     help: "Rotate the cursor continuously (the beach-ball busy spin). The rotation is EPHEMERAL — it animates live in the presenter and shows a representative frozen frame in the editor; it is never keyframed or saved.",
   },
   {
@@ -141,6 +141,11 @@ export const cursorPlugin = {
   type: "cursor",
   title: "macOS Cursor",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): mount this
+  // widget's canvas-overlay palette. The `floatingToolbar(state)` descriptor below
+  // is that palette's CONTENT (the cursor grid); this string is what says the
+  // double-click opens it at all.
+  activate: "overlay_palette",
   defaults: {
     type: "cursor", x: 140, y: 140, w: 96, h: 96, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
@@ -155,7 +160,7 @@ export const cursorPlugin = {
     ...bundle("positioning"),
     ...CUSTOM.rows, // cursorKind + spin + spinRevsPerSec
     ...props("animated"),
-    { key: "preserveAspect", label: "Preserve aspect", kind: "checkbox", category: "formatting", help: "Scale the cursor uniformly to fit the box (keeps its shape). Off stretches it to the box's exact size." },
+    { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Scale the cursor uniformly to fit the box (keeps its shape). Off stretches it to the box's exact size." },
     ...props("opacity"),
     ...bundle("effects"),
   ],

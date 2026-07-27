@@ -38,6 +38,7 @@ import { bentoPlugin } from "./bento.js";
 import { progressBarPlugin } from "./progress_bar.js"; // track+fill two-box bar; fraction is equation-bindable (e.g. = a video scrubber's progress export)
 import { clockAnalogPlugin } from "./clock_analog.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
+import { polygonPlugin } from "./polygon.js"; // freeform polygon/polyline: a variable-length vertex list, every vertex a handle, the whole list one keyframable leaf
 // DEMO widgets (plugins/demo/) — showcase the extensibility story (custom
 // self.* properties). Surfaced via the "Insert Demo Widget" submenu (App.svelte),
 // not the core Add menus.
@@ -62,8 +63,10 @@ import { videoV7Plugin } from "./demo/video_v7.js"; // video PLAYER via a PER-WI
 import { videoV8Plugin } from "./demo/video_v8.js"; // fresh video-player: ONE overlay canvas over Skia, WebGPU zero-copy OR WebGL2 upload backend (cohort V8)
 import { comicPlugin } from "./demo/comic.js"; // comic-book Ben-Day halftone filter (backdrop material + presets)
 import { glitchPlugin } from "./demo/glitch.js"; // animated sci-fi datamosh / broken-signal glitch (backdrop material + presets)
+import { mandelbrotPlugin } from "./demo/mandelbrot.js"; // deep-zoom Mandelbrot (perturbation + rebasing in SkSL; split-number centre so every property keyframes)
+import { brightnessContrastPlugin } from "./demo/brightness_contrast.js"; // tone-adjustment region filter (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB + hue lock)
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, progressBarPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, progressBarPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, polygonPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, brightnessContrastPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {

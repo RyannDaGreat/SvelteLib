@@ -180,6 +180,10 @@ export const latexPlugin = {
   type: "latex",
   title: "LaTeX Equation",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the
+  // WYSIWYG equation editor (a MathLive DOM overlay plus canvas suppression —
+  // MathJax has no caret to self-draw, so unlike text this one is NOT Skia-owned).
+  activate: "latex_edit",
   /**
    * Pure function. Is this equation currently a GHOST (manifest 13.6 CONDITIONAL
    * GHOSTS)? STATE-dependent — a latex widget is a ghost only while its source
@@ -218,14 +222,14 @@ export const latexPlugin = {
     // INK — the equation glyph color (Round 15.4 "why cant i choose the color
     // for latx"). Keyframable like any color property; default = the INK
     // convention every stroked shape / the text widget uses (LATEX_DEFAULT_INK
-    // #1a1a2e), so a fresh equation reads the same color as default text. Drives
+    // #000000), so a fresh equation reads the same color as default text. Drives
     // BOTH the raster (baked into the tinted bitmap, in the cache key) AND the
     // vector export (the SVG <path> / PDF fill color).
     ink: LATEX_DEFAULT_INK,
     // stroke COLOR default matches every other stroked shape (INK); paints only
     // once strokeWidth > 0 (0 by default → an undecorated equation is byte-
     // identical to the bare image op).
-    stroke: "#1a1a2e",
+    stroke: "#000000",
     ...defaults("strokeWidth", "cornerRadius", "opacity"), // strokeWidth:0, cornerRadius:0, opacity:1
     ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
@@ -246,7 +250,7 @@ export const latexPlugin = {
     { key: "fontSize", label: "Font size", kind: "number", min: 1, category: "text", help: "The equation's rendered size in canvas units per em (like a text font size). Larger typesets the equation bigger; the box grows to fit." },
     // Aspect-preservation toggle (default ON). ON = uniform scale-to-fit,
     // centered in the box (no squash). OFF = stretch to fill the box aspect.
-    { key: "preserveAspect", label: "Preserve aspect", kind: "checkbox", category: "formatting", help: "Scale the equation uniformly to fit the box (centered, no distortion). Turn off to stretch it to the box's exact width and height." },
+    { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Scale the equation uniformly to fit the box (centered, no distortion). Turn off to stretch it to the box's exact width and height." },
     // INK — the glyph color (Round 15.4). A standard color row (kind "color",
     // like text's Color / rect's Fill), keyframable; drives the live raster tint
     // AND the SVG/PDF vector fill.

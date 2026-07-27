@@ -12,10 +12,11 @@ import {
   tokenize, classifyEquation, equationTokenSpans, parseExpression, compiled, evalAst,
   slugify, slugMap, anchorRefName, canonicalPropPath, parseStoredRef, parseSelfRef, resolveRef, mapRefTokens,
   snakeToCamel, camelToSnake,
-  displayToStored, storedToDisplay, isNumericSlot,
+  displayToStored, storedToDisplay, isNumericSlot, resultKindForSlot, resultMatchesKind,
   evaluateState, withBindingsMigrated, withVariableRenamed,
   FUNCTIONS, equationFunctionNames, resolveOverload, widgetArgToken, widgetArgSpans, resolveWidgetArg,
 } from "../core/expressions.js";
+import { PROPS } from "../core/properties.js";
 import { textDissolve, textType, textScramble, shuffledOrder, hashText, clamp01 } from "../core/text_transitions.js";
 import { nearestPairCircleCircle, closestPointOnCircle, nearestRimPair } from "../core/outline.js";
 import { createRegistry } from "../core/registry.js";
@@ -1051,6 +1052,118 @@ test("any-type equations: a bare (no =) string in a NON-numeric slot stays a lit
   const { state: s, errors } = capturedErrorsResult(state);
   assert.equal(errors.size, 0);
   assert.equal(s.items.r1.fill, "#123456", "literal color untouched");
+});
+
+// ── Tier-0 result-kind resolution (manifest: "=" on EVERY property) ──────────
+test("resultKindForSlot: an angle-kind PROPS row types as a NUMBER (raw degrees)", () => {
+  // No PROPS entry declares kind "angle" YET (the gradient direction reaches
+  // AngleField through a paint sub-path, below), so register a throwaway one to
+  // prove the KIND_RESULT mapping the first real angle row will depend on. It
+  // used to fall through a `?? "string"` guess and reject a good heading with
+  // `= expression result 30 is not a valid string value`.
+  const key = "__test_angle_row__";
+  PROPS[key] = { label: "Test angle", kind: "angle", category: "formatting" };
+  try {
+    assert.equal(resultKindForSlot({ defaults: {} }, [key], "=30"), "number");
+    assert.equal(resultMatchesKind(30, resultKindForSlot({ defaults: {} }, [key], "=30")), true);
+  } finally {
+    delete PROPS[key];
+  }
+});
+test("resultKindForSlot: every PROPS kind in the registry is typed (no silent string guess)", () => {
+  // The import-time guard in core/expressions.js enforces this; assert it here
+  // too so the reason a new kind must be typed is visible from the test suite.
+  for (const [key, def] of Object.entries(PROPS)) {
+    const kind = resultKindForSlot({ defaults: {} }, key.split("."), "=1");
+    assert.ok(["number", "color", "boolean", "select", "string"].includes(kind), `PROPS."${key}" (kind ${def.kind}) → ${kind}`);
+  }
+});
+test("resultKindForSlot: PAINT sub-state leaves resolve (the gradient direction dial)", () => {
+  // A paint stores {type, solid, linear: {stops, angle}, radial: {stops, center, r}},
+  // none of which the plugin's flat hex `fill` default describes — these used to
+  // guess "string" and reject every gradient-geometry equation.
+  assert.equal(resultKindForSlot(rectPlugin, ["fill", "linear", "angle"], "=30"), "number");
+  assert.equal(resultKindForSlot(rectPlugin, ["stroke", "linear", "angle"], "=30"), "number");
+  assert.equal(resultKindForSlot(cameraPlugin, ["background", "linear", "angle"], "=30"), "number");
+  assert.equal(resultKindForSlot(rectPlugin, ["fill", "radial", "r"], "=0.5"), "number");
+  assert.equal(resultKindForSlot(rectPlugin, ["fill", "radial", "center", "x"], "=0.5"), "number");
+  assert.equal(resultKindForSlot(rectPlugin, ["fill", "solid"], "=#f00"), "color");
+  assert.equal(resultKindForSlot(rectPlugin, ["fill", "angle"], "=30"), "number", "LEGACY inline gradient (no mode wrapper)");
+  assert.equal(resultKindForSlot(rectPlugin, ["fill"], "=#f00"), "color", "the paint itself is still PROPS.fill");
+  // A plain (non-paint) color property must NOT pick up paint sub-state rules.
+  assert.equal(resultKindForSlot(rectPlugin, ["shadow", "color"], "=#f00"), "color");
+});
+test("resultKindForSlot: a self.-prefixed COMPUTED default is numeric under = too", () => {
+  // isNumericSlot already treats a "self."-default as a numeric slot; the "="
+  // branch used to see only a non-hex STRING and type it "string" (magnifier /
+  // magnify `origin.x`, whose default is "self.anchors.center.x").
+  const plugin = { defaults: { origin: { x: "self.anchors.center.x" } } };
+  assert.equal(resultKindForSlot(plugin, ["origin", "x"], "=self.w"), "number");
+  assert.equal(resultKindForSlot(plugin, ["origin", "x"], "self.w"), "number", "legacy, no leading =");
+});
+test("resultKindForSlot: an UNDECLARED slot is 'unresolved', never guessed as a string", () => {
+  assert.equal(resultKindForSlot({ defaults: {} }, ["mystery"], "=1"), "unresolved");
+  assert.equal(resultMatchesKind(1, "unresolved"), false);
+  assert.equal(resultMatchesKind("x", "unresolved"), false);
+});
+test("evaluateState: gradient geometry equations evaluate (angle, radius, center, solid)", () => {
+  const state = {
+    vars: { tilt: 33 },
+    items: { g: { ...rectPlugin.defaults, fill: {
+      type: "linearGradient", solid: "=#ff8800",
+      linear: { stops: [{ offset: 0, color: "#000000" }, { offset: 1, color: "#ffffff" }], angle: "=tilt * 2" },
+      radial: { stops: [{ offset: 0, color: "#000000" }, { offset: 1, color: "#ffffff" }], center: { x: "=tilt / 66", y: 0.5 }, r: "=0.25 + 0.25" },
+    } } },
+  };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0, [...errors].join("; "));
+  assert.equal(s.items.g.fill.linear.angle, 66, "the direction dial's heading, in degrees");
+  assert.equal(s.items.g.fill.radial.r, 0.5);
+  assert.equal(s.items.g.fill.radial.center.x, 0.5);
+  assert.equal(s.items.g.fill.solid, "#ff8800");
+});
+test("evaluateState: an UNDECLARED slot's = fails LOUDLY with an actionable message", () => {
+  const state = { items: { m: { ...rectPlugin.defaults, mystery: "=1 + 1" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.match(errors.get("items.m.mystery"), /has no declared value kind/);
+  assert.match(errors.get("items.m.mystery"), /PROPS entry, or a plugin default/, "the message names the fix");
+  assert.equal(s.items.m.mystery, 0, "falls back (no plugin default at this path)");
+});
+
+// ── Reserved literals (true/false are GRAMMAR, not variables) ────────────────
+test("displayToStored: the reserved boolean literals round-trip (they are not variables)", () => {
+  const state = { vars: {}, items: { a1: { type: "rect", name: "Box" } } };
+  assert.equal(displayToStored("=true", state), "true");
+  assert.equal(displayToStored("=false", state), "false");
+  assert.equal(displayToStored("= true", state), "true", "whitespace after = tolerated");
+  assert.equal(storedToDisplay("true", state), "true");
+  assert.equal(displayToStored("box.x", state), "@a1.x", "ordinary refs still map");
+  // Still LOUD on a real unknown identifier — the literal skip is narrow.
+  assert.throws(() => displayToStored("ghost", state), /Unknown variable "ghost"/);
+});
+test("mapRefTokens: a reserved literal is grammar (never mapped); a call NAME still is", () => {
+  assert.equal(mapRefTokens("true", (t) => t.toUpperCase()), "true");
+  assert.equal(mapRefTokens("false + a", (t) => t.toUpperCase()), "false + A");
+  assert.equal(mapRefTokens("true(1)", (t) => t.toUpperCase()), "TRUE(1)", "a following ( makes it a call name, exactly as the parser decides");
+});
+test("evaluateState: a boolean = equation evaluates in a boolean slot", () => {
+  const state = { items: { t: { ...textPlugin.defaults, type: "text", bold: "=true" } } };
+  const { state: s, errors } = capturedErrorsResult(state);
+  assert.equal(errors.size, 0, [...errors].join("; "));
+  assert.equal(s.items.t.bold, true);
+  const off = capturedErrorsResult({ items: { t: { ...textPlugin.defaults, type: "text", bold: "=false" } } });
+  assert.equal(off.errors.size, 0);
+  assert.equal(off.state.items.t.bold, false);
+});
+test("equationTokenSpans: reserved literals and typed literals get their own classes", () => {
+  const state = { vars: { speed: 1 }, items: {} };
+  assert.deepEqual(equationTokenSpans("true", state).map((s) => s.cls), ["bool"], "a valid boolean is NOT an error span");
+  assert.deepEqual(equationTokenSpans("false", state).map((s) => s.cls), ["bool"]);
+  assert.deepEqual(equationTokenSpans('"hi"', state).map((s) => s.cls), ["str"], "a string literal is not punctuation");
+  assert.deepEqual(equationTokenSpans("#ff0080", state).map((s) => s.cls), ["color"], "a hex literal is not punctuation");
+  assert.deepEqual(equationTokenSpans("true(1)", state).map((s) => s.cls), ["call", "paren", "num", "paren"]);
+  assert.deepEqual(equationTokenSpans("ghost", state).map((s) => s.cls), ["error"], "a REAL unknown ref is still red");
+  assert.deepEqual(equationTokenSpans("speed", state).map((s) => s.cls), ["var"]);
 });
 
 // ── FULL-JS evaluator (new Function + with(proxy)) — determinism + dep-capture ─

@@ -34,18 +34,30 @@
     open = false;
   }
 
-  // Lightweight popover: close on outside pointerdown or Escape.
+  // Lightweight popover: close on outside pointerdown — a press we are not the
+  // target of is only visible from a global listener, so this one stays at the
+  // window (the same split Dropdown.svelte makes: document listener for the
+  // outside press, element handler for the keys).
   function onWindowPointerDown(e) {
     if (!e.target.closest(".shape-picker")) open = false;
   }
-  function onWindowKeydown(e) {
-    if (e.key === "Escape") open = false;
+  /** Command. Escape closes the popup and is CONSUMED, so it does not ALSO
+   * bubble into Deselect — the ColorField/Dropdown precedent, and the reason
+   * this is bound to the picker's own root rather than the window: the keystroke
+   * belongs to the focused widget (the trigger button and every tile live inside
+   * `.shape-picker`), and its effect is confined to it. */
+  function onKeydown(e) {
+    if (e.key === "Escape" && open) {
+      open = false;
+      e.stopPropagation();
+    }
   }
 </script>
 
-<svelte:window onpointerdown={onWindowPointerDown} onkeydown={onWindowKeydown} />
+<svelte:window onpointerdown={onWindowPointerDown} />
 
-<div class="shape-picker">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="shape-picker" onkeydown={onKeydown}>
   <Tooltip text="Add Shape (star, polygon, arrow, heart, …)">
     <button
       class="btn-icon"

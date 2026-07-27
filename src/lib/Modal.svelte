@@ -25,7 +25,10 @@
     - Backdrop dims + blocks the page beneath (pointer-events on the backdrop
       only; clicks inside the panel never bubble to it).
     - Escape closes (when `closeOnEscape`); backdrop click closes (when
-      `closeOnBackdrop`) — both default true.
+      `closeOnBackdrop`) — both default true. Escape is handled ON THE PANEL and
+      CONSUMED there, so it never also reaches the host app's global keys, and a
+      control inside the panel that handles Escape itself (Dropdown,
+      DraggableNumber) still wins over closing the dialog.
     - Focus moves into the panel on open (first focusable, else the panel
       itself) and RETURNS to the previously-focused element on close.
     - Focus is TRAPPED inside the panel while open: Tab/Shift+Tab cycle
@@ -54,17 +57,34 @@
       :global(.modal-panel) { --modal-width: 640px; }
     </style>
 
-  Size (`size` prop): "large" (DEFAULT) fills ~90% of the viewport — the
-  app-wide convention that modals are a roomy work surface; "compact" is the old
-  fixed 520px dialog column; "auto" shrink-wraps content. Backward-safe: a
-  consumer that passes no `size` inherits "large". Per-size CSS below sets the
-  --modal-width / --modal-height / --modal-max-height tokens; override any of
-  them on `.modal-panel` for a one-off.
+  Size (`size` prop): "auto" (DEFAULT) is CONTENT-SIZED — the panel is as small
+  as its content wants to be and no larger than 90% of the viewport, scrolling
+  internally past that; it is always centered. "large" force-fills 90% of the
+  viewport; "compact" is the fixed 520px dialog column.
+
+  WHY "auto" is the default (user ruling, supersedes the earlier "large"
+  default): "the modal dialog does not need to take up 90% of the screen all the
+  time… It just needs to be centered and take up to a maximum of that, but a
+  minimum of whatever contents it is." A small options form must LOOK small.
+
+  WHEN TO PASS "large": content whose own intrinsic width is degenerate under
+  shrink-to-fit — most importantly a `repeat(auto-fill, minmax(…, 1fr))` grid,
+  which resolves to exactly ONE column when its container's width is indefinite.
+  Thumbnail-grid pickers must therefore ask for "large" explicitly.
+
+  WHEN TO PASS "compact": a form whose fields are sized in PERCENT (a
+  `width: 100%` text input), which likewise has no intrinsic width to shrink-wrap
+  to. "compact" gives those a definite column to resolve against.
+
+  Per-size CSS below sets the --modal-width / --modal-height / --modal-max-width
+  / --modal-max-height tokens; override any of them on `.modal-panel` for a
+  one-off.
 
   CSS custom properties (chain to ambient tokens, then a standalone fallback):
-    --modal-width        panel width               (per size: 90vw/520px/auto)
-    --modal-height       panel height              (per size: 90vh/auto/auto)
-    --modal-max-height   panel max height          (per size: 90vh/85vh/85vh)
+    --modal-width        panel width               (per size: auto/90vw/520px)
+    --modal-height       panel height              (per size: auto/90vh/auto)
+    --modal-max-width    panel max width           (per size: 90vw/90vw/90vw)
+    --modal-max-height   panel max height          (per size: 90vh/90vh/85vh)
     --modal-bg           panel background           (← --control-bg → #1c1c24)
     --modal-fg           panel text color           (← --fg → #e8e8e8)
     --modal-border       panel border color         (← --border → rgba(255,255,255,0.14))
@@ -181,13 +201,13 @@
     closeOnBackdrop = true,
     /** @type {boolean} Pressing Escape closes the modal. */
     closeOnEscape = true,
-    /** @type {"large"|"compact"|"auto"} Panel sizing. DEFAULT "large" — the
-     *  app-wide convention that a modal fills ~90% of the viewport (a roomy work
-     *  surface, not a cramped dialog). "compact" is the old fixed 520px column
-     *  for a tiny confirm/pick dialog; "auto" shrink-wraps its content. Additive
-     *  + backward-safe: a consumer that passes no `size` inherits "large" (90%),
-     *  so every existing modal adopts the convention without changing its call. */
-    size = "large",
+    /** @type {"auto"|"large"|"compact"} Panel sizing. DEFAULT "auto" —
+     *  CONTENT-SIZED and centered, capped at 90% of the viewport (scrolls
+     *  internally past that). "large" force-fills 90% (for content with no usable
+     *  intrinsic width, e.g. an auto-fill thumbnail grid); "compact" is the fixed
+     *  520px column (for percent-width form fields). See the header for the full
+     *  rationale and the pick-one-of-three guide. */
+    size = "auto",
   } = $props();
 
   let panelEl = $state(null);
@@ -201,19 +221,48 @@
   }
 
   function onBackdropPointerDown(e) {
-    if (closeOnBackdrop && e.target === e.currentTarget) requestClose();
+    if (e.target !== e.currentTarget) return; // a press INSIDE the panel is never ours
+    if (closeOnBackdrop) {
+      requestClose();
+      return;
+    }
+    // A backdrop press that does NOT close must not park focus on <body>
+    // either: the PANEL owns the dialog's keys (onKeydown is bound to it, see
+    // below), so a dialog whose focus leaked out would stop closing on Escape —
+    // which is exactly what `closeOnBackdrop: false` promises still works.
+    // Suppressing the press's default focus shift keeps focus where the
+    // focus-trap put it; same idiom the in-place text editor uses to keep focus
+    // in its input sink.
+    e.preventDefault();
   }
 
+  /**
+   * The dialog's own keyboard: Escape closes, Tab cycles inside the panel. Bound
+   * to the PANEL, not to `window` — a dialog's keys must be handled by the dialog
+   * and must not ALSO reach the host app. From the window this was impossible to
+   * get right: a host's own `<svelte:window onkeydown>` is registered FIRST (the
+   * host mounts before its dialogs), so on the bubble phase the host had already
+   * acted — in PowerRP, one Escape closed the dialog AND cleared the canvas
+   * selection behind it (measured). Moving to the panel makes stopPropagation
+   * actually work, since the panel sits BELOW window in the propagation path.
+   *
+   * The panel, not a capture-phase window listener: capture would pre-empt the
+   * panel's own CONTENT too, and controls that handle Escape themselves
+   * (Dropdown, DraggableNumber's text edit — both stopPropagation on Escape so a
+   * host cancel does not also fire) would lose their nested cancel. On the panel
+   * those still run first and their stopPropagation keeps the dialog open, which
+   * is the correct nesting: innermost cancel wins.
+   */
   function onKeydown(e) {
-    if (!open) return; // svelte:window listens unconditionally; no-op while closed
     if (e.key === "Escape" && closeOnEscape) {
       e.preventDefault();
+      e.stopPropagation();
       requestClose();
       return;
     }
     if (e.key !== "Tab" || !panelEl) return;
-    // Focus trap: keep Tab cycling inside the panel regardless of what else
-    // exists on the page (which, post-portal, is everything under body).
+    // Focus trap: keep Tab cycling among the panel's own focusables, never out
+    // into the page behind it (which, post-portal, is everything under body).
     const focusables = focusablesIn(panelEl);
     e.preventDefault();
     (nextTrapTarget(focusables, document.activeElement, e.shiftKey) ?? panelEl).focus();
@@ -244,13 +293,11 @@
   });
 </script>
 
-<svelte:window onkeydown={onKeydown} />
-
 {#if open}
   <div class="modal-root" use:portal>
     <!-- Presentational click-catcher, not an interactive control: dismissal
-         is by mouse (this handler) or keyboard (Escape, wired globally via
-         svelte:window above) — the div itself is never a Tab stop. -->
+         is by mouse (this handler) or keyboard (Escape, on the panel below) —
+         the div itself is never a Tab stop. -->
     <div class="modal-backdrop" role="presentation" onpointerdown={onBackdropPointerDown}>
       <div
         class="modal-panel modal-{size}"
@@ -259,6 +306,7 @@
         aria-modal="true"
         aria-label={title || undefined}
         tabindex="-1"
+        onkeydown={onKeydown}
       >
         {#if title}
           <div class="modal-header">
@@ -304,13 +352,14 @@
 
   .modal-panel {
     /* Chain to ambient theme tokens (light/dark aware), then a standalone
-       literal fallback — same pattern as DraggableNumber/Tooltip. The three
-       sizing tokens (width/height/max-height) are set per SIZE class below;
-       these base values are the "compact" defaults so a panel with no size
-       class still renders sanely. */
-    --modal-width: 520px;
+       literal fallback — same pattern as DraggableNumber/Tooltip. The four
+       sizing tokens (width/height/max-width/max-height) are set per SIZE class
+       below; these base values are the DEFAULT "auto" values so a panel with no
+       size class still renders sanely. */
+    --modal-width: auto;
     --modal-height: auto;
-    --modal-max-height: 85vh;
+    --modal-max-width: 90vw;
+    --modal-max-height: 90vh;
     --modal-bg: var(--control-bg, #1c1c24);
     --modal-fg: var(--fg, #e8e8e8);
     --modal-border: var(--border, rgba(255, 255, 255, 0.14));
@@ -326,8 +375,11 @@
     flex-direction: column;
     width: var(--modal-width);
     height: var(--modal-height);
-    max-width: 100%;
-    max-height: var(--modal-max-height);
+    /* Two independent caps, whichever bites first: the requested 90% of the
+       viewport, and the backdrop's own padded content box (which is smaller than
+       90% only on a viewport narrower/shorter than twice that padding). */
+    max-width: min(var(--modal-max-width), 100%);
+    max-height: min(var(--modal-max-height), 100%);
     background: var(--modal-bg);
     color: var(--modal-fg);
     border: 1px solid var(--modal-border);
@@ -336,24 +388,31 @@
     outline: none; /* focus ring not needed on the panel container itself */
   }
 
-  /* SIZE VARIANTS (app-wide convention). The backdrop already pads the viewport
-     by 24px and the panel is `max-width:100%`, so 90vw/90vh never overflow. */
+  /* SIZE VARIANTS. Every one is capped at 90% of the viewport by
+     --modal-max-width/--modal-max-height above; they differ only in the size
+     they ASK for. The backdrop's flex centering handles the rest. */
+  .modal-auto {
+    /* DEFAULT: shrink-wrap the content — as small as the content allows, never
+       larger than the 90% cap (past which .modal-body scrolls). */
+    --modal-width: auto;
+    --modal-height: auto;
+    --modal-max-width: 90vw;
+    --modal-max-height: 90vh;
+  }
   .modal-large {
-    /* DEFAULT: fill ~90% of the viewport — the roomy work surface convention. */
+    /* Force-fill 90% — for content with no usable intrinsic width (an auto-fill
+       thumbnail grid shrink-wraps to a single column). */
     --modal-width: 90vw;
     --modal-height: 90vh;
+    --modal-max-width: 90vw;
     --modal-max-height: 90vh;
   }
   .modal-compact {
-    /* The old fixed dialog column — for a tiny confirm/pick. */
+    /* The fixed dialog column — for percent-width form fields, which have no
+       intrinsic width of their own to shrink-wrap to. */
     --modal-width: 520px;
     --modal-height: auto;
-    --modal-max-height: 85vh;
-  }
-  .modal-auto {
-    /* Shrink-wrap the content (e.g. an image preview sized by its own child). */
-    --modal-width: auto;
-    --modal-height: auto;
+    --modal-max-width: 90vw;
     --modal-max-height: 85vh;
   }
 

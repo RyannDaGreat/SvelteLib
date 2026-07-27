@@ -18,7 +18,7 @@ import { renderToPng } from "../render_gpu/skia/node_render.js";
 import { rect, ellipse, polygon, text, pushTransform, popTransform, effectSubtree } from "../render_gpu/ir.js";
 import { crtPlugin } from "../plugins/demo/crt.js";
 
-const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".claude_vlm_checks");
 const DPR = 2;
 const VIEW = { zoom: 1, panX: 0, panY: 0, dpr: DPR };
 

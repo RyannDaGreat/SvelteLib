@@ -44,10 +44,12 @@
  * (→ widget ink)/hex/rgb()/url(#id) → an objectBoundingBox linearGradient (mapped
  * onto ir.js's existing gradient Paint seam — the Skia path op fills it via the
  * path's own getBounds). Path grammar M L H V C S Q T Z (abs+rel, implicit
- * repeats, S/T smoothing). PUNTED, loudly (a `warnings` string, never silent):
- * arcs (`A` — transformPathD throws; PDF-unsafe anyway), radial/userSpaceOnUse
- * gradients (→ first-stop solid), masks/clip-paths/filters (rendered UNMASKED),
- * <use>/<image>/<text>, and inline `style=` (attributes only).
+ * repeats, S/T smoothing). PUNTED, loudly (a `warnings` string naming the FEATURE
+ * and the ELEMENT — reported to the console AND drawn as the SVG widget's
+ * in-widget notice band, never silent): arcs (`A` — transformPathD throws;
+ * PDF-unsafe anyway), radial/userSpaceOnUse gradients (→ first-stop solid),
+ * masks/clip-paths/filters (rendered UNMASKED), <use>/<image>/<text>, and inline
+ * `style=` (attributes only).
  */
 
 import { num } from "./shapes.js";
@@ -580,8 +582,10 @@ export function parseViewBox(attrs) {
  *     resized box then distorts the art. `transform` is null.
  *
  * `warnings` is a deduped list of loud punt notices (arcs, gradients, masks,
- * unsupported elements) the DOM adapter reports once — the pure core stays pure
- * (no console side effect), the adapter surfaces them.
+ * unsupported elements), each naming the ELEMENT it happened on. The pure core
+ * stays pure (no console side effect); the adapter reports them once to the
+ * console AND the SVG widget draws them as an in-widget notice band
+ * (plugins/svg.js warningAffordance) — a degraded SVG must never look correct.
  *
  * Args:
  *   root ({tag, attrs, children}): the parsed <svg> tree
@@ -630,9 +634,13 @@ function walkSvgNode(node, parentCTM, inherited, ctx, ops, isRoot) {
   const tag = (node.tag || "").toLowerCase();
   if (!isRoot && NON_RENDERING_TAGS.has(tag)) return;
   const attrs = node.attrs ?? {};
-  if (attrs.style) ctx.warnings.add("svg: inline style= is ignored (v1 reads presentation attributes only)");
+  // Every punt names the ELEMENT it happened on, not just the feature: the
+  // warnings are surfaced to the USER in-widget (plugins/svg.js warningAffordance),
+  // and "which element" is what makes one actionable.
+  const el = `<${tag || "?"}>`;
+  if (attrs.style) ctx.warnings.add(`svg: ${el} inline style= is ignored (v1 reads presentation attributes only)`);
   for (const ref of ["mask", "clip-path", "filter"]) {
-    if (attrs[ref]) ctx.warnings.add(`svg: ${ref} is unsupported (v1) — the element is rendered without it`);
+    if (attrs[ref]) ctx.warnings.add(`svg: ${el} ${ref}= is unsupported (v1) — the element is rendered without it`);
   }
   const ctm = matMul(parentCTM, parseTransform(attrs.transform));
   // Inherit paint, overriding with this element's own presentation attributes.

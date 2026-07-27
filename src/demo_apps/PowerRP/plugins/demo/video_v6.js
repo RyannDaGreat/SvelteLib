@@ -44,8 +44,9 @@ export const BLANK_SRC =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 /** The backing surface colour beneath the live overlay — a near-black tone that
- *  reads as "video here" and hides the grid before the first frame lands. Matches
- *  the video widget's stroke default family (dark slate), not a bare literal. */
+ *  reads as "video here" and hides the grid before the first frame lands. Kept a
+ *  hair off pure black so the backing plate stays distinguishable from a black
+ *  letterbox bar in the first frame. */
 const BACKING_FILL = "#0b0b12";
 
 export const videoV6Plugin = {

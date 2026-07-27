@@ -31,21 +31,30 @@ slides and not others — Delete keyframes it; Purge actually removes.
   defaults, inspector rows, emit(state) → display-list commands, anchors,
   snapFeatures, editPoints, commands. **No plugin may import another
   plugin** — composition happens through capabilities and document state.
-- `render_gpu/` — the display-list renderer family. WebGPU is the runtime
-  raster backend; `pdf_backend.js` and `svg_backend.js` are the current hybrid
-  vector exporters. Canvas2D remains an internal glyph/media/readback helper,
-  not a scene-renderer backend. `ir.js` builds the device-independent display
-  list; `ports.js` walks a derived tree through plugin `emit()`; `gpu/` owns the
-  WebGPU compositor (instanced SDF shapes, glyph-atlas text, shader effects,
-  and readback).
+- `render_gpu/` — the display-list renderer family. The runtime raster backend is
+  SKIA/CanvasKit on WebGL2, NOT WebGPU: `skia/browser_surface.js` does
+  `GetWebGLContext` → `MakeWebGLContext` → `MakeOnScreenGLSurface`, deliberately
+  avoiding `navigator.gpu` so the app works on plain HTTP (WebGPU needs a secure
+  context; only the videoV8 experiments touch it). `pdf_backend.js` and
+  `svg_backend.js` are the hybrid vector exporters. Canvas2D remains an internal
+  glyph/media/readback helper, not a scene-renderer backend. `ir.js` builds the
+  device-independent display list; `ports.js` walks a derived tree through plugin
+  `emit()` AND applies the universal effects there; `skia/paint_skia.js` is THE
+  painter; `gpu/` is NOT a compositor — it holds asset rasterizers and registries
+  (glyph atlas, image/video registries, latex/mermaid/pdf/svg raster).
 - `core/view.js` — view math (fitRectView = THE camera mapping,
   worldViewRect) + the culling protocol (canSkipNode).
 - `web/` — Svelte 5 app shell. App components carry NO <style> blocks; all
   styling in `app.css` via `--a-*` tokens (annotator convention).
   gpuService.js = shared offscreen compositor for pixel consumers
   (thumbnails, minimap, PNG export).
-- `cli/render.js` — headless PNG renderer (programmatic Vite + puppeteer;
-  the page hook renders through the SAME GPU pipeline as the editor).
+- `cli/render.js` — headless PNG renderer. It runs in BARE NODE (its own header
+  says "no browser, no Vite, no puppeteer") and rasterizes on a SOFTWARE Skia
+  surface: `render_gpu/skia/node_render.js` calls `CanvasKit.MakeSurface`, and
+  node has no GL context. It shares the display list, `paint_skia.js` and the
+  plugin `emit()` path with the editor, but NOT the GPU. Consequence: heavy
+  per-pixel SkSL materials cost ~0.28 ms/px there, so a material-laden slide can
+  take minutes headlessly even though the editor draws it at 60fps on the GPU.
 - `examples/make_demo.js` — a legacy worked example, not a safe canonical
   fixture regenerator; it still emits legacy rich-text/magnifier fields. Any
   regenerated fixture must pass `repairedDocument()` with zero repair reports.

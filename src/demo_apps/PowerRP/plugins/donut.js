@@ -71,7 +71,7 @@ export const donutPlugin = {
   defaults: {
     type: "donut", x: 460, y: 200, w: 140, h: 140, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#bb9af7", stroke: "#1a1a2e", strokeWidth: 2,
+    fill: "#bb9af7", stroke: "#000000", strokeWidth: 2,
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
     inner: 0.5, // hole radius as a PROPORTION (0..1) of the outer radius

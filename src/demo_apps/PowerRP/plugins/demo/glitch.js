@@ -74,7 +74,7 @@ const CUSTOM = customProps([
   { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at: 1 = screen resolution, 2 = supersample (crisper, slower)." },
 ]);
 
-// The 6 canonical looks, surfaced by web/PresetsPane.svelte (props = a flat knob map).
+// The 6 canonical looks, surfaced by web/ToolsPane.svelte (props = a flat knob map).
 const PRESETS = [
   {
     name: "HUD Flicker",

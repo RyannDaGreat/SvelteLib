@@ -25,6 +25,12 @@
   Item selection uses SvelteLib's Dropdown (never the native <select>) and
   includes non-bbox widgets (blur layers) — selection doesn't require canvas
   geometry. Items are user-renamable (name lives on the creation slide).
+
+  FIELD RESOLUTION IS TIERED (manifest "PROPERTY-INTERFACE HIERARCHY"): every
+  item property row picks its SPECIALIZED editor by kind (Tier 1), but ALWAYS
+  falls back to the UNIVERSAL `=` equation field (Tier 0) — see the equation
+  section in the script below for which kinds route here and which own their
+  equation UX themselves.
 -->
 <script>
   import "iconify-icon";
@@ -37,10 +43,17 @@
   import PaintField from "./PaintField.svelte";
   import AngleField from "./AngleField.svelte";
   import AssetField from "./AssetField.svelte";
+  import EquationSuggest from "./EquationSuggest.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
-  import { canonicalPropPath } from "../core/expressions.js";
+  import {
+    canonicalPropPath, compiled, displayToStored, storedToDisplay, equationTokenSpans, isEquationValue,
+  } from "../core/expressions.js";
+  import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
+  import { PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
+  import { isHexColor } from "../core/interpolators.js";
+  import { getPath } from "../core/deltas.js";
   import { copyText } from "./clipboard.js";
 
   let { app } = $props();
@@ -244,7 +257,24 @@
   // the hexEditing/hexDraft draft state died with the native-input color row.
 
   function coerce(kind, raw) {
-    return kind === "number" ? Number(raw) : kind === "checkbox" ? Boolean(raw) : raw;
+    return kind === "number" ? Number(raw) : kind === "boolean" ? Boolean(raw) : raw;
+  }
+
+  /**
+   * Pure function. The CANONICAL control kind for a row (core/properties.js
+   * ROW_KINDS). A current name passes straight through; a RETIRED spelling maps
+   * to its replacement, so a plugin row still carrying the old name gets its
+   * REAL control instead of falling through this dispatcher's catch-all text
+   * input — which is how a boolean would silently become a text box mid-
+   * migration. The alias table is single-sourced in core: deleting an entry
+   * there stops that spelling working here, with no edit in this file.
+   *
+   * @example rowKind({kind: "boolean"}) // "boolean"
+   * @example rowKind({kind: "checkbox"}) // "boolean" (retired V1 spelling)
+   * @example rowKind({kind: "number"}) // "number"
+   */
+  function rowKind(row) {
+    return RETIRED_ROW_KINDS[row.kind] ?? row.kind;
   }
 
   /**
@@ -288,6 +318,391 @@
       e.target.blur();
       e.stopPropagation();
     }
+  }
+
+  // ── Tier-0 UNIVERSAL "=" equation fallback ──────────────────────────────────
+  // manifest "PROPERTY-INTERFACE HIERARCHY": "Tier 0 UNIVERSAL: equation-mode
+  // (`=`) on EVERY property, no exceptions… Inspector field-resolution reflects
+  // this: pick the specialized editor by slot kind, but ALWAYS allow falling
+  // back to the `=` equation field." This is that fallback, in the ONE place the
+  // manifest puts it — the row seam — so every kind gets the IDENTICAL
+  // affordance rather than five re-inventions.
+  //
+  // It COPIES NumericField (THE reference implementation): the hover-only ƒ
+  // button on the LEFT of the value (app.css .numfield .eq-open), a monospace
+  // input with the syntax-highlight overlay behind it, the inline evaluated
+  // badge / error affordance, live preview per keystroke, Enter-or-blur commit
+  // (ONE undo unit), Escape revert, and the EquationSuggest autocomplete. No new
+  // app.css: the markup reuses the .numfield / .eq-* classes verbatim.
+  //
+  // WHICH KINDS ROUTE HERE: the ones with no equation-aware editor of their own.
+  // number (NumericField), angle (AngleField) and paint fill/stroke (PaintField's
+  // "= Eq" mode) each own their equation UX already — routing them here would put
+  // two competing equation editors on one row. `action` rows (group's Ungroup)
+  // are command triggers, not value slots, so they have nothing to bind.
+  //
+  // WHY HERE AND NOT INSIDE ColorField/BooleanField/AssetField: those fields are
+  // also mounted where the value is NOT an equation slot — PaintField renders a
+  // ColorField for every gradient STOP color, and core's leaves() keeps array
+  // elements opaque to equation detection (PaintField's header: "an EQUATION
+  // typed into a stop offset/color is not evaluated"). The Inspector ROW is what
+  // knows the value is a real equation slot, so the affordance lives exactly here.
+  const EQUATION_KINDS = new Set(["color", "boolean", "asset", "select", "text"]);
+  // Characters of the evaluated value shown in the inline "= …" badge before it
+  // is elided — a color hex (9) or a short enum fits; a long string must not
+  // push the badge across the whole field.
+  const EQ_BADGE_CHARS = 18;
+
+  // The row currently in equation ENTRY from the ƒ button (no equation stored
+  // yet), the row whose input holds focus (its draft is live), and that row's
+  // state path. Only one row can be edited at a time, so one set of state
+  // serves every row — a row that merely STORES an equation renders from the
+  // document, not from the draft.
+  // eqOwnerId is the ITEM the open entry belongs to: row keys repeat across
+  // widgets (nearly every one has "shadow.color"), so without it a selection
+  // change while a field is open would reopen that field on the NEW item —
+  // showing the old item's draft over a write path pointing at the old item.
+  let eqOpenKey = $state(null);
+  let eqOwnerId = $state(null);
+  let eqFocusKey = $state(null);
+  let eqPath = $state(null);
+  let eqDraft = $state("");
+  let eqInvalid = $state(false);
+  let eqInputEl = $state(null);
+  let eqHighlightEl = $state(null);
+  let eqSuggestOpen = $state(false);
+  let eqHighlighted = $state(0);
+
+  // Autocomplete candidates, re-ranked from the CURRENT caret position on every
+  // keystroke (NumericField's rule: the same fragment mid-expression must
+  // suggest against the fragment, not the whole draft). `self.` completion
+  // resolves against the selected item, which owns every row rendered here.
+  let eqCandidates = $derived(
+    eqSuggestOpen && eqInputEl
+      ? suggestEquation(eqDraft, eqInputEl.selectionStart ?? eqDraft.length, app.rawState(), app.registry, pickedItemId)
+      : [],
+  );
+  $effect(() => {
+    if (eqHighlighted >= eqCandidates.length) eqHighlighted = Math.max(0, eqCandidates.length - 1);
+  });
+
+  /**
+   * Query. Does this row get the Tier-0 `=` fallback? Reads the selection's
+   * plugin. Three gates:
+   *   - it must be an ITEM row (a transition is per-boundary config and a
+   *     grayed not-yet-created row is not editable — neither is an equation
+   *     slot core would ever evaluate);
+   *   - its kind must have no equation editor of its own (EQUATION_KINDS, and
+   *     never a paint row — PaintField owns that one);
+   *   - core must be able to TYPE the slot's result. resultKindForSlot reads
+   *     the shared property registry, else INFERS the kind from the plugin
+   *     default; a key with NEITHER (the inline `active` visibility row, which
+   *     no plugin declares) would be typed "string" and a boolean result
+   *     rejected — so that row keeps its toggle until core can name its kind.
+   */
+  function equationCapable(row, itemMode) {
+    if (!itemMode || sel == null || pickedItemId == null) return false;
+    if (!EQUATION_KINDS.has(rowKind(row)) || row.paint) return false;
+    return row.key in PROPS || getPath(sel.plugin.defaults, row.key.split(".")) !== undefined;
+  }
+
+  /** Query. The RAW stored value at a row's item path — an `=` string when the
+   * row is equation-bound. The specialized editors are handed the EVALUATED
+   * state (where an equation has already resolved to a color/boolean/string),
+   * so this raw read is the only way to see the equation itself. Mirrors
+   * NumericField's stored/evaluated split. */
+  function rowStored(row) {
+    return getPath(app.rawState(), ["items", pickedItemId, ...row.key.split(".")]);
+  }
+
+  /** Query. Is the row SHOWING the equation field — because the document stores
+   * an equation there (core's own isEquationValue is the single source of truth
+   * for that question), or because the ƒ button just opened entry on THIS row of
+   * THIS item (see eqOwnerId)? */
+  function equationActive(row, stored) {
+    if (eqOpenKey === row.key && eqOwnerId === pickedItemId) return true;
+    return isEquationValue(sel.plugin, row.key.split("."), stored);
+  }
+
+  /**
+   * Pure function. A STORED `=` equation in DISPLAY form: the `=` marker plus
+   * core's display form (@itemIds → current slugs, camelCase → snake_case).
+   * The marker is split off first because it is NOT part of the expression
+   * grammar — storedToDisplay tokenizes what it is given and returns a source
+   * it cannot tokenize verbatim, which would leave every @id on screen.
+   *
+   * @example equationDisplay("=@a1.x + 10", {items: {a1: {type: "rect", name: "Box"}}}) // "=box.x + 10"
+   * @example equationDisplay("=#ff0000", {items: {}}) // "=#ff0000"
+   */
+  function equationDisplay(stored, state) {
+    return `=${storedToDisplay(String(stored).replace(/^\s*=\s*/, ""), state)}`;
+  }
+
+  /**
+   * Pure function. A typed draft → the STORED equation string: the `=` marker
+   * (the universal any-type gate — a property is an equation IFF its string
+   * starts with `=`) plus core's stored form (slugs → @itemIds, which is what
+   * makes renames free). A leading `=` in the draft is tolerated and re-added,
+   * never doubled. Throws (via the parser) on bad syntax or an unknown
+   * reference.
+   *
+   * A REFERENCE-FREE expression skips the display→stored mapping, because it
+   * has nothing to map AND because core's token mapper would reject it: the
+   * mapper treats the reserved literals `true`/`false` as variable names
+   * (`Unknown variable "true"`) even though the parser and evaluator both read
+   * them as booleans — so `=true`, the obvious equation for a boolean row,
+   * cannot survive displayToStored. compiled() still parses (and throws on)
+   * the expression, so nothing is accepted unvalidated. FLAGGED for core: the
+   * mapper should skip the boolean literals exactly as parseExpression does.
+   *
+   * @example equationStored("box.x + 10", {items: {a1: {type: "rect", name: "Box"}}}) // "=@a1.x + 10"
+   * @example equationStored("= #ff0000", {items: {}}) // "=#ff0000"
+   * @example equationStored("true", {items: {}}) // "=true" (reference-free, mapper bypassed)
+   */
+  function equationStored(draft, state) {
+    const clean = draft.replace(/^\s*=\s*/, "");
+    return `=${compiled(clean).refs.length === 0 ? clean : displayToStored(draft, state)}`;
+  }
+
+  /**
+   * Pure function. The `=` equation that evaluates to `value` — what a row is
+   * SEEDED with the moment it enters equation mode, so the field opens on a
+   * working expression instead of a blank box (PaintField's `=${seedSolid(raw)}`
+   * precedent, generalized to every kind). Booleans and numbers are bare
+   * literals, a hex color is a color literal, anything else becomes a quoted
+   * string literal escaped EXACTLY as core's tokenizer un-escapes it (\\ and \"
+   * only). A structured value (rich text) has no literal form, so it seeds an
+   * empty string the user replaces.
+   *
+   * @example equationSeed(true) // "=true"
+   * @example equationSeed("#ff0000") // "=#ff0000"
+   * @example equationSeed("multiply") // '="multiply"'
+   * @example equationSeed('say "hi"') // '="say \\"hi\\""'
+   * @example equationSeed(null) // '=""'
+   */
+  function equationSeed(value) {
+    if (typeof value === "boolean" || typeof value === "number") return `=${value}`;
+    if (typeof value === "string" && isHexColor(value)) return `=${value}`;
+    const text = typeof value === "string" ? value : "";
+    return `="${text.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+  }
+
+  /**
+   * Pure function. The evaluated value as inline-badge text, elided past
+   * EQ_BADGE_CHARS. A string shows as itself (a color hex reads as a color);
+   * every other kind shows its JSON form, so a boolean reads "true"/"false"
+   * rather than a coerced blank, and a slot holding nothing reads "null"
+   * instead of collapsing into an empty badge.
+   *
+   * @example equationBadge("#ff0000") // "#ff0000"
+   * @example equationBadge(false) // "false"
+   * @example equationBadge(undefined) // "null"
+   * @example equationBadge("a very long computed caption") // "a very long comput…"
+   */
+  function equationBadge(value) {
+    const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
+    return text.length > EQ_BADGE_CHARS ? `${text.slice(0, EQ_BADGE_CHARS)}…` : text;
+  }
+
+  /**
+   * Pure function. Splits equation text into highlight pieces — the `=` marker
+   * and whitespace gaps as plain text, every token carrying the class the REAL
+   * tokenizer/resolver assigns (never a regex re-lex). MIRRORS NumericField's
+   * buildHighlightPieces; the two are one candidate for extraction the day the
+   * equation editor becomes its own component.
+   *
+   * @example equationPieces("=2", {items: {}}, null) // [{text: "=", cls: null}, {text: "2", cls: "num"}]
+   */
+  function equationPieces(text, state, selfId) {
+    const clean = text.replace(/^\s*=\s*/, "");
+    const lead = text.slice(0, text.length - clean.length); // the "=" marker (plain)
+    const spans = equationTokenSpans(clean, state, selfId);
+    const pieces = lead ? [{ text: lead, cls: null }] : [];
+    let last = 0;
+    for (const s of spans) {
+      if (s.start > last) pieces.push({ text: clean.slice(last, s.start), cls: null });
+      pieces.push({ text: clean.slice(s.start, s.end), cls: s.cls });
+      last = s.end;
+    }
+    if (last < clean.length) pieces.push({ text: clean.slice(last), cls: null });
+    return pieces;
+  }
+
+  /** Command (Svelte action). Focuses + selects the equation input of the row
+   * that just entered entry from the ƒ button, so the caret lands in the field
+   * (NumericField's beginTextEntry does the same). A row rendering because it
+   * ALREADY stores an equation is never focus-stolen. */
+  function eqAutofocus(node, key) {
+    if (eqOpenKey === key) {
+      node.focus();
+      node.select();
+    }
+  }
+
+  /** Keeps the highlight overlay's horizontal scroll pinned to the input's, so
+   * a long expression that scrolls past the box edge stays under the caret. */
+  function syncEqScroll() {
+    if (eqHighlightEl && eqInputEl) eqHighlightEl.scrollLeft = eqInputEl.scrollLeft;
+  }
+
+  /** Command. Enters equation mode on a row that holds a LITERAL: seeds the
+   * draft with an equation evaluating to the current value and opens the input
+   * (nothing is written until commit). */
+  function beginEquation(row, path) {
+    eqOpenKey = row.key;
+    eqOwnerId = pickedItemId;
+    eqFocusKey = row.key;
+    eqPath = path;
+    eqDraft = equationSeed(getPath(app.state(), path));
+    eqInvalid = false;
+    eqSuggestOpen = false;
+  }
+
+  /** Command. Leaves equation mode: commits the CURRENT EVALUATED value as a
+   * plain literal (ONE undo unit), so the specialized editor comes back holding
+   * exactly what the equation last produced. The evaluated value is right-typed
+   * by construction — core validates an equation's result against the slot kind
+   * and falls back to the plugin default on a mismatch — so this never writes a
+   * coerced string where a color/boolean belongs. */
+  function dropEquation(path) {
+    app.setPreview([[path, getPath(app.state(), path)]]);
+    app.commitPreview();
+    eqOpenKey = null;
+    eqOwnerId = null;
+    eqFocusKey = null;
+    eqDraft = "";
+    eqInvalid = false;
+    eqSuggestOpen = false;
+  }
+
+  /** Command. Takes over the shared draft when an equation input gains focus
+   * (from the ƒ button, a click, or Tab) and captures the elements the caret
+   * math needs. The overlay is found relative to the input because BOTH are
+   * rendered per row: one shared bind:this would point at whichever row mounted
+   * last, not the one being edited. */
+  function onEqFocus(e, row, path, stored) {
+    eqOwnerId = pickedItemId;
+    eqInputEl = e.target;
+    eqHighlightEl = e.target.parentElement.querySelector(".eq-highlight");
+    if (eqFocusKey !== row.key && eqOpenKey !== row.key) eqDraft = equationDisplay(stored, app.rawState());
+    eqFocusKey = row.key;
+    eqPath = path;
+  }
+
+  /** Command. Live-previews the draft (the viewport re-renders mid-typing, the
+   * document is untouched) and re-ranks the autocomplete. */
+  function onEqInput(e) {
+    eqDraft = e.target.value;
+    eqSuggestOpen = true;
+    eqHighlighted = 0;
+    syncEqScroll();
+    try {
+      app.setPreview([[eqPath, equationStored(eqDraft, app.rawState())]]);
+      eqInvalid = false;
+    } catch {
+      // Invalid draft: the invalid affordance IS the report — a specific message
+      // would thrash while typing, and commit reports loudly if the user insists
+      // (NumericField's ruling, copied so both fields behave identically).
+      app.cancelPreview();
+      eqInvalid = true;
+    }
+  }
+
+  /** Command. Replaces the in-progress fragment with the accepted candidate and
+   * re-previews — it does NOT commit (the user is still editing) and never moves
+   * focus out of the input. */
+  function acceptEqCandidate(candidate) {
+    if (!candidate || !eqInputEl) return;
+    const { text, cursor } = acceptSuggestion(eqDraft, eqInputEl.selectionStart ?? eqDraft.length, candidate.text);
+    eqDraft = text;
+    eqSuggestOpen = false;
+    try {
+      app.setPreview([[eqPath, equationStored(eqDraft, app.rawState())]]);
+      eqInvalid = false;
+    } catch {
+      app.cancelPreview();
+      eqInvalid = true;
+    }
+    requestAnimationFrame(() => eqInputEl?.setSelectionRange(cursor, cursor));
+    eqInputEl.focus();
+  }
+
+  /** Command. Reverts the live preview and leaves entry without writing. A row
+   * that already STORES an equation keeps it (and keeps rendering as one). */
+  function cancelEquation() {
+    app.cancelPreview();
+    eqOpenKey = null;
+    eqOwnerId = null;
+    eqFocusKey = null;
+    eqInvalid = false;
+    eqSuggestOpen = false;
+    eqDraft = "";
+  }
+
+  /** Command. Commits the draft as the row's `=` equation — ONE undo unit,
+   * keyframed on the current slide like any other property write. An empty
+   * draft writes nothing (deleting the text is not a value); a draft that will
+   * not parse or resolve is reported LOUDLY and reverted, never stored as a
+   * literal string that would silently become garbage in a color/boolean slot
+   * (the ƒ button is the explicit way back to a literal). */
+  function commitEquation() {
+    eqSuggestOpen = false;
+    if (eqDraft.replace(/^\s*=\s*/, "").trim() === "") {
+      cancelEquation();
+      return;
+    }
+    let stored;
+    try {
+      stored = equationStored(eqDraft, app.rawState());
+    } catch (e) {
+      console.error(`PowerRP: equation not committed: ${e.message}`);
+      cancelEquation();
+      return;
+    }
+    app.setPreview([[eqPath, stored]]);
+    app.commitPreview();
+    eqOpenKey = null;
+    eqOwnerId = null;
+    eqFocusKey = null;
+    eqInvalid = false;
+  }
+
+  /** Keyboard for the equation input, autocomplete-aware — NumericField's
+   * handler, unchanged in behavior:
+   *   Up/Down    move the suggestion highlight (only while open)
+   *   Tab/Enter  accept the highlighted suggestion while the list is open;
+   *              Enter with it closed commits the field
+   *   Escape     dismisses an OPEN list first (field untouched); a second
+   *              Escape reverts the field. */
+  function onEqKeydown(e) {
+    const hasSuggestions = eqSuggestOpen && eqCandidates.length > 0;
+    if (hasSuggestions && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      eqHighlighted = (eqHighlighted + (e.key === "ArrowDown" ? 1 : -1) + eqCandidates.length) % eqCandidates.length;
+      e.preventDefault();
+    } else if (hasSuggestions && (e.key === "Tab" || e.key === "Enter")) {
+      acceptEqCandidate(eqCandidates[eqHighlighted]);
+      e.preventDefault();
+    } else if (e.key === "Enter") {
+      commitEquation();
+      e.target.blur();
+    } else if (e.key === "Escape" && hasSuggestions) {
+      eqSuggestOpen = false;
+      e.stopPropagation(); // dismiss-only: don't bubble into Deselect
+    } else if (e.key === "Escape") {
+      cancelEquation();
+      e.target.blur();
+      e.stopPropagation();
+    }
+  }
+
+  /** Blur commits, but only when there is something to commit: an untouched
+   * draft (clicking the ƒ button to drop the equation, or tabbing away) must
+   * not spend an undo unit re-writing the same string. */
+  function onEqBlur(row, stored) {
+    const opened = eqOpenKey === row.key;
+    eqFocusKey = null;
+    eqSuggestOpen = false;
+    if (eqInvalid || opened || eqDraft !== equationDisplay(stored, app.rawState())) commitEquation();
   }
 
   // (keyframe insert/remove/jump for property rows now lives in the shared
@@ -371,8 +786,18 @@
      against — usually `state` itself, but the not-yet-created path needs a
      synthetic {items:{id: creationState}} shape since app.rawState() doesn't
      fold an item that doesn't exist on this slide) drive the row-label PATH
-     tooltip + copy-path chrome (manifest "EQUATION DISCOVERABILITY"). -->
-{#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit, itemId = null, pathState = null })}
+     tooltip + copy-path chrome (manifest "EQUATION DISCOVERABILITY").
+
+     `hoverPreview` is OPT-IN and DELIBERATELY SEPARATE from `onpreview`: a select
+     row previews the option the pointer/arrow-keys are merely CONSIDERING, and
+     for a keyframable item row that is `previewField` (setPreview — document
+     untouched, no undo entry). It cannot reuse `onpreview`, because in the
+     TRANSITION context `onpreview` IS `commitTransition` (transitions have no
+     tween state, so their preview and commit are the same write) — wiring hover
+     to it would COMMIT A TRANSITION TYPE ON HOVER. So the two created-item call
+     sites opt in by name and the transition/not-yet-created ones simply do not.
+     null (the default) = no hover preview, exactly as before. -->
+{#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit, itemId = null, pathState = null, hoverPreview = null })}
   <!-- ITEM MODE (keyframes && !disabled): equation-aware NumericField + keyframe
        diamonds, writing item property keyframes. Otherwise PLAIN MODE: a not-yet-
        created item's grayed display (disabled) or a transition's config rows
@@ -387,6 +812,15 @@
        still receives a plain number; `null` = unbounded. Static numbers pass
        through unchanged. Extend to `min` the same way if a widget ever needs it. -->
   {@const resolvedMax = typeof row.max === "function" ? row.max(state) : (row.max ?? null)}
+  {@const ctx = { itemMode, disabled, onpreview, oncommit, itemId, resolvedMax, hoverPreview }}
+  <!-- TIER 0 (manifest field-resolution rule): does this row get the universal
+       `=` fallback, is it showing it, and what does it actually STORE (the raw
+       value — the specialized editors receive the EVALUATED one, where an
+       equation has already resolved to a color/boolean/string). -->
+  {@const eqCapable = equationCapable(row, itemMode)}
+  {@const eqStored = eqCapable ? rowStored(row) : null}
+  {@const eqActive = eqCapable && equationActive(row, eqStored)}
+  {@const eqRowPath = eqCapable ? ["items", pickedItemId, ...row.key.split(".")] : null}
   <div class="row" class:row-disabled={disabled}>
     <!-- Row-label hover chrome: PATH tooltip on the LABEL (never a label echo
          — banned) + two LEFT-side hover-only icons (round-11 field-chrome
@@ -441,178 +875,26 @@
     {:else}
       <span class="label">{row.label}</span>
     {/if}
-    {#if row.kind === "number"}
-      {#if itemMode}
-        <!-- NumericField: equation-aware (THE UNIFICATION). A number renders as
-             the DraggableNumber scrubber; an equation as a monospace expression
-             editor with live evaluation + error affordance. Click-without-drag
-             opens text entry; typed content decides number vs equation.
-             `display` (e.g. "degrees") edits/shows in a unit different from
-             storage. Dotted keys ("from.x") = nested state. -->
-        <NumericField
-          {app}
-          path={["items", pickedItemId, ...row.key.split(".")]}
-          label={row.label}
-          min={row.min ?? null}
-          max={resolvedMax}
-          display={row.display ?? null}
-          scrub={row.scrub ?? null}
-          defaultValue={row.default ?? null}
-          step={row.step ?? null}
-        />
-      {:else if disabled}
-        <!-- Grayed display of a not-yet-created item: read the value straight
-             from the creation-fold state; no equation/scrub affordance. -->
-        <input type="text" class="disabled-val" value={String(valueAt(state, row.key) ?? "")} disabled />
-      {:else}
-        <!-- Plain number (transition config): a bounded DraggableNumber scrubber
-             that commits directly (no equations, no keyframes). THREADS the row's
-             `scrub` coefficient (manifest 14.6): a transition-seconds row carries
-             SECONDS_SCRUB from the property registry, so a full 100px drag spans
-             ~1s instead of 100s. Without this the plain scrubber fell back to
-             DraggableNumber's 1 unit/px default — the reason the Round-12
-             `scrub: 0.1` fix never reached the transition seconds row (it was only
-             threaded through the ITEM NumericField path above, never this one).
-             The item path scales bounded rows across a pixel run in NumericField;
-             here (an unbounded seconds row) the explicit coefficient IS the fix,
-             so pass row.scrub straight through when present. -->
-        <div class="numfield">
-          <DraggableNumber
-            label={row.label}
-            value={Number(valueAt(state, row.key) ?? 0)}
-            min={row.min ?? null}
-            max={resolvedMax}
-            coefficient={row.scrub ?? 1}
-            defaultValue={row.default ?? null}
-            oninput={(n) => onpreview(row.key, row.kind, n)}
-            onchange={(n) => oncommit(row.key, row.kind, n)}
-          />
-        </div>
-      {/if}
-    {:else if row.kind === "select"}
-      <!-- Enum dropdown (transition `curve`; new control kind, flagged by Opus9).
-           SvelteLib Dropdown over the row's `options`, filling the value column.
-           Only reached for transition rows today (never disabled); Dropdown has
-           no top-level disabled prop, so a future disabled select would render
-           the plain grayed value instead. -->
-      <Dropdown
-        items={row.optionsFrom === "items"
-          ? allDocumentItems(app.doc)
-              .filter((it) => it.id !== itemId && app.registry.get(it.type)?.capabilities.purgeable !== false)
-              .map((it) => ({ value: it.id, label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id) }))
-          : (row.options ?? []).map((o) => ({ value: o, label: row.optionLabels?.[o] ?? o }))}
-        value={valueAt(state, row.key)}
-        onchange={(v) => oncommit(row.key, "select", v)}
-      />
-    {:else if row.kind === "asset"}
-      <!-- THE asset control (manifest "ASSET UX ROUND 2"): AssetField — current
-           name + Browse (picker modal, Asset Explorer's tile grid, filtered to
-           row.assetKinds) + Upload, drag-and-drop from the Asset Explorer AND
-           Finder. ONE commit per pick/upload/drop (an asset pick is atomic —
-           no live-preview gesture, unlike a numeric drag) via the row's
-           `oncommit(key, kind, value)` — the SAME call every other plain-mode
-           kind (select) uses, so item rows write a keyframe and transition
-           rows write transition config with zero branching here (oncommit IS
-           commitField for items, commitTransition for transitions — both
-           already perform exactly one write). -->
-      <AssetField
-        {app}
-        value={valueAt(state, row.key)}
-        label={row.label}
-        assetKinds={row.assetKinds ?? ["image"]}
-        assetForm={row.assetForm ?? "url"}
-        nullable={row.nullable ?? false}
-        {disabled}
-        oncommit={(v) => oncommit(row.key, "asset", v)}
-        autoOpen={row.key === "src" && app.pendingVideoPickFor === pickedItemId}
-        onpickerclose={() => { if (app.pendingVideoPickFor === pickedItemId) app.pendingVideoPickFor = null; }}
-      />
-    {:else if row.kind === "angle"}
-      <!-- THE angle control (kind:"angle"): AngleField — a rotary DIAL (+ typed
-           degrees) that self-writes DEGREES to this item path, exactly like
-           ColorField (preview mid-drag, commit on release; the row's shared
-           KeyframeControls keyframe it like any other property). `disabled`
-           grays a not-yet-created item's row. -->
-      <AngleField
-        {app}
-        path={["items", pickedItemId, ...row.key.split(".")]}
-        label={row.label}
-        value={Number(valueAt(state, row.key) ?? 0)}
-        disabled={disabled}
-      />
-    {:else if row.kind === "color" && row.paint}
-      <!-- PAINT rows (fill/stroke — Axis-1): PaintField edits a polymorphic paint
-           (solid | linear/radial gradient). A solid delegates to ColorField
-           verbatim (byte-identical to before); a gradient stores a {type,stops,
-           geometry} object at the SAME item path. Same commit contract. -->
-      <PaintField
-        {app}
-        path={["items", pickedItemId, ...row.key.split(".")]}
-        label={row.label}
-        value={valueAt(state, row.key)}
-        disabled={disabled}
-      />
-    {:else if row.kind === "color"}
-      <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped
-           in ColorField — a compact swatch + hex readout that inline-expands the
-           full picker on click. Alpha is integral (not a bolted-on field); the
-           native <input type=color> is GONE. Live semantics: picker oninput →
-           preview (viewport re-renders mid-gesture, doc unchanged), onchange →
-           commit (one undo unit); Escape while open reverts + closes; no Enter.
-           Storage stays #rrggbbaa (opaque collapses to #rrggbb); legacy #rrggbb
-           loads as opaque. Only item rows are colors (no transition color rows),
-           so the path is always ["items", pickedItemId, …]; a grayed not-yet-
-           created item passes disabled to block interaction. Unlike a number a
-           color has no equation split, so itemMode/plain collapse to one call. -->
-      <ColorField
-        {app}
-        path={["items", pickedItemId, ...row.key.split(".")]}
-        label={row.label}
-        value={valueAt(state, row.key)}
-        disabled={disabled}
-      />
-    {:else if row.kind === "checkbox" || row.kind === "boolean"}
-      {#if itemMode}
-        <!-- Standard boolean control (BooleanField): a square toggle whose state
-             shows via the icon (never a background fill — toggle ruling). Used for
-             `active` (visibility) and plugin booleans like `bold`. Writes an item
-             property keyframe on this slide. -->
-        <BooleanField
-          {app}
-          path={["items", pickedItemId, ...row.key.split(".")]}
-          label={row.label}
-          value={row.key === "active" ? state.active !== false : Boolean(valueAt(state, row.key))}
-          onIcon={row.onIcon}
-          offIcon={row.offIcon}
-          onText={row.onText}
-          offText={row.offText}
-          {disabled}
-        />
-      {:else}
-        <!-- Plain boolean (grayed item display / transition config): a simple
-             toggle committing directly (no keyframe path). -->
-        <div class="boolfield">
-          <button
-            class="boolbtn"
-            class:on={Boolean(valueAt(state, row.key))}
-            aria-label={row.label}
-            aria-pressed={Boolean(valueAt(state, row.key))}
-            {disabled}
-            onclick={() => oncommit(row.key, "checkbox", !valueAt(state, row.key))}
-          >
-            <iconify-icon icon={valueAt(state, row.key) ? (row.onIcon ?? "mdi:check") : (row.offIcon ?? "mdi:checkbox-blank-outline")} width="16" height="16"></iconify-icon>
-          </button>
-        </div>
-      {/if}
+    <!-- THE TIERED VALUE CELL. Tier 1 is the specialized editor; Tier 0 is the
+         universal `=` field that can always stand in for it. Both live inside
+         .numfield — the equation-aware field chrome NumericField already owns in
+         app.css (hover-only ƒ on the LEFT of the value, highlighted monospace
+         input, inline evaluated badge). Reusing that chrome verbatim is what
+         makes a color row's equation affordance pixel-identical to a number's.
+         A row with no equation fallback (number/angle/paint, which own theirs;
+         transition + grayed rows, which are not equation slots) renders the
+         specialized editor alone, exactly as before. -->
+    {#if eqCapable}
+      <div class="numfield">
+        {@render eqToggle(row, eqRowPath, eqActive)}
+        {#if eqActive}
+          {@render equationEntry(row, eqRowPath, eqStored)}
+        {:else}
+          {@render valueControl(row, state, ctx)}
+        {/if}
+      </div>
     {:else}
-      <input
-        type="text"
-        value={state[row.key] ?? ""}
-        {disabled}
-        oninput={(e) => onpreview(row.key, row.kind, e.target.value)}
-        onchange={(e) => oncommit(row.key, row.kind, e.target.value)}
-        onkeydown={fieldKeydown}
-      />
+      {@render valueControl(row, state, ctx)}
     {/if}
     <!-- prev ◆ next — the shared KeyframeControls (jumps hug the diamond;
          hollow = not keyed on this slide, filled = keyed). Grouped in ONE
@@ -630,6 +912,321 @@
     {/if}
   </div>
 {/snippet}
+
+<!-- THE TIER-1 SPECIALIZED CONTROL for one row, chosen by slot kind. Split out
+     of propRow so the Tier-0 `=` equation fallback can stand in FRONT of it for
+     every kind without the two dispatches interleaving. `ctx` carries what
+     propRow already resolved: itemMode/disabled (which presentation), the
+     onpreview/oncommit write pair, the owning itemId, and the resolved dynamic
+     max. Unchanged from when it lived inline in propRow. -->
+{#snippet valueControl(row, state, ctx)}
+  {@const itemMode = ctx.itemMode}
+  {@const disabled = ctx.disabled}
+  {@const onpreview = ctx.onpreview}
+  {@const oncommit = ctx.oncommit}
+  {@const itemId = ctx.itemId}
+  {@const resolvedMax = ctx.resolvedMax}
+  {@const hoverPreview = ctx.hoverPreview}
+  <!-- Branch on the CANONICAL kind (rowKind), never row.kind: a row still
+       carrying a retired spelling must reach the same control as the current
+       one, or the two spellings render as two different things — which is
+       exactly the drift this dispatcher exists to prevent. -->
+  {@const kind = rowKind(row)}
+  {#if kind === "number"}
+    {#if itemMode}
+      <!-- NumericField: equation-aware (THE UNIFICATION). A number renders as
+           the DraggableNumber scrubber; an equation as a monospace expression
+           editor with live evaluation + error affordance. Click-without-drag
+           opens text entry; typed content decides number vs equation.
+           `display` (e.g. "degrees") edits/shows in a unit different from
+           storage. Dotted keys ("from.x") = nested state.
+
+           NO `defaultValue` IS PASSED, and that is not an omission: a row cannot
+           carry a default (core/properties.js `row()` strips it, `customProps()`
+           moves it into the plugin's defaults), so `row.default ?? null` was null
+           at every one of the 1507 numeric rows. NumericField reads the default
+           from the owning plugin instead — the same `sel.plugin.defaults` lookup
+           equationCapable() above already uses. -->
+      <NumericField
+        {app}
+        path={["items", pickedItemId, ...row.key.split(".")]}
+        label={row.label}
+        min={row.min ?? null}
+        max={resolvedMax}
+        display={row.display ?? null}
+        scrub={row.scrub ?? null}
+        step={row.step ?? null}
+      />
+    {:else if disabled}
+      <!-- Grayed display of a not-yet-created item: read the value straight
+           from the creation-fold state; no equation/scrub affordance. -->
+      <input type="text" class="disabled-val" value={String(valueAt(state, row.key) ?? "")} disabled />
+    {:else}
+      <!-- Plain number (transition config): a bounded DraggableNumber scrubber
+           that commits directly (no equations, no keyframes). THREADS the row's
+           `scrub` coefficient (manifest 14.6): a transition-seconds row carries
+           SECONDS_SCRUB from the property registry, so a full 100px drag spans
+           ~1s instead of 100s. Without this the plain scrubber fell back to
+           DraggableNumber's 1 unit/px default — the reason the Round-12
+           `scrub: 0.1` fix never reached the transition seconds row (it was only
+           threaded through the ITEM NumericField path above, never this one).
+           The item path scales bounded rows across a pixel run in NumericField;
+           here (an unbounded seconds row) the explicit coefficient IS the fix,
+           so pass row.scrub straight through when present.
+
+           `defaultValue` is likewise NOT passed (it too was `row.default ?? null`,
+           i.e. always null — see the item branch above). Here it would be inert
+           even if a row could carry one: DraggableNumber uses defaultValue only to
+           DERIVE a step, and the sole numeric row that reaches this branch
+           (core/transitions.js `row("seconds")`) declares an explicit `scrub`,
+           which outranks any default. A transition's own default seconds lives
+           with the transition TYPE, the analogue of a plugin's `defaults`. -->
+      <div class="numfield">
+        <DraggableNumber
+          label={row.label}
+          value={Number(valueAt(state, row.key) ?? 0)}
+          min={row.min ?? null}
+          max={resolvedMax}
+          coefficient={row.scrub ?? 1}
+          oninput={(n) => onpreview(row.key, kind, n)}
+          onchange={(n) => oncommit(row.key, kind, n)}
+        />
+      </div>
+    {/if}
+  {:else if kind === "select"}
+    <!-- Enum dropdown (transition `curve`, widget enums like blendMode, and the
+         optionsFrom:"items" widget pickers). SvelteLib Dropdown over the row's
+         `options`, filling the value column — a FIXED option set with no free
+         text, which is exactly why an item row's select also carries the ƒ
+         equation escape hatch beside it (the Dropdown itself is untouched).
+         Dropdown has no top-level disabled prop, so a future disabled select
+         would render the plain grayed value instead.
+
+         HOVER/ARROW-KEY LIVE PREVIEW: the Dropdown reports which row is ACTIVE
+         (pointer OR keyboard — one notion, so both preview identically) and this
+         row previews it, so an enum shows what it WOULD look like before you pick
+         it. That is the same live-preview contract every other control here obeys
+         (viewport re-renders, document untouched, no undo entry) — closing or
+         Escaping reverts via cancelPreview, and only a real click/Enter reaches
+         `oncommit` for its ONE undo unit.
+         Wired ONLY when the row's context opted in (ctx.hoverPreview) — see the
+         propRow header for why a transition row must never get it.
+
+         GROUPED OPTIONS: a row that declares `optionGroups` (blendMode's six
+         families) gets a caption row ahead of each family, built by
+         core/properties.js selectRowItems from the SAME declaration the option
+         order is flattened from. Captions are Dropdown `insert` entries, so they
+         are unselectable, skipped by the arrow keys, and never previewed. -->
+    <Dropdown
+      onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
+      oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
+      items={row.optionsFrom === "items"
+        ? allDocumentItems(app.doc)
+            .filter((it) => it.id !== itemId && app.registry.get(it.type)?.capabilities.purgeable !== false)
+            .map((it) => ({ value: it.id, label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id) }))
+        : selectRowItems(row)}
+      value={valueAt(state, row.key)}
+      onchange={(v) => oncommit(row.key, "select", v)}
+    />
+  {:else if kind === "asset"}
+    <!-- THE asset control (manifest "ASSET UX ROUND 2"): AssetField — current
+         name + Browse (picker modal, Asset Explorer's tile grid, filtered to
+         row.assetKinds) + Upload, drag-and-drop from the Asset Explorer AND
+         Finder. ONE commit per pick/upload/drop (an asset pick is atomic —
+         no live-preview gesture, unlike a numeric drag) via the row's
+         `oncommit(key, kind, value)` — the SAME call every other plain-mode
+         kind (select) uses, so item rows write a keyframe and transition
+         rows write transition config with zero branching here (oncommit IS
+         commitField for items, commitTransition for transitions — both
+         already perform exactly one write). -->
+    <AssetField
+      {app}
+      value={valueAt(state, row.key)}
+      label={row.label}
+      assetKinds={row.assetKinds ?? ["image"]}
+      assetForm={row.assetForm ?? "url"}
+      nullable={row.nullable ?? false}
+      {disabled}
+      oncommit={(v) => oncommit(row.key, "asset", v)}
+      autoOpen={row.key === "src" && app.pendingVideoPickFor === pickedItemId}
+      onpickerclose={() => { if (app.pendingVideoPickFor === pickedItemId) app.pendingVideoPickFor = null; }}
+    />
+  {:else if kind === "angle"}
+    <!-- THE angle control (kind:"angle"): AngleField — a rotary DIAL (+ typed
+         degrees) that self-writes to this item path, exactly like ColorField
+         (preview mid-drag, commit on release; the row's shared KeyframeControls
+         keyframe it like any other property). `disabled` grays a not-yet-created
+         item's row.
+         `display` is threaded exactly as the number branch threads it: the dial
+         shows degrees, the row says what it STORES (`rotation` stores radians).
+         NO Number() coercion on `value` — the same coercion class of bug that
+         silently turned an equation into 0. The field takes the evaluated value
+         raw (in stored units) and parks at 0° with the error badge showing if it
+         is not a finite heading. -->
+    <AngleField
+      {app}
+      path={["items", pickedItemId, ...row.key.split(".")]}
+      label={row.label}
+      value={valueAt(state, row.key)}
+      display={row.display ?? null}
+      disabled={disabled}
+    />
+  {:else if kind === "color" && row.paint}
+    <!-- PAINT rows (fill/stroke — Axis-1): PaintField edits a polymorphic paint
+         (solid | linear/radial gradient). A solid delegates to ColorField
+         verbatim (byte-identical to before); a gradient stores a {type,stops,
+         geometry} object at the SAME item path. Same commit contract. -->
+    <PaintField
+      {app}
+      path={["items", pickedItemId, ...row.key.split(".")]}
+      label={row.label}
+      value={valueAt(state, row.key)}
+      disabled={disabled}
+    />
+  {:else if kind === "color"}
+    <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped
+         in ColorField — a compact swatch + hex readout that inline-expands the
+         full picker on click. Alpha is integral (not a bolted-on field); the
+         native <input type=color> is GONE. Live semantics: picker oninput →
+         preview (viewport re-renders mid-gesture, doc unchanged), onchange →
+         commit (one undo unit); Escape while open reverts + closes; no Enter.
+         Storage stays #rrggbbaa (opaque collapses to #rrggbb); legacy #rrggbb
+         loads as opaque. Only item rows are colors (no transition color rows),
+         so the path is always ["items", pickedItemId, …]; a grayed not-yet-
+         created item passes disabled to block interaction. Unlike a number a
+         color has no equation split, so itemMode/plain collapse to one call. -->
+    <ColorField
+      {app}
+      path={["items", pickedItemId, ...row.key.split(".")]}
+      label={row.label}
+      value={valueAt(state, row.key)}
+      disabled={disabled}
+    />
+  {:else if kind === "boolean"}
+    {#if itemMode}
+      <!-- Standard boolean control (BooleanField): a square toggle whose state
+           shows via the icon (never a background fill — toggle ruling). Used for
+           `active` (visibility) and plugin booleans like `bold`. Writes an item
+           property keyframe on this slide. -->
+      <BooleanField
+        {app}
+        path={["items", pickedItemId, ...row.key.split(".")]}
+        label={row.label}
+        value={row.key === "active" ? state.active !== false : Boolean(valueAt(state, row.key))}
+        onIcon={row.onIcon}
+        offIcon={row.offIcon}
+        onText={row.onText}
+        offText={row.offText}
+        {disabled}
+      />
+    {:else}
+      <!-- Plain boolean (grayed item display / transition config): a simple
+           toggle committing directly (no keyframe path). -->
+      <div class="boolfield">
+        <button
+          class="boolbtn"
+          class:on={Boolean(valueAt(state, row.key))}
+          aria-label={row.label}
+          aria-pressed={Boolean(valueAt(state, row.key))}
+          {disabled}
+          onclick={() => oncommit(row.key, "boolean", !valueAt(state, row.key))}
+        >
+          <iconify-icon icon={valueAt(state, row.key) ? (row.onIcon ?? "mdi:check") : (row.offIcon ?? "mdi:checkbox-blank-outline")} width="16" height="16"></iconify-icon>
+        </button>
+      </div>
+    {/if}
+  {:else}
+    <input
+      type="text"
+      value={state[row.key] ?? ""}
+      {disabled}
+      oninput={(e) => onpreview(row.key, kind, e.target.value)}
+      onchange={(e) => oncommit(row.key, kind, e.target.value)}
+      onkeydown={fieldKeydown}
+    />
+  {/if}
+{/snippet}
+
+<!-- THE ƒ AFFORDANCE — the same control NumericField puts on the left of a
+     numeric value (app.css .numfield .eq-open: hover-only, zero width at rest,
+     revealed by .row:hover or focus-within, so the resting row is just label +
+     value). Here it TOGGLES, because a non-numeric kind has no "just type a
+     literal" way back the way a number does: pressed = the row is an equation,
+     and clicking it drops back to the evaluated value as a plain literal. That
+     is PaintField's Solid↔"= Eq" mode switch, expressed with NumericField's
+     button so there is ONE recognizable way in and out of equation mode. -->
+{#snippet eqToggle(row, path, active)}
+  <Tooltip text={active ? "Drop the equation, keeping its current value" : "Enter an equation"}>
+    <button
+      class="eq-open"
+      aria-label={active ? `${row.label}: drop the equation` : `${row.label}: enter an equation`}
+      aria-pressed={active}
+      onclick={() => (active ? dropEquation(path) : beginEquation(row, path))}
+    >
+      <iconify-icon icon="mdi:function-variant" width="14" height="14"></iconify-icon>
+    </button>
+  </Tooltip>
+{/snippet}
+
+<!-- THE UNIVERSAL `=` FIELD (Tier 0) — NumericField's equation mode, verbatim in
+     structure: a colorized overlay painted BEHIND a transparent-text input (the
+     input owns the caret and selection, so text behavior stays 100% native), the
+     inline evaluated badge pinned inside the right edge, the error affordance
+     carrying the derivation stage's message, and the EquationSuggest dropdown
+     anchored under the field. The value shown is the DISPLAY form (slugs); the
+     document stores @itemIds behind the `=` marker, so renames never rewrite it.
+     `stored` is the RAW document value, never the evaluated one.
+     KNOWN BOUND: the autocomplete's candidate set is core's (numeric leaves,
+     variables, functions) — a color/boolean row is offered the same names a
+     numeric row is, since core has no per-kind candidate filter yet. -->
+{#snippet equationEntry(row, path, stored)}
+  {@const editing = eqFocusKey === row.key || eqOpenKey === row.key}
+  {@const text = editing ? eqDraft : equationDisplay(stored, app.rawState())}
+  {@const error = app.exprErrorAt(path)}
+  {@const invalid = editing && eqInvalid}
+  <span class="eq-wrap">
+    <div class="eq-highlight" aria-hidden="true">
+      {#each equationPieces(text, app.rawState(), pickedItemId) as p}{#if p.cls}<span class="eq-tok eq-tok-{p.cls}">{p.text}</span>{:else}{p.text}{/if}{/each}
+    </div>
+    <input
+      type="text"
+      class="eq-input"
+      class:invalid
+      class:error={!invalid && !!error}
+      spellcheck="false"
+      aria-label={`${row.label} equation`}
+      value={text}
+      use:eqAutofocus={row.key}
+      oninput={onEqInput}
+      onscroll={syncEqScroll}
+      onfocus={(e) => onEqFocus(e, row, path, stored)}
+      onblur={() => onEqBlur(row, stored)}
+      onkeydown={onEqKeydown}
+    />
+    {#if !invalid && error}
+      <Tooltip text={error}>
+        <span class="eq-badge eq-badge-error">
+          <iconify-icon icon="mdi:alert-circle-outline" width="13" height="13"></iconify-icon>
+        </span>
+      </Tooltip>
+    {:else}
+      <!-- Live evaluation of the equation — the kind's OWN value (a hex color, a
+           boolean, an enum name), so the row still shows what it resolves to
+           while the specialized editor is standing down. -->
+      <span class="eq-badge">= {invalid ? "?" : equationBadge(getPath(app.state(), path))}</span>
+    {/if}
+    {#if editing}
+      <EquationSuggest
+        candidates={eqCandidates}
+        highlighted={eqHighlighted}
+        anchorEl={eqInputEl}
+        onhover={(i) => (eqHighlighted = i)}
+        onpick={acceptEqCandidate}
+      />
+    {/if}
+  </span>
+{/snippet}
+
 
 <!-- A collapsible category accordion region. The header toggles collapse; the
      chevron reflects state. Rows render only when expanded. -->
@@ -696,7 +1293,10 @@
             Show all
           </button>
         </Tooltip>
-        <Tooltip text="Remove every selected item from existence (all slides)">
+        <!-- Leads with the WORD: "purge" is this app's specific term for
+             destroy-everywhere, the counterpart to Delete's deactivate-on-this-
+             slide. A tooltip that only paraphrases it never teaches it. -->
+        <Tooltip text="Purge — remove every selected item from existence (all slides)">
           <button class="btn danger" aria-label="Purge selected" onclick={() => app.runCommand("purge-item")}>
             <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
           </button>
@@ -747,7 +1347,7 @@
       />
       <span class="kf-controls name-actions">
         {#if purgeable}
-          <Tooltip text="Remove from existence (all keyframes, all slides)">
+          <Tooltip text="Purge — remove from existence (all keyframes, all slides)">
             <button class="btn-icon danger" aria-label="Purge item" onclick={() => app.runCommand("purge-item")}>
               <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
             </button>
@@ -773,7 +1373,11 @@
             // superseded by the registry's (row.help flows through unchanged).
             help: "Whether this item shows on THIS slide. It is a keyframeable boolean like any other property — hiding it keyframes active: false here, so the item can appear on some slides and not others." },
           sel.state,
-          { keyframes: true, disabled: false, onpreview: previewField, oncommit: commitField, itemId: sel.itemId, pathState: app.rawState() }
+          // hoverPreview: this CREATED-item context previews without committing,
+          // so its select rows may preview the option under the pointer. (The
+          // Visible row itself is a boolean and has no active-row notion; the
+          // field is threaded here so both created-item contexts are identical.)
+          { keyframes: true, disabled: false, onpreview: previewField, oncommit: commitField, itemId: sel.itemId, pathState: app.rawState(), hoverPreview: previewField }
         )}
       {/if}
       {#each itemCategories as cat (cat.id)}
@@ -784,6 +1388,11 @@
           oncommit: commitField,
           itemId: sel.itemId,
           pathState: app.rawState(),
+          // Every select row of a CREATED item previews the option under the
+          // pointer / arrow-key highlight (blendMode, shape kind, cursor kind,
+          // item retargeting, …). previewField is setPreview only — the document
+          // is untouched until the pick, so no undo entry can come from hovering.
+          hoverPreview: previewField,
         })}
       {/each}
     </div>
@@ -804,7 +1413,7 @@
       />
       <span class="kf-controls name-actions">
         {#if purgeable}
-          <Tooltip text="Remove from existence (all keyframes, all slides)">
+          <Tooltip text="Purge — remove from existence (all keyframes, all slides)">
             <button class="btn-icon danger" aria-label="Purge item" onclick={() => app.runCommand("purge-item")}>
               <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
             </button>

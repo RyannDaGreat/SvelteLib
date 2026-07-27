@@ -135,6 +135,76 @@ export function foldState(doc, index, alpha = 1) {
   return blendApplied(slideState(doc, index - 1), doc.slides[index].delta, alpha);
 }
 
+/**
+ * Pure function (uses memoized folds). THE TWEEN: `foldState` plus each widget's
+ * OWN declared state interpolation. This is what every (doc, slide, alpha)
+ * consumer should call — the editor's pixel consumers, the presenter, the
+ * exporters and the CLI all reach it through web/cameraFrame.evaluatedStateAt.
+ *
+ * ── WHY A PLUGIN GETS A SAY IN THE TWEEN ─────────────────────────────────────
+ * `foldState` tweens LEAF BY LEAF (core/deltas.blendApplied → interpolate), which
+ * is right whenever a widget's properties are independent. Some are not. The
+ * deep-zoom Mandelbrot's centre and zoom are COUPLED: its `zoomExponent` is a
+ * logarithm, so the frame it names shrinks EXPONENTIALLY while a linearly-tweened
+ * centre walks a straight line — and the point being zoomed into then swings
+ * thousands of frame-widths off screen mid-transition and snaps back at the end
+ * (measured: 4170 half-widths for a whole-set → seahorse-tail pair). No
+ * reparameterization of the STORED leaves can fix that under a leaf-wise lerp: the
+ * correct centre path is c(a) = A + B·10^(-z(a)) with A and B determined by BOTH
+ * endpoints jointly, and requiring a pointwise map to reproduce it for every
+ * endpoint pair forces A constant — i.e. no anchor at all. So the law needs the
+ * two endpoint STATES, which is exactly what this function has and a leaf does not.
+ *
+ * ── THE CONTRACT ─────────────────────────────────────────────────────────────
+ *   plugin.interpolateState(from, to, alpha) → {stateKey: value}
+ * PURE, and a function of (from, to, alpha) ONLY — so RenderTree stays
+ * pure(document, [[slide, alpha]]). `from` is the folded state on the previous
+ * slide, `to` is this slide's state at alpha 1 (both already memoized by
+ * slideState, so declaring a hook costs no extra folding). The returned keys
+ * REPLACE the leaf-wise result for that item; `{}` means "the generic lerp is
+ * already right". Keys must be keyframable leaves of the item's own state.
+ *
+ * A hook is consulted ONLY strictly between the endpoints: at alpha 0 and 1 the
+ * answer IS a stored state, so this is the identity there by construction, and
+ * `foldState` alone remains the exact fold it has always been.
+ *
+ * @param {object} doc - PowerRP document
+ * @param {number} index - slide index being tweened INTO
+ * @param {number} alpha - tween strength 0..1
+ * @param {object} registry - plugin registry (resolves each item's type → plugin)
+ * @returns {object} the folded state, with every declared coupling applied
+ *
+ * @example // tweenedState(doc, 1, 0.5, registry) — halfway, coupled properties honored
+ */
+export function tweenedState(doc, index, alpha, registry) {
+  const blended = foldState(doc, index, alpha);
+  if (index === 0 || alpha <= 0 || alpha >= 1) return blended;
+  if (doc.slides[index].enabled === false) return blended;
+  const from = slideState(doc, index - 1), to = slideState(doc, index);
+  let out = blended;
+  for (const [id, state] of Object.entries(blended.items ?? {})) {
+    // An item created or purged BY this delta has no pair of endpoint states, so
+    // there is no coupling to speak of — its appearance/disappearance is the
+    // generic discrete rule's business.
+    const a = from.items?.[id], b = to.items?.[id];
+    if (!a || !b) continue;
+    // The SAME gate deriveRenderTree applies before its own `registry.get`: an
+    // item that will not be rendered has no tween to correct, and a typeless one
+    // (a raw pre-repair document) has no plugin to ask.
+    if (state.active === false || typeof state.type !== "string") continue;
+    const hook = registry.get(state.type).interpolateState;
+    if (!hook) continue;
+    const over = hook(a, b, alpha);
+    if (Object.keys(over).length === 0) continue;
+    // Copy-on-write: `blended` may be a CACHED fold (slideState's array) at the
+    // endpoints, and even mid-tween it is shared with nothing that expects it to
+    // change under it. One new object per corrected item, nothing else touched.
+    if (out === blended) out = { ...blended, items: { ...blended.items } };
+    out.items[id] = { ...state, ...over };
+  }
+  return out;
+}
+
 // ── Keyframe edits (all pure: return a new document) ─────────────────────────
 
 /** Pure function. Sets a keyframe leaf in slide `index`'s delta. */

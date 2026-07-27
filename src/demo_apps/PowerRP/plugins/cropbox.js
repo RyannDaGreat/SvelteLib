@@ -42,7 +42,7 @@ export const cropboxPlugin = {
   defaults: {
     type: "cropbox", x: 100, y: 100, w: 240, h: 140, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    target: null, fill: "#00000000", stroke: "#1a1a2e", strokeWidth: 2,
+    target: null, fill: "#00000000", stroke: "#000000", strokeWidth: 2,
     ...defaults("cornerRadius", "opacity"), // cornerRadius:0, opacity:1
   },
   inspector: [

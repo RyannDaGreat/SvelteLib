@@ -88,14 +88,17 @@ export const plaintextPlugin = {
   // PLAIN-STRING mode: it edits this widget's single `text` string directly (no
   // {runs, paras}, NO floating format toolbar), committing the typed string as a
   // keyframed change on the current slide — the box updates live per keystroke.
-  // CanvasView.onDblClick reads THIS descriptor to route the gesture (declarative
-  // opt-in, so any future single-string widget gets the editor by declaring it);
-  // the controller reads `plain` to flatten its rich editing model to a plain
-  // string at the stored-value boundary. An `=` equation-bound `text` is NOT
-  // opened this way (in-place editing would overwrite the equation with its
-  // computed value) — beginTextEdit no-ops it and routes the user to the
-  // Inspector's equation field (the mermaid/codeblock "equations live in the
-  // Inspector" precedent). `property` names WHICH string leaf the editor binds.
+  // `activate` is what ROUTES the double-click here (web/widget_handlers.js, phase
+  // "activate"); `inlineTextEdit` is the editor's CONTENT — which string leaf it
+  // binds and in which mode. Both are declarative, so any future single-string
+  // widget gets the editor by declaring the pair. The controller reads `plain` to
+  // flatten its rich editing model to a plain string at the stored-value boundary.
+  // An `=` equation-bound `text` is NOT opened this way (in-place editing would
+  // overwrite the equation with its computed value) — beginTextEdit no-ops it and
+  // routes the user to the Inspector's equation field (the mermaid/codeblock
+  // "equations live in the Inspector" precedent). `property` names WHICH string
+  // leaf the editor binds.
+  activate: "inline_text_edit",
   inlineTextEdit: { property: "text", plain: true },
   /**
    * Pure function. Is this box currently a GHOST? STATE-dependent — a plaintext
@@ -118,7 +121,7 @@ export const plaintextPlugin = {
   // effects-off, exactly like rect.js. `text` is a plain STRING (NOT a {runs,
   // paras} rich value — the whole point of this widget). `fill` is the glyph ink
   // (paint-capable via the registry `fill` prop); the registry declares no
-  // default for it, so it is supplied here (matching text.js's #1a1a2e ink).
+  // default for it, so it is supplied here (matching text.js's #000000 ink).
   defaults: {
     type: "plaintext", x: 120, y: 80, w: 260, h: 60, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation
@@ -126,7 +129,7 @@ export const plaintextPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     text: "Text",
     font: DEFAULT_FONT, size: DEFAULT_TEXT_SIZE, bold: false,
-    fill: "#1a1a2e", align: "left", valign: "top",
+    fill: "#000000", align: "left", valign: "top",
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
@@ -141,7 +144,7 @@ export const plaintextPlugin = {
     { key: "text", label: "Text", kind: "text", category: "text", help: "The text this box displays. Type freely, or start with '=' to bind it to an equation (e.g. a computed value shown as text)." },
     { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text", help: "The typeface the text is drawn in." },
     { key: "size", label: "Size", kind: "number", min: 0, category: "text", help: "Font size in canvas units. Larger is bigger on the slide." },
-    { key: "bold", label: "Bold", kind: "checkbox", category: "text", help: "Draw the text in the font's bold weight." },
+    { key: "bold", label: "Bold", kind: "boolean", category: "text", help: "Draw the text in the font's bold weight." },
     { key: "align", label: "Align", kind: "select", options: ALIGN_OPTIONS, optionLabels: ALIGN_LABELS, category: "text", help: "Horizontal alignment of the text within the box width: left, center, right, or justified." },
     { key: "valign", label: "V-Align", kind: "select", options: VALIGN_OPTIONS, optionLabels: VALIGN_LABELS, category: "text", help: "Vertical placement of the line stack within the box height: top, middle, or bottom." },
     // Ink color reuses the PAINT-capable registry `fill` prop (solid OR

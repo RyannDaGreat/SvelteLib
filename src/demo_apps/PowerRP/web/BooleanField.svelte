@@ -5,6 +5,14 @@
   the toggle-buttons ruling), and the label of each state comes from the row's
   optional on/off icon + tooltip text.
 
+  THE ONE on/off control. Every on/off property in the app reaches it through the
+  single `kind: "boolean"` branch of the Inspector's field dispatcher — that is
+  the ONLY spelling (core/properties.js ROW_KINDS; the V1 "checkbox" name is
+  retired, see RETIRED_ROW_KINDS). There is deliberately no native
+  <input type="checkbox"> anywhere in the editor: a native checkbox cannot honour
+  the toggle-buttons ruling (no opaque background when active) and would read as
+  a second, competing affordance for the same concept.
+
   It exists so a boolean property gets the SAME row treatment as every other
   property (manifest Round 12: "visibility should be a property like all the
   others… a toggleable boolean… it needs to have key frames on it, just like all

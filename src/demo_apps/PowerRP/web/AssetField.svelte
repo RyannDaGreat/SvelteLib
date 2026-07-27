@@ -55,6 +55,31 @@
 -->
 <script module>
   /**
+   * Pure function. Is this stored value an `=` EQUATION rather than an asset
+   * reference? The universal any-type gate is the leading `=` (manifest "THE `=`
+   * MARKER"). An equation-valued asset row must NOT be run through
+   * assetDisplayName, which would present the tail of the expression as if it
+   * were a file ('="/asset/p/pic.png"' reading as the asset 'pic.png"').
+   * DUPLICATED as a one-liner in ColorField (isEquationColor) for the same
+   * reason: core's isEquationValue needs the owning plugin + property path,
+   * which a display-level field does not have. The right home is a core
+   * `isEquationString` export both would call.
+   *
+   * Examples:
+   *     >>> isEquationAsset('="/asset/p/pic.png"')
+   *     true
+   *     >>> isEquationAsset("= other.src")
+   *     true
+   *     >>> isEquationAsset("/asset/p/pic.png")
+   *     false
+   *     >>> isEquationAsset(null)
+   *     false
+   */
+  export function isEquationAsset(value) {
+    return typeof value === "string" && /^\s*=/.test(value);
+  }
+
+  /**
    * Pure function. A human display name for a stored asset value: the
    * basename of a URL/filename, or a fixed label for a data: URI (never the
    * raw base64 blob — the manifest's "displays the asset name, not a raw path
@@ -125,6 +150,13 @@
     onpickerclose = () => {},
   } = $props();
 
+  // An `=` equation is not an asset reference: it renders AS an expression, and
+  // every write affordance (Browse / Upload / Clear / drop) stands down, because
+  // each would replace the expression with a literal. Editing it belongs to the
+  // Inspector row's universal `=` field (Tier 0), which owns the equation UX for
+  // every kind. Reachable today through the Inspector's grayed not-yet-created
+  // rows, which display RAW creation-slide state.
+  let equation = $derived(isEquationAsset(value));
   let displayName = $derived(assetDisplayName(value));
   let pickerOpen = $state(false);
   let assets = $state(null); // library listing, fetched lazily on first browse
@@ -132,7 +164,10 @@
   let dragging = $state(false); // valid drag hovering the field
   let dragRejected = $state(false); // a drag whose kind doesn't match, hovering
   let error = $state(null); // upload/drop failure, shown inline under the field
-  let fileInput;
+  // $state because the hidden file input now lives inside a conditional block
+  // (an equation-bound row renders no upload affordance), so bind:this assigns
+  // and clears it as that block mounts and unmounts.
+  let fileInput = $state(null);
 
   /** Query. The library assets matching this field's accepted kinds. */
   let filteredAssets = $derived((assets ?? []).filter((a) => assetKinds.includes(a.kind)));
@@ -253,6 +288,12 @@
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
     dragging = true;
+    // An equation-bound row shows the reject highlight up front; the drop itself
+    // still fires and says WHY (onDrop) rather than quietly doing nothing.
+    if (equation) {
+      dragRejected = true;
+      return;
+    }
     // A same-page asset-tile drag exposes its payload kind only on DROP (most
     // browsers hide dataTransfer item contents during dragover for security);
     // Finder file drags never do. So the reject-highlight only applies to the
@@ -280,6 +321,10 @@
     dragRejected = false;
     if (disabled) return;
     error = null;
+    if (equation) {
+      error = `${label} is bound to an equation — clear it in the row's ƒ equation field before dropping an asset here.`;
+      return;
+    }
     const assetPayload = e.dataTransfer.getData(ASSET_DRAG_MIME);
     if (assetPayload) {
       // Dropped from the Asset Explorer: an existing library asset, no upload.
@@ -299,6 +344,17 @@
 <div class="assetfield" class:disabled>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="assetfield-row" ondragover={onDragOver} ondragleave={onDragLeave} ondrop={onDrop} class:dragging class:drag-rejected={dragRejected}>
+    {#if equation}
+      <!-- EQUATION-BOUND: the ƒ mark + the expression itself, in place of a name
+           that would be a slice of the expression. No Browse / Upload / Clear —
+           each writes a literal over the equation. -->
+      <Tooltip text={`${label} is bound to an equation — edit it in the row's ƒ equation field`}>
+        <span class="assetfield-name">
+          <iconify-icon icon="mdi:function-variant" width="13" height="13"></iconify-icon>
+          {value}
+        </span>
+      </Tooltip>
+    {:else}
     <Tooltip text={displayName ? `${label}: ${displayName}` : `${label}: not set — drag an asset here, or use Browse/Upload`}>
       <span class="assetfield-name" class:empty={!displayName}>{displayName ?? "(none)"}</span>
     </Tooltip>
@@ -322,11 +378,14 @@
       </Tooltip>
       <input class="assetfield-file" type="file" bind:this={fileInput} onchange={onFileChosen} />
     </div>
+    {/if}
   </div>
   {#if error}<div class="assetfield-error">{error}</div>{/if}
 </div>
 
-<Modal bind:open={pickerOpen} title={`Choose ${assetKinds.join("/")} asset — ${label}`}>
+<!-- size="large" is REQUIRED: the tile grid is auto-fill/minmax, which collapses
+     to a few columns under the content-sized Modal default. -->
+<Modal bind:open={pickerOpen} title={`Choose ${assetKinds.join("/")} asset — ${label}`} size="large">
   {#if listError}
     <div class="ae-notice ae-error">
       <div class="ae-notice-title">Couldn't load assets</div>

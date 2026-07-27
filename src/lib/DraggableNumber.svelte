@@ -31,6 +31,9 @@
     - Shift while dragging   fine adjustment (FINE_FACTOR × coefficient)
     - ↑ / ↓                 nudge by step (or coefficient if no step)
     - Home / End            jump to min / max (only when bounded)
+    - every other plain key  CLAIMED while focused (fieldKeys.js) so a host app's
+                             global shortcuts cannot fire behind the field; modified
+                             combos, held modifiers and Tab/Escape/Enter still bubble
     - the grip wheel rolls to mirror the accumulated drag (wheel mode); it
       STOPS rolling once the value is clamped at a bound (accumulator clamps)
 
@@ -42,7 +45,8 @@
     --dn-ridge, --dn-ridge-count, --dn-ridge-gap
 -->
 <script>
-  import { defaultStep } from "./numberStep.js";
+  import { decimalPlaces, defaultStep, refinedStep } from "./numberStep.js";
+  import { fieldOwnsKeydown } from "./fieldKeys.js";
 
   // -- Pure helpers (general) -------------------------------------------------
 
@@ -95,17 +99,19 @@
   /**
    * Pure function. Decimal places implied by a step, so the display precision
    * tracks the step's granularity. Falls back to `fallback` when step is unset.
+   * Delegates to numberStep's decimalPlaces, which unwinds scientific notation —
+   * reading String(1e-7) positionally gave 2, so a very fine grid used to be
+   * DISPLAYED coarser than it steps (the value would visibly refuse to move).
    *
    * @example decimalsForStep(0.01, 4) // 2
    * @example decimalsForStep(0.5, 4) // 1
    * @example decimalsForStep(1, 4) // 0
+   * @example decimalsForStep(1e-7, 4) // 7  (not 2 — scientific notation unwound)
    * @example decimalsForStep(null, 4) // 4  (no step → fallback)
    */
   function decimalsForStep(step, fallback) {
     if (!step) return fallback;
-    const s = String(step);
-    const dot = s.indexOf(".");
-    return dot < 0 ? 0 : s.length - dot - 1;
+    return decimalPlaces(step);
   }
 
   /**
@@ -157,8 +163,9 @@
     /** @type {number|null} The control's DEFAULT value. Used ONLY to derive the
      *  fallback step when `step` is not given: the step then matches the decimal
      *  precision of this value (defaultStep — e.g. default 0.25 → step 0.01,
-     *  0.3 → 0.1, 5 → 1). Ignored entirely when `step` is explicit; a null/0
-     *  default leaves the control continuous. */
+     *  0.3 → 0.1, 5 → 1), refined if `coefficient` is finer than that. Ignored
+     *  entirely when `step` is explicit; a null/0 default leaves the control
+     *  continuous. */
     defaultValue = null,
     /** @type {boolean} Show the skeuomorphic grip wheel. */
     wheel = true,
@@ -209,8 +216,13 @@
 
   const bounded = $derived(min != null && max != null);
   // An explicit `step` always wins; otherwise fall back to the granularity
-  // implied by the default value's precision (null default → continuous).
-  const effectiveStep = $derived(step ?? defaultStep(defaultValue));
+  // implied by the default value's precision (null default → continuous) — but
+  // never COARSER than one pixel of drag, or the grid swallows the drag and the
+  // control sits frozen until the pointer has travelled step/coefficient pixels
+  // (numberStep.js: "step ≤ coefficient"). A consumer that also knows the row's
+  // bounds and calibrated scrub should resolve both numbers together with
+  // resolveScrub and pass `step` outright.
+  const effectiveStep = $derived(step ?? refinedStep(defaultStep(defaultValue), coefficient));
   const decimals = $derived(decimalsForStep(effectiveStep, DEFAULT_DECIMALS));
   const display = $derived(formatValue(value, decimals));
 
@@ -463,6 +475,16 @@
 
   function onKeyDown(e) {
     if (disabled || editing) return; // while editing, the <input> owns the keys
+    // CLAIM the plain keyspace while this control has focus (fieldKeys.js says
+    // exactly which keys that is, and why each exclusion is excluded). Without
+    // this the control was the ONE focusable field a host could not detect: it is
+    // a div[role=spinbutton], so the universal "skip shortcuts while a text field
+    // is focused" test (tag name / contenteditable) reported FALSE and every host
+    // shortcut still fired behind it — in PowerRP, Backspace DELETED the widget
+    // whose number was being edited. Cmd/Ctrl/Alt combos, held modifiers and
+    // Tab/Escape/Enter keep bubbling, so the host's undo, its live modifier
+    // tracking and any wrapper's cancel all still work.
+    if (fieldOwnsKeydown(e)) e.stopPropagation();
     switch (e.key) {
       case "ArrowUp":
         e.preventDefault();

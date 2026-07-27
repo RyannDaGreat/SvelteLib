@@ -25,11 +25,15 @@
  *     trick as the GPU supersample). Recursion capped at MAX_LENS_DEPTH
  *     (the GPU compositor's MAX_SUPERSAMPLE_DEPTH bound); a lens beyond the
  *     cap embeds as a raster region (user: pixelated lens acceptable).
- *   effectSubtree (Round 12D shadow/bloom/blend) — the hybrid rule per
- *     effect: shadow = raster PNG under VECTOR content (the manifest's
- *     verbatim case); bloom = the widget becomes a raster region; multiply/
- *     screen blends = raster region under an exact /BM ExtGState; add blends
- *     = the everything-below raster split (like blur). See emitEffect.
+ *   effectSubtree (Round 12D shadow/bloom/blend + inner shadow/soft edges) —
+ *     the hybrid rule per effect: shadow = raster PNG under VECTOR content
+ *     (the manifest's verbatim case); bloom, inner shadow and soft edges =
+ *     the widget becomes a raster region; multiply/screen blends = raster
+ *     region under an exact /BM ExtGState; add blends = the everything-below
+ *     raster split (like blur). Which effects allow the vector path is the
+ *     SHARED vectorSafeEffects predicate (below), read by BOTH vector
+ *     backends so no effect can be honored by one and dropped by the other.
+ *     See emitEffect.
  *   ANY OTHER unrepresentable op (glassBackdrop today; any future backdrop/
  *     effect op with no vector form) — the GENERAL raster fallback: rasterize
  *     JUST that op's own region (the content it samples + the op, through the
@@ -44,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, pushTransform, popTransform, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, rect, pushTransform, popTransform, effectSubtree, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -57,6 +61,193 @@ import { fitBox } from "../core/geometry.js";
  * re-interpretation; deeper lenses fall back (here: to a raster embed).
  */
 export const MAX_LENS_DEPTH = LENS_DEPTH_CAP;
+
+// ── THE EFFECT-FIELD CLASSIFICATION (the one gate both vector backends read) ──
+// Every effect an `effectSubtree` op can carry is classified EXACTLY ONCE here as
+// either vector-safe (the widget's own content can stay VECTOR alongside it) or
+// raster-only (the op must go through the pixel rasterizer or the effect would
+// not appear at all). vectorSafeEffects() below is the ONLY gate pdf_backend and
+// svg_backend consult, so an effect can never again be visible to one exporter
+// and invisible to the other — the defect this classification replaces was an
+// ad-hoc `!cmd.bloom && cmd.blend === "normal"` boolean that never mentioned
+// innerShadow or softEdges, so BOTH silently vanished from every PDF.
+//
+// The IMPORT-TIME GUARD at the bottom cross-checks these lists against a real
+// all-effects-on `effectSubtree` op, mirroring render_gpu/skia/render_settings
+// .js's ANTIALIAS_MODES check: a SIXTH effect field added to ir.js and not
+// classified here throws at import instead of silently exporting as nothing.
+
+/**
+ * Effect fields a vector backend can honor WITHOUT rasterizing the widget's own
+ * content. `shadow` qualifies because emitEffect emits it as its own raster PNG
+ * placed UNDER the untouched vector content (the manifest's verbatim "compositing
+ * a shadow png under a vector thingy"), so text inside a shadowed widget stays
+ * selectable text.
+ */
+export const VECTOR_SAFE_EFFECT_FIELDS = ["shadow"];
+
+/**
+ * Effect fields with NO vector form, so their presence forces the whole effected
+ * widget through the pixel rasterizer:
+ *   bloom       — an additive halo; no PDF/SVG primitive produces it.
+ *   innerShadow — a blurred recess clipped INSIDE the widget silhouette.
+ *   softEdges   — the widget's own coverage feathered inward to transparency.
+ * (`blend` is not a field-presence test — a mode string — so it is gated
+ * separately by vectorSafeEffects; see there.)
+ */
+export const RASTER_ONLY_EFFECT_FIELDS = ["bloom", "innerShadow", "softEdges"];
+
+/**
+ * effectSubtree keys that are STRUCTURE, not an effect: geometry, the wrapped
+ * content, the derived halo, and the shadow-only re-issue flag. Listed so the
+ * import-time guard can tell "not an effect" from "an unclassified effect".
+ */
+const EFFECT_STRUCTURAL_FIELDS = ["op", "x", "y", "w", "h", "content", "margin", "shadowOnly", "blend"];
+
+/**
+ * Pure function. Can this `effectSubtree` op keep its content VECTOR? True only
+ * when EVERY effect it carries is vector-safe — i.e. no raster-only effect field
+ * is live and the blend mode is "normal" (multiply/screen need an isolated raster
+ * under a /BM ExtGState; "add" never reaches a backend's emitEffect at all — the
+ * region's raster split claims it).
+ *
+ * `softEdges` is a NUMBER (0 = off, the ir.js default) while the others are
+ * objects-or-null, so liveness is "truthy" for both shapes — matching
+ * effects.js's own gates (a 0 feather is a crisp edge; a null shadow is no shadow).
+ *
+ * THE SHARED GATE: pdf_backend.emitEffect and svg_backend.emitEffectSVG both
+ * branch on this one predicate, so neither backend can silently drop an effect
+ * the other honors.
+ *
+ * @param {object} cmd an ir.js effectSubtree op
+ * @returns {boolean} true ⇒ vector content is faithful; false ⇒ must rasterize
+ *
+ * @example vectorSafeEffects({shadow: {dx: 3, dy: 3, blur: 4}, bloom: null, innerShadow: null, softEdges: 0, blend: "normal"}) // true (shadow alone: raster PNG under vector content)
+ * @example vectorSafeEffects({shadow: null, bloom: {radius: 5, strength: 1}, innerShadow: null, softEdges: 0, blend: "normal"}) // false (bloom has no vector form)
+ * @example vectorSafeEffects({shadow: null, bloom: null, innerShadow: {dx: 2, dy: 2, blur: 4, opacity: 0.6}, softEdges: 0, blend: "normal"}) // false (inner shadow has no vector form)
+ * @example vectorSafeEffects({shadow: null, bloom: null, innerShadow: null, softEdges: 8, blend: "normal"}) // false (an 8-unit feather has no vector form)
+ * @example vectorSafeEffects({shadow: null, bloom: null, innerShadow: null, softEdges: 0, blend: "multiply"}) // false (needs an isolated raster under /BM Multiply)
+ */
+export function vectorSafeEffects(cmd) {
+  if ((cmd.blend ?? "normal") !== "normal") return false;
+  return RASTER_ONLY_EFFECT_FIELDS.every((field) => !cmd[field]);
+}
+
+/**
+ * blend id → its PDF /BM ExtGState name (PDF 32000-1 Table 136 separable +
+ * Table 137 non-separable blend modes). THE OTHER HALF of the export
+ * classification: `vectorSafeEffects` says whether the widget's CONTENT can stay
+ * vector, this says whether its BLEND has a standard vector-blend spelling at
+ * all. "normal" is absent by design — it needs no gs op (gsBlend returns "").
+ *
+ * The PDF standard set is also, exactly, the CSS `mix-blend-mode` keyword set, so
+ * ONE table classifies both exporters and svg_backend reads the predicate below
+ * rather than keeping its own list. What is NOT here: "add" (Plus — PDF has no
+ * additive blend mode and /Screen is not it) and the nine Photoshop modes Skia
+ * itself lacks (Linear Burn, Darker/Lighter Color, Vivid/Linear/Pin Light, Hard
+ * Mix, Subtract, Divide — render_gpu/skia/blend_modes.js implements those as SkSL
+ * runtime blenders, which no page-description language can express).
+ */
+export const PDF_BLEND_NAMES = {
+  multiply: "Multiply", screen: "Screen", overlay: "Overlay",
+  darken: "Darken", lighten: "Lighten",
+  colorDodge: "ColorDodge", colorBurn: "ColorBurn",
+  hardLight: "HardLight", softLight: "SoftLight",
+  difference: "Difference", exclusion: "Exclusion",
+  hue: "Hue", saturation: "Saturation", color: "Color", luminosity: "Luminosity",
+};
+
+/**
+ * Pure function. Must this blend mode be exported through the EVERYTHING-BELOW
+ * RASTER SPLIT (the blurBackdrop precedent) rather than as an isolated region
+ * under a vector blend state? True for every mode with no PDF /BM (== no CSS
+ * mix-blend-mode) spelling: the composite genuinely needs the real backdrop
+ * pixels, so the only faithful export is to rasterize the backdrop with it.
+ *
+ * THE SHARED GATE, like vectorSafeEffects: emitRegion / emitRegionSVG use it to
+ * DETECT the split, and emitEffect / emitEffectSVG assert on it (a mode that
+ * needs the split must never reach the isolated-region path). This replaces the
+ * hand-written `blend === "add"` those four sites each carried — which was
+ * correct only while "add" was the single non-standard mode, and would have
+ * silently exported every Photoshop mode Skia lacks as unblended pixels.
+ *
+ * @param {string} mode a core/properties.js BLEND_MODES id
+ * @returns {boolean}
+ *
+ * @example blendNeedsBelowRaster("add") // true (no /Add in PDF, no additive CSS keyword)
+ * @example blendNeedsBelowRaster("vividLight") // true (an SkSL-only mode; no vector form anywhere)
+ * @example blendNeedsBelowRaster("multiply") // false (exact /BM Multiply)
+ * @example blendNeedsBelowRaster("normal") // false (no blend at all)
+ */
+export function blendNeedsBelowRaster(mode) {
+  const m = mode ?? "normal";
+  return m !== "normal" && !(m in PDF_BLEND_NAMES);
+}
+
+// LOUD IMPORT-TIME GUARD (same shape as the effect-field guard below): a /BM name
+// for a mode nobody can select is dead code, and — the real risk — a mode whose
+// spelling drifts silently stops being /BM-exportable and quietly falls into the
+// raster split. Cross-check against the ONE mode list.
+for (const mode of Object.keys(PDF_BLEND_NAMES))
+  if (!BLEND_MODES.includes(mode))
+    throw new Error(`pdf_backend: PDF_BLEND_NAMES maps "${mode}", which is not in core/properties.js BLEND_MODES — remove the stale entry (a drifted spelling would silently lose its /BM export).`);
+
+/**
+ * Pure function. The raster-only effect fields that were LIVE on `original` but
+ * are dead on `forwarded` — i.e. effects a backend silently discarded while
+ * rebuilding the op it hands its pixel rasterizer. Empty array = nothing lost.
+ *
+ * WHY BOTH BACKENDS CALL IT: each one re-spreads the effect op before rasterizing
+ * (pdf_backend strips `shadow`, already emitted as its own PNG, and neutralizes
+ * `blend`; svg_backend neutralizes `blend`), and a stray strip in that spread is
+ * invisible in review yet deletes an effect from every export. Stripping a
+ * VECTOR-SAFE field is legitimate (that is how the shadow PNG avoids doubling), so
+ * only the raster-only set is checked.
+ *
+ * @param {object} original the effectSubtree op as the IR built it
+ * @param {object} forwarded the op the backend is about to rasterize
+ * @returns {string[]} live-then-dead raster-only field names
+ *
+ * @example droppedRasterOnlyEffects({bloom: {radius: 1, strength: 1}, softEdges: 4}, {bloom: {radius: 1, strength: 1}, softEdges: 4}) // [] (nothing lost)
+ * @example droppedRasterOnlyEffects({bloom: {radius: 1, strength: 1}, softEdges: 4}, {bloom: {radius: 1, strength: 1}, softEdges: 0}) // ["softEdges"]
+ * @example droppedRasterOnlyEffects({shadow: {opacity: 1}, softEdges: 4}, {shadow: null, softEdges: 4}) // [] (shadow is vector-safe — stripping it is the PDF shadow-PNG convention)
+ */
+export function droppedRasterOnlyEffects(original, forwarded) {
+  return RASTER_ONLY_EFFECT_FIELDS.filter((field) => original[field] && !forwarded[field]);
+}
+
+/**
+ * Pure function. An `effectSubtree` op with EVERY effect turned on — the probe
+ * the import-time guard classifies, and the fixture a test can reuse so both read
+ * ONE definition of "all effects". Values are arbitrary but live (a 0 feather or a
+ * 0-opacity shadow would be off).
+ *
+ * @example allEffectsProbeOp().softEdges // 4
+ * @example allEffectsProbeOp().blend // "multiply"
+ */
+export function allEffectsProbeOp() {
+  return effectSubtree({
+    x: 0, y: 0, w: 1, h: 1, content: [],
+    shadow: { dx: 1, dy: 1, blur: 1, color: "#000000", opacity: 1 },
+    bloom: { radius: 1, strength: 1 },
+    innerShadow: { dx: 1, dy: 1, blur: 1, color: "#000000", opacity: 1 },
+    softEdges: 4,
+    blend: "multiply",
+  });
+}
+
+// THE GUARD (runs at import, both backends): every key an all-effects-on
+// effectSubtree carries must be classified above. A new effect field added to
+// ir.js effectSubtree and forgotten here would be a SILENTLY DROPPED effect in
+// every PDF and SVG export — exactly the defect this classification exists to
+// make impossible — so it fails loudly at load instead. Same shape as
+// render_gpu/skia/render_settings.js's ANTIALIAS_MODES cross-check.
+{
+  const classified = new Set([...VECTOR_SAFE_EFFECT_FIELDS, ...RASTER_ONLY_EFFECT_FIELDS, ...EFFECT_STRUCTURAL_FIELDS]);
+  const unclassified = Object.keys(allEffectsProbeOp()).filter((k) => !classified.has(k));
+  if (unclassified.length)
+    throw new Error(`pdf_backend: effectSubtree carries unclassified field(s) ${JSON.stringify(unclassified)} — add each to VECTOR_SAFE_EFFECT_FIELDS (a vector backend can honor it alongside vector content) or RASTER_ONLY_EFFECT_FIELDS (it forces the raster path), or to EFFECT_STRUCTURAL_FIELDS if it is not an effect. An unclassified effect exports as NOTHING.`);
+}
 
 /**
  * Cubic-bezier circle constant k = 4(√2−1)/3 ≈ 0.5523: the standard 4-arc
@@ -777,14 +968,15 @@ async function emitRegion(commands, region, out, ctx) {
     });
   }
 
-  // The raster-split ops: blurBackdrop (the original hybrid case), and an
-  // ADD-blended effect widget (Round 12D) — true additive compositing needs
-  // the real backdrop pixels (PDF has no /Add blend mode; /Screen ≠ add), so
-  // it claims the same everything-below raster split a blur does. Multiply/
-  // screen blends do NOT split — PDF has exact /BM equivalents (emitEffect).
+  // The raster-split ops: blurBackdrop (the original hybrid case), and an effect
+  // widget whose BLEND has no PDF /BM spelling (blendNeedsBelowRaster: "add" plus
+  // every Photoshop mode Skia implements only in SkSL) — those composites need
+  // the real backdrop pixels, so they claim the same everything-below raster
+  // split a blur does. The /BM-expressible blends do NOT split: PDF has exact
+  // equivalents and everything below stays vector (emitEffect).
   let lastBlurFlat = -1;
   flat.forEach((fc, i) => {
-    if (fc.cmd.op === "blurBackdrop" || (fc.cmd.op === "effectSubtree" && fc.cmd.blend === "add")) lastBlurFlat = i;
+    if (fc.cmd.op === "blurBackdrop" || (fc.cmd.op === "effectSubtree" && blendNeedsBelowRaster(fc.cmd.blend))) lastBlurFlat = i;
   });
 
   if (lastBlurFlat >= 0) {
@@ -848,9 +1040,24 @@ async function emitRegion(commands, region, out, ctx) {
  *   BLEND add — never reaches here: emitRegion's split detection claims the
  *     whole below-region as raster (the blur precedent; PDF has no additive
  *     blend mode, and screen ≠ add). Loud guard below.
+ *   INNER SHADOW / SOFT EDGES — raster region, for the same reason as bloom: a
+ *     blurred recess clipped inside the silhouette and an inward-feathered
+ *     coverage ramp have NO vector form. They reach the raster path through the
+ *     SHARED vectorSafeEffects gate (never through a hand-written boolean); the
+ *     shadow, already emitted above, is stripped from the re-issue but softEdges
+ *     is NOT, so the shadow PNG silhouettes the FEATHERED widget exactly as the
+ *     editor composites it (paint_skia feathers the content image first).
+ *
+ * WHICH BRANCH IS CHOSEN is decided ONLY by vectorSafeEffects(cmd) — the one
+ * predicate svg_backend.emitEffectSVG also reads. Before it existed this test was
+ * an inline `!cmd.bloom && cmd.blend === "normal"`, which never mentioned
+ * innerShadow or softEdges, so both effects SILENTLY VANISHED from every PDF
+ * export while SVG (which rasters unconditionally) rendered them. The shared
+ * predicate plus its import-time exhaustiveness guard make that class of bug
+ * structurally impossible.
  */
 async function emitEffect(cmd, world, region, out, ctx) {
-  if (cmd.blend === "add") throw new Error("pdf_backend: an add-blend effectSubtree must be consumed by emitRegion's raster split — it cannot compose as a vector-adjacent region (no /Add blend mode in PDF)");
+  if (blendNeedsBelowRaster(cmd.blend)) throw new Error(`pdf_backend: a "${cmd.blend}"-blend effectSubtree must be consumed by emitRegion's raster split — it cannot compose as a vector-adjacent region (no PDF /BM equivalent; see blendNeedsBelowRaster)`);
   // The effect region's WORLD AABB: the local bbox inflated by the op's
   // margin (blur spill + shadow offset — ir.js computes it), through the four
   // rotated corners (conservative under rotation, exact unrotated).
@@ -875,16 +1082,20 @@ async function emitEffect(cmd, world, region, out, ctx) {
     }, out);
   }
   if (cmd.shadowOnly) return; // shadow-only re-issues never carry content
-  if (!cmd.bloom && cmd.blend === "normal") {
+  if (vectorSafeEffects(cmd)) {
     // Vector-preserving path: shadow (if any) is already down as raster;
     // the widget's own commands re-emit as ordinary vectors (the content is
     // self-contained with its own absolute world — the emitCrop convention).
     await emitRegion(cmd.content, region, out, ctx);
     return;
   }
-  // Bloom and/or multiply/screen: the widget region becomes ONE raster
-  // (shadow already emitted above — stripped here so it isn't doubled).
-  await ctx.emitRasterRegion(rasterOp({ ...cmd, shadow: null, blend: "normal" }), {
+  // A raster-only effect (bloom / inner shadow / soft edges) and/or a multiply/
+  // screen blend: the widget region becomes ONE raster (shadow already emitted
+  // above — stripped here so it isn't doubled).
+  const rasterCmd = { ...cmd, shadow: null, blend: "normal" };
+  const dropped = droppedRasterOnlyEffects(cmd, rasterCmd);
+  if (dropped.length) throw new Error(`pdf_backend: emitEffect's raster re-issue lost live effect(s) ${JSON.stringify(dropped)} — a raster-only effect must survive the re-spread or it exports as nothing`);
+  await ctx.emitRasterRegion(rasterOp(rasterCmd), {
     placeRect, srcView: region.view, background: transparent,
   }, out, ctx.gsBlend(cmd.blend));
 }
@@ -900,6 +1111,54 @@ async function emitEffect(cmd, world, region, out, ctx) {
  * declare a `margin` (world units, added on top — the effectSubtree convention).
  */
 export const RASTER_OP_SPILL_FRAC = 0.9;
+
+/**
+ * Pure function. `commands` with the region's background prepended as a DRAWN
+ * world-space rect covering `srcRect` — or `commands` unchanged when the region
+ * has no background, or a fully transparent one.
+ *
+ * ── WHY A DRAWN OP AND NOT JUST THE CLEAR COLOR ───────────────────────────────
+ * emitRasterRegion hands the rasterizer `background` as the surface CLEAR, which
+ * is enough for anything that merely draws. It is NOT enough for a BACKDROP
+ * SAMPLER (blurBackdrop / glassBackdrop / materialBackdrop — metaballs, comic
+ * halftone, CRT, glass …): a sampler re-renders the content BELOW it into its own
+ * fresh offscreen and samples that, so it sees only DRAWN ops and never the
+ * surface clear. With the page background living solely in the clear, a material
+ * over empty page sampled full transparency and came out BLACK in every export —
+ * measured over a light page: the sampled region's mean went from rgb(220,204,184)
+ * to rgb(26,18,25) with 92% of its opaque pixels near-black.
+ *
+ * The editor never had that bug because its frame recipe (web/cameraFrame.js
+ * cameraFrameIR) emits the camera background as a real rect op AND passes it as
+ * the clear. This restores the same belt-and-braces convention for every raster
+ * region the exporters mint, so a sampler inside one sees the page beneath it. For
+ * a scene with NO sampler the rect is drawn over an identical clear, so every
+ * existing export is pixel-identical.
+ *
+ * TRANSPARENT REGIONS ARE SKIPPED: emitEffect rasterizes an effected widget over a
+ * transparent background on purpose (its alpha is what composites the widget onto
+ * the page), and an opaque rect there would destroy that.
+ *
+ * `background` is resolved with parseColor — the SAME single-color resolution
+ * emitRasterRegion's clear and irToPDF's page fill use — so a gradient page
+ * background stays consistent across all three instead of the tile alone becoming
+ * a gradient.
+ *
+ * @param {object[]} commands the region's raw IR list
+ * @param {{x,y,w,h}} srcRect the world rect the tile's pixels sample
+ * @param {string|number[]|object|null} background the region background
+ * @returns {object[]} commands, or [bgRect, ...commands]
+ *
+ * @example regionOverBackground([], {x: 0, y: 0, w: 4, h: 3}, null).length // 0 (no background → unchanged)
+ * @example regionOverBackground([], {x: 0, y: 0, w: 4, h: 3}, [0, 0, 0, 0]).length // 0 (transparent effect region → unchanged)
+ * @example regionOverBackground([], {x: 2, y: 1, w: 4, h: 3}, "#ff0000")[0] // {op: "rect", x: 2, y: 1, w: 4, h: 3, cornerRadius: 0, fill: [1, 0, 0, 1], stroke: null, strokeWidth: 0, opacity: 1}
+ */
+export function regionOverBackground(commands, srcRect, background) {
+  if (background === null || background === undefined) return commands;
+  const rgba = parseColor(background);
+  if (!(rgba[3] > 0)) return commands; // transparent (an effect region) — an opaque rect would wreck its alpha
+  return [rect({ x: srcRect.x, y: srcRect.y, w: srcRect.w, h: srcRect.h, fill: rgba }), ...commands];
+}
 
 /**
  * Pure function. The intersection of two world-space AABBs, or null when they do
@@ -1956,21 +2215,20 @@ class PdfAssembly {
   }
 
   /**
-   * Command (registers an ExtGState on first use). A /BM blend-mode gs op for
-   * a widget blend mode (ir.js BLEND_MODES → PDF standard separable blend
-   * modes: multiply → /Multiply, screen → /Screen — EXACT equivalents of the
-   * GPU's fixed-function states). "normal" needs no gs (empty string, the
-   * gsAlphaPair convention). "add" throws: PDF has no additive blend mode
-   * (emitRegion's raster split consumes add-blend effects instead — see
-   * emitEffect's loud guard).
+   * Command (registers an ExtGState on first use). A /BM blend-mode gs op for a
+   * widget blend mode, through the shared PDF_BLEND_NAMES table (the PDF-standard
+   * separable + non-separable sets — exact equivalents of what Skia composites in
+   * the editor). "normal" needs no gs (empty string, the gsAlphaPair convention).
+   * A mode with NO /BM name throws: those go through emitRegion's everything-below
+   * raster split instead (blendNeedsBelowRaster — see emitEffect's loud guard).
    *
    * @example // ctx.gsBlend("multiply") → "/GSbm1 gs" (registered once)
    * @example // ctx.gsBlend("normal") → ""
    */
   gsBlend(mode) {
     if (mode === "normal") return "";
-    const bm = { multiply: "Multiply", screen: "Screen" }[mode];
-    if (!bm) throw new Error(`pdf_backend: no PDF blend-mode mapping for "${mode}" (add-blend effects go through the raster split)`);
+    const bm = PDF_BLEND_NAMES[mode];
+    if (!bm) throw new Error(`pdf_backend: no PDF blend-mode mapping for "${mode}" — it must go through emitRegion's everything-below raster split (blendNeedsBelowRaster)`);
     const key = `bm:${bm}`;
     if (!this._gs.has(key)) {
       const name = `GSbm${this._gs.size + 1}`;
@@ -1989,6 +2247,13 @@ class PdfAssembly {
    * fallback, where sampling the source square and placing it over the lens
    * bbox IS the magnification. Resolution: placeRect at the region view's
    * page-pt density × rasterScale.
+   *
+   * The region background reaches the rasterizer BOTH as a DRAWN rect
+   * (regionOverBackground — so a BACKDROP SAMPLER inside the region, which
+   * re-renders the below-content into its own offscreen and therefore never sees a
+   * surface clear, samples the page instead of transparency and stops rendering
+   * black) AND as the clear itself. That is the editor's own frame-recipe
+   * convention; see regionOverBackground for the measurement that required it.
    */
   async emitRasterRegion(rawCmds, { placeRect, srcRect = placeRect, srcView, background }, out, gs = "") {
     if (!this.rasterize)
@@ -2002,7 +2267,7 @@ class PdfAssembly {
       panY: -srcRect.y * (hPx / srcRect.h),
       dpr: 1,
     };
-    const png = await this.rasterize(rawCmds, rasterView, wPx, hPx, background);
+    const png = await this.rasterize(regionOverBackground(rawCmds, srcRect, background), rasterView, wPx, hPx, background);
     const img = await this.doc.embedPng(png);
     const name = `Im${++this._imgCount}`;
     this.page.node.setXObject(PDFName.of(name), img.ref);

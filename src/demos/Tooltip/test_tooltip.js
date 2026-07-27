@@ -26,7 +26,7 @@ const port = server.httpServer.address().port;
 const url = `http://127.0.0.1:${port}/src/demos/Tooltip/demo.html`;
 
 const { default: puppeteer } = await import("puppeteer");
-const browser = await puppeteer.launch({ headless: "new" });
+const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
 
 let failures = 0;
 function check(name, ok, detail = "") {

@@ -41,6 +41,11 @@ export const videoV5Plugin = {
   type: "video_v5",
   title: "Video V5 (OffscreenCanvas/worker)",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the
+  // asset picker. `primaryAsset` names WHICH property that picker fills; this
+  // string is what says the double-click opens it at all.
+  activate: "asset_picker",
+  primaryAsset: "src",
   defaults: {
     type: "video_v5", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },

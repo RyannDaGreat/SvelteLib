@@ -20,7 +20,7 @@ export const circlePlugin = {
     // Rotation pivots about this WORLD point; default = own center (an equation
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#f7768e", stroke: "#1a1a2e", strokeWidth: 2,
+    fill: "#f7768e", stroke: "#000000", strokeWidth: 2,
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },

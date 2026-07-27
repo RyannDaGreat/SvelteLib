@@ -277,7 +277,17 @@
     const mod = e.metaKey || e.ctrlKey;
     const shift = e.shiftKey;
     const k = e.key;
-    if (k === "Escape") { e.preventDefault(); app.commitTextEdit(); return; }
+    // Escape COMMITS and is CONSUMED. stopPropagation is not optional here (and
+    // is why the two sibling in-place editors, LatexEditController and
+    // CodeEditController, both call it): commitTextEdit() clears app.textEditing
+    // INSIDE this handler, so this controller — and with it the focused
+    // contentEditable sink — is gone by the time the event reaches App.svelte's
+    // window listener. Its isTypingTarget(document.activeElement) guard then sees
+    // <body>, not the sink, and dispatches the canvas `deselect` entry: one
+    // Escape both committed the edit AND cleared the selection (measured).
+    // Every OTHER branch below keeps the sink mounted and focused, so that guard
+    // still covers them (verified in tests/escape_propagation_probe.js).
+    if (k === "Escape") { e.preventDefault(); e.stopPropagation(); app.commitTextEdit(); return; }
     if (mod && !shift && (k === "z" || k === "Z")) { e.preventDefault(); undoEdit(); return; }
     if (mod && ((shift && (k === "z" || k === "Z")) || k === "y" || k === "Y")) { e.preventDefault(); redoEdit(); return; }
     if (mod && (k === "a" || k === "A")) { e.preventDefault(); setSel(0, textLen()); return; }

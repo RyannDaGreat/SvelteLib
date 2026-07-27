@@ -287,7 +287,7 @@ export const mermaidPlugin = {
     // Theme — a Mermaid built-in theme select.
     { key: "theme", label: "Theme", kind: "select", options: MERMAID_THEMES, category: "formatting", help: "Which Mermaid built-in theme to render with. 'default' is dark ink on a light card; 'dark' suits a dark fill." },
     // Aspect-preservation toggle (default ON).
-    { key: "preserveAspect", label: "Preserve aspect", kind: "checkbox", category: "formatting", help: "Scale the diagram uniformly to fit the box (centered, no distortion). Turn off to stretch it to the box's exact width and height." },
+    { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Scale the diagram uniformly to fit the box (centered, no distortion). Turn off to stretch it to the box's exact width and height." },
     // The stroked-BOX bundle (fill + border + rounding — a framed diagram card).
     ...bundle("strokedBox"),
     // EDGE-CROP INSETS — trim the rendered diagram from each side.

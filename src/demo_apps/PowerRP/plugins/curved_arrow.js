@@ -30,7 +30,7 @@
 
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
-import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
+import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline } from "../core/outline.js";
 import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
@@ -41,6 +41,30 @@ function bendParams(s) {
   return { x0: s.from.x, y0: s.from.y, x1: s.to.x, y1: s.to.y, bend: s.bend ?? 0 };
 }
 
+/**
+ * Pure function. The LOCAL rect the curved arrow's INK occupies: the AABB of the
+ * SAMPLED bezier polyline, padded on every side by the widest of the shaft width
+ * and the head width. World == identity for a connector, so this is also its
+ * world footprint.
+ *
+ * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
+ * precedent): the effect substrate in emit() below, and — via the `localBounds`
+ * declaration — culling plus rubber-band selection (core/view.js localBoundsOf).
+ * The SAMPLED polyline (not the {from, control, to} hull) is what is actually
+ * drawn, and it is the tighter of the two: a quadratic never leaves its control
+ * hull, so sampling the curve bounds the ink and the pad — several times the
+ * largest between-sample sagitta — absorbs the sampling error.
+ *
+ * @param {object} s - evaluated item state (from / to / bend / strokeWidth / headWidth)
+ * @returns {{x: number, y: number, w: number, h: number}} local rect
+ *
+ * @example // a straight (bend 0) curved arrow bounds like a plain arrow:
+ * @example curvedArrowInkRect({from: {x: 0, y: 0}, to: {x: 100, y: 0}, bend: 0, strokeWidth: 3, headWidth: 12}) // {x: -12, y: -12, w: 124, h: 24}
+ */
+export function curvedArrowInkRect(s) {
+  return paddedPointsBBox(curvedArrowPolyline(bendParams(s)), Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH));
+}
+
 export const curvedArrowPlugin = {
   type: "curved_arrow",
   title: "Curved Arrow",
@@ -49,7 +73,7 @@ export const curvedArrowPlugin = {
     type: "curved_arrow", z: 1,
     from: { x: 200, y: 440 }, to: { x: 420, y: 440 },
     bend: 0.25,
-    stroke: "#1a1a2e", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
+    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
@@ -87,12 +111,20 @@ export const curvedArrowPlugin = {
     if (ends.end) cmds.push(polygon({ points: headTriangle(pts[n - 1], pts[n - 2], s.headLength, s.headWidth), fill: s.stroke, opacity }));
     if (ends.start) cmds.push(polygon({ points: headTriangle(pts[0], pts[1], s.headLength, s.headWidth), fill: s.stroke, opacity }));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
-    // effects.js; all-off = pass-through). Effect region = padded AABB of the
-    // drawn geometry (no bbox state; world == identity). No cullMargin:
-    // non-bbox widgets never cull-skip (core/view.js defaultCanSkip).
-    // `pts` is the SAMPLED bezier — its AABB bounds the drawn curve exactly.
-    return applyEffects(cmds, s, world, paddedPointsBBox(pts, Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH)));
+    // effects.js; all-off = pass-through). Effect region = its ink rect (the AABB
+    // of the SAMPLED bezier), the SAME rect `localBounds` reports, so the
+    // substrate and the cull/band bounds can never disagree about where this
+    // widget is.
+    return applyEffects(cmds, s, world, curvedArrowInkRect(s));
   },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the sampled curve's min/max
+  // IS this widget's width and height, so it band-selects and culls like any box
+  // widget despite having no w/h state and no resize handles.
+  localBounds: curvedArrowInkRect,
+  // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
+  // defaultCanSkip's cullMargin hook. MANDATORY now that this widget HAS an AABB
+  // to be culled by: without it a shadowed curve just off-view loses its halo.
+  cullMargin: effectsCullMargin,
   hitTestWorld(node, wx, wy) {
     const s = node.state;
     const pts = curvedArrowPolyline(bendParams(s));

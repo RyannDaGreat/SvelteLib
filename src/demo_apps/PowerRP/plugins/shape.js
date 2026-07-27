@@ -32,7 +32,7 @@ export const shapePlugin = {
     // Rotation pivots about this WORLD point; default = own center (the shared
     // equation — manifest Round 11). Absent on old docs → derive falls to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    fill: "#bb9af7", stroke: "#1a1a2e", strokeWidth: 2,
+    fill: "#bb9af7", stroke: "#000000", strokeWidth: 2,
     shape: "star", shapePoints: 5, shapeInnerRatio: 0.5,
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF

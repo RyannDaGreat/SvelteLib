@@ -33,19 +33,75 @@ export function worldViewRect(view, canvasW, canvasH) {
 }
 
 /**
- * Pure function. The axis-aligned world bounding box of a bbox node's box,
- * conservatively accounting for rotation/scale: transforms the four local
- * corners to world and takes their AABB. Returns null when the node has no
- * bbox (nothing to bound). Conservative = never smaller than the true bounds,
- * so it can only ever OVER-estimate what's visible (safe for culling).
+ * Pure function. A node's LOCAL render bounds — the rect its own INK occupies in
+ * its own pre-transform coordinates — or null when the widget is genuinely
+ * unboundable. THE ONE geometry question the whole app asks about a widget's
+ * extent; everything below (the world AABB, the effect-inclusive AABB, the
+ * default cull rule) and core/bandselect.js are consumers of exactly this.
+ *
+ * WHY IT EXISTS — the defect it removes. `capabilities.bbox` used to answer this
+ * question, but that flag means "state has x, y, w, h": a UI affordance (resize
+ * handles, the transform box). TWO-POINT WIDGETS — line, arrow, elbow / curved /
+ * fancy arrow, tangent lines, corkboard yarn — have no w/h and so answered
+ * "unboundable", even though every one of them already computes its own drawn
+ * hull for its effect substrate. All three symptoms were downstream of that ONE
+ * conflation: they could not be caught by a rubber band (bandSelectable), they
+ * NEVER culled however far off-screen they sat (defaultCanSkip), and the
+ * copy/export capture rect could not include them (effectInclusiveAABB). Bounds
+ * are now a geometry question, and `capabilities.bbox` is left meaning only what
+ * it says.
+ *
+ * THE PROTOCOL. A plugin declares `localBounds(state) → {x, y, w, h}`, RESOLVED
+ * HERE at the seam rather than injected at registration — the same shape as the
+ * two older per-widget geometry hooks this module already resolves this way,
+ * `canSkip` (canSkipNode) and `cullMargin` (effectInclusiveAABB). No hook plus
+ * `capabilities.bbox` → {0, 0, w, h}, the box a bbox widget has always been
+ * bounded by, so every box widget's bounds are unchanged to the bit.
+ *
+ * NULL MEANS GENUINELY UNBOUNDED, and plugins/blur.js is the only widget that
+ * honestly qualifies: a full-canvas backdrop sampler has no geometry at all and
+ * may read any pixel on the canvas. Null propagates as "cannot prove it
+ * invisible" (never culled) and "nothing to enclose" (not band-selectable).
+ *
+ * ORTHOGONAL TO cullMargin, deliberately: this is the widget's OWN ink, while
+ * `cullMargin` is the halo its EFFECTS throw around that ink. A widget needing
+ * room for a shadow declares the margin; a widget whose ink is not its box
+ * declares its bounds. Neither is a substitute for the other, and a widget may
+ * need both.
+ *
+ * @example localBoundsOf({state: {w: 10, h: 20}, plugin: {capabilities: {bbox: true}}}) // {x: 0, y: 0, w: 10, h: 20}
+ * @example localBoundsOf({state: {}, plugin: {capabilities: {bbox: false}}}) // null (no hook, no box: genuinely unbounded)
+ * @example // a two-point widget's hook wins, and may report a rect around anything it draws:
+ * @example localBoundsOf({state: {from: {x: 5, y: 5}, to: {x: 15, y: 25}}, plugin: {capabilities: {bbox: false}, localBounds: (s) => ({x: s.from.x, y: s.from.y, w: s.to.x - s.from.x, h: s.to.y - s.from.y})}}) // {x: 5, y: 5, w: 10, h: 20}
+ */
+export function localBoundsOf(node) {
+  if (node.plugin.localBounds) return node.plugin.localBounds(node.state);
+  if (!node.plugin.capabilities.bbox) return null;
+  return { x: 0, y: 0, w: node.state.w ?? 0, h: node.state.h ?? 0 };
+}
+
+/**
+ * Pure function. The axis-aligned WORLD bounding box of a node's local bounds
+ * (localBoundsOf), conservatively accounting for rotation/scale: transforms the
+ * four local corners to world and takes their AABB. Returns null exactly when
+ * the node is unboundable. Conservative = never smaller than the true bounds, so
+ * it can only ever OVER-estimate what's visible (safe for culling).
+ *
+ * The name is historical — it bounds whatever LOCAL rect the widget reports, not
+ * only a `bbox` widget's box; a two-point widget's rect goes through the very
+ * same corner math (its world is identity, so the transform is a no-op there,
+ * which is precisely why there is no second code path).
  *
  * @example rotatedBBoxAABB({state: {w: 10, h: 20}, world: {x: 5, y: 5, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}) // {x: 5, y: 5, w: 10, h: 20}
  * @example rotatedBBoxAABB({state: {}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: false}}}) // null
+ * @example // a line from (10,20) to (110,60) with a 5-wide stroke, world identity:
+ * @example rotatedBBoxAABB({state: {}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: false}, localBounds: () => ({x: 5, y: 15, w: 110, h: 50})}}) // {x: 5, y: 15, w: 110, h: 50}
  */
 export function rotatedBBoxAABB(node) {
-  if (!node.plugin.capabilities.bbox) return null;
-  const w = node.state.w ?? 0, h = node.state.h ?? 0;
-  const corners = [[0, 0], [w, 0], [0, h], [w, h]].map(([lx, ly]) => T.apply(node.world, lx, ly));
+  const local = localBoundsOf(node);
+  if (!local) return null;
+  const { x, y, w, h } = local;
+  const corners = [[x, y], [x + w, y], [x, y + h], [x + w, y + h]].map(([lx, ly]) => T.apply(node.world, lx, ly));
   const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   return { x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };
@@ -62,8 +118,9 @@ export function rotatedBBoxAABB(node) {
  * is computed, update the reach function passed in here (or its default,
  * effectsCullMargin) — not the callers.
  *
- * Returns null exactly when rotatedBBoxAABB does (no bbox = nothing to bound
- * or inflate).
+ * Returns null exactly when rotatedBBoxAABB does (unboundable = nothing to bound
+ * or inflate). A two-point widget IS boundable (localBoundsOf), so its shadow
+ * halo now rides into the capture rect like any other widget's.
  *
  * @example effectInclusiveAABB({state: {w: 10, h: 20}, world: {x: 5, y: 5, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}) // {x: 5, y: 5, w: 10, h: 20} (no effects: same as rotatedBBoxAABB)
  * @example effectInclusiveAABB({state: {w: 10, h: 20, shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 0.5}}, world: {x: 5, y: 5, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}, cullMargin: () => 11}}) // {x: -6, y: -6, w: 32, h: 42} (11-unit halo on every side)
@@ -88,11 +145,14 @@ export function rectsIntersect(a, b) {
 }
 
 /**
- * Pure function. The DEFAULT culling rule when a plugin declares no canSkip:
- * a bbox widget may be skipped when its (rotation-conservative) world AABB
- * doesn't intersect the view rect; a non-bbox widget never skips (we can't
- * bound its contribution, so we can't prove it invisible). Backdrop widgets
- * are handled separately in canSkipNode and never reach this via the default.
+ * Pure function. The DEFAULT culling rule when a plugin declares no canSkip: a
+ * BOUNDABLE widget may be skipped when its (rotation-conservative) world AABB
+ * doesn't intersect the view rect; an UNBOUNDABLE one never skips (we can't
+ * bound its contribution, so we can't prove it invisible). "Boundable" is
+ * localBoundsOf, NOT `capabilities.bbox` — so a line or arrow parked off-screen
+ * culls exactly like a rect there, instead of being painted forever because it
+ * has no resize handles. Backdrop widgets are handled separately in canSkipNode
+ * and never reach this via the default.
  *
  * CULL-MARGIN HOOK (manifest Round 12D: "an effect enlarges the node's
  * effective AABB by blur radius + offset — extend the cull bounds"): a plugin
@@ -105,13 +165,14 @@ export function rectsIntersect(a, b) {
  *
  * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 500, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}, {x: 0, y: 0, w: 100, h: 100}) // true
  * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 50, y: 50, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}, {x: 0, y: 0, w: 100, h: 100}) // false
- * @example defaultCanSkip({state: {}, world: {x: 9999, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: false}}}, {x: 0, y: 0, w: 100, h: 100}) // false
+ * @example defaultCanSkip({state: {}, world: {x: 9999, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: false}}}, {x: 0, y: 0, w: 100, h: 100}) // false (unboundable: no box AND no localBounds)
+ * @example defaultCanSkip({state: {}, world: {x: 0, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: false}, localBounds: () => ({x: 9999, y: 0, w: 10, h: 10})}}, {x: 0, y: 0, w: 100, h: 100}) // true (a two-point widget off-view DOES skip)
  * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 105, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}, cullMargin: () => 20}}, {x: 0, y: 0, w: 100, h: 100}) // false (20-unit halo reaches back into view)
  * @example defaultCanSkip({state: {w: 10, h: 10}, world: {x: 105, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}, cullMargin: () => 0}}, {x: 0, y: 0, w: 100, h: 100}) // true (zero margin = plain AABB)
  */
 export function defaultCanSkip(node, viewRectWorld) {
   const aabb = rotatedBBoxAABB(node);
-  if (!aabb) return false; // non-bbox: unbounded contribution, never skip
+  if (!aabb) return false; // unboundable contribution (blur): can't prove it invisible, never skip
   const margin = (node.plugin.cullMargin?.(node.state) ?? 0) * node.world.scale;
   const inflated = margin > 0
     ? { x: aabb.x - margin, y: aabb.y - margin, w: aabb.w + 2 * margin, h: aabb.h + 2 * margin }
@@ -125,7 +186,7 @@ export function defaultCanSkip(node, viewRectWorld) {
  * canvas, so they NEVER skip — enforced here regardless of any plugin hook,
  * so a plugin can't accidentally opt its backdrop out of the scene. Then a
  * plugin's own canSkip(state, viewRectWorld) wins if present; otherwise the
- * default bbox-intersection rule applies.
+ * default bounds-intersection rule applies (defaultCanSkip).
  *
  * @example canSkipNode({state: {}, plugin: {capabilities: {backdrop: true}}}, {x: 0, y: 0, w: 1, h: 1}) // false
  * @example canSkipNode({state: {w: 10, h: 10}, world: {x: 500, y: 0, rotation: 0, scale: 1}, plugin: {capabilities: {bbox: true}}}, {x: 0, y: 0, w: 100, h: 100}) // true

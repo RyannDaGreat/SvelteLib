@@ -119,14 +119,13 @@ export const groupPlugin = {
     ...bundleDefaults("cropInsets"), // cropTop/cropLeft/cropRight/cropBottom: 0
   },
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "rotation", label: "Rotation", kind: "number", display: "degrees", category: "positioning" },
-    { key: "rotationAnchor.x", label: "Rot anchor X", kind: "number", category: "positioning" },
-    { key: "rotationAnchor.y", label: "Rot anchor Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    // The eight shared bbox rows, COMPOSED from the registry rather than
+    // re-typed. They used to be hand-copied literals here — byte-identical to
+    // BUNDLES.positioning except for the `help` text they silently lacked, and
+    // exactly the copy-paste drift core/properties.js exists to end: the `angle`
+    // KIND that put the rotary dial on `rotation` reached every other bbox widget
+    // through the bundle and would have skipped this one.
+    ...bundle("positioning"),
     // The subtree crop (cropInsets) + the effects bundle — the SAME rows every
     // box/drawn widget composes, applied here to the group's member composite.
     ...bundle("cropInsets"),

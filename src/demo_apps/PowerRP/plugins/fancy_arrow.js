@@ -54,7 +54,7 @@
 
 import { polygon, polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
-import { applyEffects, paddedPointsBBox } from "../render_gpu/effects.js";
+import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { fancyArrowOutline, triangulated, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
 import { reportOnce } from "../core/report.js";
@@ -70,6 +70,38 @@ function outlineParams(s) {
     tipLength: s.tipLength, tipWidth: s.tipWidth, tipDimple: s.tipDimple,
     startWidth: s.startWidth, endWidth: s.endWidth,
   };
+}
+
+/**
+ * Pure function. The LOCAL rect the fancy arrow's INK occupies: the AABB of its
+ * generated OUTLINE, padded on every side by half the outline stroke width (0
+ * when there is no outline). World == identity for a connector, so this is also
+ * its world footprint.
+ *
+ * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
+ * precedent): the effect substrate in emit() below, and — via the `localBounds`
+ * declaration — culling plus rubber-band selection (core/view.js localBoundsOf).
+ * The outline IS the filled polygon's boundary, so the pad is EXACT rather than
+ * conservative here: the fill lies inside it and the outline stroke straddles it
+ * by half a width.
+ *
+ * DEGENERATE (zero-length) ARROW: fancyArrowOutline reports no geometry, so
+ * nothing is drawn and the true ink is EMPTY. The endpoint hull is returned
+ * instead of null — empty ink fits inside any rect, so it stays conservative,
+ * and it keeps a collapsed arrow reachable by a rubber band instead of only
+ * through the item picker (its hit test can't find it either).
+ *
+ * @param {object} s - evaluated item state (endpoints + the five taper params)
+ * @returns {{x: number, y: number, w: number, h: number}} local rect
+ *
+ * @example // a default-taper arrow spans its endpoints plus the tip's lateral flare:
+ * @example fancyArrowInkRect({from: {x: 0, y: 0}, to: {x: 100, y: 0}, tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5, strokeWidth: 0}) // {x: 0, y: -15, w: 100, h: 30}
+ * @example fancyArrowInkRect({from: {x: 40, y: 40}, to: {x: 40, y: 40}, tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5, strokeWidth: 0}) // {x: 40, y: 40, w: 0, h: 0} (collapsed: no ink, endpoint hull)
+ */
+export function fancyArrowInkRect(s) {
+  const outline = fancyArrowOutline(outlineParams(s));
+  const points = outline ? outline.map(([x, y]) => ({ x, y })) : [s.from, s.to];
+  return paddedPointsBBox(points, (s.strokeWidth ?? 0) / 2);
 }
 
 export const fancyArrowPlugin = {
@@ -89,7 +121,7 @@ export const fancyArrowPlugin = {
     // default, PROPS.strokeWidth.default) so a fresh arrow's silhouette is
     // unchanged; `stroke` still gets a sane color (rect/donut's own outline
     // ink) so turning strokeWidth up "just works" with no extra step.
-    fill: "#1a1a2e", stroke: "#1a1a2e", ...defaults("strokeWidth"),
+    fill: "#000000", stroke: "#000000", ...defaults("strokeWidth"),
     opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
@@ -157,16 +189,21 @@ export const fancyArrowPlugin = {
     if (strokeWidth > 0)
       cmds.push(polyline({ points: [...outline, outline[0]], width: strokeWidth, color: s.stroke, opacity }));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
-    // effects.js; all-off = pass-through). Effect region = padded AABB of the
-    // drawn geometry (no bbox state; world == identity). No cullMargin:
-    // non-bbox widgets never cull-skip (core/view.js defaultCanSkip). Padded
-    // by half the outline strokeWidth (0 when there is no outline — byte-
-    // identical to the old exact-AABB fill-only extent) — the same
-    // half-strokeWidth pad convention rect.js/donut.js use for their own
-    // stroked bbox halo.
-    return applyEffects(
-      cmds, s, world, paddedPointsBBox(outline.map(([x, y]) => ({ x, y })), strokeWidth / 2));
+    // effects.js; all-off = pass-through). Effect region = its ink rect, the SAME
+    // rect `localBounds` reports, so the substrate and the cull/band bounds can
+    // never disagree about where this widget is. Padded by half the outline
+    // strokeWidth (0 when there is no outline) — the same half-strokeWidth pad
+    // convention rect.js/donut.js use for their own stroked bbox halo.
+    return applyEffects(cmds, s, world, fancyArrowInkRect(s));
   },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the outline's min/max IS
+  // this widget's width and height, so it band-selects and culls like any box
+  // widget despite having no w/h state and no resize handles.
+  localBounds: fancyArrowInkRect,
+  // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
+  // defaultCanSkip's cullMargin hook. MANDATORY now that this widget HAS an AABB
+  // to be culled by: without it a shadowed arrow just off-view loses its halo.
+  cullMargin: effectsCullMargin,
   hitTestWorld(node, wx, wy) {
     const s = node.state;
     // The body (exact, concavity-aware) plus the shared padded-shaft grab

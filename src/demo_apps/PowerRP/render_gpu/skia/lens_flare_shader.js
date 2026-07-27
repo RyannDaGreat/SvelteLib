@@ -33,6 +33,29 @@
  *   • Colour-TEMPERATURE tint (Kelvin→RGB, Tanner Helland) applied to the whole
  *     assembled flare, plus an explicit tint multiply.
  *
+ * ── KNOWN BOUND: THE STARBURST IS ANGULARLY ISOTROPIC ─────────────────────────
+ * The spike profile is pow(|cos(θ·S/2 + rot)|, sharp) × a radial falloff, i.e. a
+ * function of the ANGLE alone times a function of the RADIUS alone. Every spike is
+ * therefore the same length and the S spikes are exactly evenly spaced — correct for a
+ * spherical lens, and wrong for an ANAMORPHIC one, whose image is desqueezed by a
+ * horizontal stretch of s (s = 2 for the standard squeeze). Under that stretch a real
+ * diffraction star keeps almost none of its symmetry:
+ *   • the S-fold rotational symmetry (8-fold on the 8-blade default) collapses to
+ *     2-fold — only the horizontal and vertical axes survive as mirrors;
+ *   • every off-axis ray rotates TOWARD the horizontal, θ ↦ atan(tan θ / s), so the
+ *     diagonal ray at 45° lands at atan(1/2) = 26.57°, pulled by 18.43°;
+ *   • the horizontal rays come out EXACTLY s times longer than the vertical ones.
+ * None of the three is expressible in an angle-only profile: reaching them needs a
+ * genuinely anisotropic starburst (an elliptical radial falloff plus a per-ray angle
+ * remap), not another knob. So an anamorphic starburst cannot be rendered correctly
+ * here AT ALL.
+ *
+ * This is a BOUND, not a defect, and it currently costs nothing: a real anamorphic
+ * iris is round and high-blade-count, so it barely stars in the first place. Both
+ * anamorphic presets in plugins/demo/lens_flare.js hold `starburst` near zero on that
+ * independent physical ground — the value is right for two separate reasons, and the
+ * bound only becomes visible the day someone authors an anamorphic look that stars.
+ *
  * ── COORDINATE FRAME (aspect-correct, zoom/size-stable) ───────────────────────
  * `main(float2 fragCoord)` gets DEVICE px. It un-rotates the widget's world
  * rotation into a widget-local centred frame, then normalises by the HALF-HEIGHT
@@ -41,6 +64,55 @@
  * light position is a [0,1] fraction of the widget (0.5,0.5 = centre), mapped into
  * the same centred frame. Ghosts reflect through the widget centre (the optical
  * axis), exactly like a real flare through the image centre.
+ *
+ * ── THE FEATURE SCALE (uFlareScale) ──────────────────────────────────────────
+ * Because the frame is HEIGHT-normalized, every feature's size is a fraction of the
+ * widget's own height: enlarge the box and the whole flare enlarges with it, and
+ * nothing in the shader can say otherwise. `uFlareScale` is the one knob that
+ * DECOUPLES the flare's internal feature size from the box size — a master
+ * multiplier on every normalized LENGTH, so a full-frame box can still carry a
+ * small flare (and vice versa) without touching six separate knobs.
+ *
+ * It scales SIZES ONLY, and it does it by DILATING THE SPACE each feature is measured
+ * in ABOUT THAT FEATURE'S OWN CENTRE: divide the measuring offset by the scale and
+ * every length that offset is compared against grows by it, while the centre itself
+ * does not move. That single mechanism reaches all five features — the ghost discs
+ * (about each ghost), the halo ring AND its derived rim thickness (about the optical
+ * centre), the anamorphic streak's σx and σy together, so it grows isotropically and
+ * keeps its aspect (about the light), the bloom's hot core and veiling glare (about
+ * the light), and the starburst spike LENGTH (about the light; the spike ANGLE reads
+ * the UNSCALED offset, because an angle is not a length). Four of those lengths — the
+ * streak thickness, both bloom radii and the spike falloff — were structural constants
+ * with no knob at all, so the scale is the only way to reach them.
+ *
+ * DELIBERATELY EXCLUDED, with reasons:
+ *   • THE LIGHT POSITION (uLight) — a POSITION, and the one the user placed by
+ *     dragging its own handle. Scaling it would teleport the sun.
+ *   • THE GHOST CHAIN'S AXIAL POSITIONS (uGhostSpacing) — also POSITIONS, along the
+ *     light→centre axis. A positional scale needs a fixed point and the flare has
+ *     no free one: the geometry is pinned at BOTH ends (the light, and the optical
+ *     centre the chain reflects through), so fixing either moves the other. Sizes
+ *     need no fixed point at all, which is exactly why the scale is a size scale.
+ *     It also keeps uFlareScale = 0 meaning "every feature vanishes" rather than
+ *     "the ghosts pile up on the light".
+ *   • uChromatic — already DIMENSIONLESS: it is a per-channel radius RATIO
+ *     (size·(1±chroma)), so it rides each feature's scaled size automatically.
+ *   • uBlades / uStarburstSharp / uStarburstRot — angular or exponential, not lengths.
+ *   • THE DIRT FIELD (uDirt, DIRT_SCALE) — grime sits on the FRONT ELEMENT, fixed in
+ *     the frame. It is not part of the flare pattern and must not breathe when the
+ *     flare's features resize.
+ *   • Every INTENSITY (uBrightness, uGhostIntensity, uHalo, uAnamorphic, uStarburst,
+ *     uBloom) — brightness is uBrightness's job, not this one's.
+ *
+ * uFlareScale = 1 is the IDENTITY, byte-for-byte. Every use is a DIVIDE OF THE
+ * MEASURING OFFSET by exactly 1.0, which is exact in IEEE-754, and — the reason this
+ * formulation was chosen over multiplying each size — every size CONSTANT stays a
+ * literal in the expression that consumed it, so nothing the compiler used to fold at
+ * compile time is demoted to runtime float arithmetic. (Verified the hard way: the
+ * first attempt scaled each size instead, which folded `2.0*STREAK_THICK*STREAK_THICK`
+ * and `rl/BLOOM_CORE_SIZE` into runtime multiplies and shifted real pixels at
+ * flareScale 1 — mathematically identical, not bit-identical. A document that predates
+ * this knob now renders byte-identically once the repair pass fills the default.)
  *
  * ── DETERMINISM (RenderTree = pure(document,[[slide,alpha]])) ─────────────────
  * The shader is a PURE function of (fragCoord, uniforms): no time, no Date.now, no
@@ -56,9 +128,9 @@
 import { parseColor } from "../ir.js";
 
 // uCenter 2 + uHalfSize 2 + uAngle 1 = 5 (framework geometry)
-//   + uLight 2 + 13 scalar knobs + uStreakColor 3 + uTempTint 3 + uTint 3
-//   = 5 + 2 + 13 + 3 + 3 + 3 = 29 ... (enumerated + asserted below)
-const LENS_FLARE_UNIFORM_FLOATS = 32;
+//   + uLight 2 + 17 scalar knobs + uStreakColor 3 + uTempTint 3 + uTint 3
+//   = 5 + 2 + 17 + 3 + 3 + 3 = 33 (enumerated + asserted below)
+const LENS_FLARE_UNIFORM_FLOATS = 33;
 
 /** Compile-time upper bound on the ghost chain (the SkSL loop is fixed-length and
  * gated by uGhostCount, so the count is a smooth keyframable knob). */
@@ -67,7 +139,7 @@ export const MAX_GHOSTS = 8;
 export const LENS_FLARE_SKSL = `
 // ── structural constants (WHY each; only the CHARACTER knobs are uniforms) ────
 const float TWO_PI = 6.28318530718;
-const float EPS    = 1e-4;             // guards normalize()/divide on degenerate inputs
+const float EPS    = 1e-4;             // guards normalize()/divide AND pow() BASES on degenerate inputs
 const int   N_GHOSTS = ${MAX_GHOSTS}; // fixed loop bound; uGhostCount gates it
 
 // ghost chain shaping ---------------------------------------------------------
@@ -97,6 +169,15 @@ const float STREAK_HAZE_GAIN = 0.4;    // weight of that haze band relative to t
 // starburst -------------------------------------------------------------------
 const float STARBURST_FALLOFF = 4.0;   // radial fade of the spikes away from the light (bigger = shorter spikes)
 const float MIN_BLADES = 3.0;          // an iris has at least 3 blades
+// TECHNICAL guard, NOT a taste bound. The spike profile is pow(|cos θ|, sharp), and
+// |cos θ| is EXACTLY 0 along the rays perpendicular to each spike. pow(0, e) is
+// well-defined only for e > 0: at e <= 0 the shading language leaves it UNDEFINED, so
+// whatever a given backend happens to return there is non-deterministic and would break
+// RenderTree = pure(document,...). Flooring the BASE (never the exponent) makes the
+// profile total for every exponent, which is what lets uStarburstSharp reach 0.
+// Same value + same technique as this file's ghost-size / halo-thickness / streak-σ
+// divide guards, and as sky_shader.js's own pow(max(·, EPS), ·) phase/airmass guards.
+const float SPIKE_BASE_EPS = EPS;
 
 // bloom / veiling glare -------------------------------------------------------
 const float BLOOM_CORE_SIZE = 0.05;    // exp falloff length of the tight hot core at the light
@@ -125,6 +206,7 @@ uniform float  uAngle;     // widget world rotation (radians)
 // ── user-tweakable knobs (self.* custom props) ────────────────────────────────
 uniform float2 uLight;         // light position as a [0,1] fraction of the widget (0.5,0.5 = centre)
 uniform float  uBrightness;    // overall additive gain on the whole flare
+uniform float  uFlareScale;    // MASTER FEATURE SIZE: dilates the space each feature is measured in (see THE FEATURE SCALE)
 uniform float  uGhostCount;    // number of aperture ghosts along the axis (0..N_GHOSTS)
 uniform float  uGhostSpacing;  // axis spacing: ghost i sits at lightPos·(1 − spacing·i)
 uniform float  uGhostSize;     // ghost disc radius scale (normalized units)
@@ -231,11 +313,34 @@ half4 main(float2 fragCoord) {
   float rl = length(toLight);
   float rc = length(uv);            // fragment distance from the optical centre
 
+  // THE FEATURE SCALE, guarded once (see the header note for what it scales and
+  // what it deliberately does not). The max() is the SAME technique, the SAME EPS
+  // and the SAME reason as this file's ghost-size / halo-thickness / streak-sigma /
+  // SPIKE_BASE_EPS guards: it makes every length below TOTAL. Without it,
+  // uFlareScale = 0 divides by zero at the exact light pixel (0/0 -> NaN, which
+  // blackens the whole region), and a NEGATIVE value inverts the bloom core's
+  // exponential to +inf (NaN once uBloom is 0). Flooring here means 0 and every
+  // negative collapse to a sub-pixel point — "off", deterministically. The knob's
+  // own row carries min 0 precisely so a negative is REFUSED at the Inspector
+  // rather than silently swallowed here (plugins/demo/lens_flare.js bounds policy).
+  float fscale = max(uFlareScale, EPS);
+  // Each feature is scaled by DILATING THE SPACE IT IS MEASURED IN about its OWN
+  // centre — dividing the measuring offset by fscale is algebraically identical to
+  // multiplying that feature's radius/sigma by it, and it leaves every CENTRE (the
+  // light, each ghost, the optical axis) exactly where it was. Two things follow for
+  // free: a derived size like the halo's thickness-as-a-fraction-of-radius scales
+  // WITH its radius automatically, and every size CONSTANT below stays a literal the
+  // compiler can still fold — so at fscale = 1 the divides are exact identities and
+  // the arithmetic is bit-for-bit what it was before this knob existed.
+  float rlS = rl / fscale;              // distance from the light  (bloom, starburst)
+  float rcS = rc / fscale;              // distance from the centre (halo)
+  float2 toLightS = toLight / fscale;   // offset from the light    (streak)
+
   float3 flare = float3(0.0);
 
   // ── BLOOM / VEILING GLARE: a tight hot core + a broad low-contrast veil ──────
-  float core = uBloom * exp(-rl / BLOOM_CORE_SIZE);
-  float veil = uBloom * BLOOM_VEIL_GAIN / (1.0 + (rl / BLOOM_VEIL_SIZE) * (rl / BLOOM_VEIL_SIZE));
+  float core = uBloom * exp(-rlS / BLOOM_CORE_SIZE);
+  float veil = uBloom * BLOOM_VEIL_GAIN / (1.0 + (rlS / BLOOM_VEIL_SIZE) * (rlS / BLOOM_VEIL_SIZE));
   flare += float3(core + veil);
 
   // ── GHOST CHAIN: analytic iris discs marching through the optical centre ─────
@@ -247,18 +352,18 @@ half4 main(float2 fragCoord) {
     float2 gc = lightPos * (1.0 - uGhostSpacing * fi);      // reflection through centre (Chapman axis march)
     float size = uGhostSize * mix(GHOST_SIZE_NEAR, GHOST_SIZE_FAR, t);
     float vary = GHOST_VARY_BASE + GHOST_VARY * hash1(fi);  // per-ghost brightness (not uniform)
-    float3 g = ghostRGB(uv - gc, size, uBlades, uChromatic);
+    float3 g = ghostRGB((uv - gc) / fscale, size, uBlades, uChromatic); // grows each disc about ITS OWN gc
     flare += on * uGhostIntensity * vary * (1.0 - t * 0.5) * g;
   }
 
   // ── HALO RING: chromatic gaussian annulus about the centre, light-side biased ─
   float haloThick = uHaloRadius * HALO_THICK_FRAC;
-  float3 haloC = haloRGB(rc, uHaloRadius, haloThick, uChromatic);
+  float3 haloC = haloRGB(rcS, uHaloRadius, haloThick, uChromatic); // rcS grows ring AND rim together
   float haloSide = HALO_SIDE_BASE + HALO_SIDE_GAIN * max(dot(normalize(uv + EPS), normalize(lightPos + float2(EPS))), 0.0);
   flare += uHalo * haloSide * haloC;
 
   // ── ANAMORPHIC STREAK: anisotropic gaussian (σx≫σy) + a faint wider haze band ─
-  float sy = toLight.y, sx = toLight.x;
+  float sy = toLightS.y, sx = toLightS.x;
   float sigX = max(uStreakLength, EPS);
   float streak = exp(-(sy * sy) / (2.0 * STREAK_THICK * STREAK_THICK)) * exp(-(sx * sx) / (2.0 * sigX * sigX));
   float hazeThick = STREAK_THICK * STREAK_HAZE_THICK, hazeLen = sigX * STREAK_HAZE_LEN;
@@ -270,8 +375,16 @@ half4 main(float2 fragCoord) {
   float isEven = step(mod(n, 2.0), 0.5);
   float spikeCount = n * (2.0 - isEven);
   float ang = atan(toLight.y, toLight.x);
-  float spikes = pow(abs(cos((ang + uStarburstRot) * spikeCount * 0.5)), uStarburstSharp);
-  float star = uStarburst * spikes * exp(-rl * STARBURST_FALLOFF);
+  // SPIKE_BASE_EPS floors the BASE so pow() stays defined at uStarburstSharp <= 0
+  // (see the constant). It only bites in the ~1e-4 rad sliver where the cosine is
+  // under EPS, i.e. sub-pixel at any sane radius: measured over a 960x540 frame, the
+  // floor left sharp 1 and sharp 18 BYTE-IDENTICAL and moved 4 pixels by at most
+  // 2/255 at sharp 0.25 (.claude_vlm_checks). So it buys the pow's totality for free.
+  float spikeBase = max(abs(cos((ang + uStarburstRot) * spikeCount * 0.5)), SPIKE_BASE_EPS);
+  float spikes = pow(spikeBase, uStarburstSharp);
+  // rlS (not rl) lengthens the spikes with the scale; the ANGLE above stays on the
+  // UNSCALED offset, because an angle is not a length and must not move with it.
+  float star = uStarburst * spikes * exp(-rlS * STARBURST_FALLOFF);
   flare += float3(star);
 
   // ── PROCEDURAL DIRT: a gentle grunge modulation of the assembled flare ───────
@@ -361,16 +474,16 @@ export function kelvinToRGB(kelvin) {
  * strings/arrays and are parsed here; colorTemp becomes an RGB tint via kelvinToRGB.
  *
  * @param {object} u {cx, cy, halfW, halfH, angle, lightX, lightY, brightness,
- *   ghostCount, ghostSpacing, ghostSize, ghostIntensity, anamorphic, streakLength,
- *   streakColor, halo, haloRadius, starburst, blades, starburstSharp, starburstRotation,
- *   chromatic, bloom, dirt, colorTemp, tint}
- * @returns {Float32Array} length 32
+ *   flareScale, ghostCount, ghostSpacing, ghostSize, ghostIntensity, anamorphic,
+ *   streakLength, streakColor, halo, haloRadius, starburst, blades, starburstSharp,
+ *   starburstRotation, chromatic, bloom, dirt, colorTemp, tint}
+ * @returns {Float32Array} length 33
  *
  * @example packLensFlare({cx:0,cy:0,halfW:640,halfH:360,angle:0,lightX:0.72,lightY:0.28,
- *   brightness:1,ghostCount:5,ghostSpacing:0.32,ghostSize:0.08,ghostIntensity:0.25,
+ *   brightness:1,flareScale:1,ghostCount:5,ghostSpacing:0.32,ghostSize:0.08,ghostIntensity:0.25,
  *   anamorphic:0.3,streakLength:0.3,streakColor:"#99b3ff",halo:0.3,haloRadius:0.45,
  *   starburst:0.3,blades:8,starburstSharp:24,starburstRotation:0,chromatic:0.012,
- *   bloom:0.6,dirt:0.2,colorTemp:5500,tint:"#ffffff"}).length // 32
+ *   bloom:0.6,dirt:0.2,colorTemp:5500,tint:"#ffffff"}).length // 33
  */
 export function packLensFlare(u) {
   const streak = rgb("streakColor", u.streakColor);
@@ -382,6 +495,7 @@ export function packLensFlare(u) {
     num("angle", u.angle),
     num("lightX", u.lightX), num("lightY", u.lightY),
     num("brightness", u.brightness),
+    num("flareScale", u.flareScale),
     num("ghostCount", u.ghostCount),
     num("ghostSpacing", u.ghostSpacing),
     num("ghostSize", u.ghostSize),
@@ -413,6 +527,14 @@ export function packLensFlare(u) {
 // tiny flare thumbnail must convey ("a bright flare here"). No SkSL, no ghost chain,
 // no fbm. paint_skia.js turns this spec into a Skia radial gradient.
 const PROXY_GLOW_RADIUS_FRAC = 0.9;  // glow radius as a fraction of the region half-diagonal (broad, like the flare's veil)
+// TECHNICAL floor on the finished radius, NOT a bound on flareScale. The radius
+// scales with THE FEATURE SCALE (the veil it stands in for does), and an equation
+// can drive that scale negative — the shader floors negatives to "collapsed", but a
+// negative RADIUS makes the gradient constructor hand back a NULL shader, and a null
+// shader leaves the paint's own colour behind: the region would paint SOLID instead
+// of vanishing. Zero is measured-safe (a zero-radius radial gradient draws nothing at
+// all), so zero is the floor and a collapsed flare correctly shows an empty thumbnail.
+const PROXY_MIN_GLOW_RADIUS = 0;
 const PROXY_CORE_ALPHA = 0.85;       // opacity of the hot centre (× brightness), fading to 0 at the rim
 const PROXY_MID_STOP = 0.35;         // radial stop where the falloff transitions core→broad-veil
 const PROXY_MID_ALPHA_FRAC = 0.4;    // veil alpha at PROXY_MID_STOP as a fraction of the core alpha
@@ -429,22 +551,29 @@ function cl01(x) { return Math.min(1, Math.max(0, x)); }
  * [r,g,b,a] in 0..1.
  *
  * The light position is a [0,1] fraction of the region (uLight semantics): its LOCAL
- * point is (cx + (lightX·2−1)·halfW, cy + (lightY·2−1)·halfH).
+ * point is (cx + (lightX·2−1)·halfW, cy + (lightY·2−1)·halfH). The radius tracks THE
+ * FEATURE SCALE (`flareScale`), because the veil this glow stands in for does — so a
+ * flare whose rings have been dialled down reads as a smaller glow at thumbnail size
+ * instead of lying about its extent.
  *
- * @param {object} params - the flare's op params ({lightX, lightY, tint, colorTemp, brightness, ...})
+ * @param {object} params - the flare's op params ({lightX, lightY, flareScale, tint, colorTemp, brightness, ...})
  * @param {{cx:number, cy:number, halfW:number, halfH:number}} region - local-space geometry
  * @returns {{kind:"radial", cx:number, cy:number, radius:number, stops:Array<{offset:number, color:[number,number,number,number]}>}}
  *
  * @example lensFlareProxyFill({lightX: 0.72, lightY: 0.3, tint: "#fff2e6", colorTemp: 5200, brightness: 1}, {cx: 128, cy: 72, halfW: 128, halfH: 72}).kind // "radial"
  * @example lensFlareProxyFill({lightX: 1, lightY: 0, tint: "#ffffff", colorTemp: 6500, brightness: 1}, {cx: 128, cy: 72, halfW: 128, halfH: 72}).cx // 256 (light at the right edge)
  * @example lensFlareProxyFill({lightX: 0.5, lightY: 0.5, tint: "#ffffff", colorTemp: 6500, brightness: 1}, {cx: 100, cy: 100, halfW: 100, halfH: 100}).stops.length // 3
+ * @example lensFlareProxyFill({flareScale: 0.5, tint: "#ffffff", colorTemp: 6500, brightness: 1}, {cx: 0, cy: 0, halfW: 300, halfH: 400}).radius // 225 (half of 0.9*500)
  */
 export function lensFlareProxyFill(params, region) {
   const lightX = params.lightX ?? 0.5;
   const lightY = params.lightY ?? 0.5;
   const gx = region.cx + (lightX * 2 - 1) * region.halfW;
   const gy = region.cy + (lightY * 2 - 1) * region.halfH;
-  const radius = PROXY_GLOW_RADIUS_FRAC * Math.hypot(region.halfW, region.halfH);
+  const radius = Math.max(
+    PROXY_MIN_GLOW_RADIUS,
+    PROXY_GLOW_RADIUS_FRAC * Math.hypot(region.halfW, region.halfH) * (params.flareScale ?? 1),
+  );
   const tint = rgb("tint", params.tint ?? "#ffffff");
   const temp = kelvinToRGB(params.colorTemp ?? 6500);
   const c = [cl01(tint[0] * temp[0]), cl01(tint[1] * temp[1]), cl01(tint[2] * temp[2])];

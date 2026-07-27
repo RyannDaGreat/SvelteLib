@@ -50,7 +50,11 @@ try {
   // Frontend-only Vite (no server.py): ignore backend-absent noise (asset list,
   // thumbnails, proxy 500s). Clipboard errors would be real, but our copy path
   // uses the execCommand fallback in a headless page, so also tolerated here.
-  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error/i;
+  // `no.*adapter|adapters` is this container's headless graphics reality (the
+  // tests/escape_propagation_probe.js allowlist precedent): the fixture's video
+  // widgets probe for an adapter the software renderer does not expose and fall
+  // back. Named specifically — the gate still fails on anything else.
+  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error|no.*adapter|adapters/i;
   page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });

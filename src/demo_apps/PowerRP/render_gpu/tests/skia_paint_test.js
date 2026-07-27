@@ -15,7 +15,7 @@ import { fileURLToPath } from "url";
 import { renderToPng } from "../skia/node_render.js";
 import { rect, ellipse, polyline, polygon, text, pushTransform, popTransform } from "../ir.js";
 
-const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", "..", ".claude_vlm_checks", "skia_backend_test.png");
+const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", ".claude_vlm_checks", "skia_backend_test.png");
 const DPR = 2;
 const LOGICAL_W = 720, LOGICAL_H = 470;
 

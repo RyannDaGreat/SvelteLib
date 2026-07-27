@@ -197,7 +197,7 @@ export const clockDigitalPlugin = {
     time: 0,
     showHours: false, showSeconds: true, separator: ":", leadingZero: true, hour12: false,
     font: SEG7_FONT_ID, size: DEFAULT_TEXT_SIZE, bold: false,
-    fill: "#1a1a2e", align: "center", valign: "middle",
+    fill: "#000000", align: "center", valign: "middle",
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/innerShadow/blendMode, all EFFECT-OFF
   },
@@ -210,14 +210,14 @@ export const clockDigitalPlugin = {
     // The TIME leaf. kind "number" makes it a numeric slot: a typed number OR an
     // `=` equation (bind it to the shared `time` identifier to tick live).
     { key: "time", label: "Time (seconds)", kind: "number", category: "clock", help: "The time this clock shows, in seconds. Type a fixed number, or start with '=' to bind it to an equation — e.g. '= time' to follow the presentation's playback clock." },
-    { key: "showHours", label: "Show hours", kind: "checkbox", category: "clock", help: "Show an hours field (HH:MM:SS). Off shows just minutes and seconds (MM:SS), with the minutes wrapping at 60." },
-    { key: "showSeconds", label: "Show seconds", kind: "checkbox", category: "clock", help: "Show the trailing seconds field. Off drops it (e.g. HH:MM, or just MM)." },
-    { key: "hour12", label: "12-hour", kind: "checkbox", category: "clock", help: "Show the hour on a 12-hour face (1-12, where midnight and noon read as 12) instead of 24-hour (0-23). Only affects the hours field." },
-    { key: "leadingZero", label: "Leading zero", kind: "checkbox", category: "clock", help: "Pad the first field to two digits (09:05 instead of 9:05). The following fields are always two digits, like a real clock." },
+    { key: "showHours", label: "Show hours", kind: "boolean", category: "clock", help: "Show an hours field (HH:MM:SS). Off shows just minutes and seconds (MM:SS), with the minutes wrapping at 60." },
+    { key: "showSeconds", label: "Show seconds", kind: "boolean", category: "clock", help: "Show the trailing seconds field. Off drops it (e.g. HH:MM, or just MM)." },
+    { key: "hour12", label: "12-hour", kind: "boolean", category: "clock", help: "Show the hour on a 12-hour face (1-12, where midnight and noon read as 12) instead of 24-hour (0-23). Only affects the hours field." },
+    { key: "leadingZero", label: "Leading zero", kind: "boolean", category: "clock", help: "Pad the first field to two digits (09:05 instead of 9:05). The following fields are always two digits, like a real clock." },
     { key: "separator", label: "Separator", kind: "text", category: "clock", help: "The character drawn between fields — a colon by default. Try '.' or a space for a different look." },
     { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text", help: "The typeface the digits are drawn in. Defaults to the seven-segment face for a classic digital-clock look." },
     { key: "size", label: "Size", kind: "number", min: 0, category: "text", help: "Digit size in canvas units. Larger is bigger on the slide." },
-    { key: "bold", label: "Bold", kind: "checkbox", category: "text", help: "Draw the digits in the font's bold weight." },
+    { key: "bold", label: "Bold", kind: "boolean", category: "text", help: "Draw the digits in the font's bold weight." },
     { key: "align", label: "Align", kind: "select", options: ALIGN_OPTIONS, optionLabels: ALIGN_LABELS, category: "text", help: "Horizontal alignment of the readout within the box width: left, center, right, or justified." },
     { key: "valign", label: "V-Align", kind: "select", options: VALIGN_OPTIONS, optionLabels: VALIGN_LABELS, category: "text", help: "Vertical placement of the readout within the box height: top, middle, or bottom." },
     // Ink reuses the PAINT-capable registry `fill` prop (solid OR gradient),

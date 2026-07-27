@@ -327,8 +327,12 @@ export function disposeVideoV5Scope(scopeId) {
   const prefix = scopeId + "|";
   for (const [k, slot] of playerImages) if (k.startsWith(prefix)) { slot.img.delete?.(); playerImages.delete(k); }
   // The scrub LRU is scope-keyed too (a texture-backed scrub Image is context-
-  // bound), so free this scope's cached scrub frames on the same teardown.
+  // bound), so free this scope's cached scrub frames on the same teardown. The
+  // holds are scope-keyed REFERENCES into that LRU, so they must be dropped in the
+  // same pass — a pin into a freed Image would hand a dead texture to a later draw.
   for (const [k, img] of scrubCache) if (k.startsWith(prefix)) { img?.delete?.(); scrubCache.delete(k); }
+  for (const k of scrubHeld.keys()) if (k.startsWith(prefix)) scrubHeld.delete(k);
+  for (const k of scrubFailed.keys()) if (k.startsWith(prefix)) scrubFailed.delete(k);
 }
 
 /** Query. Total ImageBitmap->GPU-texture uploads so far (diagnostic; the seq gate
@@ -387,25 +391,80 @@ function truncate(src) { return typeof src === "string" && src.length > 32 ? src
 // one source must not fight over currentTime) and NEVER autoplay/loop. The render
 // path is sync-shaped but a seek is async, so this mirrors the image pipeline's
 // async contract with a bounded LRU cache, exactly like the core scrubber.
+//
+// ── WHAT A LIVE GESTURE NEEDS THAT A ONE-SHOT RENDER DOES NOT ─────────────────
+// The first cut of this path served both consumers with one rule ("no exact frame
+// ⇒ draw nothing"). That is right for a one-shot render, which AWAITS its frames,
+// and wrong for a DRAG, which asks for a new time every paint and can never have
+// the exact frame ready. Measured on a 2 s scrub: every single captured frame was
+// empty — the clip disappeared for the whole gesture — and every intermediate time
+// was still seeked, so the decoder ran seconds behind the pointer. Two mechanisms
+// fix it, and they only touch the LIVE path:
+//   HOLD  — a miss draws the source's most recently DECODED frame (pinned in the
+//     LRU) instead of nothing, so a scrub shows a slightly stale frame of the right
+//     clip and snaps to the exact one when it lands (getVideoV5ScrubFrame).
+//   COALESCE — a live request that is superseded before it starts is DROPPED, so
+//     the decoder always works on the time being asked for NOW, while the LAST
+//     request of a gesture is always decoded (kickLiveV5ScrubFrame).
+// The AWAITED path (requestVideoV5ScrubFrame) keeps its old exact-every-frame
+// semantics untouched, because that is what makes an export reproducible.
 
-/** src → {status, el, error, ready:Promise, chain:Promise} for the PAUSED V5 scrub
- *  decoders (separate from `registry` so the player never fights them). */
+/** src → {status, el, error, ready:Promise, chain:Promise, live, pumpQueued} for the
+ *  PAUSED V5 scrub decoders (separate from `registry` so the player never fights
+ *  them). `live`/`pumpQueued` are the LATEST-WINS seek coalescer (see
+ *  kickLiveV5ScrubFrame). */
 const scrubRegistry = new Map();
 /** scopedV5ScrubKey → CanvasKit.Image: the bounded LRU of decoded scrub frames.
  *  A live scrub sweeps `time` continuously, so old frames must evict (+ .delete())
- *  or the wasm heap leaks. Insertion-ordered ⇒ first key is least-recently-used. */
+ *  or the wasm heap leaks. Insertion-ordered ⇒ first key is least-recently-used.
+ *  THE SOLE OWNER of every decoded scrub Image (scrubHeld only points into it). */
 const scrubCache = new Map();
 /** scopedV5ScrubKey → in-flight Promise<Image|null> — dedups concurrent requests
  *  for the SAME frame (N synced V5 scrubbers → ONE seek+decode). */
 const scrubInflight = new Map();
+/** scopedV5HoldKey → the scrubCache key currently PINNED as that (scope, source)'s
+ *  HOLD: its most recently DECODED frame, drawn while a newer time is still
+ *  decoding so a scrub never shows emptiness. A pin is a REFERENCE into scrubCache,
+ *  never a second owner — eviction skips pinned keys (evictV5ScrubFrames) so the
+ *  outgoing frame stays alive until a newer decode replaces it as the pin, and the
+ *  LRU still performs the one .delete(). */
+const scrubHeld = new Map();
+/** scopedV5ScrubKey → the message of a seek/decode that FAILED. Such a frame is
+ *  never held: a hold that can never resolve would make the drawn pixels depend on
+ *  cache history rather than on the document, and "stale forever" is a worse defect
+ *  than an honest empty quad. It draws nothing (exactly as before this file grew a
+ *  hold) and is not re-requested — the failure was already reported LOUDLY, and this
+ *  module's contract is that a failure is never retried silently. */
+const scrubFailed = new Map();
 
 /** Max decoded V5 scrub frames kept at once — comfortably exceeds the distinct
  *  (source, time) frames a realistic scene shows, so a one-shot prepare pass never
- *  evicts a frame it still needs; a live tween churns within this bound. */
+ *  evicts a frame it still needs; a live tween churns within this bound. The
+ *  PINNED holds (at most one per (scope, source)) are exempt, so the real ceiling
+ *  is this cap plus the number of live scrub sources. */
 export const V5_SCRUB_CACHE_CAP = 64;
 /** Seeking exactly to `duration` is undefined (past the last frame); back off a
  *  hair so "the end" resolves to the last real frame. Seconds. */
 export const V5_SCRUB_END_EPSILON = 1e-3;
+
+/** Diagnostic counters for the scrub path (read via videoV5ScrubStats). A live
+ *  gesture is a per-PAINT behaviour, so a probe needs the per-paint resolution
+ *  breakdown (exact / held / blank) and the request→decode ratio the coalescer
+ *  achieves; `blank` MUST stay at its first-frame-only value once a frame exists.
+ *  Cheap (integer adds on a path that already does a Map lookup). */
+const _scrubStats = { requests: 0, exact: 0, held: 0, blank: 0, decoded: 0, dropped: 0 };
+/** uploader.scopeId → how that scope's LAST paint resolved ("exact"/"held"/"blank"/
+ *  "failed"). PER SCOPE, not global, because the scopes answer different questions
+ *  and a global value would let one answer masquerade as the other: the ON-SCREEN
+ *  surface's GL scope is the one that must reach "exact" after a scrub settles, while
+ *  the offscreen "cpu" scope (thumbnails/export, which awaits its frames) is "exact"
+ *  by construction and would otherwise hide a stale editor canvas. */
+const _scrubLastByScope = new Map();
+/** uploader.scopeId → decodes completed for that scope. Per scope for the same
+ *  reason: the offscreen thumbnail/export scope decodes on its own schedule, so a
+ *  global count cannot be used to observe when the EDITOR's own decode backlog has
+ *  drained (a probe's smoothness measurement). */
+const _scrubDecodedByScope = new Map();
 
 /**
  * Pure function. Resolves a requested scrub time against the real media duration +
@@ -444,6 +503,18 @@ function scopedV5ScrubKey(uploader, ref, seekTime, wrap) {
   return uploader.scopeId + "|" + scrubFrameKey(ref, seekTime, wrap);
 }
 
+/** Pure function. The HOLD key for an uploader + source: the (scope, source) pair
+ *  whose most recently decoded frame is pinned as the one to draw while a newer
+ *  time decodes. Scoped for the same reason scopedV5ScrubKey is — a texture-backed
+ *  Image is usable only on its own GL context — and TIME-FREE, because the whole
+ *  point of the hold is that it survives the time changing.
+ *
+ *  @example // scopedV5HoldKey({scopeId: "gl:0"}, "clip.mp4") // "gl:0|clip.mp4"
+ */
+function scopedV5HoldKey(uploader, ref) {
+  return uploader.scopeId + "|" + ref;
+}
+
 /**
  * Command (near-pure: idempotent). Ensures a PAUSED scrub <video> exists for
  * `src`. Separate from makeEntry/ensureVideoV5 (the player) so the two never fight
@@ -465,7 +536,10 @@ function ensureV5ScrubElement(src) {
   el.playsInline = true;
   el.crossOrigin = "anonymous"; // let CORS assets feed createImageBitmap untainted
   el.preload = "auto";
-  const entry = { status: "loading", el, error: null, ready: null, chain: Promise.resolve() };
+  // `live` = the ONE pending LIVE (fire-and-forget, droppable) frame request, or
+  // null; `pumpQueued` = whether a pump task is already waiting on `chain` to claim
+  // it. Together they are the latest-wins coalescer (kickLiveV5ScrubFrame).
+  const entry = { status: "loading", el, error: null, ready: null, chain: Promise.resolve(), live: null, pumpQueued: false };
   scrubRegistry.set(src, entry);
 
   el.addEventListener("error", () => {
@@ -517,14 +591,44 @@ function seekV5(el, t) {
 }
 
 /**
+ * Command (async). THE seek-and-grab: parks `entry`'s paused decoder at `seekTime`
+ * (resolved by `wrap`), grabs that one frame via createImageBitmap (the YUV->RGBA
+ * convert resolves OFF the main thread), uploads it, and caches it under `key` —
+ * which also PINS it as the (scope, source) hold. Returns the cached Image; throws
+ * on a failed seek/decode (the callers report loudly).
+ *
+ * Runs INSIDE the per-source seek mutex (`entry.chain`): one `<video>` can be
+ * parked at only one time at a time, so both callers (the awaited
+ * requestVideoV5ScrubFrame and the coalescing live pump) chain through it.
+ */
+async function decodeV5ScrubFrame(entry, uploader, ref, seekTime, wrap, key) {
+  const el = entry.el;
+  const effective = resolveV5ScrubTime(seekTime, el.duration, wrap);
+  await seekV5(el, effective);
+  const bitmap = await createImageBitmap(el); // OFF-main-thread YUV->RGBA convert
+  let img;
+  try { img = uploadBitmap(uploader, bitmap); }
+  finally { bitmap.close(); } // the CanvasKit Image now owns the pixels; free the bitmap
+  cacheV5ScrubFrame(scopedV5HoldKey(uploader, ref), key, img);
+  _scrubStats.decoded += 1;
+  _scrubDecodedByScope.set(uploader.scopeId, (_scrubDecodedByScope.get(uploader.scopeId) ?? 0) + 1);
+  notify(ref);
+  return img;
+}
+
+/**
  * Query→build (async). The decoded CanvasKit Image for `ref` at exactly `seekTime`
  * (resolved by `wrap`), converted OFF the main thread and cached in the LRU. Dedups
  * concurrent identical requests, and SERIALIZES seeks per source (one <video> can
  * be at only one time at a time). Resolves null on load/seek/decode failure
  * (reported loudly, never silent). The caller MUST NOT delete the returned Image —
- * the LRU owns its lifetime. After the seek settles the frame is grabbed via
- * createImageBitmap(<video>) (off-main-thread YUV->RGBA convert) then uploaded with
- * uploadBitmap — the "V5 quality" the player's main loop uses, here for one frame.
+ * the LRU owns its lifetime.
+ *
+ * This is the EXACT / AWAITED path: every requested frame is decoded, never
+ * coalesced away, because the one-shot pixel consumers (thumbnails, PNG export, the
+ * headless render hook via browser_media.prepareSceneScrubFrames) await it and then
+ * paint — dropping a request here would make those renders non-deterministic. The
+ * live editor paint uses getVideoV5ScrubFrame, which DOES coalesce.
  *
  * @param uploader a GPU or CPU uploader (video_registry.makeGpuUploader / makeCpuUploader);
  *   its scope keys the LRU entry, since a texture-backed Image is context-bound
@@ -540,23 +644,11 @@ export async function requestVideoV5ScrubFrame(uploader, ref, seekTime, wrap) {
   const job = (async () => {
     await entry.ready;
     if (entry.status === "error") return null;
-    const el = entry.el;
-    const effective = resolveV5ScrubTime(seekTime, el.duration, wrap);
-    // Serialize this seek behind any other in-flight seek on the SAME element,
-    // then convert the parked frame OFF the main thread and upload it.
-    const run = entry.chain.then(async () => {
-      await seekV5(el, effective);
-      const bitmap = await createImageBitmap(el); // OFF-main-thread YUV->RGBA convert
-      try { return uploadBitmap(uploader, bitmap); }
-      finally { bitmap.close(); } // the CanvasKit Image now owns the pixels; free the bitmap
-    });
-    entry.chain = run.catch(() => {}); // keep the chain alive past a failed seek
-    const img = await run;
-    cacheV5ScrubFrame(key, img);
-    notify(ref);
-    return img;
+    const run = entry.chain.then(() => decodeV5ScrubFrame(entry, uploader, ref, seekTime, wrap, key));
+    entry.chain = run.catch(() => {}); // keep the mutex alive past a failed seek
+    return await run;
   })().catch((e) => {
-    console.error(`PowerRP video_v5 (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${e?.message ?? e}`);
+    noteV5ScrubFailure(key, ref, seekTime, e);
     return null;
   }).finally(() => scrubInflight.delete(key));
 
@@ -565,32 +657,141 @@ export async function requestVideoV5ScrubFrame(uploader, ref, seekTime, wrap) {
 }
 
 /**
- * Query→build (near-pure: kicks an async seek on a miss). The SYNC render-path
- * accessor: the cached CanvasKit Image for (ref, seekTime, wrap) if decoded, else
- * null — kicking requestVideoV5ScrubFrame so the frame lands and notify() nudges a
- * repaint (the image pipeline's async contract, applied to seeks). Draw NOTHING for
- * a null (never a placeholder). The caller must NOT delete the Image (the LRU owns
- * it).
+ * Command. Registers (ref, seekTime, wrap) as the source's LATEST live frame
+ * request and makes sure one pump task is queued behind the per-source seek mutex.
+ *
+ * LATEST-WINS COALESCING — the reason a live scrub feels smooth. A drag emits one
+ * request per paint (~60/s), while a seek+decode costs tens of milliseconds, so
+ * decoding every requested time would serialize a backlog whose head is seconds
+ * behind the pointer: the widget would trail the gesture and only "catch up" long
+ * after release. Instead a request that arrives while an older one is still WAITING
+ * replaces it and is never decoded (counted as `dropped`), so the decoder always
+ * works on the time the user is asking for NOW. The pump claims the newest request
+ * only when it reaches the front of the mutex; any request made after that claim
+ * queues exactly one more pump, so the FINAL request of a gesture is always decoded
+ * — that is what makes the settled frame exact rather than merely recent.
+ *
+ * ONE SLOT PER SOURCE, so two scrubbers on ONE source at DIFFERENT times supersede
+ * each other and only one of them decodes per pump. That still converges by the
+ * module's standing async contract — every decode notify()s, every repaint re-requests
+ * whatever is still missing — so N such widgets settle in N repaints, each showing
+ * the held frame until its own turn. (N scrubbers at the SAME time share one key and
+ * never conflict; that is the frame-lockstep case.)
+ */
+function kickLiveV5ScrubFrame(uploader, ref, seekTime, wrap, key) {
+  const entry = ensureV5ScrubElement(ref);
+  if (entry.live) _scrubStats.dropped += 1; // superseded before it was ever decoded
+  entry.live = { uploader, seekTime, wrap, key };
+  if (entry.pumpQueued) return; // the queued pump will claim whatever the newest request is by then
+  entry.pumpQueued = true;
+  // The pump OWNS its failure (reports it against the key it actually claimed, which
+  // is not necessarily this call's `key`), so `run` never rejects and stays usable as
+  // the mutex directly.
+  entry.chain = entry.chain.then(async () => {
+    await entry.ready; // load + warm-up seek; requests made while waiting are superseded above
+    const job = entry.live;
+    entry.live = null;
+    entry.pumpQueued = false; // claimed — a later request queues a FRESH pump behind this decode
+    if (!job || entry.status === "error") return null;
+    try {
+      return await decodeV5ScrubFrame(entry, job.uploader, ref, job.seekTime, job.wrap, job.key);
+    } catch (e) {
+      noteV5ScrubFailure(job.key, ref, job.seekTime, e);
+      return null;
+    }
+  });
+}
+
+/** Command, UNTESTED. Reports a failed scrub frame LOUDLY and records the key as
+ *  failed, so the hold never covers for it and it is not silently re-requested every
+ *  paint. Untested because a seek/decode failure on an ALREADY-LOADED element could
+ *  not be induced from a probe; the sibling guard it feeds — a source that fails to
+ *  LOAD draws nothing rather than holding another clip's frame — IS covered
+ *  (tests/video_v5_scrub_live_probe.js, the broken-source phase). */
+function noteV5ScrubFailure(key, ref, seekTime, err) {
+  scrubFailed.set(key, String(err?.message ?? err));
+  console.error(`PowerRP video_v5 (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${err?.message ?? err}`);
+}
+
+/**
+ * Query→build (near-pure: kicks a coalesced async seek on a miss). The SYNC
+ * render-path accessor for the LIVE editor paint: the cached CanvasKit Image for
+ * (ref, seekTime, wrap) if that exact frame is decoded, ELSE the (scope, source)'s
+ * most recently decoded frame — the HOLD — else null. The caller must NOT delete
+ * the Image (the LRU owns it).
+ *
+ * WHY IT HOLDS. A seek is async while the paint is sync, so during a scrub there is
+ * always a window with no frame decoded at the requested time. Returning null there
+ * made the widget draw NOTHING — the clip visibly DISAPPEARED for the whole gesture
+ * (proven: every captured frame of a 2 s drag was empty), which is worse than
+ * useless: you cannot scrub to something you cannot see. So mid-gesture this returns
+ * a slightly STALE frame of the SAME clip and the pipeline snaps to the requested
+ * one when it lands. That is the preview-vs-settled split used throughout this
+ * codebase: a cheap in-gesture preview, an exact settled result.
+ *
+ * IT ALWAYS CONVERGES, so the determinism contract survives. The hold is only ever
+ * returned on a MISS, the miss always kicks a request, and the coalescer guarantees
+ * the LAST requested time is decoded (see kickLiveV5ScrubFrame) — after which this
+ * returns the exact frame. The one-shot pixel consumers never see a hold at all:
+ * browser_media.prepareSceneScrubFrames AWAITS every scrub frame before painting, so
+ * their lookups are exact hits. `pure(document, slide, alpha)` is unchanged.
+ *
+ * A null (no frame has EVER decoded for this source) still draws nothing — with
+ * nothing decoded there is nothing honest to show, and a placeholder is forbidden.
  *
  * @param uploader a GPU or CPU uploader (video_registry.makeGpuUploader / makeCpuUploader)
- * @example // getVideoV5ScrubFrame(gpuUploader, "clip.mp4", 1.5, "clamp") // null until decoded, then the cached frame
+ * @example // getVideoV5ScrubFrame(gpuUploader, "clip.mp4", 1.5, "clamp") // null before the first decode, then the exact frame or the held one
  */
 export function getVideoV5ScrubFrame(uploader, ref, seekTime, wrap) {
   const key = scopedV5ScrubKey(uploader, ref, seekTime, wrap);
+  _scrubStats.requests += 1;
   const cached = scrubCache.get(key);
-  if (cached) { touchScrubLru(key); return cached; }
-  requestVideoV5ScrubFrame(uploader, ref, seekTime, wrap); // fire-and-forget; repaints on land
-  return null;
+  if (cached) { touchScrubLru(key); return noteV5ScrubResolution(uploader, "exact", cached); }
+  // A frame that FAILED, or a source that failed to load, gets no hold and no retry
+  // (see scrubFailed): a stale frame that can never resolve would silently replace a
+  // reported failure with wrong-but-plausible pixels.
+  if (scrubFailed.has(key) || scrubRegistry.get(ref)?.status === "error") return noteV5ScrubResolution(uploader, "failed", null);
+  kickLiveV5ScrubFrame(uploader, ref, seekTime, wrap, key); // fire-and-forget; repaints on land
+  const heldKey = scrubHeld.get(scopedV5HoldKey(uploader, ref));
+  // The pin (evictV5ScrubFrames) is what makes this lookup safe: a held key cannot
+  // have been evicted + deleted out from under the draw.
+  const held = heldKey === undefined ? undefined : scrubCache.get(heldKey);
+  if (held) return noteV5ScrubResolution(uploader, "held", held);
+  return noteV5ScrubResolution(uploader, "blank", null);
 }
 
-/** Command. Inserts `img` under `key` and evicts the least-recently-used frame
- *  (deleting its CanvasKit Image) when the cache exceeds V5_SCRUB_CACHE_CAP. */
-function cacheV5ScrubFrame(key, img) {
+/** Command (returns `img` so callers stay one-liners). Records how this paint
+ *  resolved, globally and per uploader scope, then hands the Image back. */
+function noteV5ScrubResolution(uploader, how, img) {
+  if (how === "exact") _scrubStats.exact += 1;
+  else if (how === "held") _scrubStats.held += 1;
+  else _scrubStats.blank += 1; // "blank" and "failed" both draw nothing
+  _scrubLastByScope.set(uploader.scopeId, how);
+  return img;
+}
+
+/** Command. Inserts `img` under `key`, PINS it as `holdKey`'s hold (superseding
+ *  that source's previous pin, which becomes evictable again), then evicts down to
+ *  the cap. */
+function cacheV5ScrubFrame(holdKey, key, img) {
   scrubCache.set(key, img);
-  while (scrubCache.size > V5_SCRUB_CACHE_CAP) {
-    const oldest = scrubCache.keys().next().value;
-    const evicted = scrubCache.get(oldest);
-    scrubCache.delete(oldest);
+  scrubHeld.set(holdKey, key);
+  evictV5ScrubFrames();
+}
+
+/** Command. Evicts least-recently-used frames (deleting each CanvasKit Image —
+ *  the LRU is their sole owner) until the cache is back within
+ *  V5_SCRUB_CACHE_CAP, SKIPPING every pinned hold: the frame a scrub is currently
+ *  showing must outlive the newer frame that has not decoded yet. Pins are at most
+ *  one per (scope, source), so the cache can exceed the cap only by that count, and
+ *  an all-pinned cache simply stops evicting rather than deleting a live frame. */
+function evictV5ScrubFrames() {
+  const pinned = new Set(scrubHeld.values());
+  for (const key of scrubCache.keys()) {
+    if (scrubCache.size <= V5_SCRUB_CACHE_CAP) return;
+    if (pinned.has(key)) continue;
+    const evicted = scrubCache.get(key);
+    scrubCache.delete(key);
     evicted?.delete?.();
   }
 }
@@ -623,10 +824,36 @@ export function videoV5ScrubState(src) {
  */
 export function resetVideoV5ScrubRegistry() {
   for (const [src, entry] of scrubRegistry) {
+    entry.live = null; // drop any coalesced request so a pump cannot seek a torn-down element
     try { entry.el.removeAttribute("src"); entry.el.load?.(); } catch (e) { console.warn(`PowerRP video_v5 (scrub): teardown of "${truncate(src)}" —`, e?.message ?? e); }
   }
   scrubRegistry.clear();
   for (const img of scrubCache.values()) img?.delete?.();
   scrubCache.clear();
+  scrubHeld.clear(); // references into the now-deleted Images
+  scrubFailed.clear();
   scrubInflight.clear();
+}
+
+/**
+ * Query. The scrub path's diagnostic counters — a live gesture is a per-PAINT
+ * behaviour, so a probe reads the per-paint resolution breakdown (`exact`/`held`/
+ * `blank`) and the request→decode ratio the coalescer achieves (`decoded` vs
+ * `dropped`). `blank` must stop rising once a source has decoded its first frame, and
+ * `lastResolution[<the on-screen GL scope>]` must be "exact" once a scrub has settled
+ * — that is the convergence check, and it is per scope precisely so the offscreen
+ * "cpu" scope (always exact, since it awaits) cannot stand in for the editor's.
+ * `cacheSize`/`pinned` prove the LRU + pins stay bounded.
+ *
+ * @example videoV5ScrubStats().blank // 0 (before any scrub frame is requested)
+ * @example videoV5ScrubStats().lastResolution // {} (before any scrub frame is requested)
+ * @returns {{requests,exact,held,blank,decoded,dropped,lastResolution,decodedByScope,cacheSize,pinned,failed,inflight}}
+ */
+export function videoV5ScrubStats() {
+  return {
+    ..._scrubStats,
+    lastResolution: Object.fromEntries(_scrubLastByScope),
+    decodedByScope: Object.fromEntries(_scrubDecodedByScope),
+    cacheSize: scrubCache.size, pinned: scrubHeld.size, failed: scrubFailed.size, inflight: scrubInflight.size,
+  };
 }

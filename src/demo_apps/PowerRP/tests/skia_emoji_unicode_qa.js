@@ -16,7 +16,7 @@ import { fileURLToPath } from "url";
 import { renderToPng } from "../render_gpu/skia/node_render.js";
 import { text } from "../render_gpu/ir.js";
 
-const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".claude_vlm_checks");
 const PROBE = "Latin Héllo · Ελληνικά Привет · 日本語 中文 · مرحبا · 😀🎉👍❤🚀";
 // Wide enough that the UNWRAPPED single-run op (boxW=Infinity, no wrap — correct
 // for legacy single-run parity ops) fits the whole line on-canvas at `size`.

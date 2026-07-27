@@ -29,7 +29,9 @@
   evaluated — list elements are not equation slots (core leaves() keeps arrays
   opaque for equation detection), so parsePaint reports it loudly rather than
   silently. Gradient geometry (linear direction / radial radius) is edited here;
-  radius is a NumericField (keyframable), direction is a 4-way preset.
+  radius is a NumericField (keyframable), direction is an AngleField dial. Both
+  are equation-bindable like every other property (manifest Tier 0) — the
+  direction's leaf simply carries the "=" expression instead of a number.
 
   Props mirror ColorField: app, path (["items", id, "fill"|"stroke"]), label,
   value (the raw stored paint — string or multi-sub-state object), disabled.
@@ -163,6 +165,7 @@
   import AngleField from "./AngleField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import GradientPresetPicker from "./GradientPresetPicker.svelte";
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import { getPath } from "../core/deltas.js";
 
   let { app, path, label, value, disabled = false } = $props();
@@ -249,27 +252,50 @@
     commitAt([subKey, "stops"], presetStops);
   }
 
+  /** Command. Live-previews a preset's stops while the pointer rests on its
+   * swatch — EXACTLY the whole-list write applyPreset commits, staged into
+   * app.previewDelta instead: the viewport re-renders, the DOCUMENT stays
+   * untouched and no undo entry is created (the house preview/commit contract).
+   * A gradient preset is ONE value (the whole stop list) at one sub-path, so
+   * this is a single pair, not a flat prop set. */
+  function previewPreset(presetStops) {
+    if (disabled) return;
+    app.setPreview([[[...path, subKey, "stops"], presetStops]]);
+  }
+
+  /** Command. Drops the hover preview (pointer left the grid, or it closed) —
+   * the document was never changed, so this just restores what is rendered. */
+  function cancelPresetPreview() {
+    app.cancelPreview();
+  }
+
   // The linear DIRECTION as a heading in DEGREES — the authoritative stored
   // `angle` if present, else derived from the from/to endpoints (old, un-migrated
-  // docs) so the dial always reflects what actually renders.
+  // docs) so the dial always reflects what actually renders. Passed to AngleField
+  // as its `value`, which the field uses only when the ANGLE LEAF ITSELF holds
+  // nothing (the legacy-endpoints case): a present angle — literal or "=" bound —
+  // is read straight from the document by the field.
   let linearAngle = $derived(
     sub.linear.angle != null ? sub.linear.angle
       : sub.linear.from && sub.linear.to ? linearEndpointsToAngle(sub.linear.from, sub.linear.to)
       : GRADIENT_DEFAULT_ANGLE,
   );
 
-  /** Command. Writes the linear DIRECTION from a dial heading (degrees): ONLY
-   * the authoritative `angle` — the single source of truth. The renderer derives
-   * the objectBoundingBox from/to endpoints from it (render_gpu/ir.js linearAxis),
+  /** Command. Writes the linear DIRECTION from the dial: ONLY the authoritative
+   * `angle` — the single source of truth. The renderer derives the
+   * objectBoundingBox from/to endpoints from it (render_gpu/ir.js linearAxis),
    * so keyframing the angle tweens as a ROTATING axis rather than lerping endpoints
    * through a degenerate midpoint. `commit` settles it as one undo unit; otherwise
-   * it is a live preview (viewport re-renders while the user drags the dial). */
-  function writeDirection(deg, commit) {
-    app.setPreview([[[...path, "linear", "angle"], deg]]);
+   * it is a live preview (viewport re-renders while the user drags the dial).
+   * `heading` is a DEGREES number or an "=" EQUATION STRING — a direction is
+   * equation-bindable like every other property (manifest Tier 0), and the write
+   * is the same either way (the stored leaf simply carries the expression). */
+  function writeDirection(heading, commit) {
+    app.setPreview([[[...path, "linear", "angle"], heading]]);
     if (commit) app.commitPreview();
   }
-  const previewDirection = (deg) => writeDirection(deg, false);
-  const commitDirection = (deg) => writeDirection(deg, true);
+  const previewDirection = (heading) => writeDirection(heading, false);
+  const commitDirection = (heading) => writeDirection(heading, true);
 
   const TYPES = [
     { id: "solid", label: "Solid" },
@@ -288,7 +314,7 @@
         aria-pressed={mode === t.id}
         onclick={() => setMode(t.id)}
         style="flex:1; font-size:var(--a-font-sm); padding:var(--a-sp-1) var(--a-sp-2); cursor:pointer;
-               color:var(--fg); border:1px solid var(--border); border-radius:var(--radius);
+               color:var(--fg); border:1px solid var(--border); border-radius:0;
                background:{mode === t.id ? 'var(--a-hover-bg)' : 'transparent'};"
       >{t.label}</button>
     {/each}
@@ -311,8 +337,8 @@
       type="text" value={typeof raw === "string" ? raw : ""} {disabled} spellcheck="false"
       aria-label={`${label} equation`} placeholder="=#ff0000"
       onchange={(e) => commitEquation(e.target.value)}
-      style="width:100%; box-sizing:border-box; font-family:var(--a-font-mono, monospace); font-size:var(--a-font-sm);
-             color:var(--fg); background:transparent; border:1px solid var(--border); border-radius:var(--radius);
+      style="width:100%; box-sizing:border-box; font-family:var(--a-mono); font-size:var(--a-font-sm);
+             color:var(--fg); background:transparent; border:1px solid var(--border); border-radius:0;
              padding:var(--a-sp-1) var(--a-sp-2);"
     />
   {:else}
@@ -343,30 +369,39 @@
           <span style="display:inline-flex; align-items:center;">
             <KeyframeControls {app} path={[...path, subKey, "stops", i]} />
           </span>
-          <button
-            type="button" aria-label="Remove stop" title="Remove stop"
-            disabled={disabled || stops.length <= 2}
-            onclick={() => removeStop(i)}
-            style="color:var(--fg-dim); background:transparent; border:none; cursor:pointer; padding:0 var(--a-sp-1);"
-          >×</button>
+          <Tooltip text="Remove stop">
+            <button
+              type="button" aria-label="Remove stop"
+              disabled={disabled || stops.length <= 2}
+              onclick={() => removeStop(i)}
+              style="color:var(--fg-dim); background:transparent; border:none; cursor:pointer; padding:0 var(--a-sp-1);"
+            >×</button>
+          </Tooltip>
         </div>
       {/each}
       <button
         type="button" {disabled} onclick={addStop}
         style="align-self:flex-start; font-size:var(--a-font-sm); color:var(--fg-dim); background:transparent;
-               border:1px dashed var(--border); border-radius:var(--radius); padding:var(--a-sp-1) var(--a-sp-2); cursor:pointer;"
+               border:1px dashed var(--border); border-radius:0; padding:var(--a-sp-1) var(--a-sp-2); cursor:pointer;"
       >+ Add stop</button>
 
       <!-- PRESET LIBRARY — a tiled grid of gradient swatches (baked from rp's
-           gradient library). Picking one replaces the stops above. -->
-      <GradientPresetPicker {disabled} onpick={applyPreset} />
+           gradient library). HOVERING one previews it live in the viewport
+           (document untouched, no undo entry); leaving the grid restores what
+           was there; picking one commits the stops above as ONE undo unit. -->
+      <GradientPresetPicker
+        {disabled}
+        onpick={applyPreset}
+        onpreview={previewPreset}
+        oncancelpreview={cancelPresetPreview}
+      />
     </div>
 
     <!-- GEOMETRY -->
     {#if mode === "linearGradient"}
       <!-- DIRECTION — a continuous rotary dial (AngleField) in place of the old
            four ↑↓ preset buttons. It writes the paint's authoritative `angle`
-           plus the from/to render projection together (writeDirection). -->
+           (writeDirection), as a degrees number or an "=" equation. -->
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
         <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Direction</span>
         <AngleField
@@ -382,7 +417,7 @@
     {:else}
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
         <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Radius</span>
-        <div style="width:80px;">
+        <div style="width:var(--a-input-w);">
           <NumericField {app} path={[...path, "radial", "r"]} label={`${label} radius`} min={0} />
         </div>
       </div>

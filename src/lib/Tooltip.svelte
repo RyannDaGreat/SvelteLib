@@ -46,7 +46,7 @@
     --tt-radius    corner radius      (2px — square-ish; keep minimal)
     --tt-pad       padding            (4px 8px)
     --tt-font-size font size          (0.75rem)
-    --tt-gap       offset from anchor (6px)
+    --tt-gap       offset from anchor (6px default; set it on any ancestor)
     --tt-max-width max content width  (240px)
 -->
 <script module>
@@ -214,8 +214,11 @@
     const ref = cursor ? pointRect(cursor.x, cursor.y) : (anchor && anchorRect(anchor));
     if (!ref) return;
     const { offsetWidth: tipW, offsetHeight: tipH } = tipEl;
-    side = resolvePlacement(placement, ref, tipH, GAP, window.innerHeight);
-    pos = computePosition(side, ref, tipW, tipH, GAP, window.innerWidth, window.innerHeight, EDGE_MARGIN);
+    // Read --tt-gap off the ANCHOR (it inherits the host's value). The tip must
+    // not declare it, or its own declaration would shadow any host override.
+    const gap = anchor ? parseFloat(getComputedStyle(anchor).getPropertyValue("--tt-gap")) || GAP : GAP;
+    side = resolvePlacement(placement, ref, tipH, gap, window.innerHeight);
+    pos = computePosition(side, ref, tipW, tipH, gap, window.innerWidth, window.innerHeight, EDGE_MARGIN);
   }
 
   /** Command. Shows the tooltip now (used after any delay elapses). Mutates shown. */
@@ -332,7 +335,10 @@
     --tt-radius: 2px; /* square-ish; rounding reads as sloppy */
     --tt-pad: 4px 8px;
     --tt-font-size: 0.75rem;
-    --tt-gap: 6px;
+    /* --tt-gap is deliberately NOT declared here: place() reads it off the
+       anchor so a host override actually applies. Declaring it on the tip would
+       shadow the host's value (the --dd-radius/--dn-radius shadowing class of
+       bug). GAP in the script is the sole default. */
     --tt-max-width: 240px;
 
     position: fixed;

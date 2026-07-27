@@ -62,6 +62,10 @@
   --a-handle-stroke: 1.5px; /* rim stroke shared by handles/endpoints/modifiers */
   --a-anchor-stroke: 1.5px;
   --a-anchor-opacity: 0.5; /* the spec's 50%-transparent X's */
+  /* Knockout halo behind overlay TEXT (anchor tooltip, ruler marker readout):
+     painted as a --bg-colored stroke under the glyphs (paint-order: stroke), so
+     the label stays legible over art or over ruler ticks. One width for both. */
+  --a-text-halo-stroke: 3px;
   /* MODIFIER POINTS (manifest ARCHITECTURE PLAN #1 — "the PPT yellow
      squares"): a highly-constrained draggable handle, visually distinct from
      the blue resize handles / amber endpoints. #ffc72c is PowerPoint's own
@@ -93,6 +97,10 @@
      column's LEFT edge so it aligns across every row (property + variable). Sized
      to the common labels; longer ones ("Magnification") ellipsis with a tooltip. */
   --a-kf-btn-w: 20px; /* one keyframe control button (16px icon + 2×--a-sp-1 pad) */
+  /* Hover-reveal of a row's hidden chrome (copy-path / help / ƒ / eq-ref marks —
+     round-11 "the resting field is minimal"). ONE duration for every one of them,
+     named like the other timing tokens (--a-latex-edit-crossfade below). */
+  --a-row-chrome-fade: 0.08s;
   /* Shape-grid picker (Wave 2): one tile column width, its preview glyph size,
      and the preview stroke weight (in the 100-unit shape viewBox — a light rim). */
   --a-shape-tile: 60px;
@@ -104,7 +112,30 @@
      Inspector — it scrolls internally). */
   --a-gradient-swatch-h: 22px;
   --a-gradient-swatch-min-w: 46px;
-  --a-gradient-grid-max-h: 200px;
+  /* The scroll cap is QUANTIZED to a whole number of rows (rows × tile + gaps +
+     the grid's own padding, which counts because everything is border-box) so
+     the bottom row is never sliced in half at rest — the user's "the way
+     they're clipped off all the way to the bottom" complaint. Six rows keeps the
+     whole opened library inside the Inspector pane at the default split (the
+     count is a visual choice; PENDING USER RATIFICATION, like the old flat
+     200px cap it replaces). */
+  --a-gradient-grid-rows: 6;
+  --a-gradient-grid-max-h: calc(
+    var(--a-gradient-grid-rows) * var(--a-gradient-swatch-h) +
+    (var(--a-gradient-grid-rows) - 1) * var(--a-sp-2) + 2 * var(--a-sp-1)
+  );
+  /* (--a-preset-list-rows / --a-preset-list-max-h are RETIRED. They capped the
+     Tools pane's preset list to four rows with its own internal scrollbar, so the
+     list and the toggle button that revealed it could both stay on screen. That
+     toggle is gone — a preset family is now its own collapsible GROUP, and the
+     group header IS the disclosure — so the cap's only justification went with it,
+     and what it left behind was a nested scroller inside .panel-body: measured,
+     the rows scrolled independently of the panel and took their own group heading
+     off screen. The Tools pane now does exactly what the Property Panel's
+     accordion does with a 25-row widget — get taller and let the ONE panel-body
+     scroller handle it (the round-10 scroll-ownership ruling; see .panel-body).
+     The gradient library keeps its own cap: that grid expands inside an Inspector
+     ROW, standing in for a popover, which is a different situation.) */
   /* Floating CANVAS TOOLBAR (the general above-the-widget popover, e.g. the
      macOS-cursor visual grid): one square tile, the columns the grid wraps at,
      the scroll cap, and the gap between the panel and the widget it floats over.
@@ -138,6 +169,13 @@
   --a-eq-call: var(--a-keyed);
   --a-eq-member: var(--a-anchor); /* .x/.y projection coord after a call/paren (Opus24 grammar) — reads like a property accessor */
   --a-eq-num: var(--fg);
+  /* String and color literals read like code strings; the reserved literals
+     true/false read like keywords. Chained to the --a-code-* palette so the two
+     highlighters agree. Before these existed, all three fell through to the
+     punctuation gray and a valid boolean equation rendered as an error. */
+  --a-eq-str: var(--a-code-string);
+  --a-eq-color: var(--a-code-string);
+  --a-eq-bool: var(--a-code-keyword);
   --a-eq-punct: var(--fg-dim);
   --a-eq-error: var(--a-guide);
   /* ── CODE-BLOCK SYNTAX-HIGHLIGHT PALETTE (Opus33, round-12D field) ──
@@ -196,6 +234,7 @@
   --a-upload-bar-h: 5px;
   --a-upload-track: color-mix(in srgb, var(--fg) 22%, transparent); /* muted track behind the progress bar AND the spinner ring */
   --a-upload-bar-fill: var(--a-selection);
+  --a-upload-bar-smooth: 0.1s; /* smooths the discrete onprogress width steps */
   --a-upload-spinner-size: 22px;
   --a-upload-spin-period: 0.8s; /* one full rotation of the indeterminate ring */
   /* Asset THUMBNAIL + BADGE (manifest #25): a rendered preview bitmap (PDF page
@@ -214,6 +253,21 @@
      tile aspect is the common slide ratio so mixed-aspect docs letterbox neatly. */
   --a-project-card-min: 220px;
   --a-project-card-aspect: 16 / 9;
+  /* Export-as-MP4 dialog (ExportMp4Modal). The shared Modal is CONTENT-SIZED,
+     so this form must declare its own column width: left to shrink-wrap, the
+     longest hint line would set the panel's max-content width and a small
+     options dialog would stretch across the screen. The label column is sized to
+     the widest label ("Hold per slide" / "Width × Height") at --a-font-md. */
+  --a-export-w: 420px;
+  --a-export-label-w: 112px;
+  --a-export-bar-h: 6px;
+  /* The server encode reports NO percentage (ffmpeg's progress never reaches the
+     browser), so its bar sweeps a short fill along the track — the honest
+     "working, duration unknown" idiom. Never a fake determinate fill. */
+  --a-export-bar-sweep-w: 34%;
+  --a-export-bar-sweep-period: 1.1s;
+  --a-export-video-h: 200px;
+  --a-export-swatch-w: 40px;
   /* Self-rendering FONT picker (manifest #26): each option in its own face, a
      larger preview beside the menu on hover. Option rows are a touch bigger than
      UI text so a typeface actually READS; the preview steps up from name → sample
@@ -279,6 +333,11 @@
   --a-code-edit-header-fg: var(--fg-dim);
   --a-code-edit-header-size: var(--a-font-sm);
   --a-key-chip-h: 18px; /* THE key-chip height (one standard; value PENDING USER RATIFICATION) */
+  /* THE SECTION-CAPTION tracking: the extra letter spacing the app's uppercase
+     section headings carry (.cat-header, and the grouped-dropdown family
+     captions that copy its voice). Named because the two must not drift apart —
+     it was a bare literal in .cat-header while it had only one consumer. */
+  --a-caption-tracking: 0.04em;
 
   /* SplitPane handles — thin, per annotator reference */
   --a-split-handle: #5a5a5a;
@@ -689,6 +748,25 @@ body,
 
 /* ── Themed scrollbars (macOS defaults ignore the theme) ─────────────────── */
 
+/* THE APP FONT REACHES FORM CONTROLS. The UA stylesheet gives button/input/
+   select/textarea their OWN font ("400 13.333px Arial" in Chrome) instead of
+   inheriting, and nothing here overrode it — so every button in the app rendered
+   in Arial while all surrounding text rendered in the body's system-ui. MEASURED
+   (tests/toolspane_probe.js): a Property Panel row label came out
+   "system-ui, -apple-system, sans-serif" while the Tools pane — which is entirely
+   buttons — came out "Arial", including the category headers the two panes SHARE.
+   That is the user's report: "the formatting menu looks so different from the
+   presets menu in the tools. It's like a different font."
+   Family only, deliberately: every control that cares already declares its own
+   font-size from the type scale, and inheriting size here would resize controls
+   app-wide for no stated reason. */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--a-scrollbar) transparent;
@@ -739,10 +817,10 @@ body,
   cursor: pointer;
 }
 
-/* Labeled button adds horizontal padding, a 1px border, and text size. */
+/* Labeled button adds horizontal padding, a hairline border, and text size. */
 .btn {
   padding: 0 var(--a-sp-3);
-  border: 1px solid var(--border);
+  border: var(--a-hairline) solid var(--border);
   font-size: var(--a-font-md);
 }
 
@@ -886,6 +964,33 @@ body,
   display: block;
 }
 
+/* FULL-WIDTH PAINT ROW (user: "it's not using the full width of the panel to do
+   it… make it take up the width of the container instead"). A gradient paint is
+   a COMPOSITE, multi-line editor (mode buttons, one row per stop, the
+   343-swatch preset library, the direction dial). Squeezed into the shared
+   value column it fits TWO swatch columns and wastes most of the panel, so a
+   row containing the picker RESTACKS: the label and the keyframe controls keep
+   line 1 — the row still reads like every other row — and the editor spans the
+   whole panel width on line 2. Placement is explicit (not auto-flow) because a
+   full-bleed middle child would otherwise push the trailing controls onto a
+   third line. Scoped by :has() to rows that actually contain the picker, so
+   every ordinary row keeps the ONE shared label|value|controls grid above. */
+.inspector .row:has(.gradient-presets) {
+  grid-template-columns: 1fr var(--a-kf-w);
+}
+.inspector .row:has(.gradient-presets) > .label,
+.inspector .row:has(.gradient-presets) > .row-label-chrome {
+  grid-area: 1 / 1;
+}
+.inspector .row:has(.gradient-presets) > .kf-controls {
+  grid-area: 1 / 2;
+}
+/* PaintField's root is the only child holding the picker (it carries no class
+   of its own — it is styled inline by the component). */
+.inspector .row:has(.gradient-presets) > :has(.gradient-presets) {
+  grid-area: 2 / 1 / 3 / 3;
+}
+
 .gradient-presets-toggle {
   display: flex;
   align-items: center;
@@ -942,10 +1047,13 @@ body,
   overflow-y: auto;
 }
 
+/* NO permanent border (user: "borders destroy the actual colors — pure colors
+   only"): a color-bearing chip shows the content color and nothing else. The
+   hover ring below is a TRANSIENT affordance, which is fine. */
 .gradient-swatch {
   height: var(--a-gradient-swatch-h);
   padding: 0;
-  border: var(--a-hairline) solid var(--border);
+  border: 0;
   border-radius: var(--radius);
   background: var(--gp-swatch);
   cursor: pointer;
@@ -964,30 +1072,48 @@ body,
 }
 
 /* ── Floating canvas toolbar (general above-the-widget popover) ───────────── */
-/* The root pins to the widget's screen top-center (render-area frame); the panel
-   is transformed so it sits centered ABOVE that point with a gap. Near the top
-   edge CanvasToolbar adds .canvas-toolbar-below, which re-pins to the widget's
-   BOTTOM and flips the transform down. pointer-events on the panel so its tiles
-   are clickable; the root itself has zero footprint. */
+/* The root pins to the widget's screen top-center (render-area frame) as a
+   ZERO-SIZE flex anchor: justify-content centers the panel across that point,
+   and align-items:flex-end hangs it ABOVE it (the gap is a margin). Near the top
+   edge CanvasToolbar adds .canvas-toolbar-below, which re-pins the root to the
+   widget's BOTTOM and flips the alignment so the panel hangs DOWN instead.
+   pointer-events on the panel so its tiles are clickable; the root itself has
+   zero footprint.
+
+   NO TRANSFORM ON THE PANEL — this is load-bearing, not a style choice. The
+   tiles' hover Tooltips render position:fixed, and ANY transformed ancestor
+   becomes the containing block for fixed descendants, which shifted every tip
+   by the panel's own origin (measured: a tip due at (622,262) landed at
+   (1202,494) = panel origin + intended). Centering therefore has to come from
+   flex alignment rather than translate(-50%, …). See the matching note at the
+   Tooltip call site in CanvasToolbar.svelte. */
 .canvas-toolbar-root {
   position: absolute;
   z-index: 5;
   pointer-events: none;
+  display: flex;
+  justify-content: center; /* centers the overflowing panel on the anchor point */
+  align-items: flex-end; /* panel's bottom edge sits on the anchor → it hangs above */
+  width: 0;
+  height: 0;
 }
 
 .canvas-toolbar {
-  position: absolute;
-  left: 0;
-  transform: translate(-50%, calc(-100% - var(--a-canvas-toolbar-gap)));
   pointer-events: auto;
+  margin-bottom: var(--a-canvas-toolbar-gap);
   padding: var(--a-sp-2);
   background: var(--a-panel-bg);
   border: var(--a-hairline) solid var(--border);
   box-shadow: var(--a-palette-shadow);
 }
 
+.canvas-toolbar-below {
+  align-items: flex-start; /* panel's top edge on the anchor → it hangs below */
+}
+
 .canvas-toolbar-below .canvas-toolbar {
-  transform: translate(-50%, var(--a-canvas-toolbar-gap));
+  margin-bottom: 0;
+  margin-top: var(--a-canvas-toolbar-gap);
 }
 
 .canvas-toolbar-grid {
@@ -1024,6 +1150,26 @@ body,
   height: 100%;
   object-fit: contain;
   pointer-events: none;
+}
+
+/* A floating panel whose content is a ROW of icon buttons rather than a tile grid
+   (the selected-handle tools). Sibling of .canvas-toolbar-grid inside the SAME
+   .canvas-toolbar surface, so both content shapes inherit one panel skin — the
+   whole point of extracting web/FloatingCanvasPanel.svelte. The buttons themselves
+   are the app's standard .btn-icon; nothing new is minted for them. */
+.canvas-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+}
+
+/* The panel's own readout text (e.g. "2 points"), matching the text-format
+   toolbar's inline size readout so the two bars read as one family. */
+.canvas-toolbar-count {
+  padding: 0 var(--a-sp-1);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
 }
 
 /* ── Canvas ──────────────────────────────────────────────────────────────── */
@@ -1124,9 +1270,7 @@ body,
 }
 
 /* Rubber-band selection: the in-progress box uses the guide color (it is a
-   transient interaction affordance, like guides) with the selection dash;
-   candidate previews are the selection outline at the anchors' established
-   50%-transparency affordance opacity. All values from existing tokens. */
+   transient interaction affordance, like guides) with the selection dash. */
 .overlay .band-rect {
   fill: none;
   stroke: var(--a-guide);
@@ -1135,13 +1279,33 @@ body,
   pointer-events: none;
 }
 
+/* BAND PREVIEW CANDIDATES — the items a release right now would change. Base =
+   the selection outline, so .band-add (joining the selection) needs no override.
+   The 50% --a-anchor-opacity fade is GONE deliberately: at half strength in the
+   selection's own colour it read as a faint selection, not a pending change. */
 .overlay .band-candidate {
   fill: none;
   stroke: var(--a-selection);
   stroke-width: var(--a-selection-stroke);
   stroke-dasharray: var(--a-selection-dash);
-  opacity: var(--a-anchor-opacity);
   pointer-events: none;
+}
+
+/* ABOUT TO LEAVE the selection (Shift subtract, an Alt invert's already-selected
+   half, a plain band's replaced leftovers): --a-guide, the same tone as the box
+   doing the removing — a blue SELECTION dash on an item about to be DEselected
+   says the opposite of what will happen. */
+.overlay .band-candidate.band-remove {
+  stroke: var(--a-guide);
+}
+
+/* INVERT's box, tinted so the third verb is readable even when the box catches
+   nothing to preview. CHAINED to --a-modifier (the existing PPT-yellow handle
+   token) rather than inventing a colour — add and subtract already own
+   --a-guide's pink, and amber is the one overlay tone not spoken for.
+   FLAGGED — PENDING USER RATIFICATION, like --a-modifier's own value. */
+.overlay .band-rect.band-verb-invert {
+  stroke: var(--a-modifier);
 }
 
 /* CROSSHAIR MODE (manifest ARCHITECTURE PLAN #5 — "one mechanism, two
@@ -1174,6 +1338,24 @@ body,
   stroke: var(--a-ghost);
   stroke-width: var(--a-guide-stroke);
   pointer-events: none;
+}
+
+/* MULTI-STEP CREATION: a landed vertex of a click-click-click placement. The
+   gray placement tone filled (not just stroked) so the vertices read as
+   "committed points" against the hairline chain that joins them — the .place-rect
+   family, one step more solid. */
+.overlay .place-dot {
+  fill: var(--a-ghost);
+  stroke: none;
+  pointer-events: none;
+}
+
+/* The FIRST vertex while a click there would CLOSE the loop. It takes the GUIDE
+   color — the same accent the snap guides use for "this click will engage
+   something" — because that is exactly what it announces, and it must be
+   readable BEFORE the click, not after. */
+.overlay .place-dot-hot {
+  fill: var(--a-guide);
 }
 
 .overlay .guide-point {
@@ -1337,7 +1519,7 @@ body,
   max-width: var(--a-code-edit-max-w);
   max-height: var(--a-code-edit-max-h);
   background: var(--a-code-edit-bg);
-  border: 1px solid var(--a-code-edit-border);
+  border: var(--a-hairline) solid var(--a-code-edit-border);
   border-radius: var(--a-code-edit-radius);
   box-shadow: var(--a-code-edit-shadow);
   overflow: hidden;
@@ -1353,7 +1535,7 @@ body,
   justify-content: space-between;
   gap: var(--a-sp-3);
   padding: var(--a-sp-2) var(--a-code-edit-pad);
-  border-bottom: 1px solid var(--a-code-edit-border);
+  border-bottom: var(--a-hairline) solid var(--a-code-edit-border);
   color: var(--a-code-edit-header-fg);
   font-size: var(--a-code-edit-header-size);
 }
@@ -1670,13 +1852,14 @@ body,
   text-decoration: underline;
 }
 /* The small color chip inside a color/highlight button (over the checker for a
-   transparent highlight). */
+   transparent highlight). NO permanent border (user: "borders destroy the actual
+   colors — pure colors only"), same rule as .colorfield-swatch. */
 .text-format-swatch {
   display: inline-block;
   width: var(--a-sp-4);
   height: var(--a-sp-2);
   margin-right: var(--a-sp-1);
-  border: var(--a-hairline) solid var(--border);
+  border: 0;
 }
 /* Inline color/outline popovers dropping below the toolbar row. */
 .text-format-popover {
@@ -1710,6 +1893,25 @@ body,
   stroke: var(--a-handle-rim);
   stroke-width: var(--a-handle-stroke);
   cursor: grab;
+}
+
+/* A handle in the HANDLE SELECTION (the inner selection scope). Skinned by
+   OVERRIDING the base rule's rim only — the same one-styling-seam construction
+   .band-add/.band-remove use over .band-candidate — so the two states cannot
+   drift apart. The rim takes --a-selection, the app's ONE selection colour (the
+   same token the multi-select box outline and the toolbar tile ring use); no new
+   colour is minted, so every theme's selection override applies for free. */
+.overlay .modifier.selected {
+  stroke: var(--a-selection);
+  stroke-width: var(--a-selection-stroke);
+}
+
+/* A handle whose LIST ELEMENT is hidden: the outline draws straight past it, so
+   the handle is HOLLOW — present and grabbable (it must be, or it could never be
+   shown again) while reading as "not part of the shape". Fill only, so a hidden
+   handle that is also selected still shows the selection rim above. */
+.overlay .modifier.hidden-element {
+  fill: none;
 }
 
 .overlay .anchor {
@@ -1923,23 +2125,33 @@ body,
 }
 
 /* Loud, visible notices — loading / empty / error — never a blank pane. */
-.asset-explorer .ae-notice {
+/* UNSCOPED, like .boolfield/.boolbtn above and for the same reason: these
+   asset-tile classes are SHARED chrome (Asset Explorer pane, Built-in Assets,
+   AssetField's picker). Scoping them under .asset-explorer silently broke every
+   consumer that is not inside that pane — a Modal PORTALS to <body>, so
+   `.asset-explorer .ae-grid` never matched AssetField's picker and its tiles
+   rendered full-width instead of in a grid, exactly as the AssetField comment
+   below already (wrongly) claimed they were reused. Built-in Assets worked only
+   because it restated the whole block under its own root. Style by class; scope
+   only genuinely pane-local affordances (.ae-insert/.ae-trash/.ae-tile-hit,
+   still scoped below). */
+.ae-notice {
   padding: var(--a-sp-3);
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
   line-height: 1.4;
 }
 
-.asset-explorer .ae-error {
+.ae-error {
   color: var(--a-guide); /* the danger/attention color, same as .btn.danger refs */
 }
 
-.asset-explorer .ae-notice-title {
+.ae-notice-title {
   font-weight: 600;
   margin-bottom: var(--a-sp-1);
 }
 
-.asset-explorer .ae-notice-detail {
+.ae-notice-detail {
   color: var(--fg-dim);
   word-break: break-word;
 }
@@ -1947,13 +2159,13 @@ body,
 /* Thumbnail grid: auto-fill square cells (Thumbnail needs a DEFINITE row
    height — grid-auto-rows tracks the column width via aspect-ratio on the
    cell, not the tile, avoiding the row-sizing cycle Thumbnail documents). */
-.asset-explorer .ae-grid {
+.ae-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--a-asset-cell-min), 1fr));
   gap: var(--a-sp-3);
 }
 
-.asset-explorer .ae-cell {
+.ae-cell {
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-1);
@@ -1962,7 +2174,7 @@ body,
 
 /* Square tile (defines the Thumbnail cell height) + overlay layer for the kind
    icon, the double-click hit target, and the insert button. */
-.asset-explorer .ae-tile {
+.ae-tile {
   position: relative;
   aspect-ratio: 1 / 1;
   border: var(--a-hairline) solid var(--border);
@@ -2088,7 +2300,7 @@ body,
   opacity: 1;
 }
 
-.asset-explorer .ae-name {
+.ae-name {
   font-size: var(--a-font-sm);
   color: var(--fg-dim);
   overflow: hidden;
@@ -2140,7 +2352,7 @@ body,
   height: 100%;
   width: var(--ae-upload-fill, 0%);
   background: var(--a-upload-bar-fill);
-  transition: width 0.1s linear; /* smooth the discrete onprogress steps */
+  transition: width var(--a-upload-bar-smooth) linear;
 }
 
 /* Indeterminate ring: shown only when the browser can't report total bytes. */
@@ -2250,13 +2462,19 @@ audio.ae-preview-media {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--fg-dim); /* the app's secondary ink, like .vidthumb-error's --a-guide below */
 }
 
 .vidthumb-error {
   color: var(--a-guide);
 }
 
+/* The play chip. Uses the standardized THUMBNAIL BADGE tokens (--a-badge-*,
+   "dark chip, reads over light OR dark thumbnails") — the manifest names this
+   very case ("PDF page count, future video duration"), so this is the same
+   badge, not a second one. Deliberately theme-independent: it sits over video
+   frames, not over app chrome. Box = --a-sp-5, the 16px icon size the markup
+   declares (the .icon-slot precedent). */
 .vidthumb-badge {
   position: absolute;
   left: var(--a-sp-2);
@@ -2264,10 +2482,10 @@ audio.ae-preview-media {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  background: rgba(0, 0, 0, 0.6);
-  color: white;
+  width: var(--a-sp-5);
+  height: var(--a-sp-5);
+  background: var(--a-badge-bg);
+  color: var(--a-badge-fg);
   pointer-events: none;
 }
 
@@ -2276,7 +2494,10 @@ audio.ae-preview-media {
    drag-and-drop from the Asset Explorer AND Finder. Fills the row's value
    cell like every other field control (--a-control-h height). The picker
    Modal's grid reuses .ae-grid/.ae-cell/.ae-tile/.ae-name (declared above, no
-   redeclaration). ── */
+   redeclaration) — which only actually WORKS now that those rules are unscoped:
+   the Modal portals to <body>, so while they were written `.asset-explorer
+   .ae-grid` they never matched here and the picker's tiles rendered full-width.
+   ── */
 .assetfield {
   display: flex;
   flex-direction: column;
@@ -2495,7 +2716,7 @@ audio.ae-preview-media {
   color: var(--fg-dim);
   border: 0;
   opacity: 0;
-  transition: opacity 0.08s ease;
+  transition: opacity var(--a-row-chrome-fade) ease;
 }
 .inspector .copy-path-btn {
   cursor: pointer;
@@ -2529,6 +2750,43 @@ audio.ae-preview-media {
   font-family: var(--a-mono);
   font-size: var(--a-font-sm);
   white-space: nowrap;
+}
+
+/* WHY a disabled control is disabled, under its help in the same tip. Shared by
+   the Tools pane's rows and the Toolbar's buttons — the AVAILABILITY footnote is
+   one sentence style wherever a disabled control explains itself.
+   Dim + rule-separated so it reads as a footnote about availability rather than
+   part of the description — the .path-tip-line precedent for a second line of
+   tooltip content, minus the monospace (this is prose, not an equation path). */
+.tool-tip-requires {
+  margin-top: var(--a-sp-2);
+  padding-top: var(--a-sp-2);
+  border-top: var(--a-hairline) solid var(--border);
+  color: var(--fg-dim);
+}
+
+/* ── The COMMAND TIP (Toolbar buttons) ────────────────────────────────────────
+   Title line with the command's key chip pushed to the trailing edge, then any
+   extra clause, then the .tool-tip-requires footnote above. The chip is the same
+   KeyCombo at the same --kc-* settings the palette rows use (.palette-item
+   .shortcut), so one combo is drawn one way app-wide. */
+.cmd-tip-head {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+  --kc-h: var(--a-key-chip-h);
+  --kc-fg: var(--fg-dim);
+}
+
+.cmd-tip-head .cmd-tip-keys {
+  margin-left: auto;
+  flex: none;
+  color: var(--fg-dim);
+}
+
+.cmd-tip-note {
+  margin-top: var(--a-sp-1);
+  color: var(--fg-dim);
 }
 
 /* Text/number inputs fill their grid cell (the value column grows; the
@@ -2687,6 +2945,9 @@ audio.ae-preview-media {
 .numfield .eq-tok-call { color: var(--a-eq-call); }
 .numfield .eq-tok-member { color: var(--a-eq-member); }
 .numfield .eq-tok-num { color: var(--a-eq-num); }
+.numfield .eq-tok-str { color: var(--a-eq-str); }
+.numfield .eq-tok-color { color: var(--a-eq-color); }
+.numfield .eq-tok-bool { color: var(--a-eq-bool); }
 .numfield .eq-tok-op,
 .numfield .eq-tok-paren,
 .numfield .eq-tok-punct { color: var(--a-eq-punct); }
@@ -2707,7 +2968,7 @@ audio.ae-preview-media {
   overflow: hidden;
   color: var(--a-eq-var); /* same chroma as a variable token — it IS a variable ref */
   opacity: 0;
-  transition: opacity 0.08s ease;
+  transition: opacity var(--a-row-chrome-fade) ease;
 }
 .inspector .row:hover .numfield .eq-ref-mark,
 .varspanel .row:hover .numfield .eq-ref-mark,
@@ -2735,7 +2996,7 @@ audio.ae-preview-media {
   border: 0;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.08s ease;
+  transition: opacity var(--a-row-chrome-fade) ease;
 }
 .numfield .eq-open:hover {
   color: var(--fg);
@@ -2792,8 +3053,11 @@ audio.ae-preview-media {
    own wrapper), so it sits directly below the field regardless of which
    Inspector row it's in. Styled by app.css tokens directly (not Dropdown's
    --dd-* — see EquationSuggest.svelte header for why a bespoke component).
-   Same visual language as Dropdown's menu (border/shadow/radius-0) so it
-   reads as "the same kind of thing" without literally being one. */
+   Same visual language as Dropdown's menu (hairline border, square) so it
+   reads as "the same kind of thing" without literally being one. The drop
+   shadow is the app's ONE floating-surface shadow (--a-palette-shadow, shared
+   with the palette / canvas toolbar / text-format popover) rather than the
+   lib Dropdown's own literal default, so it tracks every theme override. */
 .eqs-menu {
   position: absolute;
   top: 100%;
@@ -2804,9 +3068,9 @@ audio.ae-preview-media {
   max-height: var(--a-palette-max-h, 240px);
   overflow-y: auto;
   background: var(--control-bg);
-  border: 1px solid var(--border);
+  border: var(--a-hairline) solid var(--border);
   border-radius: 0; /* square corners — the field-chrome rule applies here too */
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--a-palette-shadow);
 }
 
 .eqs-item {
@@ -2882,7 +3146,10 @@ audio.ae-preview-media {
   height: var(--a-color-swatch);
   flex: none;
   padding: 0;
-  border: 1px solid var(--border);
+  /* NO permanent border (user: "borders destroy the actual colors — pure colors
+     only"). The alpha checkerboard underneath already delimits the chip; the
+     :focus-visible ring below is transient, which is fine. */
+  border: 0;
   border-radius: 0;
   cursor: pointer;
   background:
@@ -3002,59 +3269,79 @@ audio.ae-preview-media {
   color: var(--a-keyed);
 }
 
+/* The "nothing here" state, shared by every pane that can be empty. NOT unscoped
+   like .boolfield/.prop-category below (which the doctrine there demands) for one
+   concrete reason: `.assetfield-name.empty` far above is an unrelated MODIFIER
+   using the same word, and an unscoped `.empty` would leak this centered dim
+   padding into it. Adding a pane is one selector here until that name is settled. */
 .inspector .empty,
 .varspanel .empty,
-.presetspane .empty {
+.toolspane .empty {
   color: var(--fg-dim);
   padding: var(--a-sp-4);
   text-align: center;
 }
 
-/* ── Presets Pane (generic preset tool) ─────────────────────────────────────
-   A scrollable column of clickable preset cards; the pane, like the others,
-   carries the panel surface + top seam. */
-.presetspane {
+/* ── Tools Pane (the selection's tool GROUPS) ───────────────────────────────
+   A column of GROUP accordions (the same accordion the Property Panel groups
+   property rows with — see the accordion block below, whose rules this pane
+   shares, so the two panes read as one system); the pane, like the others,
+   carries the panel surface + top seam.
+
+   ONE ROW LANGUAGE, deliberately: a command tool and a preset are both the
+   standard .btn at the standard control height, so a group of tools and a group
+   of presets cannot read as two different kinds of UI. That was the other half of
+   the user's "it's like a different font" report — the first half being the
+   app-wide form-control font reset near the top of this file. The old
+   .preset-card/.preset-list/.preset-name rules died with the nested list: they
+   hand-restated .btn's width, height, padding, border, colour and cursor, and
+   .preset-card omitted font-size, so a preset row sat at the UA's 13.333px beside
+   a 13.6px tool button. .tool-preset now carries the ONLY genuine difference. */
+.toolspane {
   padding: var(--a-sp-3);
   background: var(--a-panel-bg);
   font-size: var(--a-font-md);
   border-top: var(--a-hairline) solid var(--border); /* pane seam, same as .varspanel/.kfpanel */
-  overflow-y: auto;
+  /* NO overflow of its own: the Panel BODY is the only scroller (the round-10
+     scroll-ownership ruling, see .panel-body). The old .presetspane declared
+     overflow-y:auto here, which is exactly the nested-scroller case that ruling
+     forbids — and it also clipped the preset dropdown's menu twice over. */
 }
 
-.presetspane .preset-grid {
-  display: flex;
-  flex-direction: column;
+/* A TOOL ROW (command or preset): the standard labeled .btn stretched across the
+   pane, its icon and label reading left-to-right like a menu item rather than
+   centered. */
+.toolspane .tool-action {
+  width: 100%;
+  justify-content: flex-start;
   gap: var(--a-sp-2);
 }
 
-/* A preset card: full-width button, name over an optional dim description. */
-.presetspane .preset-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--a-sp-1);
-  width: 100%;
-  text-align: left;
-  padding: var(--a-sp-3);
-  background: var(--control-bg);
-  border: var(--a-hairline) solid var(--border);
-  color: var(--fg);
-  cursor: pointer;
+/* A row's label ellipsizes rather than wrapping, so every row is exactly one
+   line. The pane is narrow and a command title can be long; the full text is in
+   the hover tip. */
+.toolspane .tool-action-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.presetspane .preset-card:hover {
-  background: var(--a-hover-bg);
+/* A PRESET row's one genuine difference from a command row: it is a PICKER entry,
+   so it carries the filled control surface and the selection-tinted hover border
+   that say "hovering me shows you this, clicking me applies it" — the same
+   preview affordance the gradient library's swatches use. */
+.toolspane .tool-preset {
+  background: var(--control-bg);
+}
+
+.toolspane .tool-preset:hover {
   border-color: var(--a-selection);
 }
 
-.presetspane .preset-name {
-  font-weight: 600;
-}
-
-.presetspane .preset-desc {
-  color: var(--fg-dim);
-  font-size: var(--a-font-sm);
-  line-height: var(--a-text-line-height);
-}
+/* A group's rows need NO rule here: the shared .cat-rows below is the whole
+   layout, exactly as it is for the Property Panel's property rows. That identity
+   is the point — "the two panes read as one system" is only true while neither
+   pane overrides the shared idiom. */
 
 /* The not-created-yet note under grayed rows reads as an inline caption, not a
    centered empty state. */
@@ -3080,12 +3367,19 @@ audio.ae-preview-media {
 /* ── Property categories (collapsible accordion; manifest Round 12) ─────────
    Each category is a header button + its rows. The header spans the full panel
    width, square, transparent (chrome, not a control) with a hover wash; the
-   chevron + title read as a section label. Collapsed categories render no rows. */
-.inspector .prop-category {
+   chevron + title read as a section label. Collapsed categories render no rows.
+
+   DELIBERATELY UNSCOPED, for the reason the .boolfield block below spells out:
+   the accordion is now a SHARED idiom (the Property Panel groups property rows
+   with it, the Tools pane groups tools with it — same vocabulary, same order, so
+   the two panes read as one system), and a pane must never have to opt in to a
+   shared idiom by being added to four selector groups. Scope only genuine
+   per-pane OVERRIDES. */
+.prop-category {
   margin-top: var(--a-sp-2);
 }
 
-.inspector .cat-header {
+.cat-header {
   display: flex;
   align-items: center;
   gap: var(--a-sp-1);
@@ -3099,20 +3393,20 @@ audio.ae-preview-media {
   cursor: pointer;
   font-size: var(--a-font-sm);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--a-caption-tracking);
 }
 
-.inspector .cat-header:hover {
+.cat-header:hover {
   background: var(--a-hover-bg);
   color: var(--fg);
 }
 
-.inspector .cat-title {
+.cat-title {
   flex: 1 1 auto;
   text-align: left;
 }
 
-.inspector .cat-rows {
+.cat-rows {
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-1);
@@ -3122,17 +3416,27 @@ audio.ae-preview-media {
 /* ── BooleanField (the boolean row control; manifest Round 12 visibility) ───
    A single square toggle at the standardized control size. The ON/OFF STATE is
    shown by the ICON only — never a background fill (the toggle-buttons ruling).
-   It sits at the left of the value column like every other value control. */
-.inspector .boolfield,
-.varspanel .boolfield {
+   It sits at the left of the value column like every other value control.
+
+   THESE RULES ARE DELIBERATELY UNSCOPED — do not put a container in front of
+   them. They used to read `.inspector .boolfield, .varspanel .boolfield, …`,
+   which meant every new pane had to remember to add itself to FIVE separate
+   selector groups before the standard control would look standard. The Export
+   as MP4 dialog is what that cost: its author, finding an unstyled control,
+   hand-rolled a native <input type="checkbox"> that matched nothing else in the
+   app, and the user reported it. A pane must never have to opt in to the shared
+   control. Style by class alone; scope only genuine per-context OVERRIDES (see
+   `.export-mp4 .boolfield` far below, which un-stretches it for an inline row).
+   (`.varspanel` was in these groups but VariablesPanel renders no boolean
+   control at all — the selector was dead, and unscoping covers it anyway.) */
+.boolfield {
   display: flex;
   align-items: center;
   width: 100%;
   min-width: 0;
 }
 
-.inspector .boolbtn,
-.varspanel .boolbtn {
+.boolbtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3145,18 +3449,15 @@ audio.ae-preview-media {
 }
 
 /* ON = the icon takes the full foreground; OFF stays dim. No fill either way. */
-.inspector .boolbtn.on,
-.varspanel .boolbtn.on {
+.boolbtn.on {
   color: var(--fg);
 }
 
-.inspector .boolbtn:hover:not(:disabled),
-.varspanel .boolbtn:hover:not(:disabled) {
+.boolbtn:hover:not(:disabled) {
   background: var(--a-hover-bg);
 }
 
-.inspector .boolbtn:disabled,
-.varspanel .boolbtn:disabled {
+.boolbtn:disabled {
   opacity: 0.35;
   cursor: default;
 }
@@ -3191,6 +3492,38 @@ audio.ae-preview-media {
 .inspector .row .dd {
   width: 100%;
   --dd-radius: 0;
+}
+
+/* GROUPED SELECT ROWS (Blend mode's six families). A row that declares
+   `optionGroups` renders one Dropdown `insert` caption ahead of each family
+   (core/properties.js selectRowItems). Dropdown ships NO separator look — the
+   whole appearance is the consumer's, exactly as src/demos/Dropdown/Demo.svelte's
+   sectioned recipe establishes — so this is where the 26-row list stops reading
+   as one flat column.
+
+   The caption copies .cat-header's voice (the app's ONE section-heading device:
+   dim, small, uppercase, --a-caption-tracking) so a family caption inside the
+   menu reads like the accordion heading outside it, and the hairline rule is the
+   FAMILY BOUNDARY. --dd-insert-* must be set on this (0,3,0) chain for the same
+   reason --dd-radius above is: Dropdown declares its own defaults on `.dd`. */
+.inspector .row .dd {
+  --dd-insert-padding: var(--a-sp-3) var(--a-sp-3) var(--a-sp-1);
+  --dd-insert-color: var(--fg-dim);
+  --dd-insert-border: var(--a-hairline) solid var(--border);
+}
+
+.inspector .row .dd-insert {
+  font-size: var(--a-font-sm);
+  text-transform: uppercase;
+  letter-spacing: var(--a-caption-tracking);
+}
+
+/* The FIRST caption needs no boundary rule — the menu's own top edge is already
+   the boundary, and a second line there reads as a stray divider. Structural
+   (:first-child), never an index, so it stays right through any reordering. */
+.inspector .row .dd-list > .dd-insert:first-child {
+  border-top: none;
+  padding-top: var(--a-sp-2);
 }
 
 /* ── Variables Panel rows ─────────────────────────────────────────────────
@@ -3311,7 +3644,7 @@ audio.ae-preview-media {
   transform: translateX(-50%);
   width: var(--a-palette-w);
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: var(--a-hairline) solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--a-palette-shadow);
   overflow: hidden;
@@ -3520,8 +3853,14 @@ audio.ae-preview-media {
   --tt-bg: color-mix(in srgb, var(--control-bg) 82%, transparent);
 }
 
-/* Single source of truth for key-chip height: HintBar follows the same
-   standardized token as the palette combo chips. */
+/* Single source of truth for key-chip DESIGN height: HintBar's chips take the
+   same standardized token as the palette combo chips, then the whole bar is
+   scaled by its own --hint-scale (lib/HintBar.svelte, `zoom` on .hintbar), so
+   its chips RENDER smaller by that factor. Measured, so the distinction is not
+   theoretical: a HintBar chip computes to the token's height and renders at
+   12.59px, against the palette chip's 18px. One token still means one design
+   metric — the bar chooses to draw itself small, which is a different decision
+   from the two surfaces disagreeing about the standard. */
 .app {
   --hint-key-h: var(--a-key-chip-h);
 }
@@ -3534,7 +3873,7 @@ audio.ae-preview-media {
   font-size: var(--a-font-sm);
   paint-order: stroke;
   stroke: var(--bg);
-  stroke-width: 3px;
+  stroke-width: var(--a-text-halo-stroke);
   pointer-events: none;
 }
 
@@ -3625,7 +3964,8 @@ audio.ae-preview-media {
    time like a progressive-reveal accordion.) */
 .panel-body > .inspector,
 .panel-body > .varspanel,
-.panel-body > .kfpanel {
+.panel-body > .kfpanel,
+.panel-body > .toolspane {
   flex: none;
   min-height: auto;
 }
@@ -3638,7 +3978,7 @@ audio.ae-preview-media {
    matching the rest of the chrome. */
 :root {
   --a-grid-line: color-mix(in srgb, var(--fg) 12%, transparent);
-  --a-ruler-h: 18px; /* strip thickness; ~ the key-chip height standard */
+  --a-ruler-h: var(--a-key-chip-h); /* strip thickness IS the key-chip height standard */
   --a-ruler-bg: color-mix(in srgb, var(--a-panel-bg) 88%, transparent);
   --a-ruler-tick: color-mix(in srgb, var(--fg) 28%, transparent);
   --a-ruler-label: var(--fg-dim);
@@ -3695,7 +4035,11 @@ audio.ae-preview-media {
   bottom: var(--a-sp-3);
   z-index: var(--a-fps-z);
   padding: var(--a-sp-1) var(--a-sp-3);
-  background: rgba(0, 0, 0, 0.7);
+  /* The same dark chip as a thumbnail badge (--a-badge-bg: "reads over light OR
+     dark"), for the same reason: this box floats over arbitrary rendered
+     content, and its ink is the fixed green --a-fps-color, so the backing must
+     stay dark in every theme. */
+  background: var(--a-badge-bg);
   font-family: var(--a-mono);
   font-size: var(--a-font-md);
   color: var(--a-fps-color);
@@ -3752,7 +4096,7 @@ audio.ae-preview-media {
 
 .ruler-marker {
   stroke: var(--a-ruler-marker);
-  stroke-width: 1px;
+  stroke-width: var(--a-guide-stroke);
 }
 
 .ruler-marker-label {
@@ -3791,7 +4135,7 @@ audio.ae-preview-media {
 .ruler-marker-label {
   paint-order: stroke;
   stroke: var(--bg);
-  stroke-width: 3px;
+  stroke-width: var(--a-text-halo-stroke);
 }
 
 /* Open Project modal (the SvelteLib Modal wired to the project server) — a
@@ -3914,11 +4258,12 @@ audio.ae-preview-media {
    The discovery-only catalog of ship-with-the-app assets (cursors today),
    rendered in a Modal — a SEPARATE surface from the project Asset Explorer.
    Reuses the SAME shared tile classes (.ae-grid/.ae-cell/.ae-tile/.ae-name) and
-   --a-* tokens so it reads as one system with the Explorer, but is scoped under
-   its own .builtin-assets root (the Modal portals to <body>, where the
-   Explorer's .asset-explorer-scoped rules don't reach). The grid/tile geometry
-   is restated (not shared via a grouped selector) to keep this a purely ADDITIVE
-   block — every value still comes from a token, no magic numbers. */
+   --a-* tokens so it reads as one system with the Explorer. It used to RESTATE
+   the whole grid/tile geometry, because those classes were scoped under
+   .asset-explorer and this Modal portals to <body>, out of that scope. The
+   shared classes are unscoped now, so the duplicate is gone and only the
+   genuinely built-in-specific chrome (the .ba-* section headers and copy
+   affordance) lives here. */
 .builtin-assets {
   display: flex;
   flex-direction: column;
@@ -3958,48 +4303,8 @@ audio.ae-preview-media {
   line-height: var(--a-text-line-height);
 }
 
-/* Loud notices (loading / empty / error) — mirrors .asset-explorer .ae-notice. */
-.builtin-assets .ae-notice {
-  padding: var(--a-sp-3);
-  color: var(--fg-dim);
-  font-size: var(--a-font-sm);
-  line-height: 1.4;
-}
-
-.builtin-assets .ae-error {
-  color: var(--a-guide);
-}
-
-.builtin-assets .ae-notice-title {
-  font-weight: 600;
-  margin-bottom: var(--a-sp-1);
-}
-
-.builtin-assets .ae-notice-detail {
-  color: var(--fg-dim);
-  word-break: break-word;
-}
-
-/* Same auto-fill square-tile grid as the Asset Explorer (shared tokens). */
-.builtin-assets .ae-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--a-asset-cell-min), 1fr));
-  gap: var(--a-sp-3);
-}
-
-.builtin-assets .ae-cell {
-  display: flex;
-  flex-direction: column;
-  gap: var(--a-sp-1);
-  min-width: 0;
-}
-
-.builtin-assets .ae-tile {
-  position: relative;
-  aspect-ratio: 1 / 1;
-  border: var(--a-hairline) solid var(--border);
-  background: var(--control-bg);
-}
+/* Notices, grid, cell and tile all come from the UNSCOPED .ae-* rules above —
+   this block only adds what is genuinely Built-in-Assets-specific. */
 
 /* Copy-name affordance, bottom-left on hover — the .ae-copy-path overlay chrome
    (built-ins have no served path; their identifier is the useful thing). */
@@ -4020,35 +4325,32 @@ audio.ae-preview-media {
   opacity: 1;
 }
 
-.builtin-assets .ae-name {
-  font-size: var(--a-font-sm);
-  color: var(--fg-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* ── GridSizePicker (Arrange-into-Grid sweep popover) ────────────────────────
    Relocated from GridSizePicker.svelte's scoped <style> (task #98) now that the
    parallel lanes that motivated keeping it scoped have merged. Local tokens
-   chain to ambient --a-*/theme tokens with a literal fallback (the Modal pattern);
-   the grid-picker* class names are unique so global scoping is collision-free. */
+   chain to the ambient app/theme tokens with BARE var() — no baked fallbacks,
+   matching every other component bridge here (--dd-*, --dn-*, --cp-*): a baked
+   graphite literal would be the wrong color under any other theme, and this app
+   always provides the tokens. The grid-picker* class names are unique so global
+   scoping is collision-free.
+   (Prior bug: this comment wrote the token prefix with a wildcard-slash, whose
+   "*" + "/" closed the comment early and made the parser swallow the whole
+   .grid-picker rule below — every --gp-* token was undefined at runtime.) */
 .grid-picker {
   --gp-cell-size: 22px;
-  --gp-cell-gap: var(--a-sp-1, 2px);
-  --gp-fg: var(--fg, #e6e6e6);
-  --gp-fg-dim: var(--fg-dim, #8c8c8c);
-  --gp-border: var(--border, rgba(255, 255, 255, 0.1));
-  --gp-accent: var(--a-selection, #3f9eff);
-  --gp-empty: var(--a-hover-bg, rgba(255, 255, 255, 0.12));
-  --gp-radius: var(--radius, 4px);
-  --gp-label-size: var(--a-font-md, 0.85rem);
-  --gp-hint-size: var(--a-font-sm, 0.72rem);
+  --gp-cell-gap: var(--a-sp-1);
+  --gp-fg: var(--fg);
+  --gp-fg-dim: var(--fg-dim);
+  --gp-border: var(--border);
+  --gp-accent: var(--a-selection);
+  --gp-empty: var(--a-hover-bg);
+  --gp-label-size: var(--a-font-md);
+  --gp-hint-size: var(--a-font-sm);
 
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--a-sp-3, 8px);
+  gap: var(--a-sp-3);
   color: var(--gp-fg);
   user-select: none;
 }
@@ -4059,13 +4361,14 @@ audio.ae-preview-media {
   font-variant-numeric: tabular-nums;
 }
 
+/* Square, like all app chrome ("be sensible about using rounded edges"). */
 .grid-picker-grid {
   display: grid;
   grid-template-columns: repeat(var(--gp-cols), var(--gp-cell-size));
   gap: var(--gp-cell-gap);
-  padding: var(--a-sp-2, 4px);
+  padding: var(--a-sp-2);
   outline: none;
-  border-radius: var(--gp-radius);
+  border-radius: 0;
 }
 .grid-picker-grid:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--gp-accent) 60%, transparent);
@@ -4079,7 +4382,7 @@ audio.ae-preview-media {
   padding: 0;
   background: transparent;
   border: 1px solid var(--gp-border);
-  border-radius: calc(var(--gp-radius) / 2);
+  border-radius: 0;
   cursor: pointer;
 }
 .grid-picker-cell:hover {
@@ -4094,4 +4397,192 @@ audio.ae-preview-media {
   font-size: var(--gp-hint-size);
   color: var(--gp-fg-dim);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── Export as MP4 dialog (ExportMp4Modal.svelte) ─────────────────────────────
+   Relocated from that component's scoped <style> and its private --emx-* token
+   namespace, which its own header only ever justified as TRANSITIONAL ("keeps
+   the new export lane merge-safe alongside parallel work"). That parallel work
+   has landed, so the carve-out is gone: web/ components carry no <style>, every
+   value here is an --a-* token, and the corners are square like all app chrome.
+   The visible consequence of the carve-out was the Transitions row — a raw
+   native <input type="checkbox"> that matched nothing else in the app. It is now
+   the shared, unscoped .boolfield/.boolbtn control, so it is pixel-identical
+   to the Inspector's booleans without opting in to anything.
+   The export-mp4* names are unique, so global scoping is collision-free (the
+   Modal portals to <body>, out of reach of any panel-scoped rule). */
+.export-mp4 {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-4);
+  /* See --a-export-w: the Modal is content-sized, so the form states its width
+     rather than letting the longest hint line stretch the dialog. */
+  width: var(--a-export-w);
+  max-width: 100%;
+  font-size: var(--a-font-md);
+}
+
+.export-mp4-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-4);
+}
+
+/* Mid-export the whole form is frozen and dimmed — same treatment as a disabled
+   Inspector row (.row-disabled), plus the input block that makes it real. */
+.export-mp4-form.is-busy {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.export-mp4-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+}
+
+.export-mp4-label {
+  flex: 0 0 var(--a-export-label-w);
+  color: var(--fg-dim);
+}
+
+.export-mp4-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A control followed by its explanatory hint (or a pair of numbers) on one row. */
+.export-mp4-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+}
+
+/* The boolean sits INLINE beside its hint rather than filling a value cell, so
+   it hugs its button instead of taking the row's full width. */
+.export-mp4 .boolfield {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.export-mp4-times {
+  color: var(--fg-dim);
+}
+
+.export-mp4-hint {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+
+.export-mp4-summary {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+
+.export-mp4-color {
+  width: var(--a-export-swatch-w);
+  height: var(--a-control-h);
+  flex: 0 0 auto;
+  padding: 0;
+  background: none;
+  border: var(--a-hairline) solid var(--border);
+  border-radius: 0; /* square — never inherit the UA's rounded swatch */
+  cursor: pointer;
+}
+
+.export-mp4-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+}
+
+.export-mp4-bar {
+  flex: 1 1 auto;
+  height: var(--a-export-bar-h);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  overflow: hidden;
+}
+
+.export-mp4-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+/* The server-encode phase: a short fill sweeping the track. Deliberately NOT a
+   determinate width — ffmpeg's progress never reaches the browser, and a bar
+   that pretends otherwise is what made a finished-looking export read as dead. */
+.export-mp4-bar-fill.is-indeterminate {
+  width: var(--a-export-bar-sweep-w);
+  animation: export-mp4-sweep var(--a-export-bar-sweep-period) ease-in-out infinite alternate;
+}
+
+@keyframes export-mp4-sweep {
+  from {
+    margin-left: 0;
+  }
+  to {
+    margin-left: calc(100% - var(--a-export-bar-sweep-w));
+  }
+}
+
+.export-mp4-progress-label {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── The finished-export result box ──────────────────────────────────────────
+   The encoded movie exists ONLY as an in-page Blob (the server deletes its
+   frame/encode scratch the moment ffmpeg returns), so this box plays it and
+   saves it from one object URL. It is the guaranteed manual path to the file
+   when the automatic download does not visibly happen. */
+.export-mp4-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+  padding: var(--a-sp-3);
+  background: var(--a-panel-bg);
+  border: var(--a-hairline) solid var(--border);
+}
+
+.export-mp4-done {
+  margin: 0;
+  font-size: var(--a-font-sm);
+}
+
+.export-mp4-video {
+  display: block;
+  width: 100%;
+  max-height: var(--a-export-video-h);
+  background: var(--a-canvas-bg);
+}
+
+.export-mp4-result-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* An <a> wearing the shared .btn chrome — it needs the icon gap and no underline. */
+.export-mp4-download {
+  gap: var(--a-sp-2);
+  text-decoration: none;
+}
+
+.export-mp4-error {
+  margin: 0;
+  color: var(--a-eq-error);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+
+.export-mp4-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--a-sp-2);
 }

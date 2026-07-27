@@ -40,6 +40,36 @@ import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
+/**
+ * Pure function. The LOCAL rect the arrow's INK occupies: the AABB of its two
+ * endpoints, padded on every side by the widest of the shaft width and the head
+ * width. The arrow has no transform of its own (world == identity), so this is
+ * also its world footprint.
+ *
+ * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
+ * precedent): the effect substrate in emit() below, and — via the `localBounds`
+ * declaration — culling plus rubber-band selection (core/view.js localBoundsOf).
+ * Before that hook existed the arrow reported NO bounds at all, so it could never
+ * be band-selected and never culled however far off-screen it sat, even though
+ * this very rect was already being computed for its effects.
+ *
+ * CONSERVATIVE BY CONSTRUCTION: a head triangle's tip sits ON an endpoint and its
+ * base corners sit half a head-width to either side of the shaft axis, while the
+ * round-capped shaft reaches half a stroke-width past each endpoint — so a pad of
+ * the FULL larger width covers both with room to spare. Over-padding only paints
+ * a widget that need not have been painted; under-padding would pop a visible
+ * arrow out of view at the canvas edge.
+ *
+ * @param {object} s - evaluated item state (from / to / strokeWidth / headWidth)
+ * @returns {{x: number, y: number, w: number, h: number}} local rect
+ *
+ * @example arrowInkRect({from: {x: 10, y: 20}, to: {x: 110, y: 60}, strokeWidth: 3, headWidth: 12}) // {x: -2, y: 8, w: 124, h: 64}
+ * @example arrowInkRect({from: {x: 0, y: 0}, to: {x: 100, y: 0}, strokeWidth: 40, headWidth: 12}) // {x: -40, y: -40, w: 180, h: 80} (a fat shaft dominates the pad)
+ */
+export function arrowInkRect(s) {
+  return paddedPointsBBox([s.from, s.to], Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH));
+}
+
 export const arrowPlugin = {
   type: "arrow",
   title: "Arrow",
@@ -49,7 +79,7 @@ export const arrowPlugin = {
     from: { x: 200, y: 300 }, to: { x: 420, y: 300 },
     // stroke width + head geometry: the shared simple-arrow defaults
     // (core/endpoints.js ARROW_ENDPOINT_DEFAULTS — one home for basic/elbow/curved).
-    stroke: "#1a1a2e", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
+    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Legacy top-level state keys → their current names. headSize was really
@@ -94,14 +124,19 @@ export const arrowPlugin = {
     if (ends.start) cmds.push(polygon({ points: headTriangle(from, to, s.headLength, s.headWidth), fill: s.stroke, opacity }));
     // Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE, render_gpu/
     // effects.js) wrap the finished op list; all-off = pass-through. Arrows
-    // have no bbox state (world == identity), so the effect region is the
-    // padded AABB of the drawn geometry; the conservative full-width pad
-    // covers the capsule shaft's half-width and the head's lateral overhang
-    // with room to spare (over-padding only grows the offscreen region
-    // slightly — it never clips). No cullMargin: non-bbox widgets never
-    // cull-skip (core/view.js defaultCanSkip returns false without an AABB).
-    return applyEffects(cmds, s, world, paddedPointsBBox([from, to], Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH)));
+    // have no bbox state (world == identity), so the effect region is its ink
+    // rect — the SAME rect `localBounds` reports, so the substrate and the
+    // cull/band bounds can never disagree about where this widget is.
+    return applyEffects(cmds, s, world, arrowInkRect(s));
   },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): an arrow's width and height
+  // are just the min/max of its endpoints, so it band-selects and culls like any
+  // box widget despite having no w/h state and no resize handles.
+  localBounds: arrowInkRect,
+  // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
+  // defaultCanSkip's cullMargin hook. MANDATORY now that an arrow HAS an AABB to
+  // be culled by: without it a shadowed arrow just off-view loses its halo.
+  cullMargin: effectsCullMargin,
   hitTestWorld(node, wx, wy) {
     return hitsShaft(node.state, wx, wy, node.state.strokeWidth ?? ARROW_STROKE_WIDTH);
   },

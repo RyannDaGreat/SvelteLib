@@ -28,7 +28,7 @@ import { renderToPng } from "../render_gpu/skia/node_render.js";
 import { renderDocToPng } from "../cli/render.js";
 import { irToSVG } from "../render_gpu/svg_backend.js";
 import { fitRectView } from "../core/view.js";
-import { createRegistry } from "../core/registry.js";
+import { createRegistry, REGISTRY_DERIVED_KEYS } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 
@@ -116,7 +116,25 @@ for (const { data, ecLevel } of CASES) {
   const registry = createRegistry();
   const commands = createCommands();
   registerAll(registry, commands);
-  assert.equal(registry.get("qrcode"), qrcodePlugin, "plugin registers under type 'qrcode'");
+  // The REGISTERED form of a plugin is a derived copy, not the authored object:
+  // register() adds the keys core/registry.js names in REGISTRY_DERIVED_KEYS. So
+  // this asserts the equality that actually holds, in BOTH directions and still
+  // whole-object — (a) every authored key survives registration byte-identical,
+  // and (b) the only keys gained are the ones the registry declares it derives.
+  // Asking core/registry.js what it derives (rather than listing the keys here) is
+  // what keeps this exact through the next thing the registry learns to inject:
+  // the old `assert.equal(registry.get("qrcode"), qrcodePlugin)` was an IDENTITY
+  // check that survived the universal-effects round only because this widget
+  // composes that bundle itself, and broke the moment tool groups arrived.
+  const registered = registry.get("qrcode");
+  assert.equal(registered.type, "qrcode", "plugin registers under type 'qrcode'");
+  for (const [key, value] of Object.entries(qrcodePlugin))
+    assert.deepEqual(registered[key], value, `registration altered the authored "${key}"`);
+  assert.deepEqual(
+    Object.keys(registered).filter((k) => !(k in qrcodePlugin)),
+    REGISTRY_DERIVED_KEYS.filter((k) => k in registered),
+    "registration added a key core/registry.js does not declare in REGISTRY_DERIVED_KEYS",
+  );
   assert.ok(commands.get("add-qrcode"), "add-qrcode command is registered");
   console.log("OK wiring — plugin + add-qrcode command registered");
 }

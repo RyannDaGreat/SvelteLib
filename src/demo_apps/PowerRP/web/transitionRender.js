@@ -22,9 +22,9 @@
  * overlaps and cannot fade a whole composited scene as one layer. It matches the
  * manifest wording exactly (two snapshots, one crossfade).
  *
- * Both endpoint snapshots go through gpuService (WebGPU — THE renderer) and come
- * back as 2D canvases; this module only lays them over each other. It never
- * touches the GPU compositor internals (Opus8's fence).
+ * Both endpoint snapshots go through gpuService (THE shared offscreen renderer)
+ * and come back as 2D canvases; this module only lays them over each other. It
+ * never touches the renderer's internals.
  */
 
 import { ease } from "../core/interpolators.js";
@@ -35,10 +35,29 @@ import { resolveTransition } from "../core/transitions.js";
 // (fadeStrength, isFadeFrame) importable in bare node — their unit tests never call a
 // render function, so the browser rasterizer is never pulled into node module
 // resolution. The browser pays one dynamic import on the first transition frame.
-let _renderCameraFrame = null;
+let _gpuService = null;
+async function gpuService() {
+  if (!_gpuService) _gpuService = await import("./gpuService.js");
+  return _gpuService;
+}
 async function renderCameraFrame(...args) {
-  if (!_renderCameraFrame) _renderCameraFrame = (await import("./gpuService.js")).renderCameraFrame;
-  return _renderCameraFrame(...args);
+  return (await gpuService()).renderCameraFrame(...args);
+}
+
+/**
+ * Query (async). The render quality for the fade's endpoint snapshots.
+ *
+ * A crossfade needs TWO completed-state camera frames at present resolution.
+ * On the GPU that is two ordinary frames, so the fade renders at FULL quality
+ * and looks exactly like the slides it blends. With no GL context the same two
+ * frames run every generative material's per-pixel shader on the CPU — minutes
+ * of blocked main thread for a transition that is supposed to last a second —
+ * so the fade drops to the existing cheap PROXY stand-ins instead. Degraded
+ * pixels for one transient blend beat a frozen presentation, and gpuService has
+ * already reported the missing context loudly.
+ */
+async function snapshotQuality() {
+  return (await (await gpuService()).gpuAccelerated()) ? "full" : "proxy";
 }
 
 // ── Endpoint-snapshot memo (14.7 REOPENED root cause) ──────────────────────────
@@ -78,10 +97,10 @@ function fadeSnapshots(doc, index, registry, width, height) {
   const key = `${index}|${width}|${height}`;
   let promise = byKey.get(key);
   if (!promise) {
-    promise = Promise.all([
-      renderCameraFrame(doc, { slideIndex: index - 1, alpha: 1, registry, width, height }),
-      renderCameraFrame(doc, { slideIndex: index, alpha: 1, registry, width, height }),
-    ]);
+    promise = snapshotQuality().then((quality) => Promise.all([
+      renderCameraFrame(doc, { slideIndex: index - 1, alpha: 1, registry, width, height, quality }),
+      renderCameraFrame(doc, { slideIndex: index, alpha: 1, registry, width, height, quality }),
+    ]));
     promise.catch(() => byKey.delete(key)); // evict failures (callers still reject loudly)
     byKey.set(key, promise);
   }

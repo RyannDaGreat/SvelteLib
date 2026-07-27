@@ -4,24 +4,42 @@
 
   Presents the export knobs — resolution (presets + custom, defaulting to THE
   CAMERA's size), fps, quality (CRF), slide range, include-transitions, and a
-  letterbox background — then runs app.exportMp4() with a live progress bar. The
-  encode is many frames (one per 1/fps of the presentation timeline), so it is
-  cancellable (AbortController) and disables the form while running.
+  letterbox background — then runs app.exportMp4(), disabling the form while it
+  works.
+
+  PROGRESS IS TWO PHASES, and the distinction is the whole point (see the
+  lifecycle note in the script): a DETERMINATE bar while the client renders and
+  uploads one frame per 1/fps of the timeline, then an INDETERMINATE bar with an
+  elapsed clock while the server runs ffmpeg and returns the file. Only the frame
+  phase is cancellable (AbortController — videoExport's loop is what checks the
+  signal), so the Cancel button exists only there and the encoding phase says so.
 
   AVAILABILITY: the encode is SERVER-SIDE (the client renders frames, the backend
   ffmpeg encodes) precisely so it works everywhere — including plain HTTP on a LAN
   IP, where the browser's secure-context-only WebCodecs VideoEncoder is absent.
   There is no secure-context gate: Export is always enabled.
 
-  This component is self-contained (scoped <style> using theme tokens with
-  fallbacks, like the SvelteLib lib components) rather than routing through the
-  contended app.css — keeps the new export lane merge-safe alongside parallel work.
+  RESULT BOX: on success the finished movie is shown right here — a <video
+  controls> plus an explicit download link — so the file is reachable even when
+  the automatic download does not happen (a blocked/silent programmatic click, a
+  browser that discards it, …). WHERE THE FILE LIVES: nowhere on disk. The server
+  DELETES its frame/encode scratch as soon as ffmpeg returns (server.py's
+  encode_export_mp4), so the only copy is the "video/mp4" Blob app.exportMp4()
+  hands back; the box plays it through an object URL, revoked when the dialog
+  closes or a new export starts. There is no server URL to link to and this file
+  must never invent one.
+
+  STYLING: app.css (.export-mp4-*) — web/ components carry NO <style> block. The
+  Transitions row is the app's STANDARD boolean control (.boolfield/.boolbtn),
+  not a native checkbox.
 -->
 <script>
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
+  import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import { cameraRectAt } from "./cameraFrame.js";
+  import { humanReadableFileSize } from "./fileSize.js";
   import { DEFAULT_FPS, DEFAULT_HOLD_SECONDS, DEFAULT_SAMPLES } from "./videoExport.js";
   import { QUALITY_CRF, CRF_MIN, CRF_MAX, DEFAULT_CRF } from "./serverMp4Encoder.js";
 
@@ -49,6 +67,21 @@
   /** Pure. Clamp a CRF into the libx264 valid range [CRF_MIN, CRF_MAX]. */
   function clampCrf(n) {
     return Math.max(CRF_MIN, Math.min(CRF_MAX, Math.round(n)));
+  }
+
+  /**
+   * Pure function. The .mp4 filename for a presentation name — the SAME rule
+   * app.exportMp4() uses for its automatic download, restated here so the
+   * in-dialog download link saves the file under an identical name.
+   *
+   * @param {string} docName The presentation's meta.name (may be blank).
+   * @returns {string} filename ending in ".mp4"
+   *
+   * @example mp4FileName("Quarterly Review") // "Quarterly Review.mp4"
+   * @example mp4FileName("") // "presentation.mp4"
+   */
+  function mp4FileName(docName) {
+    return `${docName || "presentation"}.mp4`;
   }
 
   // THE CAMERA's size at the current slide = the default output size (the camera
@@ -95,11 +128,72 @@
   let background = $state("#000000");
   let samples = $state(DEFAULT_SAMPLES); // temporal subsamples (1 = no motion blur)
 
-  // ── Encode lifecycle ────────────────────────────────────────────────────
-  let phase = $state("idle"); // "idle" | "encoding" | "done" | "error"
-  let progress = $state(0); // 0..1 while encoding
+  // ── Export lifecycle ────────────────────────────────────────────────────
+  // TWO PHASES, AND WHY THEY MUST BE SHOWN SEPARATELY. The progress fraction
+  // videoExport hands us counts FRAMES RENDERED AND UPLOADED: it reaches 100%
+  // the instant the last PNG lands on the server, which is BEFORE ffmpeg has
+  // encoded a single byte. Everything after that — the whole server-side libx264
+  // run plus transferring the finished file back — used to be unreported dead
+  // air, so the user sat watching a full bar long enough to conclude the export
+  // had died. A full determinate bar must therefore NEVER be the last thing
+  // shown. On reaching 1 we switch to an INDETERMINATE phase with a running
+  // elapsed clock: an honest "still working, duration unknown" beats a
+  // determinate bar that lies.
+  //
+  // WHY THE SERVER PHASE IS ONE PHASE, NOT TWO: the encode and the file transfer
+  // are a single awaited call (projectApi.encodeMp4Export → fetch → .blob()), so
+  // this dialog cannot see the boundary between "ffmpeg finished" and "bytes
+  // arrived", and it will not invent one. The label names both honestly.
+  const ENCODE_CLOCK_MS = 250; // elapsed-clock tick — smooth enough to read as alive
+
+  let phase = $state("idle"); // "idle" | "rendering" | "encoding" | "done" | "error"
+  let progress = $state(0); // 0..1 — frames uploaded, NOT overall completion
+  let framesDone = $state(0); // frames rendered so far (one onProgress call each)
+  let renderSeconds = $state(0); // wall clock of the render + upload phase
+  let encodeSeconds = $state(0); // wall clock of the server encode + transfer
   let errorMsg = $state(null);
-  let controller = null; // AbortController while encoding
+  let controller = null; // AbortController while running
+  let phaseStartedMs = 0;
+  let ticker = null; // interval id driving the elapsed clock
+
+  // The finished movie: an object URL over the returned Blob (the only copy —
+  // the server deleted its scratch). Revoked before a re-export and on destroy.
+  let resultUrl = $state(null);
+  let resultBytes = $state(0);
+  const fileName = mp4FileName(untrack(() => app.doc.meta.name));
+
+  /** Command. Drops the current result box and frees its object URL (leaking
+   *  one per export would pin whole movies in memory for the page's lifetime). */
+  function releaseResult() {
+    if (!resultUrl) return;
+    URL.revokeObjectURL(resultUrl);
+    resultUrl = null;
+    resultBytes = 0;
+  }
+
+  /** Command. Stops the elapsed clock, if one is running. */
+  function stopClock() {
+    if (ticker === null) return;
+    clearInterval(ticker);
+    ticker = null;
+  }
+
+  /** Command. Enters the indeterminate server phase: freezes the render timing
+   *  and starts the elapsed clock that proves the dialog is still alive. */
+  function beginEncodePhase() {
+    renderSeconds = (performance.now() - phaseStartedMs) / 1000;
+    phase = "encoding";
+    phaseStartedMs = performance.now();
+    encodeSeconds = 0;
+    ticker = setInterval(() => {
+      encodeSeconds = (performance.now() - phaseStartedMs) / 1000;
+    }, ENCODE_CLOCK_MS);
+  }
+
+  onDestroy(() => {
+    stopClock();
+    releaseResult();
+  });
 
   // ── Derived effective params ──────────────────────────────────────────────
   let preset = $derived(RESOLUTIONS.find((r) => r.value === resolution));
@@ -109,26 +203,49 @@
   let startIndex = $derived(rangeMode === "all" ? 0 : clampSlide(rangeFrom) - 1);
   let endIndex = $derived(rangeMode === "all" ? slideCount - 1 : clampSlide(rangeTo) - 1);
 
-  let busy = $derived(phase === "encoding");
-  let progressPct = $derived(Math.round(progress * 100));
+  let busy = $derived(phase === "rendering" || phase === "encoding");
+  // FLOOR, not round: with a long timeline, rounding shows "100%" while frames
+  // are still rendering (at 1000 frames it reads 100% from frame 996 on), which
+  // is the same lie the phase split exists to kill. 100% means "all frames in".
+  let progressPct = $derived(progress >= 1 ? 100 : Math.min(99, Math.floor(progress * 100)));
 
-  /** Command (async). Runs the export with the current form values, tracking
-   *  progress; cancellable. Loud on failure (also surfaced in the form). */
+  /** Command (async). Runs the export with the current form values, reporting
+   *  BOTH phases (render+upload, then the server encode); cancellable. On
+   *  success publishes the returned Blob to the result box. Loud on failure
+   *  (also surfaced in the form). */
   async function runExport() {
     if (busy) return;
-    phase = "encoding";
+    releaseResult();
+    phase = "rendering";
     progress = 0;
+    framesDone = 0;
+    renderSeconds = 0;
+    encodeSeconds = 0;
     errorMsg = null;
+    phaseStartedMs = performance.now();
     controller = new AbortController();
     try {
-      await app.exportMp4({
+      const blob = await app.exportMp4({
         width, height, fps, crf, samples: Math.round(samples),
         startIndex, endIndex, includeTransitions, holdSeconds, background,
-        onProgress: (f) => (progress = f),
+        // onProgress fires once per rendered+uploaded frame and ends at exactly
+        // 1 (videoExport: `onProgress((i + 1) / total)`), which is the ONLY
+        // signal we get that the frame phase is over and the server phase has
+        // begun — hence the switch here rather than a separate callback.
+        onProgress: (f) => {
+          progress = f;
+          framesDone += 1;
+          if (f >= 1 && phase === "rendering") beginEncodePhase();
+        },
         signal: controller.signal,
       });
+      stopClock();
+      encodeSeconds = (performance.now() - phaseStartedMs) / 1000;
+      resultUrl = URL.createObjectURL(blob);
+      resultBytes = blob.size;
       phase = "done";
     } catch (e) {
+      stopClock();
       if (e?.name === "AbortError") {
         phase = "idle";
         return;
@@ -141,263 +258,172 @@
     }
   }
 
-  /** Command. Aborts an in-flight encode (the loop checks the signal). */
+  /** Command. Aborts an in-flight export. Only the FRAME phase checks the
+   *  signal (videoExport's loop): once the frames are uploaded and ffmpeg is
+   *  running, the server call cannot be interrupted, so the button says so. */
   function cancelExport() {
     controller?.abort();
   }
 </script>
 
-<div class="emx">
-  <div class="emx-form" class:emx-disabled={busy}>
-    <label class="emx-row">
-      <span class="emx-label">Resolution</span>
-      <span class="emx-control"><Dropdown items={RESOLUTIONS} bind:value={resolution} /></span>
+<div class="export-mp4">
+  <div class="export-mp4-form" class:is-busy={busy}>
+    <label class="export-mp4-row">
+      <span class="export-mp4-label">Resolution</span>
+      <span class="export-mp4-control"><Dropdown items={RESOLUTIONS} bind:value={resolution} /></span>
     </label>
     {#if resolution === "custom"}
-      <div class="emx-row">
-        <span class="emx-label">Width × Height</span>
-        <span class="emx-control emx-dims">
+      <div class="export-mp4-row">
+        <span class="export-mp4-label">Width × Height</span>
+        <span class="export-mp4-control export-mp4-inline">
           <DraggableNumber bind:value={customW} min={MIN_DIM} max={MAX_DIM} step={2} suffix=" px" label="Width" />
-          <span class="emx-times">×</span>
+          <span class="export-mp4-times">×</span>
           <DraggableNumber bind:value={customH} min={MIN_DIM} max={MAX_DIM} step={2} suffix=" px" label="Height" />
         </span>
       </div>
     {/if}
 
-    <label class="emx-row">
-      <span class="emx-label">Frame rate</span>
-      <span class="emx-control"><DraggableNumber bind:value={fps} min={MIN_FPS} max={MAX_FPS} step={1} suffix=" fps" label="Frames per second" /></span>
+    <label class="export-mp4-row">
+      <span class="export-mp4-label">Frame rate</span>
+      <span class="export-mp4-control"><DraggableNumber bind:value={fps} min={MIN_FPS} max={MAX_FPS} step={1} suffix=" fps" label="Frames per second" /></span>
     </label>
 
-    <label class="emx-row">
-      <span class="emx-label">Quality</span>
-      <span class="emx-control"><Dropdown items={QUALITIES} bind:value={quality} /></span>
+    <label class="export-mp4-row">
+      <span class="export-mp4-label">Quality</span>
+      <span class="export-mp4-control"><Dropdown items={QUALITIES} bind:value={quality} /></span>
     </label>
     {#if quality === "custom"}
-      <label class="emx-row">
-        <span class="emx-label">CRF</span>
-        <span class="emx-control emx-inline">
+      <label class="export-mp4-row">
+        <span class="export-mp4-label">CRF</span>
+        <span class="export-mp4-control export-mp4-inline">
           <DraggableNumber bind:value={customCrf} min={CRF_MIN} max={CRF_MAX} step={1} label="H.264 constant rate factor" />
-          <span class="emx-hint">Constant rate factor — lower is higher quality &amp; larger (0 lossless … 51 worst)</span>
+          <span class="export-mp4-hint">Lower is higher quality &amp; larger (0 lossless … 51 worst)</span>
         </span>
       </label>
     {/if}
 
-    <label class="emx-row">
-      <span class="emx-label">Slides</span>
-      <span class="emx-control"><Dropdown items={RANGE_MODES} bind:value={rangeMode} /></span>
+    <label class="export-mp4-row">
+      <span class="export-mp4-label">Slides</span>
+      <span class="export-mp4-control"><Dropdown items={RANGE_MODES} bind:value={rangeMode} /></span>
     </label>
     {#if rangeMode === "custom"}
-      <div class="emx-row">
-        <span class="emx-label">From → To</span>
-        <span class="emx-control emx-dims">
+      <div class="export-mp4-row">
+        <span class="export-mp4-label">From → To</span>
+        <span class="export-mp4-control export-mp4-inline">
           <DraggableNumber bind:value={rangeFrom} min={1} max={slideCount} step={1} label="First slide" />
-          <span class="emx-times">→</span>
+          <span class="export-mp4-times">→</span>
           <DraggableNumber bind:value={rangeTo} min={1} max={slideCount} step={1} label="Last slide" />
         </span>
       </div>
     {/if}
 
-    <label class="emx-row">
-      <span class="emx-label">Transitions</span>
-      <span class="emx-control emx-inline">
-        <input type="checkbox" bind:checked={includeTransitions} />
-        <span class="emx-hint">Animate transitions between slides</span>
+    <!-- THE app's standard boolean control, NOT a native checkbox. The
+         BooleanField component itself is keyframe-path bound (it writes
+         app.setPreview([["items", id, …]])) so it cannot drive a local form
+         value; the Inspector hits the identical case for its non-keyframed
+         booleans and answers it with exactly this markup (Inspector.svelte's
+         "Plain boolean" branch), so this reuses that precedent and the shared
+         .boolfield/.boolbtn rules rather than inventing a third look. Not a
+         <label>: the control is a <button>, and a button inside a label would
+         make the hint text toggle it. -->
+    <div class="export-mp4-row">
+      <span class="export-mp4-label">Transitions</span>
+      <span class="export-mp4-control export-mp4-inline">
+        <div class="boolfield">
+          <button
+            type="button"
+            class="boolbtn"
+            class:on={includeTransitions}
+            aria-label="Animate transitions between slides"
+            aria-pressed={includeTransitions}
+            onclick={() => (includeTransitions = !includeTransitions)}
+          >
+            <iconify-icon icon={includeTransitions ? "mdi:check" : "mdi:checkbox-blank-outline"} width="16" height="16"></iconify-icon>
+          </button>
+        </div>
+        <span class="export-mp4-hint">Animate transitions between slides</span>
       </span>
+    </div>
+
+    <label class="export-mp4-row">
+      <span class="export-mp4-label">Hold per slide</span>
+      <span class="export-mp4-control"><DraggableNumber bind:value={holdSeconds} min={0} max={MAX_HOLD_SECONDS} step={0.5} suffix=" s" label="Seconds each slide is held" /></span>
     </label>
 
-    <label class="emx-row">
-      <span class="emx-label">Hold per slide</span>
-      <span class="emx-control"><DraggableNumber bind:value={holdSeconds} min={0} max={MAX_HOLD_SECONDS} step={0.5} suffix=" s" label="Seconds each slide is held" /></span>
-    </label>
-
-    <label class="emx-row">
-      <span class="emx-label">Motion blur</span>
-      <span class="emx-control emx-inline">
+    <label class="export-mp4-row">
+      <span class="export-mp4-label">Motion blur</span>
+      <span class="export-mp4-control export-mp4-inline">
         <DraggableNumber bind:value={samples} min={MIN_SAMPLES} max={MAX_SAMPLES} step={1} suffix=" ×" label="Temporal subsamples per frame" />
-        <span class="emx-hint">Samples per frame — 1 = off; higher blurs transitions &amp; animated effects (slower)</span>
+        <span class="export-mp4-hint">1 = off; higher blurs transitions (slower)</span>
       </span>
     </label>
 
-    <label class="emx-row">
-      <span class="emx-label">Background</span>
-      <span class="emx-control emx-inline">
-        <input type="color" bind:value={background} class="emx-color" />
-        <span class="emx-hint">Fills any letterbox bars (only visible when the size aspect differs from the camera)</span>
+    <label class="export-mp4-row">
+      <span class="export-mp4-label">Background</span>
+      <span class="export-mp4-control export-mp4-inline">
+        <input type="color" bind:value={background} class="export-mp4-color" aria-label="Letterbox background color" />
+        <span class="export-mp4-hint">Fills letterbox bars when the aspect differs</span>
       </span>
     </label>
   </div>
 
-  <p class="emx-summary">
+  <p class="export-mp4-summary">
     Output: {width}×{height} · {fps} fps · CRF {crf} (lower = higher quality)
   </p>
 
-  {#if phase === "encoding"}
-    <div class="emx-progress">
-      <div class="emx-bar"><div class="emx-bar-fill" style:width="{progressPct}%"></div></div>
-      <span class="emx-progress-label">Encoding… {progressPct}%</span>
+  <!-- PROGRESS. Two visually distinct states, because they mean different
+       things: a DETERMINATE bar while frames render+upload, then an
+       INDETERMINATE bar plus an elapsed clock while the server encodes — see the
+       lifecycle note in the script. A full bar is never the last thing shown. -->
+  {#if phase === "rendering"}
+    <div class="export-mp4-progress">
+      <div class="export-mp4-bar"><div class="export-mp4-bar-fill" style:width="{progressPct}%"></div></div>
+      <span class="export-mp4-progress-label">Rendering frames… {progressPct}%</span>
     </div>
+  {:else if phase === "encoding"}
+    <div class="export-mp4-progress">
+      <div class="export-mp4-bar"><div class="export-mp4-bar-fill is-indeterminate"></div></div>
+      <span class="export-mp4-progress-label">Encoding on the server… {encodeSeconds.toFixed(0)}s</span>
+    </div>
+    <p class="export-mp4-hint">
+      All {framesDone} frames were rendered and uploaded in {renderSeconds.toFixed(1)}s.
+      The server is now running ffmpeg and sending the finished file back — this step
+      reports no percentage and cannot be cancelled.
+    </p>
   {:else if phase === "done"}
-    <p class="emx-done">Done — the .mp4 has been downloaded.</p>
+    <!-- THE RESULT BOX. The finished movie exists ONLY as this Blob (the server
+         deleted its scratch the moment ffmpeg returned), so the box plays it and
+         the link saves it from an object URL. The automatic download has already
+         been attempted by app.exportMp4(); this is the guaranteed manual path. -->
+    <div class="export-mp4-result">
+      <p class="export-mp4-done">
+        Done — {fileName} ({humanReadableFileSize(resultBytes)}). Downloaded automatically;
+        use the button below if your browser did not save it.
+      </p>
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video class="export-mp4-video" src={resultUrl} controls></video>
+      <div class="export-mp4-result-actions">
+        <a class="btn export-mp4-download" href={resultUrl} download={fileName}>
+          <iconify-icon icon="mdi:download" width="16" height="16"></iconify-icon>
+          Download {fileName}
+        </a>
+      </div>
+      <p class="export-mp4-hint">
+        {framesDone} frames rendered in {renderSeconds.toFixed(1)}s · server encode
+        and transfer {encodeSeconds.toFixed(1)}s
+      </p>
+    </div>
   {:else if phase === "error"}
-    <p class="emx-error">Export failed: {errorMsg}</p>
+    <p class="export-mp4-error">Export failed: {errorMsg}</p>
   {/if}
 
-  <div class="emx-actions">
-    {#if busy}
-      <button type="button" class="emx-btn" onclick={cancelExport}>Cancel</button>
-    {:else}
-      <button type="button" class="emx-btn emx-primary" onclick={runExport}>
-        Export MP4
+  <div class="export-mp4-actions">
+    {#if phase === "rendering"}
+      <button type="button" class="btn" onclick={cancelExport}>Cancel</button>
+    {:else if phase !== "encoding"}
+      <button type="button" class="btn" onclick={runExport}>
+        {phase === "done" ? "Export again" : "Export MP4"}
       </button>
     {/if}
   </div>
 </div>
-
-<style>
-  .emx {
-    /* Chain to ambient theme tokens (light/dark aware) with literal fallbacks —
-       same pattern as the SvelteLib lib components (Dropdown/Modal). */
-    --emx-fg: var(--fg, #e6e6e6);
-    --emx-fg-dim: var(--fg-dim, #8c8c8c);
-    --emx-border: var(--border, rgba(255, 255, 255, 0.1));
-    --emx-accent: var(--accent, #9a9a9a);
-    --emx-control-bg: var(--control-bg, #242424);
-    --emx-error: var(--a-eq-error, #ff6b6b);
-    --emx-font: var(--a-font-md, 0.9rem);
-    --emx-font-sm: var(--a-font-sm, 0.8rem);
-
-    --emx-col-w: 560px; /* the form column max width inside the roomy 90% modal */
-    --emx-row-gap: 14px;
-    --emx-label-w: 130px;
-    --emx-gap: 10px;
-    --emx-pad: 8px 10px;
-    --emx-radius: 6px;
-    --emx-bar-h: 8px;
-
-    display: flex;
-    flex-direction: column;
-    gap: var(--emx-row-gap);
-    max-width: var(--emx-col-w);
-    margin: 0 auto;
-    color: var(--emx-fg);
-    font-size: var(--emx-font);
-  }
-
-  .emx-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--emx-row-gap);
-  }
-  .emx-disabled {
-    opacity: 0.5;
-    pointer-events: none;
-  }
-
-  .emx-row {
-    display: flex;
-    align-items: center;
-    gap: var(--emx-gap);
-  }
-  .emx-label {
-    flex: 0 0 var(--emx-label-w);
-    color: var(--emx-fg-dim);
-  }
-  .emx-control {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .emx-inline {
-    display: flex;
-    align-items: center;
-    gap: var(--emx-gap);
-  }
-  .emx-dims {
-    display: flex;
-    align-items: center;
-    gap: var(--emx-gap);
-  }
-  .emx-times {
-    color: var(--emx-fg-dim);
-  }
-  .emx-hint {
-    color: var(--emx-fg-dim);
-    font-size: var(--emx-font-sm);
-    line-height: 1.3;
-  }
-  .emx-color {
-    width: 2.4em;
-    height: 1.8em;
-    padding: 0;
-    background: none;
-    border: 1px solid var(--emx-border);
-    border-radius: var(--emx-radius);
-    cursor: pointer;
-  }
-
-  .emx-summary {
-    margin: 0;
-    color: var(--emx-fg-dim);
-    font-size: var(--emx-font-sm);
-  }
-
-  .emx-progress {
-    display: flex;
-    align-items: center;
-    gap: var(--emx-gap);
-  }
-  .emx-bar {
-    flex: 1 1 auto;
-    height: var(--emx-bar-h);
-    background: var(--emx-control-bg);
-    border: 1px solid var(--emx-border);
-    border-radius: var(--emx-radius);
-    overflow: hidden;
-  }
-  .emx-bar-fill {
-    height: 100%;
-    background: var(--emx-accent);
-    transition: width 120ms linear;
-  }
-  .emx-progress-label {
-    flex: 0 0 auto;
-    color: var(--emx-fg-dim);
-    font-size: var(--emx-font-sm);
-  }
-  .emx-done {
-    margin: 0;
-    color: var(--emx-fg);
-    font-size: var(--emx-font-sm);
-  }
-  .emx-error {
-    margin: 0;
-    color: var(--emx-error);
-    font-size: var(--emx-font-sm);
-    line-height: 1.4;
-  }
-
-  .emx-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--emx-gap);
-  }
-  .emx-btn {
-    padding: var(--emx-pad);
-    background: var(--emx-control-bg);
-    color: var(--emx-fg);
-    border: 1px solid var(--emx-border);
-    border-radius: var(--emx-radius);
-    font: inherit;
-    cursor: pointer;
-  }
-  .emx-btn:hover:not(:disabled) {
-    border-color: var(--emx-accent);
-  }
-  .emx-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .emx-primary {
-    border-color: var(--emx-accent);
-  }
-</style>

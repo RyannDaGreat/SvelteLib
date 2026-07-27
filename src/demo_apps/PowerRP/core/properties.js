@@ -44,6 +44,7 @@
  */
 
 import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
+import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -67,6 +68,32 @@ import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
  * "~0.01-0.02 s/px" target (100px ≈ 1s). Confirm the feel with the user.
  */
 export const SECONDS_SCRUB = 0.01;
+
+/**
+ * Default scrub coefficient (UNIT-SPANS per dragged pixel) for an UNBOUNDED
+ * NORMALIZED numeric row — the fractions/normalized UNIT-KIND: a knob whose
+ * useful domain is ONE unit wide (a 0..1 position or mix, a periodic turn with
+ * period 1) but which carries no min AND max, so web/NumericField.svelte cannot
+ * range-scale it and DraggableNumber falls back to 1 unit per drag-pixel. A 1px
+ * twitch would then fling a light source a whole widget-width or spin a star
+ * sphere a full turn. 0.01 unit/px makes a full 100px drag span one unit —
+ * the same RANGE_DRAG_PX = 100 feel a bounded 0..1 slider has, so freeing a row
+ * of its bounds costs nothing in tactile behavior.
+ *
+ * WHY IT IS A SECOND CONSTANT AND NOT `SECONDS_SCRUB`. The two are numerically
+ * identical (0.01) and derived the same way — the span the row would have had if
+ * bounded, divided by RANGE_DRAG_PX — but they are NOT the same quantity:
+ * SECONDS_SCRUB is seconds per pixel (span 1 SECOND), this is unit-spans per
+ * pixel (span 1 UNIT). Merging them would erase that distinction and invite the
+ * next reader to justify a seconds row by a unit-span rationale (or to "retune"
+ * one unit-kind and silently move the other). They are kept apart deliberately;
+ * if either unit-kind is ever retuned, only its own consumers move.
+ *
+ * Declared here rather than per-plugin because three widgets (lens flare, sky,
+ * mandelbrot) had each hand-written it locally with near-identical docstrings —
+ * the exact copy-paste drift this registry exists to kill.
+ */
+export const UNIT_SPAN_SCRUB = 0.01;
 
 /**
  * THE camera's dither-pattern modes (manifest "CAMERA RENDERING"). "off"
@@ -113,10 +140,123 @@ export const ANTIALIAS_MODE_LABELS = { off: "Off (crisp)", standard: "Standard" 
 export const SCRUB_WRAP_MODES = ["clamp", "loop"];
 export const SCRUB_WRAP_LABELS = { clamp: "Clamp (hold last frame)", loop: "Loop" };
 
+/**
+ * THE WIDGET-COMPOSITE BLEND MODES (manifest Round 12D "BLEND MODES", whose
+ * spec reads "normal/add/multiply/screen/..." — this is the "..."): how a
+ * widget's own draw combines with the backdrop. The user ruling was "everything
+ * that Photoshop has, we should have too", so this is Photoshop's layer-blend
+ * list — but NOT in Photoshop's order.
+ *
+ * ORDERED BY EXPECTED FREQUENCY OF USE, THEN GROUPED (the user's second ruling:
+ * "Normal, add, and multiply should be the top on the blend modes, because those
+ * are the most commonly used ones. Order them by how commonly people would use
+ * them. Be logical about it, like group similar things together apart from the
+ * top three maybe."). So:
+ *
+ *   1. THE COMMON TRIO — normal, add, multiply. These three are hoisted OUT of
+ *      their Photoshop families to the top because they are what people reach
+ *      for. They are NOT also repeated inside their families below: one mode,
+ *      one row. (The cost of the hoist is that someone scanning the darkening
+ *      group for Multiply does not find it there. The user's ruling takes it,
+ *      and the top-three position makes it more findable, not less.)
+ *   2..6 THE REMAINING FAMILIES, kept intact so like sits with like, and ordered
+ *      by their most-used member: lightening, darkening, contrast, comparative,
+ *      component.
+ *
+ * Within each family the relative order is still Photoshop's — that preserves
+ * muscle memory everywhere the frequency ruling does not override it — with ONE
+ * deviation: `screen` leads the lightening family instead of `lighten`, because
+ * Screen is the most-used mode in the app after the trio (every lens-flare
+ * preset composites with it, and it is the standard for glows and light leaks).
+ * Lightening precedes darkening for the same frequency reason, and because `add`
+ * being in the trio makes lightening the continuing theme.
+ *
+ * NOTHING MAY DEPEND ON THIS ORDER except the UI listing. The one order
+ * assertion in the suites is that "normal" stays FIRST (it is the default);
+ * every other consumer looks a mode up by value.
+ *
+ * THE FAMILIES ARE DECLARED, NOT COMMENTED. The six groups above used to be
+ * trailing `// 1: the common trio` comments on a flat array, so the dropdown
+ * could only render 26 undifferentiated rows — the families were ORDERED but did
+ * not READ as groups. They are now BLEND_MODE_GROUPS, and BLEND_MODES is
+ * DERIVED from it by flattening. One declaration therefore fixes both the order
+ * AND the group boundaries, so the separators in the UI cannot drift out of step
+ * with the list the way a hand-placed index array would the moment someone
+ * reorders a family (a hand-maintained mirror has already bitten this codebase).
+ *
+ * THE ONE HOME. This used to be duplicated as a literal here AND as
+ * `render_gpu/ir.js BLEND_MODES` (with a test asserting the two agreed);
+ * ir.js now imports THIS list, exactly as it already imports SCRUB_WRAP_MODES
+ * above for its own op validation. Array VALUES are the stored state / equation
+ * slugs; BLEND_MODE_LABELS maps each to the human label the Inspector shows.
+ *
+ * BACK-COMPAT IS ABSOLUTE: the four modes that existed before ("normal",
+ * "multiply", "add", "screen") keep their EXACT stored spellings, so every
+ * existing document renders byte-identically and the repair pipeline has nothing
+ * to migrate. In particular "add" is NOT renamed to Photoshop's "linearDodge" —
+ * it only gains that human LABEL ("Linear Dodge (Add)"), the storage-key vs
+ * label split every other select here uses (ANTIALIAS_MODES, DITHER_MODES).
+ *
+ * DISSOLVE IS DELIBERATELY ABSENT (the only Photoshop mode missing). It is not
+ * a blend function of (backdrop, source) at all: it is a stochastic per-pixel
+ * coverage dither, so it cannot be expressed in the composite-op slot this
+ * property feeds — and a random one would break the core invariant
+ * `RenderTree = pure(document, [[slide, alpha]])`. Offering it as a fake option
+ * that silently did nothing is forbidden (the ANTIALIAS_MODES "high" ruling), so
+ * it is left out until someone builds it as what it actually is: a seeded
+ * coverage effect beside `softEdges`, hashing device position + a seed
+ * (the deterministic-hash discipline plugins/demo/glitch.js already sets).
+ */
+export const BLEND_MODE_GROUPS = [
+  { id: "common", title: "Common", options: ["normal", "add", "multiply"] }, // "add" IS Photoshop's Linear Dodge
+  { id: "lighten", title: "Lighten", options: ["screen", "lighten", "colorDodge", "lighterColor"] }, // minus the hoisted "add"
+  { id: "darken", title: "Darken", options: ["darken", "colorBurn", "linearBurn", "darkerColor"] }, // minus the hoisted "multiply"
+  { id: "contrast", title: "Contrast", options: ["overlay", "softLight", "hardLight", "vividLight", "linearLight", "pinLight", "hardMix"] },
+  { id: "comparative", title: "Comparative", options: ["difference", "exclusion", "subtract", "divide"] },
+  { id: "component", title: "Component", options: ["hue", "saturation", "color", "luminosity"] }, // non-separable
+];
+export const BLEND_MODES = BLEND_MODE_GROUPS.flatMap((group) => group.options);
+export const BLEND_MODE_LABELS = {
+  normal: "Normal", add: "Linear Dodge (Add)", multiply: "Multiply",
+  screen: "Screen", lighten: "Lighten", colorDodge: "Color Dodge", lighterColor: "Lighter Color",
+  darken: "Darken", colorBurn: "Color Burn", linearBurn: "Linear Burn", darkerColor: "Darker Color",
+  overlay: "Overlay", softLight: "Soft Light", hardLight: "Hard Light", vividLight: "Vivid Light", linearLight: "Linear Light", pinLight: "Pin Light", hardMix: "Hard Mix",
+  difference: "Difference", exclusion: "Exclusion", subtract: "Subtract", divide: "Divide",
+  hue: "Hue", saturation: "Saturation", color: "Color", luminosity: "Luminosity",
+};
+
+// LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent): with
+// 26 modes, a mode added to BLEND_MODES without a label would show its raw camelCase
+// id in the Inspector, and a stale label entry is a mode someone forgot to delete.
+for (const mode of BLEND_MODES)
+  if (!(mode in BLEND_MODE_LABELS))
+    throw new Error(`properties: BLEND_MODES declares "${mode}" but BLEND_MODE_LABELS has no human label for it — add one (the Inspector would show the raw id).`);
+for (const mode of Object.keys(BLEND_MODE_LABELS))
+  if (!BLEND_MODES.includes(mode))
+    throw new Error(`properties: BLEND_MODE_LABELS labels "${mode}", which is not in BLEND_MODES — remove the stale entry.`);
+
 // ── THE "angle" unit-kind + linear-gradient DIRECTION math ───────────────────
-// An ANGLE property (kind "angle") is a heading in DEGREES with the SCREEN
-// convention 0° = +x (right), 90° = +y (down) — the SAME convention the particle
-// emitter's `particleAngle` documents, so all headings in the app read alike.
+// An ANGLE property (kind "angle") is a HEADING, edited by the rotary DIAL
+// (web/AngleField.svelte), with the SCREEN convention 0° = +x (right), 90° = +y
+// (down) — the SAME convention the particle emitter's `particleAngle` documents,
+// so all headings in the app read alike.
+//
+// STORAGE UNIT IS THE ROW'S BUSINESS, NOT THE KIND'S. The dial always shows
+// DEGREES; `display` (web/displayUnits.js) is the bridge, exactly as it is for a
+// kind:"number" row. `rotation` stores RADIANS and carries display:"degrees";
+// gradient `angle`, `particleAngle` and the halftone screen angles store raw
+// degrees and carry no `display`. Nothing about the kind converts anything —
+// storage is untouched by adopting the dial.
+//
+// THE HEADING IS UNBOUNDED (the multi-turn invariant). An angle is NOT folded
+// into [0, 360): the manifest requires the transform's rotation to be "an
+// unwrapped angle (deltas can spin 720°)", so a keyframe of 720° must tween
+// through TWO whole spins. The dial therefore DRAWS wrapDegrees(v) — a needle
+// can only point one way — but READS OUT and WRITES the raw value, integrating
+// drags through shortestTurn() so turn count survives the gesture. Every
+// consumer takes the heading through cos/sin (or wraps internally, like
+// angleToLinearEndpoints below), so an unwrapped value renders identically to
+// its wrapped congruent.
 //
 // This is where the LINEAR-GRADIENT DIRECTION lives now. It used to be four
 // discrete preset buttons (→ ↓ ↘ ↗) that wrote objectBoundingBox from/to point
@@ -139,6 +279,47 @@ const BBOX_CENTER = 0.5;
 /** Default linear-gradient direction (0° = left→right) — the old freshLinear "→". */
 export const GRADIENT_DEFAULT_ANGLE = 0;
 
+/** Fewest stops a gradient can describe — one colour is a solid, so
+ *  render_gpu/ir.js normalizeStops throws below this. It is the list
+ *  declaration's `minLength`, so the purge affordance refuses to go under it. */
+export const MIN_GRADIENT_STOPS = 2;
+
+/**
+ * THE GRADIENT STOP LIST — a LIST DECLARATION (core/lists.js) for the `stops`
+ * array inside a paint's gradient sub-state (fill/stroke/background .linear.stops
+ * and .radial.stops). It lives HERE, beside the `paint: true` flag and the
+ * gradient-direction math, because it describes the PAINT's shape; core/expressions
+ * .js imports it to type those slots, exactly as render_gpu/ir.js imports
+ * SCRUB_WRAP_MODES / BLEND_MODES from this file rather than keeping a copy.
+ *
+ * It is NOT a PROPS entry: `stops` is not a top-level property key, it is a leaf
+ * inside a paint sub-state (its path is e.g. ["fill", "linear", "stops"]), which is
+ * the same reason the paint sub-state kinds are a separate table.
+ *
+ * SORTED, keyed on `offset` — a stop's position is ABSOLUTE (0..1 along the
+ * gradient), so the array order carries no information a user authored and moving
+ * one stop past another simply swaps them. MEASURED CAVEAT, recorded in
+ * core/lists.js: "sorted" means CANONICALIZED ON WRITE, because the raster/SVG/PDF
+ * paths all treat the stored ORDER as authoritative (Skia pins each position to
+ * >= the previous, so an out-of-order stop collapses instead of swapping).
+ */
+export const GRADIENT_STOPS_LIST = {
+  kind: LIST_ROW_KIND,
+  label: "Stops",
+  element: {
+    storage: "record",
+    fields: [
+      { name: "offset", kind: "number", min: 0, max: 1, label: "Position", help: "Where this colour sits along the gradient, from 0 (the start) to 1 (the end)." },
+      { name: "color", kind: "color", label: "Colour", help: "The colour at this position. Lower its alpha for a gradient that fades to transparent." },
+    ],
+  },
+  order: "sorted",
+  orderKey: "offset",
+  activeKey: "stopsActive",
+  minLength: MIN_GRADIENT_STOPS,
+  help: "The colours the gradient ramps through. Insert between two stops to get their average position and blended colour; hide a stop to ramp straight past it without losing it.",
+};
+
 /** Rounds tiny floating-point dust so cos/sin of the cardinal angles land on
  * exact 0/0.5/1 objectBoundingBox coordinates (e.g. cos(90°) ≈ 6e-17 → 0). */
 function tidy(v) {
@@ -156,6 +337,35 @@ function tidy(v) {
  */
 export function wrapDegrees(deg) {
   return ((deg % FULL_TURN_DEG) + FULL_TURN_DEG) % FULL_TURN_DEG;
+}
+
+/** Half turn, in degrees — the branch cut shortestTurn folds around. */
+export const HALF_TURN_DEG = FULL_TURN_DEG / 2;
+
+/**
+ * Pure function. The SHORTEST signed turn congruent to `delta` degrees modulo a
+ * full turn — the representative in [-180, 180). This is THE rotary dial's drag
+ * integrator (web/AngleField.svelte) and the reason a dial drag cannot destroy
+ * keyframe data.
+ *
+ * WHY (the MULTI-TURN INVARIANT): a dial reads an ABSOLUTE pointer heading,
+ * which is only ever known modulo a full turn — so a dial that WRITES the
+ * pointer heading directly folds every value into [0, 360), and a rotation
+ * keyframed to 720° (two full spins, which the manifest REQUIRES of the
+ * transform: "Rotation is an unwrapped angle (deltas can spin 720°)") collapses
+ * to 0 — an animation silently reduced to no rotation at all. Integrating the
+ * SHORTEST turn from the PREVIOUS value instead accumulates turns: sweeping past
+ * the top takes 350 → 370, never 350 → 10. It also removes the ±360 seam jump
+ * for free, because no single integrated step is ever more than a half turn.
+ *
+ * @example shortestTurn(10) // 10
+ * @example shortestTurn(350) // -10   (advancing 350° IS retreating 10°)
+ * @example shortestTurn(-350) // 10
+ * @example shortestTurn(730) // 10    (two whole turns are no turn)
+ * @example shortestTurn(0) // 0
+ */
+export function shortestTurn(delta) {
+  return wrapDegrees(delta + HALF_TURN_DEG) - HALF_TURN_DEG;
 }
 
 /**
@@ -216,18 +426,159 @@ export function linearEndpointsToAngle(from, to) {
 }
 
 /**
+ * ROW_KINDS — THE Inspector control vocabulary: the complete, closed set of
+ * `kind` values a property row may declare. Every name here maps to exactly ONE
+ * control in web/Inspector.svelte's field dispatcher, and every control has
+ * exactly ONE name — a concept must never be reachable under two spellings, or
+ * the two spellings drift apart (which is exactly what happened to the boolean
+ * row; see RETIRED_ROW_KINDS).
+ *
+ *   number  → NumericField (DraggableNumber scrubber / equation editor)
+ *   angle   → AngleField (rotary dial; a HEADING shown in degrees, stored in
+ *             whatever unit the row's `display` names — see the unit-kind note above)
+ *   color   → ColorField, or PaintField when the row is `paint: true`
+ *   boolean → BooleanField (the square icon TOGGLE — THE on/off control)
+ *   select  → Dropdown over the row's `options`
+ *   asset   → AssetField (name + Browse + Upload + drag-drop)
+ *   text    → plain text input
+ *   action  → a command trigger, not a value slot (group.js "__ungroup")
+ *   list    → the VARIABLE-LENGTH element list control: one sub-row per element
+ *             per declared element field, plus insert/remove. The row additionally
+ *             declares its ELEMENT SHAPE and its ORDER flavour (sorted vs
+ *             sequence) — see core/lists.js, which owns that mechanism and whose
+ *             checkListDeclaration the import-time guard below runs over every
+ *             list row.
+ *
+ * @example ROW_KINDS.includes("boolean") // true
+ * @example ROW_KINDS.includes("checkbox") // false (retired — see RETIRED_ROW_KINDS)
+ * @example ROW_KINDS.includes("list") // true
+ */
+export const ROW_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "action", LIST_ROW_KIND];
+
+/**
+ * The row kinds that edit a NUMBER, so a value stored under them has an ORDERING
+ * — which is exactly what a SORTED list's key field needs (core/lists.js
+ * checkListDeclaration takes this list; a gradient stop's `offset` qualifies, its
+ * `color` does not). Kept beside ROW_KINDS because "which controls edit a number"
+ * is a fact about the control vocabulary, and core/lists.js deliberately holds no
+ * second copy of that vocabulary.
+ *
+ * @example NUMERIC_ROW_KINDS // ["number", "angle"]
+ */
+export const NUMERIC_ROW_KINDS = ["number", "angle"];
+
+/**
+ * RETIRED_ROW_KINDS — {oldName: canonicalName} for a row kind that has been
+ * renamed. It is NOT an accepted spelling: it exists so a guard can say what to
+ * write INSTEAD of merely "unknown kind".
+ *
+ * "checkbox" was the V1 seed's name for the boolean row back when the Inspector
+ * really did render `<input type="checkbox">`. That native input was deleted the
+ * same day BooleanField.svelte was written (2026-07-14), so the name has
+ * outlived its widget by the whole life of the project while half the plugins
+ * kept copying it — two names, one concept, and the visual drift the user
+ * finally noticed. The manifest names the concept BOOLEAN ("a standard BOOLEAN
+ * row control"; "an AssetField, sibling of Numeric/Boolean/ColorField") and this
+ * registry has only ever spelled it `boolean`, so `boolean` is canonical.
+ *
+ * ENFORCEMENT: tests/row_kinds_test.js sweeps EVERY plugin row and rejects any
+ * retired spelling (a superset of what customProps() can see, since most rows
+ * are written as plain object literals that never pass through this module).
+ *
+ * @example RETIRED_ROW_KINDS.checkbox // "boolean"
+ */
+export const RETIRED_ROW_KINDS = { checkbox: "boolean" };
+
+/**
+ * Pure function. The SvelteLib Dropdown `items` list for a select row: one
+ * {value, label} per option, with a {insert: title} CAPTION row ahead of each
+ * family when the row declares `optionGroups`.
+ *
+ * WHY A ROW DECLARES GROUPS INSTEAD OF THE UI PLACING SEPARATORS. `blendMode`
+ * offers 26 options in six families; ordered but unseparated they read as one
+ * flat list. The families are declared ONCE (BLEND_MODE_GROUPS) and BOTH the
+ * option order and the caption positions are derived from that single
+ * declaration here, so a family cannot be reordered into disagreement with its
+ * own separator — the failure mode a hand-placed index list has.
+ *
+ * `insert` is Dropdown's own pre-existing decoration entry (src/lib/Dropdown.
+ * svelte, and the sectioned-list recipe in src/demos/Dropdown/Demo.svelte):
+ * arrow-key navigation skips it, it cannot be selected, and it never reaches
+ * `onpreview` — so hover-preview keeps firing for all 26 real options and for
+ * none of the captions. The look is entirely consumer CSS (--dd-insert-*).
+ *
+ * @param {object} row - a property row: {options, optionLabels?, optionGroups?}
+ * @returns {Array<{value: string, label: string}|{insert: string}>}
+ *
+ * @example selectRowItems({options: ["a", "b"], optionLabels: {a: "A", b: "B"}})
+ * // [{value: "a", label: "A"}, {value: "b", label: "B"}]
+ * @example selectRowItems({options: ["a", "b"], optionGroups: [{id: "g1", title: "First", options: ["a"]}, {id: "g2", title: "Second", options: ["b"]}]})
+ * // [{insert: "First"}, {value: "a", label: "a"}, {insert: "Second"}, {value: "b", label: "b"}]
+ * @example selectRowItems({}) // [] (a row with no options offers nothing)
+ */
+export function selectRowItems(row) {
+  const labelled = (value) => ({ value, label: row.optionLabels?.[value] ?? value });
+  if (!row.optionGroups) return (row.options ?? []).map(labelled);
+  return row.optionGroups.flatMap((group) => [{ insert: group.title }, ...group.options.map(labelled)]);
+}
+
+// LOUD IMPORT-TIME GUARD for `optionGroups` (the ANTIALIAS_MODES precedent). The
+// groups are the DERIVATION SOURCE of the row's `options`, so the two agreeing is
+// not a coincidence to test for — it is the invariant that makes the grouping
+// drift-proof, and it fails at boot rather than shipping a dropdown whose
+// captions sit one family off. Runs over PROPS below (see the call site).
+/**
+ * Query (throws). Validates one row's LIST declaration (a no-op for every other
+ * kind) — the same loud import-time discipline checkOptionGroups gets, because a
+ * list row's ELEMENT SHAPE is what types its per-element `=` slots: a malformed
+ * one would leave those slots UNRESOLVED at runtime, far from the declaration.
+ * `label` names the declaration in an error; `key` is the property key, checked
+ * against the visibility companion's name so the two cannot drift apart.
+ */
+function checkListRow(label, key, def) {
+  if (def.kind !== LIST_ROW_KIND) return;
+  checkListDeclaration(label, def, ROW_KINDS, NUMERIC_ROW_KINDS);
+  const expected = `${key}${ACTIVE_KEY_SUFFIX}`;
+  if (def.activeKey !== expected)
+    throw new Error(`properties: ${label} declares activeKey "${def.activeKey}" — a list's visibility companion is named after the list itself, so write "${expected}" (see core/lists.js).`);
+}
+
+/** How a list's visibility-companion key is spelled: the list key plus this
+ *  suffix ("points" → "pointsActive"), so the pair is greppable from either
+ *  side and checkListRow can prove the declaration did not drift. */
+const ACTIVE_KEY_SUFFIX = "Active";
+
+/** Query (throws). Validates one row's optionGroups against its options. */
+function checkOptionGroups(key, def) {
+  if (!def.optionGroups) return;
+  if (def.kind !== "select")
+    throw new Error(`properties: "${key}" declares optionGroups but kind "${def.kind}" — only a select row renders an option list.`);
+  const ids = new Set();
+  for (const group of def.optionGroups) {
+    if (!group.id || !group.title || !Array.isArray(group.options) || group.options.length === 0)
+      throw new Error(`properties: "${key}" has a malformed option group (need id, title, non-empty options): ${JSON.stringify(group).slice(0, 120)}`);
+    if (ids.has(group.id)) throw new Error(`properties: "${key}" declares option group "${group.id}" twice.`);
+    ids.add(group.id);
+  }
+  const flattened = def.optionGroups.flatMap((group) => group.options);
+  if (JSON.stringify(flattened) !== JSON.stringify(def.options))
+    throw new Error(`properties: "${key}" optionGroups flatten to [${flattened.join(", ")}] but options is [${(def.options ?? []).join(", ")}] — the groups must BE the option list (derive one from the other; a hand-kept copy drifts).`);
+}
+
+/**
  * The property definition table. Each entry is keyed by its property key (the
  * state field / equation slug) and holds the DEFAULT row aspects + an optional
  * `default` value (the fragment default). A widget composes rows/defaults by
  * naming keys; per-widget overrides layer on top (see props()).
  *
- * `kind` — the Inspector control: "number" | "color" | "text" | "checkbox" |
- *   "boolean" | "select" | "angle" | "asset". The "angle" KIND is a value in
- *   DEGREES (0..360, WRAPPING) edited by a rotary DIAL (web/AngleField.svelte)
- *   that also accepts typed degrees; UNLIKE `rotation` (stored in RADIANS with
- *   `display:"degrees"`), an angle kind STORES raw degrees, so no display-unit
- *   conversion happens at the field boundary. Its heading convention matches
- *   the particle emitter's: 0° = +x (right), 90° = +y (down). `category` — the
+ * `kind` — the Inspector control, one of ROW_KINDS (above), which documents
+ *   what each name renders. The "angle" KIND is a HEADING edited by a rotary
+ *   DIAL (web/AngleField.svelte) that also accepts typed degrees; the dial
+ *   shows DEGREES and `display` bridges to whatever the row STORES (radians for
+ *   `rotation`, raw degrees for `particleAngle`) exactly as it does for a number
+ *   row. The heading is UNBOUNDED, not folded into [0, 360) — see the unit-kind
+ *   note above for why (multi-turn keyframes). Its convention matches the
+ *   particle emitter's: 0° = +x (right), 90° = +y (down). `category` — the
  *   collapsible-accordion group
  *   (Inspector CATEGORY_ORDER). `min`/`max` — numeric bounds (also drive the
  *   NumericField range-scaled scrub). `scrub` — explicit per-property drag
@@ -251,13 +602,25 @@ export const PROPS = {
   y: { label: "Y", kind: "number", category: "positioning", help: "Vertical position of the widget's top-left corner, in canvas units (down is positive)." },
   w: { label: "Width", kind: "number", min: 0, category: "positioning", help: "How wide the widget is, in canvas units. Drag the side/corner handles to resize instead." },
   h: { label: "Height", kind: "number", min: 0, category: "positioning", help: "How tall the widget is, in canvas units. Drag the side/corner handles to resize instead." },
-  // core stores rotation in RADIANS; the field edits/shows DEGREES (manifest
-  // "Rotation is DEGREES" — round-10 ruling). `display` is the only difference
-  // from a plain number row, single-sourced here.
-  rotation: { label: "Rotation", kind: "number", display: "degrees", category: "positioning", default: 0, help: "Clockwise rotation in degrees, pivoting about the rotation anchor (its own center by default)." },
+  // THE universal transform rotation, inherited by every bbox widget through the
+  // `positioning` bundle. core stores RADIANS; the field edits/shows DEGREES
+  // (manifest "Rotation is DEGREES" — round-10 ruling), which is what `display`
+  // does — single-sourced here rather than re-typed per widget.
+  // kind "angle" (the rotary DIAL) because a rotation IS a heading and the dial
+  // is the control for one: the user's "why are we not using that [dial] in the
+  // other places we have angles?". Storage is UNCHANGED by that switch (still
+  // radians, still `display`-bridged) and the heading stays UNWRAPPED so a
+  // 0 → 720° keyframe pair still tweens two whole spins (manifest: "Rotation is
+  // an unwrapped angle (deltas can spin 720°)") — see the unit-kind note above.
+  rotation: { label: "Rotation", kind: "angle", display: "degrees", category: "positioning", default: 0, help: "Clockwise rotation in degrees, pivoting about the rotation anchor (its own center by default). Drag the dial, or type an exact angle — past 360° keeps counting, so a keyframed 720° spins twice." },
   "rotationAnchor.x": { label: "Rot anchor X", kind: "number", category: "positioning", help: "The X of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
   "rotationAnchor.y": { label: "Rot anchor Y", kind: "number", category: "positioning", help: "The Y of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
   z: { label: "Z order", kind: "number", category: "positioning", help: "Stacking order: higher numbers draw on top of lower ones. Use Bring to Front / Send to Back to reorder without typing." },
+  // Declared here ONLY so core can NAME its kind: Tier 0 says every property is
+  // "="-bindable, and resultKindForSlot needs a kind to validate against. There is
+  // deliberately NO `default` — nothing composes `active` from a BUNDLES list, and
+  // absent-means-visible must keep working for every existing document.
+  active: { label: "Visible", kind: "boolean", category: "positioning", help: "Whether the item draws on this slide. Deleting keyframes this off rather than removing the item, so it can come back on a later slide; Purge removes it for good." },
 
   // ── positioning (endpoint-pair — arrows) ────────────────────────────────────
   "from.x": { label: "From X", kind: "number", category: "positioning", help: "X of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },
@@ -323,6 +686,35 @@ export const PROPS = {
   shape: { label: "Shape", kind: "select", options: SHAPE_NAMES, optionLabels: SHAPE_LABELS, category: "formatting", default: "star", help: "Which preset silhouette this widget draws. All of them are one vector path, so shadow, glow and border apply the same as any other shape." },
   shapePoints: { label: "Points / sides", kind: "number", min: 2, category: "formatting", default: 5, help: "How many points a star has, or sides a generic polygon has. Ignored by shapes with a fixed outline (heart, cloud, arrows, …)." },
   shapeInnerRatio: { label: "Inner ratio", kind: "number", min: 0, max: 1, category: "formatting", default: 0.5, help: "For a star, how deep the notches cut: the inner radius as a fraction of the outer. Smaller is spikier. Ignored by non-star shapes." },
+
+  // ── geometry: THE VERTEX LIST (a LIST property — core/lists.js) ──────────────
+  // The freeform polygon's variable-length vertex list. A SEQUENCE, not a sorted
+  // list: the order IS the outline, so sorting the vertices would turn the shape
+  // into a different polygon — insert-between means "insert at this index", and
+  // reordering is an explicit gesture, never a side effect of dragging a
+  // coordinate. Storage is a TUPLE ([x, y] pairs, NOT {x, y} records) and that is
+  // load-bearing, not cosmetic: core/interpolators.js interpolate() rounds a lerp
+  // between two integers, normalized corners are routinely exactly 0 and 1, and a
+  // record would therefore SNAP every vertex tween at alpha 0.5 — see
+  // plugins/polygon.js's header and core/lists.js's ELEMENT_STORAGE note.
+  // Coordinates are box FRACTIONS (0..1 nominal, deliberately NOT clamped: a
+  // vertex may be dragged outside the box), so the fields carry no bounds.
+  // No `default` here — the polygon plugin generates its own default pentagon.
+  // NO minLength: 0 and 1 vertex are legitimate degenerate states the plugin
+  // handles explicitly (it draws nothing and stays selectable).
+  points: {
+    label: "Points", kind: LIST_ROW_KIND, category: "formatting",
+    element: {
+      storage: "tuple",
+      fields: [
+        { name: "x", kind: "number", label: "X", help: "This vertex's horizontal position as a fraction of the widget's box (0 = left edge, 1 = right edge). Values outside 0..1 are allowed — the vertex simply sits outside the box." },
+        { name: "y", kind: "number", label: "Y", help: "This vertex's vertical position as a fraction of the widget's box (0 = top edge, 1 = bottom edge). Values outside 0..1 are allowed — the vertex simply sits outside the box." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "pointsActive",
+    help: "The polygon's corners, in order — the order IS the outline. Insert between two corners to add one at their midpoint; hide a corner to draw straight past it without losing where it was.",
+  },
 
   // ── time: the SECONDS unit-kind (manifest 14.6) ─────────────────────────────
   // A duration in seconds. Its `scrub` (SECONDS_SCRUB, ~0.01 s/px) is the SANE
@@ -448,10 +840,15 @@ export const PROPS = {
   "innerShadow.blur": { label: "Inner shadow blur", kind: "number", min: 0, category: "effects", default: 0, help: "How soft the inner shadow is (Gaussian blur amount, canvas units). Zero is a crisp inset edge; the inner shadow is on whenever Inner shadow opacity is above zero, softness is separate." },
   "innerShadow.color": { label: "Inner shadow color", kind: "color", category: "effects", default: "#000000", help: "The inner shadow's color — classically black for a recessed look, but any color works (a colored inner glow, for instance)." },
   "innerShadow.opacity": { label: "Inner shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0, help: "How dark the inner shadow is, from 0 (invisible — NO inner shadow, the default) to 1 (fully solid). This is its on/off gate: raise it above 0 to turn the inner shadow on." },
-  // Options mirror render_gpu/ir.js BLEND_MODES (the validating home — kept a
-  // literal here because core/ never imports render_gpu/; the effects IR test
-  // asserts the two lists stay identical).
-  blendMode: { label: "Blend mode", kind: "select", options: ["normal", "multiply", "add", "screen"], category: "effects", default: "normal", help: "How the widget's pixels combine with what's behind it: normal paints over, multiply darkens, add/screen brighten (light-like)." },
+  // Options + labels come from BLEND_MODES / BLEND_MODE_LABELS at the top of this
+  // file (THE one home — render_gpu/ir.js imports the same list for its op
+  // validation, so the two can no longer disagree). Photoshop's full layer-blend
+  // set minus Dissolve; see the BLEND_MODES docstring for the ordering rationale,
+  // the "add" back-compat spelling, and why Dissolve is absent.
+  // `optionGroups` is the SAME declaration BLEND_MODES is flattened from, so the
+  // dropdown's family captions and its option order have one source and cannot
+  // disagree (checkOptionGroups above proves that at boot).
+  blendMode: { label: "Blend mode", kind: "select", options: BLEND_MODES, optionGroups: BLEND_MODE_GROUPS, optionLabels: BLEND_MODE_LABELS, category: "effects", default: "normal", help: "How the widget's pixels combine with what's behind it — Photoshop's blend modes, ordered by how often they get used and then grouped. The three most-reached-for come first (Normal just paints over; Linear Dodge adds light; Multiply darkens), then the lightening group (Screen, Lighten, Color Dodge, …), the darkening group (Darken, Color Burn, …), the contrast group (Overlay, Soft Light, …), the comparative group (Difference, Subtract, …), and the component group (Hue, Color, Luminosity)." },
 
   // ── effects: SOFT EDGES (the effects bundle's fifth effect — PowerPoint) ────
   // FEATHERS the widget's silhouette: fades its ALPHA from full inside to 0 at
@@ -484,7 +881,9 @@ export const PROPS = {
   // help/bounds are single-sourced like every other family.
   particleRate: { label: "Rate", kind: "number", min: 0, category: "particles", default: 40, help: "How many particles are emitted per second. Zero emits nothing (the emitter becomes an invisible ghost you can still select)." },
   particleLifetime: { label: "Lifetime", kind: "number", min: 0, category: "particles", default: 2, help: "How many seconds each particle lives before it disappears. Longer lifetimes keep more particles on screen at once." },
-  particleAngle: { label: "Angle", kind: "number", category: "particles", default: 270, help: "The central launch direction in degrees (0 = right, 90 = down, 270 = up). Particles fly outward from the origin along this heading." },
+  // A launch HEADING → the rotary dial (kind "angle"). Stored in raw DEGREES, so
+  // NO `display` — the dial shows exactly what is stored.
+  particleAngle: { label: "Angle", kind: "angle", category: "particles", default: 270, help: "The central launch direction in degrees (0 = right, 90 = down, 270 = up). Particles fly outward from the origin along this heading." },
   particleSpread: { label: "Spread", kind: "number", min: 0, max: 360, category: "particles", default: 50, help: "How wide the launch fan is, in degrees, centered on the angle. Zero is a tight jet; 360 is a full radial burst in every direction." },
   particleSpeedMin: { label: "Speed min", kind: "number", min: 0, category: "particles", default: 60, help: "The slowest a particle can be launched, in canvas units per second. Each particle picks a random speed between min and max." },
   particleSpeedMax: { label: "Speed max", kind: "number", min: 0, category: "particles", default: 140, help: "The fastest a particle can be launched, in canvas units per second. Set equal to Speed min for a uniform speed." },
@@ -512,6 +911,22 @@ export const PROPS = {
   frameW: { label: "Frame width", kind: "number", min: 1, category: "formatting", help: "The pixel width to extract and lay out each frame at. Leave empty to use the video's native width." },
   frameH: { label: "Frame height", kind: "number", min: 1, category: "formatting", help: "The pixel height to extract and lay out each frame at. Leave empty to use the video's native height." },
 };
+
+// LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent, the
+// same shape core/expressions.js uses for KIND_RESULT): a registry entry whose
+// `kind` is not in ROW_KINDS has no control — the Inspector's field dispatcher
+// ends in a catch-all text input, so an unknown kind renders a plain text box
+// for a color/boolean/enum instead of failing. Cross-checking at import makes
+// that impossible to ship rather than merely unlikely.
+for (const [key, def] of Object.entries(PROPS)) {
+  if (!ROW_KINDS.includes(def.kind))
+    throw new Error(`properties: PROPS."${key}" declares kind "${def.kind}"${def.kind in RETIRED_ROW_KINDS ? ` — that spelling is RETIRED, write "${RETIRED_ROW_KINDS[def.kind]}"` : `, which is not one of ${JSON.stringify(ROW_KINDS)} — add its Inspector control before declaring it`}.`);
+  checkOptionGroups(`PROPS."${key}"`, def);
+  checkListRow(`PROPS."${key}"`, key, def);
+}
+// The gradient stop list is a declaration too (it is just not a PROPS key — see
+// GRADIENT_STOPS_LIST), so it gets the SAME guard rather than a weaker one.
+checkListRow("GRADIENT_STOPS_LIST", "stops", GRADIENT_STOPS_LIST);
 
 /**
  * BUNDLES — named ORDERED lists of property keys (manifest "SHARED STYLE
@@ -813,8 +1228,23 @@ export function customProps(defs) {
   for (const def of defs) {
     if (!def || typeof def.name !== "string" || typeof def.kind !== "string")
       throw new Error(`customProps: each def needs a string name + kind (got ${JSON.stringify(def)})`);
+    // An INVENTED kind ("toggle", "bool", "switch") has no control: the
+    // Inspector's dispatcher would fall through to its catch-all text input and
+    // silently edit a boolean as a string. Reject it here, where the widget
+    // author is standing. A RETIRED spelling is not rejected here (one call site
+    // outside this migration's ownership still uses it, and a boot-time throw
+    // would take the whole app down mid-flight) — tests/row_kinds_test.js
+    // rejects it app-wide instead, over EVERY row, literal or composed.
+    if (!ROW_KINDS.includes(def.kind) && !(def.kind in RETIRED_ROW_KINDS))
+      throw new Error(`customProps: def "${def.name}" declares kind "${def.kind}", which is not one of ${JSON.stringify(ROW_KINDS)} — a kind with no Inspector control would render as a plain text box.`);
     if (!("default" in def))
       throw new Error(`customProps: def "${def.name}" needs a default value`);
+    // Same gate PROPS gets: a grouped select whose captions do not partition its
+    // own option list would render family headings one family off, and a list
+    // whose element shape is malformed would leave its per-element `=` slots
+    // untyped at runtime instead of at the declaration.
+    checkOptionGroups(`customProps def "${def.name}"`, def);
+    checkListRow(`customProps def "${def.name}"`, def.name, def);
     const { name, kind, default: defaultValue, label, category, ...rest } = def;
     rows.push({ key: name, kind, label: label ?? defaultLabel(name), category: category ?? CUSTOM_CATEGORY, ...rest });
     defaultsOut[name] = defaultValue;

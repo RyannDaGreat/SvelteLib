@@ -25,7 +25,7 @@ import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
 import { comicPlugin } from "../plugins/demo/comic.js";
 import { glitchPlugin } from "../plugins/demo/glitch.js";
 
-const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..", ".claude_vlm_checks");
+const OUT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".claude_vlm_checks");
 const DPR = 2;
 const VIEW = { zoom: 1, panX: 0, panY: 0, dpr: DPR };
 const MIN_PNG_BYTES = 2000; // a real rendered scene is far bigger; a stub/blank would be tiny

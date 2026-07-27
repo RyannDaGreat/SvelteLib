@@ -81,7 +81,7 @@ const CUSTOM = customProps([
 /**
  * The PRESETS: `{name, description, props}` — each `props` is a flat map of the
  * self.* look knobs above, applied to the current frame in one undo unit by the
- * Presets pane (web/PresetsPane.svelte → app.applyPreset). Each is keyed to a
+ * Presets pane (web/ToolsPane.svelte → app.applyPreset). Each is keyed to a
  * REAL display, with numbers following the physics: sourceTVL rises with the
  * display's true horizontal resolution (composite ~240 … BVM ~1000), consumer
  * tubes use shadow/slot masks with heavier curvature + halation, pro RGB monitors

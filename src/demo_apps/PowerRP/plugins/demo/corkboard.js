@@ -32,7 +32,12 @@
 
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
-import { materialFill, path, parseColor } from "../../render_gpu/ir.js";
+import { materialFill, path, parseColor, BLUR_SUPPORT_SIGMAS } from "../../render_gpu/ir.js";
+// paddedPointsBBox: the arrow family's effect-bounds helper (arrow.js /
+// elbow_arrow.js / fancy_arrow.js import it the same way). corkboardYarn has no
+// bbox — it is a sagging curve between two thumbtacks — so it declares
+// effectBounds to say where its effect substrate lives.
+import { paddedPointsBBox } from "../../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../../core/endpoints.js";
 
 // The family's SINGLE light: direction TO the light in screen space, upper-left
@@ -156,7 +161,7 @@ const CORK_CUSTOM = customProps([
   { name: "frameColor", kind: "color", default: "rgb(92,58,30)", help: "The colour of the wood frame rim." },
   { name: "cornerRadius", kind: "number", default: 30, min: 0, help: "Rounded-corner radius of the board (world px)." },
   { name: "seed", kind: "number", default: 7, help: "Texture seed — changes the granule pattern deterministically (NOT animated)." },
-  { name: "lightAngle", kind: "number", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the family light in radians (screen space; upper-left by default). Drives the shading + shadow direction of the whole family." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the family light (screen space; upper-left by default). Drives the shading + shadow direction of the whole family." },
 ]);
 
 const corkboardPlugin = makeMaterialWidget({
@@ -198,7 +203,7 @@ const NOTE_CUSTOM = customProps([
   { name: "shadowStrength", kind: "number", default: 0.32, min: 0, max: 1, help: "Darkness of the soft drop shadow the note casts on the board." },
   { name: "shadowBlur", kind: "number", default: 16, min: 0, help: "Softness (world-px blur) of that drop shadow." },
   { name: "shadowOffset", kind: "number", default: 12, min: 0, help: "How far (world px) the drop shadow is offset from the note, opposite the light." },
-  { name: "lightAngle", kind: "number", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (radians, screen space). Shared with the family; drives ruling shade, curl lighting, and shadow direction." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (screen space). Shared with the family; drives ruling shade, curl lighting, and shadow direction." },
 ]);
 
 const corkboardNotePlugin = makeMaterialWidget({
@@ -239,7 +244,7 @@ const TACK_CUSTOM = customProps([
   { name: "domeGain", kind: "number", default: 0.95, min: 0, max: 1, help: "Press-in DEPTH, 1 = fully out/proud (a tall glossy dome), low = pushed in flat. ANIMATE this: it flattens the dome AND shrinks the contact shadow." },
   { name: "shininess", kind: "number", default: 20, min: 1, help: "Glossiness of the head's specular hotspot — higher = a tighter, brighter highlight." },
   { name: "seed", kind: "number", default: 0, help: "Reserved seed (kept for uniform symmetry; no visible effect)." },
-  { name: "lightAngle", kind: "number", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (radians, screen space). Shared with the family; places the hotspot and the contact shadow." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (screen space). Shared with the family; places the hotspot and the contact shadow." },
 ]);
 
 const corkboardThumbtackPlugin = makeMaterialWidget({
@@ -284,6 +289,39 @@ const YARN_HL_LIFT_FRAC = 0.28;      // highlight offset UP the cord (toward the
 const YARN_HL_LIGHTEN = 0.27;        // channel lift toward white for the highlight colour
 const YARN_HL_ALPHA = 0.6;           // highlight alpha
 
+/**
+ * Pure function. The LOCAL rect the yarn's INK occupies: the AABB of its two
+ * endpoints plus the sag control point (a quadratic never leaves the hull of its
+ * three points), padded by the cord width and the widget's OWN shadow offset +
+ * blur. World == identity for a connector, so this is also its world footprint.
+ *
+ * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
+ * precedent): `effectBounds` (where the universal effects substrate lives),
+ * `localBounds` (core/view.js localBoundsOf — culling and rubber-band selection),
+ * and nothing else needs to know how a sagging cord is shaped.
+ *
+ * The self-drawn shadow is part of this widget's INK, not an effect halo: the
+ * cord paints its own drop shadow as a third path op, so its offset and blur
+ * belong inside these bounds. The universal effects bundle's halo is separate and
+ * rides on the injected `cullMargin` (core/registry.withUniversalEffects).
+ *
+ * @param {object} s - folded, equation-evaluated item state (from / to / gravity / width)
+ * @returns {{x: number, y: number, w: number, h: number}} local rect
+ *
+ * @example // a taut (gravity 0) 7-wide cord: the endpoint hull plus the shadow pad
+ * @example yarnInkRect({from: {x: 0, y: 0}, to: {x: 100, y: 0}, gravity: 0, width: 7}) // {x: -31.15, y: -31.15, w: 162.3, h: 62.3}
+ * @example // sag pulls the bottom edge down: gravity 0.2 over a 100 span sinks the control point 40
+ * @example yarnInkRect({from: {x: 0, y: 0}, to: {x: 100, y: 0}, gravity: 0.2, width: 7}).h // 102.3
+ */
+function yarnInkRect(s) {
+  const { from, to } = s;
+  const width = s.width ?? ARROW_STROKE_WIDTH;
+  const span = Math.hypot(to.x - from.x, to.y - from.y);
+  const ctrl = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 + 2 * (s.gravity ?? 0) * span };
+  const pad = width * (1 + YARN_SHADOW_OFF_FRAC + YARN_SHADOW_DROP_FRAC + BLUR_SUPPORT_SIGMAS * YARN_SHADOW_BLUR_FRAC);
+  return paddedPointsBBox([from, to, ctrl], pad);
+}
+
 const corkboardYarnPlugin = {
   type: "corkboardYarn",
   title: "Corkboard Yarn",
@@ -300,7 +338,7 @@ const corkboardYarnPlugin = {
     { key: "gravity", label: "Gravity", kind: "number", min: 0, category: "custom", help: "Sag coefficient: the string dips by gravity × span at its midpoint. 0 = taut/straight; higher = a deeper conspiracy-board droop." },
     { key: "color", label: "Cord color", kind: "color", category: "custom", help: "The yarn colour — classic conspiracy red." },
     { key: "width", label: "Cord width", kind: "number", min: 0, category: "custom", help: "Thickness (world px) of the cord." },
-    { key: "lightAngle", label: "Light angle", kind: "number", category: "custom", help: "Direction TO the light (radians). Places the cord's shadow and top sheen." },
+    { key: "lightAngle", label: "Light angle", kind: "angle", display: "degrees", category: "custom", help: "Direction TO the light. Places the cord's shadow and top sheen." },
   ],
   /**
    * Pure function. State → three stroked `path` ops (shadow, cord, highlight). The
@@ -332,6 +370,17 @@ const corkboardYarnPlugin = {
       path({ d: d(0, -width * YARN_HL_LIFT_FRAC), stroke: lightenCss(s.color ?? "rgb(200,30,30)", YARN_HL_LIGHTEN, YARN_HL_ALPHA), strokeWidth: width * YARN_HL_WIDTH_FRAC, opacity }),
     ];
   },
+  // EFFECT BOUNDS (the hook core/registry.effectsInjectable looks for): the yarn
+  // has no bbox, so without this the registry cannot give it the shared effects
+  // bundle — it is the ONE widget still excluded purely for want of bounds. World
+  // is identity for a connector, so it passes straight through.
+  effectBounds(s, world) {
+    return { bbox: yarnInkRect(s), world };
+  },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the same ink rect, so the
+  // yarn band-selects and culls like any box widget despite having no w/h state
+  // and no resize handles. cullMargin comes from the registry's effects injection.
+  localBounds: yarnInkRect,
   hitTestWorld(node, wx, wy) {
     return hitsShaft(node.state, wx, wy, node.state.width ?? ARROW_STROKE_WIDTH);
   },

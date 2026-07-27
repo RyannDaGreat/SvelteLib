@@ -43,6 +43,19 @@
   swatch and the raw text, and open the picker at opaque black (visible +
   fixable, never a silent blacken).
 
+  EQUATION VALUES (`=…`, the universal any-type gate) are NOT unparseable colors:
+  a caller that hands this field a RAW property value — the Inspector's grayed
+  not-yet-created rows read the creation slide's raw state — can hand it an
+  equation, which used to render as the "?" corrupt-value affordance (danger-red
+  raw text) beside a swatch that opened the picker at BLACK, i.e. a click away
+  from silently replacing the equation with a color. Such a value now renders as
+  what it is: the ƒ mark plus the expression, with no swatch, no eyedropper and
+  no picker. EDITING an equation is NOT this field's job — the Inspector row owns
+  the universal `=` field (Tier 0), and this field is also mounted where an
+  equation would NOT be evaluated at all (PaintField renders one per gradient
+  STOP, and core keeps array elements opaque to equation detection), so offering
+  entry here would author equations that silently never run.
+
   Props: app, path (full state path, e.g. ["items", id, "fill"]), label,
   value (the raw stored color string), disabled.
   Styling lives in app.css (.colorfield; app convention: no <style>).
@@ -76,6 +89,26 @@
     let h = value.slice(1).toLowerCase();
     if (h.length <= 4) h = [...h].map((c) => c + c).join("");
     return "#" + h;
+  }
+
+  /**
+   * Pure function. Is this stored value an `=` EQUATION rather than a color
+   * literal? The universal any-type gate is the leading `=` (manifest "THE `=`
+   * MARKER"); core's isEquationValue answers the same question but needs the
+   * owning plugin + property path, which a display-level field does not have.
+   *
+   * Examples:
+   *     >>> isEquationColor("=#ff0000")
+   *     true
+   *     >>> isEquationColor("= other.fill")
+   *     true
+   *     >>> isEquationColor("#ff0000")
+   *     false
+   *     >>> isEquationColor(null)
+   *     false
+   */
+  export function isEquationColor(value) {
+    return typeof value === "string" && /^\s*=/.test(value);
   }
 
   /**
@@ -140,6 +173,7 @@
   const EYEDROPPER_UNSUPPORTED_TIP = "Screen eyedropper needs Chrome or Edge on a secure (HTTPS/localhost) page";
 
   // Display readouts derived from the raw stored value.
+  let equation = $derived(isEquationColor(value)); // an `=` expression, not a literal
   let norm = $derived(normalizedHex(value)); // null when unparseable
   let picker = $derived(toPicker(value)); // always #rrggbbaa for the picker
   // The swatch fill (with alpha over the checker) and the hex text shown when
@@ -198,45 +232,59 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="colorfield" class:disabled onkeydown={onKeydown}>
   <div class="colorfield-head">
-    <Tooltip text={open ? `${label} — click to close` : `${label} — click to edit`}>
-      <button
-        class="colorfield-swatch"
-        style:--cf-swatch={swatchCss}
-        aria-label={`${label}: ${hexText}${open ? " (editing)" : ""}`}
-        aria-expanded={open}
-        {disabled}
-        onclick={toggleOpen}
-      >
-        {#if !norm}<span class="colorfield-unknown">?</span>{/if}
-      </button>
-    </Tooltip>
-    <span class="colorfield-hex" class:unknown={!norm}>{hexText}</span>
-    <Tooltip text={eyedropperSupported ? EYEDROPPER_TIP : EYEDROPPER_UNSUPPORTED_TIP}>
-      <!-- Eyedropper: sample a screen pixel into this field. When unsupported the
-           button stays hoverable (native `disabled` would swallow the tooltip that
-           explains WHY) but is greyed + aria-disabled; the click handler no-ops.
-           Styled inline with ambient/--a-* tokens — this change does not touch
-           app.css, mirroring PaintField's inline-token convention. -->
-      <button
-        type="button"
-        class="colorfield-eyedropper"
-        aria-label={`${label}: pick color from screen`}
-        aria-disabled={!eyedropperSupported}
-        {disabled}
-        onclick={pickFromScreen}
-        style="display:inline-flex; align-items:center; justify-content:center; flex:none;
-               padding:0; background:transparent; border:none; color:var(--fg-dim);
-               cursor:{eyedropperSupported ? 'pointer' : 'not-allowed'};
-               opacity:{eyedropperSupported ? 1 : 0.4};"
-      >
-        <iconify-icon icon="mdi:eyedropper" width="16" height="16"></iconify-icon>
-      </button>
-    </Tooltip>
+    {#if equation}
+      <!-- EQUATION-BOUND: the ƒ mark + the expression in the same monospace
+           readout a hex uses (an expression reads as code too). No swatch (there
+           is no literal to swatch), no eyedropper and no picker — every one of
+           them would overwrite the equation with a color. -->
+      <Tooltip text={`${label} is bound to an equation — edit it in the row's ƒ equation field`}>
+        <span class="colorfield-hex">
+          <iconify-icon icon="mdi:function-variant" width="13" height="13"></iconify-icon>
+          {value}
+        </span>
+      </Tooltip>
+    {:else}
+      <Tooltip text={open ? `${label} — click to close` : `${label} — click to edit`}>
+        <button
+          class="colorfield-swatch"
+          style:--cf-swatch={swatchCss}
+          aria-label={`${label}: ${hexText}${open ? " (editing)" : ""}`}
+          aria-expanded={open}
+          {disabled}
+          onclick={toggleOpen}
+        >
+          {#if !norm}<span class="colorfield-unknown">?</span>{/if}
+        </button>
+      </Tooltip>
+      <span class="colorfield-hex" class:unknown={!norm}>{hexText}</span>
+      <Tooltip text={eyedropperSupported ? EYEDROPPER_TIP : EYEDROPPER_UNSUPPORTED_TIP}>
+        <!-- Eyedropper: sample a screen pixel into this field. When unsupported the
+             button stays hoverable (native `disabled` would swallow the tooltip that
+             explains WHY) but is greyed + aria-disabled; the click handler no-ops.
+             Styled inline with ambient/--a-* tokens — this change does not touch
+             app.css, mirroring PaintField's inline-token convention. -->
+        <button
+          type="button"
+          class="colorfield-eyedropper"
+          aria-label={`${label}: pick color from screen`}
+          aria-disabled={!eyedropperSupported}
+          {disabled}
+          onclick={pickFromScreen}
+          style="display:inline-flex; align-items:center; justify-content:center; flex:none;
+                 padding:0; background:transparent; border:none; color:var(--fg-dim);
+                 cursor:{eyedropperSupported ? 'pointer' : 'not-allowed'};
+                 opacity:{eyedropperSupported ? 1 : 0.4};"
+        >
+          <iconify-icon icon="mdi:eyedropper" width="16" height="16"></iconify-icon>
+        </button>
+      </Tooltip>
+    {/if}
   </div>
-  {#if open}
+  {#if open && !equation}
     <!-- The full picker, inline. oninput previews live per gesture, onchange
          commits on settle. Its --cp-* props chain to our --a-* tokens in
-         app.css so it matches every theme. -->
+         app.css so it matches every theme. Never shown for an equation-bound
+         value: picking would write a literal over the expression. -->
     <div class="colorfield-picker">
       <ColorPicker value={picker} {label} {disabled} oninput={preview} onchange={commit} />
     </div>
