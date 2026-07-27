@@ -1,10 +1,18 @@
 <!--
   FontPicker — the SELF-RENDERING font dropdown (manifest #26): every option's
-  name is drawn IN ITS OWN TYPEFACE (the actual loaded @font-face, via
-  fonts.js cssFamilyFor), and the focused option shows a LARGER preview panel
-  beside the menu — the pangram in REGULAR, BOLD, and UNDERLINED so all three
-  styles are visible in the real face. The trigger shows the current font's
-  name in its own face.
+  name is always READABLE (drawn in the UI font so you can identify the family)
+  next to a small in-face sample that shows the actual loaded @font-face (via
+  fonts.js cssFamilyFor). The focused option shows a LARGER preview panel beside
+  the menu — a sample line in REGULAR, BOLD, and UNDERLINED so all three styles
+  are visible in the real face.
+
+  DISPLAY FACES with a `sample` (fonts.js, e.g. seg7 — its letters are 7-segment
+  approximations that read as gibberish, so its name/the pangram are unreadable
+  in-face): previews swap in the descriptor's `sample` (fonts.js fontSample).
+  Normal fonts have no sample → they preview their name + the pangram unchanged,
+  each in its own face. The trigger label reads in the font's own face when that
+  face can render its name legibly, else in the readable UI font (so a seg7
+  selection is never an unreadable trigger).
 
   Built for HUNDREDS of families: a SEARCH box filters the list by name
   (case-insensitive) and the option list SCROLLS within a bounded height. Why
@@ -30,13 +38,20 @@
 
 <script>
   import "iconify-icon";
-  import { cssFamilyFor } from "../render_gpu/fonts.js";
+  import { cssFamilyFor, fontSample } from "../render_gpu/fonts.js";
 
   // options: [{value, label}] (fontOptions()); value: current font id; onchange(id).
   let { options = [], value = "system", onchange = () => {} } = $props();
 
-  // The sample line shown three ways (regular / bold / underlined) in the preview.
+  // The preview body for a NORMAL font, shown three ways (regular / bold /
+  // underlined). A limited-charset face substitutes its own `sample` (below).
   const PANGRAM = "The quick brown fox jumps over the lazy dog";
+  // The generic in-face sample beside a NORMAL font's readable row name — a
+  // short mixed alnum (kept tight for the narrow list column).
+  const FACE_SAMPLE = "AaBb 123";
+  // The generic medium sample line in the big preview for a NORMAL font (the
+  // wider preview column affords a longer mixed alnum than the row sample).
+  const PREVIEW_SAMPLE = "AaBbCc 0123";
 
   let open = $state(false);
   let query = $state(""); // the search filter (case-insensitive, matched on label)
@@ -90,6 +105,34 @@
   /** Pure-ish. The CSS font-family for an option id — the actual loaded face. */
   function faceOf(id) {
     return cssFamilyFor(id);
+  }
+
+  /**
+   * Pure-ish. The font-family a font's NAME should be drawn in, or null to
+   * inherit the readable UI font. A face carrying a `sample` (its name is
+   * unreadable in-face, e.g. seg7) → null (readable); a normal font uses its
+   * own face so its name reads in-face, unchanged.
+   */
+  function labelFaceOf(id) {
+    return fontSample(id) ? null : faceOf(id);
+  }
+
+  /**
+   * Pure-ish. The short in-face sample beside a row's readable name — the
+   * font's own `sample` when it has one (a display face like seg7 shows its
+   * legible sample, not gibberish), else a generic mixed-alnum sample.
+   */
+  function rowSample(id) {
+    return fontSample(id) ?? FACE_SAMPLE;
+  }
+
+  /**
+   * Pure-ish. The big-preview BODY text for the focused font: its own `sample`
+   * when set (a display face previews that legible string), else the alphabetic
+   * pangram (normal fonts unchanged).
+   */
+  function previewText(id) {
+    return fontSample(id) ?? PANGRAM;
   }
 
   /**
@@ -268,7 +311,7 @@
     aria-expanded={open}
     onclick={toggle}
   >
-    <span class="fp-trigger-label" style:font-family={faceOf(value)}>{currentLabel}</span>
+    <span class="fp-trigger-label" style:font-family={labelFaceOf(value)}>{currentLabel}</span>
     <iconify-icon class="fp-caret" icon="mdi:menu-down" width="16" height="16"></iconify-icon>
   </button>
 
@@ -296,11 +339,14 @@
                 class:selected={o.value === value}
                 role="option"
                 aria-selected={o.value === value}
-                style:font-family={faceOf(o.value)}
                 onclick={() => choose(o.value)}
                 onpointerenter={() => (activeIndex = i)}
               >
-                {o.label}
+                <!-- Name ALWAYS readable (UI font); the in-face sample beside it
+                     shows the real face — its own `sample` for a limited-charset
+                     font (seg7), else a generic mixed-alnum. -->
+                <span class="fp-item-name">{o.label}</span>
+                <span class="fp-item-sample" style:font-family={faceOf(o.value)} aria-hidden="true">{rowSample(o.value)}</span>
               </li>
             {:else}
               <li class="fp-empty" role="presentation">No fonts match</li>
@@ -333,14 +379,16 @@
           aria-label="Resize font list"
           onpointerdown={startDrag}
         ></div>
-        <!-- LARGER preview of the focused font: name + sample, then the pangram
-             in REGULAR, BOLD, and UNDERLINED (manifest #26 "a larger PREVIEW"). -->
+        <!-- LARGER preview of the focused font: readable name + an in-face
+             sample line, then the BODY in REGULAR, BOLD, and UNDERLINED. The
+             body is the pangram for a normal font, or the descriptor's `sample`
+             for a limited-charset face (seg7) whose pangram would be blank. -->
         <div class="fp-preview" aria-hidden="true">
-          <div class="fp-preview-name" style:font-family={faceOf(previewOption.value)}>{previewOption.label}</div>
-          <div class="fp-preview-sample" style:font-family={faceOf(previewOption.value)}>AaBbCc 0123</div>
-          <div class="fp-preview-line" style:font-family={faceOf(previewOption.value)}>{PANGRAM}</div>
-          <div class="fp-preview-line fp-bold" style:font-family={faceOf(previewOption.value)}>{PANGRAM}</div>
-          <div class="fp-preview-line fp-underline" style:font-family={faceOf(previewOption.value)}>{PANGRAM}</div>
+          <div class="fp-preview-name" style:font-family={labelFaceOf(previewOption.value)}>{previewOption.label}</div>
+          <div class="fp-preview-sample" style:font-family={faceOf(previewOption.value)}>{fontSample(previewOption.value) ?? PREVIEW_SAMPLE}</div>
+          <div class="fp-preview-line" style:font-family={faceOf(previewOption.value)}>{previewText(previewOption.value)}</div>
+          <div class="fp-preview-line fp-bold" style:font-family={faceOf(previewOption.value)}>{previewText(previewOption.value)}</div>
+          <div class="fp-preview-line fp-underline" style:font-family={faceOf(previewOption.value)}>{previewText(previewOption.value)}</div>
         </div>
       {/if}
     </div>

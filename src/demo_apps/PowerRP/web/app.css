@@ -1442,6 +1442,26 @@ body,
   line-height: var(--a-text-line-height);
   color: var(--fg);
   cursor: pointer;
+  /* A row = readable name (left) + small in-face sample (right). */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--a-sp-3);
+}
+/* The option name — UI font, always readable; ellipsizes (shared rule below) so
+   it never pushes the sample out of a narrow list column. */
+.fp-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The small in-face sample beside the name — dim + shrink-wrapped so the name
+   owns the leftover width. Shows the real face (seg7's own `sample`, else the
+   generic mixed-alnum). */
+.fp-item-sample {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
 }
 .fp-item.active {
   background: var(--a-hover-bg);
@@ -1455,9 +1475,9 @@ body,
   font-size: var(--a-font-md);
   color: var(--fg-dim);
 }
-/* Shared single-line ellipsis (trigger label, option rows, preview name). */
+/* Shared single-line ellipsis (trigger label, option NAME, preview name). */
 .fp-trigger-label,
-.fp-item,
+.fp-item-name,
 .fp-preview-name {
   overflow: hidden;
   text-overflow: ellipsis;

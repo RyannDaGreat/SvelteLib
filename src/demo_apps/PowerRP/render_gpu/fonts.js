@@ -40,6 +40,13 @@ const SYSTEM_STACK = "system-ui, sans-serif";
  * `cssFamily` is what canvas2D / CSS name the face; for committed fonts it is a
  * UNIQUE name (the id) so a local @font-face can never collide with a same-named
  * OS font. `fallback` chains to a generic family for any glyph the subset lacks.
+ *
+ * OPTIONAL `sample`: a short string the face renders LEGIBLY, for a display
+ * font whose own name / the alphabetic pangram would be unreadable in-face
+ * (e.g. seg7 — its letters are 7-segment approximations that read as gibberish,
+ * "Seven Segment" → "5EUEn 5EGMEnt"; its digits are crisp). UI previews (the
+ * font chooser) show this instead when the face can't legibly draw its own
+ * name. Normal fonts have no `sample` → unchanged (they preview name/pangram).
  */
 export const FONTS = {
   system: {
@@ -156,6 +163,12 @@ export const FONTS = {
     cssFamily: "PowerRP Seven Segment",
     fallback: "monospace",
     files: { regular: "DSEG7Classic-Regular.ttf", bold: "DSEG7Classic-Bold.ttf" },
+    // DSEG7's letters are 7-segment approximations that read as gibberish (its
+    // own name "Seven Segment" renders "5EUEn 5EGMEnt"), so the name/pangram are
+    // unreadable in-face. This clock/calculator readout (digits, colon, decimals
+    // — all crisp in the face) is what previews show instead, so the segmented
+    // look is visible and the row stays previewable.
+    sample: "12:34 0.0",
   },
 };
 
@@ -266,6 +279,25 @@ export function dynamicFontFaces() {
  */
 export function fontDescriptor(id) {
   return DYNAMIC_FONTS[id] || FONTS[id] || FONTS[DEFAULT_FONT];
+}
+
+/**
+ * Pure function. The preview `sample` string for a font id, or null when the
+ * font has none. A `sample` is set only on display faces whose own name / the
+ * alphabetic pangram is unreadable in-face (e.g. seg7 — 7-segment letter
+ * approximations that read as gibberish), so a UI preview can show a legible,
+ * representative string instead. Normal fonts have no `sample` → null: this is
+ * the ONE resolution point a previewer consults to decide sample-vs-name/pangram.
+ *
+ * @param {string} id - a font id (committed, dynamic, or unknown → degrades to system)
+ * @returns {string|null} the descriptor's sample, or null when it has none
+ *
+ * @example fontSample("seg7") // "12:34 0.0"
+ * @example fontSample("inter") // null
+ * @example fontSample("no-such-font") // null (degrades to system, which has none)
+ */
+export function fontSample(id) {
+  return fontDescriptor(id).sample ?? null;
 }
 
 /**

@@ -24,6 +24,12 @@ const webRoot = resolve(HERE, "../web");
 const SHOTS = resolve(HERE, "../.claude_vlm_checks");
 fs.mkdirSync(SHOTS, { recursive: true });
 
+// The alphabetic pangram a NORMAL font previews (must equal FontPicker.svelte's).
+const PANGRAM = "The quick brown fox jumps over the lazy dog";
+// seg7's descriptor `sample` — the segmented clock/calculator readout the picker
+// previews for it (must equal render_gpu/fonts.js FONTS.seg7.sample).
+const SEG7_SAMPLE = "12:34 0.0";
+
 const { createServer } = await import("vite");
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),
@@ -217,6 +223,62 @@ try {
   await sleep(250);
   const wReopen = await page.evaluate(() => document.querySelector(".fp-list") ? Math.round(document.querySelector(".fp-list").getBoundingClientRect().width) : null);
   if (w0 != null) assert(wReopen != null && Math.abs(wReopen - w1) <= 2, `dragged split PERSISTS across close/reopen (reopen width=${wReopen}, was ${w1})`);
+
+  // (6) SEG7 READABILITY + PREVIEW (the seven-segment fix). Filtering the search
+  // to a query focuses the single matching font (activeIndex clamps to 0), so its
+  // row + the big preview are both live. We read the DOM TEXT (name is readable)
+  // and the COMPUTED font-family (name in the UI font, sample/body in the face).
+  const focusByQuery = async (q) => {
+    await page.evaluate((query) => {
+      const s = document.querySelector(".fp-search");
+      s.focus(); s.value = query; s.dispatchEvent(new Event("input", { bubbles: true }));
+    }, q);
+    await sleep(250);
+    return page.evaluate(() => {
+      const face = (el) => (el ? getComputedStyle(el).fontFamily : null);
+      const q1 = (sel) => document.querySelector(sel);
+      const nameEl = q1(".fp-item-name"), sampleEl = q1(".fp-item-sample");
+      const pName = q1(".fp-preview-name"), pSample = q1(".fp-preview-sample");
+      const pLines = [...document.querySelectorAll(".fp-preview-line")];
+      const txt = (el) => (el ? el.textContent.trim() : null);
+      return {
+        rowName: txt(nameEl), rowNameFace: face(nameEl),
+        rowSample: txt(sampleEl), rowSampleFace: face(sampleEl),
+        previewName: txt(pName), previewNameFace: face(pName),
+        previewSample: txt(pSample),
+        previewLines: pLines.map(txt), previewLineFace: face(pLines[0]),
+      };
+    });
+  };
+
+  // (a) The seg7 row: NAME readable (real "Seven Segment" text, drawn in the UI
+  //     font — NOT the seg7 face), plus an in-face segmented-digit sample.
+  const seg7 = await focusByQuery("seven");
+  console.log("SEG7:", JSON.stringify(seg7, null, 2));
+  const seg7Pop = await page.$(".fp-pop");
+  if (seg7Pop) await seg7Pop.screenshot({ path: resolve(SHOTS, "fontpicker_4_seg7.png") });
+  assert(seg7.rowName === "Seven Segment", `seg7 row NAME is readable text "Seven Segment" (got ${JSON.stringify(seg7.rowName)})`);
+  assert(!!seg7.rowNameFace && !/Seven Segment/.test(seg7.rowNameFace), `seg7 row name drawn in the READABLE UI font, not the seg7 face (face=${seg7.rowNameFace})`);
+  assert(seg7.rowSample === SEG7_SAMPLE, `seg7 row shows its in-face sample ${JSON.stringify(SEG7_SAMPLE)} (got ${JSON.stringify(seg7.rowSample)})`);
+  assert(/Seven Segment/.test(seg7.rowSampleFace || ""), `seg7 row SAMPLE drawn in the seg7 face (face=${seg7.rowSampleFace})`);
+  // (b) The big preview: name readable (UI font), body = segmented DIGITS (the
+  //     sample) in all three styles, in the seg7 face — NOT the blank pangram.
+  assert(seg7.previewName === "Seven Segment", `seg7 preview NAME readable (got ${JSON.stringify(seg7.previewName)})`);
+  assert(!!seg7.previewNameFace && !/Seven Segment/.test(seg7.previewNameFace), `seg7 preview name in the READABLE UI font (face=${seg7.previewNameFace})`);
+  assert(seg7.previewSample === SEG7_SAMPLE, `seg7 preview sample line is the segmented sample (got ${JSON.stringify(seg7.previewSample)})`);
+  assert(seg7.previewLines.length === 3 && seg7.previewLines.every((t) => t === SEG7_SAMPLE), `seg7 preview BODY is the segmented sample in all 3 styles (got ${JSON.stringify(seg7.previewLines)})`);
+  assert(/Seven Segment/.test(seg7.previewLineFace || ""), `seg7 preview body drawn in the seg7 FACE (face=${seg7.previewLineFace})`);
+
+  // (c) A NORMAL font (Inter) is UNCHANGED: preview name + pangram, both in its
+  //     OWN face (regression guard for the sample swap).
+  const inter = await focusByQuery("inter");
+  console.log("INTER:", JSON.stringify(inter, null, 2));
+  const interPop = await page.$(".fp-pop");
+  if (interPop) await interPop.screenshot({ path: resolve(SHOTS, "fontpicker_5_inter.png") });
+  assert(inter.previewName === "Inter", `inter preview name (got ${JSON.stringify(inter.previewName)})`);
+  assert(/PowerRP Inter/.test(inter.previewNameFace || ""), `inter preview NAME still in its OWN face — no regression (face=${inter.previewNameFace})`);
+  assert(inter.previewLines.length === 3 && inter.previewLines.every((t) => t === PANGRAM), `inter preview BODY is the pangram, unchanged (got ${JSON.stringify(inter.previewLines[0])})`);
+  assert(/PowerRP Inter/.test(inter.previewLineFace || ""), `inter preview body in its OWN face — no regression (face=${inter.previewLineFace})`);
 
   if (errors.length) console.error("PAGE ERRORS:\n" + errors.join("\n"));
   console.log(`\n${fails.length ? "FAILED: " + fails.length : "PASS"} — FontPicker probe (shots in .claude_vlm_checks/fontpicker_*.png)`);

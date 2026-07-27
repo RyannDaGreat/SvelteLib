@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   FONTS, DEFAULT_FONT, fontOptions, committedFaces, cssFamilyFor, fontFileFor,
-  fontFamilyChain, fontDescriptor, hasEmbeddableFile,
+  fontFamilyChain, fontDescriptor, hasEmbeddableFile, fontSample,
   registerFontFamily, clearDynamicFonts, dynamicFontFaces, fontAssetId, fontAssetCssFamily,
 } from "../render_gpu/fonts.js";
 
@@ -73,6 +73,16 @@ test("system + unknown ids still degrade to the OS stack / Inter stand-in (uncha
   assert.equal(fontDescriptor("no-such-font-xyz").title, FONTS[DEFAULT_FONT].title);
 });
 
+test("fontSample: only limited-charset faces carry one (seg7), normal fonts → null", () => {
+  assert.equal(fontSample("seg7"), "12:34 0.0"); // the segmented digits/clock preview
+  assert.equal(fontSample("inter"), null);
+  assert.equal(fontSample("system"), null);
+  assert.equal(fontSample("no-such-font-xyz"), null); // degrades to system → no sample
+  // Exactly the intentionally-limited faces have a sample (guards accidental spread).
+  const withSample = Object.keys(FONTS).filter((id) => FONTS[id].sample != null);
+  assert.deepEqual(withSample, ["seg7"]);
+});
+
 // ── 2. Real glyph coverage (no ☐ tofu) via CanvasKit ─────────────────────────
 // A missing glyph resolves to glyph id 0 (.notdef → the ☐ tofu box). So "every
 // codepoint of ASCII sample text maps to a NONZERO glyph id" is a direct,
@@ -103,6 +113,23 @@ async function main() {
     for (const id of NEW_FAMILIES) {
       assertGlyphCoverage(CanvasKit, fontFileFor(id, false));
       assertGlyphCoverage(CanvasKit, fontFileFor(id, true));
+    }
+  });
+
+  test("seg7's `sample` renders tofu-free digits in BOTH weights (the preview CAN draw it)", () => {
+    // Why `sample` exists: DSEG7 maps LETTERS to 7-segment approximations that
+    // read as gibberish ("Seven Segment" → "5EUEn 5EGMEnt"), so the font's own
+    // name and the alphabetic pangram are unreadable in-face — the picker shows
+    // the readable name in the UI font and previews this digit sample instead.
+    // The sample MUST be all real glyphs (assertGlyphCoverage uses the fixed
+    // SAMPLE const, so check the seg7 sample string directly here).
+    const seg7Sample = fontSample("seg7");
+    for (const bold of [false, true]) {
+      const buf = fs.readFileSync(path.join(FONTS_DIR, fontFileFor("seg7", bold)));
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      const tf = CanvasKit.Typeface.MakeFreeTypeFaceFromData(ab);
+      const ids = Array.from(tf.getGlyphIDs(seg7Sample));
+      assert.equal(ids.filter((g) => g === 0).length, 0, `seg7 ${bold ? "bold" : "regular"} sample "${seg7Sample}" has tofu`);
     }
   });
 
