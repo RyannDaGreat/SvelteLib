@@ -199,7 +199,7 @@ export const qrcodePlugin = {
    *
    * Examples:
    *   >>> qrcodePlugin.isGhost({ data: "" })                    // true
-   *   >>> qrcodePlugin.isGhost({ data: "https://netflix.com" }) // false
+   *   >>> qrcodePlugin.isGhost({ data: "https://example.com" }) // false
    */
   isGhost(state) {
     return qrDataIsEmpty(state.data);
@@ -214,7 +214,7 @@ export const qrcodePlugin = {
     // Rotation pivots about this WORLD point; default = own center (the shared
     // equation — manifest Round 11). Absent on old docs → derive falls to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    data: "https://www.netflix.com", ecLevel: "M",
+    data: "https://www.example.com", ecLevel: "M",
     dark: "#000000", light: "#ffffff", quietModules: QR_SPEC_QUIET_ZONE_MODULES,
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF

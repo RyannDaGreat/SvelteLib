@@ -271,7 +271,7 @@
    *  option on the assets") via the shared clipboard helper (web/clipboard.js:
    *  secure-context writeText, else an execCommand fallback that works over
    *  plain HTTP — the fix for the unguarded navigator.clipboard call that threw
-   *  on this Workbench's non-localhost origin). ON SUCCESS the button flashes a
+   *  on a non-localhost origin). ON SUCCESS the button flashes a
    *  "Copied!" check; a genuine failure is reported LOUDLY inside the helper. */
   async function copyAssetPath(a) {
     if (await copyText(a.url, "asset path")) {

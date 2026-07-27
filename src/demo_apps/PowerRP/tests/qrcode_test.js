@@ -74,7 +74,7 @@ function decodeQr(pngBytes) {
 }
 
 const CASES = [
-  { data: "https://www.netflix.com", ecLevel: "M" },
+  { data: "https://www.example.com", ecLevel: "M" },
   { data: "HELLO WORLD 12345", ecLevel: "H" },
   { data: "https://example.com/path?q=1&z=2", ecLevel: "Q" },
   { data: "PowerRP", ecLevel: "L" },
@@ -89,13 +89,13 @@ for (const { data, ecLevel } of CASES) {
 // ── (2b) FULL PIPELINE e2e: a doc with a QR item scans after repair→derive→Skia ─
 {
   const cam = { type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff" };
-  const qr = { ...qrcodePlugin.defaults, data: "https://www.netflix.com", x: 490, y: 110, w: 500, h: 500 };
+  const qr = { ...qrcodePlugin.defaults, data: "https://www.example.com", x: 490, y: 110, w: 500, h: 500 };
   const doc = {
     meta: { name: "QR E2E", slideW: 1280, slideH: 720 },
     slides: [{ id: "s1", name: "Slide 1", transition: { seconds: 0.5, curve: "smooth", sound: null, type: "tween" }, delta: { items: { cam, qr } } }],
   };
   const png = await renderDocToPng(JSON.stringify(doc), { slide: 0, alpha: 1, width: 1920, height: 1080 });
-  assert.equal(decodeQr(png), "https://www.netflix.com", "full-pipeline (repair→fold→derive→camera→Skia) QR must scan");
+  assert.equal(decodeQr(png), "https://www.example.com", "full-pipeline (repair→fold→derive→camera→Skia) QR must scan");
   console.log("OK e2e — a document's QR item renders scannable through the real CLI pipeline");
 }
 
@@ -131,12 +131,12 @@ for (const { data, ecLevel } of CASES) {
   assert.equal(qrDataIsEmpty("   "), true, "whitespace-only is empty (nothing to encode)");
   assert.equal(qrDataIsEmpty("https://x"), false);
   assert.equal(qrcodePlugin.isGhost({ data: "" }), true, "empty data → ghost (selectable/findable)");
-  assert.equal(qrcodePlugin.isGhost({ data: "https://netflix.com" }), false);
+  assert.equal(qrcodePlugin.isGhost({ data: "https://example.com" }), false);
   for (const data of ["", "   ", undefined]) {
     const state = { ...qrcodePlugin.defaults, data, w: BOX, h: BOX };
     assert.deepEqual(qrcodePlugin.emit(state, null, IDENTITY), [], `empty QR emit must ghost ([]) for ${JSON.stringify(data)}`);
   }
-  const valid = qrcodePlugin.emit({ ...qrcodePlugin.defaults, data: "https://www.netflix.com", w: BOX, h: BOX }, null, IDENTITY);
+  const valid = qrcodePlugin.emit({ ...qrcodePlugin.defaults, data: "https://www.example.com", w: BOX, h: BOX }, null, IDENTITY);
   assert.ok(valid.some((op) => op.op === "path" && op.d.length > 0), "valid data still emits a QR path op");
   console.log("OK ghost — empty/blank QR data emits [] (no crash), valid data emits a path");
 }

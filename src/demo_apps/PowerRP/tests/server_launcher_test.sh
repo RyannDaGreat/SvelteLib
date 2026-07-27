@@ -49,10 +49,10 @@ start_test_launcher() {
   : >"$CURRENT_LOG"
   (
     cd "$REPO_ROOT"
-    exec env -u BD_HOSTNAME \
-      -u POWERRP_TLS_CERT \
+    exec env -u POWERRP_TLS_CERT \
       -u POWERRP_TLS_KEY \
       -u POWERRP_PUBLIC_HOST \
+      -u POWERRP_HTTPS \
       NO_OPEN=1 \
       POWERRP_PROJECTS_DIR="$PROJECTS_DIR" \
       bash "$APP_DIR/run_server.sh"
@@ -135,9 +135,9 @@ wait_for_launcher_exit
 assert_service_ports_closed
 
 CURRENT_LOG="$INVALID_TLS_LOG"
-if env -u BD_HOSTNAME \
-    -u POWERRP_TLS_CERT \
+if env -u POWERRP_TLS_CERT \
     -u POWERRP_TLS_KEY \
+    -u POWERRP_HTTPS \
     POWERRP_PUBLIC_HOST=invalid.example \
     bash "$APP_DIR/run_server.sh" >"$INVALID_TLS_LOG" 2>&1; then
   fail "hostname-only TLS override unexpectedly succeeded"

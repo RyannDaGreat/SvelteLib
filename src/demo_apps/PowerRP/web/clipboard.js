@@ -4,10 +4,9 @@
  * anchor-hover copy, …). It exists because the unguarded
  * `navigator.clipboard.writeText(...)` calls threw over a NON-localhost HTTP
  * origin: the async Clipboard API is defined only in a SECURE CONTEXT (https or
- * http://localhost/127.0.0.1), and this Workbench's launcher falls back to
- * plain HTTP when host TLS is unavailable, so `navigator.clipboard` is
- * undefined there. This module owns the secure-vs-insecure branch so no call
- * site has to.
+ * http://localhost/127.0.0.1), and the dev server serves plain HTTP by default,
+ * so `navigator.clipboard` is undefined over a non-localhost origin. This module
+ * owns the secure-vs-insecure branch so no call site has to.
  *
  * DOM-touching (uses navigator/document) — a web-only module, never imported by
  * the DOM-free core.

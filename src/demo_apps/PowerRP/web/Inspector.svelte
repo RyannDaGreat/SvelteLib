@@ -225,7 +225,7 @@
    * item's own equations) to the system clipboard via the shared clipboard
    * helper (web/clipboard.js: secure-context writeText, else an execCommand
    * fallback that works over plain HTTP — the reason the old unguarded
-   * navigator.clipboard call threw on this Workbench's non-localhost origin).
+   * navigator.clipboard call threw on a non-localhost origin).
    * ON SUCCESS the button flashes a "Copied!" check (positive feedback, the
    * user's ask); a genuine failure is reported LOUDLY inside the helper and
    * leaves no flash. */

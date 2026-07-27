@@ -8,5 +8,8 @@ projects/*
 server/__pycache__/
 .venv/
 
+# Auto-generated self-signed dev certificates (opt-in HTTPS mode)
+server/.tls/
+
 # Vite build output (this app builds into web/dist)
 web/dist/

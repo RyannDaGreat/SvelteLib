@@ -16,24 +16,71 @@ cd "$(dirname "$0")"
 # server/ is src/demo_apps/PowerRP/server → repo root is four levels up.
 ROOT="$(cd ../../../.. && pwd)"
 WEB="$(cd ../web && pwd)"
-WORKBENCH_TLS_CERT="/etc/certs/public_web.crt"
-WORKBENCH_TLS_KEY="/etc/certs/public_web.key"
+# Self-signed TLS cache for the opt-in HTTPS mode (see below). Gitignored; delete
+# it to force regeneration after a network/IP change.
+TLS_DIR="$(pwd)/.tls"
+TLS_CERT_DAYS=825          # widely-accepted maximum validity for a self-signed leaf
+TLS_KEY_BITS=2048
 BACKEND_READY_ATTEMPTS=120
 BACKEND_READY_SLEEP_SECONDS=0.5
 CHILD_MONITOR_SLEEP_SECONDS=0.25
+
+# Best-effort LAN address (first non-loopback IPv4). Used for the printed remote
+# URL and, in HTTPS mode, for the certificate's subjectAltName so another machine
+# can open the app by IP over a secure context.
+LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)
 
 # HTTPS is OPT-IN; plain HTTP on 0.0.0.0 is the DEFAULT. The editor renders via
 # Skia/CanvasKit on a WebGL2 context and uses no secure-context-only browser API
 # (clipboard, UUID, and EyeDropper all have plain-HTTP fallbacks), so it works
 # fully over plain HTTP from any origin — including a LAN/remote machine opening
-# the box by IP. HTTPS previously auto-activated on a Workbench (BD_HOSTNAME +
-# host cert) to satisfy WebGPU's secure-context requirement; that requirement is
-# gone, so auto-HTTPS is retired to keep remote HTTP access frictionless.
+# the box by IP. Keeping HTTP the default keeps remote access frictionless.
 #
-# Two ways to turn HTTPS back on (neither is the default):
-#   1. Explicit certs: set POWERRP_TLS_CERT + POWERRP_TLS_KEY + POWERRP_PUBLIC_HOST.
-#   2. Workbench convenience: set POWERRP_USE_WORKBENCH_TLS=1 to reuse the host's
-#      trusted cert (/etc/certs/public_web.*) + $BD_HOSTNAME.
+# Turn HTTPS on when you need a SECURE CONTEXT — e.g. WebGPU (navigator.gpu),
+# which the browser exposes only over HTTPS or on localhost. Two portable ways:
+#   1. Auto self-signed: POWERRP_HTTPS=1 (or pass --https). openssl mints a local
+#      self-signed cert covering localhost + this machine's LAN IP/hostname,
+#      cached in .tls/. The browser shows a one-time "not private" warning;
+#      accept it and the origin becomes a secure context.
+#   2. Bring your own trusted cert: set POWERRP_TLS_CERT + POWERRP_TLS_KEY +
+#      POWERRP_PUBLIC_HOST together (no browser warning).
+WANT_HTTPS="${POWERRP_HTTPS:-}"
+for arg in "$@"; do
+  [ "$arg" = "--https" ] && WANT_HTTPS=1
+done
+
+# Command. Mints (once, cached in TLS_DIR) a portable self-signed cert+key whose
+# subjectAltName covers localhost, 127.0.0.1, and — when discoverable — this
+# machine's LAN IP and hostname, then points TLS_CERT/TLS_KEY/PUBLIC_HOST at it.
+# Regenerates only when the cached cert is missing, unreadable, or expired (delete
+# TLS_DIR after a network change to refresh the SAN). Fails LOUDLY if openssl is
+# absent or generation fails — it never silently degrades to plain HTTP.
+generate_self_signed_tls() {
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo "ERROR: HTTPS was requested but 'openssl' is not installed." >&2
+    exit 1
+  fi
+  mkdir -p "$TLS_DIR"
+  local cert="$TLS_DIR/dev.crt"
+  local key="$TLS_DIR/dev.key"
+  if [ ! -r "$cert" ] || [ ! -r "$key" ] \
+     || ! openssl x509 -checkend 0 -noout -in "$cert" >/dev/null 2>&1; then
+    local san="DNS:localhost,IP:127.0.0.1"
+    [ -n "${LAN_IP:-}" ] && san="${san},IP:${LAN_IP}"
+    local host_name; host_name="$(hostname 2>/dev/null || true)"
+    [ -n "$host_name" ] && san="${san},DNS:${host_name}"
+    if ! openssl req -x509 -newkey "rsa:${TLS_KEY_BITS}" -nodes \
+        -keyout "$key" -out "$cert" -days "$TLS_CERT_DAYS" \
+        -subj "/CN=localhost" -addext "subjectAltName=${san}" >/dev/null; then
+      echo "ERROR: openssl failed to generate a self-signed certificate." >&2
+      exit 1
+    fi
+  fi
+  TLS_CERT="$cert"
+  TLS_KEY="$key"
+  PUBLIC_HOST="${LAN_IP:-localhost}"
+}
+
 TLS_CERT="${POWERRP_TLS_CERT:-}"
 TLS_KEY="${POWERRP_TLS_KEY:-}"
 PUBLIC_HOST="${POWERRP_PUBLIC_HOST:-}"
@@ -42,17 +89,8 @@ if [ -n "$TLS_CERT" ] || [ -n "$TLS_KEY" ] || [ -n "$PUBLIC_HOST" ]; then
     echo "ERROR: POWERRP_TLS_CERT, POWERRP_TLS_KEY, and POWERRP_PUBLIC_HOST must be set together." >&2
     exit 1
   fi
-elif [ -n "${POWERRP_USE_WORKBENCH_TLS:-}" ]; then
-  # Explicitly requested the Workbench cert — its absence is a loud error, never
-  # a silent fall-through to HTTP (the user asked for HTTPS on purpose).
-  if [ -z "${BD_HOSTNAME:-}" ] || [ ! -r "$WORKBENCH_TLS_CERT" ] || [ ! -r "$WORKBENCH_TLS_KEY" ]; then
-    echo "ERROR: POWERRP_USE_WORKBENCH_TLS is set but the Workbench TLS is unavailable" >&2
-    echo "       (need \$BD_HOSTNAME plus a readable $WORKBENCH_TLS_CERT and $WORKBENCH_TLS_KEY)." >&2
-    exit 1
-  fi
-  TLS_CERT="$WORKBENCH_TLS_CERT"
-  TLS_KEY="$WORKBENCH_TLS_KEY"
-  PUBLIC_HOST="$BD_HOSTNAME"
+elif [ -n "$WANT_HTTPS" ]; then
+  generate_self_signed_tls
 fi
 if [ -n "$TLS_CERT" ]; then
   if [ ! -r "$TLS_CERT" ] || [ ! -r "$TLS_KEY" ]; then
@@ -145,18 +183,18 @@ if [ "$BACKEND_READY" -ne 1 ]; then
   exit 1
 fi
 
-LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)
 echo "=================================================="
 echo "  PowerRP   (live / HMR + project server)"
 if [ -n "$TLS_CERT" ]; then
   echo "    Secure: ${APP_URL}"
+  [ "$PUBLIC_HOST" != "localhost" ] && echo "            https://localhost:${APP_PORT}"
+  echo "    (self-signed → accept the browser's one-time warning; enables WebGPU)"
 else
   echo "    Local:  ${APP_URL}"
   # Plain HTTP is fully supported (Skia/WebGL2 needs no secure context), so the
-  # LAN/remote URLs below are FIRST-CLASS entry points — open either from any
-  # other machine on the network by IP or by the box's hostname.
+  # LAN URL below is a FIRST-CLASS entry point — open it from any other machine
+  # on the network by IP.
   [ -n "${LAN_IP:-}" ] && echo "    LAN:    http://${LAN_IP}:${APP_PORT}   (open from another machine by IP)"
-  [ -n "${BD_HOSTNAME:-}" ] && echo "    Host:   http://${BD_HOSTNAME}:${APP_PORT}"
 fi
 echo "    (project backend on :${BACKEND_PORT} — don't open it directly)"
 echo "=================================================="
