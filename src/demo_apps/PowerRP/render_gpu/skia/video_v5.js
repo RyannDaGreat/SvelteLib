@@ -174,7 +174,8 @@ function startPipeline(entry) {
 /** Command. Main-mode fallback loop: rVFC (or "timeupdate") -> createImageBitmap
  *  (<video>) on the main thread. The convert still resolves off-thread inside
  *  createImageBitmap; only the loop lives on-main. A paused (off-view) element
- *  fires no rVFC, so this costs nothing off-view. */
+ *  presents no frames, so its pending rVFC never fires — this costs nothing
+ *  off-view WITHOUT tearing the loop down (see the unconditional re-arm below). */
 function startMainLoop(entry) {
   const el = entry.el;
   const c = caps();
@@ -186,7 +187,16 @@ function startMainLoop(entry) {
     } catch (err) {
       console.error(`PowerRP video_v5: createImageBitmap(<video>) failed for "${truncate(entry.src)}" — ${err?.message ?? err}`);
     }
-    if (c.rvfc && !el.paused) el.requestVideoFrameCallback(tick);
+    // Re-arm UNCONDITIONALLY. A pending rVFC on a paused element never fires
+    // (paused = no frame presented = zero cost), so keeping ONE pending callback
+    // across an off-view pause is free AND self-heals on resume. A prior
+    // `!el.paused` guard here stranded the loop: if setActiveVideoV5Refs paused
+    // the element WHILE this tick's `await createImageBitmap` was in flight, the
+    // tick resolved paused and skipped the re-arm, leaving NO pending callback —
+    // so on slide-return el.play() resumed playback (currentTime advanced) but no
+    // tick ever ran again and the clip froze on its last frame until forced (the
+    // "V5 slide-return freeze").
+    if (c.rvfc) el.requestVideoFrameCallback(tick);
   };
   if (c.rvfc) el.requestVideoFrameCallback(tick);
   else el.addEventListener("timeupdate", tick);
