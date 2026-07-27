@@ -3561,6 +3561,18 @@ audio.ae-preview-media {
   pointer-events: none; /* purely decorative; all input goes to .overlay */
 }
 
+/* Video V8 overlay: a canvas ABOVE .scene, below the .overlay SVG chrome (DOM
+   order gives it the middle z). Shares .scene's absolute-fill box; the live
+   video frames composite over the Skia scene. pointer-events:none so selection/
+   drag input still reaches the .overlay SVG beneath the cursor. */
+.canvas-wrap .video-v8-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 /* Composite toolbar glyphs (iconify-only rule: stacked mdi icons, never
    custom SVG) — e.g. the anchor toggle's horseshoe magnet with the anchor
    centered in its mouth (user round-11 spec). */

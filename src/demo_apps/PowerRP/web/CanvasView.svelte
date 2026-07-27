@@ -29,6 +29,12 @@
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onVideoFrame, setActiveVideoRefs } from "../render_gpu/gpu/video_registry.js";
   import { onVideoV5Frame, setActiveVideoV5Refs } from "../render_gpu/skia/video_v5.js"; // V5 off-main-thread video: same wake+gate contract as the core video path
+  // Video V8 (cohort) — a FRESH, independent overlay player: ONE canvas stacked
+  // over the Skia scene, WebGPU zero-copy OR WebGL2 upload backend. Its registry
+  // is separate from the stock video path above (no reuse), so the two never
+  // fight over elements. Wiring below mirrors the stock path's cull/gate/nudge.
+  import { createVideoV8Overlay, videoV8SourcesOf } from "./videoV8Overlay.js";
+  import { onVideoV8Frame, setActiveVideoV8Refs } from "./videoV8Registry.js";
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import * as T from "../core/transform.js";
@@ -238,6 +244,26 @@
   // the reactive paint on a NEW frame of an on-screen V5 clip (same gate as above,
   // currentMediaRefs includes "video_v5" sources below).
   $effect(() => onVideoV5Frame((src) => { if (currentMediaRefs.has(src)) imageEpoch += 1; }));
+  // VIDEO V8 OVERLAY (cohort): its own stacked canvas + backend, created async
+  // (WebGPU device selection is async) once the element binds. Playing V8 frames
+  // nudge the SAME imageEpoch (reactive paint, async frames) — but only for a src
+  // the current frame actually draws (currentV8Refs), so off-screen/off-slide
+  // frames never wake the editor. Init failure is LOUD and user-visible.
+  let videoV8El = $state(null);
+  let videoV8 = $state(null);
+  let videoV8Error = $state(null);
+  let currentV8Refs = new Set(); // non-reactive: last paint's on-screen V8 video sources
+  $effect(() => {
+    if (!videoV8El || videoV8 || videoV8Error) return;
+    createVideoV8Overlay(videoV8El)
+      .then((o) => (videoV8 = o))
+      .catch((e) => {
+        videoV8Error = String(e?.message ?? e);
+        console.error("PowerRP: Video V8 overlay init failed:", e);
+      });
+  });
+  onDestroy(() => videoV8?.dispose());
+  $effect(() => onVideoV8Frame((src) => { if (currentV8Refs.has(src)) imageEpoch += 1; }));
   // Active Blender-style modal transform bookkeeping (non-reactive, like drag).
   // {kind: "grab"|"scale", startWorld, members, center, axis, buffer}. Started
   // when app.modalXform is set (G/S shortcut) and captured by the effect below;
@@ -291,7 +317,7 @@
   onDestroy(() => gpu?.dispose());
 
   $effect(() => {
-    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; app.latexEditing; app.codeEditing; viewport; wrapW; wrapH; gpu; imageEpoch;
+    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; app.latexEditing; app.codeEditing; viewport; wrapW; wrapH; gpu; imageEpoch; videoV8;
     paint();
   });
 
@@ -445,6 +471,12 @@
     // The overlay draws itself via requestVideoFrameCallback, independent of
     // this paint loop; assigning a fresh array just re-runs its reconcile.
     videoV7Descs = videoV7Descriptors(nodes, view);
+    // VIDEO V8 GATE (same off-view=zero-cost rule, separate registry): pause every
+    // V8 clip NOT in the post-cull visible set, and gate the repaint wake to the
+    // V8 sources this frame actually draws.
+    const v8Refs = videoV8SourcesOf(nodes);
+    setActiveVideoV8Refs(v8Refs);
+    currentV8Refs = v8Refs;
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background
@@ -473,6 +505,11 @@
     // camera's per-draw coverage-AA — the LIVE edge-smoothing control (no surface
     // recreation): "off" ⇒ crisp jagged edges, "standard" ⇒ smooth (the default).
     gpu.render(ir, view, { background: [0, 0, 0, 0], dither: cameraDither(state), antialias: antialiasCoverage(cameraAntialias(state)) });
+    // VIDEO V8 OVERLAY: draw the live frames on the stacked overlay canvas AFTER the
+    // Skia scene, using the SAME view + device size so the quads pin exactly over
+    // each widget's poster. Draws nothing (a transparent clear) when no V8 clip is
+    // on-screen. No-op until the async backend is ready.
+    videoV8?.paint(nodes, view, canvasEl.width, canvasEl.height);
     app.renderFrameCount += 1;
   }
 
@@ -2419,6 +2456,14 @@
       <!-- Per-widget WebGPU video canvases, composited by the browser OVER the
            Skia scene and UNDER the SVG selection overlay (video_v7). -->
       <VideoV7Overlay descs={videoV7Descs} />
+      <!-- VIDEO V8 overlay: ONE canvas stacked directly over .scene (below the
+           .overlay SVG chrome), transparent except where a V8 video plays. Its
+           backend (WebGPU zero-copy / WebGL2 upload) is created async in an effect
+           above; pointer-events:none so all input still reaches the SVG overlay. -->
+      <canvas bind:this={videoV8El} class="video-v8-overlay"></canvas>
+      {#if videoV8Error}
+        <div class="gpu-error">Video V8 overlay init failed. {videoV8Error}</div>
+      {/if}
       {#if gpuError}
         <!-- No render fallback by decree (manifest RENDER MODES DECISION) —
              the failure is loud and names itself. -->
