@@ -232,6 +232,63 @@ void blendAppearance(float2 pl, out float3 col, out float strength, out float re
   refr = rsum * inv;
 }
 
+// Pure (reads uniforms). The horizontal surface DIRECTION as a PARTITION-WEIGHTED
+// blend of each ball's OWN outward gradient direction, using the SAME exp-softmin
+// weights as blendAppearance: D = Σ ŵ_i · dir_i, dir_i = normalize(∇d_i), Σ ŵ_i = 1.
+//
+// WHY not normalize(∇F) like a lone bead: the smooth-union field has a SADDLE at a
+// merge neck where ∇F → 0, so normalize(∇F) SPINS there → a shading singularity (the
+// midpoint "pinch"/beak). Each individual dir_i is instead smooth everywhere (a ball's
+// own outward direction), so blending them never divides a vanishing gradient. At a
+// neck the two balls' directions are OPPOSED and their weights TIE, so they cancel:
+// |D| → 0. Deep inside one ball that ball owns the pixel (ŵ_i → 1) so D = dir_i, |D| = 1
+// — identical to the lone-bead normal. Thus |D| ∈ [0,1] is a DOMINANCE factor the dome
+// folds in (Nxy = D·ω): full tilt where one ball dominates, flat (+z) at a contested
+// neck. DIRECTION-ONLY (every dir_i is normalized) ⇒ the fixed-px central-difference
+// step cancels ⇒ NO device-px magnitude anywhere ⇒ fully scale/zoom invariant.
+float2 fieldNormalDir(float2 pl) {
+  float minHalf = min(uHalfSize.x, uHalfSize.y);
+  float unit = uUnit * minHalf;
+  float k = max(uSmoothK * unit, BLEND_K_MIN_PX);   // same partition width as the appearance blend
+  float eps = GRAD_EPS_PX;
+  // pass 1 — nearest primitive distance (exp-softmin stability; cancels in the ratio).
+  float dmin = FIELD_FAR;
+  for (int i = 0; i < MAX_METABALLS; i++) {
+    if (float(i) >= uBallCount) break;
+    float type = uBalls[i * ${FIELDS_PER_BALL}];
+    float2 c = float2((uBalls[i * ${FIELDS_PER_BALL} + 1] - 0.5) * 2.0 * uHalfSize.x,
+                      (uBalls[i * ${FIELDS_PER_BALL} + 2] - 0.5) * 2.0 * uHalfSize.y);
+    float r = max(uBalls[i * ${FIELDS_PER_BALL} + 3] * minHalf, 0.0);
+    float el = max(uBalls[i * ${FIELDS_PER_BALL} + 4] * minHalf, 0.0);
+    float ang = uBalls[i * ${FIELDS_PER_BALL} + 5];
+    dmin = min(dmin, primitiveSDF(pl, type, c, r, el, ang));
+  }
+  // pass 2 — weighted sum of per-ball OUTWARD directions (central-difference gradient
+  // of THIS primitive, normalized; magnitude discarded).
+  float2 dsum = float2(0.0);
+  float wsum = 0.0;
+  for (int i = 0; i < MAX_METABALLS; i++) {
+    if (float(i) >= uBallCount) break;
+    float type = uBalls[i * ${FIELDS_PER_BALL}];
+    float2 c = float2((uBalls[i * ${FIELDS_PER_BALL} + 1] - 0.5) * 2.0 * uHalfSize.x,
+                      (uBalls[i * ${FIELDS_PER_BALL} + 2] - 0.5) * 2.0 * uHalfSize.y);
+    float r = max(uBalls[i * ${FIELDS_PER_BALL} + 3] * minHalf, 0.0);
+    float el = max(uBalls[i * ${FIELDS_PER_BALL} + 4] * minHalf, 0.0);
+    float ang = uBalls[i * ${FIELDS_PER_BALL} + 5];
+    float d = primitiveSDF(pl, type, c, r, el, ang);
+    float w = exp(-(d - dmin) / k);
+    float2 gi = float2(
+      primitiveSDF(pl + float2(eps, 0.0), type, c, r, el, ang) - primitiveSDF(pl - float2(eps, 0.0), type, c, r, el, ang),
+      primitiveSDF(pl + float2(0.0, eps), type, c, r, el, ang) - primitiveSDF(pl - float2(0.0, eps), type, c, r, el, ang)
+    );
+    float gl = length(gi);
+    float2 diri = gl > 0.0 ? gi / gl : float2(0.0);   // own center: ω→0 makes this harmless
+    dsum += w * diri;
+    wsum += w;
+  }
+  return dsum / max(wsum, BLEND_EPS);
+}
+
 half4 main(float2 p) {
   // device pixel → the widget's LOCAL centered frame (uAngle == 0 is axis-aligned).
   float cba = cos(uAngle), sba = sin(uAngle);
@@ -246,23 +303,22 @@ half4 main(float2 p) {
   float cov = 1.0 - smoothstep(-AA_PX, AA_PX, field);
   if (cov <= 0.0) { return half4(0.0); }          // outside every droplet: contribute nothing
 
-  // outward 2D normal from the field gradient (an SDF gradient is ~unit length).
-  float e = GRAD_EPS_PX;
-  float2 g = float2(
-    sceneField(pl + float2(e, 0.0)) - sceneField(pl - float2(e, 0.0)),
-    sceneField(pl + float2(0.0, e)) - sceneField(pl - float2(0.0, e))
-  );
-  float glen = length(g);
-  float2 nl = glen > 0.0 ? g / glen : float2(0.0, -1.0);
+  // outward 2D horizontal direction — a PARTITION-WEIGHTED blend of each ball's OWN
+  // outward direction (see fieldNormalDir), NOT normalize(∇F). |D| ≤ 1 is a DOMINANCE
+  // factor: 1 where one ball owns the pixel (⇒ identical to the old lone-bead normal),
+  // → 0 at a merge neck where opposed balls tie (⇒ flat +z, no singular pinch/beak).
+  float2 D = fieldNormalDir(pl);
 
-  // SPHERICAL-CAP dome coordinate ω: 1 at the rim (field ≈ 0), → 0 at the dome
-  // peak (depth ≥ domeDepth). The 3D bead normal is (∇F·ω, √(1−ω²)).
+  // SPHERICAL-CAP dome coordinate ω: 1 at the rim (field ≈ 0), → 0 at the dome peak
+  // (depth ≥ domeDepth). The 3D bead normal is (D·ω, √(1−ω²·|D|²)); for a lone ball
+  // |D|=1 so this is exactly (∇F·ω, √(1−ω²)) as before — byte-identical, no regression.
   float domeDepth = max(uBulge * unit, 1.0);
   float t = max(-field, 0.0);                     // how deep inside the surface
   float omega = clamp(1.0 - t / domeDepth, 0.0, 1.0);
-  float nz = sqrt(max(1.0 - omega * omega, 0.0));
+  float2 nlxy = D * omega;                        // horizontal normal, dominance-damped near necks
+  float nz = sqrt(max(1.0 - dot(nlxy, nlxy), 0.0));
   // rotate the horizontal normal back to DEVICE space (refraction + light are screen-space)
-  float2 Nxy = float2(cba * nl.x - sba * nl.y, sba * nl.x + cba * nl.y) * omega;
+  float2 Nxy = float2(cba * nlxy.x - sba * nlxy.y, sba * nlxy.x + cba * nlxy.y);
   float3 N = float3(Nxy, nz);
 
   // PER-BALL FLUID APPEARANCE — the field-weighted blend at this pixel (color +
