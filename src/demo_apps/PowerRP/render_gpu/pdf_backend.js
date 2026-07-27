@@ -1162,7 +1162,7 @@ async function emitCrop(cmd, world, region, out, ctx) {
  * its `default` stays a LOUD guard so a set/switch drift fails fast (no silent
  * fallback) rather than mis-rendering.
  */
-export const VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon", "path", "text", "latexVector", "image", "video"]);
+export const VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon", "path", "text", "latexVector", "image", "video", "videoV5"]);
 
 /** Command (appends operators, registers resources via ctx). One vector drawable. */
 function emitVector(cmd, world, out, ctx) {
@@ -1355,6 +1355,15 @@ function emitVector(cmd, world, out, ctx) {
       ops.push(...imagePlacementOps(cmd, name));
       break;
     }
+    case "videoV5":
+      // V5 is an EDITOR off-main-thread perf experiment; the vector PDF backend
+      // has no frame-embed for it (its <video> lives in the browser-only V5
+      // registry, unreachable from a node/export grab), so it draws NOTHING here —
+      // deterministic and crash-free. (In-browser PNG export DOES show the current
+      // V5 frame, since skia/browser_media.sceneMedia resolves videoV5.) A known
+      // bound, matched by svg_backend. In VECTOR_OPS so it routes here, not the
+      // raster fallback.
+      break;
     default:
       throw new Error(`pdf_backend: unknown op "${cmd.op}"`);
   }

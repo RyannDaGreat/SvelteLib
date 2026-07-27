@@ -26,6 +26,7 @@
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onVideoFrame, setActiveVideoRefs } from "../render_gpu/gpu/video_registry.js";
+  import { onVideoV5Frame, setActiveVideoV5Refs } from "../render_gpu/skia/video_v5.js"; // V5 off-main-thread video: same wake+gate contract as the core video path
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import * as T from "../core/transform.js";
@@ -227,6 +228,10 @@
   // media only; off-slide/off-screen frames are ignored.
   let currentMediaRefs = new Set(); // non-reactive: the last paint's on-screen video sources
   $effect(() => onVideoFrame((src) => { if (currentMediaRefs.has(src)) imageEpoch += 1; }));
+  // V5 off-main-thread video: its own registry pumps a distinct frame nudge; wake
+  // the reactive paint on a NEW frame of an on-screen V5 clip (same gate as above,
+  // currentMediaRefs includes "video_v5" sources below).
+  $effect(() => onVideoV5Frame((src) => { if (currentMediaRefs.has(src)) imageEpoch += 1; }));
   // Active Blender-style modal transform bookkeeping (non-reactive, like drag).
   // {kind: "grab"|"scale", startWorld, members, center, axis, buffer}. Started
   // when app.modalXform is set (G/S shortcut) and captured by the effect below;
@@ -402,10 +407,15 @@
     // it never thrashes per paint. Scrubbers (paused, seek-driven — not autoplay)
     // are untouched.
     setActiveVideoRefs(videoSourcesOf(nodes, "video"));
+    // V5 off-main-thread video: same POST-cull playback gate as the core path —
+    // an off-view V5 clip PAUSES (captureStream stops → its worker starves → zero
+    // decode/convert cost), resuming from its prior currentTime on re-entry.
+    setActiveVideoV5Refs(videoSourcesOf(nodes, "video_v5"));
     // WAKE SET (repaint gate above): the video/scrubber sources the CURRENT frame
     // actually draws (post-cull) — an off-screen or off-slide frame must not wake
     // the editor. Rebuilt every paint so a newly-shown clip is picked up at once.
-    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub");
+    // Includes "video_v5" so the V5 frame nudge wakes only for on-screen V5 clips.
+    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5");
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background

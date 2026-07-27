@@ -35,6 +35,7 @@
 
 import { getSkiaImage } from "../gpu/image_registry.js";
 import { getSkiaVideoFrame, getScrubFrame, requestScrubFrame } from "../gpu/video_registry.js";
+import { getVideoV5Frame } from "./video_v5.js"; // V5 off-main-thread video path (additive; its own registry)
 import { scrubFrameKey } from "../ir.js";
 
 /**
@@ -130,6 +131,16 @@ export function sceneMedia(uploader, commands) {
     if (frame) {
       media[ref] = frame;
       if (!uploader.isGpu) frames.push(frame); // CPU: fresh readback Image → release deletes it. GPU: reused in place → do NOT delete.
+    }
+  }
+  // V5 off-main-thread video: same GPU-reuse / CPU-fresh contract as `video`
+  // above, but resolved through the V5 registry (worker-produced ImageBitmap →
+  // texture). Additive — a scene with no videoV5 op does zero extra work.
+  for (const ref of refsForOp(commands, "videoV5")) {
+    const frame = getVideoV5Frame(uploader, ref);
+    if (frame) {
+      media[ref] = frame;
+      if (!uploader.isGpu) frames.push(frame);
     }
   }
   // SCRUBBER frames: keyed by scrubFrameKey (ref+time+wrap) so two scrubbers on

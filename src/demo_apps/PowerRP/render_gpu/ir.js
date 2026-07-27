@@ -444,6 +444,24 @@ export function videoV2({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, 
   return { op: "videoV2", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh), autoplay: !!autoplay, loop: !!loop, muted: !!muted };
 }
 
+/**
+ * Pure function. Video quad drawn through the OFF-MAIN-THREAD V5 frame pipeline
+ * (render_gpu/skia/video_v5.js resolves the ref to a CanvasKit Image from a
+ * worker-produced ImageBitmap). Byte-identical op SHAPE to video() — same
+ * ref/quad/opacity/source-rect — so paint_skia and the export backends draw it
+ * exactly like a `video` op; only the media-resolution SOURCE differs (V5's own
+ * registry, not gpu/video_registry.js). Additive: the core `video` op is
+ * untouched, so the two paths coexist for an A/B.
+ *
+ * @example videoV5({ref: "clip1", x: 0, y: 0, w: 320, h: 180}).op // "videoV5"
+ * @example videoV5({ref: "clip1", x: 0, y: 0, w: 320, h: 180}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ */
+export function videoV5({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1 }) {
+  if (typeof ref !== "string") throw new Error(`videoV5: "ref" must be a string, got ${JSON.stringify(ref)}`);
+  requireFinite("videoV5", { x, y, w, h, opacity, sx, sy, sw, sh });
+  return { op: "videoV5", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh) };
+}
+
 // ── videoFrame (the SCRUBBER's deterministic frame-at-time op) ─────────────────
 // The video PLAYER's `video` op draws the element's WALL-CLOCK current frame
 // (non-deterministic while playing). The SCRUBBER's `videoFrame` op instead
@@ -1276,4 +1294,4 @@ export function flattenIR(commands) {
 }
 
 /** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "videoFrame", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "videoV5", "videoFrame", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];

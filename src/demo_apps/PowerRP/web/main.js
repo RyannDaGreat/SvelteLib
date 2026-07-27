@@ -20,6 +20,7 @@ import { parseColor } from "../render_gpu/ir.js";
 import { rasterizeIrPng } from "./gpuService.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 import { videoUploadCount, videoPlaybackState } from "../render_gpu/gpu/video_registry.js";
+import { videoV5UploadCount, videoV5State } from "../render_gpu/skia/video_v5.js";
 
 // Dev/test seams (like __powerrp_render / __powerrp_app): the running total of
 // <video>→GPU-texture uploads (probe confirms the frame-advance gate keeps uploads
@@ -27,6 +28,12 @@ import { videoUploadCount, videoPlaybackState } from "../render_gpu/gpu/video_re
 // off-view players PAUSE and RESUME from their prior currentTime). Zero prod effect.
 window.__powerrp_videoUploadCount = videoUploadCount;
 window.__powerrp_videoState = videoPlaybackState;
+// V5 off-main-thread video diagnostics (its own registry): ImageBitmap→texture
+// upload count (the seq gate keeps it at ~video-rate) and a per-src snapshot
+// ({status, mode, paused, currentTime, seq, hasBitmap}) — a probe asserts motion
+// (seq advances), off-view PAUSE/RESUME, and the active pipeline mode. Zero prod effect.
+window.__powerrp_videoV5UploadCount = videoV5UploadCount;
+window.__powerrp_videoV5State = videoV5State;
 
 /**
  * Browser render hook (a few in-browser pixel-parity probes await it via

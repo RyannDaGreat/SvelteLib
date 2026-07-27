@@ -17,6 +17,7 @@ import { renderWithDither } from "./dither_shader.js";
 import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
 import { makeGpuUploader, disposeUploaderScope } from "../gpu/video_registry.js";
+import { disposeVideoV5Scope } from "./video_v5.js"; // free V5's texture Images for this scope on teardown (additive)
 import { clampSurfaceSize, MAX_SURFACE_DIM } from "../../core/clip.js";
 import { reportOnce } from "../../core/report.js";
 
@@ -170,6 +171,8 @@ export class SkiaSurface {
     // Free this context's reused video textures BEFORE the GrContext dies — a
     // later eviction .delete() on a torn-down context would fault the wasm heap.
     disposeUploaderScope(this._uploader.scopeId);
+    disposeVideoV5Scope(this._uploader.scopeId); // V5 keeps its own per-scope texture Images
+
     this.surface?.delete();
     this.grContext?.delete();
     if (this.ctxHandle) this.CanvasKit.deleteContext(this.ctxHandle);

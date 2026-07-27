@@ -321,7 +321,11 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa);
       break;
     case "image":
-    case "video": {
+    case "video":
+    // V5 off-main-thread video: SAME quad draw as `video` (same op shape, same
+    // media[ref] lookup) — only the media-resolution source differs (V5's own
+    // registry populates media[ref] in browser_media.sceneMedia). Additive.
+    case "videoV5": {
       const img = media[cmd.ref];
       // Absent media ⇒ draw NOTHING this frame (the async media contract): a
       // genuinely FAILED asset is reported loudly by image_registry/video_registry

@@ -233,7 +233,7 @@ export function roundedRectPathD({ x, y, w, h, cornerRadius = 0 }) {
  * because it must stay in lockstep with THIS file's switch below (whose `default`
  * remains a LOUD guard for a set/switch drift — no silent geometry drop).
  */
-export const SVG_VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon", "path", "text", "latexVector", "image", "video"]);
+export const SVG_VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon", "path", "text", "latexVector", "image", "video", "videoV5"]);
 
 /**
  * Pure function. Serializes one PLAIN VECTOR drawable command (no effects) to an
@@ -315,6 +315,12 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       // matching the image op's single-element opacity attr, but on the group).
       return g((cmd.opacity ?? 1) !== 1 ? `<g opacity="${fmt(cmd.opacity)}">${inner}</g>` : inner);
     }
+    case "videoV5":
+      // V5 off-main-thread video is an EDITOR perf experiment with no vector-export
+      // frame source (its <video> is in the browser-only V5 registry), so it draws
+      // NOTHING here — deterministic, crash-free. Matches pdf_backend; in
+      // SVG_VECTOR_OPS so it routes to this switch, not the raster fallback.
+      return "";
     default:
       throw new Error(`svg_backend: unknown op "${cmd.op}"`);
   }

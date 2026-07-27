@@ -488,6 +488,7 @@
         // LINKED on creation (bar.fraction = `= @<scrubber>.progress`). Direct
         // multi-item create (not crosshair): the cross-reference needs the runtime id.
         { id: "demo-insert-video-progress", title: "Video with Progress Bar (scrubber + linked bar)", icon: "mdi:video-box", run: (a) => a.insertVideoWithProgressBar() },
+        { id: "demo-insert-video-v5", title: "Video V5 (OffscreenCanvas/worker)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v5")) },
       ],
     },
     // INSERT SHAPE — ONE submenu collecting the arbitrary parametric
