@@ -499,6 +499,7 @@
         // the Skia scene; the scene shows only its deterministic poster.
         { id: "demo-insert-video-v7", title: "Video V7 (WebGPU per-widget canvas)", icon: "mdi:video-vintage", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v7")) },
         { id: "demo-insert-video-v8", title: "Video V8 (WebGPU + WebGL2 fallback)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v8")) },
+        { id: "demo-insert-comic", title: "Comic Halftone (Ben-Day dots — backdrop material shader)", icon: "mdi:dots-grid", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_comic")) },
       ],
     },
     // INSERT SHAPE — ONE submenu collecting the arbitrary parametric
