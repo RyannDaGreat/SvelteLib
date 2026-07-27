@@ -432,6 +432,7 @@
       icon: "mdi:flask-outline",
       children: [
         { id: "demo-insert-showcase", title: "Demo Showcase (custom self.* prop)", icon: "mdi:flask", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_showcase")) },
+        { id: "demo-insert-video-v2", title: "Video V2 (Skia direct upload)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v2")) },
         { id: "demo-insert-glass", title: "Liquid Glass (backdrop refraction shader)", icon: "mdi:blur", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_glass")) },
         { id: "demo-insert-crt", title: "CRT (backdrop material shader)", icon: "mdi:television-classic", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_crt")) },
         { id: "demo-insert-metaball", title: "Metaball (merging water droplets — backdrop material shader)", icon: "mdi:water", run: (a) => a.armCrosshairPlacement(a.registry.get("metaball")) },

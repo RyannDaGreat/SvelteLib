@@ -423,6 +423,27 @@ export function video({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh
   return { op: "video", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh) };
 }
 
+/**
+ * Pure function. Video quad for the V2 DIRECT-UPLOAD Skia path (a distinct op from
+ * `video`, handled by render_gpu/skia/video_v2.js — a texture-backed frame minted
+ * with makeImageFromTextureSource/updateTextureFromSource, no CPU readback). Same
+ * quad + `sx/sy/sw/sh` edge-crop source rect + opacity as video(), but ALSO
+ * carries the playback flags (autoplay/loop/muted) IN the op — unlike the `video`
+ * op, whose flags are read off document state by the shared registry. Video V2
+ * owns its own element registry, so the flags travel with the draw command that
+ * configures the `<video>` on first sight.
+ *
+ * @example videoV2({ref: "clip1", x: 0, y: 0, w: 320, h: 180}).op // "videoV2"
+ * @example videoV2({ref: "clip1", x: 0, y: 0, w: 320, h: 180}).autoplay // true
+ * @example videoV2({ref: "clip1", x: 0, y: 0, w: 320, h: 180, muted: false}).muted // false
+ * @example videoV2({ref: "clip1", x: 0, y: 0, w: 320, h: 180}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ */
+export function videoV2({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, autoplay = true, loop = true, muted = true }) {
+  if (typeof ref !== "string") throw new Error(`videoV2: "ref" must be a string, got ${JSON.stringify(ref)}`);
+  requireFinite("videoV2", { x, y, w, h, opacity, sx, sy, sw, sh });
+  return { op: "videoV2", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh), autoplay: !!autoplay, loop: !!loop, muted: !!muted };
+}
+
 // ── videoFrame (the SCRUBBER's deterministic frame-at-time op) ─────────────────
 // The video PLAYER's `video` op draws the element's WALL-CLOCK current frame
 // (non-deterministic while playing). The SCRUBBER's `videoFrame` op instead

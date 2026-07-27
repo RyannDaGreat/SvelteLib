@@ -48,6 +48,7 @@ import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill } fro
 import * as T from "../../core/transform.js";
 import { fitBox } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
+import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("videoV2") — self-resolving frame registry (additive; import-safe in node)
 
 const RAD2DEG = 180 / Math.PI;
 
@@ -115,6 +116,11 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // `antialias` rides on ctx so every leaf/border draw reaches the ONE per-frame
   // coverage-AA setting without re-threading it through each helper signature.
   const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality };
+  // liveGpu: was a real GPU factory passed in (editor/presenter on-screen or GPU
+  // offscreen), or are we on a CPU surface (node/tests/gpuService)? The videoV2 op
+  // uploads frames STRAIGHT to a GL texture only on the live path; on CPU it falls
+  // back to a readback poster. `makeSurface !== null` is exactly that discriminator.
+  ctx.liveGpu = makeSurface !== null;
   // The letterbox clip (device px), built once — applied AFTER the full-surface
   // clear so the bars keep `background` and only the scene is clipped.
   const scissorRect = scissor ? CanvasKit.LTRBRect(scissor.x, scissor.y, scissor.x + scissor.w, scissor.y + scissor.h) : null;
@@ -217,6 +223,18 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
         // NO backdrop re-render, NO children. The additive sibling of materialBackdrop.
         handleMaterialFill(CanvasKit, target, cmd, world, view, ctx);
         break;
+      case "videoV2": {
+        // V2 direct-upload video: draws in local space like a leaf (save +
+        // applyView), but resolves its OWN texture-backed frame through
+        // render_gpu/skia/video_v2.js (self-resolving — NOT via ctx.media, which
+        // browser_media.js never populates for this op) using ctx.liveGpu +
+        // ctx.makeSurface. Additive; leaves the default leaf branch untouched.
+        canvas.save();
+        applyView(canvas, view, world);
+        drawVideoV2(CanvasKit, canvas, cmd, cmd.opacity ?? 1, ctx);
+        canvas.restore();
+        break;
+      }
       case "cropSubtree":
         handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth);
         break;
