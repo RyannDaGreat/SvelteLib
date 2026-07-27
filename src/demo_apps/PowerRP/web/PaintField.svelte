@@ -162,6 +162,7 @@
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
+  import GradientPresetPicker from "./GradientPresetPicker.svelte";
   import { getPath } from "../core/deltas.js";
 
   let { app, path, label, value, disabled = false } = $props();
@@ -237,6 +238,15 @@
   function removeStop(i) {
     if (stops.length <= 2) return;
     commitAt([subKey, "stops"], stops.filter((_, j) => j !== i));
+  }
+
+  /** Command. Replaces the active gradient's stops with a preset's (from the
+   * GradientPresetPicker — a baked rp gradient). One whole-list write, one undo
+   * unit. Geometry (angle / center+radius) is untouched; only the color ramp
+   * changes. */
+  function applyPreset(presetStops) {
+    if (disabled) return;
+    commitAt([subKey, "stops"], presetStops);
   }
 
   // The linear DIRECTION as a heading in DEGREES — the authoritative stored
@@ -346,6 +356,10 @@
         style="align-self:flex-start; font-size:var(--a-font-sm); color:var(--fg-dim); background:transparent;
                border:1px dashed var(--border); border-radius:var(--radius); padding:var(--a-sp-1) var(--a-sp-2); cursor:pointer;"
       >+ Add stop</button>
+
+      <!-- PRESET LIBRARY — a tiled grid of gradient swatches (baked from rp's
+           gradient library). Picking one replaces the stops above. -->
+      <GradientPresetPicker {disabled} onpick={applyPreset} />
     </div>
 
     <!-- GEOMETRY -->

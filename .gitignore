@@ -4,8 +4,10 @@ package-lock.json
 .claude_logs/
 .claude_vlm_checks/
 .claude_todo.md
+.claude_todo*.md
 .claude_diffs/
 scratchpad*.py
+scratchpad*.js
 
 
 #<RP Default Gitignore Start>

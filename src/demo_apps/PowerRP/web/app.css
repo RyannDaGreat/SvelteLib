@@ -98,6 +98,13 @@
   --a-shape-tile: 60px;
   --a-shape-tile-icon: 40px;
   --a-shape-tile-stroke: 4;
+  /* Gradient PRESET LIBRARY (the tiled swatch picker in PaintField): each swatch
+     tile's height, the minimum column width the grid auto-fills to, and the
+     scroll cap on the inline grid (so a 343-swatch library never runs off the
+     Inspector — it scrolls internally). */
+  --a-gradient-swatch-h: 22px;
+  --a-gradient-swatch-min-w: 46px;
+  --a-gradient-grid-max-h: 200px;
   /* Floating CANVAS TOOLBAR (the general above-the-widget popover, e.g. the
      macOS-cursor visual grid): one square tile, the columns the grid wraps at,
      the scroll cap, and the gap between the panel and the widget it floats over.
@@ -866,6 +873,94 @@ body,
   color: var(--fg-dim);
   text-align: center;
   line-height: 1.1;
+}
+
+/* ── Gradient PRESET LIBRARY (the tiled swatch picker in PaintField) ──────────
+   A full-width toggle button (a control-height row: icon + label + caret) that
+   reveals a searchable, height-capped grid of little gradient swatches INLINE
+   (like ColorField's picker) — the Inspector's overflow would clip a floating
+   popover, so the grid lives in the panel's own flow and scrolls internally.
+   Each swatch paints the preset's gradient, passed in as the --gp-swatch custom
+   property (data, not a token); hover raises a selection-accent ring. */
+.gradient-presets {
+  display: block;
+}
+
+.gradient-presets-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  width: 100%;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-3);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  color: var(--fg);
+  font-size: var(--a-font-sm);
+  cursor: pointer;
+}
+
+.gradient-presets-toggle:hover:not(:disabled) {
+  background: var(--a-hover-bg);
+}
+
+.gradient-presets-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gradient-presets-caret {
+  margin-left: auto;
+}
+
+.gradient-presets-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  margin-top: var(--a-sp-2);
+}
+
+.gradient-presets-search {
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-3);
+  border: var(--a-hairline) solid var(--border);
+  background: var(--control-bg);
+  color: var(--fg);
+  font-size: var(--a-font-md);
+}
+
+.gradient-presets-search::placeholder {
+  color: var(--fg-dim);
+}
+
+.gradient-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--a-gradient-swatch-min-w), 1fr));
+  gap: var(--a-sp-2);
+  max-height: var(--a-gradient-grid-max-h);
+  padding: var(--a-sp-1);
+  overflow-y: auto;
+}
+
+.gradient-swatch {
+  height: var(--a-gradient-swatch-h);
+  padding: 0;
+  border: var(--a-hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--gp-swatch);
+  cursor: pointer;
+}
+
+.gradient-swatch:hover {
+  box-shadow: 0 0 0 var(--a-selection-stroke) var(--a-selection);
+}
+
+.gradient-presets-empty {
+  grid-column: 1 / -1;
+  padding: var(--a-sp-3);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  text-align: center;
 }
 
 /* ── Floating canvas toolbar (general above-the-widget popover) ───────────── */
