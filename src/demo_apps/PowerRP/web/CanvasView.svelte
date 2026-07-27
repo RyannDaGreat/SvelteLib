@@ -42,6 +42,7 @@
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
   import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (reusable code-string editor; no widget binds it by default)
   import CanvasToolbar from "./CanvasToolbar.svelte"; // GENERAL floating canvas toolbar (double-click a widget that declares floatingToolbar); mounted as a canvas overlay
+  import VideoV6Overlay from "./VideoV6Overlay.svelte"; // ONE shared WebGPU external-texture canvas over the scene; draws live V6 video frames (WebGL2 upload fallback on plain HTTP)
   import { copyText } from "./clipboard.js"; // HTTP-safe clipboard write (anchor-copy affordance, below)
 
   let { app } = $props();
@@ -244,6 +245,15 @@
   let modal = null;
   let modalCenter = $state(null); // {x, y} world — the scale pivot dot, or null
 
+  // VIDEO V6 (fresh WebGPU external-texture overlay): the POST-CULL visible
+  // video_v6 nodes + the current view + the scene canvas's device size, handed to
+  // VideoV6Overlay (a separate canvas stacked over the scene). Assigned in paint();
+  // the overlay draws live frames on its OWN requestVideoFrameCallback loop, so
+  // playback never re-runs this Skia paint (zero scene cost per video frame).
+  let videoV6Nodes = $state([]);
+  let videoV6View = $state(null);
+  let videoV6Device = $state({ w: 0, h: 0 });
+
   // Repaint whenever anything visible changes — INCLUDING the container size
   // (wrapW/wrapH), so pane resizes re-render instead of stretching the bitmap.
   // THE renderer (2026 render rewrite): the content canvas is Skia (CanvasKit)
@@ -416,6 +426,14 @@
     // the editor. Rebuilt every paint so a newly-shown clip is picked up at once.
     // Includes "video_v5" so the V5 frame nudge wakes only for on-screen V5 clips.
     currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5");
+    // VIDEO V6 OVERLAY FEED (additive): the post-cull visible video_v6 nodes + the
+    // view + scene device size for VideoV6Overlay (its own WebGPU/WebGL2 canvas
+    // above the scene). It gates + draws its own <video> elements; Skia draws only
+    // each widget's backing rect (plugins/demo/video_v6.js emit()). A culled/off-
+    // slide video_v6 is simply absent from `nodes`, so the overlay pauses it.
+    videoV6Nodes = nodes.filter((n) => n.type === "video_v6");
+    videoV6View = view;
+    videoV6Device = { w: canvasEl.width, h: canvasEl.height };
     // The camera's background shows in the editor too (round 11: "I can't
     // see it in the main editing area") — first draw, under all content;
     // outside the camera bbox the transparent clear keeps the app background
@@ -2382,6 +2400,11 @@
            compositor never sees it (editor-only chrome). -->
       <canvas bind:this={gridEl} class="grid-underlay"></canvas>
       <canvas bind:this={canvasEl} class="scene"></canvas>
+      <!-- VIDEO V6 (additive): ONE shared WebGPU external-texture canvas over the
+           scene; transparent where no video. Stacked above .scene but below the
+           .overlay SVG, and pointer-events:none, so all interaction still reaches
+           the SVG below it. -->
+      <VideoV6Overlay nodes={videoV6Nodes} view={videoV6View} deviceW={videoV6Device.w} deviceH={videoV6Device.h} />
       {#if gpuError}
         <!-- No render fallback by decree (manifest RENDER MODES DECISION) —
              the failure is loud and names itself. -->

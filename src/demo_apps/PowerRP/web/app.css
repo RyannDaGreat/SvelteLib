@@ -963,6 +963,17 @@ body,
   height: 100%;
 }
 
+/* VIDEO V6 overlay — one shared canvas stacked over the .scene (video draws on
+   top of the scene) but under the .overlay SVG chrome; pointer-events:none so all
+   interaction falls through to the SVG. Same full-cover box as .scene. */
+.canvas-wrap .video-v6-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .canvas-wrap .overlay {
   touch-action: none;
 }
