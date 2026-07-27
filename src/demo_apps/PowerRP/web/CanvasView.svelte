@@ -324,6 +324,13 @@
       registry: app.registry,
       width,
       height,
+      // The minimap is a ~150px OVERVIEW — proxy quality (like SlideNav thumbnails),
+      // NOT full. Full quality ran heavy generative materialFill shaders (lens
+      // flare ~1.3s) on the CPU surface, and because this effect is gated off
+      // during drag (previewDelta) it fired that render on POINTER-UP → a ~1s
+      // freeze on drop (the reported lens-flare drag spike). Proxy routes it
+      // through the cheap material stand-ins (drawProxyMaterialFill, ~6ms).
+      quality: "proxy",
     }).then((thumb) => (minimapThumb = thumb.toDataURL("image/png")));
   });
 
