@@ -24,6 +24,7 @@ import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from 
 import { bundleDefaults } from "../core/properties.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
+import { imageSignature } from "./clipboard.js"; // canvas-clipboard disambiguation signature
 import * as projectApi from "./projectApi.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -1335,92 +1336,62 @@ export class PowerRPApp {
   // a permission browsers deny silently (the root cause of the paste-does-
   // nothing bug). The server keys the copy by session cookie, so a second open
   // presentation pastes it with zero permission prompts.
+  //
+  // DISAMBIGUATION (the canvas-clipboard round-trip): copying an element ALSO
+  // puts a rendered PNG on the OS clipboard, so a plain Cmd+V's `paste` event
+  // carries an image (OUR render). We store the SIGNATURE of that PNG
+  // (imageSignature) as `png_sig` ALONGSIDE the item JSON on the SERVER — not in
+  // a per-tab in-memory field — so a SECOND open presentation (different tab,
+  // same session) can still recognize the render as ours: on paste we sign the
+  // incoming image and compare to the server payload's png_sig. Match → paste
+  // the ELEMENT; mismatch (or no internal copy) → paste the image as a new
+  // widget. Storing the signature on the server (not the bytes in a tab-local
+  // field) is what makes the cross-tab round-trip and the stale-copy either/or
+  // both correct — see pasteFromClipboard.
 
-  // The bytes of the PNG we last wrote to the OS clipboard on copy (or null).
-  // WHY it exists: copying now ALSO puts a rendered PNG on the OS clipboard, so
-  // the 13.3 paste-to-upload listener (App.svelte onPaste) would otherwise
-  // re-upload OUR OWN render as a new image asset on an internal Cmd+V. The
-  // disambiguation RULE (flagged for the user): if a pasted OS-clipboard file's
-  // bytes byte-match this last-copied render, it is OUR internal copy — skip the
-  // upload (the item paste already ran via the Cmd+V keydown path). An EXTERNAL
-  // image (different bytes, or no internal copy) still uploads-and-inserts, so
-  // 13.3 is preserved. Bytes-equality (not a hash) is exact and needs no hash
-  // dependency; the render is small (a selection crop). Not $state — no UI reads.
-  #lastCopiedPng = null;
-
-  /** Command (async). COPY the selected item (manifest 14.10 AMENDED). Writes
-   *  the item's RAW state (equations stay equations) to the SERVER-SIDE session
-   *  clipboard, then writes a rendered PNG of the selection to the OS clipboard.
-   *  Either write failing is REPORTED loudly — a copy must never fail silently. */
+  /** Command (async). COPY the selected item (the canvas-clipboard COPY half).
+   *  Renders the selection PNG FIRST so its signature can travel WITH the item
+   *  JSON: writes {powerrp_item: rawState, png_sig} to the SERVER-SIDE session
+   *  clipboard (equations stay equations), then writes that same PNG to the OS
+   *  clipboard for pasting into other apps. A server-write failure aborts
+   *  loudly (nothing to paste back); an OS-write failure is reported but not
+   *  fatal (the internal paste still works). */
   async copySelection() {
     if (!this.selection) return;
     // RAW state: equations copy as equations, not their evaluated snapshots.
     const state = this.rawState().items?.[this.selection];
     if (!state) return;
-    // 1. Item JSON → the server-side session clipboard (the paste source).
+    // Render the OS-clipboard PNG first so its signature rides WITH the payload
+    // (a camera-only selection has no bbox → null png, and no png_sig).
+    const png = await this.#renderSelectionPng();
+    const payload = { powerrp_item: state };
+    if (png) payload.png_sig = imageSignature(png);
+    // 1. Item JSON (+ signature) → the server-side session clipboard.
     try {
-      await projectApi.setClipboard(JSON.stringify({ powerrp_item: state }));
+      await projectApi.setClipboard(JSON.stringify(payload));
     } catch (e) {
       console.error("Copy: could not reach the server-side clipboard (paste will not work until the project server is up):", e.message);
       return; // no point writing a PNG the user can't paste back internally
     }
-    // 2. Rendered PNG of the element → the OS clipboard (user's "copy a rendered
-    //    PNG of that element to my clipboard"). Failure is reported, not fatal —
-    //    the internal paste still works from the server clipboard.
-    await this.#copySelectionPngToOS();
+    // 2. Rendered PNG → the OS clipboard (for pasting into OTHER apps). Failure
+    //    is reported, not fatal — the internal paste still works.
+    if (png) await this.#writeImagePngToOs(png);
   }
 
-  /** Command (async). Renders the current selection at its pixel resolution and
-   *  writes the PNG to the OS clipboard (the 14.10 "rendered PNG" half — the
-   *  same selection-crop rasterize path as copyAsPng). Remembers the bytes in
-   *  #lastCopiedPng so an internal Cmd+V paste can distinguish OUR render from
-   *  an external image. Reports loudly on any failure. */
-  async #copySelectionPngToOS() {
+  /** Command (async). Writes PNG `bytes` to the OS clipboard as image/png.
+   *  Reports loudly (and no-ops) when the browser lacks the async image-write
+   *  API (an insecure/older context) or when the write is denied — a copy must
+   *  never fail silently, and there is no in-app fallback for a system image. */
+  async #writeImagePngToOs(bytes) {
     if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
       console.warn("Copy: this browser has no Clipboard image-write API — the item is on the server clipboard (paste works), but no PNG was placed on the OS clipboard.");
       return;
     }
-    const rect = this.selectionWorldAABB();
-    if (!rect || rect.w <= 0 || rect.h <= 0) return; // e.g. camera-only selection: no bbox to render
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
-    const selected = new Set(this.selectedIds());
-    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
-    const dpr = this.dpr();
-    const width = Math.max(1, Math.round(rect.w * dpr));
-    const height = Math.max(1, Math.round(rect.h * dpr));
-    // fitRectView's (w, h) args are WORLD units (same space as rect) — dpr is
-    // a SEPARATE multiplier the compositor applies on top (view.zoom *
-    // view.dpr; core/view.js fitRectView doctests). Passing the already-
-    // dpr-scaled device px here as (w, h) double-applies dpr (zoom = dpr,
-    // then compositor multiplies by dpr again) — at dpr 2 that rasterizes at
-    // 4x the intended scale, so only the canvas's top-left quarter fills
-    // (the 15.8 bug). rect.w/rect.h (world units) is what every other
-    // rasterizeIrPng caller passes (gpuService.js renderCameraFrame, cli
-    // main.js, PresentMode) — dpr flows through the 4th arg only.
-    let png;
     try {
-      png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, rect.w, rect.h, dpr), width, height);
-    } catch (e) {
-      console.error("Copy: rendering the selection PNG failed (the item is still on the server clipboard):", e.message);
-      return;
-    }
-    this.#lastCopiedPng = png; // remember for the onPaste self-render check (13.3 disambiguation)
-    try {
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([bytes], { type: "image/png" }) })]);
     } catch (e) {
       console.error("Copy: OS-clipboard image write was denied or failed (the item is still on the server clipboard — internal paste works):", e.message);
     }
-  }
-
-  /** Query. True iff `bytes` (a Uint8Array from a pasted OS-clipboard file) is
-   *  byte-identical to the PNG this app last put on the OS clipboard on copy —
-   *  i.e. the user is pasting OUR OWN render internally (13.3 disambiguation).
-   *  Used by App.svelte's onPaste to skip re-uploading our render as an asset. */
-  isOwnCopiedPng(bytes) {
-    const mine = this.#lastCopiedPng;
-    if (!mine || !bytes || mine.length !== bytes.length) return false;
-    for (let i = 0; i < mine.length; i++) if (mine[i] !== bytes[i]) return false;
-    return true;
   }
 
   async copyProperty(key) {
@@ -1434,27 +1405,79 @@ export class PowerRPApp {
     }
   }
 
-  async pasteClipboard() {
-    // 14.10 AMENDED: read the SERVER-SIDE session clipboard (no OS-clipboard
-    // readText, no permission saga). A missing server / empty clipboard is
-    // reported, never a silent no-op.
-    let payload;
+  /** Query (async; reads the server). The parsed SERVER-SIDE clipboard payload
+   *  ({powerrp_item[, png_sig]} or {powerrp_props}), or null when the clipboard
+   *  is empty, unreachable, unparseable, or holds no PowerRP payload. Every
+   *  failure is reported loudly; the null return distinguishes those cases for
+   *  the caller (no OS-clipboard readText, no permission saga). */
+  async #readClipboardPayload() {
+    let raw;
     try {
-      const raw = await projectApi.getClipboard();
-      if (!raw) {
-        console.warn("Paste: the server-side clipboard is empty for this browser session (nothing copied yet).");
-        return;
-      }
-      payload = JSON.parse(raw);
+      raw = await projectApi.getClipboard();
     } catch (e) {
       console.error("Paste: could not read the server-side clipboard (is the project server up?):", e.message);
-      return;
+      return null;
+    }
+    if (!raw) return null;
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch (e) {
+      console.error("Paste: the server clipboard held unparseable JSON:", e.message);
+      return null;
     }
     if (!payload?.powerrp_item && !payload?.powerrp_props) {
       console.warn("Paste: the server clipboard holds no PowerRP item or property payload.");
+      return null;
+    }
+    return payload;
+  }
+
+  /** Command (async). Paste the last-copied ELEMENT/property from the SERVER-
+   *  SIDE session clipboard (the internal paste; no OS image involved). Empty
+   *  clipboard is reported, never a silent no-op. Kept as its own command so
+   *  the palette entry and runCommand("paste") route here directly. */
+  async pasteClipboard() {
+    const payload = await this.#readClipboardPayload();
+    if (!payload) {
+      console.warn("Paste: the server-side clipboard is empty for this browser session (nothing copied yet).");
       return;
     }
     this.#insertClipboardPayload(payload);
+  }
+
+  /**
+   * Command (async). THE Ctrl+V authority (App.svelte onPaste routes here). The
+   * either/or that makes the canvas clipboard bidirectional:
+   *   • OS clipboard carries file(s): if one is an image whose signature equals
+   *     the server payload's png_sig, this is OUR OWN element render → paste the
+   *     ELEMENT (round-trip, cross-tab safe: the signature lives on the server).
+   *     Otherwise the file(s) are EXTERNAL → upload + insert each as an image/
+   *     video widget (pasteFiles).
+   *   • No files on the OS clipboard → the internal element/property paste.
+   * Exactly one of the two happens per paste — no double insert (the keydown
+   * binding is nativeEvent, so it does not also fire).
+   *
+   * @param {File[]} files - the OS clipboard's files (App.svelte passes
+   *   `[...clipboardData.files]`); empty for a plain internal paste.
+   */
+  async pasteFromClipboard(files) {
+    const imageFile = files.find((f) => f.type.startsWith("image/"));
+    if (imageFile) {
+      const bytes = new Uint8Array(await imageFile.arrayBuffer());
+      const payload = await this.#readClipboardPayload();
+      // Signature match → the pasted image is our own element render; paste the
+      // ELEMENT, not the flattened bitmap (behavior 3 + 4).
+      if (payload?.png_sig && payload.png_sig === imageSignature(bytes)) {
+        this.#insertClipboardPayload(payload);
+        return;
+      }
+    }
+    if (files.length) {
+      await this.pasteFiles(files); // external image/video/file → new widget
+      return;
+    }
+    await this.pasteClipboard(); // no OS files → internal element/property paste
   }
 
   /** Command (one undo unit). Inserts a tagged clipboard payload
@@ -1556,47 +1579,27 @@ export class PowerRPApp {
     this.selectMany(newIds);
   }
 
-  // ── Paste-to-upload (manifest 13.3): Cmd/Ctrl+V with image/video/file data
-  // on the OS clipboard uploads it through the SAME path as an OS-file drop
-  // (app.uploadAsset → insertImageAsset/insertVideoAsset), landing at the
-  // camera-view center (paste has no drop point, unlike a canvas drag-drop —
-  // the same "at=null" fallback insertImageAsset already uses for the Asset
-  // Explorer's insert button). This is a SIBLING of pasteClipboard, not a
-  // replacement: the caller (App.svelte's native `paste` listener) only calls
-  // this when clipboardData carries Files, and the internal widget-paste (the
-  // Ctrl+V keydown → pasteClipboard path, reading the SERVER-SIDE clipboard)
-  // always runs on that same keydown.
-  //
-  // 14.10-AMENDED INTERACTION (the disambiguation the manifest asks us to flag):
-  // copying a PowerRP item now ALSO puts a rendered PNG on the OS clipboard, so
-  // an INTERNAL Cmd+V fires onPaste WITH a File (our own render). Without a guard
-  // that render would be re-uploaded as a new image asset on every internal
-  // paste. RULE (flagged for ratification): a pasted file whose bytes byte-match
-  // the render we last put on the OS clipboard (isOwnCopiedPng) is OUR internal
-  // copy — SKIP it (the item paste already ran via the keydown path). An
-  // EXTERNAL image (different bytes, or no internal copy this session) still
-  // uploads-and-inserts, so 13.3 is fully preserved. Bytes-equality is exact and
-  // needs no hash dependency; the copied render is a small selection crop.
+  // ── Paste-to-upload (manifest 13.3): an EXTERNAL image/video/file on the OS
+  // clipboard uploads through the SAME path as an OS-file drop (app.uploadAsset
+  // → insertImageAsset/insertVideoAsset), landing at the camera-view center
+  // (paste has no drop point, unlike a canvas drag-drop — the same "at=null"
+  // fallback insertImageAsset already uses for the Asset Explorer's insert
+  // button). pasteFromClipboard is the DECISION layer above this: it only calls
+  // pasteFiles once it has ruled out "this image is our own copied element
+  // render" (signature match), so pasteFiles no longer needs its own
+  // self-render guard — by the time we get here the file is known-external.
   // Upload hash-dedup across DIFFERENT assets stays EXPLICITLY DEFERRED (13.3).
 
   /** Command. Uploads each File in `files` to the current project's assets
    *  (app.uploadAsset — the same upload endpoint the canvas OS-file drop and
    *  the Asset Explorer's file input use) and inserts the matching widget
-   *  (image/video by MIME) at the camera-view center. A file whose bytes match
-   *  this app's own last-copied render (isOwnCopiedPng) is SKIPPED — it is an
-   *  internal item copy, already pasted via the keydown path (14.10 AMENDED).
-   *  Kinds with no canvas widget still upload (they land in the asset library)
-   *  and are reported, never silently dropped. A failure in any step is REPORTED
-   *  loudly (console.error) — a paste gesture must never fail silently. */
+   *  (image/video by MIME) at the camera-view center. Kinds with no canvas
+   *  widget still upload (they land in the asset library) and are reported,
+   *  never silently dropped. A failure in any step is REPORTED loudly
+   *  (console.error) — a paste gesture must never fail silently. */
   async pasteFiles(files) {
     for (const file of files) {
       try {
-        // 14.10 AMENDED: skip our OWN copied render (the internal item paste
-        // already ran on this Cmd+V's keydown — do not also re-upload it).
-        if (file.type === "image/png") {
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          if (this.isOwnCopiedPng(bytes)) continue;
-        }
         const up = await this.uploadAsset(file); // {ok, name, url}
         const kind = assetKindForFile(file);
         if (kind === "image") await this.insertImageAsset(up.url);
@@ -2949,6 +2952,51 @@ export class PowerRPApp {
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   }
 
+  /** Query. The render job for the SELECTED ITEMS ONLY — `{rect, nodes}` where
+   *  rect is their collective world AABB (selectionWorldAABB) and nodes are the
+   *  derived render-tree nodes of exactly those items (not everything that
+   *  merely intersects the box) — or null when there is nothing with a bbox to
+   *  render (e.g. a camera-only selection). The ONE place copy-as-PNG,
+   *  copy-as-PDF, and the copySelection OS render agree on WHAT to rasterize. */
+  #selectionRenderJob() {
+    const rect = this.selectionWorldAABB();
+    if (!rect || rect.w <= 0 || rect.h <= 0) return null;
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const selected = new Set(this.selectedIds());
+    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
+    return { rect, nodes };
+  }
+
+  /**
+   * Command (async). Rasterizes the current selection to PNG bytes at its pixel
+   * resolution (dpr-scaled), or null when there is no bbox to render. THE shared
+   * selection-crop rasterize path (copySelection's OS write and copyAsPng both
+   * call it). Reports loudly and returns null on a render failure.
+   *
+   * fitRectView's (w, h) args are WORLD units (rect.w/rect.h) — dpr is a
+   * SEPARATE multiplier the compositor applies on top (view.zoom * view.dpr;
+   * core/view.js fitRectView doctests). Passing the already-dpr-scaled device px
+   * as (w, h) double-applies dpr (at dpr 2 it rasterizes 4x too big so only the
+   * top-left quarter fills — the 15.8 bug); world units is what every other
+   * rasterizeIrPng caller passes, with dpr flowing through the 4th arg only.
+   *
+   * @returns {Promise<Uint8Array|null>} PNG bytes, or null (nothing to render)
+   */
+  async #renderSelectionPng() {
+    const job = this.#selectionRenderJob();
+    if (!job) return null;
+    const { rect, nodes } = job;
+    const dpr = this.dpr();
+    const width = Math.max(1, Math.round(rect.w * dpr));
+    const height = Math.max(1, Math.round(rect.h * dpr));
+    try {
+      return await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, rect.w, rect.h, dpr), width, height);
+    } catch (e) {
+      console.error("Render selection PNG failed:", e.message);
+      return null;
+    }
+  }
+
   /**
    * Command (async). Renders the SELECTED ITEMS ONLY (not everything that
    * merely intersects their box — the spec's "whatever bounding box are the
@@ -2969,21 +3017,12 @@ export class PowerRPApp {
       console.error("Copy as PNG: this browser has no Clipboard image-write API (navigator.clipboard.write/ClipboardItem) — cannot copy an image to the system clipboard.");
       return;
     }
-    const rect = this.selectionWorldAABB();
-    if (!rect || rect.w <= 0 || rect.h <= 0) {
+    // Same selection-crop rasterize as the copySelection OS render (#renderSelectionPng).
+    const png = await this.#renderSelectionPng();
+    if (!png) {
       console.error("Copy as PNG: nothing selected (or the selection has no bounding box) — nothing to copy.");
       return;
     }
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
-    const selected = new Set(this.selectedIds());
-    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
-    const dpr = this.dpr();
-    const width = Math.max(1, Math.round(rect.w * dpr));
-    const height = Math.max(1, Math.round(rect.h * dpr));
-    // fitRectView's (w, h) are WORLD units (rect.w/rect.h) — dpr is a
-    // separate multiplier applied by the compositor (see the identical fix +
-    // comment in #copySelectionPngToOS above; same 15.8 bug, same cause).
-    const png = await rasterizeIrPng(sceneIR(nodes), fitRectView(rect, rect.w, rect.h, dpr), width, height);
     try {
       await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]);
     } catch (e) {
@@ -3003,16 +3042,14 @@ export class PowerRPApp {
    * No-op (reported) with nothing selected.
    */
   async copyAsPdf() {
-    const rect = this.selectionWorldAABB();
-    if (!rect || rect.w <= 0 || rect.h <= 0) {
+    const job = this.#selectionRenderJob();
+    if (!job) {
       console.error("Copy as PDF: nothing selected (or the selection has no bounding box) — nothing to copy.");
       return;
     }
+    const { rect, nodes } = job;
     const { irToPDF } = await import("../render_gpu/pdf_backend.js");
     const { loadFontBytes, fontkit, measureTextAscent, measureText } = await import("./pdfFonts.js");
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
-    const selected = new Set(this.selectedIds());
-    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
     const bytes = await irToPDF(sceneIR(nodes), {
       width: rect.w,
       height: rect.h,

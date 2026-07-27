@@ -17,6 +17,42 @@
 // the viewport instead).
 const OFFSCREEN_PX = -9999;
 
+// FNV-1a 32-bit constants — the same offset basis + prime core/expressions.js
+// stringSeed uses. A dependency-free content hash: no crypto.subtle (that is
+// secure-context-only, exactly the constraint copyText already works around),
+// no hashing library.
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+
+/**
+ * Pure function. A short content signature for a byte buffer (FNV-1a 32-bit,
+ * length-prefixed). It is the disambiguation key of the canvas clipboard: on
+ * COPY of an element we store the signature of the rendered PNG alongside the
+ * internal element payload; on PASTE we sign the incoming OS-clipboard image
+ * and an EQUAL signature means "this image is our own element render" → paste
+ * the element, not the flattened bitmap.
+ *
+ * The length prefix (`<len>.<hash>`) makes two buffers of different lengths
+ * never collide regardless of the 32-bit hash — cheap extra separation for a
+ * signature that gates a branch. Not a cryptographic hash and not meant to be:
+ * it only distinguishes "the exact PNG we just wrote" from "a different image".
+ *
+ * @param {Uint8Array|number[]} bytes - the buffer to sign (PNG bytes in use)
+ * @returns {string} `"<lengthHex>.<fnv1aHex>"`
+ *
+ * @example imageSignature([]) // "0.811c9dc5"
+ * @example imageSignature([1, 2, 3]) // "3.56cf37ab"
+ * @example imageSignature([137, 80, 78, 71]) // "4.4e4a5c83" (PNG magic bytes)
+ */
+export function imageSignature(bytes) {
+  let hash = FNV_OFFSET_BASIS;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, FNV_PRIME);
+  }
+  return `${bytes.length.toString(16)}.${(hash >>> 0).toString(16)}`;
+}
+
 /**
  * Command (mutates the system clipboard; the fallback path also creates and
  * removes a transient <textarea>). Copies `text` to the system clipboard,

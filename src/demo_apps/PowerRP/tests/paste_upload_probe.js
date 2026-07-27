@@ -25,9 +25,10 @@ import { tmpdir } from "node:os";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
 const REPO_ROOT = resolve(HERE, "../../../..");
-// System Python 3.10 (repo convention — server.py's `serve` command needs no
-// rp/numpy, only stdlib + fire).
-const PY = "/opt/homebrew/opt/python@3.10/bin/python3.10";
+// The project server runs through uv (server.py carries PEP 723 inline deps) —
+// the same portable launcher start_server.sh uses, so there is no hardcoded
+// interpreter path. Override with POWERRP_UV if uv is not on PATH.
+const UV = process.env.POWERRP_UV || "uv";
 
 /** Query. A free TCP port (bind :0, read the assigned port, release). */
 function freePort() {
@@ -55,7 +56,7 @@ async function waitFor(url, tries = 60) {
 const projectsRoot = mkdtempSync(join(tmpdir(), "powerrp_paste_upload_"));
 
 const backendPort = await freePort();
-const server = spawn(PY, ["server.py", "serve", `--port=${backendPort}`], {
+const server = spawn(UV, ["run", "server.py", "serve", `--port=${backendPort}`], {
   cwd: join(APP_DIR, "server"),
   env: { ...process.env, POWERRP_PROJECTS_DIR: projectsRoot },
   stdio: ["ignore", "inherit", "inherit"],
@@ -81,16 +82,25 @@ try {
   const pageUrl = `http://127.0.0.1:${viteServer.httpServer.address().port}/`;
 
   const { default: puppeteer } = await import("puppeteer");
-  browser = await puppeteer.launch({ headless: "new" });
+  // SwiftShader flags so the WebGPU compositor inits headless (the editor renders
+  // through it, and copySelection rasterizes its PNG through it); --no-sandbox is
+  // required to launch as root (the container's default user). Same flag set the
+  // repo's other WebGPU probes use (skia_browser_qa.js, boot_probe.js).
+  browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
+  // EXPECTED headless noise: the per-widget VideoV7 overlay tries to acquire a
+  // WebGPU device and, finding no adapter in headless SwiftShader, LOUDLY reports
+  // its 2D-drawImage fallback (web/VideoV7Overlay.svelte). That is the correct
+  // reported-fallback behavior, not a defect, and is orthogonal to the clipboard
+  // path (the Skia scene + copySelection's PNG rasterize headless without WebGPU).
+  const EXPECTED_NOISE = [/VideoV7: WebGPU init failed/];
+  const isExpectedNoise = (t) => EXPECTED_NOISE.some((re) => re.test(t));
   page.on("pageerror", (e) => {
-    errors.push(`pageerror: ${e.message}`);
+    if (!isExpectedNoise(e.message)) errors.push(`pageerror: ${e.message}`);
   });
   page.on("console", (m) => {
-    if (m.type() === "error") {
-      errors.push(`console.error: ${m.text()}`);
-    }
+    if (m.type() === "error" && !isExpectedNoise(m.text())) errors.push(`console.error: ${m.text()}`);
     if (m.type() === "warning") console.log(`[page.warn] ${m.text()}`);
   });
 
@@ -172,17 +182,14 @@ try {
     errors.push(`Uploaded asset not found via /api/assets/: ${JSON.stringify(assetsListing)}`);
   else console.log(`asset on server: ${JSON.stringify(assetsListing.find((a) => a.name.includes("probe_paste")))}`);
 
-  // Compose-don't-fight check: internal widget JSON on the clipboard (no
-  // Files) must NOT be swallowed by the new listener — the pre-existing
-  // pasteClipboard() path must still be reachable and unaffected. Select the
-  // pasted image, copy it (in-app clipboard), then reproduce a REAL Cmd/
-  // Ctrl+V user gesture: a keydown (which the shortcut registry dispatches to
-  // runCommand("paste") → pasteClipboard(), exactly as onKeydown does today)
-  // FOLLOWED BY a native `paste` DOM event with NO files (browsers fire both
-  // for one physical keystroke — a synthetic `paste` event alone, with no
-  // preceding keydown, would never reach pasteClipboard(), which is wired
-  // only through the keydown shortcut path). Assert the existing paste path
-  // still runs (item count increases again) and no upload request fires.
+  // Internal element paste still works: a files-less paste must fall through to
+  // the SERVER-clipboard element paste, not upload anything. Select the pasted
+  // image, copy it (server clipboard + OS render), then reproduce a Cmd/Ctrl+V
+  // gesture. Under the single-authority model the native `paste` event is what
+  // pastes (the keydown binding is nativeEvent, so it no longer dispatches);
+  // we fire both a real keydown AND a files-less `paste` event, and the
+  // files-less event routes app.pasteFromClipboard([]) → pasteClipboard().
+  // Assert the element paste runs (item count increases) and no upload fires.
   let uploadCountAfterCompose = 0;
   page.removeAllListeners("request");
   page.on("request", (req) => {

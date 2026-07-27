@@ -871,9 +871,13 @@
   function wireShortcuts() {
     const shortcuts = createShortcuts();
     for (const e of kb.toShortcutEntries(KEYBINDING_LABELS, WHEN_RESOLVERS))
-      // Ctrl+V dispatches but is kept out of the HintBar (pre-existing
-      // choice: paste is discoverable via the palette; the bar stays lean).
-      shortcuts.add(e.command === "paste" ? { ...e, hidden: true } : e);
+      // Ctrl+V is owned by the native `paste` ClipboardEvent (onPaste), which
+      // is the SINGLE Ctrl+V authority so a paste fires exactly once and can
+      // read the pasted image to disambiguate our own render from an external
+      // one. hidden: kept out of the HintBar (pre-existing lean-bar choice);
+      // nativeEvent: keydown dispatch skips it so it never double-fires — the
+      // palette still shows the Ctrl+V hint via commandKeys.
+      shortcuts.add(e.command === "paste" ? { ...e, hidden: true, nativeEvent: true } : e);
     for (const e of handEntries) shortcuts.add(e);
     app.shortcuts = shortcuts;
   }
@@ -993,24 +997,21 @@
   }
 
   /**
-   * Command. Native OS-paste handler (manifest 13.3 PASTE-TO-UPLOAD): Cmd/
-   * Ctrl+V with image/video/file data on the OS clipboard uploads it via
-   * app.pasteFiles (same upload endpoint as the canvas OS-file drop) and
-   * inserts the matching widget. COMPOSES with the pre-existing Ctrl+V
-   * keyboard shortcut (dispatched on keydown, above) rather than replacing
-   * it: this listener is a no-op whenever clipboardData carries no Files —
-   * the internal powerrp_item/powerrp_props JSON paste (system-clipboard
-   * text, no Files present) is untouched and always wins in that case, per
-   * spec. Guarded identically to onKeydown (skip while typing/present/
-   * palette-open). Hash-dedup is explicitly DEFERRED (user, 13.3).
+   * Command. THE Ctrl+V handler — the single paste authority (the keydown
+   * binding is nativeEvent, so it does NOT also fire). Rides the native `paste`
+   * ClipboardEvent because only that event exposes the pasted image bytes,
+   * which the either/or decision needs. Hands the OS-clipboard Files to
+   * app.pasteFromClipboard, which decides between pasting our own copied
+   * ELEMENT (image signature matches the internal payload) and pasting an
+   * EXTERNAL image/video as a new widget, and falls back to the internal
+   * element/property paste when the OS clipboard carries no files. Guarded
+   * identically to onKeydown (skip while typing/present/palette-open).
    */
   function onPaste(e) {
     if (isTypingTarget(document.activeElement)) return;
     if (app.mode === "present" || app.paletteOpen) return;
-    const files = [...(e.clipboardData?.files ?? [])];
-    if (!files.length) return; // no OS files — defer entirely to the existing Ctrl+V path
     e.preventDefault();
-    app.pasteFiles(files);
+    app.pasteFromClipboard([...(e.clipboardData?.files ?? [])]);
   }
 </script>
 

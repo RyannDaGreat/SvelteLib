@@ -49,7 +49,11 @@ export function createShortcuts() {
     dispatch(event, ctx) {
       const token = keyToken(event);
       for (const e of entries) {
-        if ((!e.run && !e.command) || !e.when(ctx)) continue;
+        // nativeEvent entries are delivered by a dedicated browser event (the
+        // Paste key rides the native `paste` ClipboardEvent so it can read the
+        // pasted image), NOT by keydown dispatch — skip them here so the key
+        // never fires twice. commandKeys() still surfaces them to the palette.
+        if ((!e.run && !e.command) || e.nativeEvent || !e.when(ctx)) continue;
         const mods = e.keys.slice(0, -1).map((k) => k.toLowerCase());
         const main = e.keys[e.keys.length - 1];
         if (MOUSE_TOKENS.has(main)) continue;
