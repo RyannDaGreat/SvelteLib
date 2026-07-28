@@ -1842,9 +1842,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, "render job submit: body needs {doc, params}")
         if backend not in ("server", "client"):
             return self._error(400, f"render job submit: backend must be 'server' or 'client', got {backend!r}")
+        # NAME THE VALUE. This refusal used to omit it while its sibling in
+        # _handle_export_encode already included one, and that asymmetry made a real
+        # 400 unattributable: JSON.stringify DROPS an undefined key, so a client-side
+        # lookup miss arrives as a *missing* crf and the server complained about "an
+        # int" without saying it had received nothing at all. The producer side is now
+        # loud too (RenderCenterModal.presetCrf).
+        #
+        # KNOWN ASYMMETRY, deliberately left: this endpoint demands a strict int,
+        # while _handle_export_encode accepts (int, float) and narrows with int(crf).
+        # The same value is therefore accepted by one route and refused by the other.
+        # Every client currently sends an int on both, so tightening the other route
+        # is an untested behaviour change rather than a fix — flagged, not guessed at.
         crf = params.get("crf")
-        if not isinstance(crf, int) or not (H264_CRF_MIN <= crf <= H264_CRF_MAX):
-            return self._error(400, f"render job submit: crf must be an int in [{H264_CRF_MIN}, {H264_CRF_MAX}]")
+        if not isinstance(crf, int) or isinstance(crf, bool) or not (H264_CRF_MIN <= crf <= H264_CRF_MAX):
+            return self._error(400, f"render job submit: crf must be an int in [{H264_CRF_MIN}, {H264_CRF_MAX}] (got {crf!r})")
         if not params.get("fps", 0) > 0:
             return self._error(400, "render job submit: fps must be > 0")
         # MOTION BLUR used to be refused for the server backend, because the

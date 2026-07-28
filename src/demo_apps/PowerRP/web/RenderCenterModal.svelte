@@ -97,9 +97,41 @@
   function clampSlide(n) {
     return Math.max(1, Math.min(slideCount, Math.round(n)));
   }
-  /** Pure. Clamp a CRF into the libx264 valid range [CRF_MIN, CRF_MAX]. */
+  /**
+   * Pure. Clamp a CRF into the codec's valid range [CRF_MIN, CRF_MAX]. THROWS on a
+   * non-finite input rather than propagating NaN: NaN survives Math.round AND both
+   * Math clamps, and JSON.stringify writes it as `null` — so the server could only
+   * ever report "crf must be an int" about a value this dialog never meant to send.
+   *
+   * @param {number} n - Desired CRF
+   * @returns {number} An integer in [CRF_MIN, CRF_MAX]
+   *
+   * @example clampCrf(23.4) // 23
+   * @example clampCrf(-5)   // CRF_MIN
+   * @example clampCrf(NaN)  // throws
+   */
   function clampCrf(n) {
+    if (!Number.isFinite(n))
+      throw new Error(`RenderCenterModal: CRF is not a finite number (got ${JSON.stringify(n)})`);
     return Math.max(CRF_MIN, Math.min(CRF_MAX, Math.round(n)));
+  }
+  /**
+   * Pure. The codec CRF a quality choice means. TOTAL AND LOUD: an unknown key used
+   * to yield `undefined`, which JSON.stringify DROPS from the request body — turning
+   * a one-word client mistake into an opaque server validation error about a field
+   * the client never sent. Same idiom as web/mp4Encoder.js encoderQp.
+   *
+   * @param {string} key - A codecQuality choice ("low" | "medium" | "high")
+   * @returns {number} That choice's CRF
+   *
+   * @example presetCrf("medium") // 23
+   * @example presetCrf("lowish") // throws, naming the valid keys
+   */
+  function presetCrf(key) {
+    const crf = QUALITY_CRF[key];
+    if (crf === undefined)
+      throw new Error(`RenderCenterModal: unknown codec quality ${JSON.stringify(key)} — expected one of ${Object.keys(QUALITY_CRF).join(", ")}, custom`);
+    return crf;
   }
 
   // THE CAMERA's size at the current slide = the default output size (the camera
@@ -199,7 +231,7 @@
   let preset = $derived(RESOLUTIONS.find((r) => r.value === resolution));
   let width = $derived(resolution === "custom" ? evenDim(customW) : preset.w);
   let height = $derived(resolution === "custom" ? evenDim(customH) : preset.h);
-  let crf = $derived(codecQuality === "custom" ? clampCrf(customCrf) : QUALITY_CRF[codecQuality]);
+  let crf = $derived(codecQuality === "custom" ? clampCrf(customCrf) : presetCrf(codecQuality));
   let startIndex = $derived(rangeMode === "all" ? 0 : clampSlide(rangeFrom) - 1);
   let endIndex = $derived(rangeMode === "all" ? slideCount - 1 : clampSlide(rangeTo) - 1);
   // (Motion blur used to be Browser-backend-only: the server rendered in bare node
@@ -235,10 +267,14 @@
         // the wire word is "client".
         backend: backend === "browser" ? "client" : "server",
         encoder: browserEncoder, // ignored by the server backend
+        // NO `quality` FIELD HERE. One used to be sent as "full" and read by
+        // NOBODY — not server.py, not renderJobPage.js, not browserRenderJobs.js.
+        // A dead field that looks live is a trap: the next person adding a
+        // draft/proxy render tier would wire it here and get silence. If that tier
+        // arrives, add the field AND its reader in the same change.
         params: {
           width, height, fps, crf, samples: Math.round(samples),
           startIndex, endIndex, includeTransitions, holdSeconds, background,
-          quality: "full",
         },
       });
       await refresh();

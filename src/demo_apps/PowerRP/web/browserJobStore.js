@@ -14,7 +14,15 @@
  * ── WHAT IS STORED, AND WHY EACH PIECE IS NECESSARY ───────────────────────────
  *   jobs     one record per in-flight browser render:
  *              id/project/name           which server job this belongs to
- *              params                    width/height/fps/quality/range/…
+ *              params                    width/height/fps/crf/samples/range/…
+ *                                        (the codec field is `crf`, NOT `quality`.
+ *                                        This line said `quality` while the wire
+ *                                        field was `crf` — and the word carries
+ *                                        two more meanings nearby: the encoder's
+ *                                        `quality` ARGUMENT accepts a preset name
+ *                                        or a raw number, and a dead params field
+ *                                        of that name was removed. Name the field,
+ *                                        not the concept.)
  *              docJson                   THE SNAPSHOT (see below)
  *              framesTotal               the denominator
  *              segmentFrames             the resume granularity, recorded so a
