@@ -327,6 +327,69 @@ try {
       `scrub knob did NOT drag at the 1-unit/px fallback (${moved} ≪ ${KNOB_DRAG_PX})`);
   }
 
+  // ── C.7 — the TEXTURE BRUSH's thumbnail PALETTE + preset-expand contract ─────
+  // Entry contracts on TEXTURE_BRUSH (`texturePalette`, `presetExpand`) drive
+  // PaintField: the stroke slot on textureBrush must mount BrushPalette (a swatch
+  // grid), a swatch pick must commit the texture knob, and picking a non-neutral
+  // preset must EXPAND to continuous knobs and reset itself to neutral.
+  {
+    const tb = getStrokeMaterial("textureBrush");
+    // PRE-WARM the textures (async decode → sync render): without this the FIRST
+    // repaint after switching the stroke fires the brush's DESIGNED loud
+    // not-ready report (correct in the live editor — it repaints on decode), and
+    // this probe's zero-console-error rule would read the loudness as a failure.
+    await page.evaluate(async (regUrl, manUrl) => {
+      const { ensureImage } = await import(regUrl);
+      const man = await import(manUrl);
+      await Promise.all(man.textureIds().map((id) => ensureImage(man.textureUrl(id))));
+    }, "/@fs" + resolve(HERE, "../render_gpu/gpu/image_registry.js"), "/@fs" + resolve(HERE, "../render_gpu/skia/brush_textures/manifest.js"));
+    await page.evaluate((id) => {
+      const app = window.__powerrp_app;
+      app.setPreview([[["items", id, "stroke"], { type: "material", material: { id: "textureBrush", params: {} } }]]);
+      app.commitPreview();
+    }, rectId);
+    await sleep(200);
+    const pal = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".inspector .row")];
+      const row = rows.find((el) => el.querySelector(".label")?.textContent === "Stroke");
+      const swatches = [...(row?.querySelectorAll(".brush-swatch") ?? [])];
+      if (swatches.length > 1) swatches[1].click(); // pick a non-default texture
+      return { swatches: swatches.length };
+    });
+    ok(pal.swatches >= 20, `textureBrush stroke slot mounts the BrushPalette (${pal.swatches} swatches >= 20)`);
+    await sleep(120);
+    const strokeParams = () => page.evaluate((id) => JSON.stringify(window.__powerrp_app.doc.slides[0].delta.items[id].stroke?.material?.params ?? null), rectId);
+    const afterPick = JSON.parse(await strokeParams());
+    ok(typeof afterPick?.texture === "string", `palette pick COMMITTED the texture knob; got ${JSON.stringify(afterPick?.texture)}`);
+    // Preset-expand: drive the same seam commitSelectKnob writes through, exactly
+    // as the Dropdown's onchange does — via the app; then assert expansion shape.
+    const pe = tb.presetExpand;
+    const presetId = tb.strokeParams.find((r) => r.name === pe.knob).options.find((o) => o !== pe.neutral);
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".inspector .row")];
+      const row = rows.find((el) => el.querySelector(".label")?.textContent === "Stroke");
+      // open the preset dropdown (2nd select row: texture is 1st) and click an entry
+      const dds = [...row.querySelectorAll(".paint-material-row .dd-trigger")];
+      dds[1]?.click();
+    });
+    await sleep(120);
+    const pickedPreset = await page.evaluate((neutralLabel) => {
+      const rows = [...document.querySelectorAll(".inspector .row")];
+      const row = rows.find((el) => el.querySelector(".label")?.textContent === "Stroke");
+      const items = [...row.querySelectorAll(".dd-item")];
+      const target = items.find((li) => !li.classList.contains("dd-selected"));
+      if (!target) return null;
+      target.click();
+      return target.textContent.trim();
+    }, pe.neutral);
+    await sleep(150);
+    const expanded = JSON.parse(await strokeParams());
+    ok(pickedPreset && expanded?.[pe.knob] === pe.neutral,
+      `preset pick "${pickedPreset}" EXPANDED and reset the select to "${pe.neutral}" (got ${JSON.stringify(expanded?.[pe.knob])})`);
+    ok(typeof expanded?.sizeStart === "number" && typeof expanded?.blend === "string",
+      `preset expansion WROTE the continuous knobs (sizeStart ${JSON.stringify(expanded?.sizeStart)}, blend ${JSON.stringify(expanded?.blend)})`);
+  }
+
   if (errors.length) {
     console.error("PROBE ERRORS:\n" + errors.join("\n"));
     console.error(`\n${checks.filter(([c]) => c).length}/${checks.length} checks passed`);

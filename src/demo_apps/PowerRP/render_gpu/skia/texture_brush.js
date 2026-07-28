@@ -513,4 +513,15 @@ export const TEXTURE_BRUSH = {
     { name: "seed", kind: "number", default: 12345, min: 0, step: 1, help: "Colour-jitter seed (STORED, deterministic — same seed, same jitter every render)." },
   ],
   render: renderTextureBrush,
+  // ── UI contracts (read by PaintField's Mat mode; both node-safe data) ───────
+  // PRESET-TYPE PATTERN: picking a non-neutral value on the `preset` select
+  // EXPANDS to the continuous knobs (applyPreset) and resets the select to
+  // `custom`, so the user tweaks real values afterward. render() ALSO applies a
+  // stored preset (a hand-authored doc with preset:"sumiInk" renders right), but
+  // the UI writes expanded knobs so the Inspector never shows values the render
+  // is silently overriding.
+  presetExpand: { knob: "preset", neutral: "custom", expand: applyPreset },
+  // The named select knob is picked from a THUMBNAIL PALETTE (web/BrushPalette)
+  // rather than only the dropdown row.
+  texturePalette: "texture",
 };

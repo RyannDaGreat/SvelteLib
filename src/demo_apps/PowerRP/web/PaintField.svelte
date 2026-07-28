@@ -225,6 +225,7 @@
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
   import ListField, { collapseKeyFor } from "./ListField.svelte";
+  import BrushPalette from "./BrushPalette.svelte";
   import { makeHoverPreview } from "./hoverPreview.js";
   import { resolveScrub } from "../../../lib/numberStep.js";
   import { GRADIENT_STOPS_LIST, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
@@ -423,6 +424,26 @@
   // re-binds if `app`/`writePaths` change (and reads them reactively, not as a
   // captured initial value); a multi-selection previews every target.
   let matHover = $derived(makeHoverPreview(app, (id) => writePaths.map((p) => [[...p, "material", "id"], id])));
+  // TEXTURE PALETTE (entry contract `texturePalette`: the named select knob is
+  // picked from a thumbnail grid — the texture brush's rp-demo sidebar). Hover
+  // previews the texture live through the SAME factory as the material dropdown.
+  let texKnobRow = $derived(matEntry.texturePalette ? matRows.find((r) => r.name === matEntry.texturePalette) : null);
+  let texHover = $derived(makeHoverPreview(app, (id) => writePaths.map((p) => [[...p, "material", "params", matEntry.texturePalette], id])));
+
+  /** Command. Commits a Mat SELECT knob, honoring the entry's `presetExpand`
+   * contract (the preset-type pattern): a non-neutral pick on the preset knob
+   * EXPANDS to its continuous knobs via the entry's own expand() and resets the
+   * select to neutral, so the Inspector always shows the values that render —
+   * never a preset silently overriding the rows beneath it. One undo unit. */
+  function commitSelectKnob(mrow, v) {
+    const pe = matEntry.presetExpand;
+    if (pe && mrow.name === pe.knob && v !== pe.neutral) {
+      const expanded = pe.expand({ ...(matSub.params ?? {}), preset: v });
+      commitAt(["material", "params"], { ...expanded, [pe.knob]: pe.neutral });
+      return;
+    }
+    commitAt(["material", "params", mrow.name], v);
+  }
 
   // ── THE MATERIAL KNOBS ARE THEIR OWN COLLAPSIBLE SECTION ──────────────────────
   // A material's knob list can be long (CRT ships 23), so it MUST fold rather than
@@ -514,6 +535,19 @@
       onpreview={matHover.preview}
       oncancelpreview={matHover.cancel}
     />
+    {#if texKnobRow}
+      <!-- THE BRUSH TEXTURE PALETTE (entry contract `texturePalette`): the rp
+           paint demo's thumbnail sidebar. Hovering a swatch previews the texture
+           LIVE on the canvas; picking commits ONE undo unit (transient revert
+           dropped first, the ListField.pickPreset discipline). The plain select
+           row below still lists the same ids — the palette is the visual door. -->
+      <BrushPalette
+        value={matValue(texKnobRow)}
+        onpick={(id) => { app.transientPreview = null; commitAt(["material", "params", matEntry.texturePalette], id); }}
+        onpreview={texHover.preview}
+        oncancelpreview={texHover.cancel}
+      />
+    {/if}
     {#if matRows.length > 0}
       <!-- THE KNOBS ARE A DEDICATED COLLAPSIBLE SECTION (A material can ship 23 —
            CRT does): the app's ONE accordion (.cat-header + chevron + .cat-rows),
@@ -541,7 +575,9 @@
                 {#if mrow.kind === "color"}
                   <ColorField {app} path={[...path, "material", "params", mrow.name]} paths={writePaths.map((p) => [...p, "material", "params", mrow.name])} label={mrow.name} value={matValue(mrow)} {disabled} />
                 {:else if mrow.kind === "select"}
-                  <Dropdown items={mrow.options.map((o) => ({ value: o, label: mrow.optionLabels?.[o] ?? o }))} value={matValue(mrow)} onchange={(v) => commitAt(["material", "params", mrow.name], v)} />
+                  <!-- commitSelectKnob honors the entry's presetExpand contract:
+                       a preset pick writes the continuous knobs and resets itself. -->
+                  <Dropdown items={mrow.options.map((o) => ({ value: o, label: mrow.optionLabels?.[o] ?? o }))} value={matValue(mrow)} onchange={(v) => commitSelectKnob(mrow, v)} />
                 {:else if mrow.kind === "boolean"}
                   <input type="checkbox" checked={matValue(mrow)} {disabled} aria-label={mrow.label ?? mrow.name} onchange={(e) => commitAt(["material", "params", mrow.name], e.target.checked)} />
                 {:else}

@@ -159,6 +159,19 @@ try {
   await page.goto(`${baseUrl}/?cli=1`, { waitUntil: "networkidle0" });
   await page.waitForFunction(() => !!window.__powerrp_render, { timeout: 40000 });
 
+  // PRE-WARM the texture brush's images (async decode → sync render contract:
+  // image_registry.ensureImage resolves the decode; getSkiaImage is then sync at
+  // paint time). Without this the textureBrush cells sample the ONE frame drawn
+  // before decode finished — renderTextureBrush loudly reports and draws nothing,
+  // exactly as designed, and the matrix reads that as a missing stroke. The
+  // editor never shows that frame (it repaints reactively on decode); a
+  // single-shot probe must warm instead. Same idiom as texture_brush_probe.
+  await page.evaluate(async (regUrl, manUrl) => {
+    const { ensureImage } = await import(regUrl);
+    const man = await import(manUrl);
+    await Promise.all(man.textureIds().map((id) => ensureImage(man.textureUrl(id))));
+  }, "/@fs" + resolve(HERE, "../render_gpu/gpu/image_registry.js"), "/@fs" + resolve(HERE, "../render_gpu/skia/brush_textures/manifest.js"));
+
   const render = async (docJson) => {
     const dataUrl = await page.evaluate(
       (json, w, h) => window.__powerrp_render(json, { slide: 0, width: w, height: h }),
