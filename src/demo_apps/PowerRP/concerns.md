@@ -128,6 +128,22 @@ cutting them — the analytic rect SDF in the shaders is the silhouette for edge
 effects, so non-rect outlines get a rect's rim. The clip held (probes proved
 containment), but containment ≠ conformity. → Manifest 27.
 
+### ROUND 2 COMPLETE (2026-07-28, same day)
+All ten round-2 items delivered by 1 integrator pass + 3 Opus agents:
+0043818 top-level sections (redo), 44875fa phase-as-angle (choo-choo),
+a444a3a shape-conforming materials (silhouette EDT SDF; glass/crt/cork/
+tack/metaballs conformed, frosted proven exempt), c42f3bc Monaco code modal
++ mermaid presets + code-button row, 4ad30d6 searchable dropdowns +
+floating menus + scroll-hover. Final battery all green (see manifest STATUS).
+Round-2 lessons: an HMR-compiled MID-EDIT component state crashed the
+user's live session (addEventListener of undefined) — dev-server-on while
+agents edit shared UI components is user-visible risk; the crash was gone
+in the agent's final state but the experience argues for pausing HMR or
+warning the user during fleet edits on web/ files. Also: an agent believed
+this Mac cannot run the browser fill matrix (stale memory generalized from
+the ~35-failure full-gate baseline) — the integrator re-ran it green; agents
+inherit memory notes as absolutes, phrase them with their scope.
+
 ### Fleet lessons (this round)
 - The .claude_todo.md ledger was overwritten by a fleet agent AGAIN (TRIM this
   time; the gradient agent did it last round). Agents must be told the ledger is

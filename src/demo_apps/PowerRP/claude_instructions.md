@@ -8,6 +8,17 @@
 > the authority for the requirements below. If/when the container manifest is
 > reachable again, merge this into it (semantic merge, keep both histories).
 
+## STATUS: ALL 35 ITEMS DELIVERED (2026-07-28)
+
+Round 1 (items 1–25) and Round 2 (items 26–35) are complete, committed
+(d2c24b7 … 4ad30d6 on render-rewrite-skia), and gated: doctests 2624/0, node
+suite 89/89, and ten browser probes green on this Mac (fill matrix ×14 incl.
+glass, stroke matrix ×6 incl. both brushes, texture brush, Mat UI 38/38,
+searchable dropdown 20/20, material presets 13/13, paint-path UI 13/13, stroke
+trim, code modal 19/19, colorfield 25/25). Per-material shape-conformity
+declarations live in the "materials conform" commit (a444a3a). concerns.md
+holds the round's full mistake/lesson record.
+
 ## What this round is
 
 The materials epic landed (commits f151f84…83774e2): 13 fill materials on any
