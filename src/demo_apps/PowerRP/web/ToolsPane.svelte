@@ -60,13 +60,56 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { commandUnavailable } from "../core/commands.js";
+  import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/material_presets.js";
 
   let { app } = $props();
 
   // The selected item and the groups ITS plugin exposes (reactive off selection +
   // doc). No selection → no plugin → no groups → the empty state.
   let node = $derived(app.selectedNode());
-  let groups = $derived(node?.plugin?.toolGroups ?? []);
+
+  // The Tools groups: the plugin's OWN (widget-type) groups FOLLOWED BY groups
+  // derived from the selection's CURRENT MATERIALS (manifest D.10). The material
+  // groups are ADDITIVE — a rect carrying the sky material as its fill gets the
+  // sky's presets even though the rect plugin declares none. Reactive off
+  // app.state(), so keyframing a slot to/from a material adds/drops its section.
+  let groups = $derived([...(node?.plugin?.toolGroups ?? []), ...materialGroups()]);
+
+  /**
+   * Query. The preset groups for the SELECTED item's current fill/stroke material
+   * paints — one section per slot whose paint is `{type:"material", material:{id}}`
+   * and whose material ships presets (material_presets.js). Reads the FOLDED state
+   * (app.state), so a tweened/keyframed material is seen. Returns [] when nothing
+   * is selected, or neither slot carries a preset-bearing material.
+   *
+   * The title is SPECIFIC to the material and slot (manifest D.11): fill →
+   * "Sky material presets", stroke → "Brush stroke presets" — never a generic
+   * "fill material presets".
+   */
+  function materialGroups() {
+    if (app.selection == null) return [];
+    const state = app.state().items?.[app.selection];
+    if (!state) return [];
+    const out = [];
+    for (const slot of ["fill", "stroke"]) {
+      const paint = state[slot];
+      if (!paint || paint.type !== "material" || !paint.material?.id) continue;
+      const id = paint.material.id;
+      const presets = presetsForMaterial(id);
+      if (!presets.length) continue;
+      const noun = slot === "stroke" ? "stroke" : "material";
+      out.push({
+        id: `matpreset:${slot}:${id}`,
+        title: `${materialDisplayName(id)} ${noun} presets`,
+        rows: presets.map((p) => ({
+          kind: "materialPreset",
+          slot,
+          preset: { name: p.title, description: p.description, params: p.params },
+        })),
+      });
+    }
+    return out;
+  }
 
   // Collapsed sections persist as a BROWSER setting (the Inspector's own rule for
   // collapse state), under this pane's OWN key: collapsing "Positioning" here
@@ -149,7 +192,9 @@
   function previewRow(row) {
     revertPreview();
     if (unavailable(row)) return;
-    previewRevert = row.kind === "command" ? previewCommand(row) : previewPreset(row.preset);
+    if (row.kind === "command") previewRevert = previewCommand(row);
+    else if (row.kind === "materialPreset") previewRevert = previewMaterialPreset(row);
+    else previewRevert = previewPreset(row.preset);
   }
 
   /** Command. Reverts the live preview (pointer left the group's rows, or a
@@ -185,6 +230,39 @@
   }
 
   /**
+   * Query. The setPreview path/value pairs for a MATERIAL preset row: each of the
+   * preset's sparse knobs is written to the paint's OWN params — ["items", sel,
+   * <slot>, "material", "params", <knob>] — NOT to a top-level item key (that is
+   * what separates a material preset from a plugin preset). Only the knobs the
+   * preset names are written, so the material's other knobs keep their value.
+   *
+   * @param {{slot: string, preset: {params: object}}} row - a materialPreset row
+   */
+  function materialPresetPairs(row) {
+    return Object.entries(row.preset.params).map(
+      ([knob, value]) => [["items", app.selection, row.slot, "material", "params", knob], value]
+    );
+  }
+
+  /**
+   * Command. Live-previews a MATERIAL preset via the SAME app.previewDelta trope
+   * every ToolsPane row uses (the doc is untouched; no undo entry) and RETURNS the
+   * revert closure. Stages nothing with no selection (expected control flow).
+   *
+   * NOTE FOR THE INTEGRATOR (hover-preview unification): this reuses ToolsPane's
+   * own preview seam, which works today. The INSPECTOR agent is building a reusable
+   * hover-preview helper in PaintField's domain (PaintField material knob rows). If
+   * that helper is later adopted here to share one preview code path across the
+   * pane and the Inspector, THIS is the call site to route through it — it already
+   * has the clean preview(fn)→revert shape it expects.
+   */
+  function previewMaterialPreset(row) {
+    if (app.selection == null) return null;
+    app.setPreview(materialPresetPairs(row));
+    return () => app.cancelPreview();
+  }
+
+  /**
    * Command. Runs a row durably. Drops the revert closure WITHOUT calling it —
    * the palette's commit rule: the previewed change stays and the commit path
    * makes it a real, single-undo-unit edit (app.runCommand for a command,
@@ -199,6 +277,7 @@
   function runRow(row) {
     previewRevert = null;
     if (row.kind === "command") app.runCommand(row.command);
+    else if (row.kind === "materialPreset") { app.setPreview(materialPresetPairs(row)); app.commitPreview(); }
     else app.applyPreset(app.selection, row.preset);
   }
 </script>
