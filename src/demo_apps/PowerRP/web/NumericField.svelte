@@ -168,11 +168,18 @@
   // silently edit a different item, so item-property/anchor references keep the
   // text field (see the field-header note + FLAG in the report). refTarget is
   // the {kind:"var", name} write-through target, or null (→ not a scrubber).
+  // THE "=" MARKER COMES OFF FIRST — classifyEquation strips it internally and
+  // resolveRef takes ONE TOKEN, so passing `stored` to both made the two disagree:
+  // a `= speed` row classified as "reference" and then resolved to a variable
+  // literally named "= speed", which cannot exist, so the scrubber silently never
+  // appeared on any marker-form reference. Same strip idiom as buildHighlightPieces
+  // below (core owns the marker's one regex; this is a read, not a rewrite).
   let refTarget = $derived.by(() => {
     if (!isEquation || textEntry) return null;
-    if (classifyEquation(stored) !== "reference") return null;
+    const clean = String(stored).replace(/^\s*=\s*/, "");
+    if (classifyEquation(clean) !== "reference") return null;
     try {
-      const d = resolveRef(stored, slugMap(app.rawState()), selfId);
+      const d = resolveRef(clean, slugMap(app.rawState()), selfId);
       // Variables only, and only if the variable actually exists (a dangling
       // reference stays as text so its error affordance shows).
       if (d.kind === "var" && d.name in (app.rawState().vars ?? {})) return d;

@@ -15,7 +15,9 @@ import {
   displayToStored, storedToDisplay, isNumericSlot, resultKindForSlot, resultMatchesKind,
   evaluateState, withBindingsMigrated, withVariableRenamed,
   FUNCTIONS, equationFunctionNames, resolveOverload, widgetArgToken, widgetArgSpans, resolveWidgetArg,
+  withMarkerPreserved, isEquationValue, declaredListLeaves,
 } from "../core/expressions.js";
+import * as EXPRESSIONS from "../core/expressions.js"; // the MARKER SEAM sweep derives its set by reflection
 import { PROPS } from "../core/properties.js";
 import { textDissolve, textType, textScramble, shuffledOrder, hashText, clamp01 } from "../core/text_transitions.js";
 import { nearestPairCircleCircle, closestPointOnCircle, nearestRimPair } from "../core/outline.js";
@@ -32,6 +34,7 @@ import { textPlugin } from "../plugins/text.js";
 import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
 import { anchorPointPlugin } from "../plugins/anchor_point.js";
 import { plaintextPlugin } from "../plugins/plaintext.js"; // a plain STRING slot — the string-transition target
+import { polygonPlugin } from "../plugins/polygon.js"; // a DECLARED LIST — an equation leaves() cannot see
 
 let passed = 0;
 function test(name, fn) {
@@ -63,6 +66,7 @@ registry.register(fancyArrowPlugin);
 registry.register(textPlugin);
 registry.register(cameraPlugin);
 registry.register(plaintextPlugin);
+registry.register(polygonPlugin);
 
 // ── tokenizer + parser ───────────────────────────────────────────────────────
 test("tokenize: kinds, positions, @refs, errors", () => {
@@ -1232,6 +1236,206 @@ test("full-JS: a throwing expression fails LOUD and falls back (no silent NaN)",
   const { state: s, errors } = capturedErrorsResult(state);
   assert.ok(errors.get("items.r.x"), "the thrown error is reported");
   assert.equal(s.items.r.x, rectPlugin.defaults.x); // fallback, never NaN/undefined
+});
+
+// ── THE "=" MARKER SEAM (forward invariant) ──────────────────────────────────
+//
+// The universal "=" marker is NOT part of the expression grammar — tokenize()
+// rejects it, and it must, because its tokens carry SOURCE POSITIONS that the
+// rewriters slice the original string with. So every function that takes a stored
+// equation source has to decide what to do with the marker, and there are only two
+// right answers:
+//
+//   STRIP     f("= X", …) behaves exactly as f("X", …)              (readers/parsers)
+//   PRESERVE  f("= X", …) is f("X", …) with the marker put back      (rewriters)
+//
+// A function that does NEITHER is the defect this guards. It does not merely throw:
+// every caller of the tokenizer wraps it in a "not parseable → return the value
+// unchanged" branch, so the marker form comes back UNTOUCHED and nobody says a
+// word. That is how withVariableRenamed left `= speed * 2` naming a variable it had
+// just deleted, and how storedToDisplay put a raw `@a1.x` internal id on screen.
+//
+// THE SET IS DERIVED, NOT LISTED. Reflect over the module's exports and take every
+// function whose FIRST PARAMETER is named `src` — this file's own name for "a
+// stored equation source". A new function that tokenizes a stored value is swept
+// the moment it is exported; there is no roster to remember to update, which is the
+// point (the hand-kept mirror is its own recurring defect).
+//
+// THE ARGUMENT VOCABULARY IS SHAPES, NOT NAMES. To call each swept function the
+// sweep tries the module's own second-argument shapes (nothing, a state, a token
+// mapper, an idMap) and uses the first one the marker-FREE call accepts. A new
+// function needing a shape not in the vocabulary FAILS here rather than passing
+// unexamined — also the point.
+
+/** The one export that satisfies NEITHER relation, and why. Asserted to STILL
+ * fail both, so this note cannot outlive its reason. */
+const MARKER_LEDGER = {
+  tokenize: "tokenize DEFINES the grammar the marker is not part of, and its tokens carry positions into the exact string it was handed — swallowing a prefix would report offsets into a string the caller never had. That is why withMarkerPreserved exists ABOVE it.",
+};
+
+const SEAM_STATE = { vars: { speed: 5 }, items: { a1: { ...rectPlugin.defaults, name: "Box" } } };
+// A body that is valid in BOTH directions (a stored @id AND a display variable), so
+// one probe serves the stored→display and display→stored functions alike.
+const SEAM_BODY = "@a1.x + speed";
+// EVERY SPELLING OF THE MARKER, because the near-miss is as dangerous as the
+// omission: a hand-rolled `/^=/` (no `\s*`) passes a `"= x"` probe and mangles
+// `"  = x"`, and a hand-rolled `/^\s*=\s*/` in a PRESERVING function eats the
+// body's own leading space. Only one regex, behind the seam, survives all three.
+const SEAM_MARKERS = ["=", "= ", "  =  "];
+const SEAM_TAILS = [[], [SEAM_STATE], [(t) => t], [new Map([["a1", "z9"]])]];
+
+/** Pure function. The first parameter's name in a function's source, or null. */
+function firstParamName(fn) {
+  const m = /^[^(]*\(([^),]*)/.exec(fn.toString());
+  const name = m?.[1]?.trim().split(/[\s=]/)[0];
+  return name || null;
+}
+/** Pure function. `value` with `marker` put back on — onto the string itself, or
+ * onto its `src` field (this module's name for "the rewritten source"). */
+function markerAdded(value, marker) {
+  if (typeof value === "string") return marker + value;
+  if (value && typeof value.src === "string") return { ...value, src: marker + value.src };
+  return null; // no PRESERVE form exists for this shape
+}
+/** Query. Deep equality as a boolean (assert.deepEqual throws; the sweep needs to
+ * test two candidate relations and report on both). */
+function deepEquals(a, b) {
+  try {
+    assert.deepEqual(a, b);
+    return true;
+  } catch {
+    return false; // a mismatch is the ANSWER here, not a failure
+  }
+}
+
+test("MARKER SEAM: every exported source-taking function in core/expressions.js STRIPS or PRESERVES the `=` marker (set derived by reflection)", () => {
+  const swept = Object.entries(EXPRESSIONS)
+    .filter(([, v]) => typeof v === "function" && firstParamName(v) === "src")
+    .map(([name]) => name);
+  // The derivation must actually be finding things — a reflection bug that swept
+  // NOTHING would make every assertion below vacuous.
+  assert.ok(swept.length >= 8, `the sweep found only ${swept.length} source-taking exports — the derivation is broken, not the code`);
+  for (const name of Object.keys(MARKER_LEDGER))
+    assert.ok(swept.includes(name), `MARKER_LEDGER names "${name}", which is no longer a swept export — delete the note`);
+
+  for (const name of swept) {
+    const fn = EXPRESSIONS[name];
+    const tail = SEAM_TAILS.find((t) => {
+      try {
+        fn(SEAM_BODY, ...t);
+        return true;
+      } catch {
+        return false; // this shape is not this function's signature; try the next
+      }
+    });
+    if (name in MARKER_LEDGER) {
+      // The ledger's claim is narrow: this function REJECTS the marker form (so it
+      // satisfies neither relation, by construction). If that stops being true the
+      // note has outlived its reason and must go — MARKER_LEDGER[name] says why.
+      for (const marker of SEAM_MARKERS)
+        assert.throws(() => fn(marker + SEAM_BODY, ...(tail ?? [])), /Unexpected character "="/,
+          `${name} no longer rejects the "${marker}" marker — MARKER_LEDGER's exception for it is stale: ${MARKER_LEDGER[name]}`);
+      continue;
+    }
+    assert.ok(tail, `no probe shape fits ${name}(src, …) — add its second-argument shape to SEAM_TAILS and state which relation it satisfies`);
+    const plain = fn(SEAM_BODY, ...tail);
+    for (const marker of SEAM_MARKERS) {
+      // A THROW is one of the two ways to fail this, and the likelier one: a new
+      // marker-blind rewriter hands the marker to tokenize and dies there. It gets
+      // the SAME guidance as a wrong VALUE, because it is the same mistake.
+      let marked, threw = null;
+      try {
+        marked = fn(marker + SEAM_BODY, ...tail);
+      } catch (e) {
+        threw = e;
+      }
+      const outcome = threw ? `threw "${threw.message}"` : `returned ${JSON.stringify(marked)}`;
+      const ok = !threw && (deepEquals(marked, plain) || deepEquals(marked, markerAdded(plain, marker)));
+      assert.ok(ok,
+        `${name}("${marker}${SEAM_BODY}") neither STRIPS nor PRESERVES the marker — it ${outcome}, `
+        + `where stripping gives ${JSON.stringify(plain)} and preserving gives ${JSON.stringify(markerAdded(plain, marker))}. `
+        + "Route it through withMarkerPreserved (a rewriter) or strip the marker on entry (a reader).");
+    }
+  }
+});
+
+test("variable rename is COMPLETE or LOUD in every shape a document stores an equation", () => {
+  const doc = {
+    meta: {},
+    slides: [{
+      id: "s0",
+      delta: {
+        vars: { speed: 5, bare: "speed * 2", marked: "= speed * 3" },
+        items: {
+          n: { ...rectPlugin.defaults, type: "rect", name: "N", x: "speed * 2" },        // legacy bare, numeric slot
+          m: { ...rectPlugin.defaults, type: "rect", name: "M", y: "= speed * 4" },      // "=" on a numeric slot
+          s: { ...textPlugin.defaults, type: "text", name: "S", text: "= speed" },       // "=" on a NON-numeric slot
+          p: { ...polygonPlugin.defaults, type: "polygon", name: "P", points: [["= speed", 0]] }, // "=" in a declared list
+          j: { ...rectPlugin.defaults, type: "rect", name: "J", x: "(function () { return speed; })()" }, // full JS
+        },
+      },
+    }],
+  };
+  let out;
+  const reports = capturedErrors(() => {
+    out = withVariableRenamed(doc, "speed", "velocity", registry);
+  });
+  const d = out.slides[0].delta;
+  assert.equal(d.vars.velocity, 5);          // the keyframe moved
+  assert.equal(d.vars.bare, "velocity * 2");
+  assert.equal(d.vars.marked, "= velocity * 3");
+  assert.equal(d.items.n.x, "velocity * 2");
+  assert.equal(d.items.m.y, "= velocity * 4");
+  assert.equal(d.items.s.text, "= velocity");     // the isNumericSlot filter never saw this one
+  assert.equal(d.items.p.points[0][0], "= velocity");
+  assert.equal(d.items.j.x, "(function () { return speed; })()"); // unrewritable — left alone
+  assert.equal(reports.length, 1, `expected exactly the full-JS equation to be reported, got: ${JSON.stringify(reports)}`);
+  assert.match(reports[0], /rename incomplete/);
+  assert.match(reports[0], /still names "speed"/);
+
+  // THE POSTCONDITION, derived from the resulting DOCUMENT rather than from the
+  // list of shapes above: every equation slot the canonical walk can see must have
+  // either lost the old name or been REPORTED. A future storable shape that this
+  // rename cannot reach fails here unless it says so out loud.
+  const stillNamesOld = (v) => typeof v === "string" && /\bspeed\b/.test(v);
+  const accountedFor = (where, value) => assert.ok(reports.some((r) => r.includes(value)),
+    `${where} still names "speed" after the rename and NOTHING reported it: ${JSON.stringify(value)}`);
+  for (const slide of out.slides) {
+    for (const [name, value] of Object.entries(slide.delta.vars ?? {}))
+      if (stillNamesOld(value)) accountedFor(`vars.${name}`, value);
+    for (const [itemId, sub] of Object.entries(slide.delta.items ?? {})) {
+      const plugin = registry.get(sub.type);
+      for (const [path, value] of [...leaves(sub), ...declaredListLeaves(sub)])
+        if (isEquationValue(plugin, path, value) && stillNamesOld(value))
+          accountedFor(`items.${itemId}.${path.join(".")}`, value);
+    }
+  }
+});
+
+test("resolveRef takes ONE TOKEN: a whole equation source is a loud error, not a variable named `= speed`", () => {
+  const slugs = slugMap(SEAM_STATE);
+  assert.deepEqual(resolveRef("speed", slugs), { kind: "var", name: "speed" });
+  // The marker case, which silently disabled NumericField's reference scrubber:
+  // classifyEquation strips and says "reference", so the two calls disagreed.
+  assert.equal(classifyEquation("= speed"), "reference");
+  for (const src of ["= speed", "=speed", "  =  speed"])
+    assert.throws(() => resolveRef(src, slugs), /is not one reference token/, `resolveRef must reject ${JSON.stringify(src)}`);
+  // Not marker-specific — the whole source-where-a-token-belongs category is loud.
+  assert.throws(() => resolveRef("speed * 2", slugs), /is not one reference token/);
+});
+
+test("withMarkerPreserved: the marker's own spacing survives; a marker-free source is passed whole", () => {
+  const swap = (body) => body.replace("@a", "@z");
+  assert.equal(withMarkerPreserved("= @a.w / 2", swap), "= @z.w / 2");
+  assert.equal(withMarkerPreserved("@a.w", swap), "@z.w");
+  assert.equal(withMarkerPreserved("  =  @a.w", swap), "  =  @z.w");
+  assert.equal(withMarkerPreserved("=1", (b) => `(${b})`), "=(1)");
+  // The body handed to `rewrite` never contains the marker — that is the contract
+  // the tokenizer depends on.
+  withMarkerPreserved("=  speed", (body) => {
+    assert.equal(body, "  speed");
+    return body;
+  });
 });
 
 console.log(`\n${passed} expressions tests passed`);
