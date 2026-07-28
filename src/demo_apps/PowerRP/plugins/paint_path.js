@@ -770,12 +770,18 @@ export const paintPathPlugin = {
     return !splitSubpaths(visibleAnchors(state)).some((sp) => sp.length >= MIN_DRAWN_ANCHORS);
   },
   /**
-   * Pure function. State → ONE `path` display-list op in LOCAL coords: the bezier
-   * curve, arc-length-trimmed to [trimStart, trimEnd]. Exact beziers when the
-   * window is whole (crisp, fillable); flattened trimmed polyline otherwise (the
-   * draw-on). Nothing to draw — an empty window, no drawable subpath, or neither a
-   * fill nor a stroke — emits nothing. The effects wrap is applied by
-   * render_gpu/ports.js (registry-injected), never here.
+   * Pure function. State → `path` display-list op(s) in LOCAL coords: the bezier
+   * curve, its STROKE arc-length-trimmed to [trimStart, trimEnd]. Exact beziers
+   * when the window is whole (crisp); flattened trimmed polyline otherwise (the
+   * draw-on). THE FILL IS TRIM-INDEPENDENT — the universal stroke-trim law (trim
+   * cuts the stroke, never the fill; core/properties strokeStart/End behave the
+   * same), so a trimmed + filled path emits TWO ops: the full-path fill beneath
+   * the windowed stroke. This used to read `closed && full && fill`, which
+   * silently ERASED a fill — solid or material — the moment either trim knob
+   * moved; caught by the material_fill_probe paint_path regression (a user's
+   * glass fill vanished). Nothing to draw — an empty window, no drawable
+   * subpath, or neither a fill nor a stroke — emits nothing. The effects wrap is
+   * applied by render_gpu/ports.js (registry-injected), never here.
    */
   emit(s) {
     const t0 = clamp01(s.trimStart ?? 0), t1 = clamp01(s.trimEnd ?? 1);
@@ -784,16 +790,26 @@ export const paintPathPlugin = {
     const d = pathDForWindow(scaledAnchors(s), closed, t0, t1);
     if (!d) return [];
     const stroked = (s.strokeWidth ?? 0) > 0;
-    const filled = closed && full && s.fill != null; // a partial (trimmed) fill is meaningless
+    const filled = closed && s.fill != null;
     if (!stroked && !filled) return [];
-    return [path({
-      d,
-      fill: filled ? s.fill : null,
-      stroke: stroked ? s.stroke : null,
-      strokeWidth: s.strokeWidth ?? 0,
-      fillRule: "nonzero",
-      opacity: s.opacity ?? 1,
-    })];
+    if (full || !filled) {
+      return [path({
+        d,
+        fill: filled ? s.fill : null,
+        stroke: stroked ? s.stroke : null,
+        strokeWidth: s.strokeWidth ?? 0,
+        fillRule: "nonzero",
+        opacity: s.opacity ?? 1,
+      })];
+    }
+    // Trimmed + filled: the full-path fill beneath, the windowed stroke on top.
+    const dFull = pathDForWindow(scaledAnchors(s), closed, 0, 1);
+    return [
+      path({ d: dFull, fill: s.fill, stroke: null, strokeWidth: 0, fillRule: "nonzero", opacity: s.opacity ?? 1 }),
+      ...(stroked
+        ? [path({ d, fill: null, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, fillRule: "nonzero", opacity: s.opacity ?? 1 })]
+        : []),
+    ];
   },
   // THE BOUNDS PROTOCOL: the ink rect (box ∪ anchor/control hull), not the box —
   // a smooth handle bulges the curve outside it. This one declaration answers every

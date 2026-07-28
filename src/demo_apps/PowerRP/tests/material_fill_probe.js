@@ -162,9 +162,49 @@ try {
     }
     console.log(`  shot .claude_vlm_checks/material_fill_${id}.png  (${isBackdropMaterial(getMaterial(id)) ? "backdrop" : "foreground"})`);
   }
+  // ── REGRESSION: a material fill on a PAINT_PATH (a `path`-op emitter, not a
+  // box shape) must resolve and paint without error. Pinned after a user's live
+  // deck carried glass (with a stale knob) + a brush material stroke + trims on
+  // a paint_path — the op class this matrix's four box cells never covered. The
+  // render must produce ZERO page errors (the "reached the painter UNRESOLVED"
+  // throw is a pageerror) and paint the interior.
+  {
+    let doc = newDocument(), z = 1;
+    doc.meta = { ...doc.meta, slideW: 400, slideH: 300 };
+    const items0 = doc.slides[0].delta.items;
+    const camId = Object.keys(items0)[0];
+    items0[camId] = { ...items0[camId], x: 0, y: 0, w: 400, h: 300, background: BG };
+    const addOne = (type, over) => { [doc] = withNewItem(doc, 0, { ...registry.get(type).defaults, ...over, active: true, z: z++ }); };
+    addOne("rect", { x: 0, y: 0, w: 400, h: 300, strokeWidth: 0, fill: "#ef476f" });
+    addOne("paint_path", {
+      x: 60, y: 40, w: 280, h: 220, closed: true, trimStart: 0.05, trimEnd: 0.95, strokeWidth: 8,
+      paintPoints: [[0.5, 0.05, 0.2, 0, 0], [0.95, 0.6, 0, 0.2, 0], [0.5, 0.95, -0.2, 0, 0], [0.05, 0.6, 0, -0.2, 0]],
+      fill: { type: "material", material: { id: "glass", params: { lightX: 0.3 } } },
+      stroke: { type: "material", material: { id: "brush", params: { brush: "fineliner", wStale: 1 } } },
+    });
+    const before = fails.length;
+    const png = await (async () => {
+      const dataUrl = await page.evaluate(
+        (json, w, h) => window.__powerrp_render(json, { slide: 0, width: w, height: h }),
+        serialize(doc), 400, 300,
+      );
+      return readPng(Buffer.from(dataUrl.split(",")[1], "base64"));
+    })();
+    const center = pixelAt(png, 200, 150);
+    ok(fails.length === before, "paint_path with glass fill + brush material stroke rendered with ZERO page errors (the UNRESOLVED regression)");
+    ok(center.some((c, i) => Math.abs(c - [0xef, 0x47, 0x6f][i]) > 4),
+      `paint_path material fill PAINTED its interior (center ${center.join(",")} differs from the underlay)`);
+  }
 } finally {
   await browser.close();
   await server.close();
+}
+
+/** Pure function. RGB triple at (x,y) of a decoded PNG.
+ * @example (a red pixel) // [255, 0, 0] */
+function pixelAt(png, x, y) {
+  const i = (y * png.width + x) * 4;
+  return [png.data[i], png.data[i + 1], png.data[i + 2]];
 }
 
 if (fails.length) {
