@@ -39,6 +39,7 @@ import os
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -989,7 +990,21 @@ def run_server_job(name, job_id):
     proc = subprocess.Popen(
         [node, RENDER_JOB_SCRIPT, d, "--workers", str(record["workers"])],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=REPO_ROOT, env=env,
+        # ITS OWN SESSION, so the worker leads its own process GROUP. Two reasons, and
+        # the first is a foot-gun I nearly shipped: without this the worker shares THIS
+        # SERVER's group, so reaping it with killpg would kill the server too. With it,
+        # the group contains exactly the worker and the browsers it spawns -- which is
+        # also the only way to take those browsers down with it instead of leaving them
+        # holding ports. Same reasoning as the test runner's backend teardown.
+        start_new_session=True,
     )
+    # PERSIST THE PID, because _job_procs is IN-MEMORY and a restart empties it while
+    # the OS process SURVIVES (reparented to init). Without this, a server restart
+    # left an orphan worker rendering a job the server had already re-queued -- two
+    # workers writing the same frames directory, and a job reporting "queued" while
+    # its framesDone visibly climbed. Measured on a live server: 68cf3e78 sat at
+    # state "queued" while going 634 -> 650 of 1620 frames.
+    write_worker_pid(name, job_id, proc.pid)
     with _job_lock:
         _job_procs[job_id] = [proc]
     try:
@@ -1002,8 +1017,68 @@ def run_server_job(name, job_id):
             raise RuntimeError(f"render worker exited {proc.returncode}: {(err or '').strip()[-2000:]}")
         return err or ""
     finally:
+        clear_worker_pid(name, job_id)
         with _job_lock:
             _job_procs.pop(job_id, None)
+
+
+WORKER_PID_FILE = "worker.pid"
+
+
+def write_worker_pid(name, job_id, pid):
+    """Command. Records the live worker's pid beside its job, so a server restart can
+    find and reap it. Written before the worker does any work; removed when it exits."""
+    with open(os.path.join(job_dir(name, job_id), WORKER_PID_FILE), "w") as f:
+        f.write(str(pid))
+
+
+def clear_worker_pid(name, job_id):
+    """Command. Forgets a worker's pid. Missing is the normal case (already cleared, or
+    a job that never spawned one), so only that is tolerated."""
+    try:
+        os.remove(os.path.join(job_dir(name, job_id), WORKER_PID_FILE))
+    except FileNotFoundError:
+        pass
+
+
+def reap_orphan_worker(name, job_id):
+    """
+    Command (runs at boot, before a job is re-queued). Kills a worker left over from a
+    previous server process, and returns True if it killed one.
+
+    IDENTITY IS CHECKED, NOT ASSUMED. A bare pid is not enough -- pids are reused, and
+    killing a stranger would be far worse than leaving an orphan. So the recorded pid
+    is only killed if /proc says its command line still names THIS job's directory.
+    That makes the check exact rather than probabilistic.
+
+    The whole process GROUP is signalled, for the same reason the test runner does it:
+    the worker spawns browsers of its own, and killing only the parent leaves those
+    behind holding ports.
+    """
+    path = os.path.join(job_dir(name, job_id), WORKER_PID_FILE)
+    try:
+        with open(path) as f:
+            pid = int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return False
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().decode("utf-8", "replace")
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        clear_worker_pid(name, job_id)
+        return False
+    if job_id not in cmdline:
+        # The pid was recycled by an unrelated process. Forget it; kill nothing.
+        clear_worker_pid(name, job_id)
+        return False
+    print(f"PowerRP: reaping orphaned render worker pid {pid} for job {job_id} "
+          f"(it outlived the server that started it)", file=sys.stderr)
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # exited between our read and our signal -- the outcome we wanted
+    clear_worker_pid(name, job_id)
+    return True
 
 
 def _supervise():
@@ -1114,6 +1189,11 @@ def resume_interrupted_jobs():
                 # when the server is launched with its output redirected to a log,
                 # so a "loud" notice printed there would sit unseen in a buffer.
                 print(f"PowerRP: resuming interrupted render job {record['name']} ({job_id}) in {name}", file=sys.stderr)
+                # REAP FIRST, THEN RE-QUEUE. The old worker is not our child any more,
+                # so nothing reaps it for us; re-queueing without killing it puts a
+                # SECOND worker on the same frames directory, and leaves a job whose
+                # state says "queued" while its frame count climbs.
+                reap_orphan_worker(name, job_id)
                 update_job(name, job_id, state="queued", error=None)
                 enqueue_job(name, job_id)
             else:
