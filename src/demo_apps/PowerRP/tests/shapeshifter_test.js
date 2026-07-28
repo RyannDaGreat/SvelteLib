@@ -193,4 +193,53 @@ test("modifierPoints clamp: an extreme drag stays inside the param's domain", ()
   assert.ok(modifierWrite(pts, ss, { x: ss.w / 2 + 0.01, y: ss.h / 2 }).points <= 60); // count clamps to <= 60
 });
 
+// ── GEOMETRY PRESETS validation (manifest #70 — the presets mantra) ───────────
+// Every ornament family that ships presets must: hold ≥10 (the mantra's floor);
+// carry unique names; only touch knobs the family DECLARES; keep every numeric
+// value inside that knob's declared [min, max]; and produce a real, closed,
+// non-empty outline — the same non-degeneracy bar GEN_CASES enforces above.
+test("family presets: ≥10, unique names, declared knobs, in-range, non-degenerate outlines", () => {
+  const withPresets = FAMILIES.filter((f) => Array.isArray(f.presets));
+  assert.ok(withPresets.length >= 6, "the six ornament families all declare presets");
+  for (const fam of withPresets) {
+    const rowByKey = new Map(fam.rows.map((r) => [r.key, r]));
+    assert.ok(fam.presets.length >= 10, `${fam.type}: ${fam.presets.length} presets (mantra floor is 10)`);
+
+    const names = new Set();
+    for (const preset of fam.presets) {
+      assert.ok(preset.name && typeof preset.name === "string", `${fam.type}: preset has a name`);
+      assert.ok(typeof preset.description === "string" && preset.description.length > 0, `${fam.type} "${preset.name}": has a one-line description`);
+      assert.ok(!names.has(preset.name), `${fam.type}: duplicate preset name "${preset.name}"`);
+      names.add(preset.name);
+      assert.ok(preset.props && typeof preset.props === "object", `${fam.type} "${preset.name}": has a props object`);
+
+      for (const [key, val] of Object.entries(preset.props)) {
+        const row = rowByKey.get(key);
+        assert.ok(row, `${fam.type} "${preset.name}": prop "${key}" is a declared knob`);
+        if (row.kind === "number") {
+          assert.equal(typeof val, "number", `${fam.type} "${preset.name}": numeric knob "${key}" gets a number`);
+          assert.ok(Number.isFinite(val), `${fam.type} "${preset.name}": knob "${key}" is finite`);
+          if (row.min !== undefined) assert.ok(val >= row.min, `${fam.type} "${preset.name}": "${key}"=${val} ≥ min ${row.min}`);
+          if (row.max !== undefined) assert.ok(val <= row.max, `${fam.type} "${preset.name}": "${key}"=${val} ≤ max ${row.max}`);
+        } else if (row.kind === "select") {
+          assert.ok(row.options.includes(val), `${fam.type} "${preset.name}": "${key}"="${val}" is a declared option`);
+        } else if (row.kind === "boolean") {
+          assert.equal(typeof val, "boolean", `${fam.type} "${preset.name}": boolean knob "${key}" gets a boolean`);
+        }
+      }
+
+      // The preset must actually draw: fold props over defaults and run outline().
+      const subs = fam.outline({ ...fam.defaults, ...preset.props });
+      assert.ok(subs.length >= 1, `${fam.type} "${preset.name}": outline has ≥1 subpath`);
+      for (const sp of subs) {
+        assert.ok(sp.length >= 3, `${fam.type} "${preset.name}": each subpath is a polygon`);
+        for (const [x, y] of sp) assert.ok(Number.isFinite(x) && Number.isFinite(y), `${fam.type} "${preset.name}": finite vertex`);
+      }
+      const d = subpathsPathD(subs);
+      assert.ok(/Z/.test(d), `${fam.type} "${preset.name}": path is closed`);
+      assert.ok(!/[A-Za-z]/.test(d.replace(/[MLZ]/g, "")), `${fam.type} "${preset.name}": only M/L/Z commands`);
+    }
+  }
+});
+
 console.log(`\n${passed} shapeshifter tests passed`);
