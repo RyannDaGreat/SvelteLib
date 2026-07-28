@@ -209,6 +209,83 @@ export function bentoGridAnchors(state) {
   return out;
 }
 
+// The 9 bbox suffixes a cell anchor id may end in — DERIVED from the one home
+// (standardBBoxAnchors), never re-listed, so bentoCellAnchorId cannot mint an id
+// bentoGridAnchors does not actually publish.
+const CELL_ANCHOR_SUFFIXES = new Set(standardBBoxAnchors({ w: 0, h: 0 }).map((a) => a.id));
+
+/**
+ * Pure function. THE cell anchor id — `c{r}x{c}` + a standard bbox suffix, the
+ * grammar the file docstring specifies. Exists so no caller string-builds an id:
+ * an id is only referenceable if it contains NO underscore and IS published by
+ * bentoGridAnchors, and both facts live here. Throws LOUDLY on an unknown suffix
+ * (a typo'd suffix would produce an id that resolveRef accepts syntactically and
+ * evaluateState then rejects at paint time — much later, and once per frame).
+ *
+ * @param {number} r - cell row (0-based)
+ * @param {number} c - cell column (0-based)
+ * @param {string} suffix - one of the 9 standard bbox anchor ids
+ * @returns {string}
+ *
+ * @example bentoCellAnchorId(1, 2) // "c1x2cm" (the cell CENTRE — the default)
+ * @example bentoCellAnchorId(0, 0, "tl") // "c0x0tl"
+ * @example // bentoCellAnchorId(0, 0, "middle") throws: not a standard bbox anchor id
+ */
+export function bentoCellAnchorId(r, c, suffix = "cm") {
+  if (!CELL_ANCHOR_SUFFIXES.has(suffix))
+    throw new Error(`bentoCellAnchorId: "${suffix}" is not a standard bbox anchor id (${[...CELL_ANCHOR_SUFFIXES].join("/")}) — bentoGridAnchors publishes no such cell anchor.`);
+  return `c${r}x${c}${suffix}`;
+}
+
+/**
+ * Pure function. The VISIBLE cell (bentoCellRects entry) at a LOCAL point — the
+ * cell CONTAINING it, or, for a point in a gutter / in the padding / outside the
+ * widget entirely, the NEAREST cell by squared clamped rect distance.
+ *
+ * NEAREST rather than "the containing cell or null" on purpose: the gutters and
+ * the padding inset are real areas of the widget, so a containment-only lookup
+ * would make a press there a dead no-op — and the caller (a cell-aiming click)
+ * has no better answer to give than "the one you were nearest". Ties resolve to
+ * the earlier cell in bentoCellRects order (merged spans first, then row-major),
+ * so the result is deterministic. Never null: bentoCellRects always yields at
+ * least one cell (rows/cols are clamped to >= 1).
+ *
+ * @param {object} state - widget state (see bentoGeom) plus optional `spans`
+ * @param {number} localX - point x in the widget's own local frame
+ * @param {number} localY - point y in the widget's own local frame
+ * @returns {{r, c, rowSpan, colSpan, x, y, w, h}}
+ *
+ * @example bentoCellNear({w: 100, h: 100, rows: 2, cols: 2, padding: 0, rowGap: 0, colGap: 0}, 75, 25) // the {r: 0, c: 1} cell (containing)
+ * @example bentoCellNear({w: 100, h: 100, rows: 2, cols: 2, padding: 0, rowGap: 0, colGap: 0}, -500, -500).r // 0 (far outside → nearest: the top-left cell)
+ */
+export function bentoCellNear(state, localX, localY) {
+  const cells = bentoCellRects(state);
+  let best = cells[0], bestD = Infinity;
+  for (const cell of cells) {
+    const dx = Math.max(cell.x - localX, 0, localX - (cell.x + cell.w));
+    const dy = Math.max(cell.y - localY, 0, localY - (cell.y + cell.h));
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = cell; }
+  }
+  return best;
+}
+
+/**
+ * Pure function. A cell's 4 LOCAL corners as [x, y] pairs, clockwise from its
+ * top-left. Feeds an editor overlay that must draw the cell CORRECTLY under the
+ * widget's transform: a caller maps these 4 points through the world transform
+ * and strokes the ring, where an axis-aligned {x, y, w, h} rect would be wrong
+ * the moment the bento is rotated.
+ *
+ * @param {{x: number, y: number, w: number, h: number}} cell - a bentoCellRects entry
+ * @returns {[number, number][]}
+ *
+ * @example bentoCellCorners({x: 0, y: 0, w: 10, h: 20}) // [[0, 0], [10, 0], [10, 20], [0, 20]]
+ */
+export function bentoCellCorners(cell) {
+  return [[cell.x, cell.y], [cell.x + cell.w, cell.y], [cell.x + cell.w, cell.y + cell.h], [cell.x, cell.y + cell.h]];
+}
+
 /**
  * Pure function. The bento's FULL local anchor set: the widget bbox 9
  * (standardBBoxAnchors) followed by every cell + junction anchor. This is the
@@ -232,6 +309,31 @@ export const bentoPlugin = {
   // Not a ghost — it emits its own faint grid guides (a ghost would only get a
   // plain bbox outline, hiding the grid structure).
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK = AIM A CELL AT A WIDGET (web/bentoBind.js). The scaffold is
+  // never EDITED by it; the WIDGET is — it gains `=` equations reading a cell
+  // anchor, so it follows the grid from then on. That is the whole point of a
+  // widget whose product is anchors, and it is one string here (the registry
+  // owns the behaviour — web/widget_handlers.js).
+  activate: "bento_bind_cell",
+  /**
+   * THE CELL-GRID DESCRIPTOR — the CONTENT that activation operates on, in the
+   * `interiorView` / `insertPointAt` shape: three PURE functions the handler asks
+   * questions of, so the handler knows about "a widget with addressable cells"
+   * rather than about the bento. That is what lets its `claims` be a SHAPE test
+   * (`!!plugin.cellGrid`) instead of the literal type check the handler registry
+   * exists to have removed — and it means `web/` imports no named plugin.
+   *
+   *   at(state, localX, localY) → the cell at a point (nearest; never null)
+   *   corners(cell)             → the cell's 4 local corners, for an overlay
+   *   anchorId(cell, suffix)    → that cell's referenceable anchor id
+   */
+  cellGrid: {
+    at: bentoCellNear,
+    corners: bentoCellCorners,
+    /** Pure function. A cell's anchor id (bentoCellAnchorId by row/col).
+     * @example // cellGrid.anchorId({r: 1, c: 2}, "cm") === "c1x2cm" */
+    anchorId: (cell, suffix) => bentoCellAnchorId(cell.r, cell.c, suffix),
+  },
   defaults: {
     type: "bento", x: 120, y: 120, w: 480, h: 320, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about own center (an equation — the standard widget default).

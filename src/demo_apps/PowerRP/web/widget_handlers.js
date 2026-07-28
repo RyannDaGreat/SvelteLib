@@ -62,14 +62,30 @@
  * routes gestures to it, App.svelte shows the mode's `hints` in the HintBar scoped
  * to it, and Escape exits. Modes are what make multi-step behaviour expressible
  * without new host code, and there are now two shapes of them:
- *   ACTIVATE  `mode: {label, hints, onPan?, onWheel?}` — a sustained gesture on ONE
- *              existing item. Both handlers are OPTIONAL and declaring neither is
- *              legal: a mode that omits `onPan` leaves the plain single-pointer
- *              drag to the canvas, so the widget stays selectable and MOVABLE while
- *              the mode runs — which is exactly what interior explore
- *              (web/interiorNav.js) wants, since it drives its interior from the
- *              wheel alone (plain wheel pans, Ctrl+wheel zooms, the canvas's own
- *              vocabulary one frame down).
+ *   ACTIVATE  `mode: {label, hints, steps?, onPan?, onPick?, onWheel?, overlay?}` —
+ *              a sustained gesture on ONE existing item. Every handler is OPTIONAL
+ *              and declaring none is legal: a mode that omits `onPan` and `onPick`
+ *              leaves the plain single-pointer drag to the canvas, so the widget
+ *              stays selectable and MOVABLE while the mode runs — which is exactly
+ *              what interior explore (web/interiorNav.js) wants, since it drives its
+ *              interior from the wheel alone (plain wheel pans, Ctrl+wheel zooms,
+ *              the canvas's own vocabulary one frame down).
+ *                `onPick(ctx, {node, world, local})` is the PICK primitive: the
+ *              press is delivered with the widget UNDER it (`node`, null on empty
+ *              canvas) and the point in both frames, and the canvas's own
+ *              select/drag/band machinery never sees it. It is what an EYEDROPPER
+ *              needs — "click a widget and take its reference" — and its first
+ *              consumer is bento cell binding (web/bentoBind.js), which reads
+ *              `local` on its aim step and `node` on its bind step. A mode
+ *              declaring `onPick` OUTRANKS `onPan`: a mode cannot both consume the
+ *              press as a pick and open a drag with it.
+ *                `steps` + `overlay(ctx)` are the CREATE mode's own two fields,
+ *              usable here unchanged — `canvasModes()` already reads `steps` off
+ *              whatever phase declares it, so an activate mode gets per-step
+ *              HintBar narration for free, and the host feeds `overlay`'s
+ *              `{chains, rects, dots}` through the same channel a creation preview
+ *              uses. An activate mode has no `session` (its item already exists),
+ *              so `overlay` receives the mode context rather than a session.
  *   CREATE    `mode: {label, steps, hints, finish, begin, step, onHover, onStep,
  *              finalize, overlay}` — a multi-gesture PLACEMENT (web/polygonDraw.js,
  *              web/telescopicRig.js). The step-sequencing contract, and why the
@@ -79,6 +95,7 @@
  * its Escape entry are generated from the declaration wherever it lives.
  */
 
+import { BENTO_BIND_HANDLER } from "./bentoBind.js";
 import { NAVIGATE_INTERIOR_HANDLER } from "./interiorNav.js";
 import { POLYGON_CHAIN_HANDLER } from "./polygonDraw.js";
 import { TELESCOPIC_RIG_HANDLER } from "./telescopicRig.js";
@@ -248,6 +265,7 @@ const ACTIVATE_HANDLERS = [
   },
   NAVIGATE_INTERIOR_HANDLER,
   INSERT_POINT_HANDLER,
+  BENTO_BIND_HANDLER,
 ];
 
 /**

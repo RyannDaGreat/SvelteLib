@@ -154,7 +154,11 @@ try {
   ok(r.rect.activate === null, `rect declares no activation (got ${r.rect.activate})`);
   ok(r.rect.create === "bbox" && r.circle.create === "bbox", `rect/circle → bbox creation (got ${r.rect.create}/${r.circle.create})`);
   ok(r.arrow.create === "endpoints" && r.line.create === "endpoints", `arrow/line → endpoints creation (got ${r.arrow.create}/${r.line.create})`);
-  ok(resolution.modes.join(",") === "navigate_interior", `exactly one ACTIVATION canvas mode registered (got ${resolution.modes.join(",")})`);
+  // Asserts THIS probe's mode is registered, not that it is the only one: the
+  // exhaustive `join(",") === "navigate_interior"` form was a mirror of the
+  // registry's shape, so the second activate mode (bento cell binding) broke it in
+  // a file about interior explore. tests/bento_bind_test.js owns that one's wiring.
+  ok(resolution.modes.includes("navigate_interior"), `the interior-explore ACTIVATION mode is registered (got ${resolution.modes.join(",")})`);
 
   const plan = await page.evaluate(async () => {
     const mod = await import("/widget_handlers.js");

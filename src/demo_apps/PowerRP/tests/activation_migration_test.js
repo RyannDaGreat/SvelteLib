@@ -241,12 +241,23 @@ test("the mandelbrot declares explore mode + the interiorView contract", () => {
   assert.equal(typeof mandelbrotPlugin.interiorView.window, "function");
   assert.equal(typeof mandelbrotPlugin.interiorView.writes, "function");
   // The mode is registered, so the HintBar gets its inputs for free. canvasModes()
-  // now walks BOTH phases (a creation may take over the canvas too — the polygon's
-  // click-click-click, the telescopic rig's two boxes), so the assertion is that the
-  // ACTIVATE half is exactly this one mode.
-  assert.deepEqual(canvasModes().filter((m) => m.phase === "activate").map((m) => m.handlerId), ["navigate_interior"]);
-  // An activation mode declares no step sequence — a sustained gesture is not a
-  // sequence, and offering an empty one would put a blank chip on the bar.
+  // walks BOTH phases (a creation may take over the canvas too — the polygon's
+  // click-click-click, the telescopic rig's two boxes), so the assertion is that
+  // THIS mode is in the ACTIVATE half.
+  //
+  // IT USED TO BE `deepEqual([...activate mode ids], ["navigate_interior"])`, which
+  // was a MIRROR of the registry's shape in a test whose subject is the Mandelbrot:
+  // every new activate mode broke it here, in a file about a fractal, with a message
+  // naming neither. Bento cell binding (web/bentoBind.js) is the second activate
+  // mode and was the first to hit it. The registry's own coverage is the derived
+  // kind — activations() feeds the HintBar, migrationPlan is asserted empty — so
+  // this assertion is now about the ONE mode it names.
+  assert.ok(canvasModes().some((m) => m.phase === "activate" && m.handlerId === "navigate_interior"));
+  // INTERIOR EXPLORE declares no step sequence: a sustained wheel gesture is not a
+  // sequence, and offering an empty one would put a blank chip on the bar. NOT a
+  // rule about activate modes in general — a two-press activation (aim a bento cell,
+  // then click the widget to bind) is a sequence and declares one, which is why the
+  // step generator reads `steps` off whatever phase declares it.
   assert.deepEqual(canvasModes().find((m) => m.handlerId === "navigate_interior").steps, []);
 });
 

@@ -957,6 +957,28 @@
    *  unit, committed on release). Returns true when it consumed the event. */
   function modePointerDown(e) {
     const active = activeMode();
+    // A mode that declares `onPick` takes the press as a WIDGET PICK, not a drag:
+    // it is handed the widget UNDER the pointer (null on empty canvas) plus the
+    // point in world AND in the mode item's own local frame, and decides which of
+    // the two it cares about. That is the eyedropper primitive — "click a widget
+    // and take its reference" — and it OUTRANKS onPan because one press cannot
+    // both be consumed as a pick and open a drag. preventDefault for the same
+    // measured reason the pan branch below needs it (a mode is entered by
+    // double-clicking, which leaves a document text selection behind).
+    if (active?.mode.onPick) {
+      e.preventDefault();
+      const w = worldPoint(e);
+      active.mode.onPick(modeContext(active), {
+        node: pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom),
+        world: w,
+        local: localPointOf(active.node, w.x, w.y),
+      });
+      // Re-ask for the overlay after every press — an activate mode has no session
+      // for the host to watch, so the press IS the invalidation (refreshCreationPreview's
+      // "re-derive after every mutation" rule, one phase over).
+      placePreview = active.mode.overlay ? active.mode.overlay(modeContext(active)) : null;
+      return true;
+    }
     if (!active?.mode.onPan) return false;
     // preventDefault SUPPRESSES THE NATIVE DRAG, and this gesture is the one place
     // in the app that needs it: a mode is entered by DOUBLE-CLICKING, a double-click
@@ -1197,8 +1219,13 @@
   // generated registry entry calls app.exitCanvasMode), a slide switch, entering
   // the presenter, or the selection write inside finalize. Watching app.canvasMode
   // is the ONE place that covers every route, rather than one hook per exit.
+  // An ACTIVATE mode's overlay (bento cell aiming) rides the SAME placePreview
+  // channel and has no session to abandon, so leaving the mode must drop it here
+  // too — otherwise an aimed cell outline would outlive its mode.
   $effect(() => {
-    if (!app.canvasMode && creation) abandonCreation();
+    if (app.canvasMode) return;
+    if (creation) abandonCreation();
+    placePreview = null; // only a live mode ever sets it, so null is always right here
   });
 
   // ── Selection + drag ────────────────────────────────────────────────────────
