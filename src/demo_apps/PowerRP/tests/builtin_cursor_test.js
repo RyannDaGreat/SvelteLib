@@ -170,7 +170,7 @@ test("the headless cursor render is BYTE-IDENTICAL across runs (determinism)", (
   assert.ok(Buffer.from(again).equals(Buffer.from(png)), "two renders of the same doc differ");
 });
 
-// The BEACH BALL is the one cursor with linearGradients + an ephemeral spin — the
+// The BEACH BALL is the one cursor with linearGradients + a clock-driven spin — the
 // richest asset, and the one whose gradient stops exercise the scanner's nested
 // <defs>-less gradient collection.
 const ballPng = await renderDocToPng(JSON.stringify(cursorDoc(registry, "beachball")), { slide: 0, alpha: 1, width: 640, height: 360 });

@@ -216,8 +216,10 @@ export const particlesPlugin = {
   // off-screen with a long shadow is handled by effectsCullMargin.)
   cullMargin: effectsCullMargin,
   hitTest(s, lx, ly) {
-    // The clickable target is the emitter BOX (the origin region) — particles
-    // themselves are ephemeral and not pickable, exactly like a video's frame.
+    // The clickable target is the emitter BOX (the origin region). The sparks
+    // themselves are RECORDABLE state — a pure function of (params, t, seed)
+    // with no stored per-spark geometry — so there is nothing to hit-test
+    // against, exactly like a video's frame.
     return lx >= 0 && ly >= 0 && lx <= (s.w ?? 0) && ly <= (s.h ?? 0);
   },
   anchors: standardBBoxAnchors,

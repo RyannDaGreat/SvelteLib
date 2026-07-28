@@ -304,7 +304,7 @@ export const CURSOR_NAMES = [
   "textcursor", "textcursorvertical", "zoomin", "zoomout",
 ];
 
-/** The busy/spinner cursor whose ephemeral rotation the demo spins by default —
+/** The busy/spinner cursor whose clock-driven rotation the demo spins by default —
  * the recognizable macOS "beach ball" wait indicator. This is the ONLY cursor
  * that spins; every other cursor is static (the spin is gated on this name). */
 export const SPINNING_CURSOR = "beachball";

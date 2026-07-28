@@ -1230,7 +1230,9 @@ export function withExtraCamerasDropped(doc) {
 // UI reorder ops set z to the midpoint between neighbors (bisect), then this
 // renormalizes every KEYFRAMED z document-wide to 1, 2, 3... (order-preserving
 // over the set of distinct stored values) so bisection never runs out of
-// precision. Tweened in-between z values are ephemeral and never normalized.
+// precision. A tweened in-between z is DERIVED, never written to the document,
+// so it is never normalized (this is the "not persisted" sense of transient —
+// nothing to do with the three kinds of state in CLAUDE.md).
 
 /** Pure function. Document with all stored z keyframes renormalized to 1..N. */
 export function withNormalizedZ(doc) {

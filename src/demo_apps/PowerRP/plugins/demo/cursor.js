@@ -5,7 +5,7 @@
  * built-in cursor SVG (assets/builtin/cursors/, via render_gpu/gpu/svg_raster.js)
  * and feeds it to the SAME svgToIR both this widget and plugins/svg.js call — so
  * the SVG-flatten logic has ONE home; this widget is a thin curated-picker +
- * one ephemeral behaviour (the beach-ball spin).
+ * one clock-driven behaviour (the beach-ball spin).
  *
  * ── WHY A DEMO WIDGET ─────────────────────────────────────────────────────────
  * The manifest's demo-widget split: the SVG widget is the GENERAL capability
@@ -13,20 +13,26 @@
  * picker + one behaviour). Composition happens through STATE + shared helpers,
  * never a plugin↔plugin import — exactly the manifest's magnifier→demo plan.
  *
- * ── THE BEACH-BALL SPIN IS EPHEMERAL (not serialized, not keyframed) ──────────
- * Per the user, the spin is EPHEMERAL state — presentation-time animation,
- * identical in kind to the particle emitter's `t`. The render tree stays a pure
- * function of (document, [[slide, alpha]]); the instantaneous rotation angle is
- * an AMBIENT presentation input, derived PER FRAME from the ambient clock
- * (render_gpu/particle_clock.particleTime — a FIXED freeze in the editor / CLI /
- * thumbnails, a wall clock in the presenter). There is NO stored angle, no delta,
- * no keyframe — the angle is recomputed from `t` every emit(), exactly like
- * plugins/particles.js derives its whole picture from (params, t).
+ * ── THE BEACH-BALL SPIN IS RECORDABLE STATE (not serialized, not keyframed) ───
+ * The spin is RECORDABLE state (see CLAUDE.md "The three kinds of state"),
+ * identical in kind to the particle emitter's `t`: it is NOT derivable from
+ * [[slide, alpha]] alone, but it IS a pure function of an ambient presentation
+ * time, so it is deterministic given a timeline and therefore reproducible in a
+ * recording. The render tree stays a pure function of (document, [[slide,
+ * alpha]]); the instantaneous rotation angle is an AMBIENT presentation input,
+ * derived PER FRAME from the ambient clock (render_gpu/particle_clock.
+ * particleTime — a FIXED freeze in the editor / CLI / thumbnails, a wall clock in
+ * the presenter, and a per-frame value the video exporter drives through
+ * setParticleTimeOverride). There is NO stored angle, no delta, no keyframe — the
+ * angle is recomputed from `t` every emit(), exactly like plugins/particles.js
+ * derives its whole picture from (params, t).
  *   - `spin` (boolean) and `spinRevsPerSec` (number) are ORDINARY document state
  *     (keyframable parameters that CONFIGURE the animation);
- *   - the ANGLE they produce is ephemeral (recomputed from `t`).
+ *   - the ANGLE they produce is recomputed from `t` and never stored.
  * This is the clean particle split: parameters are document state, the
- * instantaneous phase is ambient.
+ * instantaneous phase is ambient. And because the angle is a function of `t`
+ * alone — never of the previous frame — frame N renders without frame N-1, so a
+ * spinning cursor does not block the frame-range sharding in cli/render_job.js.
  *
  * Surfaced ONLY via the "Insert Demo Widget" submenu (web/App.svelte) — NO
  * top-level `commands`, keeping the core palette clean (the demo-widget intent).
@@ -119,7 +125,8 @@ function artworkBounds(ops) {
 // built-in library (options derived from the ONE canonical CURSOR_NAMES list —
 // add a file to assets/builtin/cursors/ + a name to CURSOR_NAMES and it becomes
 // a variant). `spin`/`spinRevsPerSec` are ORDINARY (keyframable) parameters; the
-// angle they produce is the EPHEMERAL part (derived from the clock in emit).
+// angle they produce is the RECORDABLE part (recomputed from the ambient clock
+// in emit, never stored — deterministic given a timeline, so it records).
 const CUSTOM = customProps([
   {
     name: "cursorKind", kind: "select", default: SPINNING_CURSOR,
@@ -129,7 +136,7 @@ const CUSTOM = customProps([
   },
   {
     name: "spin", kind: "boolean", default: true, label: "Spin", category: "formatting",
-    help: "Rotate the cursor continuously (the beach-ball busy spin). The rotation is EPHEMERAL — it animates live in the presenter and shows a representative frozen frame in the editor; it is never keyframed or saved.",
+    help: "Rotate the cursor continuously (the beach-ball busy spin). The rotation is driven by presentation time rather than by a saved value — it animates live in the presenter, records correctly into a video export, and shows a representative frozen frame in the editor; it is never keyframed or saved.",
   },
   {
     name: "spinRevsPerSec", kind: "number", default: SPIN_DEFAULT_REVS_PER_SEC, min: 0, label: "Spin speed (rev/s)", category: "formatting",
@@ -171,9 +178,10 @@ export const cursorPlugin = {
    * the SHARED svgToIR (same as plugins/svg.js), then — for the BEACH BALL ONLY,
    * when `spin` is on — wraps the ops in ONE rotation about the BALL'S OWN CENTER
    * (the flattened-artwork center, so it spins in place, not orbiting) whose
-   * angle is DERIVED from the ambient clock (ephemeral: no stored angle). Every
-   * OTHER cursor (arrow, crosshair, I-beam, …) renders STATIC — the wait spinner
-   * is the beach ball alone. Effects wrap the whole thing.
+   * angle is DERIVED from the ambient clock (recordable state: no stored angle,
+   * but a pure function of `t`, so it records). Every OTHER cursor (arrow,
+   * crosshair, I-beam, …) renders STATIC — the wait spinner is the beach ball
+   * alone. Effects wrap the whole thing.
    */
   emit(s, _targetWorldIR, world) {
     const w = s.w ?? 0, h = s.h ?? 0;
@@ -181,13 +189,14 @@ export const cursorPlugin = {
     const kind = s.cursorKind ?? SPINNING_CURSOR;
     const src = cursorSource(kind); // throws loud on a corrupt build (trusted committed assets)
     let ops = svgToIR(src, w, h, { ink: CURSOR_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1 });
-    // The ephemeral spin is the macOS WAIT indicator — it applies ONLY to the
-    // beach ball. Any other cursor is a static pointer even if `spin` is on.
+    // The spin is the WAIT indicator — it applies ONLY to the beach ball. Any
+    // other cursor is a static pointer even if `spin` is on.
     if (s.spin && kind === SPINNING_CURSOR) {
-      // EPHEMERAL angle: recomputed from the ambient clock every frame (NOT
+      // RECORDABLE angle: recomputed from the ambient clock every frame (NOT
       // document state) — a fixed freeze in the editor/CLI, wall-clock in the
-      // presenter. Pivot about the BALL'S OWN center (artwork bbox center), so
-      // the ball spins in place; the box center can differ from it.
+      // presenter, an exporter-driven `t` in a render. Pivot about the BALL'S OWN
+      // center (artwork bbox center), so the ball spins in place; the box center
+      // can differ from it.
       const angle = particleTime() * (s.spinRevsPerSec ?? SPIN_DEFAULT_REVS_PER_SEC) * 2 * Math.PI;
       const b = artworkBounds(ops);
       const cx = b ? (b.minX + b.maxX) / 2 : w / 2;

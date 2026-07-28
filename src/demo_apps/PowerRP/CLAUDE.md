@@ -124,3 +124,37 @@ widget base class. Read it before adding a widget.
 - **LIST PROPERTIES** — `core/lists.js`: per-element equations, insert-between,
   and hide-vs-purge via a companion `active` list (hiding keeps numbering, so
   equations bound to later elements survive; purging renumbers).
+
+## The three kinds of state
+
+Before you add a widget, decide which kind it introduces. This is not
+bookkeeping: it decides whether a render can be split across machines.
+
+- **Property state** — reproducible under a SHUFFLE OF TIME: computable from
+  `[[slide, alpha]]` alone, with no history. This is the core invariant and the
+  overwhelming majority of the app. Default to it.
+- **Recordable state** — needs an ambient input (presentation time `t`) that is
+  not document state, but is a PURE FUNCTION of it, so it is deterministic given
+  a timeline and records correctly. Particle emitters, the material shaders, the
+  cursor spin and a video's current frame live here. Read `t` ONLY through
+  `render_gpu/particle_clock.particleTime()`, never a wall clock directly — that
+  is the seam the presenter drives live, the editor/CLI freeze for determinism,
+  and the exporter overrides per frame. Recordable state is SEEKABLE: frame 200
+  renders without frame 199, which is what lets `cli/render_job.js` shard a
+  render by strided frame range.
+- **Ephemeral state** — genuinely untrackable; gone at the end of every
+  presentation, impossible to record or reproduce. **We have none, and avoiding
+  it is a design goal.** A widget that reads a host input (`Date.now`,
+  `Math.random`, an iframe, a live socket) inside `emit()` or a paint path
+  introduces it; so does a widget carrying state from frame N-1 (a physics sim),
+  which additionally breaks frame-range sharding. If you cannot avoid it, it must
+  fail LOUDLY rather than silently emit wrong frames.
+
+Randomness is not an exception: `core/expressions.js` blocks `Date`,
+`performance` and `Math.random` outright and exposes a SEEDED `random`, and
+`core/particles.js` hashes `(seed, i, stream)`. Picking a seed with `Math.random`
+at INSERT time and STORING it is property state, and is fine.
+
+(The word "ephemeral" also survives in the codebase in an ordinary-English sense
+— a short-lived test port, process or scratch directory. That usage is unrelated
+to this taxonomy.)
