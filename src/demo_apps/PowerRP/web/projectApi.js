@@ -63,6 +63,17 @@ export async function listAssets(name) {
   return jsonOrThrow(await fetch(`${BACKEND}/api/assets/${enc(name)}/`), `listAssets(${name})`);
 }
 
+/** Query. The ffprobe container duration (seconds) of ONE project video —
+ *  the deterministic `self.length` a time-driven scrubber's presets divide by
+ *  (`time % self.length`). Returns a Promise<{durationSec}>. Loud on a missing
+ *  or unprobeable video (the video scrubber's "Probe clip length" command surfaces
+ *  the throw); the same number rides on each video's listAssets entry, so this is
+ *  only needed when a single fresh probe is wanted. `file` is the asset's basename
+ *  (NOT the /asset/ URL — the endpoint resolves it inside the project's assets/). */
+export async function videoDuration(name, file) {
+  return jsonOrThrow(await fetch(`${BACKEND}/api/duration/${enc(name)}/${enc(file)}`), `videoDuration(${name}, ${file})`);
+}
+
 /** Command. Upload one asset (raw bytes; filename rides in the query string).
  *  `file` is a File/Blob. Returns a Promise<{ok, name, url}> — name is the FINAL
  *  basename (de-collided server-side).

@@ -35,6 +35,7 @@ import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always con
 import { anchorPointPlugin } from "../plugins/anchor_point.js";
 import { plaintextPlugin } from "../plugins/plaintext.js"; // a plain STRING slot — the string-transition target
 import { polygonPlugin } from "../plugins/polygon.js"; // a DECLARED LIST — an equation leaves() cannot see
+import { setParticleTimeOverride } from "../render_gpu/particle_clock.js"; // pin the presentation clock for `= time` tests
 
 let passed = 0;
 function test(name, fn) {
@@ -1173,6 +1174,48 @@ test("equationTokenSpans: reserved literals and typed literals get their own cla
   assert.deepEqual(equationTokenSpans("true(1)", state).map((s) => s.cls), ["call", "paren", "num", "paren"]);
   assert.deepEqual(equationTokenSpans("ghost", state).map((s) => s.cls), ["error"], "a REAL unknown ref is still red");
   assert.deepEqual(equationTokenSpans("speed", state).map((s) => s.cls), ["var"]);
+});
+
+// ── GRAMMAR: `%` modulo + the `time` keyword (manifest item 72 — `time % length`) ─
+test("grammar: `%` parses at the * / tier and evaluates as modulo", () => {
+  assert.deepEqual(tokenize("time % 12.5").map((t) => t.kind), ["ref", "op", "num"], "% tokenizes as an op");
+  // Same precedence tier as * and /: `10 % 3 * 2` = (10 % 3) * 2 = 2, left-associative.
+  assert.equal(evalAst(parseExpression("10 % 3 * 2"), () => 0), 2);
+  assert.equal(evalAst(parseExpression("7 % 3"), () => 0), 1);
+  assert.equal(evalAst(parseExpression("13.5 % 5"), () => 0), 3.5);
+  // + binds looser than %: `1 + 8 % 5` = 1 + (8 % 5) = 4.
+  assert.equal(evalAst(parseExpression("1 + 8 % 5"), () => 0), 4);
+});
+test("grammar: the `time` keyword round-trips through the UI validator (not an unknown variable)", () => {
+  const state = { vars: {}, items: { a1: { type: "rect", name: "Box" } } };
+  // resolveRef sees it as a keyword, not a variable → displayToStored no longer throws.
+  assert.deepEqual(resolveRef("time", slugMap(state)), { kind: "keyword", name: "time" });
+  assert.equal(displayToStored("time", state), "time");
+  assert.equal(displayToStored("time % 12.5", state), "time % 12.5", "the exact `time % length` shape the user types");
+  assert.equal(storedToDisplay("time % 12.5", state), "time % 12.5", "and it round-trips back to display verbatim");
+  assert.equal(mapRefTokens("time % 2", (t) => t.toUpperCase()), "time % 2", "the keyword is grammar, never mapped");
+  // Painted as a keyword (like `self`), the % as an op — never an error span.
+  assert.deepEqual(equationTokenSpans("time % 2", state).map((s) => s.cls), ["self", "op", "num"]);
+  // A REAL unknown identifier is STILL loud — the keyword skip is narrow.
+  assert.throws(() => displayToStored("tyme % 2", state), /Unknown variable "tyme"/);
+});
+test("evaluateState: `= time % length` evaluates against the pinned presentation clock", () => {
+  setParticleTimeOverride(13.5); // clock at 13.5s
+  try {
+    // rect.x is a numeric slot; bind it to the dream equation with a literal length of 5.
+    const state = { items: { r: { ...rectPlugin.defaults, x: "= time % 5" } } };
+    const { state: s, errors } = capturedErrorsResult(state);
+    assert.equal(errors.size, 0, [...errors].join("; "));
+    assert.equal(s.items.r.x, 3.5, "13.5 % 5 = 3.5 — a looping ramp over a 5s clip");
+    // Δt = 0 ⟹ identical (recordable-state law): same clock, same value, distinct state object.
+    const again = capturedErrorsResult({ items: { r: { ...rectPlugin.defaults, x: "= time % 5" } } });
+    assert.equal(again.state.items.r.x, 3.5);
+    // A different clock ⟹ a different value (the whole point of time-driven scrubbing).
+    setParticleTimeOverride(2);
+    assert.equal(capturedErrorsResult({ items: { r: { ...rectPlugin.defaults, x: "= time % 5" } } }).state.items.r.x, 2);
+  } finally {
+    setParticleTimeOverride(null); // never leak the override into sibling tests
+  }
 });
 
 // ── FULL-JS evaluator (new Function + with(proxy)) — determinism + dep-capture ─

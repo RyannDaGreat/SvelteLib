@@ -256,6 +256,36 @@ def video_frame_count(video_path):
     return int(out)
 
 
+def video_duration_seconds(video_path):
+    """
+    Query (reads the file via ffprobe). The video's intrinsic duration in SECONDS
+    (float), read from the container's `format=duration` — a codec-reported
+    property of the FILE, not of any decoder, so it is deterministic and stable
+    across machines/browsers (the `self.length` behind PowerRP's time-driven
+    scrubber presets, e.g. `time % self.length`). Unlike video_frame_count this
+    does NOT pass -count_frames, so it does not decode a single frame — it reads
+    the container header only, so it is O(1) and cheap enough to run per-asset in
+    list_assets. Raises loudly if ffprobe is missing or the file has no duration.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
+        ).stdout.strip()
+    except FileNotFoundError:
+        raise RuntimeError("ffprobe not found on PATH — install ffmpeg (brew install ffmpeg)")
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"ffprobe failed on {os.path.basename(video_path)}: {exc.stderr.strip()}")
+    try:
+        seconds = float(out)
+    except ValueError:
+        raise RuntimeError(f"no duration reported for {os.path.basename(video_path)} (ffprobe: {out!r})")
+    if not (seconds > 0):
+        raise RuntimeError(f"non-positive duration for {os.path.basename(video_path)} (ffprobe: {out!r})")
+    return seconds
+
+
 def _extract_indices(video_path, indices, out_dir, frame_h=None, frame_w=None):
     """
     Command. Extract the given frame INDICES from a video to
@@ -1355,13 +1385,18 @@ def list_assets(name):
     """
     Query. Files directly in a project's assets/ folder (NOT recursive — the
     frames/ and .thumbs/ cache subfolders are skipped). Each:
-    {name, size, mtime, kind, url, thumbnail?, badge?}. The assets/ folder IS the
-    source of truth, so this reflects manual drops too (manifest Round 12B:
-    "manually dropping a file into the folder must appear in the library — a
-    refresh button is acceptable"). `mtime` lets the client key its own thumbnail
-    cache and regenerate on a replaced file; `thumbnail`/`badge` are attached when
-    a FRESH cached thumb exists (manifest #25 — PDF first-page preview + page-count
-    badge), so a returning session shows the preview with no client re-render.
+    {name, size, mtime, kind, url, thumbnail?, badge?, durationSec?}. The assets/
+    folder IS the source of truth, so this reflects manual drops too (manifest
+    Round 12B: "manually dropping a file into the folder must appear in the
+    library — a refresh button is acceptable"). `mtime` lets the client key its
+    own thumbnail cache and regenerate on a replaced file; `thumbnail`/`badge` are
+    attached when a FRESH cached thumb exists (manifest #25 — PDF first-page
+    preview + page-count badge), so a returning session shows the preview with no
+    client re-render. `durationSec` is the ffprobe container duration for VIDEO
+    assets (the deterministic `self.length` behind the time-driven scrubber) —
+    O(1) to read (no frame decode). A video that fails to probe is REPORTED to
+    stderr and simply omits the key (an honest "unknown length"), so one bad
+    upload never breaks listing the whole library.
     """
     d = assets_dir(name)
     if not os.path.isdir(d):
@@ -1372,14 +1407,20 @@ def list_assets(name):
         if not os.path.isfile(full):
             continue  # skip frames/, .thumbs/, and any other subdir
         mtime = os.path.getmtime(full)
+        kind = asset_kind(fn)
         entry = {
             "name": fn,
             "size": os.path.getsize(full),
             "mtime": mtime,
-            "kind": asset_kind(fn),
+            "kind": kind,
             "url": f"/asset/{urllib.parse.quote(name)}/{urllib.parse.quote(fn)}",
             **asset_thumb(name, fn, mtime),
         }
+        if kind == "video":
+            try:
+                entry["durationSec"] = video_duration_seconds(full)
+            except Exception as exc:  # report, never crash the whole listing
+                print(f"[list_assets] duration probe failed for {name}/{fn}: {exc}", file=sys.stderr)
         out.append(entry)
     return out
 
@@ -1680,6 +1721,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_download(parts[2])
             if len(parts) == 5 and parts[:2] == ["api", "frames"]:
                 return self._handle_frames(parts[2], parts[3], parts[4], parsed.query)
+            if len(parts) == 4 and parts[:2] == ["api", "duration"]:
+                return self._handle_duration(parts[2], parts[3])
             if len(parts) == 3 and parts[:2] == ["api", "render-jobs"]:
                 return self._json({"jobs": list_jobs(parts[2])})
             if len(parts) >= 3 and parts[0] == "render":
@@ -1901,6 +1944,16 @@ class Handler(BaseHTTPRequestHandler):
         if (frame_h is not None and frame_h <= 0) or (frame_w is not None and frame_w <= 0):
             return self._error(400, f"frame h/w must be positive: {query!r}")
         self._json(extract_frames(name, video, n, frame_h, frame_w))
+
+    def _handle_duration(self, name, video):
+        # GET /api/duration/<project>/<video> -> {durationSec}. The deterministic
+        # ffprobe container duration of ONE project video (the `self.length` a
+        # time-driven scrubber's presets divide by). Same on-disk resolution +
+        # containment as the frames endpoint; a missing/unprobeable file is loud.
+        video_file = os.path.join(assets_dir(name), safe_name(video))
+        if not os.path.isfile(video_file):
+            return self._error(404, f"video asset not found: {name}/{video}")
+        self._json({"durationSec": video_duration_seconds(video_file)})
 
     # -- detached render jobs --
 

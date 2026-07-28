@@ -14,7 +14,7 @@
  * GRAMMAR (tiny recursive descent — arithmetic over references and function
  * calls):
  *   expr    := term (("+" | "-") term)*
- *   term    := factor (("*" | "/") factor)*
+ *   term    := factor (("*" | "/" | "%") factor)*
  *   factor  := "-" factor | primary ("." ("x"|"y"))?
  *   primary := NUMBER | CALL | REF | "(" expr ")"
  *   CALL    := REF "(" (expr ("," expr)*)? ")"
@@ -117,7 +117,13 @@ import { particleTime } from "../render_gpu/particle_clock.js";
 // therefore comes off ABOVE the tokenizer — see withMarkerPreserved (§Equation
 // slots), which is the ONE place that splits it.
 
-const OP_CHARS = "+-*/()";
+// "%" is MODULO, at the same precedence tier as "*" and "/" (C-like), parsed in
+// term() and evaluated in evalAst's `bin` case. It tokenizes as an ordinary "op"
+// (so the highlighter's TOKEN_CLS.op covers it) and passes verbatim through
+// toJsExpr into JS's native `%`. It was absent here until manifest item 72 wired
+// `time % self.length` scrubbing; the runtime already computed `%` via the full-JS
+// fallback for hand-stored equations, so no stored document changes meaning.
+const OP_CHARS = "+-*/()%";
 const NUM_RE = /^(?:\d+\.?\d*|\.\d+)/;
 // A reference token: optional "@" (stored item ref), then an identifier chain.
 // A segment AFTER the head may be all digits, so a DECLARED LIST's element can be
@@ -214,6 +220,40 @@ export function tokenize(src) {
 // as an unknown-reference error). ONE table, consulted by all three: a second
 // keyword list in any of them is exactly the drift this shares away.
 const RESERVED_LITERALS = new Map([["true", true], ["false", false]]);
+
+// ── Reserved keywords ────────────────────────────────────────────────────────
+//
+// Bare identifiers the evaluator's scope proxy (scopeGet, §computeEvaluatedState)
+// resolves to a deterministic HOST value rather than a document variable. `time`
+// is the ONE such name a user types: the presentation clock (`case "time": return
+// readClock()`). Like RESERVED_LITERALS (true/false), it is GRAMMAR, not a
+// reference — and the SAME three passes must agree on that: resolveRef (returns a
+// {kind:"keyword"} descriptor, never {kind:"var"} so displayToStored does not
+// reject it as an unknown variable), the display↔stored mappers (leave it
+// verbatim — the clock has no id to rewrite, so its display and stored forms are
+// identical and it round-trips unchanged), and the highlighter (paints it as a
+// keyword, never an unknown-reference error). Until manifest item 72 the UI-facing
+// validator threw `Unknown variable "time"` on it, contradicting the clock
+// plugins' own help text (clock_digital.js:221 tells users to type `= time`).
+const RESERVED_KEYWORDS = new Set(["time"]);
+
+/**
+ * Pure function. Is the ref token at index `i` a RESERVED KEYWORD (`time`) rather
+ * than a reference? True for a reserved-keyword identifier NOT immediately
+ * followed by "(" — a following "(" makes it a call NAME (`time(...)`), never the
+ * keyword — mirroring booleanLiteralAt exactly so the parser, the display↔stored
+ * mappers and the highlighter apply the identical rule.
+ *
+ * @example reservedKeywordAt(tokenize("time"), 0) // true
+ * @example reservedKeywordAt(tokenize("time % 12.5"), 0) // true
+ * @example reservedKeywordAt(tokenize("time(1)"), 0) // false (a call name, not the keyword)
+ * @example reservedKeywordAt(tokenize("speed"), 0) // false (an ordinary reference)
+ */
+function reservedKeywordAt(tokens, i) {
+  if (!RESERVED_KEYWORDS.has(tokens[i].value)) return false;
+  const next = tokens[i + 1];
+  return !(next?.kind === "op" && next.value === "(");
+}
 
 /**
  * Pure function. Is the ref token at index `i` a BOOLEAN LITERAL rather than a
@@ -325,6 +365,8 @@ const UNMAPPED_TOKEN_CLS = "error";
  * @example equationTokenSpans('"hi"', {items: {}}).map((s) => s.cls) // ["str"]
  * @example equationTokenSpans("#ff0000", {items: {}}).map((s) => s.cls) // ["color"]
  * @example equationTokenSpans("true", {items: {}}).map((s) => s.cls) // ["bool"]
+ * @example // the `time` keyword paints as a keyword (like `self`), the `%` as an op — never an error
+ * @example equationTokenSpans("time % 2", {items: {}}).map((s) => s.cls) // ["self", "op", "num"]
  */
 export function equationTokenSpans(src, state, selfId = null) {
   const clean = String(src).replace(/^\s*=\s*/, "");
@@ -364,6 +406,10 @@ export function equationTokenSpans(src, state, selfId = null) {
     // literal, so it is grammar — never an unknown variable (which is what it
     // used to be painted as, showing a valid boolean equation entirely in red).
     if (booleanLiteralAt(tokens, i)) return { start: t.start, end: t.end, cls: "bool" };
+    // A RESERVED KEYWORD (`time`): grammar (the presentation clock), painted like
+    // the `self` keyword (both are reserved-keyword suggestions in equationSuggest)
+    // — never an unknown variable, which is what it used to be flagged as.
+    if (reservedKeywordAt(tokens, i)) return { start: t.start, end: t.end, cls: "self" };
     // A WIDGET argument (bare item slug / "@id" at a widget param): an item ref.
     if (wSpans.has(`${t.start}:${t.end}`)) {
       const ok = t.value === "self" || t.value.startsWith("@") || slugs.toId.has(t.value);
@@ -403,6 +449,7 @@ export function equationTokenSpans(src, state, selfId = null) {
  * @example parseExpression("2 + 3 * x") // {kind: "bin", op: "+", left: {kind: "num", value: 2}, right: {kind: "bin", op: "*", left: {kind: "num", value: 3}, right: {kind: "ref", name: "x"}}}
  * @example parseExpression("-(a.x)") // {kind: "neg", arg: {kind: "ref", name: "a.x"}}
  * @example parseExpression("f(a, b).x") // {kind: "member", obj: {kind: "call", name: "f", args: [{kind: "ref", name: "a"}, {kind: "ref", name: "b"}]}, prop: "x"}
+ * @example parseExpression("time % 12.5") // {kind: "bin", op: "%", left: {kind: "ref", name: "time", start: 0, end: 4}, right: {kind: "num", value: 12.5}}
  * @example // parseExpression("1 +") throws: Unexpected end of expression
  */
 export function parseExpression(src) {
@@ -425,7 +472,7 @@ export function parseExpression(src) {
   function term() {
     let node = factor();
     let op;
-    while ((op = takeOp("*", "/"))) node = { kind: "bin", op, left: node, right: factor() };
+    while ((op = takeOp("*", "/", "%"))) node = { kind: "bin", op, left: node, right: factor() };
     return node;
   }
   function factor() {
@@ -521,6 +568,7 @@ export function compiled(src) {
  * with no callFn is a loud error.
  *
  * @example evalAst(parseExpression("2 + x * 3"), () => 4) // 14
+ * @example evalAst(parseExpression("7 % 3"), () => 0) // 1 (modulo)
  * @example evalAst(parseExpression("-(1 + 1)"), () => 0) // -2
  * @example evalAst(parseExpression("f(a).x"), () => 0, () => ({x: 7, y: 9})) // 7
  * @example evalAst(parseExpression("=#ff0000"), () => 0) // "#ff0000" (typed color literal)
@@ -553,6 +601,7 @@ export function evalAst(ast, lookup, callFn = null) {
         case "-": return a - b;
         case "*": return a * b;
         case "/": return a / b;
+        case "%": return a % b; // modulo (same tier as * and /); powers `time % length`
       }
     }
   }
@@ -927,7 +976,8 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
  * Pure function. Resolves ONE reference token (display or stored form) to a
  * descriptor: {kind: "var", name} | {kind: "prop", itemId, path} |
- * {kind: "anchor", itemId, anchorId, coord}. Throws with a helpful message
+ * {kind: "anchor", itemId, anchorId, coord} | {kind: "keyword", name} (a reserved
+ * host identifier — `time`). Throws with a helpful message
  * when nothing matches. `slugs` is a slugMap(state). `selfId` (optional) is
  * the owner item's id, enabling `self.…` references.
  *
@@ -945,11 +995,15 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * @example resolveRef("box.x", slugMap({items: {a1: {type: "rect", name: "Box"}}})) // {kind: "prop", itemId: "a1", path: ["x"]}
  * @example resolveRef("box_tm.x", slugMap({items: {a1: {type: "rect", name: "Box"}}})) // {kind: "anchor", itemId: "a1", anchorId: "tm", coord: "x"}
  * @example resolveRef("self.w", slugMap({items: {}}), "a1") // {kind: "prop", itemId: "a1", path: ["w"]}
+ * @example resolveRef("time", slugMap({items: {}})) // {kind: "keyword", name: "time"}
  * @example // resolveRef("= speed", slugMap({items: {}})) throws: "= speed" is not one reference token
  */
 export function resolveRef(token, slugs, selfId = null) {
   if (token.startsWith("@")) return parseStoredRef(token);
   if (token === "self" || token.startsWith("self.")) return parseSelfRef(token, selfId);
+  // A reserved KEYWORD (`time`) — the scope proxy resolves it to a host value, not
+  // a variable (see RESERVED_KEYWORDS). Its display and stored forms are identical.
+  if (RESERVED_KEYWORDS.has(token)) return { kind: "keyword", name: token };
   const [head, ...path] = token.split(".");
   if (path.length === 0) {
     if (!IDENTIFIER_RE.test(token))
@@ -995,6 +1049,7 @@ export function resolveRef(token, slugs, selfId = null) {
  * @example mapRefTokens("f(a).x", (t) => t.toUpperCase()) // "F(A).x" (name + arg mapped; the projection .x is grammar, untouched)
  * @example mapRefTokens("a + b", (v, tok) => `${v}@${tok.start}`) // "a@0 + b@4" (mapper gets the token for its span)
  * @example mapRefTokens("true", (t) => t.toUpperCase()) // "true" (a reserved literal is grammar, never mapped)
+ * @example mapRefTokens("time % 2", (t) => t.toUpperCase()) // "time % 2" (the `time` keyword is grammar, never mapped)
  * @example mapRefTokens("= a + b", (t) => t.toUpperCase()) // "= A + B" (the marker survives; token spans stay relative to the body)
  */
 export function mapRefTokens(src, mapToken) {
@@ -1007,6 +1062,7 @@ export function mapRefTokens(src, mapToken) {
       if (t.kind !== "ref") continue;
       if (tokens[i - 1]?.kind === "dot") continue; // member projection coord (.x/.y): grammar, not a ref
       if (booleanLiteralAt(tokens, i)) continue; // reserved literal (true/false): grammar, not a ref
+      if (reservedKeywordAt(tokens, i)) continue; // reserved keyword (time): grammar, not a ref
       out += body.slice(last, t.start) + mapToken(t.value, t);
       last = t.end;
     }
@@ -1120,6 +1176,7 @@ function pathToDisplay(path) {
  * @example displayToStored("self.end_width / 2", {items: {}}) // "self.endWidth / 2"
  * @example displayToStored("closest_to_rim(box, c).x", {items: {a1: {type: "rect", name: "Box"}, a2: {type: "circle", name: "C"}}}) // "closest_to_rim(@a1, @a2).x"
  * @example displayToStored("=true", {items: {}}) // "true" (a reserved literal is grammar, not an unknown variable)
+ * @example displayToStored("time % 12.5", {items: {}}) // "time % 12.5" (the `time` keyword + `%` operator both round-trip; NOT an unknown variable)
  * @example // displayToStored("sped * 2", {vars: {speed: 5}}) throws: Unknown variable "sped"
  * @example // displayToStored("self.endWidth", {items: {}}) throws: Unknown property "endWidth" (self.endWidth) — camelCase is not accepted, one canonical form only
  */
