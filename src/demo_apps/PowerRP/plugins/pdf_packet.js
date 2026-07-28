@@ -190,7 +190,12 @@ export const pdfPacketPlugin = {
   inspector: [
     ...bundle("positioning"),
     ...props("src", { src: { label: "PDF", assetKinds: ["pdf"], help: "The PDF whose pages this packet holds — the whole document, stapled at the corner." } }),
-    { key: "page", label: "Page", kind: "number", min: 1, step: 0.01, category: "formatting", help: "FRACTIONAL: 2.3 means page 2 is 30% through peeling over the staple. Tween or bind it (= t) to animate reading through the packet." },
+    // `scrub` (drag units per pixel), not just `step`: resolveScrub can't infer
+    // fractionality here (integer min, integer default, no max), so without it
+    // the DRAG coefficient fell back to a whole page per pixel — the step grid
+    // was 0.01 but every pixel of drag skipped to the next integer (user
+    // report). 0.01/px = one full page turn per 100px of drag.
+    { key: "page", label: "Page", kind: "number", min: 1, step: 0.01, scrub: 0.01, category: "formatting", help: "FRACTIONAL: 2.3 means page 2 is 30% through peeling over the staple. Tween or bind it (= t) to animate reading through the packet." },
     { key: "flipAngle", label: "Flip angle", kind: "number", min: 0, max: 360, step: 1, category: "formatting", help: "The direction the turning page's free corner travels, in degrees. Also draggable as the on-canvas handle riding the ray from the staple." },
     { key: "curl", label: "Curl", kind: "number", min: CURL_MIN, max: CURL_MAX, step: 0.05, category: "formatting", help: "How loosely the turning sheet rolls — the loopity-loop knob. Small = tight scroll, large = wide belly." },
     { key: "spreadTurned", label: "Turned fan", kind: "number", min: 0, max: 20, step: 0.5, category: "formatting", help: "Degrees between successive already-turned pages fanned around the staple." },
