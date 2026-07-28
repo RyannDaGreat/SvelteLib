@@ -74,6 +74,15 @@ try {
       soundLoadErrors.push(t);
       return;
     }
+    // ENVIRONMENTAL, NOT THIS PROBE'S SUBJECT — and this is the stale-console-filter
+    // class run_all.mjs's own header blames for a whole session of unnoticed failures.
+    // A cold or contended Vite dep optimizer answers 504 "Outdated Optimize Dep" for a
+    // module request, and headless Chromium here has no WebGPU adapter so VideoV7
+    // reports its 2D fallback. EVERY other browser probe filters both; this one did
+    // not, so it failed AT BOOT at baseline — on messages about neither text nor sound.
+    // Kept NARROW deliberately: three named conditions, no `|adapters`-style branch
+    // that would swallow anything mentioning adapters.
+    if (/Outdated Optimize Dep|WebGPU|VideoV7/i.test(t)) return;
     errors.push(`console.error: ${t}`);
   });
 
