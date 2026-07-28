@@ -243,7 +243,12 @@ const TACK_CUSTOM = customProps([
   { name: "color", kind: "color", default: "rgb(210,45,45)", help: "The plastic head colour of the pin." },
   { name: "domeGain", kind: "number", default: 0.95, min: 0, max: 1, help: "Press-in DEPTH, 1 = fully out/proud (a tall glossy dome), low = pushed in flat. ANIMATE this: it flattens the dome AND shrinks the contact shadow." },
   { name: "shininess", kind: "number", default: 20, min: 1, help: "Glossiness of the head's specular hotspot — higher = a tighter, brighter highlight." },
-  { name: "seed", kind: "number", default: 0, help: "Reserved seed (kept for uniform symmetry; no visible effect)." },
+  // NO `seed` ROW, unlike the cork board and the note beside it, whose seeds really do
+  // re-roll a texture. A tack head is a smooth plastic dome with NO procedural texture
+  // to decorrelate: the row shipped admitting its own uselessness ("no visible effect"),
+  // which makes it an Inspector control that promises a change and delivers none —
+  // measured, seed 0 and 9999 were byte-identical. Deleted with its dead uniform and its
+  // packer slot; see render_gpu/skia/corkboard_shader.js's TACK_SKSL note.
   { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (screen space). Shared with the family; places the hotspot and the contact shadow." },
 ]);
 
@@ -258,7 +263,7 @@ const corkboardThumbtackPlugin = makeMaterialWidget({
   // The head centre is BOTH the standard center anchor and a named "head" anchor —
   // the yarn attach / contact point (design Part 4: `= tackA.anchors.head`).
   anchors: (s) => [...standardBBoxAnchors(s), { id: "head", x: (s.w ?? 0) / 2, y: (s.h ?? 0) / 2 }],
-  toParams: (s) => ({ domeGain: s.domeGain, color: s.color, shininess: s.shininess, lightAngle: s.lightAngle, seed: s.seed }),
+  toParams: (s) => ({ domeGain: s.domeGain, color: s.color, shininess: s.shininess, lightAngle: s.lightAngle }),
   toShadow: (s) => {
     const sdir = shadowDir(s.lightAngle);
     const proud = s.domeGain ?? 0;

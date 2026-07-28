@@ -44,3 +44,6 @@ public/videos/
 # Stray probe-artifact dirs (must go to .claude_logs or scratch, never repo tree)
 .claude_shots/
 .probe_*/
+
+# Agent scratch dirs (evidence/probes) — never the repo tree
+.scratch/

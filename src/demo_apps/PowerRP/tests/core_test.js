@@ -22,7 +22,7 @@ import { deriveRenderTree, worldTransform, nodeFeatures, nodeAnchors, pickNode, 
 import { evaluateState, resolveRef, slugMap, displayToStored } from "../core/expressions.js";
 import { bentoPlugin, bentoAnchors } from "../plugins/bento.js";
 import { solveSnap, axisLock } from "../core/snap.js";
-import { createCommands } from "../core/commands.js";
+import { createCommands, partitionByAvailability } from "../core/commands.js";
 import { rpFuzzyScore } from "../core/fuzzy.js";
 import { createShortcuts } from "../core/shortcuts.js";
 import { createUndo } from "../core/undo.js";
@@ -549,7 +549,12 @@ test("rp fuzzy + command registry + MRU + submenus", () => {
   assert.deepEqual(cmds.search("child thing", cmds.get("menu")).map((c) => c.id), ["child"]);
   assert.ok(cmds.search("child thing").map((c) => c.id).includes("gated"), "an unavailable entry must still be FOUND — it greys out, it does not vanish");
   cmds.markUsed("b");
-  assert.equal(cmds.search("")[0].id, "b"); // MRU first on empty query
+  // MRU first on empty query. Still asserted of search() ITSELF, and still with
+  // its original intent: ranking is what this function does. Availability now
+  // outranks it, but that happens in the partition at the surfacing (asserted in
+  // the next test), so nothing here needed restating — which is precisely the
+  // argument for having put the partition there rather than inside search().
+  assert.equal(cmds.search("")[0].id, "b");
   const mru = cmds.usageList();
   const cmds2 = createCommands();
   cmds2.add({ id: "a", title: "A", run: () => {} });
@@ -557,6 +562,49 @@ test("rp fuzzy + command registry + MRU + submenus", () => {
   cmds2.loadUsage(mru);
   assert.equal(cmds2.search("")[0].id, "b"); // MRU survives persistence
   assert.throws(() => cmds.add({ id: "a", title: "dupe", run: () => {} }), /Duplicate/);
+});
+test("commands: availability partition is available-first AND stable within each half", () => {
+  // User ruling: "ones that we can select are always going to get priority and be
+  // sorted above ones that are not. It's a stable sort."
+  //
+  // A KNOWN INTERLEAVING, so "unavailable last" alone cannot pass this: the two
+  // subsequences are checked against the order they went in with. A comparator
+  // that scrambled ties would satisfy the first property and fail the second.
+  const app = {}; // the gates below ignore it; partition only passes it through
+  const entry = (id, runnable) => ({ id, title: id, run: () => {}, ...(runnable ? {} : { when: () => false, requires: "r" }) });
+  const input = [entry("v1", true), entry("x1", false), entry("v2", true), entry("x2", false), entry("x3", false), entry("v3", true)];
+
+  const { available, unavailable } = partitionByAvailability(input, app);
+  const ordered = [...available, ...unavailable].map((c) => c.id);
+
+  // (a) no available entry sits after any unavailable one.
+  const lastAvailable = ordered.findLastIndex((id) => id.startsWith("v"));
+  const firstUnavailable = ordered.findIndex((id) => id.startsWith("x"));
+  assert.ok(lastAvailable < firstUnavailable, `available must all precede unavailable, got ${ordered.join(",")}`);
+
+  // (b) each subsequence keeps its PRE-partition relative order.
+  const inputIds = input.map((c) => c.id);
+  assert.deepEqual(available.map((c) => c.id), inputIds.filter((id) => id.startsWith("v")), "the runnable commands were re-ranked");
+  assert.deepEqual(unavailable.map((c) => c.id), inputIds.filter((id) => id.startsWith("x")), "the greyed commands were re-ranked");
+
+  // (c) a PERMUTATION: nothing enters, nothing leaves. This is what keeps pool
+  //     scoping absolute — the partition runs on what search() returned.
+  assert.deepEqual([...ordered].sort(), [...inputIds].sort(), "the partition changed MEMBERSHIP, not just order");
+
+  // (d) the ungated case passes the ranking through untouched.
+  const allLive = [entry("p", true), entry("q", true)];
+  assert.deepEqual(partitionByAvailability(allLive, app), { available: allLive, unavailable: [] });
+
+  // (e) THE MRU DEMOTION, end to end through the real registry: the
+  //     most-recently-used entry is first out of search() and must still sink
+  //     below the runnable ones once partitioned.
+  const reg = createCommands();
+  reg.add({ id: "live", title: "Live", run: () => {} });
+  reg.add({ id: "recent-but-dead", title: "Recent But Dead", when: () => false, requires: "r", run: () => {} });
+  reg.markUsed("recent-but-dead");
+  assert.equal(reg.search("")[0].id, "recent-but-dead", "precondition: MRU puts it first");
+  const shown = partitionByAvailability(reg.search(""), app);
+  assert.deepEqual([...shown.available, ...shown.unavailable].map((c) => c.id), ["live", "recent-but-dead"]);
 });
 test("shortcuts: dispatch + context filtering + hints", () => {
   const sc = createShortcuts();

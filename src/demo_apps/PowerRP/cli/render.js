@@ -14,19 +14,45 @@
  * width×height at dpr 1 (identical to the editor's PNG export at that size),
  * and the camera background clears the frame (letterbox edges included).
  *
- * KNOWN BOUND (render rewrite Phase 1a): paint_skia.js does not yet implement
- * the backdrop/effect/latex ops — blurBackdrop, magnifyBackdrop, cropSubtree,
- * effectSubtree (shadows/bloom/blend), latexVector — and throws loudly on them.
- * So a document using blur/magnifier widgets, live shadows/bloom, crop boxes,
- * or latex cannot render here until Phase 1b lands (owned by the paint_skia
- * engineer). Widgets with effects OFF (the default) render fine.
+ * ══ THIS IS A STILL RENDERER. IT IS NOT THE VIDEO PATH, AND MUST NOT BECOME IT ══
  *
- * Image/video media is not yet decoded on the Node side: an empty media map is
- * passed, so a document containing image/video widgets draws those widgets as
- * NOTHING here (paint_skia's image/video op skips an unresolved ref — the async
- * media contract — rather than throwing). Wiring node-side media decode
- * (file/dataURL → CanvasKit.MakeImageFromEncoded) is a follow-up; the browser
- * editor/thumbnails/export DO render media (render_gpu/skia/browser_media.js).
+ * The server-side video backend USED to drive this file, and that was a mistake the
+ * user overruled (manifest: "THE RENDERER IS ONE CODE PATH. THE BACKEND MUST USE
+ * IT."). Video now renders through cli/render_job.js, which boots the real editor in
+ * headless Chrome. Anyone tempted to wire this module to video again should read the
+ * list below first — every item on it is something this path silently omits, and a
+ * 900-frame render omitting them looks exactly like a 900-frame render.
+ *
+ * WHAT THIS PATH CANNOT DRAW, and why:
+ *   · IMAGES, VIDEO, PDF PAGES, FILMSTRIP FRAMES — decoding needs
+ *     `createImageBitmap`, which node does not have. An empty media map is passed, so
+ *     these draw as NOTHING (paint_skia skips an unresolved ref — the async media
+ *     contract — rather than throwing). `mediaOpCount` below counts them and the
+ *     render prints a LOUD warning naming the count, because a blank where a
+ *     photograph belongs must never be discovered later.
+ *   · LATEX — MathJax needs a DOM; latex_raster reports the failure loudly and the
+ *     equation draws as nothing.
+ *   · MERMAID — its font load fails in node; likewise reported, likewise blank.
+ *   · MOTION BLUR — sub-frame averaging needs a canvas.
+ *   · A GPU, EVER — node_render.js calls `CanvasKit.MakeSurface`, a software surface
+ *     with no grContext. It never asks for a context, so it is CPU-only on eight A100s
+ *     just as it is here. (render_gpu/skia/browser_surface.js, by contrast, has no CPU
+ *     branch at all: it always asks for WebGL2 and lets ANGLE bind SwiftShader, Mesa,
+ *     or a real driver. That is why the browser worker gets a GPU for free and this
+ *     cannot.)
+ *
+ * WHY IT IS KEPT ANYWAY (the ruling): it is the ONE renderer with no system
+ * dependencies beyond node itself. cli/render_job.js needs Chrome and its ~30 shared
+ * libraries (setup.sh installs them) and pays ~1.7 s of browser boot; this needs
+ * neither, and renders a light vector/text slide in ~0.10 s. For a scripted figure
+ * export, a CI check, or any machine where Chrome will not run, that is worth having
+ * — and because paint_skia.js is shared, a deck WITHOUT the items listed above comes
+ * out matching the editor. Reach for cli/render_job.js whenever the deck contains
+ * media, LaTeX, Mermaid, or more than one frame.
+ *
+ * KNOWN BOUND (render rewrite Phase 1a, still open): paint_skia.js throws loudly on
+ * some backdrop/effect ops it has not implemented. Widgets with effects OFF (the
+ * default) render fine.
  *
  * ── WHY A HEAVY SLIDE TAKES MINUTES HERE, AND WHAT THE FLAG DOES ─────────────
  * This path shares paint_skia.js with the editor but NOT the GPU: node_render.js
@@ -54,12 +80,13 @@
  * quality a heavy slide instead prints a heads-up BEFORE the render, so a long wait
  * is explained rather than looking hung.
  *
- * Usage (from the SvelteLib repo root):
+ * Usage (from the SvelteLib repo root) — ONE still:
  *   node src/demo_apps/PowerRP/cli/render.js doc.powerrp.json out.png \
  *     [--slide 2] [--alpha 1] [--width 1920] [--height 1080] [--quality full|proxy]
  */
 
 import { readFile, writeFile } from "node:fs/promises";
+import { parseArgs } from "./args.js";
 import { deserialize, repairedDocument, printRepairReports } from "../core/document.js";
 import { cameraRect } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
@@ -81,32 +108,17 @@ const QUALITIES = ["full", "proxy"];
 const HEAVY_OPS = new Set(["materialBackdrop", "materialFill", "glassBackdrop", "magnifyBackdrop", "blurBackdrop"]);
 // Below this many heavy ops the render is quick enough that a heads-up would be noise.
 const HEAVY_OP_NOTICE_MIN = 1;
+// Ops that resolve through a MEDIA map — images (real photos, PDF-page rasters,
+// filmstrip frames, latex/mermaid rasters) and video frames. This path passes an EMPTY
+// media map because node has no createImageBitmap, so every one of them draws NOTHING.
+// They are counted so the omission is ANNOUNCED rather than discovered in the output.
+const MEDIA_OPS = new Set(["image", "video", "videoFrame", "videoV5Frame"]);
 
-/**
- * Pure function. Parses `[<doc>, <out>, --flag value ...]` into positionals + flags.
- * Flag values are coerced with Number (alpha may be fractional, slide/width/height
- * integers) EXCEPT the ones named in `stringFlags`, which stay strings — a `--quality
- * proxy` coerced to NaN would be a silently ignored request.
- *
- * @param {string[]} argv Args after the script name (process.argv.slice(2)).
- * @param {Set<string>} stringFlags Flag names whose value must NOT be coerced.
- * @returns {{positional: string[], flags: Object<string, number|string>}}
- *
- * @example parseArgs(["d.json", "o.png", "--slide", "2", "--alpha", "0.5"]) // {positional: ["d.json", "o.png"], flags: {slide: 2, alpha: 0.5}}
- * @example parseArgs(["d.json", "o.png", "--quality", "proxy"], new Set(["quality"])) // {positional: ["d.json", "o.png"], flags: {quality: "proxy"}}
- */
-export function parseArgs(argv, stringFlags = new Set(["quality"])) {
-  const positional = [];
-  const flags = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) {
-      const name = argv[i].slice(2);
-      const raw = argv[++i];
-      flags[name] = stringFlags.has(name) ? raw : Number(raw);
-    } else positional.push(argv[i]);
-  }
-  return { positional, flags };
-}
+// THE argument parser now lives in cli/args.js so that cli/render_job.js — which
+// drives a browser and has no use for this module's WASM stack — can share it
+// without `require`ing the canvaskit binary into every render worker. Re-exported
+// here so `import { parseArgs } from "../cli/render.js"` keeps working.
+export { parseArgs };
 
 /**
  * Pure function. How many ops in a display list cost per-pixel SkSL on this software
@@ -125,6 +137,30 @@ export function heavyOpCount(commands) {
   for (const cmd of commands) {
     if (HEAVY_OPS.has(cmd.op)) n++;
     if (Array.isArray(cmd.content)) n += heavyOpCount(cmd.content);
+  }
+  return n;
+}
+
+/**
+ * Pure function. How many ops in a display list would draw a MEDIA bitmap
+ * (MEDIA_OPS), recursing into subtree content — i.e. how many things this bare-node
+ * path will leave BLANK, since it has no image decoder.
+ *
+ * A latex or mermaid raster reaches the painter as an `image` op too, so a count of 0
+ * genuinely means "nothing is missing from this PNG".
+ *
+ * @param {object[]} commands IR display list (unflattened; subtree ops carry `content`)
+ * @returns {number} count of media ops, nested ones included
+ *
+ * @example mediaOpCount([{op: "rect"}, {op: "image", ref: "a"}]) // 1
+ * @example mediaOpCount([{op: "cropSubtree", content: [{op: "video", ref: "v"}]}]) // 1
+ * @example mediaOpCount([{op: "rect"}, {op: "text"}]) // 0
+ */
+export function mediaOpCount(commands) {
+  let n = 0;
+  for (const cmd of commands) {
+    if (MEDIA_OPS.has(cmd.op)) n++;
+    if (Array.isArray(cmd.content)) n += mediaOpCount(cmd.content);
   }
   return n;
 }
@@ -191,14 +227,22 @@ export async function renderDocToPng(docJson, { slide, alpha, width, height, qua
   // way gpuService reads it for thumbnails/PNG export), so the CLI never renders
   // with a different edge treatment than the editor: "off" ⇒ crisp jagged edges.
   const antialias = antialiasCoverage(cameraAntialias(state));
-  // THE TWO REPORTS. Neither changes a pixel; both exist because the alternative is a
-  // caller who cannot tell a slow render from a hung one, or a stand-in render from a
-  // real one. See the header for the measurements behind them.
+  // THE THREE REPORTS. None changes a pixel; all three exist because the alternative is
+  // a caller who cannot tell a slow render from a hung one, a stand-in render from a
+  // real one, or a complete picture from one with holes in it.
   const heavy = heavyOpCount(commands);
   if (tier !== "full")
     console.error(`cli/render.js: --quality ${tier} — this PNG is NOT the editor's render. It substitutes paint_skia's cheap thumbnail stand-ins for every per-pixel material shader (${heavy} such op(s) in this slide). Use it for previews and layout checks, never for a deliverable.`);
   else if (heavy >= HEAVY_OP_NOTICE_MIN)
     console.error(`cli/render.js: ${heavy} per-pixel material/backdrop op(s) at ${width}x${height}, full quality, on a SOFTWARE surface (node has no GL context) — this can take tens of seconds to minutes and is not stuck. --quality proxy renders cheap stand-ins instead (explicitly NOT the editor's render).`);
+  // THE BLANK-MEDIA REPORT. Bare node has no image decoder, so these ops draw NOTHING
+  // and the PNG comes out with holes where photographs, videos, PDF pages, filmstrip
+  // frames, equations and diagrams belong — while the process still exits 0. That was
+  // the actual failure that got this path retired as the video renderer, and agents
+  // "rendered and looked" through it for a whole session without noticing.
+  const media = mediaOpCount(commands);
+  if (media > 0)
+    console.error(`cli/render.js: ${media} media op(s) in this slide (image/video/PDF/filmstrip/latex/mermaid raster) WILL BE BLANK — bare node has no createImageBitmap, so an empty media map is passed. This PNG is NOT what the editor shows. For a faithful render use cli/render_job.js, which draws it in a real headless browser.`);
   return renderToPng(commands, view, { width, height, background: rect.background, media: {}, antialias, quality: tier });
 }
 

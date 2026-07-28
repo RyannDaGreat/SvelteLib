@@ -602,12 +602,14 @@ export function presetFamiliesOf(plugin) {
  * @param {object} plugin - a widget plugin
  * @returns {Array<{id: string, title: string, rows: Array}>}
  *
- * @example toolGroupsOf({type: "blur", defaults: {blur: 4}, capabilities: {}})
- * // [] (no frame → no camera-bind rows → the Positioning group is dropped)
+ * @example toolGroupsOf({type: "blur", defaults: {blur: 4}, capabilities: {}}).map((g) => g.id)
+ * // ["keyframes"] (no frame → no camera-bind rows → Positioning drops; ANY state is keyframable)
+ * @example toolGroupsOf({type: "blur", defaults: {}, capabilities: {}})
+ * // [] (no frame AND no state: every pool group loses all its rows and none is created)
  * @example toolGroupsOf({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).map((g) => g.title)
- * // ["Positioning"]
+ * // ["Positioning", "Keyframes"]
  * @example toolGroupsOf({type: "flare", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}, presets: [{name: "Cinematic", props: {}}]}).map((g) => g.id)
- * // ["presets", "positioning"]   (plugin-owned first, inherited last)
+ * // ["presets", "positioning", "keyframes"]   (plugin-owned first, inherited last)
  */
 export function toolGroupsOf(plugin) {
   const groups = [];
@@ -652,7 +654,7 @@ export function toolGroupsOf(plugin) {
  * @returns {object} an augmented copy of it
  *
  * @example withToolGroups({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).toolGroups[0].id // "positioning"
- * @example withToolGroups({type: "blur", defaults: {blur: 4}, capabilities: {}}).toolGroups // []
+ * @example withToolGroups({type: "blur", defaults: {blur: 4}, capabilities: {}}).toolGroups.map((g) => g.id) // ["keyframes"]
  */
 export function withToolGroups(plugin) {
   return { ...plugin, toolGroups: toolGroupsOf(plugin) };

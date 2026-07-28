@@ -79,6 +79,19 @@
  *              `local` on its aim step and `node` on its bind step. A mode
  *              declaring `onPick` OUTRANKS `onPan`: a mode cannot both consume the
  *              press as a pick and open a drag with it.
+ *                `onHover(ctx, pick) → changed` and `onHoverLeave() → changed` are
+ *              the HOVER half of the pick: same payload, offered on a bare
+ *              pointer-move so a mode can PREVIEW what a press would do. Each
+ *              returns whether the preview actually changed, and the host repaints
+ *              only when it did — a hover that invalidates per pixel is a known
+ *              performance defect class, and a mode's candidate normally changes
+ *              only when the pointer crosses into a different thing.
+ *                `cursors` is one CSS cursor NAME per step (clamped like a step
+ *              index, so fewer entries than steps is legal): the pointer states
+ *              which question the mode is asking. Every name must have a matching
+ *              `.overlay.cursor-<name>` rule in web/app.css — MODE_CURSORS below is
+ *              that list, and canvasModes() throws on anything else, so a typo is a
+ *              boot failure rather than a mode with a silently default cursor.
  *                `steps` + `overlay(ctx)` are the CREATE mode's own two fields,
  *              usable here unchanged — `canvasModes()` already reads `steps` off
  *              whatever phase declares it, so an activate mode gets per-step
@@ -109,6 +122,15 @@ import { TELESCOPIC_RIG_HANDLER } from "./telescopicRig.js";
  * when that gate reads the plugin's declared property instead of the literal.
  */
 const INSPECTOR_AUTO_OPEN_PROP = "src";
+
+/**
+ * The CSS cursor names a mode may declare — exactly the set web/app.css ships an
+ * `.overlay.cursor-<name>` rule for. Kept HERE, next to the validation that reads
+ * it, because the failure it prevents is silent: a name with no rule leaves the
+ * default cursor and the mode simply never says what it is. Adding a mode cursor is
+ * one rule in app.css and one entry here.
+ */
+const MODE_CURSORS = Object.freeze(["cell", "alias"]);
 
 /**
  * ACTIVATE: ADD A POINT ON THE OUTLINE where you double-clicked.
@@ -527,9 +549,35 @@ export function canvasModes() {
       label: h.mode.label,
       hints: h.mode.hints,
       steps: h.mode.steps ?? [],
+      cursors: validatedModeCursors(h.id, h.mode.cursors),
       finish: h.mode.finish ?? null,
       finishGesture: h.mode.finishGesture ?? null,
     })));
+}
+
+/**
+ * Pure function. A mode's declared `cursors`, or [] when it declares none — throwing
+ * LOUDLY on a name web/app.css has no rule for. This is called from canvasModes(),
+ * which App.svelte runs at BOOT to build the shortcut entries, so a typo'd cursor
+ * fails the app rather than producing a mode whose pointer silently says nothing
+ * (the getMaterial / getHandler precedent: an unknown declared name throws).
+ *
+ * @param {string} handlerId - the declaring handler (named in the throw)
+ * @param {string[]|undefined} cursors - one CSS cursor name per step
+ * @returns {string[]}
+ *
+ * @example validatedModeCursors("x", undefined) // []
+ * @example validatedModeCursors("x", ["cell", "alias"]) // ["cell", "alias"]
+ * @example // validatedModeCursors("x", ["eyedropper"]) throws: no .overlay.cursor-eyedropper rule
+ */
+export function validatedModeCursors(handlerId, cursors) {
+  if (cursors === undefined) return [];
+  if (!Array.isArray(cursors) || cursors.length === 0)
+    throw new Error(`canvas mode "${handlerId}": \`cursors\` must be a non-empty array of CSS cursor names, one per step (got ${JSON.stringify(cursors)}). Omit it entirely for a mode that keeps the default pointer.`);
+  for (const name of cursors)
+    if (!MODE_CURSORS.includes(name))
+      throw new Error(`canvas mode "${handlerId}": cursor "${name}" has no \`.overlay.cursor-${name}\` rule in web/app.css, so the pointer would silently stay default (known: ${MODE_CURSORS.join(", ")}). Add the rule AND the MODE_CURSORS entry together.`);
+  return cursors;
 }
 
 /**

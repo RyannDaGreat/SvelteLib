@@ -37,8 +37,10 @@
  *     (only nodes with z strictly below the magnifier) into an offscreen canvas,
  *     then composite that through the shaped clip. A true re-render at display
  *     resolution, so it's sharp. A lens NESTED inside another lens's replay
- *     falls back to the sampling path (the GPU compositor's
- *     MAX_SUPERSAMPLE_DEPTH recursion guard — see render_gpu/gpu/compositor.js).
+ *     falls back to the sampling path (the MAX_SUPERSAMPLE_DEPTH recursion guard,
+ *     which lives in render_gpu/skia/paint_skia.js beside the replay it bounds —
+ *     NOT in gpu/compositor.js, which this comment named until the retired
+ *     prototype backend took that file with it; see render_gpu/FINDINGS.md).
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";

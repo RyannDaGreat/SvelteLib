@@ -59,30 +59,59 @@ export function snapProvenance(featureId) {
 }
 
 /**
- * Pure function. Maps a snap-provenance `sourceAnchorId` to the CANONICAL
- * PRESET ANCHOR id an equation can actually reference (manifest ARCHITECTURE
- * PLAN #4: "write the EQUATION referencing the provenance anchor" —
- * expressions.js only resolves `@id_<anchorId>.x|y` against
- * `plugin.anchors(state)`, which are the 9 standard bbox points; the four
- * EDGE-LINE feature ids ("top"/"bottom"/"left"/"right") and the two CENTER-
- * LINE ids ("hcenter"/"vcenter") are snap/guide-only names with no anchor of
- * their own, so a resize edge snap needs a representative point anchor that
- * lies on the same line). The 9 standard point ids pass through unchanged
- * (already valid anchor ids — a move point-snap never needs this mapping).
- * Non-standard ids (a plugin's own snapFeatures extra) return null — the
- * caller falls back to a plain numeric commit rather than guessing.
+ * The six SNAP-ONLY LINE feature ids (core/derive.nodeFeatures mints them for every
+ * bbox widget) mapped to a PRESET ANCHOR that lies on the same line. They are the
+ * only names that need translating: a line has no anchor of its own, so an edge snap
+ * binds to a representative POINT on it. Any other id is answered by the source
+ * plugin's own `anchors()` — see provenanceAnchorId.
  *
- * @example provenanceAnchorId("right") // "mr"
- * @example provenanceAnchorId("hcenter") // "cm"
- * @example provenanceAnchorId("tm") // "tm" (already a preset anchor)
- * @example provenanceAnchorId("some_plugin_extra") // null
+ * This table is a deliberate correspondence with derive.nodeFeatures' line ids, and
+ * the ONLY place it exists; a seventh standard line would be declared in both.
  */
-export function provenanceAnchorId(sourceAnchorId) {
-  const EDGE_TO_ANCHOR = {
-    top: "tm", bottom: "bm", left: "ml", right: "mr", hcenter: "cm", vcenter: "cm",
-    tl: "tl", tm: "tm", tr: "tr", ml: "ml", cm: "cm", mr: "mr", bl: "bl", bm: "bm", br: "br",
-  };
-  return EDGE_TO_ANCHOR[sourceAnchorId] ?? null;
+const SNAP_LINE_TO_ANCHOR = Object.freeze({
+  top: "tm", bottom: "bm", left: "ml", right: "mr", hcenter: "cm", vcenter: "cm",
+});
+
+/**
+ * Pure function. Maps a snap-provenance `sourceAnchorId` to an anchor id an equation
+ * can actually reference (manifest ARCHITECTURE PLAN #4: "write the EQUATION
+ * referencing the provenance anchor" — expressions.js resolves `@id_<anchorId>.x|y`
+ * against the SOURCE plugin's `anchors(state)`), or null when the snapped feature is
+ * genuinely not bindable.
+ *
+ * `anchorIds` is what the SOURCE ITEM'S PLUGIN publishes (derive.nodeAnchors ids) and
+ * is REQUIRED — asking the plugin is the whole point. This used to be a hardcoded
+ * 15-name whitelist (the 9 standard bbox points + these 6 lines), i.e. a
+ * hand-maintained mirror of ONE plugin family's anchor set, and every anchor any
+ * other plugin published was DECLINED: a bento grid publishes 54 CELL anchors, all of
+ * which resolve cleanly through the equation grammar, and all of which the whitelist
+ * answered `null` for while the HintBar was already offering "A — Anchor snap". A
+ * plugin's own anchor now binds because the plugin says it exists.
+ *
+ * Still null, correctly and by design: a TRANSIENT snap feature that is not an anchor
+ * — a polygon vertex ("v0") is published through `snapFeatures`, never `anchors`, so
+ * there is no `@id_v0` to reference. That case is now a genuine "the plugin says no"
+ * rather than "this table has not heard of you", and the CALLER reports it (this
+ * function stays pure — it is called from the solver's release path, so it must not
+ * log).
+ *
+ * @param {string} sourceAnchorId - the feature id snapProvenance extracted
+ * @param {Iterable<string>} anchorIds - the source plugin's published anchor ids
+ * @returns {string|null}
+ *
+ * @example provenanceAnchorId("right", ["tl", "mr", "cm"]) // "mr" (an edge LINE binds to a point on it)
+ * @example provenanceAnchorId("hcenter", ["cm"]) // "cm"
+ * @example provenanceAnchorId("tm", ["tl", "tm", "tr"]) // "tm" (already a published anchor)
+ * @example provenanceAnchorId("c0x0cm", ["cm", "c0x0cm"]) // "c0x0cm" (a bento CELL anchor — the whitelist declined this)
+ * @example provenanceAnchorId("v0", ["tl", "cm", "br"]) // null (a polygon vertex is a snap feature, not an anchor)
+ */
+export function provenanceAnchorId(sourceAnchorId, anchorIds) {
+  if (anchorIds === undefined)
+    throw new TypeError("provenanceAnchorId: `anchorIds` (the source plugin's published anchor ids) is required — defaulting it would silently decline every anchor, which is the defect this argument exists to fix.");
+  const published = anchorIds instanceof Set ? anchorIds : new Set(anchorIds);
+  if (published.has(sourceAnchorId)) return sourceAnchorId;
+  const onLine = SNAP_LINE_TO_ANCHOR[sourceAnchorId];
+  return onLine !== undefined && published.has(onLine) ? onLine : null;
 }
 
 /**

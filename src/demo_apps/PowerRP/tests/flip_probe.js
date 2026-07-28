@@ -164,6 +164,16 @@ try {
     await docJson() === boundDoc, "the bound x was overwritten");
   check("flip-h reports the refusal loudly (never a silent no-op)",
     errors.length > errsBefore, JSON.stringify(errors.slice(errsBefore)));
+  // AND SO DOES THE SECOND CLICK. The refusal used to go through core/report.reportOnce,
+  // whose dedup set is never cleared — so the first press answered and every press after
+  // it refused in TOTAL SILENCE, which reads as a broken tool rather than a refused one.
+  // A user cannot flood a console at frame rate by clicking, so there is nothing to
+  // throttle here (core/report.js reportAction).
+  const errsBeforeRepeat = errors.length;
+  await runCmd("flip-h");
+  check("flip-h answers the SECOND identical refusal too (a deduped report would be silent)",
+    errors.length > errsBeforeRepeat, JSON.stringify(errors.slice(errsBeforeRepeat)));
+  check("the repeated refusal still changed NOTHING", await docJson() === boundDoc);
   await undo(); // drop the equation write
   check("equation write undone", await docJson() === initialDoc);
 

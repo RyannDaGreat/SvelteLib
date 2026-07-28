@@ -29,6 +29,8 @@
 
 import { ease } from "../core/interpolators.js";
 import { resolveTransition } from "../core/transitions.js";
+import { cameraRect } from "../core/derive.js";
+import { evaluatedStateAt } from "./cameraFrame.js";
 
 // gpuService is browser-only (its Skia bootstrap uses Vite `?url` + import.meta.glob),
 // so import it LAZILY on first use. This keeps transitionRender's PURE planners
@@ -184,4 +186,57 @@ export async function renderTransitionFrame(doc, index, alpha, registry, width, 
   ctx.drawImage(nextCanvas, 0, 0);
   ctx.globalAlpha = 1;
   return out;
+}
+
+/**
+ * Command (browser — allocates ONE reusable canvas). Builds the
+ * `renderFrame(index, alpha) → canvas` function every video export drives: the
+ * transition frame above, fitted into a `width`×`height` output over a
+ * `background` letterbox fill.
+ *
+ * THREE call sites need exactly this composite and must not disagree about it:
+ * the download-an-mp4 export, the client-backend render job (both in
+ * web/app.svelte.js), and the server-side headless worker's page half
+ * (web/renderJobPage.js). It lives here because this module already owns
+ * "(doc, index, alpha) → pixels"; the letterbox is just the last step of it.
+ *
+ * The fit preserves the CAMERA's aspect and centers it, so a custom export
+ * aspect gets clean bars instead of a stretched frame. At the default (output
+ * size == camera size) the content fills the frame exactly, the composite is a
+ * no-op over the camera's own background, and the result is byte-for-byte the
+ * presenter render. The camera rect is re-read per frame because the camera is
+ * itself animatable.
+ *
+ * ONE canvas is allocated and reused for every frame — the returned canvas is
+ * therefore only valid until the next call, which is what all three consumers
+ * want (each hands it straight to an encoder or a PNG encode).
+ *
+ * @param {object} o
+ * @param {object} o.doc Document (load-migrated).
+ * @param {object} o.registry Plugin registry.
+ * @param {number} o.width Output width in px.
+ * @param {number} o.height Output height in px.
+ * @param {string} o.background Letterbox fill CSS color.
+ * @returns {(index:number, alpha:number)=>Promise<HTMLCanvasElement>}
+ *
+ * @example
+ * // const renderFrame = createLetterboxFrameRenderer({doc, registry, width: 1920, height: 1080, background: "#000000"});
+ * // await renderFrame(0, 1) // → a 1920x1080 <canvas> of slide 0, fully applied
+ */
+export function createLetterboxFrameRenderer({ doc, registry, width, height, background }) {
+  const out = document.createElement("canvas");
+  out.width = width;
+  out.height = height;
+  const ctx = out.getContext("2d");
+  return async (index, alpha) => {
+    const rect = cameraRect(evaluatedStateAt(doc, index, alpha, registry), doc.meta);
+    const scale = Math.min(width / rect.w, height / rect.h);
+    const cw = Math.max(1, Math.round(rect.w * scale));
+    const ch = Math.max(1, Math.round(rect.h * scale));
+    const content = await renderTransitionFrame(doc, index, alpha, registry, cw, ch);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(content, Math.round((width - cw) / 2), Math.round((height - ch) / 2));
+    return out;
+  };
 }

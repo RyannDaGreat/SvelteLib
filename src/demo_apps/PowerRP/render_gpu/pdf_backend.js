@@ -611,7 +611,7 @@ export function hasTextOp(commands) {
  * @example textFaces([{op: "text", font: "inter", bold: false}, {op: "text", font: "inter", bold: true}]) // [{font: "inter", bold: false}, {font: "inter", bold: true}]
  * @example textFaces([{op: "text", bold: false}]) // [{font: "system", bold: false}]
  * @example textFaces([{op: "rect"}]) // []
- * @example textFaces([{op: "text", font: "inter", rich: {runs: [{font: "inter", bold: false}, {font: "lora", bold: true}], paras: [{}]}}]).length // 3 (op-level inter + inter/lora runs)
+ * @example textFaces([{op: "text", font: "inter", rich: {runs: [{font: "inter", bold: false}, {font: "lora", bold: true}], paras: [{}]}}]).length // 2 (op-level inter/regular DEDUPES with the identical run; only inter/regular + lora/bold remain)
  */
 export function textFaces(commands) {
   const seen = new Set();

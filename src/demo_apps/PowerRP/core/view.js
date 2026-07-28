@@ -1,11 +1,21 @@
 /**
  * View math + the culling protocol — DOM-free pure JS.
  *
- * Moved verbatim from render/compositor.js when the canvas2D painter was
- * deleted (manifest RENDER MODES DECISION: WebGPU is the only runtime raster
- * mode). These are backend-agnostic: the GPU compositor, the vector backends,
- * hit-testing, and the minimap all consume the same view mapping, and the
- * culling rule is the widget-tells-the-camera protocol from the manifest.
+ * Moved verbatim from render/compositor.js when the canvas2D painter was deleted
+ * (manifest RENDER MODES DECISION). These are backend-agnostic: the runtime
+ * painter, the vector backends, hit-testing, and the minimap all consume the same
+ * view mapping, and the culling rule is the widget-tells-the-camera protocol from
+ * the manifest.
+ *
+ * SUPERSEDED — HISTORICAL: this header used to gloss that decision as "WebGPU is
+ * the only runtime raster mode". It is not, and citing the manifest for it made
+ * the claim look settled. The runtime raster path is Skia/CanvasKit on a WebGL2
+ * context (render_gpu/skia/browser_surface.js: GetWebGLContext majorVersion 2 →
+ * MakeWebGLContext → MakeOnScreenGLSurface), chosen deliberately because WebGL2
+ * has no secure-context requirement and the editor must render over plain HTTP;
+ * bare node paints the same display list on a software surface. navigator.gpu is
+ * touched ONLY by the videoV6/V7/V8 overlay experiments. Nothing in this file
+ * depends on which it is — that is the point of the mapping being backend-agnostic.
  */
 
 import * as T from "./transform.js";

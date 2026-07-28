@@ -16,6 +16,14 @@
   filmstrip … it could be grayed out, and even just that some tooltip tells us
   why it's grayed out") is both halves of that one defect.
 
+  THEY ALSO SINK. Second user ruling: "ones that we can select are always going to
+  get priority and be sorted above ones that are not. It's a stable sort." So the
+  ranked list is PARTITIONED here into available-then-unavailable, and stably: the
+  relative order search() produced survives inside each half, because the split is
+  two buckets filled in one forward pass rather than a comparator. Availability
+  therefore outranks the fuzzy/MRU rank, but only at that one coarse level, and it
+  still changes no membership — nothing is hidden, which was the point.
+
   THE BOTTOM SECTION is the tooltip that ruling asks for, and it carries the
   optional `help` too. It is ABSENT (not empty) when the highlighted entry has
   neither — an always-present box that is usually blank is the dead chrome the
@@ -29,7 +37,7 @@
   import "iconify-icon";
   import KeyCombo from "../../../lib/KeyCombo.svelte";
   import { rpFuzzyMatchIndices } from "../core/fuzzy.js";
-  import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
+  import { commandUnavailable, commandUnavailableReason, partitionByAvailability } from "../core/commands.js";
 
   let { app } = $props();
 
@@ -72,9 +80,25 @@
   // is shown — even when query/stack are unchanged from the prior open.
   let results = $derived(app.paletteOpen ? app.commands.search(query, parent) : []);
 
+  // AVAILABLE FIRST, then unavailable — user ruling. The partition runs HERE and
+  // not in search() because availability is a property of the surfacing, not of
+  // the ranking: search() stays app-free and any caller that just wants the fuzzy
+  // rank still gets it unreordered. One pass answers both questions the rows need
+  // (where each goes, and which are grey), so no gate is evaluated twice.
+  //
+  // The list DOES re-partition when the selection changes with the palette open —
+  // rows can move under a stationary cursor. That is inherent to the ruling and
+  // preferred to the alternative it replaced: a runnable command ranked below a
+  // dead one. Inside each half the MRU / fuzzy order is exactly as search() left
+  // it, so the relative order of the commands you can actually run never moves.
+  let split = $derived(partitionByAvailability(results, app));
+  let rows = $derived([...split.available, ...split.unavailable]);
+  let unavailableIds = $derived(new Set(split.unavailable.map((c) => c.id)));
+
   // The HIGHLIGHTED entry drives both the bottom section and the live preview —
   // one notion of "the current row", so they can never point at different ones.
-  let current = $derived(results[highlighted] ?? null);
+  // Indexed into the RENDERED order, which is the only order the user can see.
+  let current = $derived(rows[highlighted] ?? null);
   let currentReason = $derived(current ? commandUnavailableReason(current, app) : null);
   let currentHelp = $derived(current?.help ?? null);
 
@@ -123,7 +147,7 @@
   //
   // previewRevert/previewedId are PLAIN (non-$state) bridge variables: the
   // effect reads/writes them imperatively but must NOT react to them — only
-  // `highlighted` and `results` may drive it.
+  // `current` (i.e. `highlighted` and `rows`) may drive it.
   let previewRevert = null; // closure that undoes the active preview, or null
   let previewedId = null; // id of the entry currently previewed, or null
 
@@ -183,12 +207,12 @@
     if (e.key === "Escape") back();
     else if (e.key === "Backspace" && query === "" && stack.length) back();
     else if (e.key === "ArrowDown") {
-      highlighted = Math.min(highlighted + 1, results.length - 1);
+      highlighted = Math.min(highlighted + 1, rows.length - 1);
       scrollHighlightedIntoView();
     } else if (e.key === "ArrowUp") {
       highlighted = Math.max(highlighted - 1, 0);
       scrollHighlightedIntoView();
-    } else if (e.key === "Enter" && results[highlighted]) activate(results[highlighted]);
+    } else if (e.key === "Enter" && current) activate(current);
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -216,27 +240,30 @@
         spellcheck="false"
       />
       <div class="palette-results" bind:this={resultsEl}>
-        {#each results as cmd, i (cmd.id)}
+        {#each rows as cmd, i (cmd.id)}
           <!-- Hover-highlight keys on pointerMOVE, not pointerenter: keyboard
                navigation scrolls the list, which slides rows UNDER a stationary
                cursor — that fires pointerenter (yanking the highlight off the
                keyboard row) but never pointermove, which only fires on genuine
                mouse movement. So hover still highlights instantly, and hover
                and keyboard can't fight (the VS Code list rule). -->
-          <!-- ONE gate evaluation per row. `when` is not free — needsMultiBbox and
-               friends derive the render tree — and the class and the attribute
-               below both need the same answer, so it is bound once rather than
-               asked twice. (Net cost is still below the old behaviour, which
-               evaluated every entry's gate inside search() whether the row was
-               rendered or not.) -->
-          {@const off = commandUnavailable(cmd, app)}
+          <!-- ONE gate evaluation per row, done up in the partition. `when` is not
+               free (needsMultiBbox derives the render tree) and three things need
+               the same answer — where the row sits, its class, its aria state — so
+               it is asked once and read from the set. -->
+          {@const off = unavailableIds.has(cmd.id)}
           <!-- aria-disabled, NOT the native `disabled` attribute: a disabled
                button fires no pointer events, so hovering it could not report
                why it is disabled — the one thing the user asked for. The guard
                is in activate() instead, and it is the same guard for the click
-               and for Enter. -->
+               and for Enter.
+               data-command-id makes the row say WHICH command it is: the title is
+               the human name, not the identity, and a surfacing of the registry
+               should carry the key it was surfaced from (the ordering probe reads
+               it to check the partition against search()'s own output). -->
           <button
             class="palette-item"
+            data-command-id={cmd.id}
             class:highlighted={i === highlighted}
             class:unavailable={off}
             aria-disabled={off}
@@ -261,7 +288,7 @@
             {#if cmd.children}<iconify-icon class="sub-arrow" icon="mdi:chevron-right" width="16" height="16"></iconify-icon>{/if}
           </button>
         {/each}
-        {#if !results.length}
+        {#if !rows.length}
           <div class="palette-none">No matching commands</div>
         {/if}
       </div>

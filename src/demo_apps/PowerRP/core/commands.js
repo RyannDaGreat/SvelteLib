@@ -75,14 +75,19 @@ export function createCommands() {
      *   2. QUERY RANKING (here, second). Fuzzy score drops non-matches and orders
      *      the rest; an empty query orders by MRU instead. This is the only
      *      filter that removes an entry from the returned list.
-     *   3. AVAILABILITY (NOT here — at each surfacing, per row). `when` decides
-     *      whether a row is GREYED, never whether it is present. It is applied
-     *      last, to something already scoped and ranked, and it cannot change
-     *      what is in the list or what order it is in.
-     * Rank is deliberately not re-sorted by availability either: a row that moved
-     * when the selection changed would break the muscle memory the MRU order
-     * exists to build, and the query is the real filter. Ranking therefore needs
-     * no `app` at all — the parameter that used to carry it here is gone.
+     *   3. AVAILABILITY (NOT here — at each surfacing, via
+     *      partitionByAvailability below). `when` decides whether a row is
+     *      GREYED and, since the user's ordering ruling, WHERE it sits: a
+     *      surfacing that renders a list partitions the ranked result into
+     *      available-then-unavailable. It is applied last, to something already
+     *      scoped and ranked. It may NOT change membership and may NOT widen the
+     *      pool — the partition is a permutation of what this function returned,
+     *      nothing enters or leaves — but it DOES outrank ranking, at exactly one
+     *      coarse level. Inside each partition the order below is untouched.
+     * So this function is availability-blind by construction and needs no `app`
+     * — the parameter that used to carry one is gone, and putting the partition
+     * here would hand it back AND silently reorder for callers that only want the
+     * ranking (a membership check, a "does the fuzzy query hit this" probe).
      */
     search(query, parent = null) {
       const pool = parent ? parent.children : topLevel;
@@ -172,6 +177,49 @@ export function commandUnavailable(cmd, app) {
  */
 export function commandUnavailableReason(cmd, app) {
   return commandUnavailable(cmd, app) ? (cmd.requires ?? null) : null;
+}
+
+/**
+ * Query. Splits already-ranked `entries` into the ones that can run now and the
+ * ones that cannot, each keeping its incoming relative order. A surfacing that
+ * renders a LIST concatenates them (available first) — user ruling: "you can
+ * always put ones we can't select on the bottom. Ones that we can select are
+ * always going to get priority and be sorted above ones that are not. It's a
+ * stable sort."
+ *
+ * A PARTITION, NOT A SORT. Two buckets filled in one forward pass: stability is
+ * then a property of the code's shape (push preserves order, full stop) rather
+ * than a guarantee to look up in the spec about how `sort` treats a comparator
+ * that returns 0. It also cannot accidentally re-rank within a bucket, which a
+ * comparator can if someone later "improves" it.
+ *
+ * BOTH HALVES ARE RETURNED, not just the concatenation, because the caller needs
+ * both facts — the order AND which rows to grey — and `when` is not free
+ * (needsMultiBbox derives the render tree). One pass answers both; returning only
+ * an ordered list would make every caller ask each gate a second time.
+ *
+ * It is a PERMUTATION of its input: available.length + unavailable.length always
+ * equals entries.length. That is what keeps pool scoping absolute — this runs on
+ * what search() returned, so a submenu's list cannot gain a foreign entry here.
+ *
+ * @param {object[]} entries - command entries, already pool-scoped and ranked
+ * @param {object} app - the app instance the gates are evaluated against
+ * @returns {{available: object[], unavailable: object[]}}
+ *
+ * @example
+ *   >>> # gates: a and c runnable, b and d not
+ *   >>> partitionByAvailability([a, b, c, d], app)
+ *   {available: [a, c], unavailable: [b, d]}   // "a, c, b, d" once concatenated
+ * @example
+ *   >>> # nothing gated at all — the ranking passes through untouched
+ *   >>> partitionByAvailability([a, b], app)
+ *   {available: [a, b], unavailable: []}
+ */
+export function partitionByAvailability(entries, app) {
+  const available = [];
+  const unavailable = [];
+  for (const cmd of entries) (commandUnavailable(cmd, app) ? unavailable : available).push(cmd);
+  return { available, unavailable };
 }
 
 /** Command (mutates map). Validates and registers an entry + descendants. */

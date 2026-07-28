@@ -72,7 +72,7 @@ import { rotatedBBoxAABB, rectsIntersect } from "../core/view.js";
 import { cropInsetsToSource } from "./decorate.js";
 import {
   ensurePdfDoc, pdfPageCount, pdfPagePointSize, ensurePdfPagePointSize,
-  ensurePdfPageRegionRasterized, clampPage, PDF_MAX_RASTER_DIM,
+  ensurePdfPageRegionRasterized, trimPdfRegionCache, clampPage, PDF_MAX_RASTER_DIM,
 } from "./gpu/pdf_page_raster.js";
 
 // ── RENDER MODES (the pdf_page widget's `renderMode` property) ────────────────

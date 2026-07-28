@@ -16,19 +16,32 @@
  * ── WHAT IT DOES ──────────────────────────────────────────────────────────────
  * Given a widget's OWN content ops plus its (evaluated) state, it returns the
  * content wrapped in ONE `effectSubtree` op (render_gpu/ir.js) when any
- * effect is ON, and returns the content UNCHANGED when none is. "None" =
- * shadow blur <= 0 AND bloom strength <= 0 AND blendMode normal (the manifest
+ * effect is ON, and returns the content UNCHANGED when none is. "None" is
+ * `effectsOff()` below — the ONE gate, and it is FIVE conditions, each reading
+ * the property that makes its effect VISIBLE rather than the property that
+ * softens it: shadow.opacity <= 0 AND bloom.strength <= 0 AND
+ * innerShadow.opacity <= 0 AND softEdges <= 0 AND blendMode normal (the manifest
  * defaults: "Defaults = effect-off ... so every old doc is byte-identical").
+ * BLUR IS NOT A GATE: a blur-0 shadow at opacity 0.5 is a HARD-EDGED shadow and
+ * is fully visible, which is the model manifest 14.8 exists to overturn. This
+ * header claimed "shadow blur <= 0 AND bloom strength <= 0 AND blendMode normal"
+ * for long enough that effectsOff's own doctests contradicted it, and this is the
+ * header every widget's effects ride through.
  * The pass-through path is what makes an effectless widget render
  * byte-identically to before this bundle existed — the same discipline as
  * decorate.js's isUndecorated.
  *
  * The substrate itself (ONE offscreen render of the widget, then shadow /
  * widget / bloom composites under the chosen blend) is implemented by each
- * backend: gpu/compositor.js's "effect" batch (render-to-texture + blur +
- * fixed-function blend pipelines), pdf_backend.js's emitEffect (the HYBRID
+ * backend: AT RUNTIME by render_gpu/skia/paint_skia.js (`drawProxyEffect` — a
+ * scratch surface plus image filters, on the browser's WebGL2 Skia surface and on
+ * bare node's software surface alike), pdf_backend.js's emitEffect (the HYBRID
  * RULE: raster shadow PNG under vector content; bloom / non-normal blends
  * raster the widget region), svg_backend.js (raster region).
+ *   SUPERSEDED — HISTORICAL: this paragraph used to answer "where is
+ *   effectSubtree implemented at runtime" with gpu/compositor.js's "effect" batch
+ *   (render-to-texture + blur + fixed-function blend pipelines). That file went
+ *   with the retired prototype backend; see render_gpu/FINDINGS.md.
  *
  * ── WHICH WIDGETS COMPOSE THIS — now EVERY eligible one, by construction ──────
  * Eligibility used to be FOUR HAND-COPIED LINES per plugin

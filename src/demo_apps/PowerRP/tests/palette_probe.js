@@ -393,6 +393,57 @@ try {
   check("greyed-rows-render-fainter-than-live-ones",
     fade.greyed.length > 0 && fade.live.length > 0 && Math.max(...fade.greyed) < Math.min(...fade.live),
     `fade=${JSON.stringify(fade)} — the unavailable class is on the row but does not dim it`);
+
+  // ── Scenario 13: AVAILABLE FIRST, STABLE WITHIN EACH HALF ──────────────────
+  // User ruling: "ones that we can select are always going to get priority and be
+  // sorted above ones that are not. It's a stable sort." core_test proves the
+  // partition function; this proves the PALETTE applies it to what the user sees.
+  // Both expectations are DERIVED from app.commands.search() re-run in the page —
+  // the same ranking the component consumed — so no id order is written here and
+  // the check survives any command being added, removed or re-ranked.
+  const order = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const gated = (c) => !!c.when && !c.when(app);
+    const ranked = app.commands.search("select"); // pre-partition order, from the registry
+    const rendered = [...document.querySelectorAll(".palette-item")].map((el) => ({
+      id: el.dataset.commandId,
+      unavailable: el.classList.contains("unavailable"),
+    }));
+    // Was the RANKED order actually mixed — did an available entry sit after an
+    // unavailable one before the partition? If not, "available first" would hold
+    // trivially and the stability checks below would prove nothing.
+    const rankedFlags = ranked.map(gated);
+    const rankedInterleaved = rankedFlags.indexOf(true) !== -1 && rankedFlags.lastIndexOf(false) > rankedFlags.indexOf(true);
+    return {
+      rendered,
+      rankedInterleaved,
+      expectedAvailable: ranked.filter((c) => !gated(c)).map((c) => c.id),
+      expectedUnavailable: ranked.filter(gated).map((c) => c.id),
+    };
+  });
+  const renderedIds = order.rendered.map((r) => r.id);
+  const firstGrey = order.rendered.findIndex((r) => r.unavailable);
+  const lastLive = order.rendered.findLastIndex((r) => !r.unavailable);
+  check("rows-carry-their-command-id", renderedIds.every((id) => typeof id === "string" && id.length > 0), `renderedIds=${JSON.stringify(renderedIds)}`);
+  check("no-available-row-after-an-unavailable-one", firstGrey === -1 || lastLive < firstGrey,
+    `lastLive=${lastLive} firstGrey=${firstGrey} rendered=${JSON.stringify(order.rendered)}`);
+  // STABILITY, the half a "greyed are last" check would miss: each subsequence
+  // must match the ranked order it came from, element for element.
+  check("available-rows-keep-their-ranked-order",
+    JSON.stringify(order.rendered.filter((r) => !r.unavailable).map((r) => r.id)) === JSON.stringify(order.expectedAvailable),
+    `rendered=${JSON.stringify(order.rendered.filter((r) => !r.unavailable).map((r) => r.id))} expected=${JSON.stringify(order.expectedAvailable)}`);
+  check("unavailable-rows-keep-their-ranked-order",
+    JSON.stringify(order.rendered.filter((r) => r.unavailable).map((r) => r.id)) === JSON.stringify(order.expectedUnavailable),
+    `rendered=${JSON.stringify(order.rendered.filter((r) => r.unavailable).map((r) => r.id))} expected=${JSON.stringify(order.expectedUnavailable)}`);
+  // MEMBERSHIP IS UNTOUCHED: the partition is a permutation of the ranked list.
+  check("partition-changed-order-not-membership",
+    JSON.stringify([...renderedIds].sort()) === JSON.stringify([...order.expectedAvailable, ...order.expectedUnavailable].sort()),
+    `rendered=${JSON.stringify(renderedIds)}`);
+  // NOT VACUOUS: both kinds are present AND the ranked order really was mixed, so
+  // the partition had work to do and the checks above discriminate.
+  check("ordering-scenario-is-not-vacuous",
+    order.expectedAvailable.length > 0 && order.expectedUnavailable.length > 0 && order.rankedInterleaved,
+    `available=${order.expectedAvailable.length} unavailable=${order.expectedUnavailable.length} rankedInterleaved=${order.rankedInterleaved} — pick a query whose ranking mixes the two kinds`);
   await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
 
   const newErrors = errors.slice(bootErrors);

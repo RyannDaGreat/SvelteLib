@@ -30,17 +30,24 @@
  *     SHAPE_WGSL's — "the rect stroke ring for the border");
  *   - an optional background `fill` painted behind the content (a transparent
  *     region of the content shows the fill through — matching a plain box).
- * This needs NO new IR op and NO new backend code: both the WebGPU compositor
- * (gpu/compositor.js cropSubtree batch → CROP_WGSL) and the PDF backend
+ * This needs NO new IR op and NO new backend code: both the runtime painter
+ * (render_gpu/skia/paint_skia.js's cropSubtree case) and the PDF backend
  * (pdf_backend.js emitCrop) already implement cropSubtree with a rounded clip +
- * stroke ring. A crop box is literally "a box that clips a foreign target"; a
+ * stroke ring.
+ *   SUPERSEDED — HISTORICAL: this sentence used to name "the WebGPU compositor
+ *   (gpu/compositor.js cropSubtree batch → CROP_WGSL)". That file and those
+ *   shader constants went with the retired prototype backend; see
+ *   render_gpu/FINDINGS.md. The two bullets above name CROP_WGSL and SHAPE_WGSL
+ *   for the same reason and are dead names too — read them as "the rounded-rect
+ *   clip" and "the rect stroke ring", which is what they described.
+ * A crop box is literally "a box that clips a foreign target"; a
  * decorated image is "a box that clips its OWN content" — the same op, a
  * different content source.
  *
  * ── THE ABSOLUTE-WORLD CONTRACT (why `world` is a parameter) ───────────────────
  * cropSubtree's `content` is an INDEPENDENTLY-flattened IR list (both backends
- * flattenIR() it fresh from identity — see ports.sceneIR's doc comment and the
- * compositor's `packList(flattenIR(cmd.content))`), so it must carry its OWN
+ * flattenIR() it fresh from identity — see ports.sceneIR's doc comment and
+ * paint_skia.js's cropSubtree case), so it must carry its OWN
  * ABSOLUTE world transform, exactly like a crop box's target content carries
  * pushTransform(node.cropTarget.world). A plugin's emit() is wrapped by sceneIR
  * in pushTransform(node.world), but that wrap does NOT reach into a cropSubtree

@@ -57,6 +57,7 @@
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
   import CodeEditController from "./CodeEditController.svelte"; // multi-line CODE editor overlay (reusable code-string editor; no widget binds it by default)
+  import BentoTargetList from "./BentoTargetList.svelte"; // a canvas mode's LIST of pickable widgets (the second input path for a bento cell bind)
   import CanvasToolbar from "./CanvasToolbar.svelte"; // GENERAL floating canvas toolbar (double-click a widget that declares floatingToolbar); mounted as a canvas overlay
   import HandleToolbar from "./HandleToolbar.svelte"; // the SELECTED-HANDLE tools, on the shared FloatingCanvasPanel shell
   import VideoV6Overlay from "./VideoV6Overlay.svelte"; // ONE shared WebGPU external-texture canvas over the scene; draws live V6 video frames (WebGL2 upload fallback on plain HTTP)
@@ -151,6 +152,25 @@
     viewport;
     if (screenMouse == null || !actions) return null;
     return actions.screenToWorld(screenMouse.x, screenMouse.y);
+  });
+  /**
+   * THE MODE CURSOR CLASS — "" or `cursor-<name>`, where <name> is the live canvas
+   * mode's cursor for the CURRENT STEP (clamped like a step index, so a mode may
+   * declare fewer cursors than steps). A mode this modal must say so under the
+   * pointer, and its two steps ask different questions.
+   *
+   * STATE → CLASS, styling in web/app.css — the crosshair `skin` precedent, and the
+   * reason there is no inline style here. Because it is DERIVED from app.canvasMode,
+   * every exit route (Escape, a slide switch, entering the presenter, finalize's
+   * selection write) reverts it by construction: no imperative cursor state exists
+   * that could get stuck. web/widget_handlers.canvasModes() validates each declared
+   * name against the rules app.css actually ships, at boot, so a typo is loud rather
+   * than a mode with no cursor.
+   */
+  let modeCursorClass = $derived.by(() => {
+    const cursors = app.canvasMode ? findHandler(app.canvasMode.handlerId).mode?.cursors : null;
+    if (!cursors) return "";
+    return `cursor-${cursors[Math.min(app.canvasMode.step, cursors.length - 1)]}`;
   });
   // Screen positions of the live mouse marker on each ruler (null = off-canvas).
   // The marker sits at the SAME screen x/y the pointer is at — worldToScreen ∘
@@ -953,6 +973,82 @@
     modeZoomIdle = setTimeout(() => { modeZoomIdle = null; app.commitPreview(); }, ZOOM_GESTURE_IDLE_MS);
   }
 
+  /** Command. Re-derives what an ACTIVATE mode's overlay paints. An activate mode
+   *  has no session for the host to watch (its item already exists), so every hook
+   *  that can change the preview calls this — refreshCreationPreview's "re-derive
+   *  after every mutation" rule, one phase over. */
+  function refreshModePreview(active) {
+    placePreview = active.mode.overlay ? active.mode.overlay(modeContext(active)) : null;
+  }
+
+  /**
+   * Command. A bare pointer-MOVE inside a canvas mode, offered to the mode as a
+   * HOVER: the widget under the pointer plus the point in both frames, exactly the
+   * payload `onPick` gets, so a mode's preview and its action read the same thing.
+   * Returns true when it consumed the event.
+   *
+   * THE OVERLAY IS ONLY REASSIGNED WHEN THE HOOK SAYS THE PREVIEW CHANGED. A hover
+   * that invalidates per pixel is the defect behind the minimap drag spike and the
+   * idle-callback stalls, and a mode's candidate typically changes only when the
+   * pointer crosses into a different cell or widget — so the hook returns a boolean
+   * and the repaint rides it, rather than firing on every mousemove.
+   *
+   * The one `app.nodes()` here replaces the one the anchor-hover branch below would
+   * have made (a mode consumes the move before it), so the cost of moving the mouse
+   * is unchanged rather than doubled.
+   */
+  function modePointerHover(e) {
+    const active = activeMode();
+    if (!active?.mode.onHover) return false;
+    const w = worldPoint(e);
+    const changed = active.mode.onHover(modeContext(active), {
+      node: pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom),
+      world: w,
+      local: localPointOf(active.node, w.x, w.y),
+    });
+    if (changed) refreshModePreview(active);
+    return true;
+  }
+
+  /**
+   * THE LIVE MODE'S PICK LIST, or null. A mode may declare `list(ctx)` returning
+   * `{label, pick(node), hover(node|null)}` — the SECOND input path for a pick whose
+   * target cannot always be reached on canvas. Null while the mode has nothing to
+   * offer (a bento with no cell aimed yet has no cell to bind into), so the surface
+   * appears exactly when it can act.
+   *
+   * `node` is carried through for the panel's anchor (it hangs off the mode's own
+   * widget). The mode's `pick`/`hover` are wrapped so the overlay is re-derived
+   * afterwards — the same refreshModePreview the pointer hooks use, so a pick from
+   * the list and a click on the canvas leave the canvas in the same state.
+   */
+  let modeList = $derived.by(() => {
+    // app.canvasMode FIRST, before activeMode(): activeMode() calls app.nodes(), which
+    // is a FULL re-derivation, and this $derived re-runs on every document change. The
+    // gate keeps the cost at exactly zero outside a mode — the "hovering must be free"
+    // rule applies to anything that runs per document change too.
+    if (!app.canvasMode) return null;
+    const active = activeMode();
+    if (!active?.mode.list) return null;
+    const ctx = modeContext(active);
+    const declared = active.mode.list(ctx);
+    if (!declared) return null;
+    return {
+      node: active.node,
+      label: declared.label,
+      pick: (n) => { declared.pick(n); refreshModePreview(active); },
+      hover: (n) => { if (declared.hover(n)) refreshModePreview(active); },
+    };
+  });
+
+  /** Command. The pointer LEFT the canvas — a mode's hover candidate must not
+   *  outlive the pointer that asked for it. Silent no-op for a mode with no hover. */
+  function modePointerLeave() {
+    const active = activeMode();
+    if (!active?.mode.onHoverLeave) return;
+    if (active.mode.onHoverLeave()) refreshModePreview(active);
+  }
+
   /** Command. Pointer-down inside a canvas mode starts a PAN gesture (one undo
    *  unit, committed on release). Returns true when it consumed the event. */
   function modePointerDown(e) {
@@ -973,10 +1069,7 @@
         world: w,
         local: localPointOf(active.node, w.x, w.y),
       });
-      // Re-ask for the overlay after every press — an activate mode has no session
-      // for the host to watch, so the press IS the invalidation (refreshCreationPreview's
-      // "re-derive after every mutation" rule, one phase over).
-      placePreview = active.mode.overlay ? active.mode.overlay(modeContext(active)) : null;
+      refreshModePreview(active);
       return true;
     }
     if (!active?.mode.onPan) return false;
@@ -1512,6 +1605,11 @@
       modePointerMove(e);
       return;
     }
+    // A mode that declares `onHover` owns the bare pointer-move: it previews what a
+    // press would do, and the canvas's own anchor hover-tip would be competing noise
+    // inside a takeover. Checked here, alongside the pan branch, for the same reason
+    // modePointerDown's pick branch sits alongside its own.
+    if (!drag && modePointerHover(e)) return;
     const w = worldPoint(e);
     // A modal transform (G/S) follows the mouse with NO button held — the
     // pointer path drives it directly and nothing else runs.
@@ -2662,6 +2760,7 @@
 
   function onPointerLeave() {
     if (!drag && !modal) screenMouse = null; // hide ruler markers on leave (not mid-gesture)
+    modePointerLeave(); // a mode's hover candidate must not outlive the pointer
   }
 
   function onPointerUp(e) {
@@ -3367,7 +3466,7 @@
       {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
-        class="overlay"
+        class="overlay {modeCursorClass}"
         bind:this={overlayEl}
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}
@@ -3618,6 +3717,22 @@
           node={floatingToolbarNode}
           worldToScreen={actions.worldToScreen}
           zoom={viewport.zoom}
+        />
+      {/if}
+      {#if modeList && actions}
+        <!-- A MODE'S PICK LIST — the second input path for a mode whose `onPick`
+             cannot always reach its target on canvas (occluded, tiny, off-screen).
+             The mode DECLARES it (`list(ctx)` → {label, pick, hover} or null when it
+             has nothing to offer yet), so this mounts one surface for any mode that
+             wants one and knows nothing about bentos. Both paths land in the mode's
+             own write, which is what keeps them from drifting. -->
+        <BentoTargetList
+          {app}
+          node={modeList.node}
+          cellLabel={modeList.label}
+          worldToScreen={actions.worldToScreen}
+          onhover={modeList.hover}
+          onpick={modeList.pick}
         />
       {/if}
       {#if selectedHandles.length && actions}

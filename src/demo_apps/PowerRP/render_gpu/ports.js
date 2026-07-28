@@ -101,8 +101,8 @@ export function videoIR(s) {
  * `.world` transform (pushTransform(node.cropTarget.world)), NOT a transform
  * relative to the crop box. cropSubtree's `content` is a SEPARATE,
  * self-contained, independently-flattened IR list (both backends
- * flattenIR() it fresh, from identity — render_gpu/gpu/compositor.js's
- * packList and pdf_backend.js's emitRegion never nest it inside the crop
+ * flattenIR() it fresh, from identity — render_gpu/skia/paint_skia.js's
+ * cropSubtree case and pdf_backend.js's emitRegion never nest it inside the crop
  * box's own pushTransform), so it must carry the SAME absolute world every
  * other node's commands do — that is what lets the crop box's re-render use
  * the SAME outer view/camera mapping as the rest of the scene (no relative-

@@ -35,9 +35,23 @@ export function keyIcon(token) {
   return KEY_ICONS[token] ?? null;
 }
 
-/** Mouse tokens → icons (shared by KeyCombo/HintBar consumers). */
+/**
+ * Mouse tokens → icons (shared by KeyCombo/HintBar consumers).
+ *
+ * A token missing from here is NOT a text chip like a letter key is — isMouseToken
+ * reports false for it, so a consumer renders the raw token string and the bar
+ * prints "mouse_left_double" at the user. Every mouse token a host registry
+ * defines must therefore appear here (PowerRP asserts the cross-check in
+ * tests/shortcut_registry_test.js).
+ *
+ * `mouse_left_double` is a DOUBLE-CLICK of the left button. It gets the gesture
+ * glyph rather than a second click-icon, because the whole point of giving
+ * double-click its own token was that a single-click icon on a double-click
+ * gesture is a wrong instruction, not merely a vague one.
+ */
 export const MOUSE_ICONS = {
   mouse_left: "mdi:mouse-left-click-outline",
+  mouse_left_double: "mdi:gesture-double-tap",
   mouse_right: "mdi:mouse-right-click-outline",
   mouse_middle: "mdi:mouse",
   mouse_scroll: "mdi:mouse-scroll-wheel",

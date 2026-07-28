@@ -12,11 +12,17 @@
  *
  * FULLY PROCEDURAL — the maria are fbm on the reconstructed normal (a single
  * placement, no tiling, so no seam concern). DOM-free at import.
+ *
+ * NO uCornerRadius, DELIBERATELY — same reason as sky_sun_shader.js, whose header
+ * carries the measurements: this material's silhouette is its own disc SDF, not its
+ * region, so there is no corner to round. It used to declare the uniform (and the
+ * plugin published a row for it) while `main()` never read it — byte-identical at
+ * cornerRadius 0 vs 140 at every disc size. Do not "restore symmetry" with `sky`.
  */
 
 import { parseColor } from "../ir.js";
 
-const SKY_MOON_UNIFORM_FLOATS = 8 + 3 + 5; // geometry 8 + uColor 3 + (phase,limbAngle,earthshine,maria,size) 5 = 16
+const SKY_MOON_UNIFORM_FLOATS = 7 + 3 + 5; // geometry 7 (no cornerRadius — see above) + uColor 3 + (phase,limbAngle,earthshine,maria,size) 5 = 15
 
 export const SKY_MOON_SKSL = `
 const float TWO_PI = 6.28318531;
@@ -25,7 +31,6 @@ const float EPS = 1e-3;
 
 uniform float2 uCenter;
 uniform float2 uHalfSize;
-uniform float  uCornerRadius;
 uniform float  uAngle;
 uniform float  uScale;
 uniform float  uTime;
@@ -88,17 +93,19 @@ function num(name, v) {
 /**
  * Pure function. Packs the skyMoon uniforms (SkSL declaration order).
  *
- * @param {object} u geometry + {color, phase, limbAngle, earthshine, maria, size}
- * @returns {Float32Array} length 16
+ * @param {object} u geometry + {color, phase, limbAngle, earthshine, maria, size}. A
+ *   `cornerRadius` the framework supplies is IGNORED — this material has no such
+ *   uniform (see the file header).
+ * @returns {Float32Array} length 15
  *
- * @example packSkyMoon({cx:0,cy:0,halfW:110,halfH:110,cornerRadius:0,angle:0,scale:1,
- *   time:0,color:"#e8e6de",phase:0.3,limbAngle:0,earthshine:0.5,maria:0.6,size:0.72}).length // 16
+ * @example packSkyMoon({cx:0,cy:0,halfW:110,halfH:110,angle:0,scale:1,
+ *   time:0,color:"#e8e6de",phase:0.3,limbAngle:0,earthshine:0.5,maria:0.6,size:0.72}).length // 15
  */
 export function packSkyMoon(u) {
   const c = parseColor(u.color);
   const out = new Float32Array([
     num("cx", u.cx), num("cy", u.cy), num("halfW", u.halfW), num("halfH", u.halfH),
-    num("cornerRadius", u.cornerRadius), num("angle", u.angle), num("scale", u.scale), num("time", u.time),
+    num("angle", u.angle), num("scale", u.scale), num("time", u.time),
     c[0], c[1], c[2],
     num("phase", u.phase), num("limbAngle", u.limbAngle), num("earthshine", u.earthshine),
     num("maria", u.maria), num("size", u.size),

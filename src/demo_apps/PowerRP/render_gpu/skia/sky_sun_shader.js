@@ -12,11 +12,25 @@
  * through — premultiplied alpha, self-limiting well inside the box.
  *
  * DOM-free at import. parseColor (render_gpu/ir.js) is the shared colour parser.
+ *
+ * NO uCornerRadius, DELIBERATELY — and this is the one thing to read before "restoring
+ * uniform-block symmetry" with the rest of the family. A rounded-rect region radius is
+ * meaningful for a material whose silhouette IS its region (`sky`, `skyClouds`, `crt`,
+ * the corkboard); this material's silhouette is its OWN disc SDF, so the region only
+ * supplies the aspect reference and there is no corner to round. It DID declare the
+ * uniform, and the plugin DID publish an Inspector row for it, while `main()` never read
+ * it: measured, cornerRadius 0 vs 140 was byte-identical at every disc size. Multiplying
+ * coverage by an sdRoundRect (what `sky` does) was measured too, and rejected: it also
+ * clips the disc at the BOX, retiring the deliberate, documented `size` behaviour ("past
+ * 1 the disc spills out of its box") — 25134 bytes of picture became 12951 at
+ * cornerRadius 0. Trading a dead knob for a broken live one is not a fix. lens_flare,
+ * metaballs and dither declare no cornerRadius either: the geometry prefix is a
+ * convention, not a contract.
  */
 
 import { parseColor } from "../ir.js";
 
-const SKY_SUN_UNIFORM_FLOATS = 8 + 3 + 4; // geometry 8 + uColor 3 + (intensity,size,glow,glowRadius) 4 = 15
+const SKY_SUN_UNIFORM_FLOATS = 7 + 3 + 4; // geometry 7 (no cornerRadius — see above) + uColor 3 + (intensity,size,glow,glowRadius) 4 = 14
 
 export const SKY_SUN_SKSL = `
 const float EDGE_AA = 1.0;
@@ -27,7 +41,6 @@ const float HALO_REACH = 0.99; // the aureole reaches this fraction of the box h
 
 uniform float2 uCenter;
 uniform float2 uHalfSize;
-uniform float  uCornerRadius;
 uniform float  uAngle;
 uniform float  uScale;
 uniform float  uTime;
@@ -68,17 +81,19 @@ function num(name, v) {
 /**
  * Pure function. Packs the skySun uniforms (SkSL declaration order).
  *
- * @param {object} u geometry + {color, intensity, size, glow, glowRadius}
- * @returns {Float32Array} length 15
+ * @param {object} u geometry + {color, intensity, size, glow, glowRadius}. A
+ *   `cornerRadius` the framework supplies is IGNORED — this material has no such
+ *   uniform (see the file header).
+ * @returns {Float32Array} length 14
  *
- * @example packSkySun({cx:0,cy:0,halfW:80,halfH:80,cornerRadius:0,angle:0,scale:1,
- *   time:0,color:"#fff2cc",intensity:3,size:0.32,glow:0.9,glowRadius:0.5}).length // 15
+ * @example packSkySun({cx:0,cy:0,halfW:80,halfH:80,angle:0,scale:1,
+ *   time:0,color:"#fff2cc",intensity:3,size:0.32,glow:0.9,glowRadius:0.5}).length // 14
  */
 export function packSkySun(u) {
   const c = parseColor(u.color);
   const out = new Float32Array([
     num("cx", u.cx), num("cy", u.cy), num("halfW", u.halfW), num("halfH", u.halfH),
-    num("cornerRadius", u.cornerRadius), num("angle", u.angle), num("scale", u.scale), num("time", u.time),
+    num("angle", u.angle), num("scale", u.scale), num("time", u.time),
     c[0], c[1], c[2],
     num("intensity", u.intensity), num("size", u.size), num("glow", u.glow), num("glowRadius", u.glowRadius),
   ]);

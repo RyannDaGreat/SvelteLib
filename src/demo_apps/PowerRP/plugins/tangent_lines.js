@@ -343,6 +343,37 @@ export function tangentLinesInkRect(s) {
   return paddedPointsBBox(points, s.strokeWidth ?? DEFAULT_STROKE_WIDTH);
 }
 
+/**
+ * Pure function. THE ANCHORS PROTOCOL (core/registry.js) for a widget with NO w/h:
+ * the nine standard bbox anchors placed over the INK RECT, which is where this
+ * widget actually is. The ids and their positions WITHIN the rect come from the one
+ * home (core/derive.standardBBoxAnchors, offset by the rect origin — the
+ * bento.bentoGridAnchors idiom for a sub-rect anchor set), so a tenth standard
+ * anchor would appear here for free.
+ *
+ * WHY IT IS NOT `standardBBoxAnchors` DIRECTLY, which is what it used to be: that
+ * helper reads `state.w ?? 0, state.h ?? 0`, and this widget has neither (it is a
+ * CONNECTOR — `capabilities.bbox: false`, no resize handles, its geometry is the two
+ * shape descriptors). So all nine anchors collapsed onto (0, 0) — the world origin,
+ * nowhere near the drawn tangents — and the `?? 0` made it silent: the equation
+ * grammar, the anchor overlay dots and anchor snapping all consumed nine anchors
+ * that were a lie, with zero errors reported. The ink rect is the SAME rect
+ * `localBounds` already publishes, so the anchors, the cull AABB and band select
+ * now agree about where this widget is.
+ *
+ * @param {object} s - evaluated item state (shapes a/b, shapeKind, strokeWidth)
+ * @returns {{id: string, x: number, y: number}[]} nine anchors in LOCAL coords
+ *
+ * @example // two equal circles side by side (the tangentLinesInkRect doctest's
+ * @example // rect {x: -2, y: -12, w: 104, h: 24}) put the center anchor mid-bridge:
+ * @example tangentLinesAnchors({a: {x: 0, y: 0, halfW: 10, halfH: 10, rotation: 0}, b: {x: 100, y: 0, halfW: 10, halfH: 10, rotation: 0}, shapeKind: "circle", strokeWidth: 2}).find((q) => q.id === "cm") // {id: "cm", x: 50, y: 0}
+ * @example tangentLinesAnchors({a: {x: 0, y: 0, halfW: 10, halfH: 10, rotation: 0}, b: {x: 100, y: 0, halfW: 10, halfH: 10, rotation: 0}, shapeKind: "circle", strokeWidth: 2}).find((q) => q.id === "tl") // {id: "tl", x: -2, y: -12}
+ */
+export function tangentLinesAnchors(s) {
+  const r = tangentLinesInkRect(s);
+  return standardBBoxAnchors({ w: r.w, h: r.h }).map((a) => ({ id: a.id, x: r.x + a.x, y: r.y + a.y }));
+}
+
 export const tangentLinesPlugin = {
   type: "tangent_lines",
   title: "Tangent Lines",
@@ -420,7 +451,9 @@ export const tangentLinesPlugin = {
     const grab = (node.state.strokeWidth ?? DEFAULT_STROKE_WIDTH) / 2 + DEFAULT_STROKE_WIDTH;
     return externalTangents(a, b).some(([p, q]) => pointSegmentDistance(wx, wy, p, q) <= grab);
   },
-  anchors: standardBBoxAnchors,
+  // THE ANCHORS PROTOCOL over the INK RECT, not over a w/h this widget does not have
+  // (tangentLinesAnchors states what the plain standardBBoxAnchors hook silently did).
+  anchors: tangentLinesAnchors,
 };
 
 // ── Telescopic-magnifier rig (pure builder) ───────────────────────────────────

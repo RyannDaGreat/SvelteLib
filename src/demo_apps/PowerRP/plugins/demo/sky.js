@@ -515,7 +515,12 @@ const SUN_CUSTOM = customProps([
   // −0.5 and −5 are byte-identical, i.e. the guard silently swallows them. As with
   // lens_flare's SPIKE_BASE_EPS, the guard is what makes 0 itself legal.
   { name: "glowRadius", kind: "number", default: 0.18, min: 0, help: "Tight-aureole falloff (fraction of the shorter half-extent) hugging the disc. The broad halo has compact support to the box edge; this controls the bright inner ring. No cap. 0 collapses the inner ring into the disc, and is the floor because the shader's own divide guard would silently swallow anything under it." },
-  { name: "cornerRadius", kind: "number", default: 0, min: 0, help: "Rounded-corner radius of the region (world px). Floor 0 is GEOMETRIC — a radius is a length, and render_gpu/ir.js materialFill clamps it there too." },
+  // NO `cornerRadius` ROW, unlike `sky`/`skyClouds`. This widget's silhouette is its own
+  // DISC, not its region, so there is no corner to round: the row shipped for two
+  // releases against a uniform the shader never read (measured byte-identical at 0 vs
+  // 140, every disc size), i.e. a knob that promised and did nothing. Making it real by
+  // clipping to an sdRoundRect was measured and rejected — it also clips the disc at the
+  // box and so retires `size`'s documented spill-out. See sky_sun_shader.js's header.
 ]);
 
 /**
@@ -646,7 +651,9 @@ export const skySunPlugin = {
   emit(s, _sub, world) {
     const op = materialFill({
       material: "skySun",
-      cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2, cornerRadius: s.cornerRadius,
+      // No cornerRadius: the skySun material has no such uniform and this widget has no
+      // such property (see the custom-props note above).
+      cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       params: { time: particleTime(), color: s.color, intensity: s.intensity, size: s.size, glow: s.glow, glowRadius: s.glowRadius },
       opacity: s.opacity ?? 1,
     });
@@ -680,7 +687,9 @@ const MOON_CUSTOM = customProps([
   // max(uSize, EPS), so everything at or below EPS = 1e-3 is the SAME (empty) frame —
   // measured, 0, 0.0009, 0.001, −0.5 and −5 are byte-identical.
   { name: "size", kind: "number", default: 0.74, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Moon disc radius as a fraction of the box's shorter half-extent. No cap — past 1 the disc overflows its box and keeps magnifying the surface. 0 (an invisible moon) is the floor because the shader's own divide guard would silently swallow anything under it." },
-  { name: "cornerRadius", kind: "number", default: 0, min: 0, help: "Rounded-corner radius of the region (world px). Floor 0 is GEOMETRIC — a radius is a length, and render_gpu/ir.js materialFill clamps it there too." },
+  // NO `cornerRadius` ROW — the skySun reasoning verbatim (a disc has no region corner;
+  // the uniform was declared and never read; the sdRoundRect fix would clip the
+  // documented `size` overflow). sky_sun_shader.js's header carries the measurements.
 ]);
 
 /**
@@ -776,7 +785,9 @@ export const skyMoonPlugin = {
     const limbAngle = s.limbAngle + autoLimbAngle(scene, w, s.w, s.h);
     return [materialFill({
       material: "skyMoon",
-      cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2, cornerRadius: s.cornerRadius,
+      // No cornerRadius: the skyMoon material has no such uniform and this widget has no
+      // such property (see the custom-props note above).
+      cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       params: { time: particleTime(), color: s.color, phase: s.phase, limbAngle, earthshine: s.earthshine, maria: s.maria, size: s.size },
       opacity: s.opacity ?? 1,
     })];

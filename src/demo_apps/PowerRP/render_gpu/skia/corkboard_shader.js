@@ -329,7 +329,12 @@ uniform float  uDomeGain;            // 0..1 apparent dome height fraction (pres
 uniform float3 uColor;               // plastic head colour (0..1)
 uniform float  uShininess;           // Blinn exponent (glossy plastic = high)
 uniform float2 uLightDir;            // TO the light (screen xy)
-uniform float  uSeed;                // (unused visual seed; kept for uniform-block symmetry)
+// NO uSeed. It was declared here and packed for two releases with main() never reading
+// it, and the Inspector row above it said so out loud ("no visible effect") — measured,
+// seed 0 and 9999 rendered byte-identically. The stated reason, "uniform-block
+// symmetry", never held: this shader's block is already its own shape (uCenter +
+// uRadius, no cornerRadius / scale / time, unlike the cork and note materials beside
+// it), because a tack is a DISK and not a rect region.
 
 half4 main(float2 fragCoord) {
   float2 p = (fragCoord - uCenter) / uRadius;      // unit disk
@@ -361,7 +366,7 @@ half4 main(float2 fragCoord) {
 
 const CORK_UNIFORM_FLOATS = 23;
 const NOTE_UNIFORM_FLOATS = 31;
-const TACK_UNIFORM_FLOATS = 11;
+const TACK_UNIFORM_FLOATS = 10;
 
 /** Pure. Asserts `v` is a finite number (a NaN uniform silently blackens a whole
  * region — fail loudly). Returns `v`. */
@@ -465,11 +470,11 @@ export function packNote(u) {
  * Pure function. Packs the thumbtack material's uniforms (TACK_SKSL declaration
  * order). All geometry is already device px (uRadius = halfW); no world-unit knobs.
  *
- * @param {object} u {cx,cy,halfW,halfH,scale, domeGain,color,shininess,lightAngle,seed}
- * @returns {Float32Array} length 11
+ * @param {object} u {cx,cy,halfW,halfH,scale, domeGain,color,shininess,lightAngle}
+ * @returns {Float32Array} length 10
  *
  * @example packTack({cx:0,cy:0,halfW:20,halfH:20,scale:1,domeGain:0.95,
- *   color:"#d22d2d",shininess:20,lightAngle:-2.16,seed:0}).length // 11
+ *   color:"#d22d2d",shininess:20,lightAngle:-2.16}).length // 10
  */
 export function packTack(u) {
   const color = rgb("color", u.color), light = lightVec(u);
@@ -480,7 +485,6 @@ export function packTack(u) {
     color[0], color[1], color[2],
     num("shininess", u.shininess),
     light[0], light[1],
-    num("seed", u.seed),
   ]);
   if (out.length !== TACK_UNIFORM_FLOATS) throw new Error(`packTack: ${out.length} floats, expected ${TACK_UNIFORM_FLOATS}`);
   return out;

@@ -138,7 +138,7 @@ export const editMode = (c) => editBase(c) && !c.crosshairArmed && !c.canvasMode
  * disambiguation-by-`when` construction `deselectable` uses for a live point drag.
  *
  * @example editSelection({mode: "edit", hasSelection: true}) // true
- * @example editSelection({mode: "edit"}) // false
+ * @example editSelection({mode: "edit"}) // undefined (FALSY, not false: `&&` yields the absent flag itself, which is all a `when` gate reads)
  * @example editSelection({mode: "edit", hasSelection: true, handlesSelected: true}) // false — the inner scope owns the keys
  */
 export const editSelection = (c) => editMode(c) && c.hasSelection && !c.handlesSelected;
@@ -151,7 +151,7 @@ export const editSelection = (c) => editMode(c) && c.hasSelection && !c.handlesS
  *
  * @example handlesSelected({mode: "edit", hasSelection: true, handlesSelected: true}) // true
  * @example handlesSelected({mode: "edit", hasSelection: true}) // false
- * @example handlesSelected({mode: "edit", handlesSelected: true}) // false — no item, so no handles
+ * @example handlesSelected({mode: "edit", handlesSelected: true}) // undefined (FALSY — no item, so no handles; same `&&` shape as editSelection)
  */
 export const handlesSelected = (c) => editMode(c) && c.hasSelection && !!c.handlesSelected;
 /**

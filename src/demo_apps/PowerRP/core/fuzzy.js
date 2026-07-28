@@ -8,6 +8,17 @@
  * Deliberately not ported (python-REPL-specific, per the port analysis):
  * the REPL-history frequency boost (the palette's MRU ordering covers
  * recency), the literal 'mro' filter, and dunder/underscore prefix staging.
+ *
+ * ── SPACES ARE NOT WORD BOUNDARIES (measured, and user-visible) ──────────────
+ * A skipped '_' costs a flat 0.1 because word-boundary skips are cheap; every
+ * OTHER skipped character costs 1.0, and ' ' is every other character. So a
+ * multi-word command title pays for the whole of its first word before a second
+ * initial can match, and the ACRONYM reading of a query ranks LAST: for "dh",
+ * "Dashed thing" scores 2.0011 and "Distribute Horizontally" 10.0012. That is
+ * faithful to the python original, where candidates are identifiers and have no
+ * spaces — but the palette's candidates are titled commands, so the port inherits
+ * a discount it can never earn. The doctests below now STATE this; the one they
+ * replace asserted the opposite, and nothing executed it.
  */
 
 /**
@@ -24,7 +35,8 @@
  *
  * @example rpFuzzyScore("d", "dict") // 0.000001 (prefix: tiny = best)
  * @example rpFuzzyScore("xyz", "abc") // null (no match)
- * @example rpFuzzyScore("dh", "Distribute Horizontally") < rpFuzzyScore("dh", "Dashed thing") // true
+ * @example rpFuzzyScore("dh", "Dashed thing") // 2.0011 (the 'h' is 3 chars in: 2 skipped, +0.0001 for matching 'd' against 'D')
+ * @example rpFuzzyScore("dh", "Distribute Horizontally") // 10.0012 (10 chars skipped to reach the 'H', so the word-initial match scores WORSE — see the header)
  */
 export function rpFuzzyScore(query, candidate) {
   const isPrefixMatch = candidate.toLowerCase().startsWith(query.toLowerCase());
