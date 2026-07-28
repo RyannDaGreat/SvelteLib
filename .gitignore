@@ -47,3 +47,4 @@ public/videos/
 
 # Agent scratch dirs (evidence/probes) — never the repo tree
 .scratch/
+scratchpad*.mjs
