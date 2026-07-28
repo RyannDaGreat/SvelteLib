@@ -45,8 +45,10 @@ const STAPLE_FY = 0.065;
 /** Staple footprint as a fraction of page width (reference: ~1/20-1/15). */
 const STAPLE_LEN_F = 0.06;
 /** A settled turned page: the turn is complete but the sheet keeps a residual
- * bow near the fold (reference: turned pages never lie dead flat). */
-const TURNED_REST_T = 0.96;
+ * bow near the fold (reference: turned pages never lie dead flat). 0.985 keeps
+ * the bump tight to the staple — 0.96 gave every turned sheet a huge lobe and
+ * the packet read as a flower (user: "are we tripping on acid here"). */
+const TURNED_REST_T = 0.985;
 /** How many remaining-stack pages get their own jittered edge cue — past this
  * depth the lines merge into the packet's own drop shadow anyway. */
 const STACK_EDGE_PAGES = 4;
@@ -87,11 +89,11 @@ export function rotationAboutPoint(deg, px, py) {
  * @param {number} n - how many pages are turned (≥ 1)
  * @returns {number} a curlScale for the settled paperCurl
  *
- * @example residualCurl(0, 1) // 1.5
+ * @example residualCurl(0, 1) // 0.75
  * @example residualCurl(0, 3) < residualCurl(2, 3) // true
  */
 export function residualCurl(k, n) {
-  return 0.5 + ((k + 1) / n) * 1.0;
+  return 0.35 + ((k + 1) / n) * 0.4;
 }
 
 /**
@@ -188,7 +190,7 @@ export const pdfPacketPlugin = {
   inspector: [
     ...bundle("positioning"),
     ...props("src", { src: { label: "PDF", assetKinds: ["pdf"], help: "The PDF whose pages this packet holds — the whole document, stapled at the corner." } }),
-    { key: "page", label: "Page", kind: "number", min: 1, step: 0.05, category: "formatting", help: "FRACTIONAL: 2.3 means page 2 is 30% through peeling over the staple. Tween or bind it (= t) to animate reading through the packet." },
+    { key: "page", label: "Page", kind: "number", min: 1, step: 0.01, category: "formatting", help: "FRACTIONAL: 2.3 means page 2 is 30% through peeling over the staple. Tween or bind it (= t) to animate reading through the packet." },
     { key: "flipAngle", label: "Flip angle", kind: "number", min: 0, max: 360, step: 1, category: "formatting", help: "The direction the turning page's free corner travels, in degrees. Also draggable as the on-canvas handle riding the ray from the staple." },
     { key: "curl", label: "Curl", kind: "number", min: CURL_MIN, max: CURL_MAX, step: 0.05, category: "formatting", help: "How loosely the turning sheet rolls — the loopity-loop knob. Small = tight scroll, large = wide belly." },
     { key: "spreadTurned", label: "Turned fan", kind: "number", min: 0, max: 20, step: 0.5, category: "formatting", help: "Degrees between successive already-turned pages fanned around the staple." },
@@ -254,13 +256,16 @@ export const pdfPacketPlugin = {
     ops.push(rect({ x: 0, y: 0, w: s.w, h: s.h, fill: null, stroke: EDGE_TINT, strokeWidth: 1, opacity }));
 
     // (3) already-turned pages, deepest (first-turned) first: settled paperCurl
-    // sheets showing their blank backs, fanned about the staple, each keeping a
-    // residual bow (agent 4's nested arcs — never flat rotated rects).
+    // sheets fanned about the staple, each keeping a residual bow (agent 4's
+    // nested arcs — never flat rotated rects). They carry their PAGE RASTERS
+    // (user ruling: "non-dominant pages can be made from raster but shouldn't
+    // be blank") — the mirrored geometry shows the content read-from-behind,
+    // the peacock-figure look, rather than dead white sheets.
     for (let k = 0; k < plan.turnedCount; k++) {
       const pose = turnedPose(k, plan.turnedCount, angle, s.spreadTurned ?? 7);
       ops.push(pushTransform(rotationAboutPoint(pose.rotationDeg, staple.x, staple.y)));
       ops.push(paperCurl({
-        ref: null, x: 0, y: 0, w: s.w, h: s.h, staple, angleDeg: angle,
+        ref: pageRasterRef(s, k + 1, world), x: 0, y: 0, w: s.w, h: s.h, staple, angleDeg: angle,
         t: TURNED_REST_T, curlScale: residualCurl(k, plan.turnedCount) * curl,
         paper, shadowOpacity: shadow * 0.5, opacity,
       }));
