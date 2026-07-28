@@ -108,17 +108,23 @@ export function interiorPointAt(window, view, lx, ly) {
 
 /**
  * Pure function. The window after a PAN of (dLocalX, dLocalY) local px: the
- * interior moves WITH the pointer, so the window slides the opposite way by the
+ * interior moves WITH the gesture, so the window slides the opposite way by the
  * same distance in interior units (Δlocal ÷ zoom).
+ *
+ * SIGN: the argument is the travel of the thing the interior should FOLLOW. A
+ * two-finger scroll is the other convention — a positive scroll delta looks
+ * FURTHER along, which is why the wheel handler negates its deltas, exactly as
+ * src/lib/PanZoom.svelte's `pan()` subtracts a scroll delta from the canvas pan.
  *
  * @param {{x: number, y: number, w: number, h: number}} window - interior window
  * @param {{zoom: number}} view - interiorViewOf(window, w, h)
- * @param {number} dLocalX - pointer travel, local px
- * @param {number} dLocalY - pointer travel, local px
+ * @param {number} dLocalX - the travel the interior should follow, local px
+ * @param {number} dLocalY - the travel the interior should follow, local px
  * @returns {{x: number, y: number, w: number, h: number}}
  *
  * @example pannedInteriorWindow({x: 0, y: 0, w: 1, h: 1}, {zoom: 100}, 50, 0) // {x: -0.5, y: 0, w: 1, h: 1}
  * @example pannedInteriorWindow({x: 0, y: 0, w: 1, h: 1}, {zoom: 100}, 0, 0) // {x: 0, y: 0, w: 1, h: 1}
+ * @example pannedInteriorWindow({x: 0, y: 0, w: 1, h: 1}, {zoom: 100}, -50, 0) // {x: 0.5, y: 0, w: 1, h: 1} (a scroll RIGHT looks further right)
  */
 export function pannedInteriorWindow(window, view, dLocalX, dLocalY) {
   return { x: window.x - dLocalX / view.zoom, y: window.y - dLocalY / view.zoom, w: window.w, h: window.h };

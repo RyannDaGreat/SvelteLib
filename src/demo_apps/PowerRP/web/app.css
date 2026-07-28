@@ -2900,6 +2900,16 @@ audio.ae-preview-media {
   opacity: 0.45;
 }
 
+/* The visibility eye is BooleanField, whose root fills a normal row's whole value
+   cell (.boolfield width:100%) — which in this flex row would make it eat the
+   line and force the field controls to wrap. Here it is one control among several,
+   so it shrinks to its button. Scoped to the list: the shared .boolfield rule is
+   right for the row it was written for. */
+.listfield .list-el > .boolfield {
+  flex: none;
+  width: auto;
+}
+
 .listfield .list-index {
   flex: none;
   width: var(--a-list-index-w);

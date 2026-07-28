@@ -123,6 +123,23 @@ try {
     seams[index].click();
   }, index);
   const rowCount = () => page.evaluate(() => document.querySelectorAll(".listfield .list-el").length);
+  /** Scrolls the list control into the Inspector's viewport and shoots IT (padded),
+   *  not the whole panel — the panel's own rect is taller than its scroller, so a
+   *  full-panel clip photographs whatever else is behind the fold. */
+  const shotOfList = async (name) => {
+    const clip = await page.evaluate(() => {
+      const list = document.querySelector(".listfield");
+      list.scrollIntoView({ block: "center" });
+      const PAD = 10;
+      const r = list.closest(".row").getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.round(r.x) - PAD), y: Math.max(0, Math.round(r.y) - PAD),
+        width: Math.round(r.width) + 2 * PAD, height: Math.round(r.height) + 2 * PAD,
+      };
+    });
+    await settle(150);
+    await page.screenshot({ path: resolve(shots, `${name}.png`), clip });
+  };
   /** Runs `action`, then proves the document takes EXACTLY ONE undo to restore. */
   const oneUndoUnit = async (label, action) => {
     const before = await docJson();
@@ -169,10 +186,7 @@ try {
     "there are n+1 INSERT seams: between every pair, plus one at each end");
   ok(await page.evaluate(() => JSON.stringify([...document.querySelectorAll(".listfield .list-el")[0].querySelectorAll(".list-field-label")].map((e) => e.textContent))) === '["x","y"]',
     "each element shows its DECLARED fields (x, y), by name");
-  await page.screenshot({ path: resolve(shots, "polygon_points_list.png"), clip: await page.evaluate(() => {
-    const r = document.querySelector(".inspector").getBoundingClientRect();
-    return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
-  }) });
+  await shotOfList("polygon_points_list");
 
   // INSERT BETWEEN vertices 1 and 2 → the midpoint of the edge it splits.
   await oneUndoUnit("polygon insert-between", () => clickInsert(1));
@@ -206,6 +220,10 @@ try {
   }
 
   // PER-ELEMENT `=`: type an equation into vertex 3's x through its OWN field.
+  // It must REFERENCE something (self.w, the polygon's own 300-unit width): the
+  // field's documented symmetric rule is that a reference-FREE expression commits
+  // as a plain number ("6*7" → 42), so only a referencing one proves the slot
+  // really stores and evaluates an equation.
   {
     const before = await docJson();
     await page.evaluate(() => {
@@ -214,11 +232,17 @@ try {
     });
     await settle(80);
     await page.evaluate(() => document.querySelector(".listfield .list-el .numfield .eq-input")?.focus());
-    await page.keyboard.type("=0.25 * 3");
+    await page.keyboard.type("self.w / 1200");
     await page.keyboard.press("Enter");
-    await settle(200);
-    ok(await rawAt(polyId, ["points", 2, 0]) === "=0.25 * 3", `per-element \`=\`: the RAW slot stores the expression (got ${JSON.stringify(await rawAt(polyId, ["points", 2, 0]))})`);
-    ok(await stateAt(polyId, ["points", 2, 0]) === 0.75, `per-element \`=\`: it is EVALUATED (got ${await stateAt(polyId, ["points", 2, 0])})`);
+    await settle(250);
+    // NO leading "=" is expected in storage: a NUMERIC slot's equation IS a string
+    // (the pre-any-type engine's form, which NumericField still writes — its header:
+    // "a leading '=' is tolerated and stripped"). core accepts both spellings
+    // (isEquationValue recognizes the marker too), so what proves the slot is an
+    // equation is that it stores a STRING expression and core resolved it.
+    const raw = await rawAt(polyId, ["points", 2, 0]);
+    ok(typeof raw === "string" && /1200/.test(raw), `per-element \`=\`: the RAW slot stores the expression (got ${JSON.stringify(raw)})`);
+    ok(await stateAt(polyId, ["points", 2, 0]) === 0.25, `per-element \`=\`: it is EVALUATED (300 / 1200; got ${await stateAt(polyId, ["points", 2, 0])})`);
     const after = await docJson();
     await page.evaluate(() => window.__powerrp_app.undo());
     await settle(80);
@@ -272,10 +296,7 @@ try {
     "each stop's colour is the app's standard ColorField (no bespoke hex input)");
   ok(await page.evaluate(() => !document.querySelectorAll(".listfield .list-el")[0].querySelector(".list-purge").disabled),
     "with 3 stops (above the declared minimum of 2) purge is available");
-  await page.screenshot({ path: resolve(shots, "gradient_stops_list.png"), clip: await page.evaluate(() => {
-    const r = document.querySelector(".inspector").getBoundingClientRect();
-    return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
-  }) });
+  await shotOfList("gradient_stops_list");
 
   // INSERT BETWEEN two stops → the average position and the BLENDED colour.
   await oneUndoUnit("gradient insert-between", () => clickInsert(1));
@@ -296,6 +317,12 @@ try {
   ok(await rowCount() === 2, "two stops");
   ok(await page.evaluate(() => [...document.querySelectorAll(".listfield .list-purge")].every((b) => b.disabled)),
     "at the declared minLength every PURGE button is DISABLED (never a silent no-op)");
+  // HIDE carries the SAME floor, for the same reason: the consumer reads the
+  // VISIBLE elements, so hiding one of two stops would hand the renderer one stop,
+  // which normalizeStops rejects — a thrown paint every frame. Gated, with the
+  // reason in the tooltip, rather than allowed and then crashing.
+  ok(await page.evaluate(() => [...document.querySelectorAll(".listfield .list-el .boolfield .boolbtn")].every((b) => b.disabled)),
+    "at the declared minLength HIDE is gated too (hiding below the floor would starve the renderer)");
   ok(await page.evaluate(() => {
     const b = document.querySelector(".listfield .list-purge");
     const anchor = b.closest(".tt-anchor");

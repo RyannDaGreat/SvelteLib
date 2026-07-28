@@ -50,7 +50,8 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, SCRUB_WRAP_MODES, BLEND_MODES } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES } from "../core/properties.js";
+import { visibleElements } from "../core/lists.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
 
@@ -225,13 +226,41 @@ export function parsePaint(paint) {
   // Active gradient sub-state: the nested wrapper for this type, else the legacy
   // inline fields on the paint object itself.
   const g = type === "linearGradient" ? (paint.linear ?? paint) : (paint.radial ?? paint);
-  const stops = normalizeStops(g.stops);
+  const stops = normalizeStops(visibleStops(g));
   if (type === "linearGradient") {
     return { type, stops, ...linearAxis(g) };
   }
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
   return { type, stops, center, r: g.r };
+}
+
+/**
+ * Pure function. A gradient sub-state's VISIBLE stops — the ones a hidden stop's
+ * visibility companion has NOT taken out of the picture.
+ *
+ * THIS IS THE RENDER HALF OF PER-STOP HIDE, and it lives here because parsePaint
+ * is the ONE funnel every backend's gradient goes through (the Skia painter, the
+ * SVG <stop> emitter and the PDF stitching function all consume its output), so
+ * one filter serves all three and none of them can disagree about which stops
+ * exist. The companion is the declaration's `activeKey` sibling INSIDE the same
+ * sub-state (fill.linear.stopsActive), exactly where core/lists.activeListPath
+ * puts it and where core/expressions.listDeclAt resolves it.
+ *
+ * Filtering here rather than in normalizeStops is deliberate: what reaches the
+ * backends is then BYTE-IDENTICAL to the hand-authored gradient without that stop
+ * (core/lists.js's "acts like it's not there" rule — there is no transparent hole,
+ * the ramp simply spans the surviving neighbours). A list with nothing hidden is
+ * returned BY IDENTITY, so every existing document allocates nothing and renders
+ * unchanged. A non-array `stops` passes straight through for normalizeStops to
+ * report, which is where that report already lived.
+ *
+ * @example visibleStops({stops: [{offset: 0}, {offset: 1}]}) // [{offset: 0}, {offset: 1}] (no companion: all visible, same array)
+ * @example visibleStops({stops: [{offset: 0}, {offset: 0.5}, {offset: 1}], stopsActive: [true, false, true]}) // [{offset: 0}, {offset: 1}]
+ */
+function visibleStops(g) {
+  if (!Array.isArray(g.stops)) return g.stops;
+  return visibleElements(GRADIENT_STOPS_LIST, { list: g.stops, active: g[GRADIENT_STOPS_LIST.activeKey] });
 }
 
 /** Pure function. Normalizes a gradient stop list: each {offset, color} → offset

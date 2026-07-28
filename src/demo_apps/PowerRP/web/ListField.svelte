@@ -169,6 +169,34 @@
     return `Insert between ${index} and ${index + 1} — the midpoint of the two: ${summary}`;
   }
 
+  /**
+   * Query (reads the list + declaration). Would hiding element `index` take the
+   * VISIBLE count below the declared minLength? Then the eye is blocked.
+   *
+   * WHY HIDE IS GATED BY minLength AT ALL, when core/lists.withElementActive does
+   * not enforce it: minLength is a statement about what the CONSUMER needs, and
+   * the consumer reads visibleElements — so hiding one of a gradient's two stops
+   * leaves the renderer one stop, which render_gpu/ir.js normalizeStops rejects
+   * ("a gradient needs >= 2 stops"), i.e. a thrown paint on every frame. The floor
+   * therefore applies to the VISIBLE count, not just the stored length, and the
+   * honest place to say so is the affordance, with the reason in its tooltip.
+   * Purge has the same floor for the same reason (a list with no minLength — the
+   * polygon's vertices — is never gated, and every corner can be hidden).
+   */
+  function hideBlocked(index) {
+    if (floor === 0 || !elementActive(value.active, index)) return false;
+    return value.list.filter((_, i) => elementActive(value.active, i)).length <= floor;
+  }
+
+  /** Query (reads the list + declaration). The visibility toggle's tooltip: what a
+   *  click will DO, plus the universal field's own explanation of hide-vs-purge —
+   *  or, when the floor blocks it, why it is refusing. */
+  function visibilityTip(index, visible) {
+    if (hideBlocked(index))
+      return `Hiding is unavailable: this list declares a minimum of ${floor}, and hiding entry ${index + 1} would leave fewer than that participating.`;
+    return `${visible ? "Visible — click to hide" : "Hidden — click to show"}. ${ACTIVE_FIELD.help}`;
+  }
+
   /** Query (reads the list + declaration). The purge button's tooltip — leading
    *  with the WORD "Purge" (this app's specific term for destroy-for-good, the
    *  item-level Purge tooltip's own register) and stating the RENUMBERING, since
@@ -282,10 +310,10 @@
           value={visible}
           onIcon="mdi:eye"
           offIcon="mdi:eye-off"
-          onText={`Visible — click to hide. ${ACTIVE_FIELD.help}`}
-          offText={`Hidden — click to show. ${ACTIVE_FIELD.help}`}
+          onText={visibilityTip(index, true)}
+          offText={visibilityTip(index, false)}
           oncommit={(next) => setActive(index, next)}
-          {disabled}
+          disabled={disabled || hideBlocked(index)}
         />
         <span class="list-fields">
           {#each fields as f (f.name)}
