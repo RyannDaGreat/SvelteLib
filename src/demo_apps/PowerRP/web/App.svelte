@@ -59,8 +59,9 @@
   // Widget-owned editor behaviour (see web/widget_handlers.js): every handler that
   // declares a sustained canvas mode — an activation's interior explore, a
   // creation's multi-step placement — contributes its own registry entries.
-  import { canvasModes } from "./widget_handlers.js";
-  import { unionRect, alignedPosition, mirroredPosition } from "../core/geometry.js";
+  import { activations, canvasModes } from "./widget_handlers.js";
+  import { unionRect, alignedPosition, mirroredPosition, flippedBox } from "../core/geometry.js";
+  import { reportOnce } from "../core/report.js";
   import { FAMILIES } from "../plugins/shapeshifter.js";
   import { subpathsPathD } from "../core/shapes.js";
 
@@ -273,6 +274,11 @@
   // says to run by the user first — so a lone selection simply disables
   // these, same as distribute disables below 3).
   const needsMultiBbox = (a) => a.nodes().filter((n) => new Set(a.selectedIds()).has(n.itemId) && n.plugin.capabilities.bbox).length >= 2;
+  // FLIP needs only ONE flippable item — a lone widget reflects about its own
+  // center, so unlike align/mirror there is no missing second reference to invent.
+  // Goes through flipTargetIds so a selected GROUP counts via its bbox members
+  // (the group itself has no flippable box — see there).
+  const needsFlippable = (a) => flipTargetIds(a).ids.length > 0;
   // Per-theme palette icons (mdi), keyed by THEMES[].id. No colors (user spec).
   const THEME_ICONS = {
     graphite: "mdi:brightness-6",
@@ -442,18 +448,27 @@
     { id: "align-center-v", title: "Align Center Vertical", icon: "mdi:align-vertical-center", when: needsMultiBbox, run: (a) => align(a, "y", "center") },
     // MIRROR (manifest 16.3): LAYOUT-ONLY mirror — reflects each selected
     // item's POSITION about the selection's own center axis; items swap
-    // sides but their own content is NOT flipped. DESIGN FORK (recorded per
-    // the task): PowerRP's transform is a similarity {x,y,rotation,scale}
-    // with a SINGLE scalar scale — no per-axis/negative scale, so a true
-    // per-item content flip isn't representable without extending the
-    // model (a flipX/flipY boolean the renderer would need to honor, across
-    // both render backends). Titled "Mirror Layout" (not plain "Mirror") so
-    // it is never mistaken for a content flip. See core/geometry.js
-    // mirroredPosition's docstring for the full math + rationale.
+    // sides but their own content is NOT flipped. Titled "Mirror Layout"
+    // (not plain "Mirror") so it is never mistaken for a content flip —
+    // that is FLIP below, which 16.3's design fork left unbuilt and the
+    // user has since settled ("a flip simply should change the height and
+    // width to negative and put the position to where it would have to be
+    // to accommodate"). The two COMPOSE: Mirror Layout swaps sides, Flip
+    // reverses each item's own content, and together they reflect an
+    // arrangement completely. See core/geometry.js mirroredPosition and
+    // flippedBox for the two pieces of math.
     { id: "mirror-h", title: "Mirror Layout Horizontal", icon: "mdi:flip-horizontal", when: needsMultiBbox, run: (a) => mirror(a, "x") },
     { id: "mirror-v", title: "Mirror Layout Vertical", icon: "mdi:flip-vertical", when: needsMultiBbox, run: (a) => mirror(a, "y") },
+    // FLIP (the CONTENT reflection — see the `flip` helper below). Needs only ONE
+    // item, unlike align/mirror: a lone widget has its own center to reflect
+    // about, so there is nothing arbitrary to invent here. The titles say
+    // "Content" because "Flip" alone next to "Mirror Layout" would leave the
+    // difference to be guessed — the same reason `mirror-h` is not plain "Mirror"
+    // and `unbind-from-camera` names the keys it touches.
+    { id: "flip-h", title: "Flip Content Horizontal (mirror left ↔ right)", icon: "mdi:flip-horizontal", when: needsFlippable, requires: "a selected widget with a width to flip", run: (a) => flip(a, "x") },
+    { id: "flip-v", title: "Flip Content Vertical (mirror top ↔ bottom)", icon: "mdi:flip-vertical", when: needsFlippable, requires: "a selected widget with a height to flip", run: (a) => flip(a, "y") },
     // FLAGGED — PENDING USER RATIFICATION: no keybindings assigned to any of
-    // the 8 align/mirror commands above. Followed the exact precedent of
+    // the 10 align/mirror/flip commands above. Followed the exact precedent of
     // distribute-h/distribute-v (also palette-only, no bound keys) rather
     // than inventing new key combos — the manifest's "no arbitrary
     // constraints invented by Claude" rule requires picking new bindings be
@@ -918,6 +933,150 @@
     a.commit(doc);
   }
 
+  // ── FLIP: the CONTENT reflection (user: "we need flip horizontal and flip vert
+  // ── tools in our command palette....and thus the abilitty to have a negative
+  // ── height or width") ──────────────────────────────────────────────────────
+  // The counterpart to Mirror Layout above, and the thing 16.3's design fork left
+  // unbuilt. Mirror Layout reflects where items SIT; Flip reflects what they SHOW.
+  // The mechanism is the user's own: negate the size, move the origin to
+  // compensate (core/geometry.js flippedBox — see there for why a negative
+  // dimension is the correct representation and not a hack, and why there is no
+  // rotation term). Composing the two gives the full reflection of an arrangement.
+  //
+  // WHY NOT ONE COMMAND THAT DOES BOTH: PowerPoint's Flip Horizontal on a
+  // multi-selection flips each object where it stands, and Mirror Layout already
+  // owns the arrangement half. Keeping them separate means the user can have
+  // either alone, and the pair composes — collapsing them would delete a
+  // capability. A GROUP is the exception (below): it is ONE object, so flipping it
+  // must reflect the whole assembly.
+
+  /**
+   * Query. The item ids a flip should write, EXPANDING every selected group into
+   * its bbox members.
+   *
+   * WHY A GROUP EXPANDS. A group is an ARMATURE: its members inherit its
+   * {x, y, rotation, scale} similarity through core/derive.applyGroupParenting and
+   * explicitly NOT its w/h (web/canvas/dragKinds.js groupResizeState documents
+   * this — a group resize drives `scale`, because writing w/h is a no-op on
+   * members). A similarity has no handedness, so a group CANNOT transmit a
+   * reflection to its members: flipping the group's own box would flip nothing but
+   * its ghost outline, and worse, shifting the group's `x` would TRANSLATE every
+   * member through the influence. So the flip goes straight to the members and the
+   * group's own frame is left untouched — which is also exactly right, because a
+   * reflection of the contents leaves the group's hull where it was.
+   *
+   * Returns {ids, groupIds} — `groupIds` records which groups were expanded, so the
+   * caller knows to reflect those members' POSITIONS about the group as well.
+   */
+  function flipTargetIds(a) {
+    const nodes = a.nodes();
+    const byId = new Map(nodes.map((n) => [n.itemId, n]));
+    const selected = new Set(a.selectedIds());
+    const ids = [], groupIds = [], seen = new Set();
+    const visit = (node) => {
+      if (!node || seen.has(node.itemId)) return; // `seen` also breaks a membership cycle
+      seen.add(node.itemId);
+      if (node.type === "group" && Array.isArray(node.state.members)) {
+        groupIds.push(node.itemId);
+        // Flat membership, but a member may itself be a group — recurse so a
+        // nested group's members are reached too (groupMembership's own reading).
+        for (const id of node.state.members) visit(byId.get(id));
+        return;
+      }
+      if (node.plugin.capabilities.bbox) ids.push(node.itemId);
+    };
+    for (const n of nodes) if (selected.has(n.itemId)) visit(n);
+    return { ids, groupIds };
+  }
+
+  /**
+   * Pure function. The flip write for ONE item: `flippedBox`, plus the position
+   * reflection that turns a set of in-place flips into a reflection of the WHOLE
+   * set (used for a group's members; `line` is null for a standalone item, which
+   * then flips exactly in place).
+   *
+   * The two compose cleanly because an in-place flip leaves the box's own center
+   * where it was, so reflecting that center about `line` afterwards is a pure
+   * translation of the already-flipped origin.
+   *
+   * @param {object} s - the item's evaluated state (its w/h may already be negative)
+   * @param {"x"|"y"} axis
+   * @param {number|null} line - the coordinate of the reflection axis, or null for in-place
+   * @returns {object} the changed leaves only — {x, w} or {y, h}
+   *
+   * @example flipWrite({x: 10, y: 0, w: 100, h: 50}, "x", null) // {x: 110, w: -100}
+   * @example // reflecting a 100-wide box at x=10 about the line X=200: its center
+   * @example // moves from 60 to 340, so the flipped origin 110 shifts by 280:
+   * @example flipWrite({x: 10, y: 0, w: 100, h: 50}, "x", 200) // {x: 390, w: -100}
+   * @example flipWrite({x: 0, y: 10, w: 50, h: 100}, "y", 200) // {y: 390, h: -100}
+   */
+  function flipWrite(s, axis, line) {
+    const out = flippedBox(s, axis);
+    if (line === null) return out;
+    const sizeKey = axis === "x" ? "w" : "h";
+    const center = (s[axis] ?? 0) + (s.scale ?? 1) * (s[sizeKey] ?? 0) / 2;
+    out[axis] += 2 * (line - center);
+    return out;
+  }
+
+  /**
+   * Command (one undo unit, or NO writes at all). FLIP the selection's content
+   * along `axis` — the user's "flip horizontal / flip vert" tools.
+   *
+   * REFUSES LOUDLY on a stored equation. A flip writes BOTH leaves of an axis
+   * (size and origin), so if either currently holds an `=` equation the write would
+   * silently replace a binding with a literal — a whole class of destroyed work
+   * with no undo affordance the user would think to look for. The established
+   * answer to "this action would clobber something the user authored" is to refuse
+   * entry, report, and change nothing (beginTextEdit and the Mandelbrot interior
+   * nav both do exactly this), so that is what happens here, atomically: one
+   * blocked item blocks the whole flip rather than leaving half a reflection.
+   */
+  function flip(a, axis) {
+    const { raw, evaluated } = documentState(a);
+    const sizeKey = axis === "x" ? "w" : "h";
+    const { ids, groupIds } = flipTargetIds(a);
+    if (ids.length === 0) return;
+    const bound = ids.filter((id) => [axis, sizeKey].some((key) =>
+      isEquationValue(a.registry.get(raw.items[id].type), [key], raw.items[id][key])));
+    if (bound.length > 0) {
+      reportOnce(
+        `flip-blocked-by-equation:${axis}:${bound.join(",")}`,
+        `PowerRP: Flip ${axis === "x" ? "Horizontal" : "Vertical"} refused — ${bound.length} selected item(s) store an equation on ${axis} or ${sizeKey} (${bound.join(", ")}), and a flip must write both. Nothing was changed. Unbind those properties (or use "Unbind Position & Size") first.`,
+      );
+      return;
+    }
+    // A GROUP flips as ONE object, so its members' positions are reflected about
+    // the members' own union center too (flipTargetIds explains why the group's own
+    // frame is never written). The union is taken in the MEMBERS' stored space,
+    // which is the same space their boxes live in — the group's influence is one
+    // similarity applied to all of them, so reflecting there and inheriting the
+    // influence afterwards yields the correctly reflected assembly, with no need to
+    // reason about the group's bind frame.
+    const line = groupIds.length > 0
+      ? (() => {
+        const u = unionRect(ids.map((id) => {
+          const s = evaluated.items[id];
+          const box = { x: s.x ?? 0, y: s.y ?? 0, w: s.w ?? 0, h: s.h ?? 0 };
+          // A negative extent spans backwards; unionRect needs a forward rect.
+          return { x: Math.min(box.x, box.x + box.w), y: Math.min(box.y, box.y + box.h), w: Math.abs(box.w), h: Math.abs(box.h) };
+        }));
+        return axis === "x" ? u.x + u.w / 2 : u.y + u.h / 2;
+      })()
+      : null;
+    let doc = a.doc;
+    for (const id of ids) {
+      const s = evaluated.items[id];
+      const write = flipWrite(s, axis, line);
+      // MINIMAL DELTA (the interaction-commit rule): only leaves that actually
+      // changed are written, so flipping a zero-width box is a true no-op and never
+      // disturbs a stored value.
+      for (const [key, value] of Object.entries(write))
+        if (value !== (s[key] ?? 0)) doc = keyframed(doc, a.slideIndex, ["items", id, key], value);
+    }
+    if (doc !== a.doc) a.commit(doc);
+  }
+
   /**
    * Pure function. The HintBar label for a live modal transform — mode, active
    * axis, and typed numeric buffer, joined by " · " (spec: "Scale · X · 2.5").
@@ -980,6 +1139,7 @@
     app,
     canvasModes: canvasModes(),
     dragKindModifiers: DRAG_KIND_MODIFIERS,
+    activations: activations(),
   });
 
   /**

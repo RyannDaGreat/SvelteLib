@@ -8,6 +8,7 @@
 
 import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
+  uuid, clonedItemStates,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
   repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
@@ -50,16 +51,18 @@ import { registerFontFamily, clearDynamicFonts, fontAssetId, fontDescriptor } fr
 import { loadDynamicFont } from "./fontLoader.js";
 // Asset thumbnail generalization (#25): pure tile-presentation + page-count badge.
 import { assetTilePresentation, pageCountBadge } from "./assetThumbnail.js";
-// untrack: read/write the transient filmstripStatus overlay from inside the
-// #wireFilmstripFrames $effect WITHOUT registering it as a dependency (else the
-// effect would re-run on its own write — effect_update_depth_exceeded). $state/
-// $effect are compiler globals in a .svelte.js file, but untrack is a real
-// import from "svelte" (main.js imports mount the same way).
-import { untrack } from "svelte";
 
 const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
 const BAND_MODE_KEY = "powerrp.bandMode";
+
+// The source id a LEGACY one-item clipboard payload ({powerrp_item: state} — no
+// id, from before the selection became the copy unit) is normalized under, so
+// the current {sourceId: state} insert path handles it unchanged. Deliberately
+// not id-shaped: uuid() ids are 8 chars, so no equation can reference it and its
+// clone's own references are therefore all EXTERNAL, which is exactly right —
+// the payload never said which item it came from.
+const LEGACY_CLIPBOARD_SOURCE_ID = "legacy-clipboard-payload";
 
 // Retina/HiDPI is CAMERA-ONLY (the scene-global "Rendering" bundle on THE
 // camera — core/properties.js). There is deliberately NO browser-level retina
@@ -278,14 +281,6 @@ export class PowerRPApp {
   hoverRegion = $state(null);
   /** Preview overlay delta shown during drags — NOT committed/undoable. */
   previewDelta = $state(null);
-  /** Transient FILMSTRIP FETCH STATUS overlay (manifest 14.2 / 14.4) — a
-   *  delta-shaped `{items: {id: {processing?, frameError?}}}` merged into the
-   *  render state but NEVER keyframed/committed/undoable (it is viewer-local
-   *  derived UI state, like a spinner). The filmstrip plugin's emit() reads
-   *  `processing` (renders the in-widget "sampling frames…" indicator instead of
-   *  the ghost) and `frameError` (renders an in-widget error strip instead of a
-   *  console-only failure). Cleared when frames land or the widget changes. */
-  filmstripStatus = $state({ items: {} });
   /** ITEM ID whose asset (video) picker should AUTO-OPEN (manifest 14.3: placing
    *  a new filmstrip immediately opens the video-picker modal). Set by the widget
    *  handlers that ASK for an asset — the "bbox_then_asset" creation gesture and the
@@ -482,7 +477,7 @@ export class PowerRPApp {
   // memo, so each consumer paid its own full O(items) equation pass per mouse
   // move — the profiled drag-lag cliff (concerns 2026-07-15, Opus4 risk (b)).
   // One stable object per (base, preview) pair = ONE evaluation per move.
-  #blendCache = { base: null, preview: null, status: null, state: null };
+  #blendCache = { base: null, preview: null, state: null };
 
   /**
    * Folded state of the current slide, with any live drag preview applied —
@@ -496,28 +491,19 @@ export class PowerRPApp {
   rawState() {
     const base = foldState(this.doc, this.slideIndex, 1);
     const preview = this.previewDelta;
-    // The filmstrip status overlay (14.2/14.4) is a transient delta merged like
-    // the preview but never committed. Empty (no filmstrip fetching/errored) →
-    // its `items` map is {}, and it drops out of the blend key so the common
-    // no-status path is byte-identical to before.
-    const status = this.#nonEmptyStatus();
-    if (!preview && !status) return base;
+    // ONE transient overlay: the live PREVIEW delta. A second one used to be blended
+    // here — the filmstrip's fetch STATUS (processing / frameError) — and it went away
+    // with the server frame-extraction round-trip that produced it: the filmstrip's
+    // frames are decoded in the browser from ordinary document state now, so it has no
+    // in-flight or fetch-failed condition to model outside the document at all.
+    if (!preview) return base;
     const c = this.#blendCache;
-    if (c.base !== base || c.preview !== preview || c.status !== status) {
+    if (c.base !== base || c.preview !== preview) {
       c.base = base;
       c.preview = preview;
-      c.status = status;
-      let s = preview ? blendApplied(base, preview, 1) : base;
-      if (status) s = blendApplied(s, status, 1);
-      c.state = s;
+      c.state = blendApplied(base, preview, 1);
     }
     return c.state;
-  }
-
-  /** Query. The filmstrip status overlay iff it has any entries, else null (so
-   *  the no-status render path stays identity-stable and byte-identical). */
-  #nonEmptyStatus() {
-    return Object.keys(this.filmstripStatus.items).length > 0 ? this.filmstripStatus : null;
   }
 
   /** The derivation-stage expression pass over rawState(): {state, errors}.
@@ -1636,8 +1622,18 @@ export class PowerRPApp {
 
   // ── Copy / paste / duplicate (manifest 14.10 AMENDED + 14.9) ────────────────
   // Whole-object by default; single properties via the palette submenu.
-  // Clipboard payloads are tagged JSON: {powerrp_item: state} or
+  // Clipboard payloads are tagged JSON: {powerrp_items: {sourceId: state}} or
   // {powerrp_props: {key: value}}.
+  //
+  // THE SELECTION IS THE UNIT (user: "i should be able to copy paste selections
+  // of objects which right now I can't"). The payload carries EVERY selected
+  // item's state KEYED BY ITS SOURCE ID, because the ids are what make a
+  // SUBGRAPH clone possible: copying A and B where A references B must paste A'
+  // referencing B', while a reference from A to some C that was NOT copied must
+  // still point at C. core/document.js clonedItemStates is that boundary; the
+  // source ids in this payload are its `idMap` key set. `powerrp_item`
+  // (singular, one state, NO id) is the LEGACY payload shape and is still read —
+  // see #readClipboardPayload.
   //
   // 14.10 AMENDED ARCHITECTURE (user verbatim: "u can copy it into the browser
   // cookie session thing in case i have two presentations open the server can
@@ -1669,22 +1665,58 @@ export class PowerRPApp {
   // field) is what makes the cross-tab round-trip and the stale-copy either/or
   // both correct — see pasteFromClipboard.
 
-  /** Command (async). COPY the selected item (the canvas-clipboard COPY half).
+  /**
+   * Query. The itemIds a clone (copy or Duplicate) covers: the selection,
+   * expanded TRANSITIVELY through group membership so a selected group travels
+   * with everything it controls. Exactly the #zOrderBlock rule (manifest 15.7,
+   * "when i move a group to front or back it should move all elements in it
+   * too"), applied to cloning for the same reason: a group's members ARE its
+   * content, so a group cloned WITHOUT them would be a second group steering the
+   * ORIGINAL items. Multi-root and cycle-safe (`seen`), matching flipTargetIds.
+   *
+   * Membership is read from the RAW folded state, not from derived nodes, so a
+   * member that is merely HIDDEN on this slide (active: false) still travels —
+   * a member left behind is exactly the double-steering case above.
+   *
+   * @param {string[]} ids - the roots (an id absent from this slide is dropped)
+   * @returns {string[]} roots first, then the members they pulled in
+   */
+  #cloneSet(ids) {
+    const items = this.rawState().items ?? {};
+    const set = new Set();
+    const visit = (id) => {
+      if (set.has(id) || !items[id]) return;
+      set.add(id);
+      if (items[id].type === "group" && Array.isArray(items[id].members))
+        for (const m of items[id].members) visit(m);
+    };
+    for (const id of ids) visit(id);
+    return [...set];
+  }
+
+  /** Query. {sourceId: rawItemState} for `ids` — the payload body every clone
+   *  path (copy, Duplicate) ships. RAW state: equations copy as equations, not
+   *  their evaluated snapshots. Ids with no state on this slide drop out. */
+  #cloneStates(ids) {
+    const items = this.rawState().items ?? {};
+    return Object.fromEntries(ids.filter((id) => items[id]).map((id) => [id, items[id]]));
+  }
+
+  /** Command (async). COPY the SELECTION (the canvas-clipboard COPY half).
    *  Renders the selection PNG FIRST so its signature can travel WITH the item
-   *  JSON: writes {powerrp_item: rawState, png_sig} to the SERVER-SIDE session
-   *  clipboard (equations stay equations), then writes that same PNG to the OS
+   *  JSON: writes {powerrp_items: {sourceId: rawState}, png_sig} to the SERVER-
+   *  SIDE session clipboard (equations stay equations, source ids ride along so
+   *  paste can reroute internal references), then writes that same PNG to the OS
    *  clipboard for pasting into other apps. A server-write failure aborts
    *  loudly (nothing to paste back); an OS-write failure is reported but not
    *  fatal (the internal paste still works). */
   async copySelection() {
-    if (!this.selection) return;
-    // RAW state: equations copy as equations, not their evaluated snapshots.
-    const state = this.rawState().items?.[this.selection];
-    if (!state) return;
+    const items = this.#cloneStates(this.#cloneSet(this.selectedIds()));
+    if (Object.keys(items).length === 0) return;
     // Render the OS-clipboard PNG first so its signature rides WITH the payload
     // (a camera-only selection has no bbox → null png, and no png_sig).
     const png = await this.#renderSelectionPng();
-    const payload = { powerrp_item: state };
+    const payload = { powerrp_items: items };
     if (png) payload.png_sig = imageSignature(png);
     // 1. Item JSON (+ signature) → the server-side session clipboard.
     try {
@@ -1726,10 +1758,18 @@ export class PowerRPApp {
   }
 
   /** Query (async; reads the server). The parsed SERVER-SIDE clipboard payload
-   *  ({powerrp_item[, png_sig]} or {powerrp_props}), or null when the clipboard
+   *  ({powerrp_items[, png_sig]} or {powerrp_props}), or null when the clipboard
    *  is empty, unreachable, unparseable, or holds no PowerRP payload. Every
    *  failure is reported loudly; the null return distinguishes those cases for
-   *  the caller (no OS-clipboard readText, no permission saga). */
+   *  the caller (no OS-clipboard readText, no permission saga).
+   *
+   *  A LEGACY {powerrp_item: state} payload (one state, no source id — what a
+   *  copy made before the selection became the unit, and what a session
+   *  clipboard written by an older build still holds) is normalized to the
+   *  current one-entry shape HERE, at the read boundary, so there is exactly ONE
+   *  insert path below rather than a fork per payload era (the load-boundary
+   *  migration pattern). Its synthetic key can never collide with a real
+   *  reference: uuid() ids are 8 chars of hex/base36. */
   async #readClipboardPayload() {
     let raw;
     try {
@@ -1746,7 +1786,9 @@ export class PowerRPApp {
       console.error("Paste: the server clipboard held unparseable JSON:", e.message);
       return null;
     }
-    if (!payload?.powerrp_item && !payload?.powerrp_props) {
+    if (payload?.powerrp_item && !payload.powerrp_items)
+      payload = { ...payload, powerrp_items: { [LEGACY_CLIPBOARD_SOURCE_ID]: payload.powerrp_item } };
+    if (!payload?.powerrp_items && !payload?.powerrp_props) {
       console.warn("Paste: the server clipboard holds no PowerRP item or property payload.");
       return null;
     }
@@ -1801,36 +1843,13 @@ export class PowerRPApp {
   }
 
   /** Command (one undo unit). Inserts a tagged clipboard payload
-   *  ({powerrp_item} or {powerrp_props}) into the current slide — the ONE
-   *  canonical insert path shared by pasteClipboard and duplicateSelection
-   *  (14.9's "one canonical clone home"):
-   *    - powerrp_item: a NEW instance (new UUID) offset one spacing step, or —
-   *      for a camera (exactly one per document) — its aspects keyframed onto
-   *      the existing camera instead of a duplicate.
+   *  ({powerrp_items} or {powerrp_props}) into the current slide:
+   *    - powerrp_items: routed to #cloneStatesIntoSlide (14.9's "one canonical
+   *      clone home", shared with duplicateSelection).
    *    - powerrp_props: applies the property values to the current selection. */
   #insertClipboardPayload(payload) {
-    if (payload.powerrp_item) {
-      const s = payload.powerrp_item;
-      // ONE camera per document: pasting a camera keyframes its ASPECTS onto
-      // the existing camera instead of duplicating it (user spec).
-      const existingCamera = s.type === "camera"
-        ? this.nodes().find((n) => n.type === "camera") : null;
-      if (existingCamera) {
-        let doc = this.doc;
-        for (const key of ["x", "y", "w", "h"])
-          doc = keyframed(doc, this.slideIndex, ["items", existingCamera.itemId, key], s[key]);
-        this.commit(doc);
-        this.selection = existingCamera.itemId;
-        return;
-      }
-      // Paste offset: one spacing step, same convention PowerPoint uses for
-      // paste-in-place collisions (precedent, not an invented constant).
-      // Equation-valued coordinates are left VERBATIM — offsetting a string
-      // would concatenate ("circle.x + 10" + 16); the pasted copy keeps its
-      // binding and lands wherever the equation says.
-      const OFFSET = 16;
-      const bump = (v) => (typeof v === "number" ? v + OFFSET : v);
-      this.addItem({ ...s, x: bump(s.x ?? 0), y: bump(s.y ?? 0) });
+    if (payload.powerrp_items) {
+      this.#cloneStatesIntoSlide(payload.powerrp_items);
     } else if (payload.powerrp_props && this.selection) {
       let doc = this.doc;
       for (const [key, value] of Object.entries(payload.powerrp_props))
@@ -1839,13 +1858,90 @@ export class PowerRPApp {
     }
   }
 
+  /**
+   * Command (ONE undo unit). THE CANONICAL CLONE HOME (14.9): drops a set of
+   * {sourceId: rawItemState} into the current slide as NEW items and selects
+   * them. Shared by paste and Duplicate — the difference between those two is
+   * only WHERE the states came from (the server clipboard vs. the live selection),
+   * never what cloning means.
+   *
+   * The rules, all of them pre-existing and now stated exactly once:
+   *   • INTERNAL REFERENCES REROUTE, EXTERNAL ONES DO NOT (core/document.js
+   *     clonedItemStates). The `states` KEY SET is the boundary, which is why the
+   *     payload carries source ids at all.
+   *   • ONE CAMERA PER DOCUMENT: a camera in the set keyframes its ASPECTS onto
+   *     the existing camera instead of cloning (user spec). It never gets a new
+   *     id, so it is not part of the reroute boundary — a reference to the camera
+   *     stays a reference to THE camera, which is correct.
+   *   • OFFSET one spacing step, the convention PowerPoint uses for paste-in-place
+   *     collisions (precedent, not an invented constant). A uniform per-item bump
+   *     IS a rigid translation, so relative positions survive. Equation-valued
+   *     coordinates are left VERBATIM — offsetting a string would concatenate
+   *     ("circle.x + 10" + 16); such a copy keeps its binding and lands wherever
+   *     the equation says.
+   *   • z stacked above the current max, preserving relative order; active: true
+   *     on the creation slide (the visibility model — creation is where an item
+   *     switches on).
+   * A reference that leaves the set and names an item THIS DOCUMENT DOES NOT HAVE
+   * is reported: that is a dangling reference (a purged item, or a cross-document
+   * paste) and it must not land silently.
+   *
+   * @param {object} states - {sourceItemId: rawItemState}
+   */
+  #cloneStatesIntoSlide(states) {
+    const OFFSET = 16;
+    const bump = (v) => (typeof v === "number" ? v + OFFSET : v);
+    // ONE camera per document: partitioned out BEFORE ids are minted.
+    const existingCamera = this.nodes().find((n) => n.type === "camera") ?? null;
+    const cloneable = {};
+    const cameras = [];
+    for (const [id, s] of Object.entries(states)) {
+      if (s.type === "camera" && existingCamera) cameras.push(s);
+      else cloneable[id] = s;
+    }
+    if (Object.keys(cloneable).length === 0 && cameras.length === 0) {
+      console.warn("Clone: the payload held no item states — nothing to insert.");
+      return;
+    }
+    const idMap = new Map(Object.keys(cloneable).map((id) => [id, uuid()]));
+    const { states: clones, external } = clonedItemStates(cloneable, idMap, this.registry);
+    this.#reportDanglingRefs(external);
+    let nextZ = (this.nodes().map((n) => n.state.z ?? 0).reduce((a, b) => Math.max(a, b), 0)) + 1;
+    let doc = this.doc;
+    for (const [newId, clone] of Object.entries(clones))
+      doc = keyframed(doc, this.slideIndex, ["items", newId], {
+        ...clone, active: true, z: nextZ++, x: bump(clone.x ?? 0), y: bump(clone.y ?? 0),
+      });
+    for (const s of cameras)
+      for (const key of ["x", "y", "w", "h"])
+        doc = keyframed(doc, this.slideIndex, ["items", existingCamera.itemId, key], s[key]);
+    // Normalize only when items were actually ADDED — a camera-aspect merge adds
+    // no z, so renumbering the whole document there would be a mutation the
+    // camera-paste rule never made.
+    this.commit(Object.keys(clones).length ? withNormalizedZ(doc) : doc); // ONE commit = one undo unit
+    this.selectMany([...Object.keys(clones), ...(cameras.length ? [existingCamera.itemId] : [])]);
+  }
+
+  /** Command (reports). Warns for every id a clone still references that this
+   *  document does not contain — a DANGLING reference: the source item was
+   *  purged, or this is a cross-document paste where the reference's target
+   *  simply does not exist here. The clone keeps the reference verbatim (so the
+   *  user can see and repair it, the storedToDisplay ruling) and the render-time
+   *  affordances report it too; this makes the paste itself say so. Ids present
+   *  in the document are legitimate external edges and stay silent. */
+  #reportDanglingRefs(external) {
+    const known = new Set(this.doc.slides.flatMap((s) => Object.keys(s.delta.items ?? {})));
+    const dangling = external.filter((id) => !known.has(id));
+    if (dangling.length)
+      console.warn(`Paste: the pasted items reference ${dangling.length} item(s) that do not exist in this document — those references are kept verbatim so you can repair them: ${dangling.join(", ")}`);
+  }
+
   // ── Duplicate (manifest 14.9: "duplicate object should be a thing") ──────────
-  // Duplicate = the same serialize→insert clone as copy+paste, but WITHOUT the
-  // clipboard round-trip (local, immediate) and as ONE undo unit for the whole
-  // selection. It reuses copySelection's raw-state serialization idea (equations
-  // stay equations) and pasteClipboard's offset-and-new-UUID insert idea — the
-  // ONE canonical clone home the manifest asks for — rather than a second
-  // cloning path. Multi-select duplicates every duplicable member.
+  // Duplicate = the same clone as copy+paste, but WITHOUT the clipboard round-trip
+  // (local, immediate) and as ONE undo unit for the whole selection. Both routes
+  // run #cloneStatesIntoSlide — the ONE canonical clone home the manifest asks
+  // for — rather than a second cloning path. Multi-select duplicates every
+  // duplicable member.
 
   /** Query. The selected itemIds that Duplicate would clone: every selected item
    *  EXCEPT non-purgeable widgets (the camera is exactly one per document — it
@@ -1866,37 +1962,21 @@ export class PowerRPApp {
   }
 
   /**
-   * Command (ONE undo unit). Duplicates every duplicable selected item: each
-   * gets a NEW UUID, the SAME raw state (equations verbatim), offset one
-   * spacing step (the paste offset — same PowerPoint precedent), z stacked above
-   * the current max. All the new items commit together (one snapshot = one
-   * undo) and become the new selection. No-op (reported) when nothing duplicable
-   * is selected.
+   * Command (ONE undo unit). Duplicates every duplicable selected item through
+   * THE canonical clone home (#cloneStatesIntoSlide): each gets a NEW UUID, the
+   * SAME raw state (equations verbatim) with references INTO the duplicated set
+   * rerouted to the new copies, offset one spacing step, z stacked above the
+   * current max. All the new items commit together (one snapshot = one undo) and
+   * become the new selection. No-op (reported) when nothing duplicable is
+   * selected.
    */
   duplicateSelection() {
-    const ids = this.#duplicableSelection();
+    const ids = this.#cloneSet(this.#duplicableSelection());
     if (ids.length === 0) {
       console.warn("Duplicate: nothing duplicable is selected (the camera cannot be duplicated).");
       return;
     }
-    // Same offset + equation-safe bump as the paste path (one canonical rule).
-    const OFFSET = 16;
-    const bump = (v) => (typeof v === "number" ? v + OFFSET : v);
-    const items = this.rawState().items ?? {};
-    // Stack the clones above the current max z, preserving their relative order.
-    let nextZ = (this.nodes().map((n) => n.state.z ?? 0).reduce((a, b) => Math.max(a, b), 0)) + 1;
-    let doc = this.doc;
-    const newIds = [];
-    for (const id of ids) {
-      const s = items[id];
-      if (!s) continue;
-      const clone = { ...s, active: true, z: nextZ++, x: bump(s.x ?? 0), y: bump(s.y ?? 0) };
-      const [next, newId] = withNewItem(doc, this.slideIndex, clone);
-      doc = next;
-      newIds.push(newId);
-    }
-    this.commit(withNormalizedZ(doc)); // ONE commit = one undo unit
-    this.selectMany(newIds);
+    this.#cloneStatesIntoSlide(this.#cloneStates(ids));
   }
 
   // ── Paste-to-upload (manifest 13.3): an EXTERNAL image/video/file on the OS
@@ -2623,150 +2703,6 @@ export class PowerRPApp {
     });
     this.commit(withNormalizedZ(doc));
     this.selection = barId; // the fraction binding is the thing to inspect
-  }
-
-  // ── Filmstrip frames wiring (grep handles: fetchFrames / frameUrls). The
-  // filmstrip plugin stores only (src, frames, frameH, frameW); frameUrls is
-  // server-derived data this effect fills in (plugins/filmstrip.js documents the
-  // contract: "an app-side effect requests them whenever src/frames/frameH/
-  // frameW changes"). While a fetch is in flight it sets a transient
-  // `processing` status (14.2 in-widget indicator); a failure sets a transient
-  // `frameError` (14.4 — an in-widget affordance, never console-only). ─────────
-
-  /** (item|project|src|frames|frameH|frameW) combos already attempted this
-   *  session — ONE fetch per combo, so a FAILURE cannot hot-loop the effect;
-   *  editing any of them retries naturally (new combo). A discarded stale fetch
-   *  un-registers itself. Not $state: nothing renders it. */
-  #framesAttempted = new Set();
-
-  /** Runs during field initialization — i.e. at construction. #wireFilmstripFrames
-   *  owns its effect via $effect.root, so it is valid whether construction
-   *  happens inside App.svelte's component init (fresh mount) OR outside any
-   *  effect context (Vite HMR re-instantiation) — the latter previously threw
-   *  effect_orphan and bricked the app. A field (not a constructor statement)
-   *  keeps the whole asset region CONTIGUOUS. Holds the root's DISPOSE fn (the
-   *  teardown hook if one is ever wired). The effect body is scheduled by Svelte
-   *  post-mount, after the constructor finishes (this.registry is set). */
-  #filmstripWiring = this.#wireFilmstripFrames();
-
-  /** Query. The frame-cache path the endpoint serves for (project, src, frames,
-   *  frameH, frameW) — the STALENESS KEY. Resolution folds into the path exactly
-   *  as the server folds it into the cache dir (server.py frames_cache_dir): a
-   *  native-size request has no resolution segment; an H×W request appends one.
-   *  Decoding-independent (the effect decodes stored URLs before comparing). */
-  #framesCachePath(project, src, frames, frameH, frameW) {
-    const h = frameH > 0 ? Math.round(frameH) : null;
-    const w = frameW > 0 ? Math.round(frameW) : null;
-    const res = h || w ? `${w ?? "native"}x${h ?? "native"}/` : "";
-    return `/asset/${project}/frames/${src}/${frames}/${res}`;
-  }
-
-  /** Command. Set/clear a filmstrip item's transient fetch status (processing /
-   *  frameError) — reassigns filmstripStatus wholesale so the $state overlay
-   *  re-blends (rawState merges it, plugins/filmstrip.js emit reads it). Passing
-   *  null clears the item's entry entirely (back to the ghost/normal path).
-   *
-   *  Called FROM the reactive #wireFilmstripFrames effect. Reading (and writing)
-   *  filmstripStatus there would make the effect depend on its OWN write → an
-   *  infinite update loop (effect_update_depth_exceeded). `untrack` reads the
-   *  current value WITHOUT registering a dependency, and the write is a no-op
-   *  when the value is unchanged (idempotent), so a status write never re-runs
-   *  the effect that produced it. */
-  #setFilmstripStatus(id, status) {
-    untrack(() => {
-      const cur = this.filmstripStatus.items[id];
-      // Idempotent: skip the reassign when the status is already what we'd set
-      // (same-shape compare — processing/frameError are the only fields).
-      const same = (a, b) => (!a && !b) || (a && b && a.processing === b.processing && a.frameError === b.frameError);
-      if (status == null ? cur == null : same(cur, status)) return;
-      const items = { ...this.filmstripStatus.items };
-      if (status == null) delete items[id];
-      else items[id] = status;
-      this.filmstripStatus = { items };
-    });
-  }
-
-  #wireFilmstripFrames() {
-    // Command (registers a reactive effect INSIDE ITS OWN ROOT SCOPE). Whenever
-    // the CURRENT slide's folded state shows a filmstrip whose (src, frames,
-    // frameH, frameW) has no matching frameUrls, fetch the frame URLs and
-    // keyframe them (ONE undo unit).
-    //
-    // $effect.root gives the effect a valid owner regardless of instantiation
-    // context. A fresh component mount runs this field initializer inside
-    // App.svelte's init-effect (where a bare $effect is legal), but Vite HMR
-    // re-instantiates PowerRPApp OUTSIDE any component-effect context on every
-    // app.svelte.js save — a bare $effect there throws `effect_orphan` and
-    // bricks the app until a hard refresh. Owning the scope makes it valid
-    // either way. Returns the root's DISPOSE fn (held by #filmstripWiring) so a
-    // future teardown can stop the effect + free the scope; no teardown path
-    // exists today, so on HMR the prior root leaks (dev-only, bounded — one per
-    // save). `untrack` is unaffected: it lives inside #setFilmstripStatus.
-    return $effect.root(() => {
-      $effect(() => {
-        const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
-        const project = this.projectName();
-        for (const [id, s] of Object.entries(state.items ?? {})) {
-          if (s.type !== "filmstrip" || typeof s.src !== "string" || !s.src || !(s.frames >= 1)) continue;
-          // A src stored as a URL/path (not a bare filename) can NEVER resolve —
-          // the frames endpoint takes a bare basename (server safe_name rejects a
-          // slash). Surface it IN THE WIDGET (14.4 candidate b was console-only).
-          if (s.src.includes("/")) {
-            this.#setFilmstripStatus(id, { frameError: `video must be a project asset filename, not a path ("${s.src}")` });
-            continue;
-          }
-          const frames = Math.round(s.frames);
-          const frameH = Number(s.frameH) || 0, frameW = Number(s.frameW) || 0;
-          // Staleness test: the stored URLs' DECODED cache path must name this
-          // exact (project, src, frames, resolution).
-          const want = this.#framesCachePath(project, s.src, frames, frameH, frameW);
-          const urls = Array.isArray(s.frameUrls) ? s.frameUrls : [];
-          if (urls.length > 0 && decodeURIComponent(urls[0]).includes(want)) {
-            this.#setFilmstripStatus(id, null); // resolved + current → clear any status
-            continue;
-          }
-          const key = `${id}|${want}`;
-          if (this.#framesAttempted.has(key)) continue;
-          this.#framesAttempted.add(key);
-          this.#setFilmstripStatus(id, { processing: true }); // 14.2 in-flight indicator
-          this.#fillFilmstripFrames(id, s.src, frames, frameH, frameW, project, want, key);
-        }
-      });
-    });
-  }
-
-  /** Command (async). One filmstrip frames fetch → ONE undo-unit frameUrls
-   *  keyframe, with an in-widget processing indicator while it runs and an
-   *  in-widget error on failure (manifest 14.2 / 14.4). A result that no longer
-   *  matches the widget (any of src/frames/frameH/frameW retyped, item purged,
-   *  slide switched mid-fetch) is DISCARDED and its attempt key released so the
-   *  effect can refetch when the combo shows again. */
-  async #fillFilmstripFrames(id, src, frames, frameH, frameW, project, want, key) {
-    try {
-      const res = await projectApi.fetchFrames(project, src, frames, frameH || null, frameW || null);
-      // Re-check against the FRESH doc before writing (no stale writes).
-      const s = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state.items?.[id];
-      const stillWants = s && s.type === "filmstrip"
-        && this.#framesCachePath(project, s.src, Math.round(s.frames), Number(s.frameH) || 0, Number(s.frameW) || 0) === want;
-      if (!stillWants) {
-        this.#framesAttempted.delete(key); // let the live combo refetch later
-        this.#setFilmstripStatus(id, null); // the current combo drives its own status
-        console.warn(`PowerRP filmstrip: discarded a stale frames fetch for "${src}" × ${frames} (widget changed mid-fetch)`);
-        return;
-      }
-      // Keyframe on the slide where the current combo was AUTHORED (its last
-      // keyframe at or before the current slide) so every later slide inherits
-      // the resolved strip from the same place the user set it.
-      const authoredAt = Math.max(0, ...["src", "frames", "frameH", "frameW"].map((k) =>
-        Math.max(-1, ...keyframeIndices(this.doc, ["items", id, k]).filter((i) => i <= this.slideIndex))));
-      this.commit(keyframed(this.doc, authoredAt, ["items", id, "frameUrls"], res.frames));
-      this.#setFilmstripStatus(id, null); // done — clear the processing indicator
-    } catch (e) {
-      // 14.4: an in-widget error affordance, not a console-only failure.
-      const msg = String(e?.message ?? e).replace(/^fetchFrames\([^)]*\):\s*/, "");
-      this.#setFilmstripStatus(id, { frameError: msg });
-      console.error(`PowerRP filmstrip: frames fetch failed for "${src}" × ${frames}:`, e);
-    }
   }
 
   // Open-project UI seam: the Open command opens a project-picker MODAL, but

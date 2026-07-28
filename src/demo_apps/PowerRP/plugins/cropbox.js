@@ -45,6 +45,13 @@ export const cropboxPlugin = {
     target: null, fill: "#00000000", stroke: "#000000", strokeWidth: 2,
     ...defaults("cornerRadius", "opacity"), // cornerRadius:0, opacity:1
   },
+  // ID-VALUED STATE PATHS (core/document.js clonedItemStates): `target` holds a
+  // raw itemId, NOT an equation, so the token rewriter that reroutes `@id`
+  // references when a selection is cloned cannot see it. Same declarative seam
+  // as `legacyKeys`; it must list every `optionsFrom: "items"` row's key (the
+  // Inspector picker below is the OTHER face of the same fact — the drift is
+  // guarded in tests/multipaste_test.js).
+  itemRefs: [["target"]],
   inspector: [
     ...bundle("positioning"),
     // `options`/`optionLabels` are populated PER-DOCUMENT by the Inspector at

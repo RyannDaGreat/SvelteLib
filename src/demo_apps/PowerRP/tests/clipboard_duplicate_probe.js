@@ -33,7 +33,9 @@
  *  E. ELEMENT ROUND-TRIP + IMAGE DISAMBIGUATION (behaviors 3 + 4). With a known
  *     {powerrp_item, png_sig} on the server clipboard: pasting an image whose
  *     signature MATCHES png_sig inserts the ELEMENT (not a flattened bitmap);
- *     pasting a DIFFERENT image inserts an IMAGE widget (upload path).
+ *     pasting a DIFFERENT image inserts an IMAGE widget (upload path). The seed
+ *     deliberately uses the LEGACY singular `powerrp_item` key, so this section
+ *     doubles as the proof that an older session clipboard still pastes.
  *
  * Run (exit-code gated):
  *   node src/demo_apps/PowerRP/tests/clipboard_duplicate_probe.js
@@ -182,8 +184,11 @@ try {
     return payload;
   });
   note(!!serverClip, "copy landed the item JSON on the server-side session clipboard");
+  // The payload is {powerrp_items: {sourceId: state}} — the SELECTION is the copy
+  // unit (source ids are what make a subgraph clone's reroute boundary knowable;
+  // see tests/multipaste_probe.js). One selected item ⇒ exactly one entry.
   let clipItem = null;
-  try { clipItem = JSON.parse(serverClip).powerrp_item; } catch { /* handled below */ }
+  try { clipItem = Object.values(JSON.parse(serverClip).powerrp_items)[0]; } catch { /* handled below */ }
   note(clipItem?.type === "filmstrip", "server clipboard holds the filmstrip item");
   note(Array.isArray(clipItem?.frameUrls) && clipItem.frameUrls.length === 18, "18-frame frameUrls leaf array survived verbatim");
   note(clipItem?.shadow && clipItem.shadow.opacity === 0.5, "nested shadow object survived verbatim");
@@ -334,7 +339,7 @@ try {
   });
   let dParsed = null;
   try { dParsed = JSON.parse(dPayload); } catch { /* asserted below */ }
-  note(dParsed?.powerrp_item?.type === "rect", "server clipboard holds the copied rect item");
+  note(Object.values(dParsed?.powerrp_items ?? {})[0]?.type === "rect", "server clipboard holds the copied rect item");
   const serverPngSig = dParsed?.png_sig;
   note(typeof serverPngSig === "string" && /^[0-9a-f]+\.[0-9a-f]+$/.test(serverPngSig), `a png_sig signature is stored alongside the item (${serverPngSig})`);
   // png_sig is `<hexByteLen>.<hexHash>`: decode the length prefix to PROVE the

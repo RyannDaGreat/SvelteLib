@@ -118,6 +118,12 @@ export const groupPlugin = {
     ...bundleNestedDefaults("effects"),
     ...bundleDefaults("cropInsets"), // cropTop/cropLeft/cropRight/cropBottom: 0
   },
+  // ID-VALUED STATE PATHS (core/document.js clonedItemStates): `members` holds
+  // raw itemIds, NOT an equation, so the token rewriter that reroutes `@id`
+  // references when a selection is cloned cannot see it. Declared here for the
+  // same reason `legacyKeys` is — a declarative, no-type-special-casing seam, so
+  // core never hard-codes "group" (paths, exactly like WORLD_AFFECTING_LEAVES).
+  itemRefs: [["members"]],
   inspector: [
     // The eight shared bbox rows, COMPOSED from the registry rather than
     // re-typed. They used to be hand-copied literals here — byte-identical to

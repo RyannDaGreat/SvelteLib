@@ -28,9 +28,11 @@
  * carry meta.fps get it stripped loudly by repairedDocument().
  */
 
-import { blendApplied, copied, getPath, setPath, deletePath, leaves } from "./deltas.js";
+import { blendApplied, copied, copiedDeep, getPath, setPath, deletePath, leaves } from "./deltas.js";
 import { defaultTransition, withDurationMigrated } from "./transitions.js";
-import { withBindingsMigrated } from "./expressions.js";
+import {
+  withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue,
+} from "./expressions.js";
 import { withRichTextMigrated } from "./richtext.js";
 import { bundleDefaults, linearEndpointsToAngle } from "./properties.js";
 
@@ -301,6 +303,102 @@ export function itemFallbackName(title, id) {
 export function withNewItem(doc, index, state) {
   const id = uuid();
   return [keyframed(doc, index, ["items", id], copied(state)), id];
+}
+
+/**
+ * Pure function. Clones a SET of item states under NEW ids, rerouting every
+ * reference that points INSIDE the set and leaving every reference that points
+ * OUTSIDE it verbatim. THE subgraph clone — the one place copy/paste and
+ * Duplicate agree on what cloning a selection means.
+ *
+ * ── THE INTERNAL/EXTERNAL BOUNDARY (the whole difficulty) ─────────────────────
+ * Cloning {A, B} where A references B must yield A' referencing B' — otherwise
+ * the pasted copy is a puppet of the original. But a reference from A to some C
+ * that is NOT in the set must still point at C — otherwise pasting an arrow
+ * bound to a circle you did not copy would break the arrow. `idMap`'s KEY SET is
+ * therefore the definition of "inside": mapped ⇒ reroute, unmapped ⇒ verbatim.
+ *
+ * ── THE TWO REFERENCE SHAPES ─────────────────────────────────────────────────
+ *   1. EQUATION references — `@<id>.<prop>`, `@<id>_<anchor>.x`, and bare
+ *      widget arguments `f(@<id>)` — living in any EQUATION slot (isEquationValue)
+ *      of the item state, INCLUDING per-element slots of a declared list (a
+ *      polygon vertex bound to another widget's anchor). Rewritten TOKEN-
+ *      STRUCTURALLY by expressions.withItemRefsRemapped, never by string
+ *      replacement (which would also hit "@id" inside a string literal and match
+ *      a PREFIX of a longer id).
+ *   2. ID-VALUED slots — a plain itemId (crop box `target`) or an array of them
+ *      (group `members`), which are not equations at all and so are invisible to
+ *      the token rewriter. Discovered from the plugin's own `itemRefs`
+ *      declaration (the `legacyKeys` seam: a declarative path list, so core
+ *      hard-codes no widget type); a string value maps as one id, an array maps
+ *      element-wise.
+ *
+ * `external` is every itemId a clone still points at from OUTSIDE the set —
+ * legitimate for a document-internal edge, and the caller's cue to REPORT the
+ * ones its own document does not contain (a purged item, or a cross-document
+ * paste): a dangling reference must never become a silent failure.
+ *
+ * Args:
+ *   states (object): {sourceItemId: rawItemState} — the states being cloned
+ *   idMap (Map): sourceItemId → the clone's NEW itemId (the caller mints them,
+ *     which is what lets A' name B' before B' has been written anywhere)
+ *   registry (object): plugin registry (.get(type) → plugin with .itemRefs?)
+ *
+ * Returns:
+ *   {states: {newItemId: clonedState}, external: string[]}
+ *
+ * @example clonedItemStates({a: {type: "rect", x: "@b.x"}, b: {type: "rect", x: 5}}, new Map([["a", "A"], ["b", "B"]]), reg).states.A.x // "@B.x"
+ * @example clonedItemStates({a: {type: "rect", x: "@c.x"}}, new Map([["a", "A"]]), reg) // {states: {A: {type: "rect", x: "@c.x"}}, external: ["c"]}
+ * @example clonedItemStates({g: {type: "group", members: ["m"]}, m: {type: "rect"}}, new Map([["g", "G"], ["m", "M"]]), reg).states.G.members // ["M"]
+ */
+export function clonedItemStates(states, idMap, registry) {
+  const out = {};
+  const external = new Set();
+  const mapId = (id) => {
+    if (typeof id !== "string") return id;
+    if (idMap.has(id)) return idMap.get(id);
+    external.add(id);
+    return id;
+  };
+  for (const [sourceId, state] of Object.entries(states)) {
+    const newId = idMap.get(sourceId);
+    if (!newId) throw new Error(`clonedItemStates: idMap has no new id for "${sourceId}" — every cloned state needs one (a clone's own references depend on it)`);
+    const plugin = registry.get(state.type);
+    // copiedDeep, not copied(): the id-valued rewrite below REPLACES a `members`
+    // array, and copied() shares arrays with the source state (the fold cache's
+    // fast path), so a shallower clone would mutate the document being cloned.
+    const clone = copiedDeep(state);
+    // 1. EQUATION references — the canonical "every equation slot of one item"
+    //    walk (the evaluateState / withVariableRenamed idiom: leaves() keeps
+    //    arrays opaque, so declared LIST elements are walked separately).
+    for (const [path, value] of [...leaves(clone), ...declaredListLeaves(clone)])
+      if (isEquationValue(plugin, path, value)) {
+        const remapped = withItemRefsRemapped(value, idMap);
+        for (const id of remapped.external) external.add(id);
+        if (remapped.src !== value) setLeaf(clone, path, remapped.src);
+      }
+    // 2. ID-VALUED slots (plugin.itemRefs) — a plain id or an array of ids.
+    for (const path of plugin.itemRefs ?? []) {
+      const value = getPath(clone, path);
+      if (Array.isArray(value)) setLeaf(clone, path, value.map(mapId));
+      else if (typeof value === "string") setLeaf(clone, path, mapId(value));
+    }
+    out[newId] = clone;
+  }
+  return { states: out, external: [...external] };
+}
+
+/**
+ * Command (mutates `tree`). Writes `value` at `path` inside an ALREADY-CLONED
+ * state tree. Every container along the way exists (the path came from walking
+ * this very tree), so this only has to descend — the array-aware create-as-you-go
+ * machinery deltas.setPath needs does not apply, and descending an array here is
+ * safe because clonedItemStates deep-copied it.
+ */
+function setLeaf(tree, path, value) {
+  let cur = tree;
+  for (const key of path.slice(0, -1)) cur = cur[key];
+  cur[path[path.length - 1]] = value;
 }
 
 /** Pure function. Removes an item FROM EXISTENCE: every keyframe of it on every slide. */
@@ -784,6 +882,100 @@ export function withAntialiasSelectMigrated(doc) {
   return { doc: out, migrated };
 }
 
+/** The filmstrip state keys that existed ONLY to serve the removed server frame-
+ *  extraction endpoint: the fetched still URLs, and the per-frame extraction
+ *  resolution that keyed its cache. Nothing reads them now. */
+const DEAD_FILMSTRIP_KEYS = ["frameUrls", "frameH", "frameW"];
+
+/**
+ * Pure function. The filmstrip FRAMES migrations a document needs. `frames` used to
+ * be a COUNT (a number) that a server endpoint turned into N extracted stills; it is
+ * now the frames THEMSELVES — a LIST whose one field per element is a TIME in the clip
+ * (core/properties.js PROPS.frames, core/lists.js). A numeric `frames` is therefore a
+ * legacy value that must become a list of that same LENGTH, so a migrated strip keeps
+ * showing the number of frames its author chose.
+ *
+ * `buildList(n)` is injected rather than imported so this stays in core/ without
+ * reaching into a plugin (the default-equation text is the FILMSTRIP's declaration —
+ * plugins/filmstrip.defaultFrameList — and repairedDocument passes it through the
+ * registry). A filmstrip with no such plugin registered yields no migration rather
+ * than an invented list.
+ *
+ * Also reports the DEAD server-era keys (frameUrls / frameH / frameW) present on the
+ * item, so their removal is LOUD rather than a silently ignored leftover.
+ *
+ * Args:
+ *   doc (object): document
+ *   buildList (fn): (n) → the n-element default frame list
+ *
+ * Returns:
+ *   {id, slideIndex, count, list, dead}[] (empty when nothing needs migrating)
+ *
+ * @example filmstripFramesMigrations({slides: [{delta: {items: {f: {type: "filmstrip", frames: 3}}}}]}, (n) => [[n]]) // [{id: "f", slideIndex: 0, count: 3, list: [[3]], dead: []}]
+ * @example filmstripFramesMigrations({slides: [{delta: {items: {f: {type: "filmstrip", frames: [[0]]}}}}]}, (n) => [[n]]) // [] (already a list)
+ * @example filmstripFramesMigrations({slides: [{delta: {items: {f: {type: "filmstrip", frames: 2, frameUrls: ["a"]}}}}]}, (n) => [[n]])[0].dead // ["frameUrls"]
+ */
+export function filmstripFramesMigrations(doc, buildList) {
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!item || typeof item !== "object") continue;
+      const dead = DEAD_FILMSTRIP_KEYS.filter((k) => k in item);
+      if (typeof item.frames !== "number") {
+        // A slide that only carries dead keys still deserves the report.
+        if (dead.length) out.push({ id, slideIndex, count: null, list: null, dead });
+        continue;
+      }
+      const count = Math.max(1, Math.round(item.frames));
+      out.push({ id, slideIndex, count, list: buildList(count), dead });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every legacy NUMERIC filmstrip `frames` rewritten to
+ * the equivalent-length frame LIST (filmstripFramesMigrations), and the dead
+ * server-era keys (frameUrls / frameH / frameW) DELETED from each slide delta.
+ * REPORTING IS THE CALLER'S JOB. Idempotent (a list value is left untouched).
+ *
+ * The dead keys are removed rather than left in place because they are not merely
+ * unread: `frameUrls` was the widget's old "do I have frames" signal, so a stale copy
+ * riding along in a saved document is a trap for anyone reading it later.
+ *
+ * @example withFilmstripFramesMigrated({slides: [{delta: {items: {f: {type: "filmstrip", frames: 2}}}}]}, (n) => [[n]]).doc.slides[0].delta.items.f.frames // [[2]]
+ * @example withFilmstripFramesMigrated({slides: [{delta: {items: {f: {type: "filmstrip", frames: 2, frameW: 320}}}}]}, (n) => [[n]]).doc.slides[0].delta.items.f.frameW // undefined
+ * @example withFilmstripFramesMigrated({slides: [{delta: {items: {f: {type: "filmstrip", frames: [[0]]}}}}]}, (n) => [[n]]).migrated.length // 0
+ */
+export function withFilmstripFramesMigrated(doc, buildList) {
+  const migrated = filmstripFramesMigrations(doc, buildList);
+  if (migrated.length === 0) return { doc, migrated };
+  let out = doc;
+  for (const { id, slideIndex, list } of migrated)
+    if (list) out = keyframed(out, slideIndex, ["items", id, "frames"], list);
+  // The dead keys are DELETED, which keyframed() cannot express (it writes values),
+  // so this rebuilds the affected slide deltas without them.
+  const byId = new Map(migrated.filter((m) => m.dead.length).map((m) => [`${m.slideIndex}|${m.id}`, m.dead]));
+  if (byId.size === 0) return { doc: out, migrated };
+  out = {
+    ...out,
+    slides: out.slides.map((s, slideIndex) => {
+      const items = s.delta?.items;
+      if (!items) return s;
+      let touched = false;
+      const next = {};
+      for (const [id, item] of Object.entries(items)) {
+        const dead = byId.get(`${slideIndex}|${id}`);
+        if (!dead) { next[id] = item; continue; }
+        touched = true;
+        next[id] = Object.fromEntries(Object.entries(item).filter(([k]) => !dead.includes(k)));
+      }
+      return touched ? { ...s, delta: { ...s.delta, items: next } } : s;
+    }),
+  };
+  return { doc: out, migrated };
+}
+
 // ── The load-boundary repair pipeline (ONE home) ─────────────────────────────
 // Both consumers of load-time repair — the editor (app.repaired via loadFile /
 // loadAutosave / loadProject / deleteSlide) and the CLI render hook
@@ -872,7 +1064,29 @@ export function repairedDocument(doc, registry) {
   for (const m of antialiasMigrated)
     reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy boolean antialias (${m.from}) → "${m.to}"`);
 
-  let out = aaMigratedDoc;
+  // Filmstrip `frames` COUNT → the frame LIST (same length), and the dead server-era
+  // keys dropped. A VALUE migration, so it sits with its peers above — but it MUST
+  // precede the defaults-fill below for the rich-text hazard's exact reason: filling
+  // first would write the LIST default over the user's numeric count before this step
+  // could read it, silently resetting every migrated strip to the default frame count.
+  // The default-equation text belongs to the FILMSTRIP's own declaration, so it comes
+  // from the plugin through the registry rather than being restated in core/.
+  // registry.get() THROWS on an unknown type (a loud guard for a real lookup), and a
+  // registry without the filmstrip is legitimate here — a focused test registers three
+  // plugins, and a document with no filmstrip needs no builder — so this asks the
+  // roster instead of catching.
+  const framesListOf = registry.all().find((p) => p.type === "filmstrip")?.defaultFrameList ?? null;
+  const { doc: framesDoc, migrated: framesMigrated } = framesListOf
+    ? withFilmstripFramesMigrated(aaMigratedDoc, framesListOf)
+    : { doc: aaMigratedDoc, migrated: [] };
+  for (const m of framesMigrated) {
+    if (m.count !== null)
+      reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy filmstrip frame COUNT (${m.count}) → a ${m.count}-element frame list, each frame's time an equation across Video start → Video end`);
+    if (m.dead.length)
+      reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: dropped dead filmstrip key(s) ${m.dead.join(", ")} — frames are decoded in the browser now, not fetched from the server frames endpoint`);
+  }
+
+  let out = framesDoc;
   if ("fps" in out.meta) {
     const meta = { ...out.meta };
     delete meta.fps;
