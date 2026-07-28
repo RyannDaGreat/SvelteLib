@@ -59,6 +59,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import { commandUnavailable } from "../core/commands.js";
 
   let { app } = $props();
 
@@ -123,8 +124,7 @@
    */
   function unavailable(row) {
     if (row.kind !== "command") return false;
-    const cmd = entryOf(row);
-    return !!cmd.when && !cmd.when(app);
+    return commandUnavailable(entryOf(row), app);
   }
 
   /**

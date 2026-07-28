@@ -390,6 +390,19 @@ export function frameBindable(plugin) {
 }
 
 /**
+ * The camera-bind pair's HELP and REQUIRES sentences, beside `frameBindable` —
+ * the predicate they explain — because two surfacings need the same words. The
+ * pool row below renders them in the Tools pane; the command ENTRIES in
+ * web/App.svelte declare them too, so the Toolbar and the command palette's help
+ * section get the same sentence without transcribing it. One string, one meaning,
+ * however many places show it.
+ */
+export const CAMERA_BIND_HELP = "Write x / y / w / h as equations reading THE camera's frame, so this widget covers the view and keeps tracking it when the camera moves, resizes or zooms.";
+export const CAMERA_BIND_REQUIRES = "a selected widget with its own position and size (x / y / w / h) — the camera itself cannot be bound to its own frame";
+export const CAMERA_FREEZE_HELP = "Replace equation-bound x / y / w / h with the plain numbers they currently evaluate to, so the widget stops following whatever it was bound to and stays put.";
+export const CAMERA_FREEZE_REQUIRES = "at least one of x / y / w / h to actually hold an equation — nothing here is bound, they are all plain numbers already";
+
+/**
  * THE TOOL POOL — the generic tools, declared ONCE, composed into every widget
  * that is structurally eligible. Ordered: a resolved plugin lists its own groups
  * first, then these in this order.
@@ -417,15 +430,15 @@ export const TOOL_POOL = [
         kind: "command",
         command: "bind-to-camera",
         applies: frameBindable,
-        help: "Write x / y / w / h as equations reading THE camera's frame, so this widget covers the view and keeps tracking it when the camera moves, resizes or zooms.",
-        requires: "a selected widget with its own position and size (x / y / w / h) — the camera itself cannot be bound to its own frame",
+        help: CAMERA_BIND_HELP,
+        requires: CAMERA_BIND_REQUIRES,
       },
       {
         kind: "command",
         command: "unbind-from-camera",
         applies: frameBindable,
-        help: "Replace equation-bound x / y / w / h with the plain numbers they currently evaluate to, so the widget stops following whatever it was bound to and stays put.",
-        requires: "at least one of x / y / w / h to actually hold an equation — nothing here is bound, they are all plain numbers already",
+        help: CAMERA_FREEZE_HELP,
+        requires: CAMERA_FREEZE_REQUIRES,
       },
     ],
   },

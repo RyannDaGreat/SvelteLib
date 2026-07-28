@@ -5,11 +5,31 @@
   or Esc goes back up; Esc at the root closes). The palette is a pure
   SURFACING of commands: shortcuts, toolbar buttons, and future context menus
   run the same entries.
+
+  UNAVAILABLE COMMANDS ARE GREYED, NOT DROPPED. A `when` gate that says no is the
+  AVAILABILITY axis (core/registry.js's TOOL GROUPS block names the two axes;
+  core/commands.js's header carries the ruling), and the Toolbar and the Tools
+  pane have always rendered it as a disabled control that explains itself. The
+  palette was the last surfacing that filtered the entry out instead, so a
+  command you could not run was a command you could not FIND — the user's report
+  ("I'm seeing Respace Filmstrip Frames even though I'm not selecting a
+  filmstrip … it could be grayed out, and even just that some tooltip tells us
+  why it's grayed out") is both halves of that one defect.
+
+  THE BOTTOM SECTION is the tooltip that ruling asks for, and it carries the
+  optional `help` too. It is ABSENT (not empty) when the highlighted entry has
+  neither — an always-present box that is usually blank is the dead chrome the
+  Tools pane's "an empty group cannot reach here" rule exists to prevent. It
+  follows `highlighted`, so hover AND the arrow keys drive it through the ONE
+  hover path the preview protocol already established (a second hover mechanism
+  would be free to disagree with the first about which row is current), and a
+  keyboard-only user gets help a pointer tooltip could never show them.
 -->
 <script>
   import "iconify-icon";
   import KeyCombo from "../../../lib/KeyCombo.svelte";
   import { rpFuzzyMatchIndices } from "../core/fuzzy.js";
+  import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
 
   let { app } = $props();
 
@@ -50,7 +70,13 @@
   // runCommand can't dirty this derived. Read app.paletteOpen (flips on every
   // open) so the empty-query MRU order is recomputed fresh each time the palette
   // is shown — even when query/stack are unchanged from the prior open.
-  let results = $derived(app.paletteOpen ? app.commands.search(query, app, parent) : []);
+  let results = $derived(app.paletteOpen ? app.commands.search(query, parent) : []);
+
+  // The HIGHLIGHTED entry drives both the bottom section and the live preview —
+  // one notion of "the current row", so they can never point at different ones.
+  let current = $derived(results[highlighted] ?? null);
+  let currentReason = $derived(current ? commandUnavailableReason(current, app) : null);
+  let currentHelp = $derived(current?.help ?? null);
 
   /** Command. Resets the highlight to the first row AND snaps the list back
    * to the top — the two must move together: open, typing, submenu drill,
@@ -102,15 +128,26 @@
   let previewedId = null; // id of the entry currently previewed, or null
 
   $effect(() => {
-    const cmd = results[highlighted];
+    const cmd = current;
     const id = cmd?.id ?? null;
     if (id === previewedId) return; // same entry still highlighted — nothing to do
     if (previewRevert) previewRevert(); // roll back the previous preview
-    previewRevert = cmd?.preview ? cmd.preview(app) : null;
+    // An UNAVAILABLE command previews nothing: its `when` says the write it would
+    // stage cannot be derived (bind-to-camera with nothing selected computes an
+    // empty pair list), so previewing it would show an empty change and call a
+    // revert for it. The Tools pane's previewRow makes the same exclusion.
+    previewRevert = cmd?.preview && !commandUnavailable(cmd, app) ? cmd.preview(app) : null;
     previewedId = id;
   });
 
   function activate(cmd) {
+    // A GREYED ROW IS INERT. Enter must not close the palette on a command that
+    // cannot run: runCommand would return early (its own disabled-command
+    // semantics) and the palette would have vanished with nothing done and no
+    // explanation. Staying open leaves the reason on screen, which is the whole
+    // point of showing the row. Not a silent failure — the bottom section is
+    // already saying why, in the sentence the entry itself declares.
+    if (commandUnavailable(cmd, app)) return;
     if (cmd.children) {
       stack = [...stack, cmd];
       query = "";
@@ -186,9 +223,23 @@
                keyboard row) but never pointermove, which only fires on genuine
                mouse movement. So hover still highlights instantly, and hover
                and keyboard can't fight (the VS Code list rule). -->
+          <!-- ONE gate evaluation per row. `when` is not free — needsMultiBbox and
+               friends derive the render tree — and the class and the attribute
+               below both need the same answer, so it is bound once rather than
+               asked twice. (Net cost is still below the old behaviour, which
+               evaluated every entry's gate inside search() whether the row was
+               rendered or not.) -->
+          {@const off = commandUnavailable(cmd, app)}
+          <!-- aria-disabled, NOT the native `disabled` attribute: a disabled
+               button fires no pointer events, so hovering it could not report
+               why it is disabled — the one thing the user asked for. The guard
+               is in activate() instead, and it is the same guard for the click
+               and for Enter. -->
           <button
             class="palette-item"
             class:highlighted={i === highlighted}
+            class:unavailable={off}
+            aria-disabled={off}
             onpointermove={() => (highlighted = i)}
             onclick={() => activate(cmd)}
           >
@@ -214,6 +265,19 @@
           <div class="palette-none">No matching commands</div>
         {/if}
       </div>
+      <!-- THE HELP SECTION. Rendered only when the highlighted entry actually has
+           something to say — `help` (what it does and why you would want it) or,
+           while its gate says no, the reason. The reason uses the SAME sentence
+           and the same .tool-tip-requires class the Toolbar and the Tools pane
+           use, so a disabled control explains itself identically wherever it is
+           surfaced. `help` is a plain string today; a richer form is a later
+           change to this one block. -->
+      {#if currentHelp || currentReason}
+        <div class="palette-help">
+          {#if currentHelp}<div class="palette-help-text">{currentHelp}</div>{/if}
+          {#if currentReason}<div class="tool-tip-requires">Unavailable — requires {currentReason}</div>{/if}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}

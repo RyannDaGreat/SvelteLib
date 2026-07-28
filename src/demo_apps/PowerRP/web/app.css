@@ -279,16 +279,28 @@
      longest hint line would set the panel's max-content width and a small
      options dialog would stretch across the screen. The label column is sized to
      the widest label ("Hold per slide" / "Width × Height") at --a-font-md. */
-  --a-export-w: 420px;
-  --a-export-label-w: 112px;
-  --a-export-bar-h: 6px;
-  /* The server encode reports NO percentage (ffmpeg's progress never reaches the
-     browser), so its bar sweeps a short fill along the track — the honest
-     "working, duration unknown" idiom. Never a fake determinate fill. */
-  --a-export-bar-sweep-w: 34%;
-  --a-export-bar-sweep-period: 1.1s;
-  --a-export-video-h: 200px;
-  --a-export-swatch-w: 40px;
+  /* RENDER CENTER (RenderCenterModal.svelte). The dialog is two panes, so it
+     states a total width and the form's share of it; the list takes the rest. */
+  --a-render-w: 860px;
+  --a-render-form-w: 420px;
+  --a-render-label-w: 112px;
+  --a-render-swatch-w: 40px;
+  --a-render-bar-h: 6px;
+  --a-render-bar-sweep-w: 34%;
+  --a-render-bar-sweep-period: 1.1s;
+  --a-render-video-h: 200px;
+  /* The list scrolls past this height rather than growing the dialog. */
+  --a-render-list-h: 560px;
+  /* Left edge that marks a job active/failed, and the unseen dot. */
+  --a-render-job-edge: 2px;
+  --a-render-dot: 7px;
+  /* TOOLBAR notification badge (unseen/active renders). Named
+     --a-toolbar-badge-* rather than --a-badge-*: that family already exists
+     above for the asset-thumbnail corner CHIP, and two different things sharing
+     a token prefix is how a restyle of one silently moves the other. */
+  --a-toolbar-badge-size: 15px;
+  --a-toolbar-badge-font: 0.6rem;
+  --a-toolbar-badge-offset: -3px;
   /* Self-rendering FONT picker (manifest #26): each option in its own face, a
      larger preview beside the menu on hover. Option rows are a touch bigger than
      UI text so a typeface actually READS; the preview steps up from name → sample
@@ -371,6 +383,12 @@
   --a-palette-top: 64px;
   --a-palette-max-h: 50vh;
   --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  /* How far an UNAVAILABLE palette row fades. Deliberately weaker than the 0.35
+     .btn:disabled uses: those are icon buttons you only need to recognise, this
+     is a line of prose the user is being asked to READ and then hover for the
+     reason. Same strength as --a-list-hidden-opacity, the other "present but
+     standing down" text row in the app. */
+  --a-palette-unavailable-opacity: 0.45;
 
   /* Present mode */
   --a-present-pos-pad: 6px 12px;
@@ -845,10 +863,13 @@ textarea {
   font-size: var(--a-font-md);
 }
 
-/* Icon button is square and borderless. */
+/* Icon button is square and borderless. `position: relative` is here so a
+   notification badge (.btn-badge — the Render Center's unseen/active count) can
+   pin to its corner; a badge is the only thing that uses it. */
 .btn-icon {
   width: var(--a-control-h);
   border: 0;
+  position: relative;
 }
 
 .btn:hover,
@@ -2882,6 +2903,23 @@ audio.ae-preview-media {
   min-width: 0;
 }
 
+/* THE LIST'S COLLAPSE HEADER is .cat-header itself — the shared accordion above,
+   reused rather than re-drawn, which is the whole reason that block is unscoped.
+   Only its REFUSING state needs saying here: while a preset picker holds the list
+   folded the header is disabled (the reason is in its tooltip), and a refusing
+   control must not keep advertising a click — the same two properties
+   .list-insert:disabled below spells out for the same reason. A disabled button
+   dispatches no pointer events, but :hover can still MATCH it, so the wash has to
+   be named out explicitly rather than assumed unreachable. */
+.listfield .cat-header:disabled {
+  cursor: default;
+}
+
+.listfield .cat-header:disabled:hover {
+  background: transparent;
+  color: var(--fg-dim);
+}
+
 /* ONE element: index, visibility eye, its field controls, the keyframe triad,
    purge. Wraps rather than overflowing, because the field count is declared per
    list and a four-field element cannot be assumed to fit. */
@@ -4009,10 +4047,45 @@ audio.ae-preview-media {
   display: block;
 }
 
+/* An UNAVAILABLE row (its command's `when` says no) stays in the list, faded and
+   inert. It keeps the .highlighted background so hover and the arrow keys can
+   still land on it — landing on it is HOW you read the reason in the help
+   section below. `cursor: default` is the only click affordance withdrawn; the
+   guard itself is in CommandPalette's activate(). */
+.palette-item.unavailable {
+  opacity: var(--a-palette-unavailable-opacity);
+  cursor: default;
+}
+
 .palette-none {
   padding: var(--a-sp-4);
   color: var(--fg-dim);
   font-size: var(--a-font-md);
+}
+
+/* THE HELP SECTION — the palette's bottom band, present only when the
+   highlighted command declares `help` or is currently gated. Styled as the
+   palette's footer the way .palette-crumbs is its header (same control-bg, same
+   hairline, mirrored side) so the results list reads as the body between them. */
+.palette-help {
+  padding: var(--a-sp-3) var(--a-sp-4);
+  background: var(--control-bg);
+  border-top: var(--a-hairline) solid var(--border);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+
+.palette-help-text {
+  color: var(--fg);
+}
+
+/* The availability footnote separates itself from the help ABOVE it; with no
+   help there is nothing to separate from, and the section's own border already
+   does that job. */
+.palette-help > .tool-tip-requires:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 /* ── Minimap (bottom-right, ABOVE content, 50% transparent — user spec) ──── */
@@ -4654,61 +4727,71 @@ audio.ae-preview-media {
   color: var(--gp-fg-dim);
   font-variant-numeric: tabular-nums;
 }
+/* ── Render Center (RenderCenterModal.svelte) ─────────────────────────────────
+   Two panes: SUBMIT on the left, this project's RENDERINGS on the right. This
+   replaces the old .export-mp4 block wholesale — the dialog it styled no longer
+   exists, because a render stopped being something this page performs and became
+   a JOB THE SERVER OWNS. The form rules are that block's, carried over with the
+   names changed; what is new is the list pane.
 
-/* ── Export as MP4 dialog (ExportMp4Modal.svelte) ─────────────────────────────
-   Relocated from that component's scoped <style> and its private --emx-* token
-   namespace, which its own header only ever justified as TRANSITIONAL ("keeps
-   the new export lane merge-safe alongside parallel work"). That parallel work
-   has landed, so the carve-out is gone: web/ components carry no <style>, every
-   value here is an --a-* token, and the corners are square like all app chrome.
-   The visible consequence of the carve-out was the Transitions row — a raw
-   native <input type="checkbox"> that matched nothing else in the app. It is now
-   the shared, unscoped .boolfield/.boolbtn control, so it is pixel-identical
-   to the Inspector's booleans without opting in to anything.
-   The export-mp4* names are unique, so global scoping is collision-free (the
-   Modal portals to <body>, out of reach of any panel-scoped rule). */
-.export-mp4 {
+   web/ components carry no <style>, every value is an --a-* token, and the
+   corners are square like all app chrome. The render-center* names are unique,
+   so global scoping is collision-free (the Modal portals to <body>, out of reach
+   of any panel-scoped rule). */
+.render-center {
   display: flex;
-  flex-direction: column;
-  gap: var(--a-sp-4);
-  /* See --a-export-w: the Modal is content-sized, so the form states its width
-     rather than letting the longest hint line stretch the dialog. */
-  width: var(--a-export-w);
+  gap: var(--a-sp-5);
+  align-items: flex-start;
+  width: var(--a-render-w);
   max-width: 100%;
   font-size: var(--a-font-md);
 }
 
-.export-mp4-form {
+.render-center-submit {
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-4);
+  flex: 0 0 var(--a-render-form-w);
+  min-width: 0;
 }
 
-/* Mid-export the whole form is frozen and dimmed — same treatment as a disabled
-   Inspector row (.row-disabled), plus the input block that makes it real. */
-.export-mp4-form.is-busy {
-  opacity: 0.5;
-  pointer-events: none;
+/* The list pane owns the leftover width and is the only thing that scrolls, so
+   the submit form never slides out of reach behind a long render history. */
+.render-center-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  border-left: var(--a-hairline) solid var(--border);
+  padding-left: var(--a-sp-5);
+  align-self: stretch;
 }
 
-.export-mp4-row {
+.render-center-heading {
+  margin: 0;
+  font-size: var(--a-font-md);
+  font-weight: 600;
+}
+
+.render-center-row {
   display: flex;
   align-items: center;
   gap: var(--a-sp-3);
 }
 
-.export-mp4-label {
-  flex: 0 0 var(--a-export-label-w);
+.render-center-label {
+  flex: 0 0 var(--a-render-label-w);
   color: var(--fg-dim);
 }
 
-.export-mp4-control {
+.render-center-control {
   flex: 1 1 auto;
   min-width: 0;
 }
 
 /* A control followed by its explanatory hint (or a pair of numbers) on one row. */
-.export-mp4-inline {
+.render-center-inline {
   display: flex;
   align-items: center;
   gap: var(--a-sp-3);
@@ -4716,16 +4799,16 @@ audio.ae-preview-media {
 
 /* The boolean sits INLINE beside its hint rather than filling a value cell, so
    it hugs its button instead of taking the row's full width. */
-.export-mp4 .boolfield {
+.render-center .boolfield {
   width: auto;
   flex: 0 0 auto;
 }
 
-.export-mp4-times {
+.render-center-times {
   color: var(--fg-dim);
 }
 
-.export-mp4-hint {
+.render-center-hint {
   min-width: 0;
   margin: 0;
   color: var(--fg-dim);
@@ -4733,14 +4816,25 @@ audio.ae-preview-media {
   line-height: var(--a-text-line-height);
 }
 
-.export-mp4-summary {
+.render-center-summary {
   margin: 0;
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
 }
 
-.export-mp4-color {
-  width: var(--a-export-swatch-w);
+.render-center-text {
+  width: 100%;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-3);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: var(--a-hairline) solid var(--border);
+  border-radius: 0;
+  font-size: var(--a-font-md);
+}
+
+.render-center-color {
+  width: var(--a-render-swatch-w);
   height: var(--a-control-h);
   flex: 0 0 auto;
   padding: 0;
@@ -4750,95 +4844,209 @@ audio.ae-preview-media {
   cursor: pointer;
 }
 
-.export-mp4-progress {
+.render-center-actions {
   display: flex;
-  align-items: center;
-  gap: var(--a-sp-3);
+  justify-content: flex-start;
+  gap: var(--a-sp-2);
 }
 
-.export-mp4-bar {
+/* ── The renderings list ─────────────────────────────────────────────────────
+   Rows are COLLAPSED by default because an expanded one mounts a <video>; only
+   in-progress and unseen-finished jobs open themselves (renderJobView's
+   defaultExpanded). This pane is the scroll container. */
+.render-center-scroll {
   flex: 1 1 auto;
-  height: var(--a-export-bar-h);
-  background: var(--control-bg);
-  border: var(--a-hairline) solid var(--border);
-  overflow: hidden;
-}
-
-.export-mp4-bar-fill {
-  height: 100%;
-  background: var(--accent);
-}
-
-/* The server-encode phase: a short fill sweeping the track. Deliberately NOT a
-   determinate width — ffmpeg's progress never reaches the browser, and a bar
-   that pretends otherwise is what made a finished-looking export read as dead. */
-.export-mp4-bar-fill.is-indeterminate {
-  width: var(--a-export-bar-sweep-w);
-  animation: export-mp4-sweep var(--a-export-bar-sweep-period) ease-in-out infinite alternate;
-}
-
-@keyframes export-mp4-sweep {
-  from {
-    margin-left: 0;
-  }
-  to {
-    margin-left: calc(100% - var(--a-export-bar-sweep-w));
-  }
-}
-
-.export-mp4-progress-label {
-  flex: 0 0 auto;
-  color: var(--fg-dim);
-  font-size: var(--a-font-sm);
-  font-variant-numeric: tabular-nums;
-}
-
-/* ── The finished-export result box ──────────────────────────────────────────
-   The encoded movie exists ONLY as an in-page Blob (the server deletes its
-   frame/encode scratch the moment ffmpeg returns), so this box plays it and
-   saves it from one object URL. It is the guaranteed manual path to the file
-   when the automatic download does not visibly happen. */
-.export-mp4-result {
+  min-height: 0;
+  max-height: var(--a-render-list-h);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-3);
+}
+
+.render-center-empty {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+
+.render-center-job {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
   padding: var(--a-sp-3);
   background: var(--a-panel-bg);
   border: var(--a-hairline) solid var(--border);
 }
 
-.export-mp4-done {
-  margin: 0;
+/* A working job gets the accent edge; a failed one the error edge — so the list
+   is triageable at a glance without reading a single status line. */
+.render-center-job.is-active {
+  border-left: var(--a-render-job-edge) solid var(--accent);
+}
+
+.render-center-job.is-failed {
+  border-left: var(--a-render-job-edge) solid var(--a-eq-error);
+}
+
+.render-center-job-head {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+}
+
+/* The whole name row is the disclosure trigger — a bare row of text and icons
+   wearing no button chrome, so it reads as a list row and not a control. */
+.render-center-disclose {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: var(--a-font-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.render-center-job-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.render-center-job-backend {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
   font-size: var(--a-font-sm);
 }
 
-.export-mp4-video {
+/* The unseen dot — the row-level twin of the toolbar badge. */
+.render-center-dot {
+  flex: 0 0 auto;
+  width: var(--a-render-dot);
+  height: var(--a-render-dot);
+  border-radius: 50%; /* a dot is the one round thing; app chrome stays square */
+  background: var(--accent);
+}
+
+.render-center-job-status {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+
+.render-center-bar {
+  height: var(--a-render-bar-h);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  overflow: hidden;
+}
+
+.render-center-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+/* ENCODING (and any job with no frame total yet): a short fill sweeping the
+   track. Deliberately NOT a determinate width — ffmpeg's progress never reaches
+   the browser, and a bar that pretends otherwise is what made a finished-looking
+   export read as dead. */
+.render-center-bar-fill.is-indeterminate {
+  width: var(--a-render-bar-sweep-w);
+  animation: render-center-sweep var(--a-render-bar-sweep-period) ease-in-out infinite alternate;
+}
+
+@keyframes render-center-sweep {
+  from {
+    margin-left: 0;
+  }
+  to {
+    margin-left: calc(100% - var(--a-render-bar-sweep-w));
+  }
+}
+
+.render-center-video {
   display: block;
   width: 100%;
-  max-height: var(--a-export-video-h);
+  max-height: var(--a-render-video-h);
   background: var(--a-canvas-bg);
 }
 
-.export-mp4-result-actions {
+.render-center-meta {
   display: flex;
-  justify-content: flex-start;
+  gap: var(--a-sp-4);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
 }
 
-/* An <a> wearing the shared .btn chrome — it needs the icon gap and no underline. */
-.export-mp4-download {
+/* The FULL ABSOLUTE path, shown because the user asked to be able to find the
+   file on disk. It wraps rather than truncating — a path you cannot read is not
+   the answer to "where is it" — and the copy button beside it is the fast path. */
+.render-center-path {
+  display: flex;
+  align-items: flex-start;
   gap: var(--a-sp-2);
-  text-decoration: none;
 }
 
-.export-mp4-error {
-  margin: 0;
-  color: var(--a-eq-error);
+.render-center-pathtext {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg-dim);
   font-size: var(--a-font-sm);
   line-height: var(--a-text-line-height);
 }
 
-.export-mp4-actions {
+.render-center-job-actions {
   display: flex;
-  justify-content: flex-end;
   gap: var(--a-sp-2);
+}
+
+/* An <a> wearing the shared .btn chrome — it needs the icon gap and no underline. */
+.render-center-job-actions .btn {
+  gap: var(--a-sp-2);
+  text-decoration: none;
+}
+
+.render-center-warning {
+  margin: 0;
+  color: var(--a-keyed);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+
+.render-center-error {
+  margin: 0;
+  color: var(--a-eq-error);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+  overflow-wrap: anywhere;
+}
+
+/* TOOLBAR NOTIFICATION BADGE — the count of renders still working or finished
+   but unseen, pinned to the Render Center button. It exists to be visible while
+   the Render Center is CLOSED: a background render you forget about was the
+   whole failure this feature removes. pointer-events:none so the badge can never
+   swallow the click meant for the button underneath it. The positioning context
+   is on .btn-icon itself (see "Icon button is square and borderless" above). */
+.btn-badge {
+  position: absolute;
+  top: var(--a-toolbar-badge-offset);
+  right: var(--a-toolbar-badge-offset);
+  min-width: var(--a-toolbar-badge-size);
+  height: var(--a-toolbar-badge-size);
+  padding: 0 var(--a-sp-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--a-badge-fg);
+  font-size: var(--a-toolbar-badge-font);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
 }

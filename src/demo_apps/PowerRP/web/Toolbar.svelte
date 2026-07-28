@@ -31,8 +31,14 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import KeyCombo from "../../../lib/KeyCombo.svelte";
   import ShapePicker from "./ShapePicker.svelte";
+  import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
 
-  let { app } = $props();
+  // `renderBadge` is the count of renders still working plus finished ones not
+  // yet seen (App.svelte polls it; renderJobView.renderBadgeCount defines it).
+  // It is passed IN rather than fetched here because the toolbar must not own a
+  // network poll, and because the badge has to keep counting while this
+  // component is not the thing anyone is looking at.
+  let { app, renderBadge = 0 } = $props();
 
   // COMMAND IDS ONLY, grouped as the separators divide them. Title and icon come
   // from app.commands, the binding from app.shortcuts — see the header.
@@ -42,12 +48,22 @@
   // The local-file pair (Export/Import Document as .powerrp.json) and the .zip are
   // still one keystroke away in the command palette — they are the rare path, so
   // they do not earn a permanent button.
+  // CROP BOX and BLUR LAYER were dropped from the insert row by user ruling: they
+  // belong in the command palette, not in permanent toolbar space. They are still
+  // one keystroke away as add-cropbox / add-blur, and neither command changed —
+  // only its claim to a button. RENDER CENTER earns one for the opposite reason:
+  // its badge has to be visible while its dialog is shut.
+  //
+  // (Entries here must stay BARE COMMAND IDS — tests/toolbar_surfacing_test.js
+  // parses this literal to prove nothing hardcodes a title or icon, so a quoted
+  // phrase inside the array reads to it as a malformed id.)
   const groups = [
-    ["add-rect", "add-circle", "add-text", "add-qrcode", "add-arrow", "add-magnifier", "add-blur", "add-cropbox"],
+    ["add-rect", "add-circle", "add-text", "add-qrcode", "add-arrow", "add-magnifier"],
     ["undo", "redo"],
     ["copy-item", "paste"],
     ["put-on-top", "put-on-bottom"],
     ["save-to-server", "open-project", "clear-doc"],
+    ["render-center"],
     ["reset-view", "present"],
   ];
 
@@ -57,23 +73,37 @@
    * per-app-state), the one core/registry.js's TOOL GROUPS block distinguishes
    * from APPLICABILITY: an unavailable button stays rendered and disabled, it is
    * never hidden, because hiding it would make the command unlearnable.
+   *
+   * The predicate itself lives in core/commands.js — the Toolbar, the Tools pane
+   * and the palette all ask it, and three copies of "does this gate say no" are
+   * three chances to disagree about what disabled means. These wrappers are the
+   * id → entry lookup this file needs, nothing more.
    */
   function unavailable(id) {
-    const cmd = app.commands.get(id);
-    return !!cmd.when && !cmd.when(app);
+    return commandUnavailable(app.commands.get(id), app);
   }
 
   /**
    * Query. WHY the command `id` cannot run right now, or null when it can run (or
    * when its entry does not declare a reason yet). Same expression, same
    * precedence and the same "Unavailable — requires …" sentence the Tools pane
-   * uses, so a disabled control explains itself identically wherever it appears.
+   * and the palette's help section use, so a disabled control explains itself
+   * identically wherever it appears.
    *
-   * `requires` is the command entry's own field, so it is read here rather than
+   * `requires` is the command entry's own field, so it is read there rather than
    * restated: this file must not know why Copy needs a selection.
    */
   function unavailableReason(id) {
-    return unavailable(id) ? (app.commands.get(id).requires ?? null) : null;
+    return commandUnavailableReason(app.commands.get(id), app);
+  }
+
+  /**
+   * Query. The notification-badge count for a toolbar command, or 0 for none.
+   * A lookup rather than an `id ===` test in the markup so a second badged
+   * command is a line here, not a template edit.
+   */
+  function badgeFor(id) {
+    return id === "render-center" ? renderBadge : 0;
   }
 </script>
 
@@ -119,11 +149,19 @@
         {#snippet tip()}{@render commandTip(id)}{/snippet}
         <button
           class="btn-icon"
-          aria-label={app.commands.get(id).title}
+          aria-label={badgeFor(id) ? `${app.commands.get(id).title} — ${badgeFor(id)} active or unseen` : app.commands.get(id).title}
           disabled={unavailable(id)}
           onclick={() => app.runCommand(id)}
         >
           <iconify-icon icon={app.commands.get(id).icon} width="18" height="18"></iconify-icon>
+          <!-- NOTIFICATION BADGE. Only the Render Center has one today, but it
+               hangs off a general per-id lookup rather than an `id ===` test in
+               the markup, so the next command that needs one declares it beside
+               the others instead of editing this template. The count is also
+               folded into aria-label — a coloured dot is not an announcement. -->
+          {#if badgeFor(id)}
+            <span class="btn-badge">{badgeFor(id)}</span>
+          {/if}
         </button>
       </Tooltip>
     {/each}

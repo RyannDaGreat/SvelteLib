@@ -27,7 +27,9 @@
   import Panel from "./Panel.svelte";
   import Modal from "../../../lib/Modal.svelte";
   import GridSizePicker from "./GridSizePicker.svelte";
-  import ExportMp4Modal from "./ExportMp4Modal.svelte";
+  import RenderCenterModal from "./RenderCenterModal.svelte";
+  import { renderBadgeCount } from "./renderJobView.js";
+  import { listRenderJobs } from "./projectApi.js";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
@@ -59,9 +61,13 @@
   // Widget-owned editor behaviour (see web/widget_handlers.js): every handler that
   // declares a sustained canvas mode — an activation's interior explore, a
   // creation's multi-step placement — contributes its own registry entries.
-  import { activations, canvasModes } from "./widget_handlers.js";
+  import { activations, canvasModes, handlerFor } from "./widget_handlers.js";
   import { unionRect, alignedPosition, mirroredPosition, flippedBox } from "../core/geometry.js";
   import { reportOnce } from "../core/report.js";
+  // The camera-bind pair's sentences live beside `frameBindable`, the predicate
+  // they explain, so the Tools pane's pool row and these command entries show the
+  // same words without either transcribing the other's (core/registry.js).
+  import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES } from "../core/registry.js";
   import { FAMILIES } from "../plugins/shapeshifter.js";
   import { subpathsPathD } from "../core/shapes.js";
 
@@ -234,13 +240,34 @@
     app.arrangeSelectionIntoGrid(rows, cols);
   }
 
-  // Export as MP4… modal: the "Export as MP4" command opens the options form
-  // (ExportMp4Modal) in the shared Modal (default 90% size). The form owns the
-  // encode + progress; the wrapper is here, mirroring the Built-in Assets modal.
-  let exportMp4Visible = $state(false);
-  app.showExportMp4 = () => {
-    exportMp4Visible = true;
+  // RENDER CENTER modal: the "Render Center" command TOGGLES it (in and out —
+  // the same button closes it), hosting the submit form + this project's
+  // renderings. The modal owns submit and polling; the wrapper is here, mirroring
+  // the Built-in Assets modal.
+  let renderCenterVisible = $state(false);
+  app.toggleRenderCenter = () => {
+    renderCenterVisible = !renderCenterVisible;
   };
+
+  // THE TOOLBAR BADGE. Polled here rather than inside the modal because the whole
+  // point is to be visible WHILE THE MODAL IS CLOSED — a render running in the
+  // background is exactly the thing the old design let you forget about. Counts
+  // jobs still working plus finished ones not yet seen (renderJobView's one
+  // definition, shared with the list). A backend that is down simply reports 0:
+  // this is an ambient indicator, and a poll failure here must not throw a dialog
+  // in front of someone who is drawing — the Render Center itself shows the real
+  // error when opened.
+  const RENDER_BADGE_POLL_MS = 4000;
+  let renderBadge = $state(0);
+  async function pollRenderBadge() {
+    try {
+      renderBadge = renderBadgeCount(await listRenderJobs(app.projectName()));
+    } catch {
+      renderBadge = 0;
+    }
+  }
+  pollRenderBadge();
+  setInterval(pollRenderBadge, RENDER_BADGE_POLL_MS);
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
@@ -279,6 +306,33 @@
   // Goes through flipTargetIds so a selected GROUP counts via its bbox members
   // (the group itself has no flippable box — see there).
   const needsFlippable = (a) => flipTargetIds(a).ids.length > 0;
+
+  // ── THE REASONS a gated command is greyed out ───────────────────────────────
+  // Each completes the sentence "Unavailable — requires …" (core/registry.js
+  // TOOL_POOL states the wording rule; web/Toolbar.svelte, web/ToolsPane.svelte
+  // and the command palette's help section all render it). Every `when` above is
+  // shared by several commands, so the sentence belongs to the GATE and is
+  // written ONCE here rather than copied per entry — a sentence transcribed
+  // fourteen times is fourteen chances to drift, which is the same defect
+  // tests/toolbar_surfacing_test.js exists to have removed from the Toolbar.
+  const REQUIRES_SELECTION = "at least one selected widget";
+  const REQUIRES_HANDLES = "at least one selected modifier point — click a widget first, then one of its points";
+  const REQUIRES_PURGEABLE = "a selected widget that may be removed (THE camera is mandatory, so it can be neither hidden nor purged)";
+  const REQUIRES_MULTI_BBOX = "at least two selected widgets that have a box — a lone widget has no second one to line up against";
+  const REQUIRES_THREE_BBOX = "at least three selected widgets — distributing spaces the ones BETWEEN the two extremes, so two is already evenly spaced";
+
+  // ── HELP shared by a family of commands ─────────────────────────────────────
+  // The optional `help` a surfacing shows on hover (core/commands.js): the
+  // CONSEQUENCE and the reason you would reach for it, never a restatement of the
+  // title. Written once where a whole family behaves the same way, for the same
+  // reason the REQUIRES sentences above are.
+  const HELP_Z_ORDER = "Z is renumbered document-wide after every move: the widget takes a z between its new neighbours and the whole deck is then normalised, so z values you never touched change too. Order is what is preserved, not the numbers.";
+  const HELP_ALIGN = "Aligns to the SELECTION's own edge, not the slide's — the outermost selected widget stays exactly where it is and the rest come to it.";
+  const HELP_DISTRIBUTE = "Leaves the two outermost widgets alone and evens out the gaps between the ones in between, which is why it needs a third widget to have anything to move.";
+  const HELP_MIRROR = "Swaps the widgets' SIDES about the selection's centre and leaves each widget's own content untouched. Flip Content is the other half — run both to reflect an arrangement completely.";
+  const HELP_EXPORT_CAMERA = "THE CAMERA decides the output — its rect IS the image, at its own size and aspect. Not the visible viewport, and not the widgets' extent, so what you export does not change when you pan or zoom.";
+  const HELP_FLIP = "Reverses ONE widget's own content about its own centre (a negative size with the position compensated), leaving it where it sits. Mirror Layout is the one that moves widgets to each other's side.";
+
   // Per-theme palette icons (mdi), keyed by THEMES[].id. No colors (user spec).
   const THEME_ICONS = {
     graphite: "mdi:brightness-6",
@@ -412,11 +466,11 @@
   }
 
   const coreCommands = [
-    { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", when: needsPurgeable, run: (a) => a.deleteSelection() },
-    { id: "purge-item", title: "Purge Item (remove from existence)", icon: "mdi:delete-forever-outline", when: needsPurgeable, run: (a) => a.purgeSelection() },
+    { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Keyframes `active` off from this slide onward. The widget still exists and still appears on the slides before this one — Show puts it back, and Purge is the irreversible one.", run: (a) => a.deleteSelection() },
+    { id: "purge-item", title: "Purge Item (remove from existence)", icon: "mdi:delete-forever-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Removes the widget from the DOCUMENT — every slide at once, and Show cannot bring it back. Reach for Delete when you only meant to stop it appearing here.", run: (a) => a.purgeSelection() },
     // The inverse of delete-item — registry-routed per the cruft audit (un-hide
     // previously had NO command surfacing, so it could never get a shortcut).
-    { id: "show-item", title: "Show (activate on this slide)", icon: "mdi:eye-outline", when: needsSelection, run: (a) => a.showSelection() },
+    { id: "show-item", title: "Show (activate on this slide)", icon: "mdi:eye-outline", when: needsSelection, requires: REQUIRES_SELECTION, help: "The inverse of Delete: keyframes `active` back on here, so a widget that was switched off earlier in the deck reappears from this slide onward.", run: (a) => a.showSelection() },
     // ── THE HANDLE SCOPE (selected modifier points — the inner selection scope) ──
     // Deliberately the SAME three verbs as the item block above, one level down, so
     // the vocabulary is learned once. Gated on a live handle selection, which is
@@ -426,26 +480,26 @@
     // shifts every later element's address, so an equation bound to one of them
     // comes to mean its neighbour (core/lists.js indexAfterPurge is the remap the
     // not-yet-built document-wide equation rewrite needs).
-    { id: "hide-points", title: "Hide Points (draw straight past them; nothing is renumbered)", icon: "mdi:eye-off", when: needsHandles, run: (a) => a.setHandleSelectionActive(false) },
-    { id: "show-points", title: "Show Points", icon: "mdi:eye", when: needsHandles, run: (a) => a.setHandleSelectionActive(true) },
-    { id: "purge-points", title: "Purge Points (remove for good — renumbers the later points)", icon: "mdi:delete-forever-outline", when: needsHandles, run: (a) => a.purgeHandleSelection() },
-    { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, run: (a) => a.reorderSelection(+1) },
-    { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, run: (a) => a.reorderSelection(-1) },
-    { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", run: (a) => a.sendToExtreme(+1) },
-    { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, requires: "a selected widget to reorder", run: (a) => a.sendToExtreme(-1) },
-    { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "x", "w") },
-    { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", when: (a) => a.selectedIds().length >= 3, run: (a) => distribute(a, "y", "h") },
+    { id: "hide-points", title: "Hide Points (draw straight past them; nothing is renumbered)", icon: "mdi:eye-off", when: needsHandles, requires: REQUIRES_HANDLES, help: "The point keeps its index, so an equation naming it still means the same point — that is the whole difference from Purge Points.", run: (a) => a.setHandleSelectionActive(false) },
+    { id: "show-points", title: "Show Points", icon: "mdi:eye", when: needsHandles, requires: REQUIRES_HANDLES, run: (a) => a.setHandleSelectionActive(true) },
+    { id: "purge-points", title: "Purge Points (remove for good — renumbers the later points)", icon: "mdi:delete-forever-outline", when: needsHandles, requires: REQUIRES_HANDLES, help: "The renumbering is the part that bites: every later point shifts down an index, so an equation written against point 4 comes to mean what used to be point 5. Hide Points is the non-destructive one.", run: (a) => a.purgeHandleSelection() },
+    { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(+1) },
+    { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(-1) },
+    { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, run: (a) => a.sendToExtreme(+1) },
+    { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, run: (a) => a.sendToExtreme(-1) },
+    { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", when: (a) => a.selectedIds().length >= 3, requires: REQUIRES_THREE_BBOX, help: HELP_DISTRIBUTE, run: (a) => distribute(a, "x", "w") },
+    { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", when: (a) => a.selectedIds().length >= 3, requires: REQUIRES_THREE_BBOX, help: HELP_DISTRIBUTE, run: (a) => distribute(a, "y", "h") },
     // OBJECT ALIGN (manifest 16.3, distinct from 15.6's text-paragraph align):
     // moves every selected bbox widget so its edge/center matches the
     // SELECTION's own collective edge/center — same needsMultiBbox gate as
     // distribute (≥2 items: aligning a single item to itself is a no-op, so
     // unlike distribute's ≥3 this only needs ≥2 to be meaningful).
-    { id: "align-left", title: "Align Left", icon: "mdi:align-horizontal-left", when: needsMultiBbox, run: (a) => align(a, "x", "min") },
-    { id: "align-right", title: "Align Right", icon: "mdi:align-horizontal-right", when: needsMultiBbox, run: (a) => align(a, "x", "max") },
-    { id: "align-top", title: "Align Top", icon: "mdi:align-vertical-top", when: needsMultiBbox, run: (a) => align(a, "y", "min") },
-    { id: "align-bottom", title: "Align Bottom", icon: "mdi:align-vertical-bottom", when: needsMultiBbox, run: (a) => align(a, "y", "max") },
-    { id: "align-center-h", title: "Align Center Horizontal", icon: "mdi:align-horizontal-center", when: needsMultiBbox, run: (a) => align(a, "x", "center") },
-    { id: "align-center-v", title: "Align Center Vertical", icon: "mdi:align-vertical-center", when: needsMultiBbox, run: (a) => align(a, "y", "center") },
+    { id: "align-left", title: "Align Left", icon: "mdi:align-horizontal-left", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "x", "min") },
+    { id: "align-right", title: "Align Right", icon: "mdi:align-horizontal-right", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "x", "max") },
+    { id: "align-top", title: "Align Top", icon: "mdi:align-vertical-top", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "y", "min") },
+    { id: "align-bottom", title: "Align Bottom", icon: "mdi:align-vertical-bottom", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "y", "max") },
+    { id: "align-center-h", title: "Align Center Horizontal", icon: "mdi:align-horizontal-center", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "x", "center") },
+    { id: "align-center-v", title: "Align Center Vertical", icon: "mdi:align-vertical-center", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "y", "center") },
     // MIRROR (manifest 16.3): LAYOUT-ONLY mirror — reflects each selected
     // item's POSITION about the selection's own center axis; items swap
     // sides but their own content is NOT flipped. Titled "Mirror Layout"
@@ -457,16 +511,16 @@
     // reverses each item's own content, and together they reflect an
     // arrangement completely. See core/geometry.js mirroredPosition and
     // flippedBox for the two pieces of math.
-    { id: "mirror-h", title: "Mirror Layout Horizontal", icon: "mdi:flip-horizontal", when: needsMultiBbox, run: (a) => mirror(a, "x") },
-    { id: "mirror-v", title: "Mirror Layout Vertical", icon: "mdi:flip-vertical", when: needsMultiBbox, run: (a) => mirror(a, "y") },
+    { id: "mirror-h", title: "Mirror Layout Horizontal", icon: "mdi:flip-horizontal", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_MIRROR, run: (a) => mirror(a, "x") },
+    { id: "mirror-v", title: "Mirror Layout Vertical", icon: "mdi:flip-vertical", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_MIRROR, run: (a) => mirror(a, "y") },
     // FLIP (the CONTENT reflection — see the `flip` helper below). Needs only ONE
     // item, unlike align/mirror: a lone widget has its own center to reflect
     // about, so there is nothing arbitrary to invent here. The titles say
     // "Content" because "Flip" alone next to "Mirror Layout" would leave the
     // difference to be guessed — the same reason `mirror-h` is not plain "Mirror"
     // and `unbind-from-camera` names the keys it touches.
-    { id: "flip-h", title: "Flip Content Horizontal (mirror left ↔ right)", icon: "mdi:flip-horizontal", when: needsFlippable, requires: "a selected widget with a width to flip", run: (a) => flip(a, "x") },
-    { id: "flip-v", title: "Flip Content Vertical (mirror top ↔ bottom)", icon: "mdi:flip-vertical", when: needsFlippable, requires: "a selected widget with a height to flip", run: (a) => flip(a, "y") },
+    { id: "flip-h", title: "Flip Content Horizontal (mirror left ↔ right)", icon: "mdi:flip-horizontal", when: needsFlippable, requires: "a selected widget with a width to flip", help: HELP_FLIP, run: (a) => flip(a, "x") },
+    { id: "flip-v", title: "Flip Content Vertical (mirror top ↔ bottom)", icon: "mdi:flip-vertical", when: needsFlippable, requires: "a selected widget with a height to flip", help: HELP_FLIP, run: (a) => flip(a, "y") },
     // FLAGGED — PENDING USER RATIFICATION: no keybindings assigned to any of
     // the 10 align/mirror/flip commands above. Followed the exact precedent of
     // distribute-h/distribute-v (also palette-only, no bound keys) rather
@@ -498,6 +552,8 @@
       title: "Bind Position & Size to Camera",
       icon: "mdi:link-variant",
       when: (a) => cameraBindWrite(a).length > 0,
+      requires: CAMERA_BIND_REQUIRES,
+      help: CAMERA_BIND_HELP,
       preview: (a) => {
         a.setPreview(cameraBindWrite(a));
         return () => a.cancelPreview();
@@ -520,6 +576,8 @@
       title: "Unbind Position & Size (freeze x/y/w/h to numbers)",
       icon: "mdi:link-variant-off",
       when: (a) => cameraFreezeWrite(a).length > 0,
+      requires: CAMERA_FREEZE_REQUIRES,
+      help: CAMERA_FREEZE_HELP,
       preview: (a) => {
         a.setPreview(cameraFreezeWrite(a));
         return () => a.cancelPreview();
@@ -532,8 +590,8 @@
     // GROUPS (manifest rough draft): Group Selection needs ≥2 groupable items;
     // Ungroup is enabled when any selected node is a group. Both operate on the
     // selection through the app helpers (which own the AABB + keyframe baking).
-    { id: "group", title: "Group Selection", icon: "mdi:group", when: (a) => a.canGroup(), run: (a) => a.groupSelection() },
-    { id: "ungroup", title: "Ungroup", icon: "mdi:ungroup", when: (a) => a.selectedNodes().some((n) => n.type === "group"), run: (a) => a.ungroupSelection() },
+    { id: "group", title: "Group Selection", icon: "mdi:group", when: (a) => a.canGroup(), requires: "at least two groupable widgets — a one-widget group is inert, so grouping starts at two", help: "A group is a flat MEMBERSHIP parent, not a nested object: every member keeps its own id, its own keyframes and its own place in the delta, and gains one box that moves and resizes them together.", run: (a) => a.groupSelection() },
+    { id: "ungroup", title: "Ungroup", icon: "mdi:ungroup", when: (a) => a.selectedNodes().some((n) => n.type === "group"), requires: "a selected group", help: "Dissolves the group and BAKES what its box was doing into the members, so they stay exactly where they look like they are rather than springing back to their pre-group values.", run: (a) => a.ungroupSelection() },
     // ARRANGE INTO GRID (the bento tool): lays the selection out as a BENTO GRID.
     // Same ≥2-bbox gate as align/mirror. INTERACTIVE (palette commands take no
     // args): `run` opens the Office-style grid-size picker; its confirm calls
@@ -543,10 +601,10 @@
     // if that lane hasn't merged yet (the picker + pure math still work).
     // Ellipsis per the storage-vocabulary rule below: `run` opens the grid-size
     // picker, so it needs further input before anything happens.
-    { id: "arrange-grid", title: "Arrange into Grid…", icon: "mdi:view-grid-plus-outline", when: needsMultiBbox, run: (a) => a.arrangeIntoGrid() },
+    { id: "arrange-grid", title: "Arrange into Grid…", icon: "mdi:view-grid-plus-outline", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: "Creates ONE bento widget sized to the selection's combined box and re-flows each widget's centre into a cell. The widgets are MOVED, not parented — the bento is a layout scaffold they sit on, so moving one afterwards just moves it.", run: (a) => a.arrangeIntoGrid() },
     { id: "toggle-anchors", title: "Toggle Anchor Visibility", icon: "mdi:anchor", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
-    { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", run: (a) => a.toggleSnapSize() },
+    { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", help: "Adds the OTHER widgets' widths and heights as snap targets while resizing, so two widgets can be made exactly the same size without reading a number off either.", run: (a) => a.toggleSnapSize() },
     { id: "toggle-minimap", title: "Toggle Minimap", icon: "mdi:map-outline", run: (a) => a.toggleMinimap() },
     { id: "toggle-fps", title: "Toggle FPS Counter", icon: "mdi:speedometer", run: (a) => a.toggleFps() },
     { id: "toggle-grid", title: "Toggle Grid", icon: "mdi:grid", run: (a) => a.toggleGrid() },
@@ -570,13 +628,13 @@
     // icon-override case as the anchor and ghost composites — so the entry's icon
     // is the neutral both-states glyph the palette shows.
     { id: "toggle-light-dark", title: "Toggle Light / Dark Theme", icon: "mdi:theme-light-dark", run: (a) => a.toggleLightDark() },
-    { id: "new-slide", title: "New Slide", icon: "mdi:plus-box-outline", run: (a) => a.addSlide() },
+    { id: "new-slide", title: "New Slide", icon: "mdi:plus-box-outline", help: "The new slide starts as an EMPTY delta, so it looks identical to the one before it until you change something — and then only the difference is recorded. That is what makes a widget on both slides the same widget.", run: (a) => a.addSlide() },
     // "Fresh" said nothing next to plain "New Slide"; the id and the handler both
     // say BLANK (addBlankSlide), and the parenthetical now uses the same word as
     // delete-item's "deactivate" for the same underlying operation.
-    { id: "new-blank-slide", title: "New Blank Slide (deactivates every visible item)", icon: "mdi:plus-box", run: (a) => a.addBlankSlide() },
-    { id: "delete-slide", title: "Delete Slide", icon: "mdi:file-remove-outline", when: (a) => a.doc.slides.length > 1, run: (a) => a.deleteSlide() },
-    { id: "toggle-slide", title: "Toggle Slide Visibility (enable/disable delta)", icon: "mdi:eye-check-outline", run: (a) => a.toggleSlide() },
+    { id: "new-blank-slide", title: "New Blank Slide (deactivates every visible item)", icon: "mdi:plus-box", help: "Nothing is purged: the slide keyframes `active` off for each currently visible widget, so you start on an empty stage and can bring any of them back with Show.", run: (a) => a.addBlankSlide() },
+    { id: "delete-slide", title: "Delete Slide", icon: "mdi:file-remove-outline", when: (a) => a.doc.slides.length > 1, requires: "more than one slide — a document always has at least one", help: "Deletes this slide's DELTA, not the widgets in it. Anything an earlier slide created still exists; what is lost is the changes this slide made, so the slides after it now inherit from the one before it.", run: (a) => a.deleteSlide() },
+    { id: "toggle-slide", title: "Toggle Slide Visibility (enable/disable delta)", icon: "mdi:eye-check-outline", help: "A disabled slide is SKIPPED when the deltas are folded, so every slide after it inherits as though it were not there — the way to park a variant without deleting it.", run: (a) => a.toggleSlide() },
     { id: "move-slide-up", title: "Move Slide Up", icon: "mdi:arrow-up", run: (a) => a.moveSlide(-1) },
     { id: "move-slide-down", title: "Move Slide Down", icon: "mdi:arrow-down", run: (a) => a.moveSlide(+1) },
     { id: "next-slide", title: "Next Slide", icon: "mdi:chevron-right", run: (a) => (a.slideIndex = Math.min(a.slideIndex + 1, a.doc.slides.length - 1)) },
@@ -635,14 +693,14 @@
     { id: "builtin-assets", title: "Browse Built-in Assets…", icon: "mdi:package-variant-closed", run: (a) => a.browseBuiltinAssets() },
     { id: "undo", title: "Undo", icon: "mdi:undo", run: (a) => a.undo() },
     { id: "redo", title: "Redo", icon: "mdi:redo", run: (a) => a.redo() },
-    { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, run: (a) => (a.selection = null) },
+    { id: "deselect", title: "Deselect", icon: "mdi:select-off", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => (a.selection = null) },
     // Select All / Deselect All (manifest Round 12B "Palette / selection
     // commands"): distinct from the single-item "Deselect" above (Escape's
     // existing path — needsSelection, singular semantics unaffected) — these
     // are explicit SET commands, always visible, so they're discoverable via
     // fuzzy search without first knowing something is already selected.
     { id: "select-all", title: "Select All", icon: "mdi:select-all", run: (a) => a.selectAll() },
-    { id: "deselect-all", title: "Deselect All", icon: "mdi:select-off", when: needsSelection, run: (a) => a.deselectAll() },
+    { id: "deselect-all", title: "Deselect All", icon: "mdi:select-off", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.deselectAll() },
     // Rubber-band selection — armed via the palette (manifest round 11) OR the
     // toolbar button (Round 12B "Box select round 2"; Toolbar.svelte), and
     // (Round 12B) directly via an empty-space drag with NO arming at all
@@ -752,7 +810,7 @@
         { id: "demo-insert-corkboard-thumbtack", title: "Corkboard Thumbtack (press-in dome)", icon: "mdi:pin", run: (a) => a.armCrosshairPlacement(a.registry.get("corkboardThumbtack")) },
         { id: "demo-insert-corkboard-yarn", title: "Corkboard Yarn (sagging string)", icon: "mdi:vector-line", run: (a) => a.armCrosshairPlacement(a.registry.get("corkboardYarn")) },
         { id: "demo-insert-magnifier", title: "Magnifier", icon: "mdi:magnify", run: (a) => a.armCrosshairPlacement(a.registry.get("magnifier")) },
-        { id: "demo-insert-cursor", title: "macOS Cursor (built-in SVG + ephemeral spin)", icon: "mdi:cursor-default-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("cursor")) },
+        { id: "demo-insert-cursor", title: "macOS Cursor (built-in SVG + animated wait spin)", icon: "mdi:cursor-default-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("cursor")) },
         // A LIVE seven-segment digital clock preset: same clock_digital plugin,
         // but its `time` is pre-bound to the shared `time` identifier (the folded
         // presentation playback clock) so it TICKS during a presentation. The
@@ -815,20 +873,25 @@
     // entry; the plugin declares no `commands` to avoid a duplicate id); arms
     // the generic crosshair placement like every other insert command.
     { id: "add-bento", title: "Add Bento Grid (layout scaffold)", icon: "mdi:view-grid-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("bento")) },
-    { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", run: (a) => a.exportPng() },
-    { id: "export-pdf", title: "Export Slide as PDF", icon: "mdi:file-pdf-box", run: (a) => a.exportPdf() },
-    { id: "export-svg", title: "Export Slide as SVG", icon: "mdi:svg", run: (a) => a.exportSvg() },
+    { id: "export-png", title: "Export Slide as PNG", icon: "mdi:image-outline", help: HELP_EXPORT_CAMERA, run: (a) => a.exportPng() },
+    { id: "export-pdf", title: "Export Slide as PDF", icon: "mdi:file-pdf-box", help: HELP_EXPORT_CAMERA, run: (a) => a.exportPdf() },
+    { id: "export-svg", title: "Export Slide as SVG", icon: "mdi:svg", help: HELP_EXPORT_CAMERA, run: (a) => a.exportSvg() },
     // WHOLE-DECK MP4 (deterministic, client-side). Opens an options modal
     // (resolution/fps/quality/slide range/…); the encode runs there. The title
     // says "All Slides" because the three Export Slide … commands above emit ONE
     // slide and the old "Export as MP4…" gave no way to tell the scopes apart
     // (the modal is where the range gets narrowed, hence the ellipsis).
-    { id: "export-mp4", title: "Export All Slides as MP4…", icon: "mdi:movie-open-outline", run: (a) => a.showExportMp4() },
-    { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", run: (a) => a.copySelection() },
-    { id: "paste", title: "Paste", icon: "mdi:content-paste", run: (a) => a.pasteClipboard() },
+    // THE RENDER CENTER. Submitting a video is no longer an "export" that this
+    // page performs and holds — it is a JOB the server owns, so the command opens
+    // the place where jobs are submitted AND where every past and in-flight
+    // rendering for this project is listed. It TOGGLES, because it is surfaced as
+    // a persistent toolbar button rather than a one-shot menu action.
+    { id: "render-center", title: "Render Center (Video)…", icon: "mdi:movie-open-outline", help: "Submit a video render and watch every rendering for this project. A Server job keeps going if you close the dialog, refresh the page, or shut the laptop — come back any time.", run: (a) => a.toggleRenderCenter() },
+    { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", help: "Copies TWICE, on purpose: the element itself (as deltas, on the server clipboard) and a rendered PNG onto the system clipboard. Pasting back into PowerRP round-trips the real widget; pasting into another app gets the picture.", run: (a) => a.copySelection() },
+    { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the ELEMENT back when the system clipboard still holds the PNG this app wrote for it; any other image or file is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
     // 14.9: Duplicate = clone the selection in place (new UUIDs, one undo unit),
     // reusing the copy/paste serialize→insert path locally (no clipboard trip).
-    { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", when: (a) => a.canDuplicate(), run: (a) => a.duplicateSelection() },
+    { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Each copy gets a NEW id and the SAME raw state, equations verbatim — but a reference INTO the duplicated set is rerouted to the new copy, so duplicating two linked widgets gives you a linked pair, not two widgets pointing at the originals.", run: (a) => a.duplicateSelection() },
     // Copy selection region to the SYSTEM clipboard (manifest Round 12B
     // "Palette / selection commands"): renders the selection's world AABB,
     // not the whole slide (unlike Export Slide as PNG/PDF above). when: selection
@@ -836,12 +899,14 @@
     // The titles name SELECTION because that scope difference was invisible:
     // beside "Export Slide as PNG" a bare "Copy as PNG" read as the same picture
     // going somewhere else, when it is in fact a different picture.
-    { id: "copy-as-png", title: "Copy Selection as PNG", icon: "mdi:image-multiple-outline", when: needsSelection, run: (a) => a.copyAsPng() },
-    { id: "copy-as-pdf", title: "Copy Selection as PDF", icon: "mdi:file-pdf-box", when: needsSelection, run: (a) => a.copyAsPdf() },
+    { id: "copy-as-png", title: "Copy Selection as PNG", icon: "mdi:image-multiple-outline", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.copyAsPng() },
+    { id: "copy-as-pdf", title: "Copy Selection as PDF", icon: "mdi:file-pdf-box", when: needsSelection, requires: REQUIRES_SELECTION, help: "Vector where it can be: shapes and text stay real PDF geometry (text is still selectable in the pasted result), and only the regions that cannot be expressed as vectors — a blur, a material — go across as raster.", run: (a) => a.copyAsPdf() },
     {
       id: "copy-property",
       title: "Copy Property",
       when: needsSelection,
+      requires: REQUIRES_SELECTION,
+      help: "Copies ONE property's value — the equation verbatim if it is one — so it can be pasted onto the same property of another widget. The children are the properties the registered widgets actually declare.",
       children: [...new Map(
         app.registry.all().flatMap((p) => (p.inspector ?? []).map((row) => [row.key, row.label])),
       )].map(([key, label]) => ({
@@ -849,6 +914,7 @@
         title: `Copy ${label}`,
         icon: "mdi:content-copy",
         when: (a) => a.selectedNode() && key in a.selectedNode().state,
+        requires: "a single selected widget that actually has this property",
         run: (a) => a.copyProperty(key),
       })),
     },
@@ -1159,6 +1225,7 @@
       dragKinds: DRAG_KINDS,
       canvasModeIds: [null, ...canvasModes().map((m) => m.handlerId)],
       canvasModeSteps: canvasModeStepAxis(canvasModes()),
+      activationIds: activations().map((a) => a.handlerId),
       app,
     });
     for (const e of unsatisfiableEntries(entries, contexts))
@@ -1281,6 +1348,14 @@
       // "now drag where the magnified view goes" off ONE mechanism — see
       // core/shortcut_entries.js inCanvasStep.
       canvasModeStep: app.canvasMode?.step ?? 0,
+      // WHAT A DOUBLE-CLICK ON THE SELECTED WIDGET WOULD DO: the ACTIVATE handler
+      // id its plugin declares (web/widget_handlers.js), or null for a widget with
+      // no activation — a rect. The crosshairArmed shape again: one field serving
+      // as both "is there anything to announce" and the per-handler discriminator
+      // core/shortcut_entries.js `activatable` scopes each activation's chip with.
+      // Resolved from the plugin's declaration, so it is the SAME resolution
+      // CanvasView's onDblClick performs to run the behaviour.
+      activation: handlerFor("activate", app.selectedNode()?.plugin ?? {})?.id ?? null,
       modalActive: app.modalXform !== null, // a live G/S transform locks input (Blender modal)
       snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: "A = anchor snap" while a drag has an active snap
       // ── THE FOCUS AXES ────────────────────────────────────────────────────
@@ -1431,7 +1506,7 @@
 />
 
 <div class="app">
-  <Toolbar {app} />
+  <Toolbar {app} {renderBadge} />
   <div class="main">
     <SplitPane orientation="horizontal" bind:splits={hSplits}>
       {#snippet children(col)}
@@ -1609,12 +1684,12 @@
   <Modal bind:open={gridPickerVisible} title="Arrange into Grid" size="compact">
     <GridSizePicker itemCount={gridPickerCount} onconfirm={confirmGrid} />
   </Modal>
-  <!-- Export as MP4… — the shared Modal at its content-sized default, hosting the
-       export form. Frames render deterministically CLIENT-side; the SERVER
-       encodes the H.264 MP4 (ffmpeg) so it works on plain HTTP everywhere. -->
-  <Modal bind:open={exportMp4Visible} title="Export as MP4">
-    {#if exportMp4Visible}
-      <ExportMp4Modal {app} />
+  <!-- RENDER CENTER — submit on the left, this project's renderings on the right.
+       A submitted job belongs to the SERVER, so closing this dialog (or the tab)
+       does not touch it; reopening re-reads the same truth from the backend. -->
+  <Modal bind:open={renderCenterVisible} title="Render Center">
+    {#if renderCenterVisible}
+      <RenderCenterModal {app} />
     {/if}
   </Modal>
 </div>

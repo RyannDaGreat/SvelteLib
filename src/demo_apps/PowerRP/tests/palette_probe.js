@@ -11,6 +11,19 @@
  * agents' in-flight WIP is recorded as a baseline and ignored, same
  * convention as modal_xform_probe.js).
  *
+ * SCENARIOS 8-11 are the CONTEXT-SENSITIVITY pass (user: "I'm seeing a 'Respace
+ * Filmstrip Frames' option in the command palette, even though I'm not selecting
+ * a filmstrip … it could be grayed out for now, and even just that some tooltip
+ * tells us why it's grayed out"). 8 is the FORWARD INVARIANT and the reason this
+ * lives in a browser probe rather than a node test: only the booted app has the
+ * whole registry — web/App.svelte's entries cannot be imported in bare node, and
+ * a node test would have to re-list them, which is the mirrored-shape defect this
+ * project keeps rediscovering. It sweeps app.commands.all() and fails on the NEXT
+ * command someone adds without a gate or without a reason, not on a list of the
+ * ones known to be wrong today. 9-11 are the rendered half: greyed and listed
+ * rather than dropped, inert under Enter, and a help section that is absent
+ * rather than empty.
+ *
  * Run from SvelteLib root:
  *   node src/demo_apps/PowerRP/tests/palette_probe.js <shot_dir>
  */
@@ -28,7 +41,11 @@ const RECT = "c5c2bed3";
 
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),
-  server: { port: 0, open: false, host: "127.0.0.1" },
+  // hmr:false + watch:null — the house probe convention (activation_probe.js et
+  // al). Without it a concurrent save anywhere in the tree triggers a full page
+  // reload mid-run and every later page.evaluate dies with "Execution context was
+  // destroyed"; a one-shot headless run has no developer to benefit from HMR.
+  server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null },
 });
 await server.listen();
 const port = server.httpServer.address().port;
@@ -209,6 +226,174 @@ try {
     check("copy-pdf-fallback-warned", warnings.some((w) => w.includes("Copy as PDF") && w.includes("falling back to downloading")),
       `warnings=${JSON.stringify(warnings)}`);
   }
+
+  // ── Scenario 8: THE REGISTRY SWEEP (forward invariant) ─────────────────────
+  // Read off app.commands.all(), never a list of ids written here: a guard that
+  // enumerates the commands it expects is a mirror of another module's shape, and
+  // it goes quiet exactly when someone adds the next command. Sweeping the live
+  // registry means a command registered in web/App.svelte, in a plugin, or as a
+  // submenu child is all covered by construction.
+  const sweep = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    // A command whose implementation READS THE SELECTION is context-sensitive by
+    // construction, so it must declare the gate that greys it out. Derived from
+    // the entry's own `run` source rather than declared anywhere: that is what
+    // makes it impossible to add a selection command and forget.
+    const READS_SELECTION = /Selection|selectedIds|selectedNode|\.selection\b/;
+    const rows = app.commands.all().map((c) => ({
+      id: c.id,
+      hasWhen: typeof c.when === "function",
+      requires: c.requires ?? null,
+      help: c.help ?? null,
+      title: c.title,
+      readsSelection: typeof c.run === "function" && READS_SELECTION.test(String(c.run)),
+    }));
+    return {
+      total: rows.length,
+      // (a) A GATED COMMAND EXPLAINS ITSELF. A `when` with no `requires` greys a
+      //     row out and says nothing about why — the defect this pass removes.
+      mute: rows.filter((r) => r.hasWhen && (typeof r.requires !== "string" || !r.requires.trim())).map((r) => r.id),
+      // (b) A CONTEXT-SENSITIVE COMMAND DECLARES ITS CONTEXT. Without a `when` it
+      //     renders fully enabled and then refuses at run time.
+      ungatedSelectionCommands: rows.filter((r) => r.readsSelection && !r.hasWhen).map((r) => r.id),
+      // How many entries the heuristic classes as selection-reading AT ALL. A
+      // floor on this is what stops (b) passing because the regex stopped
+      // matching anything rather than because every command declares its gate.
+      readsSelection: rows.filter((r) => r.readsSelection).length,
+      // (c) `help`, when present, is a non-empty string that is not the title
+      //     again (a restatement is noise in the section it renders into).
+      badHelp: rows.filter((r) => r.help !== null && (typeof r.help !== "string" || !r.help.trim() || r.help.trim() === r.title.trim())).map((r) => r.id),
+      // A floor, so a broken accessor cannot make all three pass vacuously.
+      gated: rows.filter((r) => r.hasWhen).length,
+      helped: rows.filter((r) => r.help !== null).length,
+    };
+  });
+  // FLOORS, not counts: entries come and go, so these only catch an accessor or a
+  // regex that stopped finding anything (which would make every check below pass
+  // vacuously). `total` is in the hundreds because `copy-property` generates one
+  // child per property key across every registered plugin, and each child is
+  // gated — hence `gated` running close to `total`. Measured at the time of
+  // writing: total 590, gated 443, readsSelection 14.
+  check("sweep-registry-readable", sweep.total > 100 && sweep.gated > 20 && sweep.readsSelection >= 10,
+    `sweep=${JSON.stringify({ total: sweep.total, gated: sweep.gated, readsSelection: sweep.readsSelection })}`);
+  check("sweep-every-gated-command-explains-itself", sweep.mute.length === 0,
+    `these declare a \`when\` but no \`requires\`, so they grey out silently: ${sweep.mute.join(", ")}. Add the clause completing "Unavailable — requires …".`);
+  // PENDING HANDBACK PIN, the technique tests/toolbar_surfacing_test.js used for
+  // exactly this situation and then INVERTED once the patch landed. The sweep
+  // finds ONE straggler: `filmstrip-respace-frames` reads app.selectedIds() and
+  // declares no `when`, which is the command the user actually reported seeing
+  // with no filmstrip selected. plugins/filmstrip.js is owned by another lane
+  // this round, so the fix is handed back rather than applied here, and the id is
+  // pinned so the invariant can be live TODAY instead of after the handback.
+  //
+  // THIS LIST MUST ONLY EVER SHRINK. It is not the invariant — the invariant is
+  // the sweep above it, which is derived from the registry and needs no list.
+  // Deleting the last entry (after the handback lands) is what finishes the job;
+  // adding an entry is how you would smuggle the defect back in.
+  const UNGATED_SELECTION_HANDBACK = ["filmstrip-respace-frames"];
+  const unpinned = sweep.ungatedSelectionCommands.filter((id) => !UNGATED_SELECTION_HANDBACK.includes(id));
+  check("sweep-every-selection-command-declares-its-gate", unpinned.length === 0,
+    `these read the selection in \`run\` but declare no \`when\`, so the palette offers them with nothing selected and they refuse at run time: ${unpinned.join(", ")}.`);
+  check("sweep-handback-pin-is-still-needed", UNGATED_SELECTION_HANDBACK.every((id) => sweep.ungatedSelectionCommands.includes(id)),
+    `the pin lists ${JSON.stringify(UNGATED_SELECTION_HANDBACK)} but the sweep no longer flags all of them (${JSON.stringify(sweep.ungatedSelectionCommands)}) — the handback landed, so delete the fixed id from the pin rather than leaving a stale exemption behind.`);
+  check("sweep-help-is-not-a-restated-title", sweep.badHelp.length === 0, `badHelp=${sweep.badHelp.join(", ")}`);
+  check("sweep-help-actually-written", sweep.helped >= 20, `only ${sweep.helped} commands declare help`);
+
+  // ── Scenario 9: an unavailable command is SHOWN AND GREYED, not dropped ────
+  // The user's report: a command that cannot apply must still be findable, and
+  // must say why it cannot run. Nothing is selected at this point (scenario 5
+  // deselected, and 6/7 selected the rect) — so deselect first and use Purge,
+  // whose gate is a selection.
+  await page.evaluate(() => { window.__powerrp_app.selection = null; window.__powerrp_app.paletteOpen = true; });
+  await new Promise((r) => setTimeout(r, 120));
+  await page.type(".palette input", "purge item");
+  await new Promise((r) => setTimeout(r, 150));
+  const greyed = await page.evaluate(() => {
+    const row = document.querySelector(".palette-item");
+    const help = document.querySelector(".palette-help");
+    return {
+      rowPresent: !!row,
+      title: row?.querySelector(".title")?.textContent ?? null,
+      ariaDisabled: row?.getAttribute("aria-disabled") ?? null,
+      hasUnavailableClass: !!row?.classList.contains("unavailable"),
+      // A native `disabled` button fires no pointer events, which would make the
+      // reason unreachable by hover — the attribute must NOT be used here.
+      nativeDisabled: row?.disabled ?? null,
+      reason: help?.querySelector(".tool-tip-requires")?.textContent ?? null,
+      helpText: help?.querySelector(".palette-help-text")?.textContent ?? null,
+    };
+  });
+  check("unavailable-command-still-listed", greyed.rowPresent && /Purge Item/.test(greyed.title ?? ""), `greyed=${JSON.stringify(greyed)}`);
+  check("unavailable-command-marked", greyed.ariaDisabled === "true" && greyed.hasUnavailableClass, `greyed=${JSON.stringify(greyed)}`);
+  check("unavailable-command-not-natively-disabled", greyed.nativeDisabled === false, `nativeDisabled=${greyed.nativeDisabled}`);
+  check("unavailable-command-says-why", /^Unavailable — requires .+/.test(greyed.reason ?? ""), `reason=${JSON.stringify(greyed.reason)}`);
+  check("help-section-shows-help-too", (greyed.helpText ?? "").length > 20, `helpText=${JSON.stringify(greyed.helpText)}`);
+
+
+  // ── Scenario 10: Enter on a greyed row is INERT and leaves the palette open ─
+  // Closing on a command that then refuses to run would be the worst of both:
+  // no action, and the explanation gone from the screen.
+  const slidesBefore = await page.evaluate(() => window.__powerrp_app.doc.slides.length);
+  await page.keyboard.press("Enter");
+  await new Promise((r) => setTimeout(r, 120));
+  check("enter-on-greyed-row-keeps-palette-open", (await paletteOpen()) === true);
+  check("enter-on-greyed-row-changes-nothing", (await page.evaluate(() => window.__powerrp_app.doc.slides.length)) === slidesBefore);
+
+  // ── Scenario 11: the help section is ABSENT, not empty, with nothing to say ─
+  // "Select All" is available (so no reason) and deliberately carries no help —
+  // an obvious command does not get a paragraph. Chosen by PROPERTY, not by name:
+  // the assertion below re-checks that this row really has neither before
+  // concluding anything from the missing section.
+  await page.evaluate(() => { document.querySelector(".palette input").value = ""; });
+  await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
+  await new Promise((r) => setTimeout(r, 80));
+  await page.evaluate(() => { window.__powerrp_app.paletteOpen = true; });
+  await new Promise((r) => setTimeout(r, 120));
+  await page.type(".palette input", "select all");
+  await new Promise((r) => setTimeout(r, 150));
+  const quiet = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const entry = app.commands.get("select-all");
+    return {
+      declaresNeither: !entry.help && !entry.when,
+      title: document.querySelector(".palette-item .title")?.textContent ?? null,
+      sectionPresent: !!document.querySelector(".palette-help"),
+    };
+  });
+  check("quiet-command-declares-neither", quiet.declaresNeither, `quiet=${JSON.stringify(quiet)}`);
+  check("quiet-command-row-is-the-one-highlighted", /Select All/.test(quiet.title ?? ""), `title=${JSON.stringify(quiet.title)}`);
+  check("help-section-absent-when-nothing-to-say", quiet.sectionPresent === false, "the help band rendered empty instead of not rendering");
+  await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
+
+  // ── Scenario 12: GREY IS ACTUALLY GREY ─────────────────────────────────────
+  // The class and the aria attribute in scenario 9 prove the MARKUP is right;
+  // this proves the user can SEE it, by comparing rendered opacity between an
+  // available and an unavailable row IN THE SAME LIST — the only comparison that
+  // means anything, since a list where everything happens to be gated looks
+  // normal rather than faded. "select" with nothing selected returns both kinds
+  // (Select All / Select in Box are live; Deselect, Copy Selection as PNG/PDF and
+  // Group Selection are not). LAST, because it leaves the palette on a query
+  // whose top row is runnable.
+  await new Promise((r) => setTimeout(r, 80));
+  await page.evaluate(() => { window.__powerrp_app.paletteOpen = true; });
+  await new Promise((r) => setTimeout(r, 120));
+  await page.type(".palette input", "select");
+  await new Promise((r) => setTimeout(r, 150));
+  const fade = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".palette-item")].map((el) => ({
+      unavailable: el.classList.contains("unavailable"),
+      opacity: Number(getComputedStyle(el).opacity),
+    }));
+    return {
+      live: rows.filter((r) => !r.unavailable).map((r) => r.opacity),
+      greyed: rows.filter((r) => r.unavailable).map((r) => r.opacity),
+    };
+  });
+  check("fade-list-has-both-kinds", fade.live.length > 0 && fade.greyed.length > 0, `fade=${JSON.stringify(fade)}`);
+  check("greyed-rows-render-fainter-than-live-ones",
+    fade.greyed.length > 0 && fade.live.length > 0 && Math.max(...fade.greyed) < Math.min(...fade.live),
+    `fade=${JSON.stringify(fade)} — the unavailable class is on the row but does not dim it`);
+  await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
 
   const newErrors = errors.slice(bootErrors);
   if (newErrors.length) failures.push(`console errors during palette probe: ${newErrors.join(" | ")}`);
