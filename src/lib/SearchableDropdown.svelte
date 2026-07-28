@@ -160,13 +160,19 @@
   /* The search field fills the header (Dropdown pads the .dd-header around it).
      Chains to Dropdown's own --dd-* tokens so it follows the same theme, with a
      standalone literal fallback — the house pattern for lib components. */
+  /* NO box around the search (user ruling — "just a slightly different color");
+     the in-app precedent is the COMMAND PALETTE's input: borderless, set apart
+     by a background tint and a bottom hairline. A subtle brightening on the
+     dropdown bg does the "different color"; focus brightens the hairline
+     instead of drawing a ring. */
   .sd-search {
     box-sizing: border-box;
     width: 100%;
-    background: var(--dd-bg, rgba(20, 20, 30, 0.92));
+    background: color-mix(in srgb, var(--dd-fg, #e0e0e0) 7%, var(--dd-bg, rgba(20, 20, 30, 0.92)));
     color: var(--dd-fg, #e0e0e0);
-    border: 1px solid var(--dd-border, rgba(255, 255, 255, 0.18));
-    border-radius: var(--dd-radius, 6px);
+    border: 0;
+    border-bottom: 1px solid var(--dd-border, rgba(255, 255, 255, 0.18));
+    border-radius: 0;
     padding: var(--dd-padding, 4px 10px);
     font: inherit;
     font-size: var(--dd-font-size, 0.85rem);
@@ -176,7 +182,7 @@
   }
   .sd-search:focus {
     outline: none;
-    border-color: var(--dd-active-bg, #7aa2f7);
+    border-bottom-color: var(--dd-active-bg, #7aa2f7);
   }
 
   /* Matched characters: bold + accent-tinted, no boxy background that would
