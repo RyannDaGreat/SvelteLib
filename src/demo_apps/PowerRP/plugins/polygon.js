@@ -642,9 +642,15 @@ export const polygonPlugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    // NO row for `points`: ROW_KINDS has no list control and `inspector` is a
-    // static array, so neither one list row nor N vertex rows can be declared —
-    // see the header's gap #2. The vertices are edited by their canvas handles.
+    // THE VERTEX LIST as a property row — ONE declaration, not N vertex rows:
+    // `points` is kind "list" (core/properties.js), so the row IS its list
+    // declaration and web/ListField.svelte renders every element from it (x/y
+    // NumericFields with per-element `=`, a visibility eye, insert-between, purge).
+    // This row could not exist until that control did: before it, a list row fell
+    // through the Inspector's catch-all TEXT input, which would have committed a
+    // string over the vertex array. The canvas handles still edit the same
+    // vertices — same state, two surfaces.
+    ...props("points"),
     { key: "closed", label: "Closed", kind: "boolean", category: "formatting", help: "Join the last point back to the first, which encloses an area so the shape can be filled. Off draws an open line through the points with no fill. A two-point shape encloses nothing, so it stays a line either way." },
     ...props("fill", "stroke", "strokeWidth"),
     ...props("opacity"),
@@ -769,11 +775,15 @@ export const polygonPlugin = {
    * EVERY stored vertex gets a handle, hidden ones included — a hidden vertex
    * that lost its handle could never be shown again, and it is still a real,
    * addressable, draggable element (hide takes it off the OUTLINE, not out of the
-   * list). `element` declares WHICH list element the handle is, so the universal
-   * handle actions (hide/show, purge) can operate on it without knowing anything
-   * about polygons: a handle that is not a list element simply omits it (a donut's
-   * inner-radius handle has nothing to hide). `active` is the flag those actions
-   * toggle, read through core/lists.elementActive so absent means visible.
+   * list). `element` declares WHICH list element the handle is — the LIST
+   * DECLARATION itself, by reference, plus the index — so the universal handle
+   * actions (hide/show, purge) can operate on it without knowing anything about
+   * polygons: they read the storage form, the order flavour and the visibility
+   * companion key straight off the one declaration core/properties.js owns, with no
+   * lookup that could resolve to a second copy. A handle that is not a list element
+   * simply omits it (a donut's inner-radius handle has nothing to hide). `active` is
+   * the flag those actions toggle, read through core/lists.elementActive so absent
+   * means visible.
    *
    * The handle is placed in LOCAL units and `apply` receives the drag in LOCAL
    * units (CanvasView inverts through node.world first), so this never reasons
@@ -783,7 +793,8 @@ export const polygonPlugin = {
    *
    * @example polygonPlugin.modifierPoints({points: [[0, 0], [1, 1]], w: 100, h: 50}).map((m) => m.id) // ["p0", "p1"]
    * @example polygonPlugin.modifierPoints({points: [[0, 0], [1, 1]], w: 100, h: 50})[1].x // 100
-   * @example polygonPlugin.modifierPoints({points: [[0, 0], [1, 1]], w: 100, h: 50})[1].element // {listKey: "points", index: 1}
+   * @example polygonPlugin.modifierPoints({points: [[0, 0], [1, 1]], w: 100, h: 50})[1].element.index // 1
+   * @example polygonPlugin.modifierPoints({points: [[0, 0], [1, 1]], w: 100, h: 50})[1].element.list === POINTS_LIST // true
    * @example polygonPlugin.modifierPoints({points: [[0, 0], [1, 1]], pointsActive: [true, false], w: 100, h: 50}).map((m) => m.active) // [true, false]
    */
   modifierPoints(s) {
@@ -792,7 +803,7 @@ export const polygonPlugin = {
     return normalizedPoints(s).map(([nx, ny], i) => ({
       id: `p${i}`,
       x: nx * w, y: ny * h,
-      element: { listKey: POINTS_LIST.key, index: i },
+      element: { list: POINTS_LIST, index: i },
       active: elementActive(active, i),
       apply(state, localPoint) {
         const pts = normalizedPoints(state);

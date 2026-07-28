@@ -667,6 +667,91 @@ export function nodeAnchors(node) {
   });
 }
 
+// ── THE HANDLE-CONSTRAINT PROTOCOL ───────────────────────────────────────────
+// A constrained handle answers TWO separable questions, and welding them
+// together is what kept modifier points drag-only:
+//   WHERE may it go?  `constrain(state, desired) → allowed`  — the projection
+//   HOW is that stored? `apply(state, allowed) → partial state` — the inverse
+// Every constraint used to live IMPERATIVELY inside `apply` (each one clamped or
+// dropped a coordinate on its way to writing a parameter), so only a mouse drag
+// could drive a handle: nothing could ASK where a handle was allowed to be
+// without also committing a write. Declaring the projection makes any source of
+// a desired point a valid driver — a drag, an equation, or a BINDING TO ANOTHER
+// ANCHOR (the reason this protocol exists) — exactly the move the activation
+// registry made: take something imperative and buried, declare it, and N
+// consumers become possible.
+//
+// CONVENTION (the documented reading, not something the mechanism enforces):
+// `constrain` returns the NEAREST point of the handle's allowed set, so it is a
+// metric projection and therefore IDEMPOTENT — which is what licenses composing
+// it with an `apply` that constrains again internally, and what makes
+// constraintPull below a free second consumer instead of a second declaration.
+// The signature is deliberately GENERIC (a point → a point in the same space),
+// so a future non-projection use is a new convention, not a violation.
+//
+// COORDINATE SPACE: LOCAL units, always. nodeModifierPoints wraps a handle's
+// position local→world and CanvasView inverts the SAME world back before calling
+// either hook, so rotation and scale are correct BY CONSTRUCTION and no plugin
+// reasons about them. One consequence to state out loud because it is a design
+// choice and not an oversight: under NON-UNIFORM scale, nearest-in-local is not
+// nearest-in-world. The constraint is a statement about the widget's own
+// parameters (a donut's inner radius runs along ITS x axis), so LOCAL is where it
+// is meaningful and where "nearest" is defined. Do not "fix" this into world
+// space — that would make a squashed donut's handle answer a question nobody
+// asked.
+
+/**
+ * Pure function. THE DEFAULT constraint: the identity map — a handle with no
+ * declared `constrain` allows EVERY point, so a desired point is already
+ * allowed. Widgets override it only when they genuinely restrict a handle
+ * (a polygon vertex goes anywhere; a donut's inner-radius handle does not).
+ *
+ * @example UNCONSTRAINED({}, {x: 3, y: 4}) // {x: 3, y: 4}
+ */
+export function UNCONSTRAINED(state, desired) {
+  return desired;
+}
+
+/**
+ * Pure function. Drive a modifier point from a DESIRED local point: project it
+ * onto what the handle allows, then ask the handle how to store THAT. The one
+ * composed driver — every consumer (CanvasView's drag today, an anchor binding
+ * tomorrow) goes through here rather than re-pairing the two hooks, so "constrain
+ * then apply" is written down exactly once.
+ *
+ * Args:
+ *   mp (object): a modifier point from nodeModifierPoints (constrain defaulted)
+ *   state (object): the item's evaluated state
+ *   desired ({x, y}): the desired handle position, LOCAL units
+ *
+ * Returns:
+ *   object: the partial state write
+ *
+ * @example modifierWrite({constrain: (s, p) => ({x: p.x, y: 0}), apply: (s, p) => ({v: p.x + p.y})}, {}, {x: 5, y: 99}) // {v: 5} (the y the constraint removed cannot reach the write)
+ * @example modifierWrite({constrain: UNCONSTRAINED, apply: (s, p) => ({v: p.y})}, {}, {x: 5, y: 99}) // {v: 99}
+ */
+export function modifierWrite(mp, state, desired) {
+  return mp.apply(state, mp.constrain(state, desired));
+}
+
+/**
+ * Pure function. How far the constraint PULLED a desired point: the distance
+ * from `desired` to the nearest allowed point, |p − constrain(p)|. Zero exactly
+ * when the point was already allowed.
+ *
+ * This is the projection's free second consumer — the same declaration answers
+ * "how far did the constraint drag my pointer" (a resisted drag) and "which
+ * handle is nearest what I am pointing at" (hit-testing among handles), with no
+ * second thing for a widget to declare or keep in sync.
+ *
+ * @example constraintPull({constrain: (s, p) => ({x: p.x, y: 0})}, {}, {x: 5, y: 3}) // 3
+ * @example constraintPull({constrain: UNCONSTRAINED}, {}, {x: 5, y: 3}) // 0
+ */
+export function constraintPull(mp, state, desired) {
+  const allowed = mp.constrain(state, desired);
+  return Math.hypot(desired.x - allowed.x, desired.y - allowed.y);
+}
+
 /**
  * Pure function. A node's WORLD-space MODIFIER POINTS (manifest ARCHITECTURE
  * PLAN #1 — the "PPT yellow squares"): [{id, x, y, apply}]. A modifier point
@@ -681,24 +766,32 @@ export function nodeAnchors(node) {
  * inverts back through node.world before calling apply (see
  * CanvasView.modifierDrag) — no plugin ever reasons about rotation itself.
  *
+ * `constrain(state, desired) → allowed` (THE HANDLE-CONSTRAINT PROTOCOL above)
+ * rides along in the SAME local frame as `apply` and is DEFAULTED here to
+ * UNCONSTRAINED, which is why a widget with no restricted handle needs no
+ * change: omitting it declares "anywhere". This is the one place the default is
+ * supplied, so every consumer can call `constrain` unconditionally.
+ *
  * TWO OPTIONAL ASPECTS ride along untouched, because they are not geometry and
  * this function's job is the local→world wrap:
- *   `element: {listKey, index}` — the handle IS element `index` of the widget's
- *     LIST property `listKey` (core/lists.js). That is what lets the UNIVERSAL
- *     handle actions (hide/show, purge) operate on a handle without knowing which
- *     widget it belongs to. A handle that controls a plain scalar parameter (a
- *     donut's inner radius) omits it and simply has no list actions.
+ *   `element: {list, index}` — the handle IS element `index` of a LIST property,
+ *     and `list` is that property's DECLARATION (core/lists.js) carried BY
+ *     REFERENCE — the very object core/properties.js owns, never a copy or a key to
+ *     look up. That is what lets the UNIVERSAL handle actions (hide/show, purge)
+ *     operate on a handle without knowing which widget it belongs to. A handle that
+ *     controls a plain scalar parameter (a donut's inner radius) omits it and simply
+ *     has no list actions.
  *   `active` — whether that element is VISIBLE (a plugin reads it through
  *     core/lists.elementActive, so absent means visible). Defaults to true here so
  *     a handle with no list element is never drawn as "hidden".
  *
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {}}) // []
- * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined}]
+ * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined, constrain: UNCONSTRAINED}]
  */
 export function nodeModifierPoints(node) {
   return (node.plugin.modifierPoints?.(node.state) ?? []).map((m) => {
     const p = T.apply(node.world, m.x, m.y);
-    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply };
+    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED };
   });
 }
 

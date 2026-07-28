@@ -684,23 +684,24 @@ export class PowerRPApp {
   }
 
   /**
-   * Query. The LIST DECLARATION (core/lists.js) behind a handle, or null when the
-   * handle is not a list element: `{decl, listKey, index}`.
+   * Pure function. The LIST DECLARATION (core/lists.js) behind a handle, or null
+   * when the handle is not a list element: `{decl, listKey, index}`.
    *
-   * The declaration is read off the widget's own Inspector row for that key, which
-   * is where core/properties.js already put it — so the canvas actions, the
-   * Inspector's list control and the plugin's geometry all read ONE declaration and
-   * cannot disagree about the storage form or the visibility companion's name.
-   * A handle naming a key with no list row is a plugin bug, so it throws.
+   * The handle carries the declaration BY REFERENCE (`element.list` is the very
+   * object core/properties.js owns — PROPS.points for a polygon vertex), so the
+   * canvas actions, the Inspector's list control and the plugin's own geometry read
+   * ONE declaration and cannot disagree about the storage form or the visibility
+   * companion's name. Deliberately NOT a lookup by key: a lookup needs a table to
+   * look in, and every candidate table (the plugin's inspector rows, PROPS) is a
+   * place the answer could be missing or a second copy could appear — a reference
+   * cannot drift from itself. A malformed declaration is a plugin bug, so it throws.
    */
   #handleElement(handle) {
     if (!handle.element) return null;
-    const node = this.selectedNode();
-    const { listKey, index } = handle.element;
-    const row = (node?.plugin.inspector ?? []).find((r) => r.key === listKey && r.kind === LIST_ROW_KIND);
-    if (!row)
-      throw new Error(`app: handle "${handle.id}" of "${node?.type}" declares list element "${listKey}", but that widget has no kind:"list" Inspector row for it — declare the list (core/properties.js PROPS."${listKey}") or drop the handle's \`element\`.`);
-    return { decl: row, listKey, index };
+    const { list: decl, index } = handle.element;
+    if (decl?.kind !== LIST_ROW_KIND || !decl.key || !decl.activeKey)
+      throw new Error(`app: handle "${handle.id}" of "${this.selectedNode()?.type}" declares an \`element\` whose \`list\` is not a list declaration (need kind "${LIST_ROW_KIND}" plus key/activeKey — pass the core/properties.js PROPS entry itself, e.g. \`element: {list: props("points")[0], index: i}\`). Got: ${JSON.stringify(decl)?.slice(0, 120)}`);
+    return { decl, listKey: decl.key, index };
   }
 
   /** Query. The selected handles that ARE list elements, grouped by list key and
@@ -1072,12 +1073,21 @@ export class PowerRPApp {
   lastViewport = null; // kept fresh by CanvasView's onviewport
 
   snapshot(doc) {
-    return { doc, selection: this.selection, slideIndex: this.slideIndex, viewport: this.lastViewport };
+    // handleSelection rides along for the SAME reason `selection` does, one scope
+    // down: undoing a point hide must put you back with those points selected, so
+    // the toolbar button you just pressed is still pointing at them. Without it the
+    // `selection` write in applySnapshot would clear the inner scope (the
+    // outer-owns-inner rule) and every point edit would silently deselect.
+    return { doc, selection: this.selection, handleSelection: this.handleSelection, slideIndex: this.slideIndex, viewport: this.lastViewport };
   }
 
   applySnapshot(snap) {
     this.doc = snap.doc;
     this.selection = snap.selection;
+    // AFTER `selection`, never before: that setter clears the handle selection.
+    // Snapshots taken before this field existed carry none — [] is then correct,
+    // which is also what the setter just wrote, so there is nothing to special-case.
+    this.handleSelection = snap.handleSelection ?? [];
     this.slideIndex = Math.min(snap.slideIndex, snap.doc.slides.length - 1);
     if (snap.viewport) this.canvasActions?.setViewport(snap.viewport);
   }

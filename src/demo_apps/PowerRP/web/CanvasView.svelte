@@ -15,7 +15,7 @@
   import ResizeHandles from "./ResizeHandles.svelte";
   import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
   import { videoV7Descriptors } from "./videoV7Placement.js";
-  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
+  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   import { worldViewRect, canSkipNode } from "../core/view.js";
@@ -907,20 +907,34 @@
     app.commitPreview();
   }
 
-  /** Command. The wheel inside a canvas mode zooms the WIDGET, not the canvas:
-   *  stopPropagation keeps the event from the PanZoom container above. ONE undo
-   *  unit per gesture — every tick stages a preview, and the commit fires once the
-   *  wheel has been quiet for ZOOM_GESTURE_IDLE_MS (a wheel has no "up" event, so
-   *  a pause is what ends the gesture). Outside a mode this is inert and the
-   *  canvas's own wheel pan/zoom runs exactly as before. */
+  /** Command. The wheel inside a canvas mode drives the WIDGET, not the canvas:
+   *  stopPropagation keeps the event from the PanZoom container above. The mode
+   *  receives the WHOLE wheel gesture — `ctrlKey` (what a trackpad pinch sends),
+   *  the raw deltaY for an exponential zoom, and the scroll delta already
+   *  converted to the widget's LOCAL px frame for a two-finger pan — and decides
+   *  which it is, exactly as PanZoom's own handleWheel does for the canvas. The
+   *  host does not classify the gesture, because which axis of it means what is
+   *  the widget's business.
+   *
+   *  ONE undo unit per gesture — every tick stages a preview, and the commit fires
+   *  once the wheel has been quiet for ZOOM_GESTURE_IDLE_MS (a wheel has no "up"
+   *  event, so a pause is what ends the gesture). Outside a mode this is inert and
+   *  the canvas's own wheel pan/zoom runs exactly as before. */
   function onWheel(e) {
     const active = activeMode();
-    if (!active?.mode.onZoom) return;
+    if (!active?.mode.onWheel) return;
     e.preventDefault();
     e.stopPropagation();
     const w = worldPoint(e);
     const local = localPointOf(active.node, w.x, w.y);
-    active.mode.onZoom(modeContext(active), { deltaY: e.deltaY, lx: local.x, ly: local.y });
+    // The scroll delta as a LOCAL-frame vector: the same two-point difference
+    // modePointerMove takes, so one conversion law serves both gestures.
+    const shifted = localPointOf(active.node, w.x + e.deltaX / viewport.zoom, w.y + e.deltaY / viewport.zoom);
+    active.mode.onWheel(modeContext(active), {
+      dLocalX: shifted.x - local.x, dLocalY: shifted.y - local.y,
+      deltaY: e.deltaY, ctrlKey: e.ctrlKey || e.metaKey,
+      lx: local.x, ly: local.y,
+    });
     if (modeZoomIdle !== null) clearTimeout(modeZoomIdle);
     modeZoomIdle = setTimeout(() => { modeZoomIdle = null; app.commitPreview(); }, ZOOM_GESTURE_IDLE_MS);
   }
@@ -1227,7 +1241,14 @@
     // the toolbar land on its own DOM overlay, not this SVG, so they don't reach
     // here — the toolbar stays open while you pick from it). A fresh double-click
     // reopens it.
-    floatingToolbarItemId = null;
+    //
+    // EXCEPT while the bar's OWN item is in a live canvas mode. Interior explore
+    // deliberately leaves the plain drag to the canvas so the widget stays
+    // movable, and a bar that vanished on the first such drag would take the
+    // mode's only visual indication with it. The mode owns the bar for as long as
+    // it runs; a press on ANOTHER item exits the mode (app.selection's setter) and
+    // the next press then closes the bar normally.
+    if (app.canvasMode?.itemId !== floatingToolbarItemId) floatingToolbarItemId = null;
     // A left click CONFIRMS an active modal transform (Blender precedent) and
     // consumes the event — it must NOT start a new pick/drag underneath.
     if (modal) {
@@ -2409,6 +2430,13 @@
    * The delta is measured in LOCAL space (both the grabbed handle's start and the
    * live pointer are inverted through the SAME node.world), so rotation and scale
    * are correct by construction — the existing single-handle guarantee, unchanged.
+   *
+   * ONE shared delta, but EVERY handle projects INDEPENDENTLY (core/derive.js's
+   * modifierWrite = constrain then apply). The delta is deliberately NOT
+   * pre-averaged or pre-constrained across the set: a set holding one constrained
+   * handle and one free one must see the free one follow the cursor while the
+   * constrained one lags along its own trajectory. That visible lag is the
+   * CONSTRAINT BEING HONEST, not drift to smooth away.
    */
   function modifierDrag(w) {
     const node = app.nodes().find((n) => n.itemId === drag.itemId);
@@ -2422,7 +2450,7 @@
     for (const start of drag.startLocals) {
       const mp = points.find((m) => m.id === start.id);
       if (!mp?.apply) continue; // this handle's element vanished — the rest still move
-      const partial = mp.apply(state, { x: start.x + dx, y: start.y + dy });
+      const partial = modifierWrite(mp, state, { x: start.x + dx, y: start.y + dy });
       state = { ...state, ...partial };
       written = { ...written, ...partial };
     }

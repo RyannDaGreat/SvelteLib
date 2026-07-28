@@ -145,11 +145,28 @@
   --a-canvas-toolbar-cols: 8;
   --a-canvas-toolbar-max-h: 296px;
   --a-canvas-toolbar-gap: var(--a-sp-3);
+  /* Editable-READOUT fields in the same panel (the Mandelbrot's Re/Im/Zoom bar).
+     TWO widths, because the two kinds of value in one bar have very different
+     lengths: a deep-zoom coordinate is thirty-odd digits, while a zoom exponent or
+     an iteration count is three or four. The wide value is sized to show a
+     ~26-digit coordinate without scrolling — the widget's split centre carries
+     about 32, so the field scrolls only past what a published coordinate quotes. */
+  --a-canvas-toolbar-field-wide: 232px;
+  --a-canvas-toolbar-field-narrow: 66px;
   /* Trailing keyframe-controls column: fixes the value column's RIGHT edge so it
      aligns across every row, INCLUDING rows without controls (the Name row, the
      add row). Property rows carry 3 buttons (‹◆›); Variables rows carry 4 (‹◆›+✕),
      so each panel reserves its own count (set per-panel below). */
   --a-kf-w: calc(3 * var(--a-kf-btn-w));
+  /* LIST property rows (web/ListField.svelte): the 1-based index column, the
+     minimum width one element FIELD control keeps before the row wraps (well
+     under --a-input-w, because a list row packs several of them where a normal
+     row has one), and the height of the between-elements "insert here" slice.
+     The slice is deliberately SHORTER than --a-control-h: it is a seam, not a
+     row, exactly as SlideNav's between-slides transition slice is. */
+  --a-list-index-w: 14px;
+  --a-list-field-w: 56px;
+  --a-list-insert-h: 12px;
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
   /* ── EQUATION SYNTAX-HIGHLIGHT PALETTE (Opus25, round-3 field) ──
      One token per highlight class from equationTokenSpans (core/expressions.js).
@@ -1161,6 +1178,66 @@ textarea {
   display: flex;
   align-items: center;
   gap: var(--a-sp-1);
+}
+
+/* A floating panel whose content is a row of EDITABLE READOUTS rather than tiles
+   or icon buttons (the Mandelbrot's Re/Im/Zoom/Iter/Bands bar). Third sibling of
+   .canvas-toolbar-grid and .canvas-toolbar-row inside the SAME .canvas-toolbar
+   surface, so all three content shapes inherit one panel skin. It wraps, because
+   two thirty-digit coordinates plus three short knobs do not fit one line beside a
+   narrow widget. */
+.canvas-toolbar-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--a-sp-1);
+  max-width: calc(var(--a-canvas-toolbar-field-wide) * 2);
+}
+
+.canvas-toolbar-field {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+}
+
+/* The field's name, in the same dim inline style as the panel's count readout so
+   a label never competes with the value beside it. */
+.canvas-toolbar-field-label {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
+}
+
+/* Monospace and tabular: a coordinate is read digit by digit and compared against
+   a published one, which a proportional font makes needlessly hard. */
+.canvas-toolbar-field-input {
+  width: var(--a-canvas-toolbar-field-wide);
+  height: var(--a-control-h); /* THE control height, like every other input */
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-1);
+  color: var(--fg);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  border-radius: 0; /* square — app chrome is square */
+  font-family: var(--a-mono); /* the equation/coordinate font, same as the Inspector's */
+  font-size: var(--a-font-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.canvas-toolbar-field.narrow .canvas-toolbar-field-input {
+  width: var(--a-canvas-toolbar-field-narrow);
+}
+
+.canvas-toolbar-field-input:focus {
+  outline: var(--a-hairline) solid var(--a-selection);
+}
+
+/* An `=`-bound leaf: the field REFUSES rather than overwriting the equation with
+   its current value (its Tooltip says where to edit it). Dimmed so the refusal is
+   visible before it is clicked, not after. */
+.canvas-toolbar-field-input:disabled {
+  color: var(--fg-dim);
+  cursor: not-allowed;
 }
 
 /* The panel's own readout text (e.g. "2 points"), matching the text-format
@@ -2763,6 +2840,166 @@ audio.ae-preview-media {
   padding-top: var(--a-sp-2);
   border-top: var(--a-hairline) solid var(--border);
   color: var(--fg-dim);
+}
+
+/* ── LIST property rows (web/ListField.svelte) ────────────────────────────────
+   A LIST property (a polygon's `points`, a gradient's `stops`) holds a
+   VARIABLE-LENGTH list of multi-field elements, so its control cannot fit the
+   shared row's single value column the way a number or a colour does: one
+   element row already carries an index, a visibility toggle, several field
+   controls, the keyframe triad and a purge button. So a list row keeps the
+   label + keyframe line in the normal grid and gives the LIST ITSELF the panel's
+   full width underneath — placed EXPLICITLY (grid-row/grid-column) rather than
+   left to auto-placement, since a full-width child otherwise pushes the trailing
+   controls onto a third line.
+
+   THE LAYOUT IS PROVISIONAL (see ListField's header): the user ratified
+   "functionality first, the UI can use work", and named x/y ending up adjacent in
+   one compound cell as the likely next shape. */
+.inspector .row.row-list {
+  grid-template-columns: 1fr var(--a-kf-w);
+  align-items: center;
+}
+
+.inspector .row.row-list > .list-cell {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.inspector .row.row-list > .kf-controls {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.listfield {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* ONE element: index, visibility eye, its field controls, the keyframe triad,
+   purge. Wraps rather than overflowing, because the field count is declared per
+   list and a four-field element cannot be assumed to fit. */
+.listfield .list-el {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  min-height: var(--a-control-h);
+}
+
+/* A HIDDEN element (its visibility companion flag is false): dimmed, because it
+   is still stored and still keyframable — it simply does not participate. The
+   eye itself stays full strength so the way back is never dimmed out. */
+.listfield .list-el-hidden > *:not(.boolfield) {
+  opacity: 0.45;
+}
+
+.listfield .list-index {
+  flex: none;
+  width: var(--a-list-index-w);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  text-align: right;
+}
+
+.listfield .list-fields {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--a-sp-2);
+  min-width: 0;
+}
+
+/* One declared field: its name as a micro-label (the last segment of the
+   element's own equation address, e.g. `points.3.x`) plus the kind's standard
+   control. The control keeps a floor width and grows with the panel, the same
+   contract the shared row grid gives a normal value cell. */
+.listfield .list-field {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--a-sp-1);
+  min-width: var(--a-list-field-w);
+}
+
+.listfield .list-field-label {
+  flex: none;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  cursor: help; /* its tooltip is the field's MEANING — the .help-btn precedent */
+}
+
+/* A declared field kind with no control here: reported in place, in the danger
+   colour, never silently rendered as an editable text box. */
+.listfield .list-field-unsupported {
+  color: var(--a-guide);
+  font-size: var(--a-font-sm);
+}
+
+/* PURGE is the destructive half of the pair and must not read as a stronger
+   HIDE, so it carries the danger colour the item-level Purge language uses
+   while the eye beside it stays neutral. */
+.listfield .list-purge {
+  flex: none;
+  color: var(--a-guide);
+}
+
+/* THE INSERT SEAM — between every pair of elements, and before the first / after
+   the last. A centre hairline with a + chip, i.e. the SAME affordance shape
+   .slidenav .transition-slice uses for the seam between two slides: the user's
+   own analogy for this gesture was slide in-betweens. Short (a seam, not a row)
+   and full width, so "insert HERE" is unambiguous. */
+.listfield .list-insert {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  width: 100%;
+  height: var(--a-list-insert-h);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.listfield .list-insert-line {
+  flex: 1;
+  height: var(--a-hairline);
+  background: var(--border);
+}
+
+.listfield .list-insert-chip {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity var(--a-row-chrome-fade) ease;
+}
+
+/* The + is hover-only (the resting list is just its elements — the round-11
+   field-chrome minimalism rule), while the hairline always shows the seam is
+   there to be clicked. */
+.listfield .list-insert:hover {
+  color: var(--fg);
+}
+
+.listfield .list-insert:hover .list-insert-chip {
+  opacity: 1;
+}
+
+.listfield .list-insert:hover .list-insert-line {
+  background: var(--fg-dim);
+}
+
+.listfield .list-insert:disabled {
+  cursor: default;
+}
+
+.listfield .list-empty {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  padding: var(--a-sp-1) 0;
 }
 
 /* ── The COMMAND TIP (Toolbar buttons) ────────────────────────────────────────

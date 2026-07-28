@@ -62,8 +62,14 @@
  * routes gestures to it, App.svelte shows the mode's `hints` in the HintBar scoped
  * to it, and Escape exits. Modes are what make multi-step behaviour expressible
  * without new host code, and there are now two shapes of them:
- *   ACTIVATE  `mode: {label, hints, onPan, onZoom}`  — interior explore
- *              (web/interiorNav.js): a sustained gesture on ONE existing item.
+ *   ACTIVATE  `mode: {label, hints, onPan?, onWheel?}` — a sustained gesture on ONE
+ *              existing item. Both handlers are OPTIONAL and declaring neither is
+ *              legal: a mode that omits `onPan` leaves the plain single-pointer
+ *              drag to the canvas, so the widget stays selectable and MOVABLE while
+ *              the mode runs — which is exactly what interior explore
+ *              (web/interiorNav.js) wants, since it drives its interior from the
+ *              wheel alone (plain wheel pans, Ctrl+wheel zooms, the canvas's own
+ *              vocabulary one frame down).
  *   CREATE    `mode: {label, steps, hints, finish, begin, step, onHover, onStep,
  *              finalize, overlay}` — a multi-gesture PLACEMENT (web/polygonDraw.js,
  *              web/telescopicRig.js). The step-sequencing contract, and why the
@@ -458,7 +464,7 @@ export function handlerFor(phase, plugin) {
  * @returns {{handlerId: string, phase: string, label: string, hints: object[], steps: object[], finish: object|null}[]}
  *
  * @example canvasModes().map((m) => m.handlerId) // ["polygon_chain", "telescopic_rig", "navigate_interior"]
- * @example canvasModes().find((m) => m.handlerId === "navigate_interior").hints.length // 2 (drag to pan, wheel to zoom)
+ * @example canvasModes().find((m) => m.handlerId === "navigate_interior").hints.length // 3 (wheel pans, Ctrl+wheel zooms, a plain drag still moves the widget)
  * @example canvasModes().find((m) => m.handlerId === "telescopic_rig").steps.length // 2 (drag the source box, then the lens box)
  */
 export function canvasModes() {
