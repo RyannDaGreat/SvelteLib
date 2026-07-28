@@ -31,6 +31,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import fs from "node:fs";
 import { PNG } from "pngjs";
+// puppeteer ≥23 returns screenshot bytes as a Uint8Array; pngjs demands a real
+// Buffer (readUInt32BE). One adapter, used by every decode below.
+const readPng = (bytes) => PNG.sync.read(Buffer.from(bytes));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
@@ -409,7 +412,7 @@ try {
   const shot = async (name) => {
     const buf = await page.screenshot({ clip });
     fs.writeFileSync(resolve(SHOTS, `fontpicker_hover_${name}.png`), buf);
-    return PNG.sync.read(buf);
+    return readPng(buf);
   };
   /**
    * Pure function. Mean absolute per-channel RGB difference of two equal-sized

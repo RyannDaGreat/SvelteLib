@@ -51,6 +51,9 @@ import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { PNG } from "pngjs";
+// puppeteer ≥23 returns screenshot bytes as a Uint8Array; pngjs demands a real
+// Buffer (readUInt32BE). One adapter, used by every decode below.
+const readPng = (bytes) => PNG.sync.read(Buffer.from(bytes));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(HERE, "..");
@@ -221,7 +224,7 @@ try {
     const points = samplePoints(box);
     const sampleNow = async () => {
       const shot = await page.screenshot({ clip: { x: box.cx, y: box.cy, width: box.w, height: box.h } });
-      const png = PNG.sync.read(shot);
+      const png = readPng(shot);
       return points.map(([x, y]) => pixelAt(png, x - box.cx, y - box.cy));
     };
 
@@ -278,7 +281,7 @@ try {
     const frames = [];
     for (let i = 0; i < captured.length; i++) {
       const buf = Buffer.from(captured[i].data, "base64");
-      const png = PNG.sync.read(buf);
+      const png = readPng(buf);
       const samples = points.map(([x, y]) => pixelAt(png, x, y));
       const blank = blankFrame(samples);
       frames.push({ t: captured[i].t, rgb: samples[0], blank, band: blank ? "blank" : band(samples[0]) });
@@ -308,7 +311,7 @@ try {
   const fx = await runGesture("fixture", FIXTURE_SRC, FIXTURE_SPAN);
   const settledShot = await page.screenshot({ clip: { x: fx.box.cx, y: fx.box.cy, width: fx.box.w, height: fx.box.h } });
   await writeFile(resolve(SHOTS, "scrub_flicker_settled.png"), settledShot);
-  const settledPng = PNG.sync.read(settledShot);
+  const settledPng = readPng(settledShot);
   const settledRgb = pixelAt(settledPng, settledPng.width / 2, settledPng.height / 2);
 
   // Convergence is measured on the ON-SCREEN scope only: the offscreen thumbnail/
@@ -364,7 +367,7 @@ try {
     const r = document.querySelector("canvas.scene").getBoundingClientRect();
     return { cx: r.x, cy: r.y, w: r.width, h: r.height, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
   });
-  const greenShot = PNG.sync.read(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
+  const greenShot = readPng(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
   const greenRgb = pixelAt(greenShot, greenShot.width / 2, greenShot.height / 2);
   // The instant AFTER the src+time swap: the frame most at risk of showing the old
   // clip, because the new source has decoded nothing yet. Committing the whole
@@ -376,10 +379,10 @@ try {
     app.slideIndex = 0;
   }, doc(SECOND_SRC, BLUE_TIME));
   await sleep(150); // deliberately BEFORE the new source can decode
-  const swappedEarly = PNG.sync.read(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
+  const swappedEarly = readPng(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
   const earlyRgb = pixelAt(swappedEarly, swappedEarly.width / 2, swappedEarly.height / 2);
   await sleep(4000); // now let it decode
-  const swappedLate = PNG.sync.read(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
+  const swappedLate = readPng(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
   const lateRgb = pixelAt(swappedLate, swappedLate.width / 2, swappedLate.height / 2);
   await writeFile(resolve(SHOTS, "scrub_flicker_src_swapped.png"), PNG.sync.write(swappedLate));
   console.log("\n── SRC CHANGE (the hold must not follow the source) ────");
@@ -397,7 +400,7 @@ try {
     app.purgeSelection();
   });
   await sleep(1200);
-  const purged = PNG.sync.read(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
+  const purged = readPng(await page.screenshot({ clip: { x: swapBox.cx, y: swapBox.cy, width: swapBox.w, height: swapBox.h } }));
   const purgedSamples = samplePoints(swapBox).map(([x, y]) => pixelAt(purged, x - swapBox.cx, y - swapBox.cy));
   await writeFile(resolve(SHOTS, "scrub_flicker_purged.png"), PNG.sync.write(purged));
   console.log("\n── PURGE ───────────────────────────────────────────────");
@@ -461,7 +464,7 @@ try {
   });
   const brokenShot = await page.screenshot({ clip: { x: brokenBox.cx, y: brokenBox.cy, width: brokenBox.w, height: brokenBox.h } });
   await writeFile(resolve(SHOTS, "scrub_flicker_broken_src.png"), brokenShot);
-  const brokenPng = PNG.sync.read(brokenShot);
+  const brokenPng = readPng(brokenShot);
   const brokenSamples = samplePoints(brokenBox).map(([x, y]) => pixelAt(brokenPng, x - brokenBox.cx, y - brokenBox.cy));
   page.off("console", collectBroken);
   console.log("\n── BROKEN SOURCE ───────────────────────────────────────");

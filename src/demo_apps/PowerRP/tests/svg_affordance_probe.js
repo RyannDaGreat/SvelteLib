@@ -29,6 +29,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import fs from "node:fs";
 import { PNG } from "pngjs";
+// puppeteer ≥23 returns screenshot bytes as a Uint8Array; pngjs demands a real
+// Buffer (readUInt32BE). One adapter, used by every decode below.
+const readPng = (bytes) => PNG.sync.read(Buffer.from(bytes));
 import { CURSOR_NAMES, cursorSource } from "../render_gpu/gpu/svg_raster.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -202,7 +205,7 @@ try {
     async (doc, w, h) => window.__powerrp_render(doc, { slide: 0, alpha: 1, width: w, height: h }),
     svgDoc(), RASTER_W, RASTER_H,
   );
-  const svgPng = PNG.sync.read(Buffer.from(svgFrame.split(",")[1], "base64"));
+  const svgPng = readPng(Buffer.from(svgFrame.split(",")[1], "base64"));
   fs.writeFileSync(resolve(SHOTS, "svg_warning_band_frame.png"), PNG.sync.write(svgPng));
   const amber = amberHalves(svgPng);
   assert(amber.left >= MIN_BAND_PIXELS, `the band RASTERIZES over the degraded widget (${amber.left} amber pixels)`);
@@ -223,7 +226,7 @@ try {
     async (doc, w, h) => window.__powerrp_render(doc, { slide: 0, alpha: 1, width: w, height: h }),
     cursorDoc("default"), RASTER_W, RASTER_H,
   );
-  const cursorPng = PNG.sync.read(Buffer.from(cursorFrame.split(",")[1], "base64"));
+  const cursorPng = readPng(Buffer.from(cursorFrame.split(",")[1], "base64"));
   fs.writeFileSync(resolve(SHOTS, "svg_cursor_browser_frame.png"), PNG.sync.write(cursorPng));
   // The arrow is white-on-black over a dark camera background: real ink means
   // bright pixels exist. A blank/failed cursor render would have none.

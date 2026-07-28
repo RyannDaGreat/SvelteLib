@@ -55,6 +55,9 @@ import { readFile, writeFile, mkdir, rm, readdir, stat } from "node:fs/promises"
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { PNG } from "pngjs";
+// puppeteer ≥23 returns screenshot bytes as a Uint8Array; pngjs demands a real
+// Buffer (readUInt32BE). One adapter, used by every decode below.
+const readPng = (bytes) => PNG.sync.read(Buffer.from(bytes));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(HERE, "..");
@@ -279,7 +282,7 @@ try {
     /** Query (async). The widget's sample points from a fresh screenshot of the scene canvas. */
     const sampleNow = async () => {
       const shot = await page.screenshot({ clip: { x: box.cx, y: box.cy, width: box.w, height: box.h } });
-      const png = PNG.sync.read(shot);
+      const png = readPng(shot);
       return points.map(([x, y]) => pixelAt(png, x - box.cx, y - box.cy));
     };
 
@@ -363,7 +366,7 @@ try {
     const frames = [];
     for (let i = 0; i < captured.length; i++) {
       const buf = Buffer.from(captured[i].data, "base64");
-      const png = PNG.sync.read(buf);
+      const png = readPng(buf);
       const samples = points.map(([x, y]) => pixelAt(png, x, y));
       const blank = blankFrame(samples);
       // `band` labels the FIXTURE's flat colour bands (meaningless for real footage,
@@ -398,7 +401,7 @@ try {
   const fx = await runGesture("fixture", FIXTURE_SRC, FIXTURE_SPAN);
   const settledShot = await page.screenshot({ clip: { x: fx.box.cx, y: fx.box.cy, width: fx.box.w, height: fx.box.h } });
   await writeFile(resolve(SHOTS, "v5_scrub_settled.png"), settledShot);
-  const settledPng = PNG.sync.read(settledShot);
+  const settledPng = readPng(settledShot);
   const settledRgb = pixelAt(settledPng, settledPng.width / 2, settledPng.height / 2);
   const parked = await page.evaluate((src) => window.__v5.videoV5ScrubState(src)?.currentTime ?? -1, FIXTURE_SRC);
 
@@ -424,7 +427,7 @@ try {
   const forcedLast = onScreen(forced);
   const forcedShot = await page.screenshot({ clip: { x: fx.box.cx, y: fx.box.cy, width: fx.box.w, height: fx.box.h } });
   await writeFile(resolve(SHOTS, "v5_scrub_settled_after_repaint.png"), forcedShot);
-  const forcedPng = PNG.sync.read(forcedShot);
+  const forcedPng = readPng(forcedShot);
   const forcedRgb = pixelAt(forcedPng, forcedPng.width / 2, forcedPng.height / 2);
   const identical = await page.evaluate(async (d) => {
     const a = await window.__powerrp_render(d, { slide: 0, alpha: 1, width: 480, height: 360 });
@@ -511,7 +514,7 @@ try {
   });
   const brokenShot = await page.screenshot({ clip: { x: brokenBox.cx, y: brokenBox.cy, width: brokenBox.w, height: brokenBox.h } });
   await writeFile(resolve(SHOTS, "v5_scrub_broken_src.png"), brokenShot);
-  const brokenPng = PNG.sync.read(brokenShot);
+  const brokenPng = readPng(brokenShot);
   const brokenSamples = samplePoints(brokenBox).map(([x, y]) => pixelAt(brokenPng, x - brokenBox.cx, y - brokenBox.cy));
   const brokenStats = await page.evaluate(() => window.__scrubStats());
   page.off("console", collectBroken);

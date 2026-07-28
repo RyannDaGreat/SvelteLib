@@ -40,6 +40,9 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { PNG } from "pngjs";
+// puppeteer ≥23 returns screenshot bytes as a Uint8Array; pngjs demands a real
+// Buffer (readUInt32BE). One adapter, used by every decode below.
+const readPng = (bytes) => PNG.sync.read(Buffer.from(bytes));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(HERE, "..");
@@ -198,7 +201,7 @@ try {
   });
 
   /** Query (async). A screenshot of the scene canvas, decoded. */
-  const shoot = async (box) => PNG.sync.read(await page.screenshot({ clip: { x: box.cx, y: box.cy, width: box.w, height: box.h } }));
+  const shoot = async (box) => readPng(await page.screenshot({ clip: { x: box.cx, y: box.cy, width: box.w, height: box.h } }));
 
   /** Pure function. World point → canvas-local CSS pixel, in the app's OWN convention
    *  (core/view.js worldViewRect inverts exactly this: wx = (dx/dpr - panX) / zoom, so
