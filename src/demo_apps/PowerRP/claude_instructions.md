@@ -509,10 +509,95 @@ store plain source strings (the mermaid/LaTeX precedent). FLAGGED FOR UI:
 `t` (plot domain) vs `time` (presentation clock) coexist with different
 meanings — document loudly in Inspector/Monaco.
 
-**07 codebase precedent map, 08 chalk/glow inventory, 09 per-widget vars
-design, 10 bar-graph research, video-unify investigation**: agents in
-flight; digest each into this section AS IT LANDS (standing instruction:
-"Write all of them down into the manifest").
+**07 codebase precedent map** (integration truth for the whole family):
+polygon (plugins/polygon.js) stores a normalized unbounded `points` list +
+`closed`, emits ONE path op, bounds via polygonInkRect, per-vertex handles
+via core/lists.js — and its own header says it is NOT a shapeshifter member
+BECAUSE its data is unbounded; same holds for graphLine, so the shapeshifter
+factory is REJECTED for the graph family (fixed-scalar-knob assumption).
+"Inherit from polygon" = extract its pure chain helpers (distToChain,
+closestChainProjection, openPathD, polygon.js:366–501) into core/outline.js;
+no plugin-imports-plugin. The Monaco seam is a SIX-LINE declarative
+descriptor: plugin declares `codeEditor: {property, language, title}`
+(mermaid.js:438) → widget_handlers → App command → CodeEditorModal — any
+graph widget gets Monaco free by declaring it. Stroke trim is applied
+universally at ports.js:281; a widget exposes the rows by spreading
+STROKE_TRIM_KEYS in its inspector — draw-in needs ZERO new render code.
+LaTeX is a mermaid near-twin needing MathJax's DOM (bare-node CLI must
+REPORT the omission, existing convention). Registration = one import + one
+allPlugins entry (plugins/index.js:72); core/registry.js:1–181 is the base
+class. NO scale/tick/axis precedent exists anywhere — a new core
+scale-mapping module is required and is the family's shared foundation.
+Widget presetFamilies flow through presetFamiliesOf (registry.js:587) into
+ToolsPane and the Round-4 material merge automatically.
+
+**09 per-widget vars design** (item 67): THE FOLD ALREADY WORKS —
+core/deltas.js:94–132 mutBlendApply is a generic recursive walker; nested
+numeric leaves under items.<id>.vars.* tween via interpolate() today,
+first-appearance is discrete-at-alpha>0, hand-traced. NO fold changes.
+`self.vars.lambda` ALREADY PARSES: parseSelfRef (expressions.js:907–919)
+falls through to {kind:"prop", itemId, path}. THE ONE REAL GAP is slot
+collection: computeEvaluatedState only recognizes equation slots via
+isEquationValue/plugin defaults — a small new loop mirroring the top-level
+state.vars collection (expressions.js:2139–2141) must walk each item's vars
+dict. NAMESPACE RULING: dotted `self.vars.<name>`, NOT bare identifiers —
+withVariableRenamed's bare-identifier token rewrite (2605–2666) cannot touch
+dotted tokens, so per-item names are collision-proof by construction and
+shadowing is moot. UI: reuse the VariablesPanel pattern with item-scoped
+paths (["items", id, "vars", name]) — NumericField/KeyframeControls are
+path-generic; core/lists.js REJECTED for storage (index-addressed arrays,
+not name-keyed dicts; mirror the top-level vars dict instead). Undo needs
+zero changes (flat snapshot log). Risks: the slot-collection gap (must-fix),
+rename needs a NEW narrow sibling of withVariableRenamed (not a
+generalization), copy/paste ref-remap path unverified (implementer must
+trace + pin with a test). Order: slots → app glue → Inspector UI → rename →
+autocomplete → copy/paste test.
+
+**08 chalk/glow inventory** (items 68–69 look): EVERYTHING CORE ALREADY
+EXISTS. Chalk: stroke material "brush" has a literal `chalk` archetype
+(brush_strokes.js:375) with a shipped Chalk preset (#f0efe8,
+material_presets.js:144); draw-in composes with EVERY stroke material —
+paint_skia.js:1342–1360 trims the path BEFORE the material's render(). Glow:
+bloom.radius/strength (core/properties.js:1073) is a real Gaussian bloom in
+the universal effects bundle and paint_path already composes it — the glowy
+orb and glowing title need no new machinery. ROUND-2 QUESTION RESOLVED WITH
+CERTAINTY: material fills DO rotate with shape rotation (world.rotation is
+baked into every material's uniforms; sky_shader.js:188 and comic_shader.js
+rotate the fragment SAMPLE coordinate) — so a patterned ball's rotation will
+read. Gaps (smallest closures): one stroke slot = one material, so textured
+chalk + wavy boil can't stack (two stacked widgets sharing equations, or add
+a boil knob to brush_strokes.js — currently clock-free by design); no
+ball-shaded (sphere-look) fill material yet (rotation mechanism exists
+twice); no "point at strokeEnd" anchor on paint_path for a particle emitter
+to ride the draw-in tip (chalk dust); no chalkboard-surface FILL material
+(grain machinery is stroke-only) — plain dark solid is fine per the Manim
+finding (pure #000).
+
+**10 bar-graph research** (item 71, verified against Manim source):
+BarChart defaults — bar_colors ["#003f5c","#58508d","#bc5090","#ff6361",
+"#ffa600"], bar_width 0.6, fill_opacity 0.7, stroke_width 3.
+get_riemann_rectangles — dx 0.1, input_sample_type left (left/right/center),
+stroke 1px BLACK, color gradient (BLUE→GREEN) across the sequence,
+show_signed_area, and width_scale_factor 1.001 — the >1 fudge that kills
+seams between adjacent rects (steal it). Closest in-repo precedent:
+plugins/progress_bar.js (one equation-bindable number driving a shape
+extent). THE GROW-UP FORMULA (unifies Manim LaggedStart and D3 delay(i·k)
+into ONE scrubbed variable): reveal ∈ [0,1] with per-bar smoothstep windows —
+bar i's height factor = smoothstep over the window starting at
+i·lagRatio/(N−1+lagRatio·(N−1))… (exact algebra in the report; lagRatio 0 →
+all-at-once, 1 → strict sequence, both proven to reduce to the source
+libraries' limits). 11 presets designed from distinct angles (Riemann left
+sum, dx-halving refinement sequence via discrete snaps, histogram,
+categorical, time-driven equalizer + traveling pulse (RECORDABLE), noise
+skyline, population pyramid two-instance composition, area-under-curve
+overlay, stacked comparison (flags a real export gap), minimalist
+sparkbars). Traps recorded: Manim's own two APIs disagree on defaults;
+barCount is DISCRETE (snaps at alpha>0, never lerps); autoscale stays OFF
+(anti-jump); per-bar identity under hide-vs-purge; lagRatio×transition
+length interaction; center-rule ≠ trapezoid rule.
+
+**video-unify investigation**: agent in flight; digest AS IT LANDS
+(standing instruction: "Write all of them down into the manifest").
 
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
