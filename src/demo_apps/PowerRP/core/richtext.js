@@ -118,11 +118,32 @@ export function valignOffset(valign, boxH, contentH) {
  * rich value. Accepts:
  *   - a bare STRING (legacy / plugin default) → ONE run inheriting the widget's
  *     own font/size/color/bold (the widget-level style keys), split into
- *     paragraphs by "\n" (each paragraph = one DEFAULT_PARA);
- *   - an already-rich {runs, paras} → returned normalized (missing paras filled
- *     with DEFAULT_PARA, runs coerced to carry `text`).
+ *     paragraphs by "\n" (a legacy string carries NO paragraph style, so each
+ *     paragraph is an EMPTY override object);
+ *   - an already-rich {runs, paras} → returned normalized (paras backfilled to
+ *     the paragraph count with EMPTY override objects, runs coerced to carry
+ *     `text` + full run style).
  * A migration is LOUD at the LOAD boundary via richTextMigrations (below); this
  * function itself is the pure normalizer both the migration and emit() use.
+ *
+ * ASYMMETRY, ON PURPOSE: `runs` come back FULLY RESOLVED (runFrom layers the
+ * widget-level `inherited` style under each run) but `paras` come back carrying
+ * ONLY WHAT WAS STORED. That is not an inconsistency — the two axes resolve at
+ * DIFFERENT layers. Run style has no later layer: the renderer reads
+ * `run.style.size` directly (render_gpu/skia/text_layout.textStyle), so the box
+ * → run inheritance must be applied HERE or it is lost. Paragraph style DOES have
+ * a later layer: paraStyleFor(paras, i, boxStyle) layers DEFAULT_PARA ‹ box ‹
+ * paras[i] at layout time, and every consumer goes through it (layoutRichText,
+ * skia/text_layout, TextFormatToolbar). Filling a default in HERE therefore
+ * DESTROYS the box layer instead of supplying it.
+ *
+ * WHY THIS IS WRITTEN DOWN: it used to stamp `{...DEFAULT_PARA, ...stored}` into
+ * every paragraph, which made all FOUR box-level paragraph Inspector rows
+ * (align / lineSpacing / charSpacing / wordSpacing) unreachable for EVERY
+ * document shape — paraStyleFor spreads the paragraph LAST, so a stamped default
+ * always beat the box. Measured by byte-diffing renderDocToPng: changing the box
+ * `align` from left to right moved zero pixels. The rule that prevents the
+ * recurrence: a normalizer may resolve a layer only if no layer sits ABOVE it.
  *
  * `inherited` supplies the widget-level fallbacks a legacy string had no runs
  * to carry (so old docs render byte-identically: the single run inherits the
@@ -133,19 +154,22 @@ export function valignOffset(valign, boxH, contentH) {
  *   inherited (object): {font, size, color, bold} widget-level fallbacks
  *
  * Returns:
- *   {runs, paras}: canonical rich value (runs carry text + full run style)
+ *   {runs, paras}: canonical rich value (runs carry text + full run style;
+ *     paras carry only the stored per-paragraph overrides)
  *
  * @example normalizeRichText("Hi", {font: "inter", size: 20, color: "#000", bold: false}).runs.length // 1
  * @example normalizeRichText("Hi", {size: 20}).runs[0].text // "Hi"
  * @example normalizeRichText("a\nb", {}).paras.length // 2
+ * @example normalizeRichText("a\nb", {}).paras[0] // {} (a legacy string set no paragraph style)
  * @example normalizeRichText({runs: [{text: "x"}], paras: []}, {}).paras.length // 1
+ * @example normalizeRichText({runs: [{text: "a\nb"}], paras: [{align: "center"}]}, {}).paras[1] // {} (backfilled EMPTY, so the box row still reaches paragraph 2)
  */
 export function normalizeRichText(value, inherited = {}) {
   if (typeof value === "string") {
     const paraCount = value.split("\n").length;
     return {
       runs: [runFrom({ text: value }, inherited)],
-      paras: Array.from({ length: paraCount }, () => ({ ...DEFAULT_PARA })),
+      paras: Array.from({ length: paraCount }, () => ({})),
     };
   }
   if (value && typeof value === "object" && Array.isArray(value.runs)) {
@@ -153,17 +177,27 @@ export function normalizeRichText(value, inherited = {}) {
     const text = runs.map((r) => r.text).join("");
     const paraCount = Math.max(1, text.split("\n").length);
     const paras = [];
-    for (let i = 0; i < paraCount; i++) paras.push({ ...DEFAULT_PARA, ...(value.paras?.[i] ?? {}) });
+    for (let i = 0; i < paraCount; i++) paras.push({ ...(value.paras?.[i] ?? {}) });
     return { runs, paras };
   }
   // Any other shape (null/number/etc.) → an empty single run (loud callers
   // report the migration; the render path must never throw on a weird value).
-  return { runs: [runFrom({ text: "" }, inherited)], paras: [{ ...DEFAULT_PARA }] };
+  return { runs: [runFrom({ text: "" }, inherited)], paras: [{}] };
 }
 
 /** Pure function. A canonical run from a partial run + widget-level inherited
  * style. text defaults to ""; run style keys fall back to `inherited` then to
  * sane defaults, so a legacy single run reproduces the old widget exactly.
+ *
+ * THE `??` CHAIN IS A LIVE FALLBACK, AND THAT MAKES IT SHADOWABLE. `r.X` wins
+ * over `inherited.X` by design — per-run style is the FEATURE. But a caller that
+ * STORES a fully-resolved run (every key materialized, even the ones the user
+ * never touched) leaves nothing for `inherited` to supply, so the widget-level
+ * font/size/bold/color Inspector rows go dead. That failure is SHADOWED, not
+ * inert: this function is correct, its unit tests pass, and only the app's own
+ * DEFAULT STATE reveals it (see plugins/text.js `defaults.text`, where the stamp
+ * was removed). The invariant: only USER-SET run keys may be stored; resolution
+ * happens per render, in emit().
  * outlineColor/outlineWidth/highlight (Round 13.4) default OFF (width 0, no
  * background) so a run from an OLD doc — which carries none of these keys —
  * renders byte-identically (no outline, no highlight). This IS the migration

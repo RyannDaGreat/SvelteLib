@@ -35,7 +35,7 @@ test("normalizeRichText: string → one run, one para per line", () => {
   assert.equal(normalizeRichText("a\nb", {}).paras.length, 2);
 });
 
-test("normalizeRichText: already-rich passes through, paras backfilled", () => {
+test("normalizeRichText: already-rich passes through, paras backfilled EMPTY", () => {
   const r = normalizeRichText({ runs: [{ text: "x" }], paras: [] }, {});
   assert.equal(r.paras.length, 1);
   assert.equal(r.runs[0].text, "x");
@@ -43,7 +43,13 @@ test("normalizeRichText: already-rich passes through, paras backfilled", () => {
   const r2 = normalizeRichText({ runs: [{ text: "a\nb\nc" }], paras: [{ align: "center" }] }, {});
   assert.equal(r2.paras.length, 3);
   assert.equal(r2.paras[0].align, "center"); // preserved override
-  assert.equal(r2.paras[1].align, "left");   // backfilled default
+  // A backfilled paragraph is an EMPTY override object, NOT DEFAULT_PARA. This
+  // assertion used to read `"left"`, and that stamp is what made all four
+  // box-level paragraph rows unreachable: paraStyleFor spreads the paragraph LAST,
+  // so a materialized default always beat the box layer (tests/text_rows_test.js).
+  assert.equal(r2.paras[1].align, undefined);
+  assert.equal(paraStyleFor(r2.paras, 1).align, "left");                      // the default still applies…
+  assert.equal(paraStyleFor(r2.paras, 1, { align: "right" }).align, "right"); // …and the box can now override it
 });
 
 test("normalizeRichText: junk value → empty single run (never throws)", () => {

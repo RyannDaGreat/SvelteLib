@@ -61,16 +61,38 @@ export const textPlugin = {
     // is the canonical rich shape (one run "Text") — NOT a bare string — so it
     // shares the delta-leaf structure of every rich instance: both fold to the
     // two leaves `text.runs` and `text.paras` (arrays are leaf values to the
-    // delta walker, so the run COUNT never matters), which means
+    // delta walker, so the run COUNT and its key set never matter), which means
     // document.missingDefaults NEVER mis-flags a rich instance as "missing text"
     // and clobbers it. A LEGACY plain-STRING `text` (old docs / hand-written /
     // make_demo) migrates to this shape LOUDLY at load via
     // core/richtext.withRichTextMigrated (wired in the app repair path); emit()
     // also tolerates an in-memory string on the fly (normalizeRichText).
-    // outlineColor/outlineWidth/highlight (Round 13.4) default OFF: no glyph
-    // outline (width 0), no highlight background ("" sentinel). Old docs without
-    // these keys get the same off defaults via core/richtext.runFrom.
-    text: { runs: [{ text: "Text", bold: false, italic: false, underline: false, strike: false, size: 36, font: DEFAULT_FONT, color: "#000000", outlineColor: "#000000", outlineWidth: 0, highlight: "" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] },
+    //
+    // THE RUN AND THE PARAGRAPH CARRY *CONTENT ONLY* — NO STYLE. That is load-
+    // bearing, not tidiness. Every style key below (`size`/`color`/`bold`/`font`
+    // and `align`/`lineSpacing`/`charSpacing`/`wordSpacing`) is a BOX-LEVEL
+    // Inspector row that UNDERLIES the run/paragraph: emit() feeds them to
+    // normalizeRichText as `inherited`, and layout feeds them to
+    // core/richtext.paraStyleFor as `boxStyle`. Both layerings resolve
+    // "what the run/paragraph did NOT set". This default used to materialize all
+    // ten run keys and all four paragraph keys, so there was nothing left to
+    // resolve and EIGHT box rows moved zero pixels — measured by byte-diffing
+    // renderDocToPng.
+    //
+    // THE NAME FOR THAT DEFECT CLASS IS *SHADOWED*, NOT INERT. Nothing here was
+    // dead code and nothing was mis-wired: the widget reads the row, the layering
+    // is right, and a unit test on either helper passes. The app's own DEFAULT
+    // STATE pre-empted a LIVE FALLBACK — the row was outranked by a value the user
+    // never chose. It passes code review precisely because every piece is
+    // individually correct; only rendering the real default state reveals it. The
+    // rule that prevents the recurrence: A DEFAULT MAY NOT MATERIALIZE A KEY THAT
+    // A LOWER-PRECEDENCE LAYER EXISTS TO SUPPLY.
+    //
+    // The rendered result is UNCHANGED (proven by byte-diff): a bare run resolves
+    // through runFrom to exactly the keys that were stamped here — bold/italic/
+    // underline/strike false, size 36, DEFAULT_FONT, color #000000, and the
+    // Round 13.4 outline/highlight OFF defaults (outlineWidth 0, highlight "").
+    text: { runs: [{ text: "Text" }], paras: [{}] },
     // Widget-level style the single migrated run inherits AND the per-paragraph
     // layout falls back to (font/size/color/bold are run-inherited; the para
     // keys below are the box's one-alignment-per-box defaults — SET-1 Inspector).
