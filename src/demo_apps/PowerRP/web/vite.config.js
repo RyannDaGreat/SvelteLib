@@ -47,7 +47,14 @@ export default defineConfig({
   // web/mermaidRenderer.js's lazy `import "mermaid"`) is the SAME lazy-dep flake
   // class as pdfjs/mathjax — pre-bundle it so its dep-discovery re-optimize
   // never mid-session reloads the page (which aborts a puppeteer probe).
-  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive", "mermaid"] },
+  // `mp4-muxer` (the container writer the in-page video encoder finalizes through,
+  // reached only via the lazy import chain app.svelte.js → browserRenderJobs →
+  // mp4Encoder → mp4Samples) is the SAME lazy-dep flake class, and here it is worse
+  // than a flake: the discovery happens the first time a user SUBMITS a browser
+  // render, and the resulting full page reload would kill the render that triggered
+  // it. Pre-bundled so that cannot happen. (The wasm encoder itself is imported as
+  // `?url` and never parsed, so it needs no entry here.)
+  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive", "mermaid", "mp4-muxer"] },
   server: {
     port: 3637,
     host: true,
@@ -60,8 +67,14 @@ export default defineConfig({
     // real file and proxy it to the backend (→ MIME error). Every server call
     // uses the "/api/…", "/asset/…" form, so trailing-slash prefixes are safe.
     // (This is the documented annotator trailing-slash bug, avoided here too.)
+    //
+    // "/render/" is the FINISHED MOVIES route (server.py _serve_render, Range
+    // supported so the Render Center's <video> can seek). It was missing here, so
+    // through the dev server every finished render's inline player and Download
+    // link resolved to Vite's own 404 instead of the file — the job said "done" and
+    // the movie appeared to be nowhere.
     proxy: Object.fromEntries(
-      ["/api/", "/asset/"].map((p) => [p, BACKEND]),
+      ["/api/", "/asset/", "/render/"].map((p) => [p, BACKEND]),
     ),
   },
 });

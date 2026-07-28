@@ -12,16 +12,32 @@
   reopened (or opened in a different tab tomorrow) and show the same truth.
   Everything on the right is POLLED, never remembered.
 
-  BACKENDS. The encode was always server-side ffmpeg (WebCodecs needs a secure
-  context, which plain HTTP cannot give), so the only thing that ever differed is
-  who fills the frame directory — which makes `backend` a FIELD on one job rather
-  than a second system:
+  BACKENDS. `backend` is a FIELD on one job rather than a second system, because the
+  only thing that differs is WHO PRODUCES THE PIXELS — both end in the same job
+  record, the same renders/ folder and this same list:
     Server  — detached; survives a closed laptop, a refresh, even a server
-              restart. The default, and the only honest answer to "will this
-              still be going when I come back".
-    Browser — this page renders the frames. Faster when the machine has a GPU,
-              and it is currently the ONLY backend that draws image/video widgets
-              (the headless renderer has no media decode yet) — so it stays.
+              restart. It renders in a headless browser running THIS app, so it
+              draws everything this page draws (media, LaTeX, Mermaid, motion
+              blur). The default, and the only honest answer to "will this still
+              be going when I come back".
+    Browser — this page renders the frames. It stays because the machine sitting
+              in front of the user may have a GPU the server does not. Closing the
+              tab PAUSES a browser render and reopening the project RESUMES it
+              (web/browserRenderJobs.js); the rows say exactly that rather than
+              implying it kept going, because it did not.
+
+  BROWSER ENCODERS. Two, both resumable, differing in where the bytes are compressed
+  and — the part the user must be told — how precisely a paused render resumes.
+  "Upload frames" is faster at ordinary output sizes and resumes at an EXACT frame;
+  "Encode in page" streams no pixels anywhere and needs no server scratch disk, but
+  resumes at a segment boundary. The measurements behind that are in
+  web/browserRenderJobs.js's header; the dropdown states the consequence.
+
+  WHO KNOWS THE PROGRESS. For a server job, the server does (it counts frames on
+  disk) — which is why everything on the right is POLLED. For a browser job the
+  server has no handle on the tab making the frames, so the live truth comes from
+  web/browserRenderJobs.js instead, read on the same poll. That is not a second
+  system; it is the honest answer to "how far along is this".
 
   COLLAPSED BY DEFAULT, AND WHY THAT IS A CONSTRAINT NOT A TASTE: an expanded row
   mounts a <video>, so expanding everything on open would have the browser fetch
@@ -47,7 +63,14 @@
   // lives in one pure module because the toolbar badge reads the same
   // predicates — two copies would be two chances to disagree about what the
   // badge counts. See web/renderJobView.js.
-  import { jobIsActive, defaultExpanded, jobProgress, jobStatusLine, STATE_ICONS } from "./renderJobView.js";
+  import { jobIsActive, defaultExpanded, jobProgress, jobStatusLine, STATE_ICONS, ACTIVE_STATES } from "./renderJobView.js";
+  // A browser job's progress and its paused/rendering distinction come from the
+  // browser, not the server — see the header's "WHO KNOWS THE PROGRESS".
+  import {
+    BROWSER_ENCODERS, DEFAULT_BROWSER_ENCODER, browserJobStatuses,
+    forgetBrowserRenderJob, pruneFinishedBrowserJobs,
+  } from "./browserRenderJobs.js";
+  import { browserJobStatusLine, browserJobProgress, canResume } from "./browserJobView.js";
 
   let { app } = $props();
 
@@ -109,9 +132,12 @@
     { value: "all", label: "All slides" },
     { value: "custom", label: "Range…" },
   ];
+  // The server backend renders in a headless browser running THIS app, so it draws
+  // everything this page draws — media, LaTeX, Mermaid, motion blur. "needed for
+  // media" was true of the old bare-node renderer and is no longer.
   const BACKENDS = [
     { value: "server", label: "Server — keeps going if you close this" },
-    { value: "browser", label: "Browser — this page renders (needed for media)" },
+    { value: "browser", label: "Browser — this page renders (uses your GPU)" },
   ];
 
   // ── Form state ──────────────────────────────────────────────────────────
@@ -130,24 +156,29 @@
   let holdSeconds = $state(DEFAULT_HOLD_SECONDS);
   let background = $state("#000000");
   let samples = $state(DEFAULT_SAMPLES); // temporal subsamples (1 = no motion blur)
+  let browserEncoder = $state(DEFAULT_BROWSER_ENCODER);
   let submitError = $state(null);
   let submitting = $state(false);
 
   // ── Right pane: polled job list ─────────────────────────────────────────
-  // `jobs` is server truth, refreshed on a timer. `overrides` records rows the
-  // user explicitly opened/closed — an explicit choice must beat the default for
-  // as long as the dialog is open (see the header).
+  // `jobs` is server truth, refreshed on a timer. `browserStatus` is the BROWSER's
+  // truth for browser jobs, read on the same poll (see the header's "WHO KNOWS THE
+  // PROGRESS"). `overrides` records rows the user explicitly opened/closed — an
+  // explicit choice must beat the default for as long as the dialog is open.
   let jobs = $state([]);
+  let browserStatus = $state({});
   let listError = $state(null);
   let overrides = $state({});
   let poll = null;
 
-  /** Command (async). Re-read the job list. Errors are shown in the pane rather
-   *  than thrown away — a backend that has gone away must be visible, not a list
-   *  that silently stops updating. */
+  /** Command (async). Re-read the job list AND this browser's own view of its
+   *  browser jobs. Errors are shown in the pane rather than thrown away — a
+   *  backend that has gone away must be visible, not a list that silently stops
+   *  updating. */
   async function refresh() {
     try {
       jobs = await listRenderJobs(project);
+      browserStatus = await browserJobStatuses(project);
       listError = null;
     } catch (e) {
       listError = String(e?.message ?? e);
@@ -155,6 +186,12 @@
   }
 
   refresh();
+  // Resume data for a job the server has already finished (or lost) is dead weight
+  // AND a lie — it would let the dialog offer to resume something that is over. One
+  // sweep per open, reported rather than silent.
+  pruneFinishedBrowserJobs(project)
+    .then((dropped) => { if (dropped.length) console.info(`Render Center: dropped local resume data for ${dropped.length} finished render job(s).`); })
+    .catch((e) => console.error("Render Center: could not prune finished browser render jobs:", e));
   poll = setInterval(refresh, POLL_MS);
   onDestroy(() => clearInterval(poll));
 
@@ -165,10 +202,10 @@
   let crf = $derived(codecQuality === "custom" ? clampCrf(customCrf) : QUALITY_CRF[codecQuality]);
   let startIndex = $derived(rangeMode === "all" ? 0 : clampSlide(rangeFrom) - 1);
   let endIndex = $derived(rangeMode === "all" ? slideCount - 1 : clampSlide(rangeTo) - 1);
-  // Motion blur AVERAGES sub-frames on a canvas, which the headless worker has no
-  // equivalent for. The server REJECTS it at submit; saying so here turns a
-  // rejection into a plain fact about the backend.
-  let blurNeedsBrowser = $derived(backend === "server" && Math.round(samples) > 1);
+  // (Motion blur used to be Browser-backend-only: the server rendered in bare node
+  // with no canvas to average sub-frames on. The server worker now drives the SAME
+  // frame sampler in a real headless browser, so both backends blur identically and
+  // there is no restriction left to warn about.)
 
   /** Query. Is a row expanded? An explicit toggle wins; otherwise the default. */
   function expanded(job) {
@@ -197,6 +234,7 @@
         // The dropdown says "browser" because that is what the user is choosing;
         // the wire word is "client".
         backend: backend === "browser" ? "client" : "server",
+        encoder: browserEncoder, // ignored by the server backend
         params: {
           width, height, fps, crf, samples: Math.round(samples),
           startIndex, endIndex, includeTransitions, holdSeconds, background,
@@ -212,24 +250,39 @@
     }
   }
 
-  /** Command (async). Cancel a running job; the list reflects it on refresh. */
+  /** Command (async). Cancel a running job; the list reflects it on refresh. A
+   *  browser job's local resume data goes too — a cancelled render must not still
+   *  offer to continue. */
   async function cancel(job) {
     try {
       await cancelRenderJob(project, job.id);
+      if (job.backend === "client") await forgetBrowserRenderJob(job.id);
       await refresh();
     } catch (e) {
       listError = String(e?.message ?? e);
     }
   }
 
-  /** Command (async). Delete a finished job's record AND its movie. */
+  /** Command (async). Delete a finished job's record AND its movie (and, for a
+   *  browser job, any resume data still held here). */
   async function remove(job) {
     try {
       await deleteRenderJob(project, job.id);
+      if (job.backend === "client") await forgetBrowserRenderJob(job.id);
       await refresh();
     } catch (e) {
       listError = String(e?.message ?? e);
     }
+  }
+
+  /** Command (async). Continue a PAUSED browser render from where it stopped. Not
+   *  awaited to completion — the row tracks it on the poll, exactly as a submit
+   *  does, so this dialog can be closed again immediately. */
+  function resume(job) {
+    app.resumeRender(job.id)
+      .then(refresh)
+      .catch((e) => (listError = String(e?.message ?? e)));
+    refresh();
   }
 
   /** Command (async). Copy a job's absolute output path to the clipboard. */
@@ -258,6 +311,17 @@
       <span class="render-center-label">Rendered by</span>
       <span class="render-center-control"><Dropdown items={BACKENDS} bind:value={backend} /></span>
     </label>
+    {#if backend === "browser"}
+      <label class="render-center-row">
+        <span class="render-center-label">Encoded by</span>
+        <span class="render-center-control"><Dropdown items={BROWSER_ENCODERS} bind:value={browserEncoder} /></span>
+      </label>
+      <p class="render-center-hint">
+        Closing this tab PAUSES a browser render — it does not keep going. Reopen the
+        project and press Resume to continue from
+        {BROWSER_ENCODERS.find((e) => e.value === browserEncoder)?.resume} .
+      </p>
+    {/if}
 
     <label class="render-center-row">
       <span class="render-center-label">Resolution</span>
@@ -355,12 +419,6 @@
       Output: {width}×{height} · {fps} fps · CRF {crf} (lower = higher quality)
     </p>
 
-    {#if blurNeedsBrowser}
-      <p class="render-center-warning">
-        Motion blur averages sub-frames on a canvas, which the server renderer cannot do.
-        Set it to 1, or choose the Browser backend.
-      </p>
-    {/if}
     {#if submitError}
       <p class="render-center-error">Submit failed: {submitError}</p>
     {/if}
@@ -389,8 +447,17 @@
     <div class="render-center-scroll">
       {#each jobs as job (job.id)}
         {@const open = expanded(job)}
-        {@const fraction = jobProgress(job)}
-        <div class="render-center-job" class:is-active={jobIsActive(job)} class:is-failed={job.state === "failed"}>
+        <!-- A BROWSER job's progress and its paused/rendering distinction come from
+             the browser; the server cannot see the tab making the frames. Falling
+             back to the server's view for one would print "Rendering frame 412 of
+             900" about a render that stopped when the tab closed. -->
+        {@const isBrowser = job.backend === "client"}
+        {@const bstatus = isBrowser ? (browserStatus[job.id] ?? null) : null}
+        {@const active = jobIsActive(job)}
+        {@const fraction = isBrowser ? browserJobProgress(bstatus, job) : jobProgress(job)}
+        {@const paused = isBrowser && active && bstatus?.driver === "paused"}
+        {@const resumable = canResume(job, bstatus, ACTIVE_STATES)}
+        <div class="render-center-job" class:is-active={active} class:is-failed={job.state === "failed"}>
           <div class="render-center-job-head">
             <button
               type="button"
@@ -405,7 +472,14 @@
             </button>
             <span class="render-center-job-backend">{job.backend === "server" ? "server" : "browser"}</span>
             {#if !job.seen && job.state === "done"}<span class="render-center-dot" aria-label="Not yet seen"></span>{/if}
-            {#if jobIsActive(job)}
+            {#if resumable}
+              <Tooltip text="Continue this render from where it stopped">
+                <button type="button" class="btn-icon" aria-label={`Resume ${job.name}`} onclick={() => resume(job)}>
+                  <iconify-icon icon="mdi:play-circle-outline" width="16" height="16"></iconify-icon>
+                </button>
+              </Tooltip>
+            {/if}
+            {#if active}
               <Tooltip text="Cancel this render">
                 <button type="button" class="btn-icon" aria-label={`Cancel ${job.name}`} onclick={() => cancel(job)}>
                   <iconify-icon icon="mdi:stop-circle-outline" width="16" height="16"></iconify-icon>
@@ -420,14 +494,19 @@
             {/if}
           </div>
 
-          <p class="render-center-job-status">{jobStatusLine(job)}</p>
+          <p class="render-center-job-status">
+            {isBrowser && active ? browserJobStatusLine(job, bstatus) : jobStatusLine(job)}
+          </p>
 
-          {#if jobIsActive(job)}
+          {#if active}
             <div class="render-center-bar">
+              <!-- A PAUSED browser render must not animate: a sweeping bar reads as
+                   work happening, and nothing is happening. -->
               <div
                 class="render-center-bar-fill"
-                class:is-indeterminate={fraction === null || job.state === "encoding"}
-                style:width={fraction !== null && job.state !== "encoding" ? `${Math.floor(fraction * 100)}%` : null}
+                class:is-paused={paused}
+                class:is-indeterminate={!paused && (fraction === null || job.state === "encoding")}
+                style:width={fraction !== null && (paused || job.state !== "encoding") ? `${Math.floor(fraction * 100)}%` : null}
               ></div>
             </div>
           {/if}
@@ -437,6 +516,13 @@
           {/if}
           {#if job.error}
             <p class="render-center-error">{job.error}</p>
+          {/if}
+          <!-- A browser render that stopped for a LOCAL reason (the encoder worker
+               died, IndexedDB refused a write) leaves its explanation here and
+               nowhere else: the server only ever learns "cancelled". Shown for a
+               finished row too, which is exactly when the user is asking why. -->
+          {#if bstatus?.error && bstatus.error !== job.error}
+            <p class="render-center-error">{bstatus.error}</p>
           {/if}
 
           {#if open && job.state === "done" && job.output}

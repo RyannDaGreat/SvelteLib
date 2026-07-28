@@ -251,6 +251,24 @@ export async function postRenderJobFrame(project, jobId, index, png) {
   return jsonOrThrow(res, `postRenderJobFrame(${project}, ${index})`);
 }
 
+/** Command. Deliver a FINISHED MOVIE for a browser-backend job whose frames were
+ *  encoded IN THE PAGE (web/mp4Encoder.js), so nothing was ever uploaded frame by
+ *  frame. `mp4` is the container bytes (Uint8Array/ArrayBuffer/Blob) and `frames`
+ *  is how many frames they hold — the server records that count and stops
+ *  believing its own (empty) frames directory. The movie lands in the project's
+ *  renders/ folder exactly like a server-rendered one, so the two backends share
+ *  one output location and one list entry. Returns the finished job record. */
+export async function postRenderJobOutput(project, jobId, mp4, frames) {
+  const q = new URLSearchParams({ frames: String(frames) });
+  const res = await fetch(`${BACKEND}/api/render-job/${enc(project)}/${enc(jobId)}/output/?${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "video/mp4" },
+    body: mp4,
+  });
+  const { job } = await jsonOrThrow(res, `postRenderJobOutput(${project}, ${jobId})`);
+  return job;
+}
+
 /** Command. Tell the server a CLIENT-backend job's frames are all uploaded and
  *  it should run the shared ffmpeg encode. Returns the finished job record. */
 export async function finishRenderJob(project, jobId) {

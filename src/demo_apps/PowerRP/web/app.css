@@ -1166,6 +1166,31 @@ textarea {
   overflow-y: auto;
 }
 
+/* A LIST inside a floating canvas panel (web/BentoTargetList.svelte). Sibling of
+   .canvas-toolbar-grid: the same scroll container decision, in a column instead of
+   a tile grid. Capped by --a-canvas-toolbar-max-h — the SAME token
+   FloatingCanvasPanel reads for its above/below flip — because a panel that could
+   grow past the height its flip threshold assumes is exactly the drift that shell
+   exists to prevent. The ROWS inside are .palette-item, reused rather than
+   restyled: it is already the app's one reading for "a row you can pick", and its
+   .unavailable + .tool-tip-requires pair is already the one reading for "you
+   cannot, and here is why". */
+.canvas-toolbar-list {
+  display: flex;
+  flex-direction: column;
+  max-height: var(--a-canvas-toolbar-max-h);
+  overflow-y: auto;
+}
+
+/* A greyed row's reason sits INSIDE the row, so it is readable without a second
+   hover (the list's whole premise is that the user cannot identify the widget
+   visually). The shared footnote rule owns the colour and the rule-above; the row
+   only has to stop being a single line and let it sit underneath the name. */
+.canvas-toolbar-list .palette-item {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
 .canvas-toolbar-tile {
   display: flex;
   align-items: center;
@@ -1319,6 +1344,29 @@ textarea {
 
 .canvas-wrap .overlay {
   touch-action: none;
+}
+
+/* A WIDGET CANVAS MODE'S CURSOR — the mode names the affordance and the pointer
+   states it, the same way `grab`, `col-resize`, `help` and `not-allowed` do
+   elsewhere in this file. STATE → CLASS (the crosshair `skin` precedent): the
+   class comes from the live mode's declared `cursors` entry for the current step,
+   so it reverts on every exit route with no imperative cursor state to get stuck.
+
+   STANDARD KEYWORDS, NOT AN ASSET. The bento's two binding steps ask two different
+   questions and CSS already has both words: `cell` is literally "select a cell of a
+   table/grid" and `alias` is literally "the action creates a link" — which is what a
+   cell binding is. Both glyphs also exist by name in this app's own built-in cursor
+   library (assets/builtin/cursors/cell.svg, makealias.svg), so the vocabulary is
+   house-sanctioned; an eyedropper would have meant a new asset AND a hand-tuned
+   hotspot for a less precise word. web/widget_handlers.canvasModes() validates every
+   declared name against THIS list at boot, so adding a mode cursor means adding a
+   rule here and nothing else. */
+.canvas-wrap .overlay.cursor-cell {
+  cursor: cell;
+}
+
+.canvas-wrap .overlay.cursor-alias {
+  cursor: alias;
 }
 
 /* VIDEO V7 (WebGPU per-widget canvas overlay). A stacking layer sibling to
@@ -4973,6 +5021,16 @@ audio.ae-preview-media {
   to {
     margin-left: calc(100% - var(--a-render-bar-sweep-w));
   }
+}
+
+/* PAUSED (a browser render whose tab was closed): a determinate fill in the DIM
+   colour and NO animation. Both halves are the point — the width is real progress
+   that will be continued from, and the stillness says nothing is happening.
+   Animating it would read as work in flight, which is the exact lie this state
+   exists to prevent. */
+.render-center-bar-fill.is-paused {
+  background: var(--fg-dim);
+  animation: none;
 }
 
 .render-center-video {

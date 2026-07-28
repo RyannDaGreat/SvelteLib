@@ -56,6 +56,11 @@ import fire
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(HERE)  # src/demo_apps/PowerRP
+# The SvelteLib checkout root (where package.json + node_modules live). Derived
+# from this file so the dump stays portable. The render worker must be spawned
+# from here: it starts a Vite dev server and resolves vite/puppeteer/svelte from
+# these node_modules, exactly as the editor's own launcher does.
+REPO_ROOT = os.path.normpath(os.path.join(APP_DIR, "..", "..", ".."))
 # Storage root: beside this file by default (the annotator's outputs/-beside-
 # server.py precedent), overridable via POWERRP_PROJECTS_DIR so a test harness
 # can point at a throwaway root without touching real projects (loud, explicit —
@@ -508,12 +513,24 @@ def encode_export_mp4(session_id, fps, crf):
 # designs (ffmpeg; WebCodecs needs a secure context, which plain HTTP cannot
 # give). The only thing that ever differed is WHO fills the frame directory, so
 # `backend` is a FIELD on one job record, not a second system:
-#   "server" -- this server spawns cli/render_job.js workers (detached; survives
-#               everything, and the only backend that can use a server's GPU or
-#               keep running with the laptop shut).
-#   "client" -- the browser fills the same directory by POSTing frames, then asks
-#               for the same encode. Kept because the browser has a real GPU and
-#               is often FAR faster, and because it renders media (see below).
+#   "server" -- this server spawns cli/render_job.js (detached; survives
+#               everything, and the only backend that keeps running with the
+#               laptop shut).
+#   "client" -- the user's own browser fills the same directory by POSTing frames,
+#               then asks for the same encode. Kept because that browser may have
+#               a real GPU the server does not.
+#
+# THE SERVER BACKEND RUNS THE FRONTEND'S CODE (user ruling, 2026-07-28: "the
+# renderer is one code path"). cli/render_job.js used to be a BARE-NODE renderer
+# on a software Skia surface -- a SECOND renderer, which silently lacked
+# everything the editor has: image/video/PDF/filmstrip drew NOTHING (no
+# createImageBitmap in node), LaTeX threw, Mermaid died on a font load, motion
+# blur was refused, and it could never use a GPU. It now boots the real editor in
+# headless Chrome and asks IT for frames, so the backend inherits the frontend's
+# capabilities by construction rather than by reimplementation. Measured against
+# the bare-node path it replaced: a Mandelbrot+metaball deck went 166 s/frame ->
+# 0.67 s/frame at 640x360, and a 16-widget material deck >600 s -> 6.5 s for one
+# 1080p frame, with the media actually present.
 #
 # ON-DISK LAYOUT, and why outputs go where they do:
 #     projects/<name>/renders/<file>.mp4      the finished movies -- PLAINLY
@@ -558,24 +575,46 @@ JOB_OUTPUT_EXT = ".mp4"
 # States in which a job is not finished. Used by the list (badge counts), by the
 # restart sweep, and to reject a cancel of something already over.
 JOB_ACTIVE_STATES = ("queued", "rendering", "encoding")
-# How many worker PROCESSES one server-backend job fans out across. Frame-range
-# parallelism is sound because no widget is autoregressive (see the sharding note
-# in cli/render_job.js), and it is ESSENTIAL rather than optional: a generative
-# material runs its per-pixel shader on the CPU headlessly, which measures in
-# MINUTES per frame, so the shard count is the difference between a usable render
-# and a multi-day one. Default: half the cores, capped -- the cap exists because
-# each worker holds its own CanvasKit surfaces and this often runs on a laptop,
-# where spawning 32 of them would swap. POWERRP_RENDER_WORKERS overrides it.
+# How many BROWSERS one server-backend job renders on. Frame-range parallelism is
+# sound because no widget is autoregressive (see the sharding note in
+# cli/render_job.js), and it is ESSENTIAL rather than optional: a material-heavy
+# slide measures seconds per frame even on the GPU-or-SwiftShader path, so this is
+# the difference between a usable render and an overnight one.
+#
+# ONE PROCESS, N BROWSERS -- not N processes. Measured (cli/render_job.js header):
+# concurrent worker PROCESSES each start their own Vite dev server, share
+# node_modules/.vite, and 504 each other's module graph out mid-render; and N tabs
+# of ONE browser barely parallelise because Chrome hosts same-origin tabs on one
+# renderer thread (4 tabs = 1.5x, 8 tabs = WORSE than 4). N separate browsers
+# scale (4 = 2.6x, 8 = 3.5x). So the supervisor spawns ONE worker process and
+# passes it --workers N.
+#
+# Default: half the cores, capped. The cap exists because each browser is a real
+# Chrome with its own GPU process and CanvasKit heap, and this often runs on a
+# laptop; it also stops being a win on short jobs, where N browser boots (~1.7 s
+# each) cost more than they save. POWERRP_RENDER_WORKERS overrides it.
 RENDER_WORKERS_CAP = 8
 RENDER_WORKER_COUNT = max(1, min(RENDER_WORKERS_CAP, (os.cpu_count() or 2) // 2))
 if os.environ.get("POWERRP_RENDER_WORKERS"):
     RENDER_WORKER_COUNT = max(1, int(os.environ["POWERRP_RENDER_WORKERS"]))
 # The frame worker, resolved relative to this file so the dump stays portable.
 RENDER_JOB_SCRIPT = os.path.join(APP_DIR, "cli", "render_job.js")
-# Widget types the HEADLESS renderer cannot draw: it passes an empty media map, so
-# these draw as NOTHING. That is a silently wrong picture, so submit attaches a
-# loud warning naming them rather than letting it be discovered in the output.
-HEADLESS_UNSUPPORTED_TYPES = ("image", "video", "video_scrub", "video_v5", "pdf", "filmstrip")
+# Widget types whose content is NOT a function of the presentation timeline: a
+# video PLAYER is an HTML <video> on the browser's OWN playback clock, and the
+# manifest is explicit that its playing is not document state. It RENDERS in a
+# server-side job (same code as the editor), but which frame of the clip lands on
+# which frame of the video is not reproducible -- so submit attaches a warning
+# naming them and points at the deterministic alternative. This is not a headless
+# limitation: the client backend has exactly the same property.
+NON_DETERMINISTIC_TYPES = ("video", "video_v5")
+# The deterministic alternatives, named in that warning so it is actionable.
+DETERMINISTIC_VIDEO_TYPES = ("video_scrub", "video_v5_scrub")
+# How much of the worker's stderr a job record may carry. The record is re-read by
+# the UI on every poll, so it must stay small; this is generous enough for the
+# document-repair notices and asset failures that actually appear there (a few
+# hundred characters each) and small enough that a runaway report cannot bloat the
+# poll. Exceeding it is reported in the text, never silently dropped.
+WORKER_REPORT_MAX_CHARS = 4000
 
 
 def renders_dir(name):
@@ -716,24 +755,61 @@ def widget_types(doc):
     return found
 
 
-def headless_media_warning(doc):
+def playback_clock_warning(doc):
     """
-    Pure function. A LOUD warning naming the widgets a server-side render cannot
-    draw, or None when the deck is fully renderable headlessly. The headless
-    renderer passes an empty media map, so these widgets draw as nothing -- a
-    silently wrong picture unless the user is told BEFORE they wait for it.
+    Pure function. A warning naming the widgets whose content is NOT a function of
+    the presentation timeline, or None when every widget in the deck is
+    reproducible. Applies to BOTH backends -- a video PLAYER runs on the browser's
+    own playback clock in either one.
+
+    It exists because the alternative is a user who renders the same deck twice
+    and gets two different videos with no explanation.
 
     Examples:
-        >>> headless_media_warning({"slides": [{"delta": {"items": {"a": {"type": "text"}}}}]}) is None
+        >>> playback_clock_warning({"slides": [{"delta": {"items": {"a": {"type": "text"}}}}]}) is None
         True
-        >>> "video" in headless_media_warning({"slides": [{"delta": {"items": {"a": {"type": "video"}}}}]})
+        >>> "video" in playback_clock_warning({"slides": [{"delta": {"items": {"a": {"type": "video"}}}}]})
+        True
+        >>> playback_clock_warning({"slides": [{"delta": {"items": {"a": {"type": "video_scrub"}}}}]}) is None
         True
     """
-    present = sorted(widget_types(doc) & set(HEADLESS_UNSUPPORTED_TYPES))
+    present = sorted(widget_types(doc) & set(NON_DETERMINISTIC_TYPES))
     if not present:
         return None
-    return (f"Server-side rendering cannot draw media yet, so these widgets will be BLANK in the "
-            f"output: {', '.join(present)}. Use the Browser backend for a deck containing them.")
+    return (f"This deck contains video PLAYER widgets ({', '.join(present)}). A player follows the "
+            f"browser's own playback clock, not the presentation timeline, so which frame of the clip "
+            f"lands on which frame of the render is not reproducible -- re-rendering can give a "
+            f"different result. For a deterministic export use a video SCRUBBER instead "
+            f"({', '.join(DETERMINISTIC_VIDEO_TYPES)}), whose current time IS tweened document state.")
+
+
+def merged_warning(existing, reports):
+    """
+    Pure function. The job's warning text after a worker run: whatever it already
+    carried, plus the DISTINCT lines the worker reported. None when there is
+    nothing to say.
+
+    Deduplicated because every browser rendering the job repairs the same snapshot
+    and therefore prints the same repair notices, and truncated because a job
+    record is read by the UI on every poll -- a runaway report must not turn it
+    into a megabyte of JSON. Truncation is ANNOUNCED, never silent.
+
+    Examples:
+        >>> merged_warning(None, "") is None
+        True
+        >>> merged_warning(None, "a\\na\\nb\\n")
+        'The render worker reported:\\na\\nb'
+        >>> merged_warning("careful", "a\\n")
+        'careful\\n\\nThe render worker reported:\\na'
+    """
+    seen = list(dict.fromkeys(line for line in (l.strip() for l in reports.splitlines()) if line))
+    parts = [existing] if existing else []
+    if seen:
+        text = "\n".join(seen)
+        if len(text) > WORKER_REPORT_MAX_CHARS:
+            text = text[:WORKER_REPORT_MAX_CHARS] + f"\n... (truncated at {WORKER_REPORT_MAX_CHARS} characters)"
+        parts.append("The render worker reported:\n" + text)
+    return "\n\n".join(parts) or None
 
 
 def unique_output_name(name, base):
@@ -786,7 +862,7 @@ def create_job(name, params, doc, job_name, backend):
         "params": params,
         "output": None,
         "error": None,
-        "warning": headless_media_warning(doc) if backend == "server" else None,
+        "warning": playback_clock_warning(doc),
         "workers": RENDER_WORKER_COUNT if backend == "server" else 1,
         "createdAt": time.time(),
         "startedAt": None,
@@ -865,40 +941,66 @@ def encode_job_output(name, job_id, record):
     return out_name
 
 
+def backend_origin():
+    """
+    Query. The origin the render worker's dev server must proxy /api and /asset
+    to, i.e. THIS server. Set by serve(); a caller that runs Handler itself (the
+    render-job test) sets BACKEND_URL before submitting.
+
+    Missing is a hard error, not a default: a project's image/video/PDF assets are
+    stored as "/asset/<project>/<file>" URLs, so a worker with the wrong origin
+    would 404 every one of them and render a deck full of holes. Guessing a port
+    would turn that into a silent wrong picture.
+    """
+    url = os.environ.get("BACKEND_URL")
+    if not url:
+        raise RuntimeError("BACKEND_URL is not set, so a render worker could not resolve this "
+                           "project's /asset URLs -- serve() sets it; a harness that runs Handler "
+                           "directly must set it before submitting a server-backend job")
+    return url
+
+
 def run_server_job(name, job_id):
     """
-    Command (spawns worker processes, waits, then encodes). Render a
-    server-backend job: fan its frame range out across RENDER_WORKER_COUNT
-    `cli/render_job.js` shards, wait for them all, then encode.
+    Command (spawns the worker process, waits, then encodes). Render a
+    server-backend job: ONE `cli/render_job.js` process fanning the frame range
+    across `record["workers"]` headless browsers, then encode.
 
-    Raises loudly if node is missing or ANY shard exits non-zero (with that
-    shard's stderr), so a failed render surfaces the real reason instead of
-    stalling at a percentage.
+    ONE process, N browsers -- see the RENDER_WORKER_COUNT note for the
+    measurements that forced that shape.
+
+    Raises loudly if node is missing or the worker exits non-zero (with its
+    stderr), so a failed render surfaces the real reason instead of stalling at a
+    percentage. The worker's stderr is RETURNED even on success, because the page's
+    own loud-failure reports (a failed asset fetch, a repaired document, a refused
+    surface) arrive there and must not be thrown away just because the job finished.
+
+    Returns:
+        str: the worker's stderr (possibly empty)
     """
     node = shutil.which("node")
     if not node:
         raise RuntimeError("node not found on PATH -- the server-side renderer needs Node.js")
     record = read_job(name, job_id)
-    shards = record["workers"]
     d = job_dir(name, job_id)
-    procs = []
-    for shard in range(shards):
-        procs.append(subprocess.Popen(
-            [node, RENDER_JOB_SCRIPT, d, "--shard", str(shard), "--shards", str(shards)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ))
+    # The worker starts a Vite dev server, which reads BACKEND_URL for its /api and
+    # /asset proxy -- that is how a project's assets reach the render page.
+    env = {**os.environ, "BACKEND_URL": backend_origin()}
+    proc = subprocess.Popen(
+        [node, RENDER_JOB_SCRIPT, d, "--workers", str(record["workers"])],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=REPO_ROOT, env=env,
+    )
     with _job_lock:
-        _job_procs[job_id] = procs
+        _job_procs[job_id] = [proc]
     try:
-        failures = []
-        for shard, proc in enumerate(procs):
-            _, err = proc.communicate()
-            # A cancel kills the workers, so a non-zero exit there is expected and
-            # is NOT a failure to report -- the cancel path owns that outcome.
-            if proc.returncode != 0 and job_id not in _job_cancelled:
-                failures.append(f"shard {shard} exited {proc.returncode}: {(err or '').strip()[-500:]}")
-        if failures:
-            raise RuntimeError("render worker failed -- " + " | ".join(failures))
+        out, err = proc.communicate()
+        if out and out.strip():
+            print(f"PowerRP render job {job_id}: {out.strip()}", file=sys.stderr)
+        # A cancel kills the worker, so a non-zero exit there is expected and is
+        # NOT a failure to report -- the cancel path owns that outcome.
+        if proc.returncode != 0 and job_id not in _job_cancelled:
+            raise RuntimeError(f"render worker exited {proc.returncode}: {(err or '').strip()[-2000:]}")
+        return err or ""
     finally:
         with _job_lock:
             _job_procs.pop(job_id, None)
@@ -921,12 +1023,17 @@ def _supervise():
                 update_job(name, job_id, state="cancelled", finishedAt=time.time())
                 continue
             update_job(name, job_id, state="rendering", startedAt=time.time())
-            run_server_job(name, job_id)
+            reports = run_server_job(name, job_id)
             if job_id in _job_cancelled:
                 shutil.rmtree(job_frames_dir(name, job_id), ignore_errors=True)
                 update_job(name, job_id, state="cancelled", finishedAt=time.time())
                 continue
-            record = update_job(name, job_id, state="encoding",
+            # A SUCCEEDED job that reported problems must still say so. The render
+            # page reports a failed asset fetch, a document repair or a refused
+            # surface on stderr; dropping that on the floor because the job finished
+            # is how a frame with a hole in it gets called green.
+            merged = merged_warning(record.get("warning"), reports)
+            record = update_job(name, job_id, state="encoding", warning=merged,
                                 framesDone=count_job_frames(name, job_id))
             out_name = encode_job_output(name, job_id, record)
             update_job(name, job_id, state="done", output=out_name,
@@ -976,9 +1083,18 @@ def resume_interrupted_jobs():
     restart, so a restart can never silently lose one.
 
     A SERVER-backend job is re-queued: its frames are on disk and the worker skips
-    the ones already written, so it picks up roughly where it stopped. A CLIENT
-    -backend job cannot resume -- its frame producer was a browser tab that is
-    gone -- so it is marked "interrupted" with a message saying so.
+    the ones already written, so it picks up roughly where it stopped.
+
+    A CLIENT (browser) job is LEFT ALONE, and that is a correction of what this
+    function used to do. It used to mark such a job "interrupted" on the grounds
+    that its frame producer was a tab that had gone away -- but a browser job is
+    now RESUMABLE (web/browserRenderJobs.js): its progress is either the PNG frames
+    already in this job's own directory or encoded segments in the browser's
+    IndexedDB, and neither is touched by a server restart. Marking it terminal here
+    would have destroyed a render that the next page load could have finished, and
+    would have made the endpoint that delivers its movie refuse it. A browser job
+    whose browser really is gone is reconciled by the CLIENT, which can see whether
+    it holds that job's resume data -- the server cannot.
     """
     if not os.path.isdir(PROJECTS_DIR):
         return
@@ -1001,11 +1117,9 @@ def resume_interrupted_jobs():
                 update_job(name, job_id, state="queued", error=None)
                 enqueue_job(name, job_id)
             else:
-                print(f"PowerRP: render job {record['name']} ({job_id}) in {name} was interrupted by a server restart", file=sys.stderr)
-                update_job(name, job_id, state="interrupted", finishedAt=time.time(),
-                           error="The server restarted while the browser was rendering this job's "
-                                 "frames, and a browser-rendered job cannot be resumed. Submit it "
-                                 "again -- the Server backend survives restarts.")
+                print(f"PowerRP: browser render job {record['name']} ({job_id}) in {name} is still "
+                      f"unfinished after a server restart -- left resumable (its progress is the "
+                      f"browser's, not this server's)", file=sys.stderr)
 
 
 def asset_kind(filename):
@@ -1541,6 +1655,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_job_action(parts[2], parts[3], parts[4])
             if len(parts) == 6 and parts[:2] == ["api", "render-job"] and parts[4] == "frame":
                 return self._handle_job_frame(parts[2], parts[3], parts[5])
+            if len(parts) == 5 and parts[:2] == ["api", "render-job"] and parts[4] == "output":
+                return self._handle_job_output(parts[2], parts[3], parsed)
             self._error(404, f"no POST route for {parsed.path}")
         except Exception as exc:
             traceback.print_exc()
@@ -1731,14 +1847,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, f"render job submit: crf must be an int in [{H264_CRF_MIN}, {H264_CRF_MAX}]")
         if not params.get("fps", 0) > 0:
             return self._error(400, "render job submit: fps must be > 0")
-        # MOTION BLUR is a CLIENT-backend capability: it averages sub-frames on a
-        # canvas, which the headless worker has no equivalent for. Refusing at
-        # submit is the loud option; silently rendering without blur would hand
-        # back a video that is not what was asked for.
-        if backend == "server" and params.get("samples", 1) > 1:
-            return self._error(400, "render job submit: motion blur (samples > 1) is only available on the "
-                                    "Browser backend -- the server renderer has no sub-frame averaging. "
-                                    "Set motion blur to 1, or switch the backend to Browser.")
+        # MOTION BLUR used to be refused for the server backend, because the
+        # bare-node renderer had no canvas to average sub-frames on. The worker now
+        # drives the SAME createFrameSampler the in-browser export does, in a real
+        # browser, so both backends blur identically and there is nothing to refuse.
         job_name = str(body.get("name") or "").strip() or "Render"
         try:
             safe_name(job_name)
@@ -1801,6 +1913,47 @@ class Handler(BaseHTTPRequestHandler):
         os.replace(path + ".part", path)
         self._json({"ok": True, "index": int(index)})
 
+    def _handle_job_output(self, name, job_id, parsed):
+        """
+        POST /api/render-job/<project>/<id>/output/?frames=N -- the FINISHED MOVIE
+        for a browser job that encoded IN THE PAGE (web/mp4Encoder.js: a wasm H.264
+        encoder, so nothing was ever uploaded frame by frame). Body = the .mp4 bytes.
+
+        WHY THIS EXISTS ALONGSIDE `finish`: `finish` means "the frames are on your
+        disk, run ffmpeg"; this means "here is the encoded movie". Both end the SAME
+        job record in the SAME renders/ folder, which is what keeps the two backends
+        one list rather than two systems. The frame COUNT rides in the query string
+        because a page-encoded job leaves no frames on disk for the server to count.
+
+        Written atomically (.part then rename) so a half-received upload can never
+        be served as a finished render, and refused loudly for a job that is not an
+        active browser job.
+        """
+        record = read_job(name, job_id)
+        if record["backend"] != "client":
+            return self._error(400, f"render job {job_id} is a {record['backend']} job -- only a browser job delivers its own movie")
+        if record["state"] not in JOB_ACTIVE_STATES:
+            return self._error(400, f"render job {job_id} is already {record['state']}")
+        frames = urllib.parse.parse_qs(parsed.query).get("frames", ["0"])[0]
+        if not frames.isdigit() or int(frames) <= 0:
+            return self._error(400, f"render job output: frames must be a positive integer, got {frames!r}")
+        data = self._read_body()
+        if not data:
+            return self._error(400, "empty movie body")
+        os.makedirs(renders_dir(name), exist_ok=True)
+        out_name = unique_output_name(name, record["name"])
+        out_path = os.path.join(renders_dir(name), out_name)
+        with open(out_path + ".part", "wb") as f:
+            f.write(data)
+        os.replace(out_path + ".part", out_path)
+        # The page-side encode leaves no PNG scratch, but a job that was RESUMED
+        # from the upload encoder might have some -- drop it either way.
+        shutil.rmtree(job_frames_dir(name, job_id), ignore_errors=True)
+        record = update_job(name, job_id, state="done", output=out_name,
+                            framesDone=int(frames), framesTotal=int(frames),
+                            finishedAt=time.time(), seen=False)
+        self._json({"job": job_view(name, record)})
+
     def _serve_asset(self, name, filename):
         # `filename` may be a plain asset OR a frames/<video>/<N>/frame_NNN.png
         # subpath. `d` is the project's assets/ root; NUL is rejected, and the
@@ -1826,6 +1979,12 @@ def serve(port=8000):
     ./projects (beside this file). Errors are reported, never swallowed.
     """
     os.makedirs(PROJECTS_DIR, exist_ok=True)
+    # PUBLISH OUR OWN ORIGIN for the render worker: its Vite dev server proxies
+    # /api and /asset here, which is how a project's image/video/PDF assets reach
+    # the render page. Set before the supervisor starts, so a job resumed by the
+    # boot sweep below already has it. An explicit BACKEND_URL wins (a reverse
+    # proxy or a non-localhost bind).
+    os.environ.setdefault("BACKEND_URL", f"http://localhost:{port}")
     print(f"Projects: {PROJECTS_DIR}  ({len(list_projects())} projects)", file=sys.stderr)
     # THE render supervisor: one daemon thread draining one FIFO queue, so exactly
     # one job renders at a time (each already fans out across RENDER_WORKER_COUNT

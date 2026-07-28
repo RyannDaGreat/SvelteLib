@@ -31,8 +31,16 @@ present:
   - LOUD FAILURE: a job whose document cannot render must end "failed" carrying the
     real error text, never stall at a percentage forever.
   - RESTART RECONCILE: a job left mid-flight by a server restart must be re-queued
-    (server backend) or marked "interrupted" (client backend), never silently lost.
+    (server backend) or left RESUMABLE (browser backend, whose progress lives in the
+    browser and is not the server's to lose), never silently lost.
   - CANCEL and DELETE, including the refusal to delete something still running.
+  - MOTION BLUR, which the server backend used to REFUSE at submit because the old
+    bare-node renderer had no canvas to average sub-frames on. The worker is a real
+    headless browser now, so this asserts samples=4 both COMPLETES and CHANGES THE
+    PIXELS (the deck has to move for that to be provable — see the section).
+  - THE DETERMINISM WARNING: a deck containing a video PLAYER carries it (a player
+    follows the browser's playback clock, not the timeline), a deck of reproducible
+    widgets does not.
 
 Run:  uv run src/demo_apps/PowerRP/tests/render_jobs_test.py
 Exits non-zero on any failed check.
@@ -180,6 +188,11 @@ def main():
     # thread. Nothing here is a stub.
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    # serve() normally publishes this; a harness that runs Handler itself must, because
+    # the render worker's dev server proxies /api and /asset to it (server.backend_origin
+    # raises rather than guessing a port — a wrong one would 404 every project asset and
+    # render a deck full of holes).
+    os.environ["BACKEND_URL"] = base
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     threading.Thread(target=server._supervise, daemon=True, name="powerrp-render").start()
     print(f"server on {base}   projects: {TMP_PROJECTS}\n")
@@ -263,7 +276,6 @@ def main():
     for label, payload in [
         ("bad crf is rejected", {"params": params(crf=99)}),
         ("bad backend is rejected", {"backend": "magic"}),
-        ("motion blur on the server backend is rejected", {"params": params(samples=4)}),
     ]:
         body = {"name": "Bad", "backend": "server", "params": params(),
                 "doc": doc_at_submit, "framesTotal": EXPECTED_FRAMES}
@@ -273,6 +285,36 @@ def main():
             check(label, False, "submit was accepted")
         except urllib.error.HTTPError as exc:
             check(label, exc.code == 400, f"HTTP {exc.code}")
+
+    # ── 8b. MOTION BLUR RUNS ON THE SERVER BACKEND ────────────────────────────
+    # It used to be REFUSED at submit: the server rendered in bare node, which has no
+    # canvas to average sub-frames on. The worker now drives the same frame sampler
+    # the in-browser export does, inside a real headless browser, so the refusal is
+    # gone and this proves the averaging actually runs.
+    #
+    # The deck must MOVE for that to be provable: with a static deck every sub-sample
+    # is the same picture and the output would be identical whether the averaging ran
+    # or not. So slide 2 shifts the shape across a real 1 s transition.
+    blur_doc = make_doc("#102030", "#ff0000")
+    blur_doc["slides"][1]["transition"]["seconds"] = 1
+    blur_doc["slides"][1]["delta"]["items"]["shp00001"] = {"x": 4}
+    blur_bytes = {}
+    for samples in (1, 4):
+        blur = post_json(base, f"/api/render-jobs/{PROJECT}/", {
+            "name": f"Blur{samples}", "backend": "server", "framesTotal": EXPECTED_FRAMES,
+            "params": params(samples=samples, includeTransitions=True), "doc": blur_doc,
+        }, fresh)["job"]
+        done_blur = wait_for_state(base, blur["id"], ("done", "failed", "cancelled"), fresh)
+        check(f"a server job with samples={samples} completes",
+              done_blur is not None and done_blur["state"] == "done",
+              f"{done_blur and done_blur['state']}: {(done_blur or {}).get('error')}")
+        if done_blur and done_blur.get("outputPath"):
+            with open(done_blur["outputPath"], "rb") as f:
+                blur_bytes[samples] = f.read()
+    # libx264 is deterministic for identical input at identical settings, so different
+    # output bytes mean different FRAMES — i.e. the sub-frames really were averaged.
+    check("motion blur changes the rendered pixels", len(blur_bytes) == 2 and blur_bytes[1] != blur_bytes[4],
+          f"samples=1 {len(blur_bytes.get(1, b''))} B vs samples=4 {len(blur_bytes.get(4, b''))} B")
 
     # ── 9. CANCEL, and the refusal to delete a live job ───────────────────────
     live = post_json(base, f"/api/render-jobs/{PROJECT}/", {
@@ -302,11 +344,22 @@ def main():
     after_client = server.read_job(PROJECT, stranded_client["id"])
     check("a server job stranded by a restart is re-queued",
           after_server["state"] in ("queued", "rendering", "encoding", "done"), after_server["state"])
-    check("a client job stranded by a restart is marked interrupted",
-          after_client["state"] == "interrupted", after_client["state"])
-    check("an interrupted job explains itself", bool(after_client.get("error")))
+    # A BROWSER job is left resumable rather than killed. Its progress is not this
+    # server's to lose: either the PNG frames already in its own job directory, or
+    # encoded segments in the browser's IndexedDB. Marking it terminal here used to
+    # destroy renders the next page load could have finished, and made the endpoint
+    # that delivers its movie refuse it. Reconciling a browser whose data is really
+    # gone is the CLIENT's job -- only it can see whether it holds the resume data.
+    check("a browser job stranded by a restart stays resumable, not terminal",
+          after_client["state"] in server.JOB_ACTIVE_STATES, after_client["state"])
+    check("a stranded browser job is not falsely marked failed",
+          not after_client.get("error"), str(after_client.get("error")))
 
-    # ── 11. THE HEADLESS MEDIA WARNING IS ATTACHED, NOT DISCOVERED LATER ──────
+    # ── 11. THE PLAYBACK-CLOCK WARNING IS ATTACHED, NOT DISCOVERED LATER ──────
+    # A video PLAYER draws fine now (the worker is a real browser), but it runs on the
+    # browser's own playback clock rather than the presentation timeline, so which frame
+    # of the clip lands where is not reproducible. That is a property of the widget, not
+    # of the backend, so the warning must be attached at submit either way.
     media_doc = make_doc("#102030", "#ff0000")
     media_doc["slides"][0]["delta"]["items"]["vid00001"] = {"type": "video", "x": 0, "y": 0,
                                                             "w": 10, "h": 10, "active": True}
@@ -314,8 +367,13 @@ def main():
         "name": "Warned", "backend": "server", "framesTotal": EXPECTED_FRAMES,
         "params": params(), "doc": media_doc,
     }, fresh)["job"]
-    check("a deck with media carries a loud headless warning",
+    check("a deck with a video PLAYER carries a loud determinism warning",
           bool(warned.get("warning")) and "video" in warned["warning"], (warned.get("warning") or "")[:90])
+    check("a deck with only deterministic widgets carries no warning",
+          post_json(base, f"/api/render-jobs/{PROJECT}/", {
+              "name": "Quiet", "backend": "client", "framesTotal": EXPECTED_FRAMES,
+              "params": params(), "doc": doc_at_submit,
+          }, fresh)["job"].get("warning") is None)
     server.cancel_job(PROJECT, warned["id"])
 
     httpd.shutdown()
