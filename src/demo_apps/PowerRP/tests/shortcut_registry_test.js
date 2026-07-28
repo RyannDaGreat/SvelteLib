@@ -39,15 +39,19 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createShortcuts, validateShortcutKeys, RETIRED_KEY_TOKENS } from "../core/shortcuts.js";
+import {
+  createShortcuts, validateShortcutKeys, isGestureCombo,
+  RETIRED_KEY_TOKENS, MOUSE_TOKENS, MOUSE_DOUBLE_TOKEN,
+} from "../core/shortcuts.js";
 import { createKeybindings } from "../core/keybindings.js";
 import {
   KEYBINDING_DEFAULTS, KEYBINDING_LABELS, WHEN_RESOLVERS,
   handShortcutEntries, hintProbeContexts, canvasModeStepAxis, unsatisfiableEntries,
   SUPPRESSED_AXES, DRAG_MODIFIER_HINTS, ESC_CANCELABLE_DRAG_KINDS,
 } from "../core/shortcut_entries.js";
+import { MOUSE_ICONS } from "../../../lib/keyicons.js";
 import { DRAG_KINDS, DRAG_KIND_MODIFIERS } from "../web/canvas/dragKinds.js";
-import { canvasModes } from "../web/widget_handlers.js";
+import { activations, canvasModes } from "../web/widget_handlers.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,10 +67,11 @@ function test(name, fn) {
 // so the set here IS the set the app registers.
 const app = {};
 const modes = canvasModes();
+const acts = activations();
 const kb = createKeybindings(KEYBINDING_DEFAULTS);
 const bound = kb.toShortcutEntries(KEYBINDING_LABELS, WHEN_RESOLVERS)
   .map((e) => (e.command === "paste" ? { ...e, nativeEvent: true } : e));
-const hand = handShortcutEntries({ app, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS });
+const hand = handShortcutEntries({ app, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, activations: acts });
 const registry = createShortcuts();
 for (const e of [...bound, ...hand]) registry.add(e); // add() validates tokens (1)
 const entries = registry.all();
@@ -77,6 +82,9 @@ const contexts = hintProbeContexts({
   // grows a step gets that step probed with no edit here — the same rule every
   // other axis follows, and the reason the multiresize defect cannot recur.
   canvasModeSteps: canvasModeStepAxis(modes),
+  // DERIVED from the ACTIVATE handler registry, same rule: a new double-click
+  // behaviour is probed without an edit here.
+  activationIds: acts.map((a) => a.handlerId),
   app,
 });
 
@@ -126,6 +134,68 @@ test("a main key before the last position is rejected (dispatch reads keys[-1])"
     () => createShortcuts().add({ keys: ["P", "Cmd"], label: "x", when: () => true }),
     /has "P" before the last position/,
   );
+});
+
+// ── (1b) MOUSE GESTURES are display-only, and the registry ENFORCES it ────────
+// dispatch() only ever reads KeyboardEvents, so an entry whose main key is a mouse
+// token can never fire. That was previously a SILENT skip inside dispatch's loop:
+// binding a gesture to a command produced a chip the user could see, press, and get
+// nothing from — the same class as a RETIRED key token, which the registry has always
+// thrown on. Registering double-click made the distinction load-bearing, because
+// double-click is the first gesture that LOOKS like it ought to dispatch.
+test("a mouse gesture that claims to DISPATCH is rejected at registration", () => {
+  for (const token of MOUSE_TOKENS)
+    for (const live of [{ command: "undo" }, { run: () => {} }])
+      assert.throws(
+        () => createShortcuts().add({ keys: [token], label: "x", when: () => true, ...live }),
+        /binds a MOUSE GESTURE and also declares a/,
+        `a "${token}" entry carrying a ${live.command ? "command" : "run"} must throw — dispatch() can never match it`,
+      );
+});
+
+test("every registered gesture entry really is display-only", () => {
+  for (const e of entries.filter((x) => isGestureCombo(x.keys)))
+    assert.ok(
+      !e.run && !e.command,
+      `"${e.label}" (${e.keys.join("+")}) is a mouse gesture with a run/command — it could never fire`,
+    );
+  // The guard above is only meaningful if gestures EXIST in the population, and the
+  // double-click ones specifically, since they are what this pass added.
+  const gestures = entries.filter((e) => isGestureCombo(e.keys));
+  assert.ok(gestures.length >= 10, `only ${gestures.length} gesture entries — the population looks wrong`);
+  assert.ok(
+    gestures.some((e) => e.keys.includes(MOUSE_DOUBLE_TOKEN)),
+    "no entry binds the double-click token — the whole point of adding it was that every double-click activation becomes discoverable",
+  );
+});
+
+test("dispatch() ignores a gesture entry even if one somehow reached it", () => {
+  // add() now makes this state unreachable, so this asserts the BELT: dispatch's own
+  // MOUSE_TOKENS skip. Constructed by hand precisely because add() would refuse it.
+  const sc = createShortcuts();
+  let fired = false;
+  sc.add({ keys: [MOUSE_DOUBLE_TOKEN], label: "Add a point", when: () => true });
+  const smuggled = sc.all()[0];
+  smuggled.run = () => { fired = true; };
+  assert.equal(sc.dispatch({ key: MOUSE_DOUBLE_TOKEN }, { app: {} }), false);
+  assert.equal(fired, false, "a mouse-token entry must never be run by keydown dispatch");
+});
+
+test("every mouse token has an icon, or the bar prints the raw token at the user", () => {
+  // A letter key with no icon renders as a text chip and reads fine ("P"). A MOUSE
+  // token has no such fallback: keyicons.isMouseToken is `token in MOUSE_ICONS`, so an
+  // unmapped one renders the literal string "mouse_left_double". This is the
+  // BLEND_MODES ↔ LABELS cross-check applied across the app/lib boundary.
+  for (const token of MOUSE_TOKENS)
+    assert.ok(
+      MOUSE_ICONS[token],
+      `core/shortcuts.js MOUSE_TOKENS declares "${token}" but src/lib/keyicons.js MOUSE_ICONS has no glyph for it — the HintBar would print "${token}" verbatim. Add the icon.`,
+    );
+  for (const token of Object.keys(MOUSE_ICONS))
+    assert.ok(
+      MOUSE_TOKENS.has(token),
+      `src/lib/keyicons.js maps a mouse token "${token}" that core/shortcuts.js does not declare — one spelling per gesture`,
+    );
 });
 
 // ── (2) satisfiability ───────────────────────────────────────────────────────
@@ -224,6 +294,89 @@ test("multi-selection resize announces Shift and Cmd (the reported defect)", () 
   const shown = visible(ctx).map(([keys, label]) => `${keys.join("+")}|${label}`);
   assert.ok(shown.includes("Shift|Uniform scale"), `multiresize must announce Shift. Shown: ${JSON.stringify(shown)}`);
   assert.ok(shown.includes("Cmd|Symmetric resize"), `multiresize must announce Cmd. Shown: ${JSON.stringify(shown)}`);
+});
+
+// ── (4b) DOUBLE-CLICK: every activation announces itself ──────────────────────
+// THE FORWARD INVARIANT for the reported defect. The population is GENERATED from
+// activations(), which is also the list web/CanvasView.svelte resolves the behaviour
+// through, so these assertions are about the derivation being WIRED and the chips
+// being reachable — not a hand-kept mirror of the handler list, which is the defect
+// class this suite's history warns about most loudly.
+test("EVERY double-click activation is announced on the double-click token", () => {
+  const acts2 = activations();
+  assert.ok(acts2.length >= 6, `only ${acts2.length} activate handlers found — the derivation went stale, which would make this pass for the wrong reason`);
+  for (const { handlerId, label } of acts2) {
+    // The reachable context for this activation: it is the SELECTED widget's.
+    const ctx = contexts.find((c) => c.activation === handlerId && c.mode === "edit"
+      && !c.dragging && !c.crosshairArmed && !c.canvasMode && !c.modalActive
+      && !c.typingTarget && !c.dialogOpen && !c.paletteOpen);
+    assert.ok(ctx, `no probe context selects a widget whose activation is "${handlerId}" — an activation that is not probed cannot be proven to announce itself`);
+    const shown = visible(ctx).filter(([keys]) => keys.join("+") === MOUSE_DOUBLE_TOKEN).map(([, l]) => l);
+    assert.deepEqual(
+      shown, [label],
+      `selecting a widget whose activation is "${handlerId}" must put exactly one double-click chip on the bar, reading "${label}". Got ${JSON.stringify(shown)}. THIS is the reported defect: double-click ran a real behaviour and the bar said nothing.`,
+    );
+  }
+});
+
+test("no activation chip shows for a widget that declares no activation", () => {
+  // A rect. handlerFor("activate", …) returns null for it, so App.svelte's axis is
+  // null and the bar must be silent — announcing a double-click that does nothing
+  // would be the mirror-image lie of the one being fixed.
+  const ctx = contexts.find((c) => c.mode === "edit" && c.hasSelection && c.activation === null
+    && !c.dragging && !c.crosshairArmed && !c.canvasMode && !c.modalActive
+    && !c.typingTarget && !c.dialogOpen && !c.paletteOpen && !c.handlesSelected);
+  assert.ok(ctx, "no probe context selects a widget with NO activation");
+  assert.deepEqual(visible(ctx).filter(([keys]) => keys.join("+") === MOUSE_DOUBLE_TOKEN), []);
+});
+
+test("the insert-point chip survives a HANDLE selection (the reported flow exactly)", () => {
+  // The user hit this with a polygon whose points were in play. `editSelection`
+  // excludes handlesSelected so the inner scope can own Backspace; `activatable`
+  // must NOT, or the chip would vanish precisely when the points are being worked on.
+  const ctx = contexts.find((c) => c.activation === "insert_point" && c.mode === "edit"
+    && !c.dragging && !c.crosshairArmed && !c.canvasMode && !c.modalActive
+    && !c.typingTarget && !c.dialogOpen && !c.paletteOpen);
+  assert.ok(ctx, "no probe context for a selected polygon");
+  const withHandles = { ...ctx, handlesSelected: true };
+  const shown = visible(withHandles).filter(([keys]) => keys.join("+") === MOUSE_DOUBLE_TOKEN).map(([, l]) => l);
+  assert.deepEqual(shown, ["Add a point"], `with a modifier point selected the bar must still offer the insert, got ${JSON.stringify(shown)}`);
+});
+
+test("a creation mode's finalize GESTURE is announced iff the mode declares one", () => {
+  for (const m of modes.filter((x) => x.phase === "create")) {
+    const ctx = contexts.find((c) => c.canvasMode === m.handlerId && c.mode === "edit"
+      && !c.modalActive && !c.typingTarget && !c.dialogOpen && !c.paletteOpen);
+    assert.ok(ctx, `no probe context inside creation mode "${m.handlerId}"`);
+    const shown = visible(ctx).filter(([keys]) => keys.join("+") === MOUSE_DOUBLE_TOKEN).map(([, l]) => l);
+    assert.deepEqual(
+      shown, m.finishGesture ? [m.finishGesture.label] : [],
+      `"${m.handlerId}" declares finishGesture=${JSON.stringify(m.finishGesture)}, so the bar must show ${m.finishGesture ? `["${m.finishGesture.label}"]` : "nothing"} on the double-click token. Got ${JSON.stringify(shown)}. CanvasView's dblclick handler reads the SAME declaration, so a mismatch here means the gesture and its chip have drifted.`,
+    );
+  }
+  // The polygon is the mode that HAS one, and the rig is the mode that must not —
+  // its finalize abandons an incomplete sequence, so offering "finish" would be a lie.
+  assert.ok(modes.find((m) => m.handlerId === "polygon_chain").finishGesture, "the polygon must declare the double-click finish the request named");
+  assert.equal(modes.find((m) => m.handlerId === "telescopic_rig").finishGesture, null, "a FIXED-length sequence finalizes itself; a double-click there abandons, so it must not be announced as a finish");
+});
+
+test("CanvasView's dblclick GATES on the mode declaration, and resolves activations through the registry", () => {
+  // The anti-drift proof on the behaviour side. The chips above are generated from
+  // activations() / canvasModes(); these two scans assert the HANDLER reads the same
+  // tables, rather than re-implementing an if-chain that could diverge from them.
+  // Same technique as the ESC_CANCELABLE_DRAG_KINDS scan above.
+  const src = fs.readFileSync(path.join(HERE, "../web/CanvasView.svelte"), "utf8");
+  // An exact-substring gate rather than a shape regex: it fails on the one edit that
+  // matters (dropping the declaration check, which is how the reference disappears)
+  // and does not fail on innocent reformatting around it.
+  assert.ok(
+    src.includes("if (creation.mode.finishGesture) finishCreation();"),
+    "CanvasView's onDblClick must finalize a live creation only when the mode DECLARES finishGesture. Finalizing unconditionally is how a double-click silently abandoned a half-built telescopic rig with nothing on the bar offering it.",
+  );
+  assert.match(
+    src, /handlerFor\("activate",\s*hit\.plugin\)/,
+    "CanvasView must resolve the double-clicked widget's behaviour through handlerFor(\"activate\", …) — the same list core/shortcut_entries.js generates the chips from. A local if-chain over widget types would let the behaviour and the announcement drift.",
+  );
 });
 
 // ── (5) truthfulness where dispatch is suppressed ────────────────────────────

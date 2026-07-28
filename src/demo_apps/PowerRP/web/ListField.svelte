@@ -60,6 +60,51 @@
   flicker. A picker's swatches do not move; these affordances would. The
   tooltip carries the outcome instead, and the click is one undo unit.
 
+  ── COLLAPSE: a list gets long, so it folds ───────────────────────────────────
+  The user's ruling: "plural properties should be collapsible because they can
+  get quite long" — a 12-vertex polygon otherwise buries every row below it in
+  the Inspector. The header IS web/Inspector.svelte's category accordion, class
+  for class (`.cat-header` + chevron + `.cat-title`, `aria-expanded`), because
+  that is the app's ONE section-heading device and app.css says so in as many
+  words ("the accordion is now a SHARED idiom … a pane must never have to opt in
+  to a shared idiom"). Collapsed, it still states WHAT is inside — "12 points",
+  "5 stops, 2 hidden" — so a folded row is never a mystery box.
+
+  Collapsed-ness is VIEW state, never document state: it changes nothing that
+  renders, so it neither keyframes nor belongs in a delta. It persists as a
+  BROWSER setting (manifest SETTINGS TAXONOMY: viewer-local localStorage),
+  exactly as the Inspector's and Tools pane's collapse maps do, keyed by the
+  PROPERTY rather than the item — so collapsing a polygon's points stays
+  collapsed as you select the next polygon, which is the whole point of the
+  Inspector's own "collapsing Positioning stays collapsed as you switch
+  selections" rule.
+
+  ── TWO KINDS OF COLLAPSED, deliberately kept apart ───────────────────────────
+  A hover-preview picker over a list REWRITES EVERY ELEMENT on each pointerenter
+  (the gradient preset library: 768 DOM mutations and 13 height changes over 14
+  swatches, measured) — so the rows thrash under the cursor, which is the user's
+  "otherwise it flickers like crazy". While that is happening the list folds
+  itself, and the header REFUSES with the reason in its tooltip (the eye's and
+  purge's own discipline) rather than pretending to toggle.
+
+  That is SUPPRESSION, and it is stored separately from the user's own choice:
+  merging them would silently eat a preference the user set. `collapsed` is the
+  OR of the two, and when the picker closes the list returns to whatever the
+  user had it at. Suppression has two sources, one shared and one declared:
+    • A WHOLE-LIST PREVIEW staged over this exact path — the SHARED seam, which
+      needs no wiring at all and therefore covers every hover-preview surface at
+      once (the gradient picker, a ToolsPane plugin preset with a list-valued
+      prop, whatever comes next). It is told apart from the user's OWN editing by
+      SHAPE: a whole-list write stages an ARRAY at the list's path, while
+      scrubbing one element's field stages a sparse numeric-keyed OBJECT
+      (core/deltas.js setPath) — so dragging a stop's offset never folds the row
+      out from under the pointer, which would be worse than the flicker.
+    • `forceCollapsed` — a mount point DECLARING that a sibling control is about
+      to do that. PaintField sets it the moment the preset library OPENS, which
+      is what the user asked for ("collapse that for us upon clicking the
+      dropdown"): the preview seam alone would not fold until the first swatch
+      was hovered.
+
   !!! THE LAYOUT IS PROVISIONAL AND EXPECTED TO BE CONSOLIDATED !!!
   The user's ruling was "the UI can use work, but functionality-wise, we need
   that to work now" — so this is one flex row per element, correctness first.
@@ -86,8 +131,47 @@
     disabled    — grays every control (a not-yet-created item's rows).
     seedElement — the element an insert into an EMPTY list creates, from the
                   property's own default; null = no seed offered.
+    forceCollapsed — a mount point declaring that a sibling control is rewriting
+                  this whole list right now (PaintField's open preset library),
+                  so the rows must not move under the pointer. Folds the list
+                  WITHOUT touching the user's own remembered choice.
   Styling lives in app.css (.listfield / .list-*; app convention: no <style>).
 -->
+<script module>
+  /**
+   * Pure function. The localStorage key one list's collapsed state is remembered
+   * under: its property path with the ITEM ID dropped, so the choice follows the
+   * PROPERTY and not the item (web/Inspector.svelte's accordion rule — "collapsing
+   * Positioning stays collapsed as you switch selections" — one level down). A
+   * path that is not item-rooted keys on itself.
+   *
+   * @example collapseKeyFor(["items", "a1b2c3", "points"]) // "points"
+   * @example collapseKeyFor(["items", "a1b2c3", "fill", "linear", "stops"]) // "fill.linear.stops"
+   * @example collapseKeyFor(["vars", "ramp"]) // "vars.ramp"
+   */
+  export function collapseKeyFor(path) {
+    return (path[0] === "items" ? path.slice(2) : path).join(".");
+  }
+
+  /**
+   * Pure function. What a COLLAPSED list says about itself — the count, and the
+   * hidden count when any element is hidden (the eye states are invisible while
+   * folded, so a fold that omitted them would hide a real state). `label` is the
+   * declaration's own PLURAL label, singularized for a count of one the way this
+   * control's tooltips already pluralize inline (purgeTip's "entr(y|ies)").
+   *
+   * @example listSummary(12, 0, "Points") // "12 points"
+   * @example listSummary(1, 0, "Points") // "1 point"
+   * @example listSummary(5, 2, "Stops") // "5 stops, 2 hidden"
+   * @example listSummary(0, 0, "Stops") // "no stops"
+   */
+  export function listSummary(total, hidden, label) {
+    const plural = label.toLowerCase();
+    const head = total === 0 ? `no ${plural}` : `${total} ${total === 1 ? plural.replace(/s$/, "") : plural}`;
+    return hidden > 0 ? `${head}, ${hidden} hidden` : head;
+  }
+</script>
+
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
@@ -102,7 +186,7 @@
     insertedElement, withElementActive, withElementInserted, withElementPurged,
   } from "../core/lists.js";
 
-  let { app, decl, path, label, disabled = false, seedElement = null } = $props();
+  let { app, decl, path, label, disabled = false, seedElement = null, forceCollapsed = false } = $props();
 
   /** Icon glyph size for the row's own buttons — the .btn-icon size every other
    *  icon button in a panel row uses, so the rows are one height. */
@@ -114,6 +198,12 @@
   /** How many decimals a value is summarized to in an insert tooltip. Enough to
    *  read a normalized coordinate (0.125) without showing float dust. */
   const SUMMARY_DECIMALS = 3;
+  /** Where every list's COLLAPSED state lives — ONE map for the whole app, keyed
+   *  by property path (collapseKeyFor). A BROWSER setting, per the manifest's
+   *  settings taxonomy, under this control's OWN key: the Inspector's
+   *  "powerrp.inspectorCollapsed" and the Tools pane's "powerrp.toolsCollapsed"
+   *  are separate maps for the separate things they fold, and this is the third. */
+  const COLLAPSE_KEY = "powerrp.listCollapsed";
 
   // The visibility COMPANION's path — the sibling key beside the list itself
   // (core/lists.activeListPath); never a field inside the element.
@@ -141,6 +231,65 @@
     }
     return { list, active: getPath(app.state(), activePath) };
   });
+
+  // ── COLLAPSE (see the header: view state, and two kinds of collapsed) ────────
+
+  let collapseKey = $derived(collapseKeyFor(path));
+
+  /** Query (reads localStorage). The persisted collapse map, or {} when the
+   *  setting is absent — and a REPORT plus {} when it is corrupt, never a silent
+   *  swallow (web/Inspector.svelte loadCollapsed, verbatim). */
+  function loadCollapsed() {
+    try {
+      const raw = localStorage.getItem(COLLAPSE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      console.warn("PowerRP: bad listCollapsed setting, ignoring:", e);
+      return {};
+    }
+  }
+
+  // THE USER'S OWN choice for THIS property, and nothing else — kept apart from
+  // suppression so a picker cannot eat it. Re-read whenever the key changes,
+  // because one mounted control is re-used across selections (the prop-derived
+  // resync web/GridSizePicker.svelte's `sel` does off its seed).
+  let userCollapsed = $state(false);
+  $effect(() => {
+    userCollapsed = loadCollapsed()[collapseKey] === true;
+  });
+
+  // A WHOLE-LIST PREVIEW staged over this exact path: an ARRAY at the list's own
+  // path is a picker rewriting every element, while a sparse numeric-keyed OBJECT
+  // is the user scrubbing one element's field (core/deltas.js setPath) — which
+  // must NOT fold the row being dragged. This is the shared seam: no picker has
+  // to wire anything up to get the flicker fix.
+  let listPreviewStaged = $derived(Array.isArray(getPath(app.previewDelta, path)));
+  let suppressed = $derived(Boolean(forceCollapsed) || listPreviewStaged);
+  let collapsed = $derived(userCollapsed || suppressed);
+
+  let hiddenCount = $derived(value.list.filter((_, i) => !elementActive(value.active, i)).length);
+  let summary = $derived(listSummary(value.list.length, hiddenCount, decl.label ?? label));
+
+  /** Query (reads the list + the suppression state). The collapse header's
+   *  tooltip: what a click does — or, while a sibling control holds the list
+   *  folded, WHY it is refusing, which is the same say-the-reason discipline the
+   *  eye and the purge button already follow instead of going quietly inert. */
+  function collapseTip() {
+    if (suppressed)
+      return `Folded while something previews the whole list (${summary}), so the rows cannot move under the pointer as you sweep it. It reopens to your own setting when the preview ends.`;
+    if (collapsed) return `Folded — ${summary}. Click to open it.`;
+    return `Open — ${summary}. Click to fold it away; the choice is remembered for this property.`;
+  }
+
+  /** Command. Toggles the USER's collapse choice and persists it. Re-READS the
+   * map immediately before writing: two list controls can be mounted at once (a
+   * fill gradient's stops and a stroke gradient's), and writing a snapshot taken
+   * at mount would clobber whatever the sibling stored since. */
+  function toggleCollapsed() {
+    const next = !userCollapsed;
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify({ ...loadCollapsed(), [collapseKey]: next }));
+    userCollapsed = next;
+  }
 
   /**
    * Pure function. One value as insert-tooltip text: a number rounded to
@@ -283,6 +432,37 @@
 {/snippet}
 
 <div class="listfield">
+  <!-- THE COLLAPSE HEADER — web/Inspector.svelte's category accordion, class for
+       class: the app's ONE section-heading device, which app.css keeps DELIBERATELY
+       UNSCOPED so a new consumer does not have to be added to a selector group
+       before a shared idiom looks shared. `.cat-rows` is deliberately NOT copied
+       around the body: `.listfield` is already the column, with NO gap, because an
+       insert seam must butt against the rows it sits between — .cat-rows' gap
+       would prise them apart.
+       It REFUSES (disabled, reason in the tooltip) while suppression holds the
+       list folded, so the header can never claim to toggle a state it does not
+       own — the eye's and the purge button's own discipline.
+       An EMPTY list gets no header: "No entries" is already one line, so there is
+       nothing to fold and a header above it would only add one.
+       It does NOT take `disabled`, unlike every value control here: folding writes
+       nothing to the document, and a not-yet-created item's list is exactly as long
+       as a created one's — so the one affordance that shortens the panel must not be
+       the one that goes away when the panel is at its most crowded. -->
+  {#if value.list.length > 0}
+    <Tooltip text={collapseTip()}>
+      <button
+        type="button"
+        class="cat-header"
+        aria-expanded={!collapsed}
+        disabled={suppressed}
+        aria-label={`${label} list: ${summary}`}
+        onclick={toggleCollapsed}
+      >
+        <iconify-icon icon={collapsed ? "mdi:chevron-right" : "mdi:chevron-down"} width={ICON} height={ICON}></iconify-icon>
+        <span class="cat-title">{summary}</span>
+      </button>
+    </Tooltip>
+  {/if}
   {#if value.list.length === 0}
     <!-- EMPTY: nothing to interpolate between, so the only offer is a seed from
          the property's default (or a plain report when there is none). -->
@@ -296,7 +476,7 @@
         </button>
       </Tooltip>
     {/if}
-  {:else}
+  {:else if !collapsed}
     {@render insertSlice(0)}
     {#each value.list as el, index (index)}
       {@const visible = elementActive(value.active, index)}

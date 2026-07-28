@@ -45,7 +45,19 @@
   WHAT CHANGED VISIBLY, and nothing else: the two fields now read in DECLARATION
   order (position, then colour — the old row put colour first), and an insert at
   the end EXTRAPOLATES from the last two stops rather than always appending white
-  at offset 1. The preset library below is untouched.
+  at offset 1.
+
+  ── THE PRESET LIBRARY SITS ABOVE THE STOPS, and why that is structural ───────
+  It used to sit below them, and the user ruled it "should go on the TOP of that
+  not the bottom" in the same breath as asking for the list to fold while the
+  library is open — because the two are one fix. Hovering a preset swatch
+  live-previews it, which rewrites the whole stop list; a preset with a different
+  stop COUNT therefore changes the list's HEIGHT (measured: 13 height changes over
+  14 swatches, from 2 rows to 12 and back). With the library BELOW, every one of
+  those shoved the grid — and the tile under the cursor — inside the Inspector's
+  scroller. ABOVE, the grid is anchored by the panel's own top edge instead: the
+  list can fold, unfold or resize and the swatch being pointed at cannot move.
+  Folding the list while the library is open (below) then removes the churn too.
 
   KNOWN BOUND: a stop COLOUR can hold an `=` equation (core evaluates it now —
   the old "list elements are not equation slots" bound is closed) and ColorField
@@ -275,6 +287,15 @@
     app.cancelPreview();
   }
 
+  // IS THE PRESET LIBRARY OPEN? Passed straight to the stop list as
+  // `forceCollapsed`, which is the user's "preset selection for gradients should
+  // collapse that for us upon clicking the dropdown": from the click, not from the
+  // first swatch hovered, so nothing about the list moves for the whole session.
+  // ListField keeps this apart from the user's OWN fold choice and restores it when
+  // this goes false — including when the picker unmounts (a switch to Solid), which
+  // it reports rather than leaving the list stuck folded.
+  let presetsOpen = $state(false);
+
   // The linear DIRECTION as a heading in DEGREES — the authoritative stored
   // `angle` if present, else derived from the from/to endpoints (old, un-migrated
   // docs) so the dial always reflects what actually renders. Passed to AngleField
@@ -357,6 +378,21 @@
          that refuses below the declared two-stop minimum. The header records
          exactly what this consolidation changed. -->
     <div style="display:flex; flex-direction:column; gap:var(--a-sp-2);">
+      <!-- PRESET LIBRARY — a tiled grid of gradient swatches (baked from rp's
+           gradient library). HOVERING one previews it live in the viewport
+           (document untouched, no undo entry); leaving the grid restores what
+           was there; picking one commits the stops BELOW as ONE undo unit.
+           FIRST, not last: see the header — a swatch being pointed at must not be
+           able to move when the list under it changes size, and the panel's top
+           edge anchors it where the list cannot. -->
+      <GradientPresetPicker
+        {disabled}
+        onpick={applyPreset}
+        onpreview={previewPreset}
+        oncancelpreview={cancelPresetPreview}
+        onopenchange={(open) => (presetsOpen = open)}
+      />
+
       <ListField
         {app}
         decl={GRADIENT_STOPS_LIST}
@@ -364,17 +400,7 @@
         label={`${label} stop`}
         {disabled}
         seedElement={{ offset: 0, color: NEW_STOP_COLOR }}
-      />
-
-      <!-- PRESET LIBRARY — a tiled grid of gradient swatches (baked from rp's
-           gradient library). HOVERING one previews it live in the viewport
-           (document untouched, no undo entry); leaving the grid restores what
-           was there; picking one commits the stops above as ONE undo unit. -->
-      <GradientPresetPicker
-        {disabled}
-        onpick={applyPreset}
-        onpreview={previewPreset}
-        oncancelpreview={cancelPresetPreview}
+        forceCollapsed={presetsOpen}
       />
     </div>
 

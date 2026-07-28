@@ -452,20 +452,54 @@ export function handlerFor(phase, plugin) {
 }
 
 /**
+ * Pure function. Every ACTIVATE handler as `[{handlerId, label}]` — the
+ * DOUBLE-CLICK behaviours a widget may declare, and the words for them.
+ *
+ * THE POINT: this is the ONE table both readers use. A plugin's `activate` string
+ * resolves THROUGH this list (handlerFor → getHandler) to the behaviour
+ * web/CanvasView.svelte runs, and core/shortcut_entries.js GENERATES the
+ * double-click HintBar entries from the same list — exactly the "one table, two
+ * readers" construction that fixed the multiresize defect (DRAG_KIND_MODIFIERS) and
+ * that `canvasModes()` uses for a mode's inputs. So a new activation cannot have a
+ * behaviour without a chip or a chip without a behaviour, and adding one is still
+ * one descriptor here plus one string in the plugin.
+ *
+ * `label` is what the bar SAYS ("Add a point", "Edit equation"). It was already on
+ * every descriptor and read by NOTHING — written for a surface that did not exist
+ * yet — which is why announcing double-click needed no new wording invented.
+ *
+ * @returns {{handlerId: string, label: string}[]}
+ *
+ * @example activations().find((a) => a.handlerId === "insert_point").label // "Add a point"
+ * @example activations().map((a) => a.handlerId).includes("latex_edit") // true
+ */
+export function activations() {
+  return phaseOf("activate").handlers.map((h) => ({ handlerId: h.id, label: h.label }));
+}
+
+/**
  * Pure function. Every handler in ANY phase that declares a sustained MODE, as
- * `[{handlerId, phase, label, hints, steps, finish}]` — what core/shortcut_entries.js
- * turns into HintBar + dispatch entries scoped to that mode. Reading it off the
- * registry is what makes a new mode arrive with its shortcuts already registered.
+ * `[{handlerId, phase, label, hints, steps, finish, finishGesture}]` — what
+ * core/shortcut_entries.js turns into HintBar + dispatch entries scoped to that mode.
+ * Reading it off the registry is what makes a new mode arrive with its shortcuts
+ * already registered.
  *
  * `steps` is `[]` for an activate mode (a sustained gesture has no sequence) and the
  * declared step list for a creation mode, whose per-step `hint` is what narrates a
- * multi-step placement. `finish` is the mode's own finalize key, or null.
+ * multi-step placement. `finish` is the mode's own finalize KEY, or null;
+ * `finishGesture` is its finalize POINTER GESTURE (a double-click), or null. The two
+ * are separate fields because they are delivered by different machinery — the key
+ * through the registry's own dispatch, the gesture by CanvasView's dblclick handler,
+ * which CONSULTS this declaration rather than finalizing unconditionally. That is
+ * what keeps the gesture and its chip from drifting: a mode that does not declare
+ * one neither announces nor performs it.
  *
- * @returns {{handlerId: string, phase: string, label: string, hints: object[], steps: object[], finish: object|null}[]}
+ * @returns {{handlerId: string, phase: string, label: string, hints: object[], steps: object[], finish: object|null, finishGesture: object|null}[]}
  *
  * @example canvasModes().map((m) => m.handlerId) // ["polygon_chain", "telescopic_rig", "navigate_interior"]
  * @example canvasModes().find((m) => m.handlerId === "navigate_interior").hints.length // 3 (wheel pans, Ctrl+wheel zooms, a plain drag still moves the widget)
  * @example canvasModes().find((m) => m.handlerId === "telescopic_rig").steps.length // 2 (drag the source box, then the lens box)
+ * @example canvasModes().find((m) => m.handlerId === "telescopic_rig").finishGesture // null (a FIXED-length sequence finalizes itself)
  */
 export function canvasModes() {
   return phaseNames().flatMap((phase) =>
@@ -476,6 +510,7 @@ export function canvasModes() {
       hints: h.mode.hints,
       steps: h.mode.steps ?? [],
       finish: h.mode.finish ?? null,
+      finishGesture: h.mode.finishGesture ?? null,
     })));
 }
 

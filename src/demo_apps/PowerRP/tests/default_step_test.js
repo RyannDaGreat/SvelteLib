@@ -155,7 +155,7 @@ test("resolveScrub precedence: step > scrub > range > fractional default > null"
   const at = (row) => resolveScrub({ dragPx: RANGE_DRAG_PX, ...row });
   // 1. an explicit step is the author's word — never second-guessed.
   assert.deepEqual(at({ step: 0.01, min: 0, max: 1, defaultValue: 1 }), { step: 0.01, coefficient: 0.01 });
-  assert.equal(at({ step: 1, min: 0, max: 80, defaultValue: 0 }).step, 1); // mandelbrot fineExponent
+  assert.equal(at({ step: 1, min: 0, max: 16, defaultValue: 0 }).step, 1); // mandelbrot fineExponent
   // 2. an explicit scrub outranks the range AND the default.
   assert.deepEqual(at({ scrub: 0.11, min: 0, max: 1000, defaultValue: 3 }), { step: 0.1, coefficient: 0.11 });
   // 3. the RANGE outranks the default — a 0..1 knob is fractional however its

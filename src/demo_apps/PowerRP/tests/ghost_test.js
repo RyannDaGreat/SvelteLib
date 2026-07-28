@@ -51,7 +51,12 @@ function nodeFor(itemId, doc) {
 
 // ── filmstrip ─────────────────────────────────────────────────────────────
 
-test("empty filmstrip (no frameUrls) is a ghost and emits nothing", () => {
+// A SOURCELESS filmstrip is the ghost — the condition changed with the frames
+// themselves: they used to be server-fetched stills whose absence (`frameUrls` empty)
+// meant "nothing to show", and they are now live scrub frames of `src`, so the ONE
+// thing that can leave the widget with nothing is having no video. The ghost-emits-
+// nothing symmetry this file exists to police is unchanged.
+test("sourceless filmstrip is a ghost and emits nothing", () => {
   let doc = newDocument();
   let id;
   [doc, id] = withNewItem(doc, 0, { ...filmstripPlugin.defaults, active: true });
@@ -61,12 +66,12 @@ test("empty filmstrip (no frameUrls) is a ghost and emits nothing", () => {
   assert.equal(ops.length, 0);
 });
 
-test("filmstrip with resolved frames is NOT a ghost and emits ops", () => {
+test("filmstrip with a video source is NOT a ghost and emits ops", () => {
   let doc = newDocument();
   let id;
   [doc, id] = withNewItem(doc, 0, {
     ...filmstripPlugin.defaults, active: true,
-    frameUrls: ["data:image/png;base64,aaaa", "data:image/png;base64,bbbb"],
+    src: "data:video/mp4;base64,aaaa", videoStart: 0, videoEnd: 6,
   });
   const node = nodeFor(id, doc);
   assert.equal(isGhostNode(node), false);

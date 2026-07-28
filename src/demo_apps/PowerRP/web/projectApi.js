@@ -125,21 +125,14 @@ export async function deleteAsset(name, filename) {
   return jsonOrThrow(res, `deleteAsset(${name}, ${filename})`);
 }
 
-/** Query (the server extracts on first request, then serves from its cache).
- *  N evenly-spread frames of a project video asset: {count, frames: [url,…]}.
- *  `video` is the asset FILENAME (the filmstrip widget's src); count may be
- *  less than n for a video shorter than n frames. `h`/`w` are the OPTIONAL
- *  per-frame extraction resolution in pixels (manifest 14.1 frameH/frameW; null/
- *  undefined = the video's native size) — passed as ?h=&w= query params, folded
- *  into the server's cache key so a resolution change re-extracts. */
-export async function fetchFrames(name, video, n, h = null, w = null) {
-  const q = new URLSearchParams();
-  if (h != null && h > 0) q.set("h", String(Math.round(h)));
-  if (w != null && w > 0) q.set("w", String(Math.round(w)));
-  const qs = q.toString() ? `?${q}` : "";
-  const res = await fetch(`${BACKEND}/api/frames/${enc(name)}/${enc(video)}/${encodeURIComponent(n)}/${qs}`);
-  return jsonOrThrow(res, `fetchFrames(${name}, ${video}, ${n})`);
-}
+// THE FRAME-EXTRACTION CLIENT IS GONE. `GET /api/frames/<project>/<video>/<N>` had
+// exactly one caller — an app effect that filled the filmstrip's `frameUrls` — and the
+// filmstrip now decodes its frames in the BROWSER from ordinary document state (the
+// video scrub path), so there is nothing left here to call it. The ENDPOINT itself is
+// deliberately left standing in server/server.py (with its own test,
+// tests/frames_endpoint_test.py): it is a general "N stills of a video" service, and
+// removing a working server route is a separate decision from removing this widget's
+// dependency on it. If nothing adopts it, deleting it is a one-line follow-up.
 
 /** Command. Store `payload` (a JSON STRING — the serialized item) on THIS
  *  browser session's server-side clipboard (manifest 14.10 AMENDED). The
@@ -209,6 +202,84 @@ export async function encodeMp4Export(sessionId, { fps, crf }) {
     throw new Error(`encodeMp4Export(${sessionId}): ${res.status} ${detail}`);
   }
   return res.blob();
+}
+
+// ── DETACHED RENDER JOBS ────────────────────────────────────────────────────
+// A render is a JOB THE SERVER OWNS, not a promise this page is holding. That is
+// the entire point: submitRenderJob returns as soon as the server has the
+// snapshot, and from then on the browser is optional — it may close, refresh or
+// crash. Progress is read back by POLLING listRenderJobs, which counts frames on
+// disk, so a tab opened tomorrow sees exactly what a tab opened at submit sees.
+// There is deliberately NO client-side job handle to lose.
+
+/** Query. Absolute (proxied) URL of a finished render, for <video src> and the
+ *  download link. `output` is the job's basename inside the project's renders/. */
+export const renderUrl = (project, output) => `${BACKEND}/render/${enc(project)}/${enc(output)}`;
+
+/** Query. A project's render jobs, newest first. Each job carries
+ *  {id, name, backend, state, framesDone, framesTotal, params, output, outputPath,
+ *  bytes, error, warning, seen, createdAt, startedAt, finishedAt}. */
+export async function listRenderJobs(project) {
+  const { jobs } = await jsonOrThrow(await fetch(`${BACKEND}/api/render-jobs/${enc(project)}/`), `listRenderJobs(${project})`);
+  return jobs;
+}
+
+/** Command. Submit a render job. `doc` is SNAPSHOTTED server-side at submit, so
+ *  editing the deck afterwards cannot splice two documents into one video.
+ *  `backend` is "server" (detached; survives everything) or "client" (this page
+ *  renders the frames and POSTs them, then calls finishRenderJob). Returns the
+ *  new job record. Throws loudly on a rejected submit (bad CRF, bad backend,
+ *  motion blur on the server backend, …). */
+export async function submitRenderJob(project, { name, backend, framesTotal, params, doc }) {
+  const res = await fetch(`${BACKEND}/api/render-jobs/${enc(project)}/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, backend, framesTotal, params, doc }),
+  });
+  const { job } = await jsonOrThrow(res, `submitRenderJob(${project})`);
+  return job;
+}
+
+/** Command. Upload one rendered PNG frame for a CLIENT-backend job — the same
+ *  frames directory a server worker would fill, so the encode step is shared. */
+export async function postRenderJobFrame(project, jobId, index, png) {
+  const res = await fetch(`${BACKEND}/api/render-job/${enc(project)}/${enc(jobId)}/frame/${enc(String(index))}/`, {
+    method: "POST",
+    headers: { "Content-Type": "image/png" },
+    body: png,
+  });
+  return jsonOrThrow(res, `postRenderJobFrame(${project}, ${index})`);
+}
+
+/** Command. Tell the server a CLIENT-backend job's frames are all uploaded and
+ *  it should run the shared ffmpeg encode. Returns the finished job record. */
+export async function finishRenderJob(project, jobId) {
+  const res = await fetch(`${BACKEND}/api/render-job/${enc(project)}/${enc(jobId)}/finish/`, { method: "POST" });
+  const { job } = await jsonOrThrow(res, `finishRenderJob(${project}, ${jobId})`);
+  return job;
+}
+
+/** Command. Cancel a queued or running job (kills its workers server-side).
+ *  Throws loudly for a job that already finished. */
+export async function cancelRenderJob(project, jobId) {
+  const res = await fetch(`${BACKEND}/api/render-job/${enc(project)}/${enc(jobId)}/cancel/`, { method: "POST" });
+  const { job } = await jsonOrThrow(res, `cancelRenderJob(${project}, ${jobId})`);
+  return job;
+}
+
+/** Command. Mark a finished job as SEEN, so it stops counting toward the toolbar
+ *  badge and stops auto-expanding in the Render Center. */
+export async function markRenderJobSeen(project, jobId) {
+  const res = await fetch(`${BACKEND}/api/render-job/${enc(project)}/${enc(jobId)}/seen/`, { method: "POST" });
+  const { job } = await jsonOrThrow(res, `markRenderJobSeen(${project}, ${jobId})`);
+  return job;
+}
+
+/** Command. Delete a job's record AND its output movie. Refused (loud throw)
+ *  while the job is still active — cancel it first. */
+export async function deleteRenderJob(project, jobId) {
+  const res = await fetch(`${BACKEND}/api/render-job/${enc(project)}/${enc(jobId)}/`, { method: "DELETE" });
+  return jsonOrThrow(res, `deleteRenderJob(${project}, ${jobId})`);
 }
 
 /** Command. Download the whole project as a .zip (browser save dialog). The

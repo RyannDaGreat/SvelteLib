@@ -59,7 +59,7 @@ try {
   const submenu = await page.evaluate(() => {
     const app = window.__powerrp_app;
     const entry = app.commands.get("insert-demo-widget");
-    const topHit = app.commands.search("insert demo", app).some((c) => c.id === "insert-demo-widget");
+    const topHit = app.commands.search("insert demo").some((c) => c.id === "insert-demo-widget");
     // Each child must resolve a REAL registered plugin type (loud get() would throw).
     const childTypes = { "demo-insert-showcase": "demo_showcase", "demo-insert-magnifier": "magnifier" };
     const childResolves = entry.children.map((c) => {

@@ -26,7 +26,7 @@
  * fallback) — the transport is projectApi.js, mirroring its error idiom.
  */
 
-import { beginMp4Export, postMp4ExportFrame, encodeMp4Export } from "./projectApi.js";
+import { beginMp4Export, postMp4ExportFrame, encodeMp4Export, postRenderJobFrame, finishRenderJob } from "./projectApi.js";
 
 /** libx264 CRF (Constant Rate Factor) per quality preset — LOWER = higher
  *  quality / larger file. 23 is x264's own default (visually good); 18 is near
@@ -80,6 +80,47 @@ function canvasToPngBlob(canvas) {
  * await enc.addFrame(canvas, { timestamp: 0, duration: 33333 });
  * const blob = await enc.finalize(); // Blob { type: "video/mp4" }
  */
+/**
+ * Command (async). The SAME Encoder interface, but writing into an existing
+ * RENDER JOB's frame directory instead of an anonymous export session.
+ *
+ * This is what makes "client" a BACKEND of the job system rather than a second
+ * system beside it: a browser-rendered job and a server-rendered job fill the
+ * same directory and are finished by the same ffmpeg step, so they share one
+ * record, one progress signal, one output location and one entry in the Render
+ * Center. The only difference is who produced the pixels.
+ *
+ * Unlike createServerMp4Encoder, finalize() returns the finished JOB RECORD, not
+ * a Blob: the movie is now a file in the project's renders/ folder, so there is
+ * nothing to hold in memory and a URL to play instead.
+ *
+ * @param {object} o
+ * @param {string} o.project Project name that owns the job.
+ * @param {string} o.jobId   The job to fill.
+ * @returns {Promise<{addFrame:Function, finalize:Function}>}
+ *
+ * @example
+ * const enc = await createJobFrameEncoder({ project: "Deck", jobId: "ab12" });
+ * await enc.addFrame(canvas, { timestamp: 0, duration: 33333 });
+ * const job = await enc.finalize(); // {state: "done", output: "Render.mp4", …}
+ */
+export async function createJobFrameEncoder({ project, jobId }) {
+  let count = 0;
+  return {
+    /** Command (async). PNG-encode `source` and POST it as the next job frame. */
+    async addFrame(source, _meta) {
+      const png = await canvasToPngBlob(source);
+      await postRenderJobFrame(project, jobId, count, png);
+      count += 1;
+    },
+    /** Command (async). Ask the server for the shared encode; returns the job record. */
+    async finalize() {
+      if (count === 0) throw new Error("Client render job: no frames were rendered to encode.");
+      return finishRenderJob(project, jobId);
+    },
+  };
+}
+
 export async function createServerMp4Encoder({ fps, crf = DEFAULT_CRF }) {
   const sessionId = await beginMp4Export();
   let count = 0;

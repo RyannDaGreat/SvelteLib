@@ -1,5 +1,5 @@
 /**
- * KEYBOARD-INPUT SWEEP — plain node, no framework.
+ * USER-INPUT SWEEP — plain node, no framework.
  * Run: node src/demo_apps/PowerRP/tests/shortcut_sweep_test.js
  * Inventory (what the scanner sees, for authoring the allowlist):
  *     node src/demo_apps/PowerRP/tests/shortcut_sweep_test.js --inventory
@@ -11,24 +11,43 @@
  * multi-selection resize ended up reading Shift and Cmd with nothing on the
  * HintBar, and how the command palette ended up with five keys and one chip.
  *
- * So this sweep goes the other way: it enumerates EVERY keyboard input the source
- * actually reads and requires each to be ACCOUNTED FOR — either by naming the
- * registry entries that cover it, or by a written LOCAL rationale for why it is
- * confined to its own component. An unlisted file, or a new key inside a listed
- * file, fails. That is the mechanical form of the convention.
+ * So this sweep goes the other way: it enumerates EVERY input the source actually
+ * reads and requires each to be ACCOUNTED FOR — either by naming the registry
+ * entries that cover it, or by a written LOCAL rationale for why it is confined to
+ * its own component. An unlisted file, or a new key inside a listed file, fails.
+ * That is the mechanical form of the convention.
+ *
+ * DOUBLE-CLICK IS SWEPT TOO, and it is the reason the sweep is no longer
+ * keyboard-only. The registry had no double-click vocabulary at all, so five
+ * `ondblclick` handlers — one of them the canvas's, dispatching SEVEN distinct
+ * widget behaviours — were structurally invisible to a keyboard-shaped scan, and
+ * the user reported precisely that: "double clicking adds a new point but the
+ * shortcut area didnt mention that it's not discoverable". A keyboard-only sweep
+ * could not have caught it, and cannot catch the next one either.
+ *
+ * WHY AN ALLOWLIST IS NOT THE "MIRROR ANOTHER MODULE'S SHAPE" DEFECT. The FILE SET
+ * is derived by scanning, and the scan is what drives every assertion; the ledger
+ * supplies only the WHY, which no derivation can produce. Nothing here restates a
+ * list that lives elsewhere — a new handler in an unlisted file fails, and a note
+ * for a handler that no longer exists fails too, so the ledger cannot drift from
+ * the code in either direction.
  *
  * It sweeps EVERY real source artifact rather than a sample (the tests/
  * row_kinds_test.js idiom): web/, plugins/, core/, minus the build output.
  *
- * WHAT A `coverage` STRING MEANS:
- *   "registry: …"  the keys are registered in core/shortcut_entries.js (dispatched
+ * WHAT A `coverage` / `dblclick` STRING MEANS:
+ *   "registry: …"  the input is registered in core/shortcut_entries.js (dispatched
  *                  there, or dispatched here and registered for the HintBar — the
  *                  documented "registered but externally dispatched" case).
  *   "LOCAL: …"     deliberately NOT registered, with the reason. The bar is a
  *                  finite surface; universal platform conventions (Enter/Space
  *                  activating a focused control, arrow keys in a listbox, caret
- *                  motion in a text field) are already known to every user and
- *                  would drown the app-invented verbs that need teaching.
+ *                  motion in a text field, double-clicking a file to open it) are
+ *                  already known to every user and would drown the app-invented
+ *                  verbs that need teaching.
+ * `coverage` accounts for the KEYS; `dblclick` accounts for the GESTURE. They are
+ * separate fields because they are separate decisions — web/Toolbar.svelte's F2 and
+ * its double-click-to-rename are covered by different arguments.
  */
 
 import assert from "node:assert/strict";
@@ -77,6 +96,11 @@ function sweptFiles() {
 const EVENT_NAMES = String.raw`e|ev|evt|event`;
 const LISTENER_RE = new RegExp(String.raw`on(?:keydown|keyup|keypress)\s*[=:]|addEventListener\(\s*["'](?:keydown|keyup|keypress)["']`, "i");
 const MODIFIER_RE = /\.(?:shiftKey|metaKey|ctrlKey|altKey)\b/;
+// A real HANDLER, not a mention: an attribute binding or an explicit listener. The
+// word "dblclick" appears in a dozen comments and probe names across this codebase
+// (web/polygonDraw.js documents the gesture without handling it), and a scan that
+// matched those would demand a rationale from every file that merely discusses it.
+const DBLCLICK_RE = new RegExp(String.raw`ondblclick\s*[=:]|addEventListener\(\s*["']dblclick["']`, "i");
 
 /**
  * Pure function. The key-name literals a source file compares a KeyboardEvent
@@ -107,14 +131,15 @@ export function keyLiterals(src) {
   return [...found].sort();
 }
 
-/** Query. The keyboard-input inventory: one row per file that reads keys. */
+/** Query. The input inventory: one row per file that reads keys or double-clicks. */
 function inventory() {
   return sweptFiles().flatMap((f) => {
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
     const listener = LISTENER_RE.test(src);
     const modifiers = MODIFIER_RE.test(src);
-    if (!listener && !modifiers) return [];
-    return [{ file: f, listener, modifiers, keys: keyLiterals(src) }];
+    const dblclick = DBLCLICK_RE.test(src);
+    if (!listener && !modifiers && !dblclick) return [];
+    return [{ file: f, listener, modifiers, dblclick, keys: keyLiterals(src) }];
   });
 }
 
@@ -137,10 +162,12 @@ const ACCOUNTED = {
     keys: ["A", "Escape", "a"],
     modifiers: true,
     coverage: "registry: modifier reads are the per-drag-kind verbs declared in DRAG_KIND_MODIFIERS and announced by DRAG_MODIFIER_HINTS (Shift/Cmd/Alt per kind). Held A is the 'Anchor snap' entry; Escape is the 'Cancel drag' entry, dispatched here from a CAPTURE-phase listener so it pre-empts App's bubble-phase Deselect (the deselectable predicate keeps that chip off the bar for the gesture).",
+    dblclick: "registry: THE canvas double-click, and the one that had to be registered. It does two things and both are now GENERATED from the tables it resolves them through: a live creation mode's finalize gesture (canvasModes().finishGesture — the polygon's 'Finish shape'; a mode that declares none consumes the gesture and does nothing) and, otherwise, the hit widget's declared ACTIVATION (activations() → one chip per handler on MOUSE_DOUBLE_TOKEN, scoped by `activatable` to the selected widget's own activation: 'Add a point', 'Edit equation', 'Edit text in place', 'Choose source', 'Open widget palette', 'Explore interior'). Display-only entries — dispatch() reads only KeyboardEvents — which is the registered-but-externally-dispatched case the pointer/wheel/modifier hints all use. KNOWN BOUND: the chip is scoped to the SELECTED widget while the gesture resolves against the widget under the POINTER, so double-clicking an UNSELECTED widget activates it unannounced; hover is the only axis that would close that and it is rejected at `activatable`'s docstring (no hover state exists, and it would re-derive the bar every mousemove).",
   },
   "web/TextEditController.svelte": {
     keys: ["Backspace", "Delete", "End", "Enter", "Escape", "Home", "a", "b", "i", "u", "y", "z", "+", "-", "=", "_", "A", "B", "I", "U", "Y", "Z", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp"],
     modifiers: true,
+    dblclick: "LOCAL: double-click selects the WORD under the pointer (onHitDblClick → layout.wordAt). The universal text-editing convention, and the same ruling this file's `coverage` note already makes for caret motion and Home/End: handled by the focused editor, no effect outside it, known to every user. Registering it would also be self-defeating — the bar would offer 'Select word' on the same gesture the canvas offers 'Edit text in place', and only one of them can be live, since entering this editor is what the canvas gesture DID.",
     coverage: "registry (the app-specific half): Escape 'Done editing'; Cmd+B/I/U bold/italic/underline; Cmd+=/+ and Cmd+-/_ the size steppers; Cmd+Z / Cmd+Shift+Z / Cmd+Y the EDIT-BUFFER history (a separate undo stack from the document's, which is exactly why it must be announced); Cmd+A select all. LOCAL (ruling, not an oversight): caret motion and text mutation — arrows, Alt+arrows by word, Cmd+arrows to line ends, Home/End, Shift+arrows to extend, Backspace/Delete/Enter, printable characters. Universal platform text-editing conventions handled by the focused editor, with no effect outside it; registering them would add ~10 chips every user already knows and would drown the app-invented verbs above.",
   },
   "web/CodeEditController.svelte": {
@@ -195,6 +222,7 @@ const ACCOUNTED = {
   },
   "web/Toolbar.svelte": {
     keys: ["Enter", "F2"],
+    dblclick: "LOCAL: double-click the project title opens the Rename modal. Discoverable AT THE POINT OF USE — the title carries a Tooltip reading 'Double-click to rename' — which is the right surface for a gesture on one specific piece of panel chrome, where a global chip would be up permanently for a target that is usually nowhere near the pointer. Same argument this entry's `coverage` already makes for F2 on the same element.",
     coverage: "LOCAL: Enter commits the inline project-title rename and F2 starts it — both scoped to the title field, and F2 is the platform's own rename key. Not registered because a global chip for a key that only works on one hovered widget would be less honest than none.",
   },
   "web/SlideNav.svelte": {
@@ -208,6 +236,11 @@ const ACCOUNTED = {
   "web/VariablesPanel.svelte": {
     keys: ["Enter"],
     coverage: "LOCAL: Enter commits an inline variable name/value edit (same field-commit convention).",
+  },
+  "web/AssetExplorer.svelte": {
+    keys: [],
+    dblclick: "LOCAL: double-click an asset tile opens its Modal preview. The platform's own 'double-click a file to open it' convention, confined to this panel, on a target that only exists while the panel is open — and now named in the tile's own Tooltip ('drag onto the canvas to insert at a point, or double-click to preview'), which is where a panel gesture is discoverable. Deliberately NOT registered: the HintBar narrates the CANVAS context (its predicates are all built on editMode, which says nothing about which panel is open), so a permanent chip for a gesture that only works over one panel's tiles would be exactly the kind of always-on, usually-wrong hint the truthfulness guards exist to prevent.",
+    coverage: "LOCAL: reads no keyboard input at all — it is listed for its double-click gesture above. The tiles are <button>s, so Enter/Space activation is the browser's, not this component's.",
   },
   "web/AssetThumb.svelte": {
     keys: ["Enter"],
@@ -267,6 +300,7 @@ const ACCOUNTED = {
     keys: ["Enter", "Escape", "c", "t", "x"],
     modifiers: true,
     mounted: false,
+    dblclick: "LOCAL: NOT MOUNTED BY THIS APP (see the coverage note and the import assertion below), so its double-click-to-edit-a-comment is not in this editor's gesture space at all. Were the bar ever mounted here, this would be an ordinary panel-chrome case like the Toolbar title's.",
     coverage: "LOCAL: NOT MOUNTED BY THIS APP — no file under web/, plugins/ or core/ imports it (asserted below, so the claim cannot go stale), so none of its keys are in the editor's keyspace and there is nothing for the registry to know. Recorded rather than skipped because its C/X/T hotkeys are WINDOW-scoped and app-invented, which is the one shape the LOCAL clause does NOT excuse: were PowerRP ever to mount this bar, those three would have to be registered (or scoped to the bar) before it shipped. Enter/Escape commit its inline comment edit and the modifier reads are Alt/Shift on its own pointer gestures — those parts would be ordinary field and drag-modifier cases.",
   },
 };
@@ -288,8 +322,8 @@ const rows = inventory();
 
 if (process.argv.includes("--inventory")) {
   for (const r of rows)
-    console.log(`${r.file}\n    listener=${r.listener} modifiers=${r.modifiers}\n    keys=${JSON.stringify(r.keys)}`);
-  console.log(`\n${rows.length} files read keyboard input`);
+    console.log(`${r.file}\n    listener=${r.listener} modifiers=${r.modifiers} dblclick=${r.dblclick}\n    keys=${JSON.stringify(r.keys)}`);
+  console.log(`\n${rows.length} files read user input (${rows.filter((r) => r.dblclick).length} handle double-click)`);
   process.exit(0);
 }
 
@@ -329,12 +363,48 @@ test("a lib entry claiming it is NOT MOUNTED really is not imported by this app"
   }
 });
 
-test("every file that reads keyboard input is accounted for", () => {
+test("every file that reads user input is accounted for", () => {
   for (const r of rows)
     assert.ok(
       ACCOUNTED[r.file],
-      `${r.file} reads keyboard input (${r.listener ? "listener" : ""}${r.modifiers ? " modifiers" : ""}, keys ${JSON.stringify(r.keys)}) but is not in the sweep allowlist. Either register those inputs in core/shortcut_entries.js and record "registry: …" here, or record "LOCAL: …" with the reason they stay confined to this component. An unlisted keyboard input is the convention violation this test exists to stop.`,
+      `${r.file} reads user input (${r.listener ? "listener" : ""}${r.modifiers ? " modifiers" : ""}${r.dblclick ? " dblclick" : ""}, keys ${JSON.stringify(r.keys)}) but is not in the sweep allowlist. Either register those inputs in core/shortcut_entries.js and record "registry: …" here, or record "LOCAL: …" with the reason they stay confined to this component. An unlisted input is the convention violation this test exists to stop.`,
     );
+});
+
+// ── DOUBLE-CLICK ─────────────────────────────────────────────────────────────
+// The gesture half, and the direct forward guard for the reported defect: a NEW
+// `ondblclick` anywhere under web/, plugins/, core/ or src/lib fails until somebody
+// decides — in writing — whether it is a canvas verb that belongs in the registry or
+// a panel convention that stays local. That decision is the whole point of the
+// failure, exactly as it is for a new key.
+test("every double-click handler is accounted for", () => {
+  const handlers = rows.filter((r) => r.dblclick);
+  assert.ok(handlers.length >= 4, `the scanner found only ${handlers.length} double-click handlers — DBLCLICK_RE went stale, which would make this pass for the wrong reason`);
+  const canvas = handlers.find((r) => r.file === "web/CanvasView.svelte");
+  assert.ok(canvas, "web/CanvasView.svelte must be found as a double-click handler — it owns the canvas activation gesture, the one this sweep was extended for");
+  for (const r of handlers)
+    assert.ok(
+      ACCOUNTED[r.file]?.dblclick,
+      `${r.file} handles a double-click but its allowlist entry carries no \`dblclick\` note. Decide and record it: "registry: …" naming the entries that announce it (a canvas verb — see core/shortcut_entries.js MOUSE_DOUBLE_TOKEN), or "LOCAL: …" with the reason it stays confined to this component. An unannounced double-click is the exact defect this was extended for: it is the one gesture a user cannot stumble into by accident.`,
+    );
+});
+
+test("no allowlist entry claims a double-click its file no longer handles", () => {
+  const handles = new Set(rows.filter((r) => r.dblclick).map((r) => r.file));
+  for (const [file, spec] of Object.entries(ACCOUNTED))
+    if (spec.dblclick)
+      assert.ok(handles.has(file), `the allowlist gives ${file} a \`dblclick\` rationale but the scanner finds no handler there — drop it, so the ledger stays a description of the code rather than a wish.`);
+});
+
+test("every double-click note is a registry citation or a written LOCAL rationale", () => {
+  for (const [file, spec] of Object.entries(ACCOUNTED)) {
+    if (!spec.dblclick) continue;
+    assert.ok(
+      /^(registry|LOCAL)/.test(spec.dblclick),
+      `${file}'s dblclick note must start with "registry:" or "LOCAL:" — got ${JSON.stringify(spec.dblclick.slice(0, 40))}`,
+    );
+    assert.ok(spec.dblclick.length > 60, `${file}'s dblclick note is too short to be a real rationale: ${JSON.stringify(spec.dblclick)}`);
+  }
 });
 
 test("every key a listed file reads is declared (a new key fails the sweep)", () => {
@@ -357,10 +427,10 @@ test("no allowlist entry declares a key its file no longer reads", () => {
       );
 });
 
-test("no allowlist entry names a file that no longer reads keyboard input", () => {
+test("no allowlist entry names a file that no longer reads any input", () => {
   const seen = new Set(rows.map((r) => r.file));
   for (const f of Object.keys(ACCOUNTED))
-    assert.ok(seen.has(f), `the allowlist lists ${f}, which no longer reads keyboard input — remove the stale entry.`);
+    assert.ok(seen.has(f), `the allowlist lists ${f}, which no longer reads keys, modifiers or double-clicks — remove the stale entry.`);
 });
 
 test("modifier reads are declared where they happen", () => {
@@ -386,4 +456,4 @@ test("every coverage note is a registry citation or a written LOCAL rationale", 
   }
 });
 
-console.log(`\n${passed} keyboard-sweep tests passed (${rows.length} files read keyboard input)`);
+console.log(`\n${passed} input-sweep tests passed (${rows.length} files read user input, ${rows.filter((r) => r.dblclick).length} handle double-click)`);

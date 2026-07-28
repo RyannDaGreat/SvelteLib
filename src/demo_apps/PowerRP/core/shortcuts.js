@@ -19,9 +19,43 @@
  *                                //   omit BOTH for display-only hints (mouse
  *                                //   gestures handled by pointer code still
  *                                //   REGISTER here for the HintBar)
+ *
+ * A MOUSE GESTURE entry is display-only BY CONSTRUCTION, and that is now ENFORCED
+ * rather than conventional: dispatch() only ever reads KeyboardEvents, so an entry
+ * whose main key is a mouse token could never fire, and add() throws if one carries
+ * a `run`/`command` (see isGestureCombo). The registry keeps the KNOWLEDGE of the
+ * input; the pointer code that owns the gesture keeps the behaviour.
  */
 
-const MOUSE_TOKENS = new Set(["mouse_left", "mouse_right", "mouse_middle", "mouse_scroll", "mouse"]);
+/**
+ * A DOUBLE-CLICK of the left button. Spelled by suffixing the button token it is a
+ * gesture ON rather than as a token of its own ("mouse_double"), so the two
+ * compose: a double-click is the left button twice, not a different button.
+ *
+ * WHY IT EXISTS. Double-click was the one real input this registry had no
+ * vocabulary for, so every double-click activation in the app — a polygon's
+ * insert-point, the equation editor, the in-place text editors, the media asset
+ * picker, a widget's overlay palette, interior explore — fired from a DOM
+ * `dblclick` handler the registry knew nothing about. The HintBar therefore could
+ * not show any of them, which is the "a shortcut that isn't registered does not
+ * exist" violation on the ONE gesture a user cannot discover by accident: a key
+ * gets pressed by mistake eventually, a double-click on the right widget does not.
+ *
+ * It also retires a wrong instruction. web/polygonDraw.js announced its own
+ * double-click finish on `mouse_left` — a SINGLE-click glyph on a double-click
+ * gesture, the "Plus"/"Minus" failure (see RETIRED_KEY_TOKENS) in mouse form — and
+ * had to hide the chip entirely to stop it colliding with the real single-click
+ * one. With its own token it collides with nothing and can be shown.
+ */
+export const MOUSE_DOUBLE_TOKEN = "mouse_left_double";
+
+/**
+ * The MOUSE GESTURE main keys. `mouse` is the generic form; the rest name the
+ * button, the wheel, or (MOUSE_DOUBLE_TOKEN) a gesture on a button. Exported so a
+ * consumer can ask "is this entry a gesture?" through isGestureCombo rather than
+ * re-listing the vocabulary.
+ */
+export const MOUSE_TOKENS = new Set(["mouse_left", MOUSE_DOUBLE_TOKEN, "mouse_right", "mouse_middle", "mouse_scroll", "mouse"]);
 
 /** The four modifier tokens dispatch() understands (Cmd covers Ctrl — see below). */
 export const MODIFIER_TOKENS = Object.freeze(["Cmd", "Ctrl", "Alt", "Shift"]);
@@ -132,15 +166,40 @@ export function validateShortcutKeys(keys, label = "") {
   });
 }
 
+/**
+ * Pure function. Is this combo a MOUSE GESTURE — a main key dispatch() can never
+ * see, because dispatch() only ever reads KeyboardEvents? Such an entry is
+ * DISPLAY-ONLY by construction: the pointer code that owns the gesture invokes the
+ * behaviour, and the entry exists so the registry (and therefore the HintBar and
+ * the palette) KNOWS the input.
+ *
+ * @example isGestureCombo(["mouse_left"]) // true
+ * @example isGestureCombo(["Shift", "mouse_left_double"]) // true
+ * @example isGestureCombo(["Ctrl", "mouse_scroll"]) // true
+ * @example isGestureCombo(["Cmd", "Z"]) // false
+ */
+export function isGestureCombo(keys) {
+  return MOUSE_TOKENS.has(keys[keys.length - 1]);
+}
+
 export function createShortcuts() {
   const entries = [];
   return {
-    /** Command. Registers one shortcut/hint entry. Throws on a malformed entry
-     * or an unmatchable key token (validateShortcutKeys). */
+    /** Command. Registers one shortcut/hint entry. Throws on a malformed entry, an
+     * unmatchable key token (validateShortcutKeys), or a mouse gesture that claims
+     * to dispatch (isGestureCombo). */
     add(entry) {
       if (!entry.keys?.length || !entry.label || !entry.when)
         throw new Error(`Malformed shortcut entry: ${JSON.stringify(entry)}`);
       validateShortcutKeys(entry.keys, entry.label);
+      // THE GESTURE HONESTY GUARD, and the reason the registry may claim mouse
+      // entries are display-only instead of merely describing them that way: a
+      // combo whose main key is a mouse token is unreachable from keydown
+      // dispatch, so binding one to a command produces a chip the user can see,
+      // press, and get nothing from — the same class as a RETIRED key token, and
+      // previously a SILENT failure (dispatch() just skipped it).
+      if (isGestureCombo(entry.keys) && (entry.run || entry.command))
+        throw new Error(`Shortcut "${entry.keys.join("+")}" (entry "${entry.label}") binds a MOUSE GESTURE and also declares a ${entry.command ? `command ("${entry.command}")` : "run"} — dispatch() only ever reads KeyboardEvents, so it could never fire. A gesture entry is DISPLAY-ONLY: register it for the HintBar and let the pointer code that owns the gesture run the behaviour.`);
       entries.push(entry);
     },
     /** Query. Every registered entry, in registration order (the HintBar's order).
@@ -172,6 +231,13 @@ export function createShortcuts() {
         if ((!e.run && !e.command) || e.nativeEvent || !e.when(ctx)) continue;
         const mods = e.keys.slice(0, -1).map((k) => k.toLowerCase());
         const main = e.keys[e.keys.length - 1];
+        // A BELT ON A PROVEN INVARIANT, and no longer this skip's own load: add()
+        // rejects a gesture entry that carries a run/command, and the line above
+        // already skipped everything WITHOUT one, so nothing reaching here can have
+        // a mouse main key (tests/shortcut_registry_test.js asserts both halves).
+        // Kept because dispatch is the last line of defence for "a gesture is never
+        // delivered by a KeyboardEvent" — the same belt-on-a-proven-invariant call
+        // web/widget_handlers.js findHandler makes about its ambiguous-id branch.
         if (MOUSE_TOKENS.has(main)) continue;
         const wantCtrl = mods.includes("ctrl") || mods.includes("cmd");
         const wantShift = mods.includes("shift");

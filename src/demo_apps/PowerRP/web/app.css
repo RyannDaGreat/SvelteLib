@@ -4850,6 +4850,12 @@ audio.ae-preview-media {
   gap: var(--a-sp-2);
 }
 
+/* The shared .btn carries no icon gap of its own, so a button with a leading
+   glyph has to ask for one — same clause the job row's Download link uses. */
+.render-center-actions .btn {
+  gap: var(--a-sp-2);
+}
+
 /* ── The renderings list ─────────────────────────────────────────────────────
    Rows are COLLAPSED by default because an expanded one mounts a <video>; only
    in-progress and unseen-finished jobs open themselves (renderJobView's

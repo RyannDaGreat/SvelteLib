@@ -29,6 +29,22 @@
  *     COMPARE of the document before and after undo(), never by reference
  *     identity, because undo() restores an EQUAL document through a fresh
  *     reactive proxy.
+ *   - COLLAPSE: the list folds behind the app's accordion header, the header
+ *     STATES what is inside it ("5 stops", "3 stops, 1 hidden"), the choice
+ *     PERSISTS as a browser setting keyed by the PROPERTY (so it survives
+ *     selecting another item), and it is keyed per property (folding `points`
+ *     does not fold `stops`).
+ *   - THE PRESET FLICKER, COUNTED: sweeping the gradient preset library used to
+ *     rewrite every stop row under the cursor on each pointerenter (measured on
+ *     the pre-fix build: 768 DOM mutations and 13 list-height changes over 14
+ *     swatches, the list swinging between 2 and 12 rows). Opening the library
+ *     now folds the list, so the sweep is counted here and the row churn must be
+ *     ZERO — while every swatch still PREVIEWS, which is what the fold exists to
+ *     make watchable. The preset library also sits ABOVE the stops now, so a
+ *     swatch cannot move even when the list below it resizes.
+ *   - SUPPRESSION AND THE USER'S OWN CHOICE ARE SEPARATE STATE: a list the user
+ *     had OPEN is open again after the library closes, and one the user had
+ *     FOLDED stays folded.
  *
  * Writes screenshots to POWERRP/.claude_vlm_checks/list_ui/.
  *
@@ -50,7 +66,12 @@ const shots = resolve(powerrp, ".claude_vlm_checks/list_ui");
 await mkdir(shots, { recursive: true });
 const demoJson = await readFile(resolve(powerrp, "examples/demo.powerrp.json"), "utf8");
 
-const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+// hmr: false — the probe drives the app through a long stateful sequence, and a
+// hot update (any editor save anywhere in the tree) reloads the page mid-run and
+// throws away the widget the checks are measuring. Nothing here needs live reload.
+// (tests/field_key_ownership_probe.js's own reason, for the same shape of probe;
+// measured here as "Execution context was destroyed" while siblings were saving.)
+const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null } });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
@@ -123,6 +144,18 @@ try {
     seams[index].click();
   }, index);
   const rowCount = () => page.evaluate(() => document.querySelectorAll(".listfield .list-el").length);
+  /** The collapse header's own summary text ("4 points", "5 stops, 1 hidden"), or
+   *  null when the list renders no header at all (an EMPTY list has nothing to
+   *  fold, so it deliberately gets none). Scoped INSIDE .listfield: the Inspector's
+   *  own category accordions use the very same shared classes. */
+  const headerText = () => page.evaluate(() => document.querySelector(".listfield .cat-title")?.textContent ?? null);
+  const headerState = () => page.evaluate(() => {
+    const h = document.querySelector(".listfield .cat-header");
+    return h && JSON.stringify({ expanded: h.getAttribute("aria-expanded"), disabled: h.disabled, icon: h.querySelector("iconify-icon")?.getAttribute("icon") });
+  }).then((s) => (s ? JSON.parse(s) : null));
+  const clickHeader = () => page.evaluate(() => document.querySelector(".listfield .cat-header").click());
+  /** The persisted collapse map — the BROWSER setting the fold is remembered in. */
+  const collapseSetting = () => jsonEval(() => localStorage.getItem("powerrp.listCollapsed") ?? "null");
   /** Scrolls the list control into the Inspector's viewport and shoots IT (padded),
    *  not the whole panel — the panel's own rect is taller than its scroller, so a
    *  full-panel clip photographs whatever else is behind the fold. */
@@ -188,6 +221,70 @@ try {
     "each element shows its DECLARED fields (x, y), by name");
   await shotOfList("polygon_points_list");
 
+  // ── COLLAPSE (the user's "plural properties should be collapsible") ──────────
+  // The header is the app's shared accordion (.cat-header/.cat-title), and it
+  // SAYS what it is hiding, so a folded row is not a mystery box.
+  ok(await headerText() === "4 points", `the collapse header states the count (got ${JSON.stringify(await headerText())})`);
+  ok(JSON.stringify(await headerState()) === '{"expanded":"true","disabled":false,"icon":"mdi:chevron-down"}',
+    `a list starts OPEN, with the accordion's own down-chevron (${JSON.stringify(await headerState())})`);
+  {
+    const before = await docJson();
+    await clickHeader();
+    await settle(120);
+    ok(await rowCount() === 0, `folding renders NO element rows (${await rowCount()})`);
+    ok(await page.evaluate(() => document.querySelectorAll(".listfield .list-insert").length) === 0,
+      "and no insert seams — the whole body is folded, not just the rows");
+    ok(await headerText() === "4 points", "the folded header still states the count");
+    ok(JSON.stringify(await headerState()) === '{"expanded":"false","disabled":false,"icon":"mdi:chevron-right"}',
+      `folded: aria-expanded false and the right-chevron (${JSON.stringify(await headerState())})`);
+    ok(await docJson() === before,
+      "COLLAPSE IS VIEW STATE: the document is byte-identical (it neither keyframes nor makes an undo entry)");
+    ok((await collapseSetting()).points === true,
+      `the fold persists as a BROWSER setting keyed by the PROPERTY, not the item (${JSON.stringify(await collapseSetting())})`);
+    await shotOfList("polygon_points_folded");
+  }
+  // Keyed by the property, so it survives selecting something else and coming back
+  // — the Inspector accordion's own "stays collapsed as you switch selections".
+  await page.evaluate(() => { window.__powerrp_app.selection = null; });
+  await settle(150);
+  await page.evaluate((id) => { window.__powerrp_app.selection = id; }, polyId);
+  await settle(250);
+  ok(await rowCount() === 0, "the fold survives deselecting and reselecting the item");
+  await clickHeader();
+  await settle(150);
+  ok(await rowCount() === 4, `unfolding brings every row back (${await rowCount()})`);
+  ok((await collapseSetting()).points === false, "unfolding persists too");
+
+  // ── THE SHARED SEAM, tested WITHOUT any picker ──────────────────────────────
+  // A staged WHOLE-LIST preview folds the list whoever staged it — which is how a
+  // ToolsPane plugin preset carrying a list-valued prop gets this for free (its
+  // previewPreset stages exactly this shape: [["items", id, key], value]). No
+  // shipped preset declares one today, so the flicker does not exist there yet;
+  // this proves it cannot appear when one does.
+  await page.evaluate((id) => {
+    window.__powerrp_app.setPreview([[["items", id, "points"], [[0, 0], [1, 0], [1, 1], [0, 1], [0.5, 0.5]]]]);
+  }, polyId);
+  await settle(200);
+  ok(await rowCount() === 0, `a WHOLE-LIST preview staged by anything folds the list (${await rowCount()} rows)`);
+  ok(await headerText() === "5 points", "and the folded header reports the PREVIEWED list, like every other control does");
+  await page.evaluate(() => window.__powerrp_app.cancelPreview());
+  await settle(200);
+  ok(await rowCount() === 4, "cancelling the preview restores the user's own open list");
+
+  // THE CONVERSE, which matters more: the user's OWN per-element edit must NOT
+  // fold the row being dragged. A field scrub stages a sparse numeric-keyed
+  // OBJECT under the list path, not an array — that is the whole basis of the
+  // distinction, so it is measured rather than assumed.
+  await page.evaluate((id) => {
+    window.__powerrp_app.setPreview([[["items", id, "points", 1, 0], 0.75]]);
+  }, polyId);
+  await settle(200);
+  ok(await rowCount() === 4, `scrubbing ONE element's field leaves the list OPEN (${await rowCount()} rows) — folding the row under the pointer would be worse than the flicker`);
+  ok(await page.evaluate((id) => !Array.isArray(window.__powerrp_app.previewDelta.items[id].points), polyId),
+    "…because that preview stages a sparse per-index patch, not a whole-list array");
+  await page.evaluate(() => window.__powerrp_app.cancelPreview());
+  await settle(150);
+
   // INSERT BETWEEN vertices 1 and 2 → the midpoint of the edge it splits.
   await oneUndoUnit("polygon insert-between", () => clickInsert(1));
   {
@@ -217,6 +314,9 @@ try {
       "the hidden element's row reads as hidden");
     ok(await page.evaluate((id) => window.__powerrp_app.nodes().find((n) => n.itemId === id).plugin.modifierPoints(window.__powerrp_app.nodes().find((n) => n.itemId === id).state).length, polyId) === 5,
       "every STORED vertex still has a canvas handle — a hidden vertex must be showable again");
+    // The eyes are invisible once folded, so the summary must carry the hidden
+    // count — otherwise folding would hide a real state.
+    ok(await headerText() === "5 points, 1 hidden", `the header counts the HIDDEN elements too (got ${JSON.stringify(await headerText())})`);
   }
 
   // PER-ELEMENT `=`: type an equation into vertex 3's x through its OWN field.
@@ -392,6 +492,225 @@ try {
   const hiddenShot = await shoot("gradient_three_stops_middle_hidden");
   ok(!threeStopShot.equals(twoStopShot), "the compare is NOT vacuous: 3 stops and 2 stops render DIFFERENTLY");
   ok(hiddenShot.equals(twoStopShot), `PIXEL PROOF: hiding the middle stop renders EXACTLY the hand-authored 2-stop gradient (${hiddenShot.length} vs ${twoStopShot.length} bytes)`);
+
+  // ── Scenario 3: THE PRESET-LIBRARY FLICKER, COUNTED ────────────────────────
+  // Hovering a preset swatch live-previews it, which REWRITES THE WHOLE STOP LIST.
+  // Pre-fix that re-rendered every row on every pointerenter, and a preset with a
+  // different stop count resized the list under the cursor: 768 DOM mutations and
+  // 13 height changes over 14 swatches (2 rows ⇄ 12), which is the user's
+  // "otherwise it flickers like crazy". Opening the library now folds the list, so
+  // the same sweep must produce ZERO row churn — while every swatch still previews.
+  const FIVE = [
+    { offset: 0, color: "#ff0000" }, { offset: 0.25, color: "#ffff00" }, { offset: 0.5, color: "#00ff00" },
+    { offset: 0.75, color: "#00ffff" }, { offset: 1, color: "#0000ff" },
+  ];
+  /** How many swatches the counted sweep visits. Matched to the pre-fix
+   *  measurement so the before/after numbers are comparable. */
+  const SWEEP_COUNT = 14;
+  await page.evaluate((id) => { window.__powerrp_app.selection = id; }, rectId);
+  await settle(250);
+  await page.evaluate((id, stops) => {
+    const app = window.__powerrp_app;
+    app.setPreview([
+      [["items", id, "fill"], { type: "linearGradient", solid: "#ff0000", linear: { stops, angle: 0 }, radial: { stops, center: { x: 0.5, y: 0.5 }, r: 0.5 } }],
+      // Clear the hide from the pixel proof above, so the sweep starts from a list
+      // with nothing hidden and the summary is about the count alone.
+      [["items", id, "fill", "linear", "stopsActive"], stops.map(() => true)],
+    ]);
+    app.commitPreview();
+  }, rectId, FIVE);
+  await settle(350);
+  ok(await rowCount() === 5 && await headerText() === "5 stops", `a five-stop gradient lists five rows (${await headerText()})`);
+
+  // PRESETS ON TOP (the user's third ask): the library precedes the stop list in
+  // document order, so a swatch cannot move when the list below it resizes.
+  ok(await page.evaluate(() => {
+    const presets = document.querySelector(".gradient-presets");
+    const list = document.querySelector(".listfield");
+    // DOCUMENT_POSITION_FOLLOWING (4) = the list comes AFTER the preset library.
+    return !!(presets.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }), "the PRESET LIBRARY sits ABOVE the stop list, not below it");
+  await shotOfList("gradient_presets_above_stops");
+
+  // Opening the library folds the list — on the CLICK, not on the first hover.
+  await page.evaluate(() => {
+    document.querySelector(".gradient-presets-toggle").scrollIntoView({ block: "center" });
+    document.querySelector(".gradient-presets-toggle").click();
+  });
+  await settle(400);
+  ok(await rowCount() === 0, `opening the preset library FOLDS the stop list (${await rowCount()} rows)`);
+  ok(await headerText() === "5 stops", "and the folded header still says what is in it");
+  {
+    const h = await headerState();
+    ok(h.disabled === true && h.expanded === "false",
+      `while the library holds it folded the header REFUSES rather than lying about a toggle it does not own (${JSON.stringify(h)})`);
+  }
+  ok(await page.evaluate(() => {
+    const h = document.querySelector(".listfield .cat-header");
+    h.closest(".tt-anchor")?.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+    return true;
+  }), "hover the refusing header to read its reason");
+  await settle(150);
+  {
+    const tip = await page.evaluate(() => document.querySelector(".tt-tip")?.textContent ?? "");
+    ok(/previews the whole list/.test(tip) && /reopens to your own setting/.test(tip),
+      `the refusing header NAMES the reason and promises the user's own setting back: ${JSON.stringify(tip.slice(0, 140))}`);
+  }
+  await shotOfList("gradient_library_open_list_folded");
+  // Dismiss that tooltip before measuring. Tooltip renders .tt-tip as a SIBLING of
+  // its anchor, so an open bubble sits inside .listfield and its text tracks the
+  // summary — real churn, but churn this probe caused by parking a synthetic
+  // pointer on the header. A user sweeping the grid has no tip open.
+  await page.evaluate(() => {
+    document.querySelector(".listfield .cat-header").closest(".tt-anchor")
+      ?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+  });
+  await settle(200);
+  ok(await page.evaluate(() => !document.querySelector(".listfield .tt-tip")), "the header's tooltip is dismissed before the sweep is counted");
+
+  // THE SWEEP. Alternating few-stop and many-stop presets, so every hover would
+  // have changed the list's height pre-fix; the library's first tiles are all
+  // 2-stop gradients and would measure almost nothing. A stop count is readable
+  // off the tile: --gp-swatch is the CSS gradient its stops were baked into.
+  const sweepOrder = await jsonEval((n) => {
+    const counted = [...document.querySelectorAll(".gradient-swatch")].map((s, i) => ({
+      i, stops: (s.style.getPropertyValue("--gp-swatch").match(/%/g) ?? []).length,
+    }));
+    const few = counted.filter((c) => c.stops <= 2).map((c) => c.i);
+    const many = counted.filter((c) => c.stops >= 4).map((c) => c.i);
+    const out = [];
+    for (let k = 0; out.length < n && (k < few.length || k < many.length); k++) {
+      if (k < few.length) out.push(few[k]);
+      if (out.length < n && k < many.length) out.push(many[k]);
+    }
+    return JSON.stringify(out);
+  }, SWEEP_COUNT);
+  ok(sweepOrder.length === SWEEP_COUNT, `the sweep visits ${SWEEP_COUNT} presets of alternating stop counts (${sweepOrder.length})`);
+  // Mutations are classified by WHERE they land. The list's BODY (rows + insert
+  // seams) is what flickered and must go completely still; the folded HEADER's own
+  // count text is expected to keep tracking the preview, because this control
+  // renders from app.state() — which blends it — exactly as the viewport and every
+  // other field do. That is feedback ("this preset has 12 stops"), not flicker, and
+  // it cannot move anything: .cat-header's height is a fixed token, asserted below.
+  await page.evaluate(() => {
+    window.__listChurn = { body: 0, header: 0, bodyLog: [], rowCounts: [], heights: [], headerHeights: [], previews: 0, swatchMoves: 0 };
+    const list = document.querySelector(".listfield");
+    // The HEADER ROW is the collapse button plus the Tooltip anchor wrapped around
+    // it (whose own tip text tracks the summary): one region, so its churn is
+    // counted as the header's rather than leaking into the body's tally.
+    const headerRow = list.querySelector(".cat-header").closest(".tt-anchor") ?? list.querySelector(".cat-header");
+    window.__listObs = new MutationObserver((recs) => {
+      const c = window.__listChurn;
+      for (const r of recs) {
+        const el = r.target.nodeType === Node.ELEMENT_NODE ? r.target : r.target.parentElement;
+        if (el && headerRow.contains(el)) c.header++;
+        else {
+          c.body++;
+          if (c.bodyLog.length < 4) c.bodyLog.push(`${r.type} on ${el?.tagName}.${el?.className} (${r.attributeName ?? ""})`);
+        }
+      }
+    });
+    window.__listObs.observe(list, { subtree: true, childList: true, attributes: true, characterData: true });
+  });
+  for (const index of sweepOrder) {
+    // Scroll the tile into view and read its position AFTER that scroll, so the
+    // before/after pair brackets the HOVER alone — the probe's own scrolling must
+    // not be counted as the app moving the tile.
+    const t = await jsonEval((i) => {
+      const s = document.querySelectorAll(".gradient-swatch")[i];
+      s.scrollIntoView({ block: "nearest" });
+      const r = s.getBoundingClientRect();
+      return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), top: Math.round(r.top) });
+    }, index);
+    await page.mouse.move(t.x, t.y);
+    await settle(140);
+    await page.evaluate((i, id, before) => {
+      const app = window.__powerrp_app;
+      const c = window.__listChurn;
+      const s = document.querySelectorAll(".gradient-swatch")[i];
+      const list = document.querySelector(".listfield");
+      c.rowCounts.push(document.querySelectorAll(".listfield .list-el").length);
+      c.heights.push(Math.round(list.getBoundingClientRect().height));
+      c.headerHeights.push(Math.round(list.querySelector(".cat-header").getBoundingClientRect().height));
+      if (Math.round(s.getBoundingClientRect().top) !== before.top) c.swatchMoves++;
+      // THE PREVIEW MUST STILL HAPPEN: folding the list must not break the very
+      // thing the fold exists to make watchable. A staged whole-list ARRAY at the
+      // stops path with the SWATCH's own stop count is the proof.
+      const staged = app.previewDelta?.items?.[id]?.fill?.linear?.stops;
+      const want = (s.style.getPropertyValue("--gp-swatch").match(/%/g) ?? []).length;
+      if (staged && Object.keys(staged).length === want) c.previews++;
+    }, index, rectId, t);
+  }
+  {
+    const churn = await jsonEval(() => {
+      const c = window.__listChurn;
+      window.__listObs.disconnect();
+      const steps = (a) => a.filter((v, i) => i > 0 && v !== a[i - 1]).length;
+      return JSON.stringify({
+        body: c.body, header: c.header, bodyLog: c.bodyLog, previews: c.previews, swatchMoves: c.swatchMoves,
+        rowSteps: steps(c.rowCounts), heightSteps: steps(c.heights), headerHeightSteps: steps(c.headerHeights),
+        rows: [...new Set(c.rowCounts)],
+      });
+    });
+    console.log(`  sweep of ${SWEEP_COUNT} presets → ${JSON.stringify(churn)}`);
+    ok(churn.previews === SWEEP_COUNT,
+      `HOVER-PREVIEW STILL WORKS FOR EVERY PRESET while the list is folded (${churn.previews}/${SWEEP_COUNT} staged the swatch's own stop list)`);
+    ok(churn.rowSteps === 0 && churn.rows.length === 1 && churn.rows[0] === 0,
+      `ZERO row churn across the sweep — pre-fix the row count swung 2⇄12 on every hover (rowSteps ${churn.rowSteps}, counts ${JSON.stringify(churn.rows)})`);
+    ok(churn.heightSteps === 0,
+      `ZERO list-height changes across the sweep — pre-fix there were 13 of 13 (got ${churn.heightSteps})`);
+    ok(churn.swatchMoves === 0,
+      `the swatch being hovered never MOVED during its own hover (${churn.swatchMoves} of ${SWEEP_COUNT} moved)`);
+    ok(churn.body === 0,
+      `ZERO DOM mutations in the list's BODY across the sweep — pre-fix 768 (got ${churn.body}${churn.body ? `: ${JSON.stringify(churn.bodyLog)}` : ""})`);
+    ok(churn.header > 0 && churn.headerHeightSteps === 0,
+      `the folded header's count still TRACKS the preview (${churn.header} text updates) at a fixed height, so it informs without moving anything (${churn.headerHeightSteps} height changes)`);
+  }
+
+  // THE USER'S OWN CHOICE IS SEPARATE STATE: this list was OPEN before the library
+  // opened, so closing the library must open it again.
+  await page.keyboard.press("Escape");
+  await settle(300);
+  ok(await rowCount() === 5, `closing the library restores the list the user had OPEN (${await rowCount()} rows)`);
+  ok((await headerState()).disabled === false, "and the header takes clicks again");
+
+  // …and a list the user had FOLDED stays folded, rather than being reopened by
+  // the library's own fold ending. Two states, never merged.
+  await clickHeader();
+  await settle(150);
+  ok(await rowCount() === 0, "the user folds the stop list themselves");
+  await page.evaluate(() => document.querySelector(".gradient-presets-toggle").click());
+  await settle(300);
+  ok(await rowCount() === 0, "opening the library over an already-folded list changes nothing visible");
+  await page.keyboard.press("Escape");
+  await settle(300);
+  ok(await rowCount() === 0, "closing it leaves the user's OWN fold intact (suppression did not eat the preference)");
+  ok((await collapseSetting())["fill.linear.stops"] === true,
+    `the stop list's fold is keyed separately from the polygon's (${JSON.stringify(await collapseSetting())})`);
+  await clickHeader();
+  await settle(150);
+
+  // PICKING a preset: one undo unit, and the list comes back showing the new stops.
+  await page.evaluate(() => document.querySelector(".gradient-presets-toggle").click());
+  await settle(300);
+  await oneUndoUnit("gradient preset pick", async () => {
+    await page.evaluate(() => document.querySelectorAll(".gradient-swatch")[0].click());
+  });
+  await settle(250);
+  ok(await page.evaluate(() => !document.querySelector(".gradient-presets-body")), "picking a preset closes the library");
+  ok(await rowCount() > 0, `and the stop list is showing the picked preset's stops again (${await rowCount()} rows)`);
+  await shotOfList("gradient_after_preset_pick");
+
+  // SINGULAR: a one-element list reads "1 point", not "1 points". Last, because it
+  // leaves the polygon a ghost — nothing is rendered or compared after this.
+  await page.evaluate((id) => {
+    const app = window.__powerrp_app;
+    app.selection = id;
+    app.setPreview([[["items", id, "points"], [[0, 0]]], [["items", id, "pointsActive"], [true]]]);
+    app.commitPreview();
+  }, polyId);
+  await settle(300);
+  ok(await headerText() === "1 point", `a one-element list is singular (got ${JSON.stringify(await headerText())})`);
 
   ok(liveErrors.length === 0, `zero console errors during all interactions (${JSON.stringify(liveErrors)})`);
 

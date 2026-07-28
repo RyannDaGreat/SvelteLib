@@ -45,6 +45,7 @@
 
 import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
+import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -914,6 +915,18 @@ export const PROPS = {
   // fed: a frame is now decoded live at the video's own resolution by the scrub
   // path, so there is no extraction resolution left to choose.
   vertical: { label: "Vertical", kind: "boolean", category: "formatting", default: false, help: "Lay the frames top-to-bottom in a vertical strip instead of left-to-right. The frames stay upright either way." },
+  // The PERFORATION FAMILY — the film gauge + sprocket-hole geometry, keyed by the axis
+  // that actually determines it (negative vs print, and gauge), NOT by manufacturer. Its
+  // options and their PUBLISHED millimetre dimensions live in ONE data table,
+  // plugins/filmstrip.js PERF_FAMILIES; the row's `options` are that table's keys, so
+  // adding a family is one data entry and never an edit here. A `select`, because the
+  // families are named specifications rather than a continuum.
+  perfFamily: {
+    label: "Perforations", kind: "select", category: "formatting",
+    options: PERF_FAMILY_IDS,
+    optionLabels: PERF_FAMILY_LABELS,
+    help: "Which film gauge and sprocket-hole specification the strip is drawn to. The hole size, corner radius and spacing come from the family's published millimetre dimensions scaled to the strip's width, so a 16 mm strip really does read as coarser than a 35 mm one.",
+  },
   filmColor: { label: "Film color", kind: "color", category: "formatting", default: "#000000", help: "The color of the film base the frames sit on — the strip and its sprocket-hole bands. Classic film is black." },
 
   // ── filmstrip: the SAMPLED WINDOW into the clip ───────────────────────────────
@@ -929,8 +942,8 @@ export const PROPS = {
   // (plugins/video_scrub.js). Default 0 (an honest "not told yet"), which collapses
   // every frame's default time onto `videoStart`; the widget SAYS so in-widget rather
   // than inventing a length.
-  videoStart: { label: "Video start (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", help: "The time in the clip the first sampled frame comes from, in seconds. Raise it to skip a slate or a fade-in." },
-  videoEnd: { label: "Video end (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", help: "The time in the clip the sampled span ends at, in seconds — normally the clip's length. Every frame's default time is an equation across start→end, so this one number spreads the whole strip. Left 0 the span is empty and all frames show the start (the real duration is only known once the video decodes, so it is a value you provide)." },
+  videoStart: { label: "Video start (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", default: 0, help: "The time in the clip the first sampled frame comes from, in seconds. Raise it to skip a slate or a fade-in." },
+  videoEnd: { label: "Video end (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", default: 0, help: "The time in the clip the sampled span ends at, in seconds — normally the clip's length. Every frame's default time is an equation across start→end, so this one number spreads the whole strip. Left 0 the span is empty and all frames show the start (the real duration is only known once the video decodes, so it is a value you provide)." },
 
   // ── filmstrip: THE FRAME LIST (a LIST property — core/lists.js) ────────────────
   // `frames` used to be a COUNT (a number) that a server endpoint turned into N

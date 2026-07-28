@@ -36,10 +36,16 @@
  * (equations are already numbers by emit time). The raster backend PARKS a
  * paused decoder at that time and AWAITS the decoded frame before compositing
  * (render_gpu/gpu/video_registry.requestScrubFrame):
- *   - LIVE (editor/presenter): the sync paint draws NOTHING for a not-yet-decoded
- *     frame and repaints when the seek lands (video_registry.notify → the
- *     reactive canvas's onVideoFrame nudge) — the image pipeline's async contract
- *     applied to seeks.
+ *   - LIVE (editor/presenter): the sync paint draws the source's most recently
+ *     DECODED frame — the HOLD — while the requested one is still in flight, and
+ *     snaps to the exact frame when the seek lands (video_registry.notify → the
+ *     reactive canvas's onVideoFrame nudge). Drawing NOTHING there instead was the
+ *     reported FLICKER: blank, frame, blank, frame as the decoder chased the
+ *     pointer (measured — 153 of 154 captured frames of a 2 s scrub were blank).
+ *     A few milliseconds of a stale frame of the SAME clip beats a hole, and the
+ *     hold is keyed on the SOURCE, so it can never show a previous video's
+ *     picture. Live requests also COALESCE latest-wins, so the decoder always
+ *     works on the time being asked for now. See video_registry's scrubber section.
  *   - HEADLESS one-shot (thumbnails / PNG export / the puppeteer render hook via
  *     web/gpuService.js): the pixel path AWAITS every scrub frame BEFORE painting
  *     (browser_media.prepareSceneScrubFrames), so its output is reproducible.

@@ -337,9 +337,18 @@ export function scenes() {
     s("filmstrip-look", (() => {
       const W = 320, H = 96;
       const world = { x: 40, y: 100, rotation: 0, scale: 1 };
+      // The frames are `videoV5Frame` SCRUB ops now (the widget's frames are decoded
+      // live from `src` at four times across the videoStart→videoEnd span, replacing
+      // the server-fetched stills the `frameUrls` state key used to hold). Those ops
+      // are in NEITHER backend's vector set, so each takes the general RASTER fallback
+      // (pdf_backend.emitRasterOp / svg_backend.emitRasterOpSVG) through the shared
+      // rasterize seam — which is exactly the hybrid-rule behaviour this scene should
+      // pin for a scrub op. The BANDS + the whole-strip and per-cell rounded clips are
+      // still the vector geometry under test, and `videoEnd` is set so the widget's
+      // empty-span hint (a text op) stays out of the comparison.
       const state = {
-        ...filmstripPlugin.defaults, w: W, h: H, frames: 4,
-        src: "clip.mp4", frameUrls: [CHECKER_PNG_DATA_URI, CHECKER_PNG_DATA_URI, CHECKER_PNG_DATA_URI, CHECKER_PNG_DATA_URI],
+        ...filmstripPlugin.defaults, w: W, h: H,
+        src: STILL_VIDEO_MP4_DATA_URI, videoStart: 0, videoEnd: 4, frames: [[0], [1], [2], [3]],
         filmColor: "#303038", stroke: "#808080", strokeWidth: 0, opacity: 1,
       };
       return [
@@ -348,7 +357,7 @@ export function scenes() {
         ...filmstripPlugin.emit(state, null, world),
         popTransform(),
       ];
-    })(), 28), // measured 32.43 dB (2026-07-15 run) — triangulated-polygon bands + per-cell rounded-clip images (donut/cropbox parity class); floor = measured − ~4.4 dB (the image/cropbox measured-to-floor margin) for AA headroom. PENDING USER RATIFICATION
+    })(), 28, { video: { ref: STILL_VIDEO_MP4_DATA_URI, frameSrc: STILL_VIDEO_FRAME_DATA_URI } }), // floor carried over from the 32.43 dB measured on the pre-scrub (server-stills) form of this scene — the vector geometry is unchanged and the cells' raster path is the same class. RE-MEASURE PENDING (the frames now rasterize through the hybrid seam).
 
     // ── DONUT widget parity (SA1 — modifier-point substrate's first consumer) ─
     // Neither backend has a native ring/even-odd primitive (see

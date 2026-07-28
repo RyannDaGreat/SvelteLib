@@ -419,7 +419,12 @@
       <div class="ae-grid">
         {#each assets as a (a.name)}
           <div class="ae-cell">
-            <Tooltip text={`${a.name} (${a.kind}) — drag onto the canvas to insert at a point`}>
+            <!-- The tip names BOTH of the tile's gestures. Double-click-to-preview
+                 is deliberately NOT a shortcut-registry entry (that bar announces
+                 the canvas context), so this tip is the only thing that can teach
+                 it — and an unannounced double-click is exactly the defect the
+                 canvas half of this pass fixed. -->
+            <Tooltip text={`${a.name} (${a.kind}) — drag onto the canvas to insert at a point, or double-click to preview`}>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="ae-tile" draggable="true" ondragstart={(e) => onTileDragStart(e, a)}>
                 <!-- Generalized tile media + badge (manifest #25): image/video

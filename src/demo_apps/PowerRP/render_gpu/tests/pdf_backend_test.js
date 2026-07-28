@@ -214,7 +214,14 @@ for (const scene of scenes()) {
     // or blend widget raster / the add-blend below-split — every effect's
     // hybrid form embeds at least one image; render_gpu/pdf_backend
     // emitEffect). The Round-12D extension of this invariant.
-    const wantsImage = commandsDeep(scene.commands).some((c) => c.op === "blurBackdrop" || c.op === "image" || c.op === "video" || c.op === "effectSubtree");
+    // The SCRUB ops (`videoFrame` / `videoV5Frame` — a scrubber's, and now every
+    // filmstrip frame's, deterministic frame-at-time quad) are in NEITHER backend's
+    // vector set, so each one takes the GENERAL RASTER FALLBACK (emitRasterOp) and
+    // embeds its own region as an image XObject. That is the hybrid rule working as
+    // designed, so they belong in this invariant alongside the ops that always
+    // rasterize — omitting them made a scrub op look like a silent geometry drop.
+    const RASTERIZING_OPS = ["blurBackdrop", "image", "video", "videoFrame", "videoV5Frame", "effectSubtree"];
+    const wantsImage = commandsDeep(scene.commands).some((c) => RASTERIZING_OPS.includes(c.op));
     assert.equal(s.includes("/Subtype /Image"), wantsImage, `image XObject iff blur/image/video/effect op (${scene.name})`);
 
     const hasLens = scene.commands.some((c) => c.op === "magnifyBackdrop");

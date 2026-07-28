@@ -48,6 +48,7 @@ import {
   MIN_DRAWN_VERTICES, MIN_POLYGON_VERTICES, SHIFT_ANGLE_DIVISIONS,
   angleSnappedPoint, closeLoopIndex, polygonFromWorldPoints,
 } from "../plugins/polygon.js";
+import { MOUSE_DOUBLE_TOKEN } from "../core/shortcuts.js";
 import { currentStepIndex, validatedSteps } from "./creationSteps.js";
 
 /** The declared steps: ONE repeating click. */
@@ -147,15 +148,28 @@ export const POLYGON_CHAIN_HANDLER = {
   mode: {
     label: "Draw polygon",
     steps: POLYGON_STEPS,
-    // Registered inputs beyond the per-step click chip (which the generator emits
-    // from `steps`). Display-only: CanvasView's dblclick handler dispatches this
-    // one, exactly like the canvas's own pointer hints.
-    hints: [
-      { keys: ["mouse_left"], label: "Double-click to finish", hidden: true },
-    ],
+    // No inputs beyond the two finalize gestures below and the per-step click chip
+    // the generator emits from `steps`.
+    hints: [],
     // The DISPATCHABLE finalize key. Registered (through the generator) so it
     // both fires and reaches the HintBar — an unregistered Enter would not exist.
     finish: { keys: ["Enter"], label: "Finish shape" },
+    // THE FINALIZE GESTURE — the other half of "I hit enter to finalize or double
+    // click to finalize". Display-only: CanvasView's dblclick handler delivers it,
+    // and it consults THIS declaration, so a mode that does not name the gesture
+    // does not perform it (the telescopic rig does not, and must not: its finalize
+    // abandons an incomplete sequence, so a stray double-click there would discard
+    // the half-built rig, not finish it).
+    //
+    // This was declared on `mouse_left` and `hidden: true` — a SINGLE-click glyph on
+    // a double-click gesture, suppressed because on that token it collided with the
+    // step's real single-click chip. So the gesture the request explicitly asked for
+    // was, in practice, announced nowhere. core/shortcuts.js MOUSE_DOUBLE_TOKEN is
+    // what lets it be spelled correctly and therefore shown. Two visible chips both
+    // reading "Finish shape" is deliberate, and the same call the modal transform's
+    // two "Confirm" chips already make: distinct glyphs, distinct modalities, both
+    // genuinely fire, and hiding either would delete a real input from the bar.
+    finishGesture: { keys: [MOUSE_DOUBLE_TOKEN], label: "Finish shape" },
     /** Command (allocates). A fresh drawing session: no vertices, no live point,
      *  an OPEN loop until a click on the first vertex closes it. */
     begin() {

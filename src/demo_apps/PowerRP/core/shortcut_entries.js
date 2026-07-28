@@ -41,6 +41,14 @@
  *                        then "now drag where the magnified view goes" — instead of
  *                        showing one averaged chip for a flow that changes meaning
  *                        halfway through.
+ *   activation           the ACTIVATE handler id (web/widget_handlers.js) the
+ *                        SELECTED widget declares, or null — what a DOUBLE-CLICK
+ *                        on it would do. The axis exists because double-click was
+ *                        the app's one wholly undiscoverable input: seven distinct
+ *                        behaviours, all delivered by a DOM `dblclick`, none of
+ *                        them ever on the bar. The user reported it on the case
+ *                        with no other affordance at all — "double clicking adds a
+ *                        new point but the shortcut area didnt mention that".
  *   modalActive          a live G/S modal transform locks input (Blender modal)
  *   snapEngaged          the live drag has an active snap correction
  *   textEditing / textEditingRich / latexEditing / codeEditing   in-place editors
@@ -52,10 +60,14 @@
  *   numericFieldBounded  that field has both a min and a max (so Home/End apply)
  */
 
-// NOTHING is imported here. core/ is the DOM-free foundation, so the drag-kind
-// vocabulary (web/canvas/dragKinds.js) and the widget-handler registry
+// NOTHING from web/ is imported here. core/ is the DOM-free foundation, so the
+// drag-kind vocabulary (web/canvas/dragKinds.js) and the widget-handler registry
 // (web/widget_handlers.js) are INJECTED by the caller rather than imported —
-// otherwise this module would reach up into web/ and invert the layering.
+// otherwise this module would reach up into web/ and invert the layering. The one
+// import is a core SIBLING: the double-click token, taken from the registry that
+// defines the vocabulary rather than re-spelled here, so there is exactly one
+// spelling of it across core, the plugins that declare it, and the icon map.
+import { MOUSE_DOUBLE_TOKEN } from "./shortcuts.js";
 
 // ── THE PREDICATE BASE, AND WHY IT EXISTS ───────────────────────────────────
 // Three rungs, each excluding exactly one class of takeover:
@@ -184,6 +196,41 @@ export const deselectable = (c) => editSelection(c) && !ESC_CANCELABLE_DRAG_KIND
  * @example handleDeselectable({mode: "edit", hasSelection: true, handlesSelected: true, dragKind: "modifier"}) // false
  */
 export const handleDeselectable = (c) => handlesSelected(c) && !ESC_CANCELABLE_DRAG_KINDS.includes(c.dragKind);
+/**
+ * Pure function. A DOUBLE-CLICK on the selected widget would run the activation
+ * `handlerId` (web/widget_handlers.js ACTIVATE_HANDLERS).
+ *
+ * Composed from `editMode`, not `editSelection`, on purpose in both directions:
+ *   - it must survive `handlesSelected`. The reported case IS a polygon with a
+ *     modifier point selected: double-clicking its outline still inserts a point,
+ *     so the editSelection exclusion that hands Backspace to the inner scope would
+ *     hide this chip exactly when the user is working on the points. Double-click
+ *     is not a contested key — no other reading of it exists at either scope.
+ *   - `editMode`'s own exclusions are the ones CanvasView's onDblClick states as
+ *     early returns (a live drag, a modal transform, a widget canvas mode), plus an
+ *     armed crosshair, where the bar narrates the placement gesture instead and the
+ *     mode/crosshair owns the pointer. `!c.dragging` mirrors the `drag` guard
+ *     directly, exactly as the "Select / drag" entry does.
+ * `hasSelection` is required rather than assumed: the axis is RESOLVED from the
+ * selected item's plugin, so the two always travel together — stating it keeps the
+ * predicate right on its own terms rather than right by luck (`handlesSelected`'s
+ * precedent).
+ *
+ * KNOWN BOUND, deliberately accepted. The gesture resolves against the widget under
+ * the POINTER; the chip is scoped to the SELECTED one. So double-clicking an
+ * unselected widget still activates it with nothing announced. Hover is the only
+ * axis that would close that, and it is the wrong trade: there is no widget-hover
+ * state in the app, the bar would re-derive on every mousemove, and it would be the
+ * one hover-scoped chip among ~90 selection- and gesture-scoped ones. Selection
+ * also matches how the gesture is actually reached — you click a widget to find out
+ * what it is, so the chip appears one gesture BEFORE it is wanted.
+ *
+ * @example // activatable("insert_point")({mode: "edit", hasSelection: true, activation: "insert_point"}) → true
+ * @example // activatable("insert_point")({mode: "edit", hasSelection: true, activation: "latex_edit"}) → false
+ * @example // activatable("insert_point")({mode: "edit", hasSelection: true, handlesSelected: true, activation: "insert_point"}) → true
+ * @example // activatable("insert_point")({mode: "edit", hasSelection: true, activation: "insert_point", dragging: true}) → false
+ */
+export const activatable = (handlerId) => (c) => editMode(c) && c.hasSelection && !c.dragging && c.activation === handlerId;
 /** Pure function. ANY crosshair skin is armed — the skin-agnostic half of `armed`,
  * used by the one entry (Escape → cancel) that means the same thing for every skin.
  * `!c.canvasMode`: a widget canvas mode OUTRANKS an armed crosshair, because
@@ -442,10 +489,11 @@ export function dragModifierContext(kind) {
  *   app                — the app instance the live entries drive (run closures)
  *   canvasModes        — web/widget_handlers.canvasModes() output
  *   dragKindModifiers  — web/canvas/dragKinds.js DRAG_KIND_MODIFIERS
+ *   activations        — web/widget_handlers.activations() output
  *
  * Returns: the entry array, ready for shortcuts.add() in order.
  */
-export function handShortcutEntries({ app, canvasModes, dragKindModifiers }) {
+export function handShortcutEntries({ app, canvasModes, dragKindModifiers, activations }) {
   // Loud cross-check (house idiom: core/properties.js BLEND_MODES ↔ LABELS): a
   // drag kind declaring a modifier this module has no wording for would silently
   // announce nothing, which is the exact defect the table exists to prevent.
@@ -468,6 +516,21 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers }) {
   for (const id of Object.keys(DRAG_MODIFIER_HINTS))
     if (!Object.values(dragKindModifiers).some((ids) => ids.includes(id)) && !stepModifierIds.includes(id))
       throw new Error(`shortcut_entries: DRAG_MODIFIER_HINTS declares "${id}" but no drag kind in DRAG_KIND_MODIFIERS and no creation-mode step reads it — an entry no gesture can ever satisfy.`);
+  // An ACTIVATION with no wording would put a BLANK chip on the bar — the whole
+  // reason double-click could be registered without inventing vocabulary is that
+  // every descriptor already carries a `label`, so a new one omitting it must fail
+  // loudly here rather than ship an empty chip (the DRAG_MODIFIER_HINTS check's
+  // twin, over the other table this file generates from).
+  for (const { handlerId, label } of activations)
+    if (!label)
+      throw new Error(`shortcut_entries: activate handler "${handlerId}" declares no \`label\`, but the double-click HintBar entry is generated from it — the bar would show an empty chip. Give the descriptor in web/widget_handlers.js a label naming what double-clicking the widget DOES.`);
+  // A mode's finalize GESTURE is delivered by CanvasView's dblclick handler and by
+  // nothing else, so a mode declaring it on any other token would announce a
+  // gesture the app never delivers — the mouse-shaped form of an unmatchable key
+  // token, caught at the same place validateShortcutKeys catches those.
+  for (const { handlerId, finishGesture } of canvasModes)
+    if (finishGesture && (finishGesture.keys.length !== 1 || finishGesture.keys[0] !== MOUSE_DOUBLE_TOKEN))
+      throw new Error(`shortcut_entries: creation mode "${handlerId}" declares finishGesture on ${JSON.stringify(finishGesture.keys)}, but the only gesture that finalizes a mode is the double-click CanvasView's dblclick handler delivers — declare ["${MOUSE_DOUBLE_TOKEN}"] or use \`finish\` for a KEY.`);
 
   return [
     { keys: ["Delete"], label: "Delete", hidden: true, when: editSelection, command: "delete-item" },
@@ -583,6 +646,29 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers }) {
     { keys: ["Backspace"], label: "Edit value", when: modalTransform, run: () => app.modalBackspace() },
     { keys: ["mouse_scroll"], label: "Pan", when: editMode },
     { keys: ["Ctrl", "mouse_scroll"], label: "Zoom", when: editMode },
+    // ── DOUBLE-CLICK, GENERATED PER ACTIVATION ──────────────────────────────
+    // WHAT DOUBLE-CLICK DOES IS THE WIDGET'S OWN BUSINESS (web/CanvasView's own
+    // words), and there are seven answers: add a point, edit the equation, edit the
+    // text, choose a source, open the widget's palette, explore its interior. Every
+    // one of them fired from a DOM `dblclick` and NONE of them was ever on the bar,
+    // so the app's least-guessable gesture was also its least documented — the
+    // reported defect, in the user's words: "double clicking adds a new point but
+    // the shortcut area didnt mention that it's not discoverable".
+    //
+    // DERIVED from web/widget_handlers.activations(), which is THE table CanvasView
+    // also resolves the behaviour through — one table, two readers, the construction
+    // that fixed the multiresize defect. A new activation therefore cannot ship a
+    // behaviour with no chip (this generator sees it) or a chip with no behaviour
+    // (handlerFor resolves the same list), and it costs no edit to this file.
+    //
+    // DISPLAY-ONLY, and structurally so: the main key is a mouse token, which
+    // dispatch() can never match, and core/shortcuts.add() now THROWS on a gesture
+    // entry that claims otherwise. The pointer code owns delivery, exactly as it
+    // does for "Select / drag", the wheel's Pan/Zoom, every drag modifier and every
+    // creation step's chip.
+    ...activations.map(({ handlerId, label }) => ({
+      keys: [MOUSE_DOUBLE_TOKEN], label, when: activatable(handlerId),
+    })),
     // PRESENT-MODE keys (Round 18 audit INV5). DISPLAY-ONLY: PresentMode.svelte
     // owns the actual dispatch via its own CAPTURE-phase window listener (it
     // stopPropagation()s to claim these keys during the fullscreen takeover and
@@ -700,7 +786,7 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers }) {
     // step reads. Both are scoped by inCanvasStep, so step 2's wording cannot show
     // during step 1 — which is also what keeps two "box" steps from putting two
     // different labels on mouse_left in one context.
-    ...canvasModes.flatMap(({ handlerId, label, hints, steps, finish }) => [
+    ...canvasModes.flatMap(({ handlerId, label, hints, steps, finish, finishGesture }) => [
       ...hints.map((h) => ({ ...h, when: inCanvasMode(handlerId) })),
       ...steps.flatMap((s, i) => [
         { keys: ["mouse_left"], label: s.hint, when: inCanvasStep(handlerId, i) },
@@ -710,6 +796,15 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers }) {
       // unbounded, so only the user knows when it is done; a fixed-length sequence
       // finalizes itself and declares no key).
       ...(finish ? [{ ...finish, when: inCanvasMode(handlerId), run: () => app.finishCanvasMode() }] : []),
+      // The finalize GESTURE of a mode that has one — the second of the two the
+      // request names ("I hit enter to finalize or double click to finalize").
+      // DISPLAY-ONLY: CanvasView's dblclick handler delivers it, and it now
+      // consults this same declaration instead of finalizing any live creation
+      // unconditionally, so the chip and the behaviour are one fact. VISIBLE, where
+      // its predecessor had to be hidden: declared on `mouse_left`, it collided
+      // with the step's real single-click chip and would have shown two meanings on
+      // one combo, so it was suppressed and the gesture went unannounced entirely.
+      ...(finishGesture ? [{ ...finishGesture, when: inCanvasMode(handlerId) }] : []),
       { keys: ["Escape"], label: `Exit ${label.toLowerCase()}`, when: inCanvasMode(handlerId), run: () => app.exitCanvasMode() },
     ]),
   ];
@@ -722,6 +817,11 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers }) {
  * a time is enough because no entry ANDs two unrelated positive flags — and if one
  * ever does, it must add its combination here, which is the same "declare the
  * context you need" discipline the predicates themselves follow.
+ *
+ * The `activation` combinations are NOT here: they are DERIVED from the ACTIVATE
+ * handler registry and appended by hintProbeContexts, because a hand-written list of
+ * handler ids would be the same mirror-of-another-module's-shape that made the
+ * multiresize defect invisible.
  */
 export const HINT_PROBE_FLAGS = Object.freeze([
   {},
@@ -767,22 +867,32 @@ export const HINT_PROBE_CROSSHAIRS = Object.freeze([null, "band", "place"]);
  *
  * EVERY axis value list is DERIVED, never hand-written: `dragKinds` comes from
  * web/canvas/dragKinds.js DRAG_KINDS (whose setter guard makes an unlisted kind
- * unassignable), `canvasModeIds` from the widget handler registry, and
+ * unassignable), `canvasModeIds` from the widget handler registry,
  * `canvasModeSteps` from the step lists those modes declare (so a mode that grows a
- * third step gets that step probed without editing anything here). The
- * hand-maintained version of this list is what made the multiresize defect
- * invisible — it listed a kind nothing assigned and omitted the one that mattered.
+ * third step gets that step probed without editing anything here), and
+ * `activationIds` from the ACTIVATE handler registry. The hand-maintained version of
+ * this list is what made the multiresize defect invisible — it listed a kind nothing
+ * assigned and omitted the one that mattered.
  *
- * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], app: {}}).length // 114
+ * `activationIds` joins the FLAG axis rather than becoming a seventh nested loop:
+ * an activation is resolved from the SELECTED item, so it co-occurs with exactly one
+ * other flag and is orthogonal to every loop axis. Crossing it as a loop would
+ * multiply the whole grid by the handler count to reach the same reachable states.
+ *
+ * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length // 114
+ * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: ["insert_point"], app: {}}).length // 120
  */
-export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, app }) {
+export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, activationIds, app }) {
+  // One extra flag set per activation: the selected widget declares it. Derived, so
+  // a new activate handler is probed with no edit here.
+  const flagSets = [...HINT_PROBE_FLAGS, ...activationIds.map((id) => ({ hasSelection: true, activation: id }))];
   const out = [];
   for (const mode of HINT_PROBE_MODES)
     for (const dragKind of [null, ...dragKinds])
       for (const crosshairArmed of HINT_PROBE_CROSSHAIRS)
         for (const canvasMode of canvasModeIds)
           for (const canvasModeStep of canvasModeSteps)
-            for (const flags of HINT_PROBE_FLAGS)
+            for (const flags of flagSets)
               out.push({
                 mode, dragKind, crosshairArmed, canvasMode, canvasModeStep,
                 paletteOpen: false, hasSelection: false, handlesSelected: false, dragging: false, modalActive: false,
@@ -790,7 +900,13 @@ export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, a
                 latexEditing: false, codeEditing: false,
                 typingTarget: false, dialogOpen: false,
                 numericField: null, numericFieldBounded: false,
+                activation: null,
                 ...flags,
+                // THE SAME KIND OF APP INVARIANT as `dragging` below: App.svelte
+                // resolves `activation` from the SELECTED item's plugin, so a
+                // non-null activation always means there is a selection. Modelling
+                // it keeps the grid describing states the user can be in.
+                hasSelection: flags.activation != null || !!flags.hasSelection,
                 // AN APP INVARIANT, not a convenience: CanvasView sets `dragging` and
                 // `dragKind` together and clears them together, so a non-null
                 // dragKind ALWAYS means a live gesture. Modelling it here keeps the

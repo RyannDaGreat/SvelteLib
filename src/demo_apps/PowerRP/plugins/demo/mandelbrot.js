@@ -24,6 +24,12 @@
  * a chosen exponent give about 32 significant digits, and every one of them
  * keyframes, tweens and accepts a `= …` equation like any other knob.
  *
+ * THOSE 32 DIGITS ARE ALL THERE ARE, AT ANY EXPONENT — the pair carries 2·53 bits
+ * however it is scaled — which is why `fineExponent` has a DERIVED ceiling
+ * (MANDELBROT_MAX_FINE_EXPONENT, 16: the first decade the coarse leaf cannot name).
+ * Past it the resolution is flat and measured flat, while the fine slot's own value
+ * grows by a decade a step until an ordinary pan overflows the exact-decimal sum.
+ *
  * TO ANIMATE A ZOOM, TWEEN `zoomExponent` — linearly, for a constant-rate zoom
  * (the half-width is 10^(-zoomExponent)). Nobody tweens a 32-digit coordinate;
  * they hold the centre still and change the magnification. TO ANIMATE THE
@@ -72,7 +78,8 @@ import { UNIT_SPAN_SCRUB, bundle, customProps, defaults, props } from "../../cor
 import { reportOnce } from "../../core/report.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import {
-  MANDELBROT_AXIS_CODE, MANDELBROT_ESCAPE_RADIUS, MANDELBROT_MAX_ITERATIONS, MANDELBROT_REF_LEN,
+  MANDELBROT_AXIS_CODE, MANDELBROT_ESCAPE_RADIUS, MANDELBROT_MAX_FINE_EXPONENT, MANDELBROT_MAX_ITERATIONS,
+  MANDELBROT_REF_LEN,
   bakeMandelbrotPalette, bitsForDepth, centreResolutionDecades, referenceOrbit, scaledDecimal, splitCentreFixed,
 } from "../../render_gpu/skia/mandelbrot_shader.js";
 
@@ -258,6 +265,31 @@ export function approxCentre(coarse, fine, fineExponent) {
  *  @example fineExponentOf({}) // 0 */
 function fineExponentOf(s) {
   return Math.max(0, Math.round(s.fineExponent ?? 0));
+}
+
+/**
+ * Pure function. Whether the COARSE leaf can hold a centre delta by itself — the
+ * question interiorView.writes asks before choosing which leaf a pan lands in.
+ *
+ * `Number.EPSILON` IS 2^-52, the relative spacing of float64, so EPSILON·|centre| is
+ * an upper bound on ulp(centre): a delta at least that big is representable in the
+ * coarse leaf, and one smaller than it must go to the fine leaf — where it is then
+ * bounded by EPSILON·|centre|·10^fineExponent, which at the ceiling and |c| ≤ 2 is
+ * 4.4, so the fine slot cannot grow. A centre of exactly 0 has no leading digits to
+ * protect and its coarse leaf holds any delta EXACTLY (float64's exponent range does
+ * the work a fine slot would do badly — a fine value of 1e-14 keeps only four digits
+ * through splitCentreFixed's 18-place truncation), so it answers true.
+ *
+ * @param {number} centre - the axis's current absolute coordinate
+ * @param {number} delta - the centre delta a gesture asks for
+ * @returns {boolean}
+ *
+ * @example coarseLeafHolds(-0.7435669, 1e-3) // true
+ * @example coarseLeafHolds(-0.7435669, 1e-30) // false (far below the float64 spacing there)
+ * @example coarseLeafHolds(0, 1e-30) // true (a coordinate near zero needs no fine slot)
+ */
+function coarseLeafHolds(centre, delta) {
+  return Math.abs(delta) >= Number.EPSILON * Math.abs(centre);
 }
 
 /** Pure function. The view's complex half-width, 10^(-zoomExponent) — emit()'s
@@ -563,8 +595,8 @@ const CUSTOM = customProps([
   { name: "centerY", kind: "number", default: 0.1314023, label: "Centre Y", help: "Imaginary part of the view centre — the leading digits." },
   { name: "centerFineX", kind: "number", default: 0, label: "Centre X fine", help: "Extra precision for Centre X, in units of 10^(-Fine exponent). The true centre is Centre X + Centre X fine x 10^(-Fine exponent), summed in exact decimal arithmetic — two plain numbers give about 32 significant digits, which is what makes a deep centre keyframable at all." },
   { name: "centerFineY", kind: "number", default: 0, label: "Centre Y fine", help: "Extra precision for Centre Y, in units of 10^(-Fine exponent)." },
-  { name: "fineExponent", kind: "number", default: 0, min: 0, max: 80, step: 1, label: "Fine exponent", help: "Decimal exponent of the fine centre offsets: 0 turns the fine part off entirely, 16 continues the coordinate right where the coarse number's digits run out. AT 0 THE CENTRE ONLY RESOLVES TO ABOUT 1e-17, so any zoom deeper than that needs this set (the widget reports it out loud if you forget). Cannot exceed 80." },
-  { name: "zoomExponent", kind: "number", default: 2.9416, min: MIN_ZOOM_EXPONENT, label: "Zoom exponent", help: "Magnification: the view's half-width is 10^(-Zoom exponent), so 3 is a 1e-3 window and 30 is a 1e-30 one; NEGATIVE values zoom OUT (the whole set needs about -0.2, a half-width of 1.6). TWEEN THIS, LINEARLY, for a constant-rate zoom — it is the one property a zoom animation should touch. Past 1e-17 you must also set Fine exponent, or the centre quantizes. Verified with real structure to about 1e-11; deeper than that the reference orbit that rides to the GPU may be too short for the depth (its length is fixed by how much uniform space a graphics card is guaranteed to have), and the way that shows up is a FLAT frame rather than a noisy one." },
+  { name: "fineExponent", kind: "number", default: 0, min: 0, max: MANDELBROT_MAX_FINE_EXPONENT, step: 1, label: "Fine exponent", help: `Decimal exponent of the fine centre offsets: 0 turns the fine part off entirely, ${MANDELBROT_MAX_FINE_EXPONENT} continues the coordinate right where the coarse number's digits run out. AT 0 THE CENTRE ONLY RESOLVES TO ABOUT 1e-${centreResolutionDecades(0)}, so any zoom deeper than that needs this set (the widget reports it out loud if you forget). ${MANDELBROT_MAX_FINE_EXPONENT} IS ALSO THE CEILING, and not as a matter of taste: two plain numbers resolve about 1e-33 however this is set (measured), so a larger exponent is the same precision written with a bigger fine value — and a fine value that big overflows the exact-decimal sum on an ordinary pan.` },
+  { name: "zoomExponent", kind: "number", default: 2.9416, min: MIN_ZOOM_EXPONENT, label: "Zoom exponent", help: `Magnification: the view's half-width is 10^(-Zoom exponent), so 3 is a 1e-3 window and 30 is a 1e-30 one; NEGATIVE values zoom OUT (the whole set needs about -0.2, a half-width of 1.6). TWEEN THIS, LINEARLY, for a constant-rate zoom — it is the one property a zoom animation should touch. Past 1e-${centreResolutionDecades(0)} you must also set Fine exponent, or the centre quantizes; with it set the split centre reaches about 1e-${centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT)} and no deeper. Verified with real structure to about 1e-11; deeper than that the reference orbit that rides to the GPU may be too short for the depth (its length is fixed by how much uniform space a graphics card is guaranteed to have), and the way that shows up is a FLAT frame rather than a noisy one.` },
   // ── HOW HARD (the speed knobs) ───────────────────────────────────────────────
   { name: "maxIterations", kind: "number", default: 900, min: 1, max: MANDELBROT_MAX_ITERATIONS, step: 1, label: "Max iterations", help: `The iteration BUDGET, and it is NOT a smooth quality dial — this is the knob whose behaviour surprises people. A pixel that neither escapes nor is certified interior by the budget is painted the INTERIOR COLOUR, so a view set too low does not go blurry, it goes BLACK, and the black looks exactly like real set. Measured: at 0.3x the needed budget the whole-set view costs 1.25x less and the 1e-10.5 view goes 100% black, because at depth the whole frame escapes within a few iterations of each other. So set it to what the PLACE needs and leave it — each Location preset carries a measured value. Cost is what is left over: it is close to linear in the iterations a pixel ACTUALLY runs, which is far below this ceiling wherever most of the frame escapes early (measured 30 per pixel on the whole set at a budget of 2048, against 504 at 1e-10.5). There is deliberately no automatic value: demand follows the local structure, not the zoom. Capped at ${MANDELBROT_MAX_ITERATIONS}, twice the ${MANDELBROT_REF_LEN}-point reference orbit — as far past the reference as reusing it has been measured to hold up.` },
   { name: "interiorTest", kind: "select", options: INTERIOR_OPTIONS, optionLabels: INTERIOR_LABELS, default: "derivative", label: "Interior test", help: "How points INSIDE the set are recognised early. The derivative certificate watches the product of 2z along the orbit: it collapses toward zero for a point captured by a cycle, which proves the point is interior long before Max iterations. Measured on the whole-set view: 4.3x faster (608 ms against 2638 ms) with pixel-identical results — 14.6% interior either way, so no wrongly-filled pixels. It saves nothing on a view with no interior in frame (measured 1.00x on the seahorse tail), because there is nothing to certify. Turn it off only to check it against a brute-force render." },
@@ -981,34 +1013,61 @@ export const mandelbrotPlugin = {
       return { x: approxCentre(s.centerX, s.centerFineX, fe) - halfW, y: approxCentre(s.centerY, s.centerFineY, fe) - halfH, w: 2 * halfW, h: 2 * halfH };
     },
     /**
-     * Pure function. A new window → the keyframable writes that store it. At
-     * fineExponent > 0 the centre delta goes into the FINE slots and the coarse
-     * digits are left ALONE — that is the whole point of the split centre, and it
-     * is what stops a drag from flattening a typed 32-digit coordinate to float64.
-     * The zoom is inverted from the window's own half-width and clamped at
-     * MIN_ZOOM_EXPONENT, the same floor the Inspector row enforces.
+     * Pure function. A new window → the keyframable writes that store it. EACH AXIS
+     * SENDS ITS DELTA TO THE LEAF THAT CAN HOLD IT: the FINE slot when the coarse
+     * leaf cannot resolve the delta (coarseLeafHolds), the coarse leaf when it can —
+     * and the other leaf is left ALONE either way, so a typed 32-digit coordinate
+     * keeps its deep digits through a drag. The zoom is inverted from the window's
+     * own half-width and clamped at MIN_ZOOM_EXPONENT, the same floor the Inspector
+     * row enforces.
+     *
+     * WHY THE ROUTE IS A CONDITION AND NOT ALWAYS THE FINE SLOT — measured. This
+     * sent EVERY delta to the fine slot whenever `fineExponent > 0`, which scales it
+     * by 10^fineExponent with nothing relating the two, so a pan at a SHALLOW zoom
+     * with a large exponent stored wrote a fine value far outside its intended range:
+     * at the exponent ceiling the row used to declare (80), one 50-px wheel tick at
+     * the shallowest zoom wrote 1.9e80 (a full-frame pan, 2e81) and the next render
+     * threw from inside scaledDecimal, which — inside CanvasView's render $effect —
+     * froze the editor. MANDELBROT_MAX_FINE_EXPONENT bounds that
+     * write to 4e16 for any legitimate view; the route is what makes the fine slot's
+     * growth IMPOSSIBLE rather than merely slow (unrouted, at the ceiling, 1e5
+     * complex units of panning — 25 000 whole-set diameters — still reaches the wall).
+     *
+     * AND THE ROUTE COSTS NOTHING, which is the measurement that matters: `window`
+     * builds the window from approxCentre, a FLOAT64 sum, so the delta this function
+     * sees is a difference of two float64s near |c| — either exactly 0 or at least
+     * one ulp of the centre. Measured on a 520-px box, a 50-px wheel tick arrives as
+     * 2.2e-16 at zoomExponent 15 and as EXACTLY 0 at 16 and deeper. So every delta
+     * the fine slot ever received was one the coarse leaf could hold, and the deltas
+     * the coarse leaf cannot hold arrive as zero: the depth of an interior PAN is
+     * bounded at about 1e-16 by the float64 window, whatever the fine exponent says.
+     * Lifting that bound means carrying the interior window itself in the split
+     * representation, which is a change to the interiorView contract, not to this
+     * function — and until it happens the fine slot is written by the toolbar's typed
+     * coordinate (parseSplitCentre), the Inspector and the tween, never by a pan.
      *
      * @param {object} s - folded item state (the window is re-derived from it)
      * @param {{x: number, y: number, w: number, h: number}} win - the new complex window
      * @returns {object} a flat {stateKey: value} map of keyframable leaves
      *
      * @example mandelbrotPlugin.interiorView.writes({centerX: 0, centerY: 0, zoomExponent: 0, w: 200, h: 100}, {x: 0.9, y: -0.05, w: 0.2, h: 0.1}) // {zoomExponent: 1, centerX: 1, centerY: 0} (zoomed ten-fold onto c = 1)
-     * @example mandelbrotPlugin.interiorView.writes({centerX: 0, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent: 2, zoomExponent: 1, w: 100, h: 100}, {x: 0.4, y: -0.1, w: 0.2, h: 0.2}) // {zoomExponent: 1, centerFineX: 50, centerFineY: 0} (NO centerX key — the coarse digits are untouched)
+     * @example mandelbrotPlugin.interiorView.writes({centerX: 0, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent: 2, zoomExponent: 1, w: 100, h: 100}, {x: 0.4, y: -0.1, w: 0.2, h: 0.2}) // {zoomExponent: 1, centerX: 0.5, centerY: 0} (a 0.5 pan is nothing like fine: the coarse leaf holds it exactly)
+     * @example mandelbrotPlugin.interiorView.writes({centerX: -0.7435669, centerY: 0.1314023, centerFineX: 3, centerFineY: 0, fineExponent: 16, zoomExponent: 2, w: 100, h: 100}, {x: -0.7435668999999997, y: 0.1214023, w: 0.02, h: 0.02}) // {zoomExponent: 2, centerX: -0.7335669, centerFineY: 0} (a 0.01 pan: coarse takes it and centerFineX's 3e-16 is left alone, so the sum stays exact)
+     * @example mandelbrotPlugin.interiorView.writes({centerX: -0.7435669, centerY: 0.1314023, centerFineX: 3, centerFineY: 0, fineExponent: 16, zoomExponent: 2, w: 100, h: 100}, {x: -0.7535668999999997, y: 0.1214023, w: 0.02, h: 0.02}) // {zoomExponent: 2, centerFineX: 3, centerFineY: 0} (an UNMOVED window: both axes stay in the fine leaf — this is the set equationBoundInteriorProps reads)
      */
     writes(s, win) {
       const fe = fineExponentOf(s);
       const old = mandelbrotPlugin.interiorView.window(s);
       const dx = (win.x + win.w / 2) - (old.x + old.w / 2);
       const dy = (win.y + win.h / 2) - (old.y + old.h / 2);
+      const unit = Math.pow(10, fe);
       const out = { zoomExponent: clampedZoomExponent(-Math.log10(win.w / 2)) };
-      if (fe > 0) {
-        const unit = Math.pow(10, fe);
+      if (fe > 0 && !coarseLeafHolds(approxCentre(s.centerX, s.centerFineX, fe), dx))
         out.centerFineX = (s.centerFineX ?? 0) + dx * unit;
+      else out.centerX = (s.centerX ?? 0) + dx;
+      if (fe > 0 && !coarseLeafHolds(approxCentre(s.centerY, s.centerFineY, fe), dy))
         out.centerFineY = (s.centerFineY ?? 0) + dy * unit;
-      } else {
-        out.centerX = (s.centerX ?? 0) + dx;
-        out.centerY = (s.centerY ?? 0) + dy;
-      }
+      else out.centerY = (s.centerY ?? 0) + dy;
       return out;
     },
   },
@@ -1140,6 +1199,15 @@ export const mandelbrotPlugin = {
     // A zoom deeper than the split centre can resolve does not fail — it renders a
     // perfectly valid view of a QUANTIZED neighbour of the requested point, which
     // is exactly the kind of plausible-but-wrong result that must never be silent.
+    // A STORED fine exponent past the ceiling: a document written while the row
+    // offered 80. NOTHING IS REWRITTEN — the pair still names a real coordinate, and
+    // lowering the exponent alone would MOVE THE VIEW by 10^(fineExponent - ceiling)
+    // fine units, which is exactly the silent relocation this widget's tests exist to
+    // prevent (see MANDELBROT_MAX_FINE_EXPONENT). So it is said out loud, with the two
+    // consequences and the one migration that keeps the coordinate.
+    if (fineExponent > MANDELBROT_MAX_FINE_EXPONENT) {
+      reportOnce(`mandelbrot-fine-exponent-${fineExponent}`, `PowerRP mandelbrot: fine exponent ${fineExponent} is past the ${MANDELBROT_MAX_FINE_EXPONENT} two plain numbers can use — the centre resolves to about 1e-${centreResolutionDecades(fineExponent)} either way, and every fine-slot write scales its delta by 10^${fineExponent}, which passes the exact-decimal formatter's limit after only 1e${21 - fineExponent} complex units of panning. TO KEEP THIS COORDINATE: lower Fine exponent to ${MANDELBROT_MAX_FINE_EXPONENT}, then re-enter the coordinate in the floating bar. The exponent change alone MOVES THE VIEW (the fine offsets change units); a typed coordinate is re-split losslessly and puts it back.`);
+    }
     const resolvable = centreResolutionDecades(fineExponent);
     if ((s.zoomExponent ?? 0) > resolvable) {
       reportOnce(`mandelbrot-centre-resolution-${fineExponent}`, `PowerRP mandelbrot: zoom exponent ${s.zoomExponent} is deeper than the centre can resolve at fine exponent ${fineExponent} (good to about 1e-${resolvable}). The view is centred on a quantized neighbour of the requested point. Raise "Fine exponent" (16 is the usual deep-zoom setting) and move the extra digits into "Centre X/Y fine".`);

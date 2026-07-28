@@ -539,16 +539,23 @@ test("rp fuzzy + command registry + MRU + submenus", () => {
   cmds.add({ id: "a", title: "Distribute Horizontally", run: () => {} });
   cmds.add({ id: "b", title: "Distribute Vertically", run: () => {} });
   cmds.add({ id: "menu", title: "Sub Menu", children: [{ id: "child", title: "Child Thing", run: () => {} }] });
-  assert.equal(cmds.search("dis h", null)[0].id, "a");
-  assert.equal(cmds.search("", null, cmds.get("menu"))[0].id, "child"); // submenu pool
+  assert.equal(cmds.search("dis h")[0].id, "a");
+  assert.equal(cmds.search("", cmds.get("menu"))[0].id, "child"); // submenu pool
+  // POOL SCOPING IS ABSOLUTE: a submenu search sees ONLY that submenu's children,
+  // whatever their availability. `when` no longer filters here at all (it greys a
+  // row at the surfacing instead), so the pool choice is the only thing that
+  // decides WHICH entries are candidates.
+  cmds.add({ id: "gated", title: "Child Thing", when: () => false, requires: "r", run: () => {} });
+  assert.deepEqual(cmds.search("child thing", cmds.get("menu")).map((c) => c.id), ["child"]);
+  assert.ok(cmds.search("child thing").map((c) => c.id).includes("gated"), "an unavailable entry must still be FOUND — it greys out, it does not vanish");
   cmds.markUsed("b");
-  assert.equal(cmds.search("", null)[0].id, "b"); // MRU first on empty query
+  assert.equal(cmds.search("")[0].id, "b"); // MRU first on empty query
   const mru = cmds.usageList();
   const cmds2 = createCommands();
   cmds2.add({ id: "a", title: "A", run: () => {} });
   cmds2.add({ id: "b", title: "B", run: () => {} });
   cmds2.loadUsage(mru);
-  assert.equal(cmds2.search("", null)[0].id, "b"); // MRU survives persistence
+  assert.equal(cmds2.search("")[0].id, "b"); // MRU survives persistence
   assert.throws(() => cmds.add({ id: "a", title: "dupe", run: () => {} }), /Duplicate/);
 });
 test("shortcuts: dispatch + context filtering + hints", () => {

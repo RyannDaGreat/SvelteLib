@@ -16,23 +16,32 @@
  *     mirror?,     // {x, y} booleans — present ONLY on a FLIPPED node (see below)
  *     plugin }
  *
- * THE FLIP NORMALIZATION (core/geometry.js flippedBox / normalizedBox). A stored
+ * THE FLIP NORMALIZATION (core/geometry.js flippedBox / unsignedState). A stored
  * w or h may be NEGATIVE: that is how a reflection is represented, because the
  * pose is a similarity and a similarity cannot carry one. Derivation is where
  * that sign STOPS: every node's state is normalized to a non-negative box and the
  * sign becomes `node.mirror`, so nothing downstream — no plugin `emit()`, no
  * `hitTest`, no shader half-extent, no exporter substrate — ever sees a negative
- * extent. Only two consumers read `mirror`: the render walk
+ * extent. `node.world` is built from that unsigned box too, so it carries no sign
+ * either and a consumer mapping `T.apply(node.world, state.w / 2, ...)` is right as
+ * written. Only two consumers read `mirror`: the render walk
  * (render_gpu/ports.js sceneIR, which wraps the node's commands in a local
  * reflection) and `hitNode` below (which reflects the probe point back). Because
  * the flip is an involution, a flipped node normalizes to the SAME geometry as its
  * unflipped self, so its footprint, snap features, anchors, AABB and cull result
  * are identical — the flip changes only which way its content faces.
+ *
+ * THE SAME MAP SERVES THE PRE-DERIVATION READERS, and must: `pointInNodeBox` and
+ * `composedMemberInfluence` below, plus `anchors` / `closestAnchor` as called from
+ * core/expressions.js, all read RAW item state because the expression pass runs
+ * before any node exists — so each enters the seam explicitly. The contract as a
+ * whole is stated once, in core/registry.js's plugin docblock, and pinned per
+ * widget by tests/negative_size_test.js.
  */
 
 import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
-import { normalizedBox, unmirroredLocal } from "./geometry.js";
+import { unmirroredLocal, unsignedState } from "./geometry.js";
 
 /**
  * Pure function. An item's LOCAL→WORLD similarity transform, with rotation
@@ -140,11 +149,11 @@ export function stateXYForCenterPivotWorld(target, w, h) {
 export function pointInNodeBox(itemState, wx, wy) {
   if (itemState.w == null || itemState.h == null) return false;
   // Reads the RAW stored state (it is called on pre-derivation item states), so it
-  // must do the flip normalization itself rather than inherit the node's. The
-  // reflection is irrelevant to a rectangle test — only the SIGN is — so this needs
-  // normalizedBox, not unmirroredLocal.
-  const box = normalizedBox(itemState);
-  const local = T.apply(T.invert(worldTransform({ ...itemState, x: box.x, y: box.y, w: box.w, h: box.h })), wx, wy);
+  // must enter the flip seam itself rather than inherit a node's. The reflection is
+  // irrelevant to a rectangle test — only the SIGN is — so this needs the state map
+  // (unsignedState), not unmirroredLocal.
+  const box = unsignedState(itemState);
+  const local = T.apply(T.invert(worldTransform(box)), wx, wy);
   return local.x >= 0 && local.x <= box.w && local.y >= 0 && local.y <= box.h;
 }
 
@@ -166,13 +175,14 @@ export function deriveRenderTree(state, registry) {
   const nodes = Object.entries(items).filter(([, s]) => s.active !== false && typeof s.type === "string").map(([id, itemState]) => {
     // THE FLIP SEAM (module docstring): a NEGATIVE w/h is a reflection. Split it
     // into a positive box + mirror flags here, so no consumer downstream can meet
-    // a negative extent. The sign test is inline and the normalization allocates
-    // NOTHING for an unflipped item — every item is re-derived on every frame, and
-    // an unflipped node must stay byte-identical (same `state` object identity, no
+    // a negative extent. `unsignedState` is THE map — shared verbatim with the
+    // PRE-DERIVATION readers in core/expressions.js, which is what stops the two
+    // halves of the anchor feature from disagreeing — and it allocates NOTHING for
+    // an unflipped item, returning the very same object. That identity IS the sign
+    // test: an unflipped node stays byte-identical (same `state` object, no
     // `mirror` key at all, exactly like the other optional node marks).
-    const signed = (itemState.w ?? 0) < 0 || (itemState.h ?? 0) < 0;
-    const box = signed ? normalizedBox(itemState) : null;
-    const state = box ? { ...itemState, x: box.x, y: box.y, w: box.w, h: box.h } : itemState;
+    const state = unsignedState(itemState);
+    const mirror = state === itemState ? null : { x: (itemState.w ?? 0) < 0, y: (itemState.h ?? 0) < 0 };
     return {
       id,
       itemId: id,
@@ -180,7 +190,7 @@ export function deriveRenderTree(state, registry) {
       state,
       world: worldTransform(state),
       plugin: registry.get(itemState.type),
-      ...(box ? { mirror: { x: box.mirrorX, y: box.mirrorY } } : {}),
+      ...(mirror ? { mirror } : {}),
     };
   });
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
@@ -349,8 +359,13 @@ export function composedMemberInfluence(ownerIds, state) {
   const items = state.items ?? {};
   let composed = null;
   for (const gid of ownerIds) {
-    const g = items[gid];
-    if (!g || !Array.isArray(g.members)) continue;
+    const raw = items[gid];
+    if (!raw || !Array.isArray(raw.members)) continue;
+    // RAW pre-derivation state (this runs inside the expression pass), so it enters
+    // the flip seam here — applyGroupParenting reads the group's ALREADY-unsigned
+    // node.state, and a group with a signed box would otherwise place its members
+    // one box-width away from where the render puts them.
+    const g = unsignedState(raw);
     const influence = groupInfluence(worldTransform(g), groupBindWorld(g));
     composed = composed ? T.compose(influence, composed) : influence;
   }

@@ -30,12 +30,12 @@ import { evaluateState } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
-import { createShortcuts } from "../core/shortcuts.js";
+import { createShortcuts, MOUSE_DOUBLE_TOKEN } from "../core/shortcuts.js";
 import {
   handShortcutEntries, hintProbeContexts, canvasModeStepAxis,
 } from "../core/shortcut_entries.js";
 import { DRAG_KINDS, DRAG_KIND_MODIFIERS } from "../web/canvas/dragKinds.js";
-import { canvasModes, findHandler, handlerFor, handlerIds, phaseNames } from "../web/widget_handlers.js";
+import { activations, canvasModes, findHandler, handlerFor, handlerIds, phaseNames } from "../web/widget_handlers.js";
 import { CREATION_GESTURES, creationPointer, currentStepIndex, validatedSteps } from "../web/creationSteps.js";
 import { POLYGON_CHAIN_HANDLER, closesLoop, constrainedVertex, repeatsLastVertex } from "../web/polygonDraw.js";
 import { TELESCOPIC_RIG_HANDLER } from "../web/telescopicRig.js";
@@ -300,12 +300,13 @@ test("telescopic finalize: one box ABANDONS — half a rig is not a rig", () => 
 // ── (4) THE HINTBAR NARRATES EACH STEP, AND ONLY ITS OWN STEP ────────────────
 const modes = canvasModes();
 const registry = createShortcuts();
-for (const e of handShortcutEntries({ app: {}, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS }))
+for (const e of handShortcutEntries({ app: {}, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, activations: activations() }))
   registry.add(e);
 const contexts = hintProbeContexts({
   dragKinds: DRAG_KINDS,
   canvasModeIds: [null, ...modes.map((m) => m.handlerId)],
   canvasModeSteps: canvasModeStepAxis(modes),
+  activationIds: activations().map((a) => a.handlerId),
   app: {},
 });
 /** Query. The visible [combo, label] pairs in the plain in-mode context for a
@@ -330,6 +331,13 @@ test("the polygon bar names the click, the axis lock, Enter and Escape", () => {
   assert.ok(chips.some(([k, l]) => k === "Shift" && l === "Axis lock"),
     `the Shift constraint must be announced with the EXISTING house wording. Got ${JSON.stringify(chips)}`);
   assert.ok(chips.some(([k, l]) => k === "Enter" && l === "Finish shape"), JSON.stringify(chips));
+  // THE OTHER finalize gesture the request names ("I hit enter to finalize or
+  // double click to finalize"). It was declared on `mouse_left` and hidden, so it
+  // showed nowhere and its glyph would have been a SINGLE click; on its own token
+  // it collides with nothing and is visible. Two "Finish shape" chips on different
+  // glyphs is the modal transform's two-"Confirm" precedent, not a duplicate.
+  assert.ok(chips.some(([k, l]) => k === MOUSE_DOUBLE_TOKEN && l === "Finish shape"),
+    `the polygon must ANNOUNCE its double-click finish, not just perform it. Got ${JSON.stringify(chips)}`);
   assert.deepEqual(chips.filter(([k]) => k === "Escape").map(([, l]) => l), ["Exit draw polygon"]);
 });
 

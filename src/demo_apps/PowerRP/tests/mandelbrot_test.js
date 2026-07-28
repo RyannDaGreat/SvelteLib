@@ -54,6 +54,7 @@ import {
 import {
   MANDELBROT_ESCAPE_RADIUS,
   MANDELBROT_MATERIAL, MANDELBROT_REF_LEN, MANDELBROT_PALETTE_STOPS, MANDELBROT_MAX_ITERATIONS,
+  MANDELBROT_MAX_FINE_EXPONENT,
   MANDELBROT_ORBIT_ROWS, MANDELBROT_UNIFORM_ROWS, MANDELBROT_UNIFORM_ROW_BUDGET,
   bitsForDepth, scaledDecimal, splitCentreFixed, centreResolutionDecades, fixedToFloat, referenceOrbit,
   bakeMandelbrotPalette, packMandelbrot, mandelbrotProxyFill, srgbToLinear,
@@ -158,12 +159,18 @@ test("splitCentreFixed: agrees with exact arithmetic to the resolution it claims
 });
 
 test("centreResolutionDecades: states the deep-zoom precondition", () => {
-  assert.equal(centreResolutionDecades(0), 17);
-  assert.equal(centreResolutionDecades(16), 33);
-  assert.ok(centreResolutionDecades(16) > 30, "a 1e-30 zoom must be inside the fine-exponent-16 budget");
-  // And the fine part must genuinely buy those decades: the resolution has to
-  // improve one-for-one with the exponent, or the split is decorative.
-  assert.equal(centreResolutionDecades(30) - centreResolutionDecades(10), 20);
+  // 53 bits with the fine part off, 2·53 with it on — see the function's derivation.
+  assert.equal(centreResolutionDecades(0), 14);
+  assert.equal(centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT), 30);
+  assert.ok(centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT) >= 30, "a 1e-30 zoom must be inside the fine-exponent budget");
+  // The fine part must genuinely buy those decades UP TO SATURATION: the decimal sum
+  // improves one-for-one with the exponent until the LEAVES' own 106 bits take over,
+  // or the split is decorative...
+  assert.equal(centreResolutionDecades(13) - centreResolutionDecades(3), 10);
+  // ...and past saturation it must NOT keep claiming, or the report that guards
+  // against a plausible wrong image is silenced exactly where it is needed.
+  assert.equal(centreResolutionDecades(30), centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT));
+  assert.equal(centreResolutionDecades(80), centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT));
 });
 
 test("splitCentreFixed: the FINE part really adds digits the coarse one cannot hold", () => {
@@ -180,12 +187,115 @@ test("splitCentreFixed: the FINE part really adds digits the coarse one cannot h
 
 test("splitCentreFixed: LOUD past the depth two plain numbers can express", () => {
   // decimals = fineExponent + 18, and toFixed stops at 100 places, so 83 is the
-  // first exponent the split cannot express. The Inspector row's max is 80, well
-  // inside that.
+  // first exponent the split cannot express. The Inspector row's max is far inside
+  // that, for a stronger reason — MANDELBROT_MAX_FINE_EXPONENT.
   assert.throws(() => splitCentreFixed(0, 0, 83, 400), /beyond the 100/);
   assert.ok(mandelbrotPlugin.inspector.find((r) => r.key === "fineExponent").max < 83);
   assert.throws(() => splitCentreFixed(0, 0, -1, 400), /non-negative integer/);
 });
+
+/**
+ * A published DENSE deep-zoom coordinate: 48 significant digits, none of them a
+ * terminating accident, so nothing about it flatters the split. (The same point the
+ * repo's own verify_truth fixture uses.)
+ */
+const DENSE_COORDINATE = "-0.746824998372766419467348106462117643102731201318";
+
+/**
+ * Pure function. A decimal STRING as a fixed-point BigInt with `bits` fractional
+ * bits, exactly — the judge for a round trip through the split centre, since it
+ * never touches a float64 at all.
+ *
+ * @param {string} text - a decimal number
+ * @param {number} bits - fractional bits
+ * @returns {bigint}
+ *
+ * @example exactDecimalFixed("0.5", 8) // 128n
+ * @example exactDecimalFixed("-2", 8) // -512n
+ * @example exactDecimalFixed("0.1", 4) // 2n (0.1·16 = 1.6, rounded)
+ */
+function exactDecimalFixed(text, bits) {
+  const DECIMALS = 90; // far beyond what two float64s carry
+  const neg = text.startsWith("-");
+  const [ip, fp = ""] = text.replace(/^[+-]/, "").split(".");
+  const scaled = (neg ? -1n : 1n) * BigInt(ip + fp.slice(0, DECIMALS).padEnd(DECIMALS, "0"));
+  const scale10 = 10n ** BigInt(DECIMALS);
+  const a = (scaled < 0n ? -scaled : scaled) << BigInt(bits);
+  const q = a / scale10;
+  const rounded = (a % scale10) * 2n >= scale10 ? q + 1n : q;
+  return scaled < 0n ? -rounded : rounded;
+}
+
+/**
+ * Query. Decades of agreement between a coordinate STRING and the split centre that
+ * carries it at `fineExponent`: the coordinate is re-split the way the floating bar
+ * re-splits a paste (parseSplitCentre), summed the way the render sums it
+ * (splitCentreFixed), and compared against exact decimal arithmetic.
+ *
+ * @param {string} text - the coordinate
+ * @param {number} fineExponent - the exponent to carry it at
+ * @returns {number} -log10 of the absolute error (Infinity when exact)
+ */
+function roundTripDecades(text, fineExponent) {
+  const BITS = bitsForDepth(60);
+  const split = parseSplitCentre(text, fineExponent);
+  const got = splitCentreFixed(split.coarse, split.fine, fineExponent, BITS);
+  const exact = exactDecimalFixed(text, BITS);
+  const diff = got > exact ? got - exact : exact - got;
+  if (diff === 0n) return Infinity;
+  const width = diff.toString(2).length;
+  const drop = Math.max(0, width - 64);
+  return -Math.log10(Number(diff >> BigInt(drop)) * Math.pow(2, drop - BITS));
+}
+
+test("THE FINE EXPONENT CEILING IS MEASURED, NOT DECLARED", () => {
+  // The measurement that sets MANDELBROT_MAX_FINE_EXPONENT. A 48-digit coordinate is
+  // re-split at each exponent and judged against exact arithmetic: the pair improves
+  // ONE DECADE PER EXPONENT while the decimal sum is the binding term, and then stops
+  // — because two float64s carry 2·53 bits however they are scaled. A larger exponent
+  // is not more precision, so the row does not offer one.
+  const atCeiling = roundTripDecades(DENSE_COORDINATE, MANDELBROT_MAX_FINE_EXPONENT);
+  assert.ok(atCeiling > 32, `the ceiling resolves only ${atCeiling.toFixed(2)} decades`);
+  assert.ok(roundTripDecades(DENSE_COORDINATE, 8) < atCeiling - 5, "the exponent must buy decades below the ceiling");
+  // FLAT above it: 14 more exponents buy less than one decade (measured 33.8 → 33.4).
+  for (const past of [20, 24, 30]) {
+    const beyond = roundTripDecades(DENSE_COORDINATE, past);
+    assert.ok(beyond <= atCeiling + 1, `fine exponent ${past} resolved ${beyond.toFixed(2)} decades against the ceiling's ${atCeiling.toFixed(2)} — the ceiling would be costing precision`);
+  }
+  // And the claim the widget REPORTS must be a lower bound on the measurement at
+  // every exponent, including the ones a legacy document may still hold: the report
+  // exists to catch a wrong location, so an over-claim is the bug itself.
+  for (const fe of [0, 1, 2, 4, 8, 12, 13, 14, MANDELBROT_MAX_FINE_EXPONENT, 20, 30, 36]) {
+    const measured = roundTripDecades(DENSE_COORDINATE, fe);
+    assert.ok(measured >= centreResolutionDecades(fe),
+      `at fine exponent ${fe} the widget claims ${centreResolutionDecades(fe)} decades and delivers ${measured.toFixed(2)}`);
+  }
+});
+
+test("THE CEILING IS WHERE THE FORMATTER WALL IS, and every shipped preset is inside it", () => {
+  const row = mandelbrotPlugin.inspector.find((r) => r.key === "fineExponent");
+  assert.equal(row.max, MANDELBROT_MAX_FINE_EXPONENT);
+  assert.equal(row.min, 0);
+  // A legitimate centre lives in |c| ≤ 2 (anything further escapes at once), so the
+  // largest offset any write can scale by 10^fineExponent is the set's own diameter.
+  // At the ceiling that stays under the magnitude where toFixed goes exponential and
+  // BigInt cannot parse it; one exponent above 20 it does not, which is the crash.
+  const SET_DIAMETER = 4;
+  assert.doesNotThrow(() => scaledDecimal(SET_DIAMETER * Math.pow(10, MANDELBROT_MAX_FINE_EXPONENT), 18));
+  assert.throws(() => scaledDecimal(SET_DIAMETER * Math.pow(10, 21), 18), /overflowed upstream/);
+  for (const p of LOCATION_PRESET_PROPS()) {
+    const fe = p.fineExponent ?? 0;
+    assert.ok(fe <= MANDELBROT_MAX_FINE_EXPONENT, `a shipped location asks for fine exponent ${fe}, past the ceiling — it is unshippable, not clampable`);
+    assert.ok(Number.isInteger(fe) && fe >= 0, `a shipped location's fine exponent ${fe} is not a non-negative integer`);
+  }
+});
+
+/** Query. Every shipped LOCATION preset's raw props (read before the preset-family
+ *  helpers below exist, so the ceiling test can stand beside the arithmetic it is
+ *  about rather than in the preset section). */
+function LOCATION_PRESET_PROPS() {
+  return mandelbrotPlugin.presetFamilies.find((f) => f.id === "location").presets.map((p) => p.props);
+}
 
 test("bitsForDepth: enough bits for the depth, plus guard bits", () => {
   assert.equal(bitsForDepth(0), 64);
@@ -906,6 +1016,81 @@ test("THE SPLIT CENTRE SURVIVES THE TWEEN: a deep zoom keeps every fine digit", 
   const fines = [];
   for (let i = 0; i <= TWEEN_SAMPLES; i++) fines.push(tweenedState(doc, 1, i / TWEEN_SAMPLES, registry).items[id].centerFineX);
   for (let i = 1; i < fines.length; i++) assert.ok(fines[i] >= fines[i - 1] - 1e-15, `fine digits went backwards at step ${i}`);
+});
+
+test("THE OVERFLOW THAT FROZE THE EDITOR IS UNREACHABLE — the pan, the tween, the guard", () => {
+  // WHAT HAPPENED: a centre reached 1.9e84, scaledDecimal handed toFixed's
+  // "1.8967841688652096e+84" to BigInt, and because the throw happened inside
+  // CanvasView's render $effect it tore down the Svelte reactive root and froze the
+  // editor. Three things had to hold for that, and each is checked here.
+  const SET_DIAMETER = 4; // |c| ≤ 2 for every point of the set
+  const LEGACY_CEILING = 80; // what the row used to offer
+
+  // (1) THE GUARD still names such a state if one ever arrives — the symptom, kept.
+  assert.throws(() => mandelbrotPlugin.emit(stateOf({ fineExponent: LEGACY_CEILING, centerFineX: 1.9e84 })), /overflowed upstream/);
+
+  // (2) THE PAN can no longer write one. A FULL-FRAME pan at the shallowest zoom the
+  // row allows is the worst case the gesture has, and at every exponent — including a
+  // legacy 80 a document may still hold — the delta goes to the leaf that can hold it,
+  // so the fine slot receives nothing and the render is fine.
+  for (const fineExponent of [MANDELBROT_MAX_FINE_EXPONENT, 20, LEGACY_CEILING]) {
+    const s = stateOf({ centerX: -0.7435669, centerY: 0.1314023, centerFineX: 0, centerFineY: 0, fineExponent, zoomExponent: -1 });
+    const win = mandelbrotPlugin.interiorView.window(s);
+    const out = mandelbrotPlugin.interiorView.writes(s, { ...win, x: win.x + win.w });
+    assert.equal(out.centerFineX ?? 0, 0, `a full-frame pan at fine exponent ${fineExponent} wrote ${out.centerFineX} into the fine slot`);
+    assert.doesNotThrow(() => mandelbrotPlugin.emit({ ...s, ...out }), `emit threw after a pan at fine exponent ${fineExponent}`);
+  }
+
+  // (3) THE TWEEN's fine leaf is bounded by the CEILING and by nothing else. It pins
+  // the coarse leaf to the target's and lets the FINE leaf carry the whole offset
+  // (zoomTweenAxis, deliberate), so mid-transition the leaf holds (cFrom - cTo)·10^fe
+  // — at most the set's diameter times 10^fe, which the ceiling keeps 4.4 decades
+  // under the formatter's wall. THE SAME TRANSITION at the legacy ceiling throws
+  // mid-tween, which is what makes this a derived ceiling and not a preference.
+  const ALPHAS = 20;
+  const transition = (fineExponent) => zoomDoc(
+    { centerX: -0.6, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent, zoomExponent: -0.2041 },
+    { centerX: -0.7435669, centerY: 0.1314023, zoomExponent: 6 },
+  );
+  const ok = transition(MANDELBROT_MAX_FINE_EXPONENT);
+  let worst = 0;
+  for (let i = 0; i <= ALPHAS; i++) {
+    const s = tweenedState(ok.doc, 1, i / ALPHAS, ok.registry).items[ok.id];
+    worst = Math.max(worst, Math.abs(s.centerFineX));
+    assert.doesNotThrow(() => mandelbrotPlugin.emit(s), `the tween threw at alpha ${i / ALPHAS} at the ceiling`);
+  }
+  assert.ok(worst <= SET_DIAMETER * Math.pow(10, MANDELBROT_MAX_FINE_EXPONENT),
+    `the tween's fine leaf reached ${worst.toExponential(3)}, past the ${SET_DIAMETER}·10^${MANDELBROT_MAX_FINE_EXPONENT} bound a centre of the set can produce`);
+  const legacy = transition(LEGACY_CEILING);
+  let threw = false;
+  for (let i = 0; i <= ALPHAS && !threw; i++) {
+    const s = tweenedState(legacy.doc, 1, i / ALPHAS, legacy.registry).items[legacy.id];
+    try { mandelbrotPlugin.emit(s); } catch { threw = true; }
+  }
+  assert.ok(threw, `the same transition at fine exponent ${LEGACY_CEILING} did NOT overflow — then the ceiling is not what fixes it and this test is wrong`);
+});
+
+test("A STORED FINE EXPONENT PAST THE CEILING IS REPORTED, NOT REWRITTEN", () => {
+  // THE MIGRATION RULING. A document written while the row offered 80 still names a
+  // real coordinate, and lowering its exponent by itself would move the view by
+  // 10^(fineExponent - ceiling) fine units — the silent relocation this whole file
+  // exists to prevent. So nothing is rewritten: emit() says it out loud, once, and
+  // names the one migration that keeps the coordinate (re-type it in the bar, which
+  // parseSplitCentre re-splits losslessly).
+  const LEGACY = 40;
+  const s = stateOf({ centerX: -0.7435669, centerY: 0.1314023, centerFineX: 3, centerFineY: 0, fineExponent: LEGACY, zoomExponent: 8 });
+  const orig = console.error;
+  const seen = [];
+  console.error = (...args) => seen.push(args.join(" "));
+  let ops;
+  try { ops = mandelbrotPlugin.emit(s); } finally { console.error = orig; }
+  assert.equal(ops.length, 1, "the widget must still render — a legacy exponent is not a failure");
+  assert.equal(seen.length, 1, `expected exactly one report, got ${seen.length}: ${seen.join(" | ")}`);
+  assert.match(seen[0], new RegExp(`fine exponent ${LEGACY} is past the ${MANDELBROT_MAX_FINE_EXPONENT}`));
+  assert.match(seen[0], /MOVES THE VIEW/, "the report must say why the exponent is not simply lowered");
+  // And the op is the one the stored state asks for: no leaf was touched.
+  assert.equal(s.centerFineX, 3);
+  assert.equal(s.fineExponent, LEGACY);
 });
 
 test("AN `=` EQUATION ON THE CENTRE DEFERS TO THE EQUATION, and does not throw", () => {

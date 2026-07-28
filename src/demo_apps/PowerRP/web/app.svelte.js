@@ -3213,6 +3213,102 @@ export class PowerRPApp {
     return blob;
   }
 
+  /**
+   * Command (async; submits a job, and for the client backend renders into it).
+   * SUBMIT A RENDER JOB — the one entry point both backends go through.
+   *
+   * WHY THIS REPLACED "export and hold a promise". exportMp4 above makes THIS PAGE
+   * the owner of the render: its progress lives in a component, so closing the
+   * dialog, refreshing, or an editor hot-reload destroyed the work with no way to
+   * find it again. A job instead belongs to the SERVER — submit hands over a
+   * SNAPSHOT of the document and returns immediately, and every later question
+   * ("how far along?", "where is the file?") is answered by polling
+   * listRenderJobs. Nothing the page holds is load-bearing.
+   *
+   * THE SNAPSHOT IS TAKEN SERVER-SIDE AT SUBMIT from the doc posted here, so
+   * editing the deck a second later cannot splice two documents into one video.
+   *
+   * backend "server": the server spawns headless workers; the page's job is over.
+   * backend "client": this page fills the SAME job's frame directory (the browser
+   *   has a real GPU and renders media, which the headless path cannot yet), then
+   *   asks for the SAME shared encode. It appears in the same list with the same
+   *   progress bar — one job shape, two frame producers.
+   *
+   * @param {object} o
+   * @param {string} o.name Job name; also the output filename stem.
+   * @param {string} o.backend "server" | "client".
+   * @param {object} o.params width/height/fps/crf/background/range/samples/…
+   * @param {AbortSignal} [o.signal] Cancels a CLIENT-backend frame walk.
+   * @returns {Promise<object>} the submitted job record (NOT the finished movie)
+   */
+  async submitRender({ name, backend, params, signal }) {
+    const { timelinePlan, frameCount, DEFAULT_HOLD_SECONDS } = await import("./videoExport.js");
+    const { submitRenderJob } = await import("./projectApi.js");
+    const plan = timelinePlan(this.doc, {
+      startIndex: params.startIndex,
+      endIndex: params.endIndex,
+      includeTransitions: params.includeTransitions,
+      holdSeconds: params.holdSeconds ?? DEFAULT_HOLD_SECONDS,
+    });
+    // The denominator for the progress bar, computed from the SAME pure helpers
+    // the headless worker uses on the same document — so both agree — and sent
+    // only so the bar has a total before the first frame lands.
+    const framesTotal = frameCount(plan.duration, params.fps);
+    const job = await submitRenderJob(this.projectName(), {
+      name, backend, framesTotal, params, doc: this.doc,
+    });
+    if (backend === "client") this.#fillClientRenderJob(job, params, plan, signal);
+    return job;
+  }
+
+  /**
+   * Command (async, fire-and-forget). Render a CLIENT-backend job's frames from
+   * this page and ask for the shared encode.
+   *
+   * DELIBERATELY NOT AWAITED by the caller: the Render Center tracks this job by
+   * POLLING the server like any other, so the modal can be closed while it runs
+   * and a reopened modal picks it straight back up. A failure is reported to the
+   * console AND lands on the job record (the server marks a job failed when its
+   * finish call throws), so it is never a silent stall.
+   */
+  async #fillClientRenderJob(job, params, plan, signal) {
+    const { exportVideo } = await import("./videoExport.js");
+    const { createJobFrameEncoder } = await import("./serverMp4Encoder.js");
+    const { renderTransitionFrame } = await import("./transitionRender.js");
+    const { setParticleTimeOverride } = await import("../render_gpu/particle_clock.js");
+    const { cancelRenderJob } = await import("./projectApi.js");
+    const { width, height, fps, samples, background } = params;
+    const out = document.createElement("canvas");
+    out.width = width;
+    out.height = height;
+    const ctx = out.getContext("2d");
+    const renderFrame = async (index, alpha) => {
+      const rect = cameraRect(evaluateState(foldState(this.doc, index, alpha), this.registry).state, this.doc.meta);
+      const scale = Math.min(width / rect.w, height / rect.h);
+      const cw = Math.max(1, Math.round(rect.w * scale));
+      const ch = Math.max(1, Math.round(rect.h * scale));
+      const content = await renderTransitionFrame(this.doc, index, alpha, this.registry, cw, ch);
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(content, Math.round((width - cw) / 2), Math.round((height - ch) / 2));
+      return out;
+    };
+    try {
+      await exportVideo({
+        plan, renderFrame, width, height, fps, samples,
+        encoder: await createJobFrameEncoder({ project: job.project, jobId: job.id }),
+        setTime: setParticleTimeOverride, // controlled time → ambient-clock effects animate + blur
+        signal,
+      });
+    } catch (e) {
+      console.error(`Client render job "${job.name}" failed:`, e);
+      // Abort is a user action, not a failure — leave the job cancelled, not
+      // "failed", so the list tells the truth about why it stopped.
+      await cancelRenderJob(job.project, job.id).catch((err) =>
+        console.error(`Could not mark render job ${job.id} cancelled:`, err));
+    }
+  }
+
   // ── Copy selection as PNG/PDF (manifest Round 12B "Palette / selection
   // commands"): render ONLY the selected items, cropped to their collective
   // world AABB, onto the SYSTEM clipboard. Distinct from exportPng/exportPdf

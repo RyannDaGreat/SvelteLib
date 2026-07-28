@@ -563,7 +563,12 @@
     // and "video_v5_scrub", which rides the SAME V5 frame nudge (onVideoV5Frame):
     // omitting it let a settled scrub's decoded frame be dropped by this gate, so
     // the canvas kept a stale frame until some unrelated repaint happened.
-    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5", "video_v5_scrub");
+    // "filmstrip" is here for exactly that reason: its frames ARE V5 scrub frames
+    // (one `videoV5Frame` op per cell — plugins/filmstrip.js), so each cell's decode
+    // notifies through onVideoV5Frame and the strip fills in cell by cell. Omitting it
+    // would leave a freshly sourced strip showing its first-decoded frame in every cell
+    // until an unrelated repaint happened.
+    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5", "video_v5_scrub", "filmstrip");
     // VIDEO V6 OVERLAY FEED (additive): the post-cull visible video_v6 nodes + the
     // view + scene device size for VideoV6Overlay (its own WebGPU/WebGL2 canvas
     // above the scene). It gates + draws its own <video> elements; Skia draws only
@@ -847,8 +852,17 @@
     // to finalize"). The clicks that made it already landed their vertices — the
     // second one coincides with the first's, which the handler absorbs — so this
     // only has to say "done".
+    //
+    // GATED ON THE MODE'S OWN `finishGesture` DECLARATION, which is also what
+    // core/shortcut_entries.js generates the chip from — so the gesture and its
+    // announcement are one fact and cannot drift. It used to finalize ANY live
+    // creation, which was wrong twice over: the telescopic rig declares no such
+    // gesture and its finalize ABANDONS an incomplete sequence, so a stray
+    // double-click silently discarded a half-built rig with nothing on the bar
+    // having offered it. A mode that does not declare the gesture now consumes the
+    // double-click and does nothing, which is exactly what the empty bar says.
     if (creation) {
-      finishCreation();
+      if (creation.mode.finishGesture) finishCreation();
       return;
     }
     if (drag || modal || app.canvasMode) return; // never open mid-gesture or mid-mode

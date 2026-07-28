@@ -28,9 +28,13 @@
 
   Props: onpick(stops) — called with a fresh {offset, color}[] stop list when a
   preset is chosen; onpreview(stops) — the same list, staged as a live preview
-  while a swatch is hovered; oncancelpreview() — revert that preview; disabled —
-  greys out the toggle. The two preview callbacks are optional and guarded at the
-  call site, following the sibling AngleField's onpreview/oncommit convention.
+  while a swatch is hovered; oncancelpreview() — revert that preview;
+  onopenchange(open) — reports the library opening/closing, so the mount point can
+  react to it being open at all (PaintField folds the sibling stop list while it
+  is: hovering a swatch rewrites every stop, and a list re-rendering under the
+  cursor is the flicker the fold exists to stop); disabled — greys out the toggle.
+  The optional callbacks are guarded at the call site, following the sibling
+  AngleField's onpreview/oncommit convention.
 -->
 <script module>
   import { GRADIENT_PRESETS } from "./gradient_presets.js";
@@ -74,7 +78,7 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
 
-  let { onpick, onpreview = null, oncancelpreview = null, disabled = false } = $props();
+  let { onpick, onpreview = null, oncancelpreview = null, onopenchange = null, disabled = false } = $props();
 
   let open = $state(false);
   let query = $state("");
@@ -102,11 +106,19 @@
     if (oncancelpreview) oncancelpreview();
   }
 
+  /** Command. Sets the open state and REPORTS it (onopenchange) — the one place
+   * `open` is written, so no path can change it without the mount point hearing
+   * about it. */
+  function setOpen(next) {
+    open = next;
+    if (onopenchange) onopenchange(next);
+  }
+
   /** Command. Collapses the library, clears the search, and reverts any hover
    * preview — the grid can unmount with the pointer still over a swatch, which
    * fires no pointerleave, so the revert must not depend on one. */
   function close() {
-    open = false;
+    setOpen(false);
     query = "";
     cancelPreview();
   }
@@ -115,7 +127,7 @@
   function toggle() {
     if (disabled) return;
     if (open) close();
-    else open = true;
+    else setOpen(true);
   }
 
   /** Command. Live-previews `preset` on the selected item WITHOUT committing:
@@ -153,6 +165,15 @@
     if (!open || !searchEl || !bodyEl) return;
     searchEl.focus();
     bodyEl.scrollIntoView({ block: "nearest" });
+  });
+
+  // THIS WHOLE FIELD can unmount while the library is open (the paint switches to
+  // Solid), and that fires no close() — so report closed on teardown, for exactly
+  // the reason close() reverts a preview no pointerleave will ever revert. Without
+  // it a mount point that folded a list while the library was open would be left
+  // holding it folded by a picker that no longer exists.
+  $effect(() => () => {
+    if (open && onopenchange) onopenchange(false);
   });
 </script>
 

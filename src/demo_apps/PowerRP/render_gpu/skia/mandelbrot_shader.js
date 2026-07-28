@@ -667,6 +667,15 @@ const BITS_PER_DECIMAL_DIGIT = Math.log2(10);
 const GUARD_BITS = 64;
 
 /**
+ * Significant bits in a float64 (IEEE 754 binary64: 52 stored, 1 implicit). EVERY
+ * limit of the split centre comes off this one number — what one leaf resolves,
+ * what two leaves resolve (centreResolutionDecades), and the decade where the
+ * coarse leaf's digits run out (MANDELBROT_MAX_FINE_EXPONENT) — so it is named
+ * once rather than appearing as a 53, a 2^-52 and a 16 that must be kept in step.
+ */
+const FLOAT64_SIGNIFICAND_BITS = 53;
+
+/**
  * Decimal places kept for the COARSE part of a split centre, BEYOND the fine
  * part's exponent. This single number sets how deep the widget can go, and the
  * reasoning is worth spelling out because it is easy to get backwards.
@@ -688,17 +697,50 @@ const COARSE_DECIMALS = 18;
 /**
  * Pure function. Decades of the complex plane the split centre can resolve at a
  * given fine exponent — i.e. the deepest `zoomExponent` that still lands on the
- * intended point rather than on a quantized neighbour.
+ * intended point rather than on a quantized neighbour. The plugin REPORTS OUT LOUD
+ * when a view asks for more than this, so the number must be a LOWER bound on what
+ * the pair really delivers: over-claiming here is precisely how the widget comes to
+ * render a plausible WRONG LOCATION in silence.
+ *
+ * TWO LIMITS, AND THE ANSWER IS THE WORSE OF THEM.
+ *
+ *   THE DECIMAL SUM. splitCentreFixed keeps `fineExponent + COARSE_DECIMALS`
+ *   places, so the sum is quantized at 10^(-fineExponent-18) — fineExponent + 18
+ *   decades, less one for margin. This is the term that GROWS with the exponent.
+ *
+ *   THE LEAVES THEMSELVES. The pair is an unevaluated sum, so it carries the
+ *   significands of the leaves it actually uses and no more: 53 bits with the fine
+ *   part off, 2·53 = 106 bits with it on (the canonical split — coarse takes the
+ *   nearest float64, fine takes the remainder — is a double-double, and
+ *   parseSplitCentre builds exactly that). 106 bits is 31.9 decimal digits, and a
+ *   centre of the set has |c| ≤ 2, so the absolute resolution bottoms out at
+ *   2^-105 = 2.5e-32. THIS TERM DOES NOT MOVE WITH THE EXPONENT — which is what was
+ *   missing: from fineExponent 13 up the sum is no longer the binding term and a
+ *   larger exponent buys NOTHING. The floor()-then-minus-one keeps the same one
+ *   decade of margin COARSE_DECIMALS keeps, and absorbs the |c| ≤ 2 factor with it.
+ *
+ * MEASURED — four published dense coordinates re-split by parseSplitCentre and
+ * compared against exact BigInt arithmetic (tests/mandelbrot_test.js runs it):
+ *
+ *     fineExponent    0     8    13    14    16    20    30    36
+ *     decades      16.4  26.2  31.1  32.1  32.8  33.0  32.7  33.0
+ *
+ * — one decade per exponent up to about 15, then FLAT FOREVER. The old form
+ * (fineExponent + 17, uncapped) claimed 47 decades at fineExponent 30 and 97 at 80;
+ * that is how a document could sit at zoomExponent 33 with its frame 1.9 half-widths
+ * off the requested point and nothing anywhere reporting it.
  *
  * @param {number} fineExponent - the widget's fineExponent (non-negative integer)
  * @returns {number} decades
  *
- * @example centreResolutionDecades(0)  // 17  (a plain float64 pair: about 1e-17)
- * @example centreResolutionDecades(16) // 33  (the recommended deep-zoom setting)
- * @example centreResolutionDecades(80) // 97  (the deepest the split can express)
+ * @example centreResolutionDecades(0)  // 14  (one leaf: 53 bits; measured 16.4)
+ * @example centreResolutionDecades(16) // 30  (the pair's own 106-bit floor)
+ * @example centreResolutionDecades(80) // 30  (a bigger exponent cannot add resolution)
  */
 export function centreResolutionDecades(fineExponent) {
-  return Math.max(0, Math.round(fineExponent)) + COARSE_DECIMALS - 1;
+  const fe = Math.max(0, Math.round(fineExponent));
+  const leafBits = (fe === 0 ? 1 : 2) * FLOAT64_SIGNIFICAND_BITS;
+  return Math.min(fe + COARSE_DECIMALS, Math.floor(leafBits / BITS_PER_DECIMAL_DIGIT)) - 1;
 }
 
 /** `Number.prototype.toFixed` is specified only to 100 fractional digits, which
@@ -735,6 +777,61 @@ export function bitsForDepth(depthDecades) {
  * near it, and anything that is has already gone wrong upstream.
  */
 const MAX_TO_FIXED_PLAIN = 1e21;
+
+/**
+ * The greatest offset between two LEGITIMATE centres: the diameter of the disk the
+ * set lives in. |c| > 2 escapes on the very first iteration (2 is the radius the
+ * reference orbit's own escape test uses — REFERENCE_ESCAPE_RADIUS_SQUARED), so both
+ * ends of any pan, any tween and any pasted coordinate lie inside |c| ≤ 2. Named
+ * because it is what makes MANDELBROT_MAX_FINE_EXPONENT's formatter bound a THEOREM
+ * about legitimate views rather than a hope about user input.
+ */
+const CENTRE_OFFSET_LIMIT = 2 * Math.sqrt(REFERENCE_ESCAPE_RADIUS_SQUARED);
+
+/**
+ * Largest `fineExponent` the widget offers — the one limit on the split centre that
+ * is not a formatter's, because it is where float64 itself runs out.
+ *
+ * WHAT IT IS. 2^-52 is the largest residual a canonical split can leave for the fine
+ * leaf: a centre of the set has |c| ≤ 2, whose float64 spacing is at most 2^-51, and
+ * the nearest float64 is within half of that. So 10^-16 = ⌈-log10(2^-52)⌉ is the
+ * FIRST DECADE THE COARSE LEAF CANNOT NAME, and a fine exponent of 16 is what makes
+ * the fine leaf's own value O(1) — the widget's help text, "16 continues the
+ * coordinate right where the coarse number's digits run out", as arithmetic.
+ *
+ * WHY NOTHING ABOVE IT IS OFFERED. The pair carries 2·53 bits however the exponent
+ * is chosen, and the decimal sum stops being the binding term at fineExponent 13
+ * (see centreResolutionDecades), so from 13 up the resolution is FLAT at about 1e-33.
+ * Measured on a 48-digit published coordinate: 33.8 decades at 16, 33.0 at 36. A
+ * larger exponent is not more precision — it is the same precision written with a
+ * bigger fine value, which is strictly worse (see below). 16 is three decades past
+ * saturation, so the ceiling costs nothing even under the conservative claim.
+ *
+ * WHY IT IS A HARD CEILING AND NOT A TASTE CAP. Every write to the fine leaf scales
+ * a coordinate offset by 10^fineExponent, and scaledDecimal cannot format a magnitude
+ * at or above MAX_TO_FIXED_PLAIN, so the ceiling must satisfy
+ * CENTRE_OFFSET_LIMIT·10^fe < 1e21 (the guard below asserts it): 16 clears that by
+ * 4.4 decades. The ceiling used to be 80, derived from `toFixed`'s 100-place limit
+ * ALONE (100 - 18 = 82), and the consequence was measured through the real pipeline:
+ * at 80 a SINGLE 50-px wheel tick of interior pan writes 1.9e80 into the fine slot (a
+ * full-frame pan, 2e81) and the next render throws from inside scaledDecimal — the
+ * crash that froze a user's editor (a centre of 1.9e84). Even at 20, one full-frame
+ * pan at the shallowest zoom writes 2e21 and does the same, and at 80 the widget's own
+ * floating bar cannot even DISPLAY a deep coordinate: splitCentreText throws on the
+ * fine value parseSplitCentre has to produce there (3.6e63 for a 33-digit paste). The
+ * two formatter limits and this one are not interchangeable: the 100-place limit
+ * permits 82, and 82 is unusable.
+ */
+export const MANDELBROT_MAX_FINE_EXPONENT = Math.ceil(-Math.log10(Math.pow(2, -(FLOAT64_SIGNIFICAND_BITS - 1))));
+
+// The ceiling must sit inside BOTH of `toFixed`'s limits, since every split centre
+// is summed through it. Loud at import for the same reason the uniform-row budget is
+// (see MANDELBROT_UNIFORM_ROW_BUDGET): a violation here is a render-time throw from
+// deep inside a $effect, which is a frozen editor rather than a diagnosable failure.
+if (CENTRE_OFFSET_LIMIT * Math.pow(10, MANDELBROT_MAX_FINE_EXPONENT) >= MAX_TO_FIXED_PLAIN)
+  throw new Error(`mandelbrot_shader: at fine exponent ${MANDELBROT_MAX_FINE_EXPONENT} a legitimate centre offset (up to ${CENTRE_OFFSET_LIMIT}, the set's own diameter) scales to ${CENTRE_OFFSET_LIMIT * Math.pow(10, MANDELBROT_MAX_FINE_EXPONENT)}, at or past the ${MAX_TO_FIXED_PLAIN} where toFixed goes exponential and BigInt cannot parse it — an ordinary pan or tween would throw from inside a render.`);
+if (MANDELBROT_MAX_FINE_EXPONENT + COARSE_DECIMALS > MAX_TO_FIXED_DECIMALS)
+  throw new Error(`mandelbrot_shader: fine exponent ${MANDELBROT_MAX_FINE_EXPONENT} needs ${MANDELBROT_MAX_FINE_EXPONENT + COARSE_DECIMALS} decimal places, beyond the ${MAX_TO_FIXED_DECIMALS} toFixed accepts — splitCentreFixed could not sum the centre at all.`);
 
 /**
  * Pure function. A finite number as an EXACT BigInt numerator over 10^decimals.

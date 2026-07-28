@@ -36,12 +36,14 @@ import http.cookies
 import io
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import urllib.parse
 import uuid
@@ -490,6 +492,520 @@ def encode_export_mp4(session_id, fps, crf):
         # Ephemeral scratch: always cleaned. ignore_errors so a stray unlink can
         # never mask (replace) the real ffmpeg error propagating out of the try.
         shutil.rmtree(d, ignore_errors=True)
+
+
+# -- Detached RENDER JOBS (survive the browser) -------------------------------
+#
+# THE PROBLEM THIS SOLVES. The export above makes the BROWSER the renderer: it
+# walks frames on the client GPU and POSTs each PNG. So closing the dialog,
+# refreshing, or an editor hot-reload destroyed an in-flight export with no way
+# to get it back -- a five-hour render lost to a stray reload. A render must
+# instead be a JOB the server owns: the browser submits and then has no further
+# role, and progress is SERVER state, so any tab (or a tab opened tomorrow) can
+# ask how far along it is.
+#
+# ONE JOB SHAPE, TWO FRAME PRODUCERS. The ENCODE was already server-side in both
+# designs (ffmpeg; WebCodecs needs a secure context, which plain HTTP cannot
+# give). The only thing that ever differed is WHO fills the frame directory, so
+# `backend` is a FIELD on one job record, not a second system:
+#   "server" -- this server spawns cli/render_job.js workers (detached; survives
+#               everything, and the only backend that can use a server's GPU or
+#               keep running with the laptop shut).
+#   "client" -- the browser fills the same directory by POSTing frames, then asks
+#               for the same encode. Kept because the browser has a real GPU and
+#               is often FAR faster, and because it renders media (see below).
+#
+# ON-DISK LAYOUT, and why outputs go where they do:
+#     projects/<name>/renders/<file>.mp4      the finished movies -- PLAINLY
+#                                             visible in the project folder,
+#                                             which is what the user asked for
+#     projects/<name>/renders/.jobs/<id>/
+#         job.json    the record (persists after the job ends -- it IS the list)
+#         doc.json    THE SNAPSHOT (see below)
+#         frames/     frame_000000.png ... -- scratch, deleted after the encode
+# `renders/` is a SIBLING of `assets/`, not inside it, because assets/ is the
+# project's asset LIBRARY and list_assets treats every file there as a library
+# entry: writing movies into it would silently grow the asset browser. A dotted
+# `.jobs/` keeps the bookkeeping out of the way of the movies themselves.
+#
+# THE SNAPSHOT IS THE WHOLE CORRECTNESS ARGUMENT. A render is
+# pure(document, [slide, alpha]). If the user edits the deck while a job runs, an
+# unsnapshotted job would splice pre-edit and post-edit frames into one video and
+# report success -- a silently wrong output, the worst failure mode available
+# here. So submit COPIES the document into the job dir and every worker reads
+# that copy; the live project can be edited freely.
+#
+# CONCURRENCY: exactly ONE job renders at a time, from a FIFO queue. Not a
+# limitation to apologise for -- a single job already fans out across
+# RENDER_WORKER_COUNT processes and saturates the machine, so running two
+# concurrently would only make both slower and multiply peak RAM. A second
+# submit is honestly reported as "queued".
+#
+# SERVER RESTART: a job is a directory, so nothing is lost. On boot,
+# resume_interrupted_jobs() re-queues every server-backend job that was mid-flight
+# (its already-written frames are kept and skipped -- frames are written
+# atomically via a .part rename, so a half-written PNG can never be mistaken for a
+# finished one). A CLIENT-backend job cannot resume, because its frame producer
+# was the page that went away, so it is marked "interrupted" LOUDLY rather than
+# left spinning at 47% forever.
+
+RENDERS_SUBDIR = "renders"
+JOBS_SUBDIR = ".jobs"
+JOB_RECORD_FILENAME = "job.json"
+JOB_DOC_FILENAME = "doc.json"
+JOB_FRAMES_SUBDIR = "frames"
+JOB_OUTPUT_EXT = ".mp4"
+# States in which a job is not finished. Used by the list (badge counts), by the
+# restart sweep, and to reject a cancel of something already over.
+JOB_ACTIVE_STATES = ("queued", "rendering", "encoding")
+# How many worker PROCESSES one server-backend job fans out across. Frame-range
+# parallelism is sound because no widget is autoregressive (see the sharding note
+# in cli/render_job.js), and it is ESSENTIAL rather than optional: a generative
+# material runs its per-pixel shader on the CPU headlessly, which measures in
+# MINUTES per frame, so the shard count is the difference between a usable render
+# and a multi-day one. Default: half the cores, capped -- the cap exists because
+# each worker holds its own CanvasKit surfaces and this often runs on a laptop,
+# where spawning 32 of them would swap. POWERRP_RENDER_WORKERS overrides it.
+RENDER_WORKERS_CAP = 8
+RENDER_WORKER_COUNT = max(1, min(RENDER_WORKERS_CAP, (os.cpu_count() or 2) // 2))
+if os.environ.get("POWERRP_RENDER_WORKERS"):
+    RENDER_WORKER_COUNT = max(1, int(os.environ["POWERRP_RENDER_WORKERS"]))
+# The frame worker, resolved relative to this file so the dump stays portable.
+RENDER_JOB_SCRIPT = os.path.join(APP_DIR, "cli", "render_job.js")
+# Widget types the HEADLESS renderer cannot draw: it passes an empty media map, so
+# these draw as NOTHING. That is a silently wrong picture, so submit attaches a
+# loud warning naming them rather than letting it be discovered in the output.
+HEADLESS_UNSUPPORTED_TYPES = ("image", "video", "video_scrub", "video_v5", "pdf", "filmstrip")
+
+
+def renders_dir(name):
+    """Query. Absolute path of a project's renders/ folder (the finished movies)."""
+    return os.path.join(project_dir(name), RENDERS_SUBDIR)
+
+
+def jobs_dir(name):
+    """Query. Absolute path of a project's render-job bookkeeping folder."""
+    return os.path.join(renders_dir(name), JOBS_SUBDIR)
+
+
+def job_dir(name, job_id):
+    """
+    Query. Absolute path of ONE render job's folder. The id is validated as a
+    single safe component AND containment-checked, so a crafted id can never
+    escape the project's jobs folder.
+    """
+    base = jobs_dir(name)
+    full = os.path.normpath(os.path.join(base, safe_name(job_id)))
+    if not full.startswith(base + os.sep):
+        raise ValueError(f"unsafe render job id: {job_id!r}")
+    return full
+
+
+def job_frames_dir(name, job_id):
+    """Query. Absolute path of a job's frame scratch folder."""
+    return os.path.join(job_dir(name, job_id), JOB_FRAMES_SUBDIR)
+
+
+def count_job_frames(name, job_id):
+    """
+    Query. How many finished frames a job has written -- THE progress signal.
+    Counting a directory is deliberate: it needs no IPC, no heartbeat and no
+    client-held handle, so any tab can read it at any time, and a killed worker
+    cannot leave a stale "80%" behind. Partial writes are invisible because the
+    worker renames a .part file into place only once complete.
+    """
+    d = job_frames_dir(name, job_id)
+    if not os.path.isdir(d):
+        return 0
+    return sum(1 for f in os.listdir(d) if f.startswith("frame_") and f.endswith(".png"))
+
+
+def read_job(name, job_id):
+    """Query. One job's record, or raise FileNotFoundError if there is no such job."""
+    path = os.path.join(job_dir(name, job_id), JOB_RECORD_FILENAME)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"unknown render job: {job_id}")
+    with open(path) as f:
+        return json.load(f)
+
+
+def write_job(name, job_id, record):
+    """
+    Command (mutates the filesystem). Persist a job record ATOMICALLY (write a
+    temp file then os.replace), so a reader that lists jobs while the supervisor
+    is updating one can never see a half-written JSON.
+    """
+    d = job_dir(name, job_id)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, JOB_RECORD_FILENAME)
+    tmp = path + ".part"
+    with open(tmp, "w") as f:
+        json.dump(record, f, indent=2)
+    os.replace(tmp, path)
+
+
+def update_job(name, job_id, **fields):
+    """Command. Read-modify-write a job record with `fields`. Returns the new record."""
+    record = read_job(name, job_id)
+    record.update(fields)
+    write_job(name, job_id, record)
+    return record
+
+
+def job_view(name, record):
+    """
+    Query. A job record decorated for the client: live `framesDone` (counted off
+    disk for an unfinished job) and the output's current size. A finished job
+    keeps the counts frozen in its record -- its frames folder is gone.
+    """
+    view = dict(record)
+    if record["state"] in JOB_ACTIVE_STATES:
+        view["framesDone"] = count_job_frames(name, record["id"])
+    out = record.get("output")
+    if out:
+        path = os.path.join(renders_dir(name), out)
+        view["bytes"] = os.path.getsize(path) if os.path.exists(path) else 0
+        view["outputPath"] = path
+    return view
+
+
+def list_jobs(name):
+    """
+    Query. A project's render jobs, newest first, each decorated by job_view. A
+    project with no renders/ folder simply has none.
+    """
+    base = jobs_dir(name)
+    if not os.path.isdir(base):
+        return []
+    out = []
+    for job_id in os.listdir(base):
+        path = os.path.join(base, job_id, JOB_RECORD_FILENAME)
+        if not os.path.exists(path):
+            continue
+        with open(path) as f:
+            out.append(job_view(name, json.load(f)))
+    return sorted(out, key=lambda j: j.get("createdAt", 0), reverse=True)
+
+
+def widget_types(doc):
+    """
+    Pure function. The distinct widget `type` values appearing anywhere in a
+    document, found by walking the whole structure -- items live inside per-slide
+    DELTAS, not a flat item table, so a shallow scan would miss most of them.
+
+    Examples:
+        >>> sorted(widget_types({"slides": [{"delta": {"items": {"a": {"type": "text"}}}}]}))
+        ['text']
+        >>> widget_types({})
+        set()
+    """
+    found = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            kind = node.get("type")
+            if isinstance(kind, str):
+                found.add(kind)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(doc)
+    return found
+
+
+def headless_media_warning(doc):
+    """
+    Pure function. A LOUD warning naming the widgets a server-side render cannot
+    draw, or None when the deck is fully renderable headlessly. The headless
+    renderer passes an empty media map, so these widgets draw as nothing -- a
+    silently wrong picture unless the user is told BEFORE they wait for it.
+
+    Examples:
+        >>> headless_media_warning({"slides": [{"delta": {"items": {"a": {"type": "text"}}}}]}) is None
+        True
+        >>> "video" in headless_media_warning({"slides": [{"delta": {"items": {"a": {"type": "video"}}}}]})
+        True
+    """
+    present = sorted(widget_types(doc) & set(HEADLESS_UNSUPPORTED_TYPES))
+    if not present:
+        return None
+    return (f"Server-side rendering cannot draw media yet, so these widgets will be BLANK in the "
+            f"output: {', '.join(present)}. Use the Browser backend for a deck containing them.")
+
+
+def unique_output_name(name, base):
+    """
+    Query. A free "<base>.mp4" (or "<base> (2).mp4", ...) inside the project's
+    renders/ folder, so a re-render never silently overwrites an earlier movie the
+    user may still want.
+    """
+    d = renders_dir(name)
+    candidate = base + JOB_OUTPUT_EXT
+    n = 2
+    while os.path.exists(os.path.join(d, candidate)):
+        candidate = f"{base} ({n}){JOB_OUTPUT_EXT}"
+        n += 1
+    return candidate
+
+
+def create_job(name, params, doc, job_name, backend):
+    """
+    Command (mutates the filesystem). Register a render job for a project and
+    SNAPSHOT `doc` into it, returning the new record.
+
+    The snapshot is the point: the job renders the deck AS IT WAS AT SUBMIT, so
+    editing (or even deleting) the project afterwards cannot splice two different
+    documents into one video.
+
+    Args:
+        name (str): project name
+        params (dict): width/height/fps/crf/background/range/... (validated by caller)
+        doc (dict): the document to snapshot
+        job_name (str): human label, also the output filename stem
+        backend (str): "server" (this server renders) or "client" (browser renders)
+
+    Returns:
+        dict: the job record
+    """
+    job_id = uuid.uuid4().hex
+    d = job_dir(name, job_id)
+    os.makedirs(os.path.join(d, JOB_FRAMES_SUBDIR), exist_ok=True)
+    with open(os.path.join(d, JOB_DOC_FILENAME), "w") as f:
+        json.dump(doc, f)
+    record = {
+        "id": job_id,
+        "project": name,
+        "name": job_name,
+        "backend": backend,
+        "state": "queued",
+        "framesTotal": 0,       # filled by the worker's plan (server) or the client
+        "framesDone": 0,
+        "params": params,
+        "output": None,
+        "error": None,
+        "warning": headless_media_warning(doc) if backend == "server" else None,
+        "workers": RENDER_WORKER_COUNT if backend == "server" else 1,
+        "createdAt": time.time(),
+        "startedAt": None,
+        "finishedAt": None,
+        "seen": False,
+    }
+    write_job(name, job_id, record)
+    return record
+
+
+def delete_job(name, job_id):
+    """
+    Command (mutates the filesystem). Remove a job's bookkeeping folder AND its
+    output movie. Refuses LOUDLY while the job is still active -- cancel it first,
+    so a running worker can never be left writing into a deleted directory.
+    """
+    record = read_job(name, job_id)
+    if record["state"] in JOB_ACTIVE_STATES:
+        raise RuntimeError(f"render job {job_id} is {record['state']} -- cancel it before deleting")
+    out = record.get("output")
+    if out:
+        path = os.path.join(renders_dir(name), out)
+        if os.path.exists(path):
+            os.remove(path)
+    shutil.rmtree(job_dir(name, job_id), ignore_errors=True)
+
+
+# The render queue and its single supervisor thread. ONE job at a time (see the
+# section header); `_job_procs` holds a running job's worker Popens so a cancel
+# can kill them, and `_job_cancelled` marks ids the supervisor must abandon --
+# including one cancelled while still QUEUED, which has no processes to kill.
+_job_queue = queue.Queue()
+_job_procs = {}
+_job_cancelled = set()
+_job_lock = threading.Lock()
+
+
+def encode_job_output(name, job_id, record):
+    """
+    Command (runs ffmpeg, writes the movie, deletes the frame scratch). Mux a
+    job's rendered PNG sequence into the project's renders/ folder and return the
+    output's basename.
+
+    This is the ONE encode step, shared by both backends -- the browser-rendered
+    and server-rendered paths differ only in who wrote the frames. Mirrors
+    encode_export_mp4's ffmpeg invocation (yuv420p + even dimensions so it plays
+    everywhere, +faststart so it is instantly seekable) but writes to a PERSISTENT
+    location instead of returning bytes and deleting everything.
+
+    Raises loudly if ffmpeg is missing, no frames exist, or ffmpeg fails.
+    """
+    frames = job_frames_dir(name, job_id)
+    if not os.path.isdir(frames) or not any(f.endswith(".png") for f in os.listdir(frames)):
+        raise RuntimeError(f"render job {job_id} has no frames to encode")
+    os.makedirs(renders_dir(name), exist_ok=True)
+    out_name = unique_output_name(name, record["name"])
+    out_path = os.path.join(renders_dir(name), out_name)
+    pattern = os.path.join(frames, f"frame_%0{EXPORT_FRAME_PAD}d.png")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-framerate", str(record["params"]["fps"]), "-start_number", "0",
+             "-i", pattern,
+             "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-crf", str(record["params"]["crf"]), "-movflags", "+faststart",
+             "-loglevel", "error", out_path],
+            capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg not found on PATH -- install ffmpeg")
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"ffmpeg MP4 encode failed: {exc.stderr.strip()[-500:]}")
+    # The movie exists now, so the PNG sequence (1-2 GB for a 1080p minute) is
+    # dead weight and goes immediately. The job RECORD stays -- it is the list.
+    shutil.rmtree(frames, ignore_errors=True)
+    return out_name
+
+
+def run_server_job(name, job_id):
+    """
+    Command (spawns worker processes, waits, then encodes). Render a
+    server-backend job: fan its frame range out across RENDER_WORKER_COUNT
+    `cli/render_job.js` shards, wait for them all, then encode.
+
+    Raises loudly if node is missing or ANY shard exits non-zero (with that
+    shard's stderr), so a failed render surfaces the real reason instead of
+    stalling at a percentage.
+    """
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("node not found on PATH -- the server-side renderer needs Node.js")
+    record = read_job(name, job_id)
+    shards = record["workers"]
+    d = job_dir(name, job_id)
+    procs = []
+    for shard in range(shards):
+        procs.append(subprocess.Popen(
+            [node, RENDER_JOB_SCRIPT, d, "--shard", str(shard), "--shards", str(shards)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ))
+    with _job_lock:
+        _job_procs[job_id] = procs
+    try:
+        failures = []
+        for shard, proc in enumerate(procs):
+            _, err = proc.communicate()
+            # A cancel kills the workers, so a non-zero exit there is expected and
+            # is NOT a failure to report -- the cancel path owns that outcome.
+            if proc.returncode != 0 and job_id not in _job_cancelled:
+                failures.append(f"shard {shard} exited {proc.returncode}: {(err or '').strip()[-500:]}")
+        if failures:
+            raise RuntimeError("render worker failed -- " + " | ".join(failures))
+    finally:
+        with _job_lock:
+            _job_procs.pop(job_id, None)
+
+
+def _supervise():
+    """
+    Command (the render supervisor thread; runs forever). Takes one job id at a
+    time off the queue, renders it (server backend) and encodes it, recording
+    every outcome on the job record.
+
+    Every failure is written to the record's `error` and printed with a traceback:
+    a job must end in a state the user can SEE, never linger as a lie.
+    """
+    while True:
+        name, job_id = _job_queue.get()
+        try:
+            record = read_job(name, job_id)
+            if job_id in _job_cancelled or record["state"] == "cancelled":
+                update_job(name, job_id, state="cancelled", finishedAt=time.time())
+                continue
+            update_job(name, job_id, state="rendering", startedAt=time.time())
+            run_server_job(name, job_id)
+            if job_id in _job_cancelled:
+                shutil.rmtree(job_frames_dir(name, job_id), ignore_errors=True)
+                update_job(name, job_id, state="cancelled", finishedAt=time.time())
+                continue
+            record = update_job(name, job_id, state="encoding",
+                                framesDone=count_job_frames(name, job_id))
+            out_name = encode_job_output(name, job_id, record)
+            update_job(name, job_id, state="done", output=out_name,
+                       finishedAt=time.time(), seen=False)
+        except Exception as exc:  # report loudly on the record AND the console
+            traceback.print_exc()
+            try:
+                update_job(name, job_id, state="failed", error=f"{type(exc).__name__}: {exc}",
+                           finishedAt=time.time())
+            except Exception:
+                traceback.print_exc()  # the record itself is unwritable -- console is all we have
+        finally:
+            _job_cancelled.discard(job_id)
+            _job_queue.task_done()
+
+
+def enqueue_job(name, job_id):
+    """Command. Hand a server-backend job to the supervisor thread."""
+    _job_queue.put((name, job_id))
+
+
+def cancel_job(name, job_id):
+    """
+    Command (kills the job's workers). Cancel a queued or running job. Marks the
+    id cancelled FIRST so a job still sitting in the queue is abandoned when it
+    comes up, then kills any live worker processes. Refuses loudly for a job that
+    has already finished.
+    """
+    record = read_job(name, job_id)
+    if record["state"] not in JOB_ACTIVE_STATES:
+        raise RuntimeError(f"render job {job_id} is already {record['state']}")
+    _job_cancelled.add(job_id)
+    with _job_lock:
+        for proc in _job_procs.get(job_id, []):
+            proc.kill()
+    # A CLIENT-backend job has no server-side process to kill: marking the record
+    # is the whole cancel, and the browser stops when its next POST is refused.
+    if record["backend"] == "client":
+        shutil.rmtree(job_frames_dir(name, job_id), ignore_errors=True)
+        update_job(name, job_id, state="cancelled", finishedAt=time.time())
+    return read_job(name, job_id)
+
+
+def resume_interrupted_jobs():
+    """
+    Command (runs once at boot). Reconcile jobs left mid-flight by a server
+    restart, so a restart can never silently lose one.
+
+    A SERVER-backend job is re-queued: its frames are on disk and the worker skips
+    the ones already written, so it picks up roughly where it stopped. A CLIENT
+    -backend job cannot resume -- its frame producer was a browser tab that is
+    gone -- so it is marked "interrupted" with a message saying so.
+    """
+    if not os.path.isdir(PROJECTS_DIR):
+        return
+    for name in os.listdir(PROJECTS_DIR):
+        base = os.path.join(PROJECTS_DIR, name, RENDERS_SUBDIR, JOBS_SUBDIR)
+        if not os.path.isdir(base):
+            continue
+        for job_id in os.listdir(base):
+            try:
+                record = read_job(name, job_id)
+            except (FileNotFoundError, ValueError):
+                continue
+            if record["state"] not in JOB_ACTIVE_STATES:
+                continue
+            if record["backend"] == "server":
+                # stderr, like every other server report: stdout is block-buffered
+                # when the server is launched with its output redirected to a log,
+                # so a "loud" notice printed there would sit unseen in a buffer.
+                print(f"PowerRP: resuming interrupted render job {record['name']} ({job_id}) in {name}", file=sys.stderr)
+                update_job(name, job_id, state="queued", error=None)
+                enqueue_job(name, job_id)
+            else:
+                print(f"PowerRP: render job {record['name']} ({job_id}) in {name} was interrupted by a server restart", file=sys.stderr)
+                update_job(name, job_id, state="interrupted", finishedAt=time.time(),
+                           error="The server restarted while the browser was rendering this job's "
+                                 "frames, and a browser-rendered job cannot be resumed. Submit it "
+                                 "again -- the Server backend survives restarts.")
 
 
 def asset_kind(filename):
@@ -964,6 +1480,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_download(parts[2])
             if len(parts) == 5 and parts[:2] == ["api", "frames"]:
                 return self._handle_frames(parts[2], parts[3], parts[4], parsed.query)
+            if len(parts) == 3 and parts[:2] == ["api", "render-jobs"]:
+                return self._json({"jobs": list_jobs(parts[2])})
+            if len(parts) >= 3 and parts[0] == "render":
+                # parts[1] = project, parts[2:] = a file inside renders/. Served
+                # with Range support so the modal's <video> can seek the result.
+                return self._serve_render(parts[1], "/".join(parts[2:]))
             if len(parts) >= 3 and parts[0] == "asset":
                 # parts[1] = project, parts[2:] = a file path inside assets/
                 # (a plain file, or a frames/<video>/<N>/frame_NNN.png subpath).
@@ -1012,6 +1534,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_export_frame(parts[2], parts[4])
             if len(parts) == 4 and parts[:2] == ["api", "export-mp4"] and parts[3] == "encode":
                 return self._handle_export_encode(parts[2])
+            # -- detached render jobs --
+            if len(parts) == 3 and parts[:2] == ["api", "render-jobs"]:
+                return self._handle_job_submit(parts[2])
+            if len(parts) == 5 and parts[:2] == ["api", "render-job"] and parts[4] in ("cancel", "seen", "finish"):
+                return self._handle_job_action(parts[2], parts[3], parts[4])
+            if len(parts) == 6 and parts[:2] == ["api", "render-job"] and parts[4] == "frame":
+                return self._handle_job_frame(parts[2], parts[3], parts[5])
             self._error(404, f"no POST route for {parsed.path}")
         except Exception as exc:
             traceback.print_exc()
@@ -1022,6 +1551,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if len(parts) == 4 and parts[:2] == ["api", "asset"]:
                 return self._handle_delete_asset(parts[2], parts[3])
+            if len(parts) == 4 and parts[:2] == ["api", "render-job"]:
+                delete_job(parts[2], parts[3])
+                return self._json({"ok": True, "id": parts[3]})
             self._error(404, f"no DELETE route for {parsed.path}")
         except Exception as exc:
             traceback.print_exc()
@@ -1168,6 +1700,107 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, f"frame h/w must be positive: {query!r}")
         self._json(extract_frames(name, video, n, frame_h, frame_w))
 
+    # -- detached render jobs --
+
+    def _serve_render(self, name, filename):
+        """Serve a finished movie out of a project's renders/ folder, Range-supported
+        (the modal plays it inline). Same containment guard as _serve_asset."""
+        if "\x00" in filename:
+            return self._error(400, f"bad render path: {name}/{filename}")
+        d = renders_dir(name)
+        full = os.path.normpath(os.path.join(d, filename))
+        if not full.startswith(d + os.sep) or not os.path.isfile(full):
+            return self._error(404, f"render not found: {name}/{filename}")
+        self._serve_file(full, content_type_for(full))
+
+    def _handle_job_submit(self, name):
+        """
+        POST /api/render-jobs/<project>/ -- body {name, backend, framesTotal, params, doc}.
+        SNAPSHOTS doc into the job and (server backend) queues it. Returns {job}.
+        """
+        body = json.loads(self._read_body() or b"{}")
+        doc = body.get("doc")
+        params = body.get("params")
+        backend = body.get("backend")
+        if not isinstance(doc, dict) or not isinstance(params, dict):
+            return self._error(400, "render job submit: body needs {doc, params}")
+        if backend not in ("server", "client"):
+            return self._error(400, f"render job submit: backend must be 'server' or 'client', got {backend!r}")
+        crf = params.get("crf")
+        if not isinstance(crf, int) or not (H264_CRF_MIN <= crf <= H264_CRF_MAX):
+            return self._error(400, f"render job submit: crf must be an int in [{H264_CRF_MIN}, {H264_CRF_MAX}]")
+        if not params.get("fps", 0) > 0:
+            return self._error(400, "render job submit: fps must be > 0")
+        # MOTION BLUR is a CLIENT-backend capability: it averages sub-frames on a
+        # canvas, which the headless worker has no equivalent for. Refusing at
+        # submit is the loud option; silently rendering without blur would hand
+        # back a video that is not what was asked for.
+        if backend == "server" and params.get("samples", 1) > 1:
+            return self._error(400, "render job submit: motion blur (samples > 1) is only available on the "
+                                    "Browser backend -- the server renderer has no sub-frame averaging. "
+                                    "Set motion blur to 1, or switch the backend to Browser.")
+        job_name = str(body.get("name") or "").strip() or "Render"
+        try:
+            safe_name(job_name)
+        except ValueError:
+            return self._error(400, f"render job submit: name is not a valid filename: {job_name!r}")
+        record = create_job(name, params, doc, job_name, backend)
+        frames_total = body.get("framesTotal")
+        if isinstance(frames_total, int) and frames_total > 0:
+            # The client already built the timeline for its own UI; the worker
+            # recomputes the identical number from the same pure helpers on the
+            # same snapshot. This copy exists only so the progress bar has a
+            # denominator before the first frame lands.
+            record = update_job(name, record["id"], framesTotal=frames_total)
+        if backend == "server":
+            enqueue_job(name, record["id"])
+        else:
+            record = update_job(name, record["id"], state="rendering", startedAt=time.time())
+        self._json({"job": job_view(name, record)})
+
+    def _handle_job_action(self, name, job_id, action):
+        """POST /api/render-job/<project>/<id>/{cancel,seen,finish}/ → {job}."""
+        if action == "cancel":
+            return self._json({"job": job_view(name, cancel_job(name, job_id))})
+        if action == "seen":
+            return self._json({"job": job_view(name, update_job(name, job_id, seen=True))})
+        # finish: the CLIENT backend has uploaded every frame and wants the shared
+        # encode. Same ffmpeg step the server backend uses -- one encode, one
+        # output location, one job list.
+        record = read_job(name, job_id)
+        if record["backend"] != "client":
+            return self._error(400, f"render job {job_id} is a {record['backend']} job -- only a client job is finished by the browser")
+        if record["state"] not in JOB_ACTIVE_STATES:
+            return self._error(400, f"render job {job_id} is already {record['state']}")
+        record = update_job(name, job_id, state="encoding", framesDone=count_job_frames(name, job_id))
+        try:
+            out_name = encode_job_output(name, job_id, record)
+        except Exception as exc:
+            traceback.print_exc()
+            update_job(name, job_id, state="failed", error=f"{type(exc).__name__}: {exc}", finishedAt=time.time())
+            raise
+        record = update_job(name, job_id, state="done", output=out_name, finishedAt=time.time(), seen=False)
+        self._json({"job": job_view(name, record)})
+
+    def _handle_job_frame(self, name, job_id, index):
+        """POST /api/render-job/<project>/<id>/frame/<n>/ -- one PNG from the CLIENT
+        backend, written into the SAME frames dir the server workers would fill."""
+        record = read_job(name, job_id)
+        if record["state"] not in JOB_ACTIVE_STATES:
+            return self._error(409, f"render job {job_id} is {record['state']} -- not accepting frames")
+        data = self._read_body()
+        if not data:
+            return self._error(400, "empty frame body")
+        frames = job_frames_dir(name, job_id)
+        os.makedirs(frames, exist_ok=True)
+        path = os.path.join(frames, f"frame_{int(index):0{EXPORT_FRAME_PAD}d}.png")
+        # Atomic, exactly like the headless worker: the frame COUNT is the progress
+        # signal, so a partially-received PNG must never be counted.
+        with open(path + ".part", "wb") as f:
+            f.write(data)
+        os.replace(path + ".part", path)
+        self._json({"ok": True, "index": int(index)})
+
     def _serve_asset(self, name, filename):
         # `filename` may be a plain asset OR a frames/<video>/<N>/frame_NNN.png
         # subpath. `d` is the project's assets/ root; NUL is rejected, and the
@@ -1194,6 +1827,15 @@ def serve(port=8000):
     """
     os.makedirs(PROJECTS_DIR, exist_ok=True)
     print(f"Projects: {PROJECTS_DIR}  ({len(list_projects())} projects)", file=sys.stderr)
+    # THE render supervisor: one daemon thread draining one FIFO queue, so exactly
+    # one job renders at a time (each already fans out across RENDER_WORKER_COUNT
+    # processes). Started before the reconcile sweep so a resumed job has somewhere
+    # to go. Daemon: a Ctrl-C must not be held up by an in-flight render, and
+    # nothing is lost if it is killed — the job dir survives and the next boot
+    # resumes it.
+    threading.Thread(target=_supervise, daemon=True, name="powerrp-render").start()
+    print(f"Render workers per job: {RENDER_WORKER_COUNT}", file=sys.stderr)
+    resume_interrupted_jobs()
     print(f"Serving on http://localhost:{port}", file=sys.stderr)
     ThreadingHTTPServer(("", port), Handler).serve_forever()
 

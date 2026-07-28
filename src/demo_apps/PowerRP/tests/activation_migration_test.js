@@ -44,7 +44,7 @@ import { createRegistry } from "../core/registry.js";
 import {
   canvasModes, getHandler, handlerFor, handlerIds, migrationPlan, phaseNames,
 } from "../web/widget_handlers.js";
-import { mandelbrotPlugin } from "../plugins/demo/mandelbrot.js";
+import { approxCentre, mandelbrotPlugin } from "../plugins/demo/mandelbrot.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -275,14 +275,40 @@ test("interiorView.writes: a new window becomes keyframable coarse-centre writes
   );
 });
 
-test("interiorView.writes: at fineExponent > 0 the COARSE digits are left ALONE", () => {
+test("interiorView.writes: the centre delta goes to the LEAF THAT CAN HOLD IT", () => {
   // THE reason the centre is split at all: a drag must not flatten a typed 32-digit
-  // coordinate to float64, so the delta lands in the fine slots.
-  const s = { centerX: 0, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent: 2, zoomExponent: 1, w: 100, h: 100 };
-  const out = mandelbrotPlugin.interiorView.writes(s, { x: 0.4, y: -0.1, w: 0.2, h: 0.2 });
-  assert.deepEqual(out, { zoomExponent: 1, centerFineX: 50, centerFineY: 0 });
-  assert.equal("centerX" in out, false);
-  assert.equal("centerY" in out, false);
+  // coordinate to float64. What protects those digits is that only ONE leaf is
+  // written — the one that can represent the delta — never both.
+  const DEEP_FINE = 3.123456789012345; // 16 digits riding at 10^-16
+  const s = {
+    centerX: -0.7435669, centerY: 0.1314023, centerFineX: DEEP_FINE, centerFineY: 0,
+    fineExponent: 16, zoomExponent: 2, w: 100, h: 100,
+  };
+  const win = mandelbrotPlugin.interiorView.window(s);
+
+  // AN UNMOVED WINDOW stays in the leaf each axis is already in — which is also the
+  // set equationBoundInteriorProps reads to decide whether to refuse the mode.
+  const still = mandelbrotPlugin.interiorView.writes(s, win);
+  assert.deepEqual(still, { zoomExponent: 2, centerFineX: DEEP_FINE, centerFineY: 0 });
+
+  // A REAL PAN (0.01, ten thousand times the coarse leaf's own spacing) belongs to the
+  // COARSE leaf: it is representable there, so storing it in the fine slot would only
+  // scale it by 10^16 for nothing. The deep fine digits are left ALONE...
+  const panned = mandelbrotPlugin.interiorView.writes(s, { ...win, x: win.x + 0.01 });
+  assert.equal("centerFineX" in panned, false, "a 0.01 pan does not belong in a 10^-16 slot");
+  assert.equal(panned.centerX, -0.7335669);
+  // ...so the SUM the shader consumes is exactly the old centre plus the pan.
+  const before = approxCentre(s.centerX, s.centerFineX, 16);
+  const after = approxCentre(panned.centerX, s.centerFineX, 16);
+  assert.ok(Math.abs((after - before) - 0.01) < 1e-15, `the pan landed at ${after - before}, not 0.01`);
+
+  // AND A DELTA THE COARSE LEAF CANNOT HOLD goes to the fine slot — which is the
+  // branch the split centre exists for, reached here by handing writes() a window the
+  // float64 one could not have produced (see the writes() docstring: an interior PAN
+  // is itself bounded at about 1e-16 because `window` is a float64 rect).
+  const sub = mandelbrotPlugin.interiorView.writes(s, { ...win, x: win.x + 1e-20 });
+  assert.equal("centerX" in sub, false, "a 1e-20 delta must not be rounded into the coarse leaf");
+  assert.ok(Math.abs(sub.centerFineX - DEEP_FINE) < 1e-3, "the fine slot must carry the sub-ulp delta, not replace it");
 });
 
 test("interiorView: window/writes ROUND-TRIP (an untouched window writes the state back)", () => {
