@@ -473,19 +473,47 @@
     commitAt(["material"], { id, params: withSeededLists(matGet(id), matSub.params ?? {}) });
   }
 
-  /** Command. Commits a Mat SELECT knob, honoring the entry's `presetExpand`
-   * contract (the preset-type pattern): a non-neutral pick on the preset knob
-   * EXPANDS to its continuous knobs via the entry's own expand() and resets the
-   * select to neutral, so the Inspector always shows the values that render —
-   * never a preset silently overriding the rows beneath it. One undo unit. */
-  function commitSelectKnob(mrow, v) {
+  /**
+   * Query (reads matEntry/matSub). The single {subpath, value} write a select
+   * knob PICK performs — factored out so the hover PREVIEW stages EXACTLY what
+   * the commit writes (the manifest's hover doctrine: "point at an option, see
+   * what choosing it would do"). Honors the entry's `presetExpand` contract: a
+   * non-neutral pick on the preset knob EXPANDS to its continuous knobs (the
+   * entry's own expand()) and resets the select to neutral, so the Inspector
+   * always shows the values that render; any other select writes its one param.
+   *
+   * @example
+   * // selectKnobWrite({name:"metalType"}, "brass")
+   * // // → { subpath: ["material","params","metalType"], value: "brass" }
+   */
+  function selectKnobWrite(mrow, v) {
     const pe = matEntry.presetExpand;
     if (pe && mrow.name === pe.knob && v !== pe.neutral) {
       const expanded = pe.expand({ ...(matSub.params ?? {}), preset: v });
-      commitAt(["material", "params"], { ...expanded, [pe.knob]: pe.neutral });
-      return;
+      return { subpath: ["material", "params"], value: { ...expanded, [pe.knob]: pe.neutral } };
     }
-    commitAt(["material", "params", mrow.name], v);
+    return { subpath: ["material", "params", mrow.name], value: v };
+  }
+
+  /** Command. Commits a Mat SELECT knob (one undo unit) via selectKnobWrite —
+   * so a preset pick expands and never silently overrides the rows beneath it. */
+  function commitSelectKnob(mrow, v) {
+    const w = selectKnobWrite(mrow, v);
+    commitAt(w.subpath, w.value);
+  }
+
+  /** Command factory. The hover-preview {preview, cancel} pair for ONE select
+   * knob (metalType, blendMode, …): pointing at an option — pointer OR arrow key,
+   * the Dropdown collapses both to one "active" notion — stages selectKnobWrite's
+   * write LIVE on every target and reverts on leave, the document untouched. It
+   * is the SAME write commitSelectKnob makes, staged not committed
+   * (web/hoverPreview.js's doctrine). Built per row because each knob writes a
+   * different param; a multi-selection previews every target. */
+  function selectKnobHover(mrow) {
+    return makeHoverPreview(app, (v) => {
+      const w = selectKnobWrite(mrow, v);
+      return writePaths.map((p) => [[...p, ...w.subpath], perTarget(w.value)]);
+    });
   }
 
   // ── THE MATERIAL KNOBS ARE THEIR OWN COLLAPSIBLE SECTION ──────────────────────
@@ -651,8 +679,24 @@
                   <ColorField {app} path={[...path, "material", "params", mrow.name]} paths={writePaths.map((p) => [...p, "material", "params", mrow.name])} label={mrow.name} value={matValue(mrow)} {disabled} />
                 {:else if mrow.kind === "select"}
                   <!-- commitSelectKnob honors the entry's presetExpand contract:
-                       a preset pick writes the continuous knobs and resets itself. -->
-                  <Dropdown items={mrow.options.map((o) => ({ value: o, label: mrow.optionLabels?.[o] ?? o }))} value={matValue(mrow)} onchange={(v) => commitSelectKnob(mrow, v)} />
+                       a preset pick writes the continuous knobs and resets itself.
+                       HOVER PREVIEW (the material-picker trope, web/hoverPreview.js,
+                       via selectKnobHover): pointing at an option — pointer OR arrow
+                       key, one "active" notion in the Dropdown — stages that pick
+                       LIVE on the canvas and reverts on leave, the document
+                       untouched; a real pick drops the transient revert FIRST
+                       (ListField.pickPreset discipline) then commits ONE undo unit.
+                       Closes the "metal material options don't preview on hover"
+                       gap — the material id + texture palette already had it; the
+                       per-param select knobs (metalType brass/chrome/…) did not. -->
+                  {@const selHover = selectKnobHover(mrow)}
+                  <Dropdown
+                    items={mrow.options.map((o) => ({ value: o, label: mrow.optionLabels?.[o] ?? o }))}
+                    value={matValue(mrow)}
+                    onchange={(v) => { app.transientPreview = null; commitSelectKnob(mrow, v); }}
+                    onpreview={selHover.preview}
+                    oncancelpreview={selHover.cancel}
+                  />
                 {:else if mrow.kind === "boolean"}
                   <input type="checkbox" checked={matValue(mrow)} {disabled} aria-label={mrow.label ?? mrow.name} onchange={(e) => commitAt(["material", "params", mrow.name], e.target.checked)} />
                 {:else}
