@@ -177,6 +177,9 @@
      strength .btn:disabled uses, named because this one is a semantic state
      (hidden ≠ disabled) rather than a control's own dimming. */
   --a-list-hidden-opacity: 0.45;
+  /* The render-warning fold's one-line teaser: quieter than its "Warning" label
+     (it is a preview, not the message) but still clearly readable. */
+  --a-warning-teaser-opacity: 0.7;
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
   /* ── EQUATION SYNTAX-HIGHLIGHT PALETTE (Opus25, round-3 field) ──
      One token per highlight class from equationTokenSpans (core/expressions.js).
@@ -4940,6 +4943,13 @@ audio.ae-preview-media {
   font-weight: 600;
 }
 
+/* Heading + the reset-to-defaults button on one line, pushed apart. */
+.render-center-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .render-center-row {
   display: flex;
   align-items: center;
@@ -5210,12 +5220,57 @@ audio.ae-preview-media {
   text-decoration: none;
 }
 
+/* JOB WARNING FOLD — closed by default. The renderer's warnings are deliberate
+   essays (said once per render), so a row shows one ellipsized teaser line and
+   opens to the full text only on demand. */
 .render-center-warning {
   margin: 0;
   color: var(--a-keyed);
   font-size: var(--a-font-sm);
   line-height: var(--a-text-line-height);
+  min-width: 0;
 }
+
+.render-center-warning-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  cursor: pointer;
+  list-style: none; /* the chevron below is the marker; hide the UA's */
+}
+
+.render-center-warning-summary::-webkit-details-marker {
+  display: none;
+}
+
+.render-center-warning[open] .render-center-warning-chevron {
+  transform: rotate(90deg);
+}
+
+.render-center-warning-label {
+  flex-shrink: 0;
+}
+
+.render-center-warning-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: var(--a-warning-teaser-opacity);
+}
+
+/* Open = the full text is right below; the teaser would duplicate its first words. */
+.render-center-warning[open] .render-center-warning-preview {
+  display: none;
+}
+
+.render-center-warning-text {
+  margin: var(--a-sp-2) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 
 .render-center-error {
   margin: 0;

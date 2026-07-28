@@ -28,17 +28,12 @@
 
 import { beginMp4Export, postMp4ExportFrame, encodeMp4Export, postRenderJobFrame, finishRenderJob, listRenderJobs } from "./projectApi.js";
 
-/** libx264 CRF (Constant Rate Factor) per quality preset — LOWER = higher
- *  quality / larger file. 23 is x264's own default (visually good); 18 is near
- *  visually-lossless; 28 is noticeably smaller. The server validates the chosen
- *  CRF against the codec's [CRF_MIN, CRF_MAX] range. */
-export const QUALITY_CRF = { low: 28, medium: 23, high: 18 };
-/** libx264 CRF bounds: 0 = lossless (huge), 51 = worst. The custom-quality input
- *  clamps to this and the server rejects anything outside it. */
-export const CRF_MIN = 0;
-export const CRF_MAX = 51;
-/** Default CRF when quality is unspecified (x264's own default == "medium"). */
-export const DEFAULT_CRF = QUALITY_CRF.medium;
+// The codec constants MOVED to renderCenterSettings.js — a leaf-pure module
+// bare node can import (this one pulls in projectApi, which reads `location`
+// at module scope). Re-exported so this stays their encoder-side name for
+// existing importers.
+import { QUALITY_CRF, CRF_MIN, CRF_MAX, DEFAULT_CRF } from "./renderCenterSettings.js";
+export { QUALITY_CRF, CRF_MIN, CRF_MAX, DEFAULT_CRF };
 
 /**
  * Near-pure helper (reads the canvas bitmap; allocates a Blob). Serializes a

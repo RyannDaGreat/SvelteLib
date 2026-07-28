@@ -136,3 +136,90 @@ export function jobStatusLine(job) {
   if (job.state === "interrupted") return "Interrupted by a server restart";
   return "Failed";
 }
+
+/**
+ * Pure function. A job warning flattened to ONE compact line for the collapsed
+ * warning fold's <summary> — newlines and whitespace runs become single spaces
+ * (the display truncates with CSS ellipsis, so no length cap here). The full
+ * text, formatting intact, lives in the fold's body; this is only the teaser.
+ *
+ * @param {string} text The job record's `warning`.
+ * @returns {string}
+ *
+ * @example warningPreview("The render worker reported:\nrender_job: frames went flat") // "The render worker reported: render_job: frames went flat"
+ * @example warningPreview("  one   line  ") // "one line"
+ */
+export function warningPreview(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Pure function. Render-progress time estimate — THE SAME MATH AS rp.eta
+ * (rp.r._eta): one observed session where `startN` items already existed when
+ * observation began, `elapsedSeconds` have passed, and `n` exist now.
+ *
+ *   proportion = (n − startN) / (total − startN)
+ *   eta        = elapsed / proportion        (estimated total session time)
+ *   etr        = eta − elapsed               (estimated time remaining)
+ *   rate       = (n − startN) / elapsed
+ *
+ * Subtracting startN is rp's `start_n` and it is why a RESUMED job (frames
+ * already on disk when the dialog starts watching) cannot fake a fast rate.
+ * Returns null while the session has made no progress — rp prints "NO
+ * PROGRESS; INFINITE TIME REMAINING" for that; the caller shows nothing.
+ * (rp's high-water clamp for a mid-flight GROWING total is deliberately not
+ * mirrored: framesTotal is fixed at submit, so proportion is already monotone.)
+ *
+ * @param {number} n Items done now.
+ * @param {number} total Total items.
+ * @param {number} startN Items that were already done at session start.
+ * @param {number} elapsedSeconds Seconds since session start (> 0 for an estimate).
+ * @returns {{etrSeconds: number, etaSeconds: number, rate: number}|null}
+ *
+ * @example etaEstimate(5, 10, 0, 10) // {etrSeconds: 10, etaSeconds: 20, rate: 0.5}
+ * @example etaEstimate(700, 1000, 600, 50) // {etrSeconds: 150, etaSeconds: 200, rate: 2}
+ * @example etaEstimate(600, 1000, 600, 50) // null (no session progress yet)
+ * @example etaEstimate(0, 0, 0, 5) // null
+ */
+export function etaEstimate(n, total, startN, elapsedSeconds) {
+  if (!(total > startN) || !(elapsedSeconds > 0)) return null;
+  const proportion = (n - startN) / (total - startN);
+  if (proportion <= 0) return null;
+  const eta = elapsedSeconds / proportion;
+  return { etrSeconds: eta - elapsedSeconds, etaSeconds: eta, rate: (n - startN) / elapsedSeconds };
+}
+
+/**
+ * Pure function. Seconds as a python-timedelta-style clock, whole seconds —
+ * the H:MM:SS shape rp.eta prints (hours unpadded, may exceed 24).
+ *
+ * @param {number} seconds Non-negative duration.
+ * @returns {string}
+ *
+ * @example formatClock(83) // "0:01:23"
+ * @example formatClock(3722) // "1:02:02"
+ * @example formatClock(90000) // "25:00:00"
+ */
+export function formatClock(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+}
+
+/**
+ * Pure function. The status-line suffix for an etaEstimate: ETR and rate in
+ * rp.eta's vocabulary, or "" for null (no estimate yet — say nothing rather
+ * than something wrong).
+ *
+ * @param {{etrSeconds: number, rate: number}|null} est An etaEstimate result.
+ * @returns {string}
+ *
+ * @example etaSuffix({etrSeconds: 150, etaSeconds: 200, rate: 2}) // " · ETR 0:02:30 · 2.00/s"
+ * @example etaSuffix(null) // ""
+ */
+export function etaSuffix(est) {
+  if (!est) return "";
+  return ` · ETR ${formatClock(est.etrSeconds)} · ${est.rate.toFixed(2)}/s`;
+}

@@ -72,13 +72,19 @@
   import { cameraRectAt } from "./cameraFrame.js";
   import { humanReadableFileSize } from "./fileSize.js";
   import { DEFAULT_FPS, DEFAULT_HOLD_SECONDS, DEFAULT_SAMPLES } from "./videoExport.js";
-  import { QUALITY_CRF, CRF_MIN, CRF_MAX, DEFAULT_CRF } from "./serverMp4Encoder.js";
+  // The form's pure vocabulary: bounds, codec constants, the job→settings
+  // mapping and the persisted-settings sanitizer live in one doctested module.
+  import {
+    QUALITY_CRF, CRF_MIN, CRF_MAX, DEFAULT_CRF,
+    MIN_DIM, MAX_DIM, MIN_FPS, MAX_FPS, MAX_HOLD_SECONDS, MIN_SAMPLES, MAX_SAMPLES,
+    STANDARD_RESOLUTIONS, evenDim, settingsFromJob, sanitizeSettings, loadSettings, saveSettings,
+  } from "./renderCenterSettings.js";
   import { listRenderJobs, cancelRenderJob, deleteRenderJob, markRenderJobSeen, renderUrl } from "./projectApi.js";
   // The job vocabulary (active? unseen? how far? what does this state MEAN?)
   // lives in one pure module because the toolbar badge reads the same
   // predicates — two copies would be two chances to disagree about what the
   // badge counts. See web/renderJobView.js.
-  import { jobIsActive, defaultExpanded, jobProgress, jobStatusLine, STATE_ICONS, ACTIVE_STATES } from "./renderJobView.js";
+  import { jobIsActive, defaultExpanded, jobProgress, jobStatusLine, warningPreview, etaEstimate, etaSuffix, STATE_ICONS, ACTIVE_STATES } from "./renderJobView.js";
   // A browser job's progress and its paused/rendering distinction come from the
   // browser, not the server — see the header's "WHO KNOWS THE PROGRESS".
   import {
@@ -89,25 +95,13 @@
 
   let { app } = $props();
 
-  // Bounds (named, not magic): H.264 needs EVEN dimensions (4:2:0). Cap fps and
-  // dwell to sane authoring ranges; the server validates the real codec limits.
-  const MIN_DIM = 16;
-  const MAX_DIM = 7680; // 8K wide — beyond that, encoding gets impractical
-  const MIN_FPS = 1;
-  const MAX_FPS = 120;
-  const MAX_HOLD_SECONDS = 60;
-  const MIN_SAMPLES = 1;
-  const MAX_SAMPLES = 16; // temporal subsamples per frame (motion blur); >16 rarely worth the cost
+  // Form bounds and evenDim: imported from renderCenterSettings.js so the form
+  // clamps with the SAME numbers the persisted-settings sanitizer uses.
   // How often the right pane re-asks the server. Progress is a directory listing
   // server-side, so this is cheap; 1 s reads as live without hammering a backend
   // that is also running the render.
   const POLL_MS = 1000;
 
-  /** Pure. Largest even integer ≤ v, clamped to [MIN_DIM, MAX_DIM]. */
-  function evenDim(v) {
-    const n = Math.round(v);
-    return Math.max(MIN_DIM, Math.min(MAX_DIM, n - (n % 2)));
-  }
   /** Pure. Clamp a 1-based slide number into [1, slideCount]. */
   function clampSlide(n) {
     return Math.max(1, Math.min(slideCount, Math.round(n)));
@@ -177,11 +171,7 @@
 
   const RESOLUTIONS = [
     { value: "camera", label: `Camera size — ${camW}×${camH}`, w: camW, h: camH },
-    { value: "2160", label: "4K — 3840×2160", w: 3840, h: 2160 },
-    { value: "1440", label: "QHD — 2560×1440", w: 2560, h: 1440 },
-    { value: "1080", label: "1080p — 1920×1080", w: 1920, h: 1080 },
-    { value: "720", label: "720p — 1280×720", w: 1280, h: 720 },
-    { value: "480", label: "480p — 854×480", w: 854, h: 480 },
+    ...STANDARD_RESOLUTIONS,
     { value: "custom", label: "Custom…" },
   ];
   // "Quality" alone was ambiguous — it reads as render quality, but it is the
@@ -243,24 +233,115 @@
   let splits = $state([INITIAL_FORM_SPLIT]);
 
   // ── Form state ──────────────────────────────────────────────────────────
-  let jobName = $state(untrack(() => app.projectName()));
-  let backend = $state("server");
-  let resolution = $state("camera");
-  let customW = $state(camW);
-  let customH = $state(camH);
-  let fps = $state(DEFAULT_FPS);
-  let codecQuality = $state("medium");
-  let customCrf = $state(DEFAULT_CRF); // libx264 CRF when codecQuality === "custom"
-  let rangeMode = $state("all");
-  let rangeFrom = $state(1);
-  let rangeTo = $state(slideCount);
-  let includeTransitions = $state(true);
-  let holdSeconds = $state(DEFAULT_HOLD_SECONDS);
-  let background = $state("#000000");
-  let samples = $state(DEFAULT_SAMPLES); // temporal subsamples (1 = no motion blur)
-  let browserEncoder = $state(DEFAULT_BROWSER_ENCODER);
+  // Defaults double as the persisted-settings SCHEMA (sanitizeSettings): the
+  // keys here decide which fields exist. The modal remounts on every open, so
+  // the form's persistence across close/reopen — and across reloads — is the
+  // localStorage round-trip below, sanitized on the way back in.
+  const FORM_DEFAULTS = {
+    name: project,
+    backend: "server",
+    resolution: "camera",
+    customW: camW,
+    customH: camH,
+    fps: DEFAULT_FPS,
+    codecQuality: "medium",
+    customCrf: DEFAULT_CRF, // libx264 CRF when codecQuality === "custom"
+    rangeMode: "all",
+    rangeFrom: 1,
+    rangeTo: slideCount,
+    includeTransitions: true,
+    holdSeconds: DEFAULT_HOLD_SECONDS,
+    background: "#000000",
+    samples: DEFAULT_SAMPLES, // temporal subsamples (1 = no motion blur)
+    browserEncoder: DEFAULT_BROWSER_ENCODER,
+  };
+  const ENCODER_VALUES = BROWSER_ENCODERS.map((e) => e.value);
+  const savedSettings = loadSettings(localStorage, FORM_DEFAULTS, slideCount, ENCODER_VALUES);
+
+  let jobName = $state(savedSettings.name);
+  let backend = $state(savedSettings.backend);
+  let resolution = $state(savedSettings.resolution);
+  let customW = $state(savedSettings.customW);
+  let customH = $state(savedSettings.customH);
+  let fps = $state(savedSettings.fps);
+  let codecQuality = $state(savedSettings.codecQuality);
+  let customCrf = $state(savedSettings.customCrf);
+  let rangeMode = $state(savedSettings.rangeMode);
+  let rangeFrom = $state(savedSettings.rangeFrom);
+  let rangeTo = $state(savedSettings.rangeTo);
+  let includeTransitions = $state(savedSettings.includeTransitions);
+  let holdSeconds = $state(savedSettings.holdSeconds);
+  let background = $state(savedSettings.background);
+  let samples = $state(savedSettings.samples);
+  let browserEncoder = $state(savedSettings.browserEncoder);
   let submitError = $state(null);
   let submitting = $state(false);
+
+  /** Query. The form as one settings object (the persistence/copy shape). */
+  function currentSettings() {
+    return {
+      name: jobName, backend, resolution, customW, customH, fps, codecQuality,
+      customCrf, rangeMode, rangeFrom, rangeTo, includeTransitions, holdSeconds,
+      background, samples, browserEncoder,
+    };
+  }
+
+  /** Command. Set every form field from a complete settings object. */
+  function applySettings(s) {
+    jobName = s.name; backend = s.backend; resolution = s.resolution;
+    customW = s.customW; customH = s.customH; fps = s.fps;
+    codecQuality = s.codecQuality; customCrf = s.customCrf;
+    rangeMode = s.rangeMode; rangeFrom = s.rangeFrom; rangeTo = s.rangeTo;
+    includeTransitions = s.includeTransitions; holdSeconds = s.holdSeconds;
+    background = s.background; samples = s.samples; browserEncoder = s.browserEncoder;
+  }
+
+  // Persist on every form change. `name` is left out: it defaults to the
+  // PROJECT's name, and remembering one project's render name across projects
+  // would title the next deck's movie after this one.
+  $effect(() => {
+    const { name: _name, ...rest } = currentSettings();
+    saveSettings(localStorage, rest);
+  });
+
+  /** Command. The "Reset to defaults" button: the form goes back to its
+   *  defaults; the persistence effect then overwrites the stored settings. */
+  function resetSettings() {
+    applySettings(FORM_DEFAULTS);
+  }
+
+  /** Command. The per-job "use these settings" button: the job's params, mapped
+   *  back into form words (settingsFromJob) and sanitized against the CURRENT
+   *  form (so fields the record cannot know — browserEncoder — keep their
+   *  values). Flashes the row's button as feedback, like copyPath. */
+  let copiedSettings = $state(null);
+  function copySettings(job) {
+    applySettings(sanitizeSettings(settingsFromJob(job, slideCount, camW, camH), currentSettings(), slideCount, ENCODER_VALUES));
+    copiedSettings = job.id;
+    setTimeout(() => { if (copiedSettings === job.id) copiedSettings = null; }, COPY_FLASH_MS);
+  }
+
+  // ── Render ETA (rp.eta's math — see renderJobView.etaEstimate) ───────────
+  // One observed session per rendering job: first sight of it on a poll records
+  // {frames already done, when} so pre-existing frames (a RESUMED job) never
+  // count toward the rate. Plain Map, not $state: the poll's `jobs` update
+  // already re-renders the rows each second, which re-runs renderEtaSuffix.
+  const etaSessions = new Map();
+  /** Query (reads the session map + the clock). The " · ETR …" suffix for a
+   *  job row, "" until the session has progress to extrapolate from. */
+  function renderEtaSuffix(job) {
+    if (job.state !== "rendering" || !job.framesTotal) {
+      etaSessions.delete(job.id);
+      return "";
+    }
+    const now = Date.now();
+    let s = etaSessions.get(job.id);
+    if (!s || job.framesDone < s.startN) { // new sight, or the worker restarted behind us
+      s = { startN: job.framesDone, startTime: now };
+      etaSessions.set(job.id, s);
+    }
+    return etaSuffix(etaEstimate(job.framesDone, job.framesTotal, s.startN, (now - s.startTime) / 1000));
+  }
 
   // ── Right pane: polled job list ─────────────────────────────────────────
   // `jobs` is server truth, refreshed on a timer. `browserStatus` is the BROWSER's
@@ -407,7 +488,14 @@
 <div class="render-center-panes" class:is-dragging={state.dragging}>
   <!-- ── LEFT: submit ────────────────────────────────────────────────────── -->
   <div class="render-center-submit" style:width={`${state.splits[0] * 100}%`}>
-    <h3 class="render-center-heading">New render</h3>
+    <div class="render-center-heading-row">
+      <h3 class="render-center-heading">New render</h3>
+      <Tooltip text="Reset every setting below to its default">
+        <button type="button" class="btn-icon" aria-label="Reset render settings to defaults" onclick={resetSettings}>
+          <iconify-icon icon="mdi:restore" width="16" height="16"></iconify-icon>
+        </button>
+      </Tooltip>
+    </div>
 
     <label class="render-center-row">
       <span class="render-center-label">Name</span>
@@ -605,6 +693,11 @@
             </button>
             <span class="render-center-job-backend">{job.backend === "server" ? "server" : "browser"}</span>
             {#if !job.seen && job.state === "done"}<span class="render-center-dot" aria-label="Not yet seen"></span>{/if}
+            <Tooltip text={copiedSettings === job.id ? "Settings copied to the form" : "Fill the form with this job's settings"}>
+              <button type="button" class="btn-icon" aria-label={`Use ${job.name}'s render settings`} onclick={() => copySettings(job)}>
+                <iconify-icon icon={copiedSettings === job.id ? "mdi:check" : "mdi:tune"} width="16" height="16"></iconify-icon>
+              </button>
+            </Tooltip>
             {#if resumable}
               <Tooltip text="Continue this render from where it stopped">
                 <button type="button" class="btn-icon" aria-label={`Resume ${job.name}`} onclick={() => resume(job)}>
@@ -628,7 +721,7 @@
           </div>
 
           <p class="render-center-job-status">
-            {isBrowser && active ? browserJobStatusLine(job, bstatus) : jobStatusLine(job)}
+            {isBrowser && active ? browserJobStatusLine(job, bstatus) : jobStatusLine(job) + renderEtaSuffix(job)}
           </p>
 
           {#if active}
@@ -645,7 +738,19 @@
           {/if}
 
           {#if job.warning}
-            <p class="render-center-warning">{job.warning}</p>
+            <!-- Folded by default: a warning can be a deliberate essay (the
+                 renderer reports once per render, loudly), and it must not bury
+                 the video it sits on top of. The summary teases the first words;
+                 the full text opens on demand. -->
+            <details class="render-center-warning">
+              <summary class="render-center-warning-summary">
+                <iconify-icon class="render-center-warning-chevron" icon="mdi:chevron-right" width="14" height="14"></iconify-icon>
+                <iconify-icon icon="mdi:alert-outline" width="14" height="14"></iconify-icon>
+                <span class="render-center-warning-label">Warning</span>
+                <span class="render-center-warning-preview">{warningPreview(job.warning)}</span>
+              </summary>
+              <p class="render-center-warning-text">{job.warning}</p>
+            </details>
           {/if}
           {#if job.error}
             <p class="render-center-error">{job.error}</p>
