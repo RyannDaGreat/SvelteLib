@@ -384,6 +384,67 @@ code exists.
     (grow-up entrance via tweened properties); Manim bar-chart aesthetics.
     Part of the graph* family and subject to the presets mantra (70).
 
+72. **UNIFY VIDEO PLAYER AND SCRUBBER via `time`** (user, 2026-07-28): "we
+    shouldn't have any distinction between video scrubber and regular videos
+    anymore if we can help it... a scrubber with the time just being the time
+    variable modulo self.length should be equivalent, right?" In principle
+    YES — a scrubber whose currentTime equation is `time % self.length` IS a
+    playing video, and unlike the player it is recordable/deterministic (the
+    player deliberately rides the browser's own playback clock and is the one
+    non-reproducible widget; server.py already warns about it and points at
+    the scrubber). Known gaps to close before the player can be retired:
+    (a) `self.length` — the video's duration must be exposed to expressions
+    (it currently is not document state); (b) AUDIO — the native player plays
+    sound, a seek-driven scrubber does not; decide presenter-mode audio story
+    or accept silence; (c) live-playback smoothness — per-frame decoder
+    seeking vs native decode, must be measured in the presenter. Investigation
+    agent dispatched; implementation after findings.
+
+### Round 5 research findings (frenzy digests — the manifest copy is canonical;
+### .frenzy/graph_family/*.md are the full reports and are disposable)
+
+**01 matplotlib/Manim axis options** (for graphRuler, item 66): knob schema
+delivered in PowerRP's real ROW_KINDS vocabulary, tiered A/B/C. Structure to
+mirror Manim: shared axis_config + per-axis override. v1 excludes zoom/pan,
+date axes, 3D, twin axes. LOAD-BEARING TRAPS: tick labels must be generated as
+integer-index × rational-step (NEVER accumulated addition — the
+0.30000000000000004 bug); MaxNLocator's "nice" step set is [1, 2, 2.5, 5, 10];
+minor-tick subdivision is 4-vs-5 depending on major step; log minor ticks are
+non-uniform; spine positioning has three coordinate systems (points / axes
+fraction / data units); no built-in label-collision avoidance anywhere —
+skip-every-N is the pragmatic knob; watch negative-zero formatting.
+
+**02 Manim aesthetics** (for the zoo's look, items 68–69): background is pure
+#000000 (the assumed #0E1116 is UNCONFIRMED — flagged, don't pin it); palette
+BLUE_C #58C4DD, YELLOW_C #F7D96F, RED_C #FC6255 (full ramps in report); stroke
+width ≈ 1/280 of frame width at default weight; Create uses lag_ratio 1.0
+path-trace, Write uses linear rate with length-keyed run_time,
+DrawBorderThenFill is 2s double_smooth stroke-then-fill; base animation is 1s
+smooth (sigmoid — PowerRP's cubic "smooth" curve is the stand-in; ALWAYS
+smooth for draw-ins); NumberPlane grid: faded_line_ratio sub-lines dimmer than
+axes, verticals→horizontals staggered ~60ms; glow = shader radial falloff
+(glow_factor 2.0) or the layered fallback: 4 rings at ~35/18/9/4% opacity.
+
+**05 parametric tool survey** (for graphLine, item 63): numPoints default 256
+(point count, not step — resolution-independent; matplotlib convention
+100–500; in-repo precedent tangent_lines.js CIRCLE_SAMPLES=64);
+discontinuities: Tier A = screen-space jump heuristic (break polyline when
+consecutive samples exceed a threshold), Tier C = Manim-style explicit
+t-value list (no tool auto-detects asymptotes); DRAW-IN IS FREE — tStart/tEnd
+as ordinary tweenable numbers animate through the existing delta engine, zero
+widget-specific animation code; polar/explicit modes are syntactic sugar over
+ONE parametric (x(t), y(t)) core (GeoGebra precedent); THE DESMOS SLIDER
+TRICK: core/expressions.js already detects unknown-variable spans and has a
+constant→scrubber span kind, so auto-exposing free variables as inspector
+scrub rows is wiring, not new detection — this is the first consumer of the
+per-widget variables refactor (item 67).
+
+**03 rolling-ball math, 04 equation-zoo curriculum, 06 sandbox design,
+07 codebase precedent map, 08 chalk/glow inventory, 09 per-widget vars
+design, 10 bar-graph research, video-unify investigation**: agents in flight;
+digest each into this section AS IT LANDS (standing instruction from the
+user: "Write all of them down into the manifest").
+
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
   parametric core with a y-of-x preset wrapper unless told otherwise.)
