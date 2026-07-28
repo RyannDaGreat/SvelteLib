@@ -354,4 +354,27 @@ export const METAL_STAMP_PRESETS = [
     params: { depth: 0.75, bevelWidth: 11, profile: "V", emboss: false, patinaAmount: 0.85, patinaColor: "rgb(67,179,174)" } },
   { id: "engrave_rusted", title: "Rusted Stamp", description: "A struck mark where rust has settled into the cut lines first.",
     params: { depth: 0.8, bevelWidth: 10, profile: "chamfer", emboss: false, rustCoverage: 0.7 } },
+  // ── mini-frenzy top-up (presets mantra, manifest item 70) — each models a
+  // named real-world finish; numbers chosen to stay clearly apart from the
+  // five above AND each other (depth/bevel/light/tint/seed deltas). ─────────
+  { id: "etch_acid", title: "Acid Etch", description: "A chemical bite: shallow, wide, softly chamfered — a surface etch, not a cut groove.",
+    params: { depth: 0.18, bevelWidth: 30, profile: "chamfer", emboss: false } },
+  { id: "deboss_letterpress", title: "Letterpress Deboss", description: "A blunt even press into the metal — rounded walls, no sharp edges anywhere.",
+    params: { depth: 0.22, bevelWidth: 26, profile: "round", emboss: false } },
+  { id: "punch_hallmark", title: "Hallmark Punch", description: "A jeweler's maker's-mark strike: tiny, deep, sharp V with almost no bevel.",
+    params: { depth: 0.95, bevelWidth: 4, profile: "V", emboss: false } },
+  { id: "engrave_trophy", title: "Trophy Plate", description: "Clean precise brass-plate engraving under bright bench light from the upper right.",
+    params: { depth: 0.55, bevelWidth: 9, profile: "chamfer", emboss: false, lightAngle: -55 } },
+  { id: "stamp_dogtag", title: "Dog Tag Stamp", description: "Hard flat-die character stamping read under harsh near-overhead light.",
+    params: { depth: 0.85, bevelWidth: 8, profile: "chamfer", emboss: false, lightAngle: -95 } },
+  { id: "emboss_coin", title: "Coin Relief", description: "Struck-coin relief: deliberately low, wide and rounded so it survives wear.",
+    params: { depth: 0.35, bevelWidth: 34, profile: "round", emboss: true } },
+  { id: "emboss_cast_iron", title: "Cast Iron Lettering", description: "Sand-cast raised lettering, rough wide edges already going to rust.",
+    params: { depth: 0.8, bevelWidth: 24, profile: "chamfer", emboss: true, rustCoverage: 0.35 } },
+  { id: "emboss_hammered_coin", title: "Hammered Coin", description: "Hand-hammered low relief with a faint dusty-tan circulation tarnish.",
+    params: { depth: 0.4, bevelWidth: 22, profile: "round", emboss: true, patinaAmount: 0.3, patinaColor: "rgb(120,110,90)", seed: 11 } },
+  { id: "emboss_verdigris", title: "Verdigris Plaque", description: "Cast bronze plaque, raised lettering over an olive-green weathered surround.",
+    params: { depth: 0.5, bevelWidth: 18, profile: "round", emboss: true, patinaAmount: 0.8, patinaColor: "rgb(88,138,102)" } },
+  { id: "engrave_blackened", title: "Blackened Jewelry", description: "Antiqued silver: engraved lines deliberately blackened so the design pops.",
+    params: { depth: 0.45, bevelWidth: 9, profile: "V", emboss: false, patinaAmount: 0.9, patinaColor: "rgb(18,18,20)" } },
 ];
