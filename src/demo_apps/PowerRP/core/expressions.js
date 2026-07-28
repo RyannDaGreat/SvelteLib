@@ -1885,8 +1885,11 @@ const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
 const REF_SEGS = Symbol("refSegs");
 const IS_REF = Symbol("isRef");
 
-/** Math with NO random (determinism): every Math member except `random`. */
-const SAFE_MATH = Object.freeze(Object.fromEntries(
+/** Math with NO random (determinism): every Math member except `random`.
+ *  EXPORTED for the graph* family's per-sample equation evaluator
+ *  (core/graph_equation.js), which reuses this exact host rather than
+ *  re-deriving a Math-sans-random (duplicating the excision risks drift). */
+export const SAFE_MATH = Object.freeze(Object.fromEntries(
   Object.getOwnPropertyNames(Math)
     .filter((k) => k !== "random")
     .map((k) => [k, typeof Math[k] === "function" ? Math[k].bind(Math) : Math[k]]),
@@ -1897,7 +1900,11 @@ const SAFE_MATH = Object.freeze(Object.fromEntries(
 // `has: () => true` already blocks fall-through to the real globals, so this is
 // the explicit, self-documenting half of the guard. `self` is NOT here — it is
 // the owning-item keyword and is handled as a reference head.
-const BLOCKED_GLOBALS = new Set([
+// EXPORTED for the graph* family's per-sample evaluator, which runs equations
+// against a plain (Proxy-free) scope and so must SHADOW these names to undefined
+// itself to keep `with`-fall-through from reaching the real globals — reusing the
+// one list here rather than maintaining a second copy that could drift.
+export const BLOCKED_GLOBALS = new Set([
   "Date", "window", "globalThis", "global", "fetch", "XMLHttpRequest", "WebSocket",
   "process", "require", "eval", "Function", "import", "document", "navigator",
   "performance", "setTimeout", "setInterval", "queueMicrotask", "Reflect",
@@ -1979,7 +1986,7 @@ function refToJs(value) {
  * @example toJsExpr("self.points.3.x / 2") // "self.points[3].x / 2"
  * @example toJsExpr("(function(){return 1})()") // "(function(){return 1})()" (verbatim — not restricted)
  */
-function toJsExpr(clean) {
+export function toJsExpr(clean) {
   let toks;
   try {
     toks = tokenize(clean);
@@ -2013,7 +2020,7 @@ const jsFnCache = new Map(); // clean src → compiled (scope) → value (pure c
  *
  * @example // compileEquationFn("speed * 2")(scope) evaluates speed*2 against scope
  */
-function compileEquationFn(clean) {
+export function compileEquationFn(clean) {
   const cached = jsFnCache.get(clean);
   if (cached) return cached;
   let restrictedErr = null;

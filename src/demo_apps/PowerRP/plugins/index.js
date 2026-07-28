@@ -42,6 +42,13 @@ import { clockAnalogPlugin } from "./clock_analog.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
 import { polygonPlugin } from "./polygon.js"; // freeform polygon/polyline: a variable-length vertex list, every vertex a handle, the whole list one keyframable leaf
 import { paintPathPlugin } from "./paint_path.js"; // paintable editable cubic-bezier stroke: mirrored-handle anchor list with BREAKS (multi-subpath) + the universal stroke-trim draw-on (strokeStart/End/phase/caps)
+// GRAPH family (items 63-66, 71): parametric-curve / ruler / grid / bars, all
+// driven by the shared core scale + equation modules (core/graph_scale.js,
+// core/graph_equation.js). Siblings of polygon (unbounded data), NOT shapeshifter.
+import { graphLinePlugin } from "./graph_line.js"; // parametric curve: one Monaco equation sampled over [tStart,tEnd] → one path; STROKE_TRIM draw-in
+import { graphTickMarksPlugin } from "./graph_tick_marks.js"; // matplotlib/Manim ruler: axes, ticks, labels, arrow tips
+import { graphGridPlugin } from "./graph_grid.js"; // coordinate grid + faded sub-lines + geometry-baked snake-in (growth via the lagged-reveal formula)
+import { graphBarsPlugin } from "./graph_bars.js"; // programmatic bar graph: direct/riemann/literal, the reveal grow-up, area-under-curve
 // DEMO widgets (plugins/demo/) — showcase the extensibility story (custom
 // self.* properties). Surfaced via the "Add Demo Widget" submenu (App.svelte),
 // not the core Add menus.
@@ -69,7 +76,7 @@ import { glitchPlugin } from "./demo/glitch.js"; // animated sci-fi datamosh / b
 import { mandelbrotPlugin } from "./demo/mandelbrot.js"; // deep-zoom Mandelbrot (perturbation + rebasing in SkSL; split-number centre so every property keyframes)
 import { brightnessContrastPlugin } from "./demo/brightness_contrast.js"; // tone-adjustment region filter (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB + hue lock)
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, progressBarPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, polygonPlugin, paintPathPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, brightnessContrastPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, progressBarPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, polygonPlugin, paintPathPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, brightnessContrastPlugin];
 
 /** Command. Registers every plugin and its palette commands. */
 export function registerAll(registry, commands) {
