@@ -35,6 +35,7 @@
 <script>
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
+  import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import NumericField from "./NumericField.svelte";
@@ -1234,17 +1235,30 @@
          core/properties.js selectRowItems from the SAME declaration the option
          order is flattened from. Captions are Dropdown `insert` entries, so they
          are unselectable, skipped by the arrow keys, and never previewed. -->
-    <Dropdown
-      onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
-      oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
-      items={row.optionsFrom === "items"
-        ? allDocumentItems(app.doc)
-            .filter((it) => it.id !== itemId && app.registry.get(it.type)?.capabilities.purgeable !== false)
-            .map((it) => ({ value: it.id, label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id) }))
-        : selectRowItems(row)}
-      value={valueAt(state, row.key)}
-      onchange={(v) => oncommit(row.key, "select", v)}
-    />
+    <!-- optionsFrom:"items" is an UNBOUNDED object/target list (every eligible
+         widget in the doc), so it types-to-filter (Round 2 #29). Enum/grouped
+         selects (blendMode's liked family sections, curve, …) stay the plain
+         Dropdown: they are short and `optionGroups` caption inserts don't survive
+         a flat fuzzy filter. Both branches share every other prop. -->
+    {#if row.optionsFrom === "items"}
+      <SearchableDropdown
+        onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
+        oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
+        items={allDocumentItems(app.doc)
+          .filter((it) => it.id !== itemId && app.registry.get(it.type)?.capabilities.purgeable !== false)
+          .map((it) => ({ value: it.id, label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id) }))}
+        value={valueAt(state, row.key)}
+        onchange={(v) => oncommit(row.key, "select", v)}
+      />
+    {:else}
+      <Dropdown
+        onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
+        oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
+        items={selectRowItems(row)}
+        value={valueAt(state, row.key)}
+        onchange={(v) => oncommit(row.key, "select", v)}
+      />
+    {/if}
   {:else if kind === "asset"}
     <!-- THE asset control (manifest "ASSET UX ROUND 2"): AssetField — current
          name + Browse (picker modal, Asset Explorer's tile grid, filtered to
@@ -1501,7 +1515,12 @@
 
 <div class="inspector">
   <div class="inspector-head">
-    <Dropdown
+    <!-- The item picker lists EVERY object on EVERY slide (Round 2 #29: object
+         select becomes searchable) — unbounded, so it types-to-filter past the
+         small-list threshold. It keeps its custom `pickerItem` snippet (the
+         invisible-on-this-slide danger styling), which opts out of the built-in
+         match highlight. -->
+    <SearchableDropdown
       items={itemChoices}
       value={pickedItemId}
       placeholder="— select item —"

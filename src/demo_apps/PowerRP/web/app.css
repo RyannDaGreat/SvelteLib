@@ -408,6 +408,12 @@
   --a-fps-color: #35d07f;
   --a-fps-z: 300;
 
+  /* Floating popover stacking level — the open Dropdown menu (Dropdown reads it
+     as --dd-menu-z). Above every pane / present layer (≤ 300) so a menu that has
+     escaped its pane's overflow also paints over neighbours, and below Tooltip /
+     Modal's 2147483647 ceiling so a dialog opened over a menu still wins. */
+  --a-z-popover: 1000;
+
   /* Scrollbars */
   --a-scrollbar-w: 8px;
 }
@@ -5435,4 +5441,71 @@ audio.ae-preview-media {
 .brush-swatch-selected {
   outline: var(--a-selection-stroke) solid var(--a-selection);
   outline-offset: 1px;
+}
+
+/* ── CodeEditorModal (Monaco) — ROUND 2 #32/#33 ─────────────────────────────────
+   The reusable full-screen code editor's CHROME (Monaco draws its own vs-dark
+   editing surface inside .code-modal-editor). It rides the shared lib/Modal.svelte
+   at size="large" (90vw×90vh); the two :global rules below flex that modal's body
+   to FILL the panel so the editor can be full-height — scoped to panels that
+   actually contain a .code-modal-root via :has(), so no other modal is affected. */
+:root {
+  --a-code-modal-footer-pad: 10px 14px;
+  --a-code-modal-footer-gap: 12px;
+  --a-code-modal-btn-pad: 6px 16px;
+  --a-code-modal-min-editor-h: 200px;
+}
+/* Fill the shared modal's body with the editor (the panel is already a flex
+   column at a fixed 90vh); drop its padding so Monaco meets the edges. */
+.modal-panel:has(.code-modal-root) > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+.code-modal-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.code-modal-editor {
+  flex: 1 1 auto;
+  min-height: var(--a-code-modal-min-editor-h);
+  width: 100%;
+}
+.code-modal-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--a-code-modal-footer-gap);
+  padding: var(--a-code-modal-footer-pad);
+  border-top: 1px solid var(--border);
+  background: var(--a-panel-bg);
+}
+.code-modal-hint {
+  color: var(--fg-dim);
+  font-size: 0.85em;
+}
+.code-modal-actions {
+  display: flex;
+  gap: var(--a-code-modal-footer-gap);
+}
+.code-modal-btn {
+  padding: var(--a-code-modal-btn-pad);
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.code-modal-btn:hover {
+  background: var(--a-hover-bg);
+}
+.code-modal-primary {
+  background: var(--a-selection);
+  border-color: var(--a-selection);
 }

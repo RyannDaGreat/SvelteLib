@@ -221,6 +221,7 @@
   import ColorField from "./ColorField.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import Dropdown from "../../../lib/Dropdown.svelte";
+  import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
@@ -528,7 +529,11 @@
          the canvas and reverts on leave (matHover; web/hoverPreview.js). A pick
          drops the transient revert FIRST — ListField.pickPreset's discipline — so
          the commit is the user's choice, never a hovered-past one left staged. -->
-    <Dropdown
+    <!-- SEARCHABLE (Round 2 #28/#29): the fill/stroke material registries grow
+         past a dozen entries, so this picker types-to-filter. It is otherwise the
+         same Dropdown contract — hover still previews LIVE, a pick still drops the
+         transient revert then commits. -->
+    <SearchableDropdown
       items={MATERIAL_OPTIONS}
       value={matSub.id}
       onchange={(id) => { app.transientPreview = null; commitAt(["material", "id"], id); }}

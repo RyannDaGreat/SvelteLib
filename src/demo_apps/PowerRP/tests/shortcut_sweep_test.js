@@ -278,6 +278,10 @@ const ACCOUNTED = {
     keys: [" ", "ArrowDown", "ArrowUp", "End", "Enter", "Escape", "Home"],
     coverage: "LOCAL: a listbox — Space/Enter/Down open it, arrows walk the options, Home/End jump to first/last, Enter chooses, Escape dismisses. The platform's own ARIA listbox conventions, every effect confined to the open menu, and it stopPropagations Escape so a host cancel does not ALSO fire behind the dismiss (the innermost-cancel-wins nesting Modal.svelte's header documents).",
   },
+  "../../lib/SearchableDropdown.svelte": {
+    keys: ["End", "Escape", "Home"],
+    coverage: "LOCAL: a combobox wrapping Dropdown — its search <input> only intercepts three keys before letting the rest bubble to the Dropdown listbox above. Escape CLEARS a non-empty query first (a second, empty Escape falls through to Dropdown's dismiss — the standard clear-then-close), and Home/End edit the search TEXT (stopPropagation so Dropdown does not hijack them to jump the list). Arrows/Enter/typing are untouched and reach Dropdown, which owns the actual listbox navigation already registered above. Universal combobox conventions, every effect confined to the open picker.",
+  },
   "../../lib/ColorPicker.svelte": {
     keys: ["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "Enter", "Escape"],
     coverage: "LOCAL: three focusable slider surfaces (the SV square, the hue strip, the alpha strip) nudged with arrows — the same role=slider ARIA convention web/AngleField's dial rides — plus Enter/Escape to commit/revert the hex <input>. Universal field and slider conventions, each confined to the focused surface inside an open popover.",

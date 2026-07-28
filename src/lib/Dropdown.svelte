@@ -65,6 +65,33 @@
     - `insert`  snippet — override per-insert rendering (receives the payload)
     - `header`  snippet — content above the list (search box, etc.)
     - `footer`  snippet — content below the list (action buttons, etc.)
+    - `open`      ($bindable) — the menu's open state, exposed so a wrapper
+                  (SearchableDropdown) can react to open/close (focus its search
+                  box, clear its query). Existing callers leave it unbound.
+    - `listItems` — the rows the menu RENDERS and navigates, when they differ
+                  from `items`. `items` still resolves the TRIGGER label and the
+                  selected value; `listItems` (a filtered/ranked subset) drives
+                  the list, arrow keys, hover-preview and selection. This is the
+                  seam SearchableDropdown uses to filter without the trigger
+                  going blank when the selected row is filtered out. Unset ⇒
+                  identical to before (list === items).
+
+  FLOATING MENU (no-clip): the open menu is `position: fixed`, positioned at the
+  trigger's viewport rect, so it ESCAPES an ancestor's `overflow:hidden` (the
+  Inspector pane clipped it at the pane bottom — the reported bug) rather than
+  being trapped in the panel's flow. It flips ABOVE the trigger when there is no
+  room below, caps its height to the available space, and on an OUTSIDE scroll
+  FOLLOWS the anchor (repositioning) rather than closing — see handleWindowScroll
+  for why blind close-on-scroll was wrong here. It stays a DOM descendant of the
+  root (not portaled), so keyboard
+  bubbling, outside-click containment, and consumers that query `.dd-item` inside
+  the row all keep working. Requires no transformed ancestor between the trigger
+  and the viewport (same constraint Tooltip already relies on here).
+
+  SCROLL-UPDATES-HOVER: scrolling the option list under a stationary pointer
+  re-hit-tests the row now under the cursor and makes IT the active/previewed
+  row — a scroll fires no mousemove, so without this the preview would lag the
+  visible list.
 
   Behavior: click trigger to open, click item to select/toggle, click outside
   or ESC to close. ↑/↓ to navigate (skipping inserts + disabled rows), Enter to
@@ -100,6 +127,13 @@
      (Row content and consumer snippets may still use iconify-icon freely.) */
   const CARET_PATH = "m7 10l5 5l5-5z"; // mdi:menu-down
   const CHECK_PATH = "M21 7L9 19l-5.5-5.5l1.41-1.41L9 16.17L19.59 5.59z"; // mdi:check
+
+  /* Floating-menu placement (positionMenu). DEFAULT_MENU_MAX_H mirrors the CSS
+     `--dd-menu-max-height` default so the list still caps + scrolls at the usual
+     height; the fixed-position box only shrinks BELOW it when the viewport is
+     tight. VIEWPORT_MARGIN is the sliver kept between the menu and the edge. */
+  const DEFAULT_MENU_MAX_H = 240;
+  const VIEWPORT_MARGIN = 6;
 
   /**
    * Pure function. True if `it` is an insert entry (decoration between rows)
@@ -209,6 +243,11 @@
     oncancelpreview = undefined,
     /** @type {(values:any[], items:any[])=>string} multi-select trigger summary */
     summary = undefined,
+    /** @type {boolean} $bindable menu open state — a wrapper may observe it */
+    open = $bindable(false),
+    /** @type {any[]|undefined} rows to RENDER/navigate (filtered subset); `items`
+     *  still resolves the trigger label + value. Unset ⇒ list === items. */
+    listItems = undefined,
 
     trigger,
     item: itemSnippet,
@@ -217,10 +256,23 @@
     footer,
   } = $props();
 
-  let open = $state(false);
   let activeIndex = $state(-1);
   let rootEl;
+  let triggerEl = $state(null);
   let listEl = $state(null);
+  let menuEl = $state(null);
+
+  /* The rows the MENU shows and the keyboard/hover navigate. `items` stays the
+     source for the trigger label + value resolution; a wrapper passing a
+     filtered `listItems` gets a filtered list without the trigger going blank. */
+  const rows = $derived(listItems ?? items);
+
+  /* Fixed-position box for the open menu (viewport coords), recomputed on open,
+     scroll, and resize. null before the first measure. */
+  let menuPos = $state(null);
+  /* Last known pointer position (viewport), so a scroll under a stationary mouse
+     can re-hit-test what is now under the cursor. */
+  let lastPointer = null;
 
   /* Loud guard: multi-select requires an array value so bindings stay sane. */
   $effect(() => {
@@ -240,9 +292,9 @@
   );
 
   function firstSelectableFor(value) {
-    const idx = findIndex(items, multiple ? undefined : value);
+    const idx = findIndex(rows, multiple ? undefined : value);
     if (idx >= 0) return idx;
-    for (let i = 0; i < items.length; i++) if (isSelectable(items, i)) return i;
+    for (let i = 0; i < rows.length; i++) if (isSelectable(rows, i)) return i;
     return -1;
   }
 
@@ -250,11 +302,21 @@
     open = true;
     activeIndex = firstSelectableFor(value);
     if (scrollToValue !== undefined) scrollTargetIntoView(scrollToValue);
+    /* Seed a valid down-placement from the trigger rect (which exists now) so the
+       FIRST render is already correctly positioned — no null frame that would
+       fall back to the CSS anchor. rAF then refines it once the list has laid out
+       (measuring its height decides the flip). */
+    if (triggerEl) {
+      const r = triggerEl.getBoundingClientRect();
+      menuPos = { left: r.left, top: r.bottom, width: r.width, maxHeight: DEFAULT_MENU_MAX_H, placement: "down" };
+    }
+    requestAnimationFrame(positionMenu);
   }
 
   function closeMenu() {
     open = false;
     activeIndex = -1;
+    menuPos = null;
   }
 
   function toggleMenu() {
@@ -264,7 +326,7 @@
   /* Command: scroll the row whose value === target into view, centered.
      Waits a frame so the menu has laid out before measuring. */
   function scrollTargetIntoView(target) {
-    const idx = findIndex(items, target);
+    const idx = findIndex(rows, target);
     if (idx < 0) return;
     requestAnimationFrame(() => {
       const row = listEl?.querySelector(`[data-dd-index="${idx}"]`);
@@ -273,8 +335,8 @@
   }
 
   function selectAt(i) {
-    if (!isSelectable(items, i)) return;
-    const v = items[i].value;
+    if (!isSelectable(rows, i)) return;
+    const v = rows[i].value;
     if (multiple) {
       value = toggleMembership(value, v);
       onchange?.(value);
@@ -287,14 +349,14 @@
   }
 
   function moveActive(delta) {
-    if (!items.length) return;
-    let i = activeIndex < 0 ? 0 : wrap(activeIndex + delta, items.length);
-    for (let n = 0; n < items.length; n++) {
-      if (isSelectable(items, i)) {
+    if (!rows.length) return;
+    let i = activeIndex < 0 ? 0 : wrap(activeIndex + delta, rows.length);
+    for (let n = 0; n < rows.length; n++) {
+      if (isSelectable(rows, i)) {
         activeIndex = i;
         return;
       }
-      i = wrap(i + delta, items.length);
+      i = wrap(i + delta, rows.length);
     }
   }
 
@@ -334,7 +396,7 @@
         break;
       case "End":
         e.preventDefault();
-        activeIndex = items.length;
+        activeIndex = rows.length;
         moveActive(-1);
         break;
       case "Enter":
@@ -349,10 +411,94 @@
     if (rootEl && !rootEl.contains(e.target)) closeMenu();
   }
 
+  /* Command. Positions the open menu as a FIXED box at the trigger's viewport
+     rect, flipping ABOVE when there is no room below and capping its height to
+     the space available on the chosen side. Fixed positioning is what lets the
+     menu escape an ancestor's overflow:hidden (the clipped-at-pane-bottom bug)
+     without portaling it out of the root. Reads DOM geometry, writes menuPos. */
+  function positionMenu() {
+    if (!open || !triggerEl) return;
+    const r = triggerEl.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const spaceBelow = vh - r.bottom;
+    const spaceAbove = r.top;
+    /* The menu's NATURAL desired height, measured from the LIST's full content
+       (scrollHeight ignores the max-height cap, unlike menuEl's height, so this
+       does NOT feed back on a previously-capped measurement) plus the header. */
+    const headerH = menuEl?.querySelector(".dd-header")?.offsetHeight ?? 0;
+    const natural = (listEl ? listEl.scrollHeight : 0) + headerH;
+    /* Flip up only when below is too short for the natural menu AND above has more
+       room. Prefer below (the legacy anchored look). */
+    const flipUp = spaceBelow < natural && spaceAbove > spaceBelow;
+    /* Cap the list to the room on the chosen side, but never TALLER than the
+       component's own --dd-menu-max-height default — so a long list still scrolls
+       instead of ballooning to fill the pane. VIEWPORT_MARGIN keeps a hair of gap
+       to the edge so the not-clipped invariant holds. */
+    const room = (flipUp ? spaceAbove : spaceBelow) - VIEWPORT_MARGIN - headerH;
+    const maxHeight = Math.max(0, Math.min(DEFAULT_MENU_MAX_H, room));
+    menuPos = flipUp
+      ? { left: r.left, bottom: vh - r.top, width: r.width, maxHeight, placement: "up" }
+      : { left: r.left, top: r.bottom, width: r.width, maxHeight, placement: "down" };
+  }
+
+  /* Command. Responds to an OUTSIDE scroll that moves the anchor by REPOSITIONING
+     the fixed menu to follow the trigger — it stays glued to the anchor through
+     any scroll. The menu list's OWN scroll instead re-hovers (onListScroll);
+     scroll events don't bubble, so this capture-phase listener sees every scroll
+     and discriminates by target.
+
+     Why follow rather than CLOSE-on-scroll (the textbook behavior): opening the
+     fixed menu itself perturbs the ancestor panel's scroll (measured: the
+     Inspector panel-body bounced 584→714→584 px as the menu mounted, briefly
+     scrolling the trigger's rect off-screen). A close on that SPURIOUS scroll
+     tore the menu down mid-hover and wiped the live material preview — and it is
+     not distinguishable from a genuine scroll at the event. Following the anchor
+     (the Floating-UI/Radix default) survives the spurious scroll and keeps the
+     menu correct through a genuine one; an outside pointerdown / Escape / pick
+     still closes it. */
+  function handleWindowScroll(e) {
+    if (!open) return;
+    if (e.target === listEl || (menuEl && menuEl.contains(e.target))) {
+      onListScroll();
+      return;
+    }
+    const scroller = e.target === document ? document.documentElement : e.target;
+    if (scroller?.contains?.(triggerEl)) positionMenu();
+  }
+
+  /* Command. Re-hit-test what the (stationary) pointer is now over after the list
+     scrolled, and make THAT row active — a scroll fires no mousemove, so the
+     previewed row must be recomputed from the pointer position by hand. */
+  function onListScroll() {
+    if (!open || !lastPointer || !listEl) return;
+    const el = document.elementFromPoint(lastPointer.x, lastPointer.y);
+    const row = el && el.closest?.("[data-dd-index]");
+    if (!row || !listEl.contains(row)) return;
+    const i = Number(row.getAttribute("data-dd-index"));
+    if (Number.isInteger(i) && isSelectable(rows, i)) activeIndex = i;
+  }
+
+  function trackPointer(e) {
+    lastPointer = { x: e.clientX, y: e.clientY };
+  }
+
+  /* One effect owns every while-open document/window listener + the initial
+     placement. It reads `open` only; the listeners it installs write menuPos /
+     activeIndex / lastPointer, none of which it reads — so it never re-runs
+     itself (the FontPicker effect-depth precedent). */
   $effect(() => {
     if (!open) return;
     document.addEventListener("pointerdown", handleDocPointer, true);
-    return () => document.removeEventListener("pointerdown", handleDocPointer, true);
+    window.addEventListener("scroll", handleWindowScroll, true);
+    window.addEventListener("resize", positionMenu);
+    window.addEventListener("pointermove", trackPointer, true);
+    positionMenu();
+    return () => {
+      document.removeEventListener("pointerdown", handleDocPointer, true);
+      window.removeEventListener("scroll", handleWindowScroll, true);
+      window.removeEventListener("resize", positionMenu);
+      window.removeEventListener("pointermove", trackPointer, true);
+    };
   });
 
   /* LIVE PREVIEW of the active row (see the header). ONE effect covers hover AND
@@ -360,17 +506,37 @@
      pointerenter handler and moveActive() write the same state, so there is no
      second hover path that could drift from the arrow keys.
 
-     `previewedIndex` is a PLAIN variable, deliberately not $state: it is what the
-     effect has already reported, so making it reactive would re-run the effect on
-     its own write. The early return makes the effect idempotent — a re-run for an
-     unrelated reason (items changing identity, say) re-fires nothing. */
+     `previewed*` are PLAIN variables, deliberately not $state: they are what the
+     effect has already reported, so making them reactive would re-run the effect
+     on its own write. The early return makes it idempotent.
+
+     It keys on the previewed VALUE, not just the index: under a live filter the
+     active index can stay 0 while the row AT 0 changes (glass → crt as you type),
+     and an index-only guard would wrongly suppress the new preview. */
   let previewedIndex = -1;
+  let previewedValue;
   $effect(() => {
-    const i = open && isSelectable(items, activeIndex) ? activeIndex : -1;
-    if (i === previewedIndex) return;
+    const i = open && isSelectable(rows, activeIndex) ? activeIndex : -1;
+    const v = i >= 0 ? rows[i].value : undefined;
+    if (i === previewedIndex && v === previewedValue) return;
     if (previewedIndex >= 0) oncancelpreview?.();
-    if (i >= 0) onpreview?.(items[i].value);
+    if (i >= 0) onpreview?.(v);
     previewedIndex = i;
+    previewedValue = v;
+  });
+
+  /* Keep the active row valid as `listItems` narrows under a live filter: when
+     the current index falls off the end (or onto an insert/disabled row) of the
+     new list, re-point to its first selectable row. Reads+writes activeIndex but
+     CONVERGES — the value it writes is always in range, so the guard is false on
+     the re-run (the FontPicker keep-in-range precedent). Inert for callers that
+     never pass listItems (rows === items, which doesn't churn while open). */
+  $effect(() => {
+    if (!open) return;
+    if (activeIndex < rows.length && (activeIndex < 0 || isSelectable(rows, activeIndex))) return;
+    let i = -1;
+    for (let k = 0; k < rows.length; k++) if (isSelectable(rows, k)) { i = k; break; }
+    activeIndex = i;
   });
 </script>
 
@@ -387,6 +553,7 @@
     type="button"
     class="dd-trigger"
     class:dd-open={open}
+    bind:this={triggerEl}
     aria-haspopup="listbox"
     aria-expanded={open}
     onclick={toggleMenu}
@@ -410,13 +577,29 @@
   </button>
 
   {#if open}
-    <div class="dd-menu" role="listbox" aria-multiselectable={multiple || undefined}>
+    <!-- FIXED at the trigger's viewport rect (see the FLOATING MENU note) so an
+         ancestor's overflow can't clip it; menuPos is null for the first frame
+         (pre-measure), when we fall back to the anchored-below look. -->
+    <div
+      class="dd-menu"
+      class:dd-menu-up={menuPos?.placement === "up"}
+      role="listbox"
+      aria-multiselectable={multiple || undefined}
+      bind:this={menuEl}
+      style:position="fixed"
+      style:left={menuPos ? `${menuPos.left}px` : null}
+      style:right="auto"
+      style:top={menuPos?.placement === "up" ? "auto" : (menuPos ? `${menuPos.top}px` : null)}
+      style:bottom={menuPos?.placement === "up" ? `${menuPos.bottom}px` : "auto"}
+      style:width={menuPos ? `${menuPos.width}px` : null}
+      style:--dd-menu-max-height={menuPos ? `${menuPos.maxHeight}px` : null}
+    >
       {#if header}
         <div class="dd-header">{@render header()}</div>
       {/if}
 
-      <ul class="dd-list" bind:this={listEl}>
-        {#each items as it, i}
+      <ul class="dd-list" bind:this={listEl} onscroll={onListScroll}>
+        {#each rows as it, i}
           {#if isInsert(it)}
             <li class="dd-insert" role="presentation" aria-hidden="true">
               {#if insertSnippet}
@@ -431,18 +614,18 @@
             <li
               class="dd-item"
               class:dd-active={i === activeIndex}
-              class:dd-selected={multiple ? isChecked(items, value, i) : it.value === value}
+              class:dd-selected={multiple ? isChecked(rows, value, i) : it.value === value}
               class:dd-disabled={it.disabled}
               data-dd-index={i}
               role="option"
-              aria-selected={multiple ? isChecked(items, value, i) : it.value === value}
+              aria-selected={multiple ? isChecked(rows, value, i) : it.value === value}
               aria-disabled={it.disabled || undefined}
               onclick={() => selectAt(i)}
-              onpointerenter={() => isSelectable(items, i) && (activeIndex = i)}
+              onpointerenter={() => isSelectable(rows, i) && (activeIndex = i)}
             >
               {#if multiple}
                 <span class="dd-check" aria-hidden="true">
-                  {#if isChecked(items, value, i)}
+                  {#if isChecked(rows, value, i)}
                     {@render glyph(CHECK_PATH)}
                   {/if}
                 </span>
@@ -482,6 +665,9 @@
     --dd-active-fg: var(--fg, #e0e0e0);
     --dd-menu-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
     --dd-menu-max-height: 240px;
+    /* Stacking level of the open (fixed) menu. Chains to PowerRP's popover
+       z token when present; the literal is the standalone fallback. */
+    --dd-menu-z: var(--a-z-popover, 1000);
 
     /* Trigger caret. Default size tracks the trigger's text height (1.2em of
        --dd-font-size) so it reads as matched to the label; overridable. */
@@ -565,14 +751,18 @@
     transform: rotate(180deg);
   }
 
-  /* Menu spans exactly the trigger's width via `right: 0`, so no width
-     mismatch and no flare needed. */
+  /* Menu is a FIXED box placed at the trigger's viewport rect by positionMenu
+     (inline left/top-or-bottom/width), so it escapes an ancestor's overflow.
+     The inline `position:fixed` + coords win over these; `top:100%;left:0` here
+     is only the pre-measure fallback for the first frame before menuPos exists,
+     matching the legacy anchored-below look. z-index via --dd-menu-z (an ambient
+     --a-z token in PowerRP; a literal fallback for standalone use). */
   .dd-menu {
     position: absolute;
     top: 100%;
     left: 0;
     right: 0;
-    z-index: 1000;
+    z-index: var(--dd-menu-z, 1000);
     background: var(--dd-bg);
     color: var(--dd-fg);
     border: 1px solid var(--dd-border);
@@ -580,6 +770,13 @@
     border-radius: 0 0 var(--dd-radius) var(--dd-radius);
     box-shadow: var(--dd-menu-shadow);
     overflow: hidden;
+  }
+  /* Flipped ABOVE the trigger: the seam is now on the menu's BOTTOM edge, so
+     square the bottom corners / round the top and drop the bottom border join. */
+  .dd-menu.dd-menu-up {
+    border-top: 1px solid var(--dd-border);
+    border-bottom: none;
+    border-radius: var(--dd-radius) var(--dd-radius) 0 0;
   }
 
   .dd-header {
