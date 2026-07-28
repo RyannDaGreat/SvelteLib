@@ -34,28 +34,34 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import FloatingCanvasPanel from "./FloatingCanvasPanel.svelte";
+  import FloatingCanvasPanel, { widgetPanelAnchor } from "./FloatingCanvasPanel.svelte";
 
   // app = the app store; handles = the SELECTED handles in world space (each
-  // {id, x, y, element, active}); worldToScreen = the PanZoom camera map.
-  let { app, handles, worldToScreen } = $props();
+  // {id, x, y, element, active}); node = the render node OWNING those handles, which
+  // is what the bar hangs off; worldToScreen = the PanZoom camera map.
+  let { app, handles, node, worldToScreen } = $props();
 
   /** Icon size for the row's buttons — the .btn-icon glyph size the text format
    *  toolbar's own buttons use, so the two bars' rows are the same height. */
   const ICON = 18;
 
-  // The bar hangs off the selected handles' bounding box in SCREEN space: centred
-  // on it, above its top edge (flipping below near the viewport top). A BOX rather
-  // than the centroid so a wide selection is not covered by its own toolbar, and
-  // screen-space rather than local because the handles may be rotated — their
-  // world positions are already the poses on screen (nodeModifierPoints wrapped
-  // them through node.world), so no transform reasoning belongs here.
-  let anchor = $derived.by(() => {
-    const pts = handles.map((h) => worldToScreen(h.x, h.y));
-    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-    const lo = Math.min(...xs), hi = Math.max(...xs);
-    return { x: (lo + hi) / 2, topY: Math.min(...ys), bottomY: Math.max(...ys) };
-  });
+  // The bar hangs off THE WIDGET, exactly like the widget toolbar and every other
+  // floating panel — `widgetPanelAnchor` is the shared helper for that one case, so
+  // all three bars sit in the same place and flip above/below by the same rule.
+  //
+  // It used to hang off the SELECTED HANDLES' bounding box, which read as a tooltip
+  // stuck to a handle and moved every time the selection changed — two different
+  // conventions for the same kind of surface. User ruling: "it should be above the
+  // widget or below like other toolbars", and separately "minor aesthetic
+  // differences are fine if it means consolidating code". Anchoring to the widget
+  // also means the bar does not jump while dragging a handle, and cannot cover the
+  // very handles it acts on.
+  //
+  // `node` may be null for one frame while the selection settles (the handles derive
+  // from app.selectedHandles(), the node from app.selectedNode(), and Svelte need
+  // not update both in the same tick), so the panel is simply not rendered then
+  // rather than being anchored at a guessed origin.
+  let anchor = $derived(node ? widgetPanelAnchor(node, worldToScreen) : null);
 
   // Do the selected handles carry LIST ELEMENTS at all? Only then are hide/purge
   // meaningful (see the header). Every selected element visible → the toggle offers
@@ -65,7 +71,7 @@
   let allVisible = $derived(elements.length > 0 && elements.every((h) => h.active));
 </script>
 
-{#if handles.length}
+{#if handles.length && anchor}
   <FloatingCanvasPanel x={anchor.x} topY={anchor.topY} bottomY={anchor.bottomY} label="Selected points">
     {#snippet children()}
       <div class="canvas-toolbar-row">

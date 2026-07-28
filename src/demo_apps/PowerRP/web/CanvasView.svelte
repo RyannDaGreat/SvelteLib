@@ -2004,7 +2004,14 @@
     // provenance an A-release would wrongly honor. Set below only when the
     // gate (unrotated, enabled, no modifier) is open AND a correction lands.
     drag.snapProvenance = null;
-    if (!drag.rotated && app.snapEnabled && !mods.uniform && !mods.symmetric) {
+    // An INVERTED box (the drag passed through the opposite edge — a FLIP,
+    // web/canvas/dragKinds.js resizedBox) bypasses snapping for exactly the reason
+    // stated above for rotated items: its "left" edge is to the RIGHT of its
+    // "right" edge, so every edge→line and size-match comparison here would be
+    // reasoning about a rect that does not exist. Skipping is the honest choice
+    // rather than producing wrong math; the flip itself still tracks the cursor.
+    const inverted = ww < 0 || hh < 0;
+    if (!drag.rotated && !inverted && app.snapEnabled && !mods.uniform && !mods.symmetric) {
       const r = applyResizeSnap({ x, y, ww, hh });
       x = r.x; y = r.y; ww = r.ww; hh = r.hh;
       newGuides = r.guides;
@@ -3576,7 +3583,7 @@
         <!-- The SELECTED-HANDLE tools (hide/show, purge), on the same
              FloatingCanvasPanel shell as the widget toolbar above. Universal: it
              appears for any widget whose handles are list elements. -->
-        <HandleToolbar {app} handles={selectedHandles} worldToScreen={actions.worldToScreen} />
+        <HandleToolbar {app} handles={selectedHandles} node={app.selectedNode()} worldToScreen={actions.worldToScreen} />
       {/if}
       {#if app.minimapVisible}
         <div class="minimap-dock">
