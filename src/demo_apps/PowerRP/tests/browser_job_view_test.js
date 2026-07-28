@@ -113,13 +113,39 @@ ok("a gap in the persisted segments is refused, not resumed around", () => {
 
 ok("the lease distinguishes this tab, another tab, and nobody", () => {
   const now = 100_000;
-  assert.equal(driverState({ driverId: "a", heartbeatAt: now - 100 }, "a", now), "here");
-  assert.equal(driverState({ driverId: "b", heartbeatAt: now - 100 }, "a", now), "elsewhere");
+  assert.equal(driverState({ driverId: "a", heartbeatAt: now - 100 }, "a", now, true), "here");
+  assert.equal(driverState({ driverId: "b", heartbeatAt: now - 100 }, "a", now, false), "elsewhere");
   // A lease nobody refreshed is stale: the tab that held it is gone.
-  assert.equal(driverState({ driverId: "b", heartbeatAt: now - LEASE_STALE_MS - 1 }, "a", now), "paused");
-  assert.equal(driverState({ driverId: null, heartbeatAt: 0 }, "a", now), "paused");
-  // Even OUR OWN stale lease is paused — a reloaded page is a new driver.
-  assert.equal(driverState({ driverId: "a", heartbeatAt: now - LEASE_STALE_MS - 1 }, "a", now), "paused");
+  assert.equal(driverState({ driverId: "b", heartbeatAt: now - LEASE_STALE_MS - 1 }, "a", now, false), "paused");
+  assert.equal(driverState({ driverId: null, heartbeatAt: 0 }, "a", now, false), "paused");
+  // OUR OWN lease with no work behind it is a leftover, not a driver — however fresh
+  // its heartbeat. A reloaded page is a new driver, and a drive that ended without
+  // clearing the record left this behind.
+  assert.equal(driverState({ driverId: "a", heartbeatAt: now - LEASE_STALE_MS - 1 }, "a", now, false), "paused");
+  assert.equal(driverState({ driverId: "a", heartbeatAt: now - 100 }, "a", now, false), "paused");
+});
+
+ok("a tab driving a job is 'here' however old the lease in the store looks", () => {
+  // THE REGRESSION. The frame walk blocks the main thread for a whole output frame,
+  // so a heartbeat read before such a block, judged against a clock read after it,
+  // is arbitrarily old — measured 7.4 s for one 4K frame at 16 subsamples, and 77 s
+  // for a shader deck's first frame. The lease must not get a vote on whether THIS
+  // tab is working: that is a fact the caller holds, and it is the fourth argument.
+  const now = 100_000;
+  const ancient = { driverId: "a", heartbeatAt: 0 };
+  assert.equal(driverState(ancient, "a", now, true), "here");
+  // Another tab's id with our work behind it still means our work — the id in the
+  // record cannot outvote a frame walk that is running.
+  assert.equal(driverState({ driverId: "b", heartbeatAt: 0 }, "a", now, true), "here");
+});
+
+ok("driverState refuses to guess whether the caller is driving", () => {
+  // An omitted argument is falsy, so tolerating one would silently reinstate the
+  // lease-derived answer at the new call site. It throws instead.
+  const now = 100_000;
+  const job = { driverId: "a", heartbeatAt: now - 100 };
+  assert.throws(() => driverState(job, "a", now), /must be a boolean fact/);
+  assert.throws(() => driverState(job, "a", now, "yes"), /must be a boolean fact/);
 });
 
 ok("segment length is the keyframe period AND the resume granularity", () => {
