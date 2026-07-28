@@ -258,18 +258,20 @@ test("sweep: the reported rows are FIXED — a fractional default now scrubs its
   assert.equal(it.defaultValue, 1e-3);
   assert.equal(it.coefficient, 1e-5); // was 1 unit/px, i.e. 1000× the value per pixel
   assert.equal(it.step, 1e-5);
-  // demo_mandelbrot.paletteOffset (default 0): NOT fixable by inference — a 0
-  // default and no bounds is zero evidence, so inference correctly declines and
-  // ONLY an explicit `scrub` can rescue the row. That scrub has since been
-  // declared (UNIT_SPAN_SCRUB: the shader samples the palette through fract(), so
-  // the period is exactly 1 and one full rotation per RANGE_DRAG_PX is the right
-  // feel), which is why the coefficient below is 0.01 rather than null. The
-  // assertion is kept — inverted — because the POINT still holds and is the
-  // reason the blind-row census exists: inference cannot reach a zero-default
-  // unbounded row, so the fix has to be a declaration.
-  const po = of("demo_mandelbrot", "paletteOffset");
+  // demo_mandelbrot.rampPhase (default 0): NOT fixable by inference — a 0 default
+  // and no bounds is zero evidence, so inference correctly declines and ONLY an
+  // explicit `scrub` can rescue the row. That scrub is declared (UNIT_SPAN_SCRUB:
+  // a looping ramp's phase has period exactly 1, so one full rotation per
+  // RANGE_DRAG_PX is the right feel), which is why the coefficient below is 0.01
+  // rather than null. The assertion is kept — inverted — because the POINT still
+  // holds and is the reason the blind-row census exists: inference cannot reach a
+  // zero-default unbounded row, so the fix has to be a declaration.
+  // FORMERLY demo_mandelbrot.paletteOffset, which became the SHARED ramp property
+  // `rampPhase` when the palette became a colour ramp (core/ramps.js) — the same
+  // knob, the same declared scrub, migrated by the plugin's `legacyKeys`.
+  const po = of("demo_mandelbrot", "rampPhase");
   assert.equal(po.defaultValue, 0);
-  assert.equal(po.coefficient, 0.01, "paletteOffset must scrub one palette cycle per 100px — if this is null again, its declared `scrub` was dropped");
+  assert.equal(po.coefficient, 0.01, "rampPhase must scrub one ramp cycle per 100px — if this is null again, its declared `scrub` was dropped");
   // The wider class, one row per shape of default.
   assert.equal(of("demo_glass", "lightIntensity").coefficient, 0.008); // 0.8
   assert.equal(of("demo_lens_flare", "ghostSpacing").coefficient, 0.0033); // 0.33

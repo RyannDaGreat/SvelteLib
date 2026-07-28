@@ -47,17 +47,15 @@
   the end EXTRAPOLATES from the last two stops rather than always appending white
   at offset 1.
 
-  ── THE PRESET LIBRARY SITS ABOVE THE STOPS, and why that is structural ───────
-  It used to sit below them, and the user ruled it "should go on the TOP of that
-  not the bottom" in the same breath as asking for the list to fold while the
-  library is open — because the two are one fix. Hovering a preset swatch
-  live-previews it, which rewrites the whole stop list; a preset with a different
-  stop COUNT therefore changes the list's HEIGHT (measured: 13 height changes over
-  14 swatches, from 2 rows to 12 and back). With the library BELOW, every one of
-  those shoved the grid — and the tile under the cursor — inside the Inspector's
-  scroller. ABOVE, the grid is anchored by the panel's own top edge instead: the
-  list can fold, unfold or resize and the swatch being pointed at cannot move.
-  Folding the list while the library is open (below) then removes the churn too.
+  ── THE PRESET LIBRARY IS NOT MOUNTED HERE ANY MORE ──────────────────────────
+  It was, privately, which is exactly why no property other than a paint could
+  have one — and why the Mandelbrot palette had to be a `select` over six
+  hard-coded colour lists instead of the same control. GRADIENT_STOPS_LIST now
+  DECLARES `presets: COLOR_RAMP_LIBRARY` and web/ListField.svelte mounts the
+  library from the declaration, above the rows and folding them while it is open,
+  for the reasons that used to be recorded here (a swatch being pointed at must
+  not be able to move when the list under it resizes: measured, 13 height changes
+  over 14 swatches). Nothing about the behaviour changed; the OWNER did.
 
   KNOWN BOUND: a stop COLOUR can hold an `=` equation (core evaluates it now —
   the old "list elements are not equation slots" bound is closed) and ColorField
@@ -202,7 +200,6 @@
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
   import ListField from "./ListField.svelte";
-  import GradientPresetPicker from "./GradientPresetPicker.svelte";
   import { GRADIENT_STOPS_LIST } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
 
@@ -260,41 +257,6 @@
   function commitEquation(text) {
     commitWhole(text);
   }
-
-  /** Command. Replaces the active gradient's stops with a preset's (from the
-   * GradientPresetPicker — a baked rp gradient). One whole-list write, one undo
-   * unit. Geometry (angle / center+radius) is untouched; only the color ramp
-   * changes. */
-  function applyPreset(presetStops) {
-    if (disabled) return;
-    commitAt([subKey, "stops"], presetStops);
-  }
-
-  /** Command. Live-previews a preset's stops while the pointer rests on its
-   * swatch — EXACTLY the whole-list write applyPreset commits, staged into
-   * app.previewDelta instead: the viewport re-renders, the DOCUMENT stays
-   * untouched and no undo entry is created (the house preview/commit contract).
-   * A gradient preset is ONE value (the whole stop list) at one sub-path, so
-   * this is a single pair, not a flat prop set. */
-  function previewPreset(presetStops) {
-    if (disabled) return;
-    app.setPreview([[[...path, subKey, "stops"], presetStops]]);
-  }
-
-  /** Command. Drops the hover preview (pointer left the grid, or it closed) —
-   * the document was never changed, so this just restores what is rendered. */
-  function cancelPresetPreview() {
-    app.cancelPreview();
-  }
-
-  // IS THE PRESET LIBRARY OPEN? Passed straight to the stop list as
-  // `forceCollapsed`, which is the user's "preset selection for gradients should
-  // collapse that for us upon clicking the dropdown": from the click, not from the
-  // first swatch hovered, so nothing about the list moves for the whole session.
-  // ListField keeps this apart from the user's OWN fold choice and restores it when
-  // this goes false — including when the picker unmounts (a switch to Solid), which
-  // it reports rather than leaving the list stuck folded.
-  let presetsOpen = $state(false);
 
   // The linear DIRECTION as a heading in DEGREES — the authoritative stored
   // `angle` if present, else derived from the from/to endpoints (old, un-migrated
@@ -378,21 +340,13 @@
          that refuses below the declared two-stop minimum. The header records
          exactly what this consolidation changed. -->
     <div style="display:flex; flex-direction:column; gap:var(--a-sp-2);">
-      <!-- PRESET LIBRARY — a tiled grid of gradient swatches (baked from rp's
-           gradient library). HOVERING one previews it live in the viewport
-           (document untouched, no undo entry); leaving the grid restores what
-           was there; picking one commits the stops BELOW as ONE undo unit.
-           FIRST, not last: see the header — a swatch being pointed at must not be
-           able to move when the list under it changes size, and the panel's top
-           edge anchors it where the list cannot. -->
-      <GradientPresetPicker
-        {disabled}
-        onpick={applyPreset}
-        onpreview={previewPreset}
-        oncancelpreview={cancelPresetPreview}
-        onopenchange={(open) => (presetsOpen = open)}
-      />
-
+      <!-- The PRESET LIBRARY is no longer mounted here: GRADIENT_STOPS_LIST
+           declares `presets: COLOR_RAMP_LIBRARY` and ListField mounts the library
+           from that declaration, along with the fold-while-open behaviour this
+           field used to drive through `forceCollapsed`. Same grid, same live
+           hover-preview on the canvas, same one-undo-unit commit — one mount point
+           instead of a private one, which is what lets any other ramp property
+           have the library at all. -->
       <ListField
         {app}
         decl={GRADIENT_STOPS_LIST}
@@ -400,7 +354,6 @@
         label={`${label} stop`}
         {disabled}
         seedElement={{ offset: 0, color: NEW_STOP_COLOR }}
-        forceCollapsed={presetsOpen}
       />
     </div>
 

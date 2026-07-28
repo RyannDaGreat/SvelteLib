@@ -3,7 +3,8 @@
  * GENERATIVE FOREGROUND material on the reusable MATERIAL FRAMEWORK. A rounded
  * rect that renders the Mandelbrot set at a centre and zoom of its own, thousands
  * of times deeper than ordinary floating point reaches, with the modern
- * orbit-average / distance-estimate colour stack over a cyclic OKLab palette.
+ * orbit-average / distance-estimate colour stack over a SHARED COLOUR RAMP
+ * (core/ramps.js) read cyclically and blended in OKLab.
  *
  * The mathematics, the measurements behind every default, and the honest limits
  * live beside the SkSL in render_gpu/skia/mandelbrot_shader.js. This file is the
@@ -33,7 +34,7 @@
  * TO ANIMATE A ZOOM, TWEEN `zoomExponent` — linearly, for a constant-rate zoom
  * (the half-width is 10^(-zoomExponent)). Nobody tweens a 32-digit coordinate;
  * they hold the centre still and change the magnification. TO ANIMATE THE
- * COLOURS, tween `paletteOffset`: it recolours without touching the iteration.
+ * COLOURS, tween `rampPhase`: it recolours without touching the iteration.
  *
  * ── THREE PRESET FAMILIES, NOT ONE LIST ──────────────────────────────────────
  * A fractal picture is made of three independent choices — WHERE, WHAT COLOUR, HOW
@@ -74,23 +75,38 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
-import { UNIT_SPAN_SCRUB, bundle, customProps, defaults, props } from "../../core/properties.js";
+import { CUSTOM_CATEGORY, bundle, bundleDefaults, customProps, defaults, props } from "../../core/properties.js";
+import { cyclicRampStops, evenlySpacedRampStops } from "../../core/ramps.js";
 import { reportOnce } from "../../core/report.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import {
   MANDELBROT_AXIS_CODE, MANDELBROT_ESCAPE_RADIUS, MANDELBROT_MAX_FINE_EXPONENT, MANDELBROT_MAX_ITERATIONS,
   MANDELBROT_REF_LEN,
-  bakeMandelbrotPalette, bitsForDepth, centreResolutionDecades, referenceOrbit, scaledDecimal, splitCentreFixed,
+  bakeMandelbrotRamp, bitsForDepth, centreResolutionDecades, referenceOrbit, scaledDecimal, splitCentreFixed,
 } from "../../render_gpu/skia/mandelbrot_shader.js";
 
 const DEG2RAD = Math.PI / 180;
 
-// UNIT_SPAN_SCRUB (core/properties.js, beside SECONDS_SCRUB) is the scrub
-// sensitivity for an UNBOUNDED knob whose useful domain spans ONE unit — here
-// `paletteOffset`, which the shader samples through fract() and is therefore
-// periodic with period exactly 1, so 0.01/px gives one full palette rotation per
-// 100 px of drag. It used to be declared here; three plugins had hand-written the
-// same constant, so it moved to the registry.
+// THE PALETTE IS A SHARED COLOUR RAMP (core/ramps.js + the `ramp` BUNDLE), not a
+// widget-private select. It used to be a `palette` select over six hard-coded
+// colour lists PLUS a comma-separated `paletteStops` TEXT override, and the text
+// row's own help stated the cost: "Being text, this switches rather than tweens".
+// So a palette could not animate between two ramps at all, none of the shared
+// library's 343 gradient presets was reachable from it, and no stop was
+// addressable by an equation. The six named palettes are now ordinary ramp DATA
+// (core/ramps.js CYCLIC_RAMPS), which is the user's ruling — "then make them
+// ramp-capable ... make them ramps" — and their two pieces of domain knowledge
+// travel WITH the data as ramp aspects rather than as widget behaviour:
+//   loop: true   cyclicity is MANDATORY, not stylistic (a 1e-12 frame spans about
+//                two iterations, so a ramp across the whole iteration range is one
+//                flat colour), and the shader already reads the baked table
+//                cyclically, so looping is decided entirely at bake time.
+//   space: "oklab"   perceptual blending, which is why no ramp passes through mud.
+// `paletteOffset` became the ramp's `rampPhase` — the SAME concept (its own help
+// said "one full cycle per unit, and it wraps, so 1.25 looks exactly like 0.25",
+// which is a phase on a period-1 looping ramp) — migrated by the declarative
+// `legacyKeys` rename seam below. `paletteScale` STAYS a widget knob: iterations
+// per colour cycle is escape-time domain knowledge, not a ramp aspect.
 
 /**
  * Zoom depth (decades) below which an EXHAUSTED reference orbit can be rebased
@@ -118,34 +134,6 @@ const MIN_ZOOM_EXPONENT = -1;
  * how they come to disagree.
  */
 const MIN_PALETTE_SCALE = 0.001;
-
-/**
- * The built-in cyclic palettes. Each is a stop list whose LAST stop blends back
- * into its first (bakeMandelbrotPalette assumes that), because a deep-zoom
- * palette must CYCLE: measured, a 1e-12 frame spans 2.4 iterations riding on an
- * offset of 1117, so a non-cyclic palette(nu/maxIter) is one flat colour.
- * `ultrafractal` is the classic blue/white/orange; `twilight` and `magma` are
- * matplotlib's perceptually-uniform ramps (twilight is natively cyclic, magma
- * mirrored into one).
- */
-const PALETTES = {
-  ultrafractal: ["#000764", "#206bcb", "#edffff", "#ffaa00", "#000200"],
-  twilight: ["#e2d9e2", "#7ba1c2", "#5e43a5", "#2f1436", "#8d2b50", "#c6896c"],
-  magma: ["#000004", "#2d1161", "#721f81", "#b73779", "#f1605d", "#feb078", "#fcfdbf", "#feb078", "#f1605d", "#b73779", "#721f81", "#2d1161"],
-  gold: ["#120b02", "#5a3d0a", "#b8860b", "#ffd700", "#fff4c2", "#ffd700", "#b8860b", "#5a3d0a"],
-  ice: ["#01040f", "#062b56", "#1b6ea8", "#79c6e8", "#eaf8ff", "#79c6e8", "#1b6ea8", "#062b56"],
-  ember: ["#050101", "#2b0a06", "#7c1d0c", "#d9541b", "#ffc46b", "#fff3d0", "#ffc46b", "#d9541b", "#7c1d0c", "#2b0a06"],
-};
-
-const PALETTE_OPTIONS = Object.keys(PALETTES);
-const PALETTE_LABELS = {
-  ultrafractal: "Ultra Fractal (blue / cream / amber)",
-  twilight: "Twilight (dusk + wine)",
-  magma: "Magma (black → cream)",
-  gold: "Gold (molten metal)",
-  ice: "Ice (deep blue → white)",
-  ember: "Ember (charcoal → flame)",
-};
 
 const AXIS_OPTIONS = ["iteration", "logIteration", "distance"];
 const AXIS_LABELS = {
@@ -203,38 +191,51 @@ export function cachedOrbit(s) {
 }
 
 /**
- * Pure function. The colour stops a widget state asks for: the `paletteStops`
- * override when it names at least two colours, else the named `palette`. The
- * override is a comma-separated list and is DISCRETE — it is a text property, so
- * it switches rather than tweens, unlike every numeric knob here.
+ * Pure function. The RAMP a widget state describes: its stop list plus the three
+ * aspects that decide how the ramp is read (core/ramps.js). One reader, so the
+ * bake, the Inspector and any future consumer cannot disagree about what the
+ * ramp IS.
  *
- * @param {object} s - folded item state (palette, paletteStops)
- * @returns {string[]} at least two colour strings
+ * ABSENT ASPECTS FALL BACK TO THIS WIDGET'S OWN DEFAULTS, not to the registry's:
+ * a Mandelbrot palette that lost `rampLoop` to a partial delta must still be
+ * CYCLIC, because a non-cyclic one renders as one flat colour at depth. The stop
+ * list has no such fallback — an absent ramp is a fold bug and checkRampStops
+ * says so loudly at the bake.
  *
- * @example paletteStopsFor({palette: "gold"}).length // 8
- * @example paletteStopsFor({palette: "gold", paletteStops: "#000000, #ffffff"}) // ["#000000", "#ffffff"]
- * @example paletteStopsFor({palette: "ice", paletteStops: "#ff0000"}).length // 8 (one stop cannot cycle — the named palette wins)
+ * @param {object} s - folded item state (rampStops, rampLoop, rampSpace, rampPhase)
+ * @returns {{stops: object[], loop: boolean, space: string, phase: number}}
+ *
+ * @example rampOf({rampStops: [{offset: 0, color: "#000000"}, {offset: 0.5, color: "#ffffff"}]}).loop // true
+ * @example rampOf({rampStops: [], rampSpace: "srgb"}).space // "srgb"
+ * @example rampOf({rampStops: [], rampPhase: 0.25}).phase // 0.25
  */
-export function paletteStopsFor(s) {
-  const override = String(s.paletteStops ?? "").split(",").map((t) => t.trim()).filter((t) => t.length > 0);
-  if (override.length >= 2) return override;
-  return PALETTES[s.palette] ?? PALETTES.gold;
+export function rampOf(s) {
+  return {
+    stops: s.rampStops,
+    loop: s.rampLoop ?? RAMP_DEFAULTS.rampLoop,
+    space: s.rampSpace ?? RAMP_DEFAULTS.rampSpace,
+    phase: s.rampPhase ?? RAMP_DEFAULTS.rampPhase,
+  };
 }
 
 /**
- * Query (memoized; near-pure). The baked palette + mean for a widget state.
+ * Query (memoized; near-pure). The baked palette + mean for a widget state. The
+ * PHASE is deliberately NOT part of the key: the shader applies it per pixel
+ * (samplePalette(t + uPaletteOffset)), so a phase animation re-reads one cached
+ * table instead of re-baking 32 entries per frame.
  *
- * @param {object} s - folded item state (palette, paletteStops)
+ * @param {object} s - folded item state (rampStops, rampLoop, rampSpace)
  * @returns {{palette: number[], mean: [number, number, number]}}
  *
- * @example cachedPalette({palette: "gold"}).palette.length // 96
+ * @example cachedPalette({rampStops: [{offset: 0, color: "#ffffff"}, {offset: 0.5, color: "#ffffff"}]}).palette.length // 96
  */
 export function cachedPalette(s) {
-  const stops = paletteStopsFor(s);
-  const key = stops.join("|");
+  const ramp = rampOf(s);
+  const stops = ramp.stops;
+  const key = `${ramp.loop}|${ramp.space}|${JSON.stringify(stops)}`;
   const hit = _paletteCache.get(key);
   if (hit) return hit;
-  const built = bakeMandelbrotPalette(stops);
+  const built = bakeMandelbrotRamp(stops, ramp);
   if (_paletteCache.size >= PALETTE_CACHE_LIMIT) _paletteCache.delete(_paletteCache.keys().next().value);
   _paletteCache.set(key, built);
   return built;
@@ -589,6 +590,65 @@ function interpolateMandelbrotState(from, to, alpha) {
   };
 }
 
+/**
+ * THIS WIDGET'S RAMP ASPECT DEFAULTS — the `ramp` bundle's registry defaults
+ * (core/properties.js) with the two the fractal OVERRIDES, and the reason each is
+ * overridden rather than inherited:
+ *
+ *   rampLoop: true    The registry default is FALSE, because a gradient PAINT has
+ *                     always clamped and must keep rendering byte-identically. A
+ *                     Mandelbrot palette is the opposite case: cyclicity is
+ *                     MANDATORY (measured, a 1e-12 frame spans 2.4 iterations
+ *                     riding on an offset of 1117, so a clamped ramp paints one
+ *                     flat colour), so this widget declares it.
+ *   rampSpace: oklab  The registry default is sRGB, which is what Skia/SVG/PDF
+ *                     gradients do. The named palettes were authored for
+ *                     perceptual blending and look wrong without it.
+ *
+ * ONE declaration, read by BOTH `defaults` (what a new widget gets) and rampOf
+ * (what a partial delta falls back to), so the two cannot drift.
+ *
+ * @example RAMP_DEFAULTS.rampLoop // true
+ * @example RAMP_DEFAULTS.rampSpace // "oklab"
+ * @example RAMP_DEFAULTS.rampPhase // 0 (inherited from the registry)
+ */
+const RAMP_DEFAULTS = { ...bundleDefaults("ramp"), rampLoop: true, rampSpace: "oklab" };
+
+/** The named cyclic ramp a FRESH mandelbrot widget gets. Gold is the shipped
+ *  default look ("Molten Gold" is the first COLOUR preset) and it is also the
+ *  fallback the retired `palette` select documented, so the migration and a fresh
+ *  widget agree by construction. */
+const DEFAULT_MANDELBROT_RAMP = "gold";
+
+/** The Inspector row the shared `ramp` bundle is spliced in FRONT of, so the
+ *  colour block reads ramp-then-scale-then-axis as it always has. */
+const RAMP_ROWS_BEFORE = "paletteScale";
+
+/**
+ * Pure function. This widget's rows with the shared `ramp` BUNDLE spliced in
+ * ahead of `paletteScale`, re-categorised into the widget's own Custom region.
+ *
+ * WHY A SPLICE RATHER THAN CONCATENATION: the four ramp rows belong in the middle
+ * of the colour block, and `inspector` is a flat ordered array — appending them
+ * would put the ramp AFTER the boundary glow and the interior colour, i.e. the
+ * palette's own colours would sit below every knob that modifies them. Splicing by
+ * KEY rather than by index means reordering the widget's own rows can never move
+ * the bundle to the wrong place.
+ *
+ * @param {object[]} rows - this widget's customProps rows
+ * @returns {object[]} rows with the four ramp rows inserted
+ *
+ * @example spliceRampRows([{key: "a"}, {key: "paletteScale"}]).map((r) => r.key)
+ * // ["a", "rampStops", "rampLoop", "rampSpace", "rampPhase", "paletteScale"]
+ * @example spliceRampRows([{key: "a"}, {key: "paletteScale"}]).length // 6
+ */
+function spliceRampRows(rows) {
+  const at = rows.findIndex((r) => r.key === RAMP_ROWS_BEFORE);
+  if (at < 0) throw new Error(`mandelbrot: no "${RAMP_ROWS_BEFORE}" row to splice the ramp bundle in front of — the colour block moved, so update RAMP_ROWS_BEFORE.`);
+  const recategorised = Object.fromEntries(bundle("ramp").map((r) => [r.key, { category: CUSTOM_CATEGORY }]));
+  return [...rows.slice(0, at), ...bundle("ramp", recategorised), ...rows.slice(at)];
+}
+
 const CUSTOM = customProps([
   // ── WHERE (the split centre + the zoom) ──────────────────────────────────────
   { name: "centerX", kind: "number", default: -0.7435669, label: "Centre X", help: "Real part of the view centre — the leading digits. A plain number, so it keyframes and takes a `= …` equation like anything else. For a deep location, put the first ~16 digits here and the next ~16 in Centre X fine." },
@@ -603,18 +663,11 @@ const CUSTOM = customProps([
   { name: "interiorThreshold", kind: "number", default: 1e-3, min: 0, label: "Interior threshold", help: "How small the derivative product must get before a point is declared interior. Smaller is more cautious and slower; larger is faster but can eventually fill a pixel that would have escaped." },
   { name: "escapeRadius", kind: "number", default: MANDELBROT_ESCAPE_RADIUS, min: 16, label: "Escape radius", help: "How far a point must fly before it counts as escaped. 256 is calibrated, not arbitrary: the smooth iteration count's error is 3.1 iterations at radius 2 but 0.0000047 at 256, and the distance estimate needs at least 100 to be meaningful at all. Lower it only to see the banding come back." },
   // ── THE PALETTE ─────────────────────────────────────────────────────────────
-  { name: "palette", kind: "select", options: PALETTE_OPTIONS, optionLabels: PALETTE_LABELS, default: "gold", label: "Palette", help: "Which cyclic colour ramp to use. All of them cycle, and at depth that is mandatory rather than stylistic: a 1e-12 frame spans about two iterations, so any palette stretched across the whole iteration range would be one flat colour. Stops are interpolated perceptually (OKLab), so no ramp passes through mud." },
-  { name: "paletteStops", kind: "text", default: "", label: "Palette override", help: "Your own palette: two or more comma-separated colours (\"#001028, #ffd27f, #7a2f10\"), cycled and interpolated in OKLab. Empty uses the named palette above. Being text, this switches rather than tweens." },
+  // The RAMP itself is not declared here: it is the shared `ramp` BUNDLE, spliced
+  // into the Inspector at this point (see `inspector` below) so the colour rows
+  // still read in one block. `paletteScale` stays a widget knob because iterations
+  // per colour cycle is escape-time domain knowledge, not a ramp aspect.
   { name: "paletteScale", kind: "number", default: 18, min: MIN_PALETTE_SCALE, label: "Palette scale", help: "Iterations per colour cycle (or octaves per cycle on the Screen distance axis). Small = tight rainbow banding; large = broad sweeps of one colour. This is the knob to reach for when a view looks either stripey or washed out." },
-  // `scrub` is MANDATORY here and cannot be inferred: the row is unbounded and its
-  // default is 0, so there is no evidence of scale anywhere in the declaration, and
-  // NumericField falls back to DraggableNumber's 1 unit per drag-PIXEL. Measured, a
-  // 100 px drag ran 0 → 90 — a knob whose whole meaningful domain is one unit wide.
-  // The shader samples the palette through fract() (`samplePalette(t + uPaletteOffset)`),
-  // so the period is exactly 1 and the row is unbounded only because the rotation is
-  // PERIODIC, not because it is large. That is the same situation, with the same fix,
-  // as plugins/demo/sky.js timeOfDay and plugins/demo/lens_flare.js UNIT_SPAN_SCRUB.
-  { name: "paletteOffset", kind: "number", default: 0, scrub: UNIT_SPAN_SCRUB, label: "Palette offset", help: "Rotates the palette along the colour axis — one full cycle per unit, and it wraps, so 1.25 looks exactly like 0.25. KEYFRAME THIS for a palette-cycling animation: it only recolours, so it costs nothing extra to animate." },
   { name: "colorAxis", kind: "select", options: AXIS_OPTIONS, optionLabels: AXIS_LABELS, default: "iteration", label: "Colour axis", help: "What the palette is indexed by. Iteration is the familiar escape-time look. Log iteration makes the band n..2n one cycle, so the banding density holds as you zoom. Screen distance uses the distance estimate in pixels, which is distributed identically at every depth and therefore needs no retuning — flatter looking, but it never needs adjusting mid-zoom." },
   // ── THE TEXTURE (orbit averages) ─────────────────────────────────────────────
   { name: "stripeAmount", kind: "number", default: 0.45, min: 0, max: 1, step: 0.01, label: "Silk (stripe average)", help: "Stripe Average Colouring: the running average of a wave riding on the orbit's ANGLE, which drapes the escape-time field in silk or brushed metal. The single biggest visual difference between this and a 1990s rainbow fractal. 0 is exactly off." },
@@ -823,12 +876,66 @@ const LOCATION_PRESETS = [
  * were dropped for exactly that, and two more were retuned after going flat at the
  * middle location. `paletteScale` is therefore an equation — see paletteCycles.
  */
+/**
+ * Pure function. The RAMP half of a COLOUR preset's `props`: a ramp's stops plus
+ * the aspects that decide how it is read, as the four keys a preset writes.
+ *
+ * WHY A HELPER AND NOT FOUR LITERAL KEYS PER PRESET: nine presets would each
+ * re-type `rampLoop: true, rampSpace: "oklab", rampPhase: 0`, and the moment one
+ * was typed wrong that preset would silently render a clamped or a muddy palette.
+ * It also keeps every preset's key SET identical, which is what the disjoint-key
+ * guarantee between the three families rests on (tests/tool_groups_test.js).
+ *
+ * @param {{offset: number, color: string}[]} stops - the ramp
+ * @returns {object} the four ramp keys a preset writes
+ *
+ * @example Object.keys(rampProps([{offset: 0, color: "#000"}, {offset: 0.5, color: "#fff"}]))
+ * // ["rampStops", "rampLoop", "rampSpace", "rampPhase"]
+ * @example rampProps([{offset: 0, color: "#000000"}, {offset: 0.5, color: "#ffffff"}]).rampLoop // true
+ */
+function rampProps(stops) {
+  return { rampStops: stops, ...RAMP_DEFAULTS };
+}
+
+/**
+ * Pure function. A COLOUR preset's ramp keys for one of the NAMED cyclic ramps —
+ * read from the ONE home the preset library also reads (core/ramps.js
+ * CYCLIC_RAMPS), so a preset and a picker swatch of the same name can never
+ * disagree.
+ *
+ * @param {string} id - a CYCLIC_RAMPS key
+ * @returns {object} the four ramp keys
+ *
+ * @example namedRampProps("gold").rampStops.length // 8
+ * @example namedRampProps("gold").rampSpace // "oklab"
+ */
+function namedRampProps(id) {
+  return rampProps(cyclicRampStops(id));
+}
+
+/**
+ * Pure function. A COLOUR preset's ramp keys for a bespoke CYCLIC colour list —
+ * the three presets that used to carry a comma-separated `paletteStops` override
+ * string. The colours are spaced i/N round the circle, which is exactly what the
+ * old comma-separated override resolved to, so those three presets render
+ * unchanged.
+ *
+ * @param {string[]} colors - two or more hex colours, in cycle order
+ * @returns {object} the four ramp keys
+ *
+ * @example cyclicRampProps(["#000000", "#ffffff"]).rampStops // [{offset: 0, color: "#000000"}, {offset: 0.5, color: "#ffffff"}]
+ * @example cyclicRampProps(["#0b0d10", "#6e7680", "#e8eef5", "#6e7680"]).rampStops.length // 4
+ */
+function cyclicRampProps(colors) {
+  return rampProps(evenlySpacedRampStops(colors, true));
+}
+
 const COLOUR_PRESETS = [
   {
     name: "Molten Gold",
     description: "Molten metal with a glowing rim: silk over woven cloth over lit relief, in a warm gold ramp. The default look.",
     props: {
-      palette: "gold", paletteStops: "", paletteScale: paletteCycles(50), paletteOffset: 0, colorAxis: "iteration",
+      ...namedRampProps("gold"), paletteScale: paletteCycles(50), colorAxis: "iteration",
       stripeAmount: 0.45, stripeDensity: 4, triangleAmount: 0.3, shadeAmount: 0.45, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0.3, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#000000",
     },
@@ -837,7 +944,7 @@ const COLOUR_PRESETS = [
     name: "Ultra Fractal Blue",
     description: "The classic deep-zoom look: navy through cream to amber, the highest-contrast palette here. If a view seems washed out in anything else, try this first.",
     props: {
-      palette: "ultrafractal", paletteStops: "", paletteScale: paletteCycles(33), paletteOffset: 0, colorAxis: "iteration",
+      ...namedRampProps("ultrafractal"), paletteScale: paletteCycles(33), colorAxis: "iteration",
       stripeAmount: 0.55, stripeDensity: 4, triangleAmount: 0.25, shadeAmount: 0.5, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0.3, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#000000",
     },
@@ -846,7 +953,7 @@ const COLOUR_PRESETS = [
     name: "Twilight Rose",
     description: "Dusk and wine over pale silk — matplotlib's natively cyclic twilight ramp, heavy on the stripe average. Retuned from 12 to 25 cycles after it went flat purple at a 2048-iteration location.",
     props: {
-      palette: "twilight", paletteStops: "", paletteScale: paletteCycles(25), paletteOffset: 0, colorAxis: "iteration",
+      ...namedRampProps("twilight"), paletteScale: paletteCycles(25), colorAxis: "iteration",
       stripeAmount: 0.6, stripeDensity: 5, triangleAmount: 0.15, shadeAmount: 0.35, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0.25, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#000000",
     },
@@ -855,7 +962,7 @@ const COLOUR_PRESETS = [
     name: "Ice Porcelain",
     description: "White lace on deep blue with a bright boundary rim — the coldest and cleanest of the set, and the one that shows filament detail best.",
     props: {
-      palette: "ice", paletteStops: "", paletteScale: paletteCycles(85), paletteOffset: 0, colorAxis: "iteration",
+      ...namedRampProps("ice"), paletteScale: paletteCycles(85), colorAxis: "iteration",
       stripeAmount: 0.5, stripeDensity: 6, triangleAmount: 0.2, shadeAmount: 0.4, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0.35, glowWidth: 1.2, bandLimit: true, boundaryAA: false, interiorColor: "#000000",
     },
@@ -864,7 +971,7 @@ const COLOUR_PRESETS = [
     name: "Ember Forge",
     description: "Charcoal into flame, with the cloth texture pushed up and the light raking low. The warmest and darkest look here.",
     props: {
-      palette: "ember", paletteStops: "", paletteScale: paletteCycles(25), paletteOffset: 0, colorAxis: "iteration",
+      ...namedRampProps("ember"), paletteScale: paletteCycles(25), colorAxis: "iteration",
       stripeAmount: 0.4, stripeDensity: 3, triangleAmount: 0.35, shadeAmount: 0.5, lightAngle: -45, lightHeight: 1.2,
       glowAmount: 0.4, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#000000",
     },
@@ -873,7 +980,7 @@ const COLOUR_PRESETS = [
     name: "Brushed Chrome",
     description: "Machined metal: a near-neutral grey ramp with the stripe average almost fully open and the relief hard, which is what makes the escape-time field read as a turned metal surface rather than as colour. The only look here with no hue at all.",
     props: {
-      palette: "gold", paletteStops: "#0b0d10, #6e7680, #e8eef5, #6e7680", paletteScale: paletteCycles(20), paletteOffset: 0, colorAxis: "iteration",
+      ...cyclicRampProps(["#0b0d10", "#6e7680", "#e8eef5", "#6e7680"]), paletteScale: paletteCycles(20), colorAxis: "iteration",
       stripeAmount: 0.9, stripeDensity: 8, triangleAmount: 0.1, shadeAmount: 0.75, lightAngle: -60, lightHeight: 0.7,
       glowAmount: 0.15, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#05070a",
     },
@@ -882,7 +989,7 @@ const COLOUR_PRESETS = [
     name: "Neon Filament",
     description: "Electric cyan filaments on near-black: the distance-estimate glow carries the picture and the palette stays out of the way. Retuned from 16 cycles and 1.3 glow, which blew out to flat white at a 2048-iteration location.",
     props: {
-      palette: "gold", paletteStops: "#03010a, #1b0a3a, #4b1e8c, #10d0ff, #b8f8ff, #10d0ff, #4b1e8c, #1b0a3a", paletteScale: paletteCycles(40), paletteOffset: 0, colorAxis: "iteration",
+      ...cyclicRampProps(["#03010a", "#1b0a3a", "#4b1e8c", "#10d0ff", "#b8f8ff", "#10d0ff", "#4b1e8c", "#1b0a3a"]), paletteScale: paletteCycles(40), colorAxis: "iteration",
       stripeAmount: 0.2, stripeDensity: 4, triangleAmount: 0.1, shadeAmount: 0.15, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0.9, glowWidth: 0.7, bandLimit: true, boundaryAA: false, interiorColor: "#000000",
     },
@@ -891,7 +998,7 @@ const COLOUR_PRESETS = [
     name: "Blueprint",
     description: "A flat two-tone technical look with no silk, no cloth and no relief — just the boundary picked out in white on blue. For a figure on a slide, where a lit metal fractal would fight the text.",
     props: {
-      palette: "gold", paletteStops: "#071a2b, #1e5f8f, #cfe8ff, #1e5f8f", paletteScale: paletteCycles(30), paletteOffset: 0, colorAxis: "iteration",
+      ...cyclicRampProps(["#071a2b", "#1e5f8f", "#cfe8ff", "#1e5f8f"]), paletteScale: paletteCycles(30), colorAxis: "iteration",
       stripeAmount: 0, stripeDensity: 4, triangleAmount: 0, shadeAmount: 0, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0.55, glowWidth: 1.4, bandLimit: true, boundaryAA: false, interiorColor: "#04101c",
     },
@@ -900,7 +1007,7 @@ const COLOUR_PRESETS = [
     name: "Flat Escape Time (the control)",
     description: "Silk, cloth, relief, glow and the band-limit ALL OFF: a plain banded 1990s escape-time fractal. Not a look to ship a slide with — a control. Put it beside any other colour preset at the same location to see what the modern colour stack is actually doing.",
     props: {
-      palette: "ultrafractal", paletteStops: "", paletteScale: paletteCycles(33), paletteOffset: 0, colorAxis: "iteration",
+      ...namedRampProps("ultrafractal"), paletteScale: paletteCycles(33), colorAxis: "iteration",
       stripeAmount: 0, stripeDensity: 4, triangleAmount: 0, shadeAmount: 0, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0, glowWidth: 1, bandLimit: false, boundaryAA: false, interiorColor: "#000000",
     },
@@ -1161,12 +1268,27 @@ export const mandelbrotPlugin = {
   // away and snaps back. See interpolateMandelbrotState / zoomTweenLam above for
   // the law, the measurement, and the three cases that defer to the generic lerp.
   interpolateState: interpolateMandelbrotState,
+  // paletteOffset → rampPhase: a pure KEY RENAME, so it goes through the
+  // declarative seam core/document.js withLegacyKeysRenamed already applies at the
+  // load boundary (the arrow's headSize → headLength precedent). The value moves
+  // VERBATIM — numbers, equation strings and keyframed animations all survive — so
+  // an old palette-cycling animation keeps cycling.
+  // THE OTHER TWO legacy keys (`palette`, `paletteStops`) are NOT renames: two
+  // properties collapse into one ramp with a VALUE transform, which legacyKeys
+  // cannot express. That migration is core/ramp_migration.js.
+  legacyKeys: { paletteOffset: "rampPhase" },
   defaults: {
     type: "demo_mandelbrot", x: 140, y: 140, w: 520, h: 390, z: 100, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     // A faint hairline framing the panel (optional; strokeWidth 0 = none).
     stroke: "rgba(255,255,255,0.28)", strokeWidth: 1,
     ...defaults("opacity"), // opacity:1
+    // THE DEFAULT RAMP: gold, from the ONE home the preset library also reads
+    // (core/ramps.js CYCLIC_RAMPS) — a literal colour list here would be the
+    // mirror this consolidation exists to remove. Fresh stops, never the shared
+    // record, so a document can never alias author-time data.
+    rampStops: cyclicRampStops(DEFAULT_MANDELBROT_RAMP),
+    ...RAMP_DEFAULTS,
     ...CUSTOM.defaults,     // the mandelbrot.* knobs (self.*)
   },
   inspector: [
@@ -1175,7 +1297,13 @@ export const mandelbrotPlugin = {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },
     }),
-    ...CUSTOM.rows, // the look knobs (Inspector "Custom" region)
+    // The look knobs, with the shared `ramp` BUNDLE spliced in just before
+    // `paletteScale` so the colour rows still read as one block. The bundle's rows
+    // are re-categorised into the widget's own "Custom" region (a row's category is
+    // an overridable aspect — core/properties.js props()) because that is where
+    // every other knob of this widget lives; filing four of them under Formatting
+    // would split one concept across two accordions.
+    ...spliceRampRows(CUSTOM.rows),
   ],
   // Three DECLARED families, one Tools-pane group each. NOT also a flat `presets`:
   // core/registry.js refuses both at once, and a flat list is what the split exists
@@ -1239,7 +1367,10 @@ export const mandelbrotPlugin = {
         interiorThreshold: s.interiorThreshold,
         colorAxis: MANDELBROT_AXIS_CODE[s.colorAxis] ?? 0,
         paletteScale: s.paletteScale,
-        paletteOffset: s.paletteOffset,
+        // uPaletteOffset is the shader's name for the RAMP PHASE (core/ramps.js):
+        // it is added to the colour-axis position before the cyclic table read, so
+        // one baked table serves every phase and a phase animation re-bakes nothing.
+        paletteOffset: rampOf(s).phase,
         stripeAmount: s.stripeAmount,
         stripeDensity: s.stripeDensity,
         triangleAmount: s.triangleAmount,

@@ -48,7 +48,7 @@ import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { getMaterial, resolveProxyFill, isBackdropMaterial, materialIds } from "../render_gpu/skia/materials.js";
 import {
-  mandelbrotPlugin, cachedOrbit, cachedPalette, paletteStopsFor, approxCentre, paletteCycles,
+  mandelbrotPlugin, cachedOrbit, cachedPalette, rampOf, approxCentre, paletteCycles,
   zoomTweenLam, zoomTweenAxis, splitCentreText, parseSplitCentre,
 } from "../plugins/demo/mandelbrot.js";
 import {
@@ -57,9 +57,12 @@ import {
   MANDELBROT_MAX_FINE_EXPONENT,
   MANDELBROT_ORBIT_ROWS, MANDELBROT_UNIFORM_ROWS, MANDELBROT_UNIFORM_ROW_BUDGET,
   bitsForDepth, scaledDecimal, splitCentreFixed, centreResolutionDecades, fixedToFloat, referenceOrbit,
-  bakeMandelbrotPalette, packMandelbrot, mandelbrotProxyFill, srgbToLinear,
-  linearSrgbToOklab, oklabToLinearSrgb,
+  bakeMandelbrotRamp, packMandelbrot, mandelbrotProxyFill,
 } from "../render_gpu/skia/mandelbrot_shader.js";
+import {
+  CYCLIC_RAMPS, cyclicRampStops, evenlySpacedRampStops, srgbToLinear,
+  linearSrgbToOklab, oklabToLinearSrgb,
+} from "../core/ramps.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -371,24 +374,29 @@ test("OKLab round-trips linear sRGB", () => {
   }
 });
 
-test("bakeMandelbrotPalette: shipped length, linear values, correct mean", () => {
-  const white = bakeMandelbrotPalette(["#ffffff", "#ffffff"]);
+/** Query→build. An evenly-spaced CYCLIC ramp from bare colours — the shape the
+ *  retired palette stored, so the bake tests read as they did. */
+const cyclic = (colors) => evenlySpacedRampStops(colors, true);
+const CYCLIC = { loop: true, space: "oklab" };
+
+test("bakeMandelbrotRamp: shipped length, linear values, correct mean", () => {
+  const white = bakeMandelbrotRamp(cyclic(["#ffffff", "#ffffff"]), CYCLIC);
   assert.equal(white.palette.length, MANDELBROT_PALETTE_STOPS * 3);
   for (const v of white.palette) assert.ok(Math.abs(v - 1) < 1e-6, "a white palette must bake to linear 1");
   assert.deepEqual(white.mean.map((v) => Math.round(v)), [1, 1, 1]);
-  const black = bakeMandelbrotPalette(["#000000", "#000000"]);
+  const black = bakeMandelbrotRamp(cyclic(["#000000", "#000000"]), CYCLIC);
   assert.deepEqual(black.mean, [0, 0, 0]);
 });
 
-test("bakeMandelbrotPalette: a mid-grey stop bakes to LINEAR light, not the encoded byte", () => {
-  const grey = bakeMandelbrotPalette(["#808080", "#808080"]);
+test("bakeMandelbrotRamp: a mid-grey stop bakes to LINEAR light, not the encoded byte", () => {
+  const grey = bakeMandelbrotRamp(cyclic(["#808080", "#808080"]), CYCLIC);
   assert.ok(Math.abs(grey.palette[0] - srgbToLinear(128 / 255)) < 1e-6,
     `expected linear ${srgbToLinear(128 / 255)}, got ${grey.palette[0]} — a palette baked in encoded sRGB makes every gradient too light`);
 });
 
-test("bakeMandelbrotPalette: LOUD on a palette that cannot cycle", () => {
-  assert.throws(() => bakeMandelbrotPalette(["#000000"]), /at least 2 stops/);
-  assert.throws(() => bakeMandelbrotPalette("nope"), /at least 2 stops/);
+test("bakeMandelbrotRamp: LOUD on a ramp that cannot cycle", () => {
+  assert.throws(() => bakeMandelbrotRamp([{ offset: 0, color: "#000000" }], CYCLIC), /at least 2 stops/);
+  assert.throws(() => bakeMandelbrotRamp("nope", CYCLIC), /at least 2 stops/);
 });
 
 // ── (4) the material contract ─────────────────────────────────────────────────
@@ -460,7 +468,7 @@ test("THE UNIFORM ROW BUDGET: the program fits hardware that cannot report the f
 
 /** Query→build. A complete, legal argument object for packMandelbrot. */
 function packArgs(over = {}) {
-  const { palette, mean } = bakeMandelbrotPalette(["#000000", "#ffffff"]);
+  const { palette, mean } = bakeMandelbrotRamp(cyclic(["#000000", "#ffffff"]), CYCLIC);
   return {
     cx: 0, cy: 0, halfW: 100, halfH: 75, cornerRadius: 0, angle: 0,
     centerApproxX: -0.5, centerApproxY: 0, halfWidth: 1,
@@ -494,7 +502,7 @@ test("packMandelbrot: the interior colour reaches the shader as LINEAR light", (
 
 test("the material declares a proxyFill — the heaviest shader in the app cannot reach a thumbnail", () => {
   assert.equal(typeof MANDELBROT_MATERIAL.proxyFill, "function");
-  const { palette } = bakeMandelbrotPalette(["#001028", "#ffd27f"]);
+  const { palette } = bakeMandelbrotRamp(cyclic(["#001028", "#ffd27f"]), CYCLIC);
   const spec = resolveProxyFill(MANDELBROT_MATERIAL, { palette, interiorColor: "#000000" }, { cx: 100, cy: 80, halfW: 100, halfH: 80 });
   assert.equal(spec.kind, "radial");
   assert.equal(spec.stops.length, 3);
@@ -518,7 +526,7 @@ test("the plugin registers, and its knobs are all in the Inspector custom region
   registry.register(mandelbrotPlugin);
   assert.equal(registry.get("demo_mandelbrot").type, "demo_mandelbrot");
   assert.equal(registry.get("demo_mandelbrot").title, mandelbrotPlugin.title);
-  for (const key of ["centerX", "centerFineX", "fineExponent", "zoomExponent", "maxIterations", "paletteOffset"]) {
+  for (const key of ["centerX", "centerFineX", "fineExponent", "zoomExponent", "maxIterations", "rampPhase"]) {
     const row = mandelbrotPlugin.inspector.find((r) => r.key === key);
     assert.ok(row, `no Inspector row for ${key}`);
     assert.equal(row.category, CUSTOM_CATEGORY);
@@ -540,7 +548,7 @@ test("THE TIER-0 REQUIREMENT: every numeric knob is keyframable and `=` bindable
     assert.ok(paths.includes(snake(key)), `${key} is not reachable as an equation path (have: ${paths.join(", ")})`);
   }
   // The load-bearing ones by name, so a rename cannot quietly drop them.
-  for (const key of ["centerX", "centerY", "centerFineX", "centerFineY", "fineExponent", "zoomExponent", "maxIterations", "paletteOffset", "lightAngle"]) {
+  for (const key of ["centerX", "centerY", "centerFineX", "centerFineY", "fineExponent", "zoomExponent", "maxIterations", "rampPhase", "lightAngle"]) {
     assert.ok(paths.includes(snake(key)), `${key} must be equation-bindable`);
     assert.equal(isEquationValue(mandelbrotPlugin, [key], "= 1 + 1"), true, `${key} must accept a "= …" equation`);
   }
@@ -625,11 +633,32 @@ test("maxIterations is EXPLICIT and capped — never derived from the zoom", () 
   assert.equal(shallow, mandelbrotPlugin.defaults.maxIterations);
 });
 
-test("paletteStopsFor: the override needs two stops to cycle, else the named palette wins", () => {
-  assert.deepEqual(paletteStopsFor({ palette: "gold", paletteStops: "#000000, #ffffff" }), ["#000000", "#ffffff"]);
-  assert.equal(paletteStopsFor({ palette: "gold", paletteStops: "#ff0000" }).length, 8);
-  assert.equal(paletteStopsFor({ palette: "gold", paletteStops: "" }).length, 8);
-  assert.equal(paletteStopsFor({ palette: "nope" }).length, 8, "an unknown palette name falls back to a real one");
+test("rampOf: the ramp aspects fall back to THIS WIDGET'S defaults, not the registry's", () => {
+  // A partial delta that lost the aspects must still be CYCLIC and PERCEPTUAL: a
+  // clamped Mandelbrot palette renders as one flat colour at depth, so the widget's
+  // own default is the only safe fallback (the registry default is clamped sRGB,
+  // which is right for a gradient PAINT and wrong here).
+  const stops = cyclicRampStops("gold");
+  assert.equal(rampOf({ rampStops: stops }).loop, true);
+  assert.equal(rampOf({ rampStops: stops }).space, "oklab");
+  assert.equal(rampOf({ rampStops: stops }).phase, 0);
+  assert.equal(rampOf({ rampStops: stops, rampLoop: false }).loop, false, "an explicit false is honoured");
+  assert.equal(rampOf({ rampStops: stops, rampPhase: 0.25 }).phase, 0.25);
+});
+
+test("the named palettes became shared RAMP DATA, cyclic and perceptual, spaced i/N", () => {
+  // The i/N spacing is load-bearing: i/(N-1) would put the last stop at offset 1,
+  // squash the synthesised wrap segment to zero and change every sampled colour.
+  for (const [id, ramp] of Object.entries(CYCLIC_RAMPS)) {
+    assert.equal(ramp.loop, true, `${id} must be cyclic`);
+    assert.equal(ramp.space, "oklab", `${id} must blend perceptually`);
+    assert.equal(ramp.stops.length, ramp.colors.length);
+    ramp.stops.forEach((s, i) => assert.equal(s.offset, i / ramp.colors.length, `${id} stop ${i}`));
+    assert.ok(ramp.stops[ramp.stops.length - 1].offset < 1, `${id}'s last stop must leave room for the wrap segment`);
+  }
+  // And a fresh widget's default ramp comes from that SAME home — no second copy.
+  assert.deepEqual(mandelbrotPlugin.defaults.rampStops, cyclicRampStops("gold"));
+  assert.notEqual(mandelbrotPlugin.defaults.rampStops, CYCLIC_RAMPS.gold.stops, "a document must never alias author-time data");
 });
 
 test("cachedOrbit / cachedPalette: memoized but still pure in their inputs", () => {
@@ -638,7 +667,12 @@ test("cachedOrbit / cachedPalette: memoized but still pure in their inputs", () 
   assert.deepEqual([...cachedOrbit(s).orbit], [...cachedOrbit(stateOf()).orbit]);
   assert.notDeepEqual([...cachedOrbit(s).orbit], [...cachedOrbit(stateOf({ centerX: 0 })).orbit]);
   assert.deepEqual(cachedPalette(s).mean, cachedPalette(stateOf()).mean);
-  assert.notDeepEqual(cachedPalette(stateOf({ palette: "ice" })).mean, cachedPalette(stateOf({ palette: "ember" })).mean);
+  assert.notDeepEqual(
+    cachedPalette(stateOf({ rampStops: cyclicRampStops("ice") })).mean,
+    cachedPalette(stateOf({ rampStops: cyclicRampStops("ember") })).mean);
+  // The PHASE is not part of the cache key: the shader applies it per pixel, so a
+  // phase animation must re-read one table rather than re-bake 32 entries a frame.
+  assert.equal(cachedPalette(stateOf({ rampPhase: 0.37 })), cachedPalette(stateOf()));
 });
 
 test("approxCentre: coarse plus fine at the stated exponent", () => {

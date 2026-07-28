@@ -46,6 +46,7 @@
 import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
+import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -304,20 +305,34 @@ export const MIN_GRADIENT_STOPS = 2;
  * paths all treat the stored ORDER as authoritative (Skia pins each position to
  * >= the previous, so an out-of-order stop collapses instead of swapping).
  */
+/**
+ * THE COLOUR-RAMP STOP ELEMENT — the {offset, color} record shape, declared ONCE
+ * and referenced by every ramp declaration (the gradient paint's `stops` below
+ * and the top-level `rampStops` property). A second copy is exactly how the two
+ * would come to disagree about a stop's bounds or its help text, and a stop is
+ * the same thing wherever it is stored: a position along a ramp and the colour
+ * there.
+ *
+ * @example RAMP_STOP_ELEMENT.storage // "record"
+ * @example RAMP_STOP_ELEMENT.fields.map((f) => f.name) // ["offset", "color"]
+ */
+export const RAMP_STOP_ELEMENT = {
+  storage: "record",
+  fields: [
+    { name: "offset", kind: "number", min: 0, max: 1, label: "Position", help: "Where this colour sits along the ramp, from 0 (the start) to 1 (the end). When the ramp LOOPS, 0 and 1 are the SAME point on the cycle." },
+    { name: "color", kind: "color", label: "Colour", help: "The colour at this position. Lower its alpha for a ramp that fades to transparent." },
+  ],
+};
+
 export const GRADIENT_STOPS_LIST = {
   kind: LIST_ROW_KIND,
   label: "Stops",
-  element: {
-    storage: "record",
-    fields: [
-      { name: "offset", kind: "number", min: 0, max: 1, label: "Position", help: "Where this colour sits along the gradient, from 0 (the start) to 1 (the end)." },
-      { name: "color", kind: "color", label: "Colour", help: "The colour at this position. Lower its alpha for a gradient that fades to transparent." },
-    ],
-  },
+  element: RAMP_STOP_ELEMENT,
   order: "sorted",
   orderKey: "offset",
   activeKey: "stopsActive",
   minLength: MIN_GRADIENT_STOPS,
+  presets: COLOR_RAMP_LIBRARY,
   help: "The colours the gradient ramps through. Insert between two stops to get their average position and blended colour; hide a stop to ramp straight past it without losing it.",
 };
 
@@ -542,6 +557,18 @@ function checkListRow(label, key, def) {
   const expected = `${key}${ACTIVE_KEY_SUFFIX}`;
   if (def.activeKey !== expected)
     throw new Error(`properties: ${label} declares activeKey "${def.activeKey}" — a list's visibility companion is named after the list itself, so write "${expected}" (see core/lists.js).`);
+  // A `presets` aspect names WHICH preset library the list control offers above
+  // its rows (web/ListField.svelte mounts it from the DECLARATION, so a list gets
+  // the library by saying so and no mount point owns one privately). An unknown id
+  // would silently render no library at all, which is the failure mode this guard
+  // exists to make impossible.
+  if ("presets" in def && !RAMP_PRESET_LIBRARIES.includes(def.presets))
+    throw new Error(`properties: ${label} declares presets "${def.presets}", which is not one of ${JSON.stringify(RAMP_PRESET_LIBRARIES)} — add the library to core/ramps.js RAMP_PRESET_LIBRARIES (and teach web/ListField.svelte to serve it) before declaring it.`);
+  // `presetAspectKeys` only means anything to a preset APPLICATION, so declaring it
+  // without a library is a declaration that does nothing — reported where it is
+  // written rather than discovered as a preset that half-applies.
+  if ("presetAspectKeys" in def && !("presets" in def))
+    throw new Error(`properties: ${label} declares presetAspectKeys but no \`presets\` library — the aspect map is only read when a preset is applied, so it would do nothing.`);
 }
 
 /** How a list's visibility-companion key is spelled: the list key plus this
@@ -723,6 +750,76 @@ export const PROPS = {
     activeKey: "pointsActive",
     help: "The polygon's corners, in order — the order IS the outline. Insert between two corners to add one at their midpoint; hide a corner to draw straight past it without losing where it was.",
   },
+
+  // ── formatting: THE COLOUR RAMP (core/ramps.js) ─────────────────────────────
+  // A ramp is a stop list PLUS the two aspects that decide how it is READ. It
+  // exists as a TOP-LEVEL property family because a ramp is not always a paint:
+  // a gradient paint is `ramp + geometry` (a direction dial, a radius), while a
+  // Mandelbrot palette is a ramp read cyclically against an escape-time axis and
+  // has NO geometry to give — offering it a linear/radial choice would be a false
+  // affordance. So the shared thing is the RAMP (user ruling: "The palette in the
+  // Mandelbrot viewer could be the same as a gradient selector… make it
+  // generalizable… then make them ramp-capable? and make the gradient loop
+  // perhaps"), and `paint` composes it with geometry inside its own sub-state.
+  //
+  // WHAT THIS BUYS, concretely: the palette gains the 343-preset shared library,
+  // per-stop `=` equations, per-stop hide/insert/purge through the general list
+  // control, and — the capability that did not exist at all — TWEENING. The old
+  // palette was a `select` plus a comma-separated `text` override whose own help
+  // admitted "Being text, this switches rather than tweens".
+  //
+  // NO `default` on rampStops: a ramp's colours are the widget's own identity
+  // (the Mandelbrot default is gold), exactly as `points` has no universal
+  // default pentagon here.
+  rampStops: {
+    label: "Ramp", kind: LIST_ROW_KIND, category: "formatting",
+    element: RAMP_STOP_ELEMENT,
+    order: "sorted",
+    orderKey: "offset",
+    activeKey: "rampStopsActive",
+    minLength: MIN_GRADIENT_STOPS,
+    presets: COLOR_RAMP_LIBRARY,
+    // WHERE A PICKED PRESET'S ASPECTS LAND: a preset record is a whole ramp value
+    // ({stops, loop, space}), so applying one must write the aspects too or picking
+    // a cyclic OKLab palette would land clamped and muddy. This maps each aspect to
+    // its SIBLING state key beside the list — the same declarative shape `activeKey`
+    // has, so web/ListField.svelte writes them with no knowledge of what a ramp is.
+    // A declaration that OMITS this (the gradient paint's `stops`, which stores no
+    // loop/space today) simply has the aspects not written, so a picked gradient
+    // changes only the stops, byte-identically to before.
+    presetAspectKeys: { loop: "rampLoop", space: "rampSpace" },
+    help: "The colours this ramp runs through, and the shared preset library to pick one from. Insert between two stops for their average position and blended colour; hide a stop to ramp straight past it without losing it. Each stop's position and colour is an ordinary keyframable, equation-bindable value, so a ramp TWEENS from slide to slide.",
+  },
+  // LOOP is a RAMP aspect, not a widget behaviour — which is the whole reason the
+  // Mandelbrot palette can now BE a ramp: its cyclicity is mandatory (measured, a
+  // 1e-12 frame spans about two iterations, so a ramp stretched across the whole
+  // iteration range is one flat colour), and expressing that as `loop: true`
+  // costs no special case. A looping LINEAR or RADIAL gradient is a real
+  // capability in its own right besides (CSS repeating-linear-gradient,
+  // Photoshop's gradient repeat mode).
+  // DEFAULT false = today's behaviour exactly (Skia/SVG/PDF gradients clamp), so
+  // no existing ramp changes by gaining the property.
+  // The exact boundary semantics are ONE paragraph in core/ramps.js's header and
+  // are deliberately not restated here; the short form is in `help`.
+  rampLoop: { label: "Loop", kind: "boolean", category: "formatting", default: false, help: "Repeats the ramp end to end instead of holding its end colours. The cycle has period 1 and the segment from the LAST stop back to the FIRST is filled in, so a ramp whose stops span 0 to just under 1 loops SEAMLESSLY — put stops at both 0 and 1 to get a hard edge at the seam on purpose." },
+  // The interpolation SPACE travels WITH the ramp because it has to: a ramp
+  // authored for perceptual blending and read as a direct channel blend is a
+  // different ramp. Moving the named palettes into the shared preset library
+  // without this would have silently changed how they look in their new home.
+  // DEFAULT sRGB = what Skia/SVG/PDF gradients already do, so nothing moves.
+  rampSpace: { label: "Blend space", kind: "select", options: RAMP_SPACES, optionLabels: RAMP_SPACE_LABELS, category: "formatting", default: DEFAULT_RAMP_SPACE, help: "How two neighbouring stops are blended. sRGB mixes the stored channels directly (what gradients have always done). OKLab mixes perceptually, so a blend between distant hues stays bright instead of passing through mud — at the cost of not matching a browser gradient exactly." },
+  // THE RAMP PHASE — the generalization of the Mandelbrot palette's own
+  // `paletteOffset`, whose help already described a phase in as many words:
+  // "one full cycle per unit, and it wraps, so 1.25 looks exactly like 0.25".
+  // That is exactly `fract(t + phase)` on a period-1 looping ramp, so it is ONE
+  // concept and not two; the old key is migrated by the declarative `legacyKeys`
+  // rename seam (plugins/demo/mandelbrot.js).
+  // `scrub` is MANDATORY and cannot be inferred: the row is unbounded (the
+  // rotation is PERIODIC, not large) with a 0 default, so NumericField has no
+  // evidence of scale and DraggableNumber would fall back to 1 unit per drag
+  // PIXEL — measured, a 100px drag ran 0 → 90 on a knob whose whole domain is one
+  // unit wide. UNIT_SPAN_SCRUB makes 100px one full cycle.
+  rampPhase: { label: "Phase", kind: "number", scrub: UNIT_SPAN_SCRUB, category: "formatting", default: 0, help: "Rotates the ramp along its own axis — one full cycle per unit, and it wraps, so 1.25 looks exactly like 0.25. KEYFRAME THIS for a colour-cycling animation. It is only periodic when Loop is on; on a clamped ramp it slides the ramp and holds the end colours." },
 
   // ── time: the SECONDS unit-kind (manifest 14.6) ─────────────────────────────
   // A duration in seconds. Its `scrub` (SECONDS_SCRUB, ~0.01 s/px) is the SANE
@@ -1102,6 +1199,12 @@ export const BUNDLES = {
     "particleSizeMin", "particleSizeMax",
     "particleColor", "particleFade", "particleShrink", "particleSeed",
   ],
+  // THE COLOUR-RAMP bundle (core/ramps.js): the stop list plus the three aspects
+  // that decide how it is read. Composed by any widget whose value IS a ramp
+  // (plugins/demo/mandelbrot.js is the first); a gradient PAINT composes the same
+  // stop declaration inside its own sub-state and adds geometry. Order = Inspector
+  // row order: the stops, then how the ramp is read, then the animatable phase.
+  ramp: ["rampStops", "rampLoop", "rampSpace", "rampPhase"],
   // THE CAMERA RENDERING bundle (manifest "CAMERA RENDERING"): the scene-global
   // render toggles the singleton camera owns — anti-aliasing, retina/DPR, and
   // the dither mode + its emphasis. Composed ONLY by plugins/camera.js (the sole

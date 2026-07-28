@@ -1,10 +1,20 @@
 <!--
-  GradientPresetPicker — a Photoshop-style TILED LIBRARY of gradient presets for
-  the gradient stop editor. A "Preset library" toggle reveals a searchable grid
-  of little gradient swatches; clicking one REPLACES the current gradient's stops
-  with that preset's (via the onpick callback). The presets are baked from the
-  `rp` Python library's gradient library (web/gradient_presets.js — 343 named
-  gradients), so no runtime python dependency exists.
+  GradientPresetPicker — a Photoshop-style TILED LIBRARY of COLOUR-RAMP presets. A
+  "Preset library" toggle reveals a searchable, family-grouped grid of little ramp
+  swatches; clicking one REPLACES the ramp being edited with that preset's (via the
+  onpick callback).
+
+  IT SERVES ANY RAMP, not only a gradient paint. The library is DECLARED by the
+  mount point (`families`, assembled once in web/ramp_preset_families.js) and a
+  preset record is a whole RAMP VALUE — {name, stops, loop, space} — so the six
+  cyclic OKLab palettes a Mandelbrot viewer needs and the 343 clamped sRGB
+  gradients baked from the `rp` Python library sit in ONE grid and land correctly
+  in either consumer with no branch here. Presets are DATA.
+
+  MOUNTED FROM THE LIST DECLARATION, not by one field: web/ListField.svelte renders
+  this above the stop rows whenever the declaration says `presets:
+  COLOR_RAMP_LIBRARY` (core/properties.js). It used to be mounted privately by
+  web/PaintField.svelte, which is why no other property could have a library.
 
   WHY inline expansion (not a floating popover): this field lives in the
   Inspector, whose scroll/overflow would clip an absolutely-positioned popover —
@@ -22,13 +32,22 @@
   and no undo entry is created until a click commits.
 
   No <style> block (web/ app convention): classes live in app.css
-  (.gradient-presets / .gradient-swatch / … via --a-* tokens). Each swatch's
+  (.gradient-presets / .gradient-swatch / .gradient-presets-family / … via --a-*
+  tokens). Each swatch's
   gradient is DATA, not a design token, so it is passed as the --gp-swatch custom
   property exactly like ColorField passes its swatch color as --cf-swatch.
 
-  Props: onpick(stops) — called with a fresh {offset, color}[] stop list when a
-  preset is chosen; onpreview(stops) — the same list, staged as a live preview
-  while a swatch is hovered; oncancelpreview() — revert that preview;
+  `data-ramp-stops` states the preset's REAL stop count. It needs its own home
+  because --gp-swatch no longer implies it: for a looping or OKLab ramp the swatch
+  is a RESAMPLE of the colours the ramp will produce (cssRampSwatch), not its
+  authored stops, so counting the CSS stops would report the sample count instead
+  of the ramp's. Anything that needs to know how long the list it is about to apply
+  is — a probe measuring list churn, a future "12 stops" hint — reads this.
+
+  Props: onpick(ramp) — called with a fresh {stops, loop, space} ramp when a preset
+  is chosen; onpreview(ramp) — the same ramp, staged as a live preview while a
+  swatch is hovered; oncancelpreview() — revert that preview; families — the
+  declared libraries to list (defaults to every ramp family);
   onopenchange(open) — reports the library opening/closing, so the mount point can
   react to it being open at all (PaintField folds the sibling stop list while it
   is: hovering a swatch rewrites every stop, and a list re-rendering under the
@@ -37,14 +56,13 @@
   AngleField's onpreview/oncommit convention.
 -->
 <script module>
-  import { GRADIENT_PRESETS } from "./gradient_presets.js";
+  import { DEFAULT_RAMP_SPACE, sampleRampHex } from "../core/ramps.js";
 
   const PERCENT = 100; // stop offsets are 0..1; CSS gradient stops are 0..100%
 
   /**
    * Pure function. A CSS linear-gradient() preview string for a stop list, with
-   * each stop's ABSOLUTE offset (0..1) mapped to a percentage. Used both for the
-   * swatch tiles and could preview any gradient at a glance.
+   * each stop's ABSOLUTE offset (0..1) mapped to a percentage.
    *
    * @param {{offset:number,color:string}[]} stops - ordered stops, offsets in [0,1]
    * @returns {string} a CSS `linear-gradient(...)` value
@@ -58,46 +76,79 @@
   }
 
   /**
-   * Pure function. Case-insensitive substring filter over presets by name. An
-   * empty/blank query returns the full list unchanged.
-   *
-   * @param {{name:string}[]} presets
-   * @param {string} query
-   * @returns {{name:string}[]}
-   *
-   * @example filterPresets([{name:"sunset"},{name:"ocean"}], "sun").length // 1
-   * @example filterPresets([{name:"sunset"},{name:"ocean"}], "  ").length // 2
+   * How many points a RESAMPLED swatch is drawn from. 32 is the size of the
+   * palette table the widest consumer of a cyclic ramp actually renders from
+   * (render_gpu/skia/mandelbrot_shader.js MANDELBROT_PALETTE_STOPS), so a swatch
+   * promises exactly the smoothness the render delivers and no more — a linked
+   * constant, not a taste call. Not imported from there because this control is
+   * not that widget's; if the table size ever moves, this follows it.
    */
-  export function filterPresets(presets, query) {
-    const q = query.trim().toLowerCase();
-    return q ? presets.filter((p) => p.name.toLowerCase().includes(q)) : presets;
+  const SWATCH_SAMPLES = 32;
+
+  /**
+   * Pure function. The CSS gradient a swatch shows for a whole RAMP — which is not
+   * always its stop list. A ramp whose declared reading is sRGB-and-clamped IS its
+   * stop list, so the 343 baked gradients render byte-identically to before. A ramp
+   * that LOOPS or blends in OKLab is not expressible as CSS stops at all, so it is
+   * RESAMPLED through the real sampler (core/ramps.js) and shown as the colours it
+   * will actually produce.
+   *
+   * WHY THIS MATTERS RATHER THAN BEING A NICETY: a swatch IS hover feedback, and
+   * hover feedback that misrepresents what a click will apply is the defect the
+   * manifest's hover doctrine exists to stop. Drawn from its raw stops, an OKLab
+   * cyclic palette's swatch would show the sRGB blend the render does NOT use, and
+   * would hide the wrap segment entirely.
+   *
+   * @param {{stops:{offset:number,color:string}[],loop:boolean,space:string}} ramp
+   * @returns {string} a CSS `linear-gradient(...)` value
+   *
+   * @example cssRampSwatch({stops:[{offset:0,color:"#000000"},{offset:1,color:"#ffffff"}], loop:false, space:"srgb"})
+   * // "linear-gradient(90deg, #000000 0%, #ffffff 100%)"   (its stops, verbatim)
+   * @example cssRampSwatch({stops:[{offset:0,color:"#000000"},{offset:0.5,color:"#ffffff"}], loop:true, space:"srgb"})
+   * // a 33-stop resample showing the black→white ramp AND the synthesised white→black wrap
+   */
+  export function cssRampSwatch(ramp) {
+    if (!ramp.loop && ramp.space === DEFAULT_RAMP_SPACE) return cssGradientFromStops(ramp.stops);
+    const sampled = Array.from({ length: SWATCH_SAMPLES + 1 }, (_, i) => ({
+      offset: i / SWATCH_SAMPLES,
+      color: sampleRampHex(ramp.stops, i / SWATCH_SAMPLES, ramp),
+    }));
+    return cssGradientFromStops(sampled);
   }
+
 </script>
 
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import { RAMP_PRESET_FAMILIES, filterRampFamilies } from "./ramp_preset_families.js";
 
-  let { onpick, onpreview = null, oncancelpreview = null, onopenchange = null, disabled = false } = $props();
+  let {
+    onpick, onpreview = null, oncancelpreview = null, onopenchange = null,
+    families = RAMP_PRESET_FAMILIES, disabled = false,
+  } = $props();
 
   let open = $state(false);
   let query = $state("");
   let searchEl = $state(null);
   let bodyEl = $state(null);
 
-  let filtered = $derived(filterPresets(GRADIENT_PRESETS, query));
+  let filtered = $derived(filterRampFamilies(families, query));
 
   /**
-   * Pure function. A FRESH copy of a preset's stops — never the shared preset
-   * object, so neither the document nor a preview can alias author-time data.
+   * Pure function. A FRESH copy of a preset RECORD — a new stop array, never the
+   * shared preset object, so neither the document nor a preview can alias
+   * author-time data. The ramp ASPECTS travel with it, which is what makes a
+   * cyclic OKLab palette land cyclic and perceptual wherever it is applied.
    *
-   * @param {{stops:{offset:number,color:string}[]}} preset
-   * @returns {{offset:number,color:string}[]}
+   * @param {{name:string, stops:{offset:number,color:string}[], loop:boolean, space:string}} preset
+   * @returns {{stops:{offset:number,color:string}[], loop:boolean, space:string}}
    *
-   * @example freshStops({name:"x", stops:[{offset:0,color:"#000000"}]}) // [{offset:0, color:"#000000"}]
+   * @example freshRamp({name:"x", stops:[{offset:0,color:"#000000"}], loop:true, space:"oklab"})
+   * // {stops: [{offset: 0, color: "#000000"}], loop: true, space: "oklab"}
    */
-  function freshStops(preset) {
-    return preset.stops.map((s) => ({ offset: s.offset, color: s.color }));
+  function freshRamp(preset) {
+    return { stops: preset.stops.map((s) => ({ offset: s.offset, color: s.color })), loop: preset.loop, space: preset.space };
   }
 
   /** Command. Reverts the hover preview (the mount point restores what the
@@ -136,14 +187,14 @@
    * created. The next hover overwrites it; leaving the grid reverts it. */
   function preview(preset) {
     if (disabled || !onpreview) return;
-    onpreview(freshStops(preset));
+    onpreview(freshRamp(preset));
   }
 
   /** Command. Applies a preset durably (one undo unit, via onpick) and collapses
    * the library. The commit consumes the staged preview, so close()'s revert is
    * a no-op here — it only guards the unmount-without-pointerleave case. */
   function pick(preset) {
-    onpick(freshStops(preset));
+    onpick(freshRamp(preset));
     close();
   }
 
@@ -212,19 +263,26 @@
         tabindex="-1"
         onpointerleave={cancelPreview}
       >
-        {#each filtered as p (p.name)}
-          <Tooltip text={p.name}>
-            <button
-              type="button"
-              class="gradient-swatch"
-              role="option"
-              aria-selected="false"
-              aria-label={p.name}
-              style:--gp-swatch={cssGradientFromStops(p.stops)}
-              onpointerenter={() => preview(p)}
-              onclick={() => pick(p)}
-            ></button>
-          </Tooltip>
+        {#each filtered as family (family.id)}
+          <!-- The family CAPTION spans the whole grid row (app.css
+               .gradient-presets-family), so a family reads as a group rather than
+               as an unexplained change of colour halfway down the tiles. -->
+          <div class="gradient-presets-family">{family.title}</div>
+          {#each family.presets as p (p.name)}
+            <Tooltip text={p.name}>
+              <button
+                type="button"
+                class="gradient-swatch"
+                role="option"
+                aria-selected="false"
+                aria-label={p.name}
+                data-ramp-stops={p.stops.length}
+                style:--gp-swatch={cssRampSwatch(p)}
+                onpointerenter={() => preview(p)}
+                onclick={() => pick(p)}
+              ></button>
+            </Tooltip>
+          {/each}
         {:else}
           <div class="gradient-presets-empty">No presets match</div>
         {/each}

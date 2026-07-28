@@ -144,6 +144,12 @@
   --a-canvas-toolbar-tile: 40px;
   --a-canvas-toolbar-cols: 8;
   --a-canvas-toolbar-max-h: 296px;
+  /* A LIST in a floating canvas panel needs an explicit width: the tile grid sizes
+     itself from its columns, but a list of names would collapse to its longest word
+     and wrap a greyed row's reason sentence one word per line (measured, in the
+     probe screenshot). Wide enough for the reason to read as prose, narrow enough
+     to stay a canvas popover rather than a panel. */
+  --a-canvas-toolbar-list-w: 280px;
   --a-canvas-toolbar-gap: var(--a-sp-3);
   /* Editable-READOUT fields in the same panel (the Mandelbrot's Re/Im/Zoom bar).
      TWO widths, because the two kinds of value in one bar have very different
@@ -877,8 +883,15 @@ textarea {
   background: var(--a-hover-bg);
 }
 
+/* [aria-disabled] reads the SAME as :disabled, because a control that withholds
+   the native attribute in order to stay hoverable and focusable (the
+   CommandPalette precedent — a natively disabled button is not in the tab order,
+   so the keyboard can never reach the sentence saying why it is dead) must still
+   LOOK unavailable. Same declarations, so the two spellings cannot drift. */
 .btn:disabled,
-.btn-icon:disabled {
+.btn[aria-disabled="true"],
+.btn-icon:disabled,
+.btn-icon[aria-disabled="true"] {
   opacity: 0.35;
   cursor: default;
 }
@@ -1105,6 +1118,18 @@ textarea {
   box-shadow: 0 0 0 var(--a-selection-stroke) var(--a-selection);
 }
 
+/* A family CAPTION inside the preset grid: spans every column, so a family reads
+   as a group. Same device as the Dropdown's `insert` caption rows — a heading in
+   the flow of the items it heads, not a separate list. */
+.gradient-presets-family {
+  grid-column: 1 / -1;
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: var(--a-caption-tracking);
+  padding: var(--a-sp-1) 0 0;
+}
+
 .gradient-presets-empty {
   grid-column: 1 / -1;
   padding: var(--a-sp-3);
@@ -1178,6 +1203,7 @@ textarea {
 .canvas-toolbar-list {
   display: flex;
   flex-direction: column;
+  width: var(--a-canvas-toolbar-list-w);
   max-height: var(--a-canvas-toolbar-max-h);
   overflow-y: auto;
 }
@@ -1517,6 +1543,24 @@ textarea {
   fill: var(--a-handle-fill);
   stroke: var(--a-handle-rim);
   stroke-width: var(--a-handle-stroke);
+}
+
+/* HOVER ACQUISITION — the handle you actually grabbed, stated before the press.
+   The per-handle CURSOR (web/ResizeHandles.svelte) already says which AXIS, and
+   that is genuinely most of the answer; what it cannot say is WHICH of two 8px
+   squares the pointer acquired, because tl/br share nwse-resize and tr/bl share
+   nesw-resize — and at low zoom a corner and an edge handle sit half a box apart.
+   The browser hit-tests these rects already (they are among the few overlay marks
+   that are not pointer-events:none), so this costs no script and nothing per move.
+
+   IT INVERTS RATHER THAN TINTING, and that is the point: --a-handle-fill IS
+   --a-selection, so a selection-toned hover would be invisible against the handle's
+   own resting colour — the bento-aim-ring bug. Swapping fill and rim reuses the two
+   tokens the handle already owns and reads unmistakably at 8px, with no new token
+   and no theme override to forget. */
+.overlay .handle:hover {
+  fill: var(--a-handle-rim);
+  stroke: var(--a-handle-fill);
 }
 
 .overlay .endpoint {
@@ -2182,6 +2226,16 @@ textarea {
   background: var(--a-selection);
 }
 
+/* HOVER READS AS A BACKGROUND SHIFT, NEVER A BORDER, and that is a constraint not
+   a preference: `.current` below is distinguished SOLELY by border-color, so a
+   selection-toned hover border would make every hovered slide look like the current
+   slide — the bento-aim-ring bug. Background is the house hover treatment anyway
+   (.btn, .cat-header, .canvas-toolbar-tile all shift --a-hover-bg), so the two axes
+   stay independent: background = hovered, border = current. The sibling
+   .transition-slice already splits them this way (--fg hover vs --a-selection). */
+.slidenav .slide:hover {
+  background: var(--a-hover-bg);
+}
 .slidenav .slide.current {
   border-color: var(--a-selection);
 }
@@ -2943,6 +2997,17 @@ audio.ae-preview-media {
 .inspector .row.row-list > .kf-controls {
   grid-row: 1;
   grid-column: 2;
+}
+
+/* The column holding a list's PRESET LIBRARY above the list itself. A wrapper
+   rather than putting the picker inside .listfield, so that class keeps meaning
+   "the list" — probes and CSS that measure the list must not start measuring the
+   picker's grid. No gap: the picker's own body already carries its spacing, and a
+   gap here would prise the library off the header it introduces. */
+.ramp-presets-and-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .listfield {

@@ -126,7 +126,7 @@
  * the smooth count across the WHOLE frame spans 2.4 iterations riding on an
  * offset of 1117, so any palette(ν/maxIter) is one flat colour. A cyclic palette
  * indexed by frac(ν/scale) is invariant to that offset modulo the scale. Stops
- * are interpolated in OKLab on the CPU (bakeMandelbrotPalette) because an sRGB
+ * are interpolated on the CPU (core/ramps.js, in the ramp's declared space) because an sRGB
  * lerp of red→blue passes through a dark desaturated mud.
  *
  * ANALYTIC BAND-LIMIT — the free antialias. Verified numerically:
@@ -197,6 +197,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { bakeRampLut, linearToSrgb, srgbToLinear } from "../../core/ramps.js";
 
 // ── sizes (compile-time in the SkSL, so exported for the plugin and the tests) ─
 
@@ -969,117 +970,29 @@ export function referenceOrbit(cr, ci, bits, length) {
 // ── CPU side: the OKLab palette bake ─────────────────────────────────────────
 
 /**
- * Pure function. Linear sRGB to OKLab (Björn Ottosson, 2020). Interpolating a
- * palette in OKLab rather than sRGB is what stops a blue-to-orange ramp passing
- * through mud: OKLab is perceptually uniform, so a straight line in it is a
- * straight line to the eye.
+ * Pure function. Bakes a colour RAMP (core/ramps.js) into this shader's cyclic
+ * LINEAR palette uniform: MANDELBROT_PALETTE_STOPS entries plus the MEAN a fully
+ * band-limited (one-cycle-per-pixel) region converges to. A thin, named wrapper
+ * over the SHARED bakeRampLut so the widget's LUT SIZE lives beside the shader
+ * that declares it while the ramp math has exactly one home.
  *
- * @param {number} r - linear sRGB red, 0..1
- * @param {number} g - linear sRGB green, 0..1
- * @param {number} b - linear sRGB blue, 0..1
- * @returns {[number, number, number]} [L, a, b]
+ * WHY THE SHADER NEEDS NO CHANGE TO GAIN `loop`: samplePalette already reads the
+ * table cyclically (fract() plus a wrap-in-both-directions gather), so looping is
+ * decided entirely at BAKE time — a looping ramp bakes a seamless table, a
+ * clamped one bakes a table whose two ends differ and therefore shows a seam per
+ * cycle. No uniform, no row-budget cost, no SkSL edit.
  *
- * @example linearSrgbToOklab(1, 1, 1).map((v) => +v.toFixed(4)) // [1, 0, 0]
- * @example linearSrgbToOklab(0, 0, 0) // [0, 0, 0]
- */
-export function linearSrgbToOklab(r, g, b) {
-  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
-  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
-  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-  return [
-    0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
-    1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
-    0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
-  ];
-}
-
-/**
- * Pure function. OKLab back to linear sRGB — Ottosson's published inverse.
- *
- * @param {number} L - OKLab lightness
- * @param {number} a - OKLab green/red axis
- * @param {number} b - OKLab blue/yellow axis
- * @returns {[number, number, number]} linear sRGB (may leave the gamut; clamped downstream)
- *
- * @example oklabToLinearSrgb(1, 0, 0).map((v) => +v.toFixed(4)) // [1, 1, 1]
- * @example oklabToLinearSrgb(0, 0, 0) // [0, 0, 0]
- */
-export function oklabToLinearSrgb(L, a, b) {
-  const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
-  const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
-  const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
-  const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
-  return [
-    +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
-  ];
-}
-
-/** The sRGB transfer function's constants (IEC 61966-2-1) — the CPU twin of the
- *  shader's encodeSrgb, used here only in the DECODE direction. */
-const SRGB_LINEAR_CUTOFF = 0.0031308;
-const SRGB_LINEAR_SLOPE = 12.92;
-const SRGB_GAMMA_SCALE = 1.055;
-const SRGB_GAMMA_OFFSET = 0.055;
-
-/**
- * Pure function. Gamma-encoded sRGB to linear light — what a hex colour must pass
- * through before it can be interpolated perceptually.
- *
- * @param {number} v - encoded 0..1
- * @returns {number} linear light 0..1
- *
- * @example srgbToLinear(1) // 1
- * @example +srgbToLinear(0.7354).toFixed(4) // 0.5
- */
-export function srgbToLinear(v) {
-  const c = Math.min(1, Math.max(0, v));
-  return c <= SRGB_LINEAR_CUTOFF * SRGB_LINEAR_SLOPE
-    ? c / SRGB_LINEAR_SLOPE
-    : Math.pow((c + SRGB_GAMMA_OFFSET) / SRGB_GAMMA_SCALE, 2.4);
-}
-
-/**
- * Pure function. Bakes a list of colour stops into the shader's CYCLIC LINEAR
- * palette: MANDELBROT_PALETTE_STOPS entries interpolated in OKLab, with the last
- * stop blending back into the first so the palette tiles along the colour axis
- * with no seam. Also returns the palette MEAN, which is what a fully
- * band-limited (one-cycle-per-pixel) region must converge to.
- *
- * @param {string[]} stops - colour strings (anything parseColor accepts), in order
+ * @param {{offset: number, color: string}[]} stops - the ramp, canonical order
+ * @param {{loop?: boolean, space?: string}} ramp - the ramp's aspects
  * @returns {{palette: number[], mean: [number, number, number]}} palette is 3·N linear values
  *
- * @example bakeMandelbrotPalette(["#000000", "#ffffff"]).palette.length // 96
- * @example bakeMandelbrotPalette(["#000000", "#000000"]).mean // [0, 0, 0]
- * @example bakeMandelbrotPalette(["#ffffff", "#ffffff"]).palette[0] // 1
+ * @example bakeMandelbrotRamp([{offset: 0, color: "#ffffff"}, {offset: 0.5, color: "#ffffff"}], {loop: true}).palette.length // 96
+ * @example bakeMandelbrotRamp([{offset: 0, color: "#000000"}, {offset: 0.5, color: "#000000"}], {loop: true}).mean // [0, 0, 0]
+ * @example bakeMandelbrotRamp([{offset: 0, color: "#ffffff"}, {offset: 0.5, color: "#ffffff"}], {loop: true}).palette[0] // 1
  */
-export function bakeMandelbrotPalette(stops) {
-  if (!Array.isArray(stops) || stops.length < 2)
-    throw new Error(`bakeMandelbrotPalette: need at least 2 stops, got ${JSON.stringify(stops)}`);
-  const lab = stops.map((s) => {
-    const c = parseColor(s);
-    return linearSrgbToOklab(srgbToLinear(c[0]), srgbToLinear(c[1]), srgbToLinear(c[2]));
-  });
-  const palette = new Array(MANDELBROT_PALETTE_STOPS * 3);
-  const acc = [0, 0, 0];
-  for (let i = 0; i < MANDELBROT_PALETTE_STOPS; i++) {
-    const x = (i / MANDELBROT_PALETTE_STOPS) * stops.length;
-    const i0 = Math.floor(x) % stops.length;
-    const i1 = (i0 + 1) % stops.length;
-    const f = x - Math.floor(x);
-    const rgb = oklabToLinearSrgb(
-      lab[i0][0] + (lab[i1][0] - lab[i0][0]) * f,
-      lab[i0][1] + (lab[i1][1] - lab[i0][1]) * f,
-      lab[i0][2] + (lab[i1][2] - lab[i0][2]) * f,
-    );
-    for (let k = 0; k < 3; k++) {
-      const v = Math.min(1, Math.max(0, rgb[k]));
-      palette[i * 3 + k] = v;
-      acc[k] += v;
-    }
-  }
-  return { palette, mean: [acc[0] / MANDELBROT_PALETTE_STOPS, acc[1] / MANDELBROT_PALETTE_STOPS, acc[2] / MANDELBROT_PALETTE_STOPS] };
+export function bakeMandelbrotRamp(stops, ramp) {
+  const { lut, mean } = bakeRampLut(stops, MANDELBROT_PALETTE_STOPS, ramp);
+  return { palette: lut, mean };
 }
 
 // ── the uniform packer ────────────────────────────────────────────────────────
@@ -1100,7 +1013,7 @@ function floats(name, v, length) {
  * Pure function. Packs the mandelbrot uniforms in SkSL declaration order.
  * `u` carries the framework's device-space region geometry plus the plugin's
  * params — including `orbit` (2·MANDELBROT_REF_LEN interleaved fp32 values from
- * referenceOrbit) and `palette`/`paletteMean` (from bakeMandelbrotPalette).
+ * referenceOrbit) and `palette`/`paletteMean` (from bakeMandelbrotRamp).
  *
  * @param {object} u - geometry {cx, cy, halfW, halfH, cornerRadius, angle} + the op params
  * @returns {Float32Array} length MANDELBROT_UNIFORM_FLOATS
@@ -1152,15 +1065,11 @@ const PROXY_RIM_PALETTE_T = 0.15;    // palette position sampled for the outer r
 const PROXY_MID_PALETTE_T = 0.5;     // palette position sampled for the mid-tone
 const PROXY_ALPHA = 1;               // opaque: a foreground material occupies its region
 
-/** Pure function. Linear light to gamma-encoded sRGB — the CPU twin of the
- *  shader's encodeSrgb, needed because a proxy gradient's stops are ORDINARY
- *  Skia colours (already display-encoded), not the shader's linear working space.
- *  @example linearToSrgb(0) // 0
- *  @example +linearToSrgb(0.5).toFixed(4) // 0.7354 */
-function linearToSrgb(v) {
-  const c = Math.min(1, Math.max(0, v));
-  return c <= SRGB_LINEAR_CUTOFF ? SRGB_LINEAR_SLOPE * c : SRGB_GAMMA_SCALE * Math.pow(c, 1 / 2.4) - SRGB_GAMMA_OFFSET;
-}
+// linearToSrgb — the CPU twin of the shader's encodeSrgb, needed here because a
+// proxy gradient's stops are ORDINARY Skia colours (already display-encoded), not
+// the shader's linear working space. It used to be a local copy of the sRGB
+// transfer function; it now comes from core/ramps.js, which owns that curve in both
+// directions for the whole app.
 
 /** Query. The baked palette sampled at cyclic position `t`, display-encoded. */
 function proxyPaletteColor(palette, t) {

@@ -99,11 +99,17 @@
       scrubbing one element's field stages a sparse numeric-keyed OBJECT
       (core/deltas.js setPath) — so dragging a stop's offset never folds the row
       out from under the pointer, which would be worse than the flicker.
-    • `forceCollapsed` — a mount point DECLARING that a sibling control is about
-      to do that. PaintField sets it the moment the preset library OPENS, which
-      is what the user asked for ("collapse that for us upon clicking the
-      dropdown"): the preview seam alone would not fold until the first swatch
-      was hovered.
+    • THIS CONTROL'S OWN PRESET LIBRARY being OPEN — from the CLICK, not from the
+      first swatch hovered, which is what the user asked for ("collapse that for
+      us upon clicking the dropdown"): the preview seam alone would not fold
+      until the first swatch had already been pointed at. This used to be
+      threaded in from PaintField as `forceCollapsed`, back when PaintField owned
+      the picker; it is internal now that the library is mounted here.
+    • `forceCollapsed` — a mount point DECLARING that some OTHER sibling control
+      it owns is about to rewrite the list. Kept for that case even though no
+      mount point needs it today: the picker is no longer the only thing that
+      could, and it composes with the two sources above rather than replacing
+      them.
 
   !!! THE LAYOUT IS PROVISIONAL AND EXPECTED TO BE CONSOLIDATED !!!
   The user's ruling was "the UI can use work, but functionality-wise, we need
@@ -131,11 +137,30 @@
     disabled    — grays every control (a not-yet-created item's rows).
     seedElement — the element an insert into an EMPTY list creates, from the
                   property's own default; null = no seed offered.
-    forceCollapsed — a mount point declaring that a sibling control is rewriting
-                  this whole list right now (PaintField's open preset library),
-                  so the rows must not move under the pointer. Folds the list
-                  WITHOUT touching the user's own remembered choice.
-  Styling lives in app.css (.listfield / .list-*; app convention: no <style>).
+    forceCollapsed — a mount point declaring that some OTHER control it owns is
+                  rewriting this whole list right now, so the rows must not move
+                  under the pointer. Folds the list WITHOUT touching the user's
+                  own remembered choice. (This control's OWN preset library folds
+                  the rows by itself; nothing has to be threaded in for that.)
+
+  ── THE PRESET LIBRARY, WHEN THE DECLARATION ASKS FOR ONE ────────────────────
+  A list whose declaration says `presets: COLOR_RAMP_LIBRARY` (core/properties.js
+  GRADIENT_STOPS_LIST and PROPS.rampStops) renders the shared ramp preset library
+  ABOVE its rows. That mount used to live PRIVATELY in web/PaintField.svelte,
+  which is precisely why no property but a gradient paint could have a library —
+  the Mandelbrot palette had to be a `select` over six hard-coded colour lists
+  instead of this control. Moving the mount to the DECLARATION is the
+  generalization; the behaviour (hover previews on the canvas, leave reverts,
+  click commits one undo unit) is unchanged.
+
+  The library is rendered as a SIBLING of `.listfield` inside a
+  `.ramp-presets-and-list` wrapper, deliberately: `.listfield` must keep meaning
+  "the list itself" so nothing that measures the list (its rows, its height, its
+  DOM churn under a hover sweep — tests/list_ui_probe.js counts exactly that)
+  starts measuring the picker's 349-swatch grid instead.
+
+  Styling lives in app.css (.ramp-presets-and-list / .listfield / .list-*; app
+  convention: no <style>).
 -->
 <script module>
   /**
@@ -180,13 +205,31 @@
   import BooleanField from "./BooleanField.svelte";
   import AngleField from "./AngleField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
+  import GradientPresetPicker from "./GradientPresetPicker.svelte";
   import { getPath } from "../core/deltas.js";
+  import { COLOR_RAMP_LIBRARY } from "../core/ramps.js";
   import {
     ACTIVE_FIELD, activeListPath, elementActive, elementFieldValue, elementStorageKey,
     insertedElement, withElementActive, withElementInserted, withElementPurged,
   } from "../core/lists.js";
 
   let { app, decl, path, label, disabled = false, seedElement = null, forceCollapsed = false } = $props();
+
+  // ── THE PRESET LIBRARY, MOUNTED FROM THE DECLARATION ──────────────────────
+  // A list that declares `presets: COLOR_RAMP_LIBRARY` (core/properties.js
+  // GRADIENT_STOPS_LIST and PROPS.rampStops) gets the shared ramp library above
+  // its rows. It is mounted HERE, in the general list control, rather than by one
+  // field: web/PaintField.svelte used to own the picker privately, which is the
+  // whole reason no other property could have a library and the reason the
+  // Mandelbrot palette had to be a `select` over six hard-coded names.
+  let hasPresets = $derived(decl.presets === COLOR_RAMP_LIBRARY);
+  // IS THE LIBRARY OPEN? Folds the rows from the CLICK, not from the first swatch
+  // hovered, so nothing about the list moves for the whole session (the user's
+  // "preset selection for gradients should collapse that for us upon clicking the
+  // dropdown"). It joins `forceCollapsed` in `suppressed` below rather than
+  // replacing it — a mount point may still declare suppression for a sibling
+  // control this list knows nothing about.
+  let presetsOpen = $state(false);
 
   /** Icon glyph size for the row's own buttons — the .btn-icon size every other
    *  icon button in a panel row uses, so the rows are one height. */
@@ -264,11 +307,67 @@
   // must NOT fold the row being dragged. This is the shared seam: no picker has
   // to wire anything up to get the flicker fix.
   let listPreviewStaged = $derived(Array.isArray(getPath(app.previewDelta, path)));
-  let suppressed = $derived(Boolean(forceCollapsed) || listPreviewStaged);
+  let suppressed = $derived(Boolean(forceCollapsed) || presetsOpen || listPreviewStaged);
   let collapsed = $derived(userCollapsed || suppressed);
 
   let hiddenCount = $derived(value.list.filter((_, i) => !elementActive(value.active, i)).length);
   let summary = $derived(listSummary(value.list.length, hiddenCount, decl.label ?? label));
+
+  /**
+   * Pure function. The [path, value] pairs one RAMP PRESET writes: the stop list
+   * at this control's own path, plus each ASPECT the declaration has a home for
+   * (`presetAspectKeys`, e.g. {loop: "rampLoop", space: "rampSpace"} — a SIBLING
+   * state key beside the list, the same shape `activeKey` already has). A
+   * declaration with no home for an aspect simply does not write it: a gradient
+   * paint stores no loop/space today, so picking a preset there changes only the
+   * stops, byte-identically to before.
+   *
+   * @param {{stops: object[], loop: boolean, space: string}} ramp - the picked preset
+   * @returns {Array} setPreview pairs
+   *
+   * @example // for decl {presetAspectKeys: {loop: "rampLoop"}} at path ["items","a","rampStops"]:
+   * @example // rampPreviewPairs({stops: [], loop: true}) → [[["items","a","rampStops"], []], [["items","a","rampLoop"], true]]
+   */
+  function rampPreviewPairs(ramp) {
+    const pairs = [[path, ramp.stops]];
+    for (const [aspect, key] of Object.entries(decl.presetAspectKeys ?? {}))
+      if (aspect in ramp) pairs.push([[...path.slice(0, -1), key], ramp[aspect]]);
+    return pairs;
+  }
+
+  /** Command. Live-previews a ramp preset while the pointer rests on its swatch —
+   * EXACTLY the write pickPreset commits, staged into app.previewDelta instead, so
+   * the CANVAS re-renders while the DOCUMENT stays untouched and no undo entry is
+   * created (the house preview/commit contract; the manifest's hover doctrine:
+   * "the document is never mutated by hovering").
+   *
+   * It also registers the revert as app.transientPreview, which is the FontPicker
+   * fix one level out: there is exactly ONE preview slot, and a dismissal path that
+   * commits whatever is staged (app.exitCanvasMode does) would otherwise commit a
+   * preset the user merely POINTED AT. Registering the revert means every path that
+   * calls dropTransientPreview() reverts instead of committing. */
+  function previewPreset(ramp) {
+    if (disabled) return;
+    app.setPreview(rampPreviewPairs(ramp));
+    app.transientPreview = () => app.cancelPreview();
+  }
+
+  /** Command. Drops the hover preview (the pointer left the grid, or it closed).
+   * The document was never changed, so this only restores what is rendered. */
+  function cancelPresetPreview() {
+    app.transientPreview = null;
+    app.cancelPreview();
+  }
+
+  /** Command. Applies a ramp preset DURABLY — one write, one undo unit. The
+   * transient registration is dropped FIRST so the commit is the user's choice and
+   * not a revert target. */
+  function pickPreset(ramp) {
+    if (disabled) return;
+    app.transientPreview = null;
+    app.setPreview(rampPreviewPairs(ramp));
+    app.commitPreview();
+  }
 
   /** Query (reads the list + the suppression state). The collapse header's
    *  tooltip: what a click does — or, while a sibling control holds the list
@@ -431,7 +530,33 @@
   </Tooltip>
 {/snippet}
 
-<div class="listfield">
+<!-- THE PRESET LIBRARY IS A SIBLING OF `.listfield`, NOT A CHILD, and the wrapper
+     exists for exactly that: `.listfield` must keep meaning "the list itself" so
+     nothing measuring the list (its rows, its height, its DOM churn under a hover
+     sweep) starts measuring the picker's grid instead. The library is a control
+     ABOVE the list, not part of it. -->
+<div class="ramp-presets-and-list">
+  {#if hasPresets}
+    <!-- THE PRESET LIBRARY — a tiled, family-grouped grid of ramp swatches.
+         HOVERING one previews it live on the CANVAS (document untouched, no undo
+         entry); leaving the grid restores what was there; picking one commits as
+         ONE undo unit.
+         FIRST, not last, and that is structural rather than cosmetic: hovering a
+         swatch rewrites the whole stop list, and a preset with a different stop
+         COUNT changes the list's HEIGHT (measured: 13 height changes over 14
+         swatches, from 2 rows to 12 and back). With the library BELOW, every one of
+         those shoved the grid — and the tile under the cursor — inside the
+         Inspector's scroller. ABOVE, the panel's own top edge anchors it, so the
+         swatch being pointed at cannot move. -->
+    <GradientPresetPicker
+      {disabled}
+      onpick={pickPreset}
+      onpreview={previewPreset}
+      oncancelpreview={cancelPresetPreview}
+      onopenchange={(open) => (presetsOpen = open)}
+    />
+  {/if}
+  <div class="listfield">
   <!-- THE COLLAPSE HEADER — web/Inspector.svelte's category accordion, class for
        class: the app's ONE section-heading device, which app.css keeps DELIBERATELY
        UNSCOPED so a new consumer does not have to be added to a selector group
@@ -560,4 +685,5 @@
       {@render insertSlice(index + 1)}
     {/each}
   {/if}
+  </div>
 </div>

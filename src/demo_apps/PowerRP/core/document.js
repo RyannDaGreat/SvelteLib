@@ -34,6 +34,7 @@ import {
   withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue,
 } from "./expressions.js";
 import { withRichTextMigrated } from "./richtext.js";
+import { withPaletteRampMigrated, rampMigrationReports } from "./ramp_migration.js";
 import { bundleDefaults, linearEndpointsToAngle } from "./properties.js";
 
 /** Query (reads crypto). Random 8-char id — short but collision-safe at presentation scale. */
@@ -1661,7 +1662,24 @@ export function repairedDocument(doc, registry) {
       reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: dropped dead filmstrip key(s) ${m.dead.join(", ")} — frames are decoded in the browser now, not fetched from the server frames endpoint`);
   }
 
-  let out = framesDoc;
+  // Mandelbrot palette -> the shared colour RAMP (core/ramps.js): the `palette`
+  // select plus the `paletteStops` text override collapse into one `rampStops` list.
+  // A VALUE migration with a TYPE change, so it cannot use the declarative
+  // legacyKeys seam — that only moves a value between key names, which is why the
+  // sibling rename `paletteOffset` -> `rampPhase` DOES go through it.
+  //
+  // POSITION IS LOAD-BEARING, for the same reason the filmstrip step above is: it
+  // must run BEFORE withMissingDefaultsFilled, so a document whose only palette
+  // write is on a later slide gets its creation-slide default ramp from the fill
+  // rather than from here.
+  //
+  // AND IT MUST FOLD, which projects/Fractals proved: slide 1 sets a stops
+  // override, slide 2 sets `palette: "ember"` — which the still-folded override
+  // SHADOWS, so slide 2 was never ember. A per-slide conversion gets that wrong.
+  const { doc: rampDoc, migrated: rampsMigrated } = withPaletteRampMigrated(framesDoc);
+  for (const line of rampMigrationReports(rampsMigrated)) reports.push(line);
+
+  let out = rampDoc;
   if ("fps" in out.meta) {
     const meta = { ...out.meta };
     delete meta.fps;

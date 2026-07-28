@@ -571,10 +571,11 @@ try {
   // THE SWEEP. Alternating few-stop and many-stop presets, so every hover would
   // have changed the list's height pre-fix; the library's first tiles are all
   // 2-stop gradients and would measure almost nothing. A stop count is readable
-  // off the tile: --gp-swatch is the CSS gradient its stops were baked into.
+  // off the tile: `data-ramp-stops` states the preset's REAL stop count (its CSS
+  // gradient does NOT, for a looping or OKLab preset — see cssRampSwatch).
   const sweepOrder = await jsonEval((n) => {
     const counted = [...document.querySelectorAll(".gradient-swatch")].map((s, i) => ({
-      i, stops: (s.style.getPropertyValue("--gp-swatch").match(/%/g) ?? []).length,
+      i, stops: Number(s.dataset.rampStops),
     }));
     const few = counted.filter((c) => c.stops <= 2).map((c) => c.i);
     const many = counted.filter((c) => c.stops >= 4).map((c) => c.i);
@@ -637,7 +638,12 @@ try {
       // thing the fold exists to make watchable. A staged whole-list ARRAY at the
       // stops path with the SWATCH's own stop count is the proof.
       const staged = app.previewDelta?.items?.[id]?.fill?.linear?.stops;
-      const want = (s.style.getPropertyValue("--gp-swatch").match(/%/g) ?? []).length;
+      // The swatch's OWN stop count, read from data-ramp-stops rather than counted
+      // off its CSS gradient: for a looping or OKLab preset the swatch is a
+      // RESAMPLE of the colours the ramp produces, not its authored stops, so the
+      // CSS count is the sample count (web/GradientPresetPicker.svelte
+      // cssRampSwatch). The attribute is the honest source.
+      const want = Number(s.dataset.rampStops);
       if (staged && Object.keys(staged).length === want) c.previews++;
     }, index, rectId, t);
   }
