@@ -663,6 +663,20 @@ widget is the scrubber-with-time-presets.
     click = one undo unit). Export-config dropdowns (RenderCenterModal)
     deliberately unwired — nothing on canvas to preview.
 
+75. **THE REPLICATION STUDY** (user, 2026-07-28, with a reference screenshot):
+    "make a presentation that tries to replicate this as closely as possible —
+    to find shortcomings in the current widget ecosystem OR confirm we have
+    everything we need. First slide = that image; second slide = a replication
+    of it with widgets, properly grouped and colored precisely." The reference
+    is a corporate dark deck slide ("BUILD IT" kicker, big white title, a
+    syntax-highlighted Python code block, four callout cards with
+    green/blue/orange/red left accent bars, a navy terminal panel with green
+    CLI text). The DELIVERABLE IS THE FINDINGS as much as the deck: every
+    place the ecosystem falls short (e.g. does the codeblock widget render
+    real syntax colouring, per-card grouping ergonomics, precise-hex
+    workflows) gets recorded; if nothing falls short, that confirmation is
+    the result. Deck: projects/ReplicaStudy.
+
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
   parametric core with a y-of-x preset wrapper unless told otherwise.)
