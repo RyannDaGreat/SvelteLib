@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
@@ -516,14 +516,20 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
       const bounds = { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
       if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
-      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
+      if (cmd.stroke && cmd.strokeWidth > 0) {
+        if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
+      }
       break;
     }
     case "ellipse": {
       const oval = CanvasKit.LTRBRect(cmd.cx - cmd.rx, cmd.cy - cmd.ry, cmd.cx + cmd.rx, cmd.cy + cmd.ry);
       const bounds = { x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry };
       if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
-      if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
+      if (cmd.stroke && cmd.strokeWidth > 0) {
+        if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
+      }
       break;
     }
     case "polyline": {
@@ -800,7 +806,13 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true) {
   const maskBlur = cmd.blur > 0 ? CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, cmd.blur, true) : null;
   const drawWith = (p) => { if (maskBlur) p.setMaskFilter(maskBlur); canvas.drawPath(skPath, p); };
   if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), drawWith);
-  if (cmd.stroke && cmd.strokeWidth > 0) withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), drawWith);
+  if (cmd.stroke && cmd.strokeWidth > 0) {
+    // A trimmed/capped path stroke takes the arc-length preprocessing route (the
+    // optional soft `blur` mask does not apply to a trimmed stroke — a niche
+    // combination; the fill above still carries it).
+    if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), drawWith);
+  }
   if (maskBlur) maskBlur.delete();
   skPath.delete();
 }
@@ -1306,20 +1318,181 @@ function drawMaterialStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy) {
     throw new Error(`paintIR(skia): material stroke "${paint.material?.id}" reached the painter UNRESOLVED — render_gpu/ports.js resolveMaterialFillPaints must run on every pipeline that builds IR.`);
   const entry = getStrokeMaterial(paint.material.id);
   const localPath = shapeOpLocalPath(CanvasKit, cmd);
+  // TRIM PREPROCESSING (the fleet contract): a material stroke receives an
+  // already-trimmed/phased path, so arc-length materials (along-gradient,
+  // width-profile, dashes, wavy) draw ON the kept arc with no material change. A
+  // window that keeps nothing draws nothing. Caps stay the material's own concern
+  // (dashes cap their dashes, width-profile tapers via its ribbon).
+  const trimmed = strokeIsTrimmed(cmd) ? buildTrimmedStrokePath(CanvasKit, localPath, cmd) : null;
+  const strokePath = trimmed ?? localPath;
   const opacity = cmd.opacity ?? 1;
   canvas.save();
   applyView(canvas, view, world);
-  if (proxy) {
+  if (strokeIsTrimmed(cmd) && !trimmed) {
+    // nothing kept — draw nothing
+  } else if (proxy) {
     const p = strokePaint(CanvasKit, PROXY_STROKE_COLOR, width, opacity, null, ctx.antialias);
     p.setStrokeCap(CanvasKit.StrokeCap.Round);
     p.setStrokeJoin(CanvasKit.StrokeJoin.Round);
-    canvas.drawPath(localPath, p);
+    canvas.drawPath(strokePath, p);
     p.delete();
   } else {
-    entry.render(CanvasKit, canvas, localPath, paint.resolvedParams, width, opacity, ctx.antialias);
+    entry.render(CanvasKit, canvas, strokePath, paint.resolvedParams, width, opacity, ctx.antialias);
   }
   canvas.restore();
+  if (trimmed) trimmed.delete();
   localPath.delete();
+}
+
+// ── THE STROKE-TRIM PAINTER (manifest E.12-15) ───────────────────────────────
+// Per the fleet architecture contract, trim/phase are PATH PREPROCESSING: the
+// stroke path is cut to its arc-length window and its origin rotated (via
+// ContourMeasure) BEFORE plain stroking AND before a stroke material's render(),
+// so materials receive an already-trimmed localPath and need zero change. Caps
+// (flat/round/taper) apply at the plain-stroke seam here.
+
+/** How many stroke-WIDTHS a "taper" cap ramps over (clamped to half the contour):
+ *  a lifted-brush end reads across several widths, not a knife-edge. */
+const TAPER_CAP_WIDTHS = 16;
+/** Ribbon sampling: one variable-width sample per this many LOCAL arc units,
+ *  clamped to [MIN, MAX] — smooth on a curve without exploding vertex counts. */
+const TAPER_SAMPLE_SPACING = 3;
+const TAPER_MIN_SAMPLES = 8;
+const TAPER_MAX_SAMPLES = 512;
+/** Two free ends within this many LOCAL units are the SAME point (a wrap seam) —
+ *  such ends are a continuous joint, not a real cap, so no disc is drawn there. */
+const END_COINCIDENCE_EPS = 1e-3;
+
+/** Command. Runs `fn(contour)` for each contour of `path` (ContourMeasure memory
+ *  contract: delete each measured contour + the iterator). Local twin of the
+ *  stroke_materials helper (that module is import-frozen for this agent). */
+function forEachContourMeasure(CanvasKit, path, fn) {
+  const iter = new CanvasKit.ContourMeasureIter(path, false, 1);
+  let c;
+  while ((c = iter.next())) { fn(c); c.delete(); }
+  iter.delete();
+}
+
+/**
+ * Command (allocates a Path; caller deletes; returns null when the trim keeps
+ * NOTHING). The arc-length-TRIMMED `src`, per the op's strokeStart/End/Phase:
+ * each contour is walked and only trimSegments' distance windows kept. A wrapped
+ * closed window returns as two subpaths whose seam endpoints coincide (deduped as
+ * a joint, not a cap, by collectFreeEnds).
+ */
+function buildTrimmedStrokePath(CanvasKit, src, cmd) {
+  const start = cmd.strokeStart ?? 0, end = cmd.strokeEnd ?? 1, phase = cmd.strokePhase ?? 0;
+  const b = new CanvasKit.PathBuilder();
+  let any = false;
+  forEachContourMeasure(CanvasKit, src, (c) => {
+    const L = c.length();
+    for (const [d0, d1] of trimSegments(L, start, end, phase, c.isClosed())) {
+      const seg = c.getSegment(d0, d1, true);
+      b.addPath(seg);
+      seg.delete();
+      any = true;
+    }
+  });
+  const path = any ? b.detach() : null;
+  b.delete();
+  return path;
+}
+
+/**
+ * Query. The FREE ENDS of `path` — the open endpoints of each OPEN contour, each
+ * tagged `side` "start" (arc distance 0) or "end" (arc distance L). A CLOSED
+ * contour (an untrimmed rect/ellipse) has none. Wrap-seam ends that coincide with
+ * another end are dropped (a continuous joint gets no cap).
+ *
+ * @returns {Array<{x:number, y:number, side:"start"|"end"}>}
+ */
+function collectFreeEnds(CanvasKit, path) {
+  const raw = [];
+  forEachContourMeasure(CanvasKit, path, (c) => {
+    if (c.isClosed()) return;
+    const L = c.length();
+    if (!(L > 0)) return;
+    const a = c.getPosTan(0), z = c.getPosTan(L);
+    raw.push({ x: a[0], y: a[1], side: "start" });
+    raw.push({ x: z[0], y: z[1], side: "end" });
+  });
+  return raw.filter((e, i) => !raw.some((o, j) => j !== i && Math.hypot(o.x - e.x, o.y - e.y) < END_COINCIDENCE_EPS));
+}
+
+/**
+ * Command (draws on `canvas`, local space under the CTM). Fills a variable-width
+ * RIBBON for `path`, ramping the half-width to 0 over a taper cap end (the
+ * widthProfile ribbon technique, but a CAP taper localized to the ends). A closed
+ * contour has no free end, so it fills at uniform width.
+ */
+function fillTaperedRibbon(CanvasKit, canvas, path, cmd, bounds, opacity, aa, capStart, capEnd) {
+  const half = cmd.strokeWidth / 2;
+  const b = new CanvasKit.PathBuilder();
+  forEachContourMeasure(CanvasKit, path, (c) => {
+    const L = c.length();
+    if (!(L > 0)) return;
+    const closed = c.isClosed();
+    const steps = Math.max(TAPER_MIN_SAMPLES, Math.min(TAPER_MAX_SAMPLES, Math.round(L / TAPER_SAMPLE_SPACING)));
+    const taperLen = Math.min(cmd.strokeWidth * TAPER_CAP_WIDTHS, L / 2);
+    const left = [], right = [];
+    for (let i = 0; i <= steps; i++) {
+      const d = L * i / steps;
+      const pt = c.getPosTan(d);
+      const nx = -pt[3], ny = pt[2]; // unit normal (tangent is unit)
+      let hw = half;
+      if (!closed && taperLen > 0) {
+        if (capStart === "taper" && d < taperLen) hw = Math.min(hw, half * (d / taperLen));
+        if (capEnd === "taper" && d > L - taperLen) hw = Math.min(hw, half * ((L - d) / taperLen));
+      }
+      left.push([pt[0] + nx * hw, pt[1] + ny * hw]);
+      right.push([pt[0] - nx * hw, pt[1] - ny * hw]);
+    }
+    b.moveTo(left[0][0], left[0][1]);
+    for (let i = 1; i < left.length; i++) b.lineTo(left[i][0], left[i][1]);
+    for (let i = right.length - 1; i >= 0; i--) b.lineTo(right[i][0], right[i][1]);
+    b.close();
+  });
+  const ribbon = b.detach();
+  b.delete();
+  withPaint(CanvasKit, fillPaint(CanvasKit, cmd.stroke, opacity, bounds, aa), (p) => canvas.drawPath(ribbon, p));
+  ribbon.delete();
+}
+
+/**
+ * Command (draws on `canvas`, local space under the CTM). THE plain-stroke path
+ * for a shape op whose stroke is TRIMMED and/or non-flat-CAPPED — the general
+ * route taken instead of the direct drawRRect/drawOval when opStrokeNeedsTrimPath.
+ * Builds the shape's local path, trims it, then either fills a tapered ribbon or
+ * strokes it butt-capped and adds a round-cap disc (radius width/2) at each round
+ * free end. `bounds` is the op's local bbox (the gradient objectBoundingBox).
+ */
+function drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa) {
+  const width = cmd.strokeWidth;
+  if (!(width > 0) || !cmd.stroke) return;
+  const capStart = cmd.strokeCapStart ?? "flat";
+  const capEnd = cmd.strokeCapEnd ?? "flat";
+  const src = shapeOpLocalPath(CanvasKit, cmd);
+  const trimmed = strokeIsTrimmed(cmd) ? buildTrimmedStrokePath(CanvasKit, src, cmd) : null;
+  // A trim window that keeps nothing draws nothing (an empty stroke, not the whole one).
+  if (strokeIsTrimmed(cmd) && !trimmed) { src.delete(); return; }
+  const strokePath = trimmed ?? src;
+  const ends = collectFreeEnds(CanvasKit, strokePath);
+  if (capStart === "taper" || capEnd === "taper") {
+    fillTaperedRibbon(CanvasKit, canvas, strokePath, cmd, bounds, opacity, aa, capStart, capEnd);
+  } else {
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa), (p) => {
+      p.setStrokeCap(CanvasKit.StrokeCap.Butt);
+      canvas.drawPath(strokePath, p);
+    });
+  }
+  // Round-cap discs — in BOTH branches, so a round end beside a tapered one still rounds.
+  const roundEnds = ends.filter((e) => (e.side === "start" ? capStart : capEnd) === "round");
+  if (roundEnds.length)
+    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.stroke, opacity, bounds, aa), (p) => {
+      for (const e of roundEnds) canvas.drawCircle(e.x, e.y, width / 2, p);
+    });
+  if (trimmed) trimmed.delete();
+  src.delete();
 }
 
 function lensClipPath(CanvasKit, cmd, deviceM) {

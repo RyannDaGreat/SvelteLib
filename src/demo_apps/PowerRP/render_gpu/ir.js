@@ -50,7 +50,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
@@ -467,6 +467,238 @@ export function opHasMirrorLinearFill(cmd) {
   return !!(p && typeof p === "object" && !Array.isArray(p) && p.type === "linearGradient" && (p.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH) !== 1);
 }
 
+// ── THE STROKE-TRIM framework (manifest E.12-15) ─────────────────────────────
+// strokeStart/strokeEnd (0..1 of the outline's arc length), strokePhase (a turn,
+// period 1) and the two caps (STROKE_CAP_MODES) are UNIVERSAL stroke options that
+// ride on a stroked op as plain fields. The default is the IDENTITY — full stroke
+// (start 0, end 1), no phase, flat caps — and the identity is ABSENT: a field is
+// only present on an op when it moves off identity, so an untrimmed flat-capped
+// stroke carries none of them and renders byte-identically (the gradient
+// center/wavelength absent-is-legacy precedent). paint_skia reads these off the
+// op; the vector exporters route the ones with no vector form to the raster
+// fallback (opStrokeNeedsRaster).
+
+/** Identity trim window bounds — a stroke drawn from its very start to its very
+ *  end (the whole outline). Off either of these ⇒ the stroke is trimmed. */
+export const STROKE_TRIM_FULL_START = 0;
+export const STROKE_TRIM_FULL_END = 1;
+/** Identity phase — position 0 sits at the outline's natural origin. */
+export const STROKE_PHASE_NONE = 0;
+
+/**
+ * Pure function. Is a cap id a real (non-flat) cap? A flat/absent cap is the
+ * identity finish (a flush butt end), so it needs no path work in either the
+ * painter or the exporter.
+ *
+ * @example capIsActive("round") // true
+ * @example capIsActive("taper") // true
+ * @example capIsActive("flat") // false
+ * @example capIsActive(undefined) // false
+ */
+export function capIsActive(cap) {
+  return cap != null && cap !== STROKE_CAP_FLAT;
+}
+
+/**
+ * Pure function. Does an op's stroke carry a non-identity TRIM WINDOW or PHASE
+ * (start ≠ 0, end ≠ 1, or phase ≠ 0)? This is the part of the framework that
+ * changes WHICH arc of the outline is drawn — distinct from the caps, which only
+ * change how its ends are finished.
+ *
+ * @example strokeIsTrimmed({strokeEnd: 0.5}) // true
+ * @example strokeIsTrimmed({strokeStart: 0.2}) // true
+ * @example strokeIsTrimmed({strokePhase: 0.3}) // true
+ * @example strokeIsTrimmed({}) // false (absent = full, byte-identical legacy)
+ * @example strokeIsTrimmed({strokeStart: 0, strokeEnd: 1, strokePhase: 0}) // false
+ */
+export function strokeIsTrimmed(cmd) {
+  return (cmd.strokeStart ?? STROKE_TRIM_FULL_START) !== STROKE_TRIM_FULL_START
+    || (cmd.strokeEnd ?? STROKE_TRIM_FULL_END) !== STROKE_TRIM_FULL_END
+    || (cmd.strokePhase ?? STROKE_PHASE_NONE) !== STROKE_PHASE_NONE;
+}
+
+/**
+ * Pure function. Must paint_skia stroke this op through the arc-length TRIM PATH
+ * (ContourMeasure preprocessing) rather than its direct drawRRect/drawOval fast
+ * path? True when the stroke is trimmed/phased OR carries any non-flat cap —
+ * either needs a real path to act on. A plain, full, flat-capped stroke returns
+ * false and keeps the byte-identical direct draw.
+ *
+ * @example opStrokeNeedsTrimPath({strokeEnd: 0.5}) // true
+ * @example opStrokeNeedsTrimPath({strokeCapStart: "round"}) // true
+ * @example opStrokeNeedsTrimPath({strokeCapEnd: "taper"}) // true
+ * @example opStrokeNeedsTrimPath({}) // false
+ * @example opStrokeNeedsTrimPath({strokeCapStart: "flat"}) // false
+ */
+export function opStrokeNeedsTrimPath(cmd) {
+  return strokeIsTrimmed(cmd) || capIsActive(cmd.strokeCapStart) || capIsActive(cmd.strokeCapEnd);
+}
+
+/**
+ * Pure function. Must a VECTOR exporter (PDF/SVG) send this op to the region
+ * RASTER FALLBACK because its stroke has no trivial vector form? True when the
+ * stroke is trimmed/phased or carries a TAPER cap (a variable-width outline) —
+ * the same "no vector form ⇒ rasterize its own region" rule material fills and
+ * mirror gradients already follow (opHasMaterialFill / opHasMirrorLinearFill).
+ * A ROUND cap alone is NOT here: SVG/PDF express round caps natively (linecap),
+ * so a round-capped-but-untrimmed stroke stays vector.
+ *
+ * @example opStrokeNeedsRaster({strokeEnd: 0.5}) // true
+ * @example opStrokeNeedsRaster({strokeCapStart: "taper"}) // true
+ * @example opStrokeNeedsRaster({strokeCapStart: "round"}) // false (round is vector-expressible)
+ * @example opStrokeNeedsRaster({}) // false
+ */
+export function opStrokeNeedsRaster(cmd) {
+  return strokeIsTrimmed(cmd) || cmd.strokeCapStart === "taper" || cmd.strokeCapEnd === "taper";
+}
+
+/**
+ * Near-pure helper (throws on bad input — the parsePaint/requireFinite
+ * discipline). Validates the raw stroke-trim aspects and returns ONLY the
+ * non-identity ones (so an identity/absent set returns {}, keeping the op minimal
+ * and byte-identical — absent-is-legacy). The trim window bounds are physical
+ * ([0,1] of arc length); phase is a periodic turn (any finite number wraps);
+ * caps must be a STROKE_CAP_MODES id.
+ *
+ * @param {string} cmdName - the op name, for error messages
+ * @param {object} src - {strokeStart?, strokeEnd?, strokePhase?, strokeCapStart?, strokeCapEnd?}
+ * @returns {object} the non-identity subset, ready to spread onto an op
+ *
+ * @example normalizeStrokeTrim("rect", {}) // {}
+ * @example normalizeStrokeTrim("rect", {strokeStart: 0, strokeEnd: 1, strokePhase: 0, strokeCapStart: "flat"}) // {}
+ * @example normalizeStrokeTrim("rect", {strokeEnd: 0.5}) // {strokeEnd: 0.5}
+ * @example normalizeStrokeTrim("rect", {strokeCapStart: "round", strokePhase: 0.25}) // {strokePhase: 0.25, strokeCapStart: "round"}
+ */
+export function normalizeStrokeTrim(cmdName, src = {}) {
+  const out = {};
+  const num = (name, v) => {
+    if (v == null) return null;
+    if (typeof v !== "number" || !Number.isFinite(v))
+      throw new Error(`${cmdName}: stroke-trim "${name}" must be a finite number, got ${JSON.stringify(v)}`);
+    return v;
+  };
+  const start = num("strokeStart", src.strokeStart);
+  const end = num("strokeEnd", src.strokeEnd);
+  const phase = num("strokePhase", src.strokePhase);
+  if (start != null && (start < 0 || start > 1))
+    throw new Error(`${cmdName}: strokeStart is a fraction of arc length in [0,1], got ${JSON.stringify(src.strokeStart)}`);
+  if (end != null && (end < 0 || end > 1))
+    throw new Error(`${cmdName}: strokeEnd is a fraction of arc length in [0,1], got ${JSON.stringify(src.strokeEnd)}`);
+  if (start != null && start !== STROKE_TRIM_FULL_START) out.strokeStart = start;
+  if (end != null && end !== STROKE_TRIM_FULL_END) out.strokeEnd = end;
+  if (phase != null && phase !== STROKE_PHASE_NONE) out.strokePhase = phase;
+  for (const key of ["strokeCapStart", "strokeCapEnd"]) {
+    const cap = src[key];
+    if (cap == null) continue;
+    if (!STROKE_CAP_MODES.includes(cap))
+      throw new Error(`${cmdName}: ${key} must be one of ${JSON.stringify(STROKE_CAP_MODES)}, got ${JSON.stringify(cap)}`);
+    if (capIsActive(cap)) out[key] = cap;
+  }
+  return out;
+}
+
+/**
+ * Pure function. Stamps a widget's UNIVERSAL STROKE-TRIM options (read from its
+ * STATE) onto the stroked ops it emitted — the ports-seam counterpart of the
+ * universal EFFECTS seam (render_gpu/effects.applyNodeEffects). Every stroked box
+ * inherits trim/phase/caps here without any per-plugin emit change; a widget
+ * whose state carries no trim (the overwhelming majority, and EVERY existing
+ * document) returns `cmds` UNCHANGED and byte-identical.
+ *
+ * OWNERSHIP RULE (why the recursion is shaped as it is): the stamp targets the
+ * node's OWN stroke. It recurses through an effectSubtree's `content` — that is a
+ * widget's own ops wrapped by its own effects (shadow/bloom) — but NOT through a
+ * cropSubtree's `content`, which holds a FOREIGN target/member whose stroke was
+ * already stamped during its own emit. A cropSubtree's own border stroke (an
+ * image/video/crop-box frame) IS stamped, on the cropSubtree op itself. Container
+ * nodes (group/cropbox target) carry no trim of their own, so this is never even
+ * entered for them (the identity short-circuit).
+ *
+ * @param {object} state - the widget's evaluated state (numbers, not equations)
+ * @param {object[]} cmds - the node's emitted IR
+ * @returns {object[]} cmds, with trim stamped onto stroked ops (or unchanged)
+ *
+ * @example applyStrokeTrim({}, [{op: "rect", stroke: [0,0,0,1]}]) // [{op: "rect", stroke: [0,0,0,1]}]
+ * @example applyStrokeTrim({strokeEnd: 0.5}, [{op: "rect", stroke: [0,0,0,1], strokeWidth: 2}])[0].strokeEnd // 0.5
+ * @example applyStrokeTrim({strokeEnd: 0.5}, [{op: "rect", fill: [1,0,0,1]}])[0].strokeEnd // undefined (no stroke to trim)
+ */
+export function applyStrokeTrim(state, cmds) {
+  const trim = normalizeStrokeTrim("applyStrokeTrim", state ?? {});
+  if (Object.keys(trim).length === 0) return cmds;
+  return cmds.map((cmd) => stampStrokeTrim(cmd, trim));
+}
+
+/** Pure helper for applyStrokeTrim: stamp `trim` onto one op's OWN stroke and,
+ *  for a self-effect wrapper, its content — but never a cropSubtree's foreign
+ *  content (see the ownership rule above). */
+function stampStrokeTrim(cmd, trim) {
+  let out = cmd;
+  if (cmd.stroke != null) out = { ...out, ...trim };
+  if (cmd.op === "effectSubtree" && Array.isArray(cmd.content))
+    out = { ...out, content: cmd.content.map((c) => stampStrokeTrim(c, trim)) };
+  return out;
+}
+
+/**
+ * Pure function. Wraps a turn count into [0, 1) — the modulus for stroke-phase
+ * and closed-contour trim positions (frac for positives, folding negatives in).
+ *
+ * @example mod1(0.3) // 0.3
+ * @example mod1(1.25) // 0.25
+ * @example mod1(-0.6) // 0.4
+ * @example mod1(1) // 0
+ */
+export function mod1(x) {
+  return ((x % 1) + 1) % 1;
+}
+
+/**
+ * Pure function. THE arc-length trim math: the DISTANCE segment(s) [d0, d1] to
+ * KEEP from one contour of length `L`, given the trim window (`start`/`end`,
+ * fractions of the contour) rotated by `phase` (turns). Returns 0, 1 or 2
+ * segments — two when a CLOSED trim wraps across the seam (d0..L then 0..d1).
+ * paint_skia turns each pair into a sub-path via ContourMeasure.getSegment.
+ *
+ * The kept WIDTH is (end − start), taken modulo a full turn on a closed contour
+ * (so 0.8 → 0.2 keeps the 0.4-long arc across the seam) and clamped on an open
+ * one. Phase rotates the ORIGIN by phase·L, wrapping on a closed contour and
+ * sliding-then-clamping on an open one (a phase is only meaningful on a closed
+ * outline — the manifest — but an open contour must still degrade sanely).
+ *
+ * Args:
+ *   L (number): contour arc length (device-independent local units)
+ *   start (number): window start, fraction of the contour [0,1]
+ *   end (number): window end, fraction of the contour [0,1]
+ *   phase (number): origin rotation, in turns (any finite value; wraps)
+ *   closed (boolean): does the contour close (from ContourMeasure.isClosed)?
+ *
+ * Returns:
+ *   Array<[number, number]>: kept [startDist, stopDist] pairs, in arc distance
+ *
+ * @example trimSegments(100, 0, 0.5, 0, false) // [[0, 50]]
+ * @example trimSegments(100, 0.25, 0.75, 0, true) // [[25, 75]]
+ * @example trimSegments(100, 0, 1, 0.25, true) // [[25, 100], [0, 25]]
+ * @example trimSegments(100, 0.8, 0.2, 0, true) // [[80, 100], [0, 20]]
+ * @example trimSegments(100, 0.25, 0.25, 0, true) // [] (zero-width window keeps nothing)
+ */
+export function trimSegments(L, start, end, phase, closed) {
+  if (!(L > 0)) return [];
+  if (closed) {
+    const width = (end - start >= 1) ? 1 : mod1(end - start);
+    const keep = width * L;
+    if (!(keep > 0)) return [];
+    const ds = mod1(start + phase) * L;
+    const de = ds + keep;
+    if (de <= L + 1e-6) return [[ds, Math.min(de, L)]];
+    return [[ds, L], [0, de - L]];
+  }
+  // Open: slide by phase, clamp into the contour, keep the forward span.
+  const s = Math.min(Math.max(start + phase, 0), 1) * L;
+  const e = Math.min(Math.max(end + phase, 0), 1) * L;
+  const lo = Math.min(s, e), hi = Math.max(s, e);
+  return hi - lo > 1e-6 ? [[lo, hi]] : [];
+}
+
 // ── command builders ─────────────────────────────────────────────────────────
 // Each builder validates + normalizes (colors → rgba arrays, defaults filled)
 // so backends never re-check. Missing required fields throw loudly.
@@ -484,7 +716,7 @@ function requireFinite(cmdName, fields) {
  * @example rect({x: 0, y: 0, w: 10, h: 5, fill: "#fff"}).op // "rect"
  * @example rect({x: 0, y: 0, w: 10, h: 5, fill: "#f00", cornerRadius: 2}).fill // [1, 0, 0, 1]
  */
-export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null, strokeWidth = 0, opacity = 1 }) {
+export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null, strokeWidth = 0, opacity = 1, ...trim }) {
   requireFinite("rect", { x, y, w, h, cornerRadius, strokeWidth, opacity });
   return {
     op: "rect", x, y, w, h,
@@ -492,6 +724,7 @@ export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null,
     fill: fill === null ? null : parsePaint(fill),
     stroke: stroke === null ? null : parsePaint(stroke),
     strokeWidth, opacity,
+    ...normalizeStrokeTrim("rect", trim), // stroke-trim fields ride along only when non-identity (absent-is-legacy)
   };
 }
 
@@ -500,13 +733,14 @@ export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null,
  *
  * @example ellipse({cx: 5, cy: 5, rx: 5, ry: 3, fill: "#000"}).ry // 3
  */
-export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidth = 0, opacity = 1 }) {
+export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidth = 0, opacity = 1, ...trim }) {
   requireFinite("ellipse", { cx, cy, rx, ry, strokeWidth, opacity });
   return {
     op: "ellipse", cx, cy, rx, ry,
     fill: fill === null ? null : parsePaint(fill),
     stroke: stroke === null ? null : parsePaint(stroke),
     strokeWidth, opacity,
+    ...normalizeStrokeTrim("ellipse", trim),
   };
 }
 
@@ -978,7 +1212,7 @@ export function mermaidVector({ ref, x, y, w, h, paths, texts, viewBox, opacity 
  * @example path({d: "M0 0h10v10h-10z", fill: "#000", fillRule: "evenodd"}).fillRule // "evenodd"
  * @example path({d: "M0 0L10 0", stroke: "#000", strokeWidth: 2}).fill // null
  */
-export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule = "nonzero", opacity = 1, blur = 0 }) {
+export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule = "nonzero", opacity = 1, blur = 0, ...trim }) {
   if (typeof d !== "string" || d.trim() === "") throw new Error(`path: "d" must be a non-empty SVG path string, got ${JSON.stringify(d)}`);
   if (fillRule !== "nonzero" && fillRule !== "evenodd") throw new Error(`path: "fillRule" must be "nonzero" or "evenodd", got ${JSON.stringify(fillRule)}`);
   requireFinite("path", { strokeWidth, opacity, blur });
@@ -986,6 +1220,7 @@ export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule 
     op: "path", d, fillRule,
     fill: fill === null ? null : parsePaint(fill),
     stroke: stroke === null ? null : parsePaint(stroke),
+    ...normalizeStrokeTrim("path", trim),
     // `blur` (optional): a Gaussian MASK-blur radius in LOCAL units — a general
     // soft-path enhancement any consumer can reuse (the corkboard YARN uses it for
     // its soft cast shadow, a blurred stroke, avoiding a heavier effectSubtree
@@ -1489,7 +1724,7 @@ export function materialFill({
  * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, cornerRadius: 2, content: []}).cornerRadius // 2
  * @example cropSubtree({x: 0, y: 0, w: 10, h: 10, content: []}).fill // null
  */
-export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null, strokeWidth = 0, opacity = 1, content = [] }) {
+export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null, strokeWidth = 0, opacity = 1, content = [], ...trim }) {
   requireFinite("cropSubtree", { x, y, w, h, cornerRadius, strokeWidth, opacity });
   if (!Array.isArray(content)) throw new Error(`cropSubtree: "content" must be an array, got ${JSON.stringify(content)}`);
   return {
@@ -1498,6 +1733,7 @@ export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke 
     fill: fill === null ? null : parseColor(fill),
     stroke: stroke === null ? null : parseColor(stroke),
     strokeWidth, opacity, content,
+    ...normalizeStrokeTrim("cropSubtree", trim), // a crop/media FRAME's border trims too
   };
 }
 

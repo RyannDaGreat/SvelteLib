@@ -143,6 +143,27 @@ export const SCRUB_WRAP_MODES = ["clamp", "loop"];
 export const SCRUB_WRAP_LABELS = { clamp: "Clamp (hold last frame)", loop: "Loop" };
 
 /**
+ * THE STROKE-CAP modes (the general stroke-trim framework, manifest E.15): how a
+ * stroke's FREE ENDS are drawn. Free ends only exist where the outline is OPEN —
+ * an open path, or ANY stroke the trim (strokeStart/strokeEnd) has cut, so a
+ * closed rect/ellipse at full length shows no cap difference. "flat" is a butt
+ * cut flush with the end (today's default for every filled/stroked box — so an
+ * ABSENT cap renders byte-identically); "round" adds a half-disc of radius
+ * width/2; "taper" ramps the width down to a point over a few stroke-widths (a
+ * lifted-brush end, the rp trail demo's size_start/size_end feel).
+ *
+ * The array VALUES are the stored select ids; STROKE_CAP_LABELS maps each to the
+ * human label. Single-sourced here so the two ir/paint readers and the property
+ * rows agree on the exact ids (the ANTIALIAS_MODES precedent); render_gpu/ir.js
+ * imports this list for its op validation.
+ */
+export const STROKE_CAP_MODES = ["flat", "round", "taper"];
+export const STROKE_CAP_LABELS = { flat: "Flat", round: "Round", taper: "Taper" };
+/** The stroke-cap id that is a no-op (flush butt end) — the ABSENT default, so an
+ *  untrimmed flat-capped stroke is byte-identical legacy rendering. */
+export const STROKE_CAP_FLAT = "flat";
+
+/**
  * THE WIDGET-COMPOSITE BLEND MODES (manifest Round 12D "BLEND MODES", whose
  * spec reads "normal/add/multiply/screen/..." — this is the "..."): how a
  * widget's own draw combines with the backdrop. The user ruling was "everything
@@ -697,6 +718,32 @@ export const PROPS = {
   strokeWidth: { label: "Stroke width", kind: "number", min: 0, category: "formatting", default: 0, help: "Thickness of the outline in canvas units. Zero means no outline." },
   cornerRadius: { label: "Corner radius", kind: "number", min: 0, category: "formatting", default: 0, help: "Rounds the widget's corners by this radius in canvas units. Zero is a sharp square corner; larger values round more." },
 
+  // ── formatting: THE STROKE-TRIM framework (manifest E.12-15) ─────────────────
+  // strokeStart/strokeEnd cut the outline to an arc-length WINDOW so any stroked
+  // shape draws on with a plain keyframe; strokePhase rotates where position 0
+  // sits (and where a dash pattern begins/collapses) on a closed outline; the two
+  // caps decide how the trimmed FREE ENDS look. These are UNIVERSAL stroke
+  // options, so they live in the strokedBox/strokedBorder BUNDLES and every
+  // stroked box inherits the rows for free (the rule #4 story above, now realized).
+  //
+  // ABSENT-IS-LEGACY (the gradient center/wavelength precedent, mirrored EXACTLY):
+  // NONE of these carries a `default`, so nothing bakes them into a widget's
+  // state — an absent strokeStart/End/Phase/cap is the identity (full stroke, flat
+  // caps) and renders byte-identically to before the feature. The enable
+  // affordance for "cut stroke on/off" (E.12) IS this sparseness: trimming is OFF
+  // until the knobs move off full, so there is no separate boolean to disagree
+  // with the knobs (a `trim:false` while strokeEnd=0.5 would be meaningless state).
+  // render_gpu/ir.js drops any identity field at the op boundary and paint_skia
+  // keeps its direct-draw fast path when none are active.
+  strokeStart: { label: "Stroke start", kind: "number", min: 0, max: 1, category: "formatting", help: "Where the drawn outline BEGINS, as a fraction of its total length (0 = the very start, 1 = the very end). Raise it to reveal the stroke from its end inward; keyframe it for a draw-on animation." },
+  strokeEnd: { label: "Stroke end", kind: "number", min: 0, max: 1, category: "formatting", help: "Where the drawn outline ENDS, as a fraction of its total length (1 = fully drawn). Lower it to leave the tail undrawn; keyframe 0 → 1 to draw the stroke on over time." },
+  // Periodic (a turn of period 1), so it is UNBOUNDED and wraps — no min/max — with
+  // the fractions/normalized scrub so one 100px drag is one full turn around the
+  // outline (the UNIT_SPAN_SCRUB rationale: a periodic turn with period 1).
+  strokePhase: { label: "Stroke phase", kind: "number", scrub: UNIT_SPAN_SCRUB, category: "formatting", help: "Rotates where position 0 sits along a CLOSED outline — and where a dashed/dotted pattern starts and collapses. One full unit walks the origin once around the shape. Only visible when the stroke is trimmed or carries a repeating pattern." },
+  strokeCapStart: { label: "Start cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "formatting", help: "How the START of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point like a lifted brush. No effect on a closed shape drawn at full length (it has no free end)." },
+  strokeCapEnd: { label: "End cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "formatting", help: "How the END of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point. No effect on a closed shape drawn at full length (it has no free end)." },
+
   // ── formatting: opacity ─────────────────────────────────────────────────────
   // Bounded [0,1] → NumericField range-scales its scrub automatically (the fix
   // for opacity "flicking between 0 and 1"; manifest "Number slider
@@ -728,7 +775,7 @@ export const PROPS = {
   antialias: { label: "Anti-aliasing", kind: "select", options: ANTIALIAS_MODES, optionLabels: ANTIALIAS_MODE_LABELS, category: "rendering", default: "standard", help: "How shape and text edges are smoothed. Standard blends edge pixels (the default look). Off gives crisp, pixelated staircase edges and renders a little faster. (A higher-quality supersample mode is planned.)" },
   retina: { label: "Retina (HiDPI)", kind: "boolean", category: "rendering", default: true, help: "Renders at the display's full pixel density (its device pixel ratio) so edges stay sharp on high-DPI screens. Off renders at 1:1 CSS pixels — softer on a Retina display but faster." },
   ditherMode: { label: "Dither", kind: "select", options: DITHER_MODES, optionLabels: DITHER_MODE_LABELS, category: "rendering", default: "off", help: "Scatters pixels between adjacent colors to hide the visible stair-step banding in smooth gradients. Bayer is a fixed ordered checkerboard; blue-noise is a softer irregular scatter; off disables it." },
-  ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, category: "rendering", default: 1, help: "How strongly the dither pattern is applied. 0 is none, 1 is full strength; above 1 over-emphasizes into pronounced, gritty grain (no upper cap). Only matters when a dither mode is on." },
+  ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "rendering", default: 1, help: "How strongly the dither pattern is applied. 0 is none, 1 is full strength; above 1 over-emphasizes into pronounced, gritty grain (no upper cap). Only matters when a dither mode is on." },
 
   // ── shape: the PRESET-SHAPE selector + its adjustable knobs (Wave 2) ─────────
   // Only the `shape` widget (plugins/shape.js) composes these — a single-consumer
@@ -1022,7 +1069,7 @@ export const PROPS = {
   "shadow.color": { label: "Shadow color", kind: "color", category: "effects", default: "#000000", help: "The drop shadow's color — classically black, but any color works (a colored glow-like shadow, for instance)." },
   "shadow.opacity": { label: "Shadow opacity", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "effects", default: 0, help: "How dark the drop shadow is: 0 is invisible (NO shadow — the default) and 1 is the fully solid shadow color. NO UPPER CAP — above 1 the shadow OVERDRIVES: the solid core cannot get darker, but the soft penumbra is driven to full strength too, so the falloff hardens (past about 255 nothing more can change — every pixel the shadow reaches is already solid). This is the shadow's on/off gate: raise it above 0 to turn the shadow on." },
   "bloom.radius": { label: "Bloom radius", kind: "number", min: 0, category: "effects", default: 10, help: "How far the bloom glow spreads (Gaussian blur amount, canvas units). Takes effect once Bloom strength is above zero." },
-  "bloom.strength": { label: "Bloom strength", kind: "number", min: 0, category: "effects", default: 0, help: "How bright the glow is: a blurred copy of the widget added on top of itself. Zero means NO bloom; 1 adds a full-brightness copy; higher over-glows." },
+  "bloom.strength": { label: "Bloom strength", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "effects", default: 0, help: "How bright the glow is: a blurred copy of the widget added on top of itself. Zero means NO bloom; 1 adds a full-brightness copy; higher over-glows." },
 
   // ── effects: INNER SHADOW (the effects bundle's fourth effect) ──────────────
   // A shadow cast INSIDE the widget's own silhouette (a recess/inset look — the
@@ -1091,7 +1138,7 @@ export const PROPS = {
   // bundle (it is the only emitter), but it lives in the registry so its rows/
   // help/bounds are single-sourced like every other family.
   particleRate: { label: "Rate", kind: "number", min: 0, category: "particles", default: 40, help: "How many particles are emitted per second. Zero emits nothing (the emitter becomes an invisible ghost you can still select)." },
-  particleLifetime: { label: "Lifetime", kind: "number", min: 0, category: "particles", default: 2, help: "How many seconds each particle lives before it disappears. Longer lifetimes keep more particles on screen at once." },
+  particleLifetime: { label: "Lifetime", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "particles", default: 2, help: "How many seconds each particle lives before it disappears. Longer lifetimes keep more particles on screen at once." },
   // A launch HEADING → the rotary dial (kind "angle"). Stored in raw DEGREES, so
   // NO `display` — the dial shows exactly what is stored.
   particleAngle: { label: "Angle", kind: "angle", category: "particles", default: 270, help: "The central launch direction in degrees (0 = right, 90 = down, 270 = up). Particles fly outward from the origin along this heading." },
@@ -1213,6 +1260,11 @@ checkListRow("GRADIENT_STOPS_LIST", "stops", GRADIENT_STOPS_LIST);
  * `media` — the shared media chrome: a `src` string row + `opacity`. Media
  *   widgets compose positioning + media + (the border half of) strokedBox.
  */
+/** THE STROKE-TRIM property keys, single-sourced so strokedBorder and strokedBox
+ *  cannot drift on which trim/cap rows a box inherits (manifest E.12-15). Order =
+ *  Inspector row order: the arc-length window, its phase, then the two caps. */
+export const STROKE_TRIM_KEYS = ["strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd"];
+
 export const BUNDLES = {
   positioning: ["x", "y", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
   // The endpoint-pair positioning every arrow-family widget shares (from/to
@@ -1220,12 +1272,16 @@ export const BUNDLES = {
   // of their own; their geometry IS the two endpoints (core/endpoints.js).
   endpoints: ["from.x", "from.y", "to.x", "to.y", "z"],
   // The BORDER-only slice of the stroked box: stroke + strokeWidth + cornerRadius
-  // (no fill). Media widgets (image/video/filmstrip) compose THIS — a photo has
-  // no fill color of its own, only a frame. rect/donut/cropbox add `fill`
-  // themselves (they ARE filled boxes).
-  strokedBorder: ["stroke", "strokeWidth", "cornerRadius"],
-  // The full filled-and-stroked box: fill + the border slice.
-  strokedBox: ["fill", "stroke", "strokeWidth", "cornerRadius"],
+  // (no fill), plus THE STROKE-TRIM keys (trim window + phase + the two caps —
+  // manifest E.12-15). Media widgets (image/video/filmstrip) compose THIS — a
+  // photo has no fill color of its own, only a frame. rect/donut/cropbox add
+  // `fill` themselves (they ARE filled boxes). The trim keys ride along here (and
+  // in strokedBox) so EVERY stroked box inherits drawing-on/caps for free; they
+  // carry no default (absent-is-legacy), so composing them changes no widget's
+  // stored state or rendering until a knob moves.
+  strokedBorder: ["stroke", "strokeWidth", "cornerRadius", ...STROKE_TRIM_KEYS],
+  // The full filled-and-stroked box: fill + the border slice (trim keys included).
+  strokedBox: ["fill", "stroke", "strokeWidth", "cornerRadius", ...STROKE_TRIM_KEYS],
   // EDGE-CROP INSETS (manifest "Edge-crop insets"): the four per-edge source
   // trims. Media widgets (image/video) compose this; groups will too (their
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
@@ -1341,7 +1397,7 @@ export function props(...args) {
  *   object[]: resolved rows
  *
  * @example bundle("strokedBorder").map((r) => r.key)
- * ["stroke","strokeWidth","cornerRadius"]
+ * ["stroke","strokeWidth","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd"]
  * @example bundle("positioning").length
  * 8
  */

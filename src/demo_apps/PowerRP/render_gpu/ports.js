@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce } from "../core/report.js";
@@ -246,7 +246,13 @@ function emitNode(node, byId, pdfDisplay) {
   // applyNodeEffects returns `cmds` untouched both for the 34 plugins that call
   // applyEffects inside their own emit() (never a double wrap) and whenever every
   // effect is off (byte-identical to before this seam existed).
-  const body = applyNodeEffects(node, cmds);
+  // THE UNIVERSAL STROKE-TRIM SEAM (manifest E.12-15), the exact sibling of the
+  // effects seam above: every stroked box inherits strokeStart/End/Phase + caps
+  // from its state here, stamped onto its own stroked ops (render_gpu/ir.js
+  // applyStrokeTrim). A node with no trim (every existing document) returns `body`
+  // untouched and byte-identical, and it never reaches a foreign group member /
+  // crop target (they carry no trim and the stamp does not recurse crop content).
+  const body = applyStrokeTrim(node.state, applyNodeEffects(node, cmds));
   return mirror
     ? [pushTransform(node.world), mirror, ...body, popTransform(), popTransform()]
     : [pushTransform(node.world), ...body, popTransform()];

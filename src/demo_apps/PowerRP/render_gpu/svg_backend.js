@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, linearGradientRender, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, linearGradientRender, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -493,8 +493,11 @@ export async function emitRegionSVG(commands, region, out, ctx) {
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
-    } else if (!SVG_VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd) || opHasMaterialStroke(cmd)) {
-      // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.)
+    } else if (!SVG_VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd)) {
+      // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.
+      //  A TRIMMED / TAPER-capped stroke (opStrokeNeedsRaster) likewise rasterizes its
+      //  own region rather than silently drawing the untrimmed stroke; a plain round cap
+      //  stays vector — SVG expresses stroke-linecap natively.)
       // GENERAL RASTER FALLBACK (the HYBRID RULE generalized — the SVG twin of
       // pdf_backend.emitRegion's emitRasterOp branch): an op with no SVG vector
       // form (glassBackdrop today; any FUTURE such op automatically) rasterizes
