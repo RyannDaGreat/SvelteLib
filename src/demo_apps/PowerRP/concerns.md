@@ -144,7 +144,26 @@ this Mac cannot run the browser fill matrix (stale memory generalized from
 the ~35-failure full-gate baseline) — the integrator re-ran it green; agents
 inherit memory notes as absolutes, phrase them with their scope.
 
-### Fleet lessons (this round)
+### POST-ROUND user crash report → a different real bug (2026-07-28)
+User hit "material fill glass reached the painter UNRESOLVED" live, twice.
+Exhaustive reproduction on the committed tree (their saved deck, their exact
+paint_path item state with glass+stale-knob fill + brush stroke + trims,
+fresh/autosave/backend boots, groups, tweens, hover): ZERO occurrences — both
+reports coincided with their dev server compiling MID-FLEET-EDIT states of
+exactly the files in the traces (first: stale dep-optimizer chunks; second:
+server restarted while the SHAPE agent rewrote paint_skia/materials under
+HMR). But the hunt surfaced a REAL adjacent bug the crash had been masking
+from the user's view: paint_path's own trim knobs ERASED the interior fill
+entirely (filled = closed && FULL && fill — "a partial fill is meaningless"),
+contradicting the same-day universal law that trim cuts the stroke only.
+Fixed (35a393a): trimmed+filled emits full-path fill under the windowed
+stroke; pixel-pinned in a new material_fill_probe paint_path cell.
+**Lessons:** (1) path-op emitters (paint_path) were a coverage hole in the
+fill matrix — "4 shapes incl. custom" did not include the op class users
+draw by hand; (2) a probe author calling an anomaly "orthogonal" (the
+fill:null blue interior) may be looking at the masked half of a real bug;
+(3) users on a live dev server DURING fleet edits will see mid-edit
+compiles as crashes — twice now; pause the server or warn the user.
 - The .claude_todo.md ledger was overwritten by a fleet agent AGAIN (TRIM this
   time; the gradient agent did it last round). Agents must be told the ledger is
   integrator-owned, or given per-agent ledger files.
