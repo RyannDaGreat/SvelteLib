@@ -69,14 +69,28 @@ const TIMEOUT_MS = { node: 300_000, browser: 600_000, python: 300_000, shell: 30
  *  suites are pure computation, so the only limit is core count. */
 const CONCURRENCY = { node: Math.max(2, Math.min(8, (navigator?.hardwareConcurrency ?? 8) - 2)), browser: 3, python: 2, shell: 1 };
 
-/** Query. Files of one kind, as absolute paths, sorted for stable output. */
+/**
+ * Query. Files of one kind, as absolute paths, sorted for stable output.
+ *
+ * BOTH TEST DIRECTORIES, BOTH EXTENSIONS. The first version of this collected
+ * `_test.js` from tests/ AND render_gpu/tests/ but `_probe.js` from tests/ ONLY —
+ * so three real browser probes in render_gpu/tests/ were silently outside the gate,
+ * and so was one `.mjs` probe. That is the same failure this whole file exists to
+ * prevent, committed by the file itself: a count that looks total and isn't. The
+ * suffix decides the KIND and the directory decides nothing, which is the only rule
+ * that cannot rot as directories are added.
+ */
 function collect(kind) {
-  const globs = {
-    node: [["tests", /_test\.js$/], ["render_gpu/tests", /_test\.js$/]],
-    browser: [["tests", /_probe\.js$/]],
-    python: [["tests", /_test\.py$/]],
-    shell: [["tests", /_test\.sh$/]],
+  const dirs = ["tests", "render_gpu/tests"];
+  // `.mjs` is admitted because a probe already used it. One suffix rule, no roster.
+  const suffix = {
+    node: /_test\.m?js$/,
+    browser: /_probe\.m?js$/,
+    python: /_test\.py$/,
+    shell: /_test\.sh$/,
   }[kind];
+  if (!suffix) throw new Error(`run_all: unknown kind ${JSON.stringify(kind)} — expected one of ${Object.keys(TIMEOUT_MS).join(", ")}`);
+  const globs = dirs.map((d) => [d, suffix]);
   const out = [];
   for (const [dir, re] of globs) {
     const full = resolve(appRoot, dir);

@@ -963,7 +963,9 @@ export function withOrphanedItemsDropped(doc, knownTypes) {
  *
  * `type` itself is exempt (that's the orphan case — see orphanedItems); a
  * null (delete-sentinel) write does NOT count as coverage, since it folds to
- * the same missing key.
+ * the same missing key — EXCEPT where the plugin's own default IS null (see
+ * the null-default note in the body: nothing else can cover such a key, so
+ * without the exception the report repeats on every load forever).
  *
  * Args:
  *   doc (object): document
@@ -978,13 +980,15 @@ export function withOrphanedItemsDropped(doc, knownTypes) {
 export function missingDefaults(doc, registry) {
   const typeSlide = new Map(); // id → first slide index with a known type
   const written = new Map(); // id → Set of non-null leaf path strings
+  const nulled = new Map(); // id → Set of leaf paths written as NULL (delete sentinel)
   for (let i = 0; i < doc.slides.length; i++)
     for (const [id, item] of Object.entries(doc.slides[i].delta.items ?? {})) {
       if (!(item && typeof item === "object")) continue;
       if (typeof item.type === "string" && !typeSlide.has(id)) typeSlide.set(id, i);
-      if (!written.has(id)) written.set(id, new Set());
+      if (!written.has(id)) { written.set(id, new Set()); nulled.set(id, new Set()); }
       const set = written.get(id);
-      for (const [path, value] of leaves(item)) if (value !== null) set.add(path.join("."));
+      const nulls = nulled.get(id);
+      for (const [path, value] of leaves(item)) (value === null ? nulls : set).add(path.join("."));
     }
   const out = [];
   for (const [id, slideIndex] of typeSlide) {
@@ -995,6 +999,7 @@ export function missingDefaults(doc, registry) {
       continue; // unknown type = the orphan case, repaired by orphanedItems
     }
     const set = written.get(id);
+    const nulls = nulled.get(id);
     const missing = [];
     for (const [path, value] of leaves(plugin.defaults)) {
       // COMPUTED defaults (self.-equations, e.g. rotationAnchor) are supplied
@@ -1012,7 +1017,22 @@ export function missingDefaults(doc, registry) {
       // as coverage so paint objects survive a load/repair round-trip.
       const key = path.join(".");
       const coveredByNested = set.has(key) || [...set].some((w) => w.startsWith(key + "."));
-      if (path[0] !== "type" && !coveredByNested) missing.push({ path, value });
+      // A default that IS null (cropbox.target — the "no target chosen" picker;
+      // the only null default in the roster, and the gate below is written so a
+      // second one needs no further change) cannot be covered by the non-null
+      // `written` set at all: keyframing null writes the DELETE sentinel, which
+      // folds back to "key absent", so the fill can never satisfy its own
+      // coverage test. That made this the REVERSE of a silent repair — the
+      // report was emitted on every load forever while the document never
+      // changed, which is worse than silence because it is the one channel the
+      // no-silent-repairs doctrine relies on, and it falsified
+      // repairedDocument's "idempotent, reports = []" contract for every
+      // document containing a crop box. For a null default a null write is
+      // EXACTLY the state being asked for, so it counts as coverage; every
+      // other key's delete-sentinel handling is untouched (a `w: null` still
+      // reports and still gets the real default filled in).
+      const coveredByNull = value === null && nulls.has(key);
+      if (path[0] !== "type" && !coveredByNested && !coveredByNull) missing.push({ path, value });
     }
     if (missing.length) out.push({ id, slideIndex, missing });
   }
@@ -1073,6 +1093,33 @@ export function withMissingDefaultsFilled(doc, registry) {
 // cost the user's authored value — data loss. Data loss loses.
 
 /**
+ * Pure function. id → the item's CREATION type: the FIRST `type` any slide
+ * delta writes for it, in slide order. THE one place the migrations below learn
+ * what a partial delta belongs to — a property keyframed on a LATER slide
+ * carries no `type`, so a migration that reads `item.type` alone either misses
+ * those keyframes or (worse) treats a same-named property on a foreign widget
+ * as its own. Every WIDGET-SPECIFIC migration in this file gates on this map.
+ *
+ * Args:
+ *   doc (object): document
+ *
+ * Returns:
+ *   Map<string, string> (ids whose type is never written anywhere are ABSENT —
+ *   that is the orphan case, repaired by orphanedItems before any migration)
+ *
+ * @example itemCreationTypes({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {x: 5}}}}]}).get("a") // "rect"
+ * @example itemCreationTypes({slides: [{delta: {items: {a: {x: 5}}}}]}).has("a") // false (typeless orphan)
+ */
+export function itemCreationTypes(doc) {
+  const typeOf = new Map();
+  for (const s of doc.slides)
+    for (const [id, item] of Object.entries(s.delta.items ?? {}))
+      if (item && typeof item === "object" && typeof item.type === "string" && !typeOf.has(id))
+        typeOf.set(id, item.type);
+  return typeOf;
+}
+
+/**
  * Pure function. Legacy key renames the document needs: every slide-delta
  * write at items.<id>.<oldKey> where the item's plugin declares
  * `legacyKeys: {oldKey: newKey}` (a top-level-state-key rename map — the
@@ -1096,11 +1143,7 @@ export function withMissingDefaultsFilled(doc, registry) {
  * @example legacyKeyRenames({slides: [{delta: {items: {a: {type: "arrow", headLength: 20}}}}]}, reg) // [] (already current)
  */
 export function legacyKeyRenames(doc, registry) {
-  const typeOf = new Map(); // id → first type written anywhere (creation type)
-  for (const s of doc.slides)
-    for (const [id, item] of Object.entries(s.delta.items ?? {}))
-      if (item && typeof item === "object" && typeof item.type === "string" && !typeOf.has(id))
-        typeOf.set(id, item.type);
+  const typeOf = itemCreationTypes(doc);
   const out = [];
   doc.slides.forEach((s, slideIndex) => {
     for (const [id, item] of Object.entries(s.delta.items ?? {})) {
@@ -1157,32 +1200,48 @@ export function withLegacyKeysRenamed(doc, registry) {
  * step then supplies the untouched-old-doc's `strokeWidth` default of 0,
  * which is exactly the "no outline until the user adds one" requirement).
  *
- * A slide is a migration candidate iff it writes `stroke` on a fancy_arrow
- * item AND that same delta does not ALSO write `fill` (an item already on
- * the new schema, or one where the current slide is a later keyframe of just
- * `stroke`-the-outline-color post-migration, is left alone — idempotent).
+ * THE CANDIDATE GATE IS PER-ITEM, NOT PER-SLIDE. An item is a candidate iff it
+ * writes `fill` on NO slide — because `fill` did not EXIST on this widget before
+ * 17.4 (pre-17.4 defaults: type/z/from/to/tipLength/tipWidth/tipDimple/
+ * startWidth/endWidth/stroke/opacity + effects, verified at 11b742a^), so a
+ * `fill` written ANYWHERE proves the whole item is already on the new schema.
+ * Every slide of such an item is then left alone, and only then is this
+ * migration safe to re-run forever (the RETIRED block's criterion: a migration
+ * must detect a shape the current editor CANNOT produce).
+ *
+ * PER-SLIDE WAS DATA LOSS (measured, this defect's whole point). A fancy arrow
+ * inserted TODAY writes fill AND stroke on its creation slide; changing Outline
+ * on slide 2 commits that ONE leaf, so slide 2's delta is `{stroke: …}` — byte
+ * identical to a legacy pre-17.4 write. The per-slide gate rewrote that
+ * keyframe to `{fill: …}` on the very next load: the authored outline animation
+ * became a BODY animation, permanently, three clicks from a fresh insert
+ * (equations included — `{stroke: "= hue(t)"}` moved just as silently).
  *
  * Args:
  *   doc (object): document
- *   registry (object): plugin registry (.get(type) → plugin)
+ *   registry (object): plugin registry (unused — the creation type comes from
+ *     the document itself; kept for signature parity with its sibling
+ *     migrations and its caller in repairedDocument)
  *
  * Returns:
  *   {id, slideIndex, value}[] (empty when nothing needs migrating)
  *
  * @example fancyArrowFillMigrations({slides: [{delta: {items: {a: {type: "fancy_arrow", stroke: "#ff0000"}}}}]}, reg) // [{id: "a", slideIndex: 0, value: "#ff0000"}]
  * @example fancyArrowFillMigrations({slides: [{delta: {items: {a: {type: "fancy_arrow", fill: "#ff0000", stroke: "#000000"}}}}]}, reg) // [] (already on the new schema)
+ * @example // an item whose fill lives on the CREATION slide is exempt on EVERY slide:
+ * @example fancyArrowFillMigrations({slides: [{delta: {items: {a: {type: "fancy_arrow", fill: "#f00", stroke: "#000"}}}}, {delta: {items: {a: {stroke: "#0f0"}}}}]}, reg) // []
  */
 export function fancyArrowFillMigrations(doc, registry) {
-  const typeOf = new Map();
+  const typeOf = itemCreationTypes(doc);
+  const onNewSchema = new Set(); // ids writing `fill` on ANY slide → post-17.4
   for (const s of doc.slides)
     for (const [id, item] of Object.entries(s.delta.items ?? {}))
-      if (item && typeof item === "object" && typeof item.type === "string" && !typeOf.has(id))
-        typeOf.set(id, item.type);
+      if (item && typeof item === "object" && "fill" in item) onNewSchema.add(id);
   const out = [];
   doc.slides.forEach((s, slideIndex) => {
     for (const [id, item] of Object.entries(s.delta.items ?? {})) {
       if (!(item && typeof item === "object") || typeOf.get(id) !== "fancy_arrow") continue;
-      if (!("stroke" in item) || "fill" in item) continue;
+      if (!("stroke" in item) || onNewSchema.has(id)) continue;
       out.push({ id, slideIndex, value: item.stroke });
     }
   });
@@ -1197,8 +1256,10 @@ export function fancyArrowFillMigrations(doc, registry) {
  * the plugin's new outline-color default; strokeWidth stays whatever the doc
  * already had, or the missing-defaults fill supplies 0 next — so an
  * un-migrated doc that never set strokeWidth draws NO outline, byte-identical
- * to before). REPORTING IS THE CALLER'S JOB. Idempotent (a migrated item has
- * `fill`, so fancyArrowFillMigrations no longer selects it).
+ * to before). REPORTING IS THE CALLER'S JOB. Idempotent (a migrated item now
+ * writes `fill`, and the candidate gate is ITEM-wide, so no slide of it is ever
+ * selected again — including the later `stroke`-the-outline keyframes the user
+ * adds afterwards).
  *
  * @example withFancyArrowFillMigrated({slides: [{delta: {items: {a: {type: "fancy_arrow", stroke: "#ff0000"}}}}]}, reg).doc.slides[0].delta.items.a.fill // "#ff0000"
  * @example withFancyArrowFillMigrated({slides: [{delta: {items: {a: {type: "fancy_arrow", stroke: "#ff0000"}}}}]}, reg).doc.slides[0].delta.items.a.stroke // undefined (falls back to the plugin default)
@@ -1296,9 +1357,16 @@ export function withLinearGradientAngleMigrated(doc) {
  * edges); it is now a quality/algorithm SELECT (core/properties.ANTIALIAS_MODES:
  * "off" | "standard"). Every slide-delta item that stores `antialias` as a
  * BOOLEAN is a candidate: true → "standard" (today's coverage-AA look), false →
- * "off" (crisp). Only the camera carries this property, so keying on the boolean
- * TYPE is exact and also catches an `antialias` keyframed on a non-creation slide
- * (no `type` there). A value already a string (migrated / fresh) is skipped.
+ * "off" (crisp). A value already a string (migrated / fresh) is skipped.
+ *
+ * GATED ON THE CAMERA (itemCreationTypes), so an `antialias` keyframed on a
+ * non-creation slide is still caught while a same-named property on any FUTURE
+ * widget is not. The gate used to be the boolean TYPE alone, on the reasoning
+ * that "only the camera carries this property" — true of today's roster, and not
+ * a property of the document format at all: a plugin declaring a boolean
+ * `antialias` would have had every stored `false` rewritten to the string "off"
+ * on load, which is this file's fancy-arrow defect (a per-shape gate standing in
+ * for a per-widget one) with a different key name.
  *
  * Args:
  *   doc (object): document
@@ -1309,12 +1377,14 @@ export function withLinearGradientAngleMigrated(doc) {
  * @example antialiasSelectMigrations({slides: [{delta: {items: {c: {type: "camera", antialias: true}}}}]}) // [{id: "c", slideIndex: 0, from: true, to: "standard"}]
  * @example antialiasSelectMigrations({slides: [{delta: {items: {c: {type: "camera", antialias: false}}}}]}) // [{id: "c", slideIndex: 0, from: false, to: "off"}]
  * @example antialiasSelectMigrations({slides: [{delta: {items: {c: {type: "camera", antialias: "off"}}}}]}) // [] (already a select value)
+ * @example antialiasSelectMigrations({slides: [{delta: {items: {r: {type: "rect", antialias: false}}}}]}) // [] (not the camera — not this migration's property)
  */
 export function antialiasSelectMigrations(doc) {
+  const typeOf = itemCreationTypes(doc);
   const out = [];
   doc.slides.forEach((s, slideIndex) => {
     for (const [id, item] of Object.entries(s.delta.items ?? {})) {
-      if (!item || typeof item !== "object") continue;
+      if (!item || typeof item !== "object" || typeOf.get(id) !== "camera") continue;
       if (typeof item.antialias === "boolean") out.push({ id, slideIndex, from: item.antialias, to: item.antialias ? "standard" : "off" });
     }
   });
@@ -1361,6 +1431,12 @@ const DEAD_FILMSTRIP_KEYS = ["frameUrls", "frameH", "frameW"];
  * Also reports the DEAD server-era keys (frameUrls / frameH / frameW) present on the
  * item, so their removal is LOUD rather than a silently ignored leftover.
  *
+ * GATED ON THE FILMSTRIP (itemCreationTypes) — `frames` and the dead keys are ITS
+ * property names, not the document format's. Ungated, this rewrote ANY widget's
+ * numeric `frames` into a 7-element list of video-time equations and deleted any
+ * widget's `frameW`/`frameH`/`frameUrls`; the gate is the difference between "a
+ * shape the current editor cannot produce" and "a key name nobody has claimed yet".
+ *
  * Args:
  *   doc (object): document
  *   buildList (fn): (n) → the n-element default frame list
@@ -1371,12 +1447,14 @@ const DEAD_FILMSTRIP_KEYS = ["frameUrls", "frameH", "frameW"];
  * @example filmstripFramesMigrations({slides: [{delta: {items: {f: {type: "filmstrip", frames: 3}}}}]}, (n) => [[n]]) // [{id: "f", slideIndex: 0, count: 3, list: [[3]], dead: []}]
  * @example filmstripFramesMigrations({slides: [{delta: {items: {f: {type: "filmstrip", frames: [[0]]}}}}]}, (n) => [[n]]) // [] (already a list)
  * @example filmstripFramesMigrations({slides: [{delta: {items: {f: {type: "filmstrip", frames: 2, frameUrls: ["a"]}}}}]}, (n) => [[n]])[0].dead // ["frameUrls"]
+ * @example filmstripFramesMigrations({slides: [{delta: {items: {r: {type: "rect", frames: 3}}}}]}, (n) => [[n]]) // [] (not a filmstrip — not this migration's property)
  */
 export function filmstripFramesMigrations(doc, buildList) {
+  const typeOf = itemCreationTypes(doc);
   const out = [];
   doc.slides.forEach((s, slideIndex) => {
     for (const [id, item] of Object.entries(s.delta.items ?? {})) {
-      if (!item || typeof item !== "object") continue;
+      if (!item || typeof item !== "object" || typeOf.get(id) !== "filmstrip") continue;
       const dead = DEAD_FILMSTRIP_KEYS.filter((k) => k in item);
       if (typeof item.frames !== "number") {
         // A slide that only carries dead keys still deserves the report.
@@ -1433,6 +1511,47 @@ export function withFilmstripFramesMigrated(doc, buildList) {
   return { doc: out, migrated };
 }
 
+/**
+ * Pure function. The legacy {item, anchor} endpoint bindings a document still
+ * carries — the REPORT half of the binding migration, whose rewriting half is
+ * core/expressions.withBindingsMigrated (THE UNIFICATION: a bound endpoint is
+ * an equation pair `@<id>_<anchor>.x` / `.y`, not a special stored shape).
+ *
+ * WHY THIS LIVES HERE AND NOT THERE: that function returns only the document,
+ * so it was the ONE step of repairedDocument's order-critical sequence that
+ * rewrote the document and pushed NO report — the exact silent repair
+ * printRepairReports exists to prevent. This enumerates the same candidates so
+ * the step can speak, and repairedDocument CROSS-CHECKS the two against each
+ * other (a count here with no rewrite there, or the reverse, throws) so the
+ * duplicated predicate cannot drift silently. The tree test is the SAME
+ * `isTree` from core/deltas.js that withBindingsMigrated uses.
+ *
+ * Only an item's TOP-LEVEL keys are bindings (`from`/`to` today), matching the
+ * migration's own single-level walk.
+ *
+ * Args:
+ *   doc (object): document
+ *
+ * Returns:
+ *   {id, slideIndex, key, target, anchor}[] (empty for a current document)
+ *
+ * @example legacyBindings({slides: [{delta: {items: {A: {type: "arrow", from: {item: "c1", anchor: "tm"}}}}}]}) // [{id: "A", slideIndex: 0, key: "from", target: "c1", anchor: "tm"}]
+ * @example legacyBindings({slides: [{delta: {items: {A: {type: "arrow", from: {x: "@c1_tm.x", y: "@c1_tm.y"}}}}}]}) // [] (already an equation pair)
+ * @example legacyBindings({slides: [{delta: {items: {A: {type: "arrow", from: {x: 5, y: 5}}}}}]}) // [] (a free endpoint stays free)
+ */
+export function legacyBindings(doc) {
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!isTree(item)) continue;
+      for (const [key, value] of Object.entries(item))
+        if (isTree(value) && typeof value.item === "string" && typeof value.anchor === "string")
+          out.push({ id, slideIndex, key, target: value.item, anchor: value.anchor });
+    }
+  });
+  return out;
+}
+
 // ── The load-boundary repair pipeline (ONE home) ─────────────────────────────
 // Both consumers of load-time repair — the editor (app.repaired via loadFile /
 // loadAutosave / loadProject / deleteSlide) and the CLI render hook
@@ -1481,7 +1600,10 @@ export function withFilmstripFramesMigrated(doc, buildList) {
  *      (byte-identical render). AFTER camera dedup so a camera-background
  *      gradient on the surviving camera is migrated too.
  *   7. bindings migrated        — legacy {item, anchor} arrow bindings become
- *      equation pairs (THE UNIFICATION); runs LAST, on the now-clean doc.
+ *      equation pairs (THE UNIFICATION); runs LAST, on the now-clean doc. Its
+ *      rewriter (core/expressions.js) reports nothing on its own, so the
+ *      candidates are enumerated HERE (legacyBindings) and cross-checked
+ *      against it — this step used to be the one silent rewrite in the chain.
  *
  * @example // repairedDocument(newDocument(), registry) → {doc: <equivalent>, reports: []}
  * @example // a doc with meta.fps → reports includes "PowerRP repair: removed legacy meta.fps — presentations are always uncapped"
@@ -1580,7 +1702,22 @@ export function repairedDocument(doc, registry) {
   for (const { id, slideIndex, relPath, angle } of gradientAngles)
     reports.push(`PowerRP repair: item "${id}" slide ${slideIndex}: legacy linear-gradient direction (${relPath.join(".")}) → angle ${angle}°`);
 
-  return { doc: withBindingsMigrated(gradientDoc), reports };
+  // Legacy {item, anchor} bindings → equation pairs (THE UNIFICATION). The
+  // rewrite lives in core/expressions.js and returns the document ALONE, so the
+  // candidates are enumerated here (legacyBindings) to give this step the report
+  // every other step has. The two are cross-checked rather than trusted: they
+  // are separate copies of one predicate, so a drift between them must be LOUD
+  // (this step's whole defect was changing a document with nothing to show for
+  // it — a wrong report is not an acceptable replacement for a missing one).
+  const bindings = legacyBindings(gradientDoc);
+  const boundDoc = withBindingsMigrated(gradientDoc);
+  const rewrote = boundDoc !== gradientDoc; // withBindingsMigrated returns the SAME object when it changes nothing
+  if (rewrote !== (bindings.length > 0))
+    throw new Error(`Binding migration disagreement: legacyBindings found ${bindings.length} candidate(s) but withBindingsMigrated ${rewrote ? "did" : "did NOT"} rewrite the document — core/document.legacyBindings and core/expressions.withBindingsMigrated have drifted apart`);
+  for (const b of bindings)
+    reports.push(`PowerRP repair: item "${b.id}" slide ${b.slideIndex}: legacy "${b.key}" binding {item: "${b.target}", anchor: "${b.anchor}"} → equation pair @${b.target}_${b.anchor}.x / .y`);
+
+  return { doc: boundDoc, reports };
 }
 
 /**

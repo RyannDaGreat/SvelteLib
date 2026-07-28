@@ -97,11 +97,22 @@ a shortcut that isn't registered there does not exist.
 - **THE TEST GATE — "passing" means THIS, nothing less** (user ruling, 2026-07-28:
   "For now on passing must always include browser probes, duh."):
   `node src/demo_apps/PowerRP/tests/run_all.mjs`
-  That script IS the definition. 181 files in four kinds: 82 bare-node `*_test.js`,
-  93 browser `*_probe.js`, 5 python `*_test.py`, 1 shell. Quoting a bare-node-only
-  number is how a whole session went by with five browser probes failing at baseline
-  and nobody noticing — a partial number manufactures false confidence. Use
-  `--only=node` while iterating, never to report.
+  That script IS the definition, in four kinds — bare-node `*_test.{js,mjs}`, browser
+  `*_probe.{js,mjs}`, python `*_test.py`, shell `*_test.sh` — collected from BOTH
+  `tests/` and `render_gpu/tests/`. **`--list` is the authority on how many there
+  are; do not quote a number from this file.** A pinned count was wrong twice over:
+  it went stale as agents added suites, and it was already too low because the
+  collector took `_probe.js` from `tests/` only, leaving three real browser probes in
+  `render_gpu/tests/` plus one `.mjs` probe outside the gate entirely. Quoting a
+  bare-node-only number is how a whole session went by with five browser probes
+  failing at baseline and nobody noticing. A partial number manufactures false
+  confidence — which is exactly what a stale one in this file did too. Use
+  `--only=node` / `--filter=<substring>` while iterating, never to report.
+  The gate STARTS ITS OWN BACKEND on a free port and passes `BACKEND_URL` to the
+  browser children, because ~9 of the first sweep's 12 failures were `listAssets:
+  500` from nothing listening. Probes do not *listen* on the fixed backend port, but
+  each one's self-spun Vite *proxies* to `BACKEND_URL` — so without one they report
+  an absent dependency as if the app were broken.
 - Core tests only (iterating): `node src/demo_apps/PowerRP/tests/core_test.js`
 - Server lifecycle: `bash src/demo_apps/PowerRP/tests/server_launcher_test.sh`
 - Editor smoke: `node src/demo_apps/PowerRP/tests/editor_smoke.js <shot_dir>`
@@ -119,10 +130,18 @@ a shortcut that isn't registered there does not exist.
 ## Known bounds (deliberate)
 
 Multi-selection, box selection, drag-all/multi-resize, alignment, and grouping
-exist; the heterogeneous multi-selection Inspector intersection remains
-unbuilt. Groups are flat-membership derivation parents, not nested object trees,
-and retain the five Round 18 frozen-baseline defects — but they DO composite as
-a subtree when their effects bundle is active (`plugins/group.js` carries
+exist; the heterogeneous multi-selection Inspector intersection is being built
+now. Groups are flat-membership derivation parents, not nested object trees,
+and retain FOUR of the five Round 18 frozen-baseline defects — this line used to
+say all five were group defects, which was WRONG: #1 was never one. It was
+`fancyArrowFillMigrations()` silently rewriting a valid current-schema
+later-slide `stroke` keyframe into `fill` on load (the manifest names it exactly,
+at `claude_instructions.md:4612`), and it is FIXED — the gate was per-slide, so a
+one-leaf Outline commit on slide 2 was byte-identical to a legacy pre-17.4 write;
+it is now per-item, because a `fill` on ANY slide proves the item is post-17.4.
+Both directions are pinned by tests: authored-today is left alone, genuinely
+legacy still migrates. Defects 2-5 (group/anchor/ungroup) remain open. Groups DO
+composite as a subtree when their effects bundle is active (`plugins/group.js` carries
 `bundle("effects")` + `bundle("cropInsets")`, and `groupFoldsSubtree()`
 composites). The video player exists, and so does the deterministic video
 scrubber (`plugins/video_scrub.js`, plus `plugins/demo/video_v5_scrub.js`);

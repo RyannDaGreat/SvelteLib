@@ -17,6 +17,7 @@ import {
   fancyArrowFillMigrations, withFancyArrowFillMigrated,
   linearGradientAngleMigrations, withLinearGradientAngleMigrated,
   antialiasSelectMigrations, withAntialiasSelectMigrated,
+  filmstripFramesMigrations, legacyBindings, itemCreationTypes,
   repairedDocument, defaultCameraState, withExtraCamerasDropped,
 } from "../core/document.js";
 import { angleToLinearEndpoints, linearEndpointsToAngle } from "../core/properties.js";
@@ -712,6 +713,174 @@ test("repairedDocument: a fresh document (antialias already the select default) 
   const cam = camerasIn(fixed)[0];
   assert.equal(fixed.slides[0].delta.items[cam].antialias, "standard"); // the new select default
   assert.ok(!reports.some((r) => r.includes("boolean antialias")));
+});
+
+// ── MIGRATION GATES ──────────────────────────────────────────────────────────
+// THE CRITERION (core/document.js's RETIRED block, and the reason those
+// migrations are safe to re-run forever): a migration may only fire on a shape
+// THE CURRENT EDITOR CANNOT PRODUCE. Every test below is a gate against the
+// three ways that was violated — a per-SLIDE gate standing in for a per-ITEM
+// one, a per-SHAPE gate standing in for a per-WIDGET one, and a coverage test
+// the repair's own write could never satisfy.
+
+/** The filmstrip's own frame-list builder, the way repairedDocument gets it. */
+const defaultFrameList = registry.all().find((p) => p.type === "filmstrip").defaultFrameList;
+
+test("itemCreationTypes: the FIRST type written wins; a typeless id is absent (the orphan case)", () => {
+  const doc = { slides: [{ delta: { items: { a: { type: "rect" }, b: { x: 1 } } } }, { delta: { items: { a: { x: 5 } } } }] };
+  assert.equal(itemCreationTypes(doc).get("a"), "rect");
+  assert.equal(itemCreationTypes(doc).has("b"), false);
+});
+
+test("fancy arrow: an Outline keyframe authored TODAY is NOT migrated (per-ITEM gate, not per-slide)", () => {
+  // THE DEFECT this gates: a fancy arrow inserted today writes fill AND stroke
+  // on its creation slide, so changing Outline on slide 2 commits that ONE leaf
+  // and slide 2's delta is {stroke: …} — byte-identical to a legacy pre-17.4
+  // write. The per-SLIDE gate rewrote it to {fill: …} on the very next load, so
+  // the authored OUTLINE animation became a BODY animation, permanently, three
+  // clicks from a fresh insert.
+  const [d1, id] = withNewItem(newDocument(), 0, { ...fancyArrowPlugin.defaults, active: true });
+  const [d2] = withNewSlide(d1, 0);
+  const authored = keyframed(d2, 1, ["items", id, "stroke"], "#00ff00");
+  assert.ok("fill" in authored.slides[0].delta.items[id], "premise: today's creation slide writes fill");
+  assert.deepEqual(fancyArrowFillMigrations(authored, registry), []);
+
+  const { doc: fixed, reports } = repairedDocument(authored, registry);
+  assert.deepEqual(fixed.slides[1].delta.items[id], { stroke: "#00ff00" });
+  assert.ok(!reports.some((r) => r.includes("fancy-arrow")), `expected no fancy-arrow report, got: ${JSON.stringify(reports)}`);
+  // The folded slide-2 state is UNCHANGED by the load: green outline, default body.
+  const before = foldState(authored, 1, 1).items[id];
+  const after = foldState(fixed, 1, 1).items[id];
+  assert.equal(after.stroke, "#00ff00");
+  assert.equal(after.stroke, before.stroke);
+  assert.equal(after.fill, before.fill);
+});
+
+test("fancy arrow: an EQUATION on a later stroke keyframe is not eaten either", () => {
+  // The corruption moved whatever the leaf held — equations included, which is
+  // how an animated outline colour became an animated body colour.
+  const [d1, id] = withNewItem(newDocument(), 0, { ...fancyArrowPlugin.defaults, active: true });
+  const [d2] = withNewSlide(d1, 0);
+  const authored = keyframed(d2, 1, ["items", id, "stroke"], "= hsl(t, 1, 0.5)");
+  const { doc: fixed } = repairedDocument(authored, registry);
+  assert.deepEqual(fixed.slides[1].delta.items[id], { stroke: "= hsl(t, 1, 0.5)" });
+});
+
+test("fancy arrow: a GENUINELY legacy doc still migrates, on EVERY slide, and only once", () => {
+  // The same document as the two tests above with ONE difference — the
+  // creation slide has no `fill` write, which is exactly the pre-17.4 schema
+  // (that property did not exist; `stroke` WAS the body colour). Both slides
+  // must migrate: a fix that stops migrating real legacy data would be worse
+  // than the corruption it replaced.
+  const [d1, id] = withNewItem(newDocument(), 0, { ...fancyArrowPlugin.defaults, active: true });
+  const [d2] = withNewSlide(d1, 0);
+  const withLater = keyframed(d2, 1, ["items", id, "stroke"], "#00ff00");
+  const legacy = unkeyframed(withLater, 0, ["items", id, "fill"]);
+
+  assert.deepEqual(
+    fancyArrowFillMigrations(legacy, registry).map((m) => [m.slideIndex, m.value]),
+    [[0, fancyArrowPlugin.defaults.stroke], [1, "#00ff00"]]);
+  const { doc: fixed } = withFancyArrowFillMigrated(legacy, registry);
+  assert.equal(fixed.slides[0].delta.items[id].fill, fancyArrowPlugin.defaults.stroke);
+  assert.equal(fixed.slides[0].delta.items[id].stroke, undefined); // falls back to the outline default
+  assert.equal(fixed.slides[1].delta.items[id].fill, "#00ff00");
+  assert.deepEqual(fancyArrowFillMigrations(fixed, registry), []); // idempotent
+
+  // …and repairedDocument says so, twice, then goes quiet.
+  const loud = repairedDocument(legacy, registry);
+  assert.equal(loud.reports.filter((r) => r.includes("fancy-arrow")).length, 2);
+  assert.deepEqual(repairedDocument(loud.doc, registry).reports.filter((r) => r.includes("fancy-arrow")), []);
+});
+
+test("cropbox: the NULL default `target` is reported at most once — never on every load", () => {
+  // THE DEFECT this gates: `written` excludes null values (a null write is the
+  // delete sentinel), and a null DEFAULT can only ever be filled with null, so
+  // coverage was never satisfied and the report fired forever while the
+  // document never changed — the reverse of a silent repair, and a falsified
+  // "idempotent, reports = []" contract for every document with a crop box.
+  const cropbox = registry.get("cropbox");
+  assert.equal(cropbox.defaults.target, null, "premise: cropbox.target is a NULL default");
+  const [created, id] = withNewItem(newDocument(), 0, { ...cropbox.defaults, active: true });
+
+  let cur = created; // (a) created today: target: null is already written — silence from the first load
+  for (let load = 1; load <= 5; load++) {
+    const { doc, reports } = repairedDocument(cur, registry);
+    assert.deepEqual(reports, [], `load ${load} of a fresh crop box must be silent`);
+    cur = doc;
+  }
+
+  // (b) a document that never wrote `target` at all: reported ONCE, filled, then silent.
+  const never = unkeyframed(created, 0, ["items", id, "target"]);
+  const first = repairedDocument(never, registry);
+  assert.equal(first.reports.filter((r) => r.includes("target")).length, 1);
+  assert.equal(first.doc.slides[0].delta.items[id].target, null); // the report matches a real write
+  assert.deepEqual(repairedDocument(first.doc, registry).reports, []);
+});
+
+test("repairedDocument REPORTS the legacy {item, anchor} binding migration (it used to rewrite in silence)", () => {
+  // Step 7 of the order-critical sequence was the only step that pushed nothing:
+  // the document changed shape ({item, anchor} → an equation pair) with no line
+  // for printRepairReports to print.
+  const [d1, cid] = withNewItem(newDocument(), 0, { type: "circle", x: 0, y: 0, w: 10, h: 10, active: true });
+  const [d2, aid] = withNewItem(d1, 0, { type: "arrow", from: { item: cid, anchor: "tm" }, to: { x: 5, y: 5 }, active: true });
+  assert.deepEqual(legacyBindings(d2), [{ id: aid, slideIndex: 0, key: "from", target: cid, anchor: "tm" }]);
+
+  const { doc: fixed, reports } = repairedDocument(d2, registry);
+  assert.deepEqual(fixed.slides[0].delta.items[aid].from, { x: `@${cid}_tm.x`, y: `@${cid}_tm.y` });
+  assert.ok(
+    reports.some((r) => r.includes(aid) && r.includes("binding") && r.includes(`@${cid}_tm.x`)),
+    `expected a loud binding migration report, got: ${JSON.stringify(reports)}`);
+  assert.deepEqual(legacyBindings(fixed), []); // idempotent — and the report stops with it
+  assert.deepEqual(repairedDocument(fixed, registry).reports.filter((r) => r.includes("binding")), []);
+});
+
+test("frames / antialias migrations are gated on THEIR widget — a rect keeps both values verbatim", () => {
+  // Neither `frames` nor `antialias` is a document-format concept: they belong
+  // to the filmstrip and THE camera. Ungated, the next plugin to declare a
+  // numeric `frames` would have had it rewritten into a 7-element list of
+  // video-time equations, and a boolean `antialias` into the string "off" —
+  // the fancy-arrow defect with different key names. A rect stands in for that
+  // future plugin here.
+  const [d1, id] = withNewItem(newDocument(), 0, { type: "rect", x: 0, y: 0, w: 10, h: 10, active: true });
+  const d2 = keyframed(keyframed(d1, 0, ["items", id, "frames"], 7), 0, ["items", id, "antialias"], false);
+  assert.deepEqual(filmstripFramesMigrations(d2, defaultFrameList), []);
+  assert.deepEqual(antialiasSelectMigrations(d2), []);
+  const { doc: fixed } = repairedDocument(d2, registry);
+  assert.equal(fixed.slides[0].delta.items[id].frames, 7);
+  assert.equal(fixed.slides[0].delta.items[id].antialias, false);
+});
+
+test("dead filmstrip keys are the filmstrip's too — a rect's frameW/frameH/frameUrls are left alone", () => {
+  const [d1, id] = withNewItem(newDocument(), 0, { type: "rect", x: 0, y: 0, w: 10, h: 10, active: true });
+  const d2 = keyframed(keyframed(d1, 0, ["items", id, "frameW"], 320), 0, ["items", id, "frameUrls"], ["a"]);
+  assert.deepEqual(filmstripFramesMigrations(d2, defaultFrameList), []);
+  assert.equal(repairedDocument(d2, registry).doc.slides[0].delta.items[id].frameW, 320);
+});
+
+test("EVERY plugin: an item built from its own defaults loads with a SILENT second pass", () => {
+  // The GENERAL form of the crop-box defect: any default the fill cannot
+  // materialize makes repairedDocument report forever while changing nothing.
+  // Runs over the whole roster so the next such default is caught by this
+  // suite rather than by a console full of repair lines.
+  for (const plugin of registry.all()) {
+    const [doc] = withNewItem(newDocument(), 0, { ...plugin.defaults, active: true });
+    const first = repairedDocument(doc, registry);
+    const second = repairedDocument(first.doc, registry);
+    assert.deepEqual(second.reports, [], `${plugin.type}: a second load must report nothing, got ${JSON.stringify(second.reports)}`);
+  }
+});
+
+test("EVERY plugin: its own fresh defaults are not a migration candidate (widget-gate drift guard)", () => {
+  // If a future plugin declares `frames`, `antialias`, `fill`+`stroke` or an
+  // {item, anchor}-shaped default, THIS is what goes red if the widget gates
+  // are ever loosened back to shape-only tests.
+  for (const plugin of registry.all()) {
+    const [doc] = withNewItem(newDocument(), 0, { ...plugin.defaults, active: true });
+    assert.deepEqual(filmstripFramesMigrations(doc, defaultFrameList), [], `${plugin.type}: filmstrip frames`);
+    assert.deepEqual(antialiasSelectMigrations(doc), [], `${plugin.type}: antialias`);
+    assert.deepEqual(fancyArrowFillMigrations(doc, registry), [], `${plugin.type}: fancy-arrow fill`);
+    assert.deepEqual(legacyBindings(doc), [], `${plugin.type}: legacy bindings`);
+  }
 });
 
 console.log(`\n${passed} repair tests passed`);

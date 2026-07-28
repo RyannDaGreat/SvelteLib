@@ -27,7 +27,11 @@
             "rotation": 0,
             "scale": 1,
             "active": true,
-            "background": "#ffffff"
+            "background": "#ffffff",
+            "antialias": "standard",
+            "retina": true,
+            "ditherMode": "off",
+            "ditherEmphasis": 1
           },
           "c5c2bed3": {
             "type": "rect",
@@ -58,7 +62,15 @@
               "radius": 10,
               "strength": 0
             },
-            "blendMode": "normal"
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0
           },
           "0f3d6775": {
             "type": "circle",
@@ -88,7 +100,15 @@
               "radius": 10,
               "strength": 0
             },
-            "blendMode": "normal"
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0
           },
           "5420a650": {
             "type": "text",
@@ -146,7 +166,15 @@
               "strength": 0
             },
             "blendMode": "normal",
-            "valign": "top"
+            "valign": "top",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0
           },
           "510eda10": {
             "type": "arrow",
@@ -176,7 +204,15 @@
               "radius": 10,
               "strength": 0
             },
-            "blendMode": "normal"
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0
           }
         }
       }
@@ -242,7 +278,28 @@
             "stroke": "#1a1a2e",
             "strokeWidth": 4,
             "shape": "circle",
-            "cornerRadius": 0
+            "cornerRadius": 0,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "opacity": 1
           }
         }
       }

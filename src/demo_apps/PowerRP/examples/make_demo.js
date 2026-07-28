@@ -10,7 +10,22 @@
  * with a magnifier above it (backdrop-sampler stacking) and deactivates the
  * text (the `active` mechanism: same item lives on slides 1-2 but not 3).
  *
- * Run: node src/demo_apps/PowerRP/examples/make_demo.js
+ * ── DO NOT RUN THIS TO "REFRESH" THE FIXTURE (measured, 2026-07-28) ──────────
+ * It OVERWRITES examples/demo.powerrp.json with FRESH uuids, and nine probes
+ * hardcode the committed ids (align_mirror, crosshair, flip, keyframe_freeze,
+ * modal_xform, palette, registry_ui, theme, toolspane) — so one run turns nine
+ * green probes red for a reason no diff explains. It also still emits two legacy
+ * shapes that repairedDocument() migrates loudly: `text` as a bare string (→ rich
+ * runs) and a magnifier built from the RAW plugin export, whose `defaults` lack the
+ * universal-effects keys that only createRegistry().register() injects. That is
+ * why PowerRP's CLAUDE.md calls this a worked example, not a fixture regenerator.
+ *
+ * To bring the committed fixture up to date with its plugins, re-serialize IT
+ * through repairedDocument() instead — the ids survive and the diff is purely the
+ * added defaults.
+ *
+ * Run (as an EXAMPLE, expecting the fixture to be overwritten):
+ *   node src/demo_apps/PowerRP/examples/make_demo.js
  */
 
 import { writeFile } from "node:fs/promises";
