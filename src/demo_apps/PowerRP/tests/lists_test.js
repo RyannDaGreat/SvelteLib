@@ -325,6 +325,27 @@ test("RENDER PROOF: a hidden gradient stop is byte-identical to never authoring 
   assert.deepEqual(three.list[1], { offset: 0.5, color: "#00ff00" });
 });
 
+test("RENDER WIRING: parsePaint ITSELF drops a hidden stop — the render half, in one funnel", () => {
+  // The test above proves the PRIMITIVE by calling visibleElements in the test.
+  // This proves the WIRING: parsePaint applies it, reading the companion from the
+  // gradient sub-state (fill.linear.stopsActive — exactly where activeListPath puts
+  // it). parsePaint is the ONE funnel the Skia painter, the SVG <stop> emitter and
+  // the PDF stitching function all take, so one filter serves all three.
+  const stops = [{ offset: 0, color: "#ff0000" }, { offset: 0.5, color: "#00ff00" }, { offset: 1, color: "#0000ff" }];
+  const hidden = parsePaint({ type: "linearGradient", linear: { stops, stopsActive: [true, false, true], angle: 0 } });
+  const authored = parsePaint({ type: "linearGradient", linear: { stops: [stops[0], stops[2]], angle: 0 } });
+  assert.deepEqual(hidden, authored, "a hidden stop renders as the hand-authored gradient without it");
+  assert.deepEqual(hidden.stops.map((s) => s.offset), [0, 1], "the ramp spans the SURVIVING neighbours (no transparent hole)");
+  // NOTHING HIDDEN = UNCHANGED, which is what keeps every existing document
+  // byte-identical: no companion, an all-true one, and a legacy paint with no
+  // companion key at all all parse the same.
+  const plain = parsePaint({ type: "linearGradient", linear: { stops, angle: 0 } });
+  assert.deepEqual(parsePaint({ type: "linearGradient", linear: { stops, stopsActive: [true, true, true], angle: 0 } }), plain);
+  assert.equal(plain.stops.length, 3);
+  // The hidden stop's STORED value is untouched, so unhiding restores it exactly.
+  assert.deepEqual(stops[1], { offset: 0.5, color: "#00ff00" });
+});
+
 test("RENDER PROOF: a hidden polygon vertex makes the chain close over it", () => {
   // A square with vertex 1 hidden is exactly the TRIANGLE through the survivors —
   // the edge runs from the previous surviving vertex straight to the next.

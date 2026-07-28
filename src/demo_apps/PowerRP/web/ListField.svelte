@@ -107,6 +107,10 @@
   /** Icon glyph size for the row's own buttons — the .btn-icon size every other
    *  icon button in a panel row uses, so the rows are one height. */
   const ICON = 16;
+  /** The insert seam's + glyph. Smaller than a row's icon because the seam is
+   *  SHORTER than a row (app.css --a-list-insert-h) — a row-sized glyph would not
+   *  fit inside the hairline band. */
+  const SEAM_ICON = 12;
   /** How many decimals a value is summarized to in an insert tooltip. Enough to
    *  read a normalized coordinate (0.125) without showing float dust. */
   const SUMMARY_DECIMALS = 3;
@@ -272,7 +276,7 @@
       onclick={() => insert(index)}
     >
       <span class="list-insert-line"></span>
-      <span class="list-insert-chip"><iconify-icon icon="mdi:plus" width="12" height="12"></iconify-icon></span>
+      <span class="list-insert-chip"><iconify-icon icon="mdi:plus" width={SEAM_ICON} height={SEAM_ICON}></iconify-icon></span>
       <span class="list-insert-line"></span>
     </button>
   </Tooltip>
@@ -287,7 +291,7 @@
       <Tooltip text={`Add the first entry, from this property's default: ${elementSummary(seedElement)}`}>
         <button type="button" class="list-insert" {disabled} aria-label={`${label}: add the first entry`} onclick={seed}>
           <span class="list-insert-line"></span>
-          <span class="list-insert-chip"><iconify-icon icon="mdi:plus" width="12" height="12"></iconify-icon></span>
+          <span class="list-insert-chip"><iconify-icon icon="mdi:plus" width={SEAM_ICON} height={SEAM_ICON}></iconify-icon></span>
           <span class="list-insert-line"></span>
         </button>
       </Tooltip>
@@ -326,7 +330,13 @@
               <Tooltip text={f.help ?? f.label ?? f.name}>
                 <span class="list-field-label">{f.name}</span>
               </Tooltip>
-              {#if f.kind === "number"}
+              {#if disabled}
+                <!-- GRAYED display of a NOT-YET-CREATED item's list (the Inspector
+                     renders every row of one, disabled): the value as read-only
+                     text, its .disabled-val idiom — never a live field, which
+                     would write a keyframe for an item that does not exist here. -->
+                <input type="text" class="disabled-val" value={String(elementFieldValue(decl.element, el, f.name) ?? "")} disabled />
+              {:else if f.kind === "number"}
                 <NumericField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} min={f.min ?? null} max={f.max ?? null} />
               {:else if f.kind === "color"}
                 <ColorField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} value={elementFieldValue(decl.element, el, f.name)} {disabled} />
@@ -343,8 +353,17 @@
             </span>
           {/each}
         </span>
+        <!-- ONE keyframe triad per ELEMENT, on the element's own path, so a stop or
+             a vertex keyframes and tweens as a unit (PaintField's per-stop ◆,
+             generalized). A grayed row has no diamonds — the Inspector's own rule
+             for a not-yet-created item — but still reserves the column so the rows
+             stay aligned. KNOWN BOUND: the visibility flag is keyframable (it is a
+             plain boolean leaf on the companion path) but has no diamond of its own
+             here, because a second triad per row doubles the row's width. -->
         <span class="kf-controls">
-          <KeyframeControls {app} path={[...path, index]} />
+          {#if !disabled}
+            <KeyframeControls {app} path={[...path, index]} />
+          {/if}
         </span>
         <Tooltip text={purgeTip(index)}>
           <button

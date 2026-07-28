@@ -167,6 +167,10 @@
   --a-list-index-w: 14px;
   --a-list-field-w: 56px;
   --a-list-insert-h: 12px;
+  /* How far a HIDDEN element's row fades — the same "present but standing down"
+     strength .btn:disabled uses, named because this one is a semantic state
+     (hidden ≠ disabled) rather than a control's own dimming. */
+  --a-list-hidden-opacity: 0.45;
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
   /* ── EQUATION SYNTAX-HIGHLIGHT PALETTE (Opus25, round-3 field) ──
      One token per highlight class from equationTokenSpans (core/expressions.js).
@@ -2897,7 +2901,7 @@ audio.ae-preview-media {
    stay full strength: the way back must never be the dimmed-out control. */
 .listfield .list-el-hidden .list-index,
 .listfield .list-el-hidden .list-fields {
-  opacity: 0.45;
+  opacity: var(--a-list-hidden-opacity);
 }
 
 /* The visibility eye is BooleanField, whose root fills a normal row's whole value
@@ -2995,15 +2999,15 @@ audio.ae-preview-media {
 /* The + is hover-only (the resting list is just its elements — the round-11
    field-chrome minimalism rule), while the hairline always shows the seam is
    there to be clicked. */
-.listfield .list-insert:hover {
+.listfield .list-insert:hover:not(:disabled) {
   color: var(--fg);
 }
 
-.listfield .list-insert:hover .list-insert-chip {
+.listfield .list-insert:hover:not(:disabled) .list-insert-chip {
   opacity: 1;
 }
 
-.listfield .list-insert:hover .list-insert-line {
+.listfield .list-insert:hover:not(:disabled) .list-insert-line {
   background: var(--fg-dim);
 }
 

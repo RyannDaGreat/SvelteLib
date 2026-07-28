@@ -339,21 +339,24 @@ try {
 
   // ── PIXEL PROOF: a HIDDEN stop == never having authored it ──────────────────
   // Deselect first, so no selection overlay lands inside the compared clip.
-  const canvasClip = { x: 760, y: 0, width: 0, height: 0 };
-  const clipOf = () => page.evaluate((id) => {
+  const clipOf = () => page.evaluate(() => {
     const app = window.__powerrp_app;
     const s = app.canvasActions.worldToScreen(760, 260);
     const e = app.canvasActions.worldToScreen(760 + 320, 260 + 200);
     const rect = document.querySelector(".overlay").getBoundingClientRect();
-    // Inset by a pixel on every side so an antialiased edge cannot decide the compare.
-    return {
-      x: Math.round(rect.left + s.x) + 2, y: Math.round(rect.top + s.y) + 2,
-      width: Math.round(e.x - s.x) - 4, height: Math.round(e.y - s.y) - 4,
-    };
-  }, rectId);
+    // Inset by two pixels on every side so an antialiased edge cannot decide the
+    // compare, then INTERSECT with the canvas itself: part of the widget may sit
+    // outside the viewport, and a clip that spilled onto the panel chrome would
+    // photograph static pixels that dilute what the compare is about.
+    const box = { x0: Math.round(rect.left + s.x) + 2, y0: Math.round(rect.top + s.y) + 2, x1: Math.round(rect.left + e.x) - 2, y1: Math.round(rect.top + e.y) - 2 };
+    const c = document.querySelector("canvas").getBoundingClientRect();
+    const x0 = Math.max(box.x0, Math.ceil(c.left)), y0 = Math.max(box.y0, Math.ceil(c.top));
+    const x1 = Math.min(box.x1, Math.floor(c.right)), y1 = Math.min(box.y1, Math.floor(c.bottom));
+    if (!(x1 > x0 && y1 > y0)) throw new Error("the gradient rect is not visible on the canvas — nothing to compare");
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  });
   const shoot = async (name) => {
     const clip = await clipOf();
-    Object.assign(canvasClip, clip);
     const buf = await page.screenshot({ clip });
     await writeFile(resolve(shots, `${name}.png`), buf);
     return buf;
