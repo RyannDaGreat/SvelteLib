@@ -155,10 +155,12 @@
   import { equationTokenSpans } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { displayUnit } from "./displayUnits.js";
+  import { fanOutPairs } from "../core/multiselect.js";
 
   let {
     app = null,
     path = null,
+    paths = null,
     label,
     value = 0,
     display = null,
@@ -166,6 +168,14 @@
     onpreview = null,
     oncommit = null,
   } = $props();
+
+  /**
+   * THE WRITE TARGETS. Reads stay on the singular `path` (the PRIMARY item — in a
+   * multi-selection every selected item agrees on this value, or the row would be
+   * showing the MIXED mark instead of this field), while WRITES fan out to all of
+   * them. `paths` absent = the single-selection case, byte-identically as before.
+   */
+  let writePaths = $derived(paths ?? [path]);
 
   // Display-unit transform (`rotation` edits in degrees though core stores
   // radians; identity for a row that already stores degrees). DISPLAY ONLY —
@@ -328,14 +338,14 @@
    * value is DISPLAY degrees (number) or an "=" equation string. */
   function emitPreview(v) {
     if (onpreview) onpreview(toStoredUnit(v));
-    else if (bound) app.setPreview([[path, toStoredUnit(v)]]);
+    else if (bound) app.setPreview(fanOutPairs(writePaths, toStoredUnit(v)));
   }
   /** Command. Commit a heading as ONE undo unit. The value is DISPLAY degrees
    * (number) or an "=" equation string. */
   function emitCommit(v) {
     if (oncommit) oncommit(toStoredUnit(v));
     else if (bound) {
-      app.setPreview([[path, toStoredUnit(v)]]);
+      app.setPreview(fanOutPairs(writePaths, toStoredUnit(v)));
       app.commitPreview();
     }
   }

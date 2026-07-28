@@ -65,8 +65,17 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { decimalPlaces, resolveScrub } from "../../../lib/numberStep.js";
   import { displayUnit } from "./displayUnits.js";
+  import { fanOutPairs } from "../core/multiselect.js";
 
-  let { app, path, label, min = null, max = null, display = null, scrub = null, step = null } = $props();
+  let { app, path, paths = null, label, min = null, max = null, display = null, scrub = null, step = null } = $props();
+
+  /**
+   * THE WRITE TARGETS. Reads stay on the singular `path` (the PRIMARY item — in a
+   * multi-selection every selected item agrees on this value, or the row would be
+   * showing the MIXED mark instead of this field), while WRITES fan out to all of
+   * them. `paths` absent = the single-selection case, byte-identically as before.
+   */
+  let writePaths = $derived(paths ?? [path]);
 
   // The equation's OWNING item id, enabling `self.` completion — mirrors
   // evaluateState's own selfId derivation (core/expressions.js: "self resolves
@@ -272,11 +281,11 @@
   // back to the STORED unit (radians) before writing. Identity for normal rows.
 
   function previewNumber(shown) {
-    app.setPreview([[path, unit.fromDisplay(shown)]]);
+    app.setPreview(fanOutPairs(writePaths, unit.fromDisplay(shown)));
   }
 
   function commitNumber(shown) {
-    app.setPreview([[path, unit.fromDisplay(shown)]]);
+    app.setPreview(fanOutPairs(writePaths, unit.fromDisplay(shown)));
     app.commitPreview();
   }
 
@@ -310,7 +319,7 @@
     highlighted = 0;
     syncScroll(); // keep the highlight overlay aligned as the caret scrolls the input
     try {
-      app.setPreview([[path, toStored(draft)]]);
+      app.setPreview(fanOutPairs(writePaths, toStored(draft)));
       invalid = false;
     } catch {
       // Invalid draft: affordance only — the specific message would thrash
@@ -332,7 +341,7 @@
     draft = text;
     suggestionsOpen = false;
     try {
-      app.setPreview([[path, toStored(draft)]]);
+      app.setPreview(fanOutPairs(writePaths, toStored(draft)));
       invalid = false;
     } catch {
       app.cancelPreview();
@@ -362,7 +371,7 @@
     // text is authored in stored-space references — unit conversion of
     // free-form expressions is out of scope, see the field header note).
     const value = refs.length === 0 ? unit.fromDisplay(evalAst(ast, () => 0)) : storedForm;
-    app.setPreview([[path, value]]);
+    app.setPreview(fanOutPairs(writePaths, value));
     app.commitPreview();
     invalid = false;
     endTextEntry();

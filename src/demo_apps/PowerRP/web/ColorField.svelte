@@ -160,8 +160,17 @@
   import "iconify-icon";
   import ColorPicker from "../../../lib/ColorPicker.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import { fanOutPairs } from "../core/multiselect.js";
 
-  let { app, path, label, value, disabled = false } = $props();
+  let { app, path, paths = null, label, value, disabled = false } = $props();
+  /**
+   * THE WRITE TARGETS. Reads stay on the singular `path` (the PRIMARY item — in a
+   * multi-selection every selected item agrees on this value, or the row would be
+   * showing the MIXED mark instead of this field), while WRITES fan out to all of
+   * them. `paths` absent = the single-selection case, byte-identically as before.
+   */
+  let writePaths = $derived(paths ?? [path]);
+
 
   let open = $state(false);
 
@@ -185,11 +194,11 @@
    * document stays UNCHANGED until commit (the house contract). Stored in
    * collapsed form so opaque colors never grow an alpha channel. */
   function preview(picked) {
-    app.setPreview([[path, toStored(picked)]]);
+    app.setPreview(fanOutPairs(writePaths, toStored(picked)));
   }
   /** Settle: commit the previewed color as ONE undo unit (picker onchange). */
   function commit(picked) {
-    app.setPreview([[path, toStored(picked)]]);
+    app.setPreview(fanOutPairs(writePaths, toStored(picked)));
     app.commitPreview();
   }
 

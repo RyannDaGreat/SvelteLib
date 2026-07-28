@@ -28,6 +28,7 @@ import { evaluateState, withVariableRenamed, anchorRefName, isEquationValue } fr
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
+import { multiSelectPanel, unifyPairs } from "../core/multiselect.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { imageSignature } from "./clipboard.js"; // canvas-clipboard disambiguation signature
@@ -577,6 +578,65 @@ export class PowerRPApp {
     return this.nodes().filter((n) => ids.has(n.itemId));
   }
 
+  // ── MULTI-SELECTION PROPERTY INTERSECTION (core/multiselect.js) ─────────────
+  // The Property Panel's whole multi-selection input. All the logic is in core;
+  // these two are the app-state ADAPTER (which items, whose raw state) and the
+  // ONE write, kept here beside applyPreset because they use the same seam.
+
+  /**
+   * Query. The selected items as core/multiselect.js `entries`, PRIMARY FIRST —
+   * {itemId, plugin, state} per selected id, with the RAW folded state (equations
+   * still their stored strings, exactly as the Property Panel displays them).
+   *
+   * `state` is null for an item NOT ON THIS SLIDE, which core drops from the
+   * intersection and reports in `skipped` rather than editing invisibly. The type
+   * comes from the same raw state, so an item present here always resolves its
+   * plugin; an absent one carries the plugin from its creation-fold state when one
+   * exists, so a skipped item can still be NAMED.
+   */
+  selectionEntries() {
+    const raw = this.rawState();
+    return this.selectedIds().map((itemId) => {
+      const state = raw.items?.[itemId] ?? null;
+      const type = state?.type ?? this.#creationState(itemId)?.type;
+      return { itemId, plugin: type ? this.registry.get(type) : null, state };
+    }).filter((e) => e.plugin !== null);
+  }
+
+  /**
+   * Query. Everything the multi-selection Property Panel renders: the shared rows
+   * with each one's mixed/agreed state, the reported conflicts, and the items not
+   * on this slide. A pure derivation of `selectionEntries()` — see
+   * core/multiselect.js for the identity relation and the mixed-value semantics.
+   */
+  multiSelectPanel() {
+    return multiSelectPanel(this.selectionEntries());
+  }
+
+  /**
+   * Command. UNIFIES one property across every selected item — the user's
+   * "when I click them, it would have to unify them all to the same value" — as
+   * EXACTLY ONE UNDO UNIT (setPreview stages the whole fan-out, commitPreview
+   * walks it into a single `commit`, the same way applyPreset writes a property
+   * set). Writes ONLY this key, and only on the items that do not already hold the
+   * value (core/multiselect.js `unifyPairs`, the minimal-delta rule).
+   *
+   * NO-OP WHEN THERE IS NOTHING TO WRITE, deliberately: `keyframed` rebuilds the
+   * document, so committing an empty write would push an undo entry for a change
+   * nobody made (the rule the equation field's blur handler already obeys).
+   *
+   * @param {string} key - the property key, possibly dotted ("shadow.dx")
+   * @param {*} value - the value to unify to (a literal, or an `=` equation)
+   * @returns {number} how many items were written (0 = nothing committed)
+   */
+  unifySelection(key, value) {
+    const pairs = unifyPairs(this.selectionEntries(), key, value);
+    if (pairs.length === 0) return 0;
+    this.setPreview(pairs);
+    this.commitPreview();
+    return pairs.length;
+  }
+
   /**
    * Command. Sets the selection to a SET of itemIds (band select / future
    * multi-click). The primary `selection` becomes the first id (drives every
@@ -1075,15 +1135,28 @@ export class PowerRPApp {
     // the toolbar button you just pressed is still pointing at them. Without it the
     // `selection` write in applySnapshot would clear the inner scope (the
     // outer-owns-inner rule) and every point edit would silently deselect.
-    return { doc, selection: this.selection, handleSelection: this.handleSelection, slideIndex: this.slideIndex, viewport: this.lastViewport };
+    //
+    // selectionSet rides along for that argument applied one scope UP, which was
+    // simply missed when the set was added: `selection` alone is the PRIMARY, so a
+    // snapshot without the set restored a 3-item selection as a 1-item one. Undoing
+    // a joint edit therefore left the Property Panel showing a SINGLE item, and the
+    // next gesture silently wrote to that one item instead of the set the user could
+    // still see outlined on the canvas. The manifest already required this ("undo
+    // restores UI state (selection/slide/view)") — the multi-selection Inspector is
+    // just the first feature whose behaviour depended on it.
+    return { doc, selection: this.selection, selectionSet: this.selectionSet, handleSelection: this.handleSelection, slideIndex: this.slideIndex, viewport: this.lastViewport };
   }
 
   applySnapshot(snap) {
     this.doc = snap.doc;
     this.selection = snap.selection;
-    // AFTER `selection`, never before: that setter clears the handle selection.
-    // Snapshots taken before this field existed carry none — [] is then correct,
-    // which is also what the setter just wrote, so there is nothing to special-case.
+    // AFTER `selection`, never before: that setter clears BOTH the multi-selection
+    // set and the handle selection. Written as the FIELD (not through selectMany,
+    // which would additionally clear the handle scope and re-run the group filter on
+    // a document that has just changed underneath it). Snapshots taken before either
+    // field existed carry none — [] is then correct, and is also what the setter
+    // just wrote, so there is nothing to special-case.
+    this.selectionSet = snap.selectionSet ?? [];
     this.handleSelection = snap.handleSelection ?? [];
     this.slideIndex = Math.min(snap.slideIndex, snap.doc.slides.length - 1);
     if (snap.viewport) this.canvasActions?.setViewport(snap.viewport);

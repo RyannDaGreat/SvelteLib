@@ -54,6 +54,7 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
+  import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
   import { commandUnavailableReason } from "../core/commands.js";
   import { isHexColor } from "../core/interpolators.js";
   import { getPath } from "../core/deltas.js";
@@ -116,9 +117,55 @@
   // Creation slide of the picked item (first slide keying its type).
   let creationIndex = $derived(pickedItemId == null ? null
     : keyframeIndices(app.doc, ["items", pickedItemId, "type"])[0] ?? null);
-  // Number of selected items — >1 shows the minimal multi-select placeholder
-  // (the full intersection Property Panel is a SEPARATE milestone; manifest).
+  // Number of selected items — >1 renders the INTERSECTION panel below.
   let selCount = $derived(app.selectedIds().length);
+
+  // ── MULTI-SELECTION: the intersection panel (core/multiselect.js) ───────────
+  // All the reasoning — the row-identity relation, mixed-value semantics, which
+  // items participate, what a joint write touches — lives in core. This file is
+  // the thin renderer the manifest asks for: it reads ONE derived object and
+  // renders the SAME propRow snippet single selections use.
+  let multiPanel = $derived(selCount > 1 ? app.multiSelectPanel() : null);
+  // key → {row, mixed, value, seed, problem}, so grouping can stay row-shaped
+  // (groupRows is reused verbatim) while each row still finds its own set state.
+  let multiByKey = $derived(new Map((multiPanel?.rows ?? []).map((r) => [r.row.key, r])));
+  let multiCategories = $derived(multiPanel ? groupRows(multiPanel.rows.map((r) => r.row)) : []);
+
+  /** Query. Every selected item's state path for one row key — the fan-out write
+   * targets a Tier-1 field receives as `paths` (the primary FIRST, so the field's
+   * singular `path` and this list agree about who is being read). */
+  function multiPaths(key) {
+    return (multiPanel?.itemIds ?? []).map((id) => ["items", id, ...key.split(".")]);
+  }
+
+  /**
+   * Command. UNIFIES a mixed row to the primary's value — the user's "when I
+   * click them, it would have to unify them all to the same value". ONE undo unit
+   * for the whole set (app.unifySelection). After it lands the row is no longer
+   * mixed, so the ordinary field takes over and the next gesture edits all N
+   * together, which is the "make a bunch of things fade in at the same time" flow.
+   */
+  function unifyRow(entry) {
+    app.unifySelection(entry.row.key, entry.seed);
+  }
+
+  /**
+   * Pure function. A value as short human text for the unify affordance's
+   * tooltip, so "set them all to …" NAMES the value instead of being a mystery
+   * click. Reuses the equation badge's elision budget, and shows a structural
+   * value (a gradient paint, a rich-text run set) as its type rather than as a
+   * wall of JSON.
+   *
+   * @example multiValueLabel(0.5) // "0.5"
+   * @example multiValueLabel("=cam.opacity") // "=cam.opacity"
+   * @example multiValueLabel(true) // "true"
+   * @example multiValueLabel({type: "linear"}) // "its current value"
+   */
+  function multiValueLabel(value) {
+    if (value === null || typeof value === "object") return "its current value";
+    const text = String(value);
+    return text.length > EQ_BADGE_CHARS ? `${text.slice(0, EQ_BADGE_CHARS)}…` : text;
+  }
 
   // NOT-YET-CREATED display state: the item's FULL folded property set as of its
   // ORIGINAL creation slide (manifest Round 12B — grayed rows show the item
@@ -332,6 +379,28 @@
     app.commitPreview();
   }
 
+  /** Command. Live preview of a JOINT edit — the multi-selection twin of
+   * previewField, for the kinds that commit through the row's generic seam
+   * (select / asset / text). The document is untouched until commit. */
+  function previewMulti(key, kind, raw) {
+    const value = coerce(kind, raw);
+    if (kind === "number" && Number.isNaN(value)) return;
+    app.setPreview(fanOutPairs(multiPaths(key), value));
+  }
+
+  /** Command. Commits a JOINT edit as ONE undo unit for the whole set
+   * (app.unifySelection — which also skips the items already holding the value,
+   * and commits nothing at all when none needs writing). */
+  function commitMulti(key, kind, raw) {
+    const value = coerce(kind, raw);
+    if (kind === "number" && Number.isNaN(value)) {
+      app.cancelPreview();
+      return;
+    }
+    app.cancelPreview(); // drop the live preview; the commit re-stages from the document
+    app.unifySelection(key, value);
+  }
+
   function fieldKeydown(e) {
     if (e.key === "Escape") {
       app.cancelPreview();
@@ -406,6 +475,12 @@
   let eqOwnerId = $state(null);
   let eqFocusKey = $state(null);
   let eqPath = $state(null);
+  // THE WRITE TARGETS for the Tier-0 `=` field. `eqPath` above is the PRIMARY
+  // path and stays the READ target (the error map, the evaluated badge); this is
+  // every selected item's path for the same row, so a multi-selection keeps the
+  // universal `=` affordance instead of losing it — Tier 0 says every property is
+  // "="-bindable with no exceptions, and a set is not an exception.
+  let eqPaths = $state([]);
   let eqDraft = $state("");
   let eqInvalid = $state(false);
   let eqInputEl = $state(null);
@@ -588,11 +663,12 @@
   /** Command. Enters equation mode on a row that holds a LITERAL: seeds the
    * draft with an equation evaluating to the current value and opens the input
    * (nothing is written until commit). */
-  function beginEquation(row, path) {
+  function beginEquation(row, paths) {
     eqOpenKey = row.key;
     eqOwnerId = pickedItemId;
     eqFocusKey = row.key;
-    eqPath = path;
+    eqPath = paths[0];
+    eqPaths = paths;
     eqDraft = equationSeed(getPath(app.state(), path));
     eqInvalid = false;
     eqSuggestOpen = false;
@@ -604,8 +680,11 @@
    * by construction — core validates an equation's result against the slot kind
    * and falls back to the plugin default on a mismatch — so this never writes a
    * coerced string where a color/boolean belongs. */
-  function dropEquation(path) {
-    app.setPreview([[path, getPath(app.state(), path)]]);
+  function dropEquation(paths) {
+    // The literal comes from the PRIMARY's evaluated value and is written to all
+    // of them, which is the same UNIFY semantics leaving equation mode has to
+    // have: one row, one value.
+    app.setPreview(fanOutPairs(paths, getPath(app.state(), paths[0])));
     app.commitPreview();
     eqOpenKey = null;
     eqOwnerId = null;
@@ -620,13 +699,14 @@
    * math needs. The overlay is found relative to the input because BOTH are
    * rendered per row: one shared bind:this would point at whichever row mounted
    * last, not the one being edited. */
-  function onEqFocus(e, row, path, stored) {
+  function onEqFocus(e, row, paths, stored) {
     eqOwnerId = pickedItemId;
     eqInputEl = e.target;
     eqHighlightEl = e.target.parentElement.querySelector(".eq-highlight");
     if (eqFocusKey !== row.key && eqOpenKey !== row.key) eqDraft = equationDisplay(stored, app.rawState());
     eqFocusKey = row.key;
-    eqPath = path;
+    eqPath = paths[0];
+    eqPaths = paths;
   }
 
   /** Command. Live-previews the draft (the viewport re-renders mid-typing, the
@@ -637,7 +717,7 @@
     eqHighlighted = 0;
     syncEqScroll();
     try {
-      app.setPreview([[eqPath, equationStored(eqDraft, app.rawState())]]);
+      app.setPreview(fanOutPairs(eqPaths, equationStored(eqDraft, app.rawState())));
       eqInvalid = false;
     } catch {
       // Invalid draft: the invalid affordance IS the report — a specific message
@@ -657,7 +737,7 @@
     eqDraft = text;
     eqSuggestOpen = false;
     try {
-      app.setPreview([[eqPath, equationStored(eqDraft, app.rawState())]]);
+      app.setPreview(fanOutPairs(eqPaths, equationStored(eqDraft, app.rawState())));
       eqInvalid = false;
     } catch {
       app.cancelPreview();
@@ -699,7 +779,7 @@
       cancelEquation();
       return;
     }
-    app.setPreview([[eqPath, stored]]);
+    app.setPreview(fanOutPairs(eqPaths, stored));
     app.commitPreview();
     eqOpenKey = null;
     eqOwnerId = null;
@@ -837,7 +917,7 @@
      to it would COMMIT A TRANSITION TYPE ON HOVER. So the two created-item call
      sites opt in by name and the transition/not-yet-created ones simply do not.
      null (the default) = no hover preview, exactly as before. -->
-{#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit, itemId = null, pathState = null, hoverPreview = null })}
+{#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit, itemId = null, pathState = null, hoverPreview = null, multi = null })}
   <!-- ITEM MODE (keyframes && !disabled): equation-aware NumericField + keyframe
        diamonds, writing item property keyframes. Otherwise PLAIN MODE: a not-yet-
        created item's grayed display (disabled) or a transition's config rows
@@ -857,7 +937,21 @@
        still receives a plain number; `null` = unbounded. Static numbers pass
        through unchanged. Extend to `min` the same way if a widget ever needs it. -->
   {@const resolvedMax = typeof row.max === "function" ? row.max(state) : (row.max ?? null)}
-  {@const ctx = { itemMode, disabled, onpreview, oncommit, itemId, resolvedMax, hoverPreview }}
+  <!-- MULTI-SELECTION (core/multiselect.js). `multi` is this row's set state —
+       {row, mixed, value, seed, problem} — and `writePaths` is every selected
+       item's path for it. THE FIELDS ARE NOT FORKED: each Tier-1 field takes the
+       same singular `path` it always did (the PRIMARY, which an unmixed row means
+       every item agrees with) plus `paths` for the WRITE. Reusing the itemMode
+       branch is deliberate: this pipeline has already shipped a bug where a
+       declared row aspect was silently ignored because a SIBLING branch never
+       threaded it, and a third "multi" branch would reproduce that for every
+       aspect at once. -->
+  <!-- `multi` is the CONTEXT flag (one options object serves a whole category);
+       this row's own set state is looked up by key, so there is no per-row options
+       object to build and nothing to keep in step. -->
+  {@const multiRow = multi ? multiByKey.get(row.key) : null}
+  {@const writePaths = multi ? multiPaths(row.key) : null}
+  {@const ctx = { itemMode, disabled, onpreview, oncommit, itemId, resolvedMax, hoverPreview, writePaths }}
   <!-- TIER 0 (manifest field-resolution rule): does this row get the universal
        `=` fallback, is it showing it, and what does it actually STORE (the raw
        value — the specialized editors receive the EVALUATED one, where an
@@ -865,7 +959,7 @@
   {@const eqCapable = equationCapable(row, itemMode)}
   {@const eqStored = eqCapable ? rowStored(row) : null}
   {@const eqActive = eqCapable && equationActive(row, eqStored)}
-  {@const eqRowPath = eqCapable ? ["items", pickedItemId, ...row.key.split(".")] : null}
+  {@const eqRowPaths = eqCapable ? (multi ? multiPaths(row.key) : [["items", pickedItemId, ...row.key.split(".")]]) : null}
   <!-- A LIST row (core/lists.js) keeps the label + keyframe line in the shared
        grid but gives the LIST ITSELF the panel's full width on a second line: one
        element row carries an index, a visibility eye, several field controls, the
@@ -935,11 +1029,32 @@
          A row with no equation fallback (number/angle/paint, which own theirs;
          transition + grayed rows, which are not equation slots) renders the
          specialized editor alone, exactly as before. -->
-    {#if eqCapable}
+    {#if multiRow?.problem}
+      <!-- SHARED BUT NOT JOINTLY EDITABLE. Listed, inert, and EXPLAINING ITSELF
+           (the "a disabled control explains itself" rule, and the standing
+           Inspector rule that a row which cannot be edited in this context is
+           still rendered grayed rather than omitted — omitting it would misreport
+           what the items have in common). -->
+      <Tooltip text={multiRow.problem}>
+        <span class="mixed-blocked">{MIXED_MARK}</span>
+      </Tooltip>
+    {:else if multiRow?.mixed}
+      <!-- MIXED. The user's spec: "a dot dot dot in the parts that are different.
+           And then when I click them, it would have to unify them all to the same
+           value." The mark sits IN the value cell — the field's own footprint —
+           rather than as an extra button beside it, because a per-field mode
+           BUTTON was built once and vetoed. One click unifies (ONE undo unit) and
+           the real field takes over, already editing all N together. -->
+      <Tooltip text={`${multiPanel.itemIds.length} selected items differ here — click to set them all to ${multiValueLabel(multiRow.seed)}`}>
+        <button class="mixed-unify" aria-label={`${row.label}: differs across the selection — unify to ${multiValueLabel(multiRow.seed)}`} onclick={() => unifyRow(multiRow)}>
+          {MIXED_MARK}
+        </button>
+      </Tooltip>
+    {:else if eqCapable}
       <div class="numfield">
-        {@render eqToggle(row, eqRowPath, eqActive)}
+        {@render eqToggle(row, eqRowPaths, eqActive)}
         {#if eqActive}
-          {@render equationEntry(row, eqRowPath, eqStored)}
+          {@render equationEntry(row, eqRowPaths, eqStored)}
         {:else}
           {@render valueControl(row, state, ctx)}
         {/if}
@@ -956,7 +1071,7 @@
          aligned. -->
     {#if keyframes && !disabled && !isAction}
       <span class="kf-controls">
-        <KeyframeControls {app} path={["items", itemId, ...row.key.split(".")]} />
+        <KeyframeControls {app} path={["items", itemId, ...row.key.split(".")]} paths={writePaths} />
       </span>
     {:else}
       <span class="kf-controls" aria-hidden="true"></span>
@@ -978,6 +1093,9 @@
   {@const itemId = ctx.itemId}
   {@const resolvedMax = ctx.resolvedMax}
   {@const hoverPreview = ctx.hoverPreview}
+  <!-- null for a single selection, so every field below receives `paths={null}`
+       and behaves byte-identically to before. -->
+  {@const writePaths = ctx.writePaths}
   <!-- Branch on the CANONICAL kind (rowKind), never row.kind: a row still
        carrying a retired spelling must reach the same control as the current
        one, or the two spellings render as two different things — which is
@@ -1041,6 +1159,7 @@
       <NumericField
         {app}
         path={["items", pickedItemId, ...row.key.split(".")]}
+        paths={writePaths}
         label={row.label}
         min={row.min ?? null}
         max={resolvedMax}
@@ -1157,6 +1276,7 @@
     <AngleField
       {app}
       path={["items", pickedItemId, ...row.key.split(".")]}
+      paths={writePaths}
       label={row.label}
       value={valueAt(state, row.key)}
       display={row.display ?? null}
@@ -1189,6 +1309,7 @@
     <ColorField
       {app}
       path={["items", pickedItemId, ...row.key.split(".")]}
+      paths={writePaths}
       label={row.label}
       value={valueAt(state, row.key)}
       disabled={disabled}
@@ -1226,6 +1347,7 @@
       <BooleanField
         {app}
         path={["items", pickedItemId, ...row.key.split(".")]}
+        paths={writePaths}
         label={row.label}
         value={row.key === "active" ? state.active !== false : Boolean(valueAt(state, row.key))}
         onIcon={row.onIcon}
@@ -1270,13 +1392,13 @@
      and clicking it drops back to the evaluated value as a plain literal. That
      is PaintField's Solid↔"= Eq" mode switch, expressed with NumericField's
      button so there is ONE recognizable way in and out of equation mode. -->
-{#snippet eqToggle(row, path, active)}
+{#snippet eqToggle(row, paths, active)}
   <Tooltip text={active ? "Drop the equation, keeping its current value" : "Enter an equation"}>
     <button
       class="eq-open"
       aria-label={active ? `${row.label}: drop the equation` : `${row.label}: enter an equation`}
       aria-pressed={active}
-      onclick={() => (active ? dropEquation(path) : beginEquation(row, path))}
+      onclick={() => (active ? dropEquation(paths) : beginEquation(row, paths))}
     >
       <iconify-icon icon="mdi:function-variant" width="14" height="14"></iconify-icon>
     </button>
@@ -1294,10 +1416,13 @@
      KNOWN BOUND: the autocomplete's candidate set is core's (numeric leaves,
      variables, functions) — a color/boolean row is offered the same names a
      numeric row is, since core has no per-kind candidate filter yet. -->
-{#snippet equationEntry(row, path, stored)}
+{#snippet equationEntry(row, paths, stored)}
   {@const editing = eqFocusKey === row.key || eqOpenKey === row.key}
   {@const text = editing ? eqDraft : equationDisplay(stored, app.rawState())}
-  {@const error = app.exprErrorAt(path)}
+  <!-- READS take the PRIMARY path: an error message and an evaluated badge are
+       ONE value each, and every item in the set is being given the same
+       expression, so the primary's derivation IS the row's derivation. -->
+  {@const error = app.exprErrorAt(paths[0])}
   {@const invalid = editing && eqInvalid}
   <span class="eq-wrap">
     <div class="eq-highlight" aria-hidden="true">
@@ -1314,7 +1439,7 @@
       use:eqAutofocus={row.key}
       oninput={onEqInput}
       onscroll={syncEqScroll}
-      onfocus={(e) => onEqFocus(e, row, path, stored)}
+      onfocus={(e) => onEqFocus(e, row, paths, stored)}
       onblur={() => onEqBlur(row, stored)}
       onkeydown={onEqKeydown}
     />
@@ -1328,7 +1453,7 @@
       <!-- Live evaluation of the equation — the kind's OWN value (a hex color, a
            boolean, an enum name), so the row still shows what it resolves to
            while the specialized editor is standing down. -->
-      <span class="eq-badge">= {invalid ? "?" : equationBadge(getPath(app.state(), path))}</span>
+      <span class="eq-badge">= {invalid ? "?" : equationBadge(getPath(app.state(), paths[0]))}</span>
     {/if}
     {#if editing}
       <EquationSuggest
@@ -1377,18 +1502,14 @@
   </div>
 
   {#if selCount > 1}
-    <!-- Minimal multi-select placeholder (manifest: the full intersection
-         Property Panel is a SEPARATE milestone — do NOT build it here). Round
-         12B unification: singles now surface VISIBILITY as a property row (the
-         old "Delete here" ACTION is gone). For a SET, a single visibility toggle
-         is the half-filled-diamond problem (mixed visible/hidden state has no
-         one correct icon), and "show all" would need per-item creation-state
-         activation — both belong to the intersection milestone. So the
-         placeholder keeps only the two UNAMBIGUOUS set actions and drops the
-         confusing "Delete here" label: HIDE ALL (deactivate every selected item
-         on this slide — the existing delete-item command) and PURGE (trash
-         icon). This is the chosen mixed-state answer: an explicit set ACTION,
-         not a tri-state toggle, until the intersection panel lands. -->
+    <!-- THE INTERSECTION PANEL (manifest "Inspector shows the SET INTERSECTION of
+         the selected items' attributes"; core/multiselect.js owns every rule).
+         The two set ACTIONS below are unchanged and stay: the standing ruling is
+         that a SET's visibility is HIDE ALL / SHOW ALL, always both, because "no
+         toggle that has to guess the set's state". That ruling is about an ACTION
+         control; the property rows underneath REPORT a mixed value and then unify,
+         which is the reporting case (the rich-text toolbar already ships a
+         set/unset/indeterminate boolean on the same footing). -->
     <div class="multi-select">
       <div class="multi-count">{selCount} items selected</div>
       <div class="item-actions">
@@ -1417,7 +1538,53 @@
           </button>
         </Tooltip>
       </div>
+      <!-- WHAT IS NOT BEING EDITED, said out loud. An item that does not exist on
+           this slide has no value to compare and must not be keyframed (that would
+           manufacture a typeless item), so core drops it — and the panel reports
+           it rather than editing fewer items than the user selected. -->
+      {#if multiPanel.skipped.length > 0}
+        <div class="multi-note">
+          Not on this slide, so not being edited: {multiPanel.skipped.map((id) => app.displayName(id)).join(", ")}
+        </div>
+      {/if}
+      <!-- SHARED-LOOKING BUT NOT SHARED. A key both items declare with a
+           DIFFERENT contract (a rect's corner radius is a length, a star's is a
+           0..0.5 fraction; a magnifier's `shape` offers circle/box where the shape
+           widget offers twenty silhouettes) is excluded, and saying which aspect
+           excluded it is the difference between an honest panel and one that looks
+           like these items have less in common than they do. -->
+      {#if multiPanel.conflicts.length > 0}
+        <div class="multi-note">
+          Not editable together (the same name means different things here):
+          {#each multiPanel.conflicts as c (c.key)}
+            <Tooltip text={`These items disagree about this property's ${c.aspects.join(", ")} — so one value cannot mean the same thing to all of them.`}
+              ><span class="multi-conflict">{c.key}</span></Tooltip>
+          {/each}
+        </div>
+      {/if}
+      {#if multiPanel.rows.length === 0}
+        <div class="empty">No properties in common</div>
+      {/if}
     </div>
+    {#if multiPanel.rows.length > 0}
+      <div class="rows">
+        {#each multiCategories as cat (cat.id)}
+          {@render category(cat, sel?.state ?? {}, {
+            keyframes: true,
+            disabled: false,
+            // select / asset / text rows commit through this generic seam, so the
+            // fan-out versions are all they need. number / angle / colour /
+            // boolean rows drive their own Tier-1 field with `paths` instead.
+            onpreview: previewMulti,
+            oncommit: commitMulti,
+            itemId: sel?.itemId ?? null,
+            pathState: app.rawState(),
+            hoverPreview: previewMulti,
+            multi: true,
+          })}
+        {/each}
+      </div>
+    {/if}
   {:else if target?.kind === "transition"}
     <!-- TRANSITION target: type dropdown + the type's rows through the SAME
          generic machinery, WITHOUT keyframe diamonds (transitions are

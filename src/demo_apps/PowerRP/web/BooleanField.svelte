@@ -50,10 +50,12 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import { fanOutPairs } from "../core/multiselect.js";
 
   let {
     app,
     path,
+    paths = null,
     label,
     value,
     onIcon = "mdi:check",
@@ -63,6 +65,14 @@
     disabled = false,
     oncommit = null,
   } = $props();
+
+  /**
+   * THE WRITE TARGETS. Reads stay on the singular `path` (the PRIMARY item — in a
+   * multi-selection every selected item agrees on this value, or the row would be
+   * showing the MIXED mark instead of this field), while WRITES fan out to all of
+   * them. `paths` absent = the single-selection case, byte-identically as before.
+   */
+  let writePaths = $derived(paths ?? [path]);
 
   // Tooltip describes the ACTION a click performs (flip), falling back to a
   // plain state description when the caller gives no explicit action text.
@@ -83,7 +93,7 @@
       oncommit(!value);
       return;
     }
-    app.setPreview([[path, !value]]);
+    app.setPreview(fanOutPairs(writePaths, !value));
     app.commitPreview();
   }
 </script>
