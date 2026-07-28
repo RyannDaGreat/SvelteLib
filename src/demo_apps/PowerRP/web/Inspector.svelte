@@ -1294,6 +1294,7 @@
       label={row.label}
       value={valueAt(state, row.key)}
       disabled={disabled}
+      strokeMaterials={row.key === "stroke"}
     />
   {:else if kind === "color"}
     <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped

@@ -46,6 +46,7 @@ import { SKY_SUN_MATERIAL } from "./sky_sun_shader.js";
 import { SKY_MOON_MATERIAL } from "./sky_moon_shader.js";
 import { SKY_CLOUDS_MATERIAL } from "./sky_clouds_shader.js";
 import { LENS_FLARE_MATERIAL } from "./lens_flare_shader.js";
+import { getStrokeMaterial, hasStrokeMaterial, strokeMaterialIds } from "./stroke_materials.js"; // the STROKE-material framework's registry (arc-length gradients, width profiles, dashes, wavy)
 import { COMIC_MATERIAL } from "./comic_shader.js"; // comic-book Ben-Day halftone (CMYK/RGB/duotone/mono dots)
 import { GLITCH_MATERIAL } from "./glitch_shader.js"; // animated sci-fi datamosh / broken-signal glitch
 import { MANDELBROT_MATERIAL } from "./mandelbrot_shader.js"; // deep-zoom Mandelbrot (perturbation + rebasing, orbit-average colouring)
@@ -157,6 +158,46 @@ export function materialFillParamDefaults(material) {
 }
 
 /**
+ * Query. The registry entry a material PAINT names, from EITHER registry — a fill
+ * material (this file's MATERIALS) OR a stroke material (stroke_materials.js). The
+ * ONE seam that lets resolveMaterialPaint resolve a stroke slot's material the same
+ * way it resolves a fill slot's, without ports having to know which it is. The two
+ * registries share no ids, so the lookup is unambiguous; an id in neither throws
+ * LOUDLY (never a silent gray outline).
+ *
+ * @param {string} id
+ * @returns {object} a fill descriptor or a stroke entry
+ *
+ * @example materialEntryForPaint("comic").id // "comic"
+ * @example materialEntryForPaint("wavy").id // "wavy"
+ */
+function materialEntryForPaint(id) {
+  if (Object.prototype.hasOwnProperty.call(MATERIALS, id)) return MATERIALS[id];
+  if (hasStrokeMaterial(id)) return getStrokeMaterial(id);
+  throw new Error(`materials.resolveMaterialPaint: unknown material "${id}" (fill: ${Object.keys(MATERIALS).join(", ")}; stroke: ${strokeMaterialIds().join(", ")})`);
+}
+
+/**
+ * Pure function. A paint material entry's COMPLETE default knob map. Generalizes
+ * materialFillParamDefaults to BOTH slots: it reads `strokeParams ?? fillParams`,
+ * so a stroke entry resolves against its own schema while a fill entry stays
+ * byte-identical (it has no strokeParams). The one place the two frameworks share
+ * a resolution path.
+ *
+ * @param {{id:string, strokeParams?:Array, fillParams?:Array}} entry
+ * @returns {object} {name: default}
+ *
+ * @example materialParamDefaults({id: "x", strokeParams: [{name: "gap", kind: "number", default: 10}]}) // {gap: 10}
+ * @example materialParamDefaults({id: "y", fillParams: [{name: "gain", kind: "number", default: 2}]}) // {gain: 2}
+ */
+function materialParamDefaults(entry) {
+  const schema = entry.strokeParams ?? entry.fillParams;
+  if (!Array.isArray(schema))
+    throw new Error(`materials.materialParamDefaults: "${entry.id}" declares neither strokeParams nor fillParams — it cannot be a paint.`);
+  return Object.fromEntries(schema.map((row) => [row.name, row.default]));
+}
+
+/**
  * Near-pure function (reports unknown stored knobs once). A material paint with
  * its COMPLETE `resolvedParams`: schema defaults ⊕ the paint's sparse stored
  * params ⊕ the material's optional scene hook. Unknown stored keys (a renamed
@@ -173,8 +214,8 @@ export function materialFillParamDefaults(material) {
  * @example resolveMaterialPaint({type: "material", material: {id: "comic", params: {}}}, null, null, () => {}).resolvedParams.mode // "cmyk"
  */
 export function resolveMaterialPaint(paint, node, nodesById, report) {
-  const m = getMaterial(paint.material?.id);
-  const defaults = materialFillParamDefaults(m);
+  const m = materialEntryForPaint(paint.material?.id);
+  const defaults = materialParamDefaults(m);
   const stored = paint.material.params ?? {};
   const known = {};
   for (const [k, v] of Object.entries(stored)) {

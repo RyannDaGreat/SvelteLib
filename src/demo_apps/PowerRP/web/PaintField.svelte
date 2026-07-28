@@ -76,10 +76,14 @@
 -->
 <script module>
   import { fillCapableMaterialIds } from "../render_gpu/skia/materials.js";
+  import { strokeMaterialIds } from "../render_gpu/skia/stroke_materials.js";
   /** The material a fresh "Mat" paint starts on — the first fill-capable entry
-   * (the registry grows as materials opt in; comic is the exemplar). */
+   * (the registry grows as materials opt in; comic is the exemplar). A STROKE
+   * slot uses the first stroke-capable entry instead (see the `strokeMaterials`
+   * prop below). */
   const DEFAULT_FILL_MATERIAL = fillCapableMaterialIds()[0] ?? "comic";
-  import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
+  const DEFAULT_STROKE_MATERIAL = strokeMaterialIds()[0] ?? "alongGradient";
+  import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_WAVELENGTH } from "../core/properties.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
 
@@ -138,12 +142,20 @@
    * derives the from/to endpoints from it (render_gpu/ir.js linearAxis), so no
    * from/to is stored here.
    *
+   * `wavelength` (GRADIENT_DEFAULT_WAVELENGTH = 1: one ramp spans the whole axis)
+   * is stored explicitly, like `angle`, so the Inspector's Wavelength scrubber
+   * shows it; w=1 renders byte-identically to a gradient that omits it (render_gpu
+   * /ir.js linearGradientRender returns the untouched axis at w=1). `center` is
+   * NOT seeded — its absence is the box-center default, surfaced by the on-canvas
+   * center bead once dragged.
+   *
    * @example freshLinear("#f00").stops.length // 2
    * @example freshLinear("#f00").angle // 0
+   * @example freshLinear("#f00").wavelength // 1
    * @example freshLinear("#f00").from // undefined (endpoints derived from angle at render time)
    */
   export function freshLinear(seed) {
-    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], angle: GRADIENT_DEFAULT_ANGLE };
+    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], angle: GRADIENT_DEFAULT_ANGLE, wavelength: GRADIENT_DEFAULT_WAVELENGTH };
   }
 
   /**
@@ -211,11 +223,16 @@
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
   import ListField from "./ListField.svelte";
-  import { GRADIENT_STOPS_LIST } from "../core/properties.js";
+  import { GRADIENT_STOPS_LIST, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
   import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults } from "../render_gpu/skia/materials.js";
+  import { getStrokeMaterial, strokeMaterialIds as strokeIds } from "../render_gpu/skia/stroke_materials.js";
 
-  let { app, path, paths = null, label, value, disabled = false } = $props();
+  // `strokeMaterials` (Inspector passes true for the `stroke` row): the "Mat" mode
+  // then offers the STROKE-material registry (arc-length gradients, width profiles,
+  // dashes, wavy) and renders each entry's strokeParams, instead of the fill
+  // registry. Default false keeps every fill/background PaintField byte-identical.
+  let { app, path, paths = null, label, value, disabled = false, strokeMaterials = false } = $props();
 
   // Fan-out (the NumericField convention): `paths` present = a multi-selection
   // writes every selected item's paint; absent = the single path, byte-identical.
@@ -274,6 +291,16 @@
   function setMode(next) {
     if (disabled || next === mode) return;
     if (next === "equation") commitWhole(`=${seedSolid(raw)}`); // seed: a color-literal equation
+    else if (next === "material") {
+      // Materialize the whole paint AND force a material id valid for THIS slot: a
+      // stroke slot must never store a fill-material id (the painter would call
+      // getStrokeMaterial on it and throw). An existing valid id + its params are
+      // kept; a foreign/absent one falls back to the slot default.
+      const base = paintSubstates(raw);
+      const stored = base.material ?? {};
+      const id = matRegistryIds.includes(stored.id) ? stored.id : matDefaultId;
+      commitWhole({ ...base, type: "material", material: { id, params: stored.params ?? {} } });
+    }
     else if (isCompletePaint(raw)) commitAt(["type"], next);
     else commitWhole({ ...paintSubstates(raw), type: next });
   }
@@ -313,16 +340,28 @@
   const previewDirection = (heading) => writeDirection(heading, false);
   const commitDirection = (heading) => writeDirection(heading, true);
 
-  // ── the MATERIAL mode's derived pieces (fill-material framework) ─────────
-  /** The stored material sub-state ({id, params} — params sparse). */
-  let matSub = $derived((raw && typeof raw === "object" && raw.material) ? raw.material : { id: DEFAULT_FILL_MATERIAL, params: {} });
-  let matEntry = $derived(getMaterial(matSub.id));
-  let matRows = $derived(matEntry.fillParams ?? []);
+  // ── the MATERIAL mode's derived pieces (fill- AND stroke-material frameworks) ──
+  // The slot decides the registry: a STROKE paint offers stroke materials + their
+  // strokeParams; a fill/background paint offers fill materials + fillParams.
+  let matRegistryIds = $derived(strokeMaterials ? strokeIds() : fillIds());
+  let matDefaultId = $derived(strokeMaterials ? DEFAULT_STROKE_MATERIAL : DEFAULT_FILL_MATERIAL);
+  const matGet = (id) => (strokeMaterials ? getStrokeMaterial(id) : getMaterial(id));
+  /** The stored material sub-state ({id, params} — params sparse), but ONLY when its
+   *  id belongs to THIS slot's registry; a stale/foreign id falls back to the slot
+   *  default for DISPLAY (a stroke slot never asks getStrokeMaterial for a fill id).
+   *  setMode() rewrites a foreign stored id on the next mode entry. */
+  let matSub = $derived.by(() => {
+    const stored = (raw && typeof raw === "object" && raw.material) ? raw.material : null;
+    if (stored && matRegistryIds.includes(stored.id)) return stored;
+    return { id: matDefaultId, params: stored?.params ?? {} };
+  });
+  let matEntry = $derived(matGet(matSub.id));
+  let matRows = $derived((strokeMaterials ? matEntry.strokeParams : matEntry.fillParams) ?? []);
   /** Query. A knob's DISPLAY value: stored when written, else its schema default. */
   function matValue(row) {
     return matSub.params?.[row.name] ?? row.default;
   }
-  const MATERIAL_OPTIONS = fillIds().map((id) => ({ value: id, label: getMaterial(id).title ?? id }));
+  let MATERIAL_OPTIONS = $derived(matRegistryIds.map((id) => ({ value: id, label: matGet(id).title ?? id })));
 
   const TYPES = [
     { id: "solid", label: "Solid" },
@@ -450,6 +489,17 @@
           onpreview={previewDirection}
           oncommit={commitDirection}
         />
+      </div>
+      <!-- WAVELENGTH — the fraction of the box one full colour ramp spans (the
+           on-canvas direction bead sets it too). 1 = the whole-box axis (today);
+           below 1 the ramp mirror-tiles (render_gpu/ir.js linearGradientRender).
+           A keyframable NumericField like the radial Radius, floored at
+           GRADIENT_MIN_WAVELENGTH so the axis can't collapse. -->
+      <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
+        <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Wavelength</span>
+        <div style="width:var(--a-input-w);">
+          <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={GRADIENT_MIN_WAVELENGTH} />
+        </div>
       </div>
     {:else}
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">

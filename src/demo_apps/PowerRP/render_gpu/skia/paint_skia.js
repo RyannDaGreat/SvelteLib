@@ -40,11 +40,12 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, opHasMaterialFill, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
 import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
+import { getStrokeMaterial } from "./stroke_materials.js";
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
@@ -414,6 +415,16 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
     // the SAME cheap stand-ins widget materials use, clipped to the shape.
     if (opHasMaterialFill(cmd)) {
       handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowOf(i), ctx, depth, proxy);
+      continue;
+    }
+    // A SHAPE op whose STROKE is a MATERIAL paint (the stroke-material framework:
+    // arc-length gradients, width profiles, dashes, wavy), but whose fill is NOT a
+    // material (that case is handled above, where handleMaterialPaintShape draws
+    // the material fill and then routes the material stroke through the same
+    // drawOpStroke seam). The op's ordinary fill draws first, then the stroke
+    // material paints the outline in LOCAL space (strokes ride the CTM).
+    if (opHasMaterialStroke(cmd)) {
+      handleMaterialStrokeShape(CanvasKit, target, cmd, world, view, ctx, proxy);
       continue;
     }
     switch (cmd.op) {
@@ -1128,11 +1139,13 @@ function shapeOpLocalBBox(CanvasKit, cmd) {
 }
 
 /**
- * Command (allocates; caller deletes). A shape op's geometry as a DEVICE-space
- * Skia path — the material fill's clip (the lensClipPath pattern).
+ * Command (mutates `b`). Appends a shape op's geometry (rect/ellipse/polygon/path)
+ * to a PathBuilder — the SHARED body of shapeOpLocalPath (stroke materials, local
+ * space) and shapeOpDevicePath (material-fill clip, device space). A polygon closes
+ * its contour; a `path` op keeps whatever open/closed contours its `d` declares (an
+ * open outline strokes as an open path). Throws on a non-shape op.
  */
-function shapeOpDevicePath(CanvasKit, cmd, deviceM) {
-  const b = new CanvasKit.PathBuilder();
+function addOpGeometry(CanvasKit, b, cmd) {
   switch (cmd.op) {
     case "rect":
       b.addRRect(CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius ?? 0, cmd.cornerRadius ?? 0));
@@ -1148,14 +1161,37 @@ function shapeOpDevicePath(CanvasKit, cmd, deviceM) {
     }
     case "path": {
       const p = CanvasKit.Path.MakeFromSVGString(cmd.d);
-      if (!p) throw new Error(`paintIR(skia): material-fill path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
+      if (!p) throw new Error(`paintIR(skia): material-paint path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
       b.addPath(p);
       p.delete();
       break;
     }
     default:
-      throw new Error(`paintIR(skia): op "${cmd.op}" carries a material fill but is not a shape op.`);
+      throw new Error(`paintIR(skia): op "${cmd.op}" carries a material paint but is not a shape op (rect/ellipse/polygon/path).`);
   }
+}
+
+/**
+ * Command (allocates; caller deletes). A shape op's geometry as a LOCAL-space Skia
+ * path — the geometry a MATERIAL STROKE walks by arc length. The stroke rides the
+ * CTM (paint_skia applies the view before the material's render()), so the path
+ * stays in local units, unlike shapeOpDevicePath's clip.
+ */
+function shapeOpLocalPath(CanvasKit, cmd) {
+  const b = new CanvasKit.PathBuilder();
+  addOpGeometry(CanvasKit, b, cmd);
+  const path = b.detach();
+  b.delete();
+  return path;
+}
+
+/**
+ * Command (allocates; caller deletes). A shape op's geometry as a DEVICE-space
+ * Skia path — the material fill's clip (the lensClipPath pattern).
+ */
+function shapeOpDevicePath(CanvasKit, cmd, deviceM) {
+  const b = new CanvasKit.PathBuilder();
+  addOpGeometry(CanvasKit, b, cmd);
   b.transform(deviceM);
   const path = b.detach();
   b.delete();
@@ -1205,12 +1241,85 @@ function handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowFlat
   }
   canvas.restore();
   clip.delete();
-  if (cmd.stroke && (cmd.strokeWidth ?? 0) > 0) {
+  // The stroke draws on top — a plain stroke through the leaf path, OR a MATERIAL
+  // stroke through the stroke-material framework (the both-material case). ONE seam.
+  drawOpStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy);
+}
+
+/**
+ * Command (draws on target). A SHAPE op whose STROKE is a MATERIAL paint but whose
+ * FILL is not one: the ordinary (solid/gradient/none) fill draws first through the
+ * leaf path with the stroke nulled, then the material stroke paints the outline.
+ * The stroke-only twin of handleMaterialPaintShape; both funnel the stroke through
+ * drawOpStroke so a material stroke is drawn identically whether or not the fill
+ * was a material.
+ */
+function handleMaterialStrokeShape(CanvasKit, target, cmd, world, view, ctx, proxy) {
+  const canvas = target.canvas;
+  if (cmd.fill) {
+    canvas.save();
+    applyView(canvas, view, world);
+    drawLeafOp(CanvasKit, canvas, { ...cmd, stroke: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
+    canvas.restore();
+  }
+  drawOpStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy);
+}
+
+/**
+ * Command (draws the op's STROKE on `canvas`, in local space under applyView). The
+ * ONE stroke seam for a material-carrying shape op: a MATERIAL stroke dispatches to
+ * the stroke-material framework (getStrokeMaterial(...).render, drawn on the op's
+ * LOCAL geometry path so it rides the camera CTM); a plain stroke takes the
+ * ordinary leaf path with the fill nulled (byte-identical to before). A zero-width
+ * or absent stroke draws nothing.
+ */
+function drawOpStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy) {
+  if (!cmd.stroke) return;
+  if (isMaterialPaint(cmd.stroke)) {
+    drawMaterialStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy);
+  } else if ((cmd.strokeWidth ?? 0) > 0) {
     canvas.save();
     applyView(canvas, view, world);
     drawLeafOp(CanvasKit, canvas, { ...cmd, fill: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
     canvas.restore();
   }
+}
+
+/** Grey stand-in for a material stroke on the thumbnail / minimap (proxy) surface —
+ * a stroke material is CPU vector drawing, cheap, but a flat outline is cheaper and
+ * plenty at proxy size (the fill-material proxy doctrine, mirrored). */
+const PROXY_STROKE_COLOR = [0.5, 0.5, 0.5, 1];
+
+/**
+ * Command (draws on `canvas`, which already rides the local→device CTM). A MATERIAL
+ * stroke: build the op's LOCAL geometry path (rect/ellipse/polygon/path), then hand
+ * it to the stroke material's render command. Proxy mode substitutes a flat grey
+ * stroke (no arc-length walk). The op's `resolvedParams` MUST be present — an
+ * unresolved paint that skipped render_gpu/ports.js is a hard bug, not a silent
+ * gray outline.
+ */
+function drawMaterialStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy) {
+  const paint = cmd.stroke;
+  const width = cmd.strokeWidth ?? 0;
+  if (!(width > 0)) return;
+  if (!paint.resolvedParams)
+    throw new Error(`paintIR(skia): material stroke "${paint.material?.id}" reached the painter UNRESOLVED — render_gpu/ports.js resolveMaterialFillPaints must run on every pipeline that builds IR.`);
+  const entry = getStrokeMaterial(paint.material.id);
+  const localPath = shapeOpLocalPath(CanvasKit, cmd);
+  const opacity = cmd.opacity ?? 1;
+  canvas.save();
+  applyView(canvas, view, world);
+  if (proxy) {
+    const p = strokePaint(CanvasKit, PROXY_STROKE_COLOR, width, opacity, null, ctx.antialias);
+    p.setStrokeCap(CanvasKit.StrokeCap.Round);
+    p.setStrokeJoin(CanvasKit.StrokeJoin.Round);
+    canvas.drawPath(localPath, p);
+    p.delete();
+  } else {
+    entry.render(CanvasKit, canvas, localPath, paint.resolvedParams, width, opacity, ctx.antialias);
+  }
+  canvas.restore();
+  localPath.delete();
 }
 
 function lensClipPath(CanvasKit, cmd, deviceM) {
