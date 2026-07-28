@@ -35,6 +35,9 @@
 
 // ── The registry ─────────────────────────────────────────────────────────────
 // Keyed by material id → ordered preset list. Ordering is content: read top-down.
+import { getMaterial } from "./materials.js";
+import { getStrokeMaterial, hasStrokeMaterial } from "./stroke_materials.js";
+
 export const MATERIAL_PRESETS = {
   // FILL: sky (night-sky variants — see the file header note on the missing sun).
   sky: [
@@ -201,9 +204,58 @@ export function materialDisplayName(id) {
  * @example presetsForMaterial("brush")[0].params.brush // "inkPen"
  * @example presetsForMaterial("nope") // []
  */
-export function presetsForMaterial(id) {
-  const list = MATERIAL_PRESETS[id];
-  if (!list) return [];
+// ── THE WIDGET IS THE AUTHORITY (Round 4 #52, user rule): "the demo widget
+// should determine the types of presets that these have. You can add them
+// together to make more." Each material's demo WIDGET already ships a tuned
+// preset roster (glitch's HUD Flicker — the missing "sci-fi preset" — Heavy
+// Datamosh, glass's Material family, …); those rosters and the material share
+// ONE knob schema, so they translate directly. presetsForMaterial therefore
+// MERGES: widget presets FIRST (the authority), this file's curated entries as
+// EXTRAS (deduped by title). The widget lookup needs the live registry, which
+// only the UI has — callers pass it (ToolsPane does); a null registry (bare
+// node, tests that only need the extras) skips the widget half loudly-visibly
+// by simply returning the extras, never a throw-on-missing-context.
+const WIDGET_PRESET_SOURCES = {
+  glitch: "demo_glitch", crt: "demo_crt", glass: "demo_glass",
+  metaballs: "metaball", corkboard: "corkboard", corkboardThumbtack: "corkboardThumbtack",
+  frosted: "demo_frosted_glass", rainy_window: "demo_rainy_window",
+  raycast_dither: "demo_raycast_dither", sky: "sky", lens_flare: "demo_lens_flare",
+  comic: "demo_comic", mandelbrot: "demo_mandelbrot", brightness_contrast: "demo_brightness_contrast",
+};
+
+/**
+ * Query (reads the material registries). The demo WIDGET's presets translated
+ * into MATERIAL presets: every family flattened (plugin.presets is one family;
+ * presetFamilies is several), each preset's props filtered to the material's
+ * OWN schema knobs (widget-side keys like cornerRadius/animated drop away —
+ * exactly what resolveMaterialPaint would loudly drop anyway), and presets left
+ * with no schema-known knob are skipped (a silhouette-only glass preset says
+ * nothing about the FILL). Pure given (plugin, schema).
+ *
+ * @param {object|null} plugin - the registry entry for the widget (or null)
+ * @param {Array} schema - the material's fillParams/strokeParams rows
+ * @returns {Array<{id, title, description?, params}>}
+ *
+ * @example widgetPresetsFor({presets: [{name: "Hot", props: {glow: 2, cornerRadius: 8}}]}, [{name: "glow"}]) // [{id: "widget:presets:Hot", title: "Hot", params: {glow: 2}}]
+ * @example widgetPresetsFor(null, [{name: "glow"}]) // []
+ */
+export function widgetPresetsFor(plugin, schema) {
+  if (!plugin) return [];
+  const known = new Set((schema ?? []).map((r) => r.name));
+  const families = plugin.presetFamilies ?? (plugin.presets ? [{ id: "presets", title: "Presets", presets: plugin.presets }] : []);
+  const out = [];
+  for (const fam of families) {
+    for (const p of fam.presets ?? []) {
+      const params = Object.fromEntries(Object.entries(p.props ?? {}).filter(([k]) => known.has(k)));
+      if (Object.keys(params).length === 0) continue; // says nothing about this material's knobs
+      out.push({ id: `widget:${fam.id}:${p.name}`, title: p.name, ...(p.description != null && { description: p.description }), params });
+    }
+  }
+  return out;
+}
+
+export function presetsForMaterial(id, registry = null) {
+  const list = MATERIAL_PRESETS[id] ?? [];
   if (!Array.isArray(list))
     throw new Error(`material_presets: entry for "${id}" is not an array (got ${typeof list})`);
   for (const p of list) {
@@ -212,5 +264,12 @@ export function presetsForMaterial(id) {
     if (!p.params || typeof p.params !== "object" || Array.isArray(p.params))
       throw new Error(`material_presets: preset "${id}/${p.id}" has no plain-object params: ${JSON.stringify(p.params)?.slice(0, 120)}`);
   }
-  return list;
+  const widgetType = WIDGET_PRESET_SOURCES[id];
+  if (!registry || !widgetType) return list;
+  const entry = hasStrokeMaterial(id) ? getStrokeMaterial(id) : getMaterial(id);
+  const schema = entry.fillParams ?? entry.strokeParams ?? [];
+  const fromWidget = widgetPresetsFor(registry.get(widgetType), schema);
+  // WIDGET FIRST (the authority), curated extras after, deduped by title.
+  const titles = new Set(fromWidget.map((p) => p.title));
+  return [...fromWidget, ...list.filter((p) => !titles.has(p.title))];
 }

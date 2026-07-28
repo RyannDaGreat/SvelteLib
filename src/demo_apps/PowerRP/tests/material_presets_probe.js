@@ -11,7 +11,7 @@
  * that). Asserts, in order:
  *   - a solid-fill rect shows NO "* material presets" / "* stroke presets" section;
  *   - a sky-fill rect shows a section TITLED "Sky material presets" listing exactly
- *     the sky presets (material_presets.js), in order;
+ *     the MERGED sky roster (widget presets first, curated extras after — #52), in order;
  *   - clicking a preset writes its params SPARSELY at fill.material.params.<knob>
  *     (JSON.stringify IN page — the doc is a Svelte 5 deep proxy) as ONE undo unit;
  *   - a brush-STROKE rect shows a "Brush stroke presets" section (the stroke slot +
@@ -31,7 +31,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
 const demoJson = await readFile(resolve(HERE, "../examples/demo.powerrp.json"), "utf8");
 
-const SKY_PRESETS = presetsForMaterial("sky");
+// The UI list is the MERGED roster (Round 4 #52: the demo widget's presets come
+// FIRST, curated extras after) — build the same merge here in node with a real
+// registry, so the pin follows the contract instead of a frozen count.
+const { registerAll } = await import("../plugins/index.js");
+const { createRegistry } = await import("../core/registry.js");
+const { createCommands } = await import("../core/commands.js");
+const probeRegistry = createRegistry();
+registerAll(probeRegistry, createCommands());
+const SKY_PRESETS = presetsForMaterial("sky", probeRegistry);
 const SKY_TITLE = "Sky material presets";
 const BRUSH_TITLE = "Brush stroke presets";
 

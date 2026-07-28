@@ -95,7 +95,7 @@
       const paint = state[slot];
       if (!paint || paint.type !== "material" || !paint.material?.id) continue;
       const id = paint.material.id;
-      const presets = presetsForMaterial(id);
+      const presets = presetsForMaterial(id, app.registry); // widget presets FIRST (Round 4 #52), curated extras after
       if (!presets.length) continue;
       const noun = slot === "stroke" ? "stroke" : "material";
       out.push({
