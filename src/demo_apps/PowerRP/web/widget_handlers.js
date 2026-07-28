@@ -111,6 +111,7 @@
 import { BENTO_BIND_HANDLER } from "./bentoBind.js";
 import { NAVIGATE_INTERIOR_HANDLER } from "./interiorNav.js";
 import { POLYGON_CHAIN_HANDLER } from "./polygonDraw.js";
+import { PAINT_PATH_CHAIN_HANDLER } from "./paintPathDraw.js";
 import { TELESCOPIC_RIG_HANDLER } from "./telescopicRig.js";
 
 /**
@@ -387,6 +388,7 @@ const CREATE_HANDLERS = [
   // finishing on the first release; the host enters that mode on the crosshair's
   // first press and their `place` does nothing but ask for it (see either file).
   POLYGON_CHAIN_HANDLER,
+  PAINT_PATH_CHAIN_HANDLER,
   TELESCOPIC_RIG_HANDLER,
 ];
 
