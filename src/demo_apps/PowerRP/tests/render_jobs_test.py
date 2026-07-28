@@ -376,6 +376,24 @@ def main():
           }, fresh)["job"].get("warning") is None)
     server.cancel_job(PROJECT, warned["id"])
 
+    # ── ONE CORRUPT RECORD MUST NOT BRICK THE LIST (the live Gears 500) ────────
+    # An external tool once hand-wrote a job.json with a trailing brace and the
+    # whole listRenderJobs endpoint 500ed, hiding EVERY job. The list must
+    # instead carry a loud failed "corrupt record" row naming the parse error
+    # while the healthy jobs stay visible.
+    corrupt_dir = os.path.join(server.jobs_dir(PROJECT), "deadbeefcafe")
+    os.makedirs(corrupt_dir, exist_ok=True)
+    with open(os.path.join(corrupt_dir, server.JOB_RECORD_FILENAME), "w") as f:
+        f.write('{"id": "deadbeefcafe", "state": "done"}}')
+    listed = get_json(base, f"/api/render-jobs/{PROJECT}/", fresh)["jobs"]
+    corrupt_rows = [j for j in listed if j.get("state") == "failed" and "does not parse" in (j.get("error") or "")]
+    check("a corrupt job.json becomes a LOUD failed row instead of a 500",
+          len(corrupt_rows) == 1, (corrupt_rows[0].get("error") or "")[:80] if corrupt_rows else "no corrupt row")
+    check("healthy jobs stay visible beside the corrupt record",
+          any(j.get("id") != "deadbeefcafe" and j.get("state") != "failed" for j in listed),
+          f"{len(listed)} rows listed")
+    shutil.rmtree(corrupt_dir)
+
     httpd.shutdown()
     print()
     if failures:

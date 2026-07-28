@@ -743,6 +743,12 @@ def list_jobs(name):
     """
     Query. A project's render jobs, newest first, each decorated by job_view. A
     project with no renders/ folder simply has none.
+
+    A job.json that fails to PARSE (a crashed or hand-authored external writer;
+    the server's own write_job is atomic tmp+replace) is reported as a LOUD
+    "corrupt" entry naming the file and the parse error, instead of 500ing the
+    whole list: one bad record must not brick every other job's visibility, and
+    the entry keeps the corruption visible to the user (never silently skipped).
     """
     base = jobs_dir(name)
     if not os.path.isdir(base):
@@ -753,7 +759,23 @@ def list_jobs(name):
         if not os.path.exists(path):
             continue
         with open(path) as f:
-            out.append(job_view(name, json.load(f)))
+            raw = f.read()
+        try:
+            record = json.loads(raw)
+        except ValueError as e:
+            out.append({
+                # Shaped like a failed job_view so the existing UI renders it
+                # as a failed row with the parse error visible.
+                "id": job_id,
+                "project": name,
+                "name": "corrupt record %s" % job_id[:8],
+                "state": "failed",
+                "backend": "server",
+                "error": "job.json does not parse: %s (file: %s)" % (e, path),
+                "createdAt": os.path.getmtime(path),
+            })
+            continue
+        out.append(job_view(name, record))
     return sorted(out, key=lambda j: j.get("createdAt", 0), reverse=True)
 
 
