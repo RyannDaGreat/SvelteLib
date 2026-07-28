@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, pushTransform, popTransform, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -105,15 +105,24 @@ export function fmt(n) {
  * core/transform.js similarity T.apply order. Omits identity components so the
  * output stays compact and the doctests read cleanly.
  *
+ * `world.signX`/`signY` (render_gpu/ir.js: the FLIP — a ±1 per-axis reflection,
+ * absent = +1) fold into that trailing scale as a per-axis `scale(sx sy)`, which is
+ * how SVG spells a reflection; the magnitude stays `world.scale` so a flip changes
+ * only handedness. With no signs the output is byte-identical to before.
+ *
  * @example similarityTransform({x: 10, y: 0, rotation: 0, scale: 2}) // "translate(10 0) scale(2)"
  * @example similarityTransform({x: 0, y: 0, rotation: Math.PI / 2, scale: 1}) // "rotate(90)"
  * @example similarityTransform({x: 0, y: 0, rotation: 0, scale: 1}) // ""
+ * @example similarityTransform({x: 0, y: 0, rotation: 0, scale: 1, signX: -1}) // "scale(-1 1)"
+ * @example similarityTransform({x: 0, y: 0, rotation: 0, scale: 2, signY: -1}) // "scale(2 -2)"
  */
 export function similarityTransform(world) {
   const parts = [];
+  const sx = world.signX ?? 1, sy = world.signY ?? 1;
   if (world.x !== 0 || world.y !== 0) parts.push(`translate(${fmt(world.x)} ${fmt(world.y)})`);
   if (world.rotation !== 0) parts.push(`rotate(${fmt((world.rotation * 180) / Math.PI)})`);
-  if (world.scale !== 1) parts.push(`scale(${fmt(world.scale)})`);
+  if (sx !== 1 || sy !== 1) parts.push(`scale(${fmt(world.scale * sx)} ${fmt(world.scale * sy)})`);
+  else if (world.scale !== 1) parts.push(`scale(${fmt(world.scale)})`);
   return parts.join(" ");
 }
 
@@ -524,7 +533,7 @@ export async function emitEffectSVG(cmd, world, region, ctx) {
   const corners = [
     [cmd.x - m, cmd.y - m], [cmd.x + cmd.w + m, cmd.y - m],
     [cmd.x - m, cmd.y + cmd.h + m], [cmd.x + cmd.w + m, cmd.y + cmd.h + m],
-  ].map(([lx, ly]) => T.apply(world, lx, ly));
+  ].map(([lx, ly]) => signedApply(world, lx, ly));
   const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
   const placeRect = {
     x: Math.min(...xs), y: Math.min(...ys),
@@ -599,8 +608,8 @@ export async function emitRasterOpSVG(cmd, world, commands, rawIdx, region, ctx)
  */
 export async function emitLensSVG(cmd, world, commands, rawIdx, region, ctx) {
   const isBox = cmd.shape === "box";
-  const center = T.apply(world, cmd.cx, cmd.cy);
-  const originWorld = T.apply(world, cmd.originX ?? cmd.cx, cmd.originY ?? cmd.cy);
+  const center = signedApply(world, cmd.cx, cmd.cy);
+  const originWorld = signedApply(world, cmd.originX ?? cmd.cx, cmd.originY ?? cmd.cy);
   const m = Math.max(cmd.magnification, 0.01);
   const below = balancedSlice(commands, rawIdx);
   // Hybrid-raster source rect: centered on the ORIGIN (what shows at the lens

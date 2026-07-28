@@ -600,8 +600,15 @@ export const PROPS = {
   // ── positioning (bbox) ──────────────────────────────────────────────────────
   x: { label: "X", kind: "number", category: "positioning", help: "Horizontal position of the widget's top-left corner, in canvas units (right is positive)." },
   y: { label: "Y", kind: "number", category: "positioning", help: "Vertical position of the widget's top-left corner, in canvas units (down is positive)." },
-  w: { label: "Width", kind: "number", min: 0, category: "positioning", help: "How wide the widget is, in canvas units. Drag the side/corner handles to resize instead." },
-  h: { label: "Height", kind: "number", min: 0, category: "positioning", help: "How tall the widget is, in canvas units. Drag the side/corner handles to resize instead." },
+  // NO `min` ON w/h — a NEGATIVE size is meaningful: it is a FLIP (core/geometry.js
+  // "THE FLIP"; the Flip Content commands write exactly this, and dragging a resize
+  // handle past the opposite edge produces it). A `min: 0` here would have made the
+  // Inspector the one place in the app that could not express a flipped widget, and
+  // would have silently clamped a legitimate stored value on edit. Contrast the
+  // `min: 0` rows below (strokeWidth, blur, radii, rates): for those a negative
+  // number has no meaning at all, which is what earns them a bound.
+  w: { label: "Width", kind: "number", category: "positioning", help: "How wide the widget is, in canvas units. Drag the side/corner handles to resize instead. A NEGATIVE width flips the widget horizontally — it covers the same area with its content mirrored left ↔ right." },
+  h: { label: "Height", kind: "number", category: "positioning", help: "How tall the widget is, in canvas units. Drag the side/corner handles to resize instead. A NEGATIVE height flips the widget vertically — it covers the same area with its content mirrored top ↔ bottom." },
   // THE universal transform rotation, inherited by every bbox widget through the
   // `positioning` bundle. core stores RADIANS; the field edits/shows DEGREES
   // (manifest "Rotation is DEGREES" — round-10 ruling), which is what `display`
@@ -740,10 +747,13 @@ export const PROPS = {
   // {assetKinds:["video"]}). `assetForm` says what STRING FORM the field writes
   // on pick: "url" (the served /asset/<project>/<file> path — image/video's
   // storage) or "filename" (the bare basename — filmstrip's storage, resolved
-  // against the project's assets/ server-side by the frames endpoint). Default
-  // "url" (the more common case); filmstrip overrides to "filename".
+  // against the project's assets/). Default "url" — which is now the ONLY form in
+  // use: the filmstrip's former "filename" storage existed solely so a SERVER
+  // endpoint could resolve the basename, and its frames are decoded in the browser
+  // now, so it stores the served URL like every other media widget.
   src: { label: "Source", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The image or video this widget shows — pick from the project's assets, upload a file, or drag one in from the Asset Explorer or Finder." },
-  frames: { label: "Frames", kind: "number", min: 1, category: "formatting", help: "How many evenly-spaced frames to sample across the whole clip and lay out left to right." },
+  // `frames` (the filmstrip's FRAME LIST) is declared with the rest of the
+  // filmstrip's rows at the bottom of this registry — it is a LIST, not a count.
   autoplay: { label: "Autoplay", kind: "boolean", category: "formatting", default: true, help: "Start playing as soon as the slide loads. Requires Muted on — browsers block autoplay with sound." },
   loop: { label: "Loop", kind: "boolean", category: "formatting", default: true, help: "Restart the clip from the beginning each time it reaches the end, so it plays forever." },
   muted: { label: "Muted", kind: "boolean", category: "formatting", default: true, help: "Play with no sound. Turn off for audio, but note that browsers won't autoplay an unmuted clip." },
@@ -896,20 +906,68 @@ export const PROPS = {
   particleShrink: { label: "Shrink", kind: "number", min: 0, max: 1, category: "particles", default: 0, help: "How much a particle shrinks over its life, from 0 (keeps its birth size) to 1 (shrinks down to nothing by the end)." },
   particleSeed: { label: "Seed", kind: "number", category: "particles", default: 1, help: "The randomness seed. The same seed always produces the exact same particle pattern (so renders reproduce); change it to reshuffle." },
 
-  // ── filmstrip: the FULL film_strip API (manifest ROUND 14.1) ──────────────────
-  // These four give the filmstrip widget the rest of the original Python
-  // film_strip(video, length, height, width, vertical, film_color) signature
-  // (frames == length; src == video). Filmstrip-specific, so they live as plain
-  // rows here rather than a bundle. `vertical` flips orientation; `filmColor` is
-  // the strip's film color (default black, matching the Python default);
-  // `frameW`/`frameH` are the PER-FRAME extraction/cell resolution in pixels
-  // (empty = the video's native size — feeds BOTH the server extraction
-  // resolution and the on-canvas cell layout). min 1 so a set resolution is a
-  // real pixel size; no default value → an empty field means "native".
+  // ── filmstrip: orientation + film base colour ─────────────────────────────────
+  // Two of the original Python film_strip(video, length, height, width, vertical,
+  // film_color) signature (src == video; `frames` below is length). Filmstrip-
+  // specific, so they live as plain rows here rather than a bundle. The former
+  // `frameW`/`frameH` rows are GONE with the server frame-extraction endpoint they
+  // fed: a frame is now decoded live at the video's own resolution by the scrub
+  // path, so there is no extraction resolution left to choose.
   vertical: { label: "Vertical", kind: "boolean", category: "formatting", default: false, help: "Lay the frames top-to-bottom in a vertical strip instead of left-to-right. The frames stay upright either way." },
   filmColor: { label: "Film color", kind: "color", category: "formatting", default: "#000000", help: "The color of the film base the frames sit on — the strip and its sprocket-hole bands. Classic film is black." },
-  frameW: { label: "Frame width", kind: "number", min: 1, category: "formatting", help: "The pixel width to extract and lay out each frame at. Leave empty to use the video's native width." },
-  frameH: { label: "Frame height", kind: "number", min: 1, category: "formatting", help: "The pixel height to extract and lay out each frame at. Leave empty to use the video's native height." },
+
+  // ── filmstrip: the SAMPLED WINDOW into the clip ───────────────────────────────
+  // The two ends of the span the frames sample, in seconds. They exist so that ONE
+  // number (the end) spreads a whole strip across a clip: every frame's default
+  // time is an EQUATION spanning start→end (plugins/filmstrip.js FRAME_TIME_EQ), so
+  // dragging `videoEnd` re-times the entire strip at once, and any single frame can
+  // still be overridden by typing over its own equation.
+  //
+  // WHY THE END IS AN INPUT, NOT DERIVED: a clip's real duration is only knowable at
+  // browser DECODE time (`<video>.duration`), which is not in pure document state —
+  // the same reason the scrubber's `duration` is a user-supplied number
+  // (plugins/video_scrub.js). Default 0 (an honest "not told yet"), which collapses
+  // every frame's default time onto `videoStart`; the widget SAYS so in-widget rather
+  // than inventing a length.
+  videoStart: { label: "Video start (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", help: "The time in the clip the first sampled frame comes from, in seconds. Raise it to skip a slate or a fade-in." },
+  videoEnd: { label: "Video end (s)", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "formatting", help: "The time in the clip the sampled span ends at, in seconds — normally the clip's length. Every frame's default time is an equation across start→end, so this one number spreads the whole strip. Left 0 the span is empty and all frames show the start (the real duration is only known once the video decodes, so it is a value you provide)." },
+
+  // ── filmstrip: THE FRAME LIST (a LIST property — core/lists.js) ────────────────
+  // `frames` used to be a COUNT (a number) that a server endpoint turned into N
+  // extracted stills. It is now the frames THEMSELVES: a variable-length list whose
+  // one field is the TIME in the clip that frame is decoded at. The count is the
+  // list's length, so there is no second source of truth for it, and each frame's
+  // time is an ordinary keyframable, equation-bindable leaf — which is what makes an
+  // ANIMATED filmstrip fall out (keyframe or bind the times and the little frames
+  // scrub as the slide tweens) with no autoplay clock anywhere.
+  //
+  // A SEQUENCE, not sorted: the order IS the strip, left to right. Sorting by time
+  // would silently reorder a deliberately non-monotonic strip (a boomerang, a
+  // shuffled contact sheet), and insert-between means "insert at this position".
+  //
+  // Storage is a TUPLE ([time]) even though there is only one field, and that is
+  // load-bearing rather than cosmetic: core/interpolators.js interpolate() ROUNDS a
+  // lerp between two INTEGERS (the tweenline int rule), and frame times are
+  // routinely whole seconds — so a RECORD ({time: 0} → {time: 2}) would recurse to
+  // that integer path and SNAP mid-tween, while a numeric PAIR-shaped array takes
+  // interpolate's pure-numeric-array branch (a plain lerp). Same reasoning, and the
+  // same conclusion, as the polygon's `points`.
+  //
+  // minLength 1: a strip with no frames is not a filmstrip, and the geometry divides
+  // by the frame count.
+  frames: {
+    label: "Frames", kind: LIST_ROW_KIND, category: "formatting",
+    element: {
+      storage: "tuple",
+      fields: [
+        { name: "time", kind: "number", min: 0, label: "Time (s)", help: "The time in the clip this frame is decoded at, in seconds. Its default is an equation across Video start → Video end, so re-timing the whole strip is one edit; type a number (or your own equation) here to pin this one frame." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "framesActive",
+    minLength: 1,
+    help: "The frames the strip shows, left to right — each one a TIME in the clip. Insert between two frames to sample the moment between them; hide a frame to close the strip over it without losing its time.",
+  },
 };
 
 // LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent, the

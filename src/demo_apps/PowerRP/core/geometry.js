@@ -186,3 +186,146 @@ export function mirroredPosition(box, union, axis) {
   const mirroredCenter = 2 * (union.y + union.h / 2) - (box.y + box.h / 2);
   return { x: box.x, y: mirroredCenter - box.h / 2 };
 }
+
+// ── THE FLIP: a reflection lives in the BOX, never in the transform ──────────
+// WHY NEGATIVE w/h IS THE REPRESENTATION AND NOT A HACK. A widget's pose is a
+// SIMILARITY, stored parametrically as {x, y, rotation, scale} (core/transform.js:
+// "NO skew... similarity ∘ similarity = similarity"). A similarity with positive
+// scale is ORIENTATION-PRESERVING, so it structurally CANNOT express a
+// reflection: `scale` is one scalar, and negating it is a rotation by π, not a
+// mirror. There is therefore nowhere in the transform to put a flip — which is
+// exactly why the flip is expressed as a SIGNED BOX instead. A box whose `w` is
+// negative spans local x from `w` up to 0 rather than 0 up to `w`: the same
+// interval walked backwards, i.e. its content frame is reflected. `mirroredPosition`
+// above is the sibling operation that reflects an item's PLACE without touching its
+// content; these two reflect the content itself.
+//
+// (This also settles a claim the codebase carried twice: that 0 is a "mathematical
+// bound" on a dimension. It is not. A negative dimension is a reflection, which is
+// perfectly well defined — see web/canvas/dragKinds.js resizedBox, which used to
+// clamp there.)
+
+/**
+ * Pure function. The TWO-LEAF write that flips a box's content along one axis:
+ * negate the size and advance the origin to where it must sit for the box to
+ * occupy the SAME footprint (the user's own formulation — "change the height and
+ * width to negative and put the position to where it would have to be to
+ * accommodate").
+ *
+ *   horizontal: w' = −w,  x' = x + scale·w
+ *   vertical:   h' = −h,  y' = y + scale·h
+ *
+ * WHY NO ROTATION TERM (the non-obvious part — derived, not guessed). `x`/`y` is
+ * the ROTATION-ZERO base translation: core/derive.js worldTransform builds
+ * T.fromState(state) and then re-pivots it with T.aboutPivot, so the stored
+ * origin is NOT the world position of the rotated corner and must not be advanced
+ * along a rotated axis. A local offset of `w` is a base-frame offset of `scale·w`,
+ * full stop. The rotation cancels because the pivot is re-derived from the new
+ * box: worldTransform sends the box CENTER to (x + scale·w/2, y + scale·h/2), and
+ * substituting (x + scale·w, −w) leaves that point unmoved — so the flipped box is
+ * the same |w|×|h| rectangle, at the same center, at the same rotation. It holds
+ * for an explicit `rotationAnchor` too (there the pivot is a stored world point,
+ * and the origin shift and the size negation cancel inside the same expression).
+ *
+ * INVOLUTION: applying this twice is the exact identity, at any rotation or scale
+ * (x + scale·w + scale·(−w) = x). `normalizedBox` is the same map, applied only
+ * when the sign is negative.
+ *
+ * Args:
+ *   state (object): needs the flipped axis's origin + size, and `scale` (default 1)
+ *   axis  ("x"|"y"): "x" flips left↔right (writes x + w), "y" flips top↔bottom
+ *
+ * Returns:
+ *   object: ONLY the two changed leaves — {x, w} or {y, h} — so a caller can hand
+ *   it straight to a minimal-delta commit and leave the other axis alone.
+ *
+ * @example flippedBox({x: 10, y: 20, w: 100, h: 50}, "x") // {x: 110, w: -100}
+ * @example flippedBox({x: 10, y: 20, w: 100, h: 50}, "y") // {y: 70, h: -50}
+ * @example // flipping an already-flipped box restores it EXACTLY (involution):
+ * @example flippedBox({x: 110, y: 20, w: -100, h: 50}, "x") // {x: 10, w: 100}
+ * @example // scale multiplies the local offset, because x is a base-frame translation:
+ * @example flippedBox({x: 10, y: 20, w: 100, h: 50, scale: 2}, "x") // {x: 210, w: -100}
+ * @example // rotation contributes NOTHING (the pivot re-derivation cancels it):
+ * @example flippedBox({x: 10, y: 20, w: 100, h: 50, rotation: Math.PI / 3}, "x") // {x: 110, w: -100}
+ */
+export function flippedBox(state, axis) {
+  const scale = state.scale ?? 1;
+  if (axis === "x") {
+    const w = state.w ?? 0;
+    return { x: (state.x ?? 0) + scale * w, w: -w };
+  }
+  const h = state.h ?? 0;
+  return { y: (state.y ?? 0) + scale * h, h: -h };
+}
+
+/**
+ * Pure function. Splits a possibly-SIGNED box into a POSITIVE box plus the
+ * mirror flags that signed box denoted — THE seam that keeps a negative
+ * dimension from leaking past the derivation stage.
+ *
+ * WHY THE SPLIT EXISTS. Everything downstream of derivation reads w/h as an
+ * extent: plugin `emit()` bodies build `halfW = s.w / 2` for their shaders, plugin
+ * `hitTest`s ask `0 <= p <= w`, `nodeFeatures` places snap points at `w/2`, and the
+ * vector exporters size their substrates from it. A negative extent would break
+ * every one of those (negative half-extents in an SkSL material are nonsense).
+ * Normalizing here means NONE of them ever sees a negative number, and the whole
+ * cost of the feature is the two flags the render seam and the hit test consume.
+ *
+ * It is `flippedBox` applied only when the sign is negative, which is what makes
+ * the pair provably consistent: because the flip is an involution, normalizing a
+ * flipped box returns the ORIGINAL box byte-for-byte (10, +100 → flip → 110, −100
+ * → normalize → 10, +100). So a flipped widget derives to the identical geometry
+ * as its unflipped self, and the ONLY difference in the render is the mirror —
+ * which is precisely the property "a flip occupies the same screen rect, mirrored".
+ *
+ * Args:
+ *   state (object): an item state that may carry a negative w and/or h
+ *
+ * Returns:
+ *   {x, y, w, h, mirrorX, mirrorY} — a non-negative box + which axes were signed.
+ *
+ * @example normalizedBox({x: 10, y: 20, w: 100, h: 50}) // {x: 10, y: 20, w: 100, h: 50, mirrorX: false, mirrorY: false}
+ * @example normalizedBox({x: 110, y: 20, w: -100, h: 50}) // {x: 10, y: 20, w: 100, h: 50, mirrorX: true, mirrorY: false}
+ * @example normalizedBox({x: 110, y: 70, w: -100, h: -50}) // {x: 10, y: 20, w: 100, h: 50, mirrorX: true, mirrorY: true}
+ * @example // scale is honoured, since it scales the origin shift:
+ * @example normalizedBox({x: 210, y: 20, w: -100, h: 50, scale: 2}) // {x: 10, y: 20, w: 100, h: 50, mirrorX: true, mirrorY: false}
+ */
+export function normalizedBox(state) {
+  const mirrorX = (state.w ?? 0) < 0;
+  const mirrorY = (state.h ?? 0) < 0;
+  const fx = mirrorX ? flippedBox(state, "x") : {};
+  const fy = mirrorY ? flippedBox(state, "y") : {};
+  return {
+    x: fx.x ?? state.x ?? 0,
+    y: fy.y ?? state.y ?? 0,
+    w: fx.w ?? state.w ?? 0,
+    h: fy.h ?? state.h ?? 0,
+    mirrorX,
+    mirrorY,
+  };
+}
+
+/**
+ * Pure function. Reflects a LOCAL point back through a node's mirror flags, so a
+ * point expressed in the widget's on-screen (mirrored) frame lands in the
+ * UNMIRRORED frame every plugin's own geometry is written in. The mirror is a
+ * reflection about the box's center line, so this is its own inverse — one
+ * function serves both directions.
+ *
+ * The consumer is hit testing (core/derive.js hitNode): a click arrives in world
+ * space, the world transform inverts it into the mirrored local frame, and this
+ * puts it back where `plugin.hitTest(state, lx, ly)` — which knows nothing about
+ * flips and asks `0 <= lx <= w` — expects it.
+ *
+ * @example unmirroredLocal({x: 10, y: 5}, {w: 100, h: 50, mirrorX: false, mirrorY: false}) // {x: 10, y: 5}
+ * @example unmirroredLocal({x: 10, y: 5}, {w: 100, h: 50, mirrorX: true, mirrorY: false}) // {x: 90, y: 5}
+ * @example unmirroredLocal({x: 10, y: 5}, {w: 100, h: 50, mirrorX: true, mirrorY: true}) // {x: 90, y: 45}
+ * @example // its own inverse: reflecting twice is the identity
+ * @example unmirroredLocal(unmirroredLocal({x: 10, y: 5}, {w: 100, h: 50, mirrorX: true}), {w: 100, h: 50, mirrorX: true}) // {x: 10, y: 5}
+ */
+export function unmirroredLocal(local, box) {
+  return {
+    x: box.mirrorX ? box.w - local.x : local.x,
+    y: box.mirrorY ? box.h - local.y : local.y,
+  };
+}

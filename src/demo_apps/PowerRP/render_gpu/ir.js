@@ -24,7 +24,7 @@
  *   {op:"video", ref, x, y, w, h, opacity}                       // ref → <video> registry key
  *   {op:"latexVector", ref, x, y, w, h, glyphs, viewBox, opacity}// dual: vector glyph <path>s (SVG/PDF) + raster ref (GPU/hybrid)
  *   {op:"mermaidVector", ref, x, y, w, h, paths, texts, viewBox, opacity} // dual: vector shapes+text (SVG/PDF/GPU) + raster ref (hybrid); mirrors latexVector
- *   {op:"pushTransform", x, y, rotation, scale}                  // similarity, composes
+ *   {op:"pushTransform", x, y, rotation, scale, signX, signY}    // SIGNED similarity, composes
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
  *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, points, innerRatio, originX, originY, magnification, magnificationX, magnificationY, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"|"star" (points/innerRatio = star silhouette; rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth; magnificationX/Y = per-axis zoom, default to magnification)
@@ -823,14 +823,123 @@ export function sourceRect(sx, sy, sw, sh) {
 }
 
 /**
- * Pure function. Pushes a similarity transform (translate/rotate/scale — the
- * core/transform.js model, NO skew) onto the stack; composes with the current.
+ * Pure function. Pushes a SIGNED similarity transform onto the stack; composes
+ * with the current one.
+ *
+ * The similarity part (translate/rotate/uniform scale, NO skew) is exactly
+ * core/transform.js's model. `signX`/`signY` are ±1 per-axis REFLECTION signs,
+ * and they live HERE rather than in core/transform.js on purpose: the stored pose
+ * of a widget is a pure similarity and must stay one (parent chains compose there
+ * and the model's whole guarantee is that they can never manufacture a shear or a
+ * handedness flip). A reflection is instead denoted by a NEGATIVE STORED w/h
+ * (core/geometry.js flippedBox) and realized only at PAINT time, which is this
+ * op — the display list is the first place a mirror can exist, and the last place
+ * it needs to.
+ *
+ * The signed similarities are closed under composition, so the stack still folds
+ * to a single frame (signedCompose): sign·sign multiplies elementwise and an odd
+ * number of reflections REVERSES the inner rotation, because
+ * diag(sx,sy)·R(φ)·diag(sx,sy) = R(sx·sy·φ).
+ *
+ * A sign of +1 is OMITTED from the emitted op, so the display list of a scene with
+ * no flip in it is byte-identical to the one this codebase emitted before signs
+ * existed (the same optional-key idiom as core/derive.js's `node.mirror`).
  *
  * @example pushTransform({x: 5, y: 6}) // {op: "pushTransform", x: 5, y: 6, rotation: 0, scale: 1}
+ * @example // the mirror-about-the-box-center push a flipped node gets (see sceneIR):
+ * @example pushTransform({x: 100, signX: -1}) // {op: "pushTransform", x: 100, y: 0, rotation: 0, scale: 1, signX: -1}
  */
-export function pushTransform({ x = 0, y = 0, rotation = 0, scale = 1 }) {
+export function pushTransform({ x = 0, y = 0, rotation = 0, scale = 1, signX = 1, signY = 1 }) {
   requireFinite("pushTransform", { x, y, rotation, scale });
-  return { op: "pushTransform", x, y, rotation, scale };
+  if (Math.abs(signX) !== 1 || Math.abs(signY) !== 1)
+    throw new Error(`pushTransform: signX/signY must be exactly +1 or -1 (a reflection, not a scale); got ${signX}, ${signY}`);
+  const op = { op: "pushTransform", x, y, rotation, scale };
+  if (signX !== 1) op.signX = signX;
+  if (signY !== 1) op.signY = signY;
+  return op;
+}
+
+/**
+ * Pure function. Does this frame carry a reflection? The gate that keeps the
+ * unmirrored path on core/transform.js's plain compose (see flattenIR).
+ *
+ * @example isReflected({x: 0, y: 0, rotation: 0, scale: 1}) // false
+ * @example isReflected({x: 0, y: 0, rotation: 0, scale: 1, signX: -1}) // true
+ */
+export function isReflected(t) {
+  return (t.signX ?? 1) !== 1 || (t.signY ?? 1) !== 1;
+}
+
+/**
+ * Pure function. Maps a LOCAL point through a SIGNED frame → world. The
+ * sign-aware twin of core/transform.js `apply`, which it reduces to exactly when
+ * there is no reflection.
+ *
+ * WHY IT IS NEEDED, AND WHERE (a defect this caught, worth stating). Most backend
+ * code never maps a point by hand — it concats the frame onto the canvas CTM and
+ * lets local geometry ride through (paint_skia applyView, pdf cmSimilarity, svg
+ * similarityTransform), and those three learned the signs directly. But the
+ * per-pixel MATERIAL and BACKDROP handlers (glass, materialFill, materialBackdrop,
+ * the magnifier lens) are different: they compute their region's DEVICE-space
+ * center + half-extents themselves and draw at the device root, so they map the
+ * center point explicitly. Doing that with a sign-blind `apply` put a flipped
+ * material's center on the far side of its box — the widget rendered in the wrong
+ * place entirely (measured: a 160-wide corkboard at x 40 drew at x 200). Half-
+ * extents are NOT the hazard there (core/derive normalizes the sign away before
+ * emit, so they are always positive); the CENTER is.
+ *
+ * @param {object} t - a signed frame {x, y, rotation, scale, signX?, signY?}
+ * @param {number} px - local x
+ * @param {number} py - local y
+ * @returns {{x: number, y: number}} the world point
+ *
+ * @example signedApply({x: 10, y: 0, rotation: 0, scale: 2}, 3, 4) // {x: 16, y: 8}
+ * @example // an x-mirrored frame reflects the local point before placing it:
+ * @example signedApply({x: 200, y: 0, rotation: 0, scale: 1, signX: -1}, 80, 50) // {x: 120, y: 50}
+ * @example // the box center is the mirror's FIXED point, which is why a flipped
+ * @example // widget's center is where it always was:
+ * @example signedApply({x: 200, y: 0, rotation: 0, scale: 1, signX: -1}, 200, 0) // {x: 0, y: 0}
+ */
+export function signedApply(t, px, py) {
+  const c = Math.cos(t.rotation), s = Math.sin(t.rotation);
+  const x = (t.signX ?? 1) * px, y = (t.signY ?? 1) * py;
+  return { x: t.x + t.scale * (c * x - s * y), y: t.y + t.scale * (s * x + c * y) };
+}
+
+/**
+ * Pure function. Composes two SIGNED similarities — `outer ∘ inner`, i.e. "apply
+ * inner, then outer", the same reading as core/transform.js compose (which this
+ * reduces to EXACTLY when both signs are +1, so an unmirrored scene folds
+ * byte-identically).
+ *
+ * The group of similarities-plus-reflections IS closed, which is what lets the
+ * flattened stack stay a single frame instead of degenerating into matrices.
+ * Writing a frame as p ↦ t + s·R(θ)·D·p with D = diag(signX, signY):
+ *
+ *   D_o·R(θ_i)·D_o = R(det_o·θ_i)   where det_o = signX_o·signY_o
+ *
+ * so the product's rotation is θ_o + det_o·θ_i, its signs are the elementwise
+ * products, its scale is the product, and its translation is the outer frame
+ * applied to the inner translation.
+ *
+ * @example signedCompose({x: 0, y: 0, rotation: 0, scale: 1, signX: 1, signY: 1}, {x: 5, y: 6, rotation: 0, scale: 2, signX: 1, signY: 1}) // {x: 5, y: 6, rotation: 0, scale: 2, signX: 1, signY: 1}
+ * @example // an x-mirror outside a rotation REVERSES that rotation (det = -1):
+ * @example signedCompose({x: 0, y: 0, rotation: 0, scale: 1, signX: -1, signY: 1}, {x: 0, y: 0, rotation: 1, scale: 1, signX: 1, signY: 1}) // {x: 0, y: 0, rotation: -1, scale: 1, signX: -1, signY: 1}
+ * @example // the outer frame maps the inner translation, reflecting it too:
+ * @example signedCompose({x: 100, y: 0, rotation: 0, scale: 1, signX: -1, signY: 1}, {x: 30, y: 5, rotation: 0, scale: 1, signX: 1, signY: 1}) // {x: 70, y: 5, rotation: 0, scale: 1, signX: -1, signY: 1}
+ */
+export function signedCompose(outer, inner) {
+  const sxo = outer.signX ?? 1, syo = outer.signY ?? 1;
+  const c = Math.cos(outer.rotation), s = Math.sin(outer.rotation);
+  const px = sxo * inner.x, py = syo * inner.y; // reflect, then rotate+scale+translate
+  return {
+    x: outer.x + outer.scale * (c * px - s * py),
+    y: outer.y + outer.scale * (s * px + c * py),
+    rotation: outer.rotation + sxo * syo * inner.rotation,
+    scale: outer.scale * inner.scale,
+    signX: sxo * (inner.signX ?? 1),
+    signY: syo * (inner.signY ?? 1),
+  };
 }
 
 /**
@@ -1366,7 +1475,12 @@ export function flattenIR(commands) {
   const out = [];
   for (const cmd of commands) {
     if (cmd.op === "pushTransform") {
-      stack.push(T.compose(stack[stack.length - 1], cmd));
+      // A scene with NO flip in it takes core/transform.js's plain compose, so its
+      // flattened frames keep the exact {x, y, rotation, scale} shape (and the exact
+      // float results) they always had; signedCompose is entered only once a
+      // reflection is actually on the stack.
+      const top = stack[stack.length - 1];
+      stack.push(isReflected(top) || isReflected(cmd) ? signedCompose(top, cmd) : T.compose(top, cmd));
     } else if (cmd.op === "popTransform") {
       if (stack.length === 1) throw new Error("flattenIR: popTransform without matching push");
       stack.pop();

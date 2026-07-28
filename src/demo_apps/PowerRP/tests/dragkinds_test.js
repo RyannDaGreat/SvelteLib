@@ -83,11 +83,32 @@ test("resizeAnchors: corner drag anchors at the opposite corner", () => {
 test("resizeAnchors: symmetric anchors at the center", () => {
   assert.equal(resizeAnchors([0, 0, 100, 50], { east: true }, { symmetric: true }).fx, 50);
 });
-test("resizedBox: plain east, symmetric, uniform-corner, and clamp", () => {
+test("resizedBox: plain east, symmetric, uniform-corner", () => {
   eq(resizedBox([0, 0, 100, 50], { x: 20, y: 0 }, { east: true }, {}), [0, 0, 120, 50]);
   eq(resizedBox([0, 0, 100, 50], { x: 20, y: 0 }, { east: true }, { symmetric: true }), [-20, 0, 120, 50]);
   eq(resizedBox([0, 0, 100, 50], { x: 100, y: 0 }, { east: true, south: true }, { uniform: true }), [0, 0, 180, 90]);
-  eq(resizedBox([0, 0, 100, 50], { x: -200, y: 0 }, { east: true }, {}), [0, 0, 0, 50]);
+});
+// THE FLIP-BY-DRAG (the removed inversion clamp — see resizedBox's "CORRECTING THE
+// RECORD"). Dragging a handle THROUGH the opposite edge must keep tracking the
+// cursor and come out inverted; zero is a point it passes, not a wall.
+test("resizedBox: dragging east PAST the west edge inverts the box (flip by drag)", () => {
+  eq(resizedBox([0, 0, 100, 50], { x: -100, y: 0 }, { east: true }, {}), [0, 0, 0, 50]); // exactly on the anchor
+  eq(resizedBox([0, 0, 100, 50], { x: -200, y: 0 }, { east: true }, {}), [0, 0, -100, 50]);
+  // The FIXED (west) edge stays fixed at 0 the whole way through — the flip is
+  // anchored, so the widget does not jump when it inverts.
+  eq(resizedBox([0, 0, 100, 50], { x: -350, y: 0 }, { east: true }, {})[0], 0);
+});
+test("resizedBox: west/north handles invert symmetrically", () => {
+  eq(resizedBox([0, 0, 100, 50], { x: 200, y: 0 }, { west: true }, {}), [200, 0, 100, 50]);
+  eq(resizedBox([0, 0, 100, 50], { x: 0, y: 100 }, { north: true }, {}), [0, 100, 100, 50]);
+});
+test("resizedBox: uniform corner past the anchor point-reflects (BOTH axes flip)", () => {
+  eq(resizedBox([0, 0, 100, 50], { x: -200, y: -100 }, { east: true, south: true }, { uniform: true }), [0, 0, -100, -50]);
+});
+test("resizedBox: symmetric east past the center inverts about the center", () => {
+  // base center x = 50; dragging east to x = -50 puts the east edge 100 left of
+  // center, so the mirrored west edge lands 100 right of it.
+  eq(resizedBox([0, 0, 100, 50], { x: -150, y: 0 }, { east: true }, { symmetric: true }), [150, 0, -50, 50]);
 });
 
 // ── scaledBoxAboutPoint / scaleMemberPairs / scalePairs ────────────────────

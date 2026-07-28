@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, rect, pushTransform, popTransform, effectSubtree, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -265,16 +265,25 @@ export function pdfNum(n) {
 }
 
 /**
- * Pure function. A similarity transform as a PDF cm operator
- * [a b -b a x y] with a = s·cosθ, b = s·sinθ (the packXform convention).
+ * Pure function. A SIGNED similarity transform as a PDF cm operator
+ * [a b c d x y] with a = s·cosθ, b = s·sinθ (the packXform convention).
+ *
+ * `world.signX`/`signY` (render_gpu/ir.js: the FLIP — a ±1 per-axis reflection,
+ * absent = +1) scale the corresponding COLUMN of the 2×2 part, because a cm's
+ * columns are the images of the local x and y axes: negating one reverses that axis
+ * and hands the exported page the same mirror the raster backend paints. Unsigned
+ * input reduces to the plain [a b −b a] similarity, byte-for-byte.
  *
  * @example cmSimilarity({x: 10, y: 20, rotation: 0, scale: 2}) // "2 0 0 2 10 20 cm"
  * @example cmSimilarity({x: 0, y: 0, rotation: Math.PI / 2, scale: 1}) // "0 1 -1 0 0 0 cm"
+ * @example cmSimilarity({x: 0, y: 0, rotation: 0, scale: 1, signX: -1}) // "-1 0 0 1 0 0 cm"
+ * @example cmSimilarity({x: 0, y: 0, rotation: 0, scale: 1, signY: -1}) // "1 0 0 -1 0 0 cm"
  */
 export function cmSimilarity(world) {
   const a = world.scale * Math.cos(world.rotation);
   const b = world.scale * Math.sin(world.rotation);
-  return `${pdfNum(a)} ${pdfNum(b)} ${pdfNum(-b)} ${pdfNum(a)} ${pdfNum(world.x)} ${pdfNum(world.y)} cm`;
+  const sx = world.signX ?? 1, sy = world.signY ?? 1;
+  return `${pdfNum(a * sx)} ${pdfNum(b * sx)} ${pdfNum(-b * sy)} ${pdfNum(a * sy)} ${pdfNum(world.x)} ${pdfNum(world.y)} cm`;
 }
 
 /**
@@ -1065,7 +1074,7 @@ async function emitEffect(cmd, world, region, out, ctx) {
   const corners = [
     [cmd.x - m, cmd.y - m], [cmd.x + cmd.w + m, cmd.y - m],
     [cmd.x - m, cmd.y + cmd.h + m], [cmd.x + cmd.w + m, cmd.y + cmd.h + m],
-  ].map(([lx, ly]) => T.apply(world, lx, ly));
+  ].map(([lx, ly]) => signedApply(world, lx, ly));
   const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
   const placeRect = {
     x: Math.min(...xs), y: Math.min(...ys),
@@ -1210,7 +1219,7 @@ export function rasterOpPlaceRect(cmd, world, region) {
   const corners = [
     [local.x - m, local.y - m], [local.x + local.w + m, local.y - m],
     [local.x - m, local.y + local.h + m], [local.x + local.w + m, local.y + local.h + m],
-  ].map(([lx, ly]) => T.apply(world, lx, ly));
+  ].map(([lx, ly]) => signedApply(world, lx, ly));
   const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
   const worldAABB = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
   return intersectRect(worldAABB, region.worldRect);
@@ -1271,8 +1280,8 @@ async function emitRasterOp(cmd, world, commands, rawIdx, region, out, ctx) {
  */
 async function emitLens(cmd, world, commands, rawIdx, region, out, ctx) {
   const isBox = cmd.shape === "box";
-  const center = T.apply(world, cmd.cx, cmd.cy);
-  const originWorld = T.apply(world, cmd.originX, cmd.originY);
+  const center = signedApply(world, cmd.cx, cmd.cy);
+  const originWorld = signedApply(world, cmd.originX, cmd.originY);
   const m = Math.max(cmd.magnification, 0.01);
   const below = balancedSlice(commands, rawIdx);
   // The lens shows a magnified view of the region about the ORIGIN. For the

@@ -149,8 +149,24 @@ export function resizeAnchors([x0, y0, x1, y1], edges, mods) {
  *     (PowerPoint's Ctrl-resize precedent). Composes with uniform: the corner
  *     then rides the FULL diagonal, scaling about the center.
  *
- * Sizes never invert (MIN_SIZE = 0, the mathematical bound): K clamps at 0
- * (collapse onto the anchor); free edges stop at theirs.
+ * SIZES INVERT — dragging a handle past the opposite edge FLIPS the widget, the
+ * PowerPoint/Figma behaviour, and it costs nothing: the box simply keeps going and
+ * comes out the other side with a negative extent, which is what a reflection IS
+ * (core/geometry.js "THE FLIP"). Under `uniform` a negative K is a point reflection
+ * through the anchor, so a corner dragged past it flips BOTH axes at once — again
+ * the established behaviour.
+ *
+ * CORRECTING THE RECORD (this docstring previously said the opposite). It claimed
+ * "Sizes never invert (MIN_SIZE = 0, the mathematical bound): K clamps at 0", and
+ * the code clamped in two places to match. Zero is NOT a mathematical bound on a
+ * dimension — a negative dimension is a well-defined reflection — so that was a
+ * DESIGN DECISION wearing the costume of a law, which is the one thing a comment
+ * must never do (a reader cannot argue with a law, so the clamp survived unexamined
+ * through the pass that deleted the other arbitrary limits). The `MIN_SIZE = 0`
+ * lineage is real but narrower than it read: the manifest records only that Claude
+ * invented MIN_SIZE = 8 and the user replaced it with 0. Zero was the right value
+ * for "the smallest size you can drag TO"; it was never a proof that you cannot
+ * drag THROUGH.
  *
  * Args:
  *   base  (number[4]): [x0, y0, x1, y1] box at the last modifier rebase
@@ -164,7 +180,12 @@ export function resizeAnchors([x0, y0, x1, y1], edges, mods) {
  * @example resizedBox([0,0,100,50], {x:20,y:0}, {east:true}, {}) // [0, 0, 120, 50]
  * @example resizedBox([0,0,100,50], {x:20,y:0}, {east:true}, {symmetric:true}) // [-20, 0, 120, 50]
  * @example resizedBox([0,0,100,50], {x:100,y:0}, {east:true,south:true}, {uniform:true}) // [0, 0, 180, 90]
- * @example resizedBox([0,0,100,50], {x:-200,y:0}, {east:true}, {}) // [0, 0, 0, 50]
+ * @example // dragging the east edge PAST the fixed west edge inverts the box — a flip:
+ * @example resizedBox([0,0,100,50], {x:-200,y:0}, {east:true}, {}) // [0, 0, -100, 50]
+ * @example // exactly ON the anchor is the degenerate zero-width box, not a flip:
+ * @example resizedBox([0,0,100,50], {x:-100,y:0}, {east:true}, {}) // [0, 0, 0, 50]
+ * @example // uniform corner past the anchor: K < 0 point-reflects, flipping BOTH axes:
+ * @example resizedBox([0,0,100,50], {x:-200,y:-100}, {east:true,south:true}, {uniform:true}) // [0, 0, -100, -50]
  */
 export function resizedBox(base, d, edges, mods) {
   const [bx0, by0, bx1, by1] = base;
@@ -174,9 +195,11 @@ export function resizedBox(base, d, edges, mods) {
     const ux = gx - fx, uy = gy - fy;
     const len2 = xActive && yActive ? ux * ux + uy * uy : xActive ? ux * ux : uy * uy;
     if (len2 > 0) {
-      const K = Math.max(0, (xActive && yActive
+      // K is SIGNED — see the flip note in the docstring. A negative K reflects the
+      // box through the anchor rather than clamping onto it.
+      const K = (xActive && yActive
         ? (gx + d.x - fx) * ux + (gy + d.y - fy) * uy
-        : xActive ? (gx + d.x - fx) * ux : (gy + d.y - fy) * uy) / len2);
+        : xActive ? (gx + d.x - fx) * ux : (gy + d.y - fy) * uy) / len2;
       const ax = xActive ? fx : cx, ay = yActive ? fy : cy;
       return [ax + K * (bx0 - ax), ay + K * (by0 - ay), ax + K * (bx1 - ax), ay + K * (by1 - ay)];
     }
@@ -195,8 +218,11 @@ export function resizedBox(base, d, edges, mods) {
     if (edges.south) y0 = 2 * cy - y1;
     if (edges.north) y1 = 2 * cy - y0;
   }
-  if (x1 < x0) x0 = x1 = mods.symmetric ? cx : fx;
-  if (y1 < y0) y0 = y1 = mods.symmetric ? cy : fy;
+  // NO inversion clamp: an inverted [x0, y0, x1, y1] is a FLIPPED box and is
+  // returned as-is (the pair of `x1 < x0` collapses that used to live here is what
+  // the docstring's "CORRECTING THE RECORD" paragraph is about). The grabbed edge
+  // keeps tracking the cursor straight through the anchor, so the negative extent
+  // the caller stores is anchored exactly where the fixed edge was.
   return [x0, y0, x1, y1];
 }
 
@@ -356,8 +382,19 @@ export function scalePairs(member, factor, c, axis = null) {
  */
 export function groupResizeState(gState, gWorld, edges, mods, dLocal) {
   const box = resizedBox([0, 0, gState.w, gState.h], dLocal, edges, { ...mods, uniform: true });
-  const K = gState.w > 1e-9 ? (box[2] - box[0]) / gState.w
+  const signedK = gState.w > 1e-9 ? (box[2] - box[0]) / gState.w
     : gState.h > 1e-9 ? (box[3] - box[1]) / gState.h : 1;
+  // K IS CLAMPED NON-NEGATIVE HERE, AND ONLY HERE — a TECHNICAL bound with a
+  // derivation, not the arbitrary kind resizedBox just shed. A single item resizes
+  // by its BOX, so a negative extent there is a reflection (core/geometry.js "THE
+  // FLIP"). A group resizes by its similarity's SCALAR `scale`, and a scalar has no
+  // handedness: negating it is a π-rotation, not a mirror, so it would silently
+  // rotate the group instead of flipping it. Worse, `world.scale` is the MAGNITUDE
+  // every length consumer multiplies by (blur sigma, stroke widths, material
+  // half-extents — render_gpu/skia/paint_skia.js), and a negative one puts negative
+  // lengths into the painter. To flip a group's CONTENTS, flip its members (the
+  // flip-h/flip-v commands recurse into a group for exactly this reason).
+  const K = Math.max(0, signedK);
   const newScale = (gState.scale ?? 1) * K;
   const worldOrigin = T.apply(gWorld, box[0], box[1]); // where local (0,0) lands
   const targetWorld = { x: worldOrigin.x, y: worldOrigin.y, rotation: gWorld.rotation, scale: newScale };

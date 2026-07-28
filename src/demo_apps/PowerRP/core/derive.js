@@ -13,11 +13,26 @@
  *     itemId,      // the STORED item this derives from (deltas target this)
  *     type, state, // folded item state
  *     world,       // similarity transform local→world (parent-composed later)
+ *     mirror?,     // {x, y} booleans — present ONLY on a FLIPPED node (see below)
  *     plugin }
+ *
+ * THE FLIP NORMALIZATION (core/geometry.js flippedBox / normalizedBox). A stored
+ * w or h may be NEGATIVE: that is how a reflection is represented, because the
+ * pose is a similarity and a similarity cannot carry one. Derivation is where
+ * that sign STOPS: every node's state is normalized to a non-negative box and the
+ * sign becomes `node.mirror`, so nothing downstream — no plugin `emit()`, no
+ * `hitTest`, no shader half-extent, no exporter substrate — ever sees a negative
+ * extent. Only two consumers read `mirror`: the render walk
+ * (render_gpu/ports.js sceneIR, which wraps the node's commands in a local
+ * reflection) and `hitNode` below (which reflects the probe point back). Because
+ * the flip is an involution, a flipped node normalizes to the SAME geometry as its
+ * unflipped self, so its footprint, snap features, anchors, AABB and cull result
+ * are identical — the flip changes only which way its content faces.
  */
 
 import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
+import { normalizedBox, unmirroredLocal } from "./geometry.js";
 
 /**
  * Pure function. An item's LOCAL→WORLD similarity transform, with rotation
@@ -119,11 +134,18 @@ export function stateXYForCenterPivotWorld(target, w, h) {
  * @example // NOT its stored (100,100) — so the test is rotation-anchor-aware:
  * @example pointInNodeBox({x: 100, y: 100, w: 200, h: 120, rotation: Math.PI / 2, scale: 1}, 200, 160) // true
  * @example pointInNodeBox({x: 100, y: 100, rotation: 0, scale: 1}, 100, 100) // false (no w/h: not a box)
+ * @example // a FLIPPED box occupies the same footprint, so the same points hit it:
+ * @example pointInNodeBox({x: 300, y: 100, w: -200, h: 120, rotation: 0, scale: 1}, 150, 160) // true
  */
 export function pointInNodeBox(itemState, wx, wy) {
   if (itemState.w == null || itemState.h == null) return false;
-  const local = T.apply(T.invert(worldTransform(itemState)), wx, wy);
-  return local.x >= 0 && local.x <= itemState.w && local.y >= 0 && local.y <= itemState.h;
+  // Reads the RAW stored state (it is called on pre-derivation item states), so it
+  // must do the flip normalization itself rather than inherit the node's. The
+  // reflection is irrelevant to a rectangle test — only the SIGN is — so this needs
+  // normalizedBox, not unmirroredLocal.
+  const box = normalizedBox(itemState);
+  const local = T.apply(T.invert(worldTransform({ ...itemState, x: box.x, y: box.y, w: box.w, h: box.h })), wx, wy);
+  return local.x >= 0 && local.x <= box.w && local.y >= 0 && local.y <= box.h;
 }
 
 /**
@@ -141,14 +163,26 @@ export function deriveRenderTree(state, registry) {
   // Typeless items are NOT YET CREATED on this fold (their creation slide is
   // later in the deck — imaginary-slide semantics; see expressions.js) and
   // derive exactly like inactive ones: skipped, never an error.
-  const nodes = Object.entries(items).filter(([, s]) => s.active !== false && typeof s.type === "string").map(([id, itemState]) => ({
-    id,
-    itemId: id,
-    type: itemState.type,
-    state: itemState,
-    world: worldTransform(itemState),
-    plugin: registry.get(itemState.type),
-  }));
+  const nodes = Object.entries(items).filter(([, s]) => s.active !== false && typeof s.type === "string").map(([id, itemState]) => {
+    // THE FLIP SEAM (module docstring): a NEGATIVE w/h is a reflection. Split it
+    // into a positive box + mirror flags here, so no consumer downstream can meet
+    // a negative extent. The sign test is inline and the normalization allocates
+    // NOTHING for an unflipped item — every item is re-derived on every frame, and
+    // an unflipped node must stay byte-identical (same `state` object identity, no
+    // `mirror` key at all, exactly like the other optional node marks).
+    const signed = (itemState.w ?? 0) < 0 || (itemState.h ?? 0) < 0;
+    const box = signed ? normalizedBox(itemState) : null;
+    const state = box ? { ...itemState, x: box.x, y: box.y, w: box.w, h: box.h } : itemState;
+    return {
+      id,
+      itemId: id,
+      type: itemState.type,
+      state,
+      world: worldTransform(state),
+      plugin: registry.get(itemState.type),
+      ...(box ? { mirror: { x: box.mirrorX, y: box.mirrorY } } : {}),
+    };
+  });
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
   return resolveMetaballScene(resolveSkyScene(resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes)))));
 }
@@ -854,7 +888,14 @@ export function standardBBoxAnchors(state) {
 function hitNode(node, wx, wy, nodesById, tol = 0) {
   const { plugin, state } = node;
   if (plugin.hitTestWorld) return plugin.hitTestWorld(node, wx, wy, nodesById);
-  const local = T.apply(T.invert(node.world), wx, wy);
+  // A FLIPPED node paints its content reflected about its box center, so the probe
+  // point must be reflected back before any hitTest sees it — every one of them
+  // (and the bbox default below) is written against the UNMIRRORED frame and asks
+  // `0 <= p <= w`. One reflection here covers all of them; no plugin learns about
+  // flips. Unflipped nodes carry no `mirror`, so they take the identity path.
+  const local = node.mirror
+    ? unmirroredLocal(T.apply(T.invert(node.world), wx, wy), { ...state, mirrorX: node.mirror.x, mirrorY: node.mirror.y })
+    : T.apply(T.invert(node.world), wx, wy);
   if (plugin.hitTest) return plugin.hitTest(state, local.x, local.y, tol / node.world.scale);
   if (plugin.capabilities.bbox)
     return local.x >= 0 && local.x <= (state.w ?? 0) && local.y >= 0 && local.y <= (state.h ?? 0);

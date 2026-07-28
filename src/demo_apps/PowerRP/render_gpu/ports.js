@@ -18,8 +18,56 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
+
+/**
+ * Pure function. The REFLECTION push that realizes a flipped node's mirror, or
+ * null for an unflipped node — the render half of the flip (core/derive.js splits
+ * a negative stored w/h into a positive box + `node.mirror`; this is where that
+ * flag becomes visible ink).
+ *
+ * The reflection is about the box's own CENTER LINE, so it is `translate(w) then
+ * negate x`: local x ↦ w − x maps the box onto itself with its content reversed.
+ * That is why a flipped widget occupies the SAME screen rect as its unflipped self
+ * — the mirror is an isometry of its own box.
+ *
+ * Emitted INSIDE pushTransform(node.world), so it composes as a local frame and no
+ * plugin's emitted geometry has to know about it. Both axes at once is a point
+ * reflection through the center (equivalently a 180° turn), which is exactly what
+ * a doubly-flipped box means.
+ *
+ * KNOWN BOUND — A PROCEDURAL MATERIAL'S PATTERN DOES NOT MIRROR. Vector geometry,
+ * raster images and TEXT GLYPHS all mirror correctly, because they ride the canvas
+ * CTM this frame becomes (render_gpu/skia/paint_skia.js applyView, pdf
+ * cmSimilarity, svg similarityTransform). The per-pixel MATERIAL and BACKDROP
+ * handlers do not ride it: they compute their own device-space region and evaluate
+ * SkSL at the device root. Their REGION is correct — the center is the mirror's
+ * fixed point and `signedApply` places it, and their half-extents are positive
+ * because core/derive normalized the sign away — but the pattern inside is
+ * generated from (center, half-extents, angle) with no handedness term, so flipping
+ * a corkboard or a sky mirrors its BOX and not its grain. For most of these
+ * materials that is invisible (they are statistically symmetric); for a directional
+ * one it is a real difference. Fixing it means giving `material.pack` a handedness
+ * uniform and honouring it per shader — deliberately NOT done here, because it is a
+ * change to every material's uniform contract rather than to the flip.
+ *
+ * @param {object} node - a derive render node; only `.mirror` and `.state.w/h` are read
+ * @returns {object|null} a pushTransform op, or null
+ *
+ * @example mirrorPush({state: {w: 100, h: 50}}) // null (no .mirror: nothing to reflect)
+ * @example mirrorPush({mirror: {x: true, y: false}, state: {w: 100, h: 50}}) // {op: "pushTransform", x: 100, y: 0, rotation: 0, scale: 1, signX: -1}
+ * @example mirrorPush({mirror: {x: false, y: true}, state: {w: 100, h: 50}}) // {op: "pushTransform", x: 0, y: 50, rotation: 0, scale: 1, signY: -1}
+ */
+export function mirrorPush(node) {
+  if (!node.mirror) return null;
+  return pushTransform({
+    x: node.mirror.x ? node.state.w : 0,
+    y: node.mirror.y ? node.state.h : 0,
+    signX: node.mirror.x ? -1 : 1,
+    signY: node.mirror.y ? -1 : 1,
+  });
+}
 
 /**
  * Pure function. Video widget state → IR (local space). `ref` names an entry
@@ -140,7 +188,16 @@ function emitNode(node, byId, pdfDisplay) {
   // below reaches the emitted ops but NOT into a subtree op's separately-flattened
   // content. Plugins that don't decorate ignore these args (they destructure only
   // `state`); cropbox + group use arg 2, decorators use arg 3.
-  const cmds = node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, node.world, renderCtx);
+  // THE FLIP (mirrorPush above). The reflection wraps EVERYTHING the node draws,
+  // effects included — a flipped widget's drop shadow falls on its flipped side,
+  // which is the behaviour a flip means (and matches PowerPoint). That is why the
+  // mirror is folded into the world handed to emit() as arg 3 as well: an effected
+  // or decorated widget's `content` is flattened INDEPENDENTLY from identity (see
+  // the arg-3 note below), so the outer push below cannot reach it and the mirror
+  // has to travel with the absolute world instead.
+  const mirror = mirrorPush(node);
+  const emitWorld = mirror ? signedCompose(node.world, mirror) : node.world;
+  const cmds = node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, emitWorld, renderCtx);
   if (cmds.length === 0) return [];
   // THE UNIVERSAL EFFECTS SEAM. This is the ONE place every rendered node passes
   // through, so the shared effects bundle (shadow / bloom / blend / inner shadow
@@ -150,5 +207,8 @@ function emitNode(node, byId, pdfDisplay) {
   // applyNodeEffects returns `cmds` untouched both for the 34 plugins that call
   // applyEffects inside their own emit() (never a double wrap) and whenever every
   // effect is off (byte-identical to before this seam existed).
-  return [pushTransform(node.world), ...applyNodeEffects(node, cmds), popTransform()];
+  const body = applyNodeEffects(node, cmds);
+  return mirror
+    ? [pushTransform(node.world), mirror, ...body, popTransform(), popTransform()]
+    : [pushTransform(node.world), ...body, popTransform()];
 }
