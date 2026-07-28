@@ -28,7 +28,7 @@
  * carry meta.fps get it stripped loudly by repairedDocument().
  */
 
-import { blendApplied, copied, copiedDeep, getPath, setPath, deletePath, leaves } from "./deltas.js";
+import { blendApplied, copied, copiedDeep, deepEqual, getPath, isTree, setPath, deletePath, leaves } from "./deltas.js";
 import { defaultTransition, withDurationMigrated } from "./transitions.js";
 import {
   withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue,
@@ -406,6 +406,246 @@ export function withItemPurged(doc, itemId) {
   let out = doc;
   for (let i = 0; i < doc.slides.length; i++) out = unkeyframed(out, i, ["items", itemId]);
   return out;
+}
+
+// ── Freezing an item's animation ─────────────────────────────────────────────
+//
+// THE REQUEST (user): "another tool to remove all keyframes … for a given
+// selection or object". Taken literally that is unbuildable: there is no separate
+// items table, so slide 0's delta CREATES every item — deleting every delta entry
+// for an object deletes the OBJECT. The buildable operation is a COLLAPSE: the
+// item keeps exactly ONE full keyframe and stops changing across the deck. That is
+// the same shape as the frame-freeze half of the camera-bind pair (core/registry.js
+// CAMERA_FREEZE_HELP: "replace equation-bound x / y / w / h with the plain numbers
+// they currently evaluate to … so the widget … stays put").
+//
+// WHICH VALUE SURVIVES: the item's state on the slide the tool was invoked FROM,
+// written at its CREATION slide.
+//   CURRENT-slide values, not creation-slide ones, because every comparable house
+//     operation preserves what the user is looking at — ungroup BAKES the current
+//     group-influenced world so that "removing the group changes nothing visible,
+//     anywhere" (ungroupBakeSlides), and the frame freeze writes the numbers a
+//     property currently evaluates to. Collapsing to the ORIGINAL pose instead
+//     would make the object jump on the very slide the user is watching.
+//   CREATION slide, not the current one, because the item must keep existing on
+//     the slides where it already existed; writing it "here" would delete it from
+//     every earlier slide.
+//
+// `active` IS NEVER TOUCHED, on any slide. It is not animation, it is EXISTENCE:
+// "`active: false` is how items exist on some slides and not others — Delete
+// keyframes it; Purge actually removes" (core/properties.js PROPS.active).
+// Collapsing it would silently perform a Delete-everywhere or a Show-everywhere —
+// operations that already have their own named commands — and invoking the tool
+// from a slide where the item is HIDDEN would collapse `active: false` onto the
+// whole deck, i.e. the object would disappear from the entire document while still
+// passing a "looks identical on the slide you invoked from" check. So the
+// visibility timeline survives leaf-for-leaf and only the animation goes.
+// `type` needs no exemption: it is part of the state written back, and an item
+// whose type is set nowhere is an orphan (orphanedItems drops it at load).
+//
+// EQUATIONS SURVIVE WHERE THEY ARE IN FORCE, because the state written back is the
+// RAW fold (equation strings intact), never the evaluated one — so a widget bound
+// to THE camera is still bound afterwards. An equation stored on some OTHER slide
+// IS destroyed, because it is a keyframe and destroying keyframes is the declared
+// purpose; lostEquationKeyframes names every one so that it is never silent.
+
+/** The one item leaf the freeze never touches — EXISTENCE, not animation. */
+const EXISTENCE_LEAF = "active";
+
+/**
+ * Pure function. True for the leaf path the freeze must leave alone — the item's
+ * OWN `active`, not a same-named leaf nested inside some sub-state.
+ *
+ * @example isExistenceLeaf(["active"]) // true
+ * @example isExistenceLeaf(["x"]) // false
+ * @example isExistenceLeaf(["pointsActive"]) // false (a LIST's visibility companion is ordinary state)
+ */
+function isExistenceLeaf(path) {
+  return path.length === 1 && path[0] === EXISTENCE_LEAF;
+}
+
+/**
+ * Pure function. The slide index the frozen state is written at: the first slide
+ * that sets `itemId`'s `type` AND actually participates in the fold, or null when
+ * there is none. The house's creation-slide rule (renameSelection, ungroupBakeSlides
+ * and app.#creationState all take the first slide keying `type`) plus the ENABLED
+ * check that rule can normally take for granted — a DISABLED slide's delta is
+ * skipped entirely (slideState), so writing the collapsed state there would make
+ * the item vanish from the whole document.
+ *
+ * @example freezeTargetSlide({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {x: 1}}}}]}, "a") // 0
+ * @example freezeTargetSlide({slides: [{enabled: false, delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {type: "rect"}}}}]}, "a") // 1 (slide 0 is out of the fold)
+ * @example freezeTargetSlide({slides: [{delta: {items: {a: {x: 1}}}}]}, "a") // null (no slide sets its type)
+ */
+export function freezeTargetSlide(doc, itemId) {
+  for (const i of keyframeIndices(doc, ["items", itemId, "type"]))
+    if (doc.slides[i].enabled !== false) return i;
+  return null;
+}
+
+/**
+ * Pure function. The keyframes a freeze would DESTROY for `itemId`: every leaf of
+ * its subtree on every slide EXCEPT the target slide (whose full state is
+ * rewritten rather than removed) and EXCEPT `active` (see the block comment).
+ * Empty means the item is already static and the tool has nothing to do — which
+ * is exactly the command's availability gate, so a greyed-out control and a
+ * no-op click cannot disagree.
+ *
+ * A whole-item delta that is not a tree (the `null` delete sentinel) counts as
+ * ONE leaf at the empty path, so it is removed too rather than silently surviving
+ * a collapse and deleting the item from the fold on that slide.
+ *
+ * Args:
+ *   doc (object): document
+ *   itemId (string): the item
+ *
+ * Returns:
+ *   {slideIndex, path, value}[] — `path` is relative to the item's own state
+ *
+ * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, "a") // [{slideIndex: 1, path: ["x"], value: 9}]
+ * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {active: false}}}}]}, "a") // [] (visibility is not animation)
+ * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, "a") // [] (already static)
+ */
+export function itemAnimationKeyframes(doc, itemId) {
+  const target = freezeTargetSlide(doc, itemId);
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    if (slideIndex === target) return;
+    const item = getPath(s.delta, ["items", itemId]);
+    if (item === undefined) return;
+    if (!isTree(item)) {
+      out.push({ slideIndex, path: [], value: item });
+      return;
+    }
+    for (const [path, value] of leaves(item))
+      if (!isExistenceLeaf(path)) out.push({ slideIndex, path, value });
+  });
+  return out;
+}
+
+/**
+ * Pure function. Every EQUATION a freeze from slide `slideIndex` would destroy
+ * for `itemId`: an equation-valued leaf stored on ANY slide whose value is not
+ * the one the frozen state keeps at that same path.
+ *
+ * WHY THE COMPARISON, rather than "every equation on a non-target slide": the
+ * state written back is the RAW fold, so an equation that is IN FORCE on the
+ * invoking slide is written back verbatim and loses nothing — the common case
+ * (a widget bound to THE camera on its creation slide) reports nothing at all.
+ * Only an equation the collapse genuinely replaces is named.
+ *
+ * REPORTING IS THE CALLER'S JOB (the repair pipeline's rule): this only builds
+ * the list. Unlike the flip's equation REFUSAL, a freeze proceeds — the flip's
+ * write was incidental to a geometric request and had "unbind first" as an
+ * escape, whereas here destroying keyframes IS the request and refusing would
+ * make the tool unusable on exactly the decks that need it.
+ *
+ * Args:
+ *   doc (object): document
+ *   slideIndex (number): the slide the freeze is invoked from
+ *   itemId (string): the item
+ *   registry (object): plugin registry (.get(type) → plugin; decides equation slots)
+ *
+ * Returns:
+ *   {slideIndex, path, value}[] (empty when nothing is lost)
+ *
+ * @example // x is "=100" on slide 0 and a literal 9 on slide 1; freezing from slide 1 drops the equation:
+ * @example lostEquationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: "=100"}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, "a", reg) // [{slideIndex: 0, path: ["x"], value: "=100"}]
+ * @example // the same equation still in force on the invoking slide is written back, so nothing is lost:
+ * @example lostEquationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: "=100"}}}}, {delta: {items: {a: {y: 9}}}}]}, 1, "a", reg) // []
+ */
+export function lostEquationKeyframes(doc, slideIndex, itemId, registry) {
+  const frozen = foldState(doc, slideIndex, 1).items?.[itemId];
+  if (!frozen || typeof frozen.type !== "string") return [];
+  const plugin = registry.get(frozen.type);
+  const out = [];
+  doc.slides.forEach((s, i) => {
+    const item = getPath(s.delta, ["items", itemId]);
+    if (!isTree(item)) return;
+    for (const [path, value] of leaves(item)) {
+      if (isExistenceLeaf(path)) continue;
+      if (!isEquationValue(plugin, path, value)) continue;
+      if (deepEqual(getPath(frozen, path), value)) continue;
+      out.push({ slideIndex: i, path, value });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every item in `itemIds` FROZEN at its state on
+ * slide `slideIndex`: the item's whole subtree is cleared from every slide
+ * (`active` excepted) and its raw folded state written back once, at
+ * freezeTargetSlide. The item's appearance on `slideIndex` is unchanged by
+ * construction; on every other slide it now shows the same thing.
+ *
+ * ONE FOLD FOR THE WHOLE SET (not a per-item loop over a shrinking document):
+ * an item's folded state depends only on its own leaves, so freezing one cannot
+ * move another, and folding once keeps a multi-selection linear rather than
+ * re-folding the deck per item.
+ *
+ * SKIPS, NEVER THROWS, on the three ways an item can have nothing to freeze —
+ * and hands the reasons back, because REPORTING IS THE CALLER'S JOB (the repair
+ * pipeline's rule; the app console.errors each one). A mixed selection therefore
+ * freezes what it can instead of failing whole.
+ *
+ * Args:
+ *   doc (object): document
+ *   slideIndex (number): the slide whose values survive
+ *   itemIds (string[]): the items to freeze
+ *
+ * Returns:
+ *   {doc, frozen: string[], skipped: {id, reason}[]}
+ *
+ * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).doc.slides[0].delta.items.a.x // 9
+ * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).doc.slides[1].delta.items // undefined (the animation keyframe is gone)
+ * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9, active: false}}}}]}, 1, ["a"]).doc.slides[1].delta.items.a // {active: false} (the visibility timeline survives)
+ * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, 0, ["a"]).skipped // [{id: "a", reason: "it has no keyframes beyond its creation slide — it is already static"}]
+ */
+export function withKeyframesFrozen(doc, slideIndex, itemIds) {
+  const state = foldState(doc, slideIndex, 1);
+  const frozen = [];
+  const skipped = [];
+  let out = doc;
+  for (const id of itemIds) {
+    const target = freezeTargetSlide(doc, id);
+    if (target === null) {
+      skipped.push({ id, reason: "no slide in the fold sets its type — an orphan the load repair should have dropped" });
+      continue;
+    }
+    const value = state.items?.[id];
+    if (!value) {
+      skipped.push({ id, reason: `it has no state on slide ${slideIndex} — it is created later in the deck, so there is nothing here to freeze it at` });
+      continue;
+    }
+    if (itemAnimationKeyframes(doc, id).length === 0) {
+      skipped.push({ id, reason: "it has no keyframes beyond its creation slide — it is already static" });
+      continue;
+    }
+    // 1. Clear the item's whole subtree on EVERY slide, the target included, so
+    //    step 2 is the ONLY thing that decides its state. Leaving the target's own
+    //    leaves in place would resurrect any key a later `null` delete sentinel had
+    //    removed from the fold — the frozen state would then not be what step 2
+    //    wrote. `active` is exempt everywhere (see the block comment above).
+    for (let i = 0; i < doc.slides.length; i++) {
+      const item = getPath(doc.slides[i].delta, ["items", id]);
+      if (item === undefined) continue;
+      if (!isTree(item)) {
+        out = unkeyframed(out, i, ["items", id]);
+        continue;
+      }
+      for (const [path] of leaves(item))
+        if (!isExistenceLeaf(path)) out = unkeyframed(out, i, ["items", id, ...path]);
+    }
+    // 2. Write the frozen state back ONCE, leaf-wise — the showSelection walk's
+    //    shape (nested subtrees keyframe per leaf, arrays are whole leaf values),
+    //    so a `rotationAnchor` lands as two number keyframes and a `points` list
+    //    as one.
+    for (const [path, leafValue] of leaves(value))
+      if (!isExistenceLeaf(path)) out = keyframed(out, target, ["items", id, ...path], leafValue);
+    frozen.push(id);
+  }
+  return { doc: out, frozen, skipped };
 }
 
 /**

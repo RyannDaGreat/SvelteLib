@@ -67,7 +67,7 @@
   // The camera-bind pair's sentences live beside `frameBindable`, the predicate
   // they explain, so the Tools pane's pool row and these command entries show the
   // same words without either transcribing the other's (core/registry.js).
-  import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES } from "../core/registry.js";
+  import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES, FREEZE_KEYFRAMES_HELP, FREEZE_KEYFRAMES_REQUIRES } from "../core/registry.js";
   import { FAMILIES } from "../plugins/shapeshifter.js";
   import { subpathsPathD } from "../core/shapes.js";
 
@@ -483,6 +483,12 @@
     { id: "hide-points", title: "Hide Points (draw straight past them; nothing is renumbered)", icon: "mdi:eye-off", when: needsHandles, requires: REQUIRES_HANDLES, help: "The point keeps its index, so an equation naming it still means the same point — that is the whole difference from Purge Points.", run: (a) => a.setHandleSelectionActive(false) },
     { id: "show-points", title: "Show Points", icon: "mdi:eye", when: needsHandles, requires: REQUIRES_HANDLES, run: (a) => a.setHandleSelectionActive(true) },
     { id: "purge-points", title: "Purge Points (remove for good — renumbers the later points)", icon: "mdi:delete-forever-outline", when: needsHandles, requires: REQUIRES_HANDLES, help: "The renumbering is the part that bites: every later point shifts down an index, so an equation written against point 4 comes to mean what used to be point 5. Hide Points is the non-destructive one.", run: (a) => a.purgeHandleSelection() },
+    // THE KEYFRAME SCOPE. Surfaced in the Tools pane's "Keyframes" section
+    // (core/registry.js TOOL_POOL); help + requires come from there so the pane,
+    // the palette and any future toolbar button read the same sentence. The title
+    // says "Animation Keyframes" rather than "all keyframes" because keyframed
+    // VISIBILITY is deliberately exempt — Delete and Show own that axis.
+    { id: "freeze-keyframes", title: "Remove Animation Keyframes (freeze at this slide's values)", icon: "mdi:motion-pause-outline", when: (a) => a.freezeKeyframeTargets().length > 0, requires: FREEZE_KEYFRAMES_REQUIRES, help: FREEZE_KEYFRAMES_HELP, run: (a) => a.freezeSelectionKeyframes() },
     { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(+1) },
     { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(-1) },
     { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, run: (a) => a.sendToExtreme(+1) },

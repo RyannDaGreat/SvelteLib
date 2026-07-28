@@ -403,6 +403,42 @@ export const CAMERA_FREEZE_HELP = "Replace equation-bound x / y / w / h with the
 export const CAMERA_FREEZE_REQUIRES = "at least one of x / y / w / h to actually hold an equation — nothing here is bound, they are all plain numbers already";
 
 /**
+ * Pure function. Can this widget's state be keyframed at all — i.e. does it
+ * declare any state for a slide delta to address? THE gate on the Keyframes
+ * tools, and it is deliberately the WHOLE condition: animation is universal in
+ * this document model (a keyframe is just a leaf of `items.<id>` in some slide's
+ * delta — core/document.js), so a widget qualifies by having state, never by
+ * being a particular kind of widget. Every registered plugin passes it today.
+ *
+ * THE CAMERA IS INCLUDED, unlike the frame-bind pair above. `purgeable: false`
+ * means "this item may not be removed from existence"; freezing its animation
+ * removes no item, and "stop the camera moving across the deck" is exactly the
+ * operation someone with a drifting camera wants.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example keyframable({defaults: {x: 0, y: 0}}) // true
+ * @example keyframable({defaults: {blur: 4}}) // true (no frame needed — any state will do)
+ * @example keyframable({defaults: {}}) // false (nothing to key)
+ */
+export function keyframable(plugin) {
+  return Object.keys(plugin.defaults ?? {}).length > 0;
+}
+
+/**
+ * The Keyframes tool's HELP and REQUIRES sentences, beside `keyframable` for the
+ * same reason the camera-bind pair's live beside `frameBindable`: the pool row
+ * below and the command ENTRY in web/App.svelte both need the same words, and a
+ * sentence transcribed twice is a sentence that can drift.
+ *
+ * The help states the CONSEQUENCE in full, because "what exactly does this
+ * destroy" is the question a freeze has to answer before it is clicked.
+ */
+export const FREEZE_KEYFRAMES_HELP = "Deletes the widget's keyframes on EVERY slide and writes its state back just once, at its creation slide, using the values it holds on the slide you run this from — so it looks the same here and stops changing anywhere else. Per-slide visibility is left alone (Delete and Show still own that). Undo is the only way back: the replaced values are not kept.";
+export const FREEZE_KEYFRAMES_REQUIRES = "a selected widget with keyframes past its creation slide — everything selected here is already static (keyframed visibility does not count, Delete and Show own that)";
+
+/**
  * THE TOOL POOL — the generic tools, declared ONCE, composed into every widget
  * that is structurally eligible. Ordered: a resolved plugin lists its own groups
  * first, then these in this order.
@@ -439,6 +475,24 @@ export const TOOL_POOL = [
         applies: frameBindable,
         help: CAMERA_FREEZE_HELP,
         requires: CAMERA_FREEZE_REQUIRES,
+      },
+    ],
+  },
+  {
+    id: "keyframes",
+    // A TOOLS-ONLY group: there is no "keyframes" Inspector CATEGORY, because a
+    // keyframe is not a property — the Property Panel shows the ‹ ◆ › control
+    // beside each row instead. So this title pins to nothing in
+    // web/Inspector.svelte's CATEGORY_TITLES, which tests/tool_groups_test.js
+    // allows for explicitly ("a tools-only group, no shared spelling to pin").
+    title: "Keyframes",
+    rows: [
+      {
+        kind: "command",
+        command: "freeze-keyframes",
+        applies: keyframable,
+        help: FREEZE_KEYFRAMES_HELP,
+        requires: FREEZE_KEYFRAMES_REQUIRES,
       },
     ],
   },

@@ -61,6 +61,16 @@ const registered = registry.all();
 const ROW_KINDS = new Set(["command", "preset"]);
 /** Pure function. Every row of every group of `plugin`, flattened. */
 const allRows = (plugin) => (plugin.toolGroups ?? []).flatMap((g) => g.rows);
+/**
+ * Pure function. The POOL group ids `plugin` inherits, in pool order — DERIVED
+ * from TOOL_POOL, never transcribed, so the order/merge assertions below survive
+ * the next generic tool being added to the pool instead of pinning today's list.
+ *
+ * @example poolIdsFor({defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}) // ["positioning", "keyframes"]
+ * @example poolIdsFor({defaults: {blur: 4}, capabilities: {}}) // ["keyframes"] (no frame → no Positioning)
+ */
+const poolIdsFor = (plugin) =>
+  TOOL_POOL.filter((g) => g.rows.some((r) => r.applies(plugin))).map((g) => g.id);
 
 // ── (1) well-formed ──────────────────────────────────────────────────────────
 test("every registered plugin carries a resolved toolGroups array", () => {
@@ -236,8 +246,12 @@ test("MULTI-FAMILY resolution: each family becomes its own top-level group, in o
       { id: "performance", title: "Performance", presets: [{ name: "Draft", props: { maxIterations: 200 } }] },
     ],
   });
-  assert.deepEqual(plugin.toolGroups.map((g) => g.id), ["presets.location", "presets.colour", "presets.performance", "positioning"]);
-  assert.deepEqual(plugin.toolGroups.map((g) => g.title), ["Location", "Colour", "Performance", "Positioning"]);
+  // The INHERITED tail is DERIVED from the pool, not transcribed: this test is
+  // about ORDER (own families first, pool groups last, in pool order), and a
+  // hand-written tail would fail every time a generic tool is added — which is
+  // exactly what happened when the Keyframes group joined the pool.
+  assert.deepEqual(plugin.toolGroups.map((g) => g.id), ["presets.location", "presets.colour", "presets.performance", ...poolIdsFor(plugin)]);
+  assert.deepEqual(plugin.toolGroups.slice(0, 3).map((g) => g.title), ["Location", "Colour", "Performance"]);
   // Picking from one family writes only that family's keys — the compose property
   // app.applyPreset gives for free (it writes exactly Object.keys(preset.props)).
   const wrote = Object.keys(plugin.toolGroups[1].rows[0].preset.props);
@@ -258,19 +272,33 @@ test("a plugin's OWN groups come first; its own rows MERGE into a pool group of 
       { id: "positioning", title: "Positioning", rows: [{ kind: "command", command: "my-pos-cmd", help: "h", requires: "r" }] },
     ],
   });
-  assert.deepEqual(plugin.toolGroups.map((g) => g.id), ["presets", "mine", "positioning"]);
+  // MEMBERSHIP: its own two groups plus every pool group it is eligible for, and
+  // nothing else — "positioning" is BOTH (merged, not duplicated).
+  const ids = plugin.toolGroups.map((g) => g.id);
+  assert.deepEqual([...ids].sort(), [...new Set(["presets", "mine", ...poolIdsFor(plugin)])].sort());
   const pos = plugin.toolGroups.find((g) => g.id === "positioning");
   assert.deepEqual(pos.rows.map((r) => r.command), ["my-pos-cmd", "bind-to-camera", "unbind-from-camera"]);
+  // ORDER, stated as the law rather than as a frozen list: preset families, then
+  // declared groups, then the purely INHERITED ones. "positioning" is declared by
+  // this plugin, so it sits with the declared groups, which is why the law is
+  // written over the pool ids it did NOT declare.
+  assert.deepEqual(ids.slice(0, 3), ["presets", "mine", "positioning"]);
+  for (const id of poolIdsFor(plugin))
+    if (id !== "positioning") assert.ok(ids.indexOf("positioning") < ids.indexOf(id), `inherited "${id}" must follow the plugin's own groups`);
 });
 
 test("a plugin row's own applies() can exclude it, and an all-excluded group vanishes", () => {
   const plugin = withToolGroups({
     type: "synthetic_excluded",
-    defaults: { blur: 4 }, // no frame → no pool group either
+    defaults: { blur: 4 }, // no frame → no Positioning group either
     capabilities: {},
     toolGroups: [{ id: "mine", title: "Mine", rows: [{ kind: "command", command: "c", help: "h", requires: "r", applies: () => false }] }],
   });
-  assert.deepEqual(plugin.toolGroups, []);
+  // Its OWN group is gone (every row excluded), and Positioning with it (no frame).
+  // What remains is exactly the pool groups it IS eligible for — nothing of its own.
+  assert.deepEqual(plugin.toolGroups.map((g) => g.id), poolIdsFor(plugin));
+  assert.ok(!plugin.toolGroups.some((g) => g.id === "mine"));
+  assert.ok(!plugin.toolGroups.some((g) => g.id === "positioning"));
 });
 
 test("the source plugin object is never mutated (two live documents share plugin modules)", () => {
