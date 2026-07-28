@@ -845,23 +845,38 @@ function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, c
       if (!sub) throw new Error("paintIR(skia): makeSurface for lens re-render returned null");
       sub.getCanvas().clear(CanvasKit.Color4f(0, 0, 0, 0));
       if (aniso) {
-        // Anisotropic: rasterize the below-list ONCE under a per-axis scale about
-        // the origin (crisp on BOTH axes — no isotropic view, no texture
-        // resampling). Pre-concat translate(-x0,-y0)·[centerDev]·scale(magX,magY)·
-        // [-originDev] onto the scratch canvas, then paint with the BASE view; each
-        // op's applyView composes with this, so vector ops rasterize at the true
-        // (magX·zoom, magY·zoom) device resolution and fill the lens footprint.
+        // Anisotropic: paint under the DOMINANT-axis lens VIEW (zoom·max(magX,
+        // magY)) and put only the RESIDUAL aspect ratio in the canvas matrix.
+        // WHY the view must carry the magnification: ops that rasterize
+        // THEMSELVES at view resolution and drawImage the result — materialFill
+        // (the Mandelbrot, the corkboard family) — never see the canvas matrix
+        // when sizing their raster. The previous shape here (BASE view + the
+        // full magnification as a concat) therefore upscaled those rasters by
+        // the whole magnification: a telescopic lens over a Mandelbrot magnified
+        // PIXELS, not the set, while the isotropic branch below was crisp.
+        // Vector ops are unchanged either way (they compose the full matrix).
+        // The residual scale(magX/m, magY/m) is ≤ 1 on both axes — a
+        // minification, which filters cleanly.
+        //
+        // Derivation (D_base = the base view's world→device map): the lens view
+        // L := lensViewFor(view, center, m, origin) satisfies
+        //   D_L(p) = centerDev + m·(D_base(p) − originDev),
+        // so the required full map
+        //   centerDev + diag(magX, magY)·(D_base(p) − originDev)
+        // equals Tr(centerDev)·scale(magX/m, magY/m)·Tr(−centerDev)·D_L(p) —
+        // the origin folds into L, and the residual squeezes about the CENTER.
+        const m = Math.max(magX, magY);
+        const lensView = lensViewFor(view, centerWorld, m, originWorld);
         const ds = view.zoom * view.dpr;
         const centerDev = { x: centerWorld.x * ds + view.panX * view.dpr, y: centerWorld.y * ds + view.panY * view.dpr };
-        const originDev = { x: originWorld.x * ds + view.panX * view.dpr, y: originWorld.y * ds + view.panY * view.dpr };
         const subCanvas = sub.getCanvas();
         subCanvas.concat(CanvasKit.Matrix.multiply(
           CanvasKit.Matrix.translated(-x0, -y0),
           CanvasKit.Matrix.translated(centerDev.x, centerDev.y),
-          CanvasKit.Matrix.scaled(magX, magY),
-          CanvasKit.Matrix.translated(-originDev.x, -originDev.y),
+          CanvasKit.Matrix.scaled(magX / m, magY / m),
+          CanvasKit.Matrix.translated(-centerDev.x, -centerDev.y),
         ));
-        paintFlat(CanvasKit, { canvas: subCanvas, surface: sub }, belowFlat, view, ctx, deeperLens(depth));
+        paintFlat(CanvasKit, { canvas: subCanvas, surface: sub }, belowFlat, lensView, ctx, deeperLens(depth));
       } else {
         const lensView = lensViewFor(view, centerWorld, magX, originWorld);
         // Shift the lens view so device (x0,y0) maps to the small surface's origin.
