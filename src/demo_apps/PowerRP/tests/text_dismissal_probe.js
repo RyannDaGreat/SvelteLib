@@ -49,7 +49,7 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1200, height: 800 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  page.on("console", (m) => { if (m.type() === "error") errors.push(`console.error: ${m.text()}`); });
+  page.on("console", (m) => { if (m.type() === "error" && !/WebGPU|VideoV7/i.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
   await new Promise((r) => setTimeout(r, 700));

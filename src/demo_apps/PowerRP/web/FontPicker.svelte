@@ -25,6 +25,12 @@
   (committed + dynamic), and cssFamilyFor resolves an uploaded family the same
   way — an uploaded font previews in its own face too.
 
+  The focused option ALSO previews where the picker is MOUNTED — for the text
+  format toolbar, that is the real canvas — via onpreview/onpreviewend. The
+  picker owns no document write: it reports which font is focused, and the mount
+  point decides what previewing one means (the GradientPresetPicker/AngleField
+  callback convention). Nothing is committed until onchange fires.
+
   No <style> block (web/ app convention): classes live in app.css (.fontpicker,
   .fp-* via --a-* tokens). iconify for the caret.
 -->
@@ -41,7 +47,19 @@
   import { cssFamilyFor, fontSample } from "../render_gpu/fonts.js";
 
   // options: [{value, label}] (fontOptions()); value: current font id; onchange(id).
-  let { options = [], value = "system", onchange = () => {} } = $props();
+  //
+  // onpreview(id)/onpreviewend() LIVE-PREVIEW the focused font wherever the
+  // picker is mounted — for the text toolbar, on the real canvas. The picker
+  // itself stays app-free (the GradientPresetPicker/AngleField callback
+  // convention): it reports which font is focused and nothing else, so it can
+  // never mutate a document or know what a "selection" is.
+  let {
+    options = [],
+    value = "system",
+    onchange = () => {},
+    onpreview = () => {},
+    onpreviewend = () => {}
+  } = $props();
 
   // The preview body for a NORMAL font, shown three ways (regular / bold /
   // underlined). A limited-charset face substitutes its own `sample` (below).
@@ -56,6 +74,13 @@
   let open = $state(false);
   let query = $state(""); // the search filter (case-insensitive, matched on label)
   let activeIndex = $state(-1); // keyboard/hover focus INTO `filtered` → drives the preview
+  // The font that was current when the menu OPENED — what focusing an option
+  // previews AWAY FROM, and what focusing it again reverts TO. Captured in
+  // openMenu rather than read live from `value` on purpose: the live preview can
+  // feed back into whatever computes `value`, and a preview keyed on its own
+  // effect would chase itself. Snapshotted once per open, it cannot. null until
+  // the first open, when nothing is focused and nothing previews anyway.
+  let baseValue = $state(null);
   // DOM refs (bind:this). $state so effects that read them re-run once bound —
   // the Svelte 5 idiom for refs used in reactive contexts (menuEl in the
   // scrollbar-sync effect; rootEl/searchEl in the focus + outside-click effects).
@@ -243,6 +268,7 @@
 
   function openMenu() {
     open = true;
+    baseValue = value;
     activeIndex = Math.max(0, filtered.findIndex((o) => o.value === value));
   }
   function closeMenu() {
@@ -253,6 +279,11 @@
   function toggle() {
     open ? closeMenu() : openMenu();
   }
+  /** Command. Commits `id` and closes. The close reverts the live preview (via
+   *  the focus effect), which is harmless AFTER onchange: a mount point that
+   *  commits must consume its own preview, so by then there is nothing to
+   *  revert — the same "the commit eats the preview" contract the gradient
+   *  preset grid relies on. */
   function choose(id) {
     onchange(id);
     closeMenu();
@@ -290,6 +321,32 @@
     filtered; listW; open; // reactive deps (touch → re-run)
     if (open && menuEl) requestAnimationFrame(syncScroll);
   });
+
+  // LIVE PREVIEW of the focused font WHEREVER THE PICKER IS MOUNTED (for the text
+  // toolbar: on the real canvas), keyed on the SAME activeIndex that drives the
+  // big in-menu preview panel. One invariant, easy to reason about: whatever face
+  // the panel is showing, the mount point is showing too.
+  //
+  // Keying on activeIndex (which BOTH pointerenter and the arrow keys write) is
+  // what makes the trope follow FOCUS rather than the pointer: arrowing through
+  // the list previews exactly like hovering, and sliding the pointer off a row
+  // onto the preview panel to read the pangram does not flicker the canvas.
+  //
+  // Focusing the ORIGINAL font ENDS the preview instead of staging one — the
+  // untouched document already IS that font, so walking back onto its row must
+  // revert. Closing the menu (Escape, outside click, pick) drops activeIndex/open
+  // and therefore reverts through this same path; there is no second code path to
+  // keep in sync.
+  $effect(() => {
+    const focused = open && activeIndex >= 0 ? filtered[activeIndex] : null;
+    if (!focused || focused.value === baseValue) onpreviewend();
+    else onpreview(focused.value);
+  });
+
+  // The picker can UNMOUNT while open and previewing (the toolbar goes away when
+  // the selection changes), and an unmount fires no pointerleave and no close —
+  // so the revert must not depend on either. The GradientPresetPicker precedent.
+  $effect(() => () => onpreviewend());
 
   // Outside-click close. Pointerdown (not click) so it fires before a blur race;
   // preventDefault is NOT used here — the toolbar's own keepFocus handles the

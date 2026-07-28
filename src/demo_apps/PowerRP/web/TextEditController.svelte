@@ -238,33 +238,127 @@
   }
 
   // ── style edits (toolbar onstyle / Cmd+B·I·U / Cmd±) ──────────────────────────
+  /** Query (reads the live selection offsets). `base` with `delta` applied over
+   *  the selection — the ONE expression of "styled selection", shared by the
+   *  durable edit and the hover preview so they can never drift. */
+  function styledOverSelection(base, delta) {
+    return { runs: applyRunStyle(base.runs, selStart, selEnd, delta), paras: base.paras };
+  }
+
+  // ── style HOVER PREVIEW (the FontPicker's live canvas preview) ────────────────
+  // Hovering/arrowing a font in the picker must show that face ON THE CANVAS
+  // without becoming an edit. The seam already exists: the WHOLE edit session
+  // lives in app.previewDelta (stageValue) and only commitTextEdit turns it into
+  // an undo unit — so a hover just stages a DIFFERENT value into the same slot.
+  // What it must NOT do is call preview(): that pushes in-session undo history
+  // (task "in-session undo/redo"), and a snapshot per hovered font would bury the
+  // user's real keystrokes. So a hover goes through stageValue DIRECTLY.
+  //
+  // `stylePreview` = the state captured at the FIRST hover of a run of hovers:
+  //   value — the rich value to restore on revert.
+  //   dirty — whether the session had ALREADY staged an edit. When it had not,
+  //           reverting must CLEAR the preview rather than re-stage an identical
+  //           value: a bare hover must not leave a pending preview behind, or
+  //           commitTextEdit would turn a mere hover into a no-op undo unit.
+  let stylePreview = null;
+
+  /** Query. The rich value every style COMMIT and the TOOLBAR must read: the
+   *  pre-hover value while a hover preview is staged, else the live one. A hover
+   *  preview is a transient canvas effect, NOT an edit — so the toolbar must not
+   *  reflect it. This also breaks a FEEDBACK LOOP: the toolbar derives the
+   *  FontPicker's `value` from these runs, so without it a staged preview would
+   *  report the hovered font as the current one and the picker would immediately
+   *  cancel its own preview. */
+  function styleBase() {
+    const live = rich; // ALWAYS read, so readers stay subscribed to the live value
+    return stylePreview ? stylePreview.value : live;
+  }
+
+  /** Command. Live-previews a run-style delta over the selection WITHOUT
+   *  committing and WITHOUT touching in-session history. A collapsed caret is a
+   *  no-op: there is no glyph the preview could change (the durable path stashes
+   *  pendingStyle instead, which by definition affects only text not yet typed).
+   *  Each call re-applies from the captured base, so hovering A then B previews
+   *  B alone rather than compounding. */
+  function previewStyleOnSelection(delta) {
+    if (plain || selEnd <= selStart) return;
+    if (!stylePreview) stylePreview = { value: rich, dirty: app.previewDelta !== null };
+    // Declare the staged value TRANSIENT: every commit path drops it first, so a
+    // click-away/slide-switch mid-hover commits the real value, not the hover.
+    app.transientPreview = endStylePreview;
+    stageValue(styledOverSelection(stylePreview.value, delta));
+  }
+
+  /** Command. Reverts a staged style hover preview, restoring exactly what the
+   *  session held before it (or clearing the preview outright when the session
+   *  was clean). A no-op when nothing is staged, so every close/leave/unmount
+   *  path can call it unconditionally. */
+  function endStylePreview() {
+    if (!stylePreview) return;
+    const { value, dirty } = stylePreview;
+    stylePreview = null;
+    app.transientPreview = null;
+    if (dirty) stageValue(value);
+    else app.cancelPreview();
+  }
+
+  /** Command. styleBase(), with any staged hover preview DISCARDED — the shared
+   *  preamble of every durable style write. Discarding (not reverting) is right
+   *  here: the caller is about to stage its own value over the same slot. */
+  function takeStyleBase() {
+    const base = styleBase();
+    stylePreview = null;
+    app.transientPreview = null;
+    return base;
+  }
+
+  // A hover preview must never OUTLIVE this controller. Text edit can be
+  // dismissed while the picker is open with a preview staged (click-away, slide
+  // switch, Esc — all funnel through app.dismissTextEdit, which COMMITS whatever
+  // previewDelta holds), and no pointerleave fires when the overlay simply
+  // unmounts. Reverting on teardown is what stops a merely-hovered font from
+  // being committed as though it were chosen.
+  $effect(() => () => endStylePreview());
+
   /** Command. Applies a run-style delta: to the SELECTION if non-empty (via
    * applyRunStyle, offsets preserved), else stashed as the caret's pending style
-   * for the next typed char (the PPT empty-caret convention). */
+   * for the next typed char (the PPT empty-caret convention).
+   *
+   * It applies over styleBase(), i.e. the value BEFORE any hover preview, and
+   * DISCARDS that preview — a hover is not an edit, so the committed value and
+   * the in-session snapshot must both start from the real one. Discarding here
+   * is also what makes the picker's revert-on-close safe to fire after a click:
+   * by then there is no preview left to revert. */
   function applyStyleToSelection(delta) {
     if (plain) return; // plain-string widget: no runs to style (no format toolbar)
-    if (selEnd > selStart) preview({ runs: applyRunStyle(rich.runs, selStart, selEnd, delta), paras: rich.paras });
+    const base = takeStyleBase();
+    if (selEnd > selStart) preview(styledOverSelection(base, delta));
     else pendingStyle = { ...pendingStyle, ...delta };
   }
   /** Command. Applies a paragraph-style delta to every paragraph the selection
-   * touches (align etc.) via applyParaStyle — offsets/runs unchanged. */
+   * touches (align etc.) via applyParaStyle — offsets/runs unchanged. Reads the
+   * pre-hover runs (takeStyleBase) so a staged font preview can never be BAKED
+   * into an unrelated paragraph commit. */
   function applyParaToSelection(delta) {
     if (plain) return; // plain-string widget: alignment lives on the Inspector row
-    preview({ runs: rich.runs, paras: applyParaStyle(rich.paras, rich.runs, selStart, selEnd, delta) });
+    const base = takeStyleBase();
+    preview({ runs: base.runs, paras: applyParaStyle(base.paras, base.runs, selStart, selEnd, delta) });
   }
   function toggleStyle(key) {
     if (plain) return; // plain-string widget: no bold/italic/underline runs
+    const base = styleBase(); // read the REAL state, never a hovered preview
     if (selEnd > selStart) {
-      const cur = commonStyle(rich.runs, selStart, selEnd, key);
+      const cur = commonStyle(base.runs, selStart, selEnd, key);
       applyStyleToSelection({ [key]: cur === true ? false : true });
     } else {
-      const cur = pendingStyle[key] ?? runStyleAt(rich.runs, focus)[key];
+      const cur = pendingStyle[key] ?? runStyleAt(base.runs, focus)[key];
       pendingStyle = { ...pendingStyle, [key]: cur === true ? false : true };
     }
   }
   function stepSize(delta) {
     if (plain) return; // plain-string widget: size lives on the Inspector row
-    const base = commonStyle(rich.runs, selStart, selEnd, "size") ?? runStyleAt(rich.runs, selStart).size ?? DEFAULT_TEXT_SIZE;
+    const cur = styleBase(); // read the REAL state, never a hovered preview
+    const base = commonStyle(cur.runs, selStart, selEnd, "size") ?? runStyleAt(cur.runs, selStart).size ?? DEFAULT_TEXT_SIZE;
     const size = Math.max(1, base + delta);
     if (selEnd > selStart) applyStyleToSelection({ size });
     else pendingStyle = { ...pendingStyle, size };
@@ -497,10 +591,12 @@
       {app}
       boxScale={box.scale}
       onstyle={applyStyleToSelection}
+      onstylepreview={previewStyleOnSelection}
+      onstylepreviewend={endStylePreview}
       onparastyle={applyParaToSelection}
       selRange={{ start: selStart, end: selEnd }}
-      runsAt={() => rich.runs}
-      parasAt={() => rich.paras}
+      runsAt={() => styleBase().runs}
+      parasAt={() => styleBase().paras}
       boxAlign={node.state.align ?? "left"}
     />
   {/if}

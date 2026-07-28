@@ -11,6 +11,18 @@
  *       bottom == pop bottom) in every state (few + many results, empty search).
  *   (4) The pangram lines must not be clipped (each line's bottom <= pop bottom).
  *   (5) The divider must DRAG (pointerdown+move on .fp-divider changes list width).
+ *   (6) SEG7/Inter readability of the in-menu preview panel.
+ *   (7) LIVE CANVAS PREVIEW of the focused font — the hover trope. Proved on
+ *       PIXELS (a crop of the rendered text, clear of the popover) AND on the
+ *       serialized document at once, because the whole point is that one changes
+ *       while the other does not:
+ *         7a hovering a row repaints the canvas, leaves app.doc byte-identical
+ *         7b the toolbar keeps reporting the REAL font (no preview feedback loop)
+ *         7c focusing the original row again restores the EXACT baseline pixels
+ *         7d Escape reverts (pixels + document)
+ *         7e ARROW KEYS preview too (the trope follows focus, not the pointer)
+ *         7f click-away mid-hover must NOT commit the merely-hovered font
+ *         7g clicking commits, and exactly ONE undo restores a JSON-equal doc
  * Screenshots each state into .claude_vlm_checks/ for a VLM look.
  *
  * Frontend-only Vite (backend-absent 404s ignored), swiftshader GL.
@@ -18,6 +30,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import fs from "node:fs";
+import { PNG } from "pngjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
@@ -50,7 +63,7 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1500, height: 1000, deviceScaleFactor: 1 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error|crypto\.randomUUID|Credentials API|preserveAspect/i;
+  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error|crypto\.randomUUID|Credentials API|preserveAspect|WebGPU|VideoV7/i;
   page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
@@ -279,6 +292,314 @@ try {
   assert(/PowerRP Inter/.test(inter.previewNameFace || ""), `inter preview NAME still in its OWN face — no regression (face=${inter.previewNameFace})`);
   assert(inter.previewLines.length === 3 && inter.previewLines.every((t) => t === PANGRAM), `inter preview BODY is the pangram, unchanged (got ${JSON.stringify(inter.previewLines[0])})`);
   assert(/PowerRP Inter/.test(inter.previewLineFace || ""), `inter preview body in its OWN face — no regression (face=${inter.previewLineFace})`);
+
+  // ── (7) LIVE CANVAS PREVIEW OF THE FOCUSED FONT ──────────────────────────────
+  // A fresh doc whose text is BIG, WHITE and SHORT, parked well left of where the
+  // popover opens: the pixel crop must contain only rendered text, never a corner
+  // of the menu (whose own preview panel repaints on hover and would make the
+  // digest change for the wrong reason). Asserted below, not assumed.
+  await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const def = (type) => ({ ...app.registry.get(type).defaults, type });
+    const run = { text: "Hamburg", bold: false, italic: false, underline: false, strike: false, size: 96, font: "system", color: "#ffffff", outlineColor: "#000000", outlineWidth: 0, highlight: "" };
+    const cam = { ...def("camera"), name: "Camera", x: 0, y: 0, w: 1000, h: 500, z: 1000, active: true, background: "#101014" };
+    const text = { ...def("text"), name: "Title", x: 60, y: 120, w: 480, h: 160, z: 1, active: true, text: { runs: [run], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] } };
+    const tr = { type: "tween", seconds: 0.4, curve: "smooth", sound: null };
+    app.commit(app.repaired({ meta: { name: "fontpicker-hover", slideW: 1000, slideH: 500 }, slides: [
+      { id: "s0", name: "S1", transition: tr, delta: { items: { cam, text } } },
+    ] }));
+    app.slideIndex = 0;
+    window.__tid = Object.keys(app.doc.slides[0].delta.items).find((id) => app.doc.slides[0].delta.items[id].type === "text");
+  });
+  await sleep(500);
+
+  /** Command. Enters text edit on the fixture item and SELECTS the whole string —
+   *  a run-style preview applies to a RANGE, so an empty selection previews
+   *  nothing (by design: there is no glyph it could change). */
+  const enterEditSelectAll = async () => {
+    await page.evaluate(() => window.__powerrp_app.beginTextEdit(window.__tid));
+    await sleep(400);
+    await page.evaluate(() => window.__powerrp_textEdit.setSelection(0, "Hamburg".length));
+    await sleep(250);
+  };
+  // Empty canvas, well clear of the popover, the toolbar and the crop. The mouse
+  // is PARKED here before the picker opens: a pointer left sitting over the list
+  // from an earlier step gets a pointerenter the moment the menu reappears under
+  // it, which is correct behaviour but silently previews a font — that is exactly
+  // how the first version of this section contaminated its own baseline.
+  const NEUTRAL = { x: 300, y: 900 };
+  const openPicker = async () => {
+    await page.mouse.move(NEUTRAL.x, NEUTRAL.y);
+    await sleep(120);
+    await page.evaluate(() => document.querySelector(".fp-trigger").click());
+    await sleep(300);
+  };
+  /** Query. The serialized document — the ONLY identity that matters here. Undo
+   *  restores an EQUAL document through a fresh proxy, never the same object. */
+  const docJson = () => page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
+  /** Query. The trigger's visible label = the font the toolbar believes is current. */
+  const triggerLabel = () => page.evaluate(() => document.querySelector(".fp-trigger-label")?.textContent.trim() ?? null);
+
+  await enterEditSelectAll();
+  await openPicker();
+
+  // The crop: the selection's on-screen rects, padded. Computed once and reused
+  // for every shot so each digest compares the same pixels.
+  const CROP_PAD = 12;
+  const geom = await page.evaluate((pad) => {
+    const rects = window.__powerrp_textEdit.selectionScreenRects();
+    if (!rects.length) return null;
+    // selectionScreenRects is in the RENDER-AREA frame (PanZoom's worldToScreen),
+    // not page coordinates — offset by the scene canvas so the crop lands on the
+    // canvas and not, say, on the slide navigator's thumbnail, which re-renders
+    // on preview and would confound every comparison.
+    const c = document.querySelector("canvas.scene").getBoundingClientRect();
+    const x0 = c.left + Math.min(...rects.map((r) => r.x)), y0 = c.top + Math.min(...rects.map((r) => r.y));
+    const x1 = c.left + Math.max(...rects.map((r) => r.x + r.w)), y1 = c.top + Math.max(...rects.map((r) => r.y + r.h));
+    const pop = document.querySelector(".fp-pop")?.getBoundingClientRect() ?? null;
+    const tb = document.querySelector(".text-format-toolbar")?.getBoundingClientRect() ?? null;
+    if (!pop || !tb) return null;
+    // CLAMP the padded selection box into the region that shows canvas and
+    // nothing else: left of the popover, below the floating toolbar, inside the
+    // scene canvas. A few glyphs of a 96u face are ample signal; what matters is
+    // that every pixel in frame can ONLY have come from the render.
+    const GAP = 4;
+    const left = Math.max(x0 - pad, c.left);
+    const right = Math.min(x1 + pad, pop.left - GAP, c.right);
+    const top = Math.max(y0 - pad, tb.bottom + GAP, c.top);
+    const bottom = Math.min(y1 + pad, c.bottom);
+    return {
+      clip: { x: Math.round(left), y: Math.round(top), width: Math.round(right - left), height: Math.round(bottom - top) },
+      canvas: { left: Math.round(c.left), top: Math.round(c.top), right: Math.round(c.right), bottom: Math.round(c.bottom) },
+      popLeft: Math.round(pop.left),
+      toolbarBottom: Math.round(tb.bottom),
+    };
+  }, CROP_PAD);
+  const MIN_CROP = 60; // a crop smaller than this shows too few glyphs to judge
+  assert(!!geom && geom.clip.width >= MIN_CROP && geom.clip.height >= MIN_CROP,
+    `selection yields a usable canvas-only crop (${JSON.stringify(geom?.clip)})`);
+  const clip = geom.clip;
+  // The crop must show ONLY canvas: inside the scene canvas, left of the popover,
+  // below the floating toolbar. Anything else in frame (the navigator thumbnail,
+  // the toolbar's own controls) repaints for reasons unrelated to the canvas.
+  assert(clip.x >= geom.canvas.left && clip.y >= geom.canvas.top && clip.x + clip.width <= geom.canvas.right && clip.y + clip.height <= geom.canvas.bottom,
+    `pixel crop lies wholly INSIDE the scene canvas (crop=${JSON.stringify(clip)} canvas=${JSON.stringify(geom.canvas)})`);
+  assert(geom.popLeft != null && clip.x + clip.width <= geom.popLeft,
+    `pixel crop is CLEAR of the popover (crop right=${clip.x + clip.width}, popover left=${geom.popLeft})`);
+  assert(geom.toolbarBottom != null && clip.y >= geom.toolbarBottom,
+    `pixel crop is CLEAR of the floating toolbar (crop top=${clip.y}, toolbar bottom=${geom.toolbarBottom})`);
+
+  // The crop must contain RENDERED GLYPHS ONLY. The caret + selection rects are
+  // DOM overlays drawn over the same pixels, and the caret BLINKS — leaving them
+  // in makes every digest a coin flip and the whole comparison meaningless.
+  // Hiding them for the rest of the run is exactly right: what is under test is
+  // what Skia painted, not the editor chrome on top of it.
+  // Also the SELECTION outline + resize handles: Escape closes the picker AND
+  // exits edit mode (its keydown deliberately does not stop propagation), which
+  // swaps editing chrome for selection chrome — a DOM change that has nothing to
+  // do with whether the previewed typeface was reverted.
+  await page.addStyleTag({ content: ".text-edit-caret, .text-edit-selrect, .handle, polygon.selection { display: none !important; }" });
+  await sleep(200);
+
+  // Compare DECODED PIXELS, not file digests: the GL rasterizer is not
+  // bit-deterministic across repaints, so two screenshots of an unchanged scene
+  // hash differently while being visually identical. Mean absolute difference
+  // over RGB separates "same scene, resampling noise" from "different typeface"
+  // by orders of magnitude — the noise floor is MEASURED below, not assumed.
+  const shot = async (name) => {
+    const buf = await page.screenshot({ clip });
+    fs.writeFileSync(resolve(SHOTS, `fontpicker_hover_${name}.png`), buf);
+    return PNG.sync.read(buf);
+  };
+  /**
+   * Pure function. Mean absolute per-channel RGB difference of two equal-sized
+   * decoded PNGs, in 0..255 units. 0 = pixel-identical.
+   *
+   * @param {{data: Buffer, width: number, height: number}} a
+   * @param {{data: Buffer, width: number, height: number}} b
+   * @returns {number}
+   *
+   * @example mad(black4x4, black4x4) // 0
+   * @example mad(black4x4, white4x4) // 255
+   */
+  const mad = (a, b) => {
+    let sum = 0, n = 0;
+    for (let i = 0; i < a.data.length; i += 4) {
+      sum += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
+      n += 3;
+    }
+    return sum / n;
+  };
+  /** Command. Moves the real mouse onto the row whose label starts with `prefix`,
+   *  firing a genuine pointerenter (the trope's actual trigger). */
+  const hoverRow = async (prefix) => {
+    const at = await page.evaluate((p) => {
+      const li = [...document.querySelectorAll(".fp-item")].find((el) => el.querySelector(".fp-item-name")?.textContent.trim().startsWith(p));
+      if (!li) return null;
+      li.scrollIntoView({ block: "nearest" });
+      const r = li.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    }, prefix);
+    if (!at) return false;
+    await page.mouse.move(at.x, at.y);
+    await sleep(280);
+    return true;
+  };
+
+  /** Command. Logs the STAGED vs STORED font alongside the focused row — the four
+   *  numbers that make a preview bug self-diagnosing (this is what revealed the
+   *  contaminated baseline: stagedFonts was already set at "base"). */
+  const probeState = async (tag) => {
+    const s = await page.evaluate(() => {
+      const app = window.__powerrp_app;
+      const pd = app.previewDelta;
+      const stagedRuns = pd?.items?.[window.__tid]?.text?.runs ?? null;
+      const docRuns = app.doc.slides[0].delta.items[window.__tid].text.runs;
+      const active = document.querySelector(".fp-item.active .fp-item-name")?.textContent.trim() ?? null;
+      return {
+        stagedFonts: stagedRuns ? stagedRuns.map((r) => r.font) : null,
+        docFonts: docRuns.map((r) => r.font),
+        transient: !!app.transientPreview,
+        activeRow: active,
+        trigger: document.querySelector(".fp-trigger-label")?.textContent.trim() ?? null,
+      };
+    });
+    console.log(`  STATE[${tag}]`, JSON.stringify(s));
+  };
+
+  const baseDoc = await docJson();
+  await probeState("base");
+  // The baseline MUST be the untouched render: nothing staged, nothing transient.
+  // Every later comparison is against this, so a contaminated baseline would
+  // quietly invert the meaning of "reverted".
+  const baseClean = await page.evaluate(() => window.__powerrp_app.previewDelta === null && !window.__powerrp_app.transientPreview);
+  assert(baseClean, "BASELINE IS CLEAN — no preview staged before the comparisons begin");
+  const base = await shot("0_base");
+
+  // MEASURE THE NOISE FLOOR: two shots of an untouched scene. Everything below is
+  // judged against what the renderer itself does when nothing changed, so the
+  // thresholds are evidence rather than taste.
+  const noise = mad(base, await shot("0_base_again"));
+  // CONTROL: leaving edit mode re-renders the SAME text slightly differently
+  // (a broad, low-amplitude antialiasing shift over every glyph edge — measured,
+  // not guessed). It has nothing to do with previews, but it is large enough to
+  // swamp a revert check, so every comparison below is made in the SAME edit
+  // state as the baseline: shots taken after an exit re-enter edit mode first.
+  await page.evaluate(() => window.__powerrp_app.dismissEdit());
+  await sleep(400);
+  const editModeShift = mad(base, await shot("0_control_not_editing"));
+  await enterEditSelectAll();
+  await openPicker();
+  const reenterShift = mad(base, await shot("0_control_reentered"));
+  console.log(`PIXEL CONTROLS: exiting edit mode shifts mad=${editModeShift.toFixed(3)}; re-entering returns to mad=${reenterShift.toFixed(3)}`);
+  assert(reenterShift <= 0.5, `re-entering edit mode reproduces the baseline render exactly (mad=${reenterShift.toFixed(3)}) — so like-for-like comparison is sound`);
+  // A revert must land within the renderer's own repaint noise; a typeface swap
+  // must clear it by a wide margin. 4x/20x give room without being a fudge.
+  const SAME_MAX = Math.max(0.5, noise * 4);
+  const CHANGED_MIN = Math.max(2.0, noise * 20);
+  console.log(`PIXEL NOISE FLOOR: mad=${noise.toFixed(4)} → same<=${SAME_MAX.toFixed(3)}, changed>=${CHANGED_MIN.toFixed(3)}`);
+  assert(noise < 1.0, `renderer repaint noise is small enough to compare against (mad=${noise.toFixed(4)})`);
+
+  // (7a) HOVER a visually distinct face → the CANVAS repaints, the DOCUMENT does not.
+  const hovered = await hoverRow("Seven Segment");
+  assert(hovered, "the Seven Segment row is reachable in the list");
+  const hoverShot = await shot("1_hovering_seg7");
+  const hoverDoc = await docJson();
+  const hoverMad = mad(base, hoverShot);
+  assert(hoverMad >= CHANGED_MIN, `HOVER REPAINTS THE CANVAS (mad=${hoverMad.toFixed(3)} >= ${CHANGED_MIN.toFixed(3)})`);
+  assert(hoverDoc === baseDoc, "hover leaves the DOCUMENT byte-identical (no commit, no undo entry)");
+
+  // (7b) No feedback loop: the toolbar must keep reporting the REAL font. If the
+  // staged preview fed back into the picker's `value`, the picker would read its
+  // own preview as the current font and cancel itself (flicker/loop).
+  assert((await triggerLabel()) === "System UI", `toolbar still reports the REAL font while previewing (label=${JSON.stringify(await triggerLabel())})`);
+
+  await probeState("hovering_seg7");
+  // (7c) Focus the ORIGINAL row again → baseline pixels back.
+  await hoverRow("System UI");
+  await probeState("back_on_original");
+  const backMad = mad(base, await shot("2_back_on_original"));
+  assert(backMad <= SAME_MAX, `re-focusing the original font restores the baseline pixels (mad=${backMad.toFixed(3)} <= ${SAME_MAX.toFixed(3)})`);
+
+  // (7d) ESCAPE while previewing must revert, not strand the preview.
+  await hoverRow("Seven Segment");
+  assert(mad(base, await shot("3_before_escape")) >= CHANGED_MIN, "preview is live again before Escape (guards the next assertion)");
+  await page.keyboard.press("Escape");
+  await sleep(350);
+  assert((await docJson()) === baseDoc, "Escape leaves the document untouched");
+  assert(await page.evaluate(() => !document.querySelector(".fp-pop")), "Escape also closed the picker");
+  // Escape ALSO exits edit mode: FontPicker's Escape handler does not stop
+  // propagation, so it reaches the editor's own Escape → commit-and-exit.
+  // Recorded, not asserted as desirable — it is PRE-EXISTING behaviour. What
+  // matters is that the revert ran BEFORE the exit could commit the hover, which
+  // the untouched-document assertion above proves.
+  assert(await page.evaluate(() => window.__powerrp_app.textEditing === null),
+    "(recorded) Escape in the picker also exits edit mode — pre-existing, and it committed the REAL value");
+  // Re-enter before shooting — see the edit-mode control above.
+  await enterEditSelectAll();
+  const escMad = mad(base, await shot("4_after_escape"));
+  assert(escMad <= SAME_MAX, `ESCAPE reverts the preview (mad=${escMad.toFixed(3)} <= ${SAME_MAX.toFixed(3)})`);
+
+  // (7e) KEYBOARD navigation previews too — the trope follows FOCUS, not the
+  // pointer. Arrow ONTO A VISUALLY DISTINCT face: neighbouring grotesques can
+  // rasterize identically here, so a single ArrowDown proves nothing (it measured
+  // mad=0.000 while the preview was in fact working — a false negative).
+  await openPicker();
+  const ARROW_LIMIT = 40; // the list is bounded; never spin forever
+  let arrowSteps = 0, landed = null;
+  while (arrowSteps < ARROW_LIMIT) {
+    landed = await page.evaluate(() => document.querySelector(".fp-item.active .fp-item-name")?.textContent.trim() ?? null);
+    if (landed === "Seven Segment") break;
+    await page.keyboard.press("ArrowDown");
+    arrowSteps++;
+    await sleep(60);
+  }
+  await sleep(300);
+  assert(landed === "Seven Segment", `ARROW KEYS moved focus onto Seven Segment in ${arrowSteps} presses (landed=${JSON.stringify(landed)})`);
+  const arrowMad = mad(base, await shot("5_arrowdown"));
+  assert(arrowMad >= CHANGED_MIN, `ARROW-KEY focus previews on the canvas — no pointer involved (mad=${arrowMad.toFixed(3)})`);
+  assert((await docJson()) === baseDoc, "keyboard preview leaves the document untouched");
+  await page.keyboard.press("Escape");
+  await sleep(300);
+  await enterEditSelectAll(); // Escape exits edit mode; compare like-for-like
+  const arrowEscMad = mad(base, await shot("6_after_arrow_escape"));
+  assert(arrowEscMad <= SAME_MAX, `Escape after keyboard preview reverts (mad=${arrowEscMad.toFixed(3)})`);
+
+  // (7f) THE HAZARD: click-away lands mid-hover. Click-away is a WINDOW-capture
+  // pointerdown that COMMITS the edit, and it always beats the picker's own
+  // document-capture close — so without a transient-preview guard the merely
+  // HOVERED font would be committed as though it had been chosen.
+  await openPicker();
+  await hoverRow("Seven Segment");
+  assert(mad(base, await shot("7_hover_before_clickaway")) >= CHANGED_MIN, "preview live before the click-away (guards the next assertion)");
+  await page.mouse.click(900, 700); // empty canvas, outside the overlay + toolbar
+  await sleep(450);
+  const afterAway = await docJson();
+  assert(!/seg7/.test(afterAway), "CLICK-AWAY MID-HOVER DID NOT COMMIT the hovered font (no seg7 in the document)");
+  assert(afterAway === baseDoc, "click-away mid-hover left the document exactly as it was");
+  await enterEditSelectAll(); // click-away exits edit mode; compare like-for-like
+  const awayMad = mad(base, await shot("8_after_clickaway"));
+  assert(awayMad <= SAME_MAX, `click-away mid-hover reverted the canvas too (mad=${awayMad.toFixed(3)})`);
+
+  // (7g) CLICKING commits — and exactly ONE undo restores a JSON-equal document.
+  await enterEditSelectAll();
+  await openPicker();
+  await hoverRow("Seven Segment");
+  await page.evaluate(() => {
+    const li = [...document.querySelectorAll(".fp-item")].find((el) => el.querySelector(".fp-item-name")?.textContent.trim().startsWith("Seven Segment"));
+    li.click();
+  });
+  await sleep(350);
+  await page.evaluate(() => window.__powerrp_app.dismissEdit()); // leave edit mode → commit
+  await sleep(450);
+  const committed = await docJson();
+  assert(committed !== baseDoc, "clicking a font COMMITS a change to the document");
+  assert(/seg7/.test(committed), "the committed document carries the CHOSEN font");
+  const commitMad = mad(base, await shot("9_committed"));
+  assert(commitMad >= CHANGED_MIN, `committed font is on the canvas (mad=${commitMad.toFixed(3)})`);
+  await page.evaluate(() => window.__powerrp_app.undo());
+  await sleep(400);
+  assert((await docJson()) === baseDoc, "EXACTLY ONE undo restores a JSON-equal document (one undo unit, no hover spam)");
 
   if (errors.length) console.error("PAGE ERRORS:\n" + errors.join("\n"));
   console.log(`\n${fails.length ? "FAILED: " + fails.length : "PASS"} — FontPicker probe (shots in .claude_vlm_checks/fontpicker_*.png)`);

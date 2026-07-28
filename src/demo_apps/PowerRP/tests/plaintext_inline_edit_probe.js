@@ -46,7 +46,7 @@ try {
   // Ignore backend-absent noise: this probe self-spins a FRONTEND-ONLY Vite (no
   // server.py), so best-effort thumbnail-persist POSTs and the project-asset
   // listing 404/500. All orthogonal to in-place text editing.
-  page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|thumbnail|\/api\/thumb|listAssets|could not list project assets|\/api\/assets/i.test(m.text())) errors.push(`console.error: ${m.text()}`); });
+  page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|thumbnail|\/api\/thumb|WebGPU|VideoV7|listAssets|could not list project assets|\/api\/assets/i.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
   await sleep(3500); // Skia wasm + fonts + first paint

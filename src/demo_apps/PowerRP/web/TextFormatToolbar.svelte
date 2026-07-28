@@ -37,7 +37,14 @@
   // paragraphs, parasAt() → current paras + boxAlign (the box-level align default
   // underlying paragraphs with no own override — so an unset paragraph reflects
   // the box, not a bare undefined).
-  let { app, boxScale, onstyle, selRange, runsAt, onparastyle, parasAt, boxAlign } = $props();
+  //
+  // onstylepreview(delta)/onstylepreviewend() are the same run-style delta staged
+  // LIVE and reverted — the hover-to-preview seam. They mirror onstyle exactly so
+  // the previewed thing and the committed thing can never disagree. This toolbar
+  // stays app-agnostic about them (the GradientPresetPicker/AngleField callback
+  // convention): only the controller knows the text model and the selection
+  // RANGE a run-style delta applies over, so only it can stage one.
+  let { app, boxScale, onstyle, onstylepreview, onstylepreviewend, selRange, runsAt, onparastyle, parasAt, boxAlign } = $props();
 
   // Which inline color popover is open (font | highlight | outline | null).
   let openPicker = $state(null);
@@ -162,9 +169,18 @@
   <span class="text-format-sep"></span>
 
   <!-- Font family: self-rendering FontPicker — each option in its OWN typeface,
-       a larger preview on hover (manifest #26). Includes uploaded font assets. -->
+       a larger preview on hover (manifest #26). Includes uploaded font assets.
+       The focused option also previews on the REAL CANVAS (onpreview), reverting
+       when the picker closes; clicking commits through the same onstyle path as
+       every other control, so a preview never becomes an edit by itself. -->
   <div class="text-format-font">
-    <FontPicker options={fonts} value={common.font ?? "system"} onchange={(v) => onstyle({ font: v })} />
+    <FontPicker
+      options={fonts}
+      value={common.font ?? "system"}
+      onchange={(v) => onstyle({ font: v })}
+      onpreview={(v) => onstylepreview({ font: v })}
+      onpreviewend={onstylepreviewend}
+    />
   </div>
 
   <span class="text-format-sep"></span>

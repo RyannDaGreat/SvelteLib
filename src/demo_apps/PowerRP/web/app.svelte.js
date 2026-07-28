@@ -12,6 +12,7 @@ import {
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
   repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
+  itemAnimationKeyframes, lostEquationKeyframes, withKeyframesFrozen,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { unionRect } from "../core/geometry.js";
@@ -281,6 +282,15 @@ export class PowerRPApp {
   hoverRegion = $state(null);
   /** Preview overlay delta shown during drags — NOT committed/undoable. */
   previewDelta = $state(null);
+  /** A revert thunk set while a TRANSIENT preview — one that must NEVER be
+   *  committed, e.g. the FontPicker's hover-a-font-to-see-it preview — is staged
+   *  OVER a session's real value. There is exactly ONE preview slot, and an
+   *  in-place text edit already occupies it for the whole session, so a hover has
+   *  nowhere else to render; without this flag a dismissal landing mid-hover
+   *  (click-away is a WINDOW-capture pointerdown, which always beats a picker's
+   *  own document-capture close) would commit a font the user merely pointed at.
+   *  Owned by whoever staged it; see dropTransientPreview. */
+  transientPreview = null;
   /** ITEM ID whose asset (video) picker should AUTO-OPEN (manifest 14.3: placing
    *  a new filmstrip immediately opens the video-picker modal). Set by the widget
    *  handlers that ASK for an asset — the "bbox_then_asset" creation gesture and the
@@ -1128,6 +1138,16 @@ export class PowerRPApp {
     this.previewDelta = null;
   }
 
+  /** Command. Restores the real value sitting under any TRANSIENT preview, so
+   * what the slot holds is what the user actually chose. Every path that can
+   * COMMIT the slot must call this first; it is a no-op when nothing transient
+   * is staged. See the `transientPreview` field for why this exists. */
+  dropTransientPreview() {
+    const revert = this.transientPreview;
+    this.transientPreview = null;
+    if (revert) revert();
+  }
+
   // ── Presets (the generic PRESETS tool — web/ToolsPane.svelte) ─────────────
 
   /**
@@ -1196,6 +1216,9 @@ export class PowerRPApp {
    * edit mode. If there was no pending preview (no change), just exits. */
   commitTextEdit() {
     const editing = this.textEditing;
+    // A hovered-but-unchosen style is staged in the SAME slot as the edit; drop
+    // it first so a dismissal landing mid-hover commits the real value.
+    this.dropTransientPreview();
     this.textEditing = null;
     if (!editing) return;
     if (this.previewDelta) this.commitPreview();
@@ -1204,6 +1227,7 @@ export class PowerRPApp {
   /** Command. Cancels the edit (reverts the live preview, no undo unit) and
    * exits edit mode. */
   cancelTextEdit() {
+    this.transientPreview = null; // the whole preview is about to go; no need to revert it first
     this.textEditing = null;
     this.cancelPreview();
   }
@@ -2101,6 +2125,50 @@ export class PowerRPApp {
     for (const id of ids) doc = withItemPurged(doc, id);
     this.commit(doc);
     this.selection = null;
+  }
+
+  /**
+   * Query. Which SELECTED items a keyframe freeze would actually change: the
+   * ones carrying at least one keyframe past their creation slide that is not
+   * `active` (per-slide visibility belongs to Delete / Show, never to this
+   * tool — core/document.js's freeze block explains why). The command's
+   * availability gate AND its target list, so a greyed-out control and a
+   * silent no-op click cannot disagree.
+   */
+  freezeKeyframeTargets() {
+    return this.selectedIds().filter((id) => itemAnimationKeyframes(this.doc, id).length > 0);
+  }
+
+  /**
+   * Command (ONE undo unit, or no writes at all). FREEZE the selection's
+   * animation: every selected item keeps only its state as of THIS slide,
+   * written once at its creation slide, and stops changing across the deck
+   * (core/document.js withKeyframesFrozen owns the rule and the reasoning).
+   * Multi-select falls out naturally — one fold, one commit for the whole set.
+   *
+   * KEEPS the selection: the items still exist and still look the same here,
+   * so deselecting them would only hide the result (deleteSelection's ruling).
+   *
+   * REPORTS, NEVER REFUSES. A skipped item says why, and every equation the
+   * collapse replaces is named — an equation still IN FORCE here is written
+   * back verbatim, so the common bound-to-camera case reports nothing.
+   */
+  freezeSelectionKeyframes() {
+    const ids = this.freezeKeyframeTargets();
+    if (ids.length === 0) return;
+    // An in-progress text/LaTeX edit is a pending write on an item this call is
+    // about to rewrite — commit it first (deleteSelection's rule, ROUND 15.2) so
+    // it lands in the state being frozen instead of being lost to the commit
+    // below, which writes `this.doc` directly and knows nothing about previewDelta.
+    this.dismissEdit();
+    const lost = ids.flatMap((id) =>
+      lostEquationKeyframes(this.doc, this.slideIndex, id, this.registry).map((e) => ({ id, ...e })));
+    const { doc, skipped } = withKeyframesFrozen(this.doc, this.slideIndex, ids);
+    for (const { id, reason } of skipped)
+      console.error(`PowerRP: Remove Animation Keyframes skipped item "${id}" — ${reason}.`);
+    if (lost.length)
+      console.error(`PowerRP: Remove Animation Keyframes dropped ${lost.length} equation keyframe(s) the frozen state does not keep: ${lost.map((e) => `items.${e.id}.${e.path.join(".")} on slide ${e.slideIndex} (${JSON.stringify(e.value)})`).join("; ")}. Undo restores them.`);
+    this.commit(doc);
   }
 
   /**
@@ -3170,33 +3238,16 @@ export class PowerRPApp {
   async exportMp4({ width, height, fps, crf, samples = 1, startIndex = 0, endIndex = this.doc.slides.length - 1, includeTransitions = true, holdSeconds, background = "#000000", onProgress, signal, download = true }) {
     const { exportVideo, timelinePlan, DEFAULT_HOLD_SECONDS } = await import("./videoExport.js");
     const { createServerMp4Encoder } = await import("./serverMp4Encoder.js");
-    const { renderTransitionFrame } = await import("./transitionRender.js");
+    const { createLetterboxFrameRenderer } = await import("./transitionRender.js");
     const { setParticleTimeOverride } = await import("../render_gpu/particle_clock.js");
     const plan = timelinePlan(this.doc, {
       startIndex, endIndex, includeTransitions,
       holdSeconds: holdSeconds ?? DEFAULT_HOLD_SECONDS,
     });
-    // One reusable backing canvas: fill the chosen background, then draw the
-    // camera content fitted (preserving the camera aspect) and centered — so a
-    // custom export aspect gets clean letterbox bars instead of a stretched
-    // frame. When the output size == the camera size (the default) the content
-    // fills the frame exactly, so the composite is a no-op over the camera's own
-    // background and the result is byte-for-byte the presenter/CLI render.
-    const out = document.createElement("canvas");
-    out.width = width;
-    out.height = height;
-    const ctx = out.getContext("2d");
-    const renderFrame = async (index, alpha) => {
-      const rect = cameraRect(evaluateState(foldState(this.doc, index, alpha), this.registry).state, this.doc.meta);
-      const scale = Math.min(width / rect.w, height / rect.h);
-      const cw = Math.max(1, Math.round(rect.w * scale));
-      const ch = Math.max(1, Math.round(rect.h * scale));
-      const content = await renderTransitionFrame(this.doc, index, alpha, this.registry, cw, ch);
-      ctx.fillStyle = background;
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(content, Math.round((width - cw) / 2), Math.round((height - ch) / 2));
-      return out;
-    };
+    // THE letterbox composite — shared with the client-backend job below and with
+    // the server-side headless worker's page half (web/renderJobPage.js), so all
+    // three produce the same pixels for the same frame.
+    const renderFrame = createLetterboxFrameRenderer({ doc: this.doc, registry: this.registry, width, height, background });
     const encoder = await createServerMp4Encoder({ fps, crf });
     const blob = await exportVideo({
       plan, renderFrame, encoder, width, height, fps, samples,
@@ -3274,25 +3325,14 @@ export class PowerRPApp {
   async #fillClientRenderJob(job, params, plan, signal) {
     const { exportVideo } = await import("./videoExport.js");
     const { createJobFrameEncoder } = await import("./serverMp4Encoder.js");
-    const { renderTransitionFrame } = await import("./transitionRender.js");
+    const { createLetterboxFrameRenderer } = await import("./transitionRender.js");
     const { setParticleTimeOverride } = await import("../render_gpu/particle_clock.js");
     const { cancelRenderJob } = await import("./projectApi.js");
     const { width, height, fps, samples, background } = params;
-    const out = document.createElement("canvas");
-    out.width = width;
-    out.height = height;
-    const ctx = out.getContext("2d");
-    const renderFrame = async (index, alpha) => {
-      const rect = cameraRect(evaluateState(foldState(this.doc, index, alpha), this.registry).state, this.doc.meta);
-      const scale = Math.min(width / rect.w, height / rect.h);
-      const cw = Math.max(1, Math.round(rect.w * scale));
-      const ch = Math.max(1, Math.round(rect.h * scale));
-      const content = await renderTransitionFrame(this.doc, index, alpha, this.registry, cw, ch);
-      ctx.fillStyle = background;
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(content, Math.round((width - cw) / 2), Math.round((height - ch) / 2));
-      return out;
-    };
+    // THE letterbox composite (transitionRender) — the SAME function exportMp4 and
+    // the server-side headless worker use, so a job's pixels do not depend on
+    // which backend filled its frame directory.
+    const renderFrame = createLetterboxFrameRenderer({ doc: this.doc, registry: this.registry, width, height, background });
     try {
       await exportVideo({
         plan, renderFrame, width, height, fps, samples,
