@@ -44,6 +44,7 @@
 
 <script>
   import "iconify-icon";
+  import { untrack } from "svelte";
   import { cssFamilyFor, fontSample } from "../render_gpu/fonts.js";
 
   // options: [{value, label}] (fontOptions()); value: current font id; onchange(id).
@@ -337,10 +338,21 @@
   // revert. Closing the menu (Escape, outside click, pick) drops activeIndex/open
   // and therefore reverts through this same path; there is no second code path to
   // keep in sync.
+  // untrack THE CALLS, on purpose: this effect's dependencies must be exactly
+  // the focus state read above — but a tracked callback would ADD everything the
+  // mount point's preview handler reads, and the text toolbar's handler both
+  // READS preview-derived state (the rich value, the staged-delta check) and
+  // WRITES the staged preview. Tracked, that is a read+write of the same state
+  // in one effect: it re-runs itself until Svelte throws
+  // effect_update_depth_exceeded, and the killed effect tree takes every revert
+  // path with it — a hovered font stayed on the canvas and the app crashed
+  // (reproduced with a real pointer; the loop diagnostics named this line).
   $effect(() => {
     const focused = open && activeIndex >= 0 ? filtered[activeIndex] : null;
-    if (!focused || focused.value === baseValue) onpreviewend();
-    else onpreview(focused.value);
+    untrack(() => {
+      if (!focused || focused.value === baseValue) onpreviewend();
+      else onpreview(focused.value);
+    });
   });
 
   // The picker can UNMOUNT while open and previewing (the toolbar goes away when
