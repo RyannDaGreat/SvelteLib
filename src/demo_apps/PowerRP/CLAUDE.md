@@ -87,10 +87,40 @@ a shortcut that isn't registered there does not exist.
 
 Multi-selection, box selection, drag-all/multi-resize, alignment, and grouping
 exist; the heterogeneous multi-selection Inspector intersection remains
-unbuilt. Groups are flat-membership derivation parents, not nested object trees
-or compositing subtrees, and retain the five Round 18 frozen-baseline defects.
-The video player exists; the deterministic video scrubber and replicators do
-not. Z-order UI = bisect then document-wide normalize (core/document.js). THE
-CAMERA is built and mandatory (exactly one, `purgeable:false`, owns the
-background and every view). Presentations are UNCAPPED — no frame caps exist
-(`meta.fps` is dead; one frame per rAF tick).
+unbuilt. Groups are flat-membership derivation parents, not nested object trees,
+and retain the five Round 18 frozen-baseline defects — but they DO composite as
+a subtree when their effects bundle is active (`plugins/group.js` carries
+`bundle("effects")` + `bundle("cropInsets")`, and `groupFoldsSubtree()`
+composites). The video player exists, and so does the deterministic video
+scrubber (`plugins/video_scrub.js`, plus `plugins/demo/video_v5_scrub.js`);
+REPLICATORS still do not. Z-order UI = bisect then document-wide normalize
+(core/document.js). THE CAMERA is built and mandatory (exactly one,
+`purgeable:false`, owns the background and every view). Presentations are
+UNCAPPED — no frame caps exist (`meta.fps` is dead; one frame per rAF tick).
+Flip H/V exists and a stored w/h MAY BE NEGATIVE (see the contract below).
+`plugins/magnifier.js` still exists alongside `plugins/demo/magnify.js` — that
+migration is partial, not done.
+
+## Protocols a plugin must know about
+
+These are declared in `core/registry.js`'s docblock, which is the de-facto
+widget base class. Read it before adding a widget.
+
+- **BOUNDS** — `localBounds(state)` is the LOCAL rect this widget's INK occupies,
+  and it is what culling, band select and the copy/export capture rect all read.
+  A two-point widget (line/arrow) declares its endpoint hull here instead of
+  being treated as having no extent. Distinct from `cullMargin`, which is the
+  EFFECT halo around that ink.
+- **NEGATIVE EXTENTS** — a stored `w`/`h` may be negative; that is a REFLECTION,
+  the thing a similarity transform structurally cannot express, and it is how
+  Flip is stored. Plugins NEVER see it: the sign is resolved at ONE map with two
+  entrances — `core/geometry.js normalizedBox` for derived nodes, and
+  `unsignedState` for the pre-derivation raw-state readers (`core/expressions.js`
+  runs BEFORE any node exists and calls `anchors` itself, which is where this
+  was silently wrong until 0570dff).
+- **HANDLE CONSTRAINTS** — `constrain(state, desired)` projects a dragged handle
+  to the nearest allowed point. Declared per modifier point, not per plugin, so
+  it greps to zero at top level.
+- **LIST PROPERTIES** — `core/lists.js`: per-element equations, insert-between,
+  and hide-vs-purge via a companion `active` list (hiding keeps numbering, so
+  equations bound to later elements survive; purging renumbers).
