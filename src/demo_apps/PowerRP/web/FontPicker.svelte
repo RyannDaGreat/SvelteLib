@@ -372,7 +372,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="fontpicker" bind:this={rootEl} onkeydown={onKeydown}>
+<div class="fontpicker" bind:this={rootEl} data-hint-popover={open ? "combobox" : null} onkeydown={onKeydown}>
   <button
     type="button"
     class="fp-trigger"

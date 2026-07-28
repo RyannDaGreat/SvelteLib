@@ -34,6 +34,7 @@
   class="thumb ring-{ring}"
   role="button"
   tabindex="0"
+  data-hint-scope="tile"
   {title}
   {onclick}
   onkeydown={(e) => e.key === "Enter" && onclick(e)}

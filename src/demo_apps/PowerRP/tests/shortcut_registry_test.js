@@ -101,6 +101,10 @@ function baselineOf(ctx) {
     typingTarget: false, dialogOpen: false, paletteOpen: false,
     textEditing: false, textEditingRich: false, latexEditing: false, codeEditing: false,
     numericField: null, numericFieldBounded: false,
+    // item-61 focus/takeover axes, cleared for the same reason numericField is: a
+    // committable-field or popover chip that still showed with its scope removed would
+    // be an ordinary editor hint leaking into the takeover, not something scoped to it.
+    fieldScope: null, popoverOpen: false, popoverKind: null,
   };
 }
 

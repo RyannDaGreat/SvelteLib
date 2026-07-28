@@ -12,10 +12,10 @@
  * HintBar, and how the command palette ended up with five keys and one chip.
  *
  * So this sweep goes the other way: it enumerates EVERY input the source actually
- * reads and requires each to be ACCOUNTED FOR — either by naming the registry
- * entries that cover it, or by a written LOCAL rationale for why it is confined to
- * its own component. An unlisted file, or a new key inside a listed file, fails.
- * That is the mechanical form of the convention.
+ * reads and requires each to be ACCOUNTED FOR — by naming the registry entries that
+ * cover it, the contextual chip scope that surfaces it, or (narrowly) the OS behaviour
+ * it literally is. An unlisted file, or a new key inside a listed file, fails. That is
+ * the mechanical form of the convention.
  *
  * DOUBLE-CLICK IS SWEPT TOO, and it is the reason the sweep is no longer
  * keyboard-only. The registry had no double-click vocabulary at all, so five
@@ -35,16 +35,42 @@
  * It sweeps EVERY real source artifact rather than a sample (the tests/
  * row_kinds_test.js idiom): web/, plugins/, core/, minus the build output.
  *
- * WHAT A `coverage` / `dblclick` STRING MEANS:
- *   "registry: …"  the input is registered in core/shortcut_entries.js (dispatched
- *                  there, or dispatched here and registered for the HintBar — the
- *                  documented "registered but externally dispatched" case).
- *   "LOCAL: …"     deliberately NOT registered, with the reason. The bar is a
- *                  finite surface; universal platform conventions (Enter/Space
- *                  activating a focused control, arrow keys in a listbox, caret
- *                  motion in a text field, double-clicking a file to open it) are
- *                  already known to every user and would drown the app-invented
- *                  verbs that need teaching.
+ * THE THREE CATEGORIES (item 61 — THE HINTBAR COMPLETENESS LAW). Per the user's
+ * correction on record ("it's always been there... every single keyboard shortcut
+ * must always pass through that, and if it doesn't, you fucked up"), item 61 is NOT a
+ * new ruling — it RE-ASSERTS the codebase's standing invariant against drift. The old
+ * two-category scheme had a `LOCAL:` escape hatch — "universal platform conventions
+ * may stay off the bar" — that the sweep's own header rationalized. That hatch
+ * DIRECTLY CONTRADICTS "a shortcut that isn't registered does not exist", it was
+ * agent-invented (no user ruling ever authorized it), and it accreted with every
+ * widget commit. It is ABOLISHED. Every input is now exactly one of:
+ *
+ *   "registry: …"        dispatched, or display-registered, in
+ *                        core/shortcut_entries.js, and shown on the bar in the
+ *                        context where it applies (canvas verbs, the palette, present
+ *                        mode, the in-place editors — the "registered but externally
+ *                        dispatched" case included).
+ *   "contextual:<scope>: …"  an app-meaningful key surfaced through a CONTEXTUAL CHIP
+ *                        SET that lights only while <scope> is active — a focused
+ *                        committable field (data-hint-scope), an open popover/menu
+ *                        (data-hint-popover), an open dialog (dialogOpen), a focused
+ *                        numeric scrubber/dial (numericField). The compliant heir of
+ *                        what used to be waved away as LOCAL, and the direct
+ *                        generalization of fieldFocus('scrubber')/fieldFocus('dial').
+ *                        Names the App.svelte context axis and the core predicate.
+ *   "OS: …"              the ONLY chipless category, and NARROW ON PURPOSE. The key
+ *                        does LITERALLY what the OS/browser does for that control with
+ *                        ZERO app-specific meaning: caret motion and character entry
+ *                        in a text field, Shift+arrow selection-extend, Tab focus
+ *                        traversal, a role=listbox/role=slider arrow nudge,
+ *                        double-click-to-select-a-word, a genuinely passive dismiss
+ *                        that claims nothing (Tooltip's Escape), or Enter/Space
+ *                        activating a REAL <button>. A key that COMMITS, CANCELS,
+ *                        CLOSES, CHOOSES, RENAMES, or ACTIVATES a custom control is NOT
+ *                        OS, however conventional its keycap — it is `contextual:` and
+ *                        MUST get a chip. "Everyone knows Enter commits" is exactly the
+ *                        reasoning item 61 overrules.
+ *
  * `coverage` accounts for the KEYS; `dblclick` accounts for the GESTURE. They are
  * separate fields because they are separate decisions — web/Toolbar.svelte's F2 and
  * its double-click-to-rename are covered by different arguments.
@@ -167,13 +193,13 @@ const ACCOUNTED = {
   "web/TextEditController.svelte": {
     keys: ["Backspace", "Delete", "End", "Enter", "Escape", "Home", "a", "b", "i", "u", "y", "z", "+", "-", "=", "_", "A", "B", "I", "U", "Y", "Z", "ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp"],
     modifiers: true,
-    dblclick: "LOCAL: double-click selects the WORD under the pointer (onHitDblClick → layout.wordAt). The universal text-editing convention, and the same ruling this file's `coverage` note already makes for caret motion and Home/End: handled by the focused editor, no effect outside it, known to every user. Registering it would also be self-defeating — the bar would offer 'Select word' on the same gesture the canvas offers 'Edit text in place', and only one of them can be live, since entering this editor is what the canvas gesture DID.",
-    coverage: "registry (the app-specific half): Escape 'Done editing'; Cmd+B/I/U bold/italic/underline; Cmd+=/+ and Cmd+-/_ the size steppers; Cmd+Z / Cmd+Shift+Z / Cmd+Y the EDIT-BUFFER history (a separate undo stack from the document's, which is exactly why it must be announced); Cmd+A select all. LOCAL (ruling, not an oversight): caret motion and text mutation — arrows, Alt+arrows by word, Cmd+arrows to line ends, Home/End, Shift+arrows to extend, Backspace/Delete/Enter, printable characters. Universal platform text-editing conventions handled by the focused editor, with no effect outside it; registering them would add ~10 chips every user already knows and would drown the app-invented verbs above.",
+    dblclick: "OS: double-click selects the WORD under the pointer (onHitDblClick → layout.wordAt) — the universal text-editor convention, handled by the focused editor with no effect outside it, and doing nothing an app verb does. Chipping it would be self-defeating too: the bar would offer 'Select word' on the same gesture the canvas offers 'Edit text in place', and only one can be live since entering this editor is what the canvas gesture DID.",
+    coverage: "registry (the app-specific half): Escape 'Done editing' (contextual, textEdit); Cmd+B/I/U bold/italic/underline; Cmd+=/+ and Cmd+-/_ the size steppers; Cmd+Z / Cmd+Shift+Z / Cmd+Y the EDIT-BUFFER history (a separate undo stack from the document's, which is exactly why it must be announced); Cmd+A select all — all display-registered under textEdit/richTextEdit. OS (the residue item 61 still permits): caret motion and text mutation — arrows, Alt+arrows by word, Cmd+arrows to line ends, Home/End, Shift+arrows to extend, Backspace/Delete/Enter(newline), printable characters. These do literally what the OS text editor does, with zero app meaning, so they stay chipless; the app-invented verbs above are the ones that get chips.",
   },
   "web/CodeEditController.svelte": {
     keys: ["Enter", "Escape", "Tab"],
     modifiers: true,
-    coverage: "registry: Escape 'Done editing', Cmd+Enter its hidden alias, Tab 'Indent' and Shift+Tab 'Outdent' (announced because a textarea does NOT indent by default — the panel overrides the browser's focus-move, the kind of app-specific rebinding the bar exists to teach). LOCAL: the auto-close bracket pairs, keyed off the typed character itself rather than a named shortcut.",
+    coverage: "registry: Escape 'Done editing', Cmd+Enter its hidden alias, Tab 'Indent' and Shift+Tab 'Outdent' (announced because a textarea does NOT indent by default — the panel overrides the browser's focus-move, the kind of app-specific rebinding the bar exists to teach). OS: the auto-close bracket pairs, keyed off the typed printable character itself — character entry, not a named shortcut, so it stays chipless.",
   },
   "web/LatexEditController.svelte": {
     keys: ["Escape"],
@@ -190,77 +216,78 @@ const ACCOUNTED = {
   "web/AngleField.svelte": {
     keys: ["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "Enter", "Escape", "Tab"],
     modifiers: true,
-    coverage: "registry: Shift 'Coarse adjust' (fieldFocus('dial')) — app-invented vocabulary nobody can guess, so it is announced whenever the dial has focus. LOCAL: the arrow keys themselves (role=slider; adjusting a focused slider with arrows is the platform's own ARIA convention) and Enter/Escape/Tab inside its equation <input> (commit / revert / leave — universal field conventions). The dial also CLAIMS the plain keyspace while focused (src/lib/fieldKeys.js fieldOwnsKeydown → stopPropagation) so no canvas command fires behind it: an svg[role=slider] is not a typing target, so Backspace used to delete the widget whose rotation was being edited and one arrow press both nudged the heading AND changed slide. Cmd/Ctrl/Alt combos, held modifiers and Tab/Escape/Enter still bubble, so app undo and the row's own Escape-revert are untouched.",
+    coverage: "contextual:field: Shift 'Coarse adjust' lights while the dial has focus (numericField='dial', core fieldFocus) — app-invented vocabulary nobody can guess; Enter 'Commit' / Escape 'Revert' light while the equation <input> has focus (data-hint-scope='commit', core fieldScope). OS: the dial's own role=slider arrow-nudge (platform ARIA) and Tab focus-traversal. The dial CLAIMS the plain keyspace while focused (src/lib/fieldKeys.js fieldOwnsKeydown → stopPropagation) so no canvas command fires behind it: an svg[role=slider] is not a typing target, so Backspace used to delete the widget whose rotation was being edited and one arrow press both nudged the heading AND changed slide. Cmd/Ctrl/Alt combos, held modifiers and Tab/Escape/Enter still bubble, so app undo and the row's own revert are untouched.",
   },
   "web/NumericField.svelte": {
     keys: ["ArrowDown", "ArrowUp", "Enter", "Escape", "Tab"],
-    coverage: "registry: the DraggableNumber it wraps contributes Shift 'Fine adjust' and Home/End 'Minimum'/'Maximum' through fieldFocus('scrubber'). LOCAL: Enter/Escape/Tab/arrows in the equation-entry <input> and its suggestion list — universal field and listbox conventions; plus the row's own Escape (onWrapKeydown) which reverts a live scrub preview and stopPropagations, which is precisely why the scrubber below it does NOT claim Escape (src/lib/fieldKeys.js HOST_KEY_NAMES). The scrubber itself claims every OTHER plain key while focused, so no canvas command fires behind a number being edited — the sweep cannot see that decision because it lives in src/lib, which SWEPT_DIRS does not cover.",
+    coverage: "contextual:field: the DraggableNumber it wraps contributes Shift 'Fine adjust' and Home/End 'Minimum'/'Maximum' while the scrubber has focus (numericField='scrubber', core fieldFocus); Enter 'Commit' / Escape 'Revert' light while the equation <input> has focus (data-hint-scope='commit', core fieldScope). OS: the suggestion-listbox arrows and Tab focus-traversal. The wrapper's own Escape (onWrapKeydown) reverts a live scrub preview and stopPropagations, which is precisely why the scrubber below it does NOT claim Escape (src/lib/fieldKeys.js HOST_KEY_NAMES); the scrubber claims every OTHER plain key while focused, so no canvas command fires behind a number being edited — a decision that lives in src/lib, which the sweep now covers.",
   },
   "web/Inspector.svelte": {
     keys: ["ArrowDown", "ArrowUp", "Enter", "Escape", "Tab"],
-    coverage: "LOCAL: property-row text inputs and their equation-suggestion listbox. Commit on Enter, revert on Escape, move focus with Tab, walk the suggestions with arrows — universal field/listbox conventions, each confined to the focused row. The registry's typingTarget axis makes the canvas chips stand down while any of them has focus, so the bar does not lie about what these keys do.",
+    coverage: "contextual:field: the property-row text input reverts a live preview on Escape (data-hint-scope='revert', core fieldScope), and the equation-suggestion <input> commits on Enter / reverts on Escape (data-hint-scope='commit'). OS: walking the suggestion listbox with arrows, and Tab focus-traversal between rows. The registry's typingTarget axis stands the canvas chips down while any row has focus, so the bar shows exactly that row's own commit/revert verbs.",
   },
   "web/FontPicker.svelte": {
     keys: ["ArrowDown", "ArrowUp", "Enter", "Escape"],
-    coverage: "LOCAL: a combobox — filter, walk with arrows, choose with Enter, dismiss with Escape. The platform's own listbox conventions, effect confined to the open picker.",
+    coverage: "contextual:combobox: Enter 'Choose' and Escape 'Close' light while the picker is open (data-hint-popover='combobox', core popover). OS: filtering by typing and walking the options with arrows — the platform's own combobox/listbox ARIA, confined to the open picker.",
   },
   "web/ShapePicker.svelte": {
     keys: ["Escape"],
-    coverage: "LOCAL: Escape dismisses the open picker popover, the universal dismiss-a-popover convention.",
+    coverage: "contextual:menu: Escape 'Close' lights while the shape popover is open (data-hint-popover='menu', core popover) — the dismiss the sweep used to wave off as a universal convention is exactly the app-meaning key item 61 requires on the bar.",
   },
   "web/ColorField.svelte": {
     keys: ["Escape"],
-    coverage: "LOCAL: Escape dismisses the open color popover (same popover convention).",
+    coverage: "contextual:menu: Escape 'Close' lights while the color popover is open (data-hint-popover='menu', core popover). The enclosed ColorPicker's hex commit + slider nudges are OS (see ../../lib/ColorPicker.svelte).",
   },
   "web/GradientPresetPicker.svelte": {
     keys: ["Escape"],
-    coverage: "LOCAL: Escape dismisses the open preset popover (same popover convention).",
+    coverage: "contextual:menu: Escape 'Close' lights while the gradient preset popover is open (data-hint-popover='menu', core popover). The picker focuses its search box on open, so App.svelte's focusContext raises the popoverOpen axis.",
   },
   "web/ContextMenu.svelte": {
     keys: ["Escape"],
-    coverage: "LOCAL: Escape dismisses the open point context menu (the paint-path point menu, F.18) — the same universal dismiss-a-popover convention ShapePicker/ColorField/GradientPresetPicker already record. The menu is opened by a right-click on a handle and closed by a pick, Escape, or an outside click; it holds no app-invented key to teach.",
+    coverage: "contextual:menu: Escape 'Close' lights while the point context menu is open (data-hint-popover='menu', core popover). The menu focuses ITSELF on open so App.svelte's focusContext raises the popoverOpen axis; it is opened by a right-click on a handle (F.18) and closed by a pick, Escape, or an outside click. Its Escape closes a menu — app meaning, exactly the key the old LOCAL note wrongly waved off as a universal dismiss.",
   },
   "web/GridSizePicker.svelte": {
     keys: [" ", "Enter"],
-    coverage: "LOCAL: Enter/Space activate the focused grid cell — the platform's convention for activating a focused control, on a div that has to implement it by hand because it is not a <button>.",
+    coverage: "contextual:grid: Enter 'Select size' (Space its hidden alias) confirms the focused grid cell while the picker is open (data-hint-popover='grid', core popover); it is mounted in a lib/Modal, so the dialog's own Esc 'Close' / Tab chips show alongside. Activating a custom div by hand is app-implemented — NOT the OS's, which only covers a real <button> — so it is chipped.",
   },
   "web/Toolbar.svelte": {
     keys: ["Enter", "F2"],
-    dblclick: "LOCAL: double-click the project title opens the Rename modal. Discoverable AT THE POINT OF USE — the title carries a Tooltip reading 'Double-click to rename' — which is the right surface for a gesture on one specific piece of panel chrome, where a global chip would be up permanently for a target that is usually nowhere near the pointer. Same argument this entry's `coverage` already makes for F2 on the same element.",
-    coverage: "LOCAL: Enter commits the inline project-title rename and F2 starts it — both scoped to the title field, and F2 is the platform's own rename key. Not registered because a global chip for a key that only works on one hovered widget would be less honest than none.",
+    dblclick: "OS: double-click the project title opens the Rename modal — the desktop file-manager rename gesture (Finder/Explorer), a mouse gesture the keyboard law does not cover, discoverable at the point of use via the title's Tooltip ('Double-click to rename'). Its KEYBOARD twin (Enter/F2) IS chipped — see coverage.",
+    coverage: "contextual:titleRename: Enter and F2 both 'Rename' (open the rename modal) while the project-title span has focus (data-hint-scope='titleRename', core fieldScope via editMode). F2 is app-invented rename vocabulary; Enter is its discoverable twin. The span is a role='button', NOT a typing target, so the two chips ride editMode and show beside the canvas hints while the title is focused.",
   },
   "web/SlideNav.svelte": {
     keys: ["Enter", "Escape"],
-    coverage: "LOCAL: Enter commits and Escape cancels the inline slide-rename editor — the universal field-commit/revert convention, confined to the focused input (a typing target, so the canvas chips already stand down). Escape stopPropagations so it cannot also fire a global dismiss while abandoning the typed name.",
-    dblclick: "LOCAL: double-click on a slide's NAME opens its inline rename editor (Round 4 #54) — the platform-universal rename gesture (Finder/Explorer/every tree view), discoverable via the name's hover tooltip ('Double-click to rename'). Registering it would put a permanent chip on a gesture that only exists over one label; the canvas double-click verbs are unaffected because the navigator is not the canvas.",
+    coverage: "contextual:rename: Enter 'Rename' commits and Escape 'Cancel' reverts the inline slide-name editor while its input has focus (data-hint-scope='rename', core fieldScope). The input is a typing target, so the canvas chips already stand down; Escape stopPropagations so it cannot also fire a global dismiss while abandoning the typed name.",
+    dblclick: "OS: double-click a slide's NAME opens its inline rename editor (Round 4 #54) — the desktop-universal rename gesture (Finder/Explorer/every tree view), a mouse gesture the keyboard law does not cover, discoverable via the name's Tooltip. Its keyboard result (the rename input's Enter/Escape) IS chipped — see coverage.",
   },
   "web/CanvasToolbar.svelte": {
     keys: ["Enter", "Escape"],
-    coverage: "LOCAL: Enter commits and Escape abandons an edit in one of the floating bar's readout fields (the Mandelbrot's Re/Im/Zoom) — the same field-commit convention as every Inspector row, confined to the focused input. BOTH stopPropagation, which is the load-bearing half: the bar is mounted BY a canvas mode (interior explore), whose own registered Escape exits that mode, so an un-stopped Escape would abandon the typed value AND close the bar that was showing it. Not registered, for the Inspector's reason: a global chip for a key that only works inside one focused field would be less honest than none.",
+    coverage: "contextual:commit: Enter 'Commit' and Escape 'Revert' light while a floating-bar readout field has focus (data-hint-scope='commit', core fieldScope) — the Mandelbrot's Re/Im/Zoom. BOTH stopPropagation, the load-bearing half: the bar is mounted BY a canvas mode (interior explore) whose own registered Escape exits the mode, but the field is a typing target so the mode's keys already stand down while it holds focus — so the field's Revert is the ONLY Escape shown, outranking the mode's Exit exactly as required.",
   },
   "web/VariablesPanel.svelte": {
     keys: ["Enter"],
-    coverage: "LOCAL: Enter commits an inline variable name/value edit (same field-commit convention).",
+    coverage: "contextual:add: Enter 'Add' commits the new-variable input while it has focus (data-hint-scope='add', core fieldScope). The inline RENAME rows commit on blur (onchange) and read no key, so they need no chip; only the add-row reads Enter.",
   },
   "web/AssetExplorer.svelte": {
     keys: [],
-    dblclick: "LOCAL: double-click an asset tile opens its Modal preview. The platform's own 'double-click a file to open it' convention, confined to this panel, on a target that only exists while the panel is open — and now named in the tile's own Tooltip ('drag onto the canvas to insert at a point, or double-click to preview'), which is where a panel gesture is discoverable. Deliberately NOT registered: the HintBar narrates the CANVAS context (its predicates are all built on editMode, which says nothing about which panel is open), so a permanent chip for a gesture that only works over one panel's tiles would be exactly the kind of always-on, usually-wrong hint the truthfulness guards exist to prevent.",
-    coverage: "LOCAL: reads no keyboard input at all — it is listed for its double-click gesture above. The tiles are <button>s, so Enter/Space activation is the browser's, not this component's.",
+    dblclick: "OS: double-click an asset tile opens its Modal preview — the desktop 'double-click a file to open it' convention, a mouse gesture the keyboard law does not cover, named in the tile's own Tooltip ('drag onto the canvas to insert at a point, or double-click to preview'). Its keyboard activation rides a real <button>'s Enter (also OS).",
+    coverage: "OS: reads no keyboard input of its own — listed for its double-click gesture above. Its tiles are real <button>s, so Enter/Space activation is the browser's, not this component's: the one shape of activate-a-focused-control that genuinely IS OS.",
   },
   "web/AssetThumb.svelte": {
     keys: ["Enter"],
-    coverage: "LOCAL: Enter activates the focused asset tile (activate-a-focused-control convention).",
+    coverage: "contextual:tile: Enter 'Open' lights while the asset tile has focus (data-hint-scope='tile', core fieldScope via editMode). The tile is a role='button' DIV, not a real <button>, so its Enter-to-activate is app-implemented — NOT the OS's — and must be chipped.",
   },
   "web/VideoThumbnail.svelte": {
     keys: ["Enter"],
-    coverage: "LOCAL: Enter activates the focused video tile (activate-a-focused-control convention).",
+    coverage: "contextual:tile: Enter 'Open' lights while the video tile has focus (data-hint-scope='tile', core fieldScope via editMode) — a role='button' DIV, so its Enter-to-activate is app-implemented, not the OS's.",
   },
   // ── SvelteLib src/lib: THE SHARED CONTROLS ──────────────────────────────────
   // `../../lib/…` — see SWEPT_DIRS. These are consumed by the web/ components
   // above, so each one's keys reach the editor through whatever mounts it, and the
-  // LOCAL clause has to be argued about the CONTROL, not about a call site: keys
-  // handled by the FOCUSED widget, effect confined to that widget, and a universal
-  // platform convention the user already knows. src/lib/fieldKeys.js is where the
+  // category has to be argued about the CONTROL, not about a call site: an
+  // app-meaning key surfaces through a contextual scope (data-hint-scope /
+  // data-hint-popover the consumer's focus resolves), and only true OS behaviour
+  // (caret, ARIA nav, a passive dismiss) stays chipless. src/lib/fieldKeys.js is where the
   // ownership boundary is DEFINED (fieldOwnsKeydown: a plain keystroke belongs to
   // the focused field; Cmd/Ctrl/Alt combos, bare modifiers and Tab/Escape/Enter
   // belong to the surface around it) — the rationales below cite it rather than
@@ -268,37 +295,37 @@ const ACCOUNTED = {
   "../../lib/fieldKeys.js": {
     keys: [],
     modifiers: true,
-    coverage: "LOCAL: THIS IS the ownership boundary — fieldOwnsKeydown reads the modifier flags to decide whether a keydown is the focused field's plain keystroke or the host's application combo. It compares no key NAME of its own by design (the two name lists are exported constants, so a consumer cannot re-decide the split), and it dispatches nothing at all: it is a pure predicate the controls below call. The one file where reading a modifier needs no further justification, exactly as core/shortcuts.js is for keys.",
+    coverage: "OS: THIS IS the ownership boundary — fieldOwnsKeydown reads the modifier flags to decide whether a keydown is the focused field's plain keystroke or the host's application combo. It compares no key NAME of its own (the two name lists are exported constants, so a consumer cannot re-decide the split) and DISPATCHES NOTHING: a pure predicate the controls below call. Nothing to chip because nothing is claimed — the one file where reading a modifier needs no further justification, exactly as core/shortcuts.js is for keys.",
   },
   "../../lib/DraggableNumber.svelte": {
     keys: ["ArrowDown", "ArrowUp", "End", "Enter", "Escape", "Home"],
     modifiers: true,
-    coverage: "registry: Shift is 'Fine adjust' under fieldFocus('scrubber'), and Home/End are 'Minimum'/'Maximum' under the same predicate plus numericFieldBounded — app-invented vocabulary, so all three are announced (they are the entries web/NumericField.svelte's note points at). LOCAL: Up/Down nudge one step, which is the platform's own spinbutton convention, and Enter/Escape commit/revert the text entry a click-without-drag opens. This is also the control the whole boundary exists for: it stopPropagations every keydown fieldOwnsKeydown claims, so no canvas command fires behind a number being edited (the leak measured in tests/field_key_ownership_probe.js — Backspace deleting the very widget whose number was focused), while Cmd/Ctrl combos, bare modifiers and Tab/Escape/Enter keep bubbling so app undo and a wrapper's own cancel still work.",
+    coverage: "contextual:scrubber: Shift 'Fine adjust' and Home/End 'Minimum'/'Maximum' light while the scrubber has focus (numericField='scrubber', core fieldFocus + numericFieldBounded) — app-invented vocabulary (the entries web/NumericField.svelte's note points at). OS: Up/Down nudge one step (the platform's spinbutton convention). The bare inline text-entry a click-without-drag opens commits on Enter / reverts on Escape; its equation-wrapper hosts (NumericField/AngleField) chip that via data-hint-scope='commit', and a RAW scrubber's Escape stopPropagations to revert (fieldKeys.js) — inside a dialog that would collide with the dialog's own Esc 'Close', so it is DELIBERATELY left to the wrapper's chip rather than double-announced. This is also the control the whole boundary exists for: it stopPropagations every keydown fieldOwnsKeydown claims so no canvas command fires behind a number being edited (the leak in tests/field_key_ownership_probe.js), while Cmd/Ctrl combos, bare modifiers and Tab/Escape/Enter keep bubbling so app undo and a wrapper's cancel still work.",
   },
   "../../lib/Dropdown.svelte": {
     keys: [" ", "ArrowDown", "ArrowUp", "End", "Enter", "Escape", "Home"],
-    coverage: "LOCAL: a listbox — Space/Enter/Down open it, arrows walk the options, Home/End jump to first/last, Enter chooses, Escape dismisses. The platform's own ARIA listbox conventions, every effect confined to the open menu, and it stopPropagations Escape so a host cancel does not ALSO fire behind the dismiss (the innermost-cancel-wins nesting Modal.svelte's header documents).",
+    coverage: "contextual:combobox: Enter 'Choose' and Escape 'Close' light while the menu is open (data-hint-popover='combobox' on .dd, core popover). OS: Space/Down to open, arrows to walk the options, Home/End to jump first/last — the platform's ARIA listbox conventions. It stopPropagations Escape so a host cancel does not ALSO fire behind the dismiss (the innermost-cancel-wins nesting Modal.svelte's header documents).",
   },
   "../../lib/SearchableDropdown.svelte": {
     keys: ["End", "Escape", "Home"],
-    coverage: "LOCAL: a combobox wrapping Dropdown — its search <input> only intercepts three keys before letting the rest bubble to the Dropdown listbox above. Escape CLEARS a non-empty query first (a second, empty Escape falls through to Dropdown's dismiss — the standard clear-then-close), and Home/End edit the search TEXT (stopPropagation so Dropdown does not hijack them to jump the list). Arrows/Enter/typing are untouched and reach Dropdown, which owns the actual listbox navigation already registered above. Universal combobox conventions, every effect confined to the open picker.",
+    coverage: "contextual:search: Enter 'Choose' and Escape 'Clear / Close' light while the search box has focus (data-hint-popover='search' on the sd-search input, core popover). The TWO-STAGE Escape is app-invented — a non-empty query CLEARS first, a second empty Escape falls through to Dropdown's dismiss — so it is taught with its own wording rather than combobox's plain 'Close'. OS: Home/End edit the search TEXT (stopPropagation so Dropdown does not hijack them to jump the list); arrows/typing bubble to the Dropdown listbox above, whose combobox nav is chipped there.",
   },
   "../../lib/ColorPicker.svelte": {
     keys: ["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp", "Enter", "Escape"],
-    coverage: "LOCAL: three focusable slider surfaces (the SV square, the hue strip, the alpha strip) nudged with arrows — the same role=slider ARIA convention web/AngleField's dial rides — plus Enter/Escape to commit/revert the hex <input>. Universal field and slider conventions, each confined to the focused surface inside an open popover.",
+    coverage: "contextual:menu: this picker is ALWAYS-INLINE, opened by web/ColorField whose .colorfield carries data-hint-popover='menu' — so while any of its surfaces has focus the popover's Escape 'Close' is the chip (core popover). OS: the three role=slider surfaces (SV square, hue strip, alpha strip) nudged with arrows (the ARIA convention web/AngleField's dial rides), and the hex <input>, which also commits on blur so its Enter is a convenience left off the one-line bar in favour of the popover's primary Close.",
   },
   "../../lib/Modal.svelte": {
     keys: ["Escape", "Tab"],
     modifiers: true,
-    coverage: "LOCAL: a dialog's two universal keys — Escape closes, Tab (and Shift+Tab, which is the modifier read) cycles the focus trap. Both are bound to the PANEL rather than to window, precisely so they do NOT also reach the app: one Escape used to close the dialog AND clear the canvas selection behind it (measured, and recorded at its onKeydown). The registry needs no entry because a dialog is a keyboard takeover the context axes already model — `dialogOpen` makes editorInput false, so the canvas chips stand down and the bar cannot claim keys the dialog has taken.",
+    coverage: "contextual:dialog: Escape 'Close' and Tab 'Next field' (with Shift+Tab, the modifier read) light while a dialog is open (dialogOpen, core dialogContext) — the takeover the sweep used to only SUPPRESS is now ANNOUNCED (item 61). Both are bound to the PANEL rather than to window, so they do NOT also reach the app: one Escape used to close the dialog AND clear the canvas selection behind it (measured, recorded at its onKeydown). dialogOpen makes editorInput false, so the canvas chips stand down and only the dialog's own two keys show.",
   },
   "../../lib/Tooltip.svelte": {
     keys: ["Escape"],
-    coverage: "LOCAL: Escape hides a shown tooltip — the universal dismiss-transient-chrome convention. It is a window listener but a PASSIVE one: it neither preventDefaults nor stopPropagations, so the same Escape still reaches whatever else means to act on it, and dismissing a hover tip changes no app state. Nothing to register, because nothing is claimed.",
+    coverage: "OS: Escape hides a shown tooltip — a genuinely PASSIVE window listener that neither preventDefaults nor stopPropagations, so the same Escape still reaches whatever else means to act on it, and dismissing a hover tip changes NO app state and claims nothing. The one true state-free dismiss item 61's OS clause is written for (see the doctrine header).",
   },
   "../../lib/Thumbnail.svelte": {
     keys: ["Enter"],
-    coverage: "LOCAL: Enter activates the focused thumbnail — the activate-a-focused-control convention, on a div that must implement it by hand because it is not a <button>. Identical case to web/AssetThumb.svelte and web/VideoThumbnail.svelte above.",
+    coverage: "contextual:tile: Enter 'Open' lights while the thumbnail has focus (data-hint-scope='tile', core fieldScope via editMode) — a role='button' DIV, not a real <button>, so its Enter-to-activate is app-implemented, not the OS's. Identical case to web/AssetThumb.svelte and web/VideoThumbnail.svelte above.",
   },
   "../../lib/PanZoom.svelte": {
     keys: [],
@@ -309,8 +336,8 @@ const ACCOUNTED = {
     keys: ["Enter", "Escape", "c", "t", "x"],
     modifiers: true,
     mounted: false,
-    dblclick: "LOCAL: NOT MOUNTED BY THIS APP (see the coverage note and the import assertion below), so its double-click-to-edit-a-comment is not in this editor's gesture space at all. Were the bar ever mounted here, this would be an ordinary panel-chrome case like the Toolbar title's.",
-    coverage: "LOCAL: NOT MOUNTED BY THIS APP — no file under web/, plugins/ or core/ imports it (asserted below, so the claim cannot go stale), so none of its keys are in the editor's keyspace and there is nothing for the registry to know. Recorded rather than skipped because its C/X/T hotkeys are WINDOW-scoped and app-invented, which is the one shape the LOCAL clause does NOT excuse: were PowerRP ever to mount this bar, those three would have to be registered (or scoped to the bar) before it shipped. Enter/Escape commit its inline comment edit and the modifier reads are Alt/Shift on its own pointer gestures — those parts would be ordinary field and drag-modifier cases.",
+    dblclick: "unmounted: NOT MOUNTED BY THIS APP (see the coverage note and the import assertion below), so its double-click-to-edit-a-comment is not in this editor's gesture space at all. Were the bar ever mounted here, this would be an ordinary panel-chrome case like the Toolbar title's.",
+    coverage: "unmounted: NOT MOUNTED BY THIS APP — no file under web/, plugins/ or core/ imports it (asserted below, so the claim cannot go stale), so none of its keys are in the editor's keyspace and there is nothing for the registry to know. Recorded rather than skipped because its C/X/T hotkeys are WINDOW-scoped and app-invented, which is the one shape neither an OS residue nor a confined scope excuses: were PowerRP ever to mount this bar, those three would have to be registered (or scoped to the bar) before it shipped. Enter/Escape commit its inline comment edit and the modifier reads are Alt/Shift on its own pointer gestures — those parts would be ordinary contextual-field and drag-modifier cases.",
   },
 };
 
@@ -376,7 +403,7 @@ test("every file that reads user input is accounted for", () => {
   for (const r of rows)
     assert.ok(
       ACCOUNTED[r.file],
-      `${r.file} reads user input (${r.listener ? "listener" : ""}${r.modifiers ? " modifiers" : ""}${r.dblclick ? " dblclick" : ""}, keys ${JSON.stringify(r.keys)}) but is not in the sweep allowlist. Either register those inputs in core/shortcut_entries.js and record "registry: …" here, or record "LOCAL: …" with the reason they stay confined to this component. An unlisted input is the convention violation this test exists to stop.`,
+      `${r.file} reads user input (${r.listener ? "listener" : ""}${r.modifiers ? " modifiers" : ""}${r.dblclick ? " dblclick" : ""}, keys ${JSON.stringify(r.keys)}) but is not in the sweep allowlist. Register those inputs in core/shortcut_entries.js and record "registry: …" or "contextual:<scope>: …" here — or, only for a key that is literally the OS's own behaviour, "OS: …". An unlisted input is the convention violation this test exists to stop.`,
     );
 });
 
@@ -394,7 +421,7 @@ test("every double-click handler is accounted for", () => {
   for (const r of handlers)
     assert.ok(
       ACCOUNTED[r.file]?.dblclick,
-      `${r.file} handles a double-click but its allowlist entry carries no \`dblclick\` note. Decide and record it: "registry: …" naming the entries that announce it (a canvas verb — see core/shortcut_entries.js MOUSE_DOUBLE_TOKEN), or "LOCAL: …" with the reason it stays confined to this component. An unannounced double-click is the exact defect this was extended for: it is the one gesture a user cannot stumble into by accident.`,
+      `${r.file} handles a double-click but its allowlist entry carries no \`dblclick\` note. Decide and record it: "registry: …" naming the entries that announce it (a canvas verb — see core/shortcut_entries.js MOUSE_DOUBLE_TOKEN), "contextual:<scope>: …", or "OS: …" for a genuine desktop mouse convention. An unannounced double-click is the exact defect this was extended for: it is the one gesture a user cannot stumble into by accident.`,
     );
 });
 
@@ -405,14 +432,34 @@ test("no allowlist entry claims a double-click its file no longer handles", () =
       assert.ok(handles.has(file), `the allowlist gives ${file} a \`dblclick\` rationale but the scanner finds no handler there — drop it, so the ledger stays a description of the code rather than a wish.`);
 });
 
-test("every double-click note is a registry citation or a written LOCAL rationale", () => {
+// ── THE ITEM-61 THREE-CATEGORY CLASSIFIER ────────────────────────────────────
+// LOCAL is abolished (see the header). A note starts with exactly one category word.
+// "unmounted:" is the one extra prefix, reserved for a lib control this app does not
+// mount (its keys are not in the keyspace, so there is nothing to classify — the
+// mounted:false import gate proves it).
+const CATEGORY_RE = /^(registry|contextual|OS|unmounted)\b/;
+// The keys an OS: note may NEVER cover: they COMMIT, CANCEL, CLOSE, CHOOSE, RENAME or
+// ACTIVATE, which is app meaning however conventional the keycap. Space and Home/End
+// are NOT here — they carry genuine caret/traversal OS meanings — so their misuse is a
+// review judgement, not a mechanical one. Escape is handled separately: it may be OS
+// only as the state-free PASSIVE dismiss the doctrine names (Tooltip), which the note
+// must say. Enter/F2 have no benign OS meaning outside a text field's newline, and a
+// file that reads Enter for text entry uses a registry:/contextual: prefix, not OS:.
+const OS_FORBIDDEN_KEYS = ["Enter", "F2"];
+
+/** Query. Asserts a coverage/dblclick note carries a valid item-61 category prefix. */
+function assertCategory(file, field, note) {
+  assert.ok(
+    CATEGORY_RE.test(note),
+    `${file}'s ${field} note must start with "registry:", "contextual:<scope>:", "OS:", or (for a not-mounted lib control) "unmounted:" — item 61 abolished "LOCAL:". Got ${JSON.stringify(note.slice(0, 40))}`,
+  );
+  assert.ok(note.length > 60, `${file}'s ${field} note is too short to be a real rationale: ${JSON.stringify(note)}`);
+}
+
+test("every double-click note carries a valid item-61 category (registry / contextual / OS / unmounted)", () => {
   for (const [file, spec] of Object.entries(ACCOUNTED)) {
     if (!spec.dblclick) continue;
-    assert.ok(
-      /^(registry|LOCAL)/.test(spec.dblclick),
-      `${file}'s dblclick note must start with "registry:" or "LOCAL:" — got ${JSON.stringify(spec.dblclick.slice(0, 40))}`,
-    );
-    assert.ok(spec.dblclick.length > 60, `${file}'s dblclick note is too short to be a real rationale: ${JSON.stringify(spec.dblclick)}`);
+    assertCategory(file, "dblclick", spec.dblclick);
   }
 });
 
@@ -422,7 +469,7 @@ test("every key a listed file reads is declared (a new key fails the sweep)", ()
     for (const k of r.keys)
       assert.ok(
         declared.includes(k),
-        `${r.file} reads the key ${JSON.stringify(k)}, which its allowlist entry does not declare. Add it — and while adding it, decide whether it belongs in the registry (an app-invented verb) or is a universal platform convention that stays LOCAL. That decision is the whole point of this failure.`,
+        `${r.file} reads the key ${JSON.stringify(k)}, which its allowlist entry does not declare. Add it — and while adding it, decide its item-61 category: registry (a canvas/global verb), contextual (surfaced through a focus/popover/dialog scope), or OS (literally the browser's own caret/nav/dismiss). That decision is the whole point of this failure.`,
       );
   }
 });
@@ -454,14 +501,41 @@ test("modifier reads are declared where they happen", () => {
   }
 });
 
-test("every coverage note is a registry citation or a written LOCAL rationale", () => {
+test("every coverage note carries a valid item-61 category (registry / contextual / OS / unmounted)", () => {
   for (const [file, spec] of Object.entries(ACCOUNTED)) {
     assert.ok(spec.coverage, `${file} has no coverage note`);
-    assert.ok(
-      /^(registry|LOCAL)/.test(spec.coverage),
-      `${file}'s coverage note must start with "registry:" (naming the entries that cover it) or "LOCAL:" (giving the reason it is not registered) — got ${JSON.stringify(spec.coverage.slice(0, 40))}`,
-    );
-    assert.ok(spec.coverage.length > 60, `${file}'s coverage note is too short to be a real rationale: ${JSON.stringify(spec.coverage)}`);
+    assertCategory(file, "coverage", spec.coverage);
+    // "unmounted:" is only for a control this app does not mount — the import gate
+    // proves it. Anywhere else it would be a way to smuggle a real key off the bar.
+    if (/^unmounted\b/.test(spec.coverage))
+      assert.equal(spec.mounted, false, `${file} uses the "unmounted:" category but is not marked mounted: false — that prefix is reserved for a lib control this app genuinely does not mount.`);
+  }
+});
+
+// ── THE ENFORCEMENT: OS IS NARROW, AND MECHANICALLY SO ───────────────────────
+// This is the guard that stops LOCAL from creeping back under a new name. An OS: note
+// is the ONLY chipless category, so it must not quietly cover a key that carries app
+// meaning. A key that COMMITS/CANCELS/CLOSES/CHOOSES/RENAMES/ACTIVATES is contextual,
+// not OS — the whole point of item 61.
+test("an OS: note may not cover a key that commits, cancels, closes, chooses, renames or activates", () => {
+  for (const [file, spec] of Object.entries(ACCOUNTED)) {
+    if (spec.mounted === false) continue; // not in the keyspace — nothing to classify
+    if (!/^OS\b/.test(spec.coverage)) continue;
+    for (const k of spec.keys) {
+      if (k === "Escape") {
+        // The ONE carve-out the doctrine names: a genuinely PASSIVE, state-free
+        // dismiss that claims nothing (Tooltip). The note must say so, in as many words.
+        assert.ok(
+          /passive/i.test(spec.coverage),
+          `${file} classifies Escape as OS but its note does not justify it as a PASSIVE, state-free dismiss (the Tooltip carve-out the doctrine names). An Escape that CLOSES or CANCELS is app meaning — surface it through a contextual chip scope (the popover/dialog precedent). LOCAL was the drift item 61 forbids.`,
+        );
+        continue;
+      }
+      assert.ok(
+        !OS_FORBIDDEN_KEYS.includes(k),
+        `${file} classifies ${JSON.stringify(k)} as OS, but that key commits/renames/activates — that is app meaning, not the OS's own behaviour, however conventional the keycap. Build a contextual chip scope for it (the fieldScope/popover precedent), or move dispatch behind a real OS control (a genuine <button>). LOCAL was the drift item 61 forbids.`,
+      );
+    }
   }
 });
 

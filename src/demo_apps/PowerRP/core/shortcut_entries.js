@@ -58,6 +58,15 @@
  *   numericField         a focused numeric field: "scrubber" (DraggableNumber) |
  *                        "dial" (AngleField) | null
  *   numericFieldBounded  that field has both a min and a max (so Home/End apply)
+ *   fieldScope           a focused COMMITTABLE FIELD's declared scope (item 61):
+ *                        "rename" | "commit" | "revert" | "add" | "titleRename" |
+ *                        null. The generalization of numericField — read off a
+ *                        data-hint-scope attribute — whose Enter/Escape verbs the
+ *                        HintBar Completeness Law requires be announced.
+ *   popoverOpen          an open menu/combobox/picker owns the keyboard (a TAKEOVER,
+ *                        like dialogOpen — editorInput excludes it)
+ *   popoverKind          which kind is open: "menu" | "combobox" | "search" |
+ *                        "color" | "grid" | null (read off data-hint-popover)
  */
 
 // NOTHING from web/ is imported here. core/ is the DOM-free foundation, so the
@@ -108,8 +117,9 @@ import { MOUSE_DOUBLE_TOKEN } from "./shortcuts.js";
  * @example editorInput({mode: "edit", typingTarget: true}) // false — the focused field owns keys
  * @example editorInput({mode: "present"}) // false — PresentMode owns its keys
  * @example editorInput({mode: "edit", paletteOpen: true}) // false — the palette owns its keys
+ * @example editorInput({mode: "edit", popoverOpen: true}) // false — an open popover/menu owns its keys
  */
-export const editorInput = (c) => c.mode === "edit" && !c.typingTarget && !c.dialogOpen && !c.paletteOpen;
+export const editorInput = (c) => c.mode === "edit" && !c.typingTarget && !c.dialogOpen && !c.paletteOpen && !c.popoverOpen;
 /** Pure function. The editor is accepting ORDINARY input: dispatchable, and no
  * live G/S modal transform locking input Blender-style.
  * @example editBase({mode: "edit"}) // true
@@ -351,6 +361,57 @@ export const fieldFocus = (kind) => (c) =>
   c.mode === "edit" && c.numericField === kind
   && !c.dragging && !c.crosshairArmed && !c.canvasMode && !c.modalActive;
 
+// ── THE HINTBAR COMPLETENESS LAW (item 61) — CONTEXTUAL FIELD & POPOVER SCOPES ─
+// The generalization of fieldFocus from two hardcoded numeric kinds to arbitrary
+// DECLARED ones. A committable field or an open popover marks itself with a DOM
+// data attribute (App.svelte focusContext reads it into fieldScope / popoverKind),
+// and these predicates gate the DISPLAY-ONLY Enter/Escape/nav entries that announce
+// its verbs. That retires the sweep's "LOCAL" drift: an Enter that commits or an
+// Escape that cancels is app meaning, so it MUST show on the bar while it applies.
+/**
+ * Pure function. A focused COMMITTABLE FIELD of `scope` OWNS its commit/cancel keys.
+ *
+ * The direct heir of `fieldFocus`, and its exclusions are the same idea one axis
+ * over: a live canvas takeover (a drag, an armed crosshair, a modal transform, an
+ * open palette/dialog/popover) is the more specific thing the user is doing and
+ * OWNS Enter/Escape, so the field stands down under it. Deliberately does NOT exclude
+ * `canvasMode`: the Mandelbrot interior-explore mode MOUNTS a readout field
+ * (CanvasToolbar), so a committable field lives INSIDE a canvas mode — and while that
+ * field holds focus it is a typing target, which already stands the mode's own keys
+ * down (editBase excludes typingTarget), so no exclusion is needed and adding one
+ * would wrongly blank the field's chips.
+ *
+ * @example fieldScope("rename")({mode: "edit", fieldScope: "rename"}) // true
+ * @example fieldScope("rename")({mode: "edit", fieldScope: "commit"}) // false
+ * @example fieldScope("commit")({mode: "edit", fieldScope: "commit", modalActive: true}) // false
+ */
+export const fieldScope = (scope) => (c) =>
+  c.mode === "edit" && c.fieldScope === scope
+  && !c.paletteOpen && !c.dialogOpen && !c.modalActive && !c.popoverOpen;
+/**
+ * Pure function. An open popover/menu/combobox of `kind` OWNS the keyboard. A
+ * TAKEOVER, like a dialog: editorInput already excludes popoverOpen, so the canvas
+ * chips are gone and only these show. `mode === "edit"` because present mode is the
+ * other takeover and both bind Escape (a bar reading "Exit" and "Close" on one key
+ * is the lie this scoping prevents — the paletteContext precedent).
+ *
+ * @example popover("menu")({mode: "edit", popoverOpen: true, popoverKind: "menu"}) // true
+ * @example popover("menu")({mode: "edit", popoverOpen: true, popoverKind: "combobox"}) // false
+ * @example popover("menu")({mode: "present", popoverOpen: true, popoverKind: "menu"}) // false
+ */
+export const popover = (kind) => (c) => c.mode === "edit" && c.popoverOpen && c.popoverKind === kind;
+/**
+ * Pure function. A modal lib/Modal.svelte DIALOG owns the screen. The dialogOpen
+ * axis ALREADY suppressed dispatch (editorInput); this is what finally ANNOUNCES the
+ * dialog's own two keys instead of leaving them a silent takeover. `mode === "edit"`
+ * so it cannot collide with presentMode's Escape "Exit" in the (unreachable) probe
+ * crossing of a dialog with present mode.
+ *
+ * @example dialogContext({mode: "edit", dialogOpen: true}) // true
+ * @example dialogContext({mode: "present", dialogOpen: true}) // false
+ */
+export const dialogContext = (c) => c.mode === "edit" && c.dialogOpen;
+
 /**
  * Command-bound key combos: the EDITOR-setting defaults (core/keybindings.js),
  * overridable per user. The bridge (toShortcutEntries) turns them into registry
@@ -477,6 +538,65 @@ export const DRAG_MODIFIER_HINTS = Object.freeze({
 export function dragModifierContext(kind) {
   return kind === "band" ? bandGesture : duringDrag(kind);
 }
+
+/**
+ * THE COMMITTABLE-FIELD SCOPES (item 61). A focused field declares one of these on a
+ * `data-hint-scope` attribute; the entries are GENERATED from this table (the
+ * DRAG_MODIFIER_HINTS construction), so a field cannot advertise a key this table has
+ * no wording for. Each entry names ONLY the keys that field actually handles — a chip
+ * for a key that does nothing would be the lie item 61 forbids, so a rename box that
+ * commits on Enter and reverts on Escape lists both, while a property row that only
+ * reverts on Escape lists escape alone.
+ *
+ * All display-only: the field's own keydown handler dispatches (a focused input is a
+ * typing target, so the registry cannot), and these route through it purely for the
+ * HintBar — the "registered but externally dispatched" case.
+ */
+export const FIELD_SCOPE_HINTS = Object.freeze({
+  rename: { enter: "Rename", escape: "Cancel" }, // SlideNav slide-name editor
+  commit: { enter: "Commit", escape: "Revert" }, // CanvasToolbar readouts, Numeric/Angle/Inspector equation inputs
+  revert: { escape: "Revert" }, // Inspector property-row text input (Esc reverts the live preview; commit is on blur)
+  add: { enter: "Add" }, // VariablesPanel add-variable input (Enter only; the rename rows commit on blur)
+  // The Toolbar project-title chrome — a role="button" span, NOT a typing target, so
+  // it stays live under editorInput and shows alongside the canvas chips. Enter and
+  // F2 both open the rename modal; both are announced (F2 is app-invented vocabulary,
+  // Enter is the discoverable twin). No `escape` — the span has no cancel.
+  titleRename: { enter: "Rename", f2: "Rename" },
+  // Focused asset/video/library TILES (AssetThumb, VideoThumbnail, lib/Thumbnail) —
+  // role="button" DIVS, not real <button>s, so Enter-to-activate is app-implemented
+  // (the sweep doctrine's own line: activate-a-focused-control is OS only on a genuine
+  // <button>). Non-typing, so it rides the same editMode predicate as titleRename.
+  tile: { enter: "Open" },
+});
+
+// The NON-TYPING field scopes: their focusable element is a role="button" (a title
+// span, a tile div), NOT an <input>, so it is no typing target and stays live under
+// editorInput — which means the generic fieldScope's typing-target shield does not
+// apply and their Enter/F2 would collide with a canvas mode's own Enter. They are
+// never focused mid-gesture, so they compose editMode (which excludes the modes and
+// the crosshair) instead. Every OTHER scope is a focused <input>.
+const NON_TYPING_FIELD_SCOPES = Object.freeze(["titleRename", "tile"]);
+
+/**
+ * THE OPEN-POPOVER KINDS (item 61). An open menu/combobox/picker declares one on a
+ * `data-hint-popover` attribute; entries are GENERATED from this table. A popover is a
+ * TAKEOVER (editorInput excludes popoverOpen), so its chips REPLACE the canvas chips.
+ * LISTBOX/SLIDER ARROW NAVIGATION IS DELIBERATELY ABSENT: arrows walking a role=listbox
+ * or nudging a role=slider are the platform's own ARIA conventions (the OS residue the
+ * sweep doctrine still permits), so only the app-meaning verbs — dismiss, choose,
+ * apply, select — are chipped, which also keeps the one-line bar from drowning.
+ *
+ * All display-only: the popover's own keydown handler dispatches.
+ */
+export const POPOVER_HINTS = Object.freeze({
+  menu: [{ keys: ["Escape"], label: "Close" }], // ContextMenu, ShapePicker, ColorField, GradientPresetPicker
+  combobox: [{ keys: ["Enter"], label: "Choose" }, { keys: ["Escape"], label: "Close" }], // FontPicker, lib/Dropdown
+  // lib/SearchableDropdown's TWO-STAGE Escape is app-invented (a non-empty query
+  // clears first, a second empty Escape closes) and cannot be guessed, so it is
+  // taught with its own wording rather than combobox's plain "Close".
+  search: [{ keys: ["Enter"], label: "Choose" }, { keys: ["Escape"], label: "Clear / Close" }],
+  grid: [{ keys: ["Enter"], label: "Select size" }, { keys: ["Space"], label: "Select size", hidden: true }], // GridSizePicker (Space is the alias)
+});
 
 /**
  * Query (reads `app` methods into closures; otherwise pure). Every HAND-registered
@@ -775,6 +895,43 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, activ
     // fact, read off the focused element's aria-valuemin/max in App.svelte.
     { keys: ["Home"], label: "Minimum", when: (c) => fieldFocus("scrubber")(c) && c.numericFieldBounded },
     { keys: ["End"], label: "Maximum", when: (c) => fieldFocus("scrubber")(c) && c.numericFieldBounded },
+    // ── COMMITTABLE FIELD SCOPES, GENERATED PER SCOPE (item 61) ───────────────
+    // The generalization of the fieldFocus entries above. A field declaring
+    // data-hint-scope="rename"|"commit"|… gets its Enter/Escape/F2 chips here, one
+    // per key the scope actually handles. DISPLAY-ONLY: the field's own keydown acts;
+    // the registry announces (the numeric-field precedent one axis over).
+    ...Object.entries(FIELD_SCOPE_HINTS).flatMap(([scope, verbs]) => {
+      // The TYPING-TARGET scopes use fieldScope: a focused <input> is a typing target,
+      // which already stands the canvas takeovers (a drag, a mode, a crosshair) down
+      // via editorInput, so fieldScope need only add the non-editorInput takeovers
+      // (palette/dialog/modal/popover). The NON-TYPING scopes (a title span, a tile
+      // div) stay live under editorInput and would collide with a canvas mode's own
+      // Enter (the polygon's "Finish shape"), so they compose editMode instead, which
+      // excludes canvasMode and the crosshair outright (see NON_TYPING_FIELD_SCOPES).
+      const when = NON_TYPING_FIELD_SCOPES.includes(scope)
+        ? (c) => editMode(c) && c.fieldScope === scope
+        : fieldScope(scope);
+      return [
+        ...(verbs.enter ? [{ keys: ["Enter"], label: verbs.enter, when }] : []),
+        ...(verbs.escape ? [{ keys: ["Escape"], label: verbs.escape, when }] : []),
+        ...(verbs.f2 ? [{ keys: ["F2"], label: verbs.f2, when }] : []),
+      ];
+    }),
+    // ── OPEN-POPOVER KINDS, GENERATED PER KIND (item 61) ──────────────────────
+    // A menu/combobox/picker declaring data-hint-popover="menu"|"combobox"|… gets its
+    // dismiss/choose/apply chips here. A popover is a TAKEOVER (editorInput excludes
+    // popoverOpen), so these REPLACE the canvas chips. DISPLAY-ONLY: the popover's own
+    // keydown owns dispatch; a listbox's arrow navigation is OS residue and unchipped.
+    ...Object.entries(POPOVER_HINTS).flatMap(([kind, hints]) =>
+      hints.map((h) => ({ ...h, when: popover(kind) }))),
+    // ── MODAL DIALOG KEYS (item 61) ───────────────────────────────────────────
+    // dialogOpen already made editorInput false (the canvas chips stand down); these
+    // finally ANNOUNCE the dialog's own takeover keys instead of leaving them silent.
+    // DISPLAY-ONLY: lib/Modal.svelte's panel keydown owns Esc-close and the Tab focus
+    // trap. A focused scrubber INSIDE the dialog still shows its own fieldFocus chips
+    // (Export MP4's width/height), which do not collide with these.
+    { keys: ["Escape"], label: "Close", when: dialogContext },
+    { keys: ["Tab"], label: "Next field", when: dialogContext },
     // ── WIDGET CANVAS MODES (web/widget_handlers.js) ─────────────────────────
     // A widget's ACTIVATION may take over canvas input (double-click a Mandelbrot
     // → explore its interior), and a widget's CREATION may too (click-click-click
@@ -859,6 +1016,22 @@ export const HINT_PROBE_FLAGS = Object.freeze([
   // it would be checking a context the user never reaches.
   { dialogOpen: true, numericField: "scrubber" },
   { dialogOpen: true, numericField: "scrubber", numericFieldBounded: true },
+  // item-61 COMMITTABLE-FIELD SCOPES. The rename/commit/revert/add fields are plain
+  // <input>s, so they are typing targets and suppress the canvas chips the way a
+  // numericField does; titleRename rides a role="button" span and is NOT a typing
+  // target, so it stays live under editorInput (its Enter/F2 show beside the canvas
+  // chips, colliding with none of them).
+  { typingTarget: true, fieldScope: "rename" },
+  { typingTarget: true, fieldScope: "commit" },
+  { typingTarget: true, fieldScope: "revert" },
+  { typingTarget: true, fieldScope: "add" },
+  { fieldScope: "titleRename" },
+  { fieldScope: "tile" },
+  // item-61 OPEN POPOVERS — each a keyboard TAKEOVER, like a dialog.
+  { popoverOpen: true, popoverKind: "menu" },
+  { popoverOpen: true, popoverKind: "combobox" },
+  { popoverOpen: true, popoverKind: "search" },
+  { popoverOpen: true, popoverKind: "grid" },
 ]);
 
 /** The two `mode` values, as an axis. */
@@ -886,8 +1059,8 @@ export const HINT_PROBE_CROSSHAIRS = Object.freeze([null, "band", "place"]);
  * other flag and is orthogonal to every loop axis. Crossing it as a loop would
  * multiply the whole grid by the handler count to reach the same reachable states.
  *
- * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length // 114
- * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: ["insert_point"], app: {}}).length // 120
+ * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length // 174
+ * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: ["insert_point"], app: {}}).length // 180
  */
 export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, activationIds, app }) {
   // One extra flag set per activation: the selected widget declares it. Derived, so
@@ -907,6 +1080,7 @@ export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, a
                 latexEditing: false, codeEditing: false,
                 typingTarget: false, dialogOpen: false,
                 numericField: null, numericFieldBounded: false,
+                fieldScope: null, popoverOpen: false, popoverKind: null,
                 activation: null,
                 ...flags,
                 // THE SAME KIND OF APP INVARIANT as `dragging` below: App.svelte
@@ -977,5 +1151,9 @@ export const SUPPRESSED_AXES = Object.freeze([
   { axis: "typingTarget", value: true },
   { axis: "paletteOpen", value: true },
   { axis: "dialogOpen", value: true },
+  // An OPEN POPOVER/MENU/COMBOBOX (item 61) is a takeover too: editorInput excludes
+  // popoverOpen, so no dispatched editor entry is live behind it and every chip shown
+  // there is the popover's own — the dialog precedent, one axis over.
+  { axis: "popoverOpen", value: true },
   { axis: "mode", value: "present", off: "edit" },
 ]);

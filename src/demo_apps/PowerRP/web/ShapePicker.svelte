@@ -57,7 +57,7 @@
 <svelte:window onpointerdown={onWindowPointerDown} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="shape-picker" onkeydown={onKeydown}>
+<div class="shape-picker" data-hint-popover={open ? "menu" : null} onkeydown={onKeydown}>
   <Tooltip text="Add Shape (star, polygon, arrow, heart, …)">
     <button
       class="btn-icon"

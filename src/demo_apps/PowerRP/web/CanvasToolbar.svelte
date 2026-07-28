@@ -198,6 +198,7 @@
                 <input
                   type="text"
                   class="canvas-toolbar-field-input"
+                  data-hint-scope="commit"
                   spellcheck="false"
                   disabled={bound.length > 0}
                   value={shown(field)}

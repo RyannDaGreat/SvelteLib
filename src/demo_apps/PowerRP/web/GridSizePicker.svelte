@@ -105,6 +105,7 @@
     class="grid-picker-grid"
     role="grid"
     tabindex="0"
+    data-hint-popover="grid"
     aria-label="Grid size: {sel.rows} by {sel.cols}. Arrow keys to size, Enter to confirm."
     onkeydown={onKeydown}
     style="--gp-cols: {disp.cols};"

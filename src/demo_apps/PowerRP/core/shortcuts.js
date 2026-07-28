@@ -71,6 +71,10 @@ export const NAMED_KEY_TOKENS = Object.freeze([
   "Escape", "Enter", "Tab", "Space", "Backspace", "Delete",
   "Home", "End", "PageUp", "PageDown",
   "Left", "Right", "Up", "Down",
+  // F2 — the platform's own RENAME key (Toolbar title, item 61). keyToken() returns
+  // event.key verbatim ("F2") for it, so this spelling is exactly what dispatch()
+  // would see; no other function key is bound, so only F2 is admitted.
+  "F2",
 ]);
 
 /**

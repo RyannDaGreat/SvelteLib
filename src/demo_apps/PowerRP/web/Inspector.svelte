@@ -1398,6 +1398,7 @@
   {:else}
     <input
       type="text"
+      data-hint-scope="revert"
       value={state[row.key] ?? ""}
       {disabled}
       oninput={(e) => onpreview(row.key, kind, e.target.value)}
@@ -1454,6 +1455,7 @@
     <input
       type="text"
       class="eq-input"
+      data-hint-scope="commit"
       class:invalid
       class:error={!invalid && !!error}
       spellcheck="false"

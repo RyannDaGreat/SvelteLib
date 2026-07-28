@@ -134,6 +134,7 @@
   <Tooltip text="Double-click to rename">
     <span
       class="doc-name"
+      data-hint-scope="titleRename"
       role="button"
       tabindex="0"
       ondblclick={() => app.renamePresentation()}

@@ -500,6 +500,7 @@
         bind:this={eqInputEl}
         type="text"
         class="eq-input"
+        data-hint-scope="commit"
         class:invalid
         class:error={!invalid && !!error}
         spellcheck="false"

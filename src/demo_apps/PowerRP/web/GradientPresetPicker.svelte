@@ -229,7 +229,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="gradient-presets" onkeydown={onKeydown}>
+<div class="gradient-presets" data-hint-popover={open ? "menu" : null} onkeydown={onKeydown}>
   <button
     type="button"
     class="gradient-presets-toggle"

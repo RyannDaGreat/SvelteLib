@@ -68,7 +68,7 @@
   <img class="ae-thumb-img" src={imgSrc} alt="" loading="lazy" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)} />
 {:else}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="ae-kind" role="button" tabindex="0" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)}>
+  <div class="ae-kind" role="button" tabindex="0" data-hint-scope="tile" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)}>
     {#if failed}
       <!-- The message is readable by hovering the glyph, through SvelteLib's
            immediate Tooltip (native title= is banned in app chrome — manifest). -->

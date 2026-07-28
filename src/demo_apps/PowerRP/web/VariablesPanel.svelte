@@ -65,6 +65,7 @@
     <input
       type="text"
       class="var-name"
+      data-hint-scope="add"
       placeholder="new_variable"
       aria-label="New variable name"
       spellcheck="false"

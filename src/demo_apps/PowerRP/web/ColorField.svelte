@@ -239,7 +239,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="colorfield" class:disabled onkeydown={onKeydown}>
+<div class="colorfield" class:disabled data-hint-popover={open ? "menu" : null} onkeydown={onKeydown}>
   <div class="colorfield-head">
     {#if equation}
       <!-- EQUATION-BOUND: the ƒ mark + the expression in the same monospace

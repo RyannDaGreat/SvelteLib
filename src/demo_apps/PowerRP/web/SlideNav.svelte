@@ -253,6 +253,7 @@
                    user just double-clicked here; focusing it is the gesture. -->
               <input
                 class="name-edit"
+                data-hint-scope="rename"
                 autofocus
                 value={renameDraft}
                 oninput={(e) => (renameDraft = e.target.value)}

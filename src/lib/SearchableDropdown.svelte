@@ -137,6 +137,7 @@
 {#snippet searchBox()}
   <input
     class="sd-search"
+    data-hint-popover="search"
     type="text"
     placeholder={searchPlaceholder}
     aria-label={searchPlaceholder}

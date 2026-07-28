@@ -115,7 +115,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="vidthumb" role="button" tabindex="0" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)}>
+<div class="vidthumb" role="button" tabindex="0" data-hint-scope="tile" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)}>
   {#if frameUrl}
     <img class="vidthumb-img" src={frameUrl} alt="" loading="lazy" />
   {:else if failed}

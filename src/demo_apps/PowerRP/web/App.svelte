@@ -1320,7 +1320,7 @@
   // Read-only on the DOM and it edits nothing: the two shared-lib controls it
   // classifies (DraggableNumber, Modal) are identified by the ARIA/role they
   // ALREADY publish, so no component had to learn about the registry.
-  const NO_FOCUS_CONTEXT = { typing: false, dialog: false, numericField: null, numericFieldBounded: false };
+  const NO_FOCUS_CONTEXT = { typing: false, dialog: false, numericField: null, numericFieldBounded: false, fieldScope: null, popoverKind: null };
   /**
    * Pure function. What the focused element owns, as the shortcut context's focus
    * axes. `el` is null when nothing is focused.
@@ -1332,10 +1332,21 @@
    * publishes aria-valuemin/max ONLY when it was given a min and a max, which is
    * exactly when its Home/End branches do anything.
    *
-   * @example // focusContext(null) → {typing: false, dialog: false, numericField: null, numericFieldBounded: false}
+   * fieldScope / popoverKind are THE HINTBAR COMPLETENESS LAW's two new focus axes
+   * (item 61), the direct generalization of numericField from two hardcoded kinds to
+   * arbitrary DECLARED ones. A committable field (a rename box, an equation entry, a
+   * property row) publishes `data-hint-scope="rename"|"commit"|…`, and an open
+   * popover/menu/combobox publishes `data-hint-popover="menu"|"combobox"|…`, on an
+   * ancestor of whatever they focus. Reading them here — off the ALREADY-focused
+   * element, the DraggableNumber precedent — is what lets the registry announce their
+   * Enter/Escape verbs (which used to be the sweep's chipless "LOCAL" drift) without
+   * any component learning about the registry.
+   *
+   * @example // focusContext(null) → {typing: false, dialog: false, numericField: null, numericFieldBounded: false, fieldScope: null, popoverKind: null}
    * @example // focusContext(<input>) → {typing: true, dialog: false, …}
    * @example // focusContext(<div role="spinbutton" aria-valuemin="0" aria-valuemax="1">)
-   * @example // → {typing: false, dialog: false, numericField: "scrubber", numericFieldBounded: true}
+   * @example // → {typing: false, dialog: false, numericField: "scrubber", numericFieldBounded: true, …}
+   * @example // focusContext(<input data-hint-scope="rename">) → {…, fieldScope: "rename"}
    */
   function focusContext(el) {
     if (!el || !el.closest) return NO_FOCUS_CONTEXT;
@@ -1349,6 +1360,11 @@
       dialog: !!el.closest('[role="dialog"]'),
       numericField: scrubber ? "scrubber" : el.closest(".angle-dial") ? "dial" : null,
       numericFieldBounded: !!scrubber?.hasAttribute("aria-valuemin") && !!scrubber?.hasAttribute("aria-valuemax"),
+      // The two item-61 axes. A closest() up the tree, exactly like the dialog and
+      // spinbutton reads above: the field/popover marks an ancestor of what it
+      // focuses, so a focus INSIDE it resolves the scope. Nothing focused ⇒ null.
+      fieldScope: el.closest("[data-hint-scope]")?.dataset.hintScope ?? null,
+      popoverKind: el.closest("[data-hint-popover]")?.dataset.hintPopover ?? null,
     };
   }
   let focus = $state(NO_FOCUS_CONTEXT);
@@ -1361,6 +1377,19 @@
   function onFocusOut(e) {
     focus = focusContext(e.relatedTarget);
   }
+  // A popover that KEEPS focus on its trigger (ShapePicker, ColorField, lib/Dropdown)
+  // toggles its data-hint-popover attribute AFTER the click that opened it, with NO
+  // focus change — so onFocusIn never re-reads it, and the "Close" chip would never
+  // appear. Re-derive the focus context whenever a hint-scope/hint-popover attribute
+  // appears or disappears anywhere in the tree, so the bar picks up a popover the
+  // instant it opens (and drops it when it closes) while activeElement.closest still
+  // gives innermost-wins for the autofocus popovers (a search box's own scope beats
+  // the enclosing menu's). Runes-only lifecycle: one observer for the component's life.
+  $effect(() => {
+    const obs = new MutationObserver(() => { focus = focusContext(document.activeElement); });
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-hint-popover", "data-hint-scope"], subtree: true });
+    return () => obs.disconnect();
+  });
 
   function shortcutCtx() {
     return {
@@ -1420,6 +1449,18 @@
       // guards together.
       typingTarget: focus.typing,
       dialogOpen: focus.dialog,
+      // ── THE ITEM-61 FOCUS AXES ──────────────────────────────────────────────
+      // A focused COMMITTABLE FIELD's declared scope ("rename"|"commit"|…), or null:
+      // the generalization of numericField, feeding the Enter/Escape chips that used
+      // to be the sweep's chipless LOCAL entries (core/shortcut_entries.js fieldScope).
+      fieldScope: focus.fieldScope,
+      // An OPEN popover/menu/combobox's kind ("menu"|"combobox"|…), or null, and the
+      // truthy "is a popover holding the keyboard" flag derived from it. Like a dialog,
+      // a popover is a TAKEOVER: editorInput excludes it, so the canvas chips stand
+      // down and the popover's own Esc/nav chips show instead (core/shortcut_entries.js
+      // popover / SUPPRESSED_AXES).
+      popoverKind: focus.popoverKind,
+      popoverOpen: focus.popoverKind !== null,
       // A focused numeric field, by KIND ("scrubber" = lib/DraggableNumber,
       // "dial" = web/AngleField) or null — the crosshairArmed shape again, because
       // the two read Shift OPPOSITE ways (finer vs coarser) and one averaged chip

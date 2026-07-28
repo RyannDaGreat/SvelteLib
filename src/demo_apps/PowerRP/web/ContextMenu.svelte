@@ -28,6 +28,16 @@
   /** Icon glyph size — the panel-row icon size the rest of the app's menus use. */
   const ICON = 15;
 
+  /** @type {HTMLDivElement|undefined} The menu panel, focused on open. */
+  let menuEl = $state(undefined);
+  // Move focus INTO the menu on open. Two jobs at once: standard menu a11y, AND the
+  // signal App.svelte's focusContext reads to raise the `popoverOpen` axis — so the
+  // registry announces this menu's Escape "Close" (item 61, the HintBar Completeness
+  // Law). Without focus here the menu's data-hint-popover would sit on an element no
+  // focus is inside, and the chip would never show. On close, focus falls to the body
+  // and the axis clears; the menu closes on a pick/Escape/outside-click.
+  $effect(() => { menuEl?.focus(); });
+
   /** Command. Runs an entry then closes (a menu pick is one action + dismiss). */
   function pick(entry) {
     entry.onselect?.();
@@ -52,9 +62,11 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
+  bind:this={menuEl}
   class="context-menu"
   role="menu"
   tabindex="-1"
+  data-hint-popover="menu"
   style={`left: ${x}px; top: ${y}px;`}
   onpointerdown={(e) => e.stopPropagation()}
 >

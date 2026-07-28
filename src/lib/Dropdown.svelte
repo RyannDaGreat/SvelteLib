@@ -548,7 +548,7 @@
   </svg>
 {/snippet}
 
-<div class="dd" bind:this={rootEl} onkeydown={handleKeydown}>
+<div class="dd" bind:this={rootEl} data-hint-popover={open ? "combobox" : null} onkeydown={handleKeydown}>
   <button
     type="button"
     class="dd-trigger"
