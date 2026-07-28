@@ -181,6 +181,35 @@ function materialEntryForPaint(id) {
 }
 
 /**
+ * Query (reads both registries). Does this PAINT value animate at rest — i.e.
+ * does its material read the particleTime clock, so a presenter showing it must
+ * keep a repaint loop alive? A material declares this with `animated`: `true`
+ * (always reads the clock — rainy_window, glitch, sky, raycast_dither) or a
+ * predicate over its RESOLVED params (wavy animates only when `boil` is
+ * engaged). Non-material paints (solids, gradients, null/undefined) and
+ * clock-free materials are false. This is the seam web/PresentMode.svelte's
+ * currentSlideHasVisibleAnimated reads, because a plain shape whose FILL
+ * animates has no widget-level `animated` flag — the material is the only
+ * place that knows (the "rainy window froze in the presenter" bug).
+ *
+ * @param {object|string|null|undefined} paint - a fill/stroke/background paint value
+ * @returns {boolean}
+ *
+ * @example paintIsAnimated({type: "material", material: {id: "rainy_window", params: {}}}) // true
+ * @example paintIsAnimated({type: "material", material: {id: "wavy", params: {boil: 2}}}) // true
+ * @example paintIsAnimated({type: "material", material: {id: "wavy", params: {}}}) // false
+ * @example paintIsAnimated("#ff0000") // false
+ * @example paintIsAnimated(null) // false
+ */
+export function paintIsAnimated(paint) {
+  if (!paint || typeof paint !== "object" || paint.type !== "material" || !paint.material?.id) return false;
+  const entry = materialEntryForPaint(paint.material.id);
+  if (typeof entry.animated === "function")
+    return entry.animated({ ...materialParamDefaults(entry), ...paint.material.params });
+  return entry.animated === true;
+}
+
+/**
  * Pure function. A paint material entry's COMPLETE default knob map. Generalizes
  * materialFillParamDefaults to BOTH slots: it reads `strokeParams ?? fillParams`,
  * so a stroke entry resolves against its own schema while a fill entry stays

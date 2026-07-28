@@ -19,6 +19,7 @@
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
   import { cameraFrameIR, evaluatedStateAt, evaluationAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
+  import { paintIsAnimated } from "../render_gpu/skia/materials.js"; // an animated MATERIAL fill/stroke/background must also keep the loop alive
   import { assetUrl } from "./projectApi.js";
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
@@ -94,9 +95,21 @@
     // the equations the way a hand-set flag would; a deck that never writes `= time`
     // gets null and the loop stays off.
     if (evaluation.clock !== null) return true;
+    // The CAMERA BACKGROUND is hand-assembled outside the derived tree and always
+    // fills the view, so an animated background material (rainy window on the
+    // camera) is checked directly — visibility is unconditional.
+    const cam = Object.values(state.items ?? {}).find((it) => it?.type === "camera" && it.active !== false);
+    if (cam && paintIsAnimated(cam.background)) return true;
     const rect = cameraRect(state, app.doc.meta);
     return deriveRenderTree(state, app.registry).some(
-      (n) => n.state.animated === true && !canSkipNode(n, rect),
+      (n) =>
+        (n.state.animated === true ||
+          // A plain shape with an ANIMATED MATERIAL paint has no widget-level
+          // flag — the material registry is the only place that knows (the
+          // "rainy window froze in the presenter" bug, manifest item 73).
+          paintIsAnimated(n.state.fill) ||
+          paintIsAnimated(n.state.stroke)) &&
+        !canSkipNode(n, rect),
     );
   }
 

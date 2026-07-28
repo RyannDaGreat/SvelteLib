@@ -379,6 +379,7 @@ export function raycastDitherUniformParams(p) {
 // animated mesh-gradient clipped to the shape — materials.isFillCapableMaterial).
 export const RAYCAST_DITHER_MATERIAL = {
   id: "raycast_dither",
+  animated: true, // reads particleTime — the presenter must keep repainting (paintIsAnimated)
   sksl: RAYCAST_DITHER_SKSL,
   pack: packRaycastDither,
   uniformFloats: RAYCAST_DITHER_UNIFORM_FLOATS,

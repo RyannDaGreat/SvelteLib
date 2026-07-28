@@ -506,6 +506,7 @@ export function rainyWindowUniformParams(p) {
  */
 export const RAINY_WINDOW_MATERIAL = {
   id: "rainy_window",
+  animated: true, // uTime drives runner drops — the presenter must keep repainting (paintIsAnimated)
   sksl: RAINY_WINDOW_SKSL,
   pack: packRainyWindow,
   uniformFloats: RAINY_WINDOW_UNIFORM_FLOATS,

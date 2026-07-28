@@ -627,6 +627,35 @@ ruling): keep the player; ship the grammar fixes on their own merit
 (`%` + UI-visible `time`); add real self.length via ffprobe; the demo
 widget is the scrubber-with-time-presets.
 
+73. **ANIMATED MATERIALS FROZE IN THE PRESENTER** (user: "Why does the rainy
+    window material not animate when I apply it to something?") — ROOT CAUSE,
+    two layers: the editor freezes ALL animation by design (determinism); but
+    in the PRESENTER, currentSlideHasVisibleAnimated only checked the
+    WIDGET-state `animated` flag, and a plain shape whose FILL is an animated
+    material has no such flag → the idle rAF never started → frozen at rest.
+    FIXED: materials now declare `animated` on their registry entries (true
+    for rainy_window/glitch/sky/raycast_dither; a params predicate for wavy —
+    boil ≠ 0) and the ONE seam `paintIsAnimated(paint)` (materials.js) is read
+    by PresentMode for every visible node's fill/stroke AND the camera
+    background (hand-assembled, always visible). Pinned by
+    tests/animated_paint_test.js including a COMPLETENESS SWEEP: any skia
+    material-definition file importing particle_clock without declaring
+    `animated` fails the test — the silent-freeze class is closed.
+
+74. **UNIVERSAL OPTION-HOVER PREVIEW** (user: "this is like a recurring
+    issue. We probably should have solved this with some base thing... when
+    I'm mousing over the options of metal material, it does not preview").
+    The Tools pane preset rows DO hover-preview (the previewDelta staging
+    protocol); the gap is the INSPECTOR's dropdowns — hovering an option of a
+    select row (e.g. metalType: brass/chrome/steel…) must stage a live
+    preview of that value through the SAME preview(app)→revert protocol,
+    reverting on pointer-leave, committing only on click. This is a BASE
+    behavior of the select/dropdown row kind, not per-widget work — one
+    implementation in the Inspector's dropdown wiring covers every material
+    knob, every widget select, forever. QUEUED behind the HintBar agent's
+    file ownership (Inspector/Dropdown); implement immediately after it
+    lands.
+
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
   parametric core with a y-of-x preset wrapper unless told otherwise.)

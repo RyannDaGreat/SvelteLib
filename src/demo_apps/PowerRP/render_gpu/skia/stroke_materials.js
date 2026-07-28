@@ -623,6 +623,7 @@ export const DASHES_STROKE = {
 
 export const WAVY_STROKE = {
   id: "wavy",
+  animated: (params) => (params.boil ?? 0) !== 0, // boil 0 (default) never reads the clock — static, so no repaint loop
   title: "Wavy",
   strokeParams: [
     { name: "color", kind: "color", default: "#7c3aed", help: "The wavy stroke's colour." },

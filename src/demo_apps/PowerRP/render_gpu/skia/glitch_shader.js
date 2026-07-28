@@ -379,6 +379,7 @@ export function glitchUniformParams(p) {
  */
 export const GLITCH_MATERIAL = {
   id: "glitch",
+  animated: true, // reads particleTime — the presenter must keep repainting (paintIsAnimated)
   sksl: GLITCH_SKSL,
   pack: packGlitchUniforms,
   uniformFloats: GLITCH_UNIFORM_FLOATS,

@@ -625,6 +625,7 @@ export function skyUniformParams(p) {
  * fill, and its scattering reads the scene's suns through the sibling gather. */
 export const SKY_MATERIAL = {
   id: "sky",
+  animated: true, // reads particleTime — the presenter must keep repainting (paintIsAnimated)
   sksl: SKY_SKSL,
   pack: packSky,
   uniformFloats: SKY_UNIFORM_FLOATS,
