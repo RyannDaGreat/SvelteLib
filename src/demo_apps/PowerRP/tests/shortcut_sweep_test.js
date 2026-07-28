@@ -230,8 +230,9 @@ const ACCOUNTED = {
     coverage: "LOCAL: Enter commits the inline project-title rename and F2 starts it — both scoped to the title field, and F2 is the platform's own rename key. Not registered because a global chip for a key that only works on one hovered widget would be less honest than none.",
   },
   "web/SlideNav.svelte": {
-    keys: ["Enter"],
-    coverage: "LOCAL: Enter commits an inline slide rename (same field-commit convention).",
+    keys: ["Enter", "Escape"],
+    coverage: "LOCAL: Enter commits and Escape cancels the inline slide-rename editor — the universal field-commit/revert convention, confined to the focused input (a typing target, so the canvas chips already stand down). Escape stopPropagations so it cannot also fire a global dismiss while abandoning the typed name.",
+    dblclick: "LOCAL: double-click on a slide's NAME opens its inline rename editor (Round 4 #54) — the platform-universal rename gesture (Finder/Explorer/every tree view), discoverable via the name's hover tooltip ('Double-click to rename'). Registering it would put a permanent chip on a gesture that only exists over one label; the canvas double-click verbs are unaffected because the navigator is not the canvas.",
   },
   "web/CanvasToolbar.svelte": {
     keys: ["Enter", "Escape"],

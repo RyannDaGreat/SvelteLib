@@ -1618,6 +1618,23 @@
          generic machinery, WITHOUT keyframe diamonds (transitions are
          per-boundary CONFIG, not keyframable tweened state). -->
     {#if transitionState}
+      <!-- SLIDE NAME (Round 4 #54): the boundary panel is the slide's
+           properties surface, so the name is editable HERE as well as by
+           double-clicking it in the navigator. Commit on change (ONE undo
+           unit); blank restores the positional default. -->
+      {@const nameSlideIndex = app.doc.slides.findIndex((s) => s.id === transitionSlideId)}
+      {#if nameSlideIndex >= 0}
+        <div class="row">
+          <span class="label">Name</span>
+          <input
+            class="slide-name-field"
+            value={app.doc.slides[nameSlideIndex].name}
+            onchange={(e) => app.renameSlide(nameSlideIndex, e.target.value)}
+            aria-label={`Slide ${nameSlideIndex + 1} name`}
+          />
+          <span class="kf-controls" aria-hidden="true"></span>
+        </div>
+      {/if}
       <div class="row transition-type-row">
         <span class="label">Type</span>
         <Dropdown

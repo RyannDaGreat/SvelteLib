@@ -169,6 +169,27 @@
     window.__powerrp_thumbs = thumbScheduler;
     return () => { if (window.__powerrp_thumbs === thumbScheduler) delete window.__powerrp_thumbs; };
   });
+
+  // ── SLIDE RENAME (Round 4 #54: "double click the title of the slide to
+  // rename it") — inline editor state: which slide index is being renamed, or
+  // null. Enter/blur commits (ONE undo unit via app.renameSlide; blank restores
+  // the positional default), Escape cancels. The input is a typing target, so
+  // the global shortcut layer already stands down while it is focused.
+  let renamingIndex = $state(null);
+  let renameDraft = $state("");
+  function startRename(i, currentName) {
+    renamingIndex = i;
+    renameDraft = currentName;
+  }
+  function commitRename() {
+    if (renamingIndex == null) return;
+    app.renameSlide(renamingIndex, renameDraft);
+    renamingIndex = null;
+  }
+  function renameKeydown(e) {
+    if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+    else if (e.key === "Escape") { e.stopPropagation(); renamingIndex = null; }
+  }
 </script>
 
 <div class="slidenav">
@@ -227,7 +248,23 @@
         >
           <span class="row-top">
             <span class="num">{i + 1}</span>
-            <span class="name">{slide.name}</span>
+            {#if renamingIndex === i}
+              <!-- svelte-ignore a11y_autofocus — the editor exists BECAUSE the
+                   user just double-clicked here; focusing it is the gesture. -->
+              <input
+                class="name-edit"
+                autofocus
+                value={renameDraft}
+                oninput={(e) => (renameDraft = e.target.value)}
+                onkeydown={renameKeydown}
+                onblur={commitRename}
+                onclick={(e) => e.stopPropagation()}
+                ondblclick={(e) => e.stopPropagation()}
+                aria-label={`Rename slide ${i + 1}`}
+              />
+            {:else}
+              <span class="name" ondblclick={(e) => { e.stopPropagation(); startRename(i, slide.name); }} title="Double-click to rename">{slide.name}</span>
+            {/if}
             <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
               <span
                 class="eye"

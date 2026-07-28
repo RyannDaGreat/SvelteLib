@@ -10,7 +10,7 @@ import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   uuid, clonedItemStates,
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
-  withSlideToggled, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
+  withSlideToggled, withSlideRenamed, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
   repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
   itemCreationSlide, itemAnimationKeyframes, lostEquationKeyframes, withItemsMadeStatic,
   itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
@@ -2601,6 +2601,14 @@ export class PowerRPApp {
   /** Toggles whether slide `index` (default: current) contributes its delta. */
   toggleSlide(index = this.slideIndex) {
     this.commit(withSlideToggled(this.doc, index));
+  }
+
+  /** Command (ONE undo unit). Renames slide `index` — the UI seam for the
+   *  SlideNav double-click editor and the slide-properties Name field (Round 4
+   *  #54: agents could author names in JSON; the user could not from the UI).
+   *  Blank restores the positional default (core withSlideRenamed). */
+  renameSlide(index, name) {
+    this.commit(withSlideRenamed(this.doc, index, name));
   }
 
   moveSlide(offset) {

@@ -33,6 +33,11 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import fs from "node:fs";
+// Bare-node pure-function gate for the two new knobs (#43 smoothness / #45 repeats).
+// texture_brush.js is DOM-free at import (the doctest gate imports it), so its pure
+// helpers run here with no browser — a fast, exact check of the vertex budget +
+// tiling math the browser render then exercises visually.
+import { refineDistances, cornerSubdivisions, autoRepeats, ribbonSampleBudget } from "../render_gpu/skia/texture_brush.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
@@ -59,6 +64,43 @@ await server.listen();
 const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`;
 
 const fails = [];
+
+// ── NODE-SIDE pure-fn gate for the resolution/repeats knobs (#43 / #45) ───────
+// A sharp corner (tangents turning 90°) between two uniform samples: higher
+// `smoothness` inserts strictly more centreline samples → a bigger vertex budget,
+// while smoothness 0 is the legacy uniform walk (byte-identical count).
+{
+  const dists = [0, 10], tans = [[1, 0], [0, 1]]; // one 90° turn
+  const nUniform = refineDistances(dists, tans, 0, 0.1).length;
+  const nSmooth1 = refineDistances(dists, tans, 1, 0.1).length;
+  const nSmooth5 = refineDistances(dists, tans, 5, 0.1).length;
+  if (nUniform !== 2) fails.push(`smoothness 0 must be uniform (2 samples), got ${nUniform}`);
+  else console.log(`  ok   smoothness=0 is legacy uniform (${nUniform} samples)`);
+  if (!(nSmooth1 > nUniform)) fails.push(`smoothness>0 must add corner samples (${nSmooth1} !> ${nUniform})`);
+  else console.log(`  ok   smoothness=1 densifies a 90° corner (${nSmooth1} > ${nUniform})`);
+  if (!(nSmooth5 > nSmooth1)) fails.push(`higher smoothness must add MORE samples (${nSmooth5} !> ${nSmooth1})`);
+  else console.log(`  ok   smoothness=5 denser than 1 (${nSmooth5} > ${nSmooth1})`);
+  // A straight run (no turn) is untouched at ANY smoothness — corners only.
+  const straight = refineDistances([0, 5, 10], [[1, 0], [1, 0], [1, 0]], 9, 0.1).length;
+  if (straight !== 3) fails.push(`straight run must be untouched by smoothness, got ${straight}`);
+  else console.log(`  ok   straight run untouched by smoothness (${straight})`);
+  // The 2^16 mesh cap still bounds a maximal corner request (no throw / no overflow).
+  const budget = ribbonSampleBudget(1e6, 2.5, 6);
+  if (!budget.decimated) fails.push("a 1e6-px contour must report decimation");
+  else console.log(`  ok   long contour decimates loudly (${budget.samples} samples, cap honoured)`);
+  // Corner subdivision math: a straight run asks for 0, a 90° corner asks for many.
+  if (cornerSubdivisions(0, 1, 0.1) !== 0) fails.push("cornerSubdivisions(straight) must be 0");
+  else console.log("  ok   cornerSubdivisions(0 turn)=0");
+  // #45 auto repeats: a stroke 10× its natural tile length asks for ~10 repeats;
+  // a stroke shorter than one tile stays at 1 (never a fractional stretch).
+  const rAuto = autoRepeats(1000, 50, 100, 50);
+  const rShort = autoRepeats(30, 50, 100, 50);
+  if (rAuto !== 10) fails.push(`autoRepeats(long) expected 10, got ${rAuto}`);
+  else console.log(`  ok   autoRepeats tiles a long stroke (${rAuto})`);
+  if (rShort !== 1) fails.push(`autoRepeats(short) expected 1, got ${rShort}`);
+  else console.log(`  ok   autoRepeats keeps a short stroke un-tiled (${rShort})`);
+}
+
 // Node-side compile gate for BrushPalette.svelte: transformRequest runs it through
 // Vite's Svelte compiler here (independent of the browser), so a syntax error in
 // the component fails the probe loudly even if the page never mounts it.
@@ -189,6 +231,70 @@ try {
     let identical = p1.length === p2.length; for (let i = 0; identical && i < p1.length; i++) if (p1[i] !== p2[i]) identical = false;
     results.push({ name: "determinism (jitter seed 77 rendered twice)", pass: identical, detail: identical ? "byte-identical" : "PIXELS DIFFER" });
 
+    // ── #45 REPEATS: repeats=4 CHANGES the ribbon vs repeats=1, but never bleeds
+    //    into the interior (tiling only remaps U along the arc). ──
+    const rep1 = renderMatrix({ ...DEFAULTS, texture: "oil_cobalt_flat", repeats: 1 });
+    const rep1px = readPixels(rep1);
+    const rep4 = renderMatrix({ ...DEFAULTS, texture: "oil_cobalt_flat", repeats: 4 });
+    const rep4px = readPixels(rep4);
+    assertCells(rep4px, "repeats4", results); // interior STILL clean under tiling
+    let repDiff = 0;
+    for (const cell of CELLS) for (let dy = 2; dy < CELL - 2; dy += GRID_STEP) for (let dx = 2; dx < CELL - 2; dx += GRID_STEP)
+      if (pxDiff(rep1px, rep4px, cell.at[0] + dx, cell.at[1] + dy) > DIFF_MIN) repDiff++;
+    results.push({ name: "repeats=4 changes pixels vs repeats=1 (tiling visible)", pass: repDiff >= MIN_CHANGED, detail: `${repDiff} differ >= ${MIN_CHANGED}` });
+    images["repeats_1x"] = encode(rep1);
+    images["repeats_4x"] = encode(rep4);
+    rep1.delete(); rep4.delete();
+
+    // ── #45 AUTO: an aspect-preserving auto tiling renders (and stays interior-clean). ──
+    const auto = renderMatrix({ ...DEFAULTS, texture: "oil_cobalt_sweep", repeatMode: "auto" });
+    assertCells(readPixels(auto), "repeatsAuto", results);
+    images["repeats_auto"] = encode(auto); auto.delete();
+
+    // ── #43 SHARP CORNER: a gear-tooth ^ apex. smoothness 0 is the LEGACY offset
+    //    ribbon — its rails MITER into a clipped/notched peak. smoothness > 0 gives
+    //    the corner a ROUND JOIN that FILLS the peak toward the true apex. The test:
+    //    the joined render must cover MORE ink in the apex band (the peak fills), and
+    //    both must paint the tooth. Bristle texture (opaque throughout) so the join's
+    //    added corner geometry actually shows. ──
+    function toothPath() {
+      const b = new CanvasKit.PathBuilder();
+      b.moveTo(40, 280); b.lineTo(160, 40); b.lineTo(280, 280); // a sharp apex at (160,40)
+      const p = b.detach(); b.delete(); return p;
+    }
+    function renderTooth(smoothness) {
+      const s = newSurface(); const canvas = s.getCanvas();
+      canvas.clear(col4("#f4f4f7"));
+      const path = toothPath();
+      tb.renderTextureBrush(CanvasKit, canvas, path, { ...DEFAULTS, texture: "oil_crimson_bristle", smoothness }, 46, 1, true);
+      path.delete(); s.flush();
+      return s;
+    }
+    // ink coverage inside the APEX band (above the miter peak) — a pixel notably
+    // darker/other than the light bg counts as painted corner.
+    const BG_LUMA = 244; // #f4f4f7
+    function apexInk(px) {
+      let n = 0;
+      for (let y = 10; y <= 45; y++) for (let x = 120; x <= 200; x++) {
+        const i = (y * W + x) * 4;
+        if (BG_LUMA - (px[i] + px[i + 1] + px[i + 2]) / 3 > 30) n++;
+      }
+      return n;
+    }
+    const tooth0 = renderTooth(0);
+    const tooth0px = readPixels(tooth0);
+    const toothHi = renderTooth(12);
+    const toothHiPx = readPixels(toothHi);
+    const loApex = apexInk(tooth0px), hiApex = apexInk(toothHiPx);
+    // count full-resolution pixels that differ near the apex (proves smoothness acts)
+    let cornerDiff = 0;
+    for (let y = 30; y < 140; y++) for (let x = 100; x < 220; x++) if (pxDiff(tooth0px, toothHiPx, x, y) > DIFF_MIN) cornerDiff++;
+    results.push({ name: "smoothness changes the corner (legacy miter 0 vs joined 12)", pass: cornerDiff >= 60, detail: `${cornerDiff} apex px differ >= 60` });
+    results.push({ name: "round join FILLS the sharp corner (joined covers more apex than legacy miter)", pass: hiApex > loApex + 40, detail: `apex ink ${hiApex} (joined) > ${loApex} (miter) + 40` });
+    images["corner_before_smoothness0"] = encode(tooth0);
+    images["corner_after_smoothness12"] = encode(toothHi);
+    tooth0.delete(); toothHi.delete();
+
     // NOT-READY loudness: a texture that never decoded must draw NOTHING (no throw,
     // no silent fill) — render onto a fresh underlay and confirm the outline is
     // untouched. (We can't force a decode failure cleanly, so this asserts the
@@ -234,6 +340,10 @@ try {
   if (parsed.fatal) { fails.push(`fatal: ${parsed.fatal}`); }
   else {
     for (const [name, b64] of Object.entries(parsed.images)) fs.writeFileSync(resolve(SHOTS, `texture_brush_${name}.png`), Buffer.from(b64, "base64"));
+    // BRUSH2 deliverable copies: the corner before/after, repeats, and per-preset
+    // contact sheets under a brush2_* name for the vision pass (#42/#43/#45).
+    for (const [name, b64] of Object.entries(parsed.images))
+      if (/^(preset_|corner_|repeats_|tex_)/.test(name)) fs.writeFileSync(resolve(SHOTS, `brush2_${name}.png`), Buffer.from(b64, "base64"));
     for (const r of parsed.results) {
       if (r.pass) console.log(`  ok   ${r.name} (${r.detail})`);
       else { fails.push(`${r.name} — ${r.detail}`); console.log(`  FAIL ${r.name} (${r.detail})`); }

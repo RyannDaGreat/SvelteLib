@@ -146,6 +146,11 @@ try {
   const dashP5 = await render(boxDoc({ strokePhase: 180 }, DASHES), "dash_phase5"); // DEGREES (angle property): 180 = half a loop
   ok(darkCount(dashP0) > 0, `dashed stroke paints a pattern (${darkCount(dashP0)} dark px)`);
   ok(!bytesEq(dashP0, dashP5), "strokePhase 180deg SHIFTS the dash pattern vs phase 0 (preprocessing feeds the material)");
+  // 360 degrees = EXACTLY one full loop of the track — byte-identical to phase 0
+  // (user round-4 report was "thousands of degrees per cycle"; pinned here so the
+  // calibration can never silently drift: one turn is one turn).
+  const dash360 = await render(boxDoc({ strokePhase: 360 }, DASHES), "dash_phase360");
+  ok(bytesEq(dashP0, dash360), "strokePhase 360deg is BYTE-IDENTICAL to 0 (one full loop, seamless)");
 
   // 4) CAPS — round vs flat vs taper at the trimmed ends must all differ.
   const flat = half; // strokeEnd 0.5, default flat caps

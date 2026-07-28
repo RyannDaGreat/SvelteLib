@@ -1769,6 +1769,30 @@ export function withSlideDeleted(doc, index) {
   return { ...doc, slides };
 }
 
+/**
+ * Pure function. Renames slide `index`. A blank/whitespace name restores the
+ * positional default ("Slide N") rather than storing emptiness — clearing the
+ * field is how the user says "back to the default", and a stored "" would
+ * render an unlabelled row. Throws on an out-of-range index (loud, never a
+ * silent no-op on a bad caller).
+ *
+ * @param {object} doc - the document
+ * @param {number} index - slide index to rename
+ * @param {string} name - the new display name
+ * @returns {object} a new document
+ *
+ * @example withSlideRenamed({slides: [{name: "Slide 1"}]}, 0, "Intro").slides[0].name // "Intro"
+ * @example withSlideRenamed({slides: [{name: "Old"}, {name: "B"}]}, 0, "   ").slides[0].name // "Slide 1"
+ */
+export function withSlideRenamed(doc, index, name) {
+  if (!(index >= 0 && index < doc.slides.length))
+    throw new Error(`withSlideRenamed: slide index ${index} out of range (0..${doc.slides.length - 1})`);
+  const trimmed = String(name).trim();
+  const slides = doc.slides.map((s, i) =>
+    i === index ? { ...s, name: trimmed || `Slide ${index + 1}` } : s);
+  return { ...doc, slides };
+}
+
 /** Pure function. Toggles a slide's enabled flag (default true → false). */
 export function withSlideToggled(doc, index) {
   const slides = doc.slides.map((s, i) =>

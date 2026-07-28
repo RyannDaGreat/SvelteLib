@@ -109,22 +109,53 @@ export const MATERIAL_PRESETS = {
       params: { pixelate: 8, posterize: 6, intensity: 0.7, blockCount: 8, density: 0.3, glow: 0.1 } },
   ],
 
-  // STROKE: brush (procedural-brush archetypes — mostly pick the archetype + ink).
+  // STROKE: wavy (the sine/random displacement material). One BOIL preset: an
+  // irregular hand-drawn wobble that, when presenting, re-rolls its seed a couple of
+  // times a second (boil) so it reads as a live cartoon "boil". In a STILL render
+  // it is simply an irregular hand-drawn line (the boil needs presentation time).
+  wavy: [
+    { id: "sketchy", title: "Sketchy", description: "A hand-drawn wobble that boils like a cartoon while presenting.",
+      params: { randomness: 0.6, wander: 0.4, boil: 2, amplitude: 6, frequency: 8 } }, // "sketchy stroke, seed = round(time·2)" — the boil seam (particleTime)
+  ],
+
+  // STROKE: brush (procedural-brush archetypes — pick the archetype + ink/knobs).
+  // A CANON roster: each preset emulates a real default brush from GIMP · Krita ·
+  // MyPaint · Photoshop · Procreate, mapped to the procedural archetype whose TIP
+  // character matches (the procedural brush stamps at constant width, so an emulation
+  // is chosen by tip/grain/scatter, not by pressure dynamics). Referent in each comment.
   brush: [
     { id: "ink_pen", title: "Ink Pen", description: "A clean, confident ink line.",
-      params: { brush: "inkPen", color: "#141420", flow: 1, spacing: 1 } },
-    { id: "watercolor", title: "Watercolor Wash", description: "A soft, bleeding watercolour stroke.",
-      params: { brush: "watercolor", color: "#3a6ea5", flow: 0.6, spacing: 1.2, scatter: 0.2 } },
+      params: { brush: "inkPen", color: "#141420", flow: 1, spacing: 1 } },                              // GIMP "Hardness 100" / Krita "Basic-5 Size"
+    { id: "fineliner", title: "Fineliner", description: "A crisp, constant-width technical liner.",
+      params: { brush: "fineliner", color: "#1a1a24", flow: 1, spacing: 0.8 } },                         // Krita "Ink-2 Fineliner"
+    { id: "brush_pen", title: "Brush Pen", description: "A soft, inky brush-pen stroke.",
+      params: { brush: "brushPen", color: "#101018", flow: 0.95, spacing: 1 } },                         // Krita "Ink-7 Brush Rough" / Procreate "Brush Pen"
+    { id: "pencil_6b", title: "6B Pencil", description: "A soft, grainy graphite sketch line.",
+      params: { brush: "pencil2B", color: "#2e2e33", flow: 0.8, spacing: 1, sizeJitter: 0.1 } },         // Procreate "6B Pencil" / Krita "Pencil-2"
+    { id: "colored_pencil", title: "Colored Pencil", description: "A waxy, layered coloured-pencil line.",
+      params: { brush: "coloredPencil", color: "#3a6ea5", flow: 0.7, spacing: 1 } },                     // Krita "Colored Pencil" / MyPaint deevad pencils
     { id: "charcoal", title: "Charcoal", description: "A grainy, broken charcoal line.",
-      params: { brush: "charcoal", color: "#1e1e1e", spacing: 1, sizeJitter: 0.3, angleJitter: 0.2 } },
-    { id: "pencil", title: "Pencil", description: "A light graphite pencil stroke.",
-      params: { brush: "pencilHB", color: "#333333", flow: 0.8, spacing: 1 } },
+      params: { brush: "charcoal", color: "#1a1a1a", flow: 0.7, spacing: 1, sizeJitter: 0.25, angleJitter: 0.15 } }, // cross-canon "Charcoal" (all five ship it)
+    { id: "soft_pastel", title: "Soft Pastel", description: "A chalky, crumbly pastel stroke.",
+      params: { brush: "pastel", color: "#e0785a", flow: 0.6, spacing: 1, scatter: 0.1 } },              // Procreate "Soft Pastel" / PS "Pastel on Canvas"
+    { id: "chalk", title: "Chalk", description: "A coarse, toothy chalk stroke.",
+      params: { brush: "chalk", color: "#f0efe8", flow: 0.6, spacing: 1, sizeJitter: 0.2 } },            // PS "Chalk 60px" / GIMP "Chalk"
     { id: "marker", title: "Marker", description: "A bold, saturated felt-marker stroke.",
-      params: { brush: "marker", color: "#e63946", flow: 0.9, spacing: 0.8 } },
+      params: { brush: "marker", color: "#e63946", flow: 0.9, spacing: 0.8 } },                          // MyPaint "marker_fat" / GIMP "Block"
+    { id: "highlighter", title: "Highlighter", description: "A flat, translucent highlighter swipe.",
+      params: { brush: "highlighter", color: "#ffe14d", flow: 0.4, spacing: 0.6 } },                     // Krita / PS highlighter (uniform translucent band)
+    { id: "watercolor", title: "Watercolor Wash", description: "A soft, bleeding watercolour stroke.",
+      params: { brush: "watercolor", color: "#3a6ea5", flow: 0.5, spacing: 1.1, scatter: 0.15 } },       // universal "Watercolor" (edge pooling, build-up)
+    { id: "oil", title: "Oil Bristle", description: "A thick, streaky oil-paint stroke.",
+      params: { brush: "oil", color: "#6a4c93", flow: 1, spacing: 1, sizeJitter: 0.15 } },               // Procreate "Oil Paint" / Krita "Wet Bristle"
+    { id: "dry_acrylic", title: "Dry Acrylic", description: "A scumbling, broken dry-brush rake.",
+      params: { brush: "acrylicDry", color: "#2a7f62", flow: 0.7, spacing: 1.1, scatter: 0.1 } },        // Krita "Dry Bristle" / PS "Rough Round Bristle"
     { id: "airbrush", title: "Spray Paint", description: "A scattered airbrush spray.",
-      params: { brush: "airbrush", color: "#2a9d8f", scatter: 1.2, spacing: 1.5, sizeJitter: 0.4 } },
-    { id: "oil", title: "Oil Impasto", description: "A thick, textured oil-paint stroke.",
-      params: { brush: "oil", color: "#6a4c93", flow: 1, spacing: 1, sizeJitter: 0.2 } },
+      params: { brush: "airbrush", color: "#2a9d8f", scatter: 1.0, spacing: 1.4, sizeJitter: 0.3 } },    // MyPaint "deevad/airbrush" / PS soft round
+    { id: "spatter", title: "Ink Spatter", description: "A flung ink-spatter spray.",
+      params: { brush: "spatter", color: "#1b1b2f", scatter: 0.8, spacing: 1.5, sizeJitter: 0.4 } },     // PS "Spatter" / GIMP "Confetti"
+    { id: "calligraphy", title: "Calligraphy Nib", description: "A flat calligraphic nib with thick/thin edges.",
+      params: { brush: "calligraphy", color: "#141420", flow: 1, spacing: 0.5 } },                       // MyPaint "calligraphy" / classic broad nib
   ],
 };
 
@@ -138,6 +169,7 @@ const MATERIAL_DISPLAY_NAMES = {
   crt: "CRT",
   glitch: "Glitch",
   brush: "Brush",
+  wavy: "Wavy",
 };
 
 /**

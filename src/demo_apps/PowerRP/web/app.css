@@ -2267,6 +2267,37 @@ textarea {
   white-space: nowrap;
 }
 
+/* The slide-properties Name field (the boundary panel) — same palette-input
+   idiom as the navigator's inline editor. */
+.inspector .slide-name-field {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--fg);
+  background: var(--control-bg);
+  border: 0;
+  border-bottom: var(--a-hairline) solid var(--border);
+  outline: none;
+  padding: var(--a-sp-1) var(--a-sp-2);
+}
+
+/* The inline slide-rename editor (Round 4 #54, double-click the name). Sized to
+   sit exactly where the name span sits; the palette-input idiom: no border box,
+   a background tint + bottom hairline. */
+.slidenav .name-edit {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--fg);
+  background: var(--control-bg);
+  border: 0;
+  border-bottom: var(--a-hairline) solid var(--border);
+  outline: none;
+  padding: 0 var(--a-sp-1);
+}
+
 .slidenav .eye {
   display: inline-flex;
   align-items: center;
