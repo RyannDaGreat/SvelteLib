@@ -1,0 +1,147 @@
+# PowerRP — Concerns (append-only history)
+
+> Created 2026-07-28 alongside the in-repo manifest (the container-side dump
+> concerns.md is unreachable from this Mac — see the manifest's provenance note).
+> APPEND ONLY. Never delete history.
+
+## 2026-07-28 — The materials epic lands; the user's live review finds the gaps
+
+### What shipped (context for the mistakes below)
+f151f84 fill-material framework → 89e9658 thirteen fill conversions → d76f678
+gradient handles → fd9cd07 stroke materials → 70be373 paint path widget →
+b56cfa7 Mat-mode editor UI gate → 83774e2 procedural 23-archetype brush.
+Gates at land time: doctests 2508/0, node 88/88, both material matrices PASS,
+Mat UI probe 13/13.
+
+### MISTAKE: built the wrong brush (procedural instead of rp's texture ribbon)
+The user asked for "that Skia Paint demo… top 23 paint strokes… save those into
+the repo… or reference them by URL." Research agents searched the WEB, found no
+such app, and a SPEC was invented for a procedural drawAtlas brush — which
+shipped. The demo was in **rp all along**:
+`rp/misc/skia_trail_interactive_paint_demo.py` (thumbnail palette of
+`TEXTURE_URLS`: 30 onlygfx watercolor banners + 49 onlygfx paint strokes +
+extras; size start/end taper sliders; blend-mode dropdown) rendering through
+`rp.skia_draw_trail` (texture ribbon swept along the contour as a triangle mesh,
+per-vertex inner/outer radii, v_subdivs, 2^16 mesh cap, mipmap).
+**Root cause:** nobody searched the rp package, despite the standing CLAUDE.md
+rule to read rp source rather than guess. "That app" + python + Skia should have
+meant `grep -rn brush $(python -c 'import rp; …')` on day one.
+**Lesson:** when the user references "that app/demo I gave you", search rp FIRST
+— he maintains it and demos live in `rp/misc/`.
+**Silver lining:** the user likes the procedural brush; it stays as its own kind.
+
+### MISTAKE: material knobs jammed under "Formatting", not collapsible
+All Mat rows render flat inside the formatting area. CRT has 23 knobs — unusable
+without collapsing. The user had asked for material sections in the GUI; the
+requirement got lost between fleet agents (each converted a shader; nobody owned
+the Inspector layout). → Manifest A.1.
+
+### MISTAKE: knob rows violate three standing UI laws at once
+- Arbitrary min/max clamps on knobs (jitter etc.) — violates the no-arbitrary-
+  constraints principle.
+- 1-per-drag-pixel scrub on fractional knobs — the SAME bug class as the
+  brightness_contrast "paletteOffset shape" fix and pdf_packet's page row, both
+  already in history; the lesson existed and was not applied to the new schemas.
+- No live preview mid-drag: PaintField Mat rows use bare DraggableNumber with
+  commit-on-release only, while ColorField (and most sliders) preview live.
+**Root cause:** fleet agents copied the exemplar (comic) knob-for-knob; the
+exemplar itself had these flaws, so they replicated 13×. Exemplar flaws are
+FRAMEWORK flaws — review the exemplar's UX, not just its wiring, before fanning
+out. → Manifest B.2–4, I.25 (audit agent running).
+
+### MISTAKE: presets statically bound to widget type → vanished for shapes
+The Tools-area presets (material demo widgets had them) don't appear when a
+plain shape carries that material as a paint, because tools bind to widget type,
+not to the CURRENT materials of the selection. → Manifest D.10–11.
+
+### MISTAKE: glass never became a fill material
+"Liquid glass" is the one backdrop material that didn't opt into fillParams —
+the conversion fleet worked from a list that omitted it (glass was "the
+groundwork", mentally filed as infrastructure, not as a material). → Manifest H.24.
+
+### Paint path shipped without its editing UX
+Curve handles landed indistinguishable from anchors, no ghost lines, no curve
+on/off toggle, no context menu, auto-curving on first drag, no gray-out for
+non-curve points. Draw-on trim exists on paint_path only — the user wants
+trim/phase/caps as GENERAL stroke options. → Manifest E.12–15, F.16–21.
+
+### Wavy conflates random and sine; dashes is a fixed dropdown
+Seed on a material whose visible parameter is a sine frequency; dash patterns
+are an enum instead of a continuous builder + presets. → Manifest G.22–23.
+
+### INCIDENT (earlier, this same round): mid-fleet `git stash` resets
+3+ agents ran `git stash`/checkout on the shared tree; work wiped twice. The one
+real casualty found at reconciliation: PaintField.svelte's stroke imports + prop
+declaration were stash-trapped while the slot-aware block USING them survived —
+the editor would ReferenceError on any paint row, and NO gate caught it because
+?cli=1 probes never mount the Inspector. Fixed; gate added (b56cfa7,
+material_paint_ui_probe). Stash backups: branches stash-backup-material-fleet-0/1.
+**Lessons:** (1) forbid git state commands in fleet-agent prompts (now standard);
+(2) every UI seam needs at least one editor-mounting probe; (3) reconcile stashes
+per-file with loss-counting (`git diff stash@{n} -- file | grep -c '^-[^-]'`),
+from the REPO ROOT (subdir cwd silently zeroes the counts — paths don't resolve).
+
+### INCIDENT: the phantom "first-render white proxy clip leak"
+A fleet agent reported DEFAULT_PROXY_BACKDROP_TINT escaping the shape clip on
+first render (glitch/crt/frosted fills). Disproven with byte-level evidence:
+render1 vs render2 identical in fresh pages; all pure-white pixels inside the
+material bbox; the tint is 14%-alpha white and cannot composite to pure 255. The
+observed white was the probe underlay's #f8f9fa disc rims wobbling under the
+backdrop region re-render — the same AA-rim artifact two other agents traced
+independently. The probe underlay was stabilized (discs out of corner sample
+zones) in 89e9658. **Lesson:** an agent's mechanism ATTRIBUTION needs the same
+adversarial verification as the observation itself.
+
+### TRAP (recorded to memory too): puppeteer × Svelte 5 $state proxies
+Returning a doc/state object raw from page.evaluate silently mangles it (numbers
+survive; nested objects come back empty) — JSON.stringify IN PAGE, parse
+node-side. Cost an hour of phantom probe failures while the code under test was
+correct.
+
+### TRAP: CanvasKit drawAtlas colors
+Plain number[] renders untinted white (ColorAsInt is signed int32, mis-marshaled)
+— pass a Uint32Array. And translucent brushes can't be dense low-flow stamps
+(SrcOver builds to opaque): draw opaque into a saveLayer composited at
+flow×opacity (the layerFlow trait).
+
+### Round status
+User review 2026-07-28 produced the 25-requirement round in the manifest.
+User then goal-locked "get all of these done" with an 8-agent Opus fleet.
+Progress (same day): 7 of 8 agents landed and committed —
+d2c24b7 (wavy/dashes), 4968a37 (dynamic presets), 8356a61 (liquid glass),
+14eca65 (Inspector sections/live+hover preview/scrub fix), fde04ee (paint-path
+handle UX), ef94899 (stroke trim/phase/caps), 5981cb4 (audit sweep).
+TEXBRUSH (C.6–9) still running. User ruling mid-round: no interim chat/ntfy
+updates — one report when EVERYTHING is done.
+
+### MISTAKE (round 2 trigger): "sections" misread as "sub-folds"
+Round 1's A.1 shipped a collapsible INSIDE the Fill/Stroke rows, still under
+Formatting. The user meant TOP-LEVEL Inspector sections (peers of POSITIONING)
+— "their own separate drop-down... I said this like 25 times." Lesson: when a
+user names a UI location ("out of formatting"), the fix must MOVE the thing,
+not decorate it in place; a screenshot of the intended level (POSITIONING
+header) beats prose. → Manifest 26, redone by the integrator.
+
+### FINDING (round 2): materials don't conform to the shape
+Glass/CRT/corkboard on a gear read as their own rect/squircle with the clip
+cutting them — the analytic rect SDF in the shaders is the silhouette for edge
+effects, so non-rect outlines get a rect's rim. The clip held (probes proved
+containment), but containment ≠ conformity. → Manifest 27.
+
+### Fleet lessons (this round)
+- The .claude_todo.md ledger was overwritten by a fleet agent AGAIN (TRIM this
+  time; the gradient agent did it last round). Agents must be told the ledger is
+  integrator-owned, or given per-agent ledger files.
+- The audit agent could not write into .frenzy/ (harness blocks subagent writes
+  there in this configuration) — returned the report in its final message; the
+  integrator saved it verbatim. Plan for report-by-message.
+- Two agents INDEPENDENTLY diagnosed a third's in-flight breakage (ContextMenu
+  Escape vs shortcut sweep) — cross-agent gate noise is also a detection channel;
+  relaying the flag to the owner mid-flight worked (PATH shipped the fix using
+  the LOCAL popover-dismiss precedent).
+- SCHEMAS refused two audit findings with source-level proof (sky ceilings
+  physical; a hallucinated rainy_window grainSpeed twin). Audits are inputs,
+  not gospel — the executor must re-verify against source.
+- zsh backticks in a git commit -m double-quoted string EXECUTE (command
+  substitution) and silently delete words from the message — single-quote
+  commit messages or avoid backticks (one commit needed --amend).
