@@ -50,6 +50,7 @@
 
 import { parseColor } from "../ir.js";
 import { randUnit } from "../../core/particles.js"; // the seeded (seed,i,stream) hash — the sparkler's, reused so a stored seed is property state
+import { elementActive } from "../../core/lists.js"; // the shared per-element visibility read — hidden stops ramp straight past, byte-identically to never authoring them
 import { reportOnce } from "../../core/report.js"; // loud-once sink for a knob outside its physical domain
 import { BRUSH_STROKE } from "./brush_strokes.js"; // the 23-archetype textured BRUSH material (drawAtlas stamping), kept in its own file
 import { TEXTURE_BRUSH } from "./texture_brush.js"; // the rp-paint-demo TEXTURE ribbon brush (skia_draw_trail twin, 23 in-repo textures), kept in its own file
@@ -73,6 +74,17 @@ const AMP_FREQ_SCRUB = 0.5; // wavy amplitude (px) & frequency (wave count) — 
 const PX_SCRUB = 0.5;       // dash / gap / dot / dash-phase LENGTHS, in local px (useful domain ~0..75)
 const REPEAT_SCRUB = 0.05;  // alongGradient ramp-cycle count (useful domain ~0..8)
 const DOTS_SCRUB = 0.05;    // dashes dots-per-dash count (rounds to a whole number; fine enough to land on each integer)
+
+// alongGradient's DEFAULT colour ramp — the three colours it used to hard-code as
+// colorStart/colorMid/colorEnd knobs, now the concrete list its `stops` row seeds
+// when the material is chosen (web/PaintField.svelte). Kept identical to those old
+// knob defaults so a freshly-authored alongGradient renders byte-identically to
+// one authored before the stops list existed.
+const ALONG_GRADIENT_DEFAULT_STOPS = [
+  { offset: 0, color: "#ff2d55" },
+  { offset: 0.5, color: "#ffcc00" },
+  { offset: 1, color: "#0a84ff" },
+];
 
 // ── pure helpers (doctested) ──────────────────────────────────────────────────
 
@@ -322,6 +334,46 @@ export function dashIntervals(pattern, dash, gap, dot, dots, strokeWidth) {
   return out;
 }
 
+/**
+ * Pure function. The EFFECTIVE colour-ramp stops for an alongGradient stroke, as
+ * {offset, color} records in canonical (offset-sorted) order with hidden stops
+ * removed. TWO sources, ABSENT-IS-LEGACY (the same absent-means-old rule the
+ * gradient-angle migration uses):
+ *   - NEW  — an authored `stops` LIST (resolvedParams.stops, the real state path
+ *            web/PaintField.svelte's gradient stops editor writes) with its
+ *            aligned visibility companion `stopsActive`: hidden stops are dropped
+ *            through the shared core/lists.elementActive read — byte-identical to
+ *            never having authored them — and the survivors sorted by offset.
+ *   - LEGACY — the three colour knobs colorStart / colorMid / colorEnd sitting at
+ *            0 / midpoint / 1. A document authored before the stops list existed
+ *            stores these and NO `stops`, so `stops` being absent (its schema
+ *            default is null) is the sentinel that selects this path, and such a
+ *            document renders byte-identically.
+ * Never sorts in place / never mutates its input. A stored `stops` whose visible
+ * survivors are empty (every stop hidden — which the editor's minimum-visible
+ * floor forbids, but a raw document could hold) falls back to the full list so
+ * the ramp is never colourless.
+ *
+ * @param {object} p - the resolved knob map (resolvedParams)
+ * @returns {Array<{offset:number, color:string}>} sorted, visible ramp stops
+ *
+ * @example alongGradientStops({colorStart: "#ff0000", colorMid: "#00ff00", colorEnd: "#0000ff", midpoint: 0.5}) // [{offset: 0, color: "#ff0000"}, {offset: 0.5, color: "#00ff00"}, {offset: 1, color: "#0000ff"}]
+ * @example alongGradientStops({stops: [{offset: 1, color: "#0000ff"}, {offset: 0, color: "#ff0000"}]}) // [{offset: 0, color: "#ff0000"}, {offset: 1, color: "#0000ff"}]
+ * @example alongGradientStops({stops: [{offset: 0, color: "#ff0000"}, {offset: 0.5, color: "#00ff00"}, {offset: 1, color: "#0000ff"}], stopsActive: [true, false, true]}) // [{offset: 0, color: "#ff0000"}, {offset: 1, color: "#0000ff"}]
+ */
+export function alongGradientStops(p) {
+  if (Array.isArray(p.stops) && p.stops.length) {
+    const visible = p.stops.filter((_, i) => elementActive(p.stopsActive, i));
+    const usable = visible.length ? visible : p.stops;
+    return usable.map((s) => ({ offset: s.offset, color: s.color })).sort((a, b) => a.offset - b.offset);
+  }
+  return [
+    { offset: 0, color: p.colorStart },
+    { offset: clamp01(p.midpoint), color: p.colorMid },
+    { offset: 1, color: p.colorEnd },
+  ].sort((a, b) => a.offset - b.offset);
+}
+
 // ── shared draw plumbing (Commands / near-pure builders) ──────────────────────
 
 /**
@@ -364,13 +416,18 @@ function forEachContour(CanvasKit, path, fn) {
 // ── the FOUR built-in stroke materials ────────────────────────────────────────
 
 /**
- * Command. ALONG-GRADIENT stroke: a 3-stop colour ramp (start → mid → end) run
- * ALONG the path's arc length. The path is walked in short bands; each band is
- * stroked with the ramp colour at its arc fraction, wrapped by `repeat` (how many
- * times the ramp cycles over the whole path) and shifted by `phase`. This is the
- * arc-length gradient a bbox shader cannot express — the colour follows the WIRE,
- * not the bounding box. `repeat` MUST be > 0 (a cycle count); a value <= 0 is
- * reported loudly and treated as a single pass rather than clamped in the UI.
+ * Command. ALONG-GRADIENT stroke: a colour ramp run ALONG the path's arc length.
+ * The path is walked in short bands; each band is stroked with the ramp colour at
+ * its arc fraction, wrapped by `repeat` (how many times the ramp cycles over the
+ * whole path) and shifted by `phase`. This is the arc-length gradient a bbox
+ * shader cannot express — the colour follows the WIRE, not the bounding box.
+ *
+ * THE RAMP IS THE REAL GRADIENT EDITOR'S STOP LIST (alongGradientStops): an
+ * authored, keyframable, visibility-aware `stops` list edited through the same
+ * ListField + ramp preset library every gradient paint uses, with the legacy
+ * three-colour knobs mapped in for documents that predate it (absent-is-legacy).
+ * `repeat` MUST be > 0 (a cycle count); a value <= 0 is reported loudly and
+ * treated as a single pass rather than clamped in the UI.
  */
 function renderAlongGradient(CanvasKit, canvas, path, p, width, opacity, aa) {
   let repeat = p.repeat;
@@ -381,11 +438,7 @@ function renderAlongGradient(CanvasKit, canvas, path, p, width, opacity, aa) {
     );
     repeat = 1;
   }
-  const stops = [
-    { offset: 0, color: parseColor(p.colorStart) },
-    { offset: clamp01(p.midpoint), color: parseColor(p.colorMid) },
-    { offset: 1, color: parseColor(p.colorEnd) },
-  ].sort((a, b) => a.offset - b.offset);
+  const stops = alongGradientStops(p).map((s) => ({ offset: s.offset, color: parseColor(s.color) }));
   const paint = strokePaintOf(CanvasKit, stops[0].color, width, opacity, aa);
   forEachContour(CanvasKit, path, (c) => {
     const L = c.length();
@@ -504,13 +557,29 @@ function renderWavy(CanvasKit, canvas, path, p, width, opacity, aa) {
 export const ALONG_GRADIENT_STROKE = {
   id: "alongGradient",
   title: "Along Gradient",
+  // The colour ramp is a real gradient STOP LIST (kind:"stops"), edited through the
+  // same ListField + ramp preset library every gradient paint uses — insert-between,
+  // per-stop visibility, purge-with-minimum, per-stop ColorField/NumericField at real
+  // state paths (…material.params.stops.<i>.color/.offset) and a per-stop keyframe ◆.
+  // Its schema default is NULL: absent stops is the sentinel that a document predates
+  // this list, so renderAlongGradient (alongGradientStops) maps the LEGACY three
+  // colour knobs below in for it, byte-identically. `seed` is the concrete list
+  // web/PaintField.svelte writes into a fresh authoring so the editor is never empty.
   strokeParams: [
-    { name: "colorStart", kind: "color", default: "#ff2d55", help: "Colour at the START of the stroke's arc length (t = 0)." },
-    { name: "colorMid", kind: "color", default: "#ffcc00", help: "Colour at the profile's MIDPOINT along the arc." },
-    { name: "colorEnd", kind: "color", default: "#0a84ff", help: "Colour at the END of the stroke's arc length (t = 1)." },
-    { name: "midpoint", kind: "number", default: 0.5, min: 0, max: 1, scrub: UNIT_SCRUB, help: "Where the middle colour sits along the arc (fraction 0..1)." },
-    { name: "repeat", kind: "number", default: 1, scrub: REPEAT_SCRUB, help: "How many times the whole start→mid→end ramp cycles over the path. 1 = one pass; 3 = three repeats. Must be > 0 (a value at or below 0 is reported and drawn as one pass)." },
+    { name: "stops", kind: "stops", default: null, seed: ALONG_GRADIENT_DEFAULT_STOPS, help: "The colours the gradient ramps through ALONG the stroke's arc length (t = 0 at the start, t = 1 at the end). Insert between two stops for their average; hide a stop to ramp straight past it; pick a preset from the ramp library." },
+    { name: "repeat", kind: "number", default: 1, scrub: REPEAT_SCRUB, help: "How many times the whole ramp cycles over the path. 1 = one pass; 3 = three repeats. Must be > 0 (a value at or below 0 is reported and drawn as one pass)." },
     { name: "phase", kind: "number", default: 0, scrub: UNIT_SCRUB, help: "Shifts the ramp along the path (fraction of one cycle; it wraps, so 1.25 looks like 0.25). Keyframe it to make the colours flow." },
+    // ── LEGACY, back-compat only (superseded by `stops`; hidden from the Inspector,
+    //    but kept in the schema so a pre-stops-list document still RESOLVES its stored
+    //    colours instead of having them dropped as unknown knobs — alongGradientStops
+    //    reads them when `stops` is absent). `stopsActive` is the stops list's aligned
+    //    visibility companion (core/lists.js), likewise hidden and likewise present so
+    //    a hidden stop survives resolution and the render can honour it. ──
+    { name: "colorStart", kind: "color", default: "#ff2d55", hidden: true, help: "Legacy: colour at the START of the arc (t = 0). Superseded by the Stops list." },
+    { name: "colorMid", kind: "color", default: "#ffcc00", hidden: true, help: "Legacy: colour at the MIDPOINT along the arc. Superseded by the Stops list." },
+    { name: "colorEnd", kind: "color", default: "#0a84ff", hidden: true, help: "Legacy: colour at the END of the arc (t = 1). Superseded by the Stops list." },
+    { name: "midpoint", kind: "number", default: 0.5, min: 0, max: 1, scrub: UNIT_SCRUB, hidden: true, help: "Legacy: where the middle colour sat along the arc (fraction 0..1). Superseded by the Stops list." },
+    { name: "stopsActive", kind: "stopsActive", default: undefined, hidden: true, help: "Per-stop visibility companion for the Stops list (core/lists.js). Managed by the stops editor, not a knob." },
   ],
   render: renderAlongGradient,
 };

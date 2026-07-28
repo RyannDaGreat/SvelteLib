@@ -55,8 +55,16 @@ const FILL_IDS = fillCapableMaterialIds();
 const STROKE_IDS = strokeMaterialIds();
 const FILL_DEFAULT = FILL_IDS[0];
 const STROKE_DEFAULT = STROKE_IDS[0];
-const fillRowCount = (getMaterial(FILL_DEFAULT).fillParams ?? []).length;
-const strokeRowCount = (getStrokeMaterial(STROKE_DEFAULT).strokeParams ?? []).length;
+// The number of `.paint-material-row` knob rows PaintField renders = the schema rows
+// that are neither HIDDEN (back-compat/companion knobs, resolved but not shown) nor a
+// kind:"stops" LIST (which mounts a full-width ListField, not a knob row). Registry-
+// driven, so it stays correct as materials add or hide knobs.
+const visibleKnobRows = (schema) => (schema ?? []).filter((r) => !r.hidden && r.kind !== "stops");
+const fillRowCount = visibleKnobRows(getMaterial(FILL_DEFAULT).fillParams).length;
+const strokeRowCount = visibleKnobRows(getStrokeMaterial(STROKE_DEFAULT).strokeParams).length;
+// Does the stroke default declare a kind:"stops" ramp list (alongGradient does)?
+// Its Mat row must then mount the gradient stops editor + the ramp preset library.
+const strokeHasStops = (getStrokeMaterial(STROKE_DEFAULT).strokeParams ?? []).some((r) => r.kind === "stops");
 
 // ── Node-side truth for the SCRUB + LIVE-PREVIEW assertions (audit item 4) ─────
 // A knob is numeric (drives a DraggableNumber) when its kind is number/angle or
@@ -66,7 +74,7 @@ const isNumericKnob = (r) => r.kind === "number" || r.kind === "angle" || !r.kin
 // witness that the scrub is calibrated: at 1 unit/px a tiny-range knob clamps to a
 // bound in ≤1px, so a partial mid-range landing PROVES resolveScrub is wired
 // (crt's convergence, 0..0.2, is exactly the audit's example).
-const fillKnobRows = getMaterial(FILL_DEFAULT).fillParams ?? [];
+const fillKnobRows = visibleKnobRows(getMaterial(FILL_DEFAULT).fillParams);
 const boundedKnobs = fillKnobRows.filter((r) => isNumericKnob(r) && Number.isFinite(r.min) && Number.isFinite(r.max));
 const boundedKnob = boundedKnobs.reduce((a, b) => (b.max - b.min < a.max - a.min ? b : a), boundedKnobs[0]);
 const boundedIdx = fillKnobRows.indexOf(boundedKnob);
@@ -187,7 +195,48 @@ try {
   ok(stroke.stored?.material?.id === STROKE_DEFAULT, `stroke slot stores the STROKE registry default "${STROKE_DEFAULT}"; got ${JSON.stringify(stroke.stored?.material?.id)}`);
   ok(STROKE_IDS.includes(stroke.stored?.material?.id) && !FILL_IDS.includes(stroke.stored?.material?.id),
     "stroke slot's id is stroke-registry-only (the setMode slot guard held)");
-  ok(stroke.knobRows === strokeRowCount, `stroke row renders "${STROKE_DEFAULT}"'s ${strokeRowCount} strokeParams knob rows; got ${stroke.knobRows}`);
+  ok(stroke.knobRows === strokeRowCount, `stroke row renders "${STROKE_DEFAULT}"'s ${strokeRowCount} strokeParams knob rows (hidden + stops-list rows excluded); got ${stroke.knobRows}`);
+
+  // ── ROUND 3 #47 — the alongGradient colour ramp IS the real gradient editor ──
+  // Its Mat row mounts the SAME stops ListField + ramp preset library a gradient
+  // PAINT uses (not bespoke start/end colour knobs), at real state paths under
+  // material.params.stops. Picking the material SEEDED a concrete ramp so the editor
+  // is never empty; a stop insert is ONE undo unit.
+  if (strokeHasStops) {
+    ok(Array.isArray(stroke.stored?.material?.params?.stops) && stroke.stored.material.params.stops.length >= 2,
+      `choosing alongGradient SEEDED a concrete stops list (${stroke.stored?.material?.params?.stops?.length} stops); got ${JSON.stringify(stroke.stored?.material?.params?.stops)?.slice(0, 80)}`);
+    // The stops editor's own chrome, read from the Stroke row: the shared ListField
+    // (.listfield) and the ramp preset library toggle (.gradient-presets) — the exact
+    // controls the gradient paint's stops editor renders, now inside Stroke Material.
+    const stopsUi = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".inspector .row")];
+      const row = rows.find((el) => el.querySelector(".label")?.textContent === "Stroke");
+      return {
+        listfields: row ? row.querySelectorAll(".listfield").length : -1,
+        presetToggles: row ? row.querySelectorAll(".gradient-presets-toggle").length : -1,
+        insertSlices: row ? row.querySelectorAll(".listfield .list-insert").length : -1,
+      };
+    });
+    ok(stopsUi.listfields >= 1, `stroke Mat mounts the shared stops ListField (.listfield ×${stopsUi.listfields})`);
+    ok(stopsUi.presetToggles >= 1, `stroke Mat mounts the ramp PRESET LIBRARY affordance (.gradient-presets-toggle ×${stopsUi.presetToggles})`);
+    ok(stopsUi.insertSlices >= 1, `the stops editor offers insert-between/-at-ends seams (.list-insert ×${stopsUi.insertSlices})`);
+
+    // ADDING A STOP IS ONE UNDO UNIT. Click the first insert seam; the stored list
+    // grows by one; a single undo restores it.
+    const stopsCount = () => page.evaluate((id) => (window.__powerrp_app.doc.slides[0].delta.items[id].stroke?.material?.params?.stops ?? []).length, rectId);
+    const before = await stopsCount();
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".inspector .row")];
+      const row = rows.find((el) => el.querySelector(".label")?.textContent === "Stroke");
+      row.querySelector(".listfield .list-insert").click();
+    });
+    await sleep(150);
+    const afterInsert = await stopsCount();
+    ok(afterInsert === before + 1, `inserting a stop grew the ramp ${before} → ${afterInsert}`);
+    await page.evaluate(() => window.__powerrp_app.undo());
+    await sleep(120);
+    ok(await stopsCount() === before, `the stop insert was ONE undo unit (back to ${before})`);
+  }
 
   // ── Undo unwinds the Mat commits (each was ONE unit) ────────────────────────
   await page.evaluate(() => { window.__powerrp_app.undo(); window.__powerrp_app.undo(); });

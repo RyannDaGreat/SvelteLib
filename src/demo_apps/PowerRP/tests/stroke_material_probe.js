@@ -269,6 +269,52 @@ try {
     fs.writeFileSync(resolve(SHOTS, `stroke_material_dashes_custom.png`), PNG.sync.write(custom.png));
     console.log("  shot .claude_vlm_checks/stroke_material_dashes_dot.png, stroke_material_dashes_custom.png");
   }
+
+  // ROUND 3 #47 — alongGradient's colour ramp is now a real STOPS LIST (the gradient
+  // editor), with the legacy three-colour knobs mapped in for old documents. TWO
+  // properties: (1) an authored 3-stop ramp of three distinct pure colours paints
+  // THREE distinct bands along the arc; (2) the legacy colour knobs render
+  // BYTE-IDENTICALLY to the equivalent authored stops (absent `stops` = the legacy
+  // path — the render-side mapping is pixel-perfect, never a silent colour shift).
+  if (ids.includes("alongGradient")) {
+    const eqBuf = (a, b) => Buffer.compare(Buffer.from(a.data), Buffer.from(b.data)) === 0;
+    const DOM = 50;        // channel-dominance margin for classifying a stroke pixel's hue
+    const BAND_MIN = 8;    // fewest grid points a colour band must cover to count as "present"
+    // Dominant-channel pixel counts among the STROKE pixels (changed from baseline),
+    // across all five cells — how many are red-, green- or blue-dominant.
+    const dominant = (png) => {
+      const c = { r: 0, g: 0, b: 0 };
+      for (const cell of CELLS)
+        for (let dy = 2; dy < CELL - 2; dy += GRID_STEP)
+          for (let dx = 2; dx < CELL - 2; dx += GRID_STEP) {
+            const x = cell.at.x + dx, y = cell.at.y + dy;
+            if (pixelDiff(png, baseline, x, y) <= DIFF_MIN) continue;
+            const i = (y * png.width + x) * 4;
+            const R = png.data[i], G = png.data[i + 1], B = png.data[i + 2];
+            if (R > G + DOM && R > B + DOM) c.r++;
+            else if (G > R + DOM && G > B + DOM) c.g++;
+            else if (B > R + DOM && B > G + DOM) c.b++;
+          }
+      return c;
+    };
+    const RGB_STOPS = [{ offset: 0, color: "#ff0000" }, { offset: 0.5, color: "#00ff00" }, { offset: 1, color: "#0000ff" }];
+    const three = await render(matrixDoc("alongGradient", { stops: RGB_STOPS, repeat: 1, phase: 0 }));
+    fs.writeFileSync(resolve(SHOTS, `stroke_material_alongGradient_3stop.png`), PNG.sync.write(three));
+    const d3 = dominant(three);
+    ok(d3.r >= BAND_MIN && d3.g >= BAND_MIN && d3.b >= BAND_MIN,
+      `alongGradient 3-stop authored ramp paints THREE distinct bands (red ${d3.r}, green ${d3.g}, blue ${d3.b} px each >= ${BAND_MIN})`);
+    // LEGACY three-colour knobs == the equivalent authored stops, pixel-for-pixel.
+    const legacy = await render(matrixDoc("alongGradient", { colorStart: "#ff0000", colorMid: "#00ff00", colorEnd: "#0000ff", midpoint: 0.5 }));
+    const authoredEquiv = await render(matrixDoc("alongGradient", { stops: RGB_STOPS }));
+    ok(eqBuf(legacy, authoredEquiv),
+      "alongGradient LEGACY colour knobs render byte-identically to the equivalent authored stops list (absent stops = the legacy path)");
+    // A genuine 2-colour legacy ramp (red → blue, no middle colour) has NO green band.
+    const legacy2 = await render(matrixDoc("alongGradient", { colorStart: "#ff0000", colorMid: "#ff0000", colorEnd: "#0000ff", midpoint: 0.5 }));
+    const d2 = dominant(legacy2);
+    ok(d2.r >= BAND_MIN && d2.b >= BAND_MIN && d2.g < BAND_MIN,
+      `alongGradient legacy 2-colour ramp (red→blue) has NO green band (red ${d2.r}, blue ${d2.b}, green ${d2.g} < ${BAND_MIN})`);
+    console.log("  shot .claude_vlm_checks/stroke_material_alongGradient_3stop.png");
+  }
 } finally {
   await browser.close();
   await server.close();

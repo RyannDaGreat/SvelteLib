@@ -319,7 +319,10 @@
       const base = paintSubstates(raw);
       const stored = base.material ?? {};
       const id = matRegistryIds.includes(stored.id) ? stored.id : matDefaultId;
-      commitWhole({ ...base, type: "material", material: { id, params: stored.params ?? {} } });
+      // Seed any kind:"stops" list the chosen material declares (a fresh alongGradient
+      // gets its default ramp), so the stops editor is never empty and the render
+      // matches — withSeededLists leaves every other knob sparse.
+      commitWhole({ ...base, type: "material", material: { id, params: withSeededLists(matGet(id), stored.params ?? {}) } });
     }
     else if (isCompletePaint(raw)) commitAt(["type"], next);
     else commitWhole({ ...paintSubstates(raw), type: next });
@@ -376,10 +379,34 @@
     return { id: matDefaultId, params: stored?.params ?? {} };
   });
   let matEntry = $derived(matGet(matSub.id));
-  let matRows = $derived((strokeMaterials ? matEntry.strokeParams : matEntry.fillParams) ?? []);
+  // HIDDEN rows (`hidden: true`) are part of the SCHEMA for resolution but render no
+  // Inspector row: the alongGradient legacy colour knobs (kept so a pre-stops-list
+  // document still resolves its stored colours) and a stops list's `stopsActive`
+  // visibility companion. Everything else — scalars, selects, and the kind:"stops"
+  // list — is an editable row.
+  let matRows = $derived(((strokeMaterials ? matEntry.strokeParams : matEntry.fillParams) ?? []).filter((r) => !r.hidden));
   /** Query. A knob's DISPLAY value: stored when written, else its schema default. */
   function matValue(row) {
     return matSub.params?.[row.name] ?? row.default;
+  }
+
+  /**
+   * Pure function. The material params to store when a material becomes the chosen
+   * one: the existing sparse params, plus a CONCRETE SEED for any kind:"stops" list
+   * the entry declares (`seed`) that is not already stored. A LIST control needs
+   * real elements to edit — unlike a scalar knob, which stays sparse and resolves
+   * from its schema default at render time — so selecting a material with a stops
+   * list materializes that list's default (byte-identical colours), while every
+   * other knob keeps the "no state until written" rule. Stops are deep-copied so a
+   * document never aliases the shared schema seed.
+   */
+  function withSeededLists(entry, params) {
+    const rows = entry.strokeParams ?? entry.fillParams ?? [];
+    const out = { ...(params ?? {}) };
+    for (const row of rows)
+      if (row.kind === "stops" && Array.isArray(row.seed) && !Array.isArray(out[row.name]))
+        out[row.name] = row.seed.map((s) => ({ ...s }));
+    return out;
   }
 
   // Pixels of drag that span a BOUNDED knob's whole range (and the scale an
@@ -436,6 +463,15 @@
   // previews the texture live through the SAME factory as the material dropdown.
   let texKnobRow = $derived(matEntry.texturePalette ? matRows.find((r) => r.name === matEntry.texturePalette) : null);
   let texHover = $derived(makeHoverPreview(app, (id) => writePaths.map((p) => [[...p, "material", "params", matEntry.texturePalette], id])));
+
+  /** Command. Switches the chosen material — writes the id AND seeds any stops
+   * list the new material declares, as ONE undo unit. Carries the existing sparse
+   * params over (byte-identical to the old id-only write for a material with no
+   * stops list; resolveMaterialPaint drops any cross-material stale knob loudly,
+   * exactly as before). */
+  function commitMaterial(id) {
+    commitAt(["material"], { id, params: withSeededLists(matGet(id), matSub.params ?? {}) });
+  }
 
   /** Command. Commits a Mat SELECT knob, honoring the entry's `presetExpand`
    * contract (the preset-type pattern): a non-neutral pick on the preset knob
@@ -542,7 +578,7 @@
     <SearchableDropdown
       items={MATERIAL_OPTIONS}
       value={matSub.id}
-      onchange={(id) => { app.transientPreview = null; commitAt(["material", "id"], id); }}
+      onchange={(id) => { app.transientPreview = null; commitMaterial(id); }}
       onpreview={matHover.preview}
       oncancelpreview={matHover.cancel}
     />
@@ -582,6 +618,31 @@
       {#if !matCollapsed}
         <div class="cat-rows">
           {#each matRows as mrow (mrow.name)}
+            {#if mrow.kind === "stops"}
+              <!-- STOPS — THE REAL GRADIENT EDITOR, mounted for a material colour ramp
+                   (alongGradient) exactly as it is for a gradient PAINT: the SAME
+                   ListField driven by the SAME GRADIENT_STOPS_LIST declaration (its
+                   `presets: COLOR_RAMP_LIBRARY` mounts the ramp preset library above
+                   the rows), writing each stop's colour/offset at real state paths
+                   (…material.params.stops.<i>.color/.offset) with per-stop keyframe ◆,
+                   insert-between, visibility and purge-with-minimum. A REUSABLE row
+                   kind: any fill/stroke material param declared kind:"stops" gets it,
+                   with no alongGradient special-case here. -->
+              {#if multi}
+                <p class="paint-stops-multi-note">
+                  Gradient stops are edited one item at a time — select a single item to edit them.
+                </p>
+              {:else}
+                <ListField
+                  {app}
+                  decl={GRADIENT_STOPS_LIST}
+                  path={[...path, "material", "params", mrow.name]}
+                  label={mrow.label ?? mrow.name}
+                  {disabled}
+                  seedElement={{ offset: 0, color: NEW_STOP_COLOR }}
+                />
+              {/if}
+            {:else}
             {@const scrub = knobScrub(mrow)}
             <div class="paint-material-row">
               <span class="paint-material-label">{mrow.label ?? mrow.name}</span>
@@ -619,6 +680,7 @@
                 {/if}
               </span>
             </div>
+            {/if}
           {/each}
         </div>
       {/if}
