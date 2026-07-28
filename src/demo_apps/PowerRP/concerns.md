@@ -180,3 +180,16 @@ compiles as crashes — twice now; pause the server or warn the user.
 - zsh backticks in a git commit -m double-quoted string EXECUTE (command
   substitution) and silently delete words from the message — single-quote
   commit messages or avoid backticks (one commit needed --amend).
+
+
+## 2026-07-28 — Gears v3 delivered (items 58/60/62); two cosmetic nits logged
+The v3 deck fixed the user's meshing complaint with actual gear math (shared
+module B=11, k=0.89 half-depth pitch radius, center distance = sum of pitch
+radii, slope = -N_parent/N_child cumulative along the chain, analytic tooth
+phase). Coordinator verified the money shot: teeth genuinely interleave with
+backlash clearance. NITS (not blockers, candidates for later polish):
+1) metal radial brushing shows a faint horizontal seam band at the hub when a
+gear is very large on screen (the near-centre radius clamp in metal_shader's
+radial arc-length-constant brushing); 2) seg7 degree readouts can overlap or
+clip near small adjacent gears in the title framing. Both visible in
+.claude_vlm_checks/gears_v3/final_000018.png.

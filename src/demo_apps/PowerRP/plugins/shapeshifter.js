@@ -644,6 +644,11 @@ export function makeFamilyPlugin(fam) {
   const plugin = {
     type: fam.type,
     title: fam.title,
+    // GEOMETRY PRESETS (the presets mantra, manifest item 70): a family may
+    // declare `presets: [{name, description, props}]` — passed through so
+    // core/registry.presetFamiliesOf surfaces them in the Tools pane exactly
+    // like any hand-written plugin's. Families without presets are untouched.
+    ...(fam.presets ? { presets: fam.presets } : {}),
     capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
     defaults: {
       type: fam.type, x: 120, y: 120, w: 200, h: 200, z: 0, rotation: 0, scale: 1,
