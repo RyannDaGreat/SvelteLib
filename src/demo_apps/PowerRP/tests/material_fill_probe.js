@@ -195,6 +195,48 @@ try {
     ok(center.some((c, i) => Math.abs(c - [0xef, 0x47, 0x6f][i]) > 4),
       `paint_path material fill PAINTED its interior (center ${center.join(",")} differs from the underlay)`);
   }
+  // ── PARITY: the glitch FILL distorts its backdrop like the glitch WIDGET ────
+  // (user report: "the demo widget looks great, why doesn't the material?").
+  // Both are rendered over vertical stripes; each region's changed-fraction vs a
+  // no-overlay control measures how much backdrop it displaced. The fill must
+  // distort at least 80% as much as the widget — parity, not pixel-equality
+  // (their regions differ, so the tear pattern does too).
+  {
+    const stripes = (withOverlays) => {
+      let d = newDocument(), z = 1;
+      d.meta = { ...d.meta, slideW: 800, slideH: 300 };
+      const items0 = d.slides[0].delta.items;
+      const camId = Object.keys(items0)[0];
+      items0[camId] = { ...items0[camId], x: 0, y: 0, w: 800, h: 300, background: "#101018" };
+      const addOne = (type, over) => { [d] = withNewItem(d, 0, { ...registry.get(type).defaults, ...over, active: true, z: z++ }); };
+      for (let x = 0; x < 800; x += 40) addOne("rect", { x, y: 0, w: 20, h: 300, fill: "#e8e8f0", strokeWidth: 0 });
+      if (withOverlays) {
+        addOne("demo_glitch", { x: 40, y: 40, w: 300, h: 220 });
+        addOne("rect", { x: 460, y: 40, w: 300, h: 220, strokeWidth: 0, cornerRadius: 0, fill: { type: "material", material: { id: "glitch", params: {} } } });
+      }
+      return serialize(d);
+    };
+    const renderWH = async (json) => {
+      const dataUrl = await page.evaluate((j) => window.__powerrp_render(j, { slide: 0, width: 800, height: 300 }), json);
+      return readPng(Buffer.from(dataUrl.split(",")[1], "base64"));
+    };
+    const control = await renderWH(stripes(false));
+    const both = await renderWH(stripes(true));
+    const changedFrac = (x0, y0, x1, y1) => {
+      let n = 0, t = 0;
+      for (let y = y0; y < y1; y += 3) for (let x = x0; x < x1; x += 3) {
+        const i = (y * 800 + x) * 4;
+        const d = Math.abs(both.data[i] - control.data[i]) + Math.abs(both.data[i + 1] - control.data[i + 1]) + Math.abs(both.data[i + 2] - control.data[i + 2]);
+        t++;
+        if (d > 30) n++;
+      }
+      return n / t;
+    };
+    const wFrac = changedFrac(60, 60, 320, 240), fFrac = changedFrac(480, 60, 740, 240);
+    ok(fFrac >= wFrac * 0.8,
+      `glitch FILL distorts its backdrop at widget parity (fill ${fFrac.toFixed(3)} >= 0.8 x widget ${wFrac.toFixed(3)})`);
+  }
+
 } finally {
   await browser.close();
   await server.close();
