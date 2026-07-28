@@ -13,6 +13,9 @@
       {/snippet}
     </SplitPane>
 
+  Props beyond the layout ones: `minPanePx` is forwarded to SplitView unchanged —
+  raise it when a pane's contents have a min-content width of their own.
+
   CSS custom properties (set on SplitPane or any ancestor):
     --sp-handle-size     Handle thickness (default: 4px)
     --sp-handle-color    Handle resting color (default: #444)
@@ -104,12 +107,18 @@
     splits = $bindable([0.5]),
     /** @type {(splits: number[]) => void} Called after drag ends */
     onchange = undefined,
+    /**
+     * @type {number|undefined} Pixel floor on every pane. Passed straight through
+     * to SplitView, which owns both the behaviour and the DEFAULT — leaving this
+     * `undefined` lets that default apply, so the number is written down once.
+     */
+    minPanePx = undefined,
     /** Snippet receiving (paneIndex, paneCount) for each pane */
     children: paneContent,
   } = $props();
 </script>
 
-<SplitView {orientation} bind:splits {onchange}>
+<SplitView {orientation} bind:splits {onchange} {minPanePx}>
   {#snippet children(state, actions)}
     <div
       class="sp-layout"

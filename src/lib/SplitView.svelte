@@ -7,7 +7,7 @@
   Renders nothing visual — passes state and actions to children.
 
   Usage:
-    <SplitView orientation="horizontal" bind:splits={mySplits}>
+    <SplitView orientation="horizontal" bind:splits={mySplits} minPanePx={260}>
       {#snippet children(state, actions)}
         {#each Array(state.paneCount) as _, i}
           <div style={myPaneStyle(state, i)}>Pane {i}</div>
@@ -90,10 +90,10 @@
    * @property {(newSplits: number[]) => void} setSplits - Programmatic update (ignored mid-drag)
    */
 
-  // Minimum size of any pane, in PIXELS. A pane never shrinks below this, but the
-  // user can resize it as freely as they like above it. Pixel-based (not a
+  // Default minimum size of any pane, in PIXELS. A pane never shrinks below this,
+  // but the user can resize it as freely as they like above it. Pixel-based (not a
   // fraction) so the floor is the same regardless of the container's size.
-  const MIN_PANE_PX = 30;
+  const DEFAULT_MIN_PANE_PX = 30;
 
   let {
     /** @type {"horizontal"|"vertical"} */
@@ -102,6 +102,14 @@
     splits = $bindable([0.5]),
     /** @type {(splits: number[]) => void} Called after drag ends with final positions */
     onchange = undefined,
+    /**
+     * @type {number} Pixel floor on every pane. Raise it when a pane's contents
+     * have a min-content width of their own — a form whose label column is a
+     * fixed width cannot shrink, so squashing its pane below that would make the
+     * form overflow the pane rather than compress inside it (which is how a
+     * "contained" control ends up painting over its neighbour).
+     */
+    minPanePx = DEFAULT_MIN_PANE_PX,
     children,
   } = $props();
 
@@ -136,7 +144,7 @@
     const clientPos = isHoriz ? e.clientX : e.clientY;
     const delta = (clientPos - startClientPos) / containerSize;
     // Convert the pixel floor to the fractional gap resolveSplits expects.
-    const minGap = MIN_PANE_PX / containerSize;
+    const minGap = minPanePx / containerSize;
     splits = resolveSplits(snapshot, dragIdx, delta, minGap);
   }
 

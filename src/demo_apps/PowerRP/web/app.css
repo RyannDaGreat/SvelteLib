@@ -285,10 +285,12 @@
      longest hint line would set the panel's max-content width and a small
      options dialog would stretch across the screen. The label column is sized to
      the widest label ("Hold per slide" / "Width × Height") at --a-font-md. */
-  /* RENDER CENTER (RenderCenterModal.svelte). The dialog is two panes, so it
-     states a total width and the form's share of it; the list takes the rest. */
+  /* RENDER CENTER (RenderCenterModal.svelte). The dialog is two panes with a
+     DRAGGABLE divider, so it states only the total width: the form's share of it
+     is a split FRACTION the user moves, owned by the component (its
+     INITIAL_FORM_SPLIT), not a token here. --a-render-form-w: 420px used to live
+     on this line and is gone for that reason. */
   --a-render-w: 860px;
-  --a-render-form-w: 420px;
   --a-render-label-w: 112px;
   --a-render-swatch-w: 40px;
   --a-render-bar-h: 6px;
@@ -4852,33 +4854,84 @@ audio.ae-preview-media {
    so global scoping is collision-free (the Modal portals to <body>, out of reach
    of any panel-scoped rule). */
 .render-center {
-  display: flex;
-  gap: var(--a-sp-5);
-  align-items: flex-start;
   width: var(--a-render-w);
   max-width: 100%;
   font-size: var(--a-font-md);
+}
+
+/* THE TWO PANES AND THE DRAGGABLE DIVIDER between them. The panes are IN FLOW
+   (their widths come from the split fraction, written inline by the component) so
+   this block keeps its content height and the shared Modal's .modal-body keeps
+   owning the vertical scroll — see RenderCenterModal.svelte's header for why that
+   ruled out SplitPane, whose panes are absolutely positioned.
+   `position: relative` is here only so the divider can sit at the boundary. */
+.render-center-panes {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+/* Mid-drag the panes must not eat pointer events, or the pointer crossing a text
+   input steals the cursor and the drag reads as stuttering. SplitPane does exactly
+   this for its own panes (.sp-dragging .sp-pane). */
+.render-center-panes.is-dragging > .render-center-submit,
+.render-center-panes.is-dragging > .render-center-list {
+  pointer-events: none;
+}
+.render-center-panes.is-dragging {
+  user-select: none;
 }
 
 .render-center-submit {
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-4);
-  flex: 0 0 var(--a-render-form-w);
+  flex: 0 0 auto; /* the split fraction is the width; do not flex around it */
   min-width: 0;
+  padding-right: var(--a-sp-5);
 }
 
-/* The list pane owns the leftover width and is the only thing that scrolls, so
-   the submit form never slides out of reach behind a long render history. */
+/* The list pane takes whatever the form leaves, and is the only thing that
+   scrolls, so the submit form never slides out of reach behind a long render
+   history. No border-left any more: the divider IS that line now. */
 .render-center-list {
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-3);
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
-  border-left: var(--a-hairline) solid var(--border);
   padding-left: var(--a-sp-5);
-  align-self: stretch;
+}
+
+/* The divider reads the SAME --a-split-handle-* tokens the app shell's SplitPane
+   handles read (app.css maps them onto --sp-* on .app), so the dialog's divider
+   and the editor's pane handles cannot drift apart in look. It reads the --a-*
+   names directly rather than --sp-*, because the shared Modal PORTALS this dialog
+   to <body>, out from under the .app block where --sp-* is declared.
+   Geometry mirrors SplitPane's handle: a line centred on the boundary, a much
+   larger invisible hit area, and col-resize to announce it before you press.
+   No z-index: the divider is the only positioned box among the panes and comes
+   after the form in tree order, so it already paints over both. */
+.render-center-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--a-split-handle-size);
+  margin-left: calc(-1 * var(--a-split-handle-size) / 2);
+  background: var(--a-split-handle);
+  cursor: col-resize;
+  transition: background-color var(--a-row-chrome-fade) ease;
+}
+
+.render-center-divider::before {
+  content: "";
+  position: absolute;
+  inset: calc(-1 * var(--a-split-handle-hit));
+}
+
+.render-center-divider:hover,
+.render-center-panes.is-dragging > .render-center-divider {
+  background: var(--a-split-handle-hover);
 }
 
 .render-center-heading {
@@ -4901,6 +4954,22 @@ audio.ae-preview-media {
 .render-center-control {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* A DROPDOWN FILLS ITS CELL — the app-wide rule (`.inspector .row .dd` says the
+   same thing), which this dialog had simply never applied. It is containment, not
+   cosmetics: without a definite width Dropdown's root is a shrink-to-fit
+   inline-block, and its shrink-to-fit width is resolved from the row's FULL width
+   while this cell's own content-based flex basis is being measured — i.e. before
+   the cell shrinks. The control therefore keeps the label's whole max-content
+   width and overflows the cell it lives in. Measured before this rule: a 447.6px
+   trigger in a 294px cell, and because `.dd-menu` spans the trigger (left:0 /
+   right:0) the OPEN MENU overflowed with it, crossing the divider into the
+   renderings pane and painting over a finished render's <video>. A percentage
+   width breaks that ordering: the trigger is sized from the settled cell, and
+   src/lib/Dropdown.svelte's ellipsis then has something to bite on. */
+.render-center-control .dd {
+  width: 100%;
 }
 
 /* A control followed by its explanatory hint (or a pair of numbers) on one row. */

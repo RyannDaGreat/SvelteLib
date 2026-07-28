@@ -7,6 +7,19 @@
   flare math. Items longer than the trigger truncate with ellipsis;
   size your trigger (e.g. `min-width` on the wrapper) to fit.
 
+  CONTAINMENT — GIVE `.dd` A DEFINITE WIDTH. This component's root is a
+  shrink-to-fit inline-block, and inside a flex or grid cell its shrink-to-fit
+  width is resolved from the row's FULL width while that cell's own content-based
+  basis is being measured — i.e. before the cell shrinks. So a long label makes
+  the trigger WIDER THAN ITS CELL, and because the menu spans the trigger
+  (left:0/right:0) the open menu overflows with it and paints over whatever sits
+  to the right. Measured in PowerRP: a 447.6px trigger in a 294px cell, menu
+  crossing into the next pane and over a <video>. `width: 100%` on `.dd` (which
+  is what `.inspector .row .dd` does, and now `.render-center-control .dd`) fixes
+  it outright — the trigger is then sized from the settled cell and the ellipsis
+  above has something to bite on. Give the wrapper a `min-width` instead when you
+  would rather the control stay legible than stay inside.
+
   Item shape:
     - Selectable row:  { value:any, label:string, disabled?:boolean }
     - Insert (decoration between rows, generic): { insert: Snippet | string }
@@ -517,6 +530,12 @@
     border-bottom-color: transparent;
   }
 
+  /* `overflow: hidden` is doing two jobs: it enables the ellipsis, AND it is what
+     lets this flex item shrink at all — a flex item whose overflow is not
+     `visible` has an automatic minimum size of zero, so no `min-width: 0` is
+     needed here (measured: adding one changes nothing). The ellipsis therefore
+     applies exactly when the TRIGGER has a definite width — see the docblock's
+     CONTAINMENT note for what the consumer must supply. */
   .dd-trigger-label {
     overflow: hidden;
     text-overflow: ellipsis;

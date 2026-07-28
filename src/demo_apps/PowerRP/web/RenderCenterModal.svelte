@@ -1,7 +1,21 @@
 <!--
   RenderCenterModal — the RENDER CENTER. Two panes: SUBMIT on the left, this
-  project's RENDERINGS on the right. (App.svelte owns the <Modal> wrapper,
-  mirroring BuiltinAssetBrowser.)
+  project's RENDERINGS on the right, with a DRAGGABLE divider between them.
+  (App.svelte owns the <Modal> wrapper, mirroring BuiltinAssetBrowser.)
+
+  THE DIVIDER IS THE SHARED SPLITTER, and it is SplitView rather than SplitPane
+  deliberately. SplitPane is the styled wrapper: it positions its panes
+  ABSOLUTELY inside a `height: 100%` root, which needs a definite height from an
+  ancestor. This dialog has none — the shared Modal's `.modal-body` owns the
+  vertical scroll, and it is CONTENT-SIZED whenever the content fits (measured at
+  1400x900: an 810px panel, and a body whose clientHeight === scrollHeight === 666),
+  so `height: 100%` would resolve to auto and every absolutely-positioned pane
+  would collapse to zero height. Forcing
+  a fixed pixel height instead would silently CLIP the form the first time someone
+  adds a row. SplitView is the same component minus the layout: identical drag
+  math, constraint resolution, spring-back and pixel floor, with the panes left in
+  normal flow so the block keeps its content height and the Modal keeps owning the
+  scroll (which tests/render_center_reach_probe.js asserts).
 
   WHY THIS REPLACED "Export as MP4". The old dialog WAS the render: it held the
   frame loop and the progress in component state, so closing it, refreshing, or an
@@ -53,6 +67,7 @@
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
+  import SplitView from "../../../lib/SplitView.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { cameraRectAt } from "./cameraFrame.js";
   import { humanReadableFileSize } from "./fileSize.js";
@@ -133,6 +148,23 @@
       throw new Error(`RenderCenterModal: unknown codec quality ${JSON.stringify(key)} — expected one of ${Object.keys(QUALITY_CRF).join(", ")}, custom`);
     return crf;
   }
+  /**
+   * Pure. What choosing this backend MEANS, for the hint under the row. Total and
+   * loud for presetCrf's reason: a missing key would otherwise render the string
+   * "undefined" as help text, which is worse than no help at all.
+   *
+   * @param {string} key - A backend choice ("server" | "browser")
+   * @returns {string} That choice's consequence, one paragraph
+   *
+   * @example backendHint("browser") // "THIS PAGE renders the frames, so the render uses your GPU rather than the server's."
+   * @example backendHint("cloud")   // throws, naming the valid keys
+   */
+  function backendHint(key) {
+    const entry = BACKENDS.find((b) => b.value === key);
+    if (!entry)
+      throw new Error(`RenderCenterModal: unknown backend ${JSON.stringify(key)} — expected one of ${BACKENDS.map((b) => b.value).join(", ")}`);
+    return entry.hint;
+  }
 
   // THE CAMERA's size at the current slide = the default output size (the camera
   // owns the frame). Read ONCE at mount via untrack (the modal remounts on each
@@ -167,10 +199,48 @@
   // The server backend renders in a headless browser running THIS app, so it draws
   // everything this page draws — media, LaTeX, Mermaid, motion blur. "needed for
   // media" was true of the old bare-node renderer and is no longer.
+  //
+  // ONE WORD PER LABEL, and the consequence in `hint`. The labels used to BE the
+  // help text ("Server — keeps going if you close this", "Browser — this page
+  // renders (uses your GPU)"), which sized the trigger to 354.9px inside a 300px
+  // cell and sent the open menu 38.9px into the renderings pane and over a
+  // finished render's <video>. app.css's `.render-center-control .dd { width:100% }`
+  // is what stops a trigger outgrowing its cell now, so the geometry no longer
+  // depends on how long a label is — but a dropdown row is still the wrong home
+  // for a sentence: it can only ever ellipsize one. The hint paragraph under the
+  // row is where this dialog already puts consequences (see the CRF, motion-blur
+  // and letterbox rows), it is readable without hovering anything, and it can say
+  // more than a row ever could.
   const BACKENDS = [
-    { value: "server", label: "Server — keeps going if you close this" },
-    { value: "browser", label: "Browser — this page renders (uses your GPU)" },
+    {
+      value: "server",
+      label: "Server",
+      hint: "The SERVER renders it, in a headless browser running this app — so it draws everything this page draws. It keeps going if you close this dialog, refresh, or shut the laptop; come back here any time to check on it.",
+    },
+    {
+      value: "browser",
+      label: "Browser",
+      hint: "THIS PAGE renders the frames, so the render uses your GPU rather than the server's.",
+    },
   ];
+
+  // The form's initial share of the dialog's width, and the pixel floor the
+  // divider may not squash either pane past.
+  //
+  // 0.5 lands the form at ~430px, which is the ~420px it was fixed at before the
+  // divider existed; the user rebalances from there. The floor is NOT decoration:
+  // the form's label column is a fixed --a-render-label-w and cannot compress, so
+  // a pane narrower than its own min-content would make the rows overflow the pane
+  // — re-creating, from the other direction, the exact "control paints over the
+  // next pane" defect this dialog was just fixed for. 260px = that label column
+  // plus a control still worth looking at.
+  const INITIAL_FORM_SPLIT = 0.5;
+  const MIN_PANE_PX = 260;
+  // NOT persisted, deliberately: the app's other splitters (App.svelte's hSplits /
+  // leftSplits / rightSplits) are plain $state and reset on reload, and the modal
+  // remounts on every open, so remembering this one would be a new mechanism that
+  // no sibling has. If it should be sticky, it belongs with those three.
+  let splits = $state([INITIAL_FORM_SPLIT]);
 
   // ── Form state ──────────────────────────────────────────────────────────
   let jobName = $state(untrack(() => app.projectName()));
@@ -332,8 +402,11 @@
 </script>
 
 <div class="render-center">
+<SplitView orientation="horizontal" bind:splits minPanePx={MIN_PANE_PX}>
+{#snippet children(state, actions)}
+<div class="render-center-panes" class:is-dragging={state.dragging}>
   <!-- ── LEFT: submit ────────────────────────────────────────────────────── -->
-  <div class="render-center-submit">
+  <div class="render-center-submit" style:width={`${state.splits[0] * 100}%`}>
     <h3 class="render-center-heading">New render</h3>
 
     <label class="render-center-row">
@@ -343,15 +416,25 @@
       </span>
     </label>
 
-    <label class="render-center-row">
+    <!-- NOT a <label>, for the reason the Transitions row below already states: a
+         Dropdown's trigger is a <button>, and clicking anything inside a <label>
+         makes the label ALSO activate its control — so picking an option bubbled
+         to the label, which re-clicked the trigger and RE-OPENED the menu you had
+         just chosen from. Reproduced with real mouse clicks on every Dropdown row
+         in this dialog; the Inspector's rows are plain <div>s and never had it. -->
+    <div class="render-center-row">
       <span class="render-center-label">Rendered by</span>
       <span class="render-center-control"><Dropdown items={BACKENDS} bind:value={backend} /></span>
-    </label>
+    </div>
+    <!-- The chosen backend's consequence, in prose, where the row could not say
+         it. Always visible: "will this still be going when I come back" is the
+         one thing about this dialog a user must not have to hover to learn. -->
+    <p class="render-center-hint">{backendHint(backend)}</p>
     {#if backend === "browser"}
-      <label class="render-center-row">
+      <div class="render-center-row">
         <span class="render-center-label">Encoded by</span>
         <span class="render-center-control"><Dropdown items={BROWSER_ENCODERS} bind:value={browserEncoder} /></span>
-      </label>
+      </div>
       <p class="render-center-hint">
         Closing this tab PAUSES a browser render — it does not keep going. Reopen the
         project and press Resume to continue from
@@ -359,10 +442,10 @@
       </p>
     {/if}
 
-    <label class="render-center-row">
+    <div class="render-center-row">
       <span class="render-center-label">Resolution</span>
       <span class="render-center-control"><Dropdown items={RESOLUTIONS} bind:value={resolution} /></span>
-    </label>
+    </div>
     {#if resolution === "custom"}
       <div class="render-center-row">
         <span class="render-center-label">Width × Height</span>
@@ -379,10 +462,10 @@
       <span class="render-center-control"><DraggableNumber bind:value={fps} min={MIN_FPS} max={MAX_FPS} step={1} suffix=" fps" label="Frames per second" /></span>
     </label>
 
-    <label class="render-center-row">
+    <div class="render-center-row">
       <span class="render-center-label">Codec quality</span>
       <span class="render-center-control"><Dropdown items={CODEC_QUALITIES} bind:value={codecQuality} /></span>
-    </label>
+    </div>
     {#if codecQuality === "custom"}
       <label class="render-center-row">
         <span class="render-center-label">CRF</span>
@@ -393,10 +476,10 @@
       </label>
     {/if}
 
-    <label class="render-center-row">
+    <div class="render-center-row">
       <span class="render-center-label">Slides</span>
       <span class="render-center-control"><Dropdown items={RANGE_MODES} bind:value={rangeMode} /></span>
-    </label>
+    </div>
     {#if rangeMode === "custom"}
       <div class="render-center-row">
         <span class="render-center-label">From → To</span>
@@ -465,11 +548,25 @@
         Submit Render Job
       </button>
     </div>
-    <p class="render-center-hint">
-      A Server job keeps rendering if you close this dialog, refresh, or shut the laptop.
-      Come back here any time to check on it.
-    </p>
+    <!-- (The paragraph that used to sit here — "A Server job keeps rendering if
+         you close this dialog…" — has moved into BACKENDS' server `hint`, up
+         beside the choice it describes. It said the same thing while the BROWSER
+         backend was selected, where it was simply not true of the job about to be
+         submitted.) -->
   </div>
+
+  <!-- THE DIVIDER. Absolutely positioned at the split boundary rather than being a
+       flex column, so the two panes stay in normal flow (the whole reason this uses
+       SplitView — see the header) while the handle still spans the full height. All
+       drag behaviour is the shared splitter's; this element only reports mousedown. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="render-center-divider"
+    style:left={`${state.splits[0] * 100}%`}
+    role="separator"
+    aria-orientation="vertical"
+    onmousedown={(e) => actions.beginDrag(0, e)}
+  ></div>
 
   <!-- ── RIGHT: this project's renderings ────────────────────────────────── -->
   <div class="render-center-list">
@@ -589,4 +686,7 @@
       {/each}
     </div>
   </div>
+</div>
+{/snippet}
+</SplitView>
 </div>
