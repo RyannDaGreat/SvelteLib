@@ -155,6 +155,13 @@ export function sceneMedia(uploader, commands) {
     const img = getSkiaImage(CanvasKit, ref);
     if (img) media[ref] = img;
   }
+  // paperCurl sheets: their front faces are ordinary image-registry refs (PDF
+  // page rasters); a null ref (blank back of a turned page) is simply absent.
+  for (const ref of refsForOp(commands, "paperCurl")) {
+    if (ref == null) continue;
+    const img = getSkiaImage(CanvasKit, ref);
+    if (img) media[ref] = img;
+  }
   for (const ref of refsForOp(commands, "video")) {
     const frame = getSkiaVideoFrame(uploader, ref);
     if (frame) {

@@ -444,6 +444,35 @@ export function image({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh
 }
 
 /**
+ * Pure function. PAPER CURL — one sheet of a corner-stapled packet mid-turn:
+ * the render_gpu/page_curl.js developable roll of the x/y/w/h sheet around the
+ * fold implied by (staple, angleDeg, t), textured by `ref` on the front, plain
+ * paper on the back, with a geometry-derived cast shadow. `ref: null` = a
+ * blank sheet (an already-turned page showing its back). The Skia painter owns
+ * the mesh; export backends take the generic raster fallback (not in
+ * VECTOR_OPS — the cd7ca00 rule).
+ *
+ * @param {object} o
+ * @param {string|null} o.ref image-registry ref of the sheet's FRONT face
+ * @param {number} o.x, o.y, o.w, o.h the sheet rect (local)
+ * @param {{x:number,y:number}} o.staple staple point (local)
+ * @param {number} o.angleDeg flip direction (deg, the free corner's travel)
+ * @param {number} o.t turn progress 0..1
+ * @param {number} [o.curlScale=1] curl-radius handle
+ * @param {string} [o.paper="#fbfaf7"] the sheet's paper color (back face + untextured front)
+ * @param {number} [o.shadowOpacity=0.4] cast-shadow strength (0 disables)
+ * @param {number} [o.opacity=1]
+ *
+ * @example paperCurl({ref: "p1", x: 0, y: 0, w: 200, h: 300, staple: {x: 14, y: 14}, angleDeg: 62, t: 0.3}).op // "paperCurl"
+ * @example paperCurl({ref: null, x: 0, y: 0, w: 200, h: 300, staple: {x: 14, y: 14}, angleDeg: 62, t: 1}).ref // null
+ */
+export function paperCurl({ ref, x, y, w, h, staple, angleDeg, t, curlScale = 1, paper = "#fbfaf7", shadowOpacity = 0.4, opacity = 1 }) {
+  if (ref !== null && typeof ref !== "string") throw new Error(`paperCurl: "ref" must be a string or null, got ${JSON.stringify(ref)}`);
+  requireFinite("paperCurl", { x, y, w, h, angleDeg, t, curlScale, shadowOpacity, opacity, stapleX: staple?.x, stapleY: staple?.y });
+  return { op: "paperCurl", ref, x, y, w, h, staple: { x: staple.x, y: staple.y }, angleDeg, t, curlScale, paper, shadowOpacity, opacity };
+}
+
+/**
  * Pure function. Video quad by media-registry ref (raster backends import the
  * current frame each render — WebGPU via importExternalTexture). Carries the
  * SAME `sx/sy/sw/sh` source rect as image() (see it for the edge-crop

@@ -52,6 +52,7 @@ import { MAX_SURFACE_DIM } from "../../core/clip.js"; // the edge below which no
 import { fitBox } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
 import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("videoV2") — self-resolving frame registry (additive; import-safe in node)
+import { turnPose, curlMesh, castShadowOutline } from "../page_curl.js"; // the paperCurl op's pure geometry (DOM-free)
 
 const RAD2DEG = 180 / Math.PI;
 
@@ -520,6 +521,9 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
     case "path":
       drawPathOp(CanvasKit, canvas, cmd, opacity, aa);
       break;
+    case "paperCurl":
+      drawPaperCurl(CanvasKit, canvas, cmd, opacity, media, aa);
+      break;
     case "text":
       drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa);
       break;
@@ -647,6 +651,113 @@ function drawSampledQuad(CanvasKit, canvas, img, cmd, opacity, quality) {
  * op is transform-applied by the caller, so `d` draws in the current local
  * space with no extra matrix here.
  */
+/** Cast-shadow light slant for the paperCurl op: offset per unit of lift, a
+ * consistent above-left key light (shadows fall down-right — the whole scene's
+ * effects bundle uses the same handedness). */
+const CURL_SHADOW_SLANT = { x: 0.28, y: 0.38 };
+/** The two cast-shadow layers (photo reference: a wide soft penumbra PLUS a
+ * tighter darker core near the fold — one blur cannot fake both). Blur sigma =
+ * factor · maxZ; alpha = factor · cmd.shadowOpacity. */
+const CURL_SHADOW_LAYERS = [
+  { blurOfZ: 0.55, alpha: 0.55 },
+  { blurOfZ: 0.18, alpha: 0.45 },
+];
+
+/**
+ * Command (draws on `canvas`, which already rides the local→device CTM).
+ * paperCurl: one sheet of a stapled packet mid-turn — the render_gpu/
+ * page_curl.js developable roll drawn as a textured triangle mesh.
+ *
+ * THREE passes, all from ONE mesh:
+ *   1. the geometry-derived CAST SHADOW (two blurred fills of the deformed
+ *      silhouette, offset by lift·CURL_SHADOW_SLANT — soft penumbra + dark core)
+ *   2. the PAPER BASE: the mesh filled with the shaded paper color — this is
+ *      the sheet's back face, and the underlay behind the texture
+ *   3. the TEXTURE: the front image modulated by per-vertex (shade, frontness)
+ *      colors — frontness fades the texture to zero across the roll's crest,
+ *      so the back reveals continuously (no hard seam), and Modulate blending
+ *      multiplies the image by the diffuse shading
+ * An absent media image (async, or ref: null — a blank turned page) simply
+ * skips pass 3: the shaded paper sheet still draws (the async media contract).
+ */
+function drawPaperCurl(CanvasKit, canvas, cmd, opacity, media, aa = true) {
+  const pose = turnPose(cmd.t, cmd.w, cmd.h, cmd.staple, cmd.angleDeg, cmd.curlScale ?? 1);
+  const mesh = curlMesh(cmd.w, cmd.h, pose);
+  canvas.save();
+  canvas.translate(cmd.x, cmd.y);
+
+  // (1) cast shadow — only when something is actually lifted.
+  if ((cmd.shadowOpacity ?? 0) > 0) {
+    const outline = castShadowOutline(cmd.w, cmd.h, pose, CURL_SHADOW_SLANT);
+    if (outline) {
+      const path = buildPath(CanvasKit, outline, true);
+      for (const layer of CURL_SHADOW_LAYERS) {
+        const p = new CanvasKit.Paint();
+        p.setAntiAlias(aa);
+        p.setColor(CanvasKit.Color4f(0, 0, 0, cmd.shadowOpacity * layer.alpha * opacity));
+        const sigma = Math.max(1, mesh.maxZ * layer.blurOfZ);
+        p.setMaskFilter(CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, sigma, false));
+        canvas.drawPath(path, p);
+        p.delete();
+      }
+      path.delete();
+    }
+  }
+
+  // Per-vertex colors, packed as 0xAARRGGBB ints (CanvasKit's ColorIntArray).
+  const V = mesh.shade.length;
+  const [pr, pg, pb] = parseColor(cmd.paper ?? "#fbfaf7");
+  const packRGBA = (r, g, b, a) => ((a << 24) | (r << 16) | (g << 8) | b) >>> 0;
+  const baseColors = new Uint32Array(V);
+  const texColors = new Uint32Array(V);
+  for (let v = 0; v < V; v++) {
+    const s = mesh.shade[v];
+    baseColors[v] = packRGBA(
+      Math.round(255 * Math.min(1, pr * s)),
+      Math.round(255 * Math.min(1, pg * s)),
+      Math.round(255 * Math.min(1, pb * s)),
+      Math.round(255 * opacity),
+    );
+    const c = Math.round(255 * Math.min(1, s));
+    texColors[v] = packRGBA(c, c, c, Math.round(255 * mesh.front[v] * opacity));
+  }
+
+  // (2) the shaded paper sheet (back face + underlay). White paint + Modulate
+  // ⇒ the vertex colors pass through untouched.
+  const white = new CanvasKit.Paint();
+  white.setAntiAlias(aa);
+  white.setColor(CanvasKit.WHITE);
+  const baseVerts = CanvasKit.MakeVertices(CanvasKit.VertexMode.Triangles, mesh.positions, null, baseColors, mesh.indices, false);
+  canvas.drawVertices(baseVerts, CanvasKit.BlendMode.Modulate, white);
+  baseVerts.delete();
+
+  // (3) the front texture, faded across the crest. Texture coords are in IMAGE
+  // PIXELS (Skia's vertices contract), so scale the mesh's 0..1 uvs here.
+  const img = cmd.ref != null ? media[cmd.ref] : null;
+  if (img) {
+    const texs = new Float32Array(mesh.uvs.length);
+    const iw = img.width(), ih = img.height();
+    for (let v = 0; v < V; v++) {
+      texs[2 * v] = mesh.uvs[2 * v] * iw;
+      texs[2 * v + 1] = mesh.uvs[2 * v + 1] * ih;
+    }
+    const texPaint = new CanvasKit.Paint();
+    texPaint.setAntiAlias(aa);
+    const shader = img.makeShaderOptions(
+      CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp,
+      CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None,
+    );
+    texPaint.setShader(shader);
+    const texVerts = CanvasKit.MakeVertices(CanvasKit.VertexMode.Triangles, mesh.positions, texs, texColors, mesh.indices, false);
+    canvas.drawVertices(texVerts, CanvasKit.BlendMode.Modulate, texPaint);
+    texVerts.delete();
+    shader.delete();
+    texPaint.delete();
+  }
+  white.delete();
+  canvas.restore();
+}
+
 function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true) {
   const skPath = CanvasKit.Path.MakeFromSVGString(cmd.d);
   if (!skPath) throw new Error(`paintIR(skia): path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
@@ -2653,6 +2764,19 @@ function opLocalBounds(CanvasKit, cmd, ctx) {
     }
     case "image": case "video": case "videoV5": case "videoFrame": case "videoV5Frame": case "videoV2":
       return { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }; // a sampled quad, exactly its dest box
+    case "paperCurl": {
+      // Conservative: the deformed sheet is a reflection/roll about a fold line
+      // through the staple's neighborhood, so every deformed point stays within
+      // the staple-centered disc of radius (reach + 2r); the cast shadow adds
+      // its slanted offset and blur support. Union with the flat sheet's box.
+      const pose = turnPose(cmd.t, cmd.w, cmd.h, cmd.staple, cmd.angleDeg, cmd.curlScale ?? 1);
+      const spread = pose.reach + 2 * pose.r + 2 * pose.r * BLUR_SUPPORT_SIGMAS;
+      const sx0 = cmd.x + cmd.staple.x - spread, sy0 = cmd.y + cmd.staple.y - spread;
+      const x0 = Math.min(cmd.x, sx0), y0 = Math.min(cmd.y, sy0);
+      const x1 = Math.max(cmd.x + cmd.w, cmd.x + cmd.staple.x + spread);
+      const y1 = Math.max(cmd.y + cmd.h, cmd.y + cmd.staple.y + spread);
+      return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
     case "latexVector":
       return { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }; // fitBox maps the glyph viewBox INSIDE the box
     case "cropSubtree":
