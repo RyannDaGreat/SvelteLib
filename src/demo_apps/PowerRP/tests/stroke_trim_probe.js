@@ -13,7 +13,7 @@
  *   TRIM — strokeEnd 0.5 leaves roughly HALF the outline drawn: markedly fewer dark
  *     pixels than the full stroke, with at least one edge midpoint gone (cut) and at
  *     least one still present (kept).
- *   PHASE-ON-DASHES — a dashes-material stroke shifted by strokePhase 0.5 differs
+ *   PHASE-ON-DASHES — a dashes-material stroke shifted by strokePhase 180 DEGREES differs
  *     from phase 0: the trim preprocessing feeds the rotated path to the material,
  *     so the dash pattern starts at a new origin (pattern moved, not just redrawn).
  *   CAPS — round vs flat vs taper at the trimmed ends all render DIFFERENTLY (each
@@ -123,9 +123,9 @@ try {
   // 3) PHASE ON A DASHED PATTERN — feeding the rotated path to the material shifts
   //    where the dashes sit. Same trim window, different phase → different pixels.
   const dashP0 = await render(boxDoc({ strokePhase: 0 }, DASHES), "dash_phase0");
-  const dashP5 = await render(boxDoc({ strokePhase: 0.5 }, DASHES), "dash_phase5");
+  const dashP5 = await render(boxDoc({ strokePhase: 180 }, DASHES), "dash_phase5"); // DEGREES (angle property): 180 = half a loop
   ok(darkCount(dashP0) > 0, `dashed stroke paints a pattern (${darkCount(dashP0)} dark px)`);
-  ok(!bytesEq(dashP0, dashP5), "strokePhase 0.5 SHIFTS the dash pattern vs phase 0 (preprocessing feeds the material)");
+  ok(!bytesEq(dashP0, dashP5), "strokePhase 180deg SHIFTS the dash pattern vs phase 0 (preprocessing feeds the material)");
 
   // 4) CAPS — round vs flat vs taper at the trimmed ends must all differ.
   const flat = half; // strokeEnd 0.5, default flat caps

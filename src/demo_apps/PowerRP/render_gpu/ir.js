@@ -623,7 +623,16 @@ export function normalizeStrokeTrim(cmdName, src = {}) {
  * @example applyStrokeTrim({strokeEnd: 0.5}, [{op: "rect", fill: [1,0,0,1]}])[0].strokeEnd // undefined (no stroke to trim)
  */
 export function applyStrokeTrim(state, cmds) {
-  const trim = normalizeStrokeTrim("applyStrokeTrim", state ?? {});
+  // STORED strokePhase is an ANGLE IN DEGREES (an angle-kind row — the rotation
+  // dial; user ruling: "phase can be represented as an angle property"). The OP
+  // contract stays in TURNS: this seam divides by 360 once, and every consumer
+  // wraps turns via mod1, so a 0° → 360° keyframe marches the pattern exactly
+  // once around the outline, seamlessly.
+  const src = state ?? {};
+  const trim = normalizeStrokeTrim("applyStrokeTrim",
+    typeof src.strokePhase === "number"
+      ? { ...src, strokePhase: src.strokePhase / 360 }
+      : src);
   if (Object.keys(trim).length === 0) return cmds;
   return cmds.map((cmd) => stampStrokeTrim(cmd, trim));
 }

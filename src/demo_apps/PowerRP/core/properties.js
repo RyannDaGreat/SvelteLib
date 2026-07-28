@@ -737,10 +737,12 @@ export const PROPS = {
   // keeps its direct-draw fast path when none are active.
   strokeStart: { label: "Stroke start", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline BEGINS, as a fraction of its total length (0 = the very start, 1 = the very end). Raise it to reveal the stroke from its end inward; keyframe it for a draw-on animation." },
   strokeEnd: { label: "Stroke end", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline ENDS, as a fraction of its total length (1 = fully drawn). Lower it to leave the tail undrawn; keyframe 0 → 1 to draw the stroke on over time." },
-  // Periodic (a turn of period 1), so it is UNBOUNDED and wraps — no min/max — with
-  // the fractions/normalized scrub so one 100px drag is one full turn around the
-  // outline (the UNIT_SPAN_SCRUB rationale: a periodic turn with period 1).
-  strokePhase: { label: "Stroke phase", kind: "number", scrub: UNIT_SPAN_SCRUB, category: "strokeMaterial", help: "Rotates where position 0 sits along a CLOSED outline — and where a dashed/dotted pattern starts and collapses. One full unit walks the origin once around the shape. Only visible when the stroke is trimmed or carries a repeating pattern." },
+  // AN ANGLE PROPERTY (user ruling: "phase can be represented as an angle
+  // property") — the rotation dial, stored in DEGREES, unbounded and periodic
+  // (370° == 10°; render_gpu/ir.js applyStrokeTrim converts to turns and every
+  // consumer wraps via mod1). Keyframing 0° → 360° marches the pattern once
+  // around the outline "like a choo-choo train" — the user's spec, verbatim.
+  strokePhase: { label: "Stroke phase", kind: "angle", display: "degrees", category: "strokeMaterial", help: "Rotates where position 0 sits along the outline, in degrees — and where a dashed/dotted pattern starts and collapses. Keyframe 0° → 360° and the pattern marches once around the shape like a train on a loop of track; it wraps seamlessly, so 370° looks exactly like 10°." },
   strokeCapStart: { label: "Start cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the START of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point like a lifted brush. No effect on a closed shape drawn at full length (it has no free end)." },
   strokeCapEnd: { label: "End cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the END of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point. No effect on a closed shape drawn at full length (it has no free end)." },
 
