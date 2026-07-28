@@ -673,6 +673,13 @@ function drawSampledQuad(CanvasKit, canvas, img, cmd, opacity, quality) {
   const p = new CanvasKit.Paint();
   p.setAlphaf(opacity);
   if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
+  // BILINEAR (op.sampling, Round 3 #37): Linear filter + mip chain — the NEW
+  // smooth option. The DEFAULT ("nearest"/absent) keeps the exact legacy
+  // drawImageRect call byte-identically — which MEASURES as hard-edged
+  // nearest on upscale (a 2x2 checker at 100x shows a 0-px blend band), so
+  // the user's premise ("current behavior is just nearest neighbor") was
+  // right and the default is named for what it does.
+  else if (cmd.sampling === "bilinear") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
   else canvas.drawImageRect(img, src, dest, p, false);
   p.delete();
 }

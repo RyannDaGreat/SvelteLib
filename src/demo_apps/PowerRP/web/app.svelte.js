@@ -66,6 +66,11 @@ const BAND_MODE_KEY = "powerrp.bandMode";
 // clone's own references are therefore all EXTERNAL, which is exactly right —
 // the payload never said which item it came from.
 const LEGACY_CLIPBOARD_SOURCE_ID = "legacy-clipboard-payload";
+// THIS BROWSER's mirror of the last-copied element payload — the offline half of
+// the canvas clipboard (the server-side clipboard is the cross-tab authority;
+// the mirror keeps ELEMENT paste working when the backend is unreachable, so a
+// dead server never downgrades a widget copy into a flattened image paste).
+const CLIPBOARD_MIRROR_KEY = "powerrp.clipboardMirror";
 
 // Retina/HiDPI is CAMERA-ONLY (the scene-global "Rendering" bundle on THE
 // camera — core/properties.js). There is deliberately NO browser-level retina
@@ -1891,14 +1896,26 @@ export class PowerRPApp {
     const png = await this.#renderSelectionPng();
     const payload = { powerrp_items: items };
     if (png) payload.png_sig = imageSignature(png);
-    // 1. Item JSON (+ signature) → the server-side session clipboard.
+    const json = JSON.stringify(payload);
+    // 1. An IN-BROWSER MIRROR of the payload, unconditionally. The server-side
+    //    clipboard is the cross-tab authority, but with the backend down a paste
+    //    used to find ONLY the OS-clipboard PNG and insert the selection as a
+    //    flattened IMAGE widget (user-reported: "it pasted it as an image") —
+    //    the mirror keeps the ELEMENT paste working offline. Quota/privacy-mode
+    //    failures are reported, never swallowed.
     try {
-      await projectApi.setClipboard(JSON.stringify(payload));
+      localStorage.setItem(CLIPBOARD_MIRROR_KEY, json);
     } catch (e) {
-      console.error("Copy: could not reach the server-side clipboard (paste will not work until the project server is up):", e.message);
-      return; // no point writing a PNG the user can't paste back internally
+      console.error("Copy: could not write the in-browser clipboard mirror:", e.message);
     }
-    // 2. Rendered PNG → the OS clipboard (for pasting into OTHER apps). Failure
+    // 2. Item JSON (+ signature) → the server-side session clipboard (cross-tab).
+    //    Failure is loud but NOT fatal any more — the mirror covers this browser.
+    try {
+      await projectApi.setClipboard(json);
+    } catch (e) {
+      console.error("Copy: could not reach the server-side clipboard (cross-TAB paste needs the project server; this browser can still paste via the mirror):", e.message);
+    }
+    // 3. Rendered PNG → the OS clipboard (for pasting into OTHER apps). Failure
     //    is reported, not fatal — the internal paste still works.
     if (png) await this.#writeImagePngToOs(png);
   }
@@ -1948,9 +1965,16 @@ export class PowerRPApp {
     try {
       raw = await projectApi.getClipboard();
     } catch (e) {
-      console.error("Paste: could not read the server-side clipboard (is the project server up?):", e.message);
-      return null;
+      // The server is the CROSS-TAB authority; unreachable, fall back to THIS
+      // browser's mirror (written by every copy) so the element paste still
+      // works — loudly, so the degraded mode is never invisible. Without this,
+      // a paste with the backend down saw only the OS PNG and inserted the
+      // selection as a flattened IMAGE widget.
+      raw = localStorage.getItem(CLIPBOARD_MIRROR_KEY);
+      console.error(`Paste: server-side clipboard unreachable (${e.message}) — ${raw ? "using this browser's clipboard mirror (cross-tab paste needs the project server)" : "and no in-browser mirror exists; nothing to paste internally"}.`);
+      if (!raw) return null;
     }
+    if (!raw) raw = localStorage.getItem(CLIPBOARD_MIRROR_KEY); // server empty (fresh session) but this browser copied before
     if (!raw) return null;
     let payload;
     try {

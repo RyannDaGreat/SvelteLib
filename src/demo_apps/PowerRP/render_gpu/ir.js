@@ -836,10 +836,12 @@ export function text({ text: str, x, y, size, color, bold = false, opacity = 1, 
  * @example image({ref: "logo", x: 0, y: 0, w: 64, h: 64}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
  * @example image({ref: "logo", x: 0, y: 0, w: 64, h: 64, sx: 0.1, sy: 0.2, sw: 0.7, sh: 0.6}).src // {sx: 0.1, sy: 0.2, sw: 0.7, sh: 0.6}
  */
-export function image({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1 }) {
+export function image({ ref, x, y, w, h, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, sampling = "nearest" }) {
   if (typeof ref !== "string") throw new Error(`image: "ref" must be a string, got ${JSON.stringify(ref)}`);
+  if (sampling !== "nearest" && sampling !== "bilinear")
+    throw new Error(`image: "sampling" must be "nearest" or "bilinear", got ${JSON.stringify(sampling)}`);
   requireFinite("image", { x, y, w, h, opacity, sx, sy, sw, sh });
-  return { op: "image", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh) };
+  return { op: "image", ref, x, y, w, h, opacity, src: sourceRect(sx, sy, sw, sh), sampling };
 }
 
 /**

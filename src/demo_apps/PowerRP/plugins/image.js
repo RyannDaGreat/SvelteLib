@@ -83,6 +83,11 @@ export const imagePlugin = {
     // assetKinds (["image"]) and assetForm ("url") match this widget exactly,
     // so no override is needed here (unlike video/filmstrip).
     ...props("src"),
+    // SAMPLING (Round 3 #37). "Nearest" IS the long-standing behavior — the
+    // legacy draw call measures hard-edged on upscale (the user's premise was
+    // right); Bilinear is the NEW smooth option. Absent/default renders
+    // byte-identically.
+    { key: "sampling", label: "Sampling", kind: "select", options: ["nearest", "bilinear"], optionLabels: { nearest: "Nearest (crisp)", bilinear: "Bilinear (smooth)" }, category: "formatting", default: "nearest", help: "How the image's pixels are enlarged or shrunk. Nearest (the default, and the long-standing behavior) keeps every source pixel a crisp square — right for pixel art, QR codes, screenshots. Bilinear blends neighbouring pixels — right for photos that shouldn't look blocky when scaled." },
     // The stroked-BORDER bundle (manifest "SHARED STYLE BUNDLES — images and
     // videos inherit stroke/rounding at once"). No `fill` row: an image's own
     // pixels ARE its interior. The default INK stroke color is in `defaults`
@@ -124,7 +129,7 @@ export const imagePlugin = {
     const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
     if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
     const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
-    const quad = image({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+    const quad = image({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh, sampling: s.sampling ?? "nearest" });
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED image, border included.
     // The effect bbox is the CROPPED (drawn) rect — what the widget paints.
