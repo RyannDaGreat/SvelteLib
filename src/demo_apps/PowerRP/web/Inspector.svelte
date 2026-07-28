@@ -54,6 +54,7 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
+  import { commandUnavailableReason } from "../core/commands.js";
   import { isHexColor } from "../core/interpolators.js";
   import { getPath } from "../core/deltas.js";
   import { copyText } from "./clipboard.js";
@@ -375,6 +376,18 @@
   // loudly. The per-ELEMENT `=` the user asked for works through the element
   // fields' own controls inside ListField (a NumericField per coordinate/offset).
   const EQUATION_KINDS = new Set(["color", "boolean", "asset", "select", "text"]);
+
+  // The VISIBLE row's meaning, shared by the two branches that render it (the
+  // created-item row's `help`, and the not-yet-created row's label tip) so one
+  // property cannot end up explained two different ways.
+  const VISIBLE_ROW_HELP =
+    "Whether this item shows on THIS slide. It is a keyframeable boolean like any other property — hiding it keyframes active: false here, so the item can appear on some slides and not others.";
+
+  // The one ROW_KIND that is NOT a value slot: it triggers a registry command
+  // (core/properties.js "action → a command trigger, not a value slot"). Named
+  // rather than spelled inline because three separate decisions key off it — no
+  // path chrome, no keyframe diamonds, and a button instead of a field.
+  const ACTION_ROW_KIND = "action";
   // Characters of the evaluated value shown in the inline "= …" badge before it
   // is elided — a color hex (9) or a short enum fits; a long string must not
   // push the badge across the whole field.
@@ -831,7 +844,12 @@
        (keyframes:false) — plain inputs committing directly via onpreview/oncommit,
        no equations, no diamonds. -->
   {@const itemMode = keyframes && !disabled}
-  {@const pathText = pathTooltipText(pathState ?? state, itemId, row.key)}
+  <!-- An ACTION row is a command trigger, not a property: it owns no state, so
+       it has no equation path to copy and nothing to keyframe. Both affordances
+       are withheld here rather than inside valueControl, because both live in
+       THIS snippet's grid cells. -->
+  {@const isAction = rowKind(row) === ACTION_ROW_KIND}
+  {@const pathText = isAction ? null : pathTooltipText(pathState ?? state, itemId, row.key)}
   {@const helpText = row.help ?? null}
   <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
        FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
@@ -936,7 +954,7 @@
          full ["items", id, ...] path. Transitions and grayed rows have no
          diamonds; the empty span still reserves the column so value edges stay
          aligned. -->
-    {#if keyframes && !disabled}
+    {#if keyframes && !disabled && !isAction}
       <span class="kf-controls">
         <KeyframeControls {app} path={["items", itemId, ...row.key.split(".")]} />
       </span>
@@ -965,7 +983,47 @@
        one, or the two spellings render as two different things — which is
        exactly the drift this dispatcher exists to prevent. -->
   {@const kind = rowKind(row)}
-  {#if kind === "number"}
+  {#if kind === ACTION_ROW_KIND}
+    <!-- A COMMAND TRIGGER, not a value slot (core/properties.js: `action` → "a
+         command trigger, not a value slot"). Before this branch existed, an
+         action row fell through to the catch-all text `<input>` at the bottom of
+         this dispatcher: "Ungroup" rendered as an empty editable field that gave
+         no sign it was a button, and typing in it keyframed a junk `__ungroup`
+         string onto the item. So this is an EXPLANATION fix first and a
+         correctness fix second.
+
+         aria-disabled, NOT the native `disabled` attribute — the CommandPalette
+         precedent, but for a MEASURED reason rather than the one written there:
+         pointer events DO reach a natively disabled button in Chrome (so its
+         tooltip does show), but a natively disabled button is NOT FOCUSABLE, so
+         the keyboard could never reach the sentence saying why it is dead. The
+         guard therefore lives in the handler, exactly as the palette's
+         activate() does. -->
+    {@const entry = app.commands.get(row.command)}
+    {@const reason = disabled ? "a widget that exists on this slide" : commandUnavailableReason(entry, app)}
+    <!-- The tip is the command's HELP — what the click does to the document —
+         never its title, which the button's own label already shows. Falling back
+         to `entry.title` would ship the label echo this file bans ("hovering a row
+         just repeating its own label is BANNED as useless"), which is exactly what
+         the first version of this branch did: the Ungroup tip read "Ungroup". -->
+    <Tooltip>
+      {#snippet tip()}
+        {#if row.help ?? entry.help}<div>{row.help ?? entry.help}</div>{/if}
+        <!-- The WHY beneath the what, rendered only while it is actually
+             unavailable so it reads as the live reason and not a standing
+             caveat — the Toolbar / Tools pane / palette wording and class. -->
+        {#if reason}<div class="tool-tip-requires">Unavailable — requires {reason}</div>{/if}
+      {/snippet}
+      <button
+        class="btn"
+        aria-disabled={reason != null}
+        onclick={() => { if (reason == null) app.runCommand(row.command); }}
+      >
+        {#if entry.icon}<iconify-icon icon={entry.icon} width="16" height="16"></iconify-icon>{/if}
+        {row.label}
+      </button>
+    </Tooltip>
+  {:else if kind === "number"}
     {#if itemMode}
       <!-- NumericField: equation-aware (THE UNIFICATION). A number renders as
            the DraggableNumber scrubber; an equation as a monospace expression
@@ -1428,7 +1486,7 @@
             // Visible row is defined inline, not from the shared registry). Once
             // `active` moves into core/properties.js this inline help is
             // superseded by the registry's (row.help flows through unchanged).
-            help: "Whether this item shows on THIS slide. It is a keyframeable boolean like any other property — hiding it keyframes active: false here, so the item can appear on some slides and not others." },
+            help: VISIBLE_ROW_HELP },
           sel.state,
           // hoverPreview: this CREATED-item context previews without committing,
           // so its select rows may preview the option under the pointer. (The
@@ -1483,7 +1541,12 @@
         <!-- Actionable visibility row: OFF here; clicking activates the item on
              this slide (creation-state copy + active:true, one undo unit). -->
         <div class="row">
-          <Tooltip text="Visible"><span class="label">Visible</span></Tooltip>
+          <!-- The label carries the property's MEANING, never an echo of itself
+               ("hovering a row just repeating its own label is BANNED as
+               useless" — this file's own rule, above). Same sentence the
+               created-item Visible row's `help` uses, so one property reads the
+               same whichever branch renders it. -->
+          <Tooltip text={VISIBLE_ROW_HELP}><span class="label">Visible</span></Tooltip>
           <div class="boolfield">
             <Tooltip text={creationIndex != null
               ? `Not created until slide ${creationIndex + 1} — click to show it here (copies its properties onto this slide)`

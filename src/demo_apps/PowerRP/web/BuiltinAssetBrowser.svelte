@@ -101,7 +101,12 @@
             {#each cat.assets as a (a.name)}
               {@const id = builtinAssetId(a.name)}
               <div class="ae-cell">
-                <Tooltip text={`${id} — built-in ${singular(cat.label)}`}>
+                <!-- The tip names the TILE's own effect: clicking the picture copies
+                     the identifier (copyName), which only the corner button's tip
+                     used to say — so a click on the picture appeared to do nothing.
+                     It also wraps the ellipsized .ae-name label below, which used to
+                     sit outside this Tooltip and so could not be read on hover. -->
+                <Tooltip text={`${id} — built-in ${singular(cat.label)} · click to copy the name`}>
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <div class="ae-tile">
                     <AssetThumb {app} asset={a} onclick={() => copyName(a)} />
@@ -115,8 +120,8 @@
                       </button>
                     </Tooltip>
                   </div>
+                  <div class="ae-name">{id}</div>
                 </Tooltip>
-                <div class="ae-name">{id}</div>
               </div>
             {/each}
           </div>

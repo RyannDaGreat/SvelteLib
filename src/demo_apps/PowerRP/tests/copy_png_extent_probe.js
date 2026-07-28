@@ -42,7 +42,13 @@ import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
-const PY = "/opt/homebrew/opt/python@3.10/bin/python3.10";
+// The backend is launched through `uv run`, NEVER a hardcoded interpreter path:
+// this file used to pin /opt/homebrew/opt/python@3.10/bin/python3.10, which made
+// the probe die with ENOENT on any machine that is not the author's Mac — so it
+// was permanently red in the gate on Linux. `uv run` is the dump's rule (a wiped
+// container still works) and the idiom tests/browser_render_harness.js already uses.
+const PY = "uv";
+const PY_ARGS = ["run", "server.py"];
 
 function freePort() {
   return new Promise((res, rej) => {
@@ -65,7 +71,7 @@ async function waitFor(url, tries = 60) {
 
 const projectsRoot = mkdtempSync(join(tmpdir(), "powerrp_copy_extent_"));
 const backendPort = await freePort();
-const server = spawn(PY, ["server.py", "serve", `--port=${backendPort}`], {
+const server = spawn(PY, [...PY_ARGS, "serve", `--port=${backendPort}`], {
   cwd: join(APP_DIR, "server"),
   env: { ...process.env, POWERRP_PROJECTS_DIR: projectsRoot },
   stdio: ["ignore", "inherit", "inherit"],

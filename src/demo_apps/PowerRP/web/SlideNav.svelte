@@ -192,38 +192,66 @@
           </button>
         </Tooltip>
       {/if}
-      <button
-        class="slide"
-        class:current={i === app.slideIndex}
-        class:disabled={slide.enabled === false}
-        onclick={() => (app.slideIndex = i)}
-      >
-        <span class="row-top">
-          <span class="num">{i + 1}</span>
-          <span class="name">{slide.name}</span>
-          <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
-            <span
-              class="eye"
-              role="button"
-              tabindex="-1"
-              onclick={(e) => { e.stopPropagation(); app.toggleSlide(i); }}
-              onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); app.toggleSlide(i); } }}
-            >
-              <iconify-icon icon={slide.enabled === false ? "mdi:eye-off" : "mdi:eye"} width="14" height="14"></iconify-icon>
-            </span>
-          </Tooltip>
-        </span>
-        {#if thumbAspect(i)}
-          <DirtyImage
-            class="thumb"
-            render={renderThumb(i)}
-            dirtyKey={publishedKeys[i]}
-            schedule={thumbScheduler.request}
-            aspect={thumbAspect(i)}
-            alt={`Slide ${i + 1} preview`}
-          />
-        {/if}
-      </button>
+      <!-- THE ROW OWES EXPLANATION and gave none: it had no tooltip and no :hover
+           rule at all, so the filmstrip's primary navigation surface read as inert.
+           Three things were unreadable. (1) The NAME ellipsizes (app.css
+           .slidenav .name), so a long slide name could not be read anywhere.
+           (2) A DISABLED slide renders as bare opacity: 0.5 with nothing saying what
+           "disabled" means — its delta is SKIPPED when the deltas are folded, so
+           every later slide inherits as though it were not there. That is exactly
+           the mystery-grey control the palette/Tools-pane `requires` rule exists to
+           kill. (3) The incoming transition is already computed for the slice above;
+           naming it here costs nothing.
+           It owes NO canvas PREVIEW, deliberately: the thumbnail already IS the
+           slide's preview, and swapping the main canvas on an incidental traverse of
+           the rail would fight the thumbRenderPaused gesture discipline this file's
+           header spends thirty lines on. -->
+      <Tooltip>
+        {#snippet tip()}
+          <!-- The NAME alone, not "Slide {i+1}: {name}": the number is visible in
+               the row two pixels away, and default names already read "Slide N", so
+               the prefixed form rendered "Slide 1: Slide 1" — a doubled echo. A
+               name-only line is the Open Project card's precedent (App.svelte), and
+               it is information whenever the label is ellipsized. -->
+          <div>{slide.name}</div>
+          {#if i > 0}{@const info = transitionInfo(i)}<div>Transition in: {info.title} · {info.seconds}s</div>{/if}
+          {#if slide.enabled === false}
+            <div class="tool-tip-requires">Disabled — its delta is skipped, so later slides inherit as if it were not here</div>
+          {/if}
+        {/snippet}
+        <button
+          class="slide"
+          class:current={i === app.slideIndex}
+          class:disabled={slide.enabled === false}
+          onclick={() => (app.slideIndex = i)}
+        >
+          <span class="row-top">
+            <span class="num">{i + 1}</span>
+            <span class="name">{slide.name}</span>
+            <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
+              <span
+                class="eye"
+                role="button"
+                tabindex="-1"
+                onclick={(e) => { e.stopPropagation(); app.toggleSlide(i); }}
+                onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); app.toggleSlide(i); } }}
+              >
+                <iconify-icon icon={slide.enabled === false ? "mdi:eye-off" : "mdi:eye"} width="14" height="14"></iconify-icon>
+              </span>
+            </Tooltip>
+          </span>
+          {#if thumbAspect(i)}
+            <DirtyImage
+              class="thumb"
+              render={renderThumb(i)}
+              dirtyKey={publishedKeys[i]}
+              schedule={thumbScheduler.request}
+              aspect={thumbAspect(i)}
+              alt={`Slide ${i + 1} preview`}
+            />
+          {/if}
+        </button>
+      </Tooltip>
     {/each}
   </div>
   <div class="nav-actions">

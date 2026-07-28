@@ -27,6 +27,7 @@
 -->
 <script module>
   import { humanReadableFileSize } from "./fileSize.js";
+  import { relativeMtime } from "./projectPreviews.js";
 
   /**
    * Pure function. Integer percent of a pending upload (0–100), or null when the
@@ -65,6 +66,65 @@
     const pct = uploadPercent(loaded, total);
     if (pct === null) return humanReadableFileSize(loaded);
     return `${pct}% · ${humanReadableFileSize(loaded)} / ${humanReadableFileSize(total)}`;
+  }
+
+  /**
+   * Pure function. An asset tile's hover sentence: name, kind, the two gestures
+   * the tile answers to, and the SIZE + AGE the server already sends in the same
+   * listing object. `size`/`mtime` appear nowhere else in the UI, so this tip is
+   * the only place a near-identical pair of files can be told apart.
+   *
+   * A missing size or mtime DROPS its clause rather than printing a placeholder —
+   * the projectMetaLine convention (web/projectPreviews.js).
+   *
+   * @param {{name:string, kind:string, size?:number, mtime?:number}} a - one listAssets entry
+   * @param {number} nowMs - current time in MILLISECONDS, for the relative age
+   * @returns {string}
+   *
+   * @example
+   * // A 25.8MB video modified two hours ago:
+   * // assetTip({name:"clip.mp4", kind:"video", size:27100000, mtime:0}, 2*3600*1000)
+   * // => 'clip.mp4 — video · 25.8MB · 2 hours ago — drag onto the canvas to insert at a point, or double-click to preview'
+   * @example
+   * // A listing with no metadata still names the gestures:
+   * // assetTip({name:"x.png", kind:"image"}, 0)
+   * // => 'x.png — image — drag onto the canvas to insert at a point, or double-click to preview'
+   */
+  export function assetTip(a, nowMs) {
+    const facts = [a.kind];
+    if (a.size != null) facts.push(humanReadableFileSize(a.size));
+    if (a.mtime != null) facts.push(relativeMtime(a.mtime, nowMs));
+    return `${a.name} — ${facts.join(" · ")} — drag onto the canvas to insert at a point, or double-click to preview`;
+  }
+
+  /**
+   * Pure function. The trash can's hover sentence, which must distinguish the
+   * button's TWO OUTCOMES — because it has two and they are not equally
+   * recoverable. onTrashClick deletes IMMEDIATELY when nothing references the
+   * asset (a server-side delete: no confirmation, no undo) and asks first when
+   * something does. One flat "Delete asset from the project" left the user unable
+   * to tell which of those a click was about to do, and the unguarded branch is
+   * the destructive one.
+   *
+   * @param {string} name - the asset's filename
+   * @param {number} users - how many widgets reference it
+   * @returns {string}
+   *
+   * @example
+   * // Nothing uses it: the click is immediate and final, and says so.
+   * // deleteTip("clip.mp4", 0)
+   * // => 'Delete "clip.mp4" — nothing in this deck uses it, so it goes immediately. This cannot be undone.'
+   * @example
+   * // Something uses it: a confirmation is coming, so the click is safe to try.
+   * // deleteTip("logo.png", 3)
+   * // => 'Delete "logo.png" — 3 widgets use it, so you will be asked to confirm first.'
+   * @example
+   * // deleteTip("logo.png", 1) // => '… — 1 widget uses it, so you will be asked to confirm first.'
+   */
+  export function deleteTip(name, users) {
+    if (users === 0)
+      return `Delete "${name}" — nothing in this deck uses it, so it goes immediately. This cannot be undone.`;
+    return `Delete "${name}" — ${users} ${users === 1 ? "widget uses" : "widgets use"} it, so you will be asked to confirm first.`;
   }
 
   /**
@@ -130,6 +190,7 @@
   let uploading = $state(false);
   let preview = $state(null); // {name, kind, url} being previewed in the Modal
   let previewOpen = $state(false);
+  let listedNowMs = $state(Date.now()); // captured per listing, for the tiles' relative-age tip
 
   // How long the copy-path button flashes its "Copied!" check after a
   // successful copy; `justCopiedUrl` is the asset URL currently flashing (null
@@ -141,6 +202,23 @@
   let confirmDelete = $state(null);
   let confirmOpen = $state(false);
   let fileInput; // hidden <input type=file> for the Upload button
+
+  // HOW MANY WIDGETS USE EACH ASSET — asset name → user count, recomputed ONCE
+  // PER COMMIT and read per tile.
+  //
+  // WHY A DERIVED AND NOT A CALL IN THE TOOLTIP EXPRESSION: assetUsers walks
+  // every slide × every item in that slide's delta, so calling it per tile per
+  // render would make the pane's cost (tiles × slides × items) and put it on the
+  // hover path. Hovering must be FREE (the manifest's hover invariant, and the
+  // defect behind the minimap drag spike). app.doc's identity flips on every
+  // commit and only then, so this is one pass per document change — the same
+  // per-commit-not-per-move discipline CommandPalette uses for `when`.
+  let assetUserCounts = $derived.by(() => {
+    const doc = app.doc;
+    const counts = new Map();
+    for (const a of assets ?? []) counts.set(a.name, assetUsers(doc, a.name, a.url).length);
+    return counts;
+  });
 
   /** Query. Absolute (proxy-aware) URL for an asset's served path. */
   function urlOf(a) {
@@ -161,6 +239,10 @@
     loading = true;
     error = null;
     try {
+      // Captured once per LISTING, not read live per tooltip — the Open Project
+      // modal's openNowMs precedent (web/App.svelte). A relative age that
+      // recomputed on every render would make every tile tooltip a fresh string.
+      listedNowMs = Date.now();
       assets = await app.listProjectAssets();
       // A finished ("done") optimistic tile is dropped here — once, and only
       // once its REAL tile is present in this fresh listing — so the swap has
@@ -423,8 +505,17 @@
                  is deliberately NOT a shortcut-registry entry (that bar announces
                  the canvas context), so this tip is the only thing that can teach
                  it — and an unannounced double-click is exactly the defect the
-                 canvas half of this pass fixed. -->
-            <Tooltip text={`${a.name} (${a.kind}) — drag onto the canvas to insert at a point, or double-click to preview`}>
+                 canvas half of this pass fixed.
+                 IT ALSO CARRIES SIZE + AGE, which the server already sends in the
+                 same listing object (server.py: {name, size, mtime, kind, url}).
+                 They cost nothing to show and answer "which of these near-identical
+                 files is the one I want" — and this tip is the only place they
+                 appear anywhere in the app.
+                 THE TOOLTIP WRAPS THE WHOLE CELL, not just .ae-tile: .ae-name is
+                 ellipsized (app.css), so hovering a truncated name — the most
+                 natural way to try to read a truncated name — used to give nothing,
+                 because the label sat outside this wrapper. -->
+            <Tooltip text={assetTip(a, listedNowMs)}>
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="ae-tile" draggable="true" ondragstart={(e) => onTileDragStart(e, a)}>
                 <!-- Generalized tile media + badge (manifest #25): image/video
@@ -459,7 +550,10 @@
                     <iconify-icon icon={justCopiedUrl === a.url ? "mdi:check" : "mdi:content-copy"} width="14" height="14"></iconify-icon>
                   </button>
                 </Tooltip>
-                <Tooltip text="Delete asset from the project">
+                <!-- The tip states WHICH of the trash can's two outcomes a click
+                     will take (see deleteTip): an unreferenced asset is deleted
+                     immediately and irreversibly, a referenced one asks first. -->
+                <Tooltip text={deleteTip(a.name, assetUserCounts.get(a.name) ?? 0)}>
                   <button
                     class="btn-icon ae-trash"
                     aria-label={`Delete ${a.name}`}
@@ -469,8 +563,8 @@
                   </button>
                 </Tooltip>
               </div>
+              <div class="ae-name">{a.name}</div>
             </Tooltip>
-            <div class="ae-name">{a.name}</div>
           </div>
         {/each}
       </div>

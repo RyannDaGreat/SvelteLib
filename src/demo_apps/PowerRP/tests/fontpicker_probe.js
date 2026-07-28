@@ -601,6 +601,93 @@ try {
   await sleep(400);
   assert((await docJson()) === baseDoc, "EXACTLY ONE undo restores a JSON-equal document (one undo unit, no hover spam)");
 
+  // ── (8) THE REST OF THE TOOLBAR PREVIEWS TOO ─────────────────────────────────
+  // The FontPicker was the ONLY control wired to onstylepreview/onstylepreviewend;
+  // Bold/Italic/Underline/Strike and the size steppers were handed the same seam
+  // and ignored it. Same fixture, same crop, same measured thresholds as (7) — so
+  // these assertions are directly comparable with the font ones above and cost no
+  // new machinery.
+  //
+  // Hovering here must NOT dismiss edit mode, so every step keeps the pointer on
+  // toolbar chrome or the parked NEUTRAL point; the toolbar's own pointerleave is
+  // what reverts, which is precisely what 8b measures.
+
+  /** Command. Moves the pointer onto a toolbar button by aria-label and lets the
+   *  hover settle. Real pointer moves, not synthetic events — a dispatched
+   *  pointerenter would not exercise the browser's own hit-testing. */
+  const hoverToolbar = async (label) => {
+    const box = await page.evaluate((l) => {
+      const b = document.querySelector(`.text-format-toolbar button[aria-label="${l}"]`);
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, label);
+    if (!box) return false;
+    await page.mouse.move(box.x, box.y);
+    await page.mouse.move(box.x + 1, box.y);
+    await sleep(280);
+    return true;
+  };
+
+  await enterEditSelectAll();
+  await page.mouse.move(NEUTRAL.x, NEUTRAL.y);
+  await sleep(250);
+  const tbBase = await shot("10_toolbar_base");
+  const tbBaseDoc = await docJson();
+  assert(
+    await page.evaluate(() => window.__powerrp_app.previewDelta === null && !window.__powerrp_app.transientPreview),
+    "TOOLBAR BASELINE IS CLEAN — no preview staged before the toolbar comparisons begin"
+  );
+
+  // (8a) Hovering a toggle repaints the canvas and leaves the document alone.
+  for (const label of ["Bold", "Italic", "Underline", "Strikethrough", "Increase size"]) {
+    assert(await hoverToolbar(label), `the toolbar exposes a "${label}" button to hover`);
+    const m = mad(tbBase, await shot(`11_hover_${label.toLowerCase().replace(/ /g, "_")}`));
+    assert(m >= CHANGED_MIN, `HOVERING "${label}" REPAINTS THE CANVAS (mad=${m.toFixed(3)} >= ${CHANGED_MIN.toFixed(3)})`);
+    assert((await docJson()) === tbBaseDoc, `hovering "${label}" leaves the document byte-identical`);
+    assert(
+      await page.evaluate(() => typeof window.__powerrp_app.transientPreview === "function"),
+      `hovering "${label}" stages the preview as TRANSIENT (a click-away cannot commit it)`
+    );
+  }
+
+  // (8b) LEAVING THE TOOLBAR REVERTS — measured, against the same baseline.
+  await page.mouse.move(NEUTRAL.x, NEUTRAL.y);
+  await sleep(300);
+  const leaveMad = mad(tbBase, await shot("12_after_toolbar_leave"));
+  assert(leaveMad <= SAME_MAX, `LEAVING THE TOOLBAR REVERTS the preview (mad=${leaveMad.toFixed(3)} <= ${SAME_MAX.toFixed(3)})`);
+  assert((await docJson()) === tbBaseDoc, "leaving the toolbar left the document exactly as it was");
+  assert(
+    await page.evaluate(() => window.__powerrp_app.previewDelta === null && !window.__powerrp_app.transientPreview),
+    "leaving the toolbar leaves NO preview staged behind (a bare hover creates no pending edit)"
+  );
+
+  // (8c) The toggle's LIT state keeps reporting the COMMITTED value while a hover
+  // previews the opposite — the "two states need two readings" invariant. Without
+  // it the button would light up on hover and be indistinguishable from committed.
+  const litState = () => page.evaluate(() =>
+    document.querySelector('.text-format-toolbar button[aria-label="Bold"]')?.getAttribute("aria-pressed"));
+  const litBefore = await litState();
+  await hoverToolbar("Bold");
+  assert(
+    (await litState()) === litBefore,
+    `the Bold button keeps reporting the COMMITTED state while hovered (aria-pressed stayed ${litBefore}) — hover is distinguishable from committed`
+  );
+  await page.mouse.move(NEUTRAL.x, NEUTRAL.y);
+  await sleep(280);
+
+  // (8d) CLICKING a toggle commits, and exactly ONE undo restores the document.
+  await hoverToolbar("Bold");
+  await page.evaluate(() => document.querySelector('.text-format-toolbar button[aria-label="Bold"]').click());
+  await sleep(300);
+  await page.evaluate(() => window.__powerrp_app.dismissEdit());
+  await sleep(450);
+  const boldCommitted = await docJson();
+  assert(boldCommitted !== tbBaseDoc, "clicking Bold COMMITS a change to the document");
+  await page.evaluate(() => window.__powerrp_app.undo());
+  await sleep(400);
+  assert((await docJson()) === tbBaseDoc, "EXACTLY ONE undo restores a JSON-equal document after a hover-then-click on Bold");
+
   if (errors.length) console.error("PAGE ERRORS:\n" + errors.join("\n"));
   console.log(`\n${fails.length ? "FAILED: " + fails.length : "PASS"} — FontPicker probe (shots in .claude_vlm_checks/fontpicker_*.png)`);
   process.exitCode = fails.length || errors.length ? 1 : 0;

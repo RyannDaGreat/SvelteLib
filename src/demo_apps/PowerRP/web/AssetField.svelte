@@ -399,13 +399,17 @@
     <div class="ae-grid">
       {#each filteredAssets as a (a.name)}
         <div class="ae-cell">
-          <Tooltip text={a.name}>
+          <!-- The tip says what the CLICK does and wraps the ellipsized label, so
+               this tile is no weaker than its identical twin in the Asset Explorer.
+               It was `text={a.name}` — a label echo of the .ae-name directly below
+               it (banned), which also never mentioned that clicking picks. -->
+          <Tooltip text={`${a.name} (${a.kind}) — click to use it for ${label}`}>
             <div class="ae-tile">
               <!-- Same generalized media + badge as the Asset Explorer (#25). -->
               <AssetThumb {app} asset={a} onclick={() => pick(a)} />
             </div>
+            <div class="ae-name">{a.name}</div>
           </Tooltip>
-          <div class="ae-name">{a.name}</div>
         </div>
       {/each}
     </div>

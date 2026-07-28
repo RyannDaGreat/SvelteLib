@@ -95,11 +95,63 @@
 
   function setAlign(align) { onparastyle({ align }); }
 
-  function toggle(key) { onstyle({ [key]: common[key] === true ? false : true }); }
-  function stepSize(delta) {
-    const base = common.size ?? 36;
-    onstyle({ size: Math.max(1, base + delta) });
+  // HOVER PREVIEWS WHAT THE CLICK WOULD DO. Every control below routes its
+  // WRITE through the pure *Delta helpers in <script module>, and its HOVER
+  // through the same helper into onstylepreview — so the previewed thing and the
+  // committed thing are the same delta by construction, not by two people
+  // remembering to keep two expressions in step.
+  //
+  // The seam was already passed in (onstylepreview/onstylepreviewend, props
+  // above) and reached only the FontPicker; every other control ignored it. The
+  // controller's previewStyleOnSelection re-applies from a captured base, so
+  // hovering Bold then Italic previews Italic alone rather than compounding, and
+  // stages the value as app.transientPreview so a click-away mid-hover commits
+  // the real value rather than the one merely pointed at.
+  // WHOSE PREVIEW IS STAGED — a PLAIN (non-$state) bridge variable, written and
+  // read imperatively and never driving a re-render: the CanvasToolbar/
+  // CommandPalette `previewing`/`previewedId` convention.
+  //
+  // IT IS LOAD-BEARING, and measured. There is exactly ONE preview slot, and this
+  // toolbar has TWO things that stage into it: these buttons, and the FontPicker
+  // NESTED INSIDE IT, which owns its own preview lifecycle (its own leave, close
+  // and unmount all revert). A bare `onpointerleave={onstylepreviewend}` on the
+  // toolbar root therefore became a second, coarser owner of the same slot and
+  // reverted the FONT preview out from under the picker: with it wired that way,
+  // fontpicker_probe's "HOVER REPAINTS THE CANVAS" fell from mad=53.272 to
+  // mad=0.000 while the arrow-key path — which never crosses the toolbar edge —
+  // kept working. So the leave reverts ONLY a preview these buttons staged, and
+  // the FontPicker's own preview claims the slot away from them (below).
+  let previewing = false;
+
+  function toggle(key) { previewing = false; onstyle(toggleDelta(common, key)); }
+  function previewToggle(key) { previewing = true; onstylepreview(toggleDelta(common, key)); }
+  function stepSize(delta) { previewing = false; onstyle(sizeDelta(common.size, delta, DEFAULT_SIZE)); }
+  function previewStepSize(delta) { previewing = true; onstylepreview(sizeDelta(common.size, delta, DEFAULT_SIZE)); }
+
+  /** Command. Stages a FONT preview and takes OWNERSHIP of the slot from the
+   *  buttons, so a later toolbar-leave cannot revert the picker's preview. Last
+   *  writer owns — one rule, no two-owner ambiguity. */
+  function previewFont(id) { previewing = false; onstylepreview({ font: id }); }
+
+  /** Command. Reverts a preview THESE BUTTONS staged; a no-op when the slot is
+   *  owned by the nested FontPicker or by nothing at all. Safe to call from any
+   *  leave/teardown path unconditionally. */
+  function endOwnPreview() {
+    if (!previewing) return;
+    previewing = false;
+    onstylepreviewend();
   }
+
+  // ONE leave handler, on the toolbar ROOT rather than per button: moving between
+  // neighbouring buttons fires the next one's pointerenter, which overwrites the
+  // stage without a revert flickering in between. The GradientPresetPicker rule
+  // ("pointerleave on the GRID, not each swatch"), applied to a button row.
+  //
+  // AND an unmount revert: this toolbar disappears the moment text edit exits or
+  // the selection changes, which fires no pointerleave at all — the same reason
+  // FontPicker and GradientPresetPicker both revert on teardown.
+  $effect(() => () => endOwnPreview());
+
   // Keep focus in the editor: swallow mousedown on the toolbar chrome.
   function keepFocus(e) { e.preventDefault(); }
 </script>
@@ -109,24 +161,25 @@
   class="text-format-toolbar"
   style:transform="scale({1 / boxScale})"
   onmousedown={keepFocus}
+  onpointerleave={endOwnPreview}
 >
   <Tooltip text="Bold (Cmd+B)">
-    <button class="btn-icon" class:active={common.bold === true} aria-pressed={common.bold === true} aria-label="Bold" onclick={() => toggle("bold")}>
+    <button class="btn-icon" class:active={common.bold === true} aria-pressed={common.bold === true} aria-label="Bold" onpointerenter={() => previewToggle("bold")} onclick={() => toggle("bold")}>
       <iconify-icon icon="mdi:format-bold" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
   <Tooltip text="Italic (Cmd+I)">
-    <button class="btn-icon" class:active={common.italic === true} aria-pressed={common.italic === true} aria-label="Italic" onclick={() => toggle("italic")}>
+    <button class="btn-icon" class:active={common.italic === true} aria-pressed={common.italic === true} aria-label="Italic" onpointerenter={() => previewToggle("italic")} onclick={() => toggle("italic")}>
       <iconify-icon icon="mdi:format-italic" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
   <Tooltip text="Underline (Cmd+U)">
-    <button class="btn-icon" class:active={common.underline === true} aria-pressed={common.underline === true} aria-label="Underline" onclick={() => toggle("underline")}>
+    <button class="btn-icon" class:active={common.underline === true} aria-pressed={common.underline === true} aria-label="Underline" onpointerenter={() => previewToggle("underline")} onclick={() => toggle("underline")}>
       <iconify-icon icon="mdi:format-underline" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
   <Tooltip text="Strikethrough">
-    <button class="btn-icon" class:active={common.strike === true} aria-pressed={common.strike === true} aria-label="Strikethrough" onclick={() => toggle("strike")}>
+    <button class="btn-icon" class:active={common.strike === true} aria-pressed={common.strike === true} aria-label="Strikethrough" onpointerenter={() => previewToggle("strike")} onclick={() => toggle("strike")}>
       <iconify-icon icon="mdi:format-strikethrough" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
@@ -155,13 +208,18 @@
   <span class="text-format-sep"></span>
 
   <Tooltip text="Decrease size (Cmd+Minus)">
-    <button class="btn-icon" aria-label="Decrease size" onclick={() => stepSize(-SIZE_STEP)}>
+    <button class="btn-icon" aria-label="Decrease size" onpointerenter={() => previewStepSize(-SIZE_STEP)} onclick={() => stepSize(-SIZE_STEP)}>
       <iconify-icon icon="mdi:format-font-size-decrease" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
-  <span class="text-format-size">{common.size ?? "—"}</span>
+  <!-- The readout's "—" is the INDETERMINATE state (the selection spans more than
+       one size), which nothing on screen said. The stepper still works on it: it
+       steps from DEFAULT_SIZE, which is what the tip promises. -->
+  <Tooltip text={common.size != null ? `${common.size}px` : `Mixed sizes in the selection — the steppers work from ${DEFAULT_SIZE}px`}>
+    <span class="text-format-size">{common.size ?? "—"}</span>
+  </Tooltip>
   <Tooltip text="Increase size (Cmd+Plus)">
-    <button class="btn-icon" aria-label="Increase size" onclick={() => stepSize(SIZE_STEP)}>
+    <button class="btn-icon" aria-label="Increase size" onpointerenter={() => previewStepSize(SIZE_STEP)} onclick={() => stepSize(SIZE_STEP)}>
       <iconify-icon icon="mdi:format-font-size-increase" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
@@ -178,7 +236,7 @@
       options={fonts}
       value={common.font ?? "system"}
       onchange={(v) => onstyle({ font: v })}
-      onpreview={(v) => onstylepreview({ font: v })}
+      onpreview={previewFont}
       onpreviewend={onstylepreviewend}
     />
   </div>
@@ -230,4 +288,54 @@
   // Default outline width when enabling outline via the color popover with no
   // width yet set (a sensible visible stroke; the user tunes it with the slider).
   const DEFAULT_OUTLINE_W = 1.5;
+
+  // The size a stepper counts from when the selection has NO common size (mixed
+  // runs, or a run that never set one). Matches the text plugin's own default so
+  // stepping an unset selection lands where the unstepped text already renders.
+  const DEFAULT_SIZE = 36;
+
+  /**
+   * Pure function. The run-style delta a boolean control would WRITE — the single
+   * source of that answer, so a control's hover preview and its click commit
+   * cannot disagree about what the control does. Two hand-written copies of
+   * "invert this key" is exactly how a preview starts showing something the click
+   * does not do.
+   *
+   * @param {Object} common - the selection's common style values (undefined = mixed)
+   * @param {string} key - a boolean run-style key ("bold", "italic", …)
+   * @returns {Object} a one-key run-style delta
+   *
+   * @example
+   * // The selection is entirely bold, so the control turns bold OFF:
+   * toggleDelta({ bold: true }, "bold") // => { bold: false }
+   * @example
+   * // Not bold, or MIXED (undefined) — either way the control turns it ON, the
+   * // PowerPoint convention for an indeterminate toggle.
+   * toggleDelta({ bold: false }, "bold")     // => { bold: true }
+   * @example toggleDelta({ bold: undefined }, "bold") // => { bold: true }
+   */
+  export function toggleDelta(common, key) {
+    return { [key]: common[key] === true ? false : true };
+  }
+
+  /**
+   * Pure function. The run-style delta a size stepper would write: the common
+   * size nudged by `delta`, floored at 1px so repeated shrinking can never reach
+   * 0. `fallback` stands in when the selection has no common size.
+   *
+   * @param {number|undefined} size - the selection's common size, or undefined when mixed
+   * @param {number} delta - px to add (negative to shrink)
+   * @param {number} fallback - size to step from when `size` is undefined
+   * @returns {{size:number}}
+   *
+   * @example sizeDelta(36, 2, 36)  // => { size: 38 }
+   * @example sizeDelta(36, -2, 36) // => { size: 34 }
+   * @example
+   * // Mixed sizes step from the fallback, so the control still does something:
+   * sizeDelta(undefined, 2, 36) // => { size: 38 }
+   * @example sizeDelta(2, -2, 36) // => { size: 1 }  (floored, never 0)
+   */
+  export function sizeDelta(size, delta, fallback) {
+    return { size: Math.max(1, (size ?? fallback) + delta) };
+  }
 </script>

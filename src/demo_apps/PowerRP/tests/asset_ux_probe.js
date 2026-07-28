@@ -37,7 +37,13 @@ import puppeteer from "puppeteer";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
 const REPO_ROOT = resolve(HERE, "../../../..");
-const PY = "/opt/homebrew/opt/python@3.10/bin/python3.10";
+// The backend is launched through `uv run`, NEVER a hardcoded interpreter path:
+// this file used to pin /opt/homebrew/opt/python@3.10/bin/python3.10, which made
+// the probe die with ENOENT on any machine that is not the author's Mac — so it
+// was permanently red in the gate on Linux. `uv run` is the dump's rule (a wiped
+// container still works) and the idiom tests/browser_render_harness.js already uses.
+const PY = "uv";
+const PY_ARGS = ["run", "server.py"];
 const PROJECT = "assetux_probe";
 
 // A 1x1 red PNG (smallest valid PNG — the paste_upload_probe.js precedent,
@@ -83,7 +89,7 @@ try {
 
   // ── Ephemeral Python project server ────────────────────────────────────────
   const backendPort = await freePort();
-  pyServer = spawn(PY, ["server.py", "serve", `--port=${backendPort}`], {
+  pyServer = spawn(PY, [...PY_ARGS, "serve", `--port=${backendPort}`], {
     cwd: join(APP_DIR, "server"),
     env: { ...process.env, POWERRP_PROJECTS_DIR: projectsRoot },
     stdio: ["ignore", "inherit", "inherit"],
@@ -111,7 +117,13 @@ try {
   await page.setViewport({ width: 1440, height: 900 });
   const uploadRequests = [];
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  page.on("console", (m) => { if (m.type() === "error") errors.push(`console.error: ${m.text()}`); });
+  // WebGPU is absent on a GPU-less box (this container has no /dev/dri), and the
+  // video_v7 widget REPORTS that and falls back — a working fallback, not a probe
+  // failure. Without this the probe dies at boot on any GPU-less machine, which is
+  // the stale-console-filter failure mode tests/run_all.mjs's header calls out.
+  // Same clause fontpicker_probe.js already carries.
+  const IGNORE_CONSOLE = /WebGPU|VideoV7/i;
+  page.on("console", (m) => { if (m.type() === "error" && !IGNORE_CONSOLE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
   page.on("request", (req) => { if (req.url().includes("/api/upload/")) uploadRequests.push(req.url()); });
 
   // Boot straight into the seeded project: an autosave doc whose meta.name
@@ -138,6 +150,63 @@ try {
   if (aeNotice) errors.push(`[1] Asset Explorer shows an error notice on boot: ${aeNotice}`);
   if (aeTileCount !== 1) errors.push(`[1] BOOT-LOAD FAILED: expected 1 asset tile auto-loaded, found ${aeTileCount}`);
   else console.log("[1] BOOT-LOAD ok: the seeded project's asset appeared with zero manual Refresh clicks");
+
+  // ── CHECK 1b: THE TILE'S HOVER FEEDBACK ────────────────────────────────────
+  // Hover feedback is universal, not a feature (manifest ruling). This tile owes
+  // EXPLANATION, and the three things it withheld were: the metadata the server
+  // ALREADY sends (size, mtime), the full name when .ae-name ellipsizes, and —
+  // on the trash can — WHICH of its two outcomes a click would take.
+  //
+  // Real pointer moves, not page.hover(): Tooltip anchors on pointermove.
+  const hoverTip = async (selector) => {
+    const at = await page.evaluate((s) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    }, selector);
+    if (!at) return null;
+    await page.mouse.move(20, 20);
+    await new Promise((r) => setTimeout(r, 120));
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.move(at.x + 1, at.y);
+    await new Promise((r) => setTimeout(r, 320));
+    return page.evaluate(() => document.querySelector(".tt-tip")?.textContent.trim().replace(/\s+/g, " ") ?? null);
+  };
+  const docBeforeHover = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
+
+  const tileTip = await hoverTip(".asset-explorer .ae-tile");
+  if (tileTip == null) errors.push("[1b] hovering the asset tile showed NO tooltip");
+  else {
+    if (!tileTip.includes("seed.png")) errors.push(`[1b] the tile tip omits the asset NAME: ${tileTip}`);
+    if (!/\d+(\.\d+)?[KMGT]?B/.test(tileTip)) errors.push(`[1b] the tile tip omits the SIZE the server already sends: ${tileTip}`);
+    if (!/ago|now|in \d/.test(tileTip)) errors.push(`[1b] the tile tip omits the relative MTIME the server already sends: ${tileTip}`);
+    if (!/double-click/.test(tileTip)) errors.push(`[1b] the tile tip stopped naming the double-click gesture: ${tileTip}`);
+    if (!errors.length) console.log(`[1b] TILE TIP ok: ${tileTip}`);
+  }
+
+  // The ellipsized NAME LABEL must be covered too — it used to sit OUTSIDE the
+  // tile's Tooltip, so hovering a truncated name to read it gave nothing.
+  const nameTip = await hoverTip(".asset-explorer .ae-name");
+  if (nameTip == null || !nameTip.includes("seed.png"))
+    errors.push(`[1b] hovering the truncated .ae-name label gives no full name: ${nameTip}`);
+  else console.log("[1b] NAME-LABEL TIP ok: the ellipsized label is inside the tile's tooltip");
+
+  // The trash can has TWO outcomes and they are not equally recoverable. Nothing
+  // references the seeded asset, so this click deletes IMMEDIATELY — and must say so.
+  await page.hover(".asset-explorer .ae-tile"); // reveal the hover-only corner buttons
+  const trashTip = await hoverTip(".asset-explorer .ae-trash");
+  if (trashTip == null) errors.push("[1b] hovering the trash can showed NO tooltip");
+  else {
+    if (!trashTip.includes("seed.png")) errors.push(`[1b] the trash tip does not name WHAT would be destroyed: ${trashTip}`);
+    if (!/nothing in this deck uses it/i.test(trashTip)) errors.push(`[1b] the trash tip does not say the asset is unreferenced: ${trashTip}`);
+    if (!/cannot be undone/i.test(trashTip)) errors.push(`[1b] the trash tip does not warn that this branch is irreversible: ${trashTip}`);
+    else console.log(`[1b] TRASH TIP ok: ${trashTip}`);
+  }
+
+  if ((await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc))) !== docBeforeHover)
+    errors.push("[1b] HOVERING MUTATED THE DOCUMENT — the document must never change from a hover");
+  else console.log("[1b] the document is byte-identical after every hover above");
 
   // ── CHECK 2: DELETE end-to-end via the real Asset Explorer trash-can flow ──
   await page.hover(".asset-explorer .ae-tile");
