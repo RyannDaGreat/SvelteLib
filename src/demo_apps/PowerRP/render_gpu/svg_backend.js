@@ -515,6 +515,18 @@ export async function emitRegionSVG(commands, region, out, ctx) {
  * on the parent). Registered through ctx.addDef like the lens clipPaths.
  * Until then this raster path keeps SVG export CORRECT for every effect.
  *
+ * A CONSTRAINT ON THAT UPGRADE — OVERDRIVEN SHADOWS. shadow.opacity has no
+ * ceiling (core/properties.js) and above 1 it is a COVERAGE MULTIPLIER, not an
+ * alpha; `flood-opacity`, `fill-opacity` and `opacity` are all specified in
+ * [0, 1], so the sketched feFlood spelling CANNOT express it and would clamp
+ * silently. The raster path below has no such problem — the multiplier is
+ * applied by the rasterizer and its saturated result is baked into the <image>
+ * pixels — so an overdriven shadow must either stay raster or be expressed as a
+ * saturating transfer on the blurred alpha (feComponentTransfer type="linear"
+ * slope=opacity on the alpha channel, which clamps at 1 per channel exactly as
+ * the renderer's colour matrix does) BEFORE the feFlood composite. Feeding the
+ * raw opacity to flood-opacity is the one forbidden option.
+ *
  * WHY THERE IS NO vectorSafeEffects BRANCH HERE (and what guards it instead):
  * pdf_backend gates its vector-preserving branch on the shared
  * vectorSafeEffects predicate; V1 SVG has no such branch — it rasters EVERY

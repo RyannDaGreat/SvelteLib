@@ -43,7 +43,7 @@
 import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
-import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
+import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
 import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
@@ -1079,8 +1079,10 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
   const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma, region);
 
   // (3) soft drop shadow UNDER the panel (drawn AFTER the backdrop images so it
-  // never bleeds into the refracted backdrop the shader samples).
-  drawGlassShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, angle, cmd.materialize, cmd.shadowStrength);
+  // never bleeds into the refracted backdrop the shader samples). Its silhouette
+  // is the SHADER'S OWN curve, so a relaxed or squircled panel does not cast a
+  // rounded-rectangle shadow.
+  drawGlassShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, cmd.squircle, cmd.surfaceTension, angle, cmd.materialize, cmd.shadowStrength);
 
   // (4) the glass shader — children {blurred, sharp}.
   const effect = glassEffect(CanvasKit);
@@ -1095,6 +1097,7 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
     squircle: cmd.squircle, sheen: cmd.sheen, specPower: cmd.specularPower,
     contactShadow: cmd.contactShadow, caustic: cmd.caustic, edgeLight: cmd.edgeLight,
     adaptivity: cmd.tintAdaptivity, chromatic: cmd.chromatic,
+    surfaceTension: cmd.surfaceTension,
   });
   const glass = effect.makeShaderWithChildren(uniforms, [blurChild, sharpChild]);
   if (!glass) throw new Error("paintIR(skia): glass makeShaderWithChildren returned null");
@@ -1115,7 +1118,7 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
   bd.blurred.delete(); bd.sharp.delete();
 
   // (5) optional bright hairline border on top (local space, rotation-safe).
-  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, ctx.antialias);
+  drawGlassOutlineBorder(CanvasKit, canvas, cmd, view, world, opacity, ctx.antialias, sd);
 }
 
 /**
@@ -1348,13 +1351,31 @@ function blurredImageOf(CanvasKit, ctx, img, sigma, w, h) {
 }
 
 /**
- * Command (draws on `canvas` at the device root). A soft, diffuse drop shadow
- * under the glass panel: a blurred dark rounded-rect, offset DOWN in screen space
- * (light from above), darkness = `strength`, fading in with `materialize`.
- * Rotation-safe (the box is rotated about the offset center; the screen-space
- * downward offset is applied before the rotation so the shadow stays below).
+ * Query→build (allocates a CanvasKit Path — caller deletes). The glass region's
+ * BOUNDARY as a closed path, from the shader's own curve (glass_shader.js
+ * glassOutlinePoints). Every non-shader draw of this widget's silhouette — the
+ * hairline stroke, the drop shadow, the thumbnail stand-in — goes through here,
+ * so none of them can be a second, differently-curved rounded rectangle.
+ *
+ * `unitScale` is how many DEVICE px one unit of the passed geometry covers; it
+ * only sizes the sampling, so callers working in device px pass 1. The curve is
+ * generated about the origin and translated onto (cx, cy) here.
  */
-function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle, materialize, strength) {
+function glassOutlinePath(CanvasKit, cx, cy, halfW, halfH, cornerRadius, squircle, surfaceTension, unitScale) {
+  const pts = glassOutlinePoints(halfW, halfH, cornerRadius, squircle, surfaceTension, unitScale);
+  return buildPath(CanvasKit, pts.map(([x, y]) => [x + cx, y + cy]), true);
+}
+
+/**
+ * Command (draws on `canvas` at the device root). A soft, diffuse drop shadow
+ * under the glass panel: a blurred dark silhouette of the panel's OWN boundary
+ * curve, offset DOWN in screen space (light from above), darkness = `strength`,
+ * fading in with `materialize`. Rotation-safe (the shape is rotated about the
+ * offset center; the screen-space downward offset is applied before the rotation
+ * so the shadow stays below). Geometry is already in device px, so the outline
+ * sampling scale is 1.
+ */
+function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, squircle, surfaceTension, angle, materialize, strength) {
   const appear = Math.min(1, Math.max(0, materialize / GLASS_SHADOW_APPEAR_END));
   if (appear <= 0 || strength <= 0 || halfW <= 0 || halfH <= 0) return;
   const sigma = halfH * GLASS_SHADOW_SIGMA_FRAC;
@@ -1366,10 +1387,36 @@ function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle,
   canvas.save();
   canvas.translate(cx, cy + dy);
   canvas.rotate(angle * RAD2DEG, 0, 0);
-  const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(-halfW, -halfH, halfW, halfH), corner, corner);
-  canvas.drawRRect(rr, p);
+  const path = glassOutlinePath(CanvasKit, 0, 0, halfW, halfH, corner, squircle, surfaceTension, 1);
+  canvas.drawPath(path, p);
+  path.delete();
   canvas.restore();
   p.delete();
+}
+
+/**
+ * Command (draws the optional bright hairline border in local space — the glass
+ * edge catch-light). Same seam as drawGlassBorder, but stroked along the SHADER'S
+ * boundary curve rather than a circular rounded rect, which is what keeps the
+ * stroke from cutting a chord across a squircled or relaxed corner. `unitScale`
+ * (world length → device px) sizes the outline sampling to the on-screen size.
+ *
+ * WHY NOT just fix drawGlassBorder: that helper is shared with materialBackdrop
+ * and materialFill, whose shaders all use a plain p=2 sdRoundRect, so RRectXY is
+ * the RIGHT shape there. Liquid Glass is the only widget whose region is a
+ * squircle, and now the only one whose region can relax, so it is the only one
+ * that needs this.
+ */
+function drawGlassOutlineBorder(CanvasKit, canvas, cmd, view, world, opacity, aa, unitScale) {
+  if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
+  canvas.save();
+  applyView(canvas, view, world);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa);
+  const path = glassOutlinePath(CanvasKit, cmd.cx, cmd.cy, cmd.halfW, cmd.halfH, cmd.cornerRadius, cmd.squircle, cmd.surfaceTension, unitScale);
+  canvas.drawPath(path, p);
+  path.delete();
+  p.delete();
+  canvas.restore();
 }
 
 /** Command (draws the optional bright hairline border in local space — the glass
@@ -1968,8 +2015,12 @@ function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, ang
  * fast direct path, so the below-content is already painted here). Runs NONE of the
  * expensive machinery a ~100px thumbnail cannot show — no composite-so-far read, no
  * below-content re-render, no full-screen blur, no SkSL, no dither. Dispatches by op:
- *   - glassBackdrop    → a translucent frost rounded-rect (the panel's own tint, or
- *                        the shared faint white) + its hairline border.
+ *   - glassBackdrop    → a translucent frost fill of the panel's OWN boundary curve
+ *                        (the panel's tint, or the shared faint white) + its
+ *                        hairline border. It is the one op here whose region is
+ *                        not a p=2 rounded rect, and at high surface tension the
+ *                        difference is the difference between an ellipse and a
+ *                        rectangle — far too big for a stand-in to paper over.
  *   - materialBackdrop → the MATERIAL'S OWN overlay tint + its border
  *                        (materials.resolveProxyBackdrop: the material's
  *                        `proxyBackdrop(params)` if it declares one, else the same
@@ -1984,20 +2035,24 @@ function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, ang
  * The overlays land ON TOP of the real backdrop content, so the region reads as a
  * sensible preview, never a hole. `ctx` supplies the camera coverage-AA flag.
  *
- * CHEAPNESS IS THE CONTRACT: every branch is at most one drawRRect plus a border
- * stroke. No offscreen surface, no SkSL, no per-pixel pass — that is what the proxy
- * path buys, and a stand-in that did real work would defeat it.
+ * CHEAPNESS IS THE CONTRACT: every branch is at most one filled region plus a
+ * border stroke. No offscreen surface, no SkSL, no per-pixel pass — that is what
+ * the proxy path buys, and a stand-in that did real work would defeat it. Glass
+ * fills a sampled path rather than an RRect, which is still one draw call and a
+ * few hundred points of arithmetic, orders below the SkSL it stands in for.
  */
 function drawProxyBackdrop(CanvasKit, canvas, cmd, view, world, ctx) {
   const opacity = cmd.opacity ?? 1;
   const aa = ctx.antialias;
   if (cmd.op === "blurBackdrop") return; // no geometry; the sharp content beneath is the proxy
   if (cmd.op === "magnifyBackdrop") { drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); return; }
-  // glass / material: a translucent overlay rounded-rect in the panel's LOCAL space
+  // glass / material: a translucent overlay region in the panel's LOCAL space
   // (applyView — rotation-safe, the same seam drawGlassBorder uses).
-  const tint = cmd.op === "materialBackdrop"
-    ? resolveProxyBackdrop(getMaterial(cmd.material), cmd.params)
-    : (cmd.tint ? parseColor(cmd.tint) : DEFAULT_PROXY_BACKDROP_TINT);
+  const glass = cmd.op === "glassBackdrop";
+  const unitScale = world.scale * view.zoom * view.dpr; // world length → device px (sizes the outline sampling)
+  const tint = glass
+    ? (cmd.tint ? parseColor(cmd.tint) : DEFAULT_PROXY_BACKDROP_TINT)
+    : resolveProxyBackdrop(getMaterial(cmd.material), cmd.params);
   const materialize = cmd.materialize ?? 1; // glass fades in with materialize; a material has none ⇒ full
   const a = tint[3] * opacity * materialize;
   if (a > 0 && cmd.halfW > 0 && cmd.halfH > 0) {
@@ -2007,12 +2062,21 @@ function drawProxyBackdrop(CanvasKit, canvas, cmd, view, world, ctx) {
     p.setStyle(CanvasKit.PaintStyle.Fill);
     p.setAntiAlias(aa);
     p.setColor(CanvasKit.Color4f(tint[0], tint[1], tint[2], a));
-    const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
-    canvas.drawRRect(rr, p);
+    if (glass) {
+      const path = glassOutlinePath(CanvasKit, cmd.cx, cmd.cy, cmd.halfW, cmd.halfH, cmd.cornerRadius, cmd.squircle, cmd.surfaceTension, unitScale);
+      canvas.drawPath(path, p);
+      path.delete();
+    } else {
+      const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
+      canvas.drawRRect(rr, p);
+    }
     p.delete();
     canvas.restore();
   }
-  drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); // glass + material both carry stroke/strokeWidth
+  // glass + material both carry stroke/strokeWidth; only glass's border follows a
+  // squircle, so only glass takes the outline path.
+  if (glass) drawGlassOutlineBorder(CanvasKit, canvas, cmd, view, world, opacity, aa, unitScale);
+  else drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa);
 }
 
 /**
@@ -2310,15 +2374,39 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
   }
 
   // SHADOW (under): blurred, offset, tinted alpha silhouette of the content.
+  //
+  // COVERAGE DRIVE = the shadow colour's own alpha × the opacity property, and it
+  // is NOT capped at 1 (core/properties.js "SHADOW OPACITY HAS NO CEILING"). Up
+  // to 1 it rides the TINT's alpha, exactly as it always has, so every in-range
+  // document's shadow pixels are unchanged to the byte. Above 1 an 8-bit tint
+  // cannot carry it (SkColor4f pins alpha at 1 — which is why the old `max: 1`
+  // was self-fulfilling: values above it rendered identically to 1), so the tint
+  // saturates and the WHOLE drive rides a coverageDriveFilter on the drop
+  // shadow's OUTPUT instead. Both spellings compute min(1, coverage·drive): the
+  // solid core is already at the shadow colour and cannot move, the penumbra is
+  // driven up, and the falloff hardens.
   if (cmd.shadow) {
     const c = cmd.shadow.color;
-    const tint = CanvasKit.Color4f(c[0], c[1], c[2], c[3] * cmd.shadow.opacity);
+    const drive = c[3] * cmd.shadow.opacity;
+    const tint = CanvasKit.Color4f(c[0], c[1], c[2], Math.min(1, drive));
     const sig = cmd.shadow.blur * scale;
-    const filt = CanvasKit.ImageFilter.MakeDropShadowOnly(cmd.shadow.dx * scale, cmd.shadow.dy * scale, sig, sig, tint, null);
+    const shadowFilt = CanvasKit.ImageFilter.MakeDropShadowOnly(cmd.shadow.dx * scale, cmd.shadow.dy * scale, sig, sig, tint, null);
+    // The overdrive node is added ONLY when it does something — the same
+    // "don't pay for an identity stage" shape as bloomFilter's `sigma > 0` blur.
+    // It also keeps the ≤ 1 path bit-exact: the extra filter node costs one more
+    // 8-bit round trip, which measured as a ±1 byte shift on a soft penumbra.
+    let filt = shadowFilt;
+    if (drive > 1) {
+      const cf = coverageDriveFilter(CanvasKit, drive);
+      filt = CanvasKit.ImageFilter.MakeColorFilter(cf, shadowFilt);
+      cf.delete();
+    }
     const p = new CanvasKit.Paint();
     p.setImageFilter(filt);
     canvas.drawImage(contentImg, region.x0, region.y0, p);
-    p.delete(); filt.delete();
+    p.delete();
+    if (filt !== shadowFilt) filt.delete();
+    shadowFilt.delete();
   }
 
   if (!cmd.shadowOnly) {
@@ -2780,11 +2868,72 @@ function drawInnerShadow(CanvasKit, canvas, contentImg, inner, scale, ctx, origi
   clip.dispose();
 
   // (3) draw over the widget at colorAlpha·opacity, at the region's origin.
+  // The paint alpha carries the drive up to 1 (SkPaint::setAlphaf pins there, so
+  // it cannot carry more); above 1 the rest rides a coverageDriveFilter, whose
+  // post-matrix clamp gives the same min(1, coverage·drive) the drop shadow uses
+  // — the recess's soft inward fade is driven to full strength, reading as a
+  // harder, deeper cut. Measured byte-identical to the bare paint alpha for every
+  // drive ≤ 1, so the filter is installed only when it does something.
   const out = new CanvasKit.Paint();
   out.setAlphaf(Math.max(0, Math.min(1, alpha)));
+  if (alpha > 1) {
+    const cf = coverageDriveFilter(CanvasKit, alpha);
+    out.setColorFilter(cf);
+    cf.delete();
+  }
   canvas.drawImage(innerImg, originX, originY, out);
   out.delete();
   innerImg.delete();
+}
+
+/**
+ * Pure function. A 4×5 colour matrix in SkColorFilters::Matrix row-major form
+ * (which operates on UNPREMULTIPLIED colour) that scales RGB by `rgb` and alpha
+ * by `alpha` and adds nothing. Skia clamps every channel to [0, 1] AFTER the
+ * matrix, which is exactly what makes a scale ABOVE 1 a saturating DRIVE rather
+ * than an overflow: the channel becomes min(1, channel·scale).
+ *
+ * ONE builder for the file's two drives — bloom's RGB over-glow and the
+ * shadows' coverage overdrive — because they are the same matrix with the scale
+ * in a different row, and the effects bundle already treats them as the same
+ * gesture (core/properties.js: bloom.strength "higher over-glows",
+ * shadow.opacity above 1 overdrives).
+ *
+ * @param rgb (number) colour scale; 1 leaves colour untouched
+ * @param alpha (number) coverage scale; 1 leaves coverage untouched
+ * @returns number[] the 20 matrix entries
+ *
+ * @example channelScaleMatrix(1, 1) // the identity: [1,0,0,0,0, 0,1,0,0,0, 0,0,1,0,0, 0,0,0,1,0]
+ * @example channelScaleMatrix(2, 1).slice(0, 5) // [2, 0, 0, 0, 0] (bloom's ×2 over-glow, coverage untouched)
+ * @example channelScaleMatrix(1, 3).slice(15) // [0, 0, 0, 3, 0] (a ×3 coverage overdrive, colour untouched)
+ */
+function channelScaleMatrix(rgb, alpha) {
+  return [
+    rgb, 0, 0, 0, 0,
+    0, rgb, 0, 0, 0,
+    0, 0, rgb, 0, 0,
+    0, 0, 0, alpha, 0,
+  ];
+}
+
+/**
+ * Query→build. THE COVERAGE OVERDRIVE filter: scales coverage (alpha) by
+ * `drive` and leaves colour alone, so a `drive` above 1 pushes partially covered
+ * pixels toward full coverage and (through Skia's post-matrix clamp) leaves
+ * already-solid ones exactly where they were. Caller deletes.
+ *
+ * This is how a shadow opacity above 1 reaches the pixels at all. The obvious
+ * spellings CANNOT carry it, all three by construction: folding it into the
+ * tint colour hits SkColor4f's pin at 1, Paint.setAlphaf pins at 1, and an
+ * 8-bit alpha channel has no room above 1 in the first place — so the value has
+ * to arrive as a MULTIPLIER applied to the composite, which is a colour filter.
+ * Measured: without this, opacity 1.5 / 3 / 255 / 1e6 were byte-identical to 1
+ * (render_gpu/tests/shadow_overdrive_test.js pins that they no longer are).
+ *
+ * @param drive (number) coverage multiplier (> 1 to overdrive)
+ */
+function coverageDriveFilter(CanvasKit, drive) {
+  return CanvasKit.ColorFilter.MakeMatrix(channelScaleMatrix(1, drive));
 }
 
 /**
@@ -2794,13 +2943,7 @@ function drawInnerShadow(CanvasKit, canvas, contentImg, inner, scale, ctx, origi
  * deletes.
  */
 function bloomFilter(CanvasKit, sigma, strength) {
-  const s = strength;
-  const cf = CanvasKit.ColorFilter.MakeMatrix([
-    s, 0, 0, 0, 0,
-    0, s, 0, 0, 0,
-    0, 0, s, 0, 0,
-    0, 0, 0, 1, 0,
-  ]);
+  const cf = CanvasKit.ColorFilter.MakeMatrix(channelScaleMatrix(strength, 1));
   const blur = sigma > 0 ? CanvasKit.ImageFilter.MakeBlur(sigma, sigma, CanvasKit.TileMode.Decal, null) : null;
   const filt = CanvasKit.ImageFilter.MakeColorFilter(cf, blur);
   cf.delete();

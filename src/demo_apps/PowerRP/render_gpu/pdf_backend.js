@@ -1031,6 +1031,19 @@ async function emitRegion(commands, region, out, ctx) {
  *     shadowOnly through the GPU rasterizer — same pixels as the editor)
  *     embeds as one raster XObject placed under the widget; the widget's own
  *     content then stays fully VECTOR (text stays text).
+ *     WHY THIS IS ALSO WHAT LETS AN OVERDRIVEN SHADOW EXPORT AT ALL, and a
+ *     constraint on anyone who "upgrades" it: shadow.opacity has NO ceiling
+ *     (core/properties.js), and above 1 it is a COVERAGE MULTIPLIER, not an
+ *     alpha. PDF's only alpha spellings are the /CA /ca ExtGState pair and they
+ *     are specified in [0, 1], so an overdriven shadow has no /ca form — but it
+ *     needs none: the multiplier is APPLIED BY THE RASTERIZER and its saturated
+ *     result is already baked into this PNG's pixels, so a 3.0 shadow exports
+ *     exactly as the editor draws it. A future vector-shadow path (a soft mask
+ *     plus a filled silhouette under a /ca) MUST NOT feed shadow.opacity into
+ *     gsAlphaPair: PDF would clamp it to 1 and the export would silently
+ *     disagree with the editor, which is exactly the failure mode this module's
+ *     droppedRasterOnlyEffects guard exists to make impossible. Either keep the
+ *     raster, or bake the saturation into the mask before writing /ca.
  *   BLOOM — the widget becomes a hybrid raster region (spec: "documented;
  *     loud, deliberate"): widget + bloom render together over transparency
  *     and embed as one PNG. KNOWN DIVERGENCE (documented): inside the raster

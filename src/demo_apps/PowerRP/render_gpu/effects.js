@@ -124,6 +124,12 @@ export const EFFECT_STATE_KEYS = ["shadow", "bloom", "blendMode", "innerShadow",
  * VISIBLE shadow: a crisp, hard-edged tinted offset silhouette (no softening).
  * Only opacity turns the shadow on/off.
  *
+ * THE GATE IS ONE-SIDED — `> 0`, with NO upper test, and that is now load-bearing
+ * rather than incidental: shadow/innerShadow opacity have no ceiling
+ * (core/properties.js "SHADOW OPACITY HAS NO CEILING"), so an OVERDRIVEN shadow
+ * (opacity above 1, driving the penumbra to full coverage) is simply an on
+ * shadow here and rides the same effectSubtree unchanged.
+ *
  * Args:
  *   state (object): evaluated widget state (shadow/bloom/blendMode read here)
  *
@@ -135,6 +141,7 @@ export const EFFECT_STATE_KEYS = ["shadow", "bloom", "blendMode", "innerShadow",
  * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 4, color: "#000", opacity: 0}}) // true (opacity 0 paints nothing)
  * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 0, color: "#000", opacity: 0.5}}) // false (blur 0 but opacity>0 = a HARD-edged shadow, visible)
  * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 4, color: "#000", opacity: 0.5}}) // false
+ * @example effectsOff({shadow: {dx: 3, dy: 3, blur: 4, color: "#000", opacity: 3}}) // false (an OVERDRIVEN shadow is just an on shadow — there is no upper gate)
  * @example effectsOff({bloom: {radius: 10, strength: 0.8}}) // false
  * @example effectsOff({bloom: {radius: 10, strength: 0}}) // true (strength 0 = bloom off)
  * @example effectsOff({blendMode: "multiply"}) // false
@@ -187,6 +194,7 @@ export function effectsOff(state) {
  *
  * @example applyEffects([{op: "rect"}], {}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10}) // [{op: "rect"}] (all off → pass-through)
  * @example applyEffects([{op: "rect"}], {shadow: {dx: 3, dy: 3, blur: 4, color: "#000000", opacity: 0.5}}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].op // "effectSubtree"
+ * @example applyEffects([{op: "rect"}], {shadow: {dx: 3, dy: 3, blur: 4, color: "#000000", opacity: 3}}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].shadow.opacity // 3 (an OVERDRIVEN opacity passes through UNCAPPED to the renderer)
  * @example applyEffects([{op: "rect"}], {blendMode: "multiply"}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].blend // "multiply"
  * @example applyEffects([{op: "rect"}], {softEdges: 6}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].softEdges // 6 (soft edges alone wraps in an effectSubtree)
  */
@@ -234,8 +242,20 @@ export function applyEffects(content, state, world, bbox) {
  * (one line); core/view.js multiplies by node.world.scale to inflate the
  * conservative AABB.
  *
+ * OPACITY IS DELIBERATELY ABSENT FROM THE MARGIN, and that survives an
+ * OVERDRIVEN shadow (opacity above 1 — core/properties.js). Overdrive is a
+ * coverage MULTIPLIER, so the obvious worry is that it makes a previously
+ * negligible blur tail visible and the halo too small. It cannot: coverage is
+ * stored in an 8-bit channel, and a Gaussian-blurred edge's profile
+ * ½·erfc(d/(σ√2)) is 0.00135 at d = 3σ = BLUR_SUPPORT_SIGMAS·σ, which quantizes
+ * to byte 0 — a pixel holding zero coverage stays zero under any multiplier. The
+ * saturated shadow's visible edge lands where the byte first reaches 1, at
+ * ½·erfc(d/(σ√2)) = 0.5/255 ⇒ d ≈ 2.89σ, INSIDE the existing margin. So the
+ * halo is right for every opacity and needs no opacity term.
+ *
  * @example effectsCullMargin({}) // 0
  * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 0.5}}) // 11 (3·2 blur spill + 5 offset length)
+ * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 3}}) // 11 (an OVERDRIVEN shadow needs no wider halo — see above)
  * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 0, color: "#000", opacity: 0.5}}) // 5 (blur 0 = no spill, but the offset silhouette still reaches 5)
  * @example effectsCullMargin({bloom: {radius: 5, strength: 1}}) // 15 (3·5 bloom spill)
  * @example effectsCullMargin({blendMode: "multiply"}) // 0 (blend alone adds no halo)

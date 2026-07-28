@@ -821,11 +821,56 @@ export const PROPS = {
   // with_drop_shadow's blur=10 default (the same Gaussian-sigma family; rp
   // r.py:5002). Blur/radius are Gaussian SIGMAS in world units — the
   // blurBackdrop radius convention (render_gpu/ir.js).
+  //
+  // SHADOW OPACITY HAS NO CEILING (user verbatim: "It should be possible to have
+  // a shadow opacity greater than 1. Like, why not? The alpha blending equation
+  // would allow it, wouldn't it?" / "lift the shadow opacity ceiling"). It is a
+  // COVERAGE MULTIPLIER, not an alpha byte: the render half computes the final
+  // coverage as min(1, colorAlpha · opacity · silhouetteCoverage), so past 1 the
+  // shadow OVERDRIVES — the fully covered core is already at the shadow colour
+  // and cannot change, while the soft penumbra is driven to full strength, which
+  // HARDENS the falloff. Same gesture, same mechanism and the same open-topped
+  // declaration as `bloom.strength` right below ("higher over-glows"): a
+  // colour-matrix scale on the effect composite, ceiling-free, min 0 only. The
+  // old `max: 1` was an invented bound AND (until this round) a lie: the value
+  // was folded into an 8-bit tint alpha that pinned at 1, so anything above it
+  // was byte-identical to 1 — see render_gpu/skia/paint_skia.js
+  // handleEffectSubtree / drawInnerShadow for the mechanism and the proof gate
+  // in render_gpu/tests/shadow_overdrive_test.js.
+  //
+  // WHY NOT CLAMP AT THE SATURATION POINT. There IS a real one: coverage lives
+  // in an 8-bit alpha channel, so its smallest non-zero value is 1/255 and any
+  // multiplier ≥ 255 drives EVERY reachable pixel to full coverage — 255 and
+  // 1e6 render byte-identically, and 254 does NOT (both measured, and both
+  // asserted in shadow_overdrive_test.js). That bound is a property of the
+  // current render target's bit depth, not of the document, so baking it into
+  // the file format's schema would be writing a device detail into the data.
+  // Above it the knob is idempotent, which is a no-op and not a failure, so
+  // there is nothing to report either (it is also keyframable and equation-
+  // driven — an animation ramping past it must not spam the console).
+  //
+  // The bound the RENDERER does care about is the cull halo, and it needs no
+  // change: overdrive cannot push visible shadow past BLUR_SUPPORT_SIGMAS·σ
+  // (render_gpu/ir.js) because a Gaussian edge profile ½·erfc(d/(σ√2)) at 3σ is
+  // 0.00135, which QUANTIZES TO BYTE 0 in the coverage channel — a pixel storing
+  // zero coverage can never be resurrected by any multiplier. The saturated
+  // shadow's visible edge lands at ≈2.9σ (where the byte first reaches 1), just
+  // inside the existing margin.
+  //
+  // Both opacity rows declare `scrub: UNIT_SPAN_SCRUB` — the documented cost of
+  // freeing a normalized row of its bounds (that constant's own docstring: "so
+  // freeing a row of its bounds costs nothing in tactile behavior"). It
+  // reproduces EXACTLY the sensitivity the removed `max` used to imply, since
+  // NumericField derived (max − min)/RANGE_DRAG_PX = 1/100 = UNIT_SPAN_SCRUB;
+  // without it a 0-default unbounded row falls back to 1 unit/px and the control
+  // would flick 0↔1 in a single pixel (src/lib/numberStep.js's doctrine — a
+  // 0 default is "doubly mute" there and nothing can rescue it but a declared
+  // scrub).
   "shadow.dx": { label: "Shadow X", kind: "number", category: "effects", default: 0, help: "How far the drop shadow shifts horizontally, in canvas units (positive is right). The shadow appears once Shadow opacity is above zero." },
   "shadow.dy": { label: "Shadow Y", kind: "number", category: "effects", default: 0, help: "How far the drop shadow shifts vertically, in canvas units (positive is down). The shadow appears once Shadow opacity is above zero." },
   "shadow.blur": { label: "Shadow blur", kind: "number", min: 0, category: "effects", default: 0, help: "How soft the drop shadow is (Gaussian blur amount, canvas units). Zero is a crisp, hard-edged shadow — the shadow is on whenever Shadow opacity is above zero, softness is separate." },
   "shadow.color": { label: "Shadow color", kind: "color", category: "effects", default: "#000000", help: "The drop shadow's color — classically black, but any color works (a colored glow-like shadow, for instance)." },
-  "shadow.opacity": { label: "Shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0, help: "How dark the drop shadow is, from 0 (invisible — NO shadow, the default) to 1 (fully solid shadow color). This is the shadow's on/off gate: raise it above 0 to turn the shadow on." },
+  "shadow.opacity": { label: "Shadow opacity", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "effects", default: 0, help: "How dark the drop shadow is: 0 is invisible (NO shadow — the default) and 1 is the fully solid shadow color. NO UPPER CAP — above 1 the shadow OVERDRIVES: the solid core cannot get darker, but the soft penumbra is driven to full strength too, so the falloff hardens (past about 255 nothing more can change — every pixel the shadow reaches is already solid). This is the shadow's on/off gate: raise it above 0 to turn the shadow on." },
   "bloom.radius": { label: "Bloom radius", kind: "number", min: 0, category: "effects", default: 10, help: "How far the bloom glow spreads (Gaussian blur amount, canvas units). Takes effect once Bloom strength is above zero." },
   "bloom.strength": { label: "Bloom strength", kind: "number", min: 0, category: "effects", default: 0, help: "How bright the glow is: a blurred copy of the widget added on top of itself. Zero means NO bloom; 1 adds a full-brightness copy; higher over-glows." },
 
@@ -846,11 +891,16 @@ export const PROPS = {
   // so every old document renders byte-identically), innerShadow.blur default 0
   // is LEGAL AND VISIBLE (opacity>0, blur 0 = a hard-edged inset silhouette),
   // color black (the with_drop_shadows(color='black') precedent).
+  //
+  // AND THE SAME OPEN TOP: innerShadow.opacity is likewise a ceiling-free
+  // coverage multiplier, for the same reason and by the same mechanism as
+  // shadow.opacity (the long note above it is the ONE home for that reasoning —
+  // read it there). Mirrored here in one line rather than restated.
   "innerShadow.dx": { label: "Inner shadow X", kind: "number", category: "effects", default: 0, help: "How far the inner shadow shifts horizontally, in canvas units (positive is right). The inner shadow appears once Inner shadow opacity is above zero." },
   "innerShadow.dy": { label: "Inner shadow Y", kind: "number", category: "effects", default: 0, help: "How far the inner shadow shifts vertically, in canvas units (positive is down). The inner shadow appears once Inner shadow opacity is above zero." },
   "innerShadow.blur": { label: "Inner shadow blur", kind: "number", min: 0, category: "effects", default: 0, help: "How soft the inner shadow is (Gaussian blur amount, canvas units). Zero is a crisp inset edge; the inner shadow is on whenever Inner shadow opacity is above zero, softness is separate." },
   "innerShadow.color": { label: "Inner shadow color", kind: "color", category: "effects", default: "#000000", help: "The inner shadow's color — classically black for a recessed look, but any color works (a colored inner glow, for instance)." },
-  "innerShadow.opacity": { label: "Inner shadow opacity", kind: "number", min: 0, max: 1, category: "effects", default: 0, help: "How dark the inner shadow is, from 0 (invisible — NO inner shadow, the default) to 1 (fully solid). This is its on/off gate: raise it above 0 to turn the inner shadow on." },
+  "innerShadow.opacity": { label: "Inner shadow opacity", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "effects", default: 0, help: "How dark the inner shadow is: 0 is invisible (NO inner shadow — the default) and 1 is fully solid. NO UPPER CAP — above 1 it OVERDRIVES, driving the soft inward fade to full strength so the recess reads as a harder, deeper cut (past about 255 nothing more can change). This is its on/off gate: raise it above 0 to turn the inner shadow on." },
   // Options + labels come from BLEND_MODES / BLEND_MODE_LABELS at the top of this
   // file (THE one home — render_gpu/ir.js imports the same list for its op
   // validation, so the two can no longer disagree). Photoshop's full layer-blend
