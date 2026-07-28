@@ -41,6 +41,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { CUSTOM_CATEGORY } from "../core/properties.js";
+import { reportOnce } from "../core/report.js";
 import { isEquationValue, numericPropertyPaths, evaluateState } from "../core/expressions.js";
 import { createRegistry, presetFamiliesOf } from "../core/registry.js";
 import { newDocument, withNewItem, withNewSlide, keyframed, foldState, tweenedState } from "../core/document.js";
@@ -49,7 +50,7 @@ import { registerAll } from "../plugins/index.js";
 import { getMaterial, resolveProxyFill, isBackdropMaterial, materialIds } from "../render_gpu/skia/materials.js";
 import {
   mandelbrotPlugin, cachedOrbit, cachedPalette, rampOf, approxCentre, paletteCycles,
-  zoomTweenLam, zoomTweenAxis, splitCentreText, parseSplitCentre,
+  zoomTweenLam, zoomTweenAxis, splitCentreText, parseSplitCentre, referenceExhaustionRisk, REFERENCE_EXHAUSTION_REPORT,
 } from "../plugins/demo/mandelbrot.js";
 import {
   MANDELBROT_ESCAPE_RADIUS,
@@ -789,17 +790,104 @@ test("NO SHIPPED PRESET TRIPS THE WIDGET'S OWN REPORTS", () => {
   // that reference loses the per-pixel offset in single precision and the frame goes
   // FLAT. The deep Misiurewicz preset holds its budget just under 792 for exactly
   // this reason, and this test is what keeps it there.
-  const EXHAUSTION_SAFE_DECADES = 6;
   const COARSE_RESOLUTION_DECADES = centreResolutionDecades(0);
   for (const p of family("location")) {
     const s = evaluatedPreset(p);
     assert.ok(s.zoomExponent <= COARSE_RESOLUTION_DECADES,
       `"${p.name}" zooms to 1e-${s.zoomExponent}, past what the centre resolves at fine exponent ${s.fineExponent}`);
     const ref = cachedOrbit(s);
-    const exhausted = ref.count < MANDELBROT_REF_LEN && s.maxIterations > ref.count && s.zoomExponent > EXHAUSTION_SAFE_DECADES;
-    assert.equal(exhausted, false,
+    // THE WIDGET'S OWN PREDICATE, not a copy of it. This test used to re-declare
+    // EXHAUSTION_SAFE_DECADES and re-type the expression, so a change to the bound
+    // could pass here while the shipped report disagreed.
+    assert.equal(referenceExhaustionRisk(s, ref), false,
       `"${p.name}" asks for ${s.maxIterations} iterations on a reference of ${ref.count} at 1e-${s.zoomExponent} — the frame can go flat`);
   }
+});
+
+test("THE EXHAUSTION REPORT NAMES NO PER-FRAME VALUE, so a zoom tween reports it ONCE", () => {
+  // THE DEFECT THIS PINS, from a real 540-frame server render of a deck that zooms to
+  // 1e-7.7 on an escaping centre. 112 of those frames satisfied the predicate, each
+  // with its own escape index (91..409), its own zoom and its own budget (52 distinct
+  // values) — and because a server job renders on N BROWSERS, i.e. N independent
+  // reportOnce memories, the job's warning came back holding EIGHT paragraphs of the
+  // same problem. server.py's merged_warning deduplicates the worker's report BY
+  // LINE, so the only thing that collapses them is a text that does not vary. That is
+  // what this test asserts: the line may not contain the escape index, the
+  // instantaneous zoom exponent or the iteration budget.
+  //
+  // It bites on the OLD text, which read "escapes after 120 of 1024 iterations but Max
+  // iterations is 2048, at a zoom of 1e-6.420616081593235 ... lower Max iterations to
+  // 120" — every one of those numbers is per frame.
+  const s = stateOf({
+    centerX: -1.7664077932234896, centerY: -0.04174011936160731, centerFineX: 0, centerFineY: 0,
+    fineExponent: 0, zoomExponent: 6.420616081593235, maxIterations: 2048,
+  });
+  const ref = cachedOrbit(s);
+  assert.equal(referenceExhaustionRisk(s, ref), true, "this state must TRIP the report, or the test proves nothing");
+  const ops = mandelbrotPlugin.emit(s);
+  assert.equal(ops.length, 1, "the widget must still render — a short reference is not a failure");
+  // WHAT emit() PRINTED, without depending on test order. reportOnce's memory is
+  // process-wide, so an earlier emit() in this file may already have consumed the key
+  // and a console capture here can legitimately see nothing. Claiming the key instead
+  // is exact: after any emit() on a tripping state it is TAKEN, so this returns false.
+  // Had emit() interpolated a per-frame value, the constant's own key would still be
+  // unclaimed and this would return true — and print.
+  const orig = console.error;
+  const seen = [];
+  console.error = (...args) => seen.push(args.join(" "));
+  let claimed;
+  try { claimed = reportOnce(REFERENCE_EXHAUSTION_REPORT); } finally { console.error = orig; }
+  assert.equal(claimed, false, `emit() never printed REFERENCE_EXHAUSTION_REPORT verbatim — it printed some other text, so the report is still per-frame`);
+  assert.deepEqual(seen, [], "claiming an already-taken key must be silent");
+  const line = REFERENCE_EXHAUSTION_REPORT;
+  for (const [what, value] of [["the reference's escape index", ref.count], ["the zoom exponent", s.zoomExponent], ["the iteration budget", s.maxIterations]]) {
+    assert.ok(!new RegExp(`(^|[^0-9.])${value}([^0-9.]|$)`).test(line),
+      `the report quotes ${what} (${value}) — that value changes on every frame of a zoom, so the job warning gets one copy per render worker:\n${line}`);
+  }
+  // THE NOTATION. The old text built its depth as `1e-${s.zoomExponent}` and printed
+  // "1e-6.420616081593235" — an `1e` glued to a logarithm, which is not a number
+  // anyone can read or type. The per-frame loop above already refuses that exact
+  // value; this pins the readable form that replaced it.
+  assert.match(line, /10\^-\d/, "the depth bound must be printed as 10^-N");
+  // It must still be LOUD about the failure mode and say what to change.
+  assert.match(line, /FLAT/, "the report must still name the failure mode");
+  assert.match(line, /minibrot's nucleus/, "the report must still say what to change");
+});
+
+test("THE EXHAUSTION REPORT IS FREE OF EVERY VALUE A REAL ZOOM TWEEN PASSES THROUGH", () => {
+  // The previous test bites on ONE frame. This one sweeps the tween that actually
+  // produced the eight-paragraph warning — the deck's slide 3 → 4 transition, an
+  // escaping centre from 1e+0.1 to 1e-7.7 — and asserts the shipped text contains
+  // NONE of the values any of those frames would have interpolated into it.
+  //
+  // reportOnce cannot be used to show this: it prints once per PROCESS, so a loop over
+  // 41 frames sees one line however badly the text varies. That is precisely why the
+  // per-browser duplication was invisible until a job ran on eight of them. So the
+  // report is compared AS A VALUE against every frame's numbers, which is what eight
+  // browsers each printing once produces.
+  const { doc, id, registry } = zoomDoc(
+    { centerX: -0.931140527615242, centerY: -0.15028470323278242, centerFineX: 0, centerFineY: 0, fineExponent: 0, zoomExponent: -0.1014570631719102 },
+    { centerX: -1.7664080311492003, centerY: -0.04174008844270469, zoomExponent: 7.702441545633221, maxIterations: 2048 },
+  );
+  const FRAMES = 40;
+  const varying = new Set();
+  let tripped = 0;
+  for (let i = 0; i <= FRAMES; i++) {
+    const s = evaluateState(tweenedState(doc, 1, i / FRAMES, registry), registry).state.items[id];
+    const ref = cachedOrbit(s);
+    if (!referenceExhaustionRisk(s, ref)) continue;
+    tripped++;
+    varying.add(ref.count).add(s.zoomExponent).add(s.maxIterations);
+  }
+  assert.ok(tripped >= 8, `expected the tween to pass through several exhausted states, got ${tripped} — this tween no longer exercises the bug`);
+  for (const value of varying) {
+    assert.ok(!new RegExp(`(^|[^0-9.])${value}([^0-9.]|$)`).test(REFERENCE_EXHAUSTION_REPORT),
+      `the report quotes ${value}, which is one frame's value out of ${varying.size} the tween visits — the job warning would carry one text per render worker`);
+  }
+  // The line emit() prints IS that constant, so no future edit can reintroduce
+  // interpolation without either this test or the one above going red.
+  const s = evaluateState(tweenedState(doc, 1, 1, registry), registry).state.items[id];
+  assert.equal(referenceExhaustionRisk(s, cachedOrbit(s)), true);
 });
 
 /**

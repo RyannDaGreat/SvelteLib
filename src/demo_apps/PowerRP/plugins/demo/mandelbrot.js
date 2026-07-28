@@ -119,6 +119,33 @@ const DEG2RAD = Math.PI / 180;
 const EXHAUSTION_SAFE_DECADES = 6;
 
 /**
+ * Pure function. Whether a widget state and its reference orbit are in the
+ * configuration where an EXHAUSTION REBASE can flatten the frame: the reference
+ * came out SHORTER than full length (which happens only when the chosen centre
+ * ESCAPES — referenceOrbit fills all MANDELBROT_REF_LEN points otherwise), the
+ * iteration budget asks for more iterations than that reference holds, and the view
+ * is deeper than EXHAUSTION_SAFE_DECADES so `d + dc == d` is possible at all.
+ *
+ * ONE DEFINITION, because there were two: emit() carried this expression inline and
+ * tests/mandelbrot_test.js re-declared its own copy of EXHAUSTION_SAFE_DECADES to
+ * re-type it. Two copies of a precision bound is how they come to disagree.
+ *
+ * @param {object} s - folded item state (maxIterations, zoomExponent)
+ * @param {{count: number}} ref - the reference orbit from cachedOrbit
+ * @returns {boolean}
+ *
+ * @example referenceExhaustionRisk({maxIterations: 2048, zoomExponent: 7.7}, {count: 370}) // true  (an escaping centre, deep)
+ * @example referenceExhaustionRisk({maxIterations: 2048, zoomExponent: 5}, {count: 370}) // false (shallower than the bound: dc survives the rebase)
+ * @example referenceExhaustionRisk({maxIterations: 780, zoomExponent: 10.5}, {count: 792}) // false (the budget stops BEFORE the reference does — the deep preset's whole trick)
+ * @example referenceExhaustionRisk({maxIterations: 2048, zoomExponent: 10.5}, {count: 1024}) // false (a full-length reference is not exhausted early)
+ */
+export function referenceExhaustionRisk(s, ref) {
+  return ref.count < MANDELBROT_REF_LEN
+    && (s.maxIterations ?? 0) > ref.count
+    && (s.zoomExponent ?? 0) > EXHAUSTION_SAFE_DECADES;
+}
+
+/**
  * Smallest `zoomExponent` the Inspector accepts. NEGATIVE, because the half-width
  * is 10^(-zoomExponent) and the whole set needs a half-width of about 1.6 — i.e.
  * an exponent of -0.2. A floor of 0 would make the widget unable to frame its own
@@ -868,6 +895,63 @@ const LOCATION_PRESETS = [
 ];
 
 /**
+ * The deepest shipped Location preset — the one that demonstrates the ONLY
+ * document-level answer to referenceExhaustionRisk, so the report can name it
+ * instead of restating its numbers (its budget is held just under its reference's
+ * own escape index). Chosen by DEPTH rather than by list position so reordering the
+ * presets cannot silently point the advice at the wrong place.
+ */
+const DEEPEST_LOCATION_PRESET = LOCATION_PRESETS.reduce((a, b) => (b.props.zoomExponent > a.props.zoomExponent ? b : a));
+
+/**
+ * THE REFERENCE-EXHAUSTION REPORT — and its being a CONSTANT is the fix, not a
+ * stylistic choice. Read this before putting a number back into it.
+ *
+ * WHAT WENT WRONG. This used to be a template interpolating the reference's escape
+ * index, the instantaneous `zoomExponent` and `maxIterations`. All three change on
+ * every frame of a zoom tween, and a render job runs on N BROWSERS — N independent
+ * module graphs, therefore N independent reportOnce memories. So the job's warning
+ * came back holding one message per WORKER, each naming a different frame:
+ * eight paragraphs of one problem, quoting "a zoom of 1e-6.420616081593235" (a log
+ * glued to an `1e`, which is not a number anyone can read or type) and advising
+ * "lower Max iterations to" eight different values for one document-level setting.
+ * server.py's merged_warning already deduplicates the worker's report BY LINE, so a
+ * text that is a pure function of DOCUMENT-LEVEL facts collapses to exactly one
+ * line with no new plumbing anywhere. A constant is the strongest possible way to
+ * say that, and it cannot be broken by accident.
+ *
+ * WHY NO COUNT OR RANGE EITHER, which is the natural next request. Each browser
+ * renders a STRIDED subset of the timeline, so "112 frames affected, 91..409
+ * iterations" would be one worker's slice, not the job's — eight different
+ * summaries instead of eight different single frames, and the dedup would keep all
+ * eight. A true per-job tally has to be merged where the job lives, which is a new
+ * machine-readable reporting channel and not a widget's business.
+ *
+ * WHY IT NOW SAYS "CAN" AND NOT "DOES". Measured — the SkSL kernel transcribed
+ * op-for-op into fp32 (Math.fround after every operation) against float64 direct
+ * iteration, 25 680 samples per view, on the exact frames that raised this report
+ * (an escaping reference of 101 and of 370 points at 10^-6.06 and 10^-7.70, budget
+ * 2048): NO pixel reached the exhaustion rebase at all, and the smooth-count field
+ * matched float64 to 0.01% and 0.07% of samples respectively with the same standard
+ * deviation. The reason is structural — a reference that stopped because it ESCAPED
+ * has |Z| > 2 in its tail, and the rebasing invariant |d| <= |z| puts any pixel that
+ * gets there outside |z| = 1, from which the escape radius is a few squarings away.
+ * The flat failure MANDELBROT_REF_LEN measures needs the reference to run out while
+ * the pixel orbit is still small, which is a different configuration. The same
+ * harness reproduces that failure (refCount forced to 128 at 10^-10.5: 81% of
+ * samples wrong, field deviation collapsing from 29.8 to 25.6), so its "not
+ * degraded" verdict on an escaping reference is a measurement and not a silence.
+ *
+ * AND THE STRONGER A/B, which needs no float64 arbiter at all: the same fp32 kernel
+ * run against a 4096-POINT reference of the same centre, differing only in reach.
+ * At the reported frame the two fields are BYTE-IDENTICAL (mean difference 0.0000,
+ * zero samples differing), and they stay identical at 10^-12, where 100% of pixels
+ * DO take the exhaustion rebase — because the iterations they run afterwards stay at
+ * three however deep the view goes. That is the structural claim, measured.
+ */
+export const REFERENCE_EXHAUSTION_REPORT = `PowerRP mandelbrot: this centre's reference orbit ESCAPES before its full ${MANDELBROT_REF_LEN} points, Max iterations asks for more iterations than that reference holds, and the view is deeper than 10^-${EXHAUSTION_SAFE_DECADES} — the configuration where the shader must rebase off the END of the reference. There the per-pixel offset can fall below a single-precision ulp of the rebased delta, and where it does every pixel follows one trajectory: the frame goes FLAT rather than glitching, which is the hardest kind of wrong to notice. IT IS A RISK THAT GROWS WITH DEPTH, NOT A CERTAINTY — measured out to 10^-7.7 an escaping reference never reaches that rebase, because its tail is already outside |Z| = 2 and a pixel there escapes within a few squarings — so LOOK AT THE DEEPEST FRAMES of the shot rather than trusting either this line or the render. SAID ONCE PER RENDER, DELIBERATELY: the escape index, the zoom and the budget all change on every frame of a zoom, so a per-frame line puts one copy per render worker in a job's warning and quotes a different value in each. THE FIX IS AUTHORIAL, so nothing here is rewritten: move the centre onto a point whose orbit does NOT escape (a minibrot's nucleus), since an escaping centre structurally cannot carry a long reference; or end the zoom shallower than 10^-${EXHAUSTION_SAFE_DECADES}; or hold Max iterations under the escape index the way the shipped "${DEEPEST_LOCATION_PRESET.name}" Location preset does. No number is offered for that last one ON PURPOSE — the safe budget is the SMALLEST escape index the whole tween passes through, and one frame cannot know it.`;
+
+/**
  * COLOURS. Palette and colouring stack ONLY: no centre, no zoom, no iteration count,
  * so any of these lands on any location. Every one was rendered at a SHALLOW
  * (1e-2.9, 800 iterations), a MIDDLE (1e-5.9, 2048) and a DEEP (1e-10.5, 780)
@@ -1345,13 +1429,11 @@ export const mandelbrotPlugin = {
     // (1024 points drive 2048 iterations at 1e-10.5, indistinguishable from a
     // 2048-point reference) — so what is worth reporting is not "maxIterations
     // exceeds the reference" but "the reference came out SHORTER THAN FULL LENGTH",
-    // which happens when the chosen centre escapes and is the case the user can
-    // actually act on. Past EXHAUSTION_SAFE_DECADES that shortfall annihilates the
-    // per-pixel offset in single precision and flattens the frame — see
-    // MANDELBROT_REF_LEN for the measurement.
-    if (ref.count < MANDELBROT_REF_LEN && (s.maxIterations ?? 0) > ref.count && (s.zoomExponent ?? 0) > EXHAUSTION_SAFE_DECADES) {
-      reportOnce("mandelbrot-reference-exhausted", `PowerRP mandelbrot: the reference orbit escapes after ${ref.count} of ${MANDELBROT_REF_LEN} iterations but Max iterations is ${s.maxIterations}, at a zoom of 1e-${s.zoomExponent}. Past about 1e-${EXHAUSTION_SAFE_DECADES} a reference that short loses the per-pixel offset to single-precision rounding and the frame goes FLAT. Move the centre nearer the set (an escaping centre cannot carry a long reference), or lower Max iterations to ${ref.count}.`);
-    }
+    // which happens when the chosen centre escapes. See referenceExhaustionRisk for
+    // the predicate and REFERENCE_EXHAUSTION_REPORT for why the message carries no
+    // per-frame number: a zoom TWEEN passes through hundreds of these states, and one
+    // report per state is one report per render worker in the job's warning.
+    if (referenceExhaustionRisk(s, ref)) reportOnce(REFERENCE_EXHAUSTION_REPORT);
     return [materialFill({
       material: "mandelbrot",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
