@@ -214,10 +214,10 @@ export function barGeometry(state) {
   } else if (mode === "riemann") {
     const xs = [];
     for (let i = 0; i < N; i++) xs.push(riemannX(state.xStart ?? 0, state.xEnd ?? 4, i, N, state.inputSampleType ?? "left"));
-    const r = sampleIndexed({ equation: state.valueEquation ?? "0", count: N, xs, vars: state.vars });
+    const r = sampleIndexed({ equation: state.valueEquation ?? "0", count: N, xs, vars: { ...(state.docVars ?? {}), ...(state.vars ?? {}) } });
     values = r.values; error = r.error;
   } else {
-    const r = sampleIndexed({ equation: state.valueEquation ?? "0", count: N, vars: state.vars });
+    const r = sampleIndexed({ equation: state.valueEquation ?? "0", count: N, vars: { ...(state.docVars ?? {}), ...(state.vars ?? {}) } });
     values = r.values; error = r.error;
   }
   if (error) return { rects: [], labels: [], error };
@@ -264,7 +264,7 @@ export function barGeometry(state) {
 export const graphBarsPlugin = {
   type: "graph_bars",
   title: "Graph Bars",
-  capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  capabilities: { docVars: true,  bbox: true, transform: true, resizable: true, backdrop: false },
   // codeEditor + its REQUIRED double-click declaration (see graph_line.js / the
   // migration gate) — double-clicking the chart opens Monaco on the value equation.
   activate: "code_modal",

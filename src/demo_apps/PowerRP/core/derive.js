@@ -165,6 +165,8 @@ export function pointInNodeBox(itemState, wx, wy) {
  */
 export function deriveRenderTree(state, registry) {
   const items = state.items ?? {};
+  // The document's folded variables — injected into docVars-capable nodes below.
+  const foldedVars = state.vars ?? {};
   // `active` is a universal widget property (default true). Delete in the UI
   // keyframes active:false — the item KEEPS its identity and properties and
   // simply isn't derived on slides where it's inactive (this is how objects
@@ -183,13 +185,22 @@ export function deriveRenderTree(state, registry) {
     // `mirror` key at all, exactly like the other optional node marks).
     const state = unsignedState(itemState);
     const mirror = state === itemState ? null : { x: (itemState.w ?? 0) < 0, y: (itemState.h ?? 0) < 0 };
+    const plugin = registry.get(itemState.type);
+    // DOC-VARS INJECTION: a plugin whose capabilities declare `docVars: true`
+    // samples an EQUATION inside emit() (the graph family's Monaco source) and
+    // therefore needs the document's folded variables at emit time — emit's
+    // signature carries only the item state, which is why the zoo's λ-morph
+    // crashed "lambda is not defined". Injected as `docVars` on the node
+    // state; the plugin spreads its item-local vars OVER it (per-widget vars
+    // shadow document vars, the digest-09 scoping law). Undeclaring plugins
+    // get the very same state object — byte-identical, no new key.
     return {
       id,
       itemId: id,
       type: itemState.type,
-      state,
+      state: plugin.capabilities?.docVars ? { ...state, docVars: foldedVars } : state,
       world: worldTransform(state),
-      plugin: registry.get(itemState.type),
+      plugin,
       ...(mirror ? { mirror } : {}),
     };
   });

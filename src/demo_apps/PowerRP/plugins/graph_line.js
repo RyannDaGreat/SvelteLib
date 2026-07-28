@@ -128,7 +128,7 @@ export function curveLocal(state) {
     tStart: state.tStart ?? 0,
     tEnd: state.tEnd ?? 1,
     numPoints: state.numPoints ?? DEFAULT_NUM_POINTS,
-    vars: state.vars,
+    vars: { ...(state.docVars ?? {}), ...(state.vars ?? {}) }, // doc vars, item vars shadowing (digest 09)
   });
   if (error) return { subpaths: [], error };
   const win = graphWindow(state);
@@ -140,7 +140,7 @@ export function curveLocal(state) {
 export const graphLinePlugin = {
   type: "graph_line",
   title: "Graph Line",
-  capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  capabilities: { docVars: true,  bbox: true, transform: true, resizable: true, backdrop: false },
   // The full-screen Monaco editor for the equation — double-click OR the "</>"
   // Inspector row, both routed through the widget-agnostic edit-code-source
   // command (the mermaid/latex seam; report 07 §2). One descriptor, no UI code.
