@@ -399,6 +399,14 @@ code exists.
     or accept silence; (c) live-playback smoothness — per-frame decoder
     seeking vs native decode, must be measured in the presenter. Investigation
     agent dispatched; implementation after findings.
+    SCOPE RULING (user, same day): "This is experimental right now. Do it as
+    a video player scrubber DEMO WIDGET. It's just a video scrubber with some
+    fancy presets that makes it dependent on time." So: do NOT retire or
+    modify the player; ship a new plugins/demo/ widget = scrubber whose
+    current-time carries time-driven equation presets ("Loop" = time %
+    self.length, ping-pong, half/double speed, reverse, stutter/freeze-frame
+    …, ≥10 per the presets mantra). self.length exposure is still required
+    for the Loop preset to be writable.
 
 ### Round 5 research findings (frenzy digests — the manifest copy is canonical;
 ### .frenzy/graph_family/*.md are the full reports and are disposable)
@@ -439,11 +447,72 @@ constant→scrubber span kind, so auto-exposing free variables as inspector
 scrub rows is wiring, not new detection — this is the first consumer of the
 per-widget variables refactor (item 67).
 
-**03 rolling-ball math, 04 equation-zoo curriculum, 06 sandbox design,
-07 codebase precedent map, 08 chalk/glow inventory, 09 per-widget vars
-design, 10 bar-graph research, video-unify investigation**: agents in flight;
-digest each into this section AS IT LANDS (standing instruction from the
-user: "Write all of them down into the manifest").
+**04 equation-zoo curriculum** (item 68): 17-slide arc in 8 acts — heart/
+cardioid → rose petal-parity → Maurer rose (string-art wildcard) → the spiral
+trilogy → golden spiral → Fermat/phyllotaxis wildcard → catenary-vs-parabola
+→ cycloids (tautochrone hook) → epicycloid/hypocycloid spirograph (gear
+tie-in) → superellipse → Lissajous → harmonograph wildcard → sum-of-sines →
+Fourier-epicycles finale. Each entry ships JS-ready t→(x,y), on-slide LaTeX,
+tuned ranges (~700×700 centered), teaching hook, draw-in recipe. THE SPIRAL
+MORPH IS PRINCIPLED, not cosmetic: Archimedean (r=a+bθ) and logarithmic
+(r=ae^{bθ}) both solve dr/dθ = c·r^p at p=0 and p=1, so the closed family
+r(θ) = [a^(1-p) + c(1-p)θ]^(1/(1-p)) gives ONE λ slider that morphs the
+mechanism (guard the 1-p→0 singularity; p→1 recovers the exponential
+exactly). Golden spiral: b = ln(φ)/(π/2) from "grows by φ per quarter turn".
+Second live-slider demo: superellipse exponent n (circle→square). This λ and
+n are exactly what per-widget vars (item 67) exist to tween.
+
+**03 rolling-ball math** (item 69, SymPy-verified; full derivations + worked
+table in the report, verification script preserved beside it): equation of
+motion for a solid sphere rolling in the catenary valley y = a·cosh(x/a),
+parameterized by arc length s (closed forms: s = a·sinh(x/a), x = a·asinh(s/a),
+and the bonus y(s) = √(a² + s²) — no cosh needed at runtime):
+
+    s̈ = −(5/7)·g·s / √(a² + s²)
+
+THE SIGN IS THE FINDING: the coordinator's proposed "+" version was WRONG —
+energy check E = (7/10)ṡ² + g·√(a²+s²) diverges under "+" (runaway ball) and
+is conserved to 2e-13 under "−" (bounded nonlinear oscillator about the
+valley floor). No elementary closed-form solution exists (non-elementary
+quadrature), so integrate RK4 from rest each evaluation — dt ≈ 0.02 s
+(~250 steps for 5 s, measured ~1000× more accurate than semi-implicit Euler);
+pure function of t, seekable. Supporting laws, all verified: sinθ = tanh(x/a)
+= s/√(a²+s²); sphere a = (5/7)g·sinθ (I = 2/5 mR²); no-slip iff
+μ ≥ (2/7)·tanθ; unit normal N = (−tanh(x/a), sech(x/a)) (center = contact +
+R·N); spin φ = −s/R + φ0 with NO left/right case split (s monotonic in x —
+one formula, both directions). Worked example a=2, R=0.3, g=9.8, x0=−3:
+period ≈ 4.799 s; spot-check table in the report.
+
+**06 equation sandbox design** (item 64): THE SANDBOX ALREADY EXISTS —
+core/expressions.js compiles arbitrary JS via
+`new Function("scope", "with(scope){return (EXPR)}")` cached by source string
+(jsFnCache), blocks Date/window/performance through BLOCKED_GLOBALS + a
+has:()=>true Proxy that seals global fall-through, excises Math.random
+(SAFE_MATH), seeds mulberry32, and routes `time` through particleTime(); an
+IIFE with a for-loop (Fibonacci) compiles through it TODAY unmodified.
+graphLine must therefore EXPORT AND REUSE compileEquationFn/toJsExpr/
+SAFE_MATH/BLOCKED_GLOBALS (duplicating the block-list risks drift) but NOT
+reuse the per-item slot/dependency-graph machinery (different problem: one
+doc-wide equation graph vs one source sampled N times). Per-sample scope: a
+plain mutable object, NOT a Proxy — measured ~17× faster and throws free
+ReferenceErrors on typos. Perf is a non-issue: worst case (Proxy + with +
+Fibonacci IIFE) ≈ 0.4 ms per 500-point pass ≈ 2.4% of a 60 fps frame;
+compile-once caching is what matters. Sandbox symbols v1: x, t (alias), i, N,
+TAU, PI, Math (sans random), random(offset) via the ORDER-INDEPENDENT
+(seed,i,stream) hash from core/particles.js (not sequential mulberry32 —
+sample-order independence matters), `time`, and every document var by name;
+`self` deferred pending a use case (item 67 will revisit). ERRORS ARE
+WHOLE-CURVE AND LOUD: compile error or first runtime throw → widget-level
+red-box affordance (the mermaid convention); NO per-sample try/catch (hides
+which input broke; unexplained gap indistinguishable from legit NaN). Presets
+store plain source strings (the mermaid/LaTeX precedent). FLAGGED FOR UI:
+`t` (plot domain) vs `time` (presentation clock) coexist with different
+meanings — document loudly in Inspector/Monaco.
+
+**07 codebase precedent map, 08 chalk/glow inventory, 09 per-widget vars
+design, 10 bar-graph research, video-unify investigation**: agents in
+flight; digest each into this section AS IT LANDS (standing instruction:
+"Write all of them down into the manifest").
 
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
