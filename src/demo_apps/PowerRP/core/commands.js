@@ -5,10 +5,16 @@
  * in the UI).
  *
  * Entry: {id, title, run?(app), when?(app) → bool, children?: [entry],
- *         icon?, preview?(app) → revert, requires?: string, help?: string}.
+ *         icon?, preview?(app) → revert, requires?: string, help?: string,
+ *         aliases?: string[]}.
  * A command has `run` XOR `children`: children make it a SUBMENU the palette
  * drills into (e.g. "Color Theme →" listing themes). Child ids must still be
  * globally unique (they're registered flat for `get()`/shortcut reuse).
+ * `aliases` are extra SEARCHABLE names — the synonyms a user actually types
+ * that a short title cannot carry ("Duplicate" was unfindable under
+ * "duplicate object" or "clone": a fuzzy subsequence match needs the query's
+ * letters to exist in the target). search() ranks each entry by its best
+ * match across title + aliases; aliases are never displayed.
  *
  * ── AVAILABILITY: `when` GREYS OUT, IT DOES NOT HIDE ────────────────────────
  * `when(app)` is the AVAILABILITY axis — transient, per-app-state ("nothing is
@@ -93,9 +99,9 @@ export function createCommands() {
       const pool = parent ? parent.children : topLevel;
       if (!query)
         return [...pool].sort((a, b) => (used.get(b.id) ?? -1) - (used.get(a.id) ?? -1));
-      // rp's ranking: LOWER score = better match.
+      // rp's ranking: LOWER score = better match (title OR any alias).
       return pool
-        .map((c) => ({ c, score: rpFuzzyScore(query, c.title) }))
+        .map((c) => ({ c, score: entryScore(query, c) }))
         .filter((x) => x.score !== null)
         .sort((a, b) => a.score - b.score)
         .map((x) => x.c);
@@ -227,8 +233,33 @@ function registerFlat(map, cmd) {
   const isSubmenu = Array.isArray(cmd.children);
   if (!cmd.id || !cmd.title || (isSubmenu ? cmd.run : !cmd.run))
     throw new Error(`Malformed command (need id, title, and run XOR children): ${JSON.stringify(cmd).slice(0, 120)}`);
+  if (cmd.aliases !== undefined && (!Array.isArray(cmd.aliases) || cmd.aliases.some((a) => typeof a !== "string" || !a)))
+    throw new Error(`Command "${cmd.id}": aliases must be an array of non-empty strings, got ${JSON.stringify(cmd.aliases)} — a malformed alias would silently never match.`);
   if (map.has(cmd.id)) throw new Error(`Duplicate command id "${cmd.id}"`);
   map.set(cmd.id, cmd);
   for (const child of cmd.children ?? []) registerFlat(map, child);
+}
+
+/**
+ * Pure function. An entry's best (lowest) fuzzy score for `query`, across its
+ * TITLE and its search `aliases` — or null when none of them match. This is
+ * what lets "duplicate object" or "clone" find the command titled "Duplicate":
+ * a fuzzy subsequence match needs the query's letters to EXIST in the target,
+ * and a one-word title cannot carry its synonyms.
+ *
+ * @param {string} query - the palette's search text
+ * @param {{title: string, aliases?: string[]}} entry - a registered command
+ * @returns {number|null} rp's score (lower = better), null = no match anywhere
+ *
+ * @example entryScore("clone", {title: "Duplicate"}) // null
+ * @example typeof entryScore("clone", {title: "Duplicate", aliases: ["clone", "duplicate object"]}) // "number"
+ * @example typeof entryScore("duplicate object", {title: "Duplicate", aliases: ["duplicate object"]}) // "number"
+ * @example entryScore("zzz", {title: "Duplicate", aliases: ["clone"]}) // null
+ */
+export function entryScore(query, entry) {
+  const scores = [entry.title, ...(entry.aliases ?? [])]
+    .map((name) => rpFuzzyScore(query, name))
+    .filter((s) => s !== null);
+  return scores.length ? Math.min(...scores) : null;
 }
 

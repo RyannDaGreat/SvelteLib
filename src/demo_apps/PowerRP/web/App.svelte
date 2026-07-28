@@ -910,7 +910,7 @@
     { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the ELEMENT back when the system clipboard still holds the PNG this app wrote for it; any other image or file is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
     // 14.9: Duplicate = clone the selection in place (new UUIDs, one undo unit),
     // reusing the copy/paste serialize→insert path locally (no clipboard trip).
-    { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Each copy gets a NEW id and the SAME raw state, equations verbatim — but a reference INTO the duplicated set is rerouted to the new copy, so duplicating two linked widgets gives you a linked pair, not two widgets pointing at the originals.", run: (a) => a.duplicateSelection() },
+    { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", aliases: ["duplicate object", "duplicate widget", "duplicate item", "clone", "copy item"], when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Each copy gets a NEW id and the SAME raw state, equations verbatim — but a reference INTO the duplicated set is rerouted to the new copy, so duplicating two linked widgets gives you a linked pair, not two widgets pointing at the originals.", run: (a) => a.duplicateSelection() },
     // Copy selection region to the SYSTEM clipboard (manifest Round 12B
     // "Palette / selection commands"): renders the selection's world AABB,
     // not the whole slide (unlike Export Slide as PNG/PDF above). when: selection
