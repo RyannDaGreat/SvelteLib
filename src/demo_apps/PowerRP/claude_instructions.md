@@ -676,6 +676,23 @@ widget is the scrubber-with-time-presets.
     real syntax colouring, per-card grouping ergonomics, precise-hex
     workflows) gets recorded; if nothing falls short, that confirmation is
     the result. Deck: projects/ReplicaStudy.
+    FINDINGS (study complete; side-by-side passes at a glance, 31 widgets,
+    zero repairs): (1) THE ONE REAL GAP — codeblock's syntax palette is not
+    customizable: it renders REAL per-language token colors (the "Monaco is
+    plaintext" worry is editor-only), but `theme` is a two-entry select over
+    hardcoded CODE_PALETTES, so the reference's orange strings/cyan imports
+    cannot be matched; fix = a `palette` override object in codeblock state.
+    (2) Monaco editor-side highlighting still absent (known follow-up).
+    (3) No per-corner radii on rect/codeblock. (4) Groups have no
+    padding/auto-layout (pure geometric parent; inner offsets hand-authored;
+    `bind` must equal the group's own transform or members shift). (5) No
+    single-color monospace widget — used text + jetbrains-mono for CLI lines
+    (fine). (6) Image widgets are blank in the bare-node CLI by design —
+    full verification needs the browser path. CONFIRMED COMPLETE: rich text
+    (mixed bold/gray runs, word-wrap, charSpacing tracking, valign), raw-hex
+    everywhere, groups move-as-unit, camera-as-backdrop. Bottom line: the
+    ecosystem reproduces a corporate slide faithfully; the codeblock palette
+    is the only pixel-parity blocker.
 
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
