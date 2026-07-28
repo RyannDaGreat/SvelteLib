@@ -94,7 +94,7 @@ registerAll(registry, createCommands());
  * as their STROKE. So a test-vs-baseline diff is EXACTLY the stroke — no fill to
  * confound it — and the underlay is byte-identical in both (the cells draw nothing
  * in the baseline). */
-function matrixDoc(materialId) {
+function matrixDoc(materialId, matParams = {}) {
   let doc = newDocument(), z = 1;
   // Configure THE mandatory camera (the only item newDocument creates) to W×H so
   // the render maps world 1:1 to output px. ADDING a second camera is wrong: repair
@@ -117,7 +117,7 @@ function matrixDoc(materialId) {
       x: cell.at.x, y: cell.at.y, w: CELL, h: CELL,
       ...cell.over,
       fill: null,
-      stroke: materialId ? { type: "material", material: { id: materialId, params: {} } } : null,
+      stroke: materialId ? { type: "material", material: { id: materialId, params: matParams } } : null,
       strokeWidth: materialId ? STROKE_W : 0,
     });
   }
@@ -186,6 +186,29 @@ try {
       }
     }
     console.log(`  shot .claude_vlm_checks/stroke_material_${id}.png  (${getStrokeMaterial(id).title})`);
+  }
+
+  // EXTRA COVERAGE for the "brush" material's archetype SELECT knob: the main loop
+  // above only exercises its DEFAULT brush. Here a spread of archetypes (dry/wet/
+  // textured/translucent/calligraphic) is asserted on every shape too — each must
+  // paint an outline and leave the interior byte-identical to the baseline, exactly
+  // like any other stroke material. Auto-skips if the brush material isn't present.
+  if (ids.includes("brush")) {
+    const BRUSH_SAMPLES = ["pencil2B", "marker", "highlighter", "charcoal", "watercolor", "calligraphy"];
+    for (const b of BRUSH_SAMPLES) {
+      const png = await render(matrixDoc("brush", { brush: b }));
+      fs.writeFileSync(resolve(SHOTS, `stroke_material_brush_${b}.png`), PNG.sync.write(png));
+      for (const cell of CELLS) {
+        const changed = changedPixels(png, baseline, cell);
+        ok(changed >= MIN_CHANGED, `brush=${b} on ${cell.id}: stroke PAINTED the outline (${changed} changed grid pts >= ${MIN_CHANGED})`);
+        if (cell.checkInterior)
+          for (const [dx, dy] of INTERIOR) {
+            const d = pixelDiff(png, baseline, cell.at.x + Math.round(dx), cell.at.y + Math.round(dy));
+            ok(d <= SAME_TOL, `brush=${b} on ${cell.id}: interior UNTOUCHED at +${Math.round(dx)},+${Math.round(dy)} (diff ${d.toFixed(1)} <= ${SAME_TOL})`);
+          }
+      }
+      console.log(`  shot .claude_vlm_checks/stroke_material_brush_${b}.png`);
+    }
   }
 } finally {
   await browser.close();

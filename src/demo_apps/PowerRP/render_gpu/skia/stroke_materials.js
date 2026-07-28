@@ -42,6 +42,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { BRUSH_STROKE } from "./brush_strokes.js"; // the 23-archetype textured BRUSH material (drawAtlas stamping), kept in its own file
 
 // ── arc-length sampling budget (WHY each exists — no magic numbers) ───────────
 const GRADIENT_SEGMENT_SPACING = 3;  // local px per colour band when walking an along-gradient (finer = smoother ramp, more draws)
@@ -480,7 +481,7 @@ export const WAVY_STROKE = {
 
 // id → entry. A new stroke material appends ONE entry here (mirrors materials.js).
 const STROKE_MATERIALS = Object.fromEntries(
-  [ALONG_GRADIENT_STROKE, WIDTH_PROFILE_STROKE, DASHES_STROKE, WAVY_STROKE].map((m) => [m.id, m]),
+  [ALONG_GRADIENT_STROKE, WIDTH_PROFILE_STROKE, DASHES_STROKE, WAVY_STROKE, BRUSH_STROKE].map((m) => [m.id, m]),
 );
 
 /**
