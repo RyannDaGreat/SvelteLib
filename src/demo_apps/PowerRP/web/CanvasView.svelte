@@ -24,9 +24,9 @@
   // imported here so the LIVE band preview shows the same set the commit will
   // keep (see bandSelectionAt), never a superset the commit then filters.
   import { selectInBox, rectFromCorners, dedupeGroupSelection } from "../core/bandselect.js";
-  import { sceneIR } from "../render_gpu/ports.js";
+  import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
   import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
-  import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
+  import { rect as rectCmd } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
@@ -629,7 +629,9 @@
       ? null
       : preRasterizePdfPages(nodes, view, canvasEl.width, canvasEl.height);
     const ir = [
-      rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: parsePaint(camRect.background) }),
+      // resolvedBackgroundFill: a MATERIAL background must resolve here — this
+      // rect never passes sceneIR (the camera-background freeze).
+      rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: resolvedBackgroundFill(camRect.background, nodes) }),
       ...sceneIR(nodes, { pdfDisplay }),
     ];
     // THE camera's dither settings drive the whole-frame final pass (scatters

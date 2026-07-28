@@ -28,9 +28,9 @@ import { tweenedState } from "../core/document.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { evaluateState } from "../core/expressions.js";
 import { canSkipNode } from "../core/view.js";
-import { sceneIR } from "../render_gpu/ports.js";
+import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
 import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
-import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
+import { rect as rectCmd } from "../render_gpu/ir.js";
 
 /**
  * Query (memoized fold + evaluate). THE evaluated folded state for
@@ -128,11 +128,13 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
   if (cullRect) nodes = nodes.filter((n) => !canSkipNode(n, cullRect));
   const pdfDisplay = view && viewW > 0 && viewH > 0 ? preRasterizePdfPages(nodes, view, viewW, viewH) : null;
   return [
-    // parsePaint (NOT parseColor): the camera background is a full PAINT prop —
-    // Solid / Linear / Radial / `=` equation — so a gradient backdrop renders in
-    // every offscreen consumer (thumbnails/export/PNG/presenter). A plain
-    // "#rrggbb" string is still a solid, byte-identically (parsePaint back-compat).
-    rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: parsePaint(rect.background) }),
+    // resolvedBackgroundFill (NOT bare parsePaint): the camera background is a
+    // full PAINT prop — Solid / Linear / Radial / MATERIAL / `=` equation — and
+    // this rect is hand-assembled OUTSIDE sceneIR, so a MATERIAL background is
+    // resolved HERE (ports.resolvedBackgroundFill; unresolved it threw at the
+    // painter every frame — the camera-background freeze). A plain "#rrggbb"
+    // string is still a solid, byte-identically.
+    rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: resolvedBackgroundFill(rect.background, nodes) }),
     ...sceneIR(nodes, { pdfDisplay }),
   ];
 }

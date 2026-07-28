@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, parsePaint } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce } from "../core/report.js";
@@ -42,6 +42,32 @@ import { reportOnce } from "../core/report.js";
  * @example resolveMaterialFillPaints([{op: "rect", fill: "#fff"}], null, null)[0].fill // "#fff"
  * @example resolveMaterialFillPaints([{op: "rect", fill: {type: "material", material: {id: "comic"}}}], null, null)[0].fill.resolvedParams.mode // "cmyk"
  */
+/**
+ * Query (reads registries; reports once on unknown knobs). The camera
+ * BACKGROUND as a PAINTER-READY fill: parsed, and — when it is a MATERIAL
+ * paint — resolved against the scene. THE ONE PAINT SLOT emitNode's resolution
+ * cannot reach: the background rect is hand-assembled by web/cameraFrame.js and
+ * web/CanvasView.svelte OUTSIDE sceneIR (no emitting node exists for it), so a
+ * material background used to reach the painter UNRESOLVED and threw on every
+ * frame — the app wedged, and persisted across reloads because the paint is
+ * stored in the doc (the camera-background freeze, user-reported live).
+ * A non-material background returns parsePaint's result byte-identically.
+ *
+ * @param {*} background - the camera's stored background paint
+ * @param {Array|null} nodes - the derived render nodes (scene hooks read them)
+ * @returns {*} a fill the painters accept
+ *
+ * @example resolvedBackgroundFill("#123f5a", []) // [0.070..., 0.247..., 0.352..., 1]
+ * @example resolvedBackgroundFill({type: "material", material: {id: "comic", params: {}}}, []).resolvedParams.mode // "cmyk"
+ */
+export function resolvedBackgroundFill(background, nodes) {
+  const p = parsePaint(background);
+  if (!isMaterialPaint(p)) return p;
+  const byId = new Map((nodes ?? []).map((n) => [n.itemId, n]));
+  const camera = (nodes ?? []).find((n) => n.type === "camera") ?? null;
+  return resolveMaterialPaint(p, camera, byId, reportOnce);
+}
+
 export function resolveMaterialFillPaints(cmds, node, nodesById) {
   return cmds.map((cmd) => {
     let out = cmd;

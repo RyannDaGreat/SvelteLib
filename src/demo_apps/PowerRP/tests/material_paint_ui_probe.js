@@ -405,6 +405,33 @@ try {
       `preset expansion WROTE the continuous knobs (sizeStart ${JSON.stringify(expanded?.sizeStart)}, blend ${JSON.stringify(expanded?.blend)})`);
   }
 
+  // ── REGRESSION: a MATERIAL paint on the CAMERA BACKGROUND must render ────────
+  // The background rect is hand-assembled OUTSIDE sceneIR (cameraFrame /
+  // CanvasView), so it was the one paint slot resolution never reached: setting
+  // Mat on the camera background threw UNRESOLVED on EVERY paint — the editor
+  // froze, and stayed frozen across reloads because the paint is stored in the
+  // doc (user-reported live, twice). This drives the exact gesture: Mat on the
+  // camera's Background row, then asserts the canvas and thumbnails keep
+  // painting with zero page errors, and that undo restores.
+  {
+    const before = errors.length;
+    await page.evaluate(() => {
+      const app = window.__powerrp_app;
+      const items = app.doc.slides[0].delta.items;
+      const camId = Object.keys(items).find((k) => items[k].type === "camera");
+      app.setPreview([[["items", camId, "background"], { type: "material", material: { id: "glass", params: {} } }]]);
+      app.commitPreview();
+      window.__camId = camId;
+    });
+    await sleep(1200); // let CanvasView + slide-nav thumbnails repaint
+    ok(errors.length === before,
+      `MATERIAL camera background renders without page errors (the camera-background freeze); new errors: ${errors.slice(before).join(" | ") || "none"}`);
+    await page.evaluate(() => window.__powerrp_app.undo());
+    await sleep(300);
+    const bgAfterUndo = JSON.parse(await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc.slides[0].delta.items[window.__camId].background ?? null)));
+    ok(typeof bgAfterUndo !== "object" || bgAfterUndo?.type !== "material", "undo restores the pre-material background (one unit)");
+  }
+
   if (errors.length) {
     console.error("PROBE ERRORS:\n" + errors.join("\n"));
     console.error(`\n${checks.filter(([c]) => c).length}/${checks.length} checks passed`);
