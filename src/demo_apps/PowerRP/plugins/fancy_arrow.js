@@ -26,12 +26,12 @@
  * of its own (world == local, identical to the basic arrow), the handles are
  * placed directly in the same from/to coordinate space emit() already uses —
  * no separate local frame to convert between. Each handle sits ON a real
- * outline vertex (core/outline.js's axisNormalFrame/projectOntoAxis/
- * projectOntoNormal decompose the shaft axis into the two directions a
- * modifier point can be constrained to, the same decomposition
- * bezierControlFromBend uses for the curved arrow) and `apply()` projects the
- * drag back onto that ONE-dimensional trajectory — donut's apply pattern,
- * generalized from "one radius" to "one axis or one normal".
+ * outline vertex and DECLARES its allowed set through the handle-constraint
+ * protocol (core/derive.js): `constrain` projects a desired point onto that
+ * ONE-dimensional trajectory and `apply` only reads the result back as a
+ * number. core/outline.js's axisNormalFrame/projectOntoAxis/projectOntoNormal
+ * decompose the shaft axis into the two directions those sets live along — the
+ * same decomposition bezierControlFromBend uses for the curved arrow.
  *
  * STROKE NAMING MIGRATION (manifest ARCHITECTURE PLAN #6, superseded by
  * Round 17.4 below): fancy_arrow has no generic `width` property (only shape
@@ -55,7 +55,7 @@
 import { polygon, polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { fancyArrowOutline, triangulated, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal } from "../core/outline.js";
+import { fancyArrowOutline, triangulated, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal, closestPointOnSegment } from "../core/outline.js";
 import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
 import { reportOnce } from "../core/report.js";
 
@@ -70,6 +70,50 @@ function outlineParams(s) {
     tipLength: s.tipLength, tipWidth: s.tipWidth, tipDimple: s.tipDimple,
     startWidth: s.startWidth, endWidth: s.endWidth,
   };
+}
+
+/**
+ * Pure function. The head's shared drag geometry: the shaft's (axis, right-normal)
+ * frame, the head length clamped to the arrow's own span, and the on-axis point of
+ * the barb base line. Derived ONCE here because all five handles' constraints and
+ * writes need it (each `apply` used to re-derive the same four lines inline).
+ *
+ * @example headFrame({from: {x: 0, y: 0}, to: {x: 100, y: 0}, tipLength: 15}).barbBase // {x: 85, y: 0}
+ * @example headFrame({from: {x: 0, y: 0}, to: {x: 10, y: 0}, tipLength: 999}).tipLength // 10 (a head cannot outrun the arrow)
+ */
+function headFrame(s) {
+  const frame = axisNormalFrame(s.from, s.to);
+  const tipLength = Math.min(Math.max(s.tipLength ?? 0, 0), frame.length);
+  return { frame, tipLength, barbBase: { x: s.to.x - frame.ux * tipLength, y: s.to.y - frame.uy * tipLength } };
+}
+
+/**
+ * Pure function. The allowed point for a HALF-WIDTH handle: the on-axis `anchor`
+ * offset along the shaft's right normal by the MAGNITUDE of the desired point's
+ * normal offset. The reachable positions really are only the +normal ray (a width
+ * is non-negative and the head is symmetric about the shaft), and crossing to the
+ * far side reads as widening the opposite barb by the same amount — so this is an
+ * idempotent RETRACTION onto that ray, deliberately NOT the metric nearest point
+ * (which would collapse any cross-axis drag to width 0). The one documented
+ * exception to core/derive.js's nearest-point CONVENTION; see
+ * tests/handle_constraints_test.js, which asserts every other invariant on it.
+ *
+ * @example widthRetraction({x: 0, y: 0}, {nx: 0, ny: 1}, {x: 30, y: 5}) // {x: 0, y: 5} (axial part removed)
+ * @example widthRetraction({x: 0, y: 0}, {nx: 0, ny: 1}, {x: 30, y: -5}) // {x: 0, y: 5} (mirrored to the +normal side)
+ */
+function widthRetraction(anchor, frame, desired) {
+  const offset = Math.abs(projectOntoNormal(anchor, frame, desired));
+  return { x: anchor.x + frame.nx * offset, y: anchor.y + frame.ny * offset };
+}
+
+/**
+ * Pure function. The FULL width an already-allowed half-width handle position
+ * encodes: twice its normal offset from the anchor (widthRetraction's inverse).
+ *
+ * @example widthFrom({x: 0, y: 0}, {nx: 0, ny: 1}, {x: 0, y: 7}) // 14
+ */
+function widthFrom(anchor, frame, allowed) {
+  return 2 * projectOntoNormal(anchor, frame, allowed);
 }
 
 /**
@@ -219,19 +263,30 @@ export const fancyArrowPlugin = {
   /**
    * Pure function. FIVE modifier points, one per parametric-geometry
    * parameter (manifest round 12B follow-up), each sitting on the outline
-   * vertex it controls and each `apply()` projecting the drag onto that
-   * parameter's ONE-dimensional trajectory (axial = along the shaft, or
-   * normal = perpendicular to it — core/outline.js's axisNormalFrame). A
-   * degenerate (zero-length) arrow has no defined axis, so it emits no
-   * modifier points (nothing to drag along an undefined direction — the
-   * same "no geometry" territory fancyArrowOutline's null return covers).
+   * vertex it controls. A degenerate (zero-length) arrow has no defined axis, so
+   * it emits no modifier points (nothing to drag along an undefined direction —
+   * the same "no geometry" territory fancyArrowOutline's null return covers).
    *
-   * Domain clamps mirror fancyArrowOutline's own (documented there): widths/
-   * lengths floor at 0, tipLength cannot exceed the arrow's span, tipDimple
-   * cannot exceed the head-back-edge bound — so a modifier drag can never
-   * push the STORED state somewhere emit() would itself have re-clamped
-   * silently (the handle's visible position always matches where the drag
-   * left it).
+   * THE HANDLE-CONSTRAINT PROTOCOL (core/derive.js). Every allowed set here is
+   * one-dimensional and expressed in the shaft's own (axis, right-normal) frame:
+   *   tipLength — the SEGMENT tip→tail (a head length lives in [0, span]).
+   *   tipDimple — the SEGMENT tip→barbBase (a dimple lives in [0, tipLength]).
+   *   tipWidth / startWidth / endWidth — the +normal RAY from their on-axis
+   *     anchor, reached by widthRetraction (see its docstring: a magnitude, so a
+   *     mirror rather than a metric projection).
+   * Each `apply` then only READS the already-allowed point back as a number, so
+   * no bound is written twice.
+   *
+   * KNOWN PRE-EXISTING DEFECT, preserved deliberately and reported rather than
+   * silently changed: the tipDimple handle is DISPLAYED at the renderer's bound
+   * `tipLength·(1 − (endWidth/2)/(tipWidth/2))` (fancyArrowOutline's maxD) but its
+   * allowed SET below stops only at tipLength, and the endWidth handle's anchor
+   * uses a third bound again. With endWidth > 0 a dimple drag past the renderer's
+   * bound therefore stores a value the outline re-clamps, and the handle springs
+   * back short of the cursor — so the old docstring's claim that "the handle's
+   * visible position always matches where the drag left it" was FALSE here. The
+   * fix is one bound shared by all three readers; it changes stored numbers in
+   * that zone, so it is the lead's call, not this refactor's.
    */
   modifierPoints(s) {
     const from = s.from, to = s.to;
@@ -249,60 +304,69 @@ export const fancyArrowPlugin = {
     const barbBase = onAxisFromTip(tipLength); // the barb base line's on-axis point
     const dimplePt = onAxisFromTip(tipLength - tipDimple); // the dimple's on-axis point
 
+    // The endWidth handle's anchor, from the LIVE state — the dimple point under
+    // that handle's OWN dimple bound (see the KNOWN PRE-EXISTING DEFECT note:
+    // this bound is not the renderer's, and is preserved as-is).
+    const endAnchor = (state) => {
+      const { frame, tipLength: tl } = headFrame(state);
+      const maxD = Math.max(state.tipWidth ?? 0, 0) / 2 > 0 ? tl : 0;
+      const td = Math.min(Math.max(state.tipDimple ?? 0, 0), maxD);
+      return { x: state.to.x - frame.ux * (tl - td), y: state.to.y - frame.uy * (tl - td) };
+    };
+
     return [
       {
         // tipLength: slides barbBase along the axis (distance from `to`).
         id: "tipLength", x: barbBase.x, y: barbBase.y,
-        apply: (state, p) => {
+        constrain: (state, desired) => closestPointOnSegment(state.to, state.from, desired),
+        apply: (state, allowed) => {
           const f = axisNormalFrame(state.from, state.to);
           if (f.length === 0) return {};
-          const back = f.length - projectOntoAxis(state.from, f, p); // distance from `to`
-          return { tipLength: Math.min(Math.max(back, 0), f.length) };
+          return { tipLength: f.length - projectOntoAxis(state.from, f, allowed) }; // distance from `to`
         },
       },
       {
         // tipWidth: the barbR point, offset halfTip along the normal from barbBase.
         id: "tipWidth", x: barbBase.x + nx * halfTip, y: barbBase.y + ny * halfTip,
-        apply: (state, p) => {
-          const f = axisNormalFrame(state.from, state.to);
-          if (f.length === 0) return {};
-          const back = Math.min(Math.max(state.tipLength ?? 0, 0), f.length);
-          const base = { x: state.to.x - f.ux * back, y: state.to.y - f.uy * back };
-          return { tipWidth: Math.max(2 * Math.abs(projectOntoNormal(base, f, p)), 0) };
+        constrain: (state, desired) => {
+          const h = headFrame(state);
+          return widthRetraction(h.barbBase, h.frame, desired);
+        },
+        apply: (state, allowed) => {
+          const h = headFrame(state);
+          if (h.frame.length === 0) return {};
+          return { tipWidth: widthFrom(h.barbBase, h.frame, allowed) };
         },
       },
       {
         // tipDimple: slides dimplePt along the axis, between the tip and barbBase.
         id: "tipDimple", x: dimplePt.x, y: dimplePt.y,
-        apply: (state, p) => {
-          const f = axisNormalFrame(state.from, state.to);
-          if (f.length === 0) return {};
-          const backOfTip = f.length - projectOntoAxis(state.from, f, p); // distance from `to`
-          const tl = Math.min(Math.max(state.tipLength ?? 0, 0), f.length);
-          return { tipDimple: Math.min(Math.max(tl - backOfTip, 0), tl) };
+        constrain: (state, desired) => closestPointOnSegment(state.to, headFrame(state).barbBase, desired),
+        apply: (state, allowed) => {
+          const { frame, tipLength: tl } = headFrame(state);
+          if (frame.length === 0) return {};
+          const backOfTip = frame.length - projectOntoAxis(state.from, frame, allowed); // distance from `to`
+          return { tipDimple: tl - backOfTip };
         },
       },
       {
         // startWidth: the startR point, offset halfStart along the normal from `from`.
         id: "startWidth", x: from.x + nx * halfStart, y: from.y + ny * halfStart,
-        apply: (state, p) => {
+        constrain: (state, desired) => widthRetraction(state.from, axisNormalFrame(state.from, state.to), desired),
+        apply: (state, allowed) => {
           const f = axisNormalFrame(state.from, state.to);
           if (f.length === 0) return {};
-          return { startWidth: Math.max(2 * Math.abs(projectOntoNormal(state.from, f, p)), 0) };
+          return { startWidth: widthFrom(state.from, f, allowed) };
         },
       },
       {
         // endWidth: the dimpleR point, offset halfEnd along the normal from dimplePt.
         id: "endWidth", x: dimplePt.x + nx * halfEnd, y: dimplePt.y + ny * halfEnd,
-        apply: (state, p) => {
+        constrain: (state, desired) => widthRetraction(endAnchor(state), axisNormalFrame(state.from, state.to), desired),
+        apply: (state, allowed) => {
           const f = axisNormalFrame(state.from, state.to);
           if (f.length === 0) return {};
-          const tl = Math.min(Math.max(state.tipLength ?? 0, 0), f.length);
-          const halfTipNow = Math.max(state.tipWidth ?? 0, 0) / 2;
-          const maxD = halfTipNow > 0 ? tl : 0;
-          const td = Math.min(Math.max(state.tipDimple ?? 0, 0), maxD);
-          const dp = { x: state.to.x - f.ux * (tl - td), y: state.to.y - f.uy * (tl - td) };
-          return { endWidth: Math.max(2 * Math.abs(projectOntoNormal(dp, f, p)), 0) };
+          return { endWidth: widthFrom(endAnchor(state), f, allowed) };
         },
       },
     ];

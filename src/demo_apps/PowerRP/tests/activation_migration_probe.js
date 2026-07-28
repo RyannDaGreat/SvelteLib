@@ -31,9 +31,11 @@
  *       equation editor, cursor → its canvas palette, and all SIX media widgets →
  *       the asset-pick signal (which really does open the picker). A rect still
  *       does nothing.
- *   (2) INTERIOR EXPLORE MODE works off plugins/demo/mandelbrot.js itself: a drag
- *       pans, a wheel zooms, each gesture is ONE undo unit, and the view lands in
- *       the DOCUMENT (so a reload / CLI render agrees with the screen).
+ *   (2) INTERIOR EXPLORE MODE works off plugins/demo/mandelbrot.js itself, with the
+ *       CANVAS'S OWN gesture vocabulary one frame down: a plain wheel pans the
+ *       interior, Ctrl+wheel (a trackpad pinch) zooms it, a plain DRAG still moves
+ *       the widget, each gesture is ONE undo unit, and the view lands in the
+ *       DOCUMENT (so a reload / CLI render agrees with the screen).
  *   (3) THE FILMSTRIP'S TWO-STEP CREATION is a declared creation gesture: a real
  *       crosshair drag places the box AND raises the asset prompt — the behaviour
  *       that used to be a `type === "filmstrip"` branch inside app.addItem.
@@ -45,12 +47,13 @@
  *   node src/demo_apps/PowerRP/tests/activation_migration_probe.js [shot_dir]
  */
 import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
 
-const repo = process.cwd();
-const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
+// Every path resolves from THIS FILE, never process.cwd(): the probe must run
+// correctly from any directory, and a cwd-relative root silently pointed at the
+// wrong tree the moment it was invoked from anywhere but the repo root.
 const shots = process.argv[2] ?? "/tmp/activation_migration_probe";
 await mkdir(shots, { recursive: true });
 
@@ -73,7 +76,7 @@ const ZOOM_IDLE_WAIT_MS = 700; // > ZOOM_GESTURE_IDLE_MS (250), so the gesture e
 // stray HMR reload mid-probe drops window.__powerrp_app for reasons that have
 // nothing to do with what is being tested.
 const server = await createServer({
-  configFile: resolve(webRoot, "vite.config.js"),
+  configFile: fileURLToPath(new URL("../web/vite.config.js", import.meta.url)),
   server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null },
 });
 await server.listen();
@@ -287,10 +290,35 @@ try {
   ok(await modeId() === "navigate_interior", `double-click enters explore mode from the PLUGIN's own declaration (got ${await modeId()})`);
   await page.screenshot({ path: `${shots}/4-explore-mode.png` });
 
-  // PAN: one undo unit, committed on release, previewing live.
+  // INTERIOR PAN: a PLAIN WHEEL, not a drag. The interior takes the canvas's own
+  // wheel vocabulary (plain = pan, Ctrl = zoom) and deliberately leaves the plain
+  // single-pointer drag to the canvas so the widget stays MOVABLE while exploring —
+  // the user's correction ("so that way I can still drag the element around while
+  // I'm editing it"). One undo unit, committed on the wheel-idle, previewing live.
   await page.evaluate(() => { window.__probeCommits = 0; const a = window.__powerrp_app; const real = a.commit.bind(a); a.commit = (d) => { window.__probeCommits += 1; return real(d); }; });
   await sleep(1500); // let any unrelated async widget commit (latex re-typeset) land first
   const base = await page.evaluate(() => window.__probeCommits);
+  const at = await worldToPage(SPOT_CX, SPOT_CY);
+  await page.mouse.move(at.x, at.y);
+  for (let i = 0; i < WHEEL_TICKS; i += 1) {
+    await page.mouse.wheel({ deltaX: WHEEL_DELTA, deltaY: WHEEL_DELTA });
+    await sleep(30);
+  }
+  const midPan = await stored(mbId, "centerX");
+  const midCommits = await page.evaluate(() => window.__probeCommits) - base;
+  await sleep(ZOOM_IDLE_WAIT_MS);
+  const panned = { centerX: await stored(mbId, "centerX"), centerY: await stored(mbId, "centerY") };
+  const panCommits = await page.evaluate(() => window.__probeCommits) - base;
+  ok(midPan !== start.centerX, "mid-gesture the interior centre is already previewing (live, not on release)");
+  ok(midCommits === 0, `NO document commit during the gesture — the preview is undo-free (got ${midCommits})`);
+  ok(panCommits === 1, `the whole ${WHEEL_TICKS}-tick interior pan is ONE undo unit (got ${panCommits})`);
+  ok(panned.centerX !== start.centerX && panned.centerY !== start.centerY,
+    `the WIDGET's own stored centre moved (${start.centerX},${start.centerY} → ${panned.centerX},${panned.centerY})`);
+  await page.screenshot({ path: `${shots}/5-after-interior-pan.png` });
+
+  // A PLAIN DRAG MOVES THE WIDGET — the other half of that correction, asserted here
+  // so a mode that quietly reclaimed the pointer would fail this probe too.
+  const itemBefore = { x: await stored(mbId, "x"), y: await stored(mbId, "y") };
   const from = await worldToPage(SPOT_CX - 30, SPOT_CY - 20);
   const to = await worldToPage(SPOT_CX + 20, SPOT_CY + 15);
   await page.mouse.move(from.x, from.y);
@@ -299,35 +327,30 @@ try {
     await page.mouse.move(from.x + (to.x - from.x) * i / 5, from.y + (to.y - from.y) * i / 5);
     await sleep(40);
   }
-  const midPan = await stored(mbId, "centerX");
-  const midCommits = await page.evaluate(() => window.__probeCommits) - base;
   await page.mouse.up();
   await sleep(SETTLE_MS);
-  const panned = { centerX: await stored(mbId, "centerX"), centerY: await stored(mbId, "centerY") };
-  const panCommits = await page.evaluate(() => window.__probeCommits) - base;
-  ok(midPan !== start.centerX, "mid-drag the interior centre is already previewing (live, not on release)");
-  ok(midCommits === 0, `NO document commit during the drag — the preview is undo-free (got ${midCommits})`);
-  ok(panCommits === 1, `the whole 5-move pan is ONE undo unit (got ${panCommits})`);
-  ok(panned.centerX !== start.centerX && panned.centerY !== start.centerY,
-    `the WIDGET's own stored centre moved (${start.centerX},${start.centerY} → ${panned.centerX},${panned.centerY})`);
-  await page.screenshot({ path: `${shots}/5-after-pan.png` });
+  ok(await stored(mbId, "x") !== itemBefore.x && await stored(mbId, "y") !== itemBefore.y,
+    `a plain drag MOVES THE WIDGET while exploring (${itemBefore.x},${itemBefore.y} → ${await stored(mbId, "x")},${await stored(mbId, "y")})`);
+  ok(await modeId() === "navigate_interior", "and the mode survives it");
 
-  // ZOOM: N wheel ticks = ONE undo unit (a wheel has no "up", so an idle ends it).
+  // INTERIOR ZOOM: Ctrl+wheel (what a trackpad PINCH sends) — N ticks = ONE undo
+  // unit (a wheel has no "up", so an idle ends it).
   await page.evaluate(() => { window.__probeCommits = 0; });
-  const at = await worldToPage(SPOT_CX, SPOT_CY);
   await page.mouse.move(at.x, at.y);
+  await page.keyboard.down("Control");
   for (let i = 0; i < WHEEL_TICKS; i += 1) {
     await page.mouse.wheel({ deltaY: WHEEL_DELTA });
     await sleep(30);
   }
+  await page.keyboard.up("Control");
   const midZoomCommits = await page.evaluate(() => window.__probeCommits);
   await sleep(ZOOM_IDLE_WAIT_MS);
   const zoomCommits = await page.evaluate(() => window.__probeCommits);
   const zoomed = await stored(mbId, "zoomExponent");
-  ok(midZoomCommits === 0, `no commit while the wheel is still turning (got ${midZoomCommits})`);
-  ok(zoomCommits === 1, `${WHEEL_TICKS} wheel ticks = ONE undo unit (got ${zoomCommits})`);
-  ok(zoomed !== start.zoomExponent, `the widget's own zoomExponent changed with the wheel (${start.zoomExponent} → ${zoomed})`);
-  await page.screenshot({ path: `${shots}/6-after-zoom.png` });
+  ok(midZoomCommits === 0, `no commit while the pinch is still going (got ${midZoomCommits})`);
+  ok(zoomCommits === 1, `${WHEEL_TICKS} pinch ticks = ONE undo unit (got ${zoomCommits})`);
+  ok(zoomed !== start.zoomExponent, `the widget's own zoomExponent changed with the pinch (${start.zoomExponent} → ${zoomed})`);
+  await page.screenshot({ path: `${shots}/6-after-interior-pinch.png` });
 
   // ONE undo reverts the WHOLE zoom gesture, and only it.
   await page.evaluate(() => window.__powerrp_app.undo());

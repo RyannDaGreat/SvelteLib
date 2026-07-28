@@ -44,7 +44,7 @@ import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, videoV5FrameKey,
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
-import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill, materialSampleReach } from "./materials.js";
+import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
@@ -111,10 +111,10 @@ function deeperSubtree(d) {
 // the only subtree that stays on the full path — it is a clip + a re-emit of
 // content already being drawn, with no offscreen and no per-pixel pass.
 const PROXY_BACKDROP_OPS = new Set(["blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop"]);
-// Frost alpha for the proxy stand-in of a backdrop panel with no tint of its own,
-// so the region still reads as a panel (not a hole) over the composited content.
-const PROXY_FROST_ALPHA = 0.14;
-const PROXY_FROST_RGBA = [1, 1, 1, PROXY_FROST_ALPHA]; // faint translucent white
+// The frost stand-in for a backdrop panel with no colour of its own now lives beside
+// the material registry's other proxy defaults, as materials.DEFAULT_PROXY_BACKDROP_TINT
+// — it is BOTH the untinted-glass fallback here AND what an undeclared backdrop
+// material resolves to (materials.resolveProxyBackdrop), so it is declared once.
 
 // Slack (device px) added around any rect that must fully contain a rasterized
 // shape: Skia's COVERAGE ANTIALIAS band reaches outside a shape's geometric edge,
@@ -1535,23 +1535,35 @@ function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, ang
  * expensive machinery a ~100px thumbnail cannot show — no composite-so-far read, no
  * below-content re-render, no full-screen blur, no SkSL, no dither. Dispatches by op:
  *   - glassBackdrop    → a translucent frost rounded-rect (the panel's own tint, or
- *                        a faint white) + its hairline border.
- *   - materialBackdrop → a faint frost rounded-rect + its border (a material has no
- *                        single representative color; the panel still reads as one).
+ *                        the shared faint white) + its hairline border.
+ *   - materialBackdrop → the MATERIAL'S OWN overlay tint + its border
+ *                        (materials.resolveProxyBackdrop: the material's
+ *                        `proxyBackdrop(params)` if it declares one, else the same
+ *                        shared frost). Declaring one is how a material whose effect
+ *                        has a DIRECTION gets a stand-in that moves the same way —
+ *                        before this hook every backdrop material shared the frost,
+ *                        which LIGHTENS, so a dimming widget read as a brightening
+ *                        one in its own thumbnail.
  *   - magnifyBackdrop  → just the lens rim (the content beneath shows un-magnified).
  *   - blurBackdrop     → nothing (a whole-frame backdrop blur is imperceptible at
  *                        thumbnail size; the sharp content beneath is a fair proxy).
  * The overlays land ON TOP of the real backdrop content, so the region reads as a
  * sensible preview, never a hole. `ctx` supplies the camera coverage-AA flag.
+ *
+ * CHEAPNESS IS THE CONTRACT: every branch is at most one drawRRect plus a border
+ * stroke. No offscreen surface, no SkSL, no per-pixel pass — that is what the proxy
+ * path buys, and a stand-in that did real work would defeat it.
  */
 function drawProxyBackdrop(CanvasKit, canvas, cmd, view, world, ctx) {
   const opacity = cmd.opacity ?? 1;
   const aa = ctx.antialias;
   if (cmd.op === "blurBackdrop") return; // no geometry; the sharp content beneath is the proxy
   if (cmd.op === "magnifyBackdrop") { drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity, aa); return; }
-  // glass / material: a translucent frosted rounded-rect in the panel's LOCAL space
+  // glass / material: a translucent overlay rounded-rect in the panel's LOCAL space
   // (applyView — rotation-safe, the same seam drawGlassBorder uses).
-  const tint = cmd.op === "glassBackdrop" && cmd.tint ? parseColor(cmd.tint) : PROXY_FROST_RGBA;
+  const tint = cmd.op === "materialBackdrop"
+    ? resolveProxyBackdrop(getMaterial(cmd.material), cmd.params)
+    : (cmd.tint ? parseColor(cmd.tint) : DEFAULT_PROXY_BACKDROP_TINT);
   const materialize = cmd.materialize ?? 1; // glass fades in with materialize; a material has none ⇒ full
   const a = tint[3] * opacity * materialize;
   if (a > 0 && cmd.halfW > 0 && cmd.halfH > 0) {

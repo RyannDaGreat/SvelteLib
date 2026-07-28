@@ -2888,10 +2888,15 @@ audio.ae-preview-media {
   min-height: var(--a-control-h);
 }
 
-/* A HIDDEN element (its visibility companion flag is false): dimmed, because it
-   is still stored and still keyframable — it simply does not participate. The
-   eye itself stays full strength so the way back is never dimmed out. */
-.listfield .list-el-hidden > *:not(.boolfield) {
+/* A HIDDEN element (its visibility companion flag is false): its index and its
+   field controls dim, because the element is still stored and still keyframable —
+   it simply does not participate. The eye and the purge button are named OUT
+   rather than excluded with :not(), because Tooltip's anchor is display:contents
+   (it is not a box, so an opacity on it would be ignored) — dimming the parts
+   themselves is the only spelling that actually holds. The eye especially must
+   stay full strength: the way back must never be the dimmed-out control. */
+.listfield .list-el-hidden .list-index,
+.listfield .list-el-hidden .list-fields {
   opacity: 0.45;
 }
 

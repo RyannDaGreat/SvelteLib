@@ -201,6 +201,10 @@ const ACCOUNTED = {
     keys: ["Enter"],
     coverage: "LOCAL: Enter commits an inline slide rename (same field-commit convention).",
   },
+  "web/CanvasToolbar.svelte": {
+    keys: ["Enter", "Escape"],
+    coverage: "LOCAL: Enter commits and Escape abandons an edit in one of the floating bar's readout fields (the Mandelbrot's Re/Im/Zoom) — the same field-commit convention as every Inspector row, confined to the focused input. BOTH stopPropagation, which is the load-bearing half: the bar is mounted BY a canvas mode (interior explore), whose own registered Escape exits that mode, so an un-stopped Escape would abandon the typed value AND close the bar that was showing it. Not registered, for the Inspector's reason: a global chip for a key that only works inside one focused field would be less honest than none.",
+  },
   "web/VariablesPanel.svelte": {
     keys: ["Enter"],
     coverage: "LOCAL: Enter commits an inline variable name/value edit (same field-commit convention).",

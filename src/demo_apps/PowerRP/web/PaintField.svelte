@@ -25,10 +25,34 @@
         through NumericField (the DraggableNumber scrubber) — NOT hand-typed hex
         or bare number inputs. Exactly the controls every other property uses.
 
-  KNOWN BOUND: an EQUATION typed into a stop offset/color (a leading "=") is not
-  evaluated — list elements are not equation slots (core leaves() keeps arrays
-  opaque for equation detection), so parsePaint reports it loudly rather than
-  silently. Gradient geometry (linear direction / radial radius) is edited here;
+  ── THE STOP LIST IS NO LONGER BESPOKE (the DRY consolidation) ────────────────
+  This field used to hand-write a stop row per element plus its own "+ Add stop"
+  and "×" buttons. That WAS the general list mechanism, built once here for one
+  property — which is exactly the duplication core/lists.js exists to end. The
+  stops now render through web/ListField.svelte, driven by the SAME declaration
+  core types the slots from (core/properties.js GRADIENT_STOPS_LIST), so:
+    - stop colours/offsets keep the identical controls, paths and per-element ◆
+      (points 2 and 3 above are unchanged — ListField delegates to the same
+      ColorField / NumericField at the same paths, and the offset's 0..1 bounds
+      now come from the DECLARATION instead of being re-typed here);
+    - every stop gains a VISIBILITY toggle (hiding one ramps straight past it,
+      byte-identically to never having authored it) and INSERT-BETWEEN /
+      insert-at-either-end, which is what the user asked for ("the add stop
+      inside the gradient UI could be better… insertions at the ends or in
+      between… And that should be generalized");
+    - removal is now PURGE, which REFUSES below the declared minimum of two
+      stops with the reason in its tooltip, where the old × silently no-oped.
+  WHAT CHANGED VISIBLY, and nothing else: the two fields now read in DECLARATION
+  order (position, then colour — the old row put colour first), and an insert at
+  the end EXTRAPOLATES from the last two stops rather than always appending white
+  at offset 1. The preset library below is untouched.
+
+  KNOWN BOUND: a stop COLOUR can hold an `=` equation (core evaluates it now —
+  the old "list elements are not equation slots" bound is closed) and ColorField
+  displays it, but ENTERING one is not offered inside a list: the universal Tier-0
+  `=` field lives at web/Inspector.svelte's row seam and is not reachable from
+  inside a value control. A stop OFFSET has full equation entry (NumericField owns
+  its own). Gradient geometry (linear direction / radial radius) is edited here;
   radius is a NumericField (keyframable), direction is an AngleField dial. Both
   are equation-bindable like every other property (manifest Tier 0) — the
   direction's leaf simply carries the "=" expression instead of a number.
@@ -36,7 +60,9 @@
   Props mirror ColorField: app, path (["items", id, "fill"|"stroke"]), label,
   value (the raw stored paint — string or multi-sub-state object), disabled.
   Styling: inline styles over existing app.css --a-*/--fg/--border tokens (this
-  field adds no app.css classes; the house token convention is preserved).
+  field adds no app.css classes; the house token convention is preserved). The
+  stop list brings its own (.listfield / .list-*, in app.css where the house
+  convention puts chrome) — one more reason not to keep a second copy here.
 -->
 <script module>
   import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
@@ -163,9 +189,9 @@
   import ColorField from "./ColorField.svelte";
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
-  import KeyframeControls from "./KeyframeControls.svelte";
+  import ListField from "./ListField.svelte";
   import GradientPresetPicker from "./GradientPresetPicker.svelte";
-  import Tooltip from "../../../lib/Tooltip.svelte";
+  import { GRADIENT_STOPS_LIST } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
 
   let { app, path, label, value, disabled = false } = $props();
@@ -180,17 +206,9 @@
   // The active gradient sub-state's key in the stored object ("linear"/"radial").
   let subKey = $derived(mode === "radialGradient" ? "radial" : "linear");
   let sub = $derived(paintSubstates(raw));
-  // The active stop list. A non-array here means the fold produced a corrupt
-  // (numeric-keyed object) stops value — a LOUD signal of a delta/fold bug, NOT
-  // something to silently coerce: report it and render no stops rather than
-  // exploding (`[...stops]`). With array-aware setPath this should never fire.
-  let stops = $derived.by(() => {
-    if (mode === "solid" || mode === "equation") return [];
-    const s = sub[subKey]?.stops;
-    if (Array.isArray(s)) return s;
-    console.error(`PaintField: ${subKey} gradient "stops" is not an array (delta/fold bug) — got ${JSON.stringify(s)}`);
-    return [];
-  });
+  // (The stop list itself is read by ListField, from the SAME path written below —
+  // including the loud report for a corrupt non-array stops value, which used to
+  // be derived here. One reader, so the control and the writes cannot disagree.)
   // A solid that has NEVER been a gradient is a bare STRING: its ColorField
   // edits `path` directly (byte-identical). Once the paint is the object form,
   // solid lives at path+["solid"].
@@ -229,18 +247,6 @@
    * evaluator reports it loudly rather than this field second-guessing it. */
   function commitEquation(text) {
     commitWhole(text);
-  }
-
-  /** Command. Appends a stop (white at offset 1) to the active gradient — a
-   * whole-list write (length change). The user drags its offset afterward. */
-  function addStop() {
-    commitAt([subKey, "stops"], [...stops, { offset: 1, color: NEW_STOP_COLOR }]);
-  }
-
-  /** Command. Removes stop `i` (kept >= 2 — a gradient needs two stops). */
-  function removeStop(i) {
-    if (stops.length <= 2) return;
-    commitAt([subKey, "stops"], stops.filter((_, j) => j !== i));
   }
 
   /** Command. Replaces the active gradient's stops with a preset's (from the
@@ -342,48 +348,23 @@
              padding:var(--a-sp-1) var(--a-sp-2);"
     />
   {:else}
-    <!-- STOPS — each row: ColorField (standard) + NumericField offset (scrubber)
-         + per-slot ◆ KeyframeControls + remove. All operate on real state paths
-         (…stops.<i>.color / .offset), so each keyframes + tweens independently. -->
+    <!-- STOPS — THE GENERAL LIST CONTROL (web/ListField.svelte), driven by the
+         SAME declaration core types these slots from (GRADIENT_STOPS_LIST). It
+         renders each stop's colour through ColorField and its offset through
+         NumericField at the identical state paths this field used to write by
+         hand (…stops.<i>.color / .offset), keeps the per-stop ◆, and adds the
+         visibility toggle, insert-between / insert-at-either-end, and a purge
+         that refuses below the declared two-stop minimum. The header records
+         exactly what this consolidation changed. -->
     <div style="display:flex; flex-direction:column; gap:var(--a-sp-2);">
-      {#each stops as stop, i (i)}
-        <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
-          <div style="flex:1.4; min-width:0;">
-            <ColorField
-              {app}
-              path={[...path, subKey, "stops", i, "color"]}
-              label={`${label} stop ${i + 1} color`}
-              value={stop.color}
-              {disabled}
-            />
-          </div>
-          <div style="flex:1; min-width:0;">
-            <NumericField
-              {app}
-              path={[...path, subKey, "stops", i, "offset"]}
-              label={`${label} stop ${i + 1} offset`}
-              min={0}
-              max={1}
-            />
-          </div>
-          <span style="display:inline-flex; align-items:center;">
-            <KeyframeControls {app} path={[...path, subKey, "stops", i]} />
-          </span>
-          <Tooltip text="Remove stop">
-            <button
-              type="button" aria-label="Remove stop"
-              disabled={disabled || stops.length <= 2}
-              onclick={() => removeStop(i)}
-              style="color:var(--fg-dim); background:transparent; border:none; cursor:pointer; padding:0 var(--a-sp-1);"
-            >×</button>
-          </Tooltip>
-        </div>
-      {/each}
-      <button
-        type="button" {disabled} onclick={addStop}
-        style="align-self:flex-start; font-size:var(--a-font-sm); color:var(--fg-dim); background:transparent;
-               border:1px dashed var(--border); border-radius:0; padding:var(--a-sp-1) var(--a-sp-2); cursor:pointer;"
-      >+ Add stop</button>
+      <ListField
+        {app}
+        decl={GRADIENT_STOPS_LIST}
+        path={[...path, subKey, "stops"]}
+        label={`${label} stop`}
+        {disabled}
+        seedElement={{ offset: 0, color: NEW_STOP_COLOR }}
+      />
 
       <!-- PRESET LIBRARY — a tiled grid of gradient swatches (baked from rp's
            gradient library). HOVERING one previews it live in the viewport

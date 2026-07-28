@@ -31,7 +31,7 @@
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline } from "../core/outline.js";
+import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline, axisNormalFrame, projectOntoNormal, closestPointOnAxisRange } from "../core/outline.js";
 import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The bezier generator's params for a state.
@@ -39,6 +39,22 @@ import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, h
  */
 function bendParams(s) {
   return { x0: s.from.x, y0: s.from.y, x1: s.to.x, y1: s.to.y, bend: s.bend ?? 0 };
+}
+
+/**
+ * Pure function. The straight span's midpoint and its (axis, right-normal) frame
+ * — the two things BOTH halves of the bend handle's constraint protocol need, so
+ * they are derived once here instead of twice inline. `frame.length` is the span
+ * (0 for coincident endpoints: no axis, so no defined bend direction).
+ *
+ * @example bendFrame({from: {x: 0, y: 0}, to: {x: 100, y: 0}}).mid // {x: 50, y: 0}
+ * @example bendFrame({from: {x: 0, y: 0}, to: {x: 100, y: 0}}).frame.ny // 1 (right normal points +y for a rightward axis)
+ */
+function bendFrame(s) {
+  return {
+    mid: { x: (s.from.x + s.to.x) / 2, y: (s.from.y + s.to.y) / 2 },
+    frame: axisNormalFrame(s.from, s.to),
+  };
 }
 
 /**
@@ -136,12 +152,19 @@ export const curvedArrowPlugin = {
   /**
    * Pure function. ONE modifier point at the curve's midpoint (t=0.5 on the
    * bezier, the visible point a user would grab to bend the arc — NOT the
-   * off-curve control point), dragged to scrub `bend`. `apply` projects the
-   * dragged point onto the PERPENDICULAR-to-span axis (the handle's ONE
-   * constrained trajectory — bend only ever moves the curve sideways off the
-   * straight line, matching bezierControlFromBend's own perpendicular-offset
-   * parameterization) via the same axisNormalFrame decomposition
-   * fancy_arrow.js's modifier points use.
+   * off-curve control point), dragged to scrub `bend`.
+   *
+   * THE HANDLE-CONSTRAINT PROTOCOL (core/derive.js):
+   *   `constrain` — the allowed set is the full LINE through the straight
+   *     midpoint along the span's RIGHT NORMAL: bend only ever moves the curve
+   *     sideways off the straight line (bezierControlFromBend's own
+   *     perpendicular-offset parameterization), so the drag's AXIAL component is
+   *     what the projection removes. Unbounded, because `bend` is unbounded —
+   *     the one handle here whose allowed set is a line rather than a segment.
+   *   `apply` — reads the already-allowed point's signed normal offset back as
+   *     bend. A t=0.5 quadratic bezier's midpoint sits HALFWAY between the
+   *     straight midpoint and the control point (De Casteljau at t=0.5), so that
+   *     offset is (bend·span)/2 — invert the factor to recover bend.
    */
   modifierPoints(s) {
     const params = bendParams(s);
@@ -149,18 +172,17 @@ export const curvedArrowPlugin = {
     const mid = quadraticBezierPoint({ x: s.from.x, y: s.from.y }, c, { x: s.to.x, y: s.to.y }, 0.5);
     return [{
       id: "bend", x: mid.x, y: mid.y,
-      apply(state, localPoint) {
-        const dx = state.to.x - state.from.x, dy = state.to.y - state.from.y;
-        const span = Math.hypot(dx, dy);
-        if (span === 0) return { bend: state.bend ?? 0 }; // no axis to project onto — leave unchanged
-        const nx = -dy / span, ny = dx / span; // right normal, same convention as core/outline.js
-        const mx = (state.from.x + state.to.x) / 2, my = (state.from.y + state.to.y) / 2;
-        // Midpoint of a t=0.5 quadratic bezier sits HALFWAY between the
-        // straight midpoint and the control point (De Casteljau at t=0.5),
-        // so its perpendicular offset from the straight midpoint is
-        // (bend*span)/2 — invert that factor to recover bend from the drag.
-        const offset = (localPoint.x - mx) * nx + (localPoint.y - my) * ny;
-        return { bend: (offset * 2) / span };
+      constrain(state, desired) {
+        const { mid: m, frame } = bendFrame(state);
+        return closestPointOnAxisRange(m, { x: frame.nx, y: frame.ny }, desired);
+      },
+      apply(state, allowed) {
+        const { mid: m, frame } = bendFrame(state);
+        // Coincident endpoints have no axis, so no bend direction exists to read
+        // an offset against — leave the value alone (the same "no geometry"
+        // territory bezierControlFromBend's degenerate case covers).
+        if (frame.length === 0) return { bend: state.bend ?? 0 };
+        return { bend: (projectOntoNormal(m, frame, allowed) * 2) / frame.length };
       },
     }];
   },

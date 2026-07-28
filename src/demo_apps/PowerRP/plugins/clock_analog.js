@@ -36,6 +36,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { closestPointInAnnulus } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props, wrapDegrees, FULL_TURN_DEG } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { ellipse, polyline, text } from "../render_gpu/ir.js";
@@ -256,6 +257,11 @@ const HOUR_MARKS = 12;                   // numerals / hour ticks around the dia
 const DEG_PER_HOUR_MARK = FULL_TURN_DEG / HOUR_MARKS; // 30° between hour marks
 const MIN_HAND_LENGTH = 0.05;            // hand-tip drag radius clamp (fraction of R)
 const MAX_HAND_LENGTH = 1;
+// A hand-tip drag landing EXACTLY on the pivot has no direction to read an angle
+// from. This is the heading it resolves to: +y is local screen-down, i.e. 6
+// o'clock — which is where unitVectorToClockAngle's own degenerate branch already
+// sent it (atan2(0, -0) = π), so naming it here changes nothing and hides nothing.
+const PIVOT_FALLBACK_DIR = { x: 0, y: 1 };
 const MIN_HAND_WIDTH = 0.5;              // canvas units — a hand is always at least hairline-visible
 
 // Inline Inspector row builders (the donut.js / shapeshifter.js precedent — rows
@@ -427,6 +433,14 @@ export const clockAnalogPlugin = {
    * band-preserving time, timeFromHandAngle) and this hand's LENGTH prop (its
    * distance from center as a fraction of the face radius) — "spin the hands and
    * change their lengths". Writing `time` overrides any equation bound there.
+   *
+   * THE HANDLE-CONSTRAINT PROTOCOL (core/derive.js): the allowed set is the
+   * ANNULUS between the two length clamps — the tip swings to ANY angle (that is
+   * the whole point of dragging a hand) but its RADIUS is bounded, so this is the
+   * two-degree-of-freedom case, not a curve. Because the face radius is the
+   * INSCRIBED circle (faceGeom takes min(w, h)/2), the set is a true circle even
+   * in a non-square box, so nearest-in-local is the exact metric projection with
+   * no ellipse caveat.
    */
   modifierPoints(s) {
     const g = faceGeom(s);
@@ -439,11 +453,17 @@ export const clockAnalogPlugin = {
         return {
           id: `${hand.id}Tip`,
           x: tip.x, y: tip.y,
-          apply(state, localPoint) {
+          constrain(state, desired) {
             const gg = faceGeom(state);
-            const dx = localPoint.x - gg.cx, dy = localPoint.y - gg.cy;
+            return closestPointInAnnulus({ x: gg.cx, y: gg.cy }, MIN_HAND_LENGTH * gg.R, MAX_HAND_LENGTH * gg.R, desired, PIVOT_FALLBACK_DIR);
+          },
+          apply(state, allowed) {
+            const gg = faceGeom(state);
+            const dx = allowed.x - gg.cx, dy = allowed.y - gg.cy;
             const newTime = timeFromHandAngle(state.time ?? 0, hand.period, unitVectorToClockAngle(dx, dy));
-            const length = gg.R > 0 ? clamp(Math.hypot(dx, dy) / gg.R, MIN_HAND_LENGTH, MAX_HAND_LENGTH) : clamp(state[hand.lengthKey], MIN_HAND_LENGTH, MAX_HAND_LENGTH);
+            // A zero-radius face has no radius to take a fraction OF (a technical
+            // division guard — and it emits no handle to drag in the first place).
+            const length = gg.R > 0 ? Math.hypot(dx, dy) / gg.R : clamp(state[hand.lengthKey], MIN_HAND_LENGTH, MAX_HAND_LENGTH);
             return { time: newTime, [hand.lengthKey]: length };
           },
         };

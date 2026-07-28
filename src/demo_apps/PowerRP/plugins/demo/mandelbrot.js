@@ -73,7 +73,7 @@ import { reportOnce } from "../../core/report.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import {
   MANDELBROT_AXIS_CODE, MANDELBROT_ESCAPE_RADIUS, MANDELBROT_MAX_ITERATIONS, MANDELBROT_REF_LEN,
-  bakeMandelbrotPalette, bitsForDepth, centreResolutionDecades, referenceOrbit, splitCentreFixed,
+  bakeMandelbrotPalette, bitsForDepth, centreResolutionDecades, referenceOrbit, scaledDecimal, splitCentreFixed,
 } from "../../render_gpu/skia/mandelbrot_shader.js";
 
 const DEG2RAD = Math.PI / 180;
@@ -103,6 +103,14 @@ const EXHAUSTION_SAFE_DECADES = 6;
  * half-width of 10, far outside anything worth looking at.
  */
 const MIN_ZOOM_EXPONENT = -1;
+
+/**
+ * Smallest `paletteScale` the Inspector accepts — iterations per colour cycle, so
+ * zero would divide by zero in the colour axis. Named because BOTH the Inspector
+ * row and the floating bar's Bands field enforce it, and two copies of a floor is
+ * how they come to disagree.
+ */
+const MIN_PALETTE_SCALE = 0.001;
 
 /**
  * The built-in cyclic palettes. Each is a stop list whose LAST stop blends back
@@ -258,6 +266,154 @@ function fineExponentOf(s) {
  *  @example halfWidthOf({}) // 1 */
 function halfWidthOf(s) {
   return Math.pow(10, -(s.zoomExponent ?? 0));
+}
+
+/** Pure function. A zoom exponent held at the SAME floor the Inspector row
+ *  enforces — so a gesture, a typed value and the row cannot disagree about how far
+ *  out the view may go (MIN_ZOOM_EXPONENT for why the floor is negative).
+ *  @example clampedZoomExponent(6) // 6
+ *  @example clampedZoomExponent(-9) // -1 (the floor: a half-width of 10) */
+function clampedZoomExponent(z) {
+  return Math.max(MIN_ZOOM_EXPONENT, z);
+}
+
+/**
+ * Pure function. ONE AXIS OF THE SPLIT CENTRE AS AN EXACT DECIMAL STRING — all of
+ * it, every digit the two float64s actually carry, with no rounding anywhere.
+ *
+ * WHY A STRING AND NOT A NUMBER: this is what the floating coordinate bar shows and
+ * what a user pastes a published deep-zoom coordinate into. `approxCentre` — the
+ * float64 sum — is the WRONG thing to display, because at fineExponent 16 it throws
+ * away the entire fine half of the coordinate the widget exists to carry.
+ *
+ * The sum is `scaledDecimal`'s, the same exact-decimal arithmetic
+ * mandelbrot_shader.splitCentreFixed uses to build the reference orbit, so what the
+ * bar shows and what the shader renders cannot disagree. Trailing zeros are trimmed
+ * because they are not information; nothing else is.
+ *
+ * WITH NO FINE PART the value IS a single float64, and JavaScript's own `String`
+ * gives the SHORTEST decimal that round-trips to it — "-0.7435669", not the
+ * "-0.743566900000000023" its 18-place expansion would show. That is not a rounding
+ * (it names the identical float64) and it is the case every shipped preset is in, so
+ * an ordinary view reads like the coordinate the user typed. A pair WITH a fine part
+ * is genuinely a 30-plus-digit number and prints as one.
+ *
+ * @param {number} coarse - the leading digits
+ * @param {number} fine - the fine offset, in units of 10^(-fineExponent)
+ * @param {number} fineExponent - a non-negative integer
+ * @returns {string} the exact decimal value of coarse + fine·10^(-fineExponent)
+ *
+ * @example splitCentreText(-0.5, 0, 0) // "-0.5"
+ * @example splitCentreText(-0.7435669, 0, 0) // "-0.7435669" (no fine part: the shortest form that IS this float64)
+ * @example splitCentreText(0.5, 5, 1) // "1"
+ * @example splitCentreText(-0.7435669, 3, 16) // "-0.7435668999999997306016545437159948" (coarse's true float64 value plus 3e-16 — what actually renders)
+ */
+export function splitCentreText(coarse, fine, fineExponent) {
+  if ((fine ?? 0) === 0) return String(coarse ?? 0);
+  const fe = Math.max(0, Math.round(fineExponent ?? 0));
+  const decimals = fe + SPLIT_TEXT_DECIMALS;
+  const scaled = scaledDecimal(coarse ?? 0, decimals) + scaledDecimal(fine ?? 0, SPLIT_TEXT_DECIMALS);
+  return decimalString(scaled, decimals);
+}
+
+/**
+ * Pure function. A TYPED decimal string → the split-centre leaves that hold it, at
+ * a given fine exponent: `{coarse, fine}` with `coarse + fine·10^(-fineExponent)`
+ * equal to the typed value to every digit the pair can represent.
+ *
+ * THIS IS A CANONICAL RE-SPLIT, AND IT IS DELIBERATELY NOT `interiorView.writes`.
+ * A gesture NUDGES a coordinate, so it must leave the coarse anchor alone and put
+ * the delta in the fine slot — otherwise a drag would quantize a 32-digit centre to
+ * float64, which is `writes`'s whole reason for existing. A TYPED absolute
+ * coordinate is the opposite situation: it defines both halves, so `coarse` takes
+ * the best float64 and `fine` takes the EXACT remainder. Rounding the typed value
+ * through float64 (a plain Number()) is the failure this function exists to prevent
+ * — that is exactly how a pasted deep coordinate loses its last sixteen digits.
+ *
+ * At fineExponent 0 there is no fine channel to speak of (the widget's own help
+ * text: "0 turns the fine part off entirely"), so the value is taken at float64 and
+ * the fine slot is left at zero — the same reading zoomTweenAxis takes.
+ *
+ * @param {string} text - a decimal number, e.g. "-0.743566900000000012345"
+ * @param {number} fineExponent - a non-negative integer
+ * @returns {{coarse: number, fine: number}|null} null when `text` is not a number
+ *
+ * PRECISION OF THE ROUND TRIP: every typed digit survives down to about 10^(-33),
+ * the pair's own resolution (two float64s at the chosen exponent). The residual
+ * itself is stored in a float64, so re-reading a 25-decimal coordinate reproduces it
+ * with an error near 10^(-34) — one part in 10^25 of the coordinate. Compare a plain
+ * `Number(text)`, which loses everything past the 17th digit.
+ *
+ * @example parseSplitCentre("-0.5", 0) // {coarse: -0.5, fine: 0}
+ * @example parseSplitCentre("1", 1) // {coarse: 1, fine: 0}
+ * @example parseSplitCentre("nonsense", 0) // null
+ * @example parseSplitCentre("-0.7435669000000000123456789", 16) // {coarse: -0.7435669, fine: 0.18255975643715994} (the fine slot holds the digits float64 dropped)
+ * @example splitCentreText(-0.7435669, 0.18255975643715994, 16).slice(0, 28) // "-0.7435669000000000123456789" (every typed digit read back)
+ */
+export function parseSplitCentre(text, fineExponent) {
+  const trimmed = String(text).trim();
+  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(trimmed)) return null;
+  const fe = Math.max(0, Math.round(fineExponent ?? 0));
+  const coarse = Number(trimmed);
+  if (!Number.isFinite(coarse)) return null;
+  if (fe === 0) return { coarse, fine: 0 };
+  const decimals = fe + SPLIT_TEXT_DECIMALS;
+  const residual = decimalScaled(trimmed, decimals) - scaledDecimal(coarse, decimals);
+  return { coarse, fine: Number(decimalString(residual, SPLIT_TEXT_DECIMALS)) };
+}
+
+/**
+ * How many decimal places past the coarse part the text helpers carry. THE SAME
+ * number splitCentreFixed scales the fine slot by (its COARSE_DECIMALS), because
+ * these functions must reproduce that sum exactly, not a near-enough one. It is
+ * private there, so it is stated here with the reason it must match rather than
+ * being a second, drifting constant.
+ */
+const SPLIT_TEXT_DECIMALS = 18;
+
+/**
+ * Pure function. A decimal STRING → a BigInt scaled by 10^decimals, exactly (no
+ * float64 anywhere on the path, which is the point — `Number(text)` is precisely
+ * the rounding the split centre exists to avoid). Digits past `decimals` are
+ * TRUNCATED, which is the honest treatment: they are past what the pair can hold.
+ *
+ * @param {string} text - a validated decimal number
+ * @param {number} decimals - fractional places to scale by
+ * @returns {bigint}
+ *
+ * @example decimalScaled("1.5", 3) // 1500n
+ * @example decimalScaled("-0.25", 2) // -25n
+ * @example decimalScaled("2", 0) // 2n
+ * @example decimalScaled("0.98765", 3) // 987n (past the scale: truncated, not rounded)
+ */
+function decimalScaled(text, decimals) {
+  const neg = text.startsWith("-");
+  const body = text.replace(/^[+-]/, "");
+  const [ip, fp = ""] = body.split(".");
+  const frac = fp.slice(0, decimals).padEnd(decimals, "0");
+  return (neg ? -1n : 1n) * BigInt((ip === "" ? "0" : ip) + (decimals === 0 ? "" : frac));
+}
+
+/**
+ * Pure function. A BigInt scaled by 10^decimals → its exact decimal string, with
+ * trailing fractional zeros trimmed (and the point dropped when nothing is left).
+ * The inverse of decimalScaled.
+ *
+ * @param {bigint} scaled - the numerator
+ * @param {number} decimals - fractional places it is scaled by
+ * @returns {string}
+ *
+ * @example decimalString(1500n, 3) // "1.5"
+ * @example decimalString(-25n, 2) // "-0.25"
+ * @example decimalString(0n, 4) // "0"
+ * @example decimalString(2000n, 3) // "2"
+ */
+function decimalString(scaled, decimals) {
+  const neg = scaled < 0n;
+  const digits = (neg ? -scaled : scaled).toString().padStart(decimals + 1, "0");
+  const ip = digits.slice(0, digits.length - decimals);
+  const fp = digits.slice(digits.length - decimals).replace(/0+$/, "");
+  return `${neg ? "-" : ""}${ip}${fp ? `.${fp}` : ""}`;
 }
 
 /**
@@ -417,7 +573,7 @@ const CUSTOM = customProps([
   // ── THE PALETTE ─────────────────────────────────────────────────────────────
   { name: "palette", kind: "select", options: PALETTE_OPTIONS, optionLabels: PALETTE_LABELS, default: "gold", label: "Palette", help: "Which cyclic colour ramp to use. All of them cycle, and at depth that is mandatory rather than stylistic: a 1e-12 frame spans about two iterations, so any palette stretched across the whole iteration range would be one flat colour. Stops are interpolated perceptually (OKLab), so no ramp passes through mud." },
   { name: "paletteStops", kind: "text", default: "", label: "Palette override", help: "Your own palette: two or more comma-separated colours (\"#001028, #ffd27f, #7a2f10\"), cycled and interpolated in OKLab. Empty uses the named palette above. Being text, this switches rather than tweens." },
-  { name: "paletteScale", kind: "number", default: 18, min: 0.001, label: "Palette scale", help: "Iterations per colour cycle (or octaves per cycle on the Screen distance axis). Small = tight rainbow banding; large = broad sweeps of one colour. This is the knob to reach for when a view looks either stripey or washed out." },
+  { name: "paletteScale", kind: "number", default: 18, min: MIN_PALETTE_SCALE, label: "Palette scale", help: "Iterations per colour cycle (or octaves per cycle on the Screen distance axis). Small = tight rainbow banding; large = broad sweeps of one colour. This is the knob to reach for when a view looks either stripey or washed out." },
   // `scrub` is MANDATORY here and cannot be inferred: the row is unbounded and its
   // default is 0, so there is no evidence of scale anywhere in the declaration, and
   // NumericField falls back to DraggableNumber's 1 unit per drag-PIXEL. Measured, a
@@ -844,7 +1000,7 @@ export const mandelbrotPlugin = {
       const old = mandelbrotPlugin.interiorView.window(s);
       const dx = (win.x + win.w / 2) - (old.x + old.w / 2);
       const dy = (win.y + win.h / 2) - (old.y + old.h / 2);
-      const out = { zoomExponent: Math.max(MIN_ZOOM_EXPONENT, -Math.log10(win.w / 2)) };
+      const out = { zoomExponent: clampedZoomExponent(-Math.log10(win.w / 2)) };
       if (fe > 0) {
         const unit = Math.pow(10, fe);
         out.centerFineX = (s.centerFineX ?? 0) + dx * unit;
@@ -855,6 +1011,89 @@ export const mandelbrotPlugin = {
       }
       return out;
     },
+  },
+  /**
+   * Pure function. THE FLOATING BAR (web/CanvasToolbar.svelte's `fields` spec) —
+   * the on-canvas readout explore mode puts above the widget.
+   *
+   * The user's request: "there's no visual indication when I'm editing it. There
+   * should be a bar just like text editing or cursors on the top in the canvas …
+   * it should … tell me the coordinates that I'm zooming into and stuff so that I
+   * can actually edit those in text on the top. And maybe some other quick toolbar
+   * things for controlling different properties of the Mandelbrot."
+   *
+   * ── WHY THESE FIVE FIELDS, ARGUED FROM THE PROPERTY LIST ─────────────────────
+   * The three coordinates are the request. The two extra knobs are not a guess:
+   * they are the ONLY two properties this file itself names as the thing to reach
+   * for, and both citations are above.
+   *   `maxIterations`  — the header's own words: "it is the FIRST thing to turn down
+   *                      if a slide feels slow"
+   *   `paletteScale`   — its row's help: "This is the knob to reach for when a view
+   *                      looks either stripey or washed out"
+   * Everything else stays in the Inspector, where a 26-row widget belongs; a bar
+   * that grew to a second Inspector would be a worse Inspector.
+   *
+   * ── WHY Re/Im ARE ONE FIELD EACH AND NOT TWO ─────────────────────────────────
+   * A centre axis is stored as coarse + fine (five leaves for two numbers), but a
+   * COORDINATE is one number and pasting one is the whole point of the field. So
+   * each axis shows the EXACT decimal sum (splitCentreText — never the float64
+   * `approxCentre`, which would drop the deep half) and takes a typed value back
+   * through parseSplitCentre, which re-splits it losslessly. `keys` names the
+   * stored leaves the field would write, so the host can refuse to clobber an `=`
+   * equation on any of them — the same ruling interior explore already makes.
+   *
+   * @param {object} s - folded, EVALUATED item state
+   * @returns {{fields: object[]}} the toolbar spec
+   */
+  floatingToolbar(s) {
+    const fe = fineExponentOf(s);
+    return {
+      label: "Mandelbrot view",
+      fields: [
+        { id: "centreRe", label: "Re", value: splitCentreText(s.centerX, s.centerFineX, fe), keys: ["centerX", "centerFineX"], size: "wide", help: "Real part of the view centre, to every digit the split centre carries. Paste a published deep-zoom coordinate here." },
+        { id: "centreIm", label: "Im", value: splitCentreText(s.centerY, s.centerFineY, fe), keys: ["centerY", "centerFineY"], size: "wide", help: "Imaginary part of the view centre, to every digit the split centre carries." },
+        { id: "zoom", label: "Zoom", value: String(s.zoomExponent ?? 0), keys: ["zoomExponent"], size: "narrow", help: "Magnification as a decimal exponent: the view's half-width is 10^(-Zoom), so 6 is a 1e-6 window. Tween this for a zoom." },
+        { id: "iterations", label: "Iter", value: String(s.maxIterations ?? 0), keys: ["maxIterations"], size: "narrow", help: "The iteration budget — the first thing to turn down if a slide feels slow, and to turn UP if the frame goes black." },
+        { id: "bands", label: "Bands", value: String(s.paletteScale ?? 0), keys: ["paletteScale"], size: "narrow", help: "Iterations per colour cycle. The knob to reach for when a view looks either stripey or washed out." },
+      ],
+    };
+  },
+  /**
+   * Pure function. A bar field's typed text → the keyframable writes that store it,
+   * or null when the text is not a value this field accepts (the host then leaves
+   * the field alone rather than committing a guess).
+   *
+   * The centre fields go through parseSplitCentre, so a 30-digit paste keeps its
+   * digits; the zoom goes through the SAME floor the Inspector row and the explore
+   * gestures use. Writing ordinary state keys is what makes a typed coordinate
+   * keyframe and tween like any other value.
+   *
+   * @param {object} s - folded item state
+   * @param {string} id - the field id from floatingToolbar
+   * @param {string} text - what the user typed
+   * @returns {object|null} a flat {stateKey: value} map, or null
+   *
+   * @example mandelbrotPlugin.fieldWrites({fineExponent: 0}, "centreRe", "-0.75") // {centerX: -0.75, centerFineX: 0}
+   * @example mandelbrotPlugin.fieldWrites({fineExponent: 0}, "zoom", "6") // {zoomExponent: 6}
+   * @example mandelbrotPlugin.fieldWrites({fineExponent: 0}, "zoom", "-99") // {zoomExponent: -1} (clamped to the row's own floor)
+   * @example mandelbrotPlugin.fieldWrites({fineExponent: 0}, "iterations", "1200") // {maxIterations: 1200}
+   * @example mandelbrotPlugin.fieldWrites({fineExponent: 0}, "centreRe", "banana") // null
+   */
+  fieldWrites(s, id, text) {
+    const fe = fineExponentOf(s);
+    if (id === "centreRe" || id === "centreIm") {
+      const split = parseSplitCentre(text, fe);
+      if (!split) return null;
+      return id === "centreRe"
+        ? { centerX: split.coarse, centerFineX: split.fine }
+        : { centerY: split.coarse, centerFineY: split.fine };
+    }
+    const n = Number(String(text).trim());
+    if (String(text).trim() === "" || !Number.isFinite(n)) return null;
+    if (id === "zoom") return { zoomExponent: clampedZoomExponent(n) };
+    if (id === "iterations") return { maxIterations: Math.max(1, Math.min(MANDELBROT_MAX_ITERATIONS, Math.round(n))) };
+    if (id === "bands") return { paletteScale: Math.max(MIN_PALETTE_SCALE, n) };
+    throw new Error(`mandelbrot fieldWrites: unknown field "${id}" (declared: centreRe, centreIm, zoom, iterations, bands)`);
   },
   // THE COUPLED-STATE TWEEN (core/document.js tweenedState). The centre and the
   // zoom are not independent knobs — a linear-in-alpha centre leaves an

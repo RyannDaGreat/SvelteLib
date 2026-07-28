@@ -38,6 +38,7 @@ import { createRegistry, effectsInjectable, composesEffects } from "../core/regi
 import { BUNDLES } from "../core/properties.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { EFFECT_STATE_KEYS, effectBoundsOf } from "../render_gpu/effects.js";
+import { localBoundsOf } from "../core/view.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -182,7 +183,9 @@ test("(6) every injected plugin's effect substrate can be bounded", () => {
   const world = { x: 0, y: 0, rotation: 0, scale: 1 };
   for (const plugin of registered) {
     if (!plugin.effectsInjected) continue;
-    const { bbox, world: w } = effectBoundsOf({ plugin, state: { ...plugin.defaults, w: 200, h: 150 }, world });
+    const state = { ...plugin.defaults, w: 200, h: 150 };
+    const node = { plugin, state, world };
+    const { bbox, world: w } = effectBoundsOf(node);
     assert.ok(w, `${plugin.type} effect bounds must carry a world`);
     if (plugin.effectBounds) {
       // A plugin that DECLARES the hook is exactly the case the hook exists for:
@@ -192,6 +195,20 @@ test("(6) every injected plugin's effect substrate can be bounded", () => {
       // demand the default from the one shape that cannot use it.
       assert.ok(Number.isFinite(bbox.x) && Number.isFinite(bbox.y), `${plugin.type} effectBounds must give a finite origin`);
       assert.ok(bbox.w > 0 && bbox.h > 0, `${plugin.type} effectBounds must give a non-degenerate substrate`);
+      continue;
+    }
+    if (plugin.localBounds) {
+      // THE BOUNDS PROTOCOL branch, and it is an EXACT equality, not a sanity check.
+      // effectBoundsOf's default is core/view.js localBoundsOf, so a plugin that
+      // declares its ink rect ONCE gets that same rect as its effect substrate — the
+      // whole point of the default. Polygon is the first plugin here: its ink is
+      // 202x152 at {-1,-1} for a 200x150 box, because a 2-wide stroke straddles the
+      // edge. It used to declare a redundant `effectBounds` that returned exactly this
+      // rect, and this test then only asked for "finite and non-degenerate"; pinning
+      // the equality is strictly stronger, and it is what would catch the two
+      // protocols drifting apart — the defect the shared default removes.
+      assert.deepEqual(bbox, localBoundsOf(node), `${plugin.type} effect substrate must BE its declared localBounds, exactly`);
+      assert.ok(bbox.w > 0 && bbox.h > 0, `${plugin.type} localBounds must give a non-degenerate substrate`);
       continue;
     }
     assert.equal(bbox.w, 200, `${plugin.type} effect bbox width must follow its state`);

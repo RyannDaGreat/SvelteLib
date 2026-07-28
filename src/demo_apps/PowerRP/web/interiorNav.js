@@ -37,19 +37,28 @@
  * point under the cursor (zoom). A window whose aspect differs from the box
  * LETTERBOXES, because that is what fitRectView does for the camera too.
  *
+ * ── THE GESTURES ARE THE CANVAS'S OWN, AND A PLAIN DRAG IS NOT ONE OF THEM ────
+ * The user's correction, verbatim: "I asked for the wrong controls before. It
+ * should just reuse the canvas pan zoom … where I would pinch to zoom and pan to,
+ * two fingers to pan. And so that way I can still drag the element around while
+ * I'm editing it."
+ *
+ * So the interior takes exactly the wheel vocabulary `src/lib/PanZoom.svelte`
+ * already implements and core/shortcut_entries.js already announces for the
+ * canvas itself — plain wheel PANS, Ctrl+wheel ZOOMS (which is what a trackpad
+ * pinch sends, and what the canvas's own "Pan" / "Zoom" chips name) — and it
+ * declares NO `onPan`, so a single-pointer drag falls straight through to the
+ * canvas's ordinary select/drag and MOVES THE WIDGET. That is the inversion: the
+ * mode owns the wheel, never the pointer. It is also why `wheelZoomFactor` is
+ * gone from this file — the law is `expZoomFactor` in src/lib/panZoomMath.js,
+ * imported by PanZoom and by this file, so the two feels cannot drift.
+ *
  * DOM-free at import: pure math plus one descriptor object.
  */
 
 import { fitRectView } from "../core/view.js";
 import { isEquationValue } from "../core/expressions.js";
-
-/**
- * Wheel-zoom sensitivity: the exponent scale in the 2^(-deltaY·s) law. This is
- * the SvelteLib PanZoom default (`zoomSensitivity = 0.01`, the canvas's own
- * wheel-zoom feel) restated because PanZoom.svelte's pure math lives in its
- * component script and is not exported — see the report's flagged wart.
- */
-const INTERIOR_ZOOM_SENSITIVITY = 0.01;
+import { expZoomFactor } from "../../../lib/panZoomMath.js";
 
 /**
  * How long the wheel must be idle before a zoom counts as FINISHED (ms). One
@@ -143,23 +152,6 @@ export function zoomedInteriorWindow(window, view, factor, lx, ly) {
 }
 
 /**
- * Pure function. Exponential view-zoom multiplier for a wheel delta — the SAME
- * 2^(-deltaY·sensitivity) law and default sensitivity the canvas wheel-zoom
- * uses, so the interior zooms with the identical feel.
- *
- * @param {number} deltaY - WheelEvent deltaY (positive = scroll down)
- * @param {number} [sensitivity] - exponent scale
- * @returns {number}
- *
- * @example wheelZoomFactor(0) // 1
- * @example wheelZoomFactor(-100) // 2 (scroll up magnifies)
- * @example wheelZoomFactor(100) // 0.5
- */
-export function wheelZoomFactor(deltaY, sensitivity = INTERIOR_ZOOM_SENSITIVITY) {
-  return Math.pow(2, -deltaY * sensitivity);
-}
-
-/**
  * Query (reads the document through `app`). The interior-view properties of
  * `node` that are bound to an `=` equation, as stored keys. Empty when none are.
  *
@@ -230,6 +222,15 @@ export const NAVIGATE_INTERIOR_HANDLER = {
       return;
     }
     ctx.app.selection = ctx.node.itemId;
+    // THE VISIBLE INDICATION that the mode is live, and the answer to "there's no
+    // visual indication when I'm editing it. There should be a bar just like text
+    // editing or cursors on the top in the canvas … that tells me the coordinates
+    // that I'm zooming into". It is the widget's OWN declared floatingToolbar, in
+    // the general canvas panel every on-canvas bar uses — so entering explore mode
+    // mounts it and nothing here knows what is in it. A widget with no toolbar
+    // declaration simply gets no bar (showOverlayPalette is a no-op for it, since
+    // web/CanvasView's floatingToolbarNode requires the declaration).
+    ctx.showOverlayPalette(ctx.node.itemId);
     ctx.enterMode();
   },
   /**
@@ -240,32 +241,35 @@ export const NAVIGATE_INTERIOR_HANDLER = {
   mode: {
     label: "Explore interior",
     // Registered inputs (core/shortcuts.js is the single source of truth for
-    // inputs AND the HintBar's only feed). The pointer/wheel entries are
-    // display-only — the host's pointer code reads them, exactly like the
-    // canvas's own "Pan"/"Zoom"/"Select / drag" gesture hints.
+    // inputs AND the HintBar's only feed). All three are display-only — the
+    // host's pointer code reads them — and they are WORD-FOR-WORD the canvas's
+    // own gesture chips ("Pan" on mouse_scroll, "Zoom" on Ctrl+mouse_scroll, in
+    // core/shortcut_entries.js) with "inside" appended, because they ARE the same
+    // gestures one frame down. mouse_left names what a plain drag still does,
+    // which is the point of the correction: the widget stays movable.
     hints: [
-      { keys: ["mouse_left"], label: "Drag to pan inside" },
-      { keys: ["mouse_scroll"], label: "Zoom inside" },
+      { keys: ["mouse_scroll"], label: "Pan inside" },
+      { keys: ["Ctrl", "mouse_scroll"], label: "Zoom inside (pinch)" },
+      { keys: ["mouse_left"], label: "Drag to move the widget" },
     ],
     /**
-     * Command. Pans the interior by a pointer delta expressed in the widget's
-     * LOCAL px frame. Reads the window from the node's CURRENT state (preview
-     * included), so successive moves accumulate.
+     * Command. THE WHEEL, interpreted exactly as src/lib/PanZoom.svelte's
+     * handleWheel interprets it for the canvas: `ctrlKey` (what a trackpad PINCH
+     * sends) zooms about the pointer, anything else pans by the scroll delta.
+     * Deltas arrive already converted to the widget's LOCAL px frame, so a
+     * rotated or scaled widget pans and zooms along its own axes.
+     *
+     * Reads the window from the node's CURRENT state (preview included), so
+     * successive ticks of one gesture accumulate into ONE undo unit.
      */
-    onPan(ctx, { dLocalX, dLocalY }) {
+    onWheel(ctx, { dLocalX, dLocalY, deltaY, ctrlKey, lx, ly }) {
       const { node } = ctx;
       const win = node.plugin.interiorView.window(node.state);
       const view = interiorViewOf(win, node.state.w, node.state.h);
-      previewInteriorWindow(ctx.app, node, pannedInteriorWindow(win, view, dLocalX, dLocalY));
-    },
-    /**
-     * Command. Zooms the interior about a widget-LOCAL point by a wheel delta.
-     */
-    onZoom(ctx, { deltaY, lx, ly }) {
-      const { node } = ctx;
-      const win = node.plugin.interiorView.window(node.state);
-      const view = interiorViewOf(win, node.state.w, node.state.h);
-      previewInteriorWindow(ctx.app, node, zoomedInteriorWindow(win, view, wheelZoomFactor(deltaY), lx, ly));
+      const next = ctrlKey
+        ? zoomedInteriorWindow(win, view, expZoomFactor(deltaY), lx, ly)
+        : pannedInteriorWindow(win, view, -dLocalX, -dLocalY);
+      previewInteriorWindow(ctx.app, node, next);
     },
   },
 };

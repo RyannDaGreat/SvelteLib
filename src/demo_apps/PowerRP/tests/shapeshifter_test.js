@@ -20,6 +20,7 @@ import {
 } from "../core/outline.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { FAMILIES, makeFamilyPlugin, shapeshifterPlugins } from "../plugins/shapeshifter.js";
+import { modifierWrite } from "../core/derive.js";
 
 let passed = 0;
 function test(name, fn) { fn(); passed += 1; console.log(`  ok  ${name}`); }
@@ -118,16 +119,19 @@ test("modifierPoints round-trip: placing a handle at its param and applying reco
 });
 
 // ── handle CLAMPS hold under an out-of-range drag ────────────────────────────
+// The clamps are now the handles' declared ALLOWED SETS (`constrain`), so a drag is
+// driven through modifierWrite — the protocol's one composed driver (core/derive.js).
+// The assertions are unchanged: an extreme drag still lands inside the domain.
 test("modifierPoints clamp: an extreme drag stays inside the param's domain", () => {
   const radial = makeFamilyPlugin(FAMILIES.find((f) => f.type === "ss_radialSweep"));
   const st = { ...radial.defaults, startAngle: 0 }; // start dir = +x, so x-drags project onto it
   const inner = radial.modifierPoints(st).find((m) => m.id === "inner");
-  approx(inner.apply(st, { x: 1e4, y: st.h / 2 }).inner, 1); // clamps to 1
-  approx(inner.apply(st, { x: -1e4, y: st.h / 2 }).inner, 0); // clamps to 0
+  approx(modifierWrite(inner, st, { x: 1e4, y: st.h / 2 }).inner, 1); // clamps to 1
+  approx(modifierWrite(inner, st, { x: -1e4, y: st.h / 2 }).inner, 0); // clamps to 0
   const star = makeFamilyPlugin(FAMILIES.find((f) => f.type === "ss_polygonStar"));
   const ss = { ...star.defaults };
   const pts = star.modifierPoints(ss).find((m) => m.id === "points");
-  assert.ok(pts.apply(ss, { x: ss.w / 2 + 0.01, y: ss.h / 2 }).points <= 60); // count clamps to <= 60
+  assert.ok(modifierWrite(pts, ss, { x: ss.w / 2 + 0.01, y: ss.h / 2 }).points <= 60); // count clamps to <= 60
 });
 
 console.log(`\n${passed} shapeshifter tests passed`);

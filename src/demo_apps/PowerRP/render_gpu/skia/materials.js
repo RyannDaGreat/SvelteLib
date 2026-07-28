@@ -289,6 +289,64 @@ export function resolveProxyFill(material, params, region) {
   return spec;
 }
 
+// ── the BACKDROP half of the same idea ────────────────────────────────────────
+// A BACKDROP material (materialBackdrop op) is stood in with a translucent OVERLAY
+// drawn over the already-composited content, not a fill of its own region — that is
+// the whole difference: the content beneath IS most of the answer, and the overlay
+// only has to say what the material DOES to it.
+//
+// THE DEFECT THIS HOOK FIXES. Every backdrop material shared ONE hard-coded stand-in,
+// a faint translucent WHITE, which says "a frosted panel is here". That is right for
+// glass and harmless for CRT, and BACKWARDS for a material that DARKENS: a
+// brightness_contrast widget configured to dim showed up LIGHTER in its own thumbnail
+// and minimap. The foreground half had solved exactly this a while ago — a material
+// MAY declare `proxyFill` and get a stand-in that looks like itself — so this is that
+// same seam, mirrored, and the shared frost becomes the DEFAULT rather than the only
+// option (an undeclared backdrop material is still covered, as before).
+//
+// SPEC SHAPE, and why it is not proxyFill's. proxyFill returns a solid/linear/radial
+// FILL spec because a foreground material paints its whole region. A backdrop stand-in
+// must stay ONE drawRRect over the composite — that cheapness is the entire point of
+// the proxy path (zero offscreen surfaces, no SkSL compile, no per-pixel pass) — so the
+// hook returns just the overlay colour. A gradient would buy a second shader
+// allocation for no perceptible gain at 256x144.
+export const DEFAULT_PROXY_BACKDROP_ALPHA = 0.14;
+/**
+ * The stand-in overlay for a backdrop panel with no colour of its own: faint
+ * translucent white, so the region still reads as a PANEL rather than a hole over the
+ * composited content beneath. Also the untinted-glass fallback in
+ * paint_skia.drawProxyBackdrop — one constant, one meaning.
+ */
+export const DEFAULT_PROXY_BACKDROP_TINT = [1, 1, 1, DEFAULT_PROXY_BACKDROP_ALPHA];
+
+/**
+ * Query. Resolves the proxy OVERLAY tint for a BACKDROP `material` at the given
+ * params: the material's own `proxyBackdrop(params)` if it declares one, else
+ * DEFAULT_PROXY_BACKDROP_TINT. The exact mirror of resolveProxyFill, including the
+ * LOUD validation — a stand-in that returned nonsense would silently paint a wrong
+ * colour over every thumbnail, which is the class of bug this hook exists to end.
+ *
+ * A returned alpha of 0 is LEGAL and means "draw no overlay at all": for some
+ * materials the honest stand-in is the untouched content beneath (the blurBackdrop
+ * precedent, which already draws nothing).
+ *
+ * @param {{id: string, proxyBackdrop?: Function}} material - a descriptor from getMaterial()
+ * @param {object} params - the material's flat op params
+ * @returns {[number, number, number, number]} an [r,g,b,a] overlay tint, channels 0..1
+ *
+ * @example resolveProxyBackdrop({id: "crt"}, {}) // [1, 1, 1, 0.14] (the shared frost default)
+ * @example resolveProxyBackdrop({id: "x", proxyBackdrop: () => ({tint: [0, 0, 0, 0.33]})}, {}) // [0, 0, 0, 0.33]
+ * @example resolveProxyBackdrop({id: "y", proxyBackdrop: () => ({tint: [1, 1, 1, 0]})}, {}) // [1, 1, 1, 0] (legal: no overlay)
+ */
+export function resolveProxyBackdrop(material, params) {
+  if (typeof material.proxyBackdrop !== "function") return DEFAULT_PROXY_BACKDROP_TINT;
+  const spec = material.proxyBackdrop(params);
+  const tint = spec?.tint;
+  if (!Array.isArray(tint) || tint.length !== 4 || tint.some((c) => !Number.isFinite(c) || c < 0 || c > 1))
+    throw new Error(`materials: proxyBackdrop for "${material.id}" must return {tint: [r,g,b,a]} with four finite channels in 0..1, got ${JSON.stringify(spec)}`);
+  return tint;
+}
+
 // Compiled RuntimeEffect cache, keyed by material id + guarded by the CanvasKit
 // instance it was compiled against (mirrors glass_shader's glassEffect memo — the
 // SAME compile-once technique, generalized to N materials).

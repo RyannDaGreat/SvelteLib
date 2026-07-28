@@ -29,7 +29,7 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
-import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { UNIT_SPAN_SCRUB, bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
 import { particleTime } from "../../render_gpu/particle_clock.js";
 
@@ -44,7 +44,13 @@ const LIGHT_ANGLE_DEFAULT = -Math.PI * 0.6;
 const CUSTOM = customProps([
   { name: "rain", kind: "number", default: 0.8, min: 0, max: 1, help: "Rain AMOUNT (0..1): how much water is on the glass. Drives drop density/rate — low = a fine mist of static beads, high = heavy running drops with trails." },
   { name: "fog", kind: "number", default: 0.5, min: 0, max: 1, help: "Fog / steam amount (0..1): how steamed-up the dry pane is (a blurred, lifted, desaturated view). Running drops and trails wipe the fog clear." },
-  { name: "speed", kind: "number", default: 1.0, min: 0, help: "Fall-speed multiplier for the running drops. 0 = a frozen still; higher = faster running rain." },
+  // SCRUB: the unit-nominal RATE multiplier — 1 = the authored fall speed, 0 = frozen.
+  // `default: 1.0` is written fractional, but JS stores the integer 1, so nothing in
+  // the row proves it fractional and it fell back to 1 unit/px: one drag-pixel DOUBLED
+  // the speed and 1.5x was unreachable. This is the SAME knob, verbatim, as
+  // plugins/demo/raycast_dither.js `speed` and plugins/demo/sky.js skyClouds `speed`;
+  // all three take the one shared constant so the three copies cannot drift apart.
+  { name: "speed", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Fall-speed multiplier for the running drops. 0 = a frozen still; higher = faster running rain." },
   { name: "dropSize", kind: "number", default: 1.0, min: 0.1, help: "Overall drop-size multiplier — scales both the running-drop heads and the static beads." },
   { name: "columns", kind: "number", default: 6, min: 1, help: "Number of running-drop columns across the width — the density granularity. More = finer, more-numerous streaks." },
   { name: "streakiness", kind: "number", default: 1.0, min: 0.1, max: 4, help: "Trail LENGTH / persistence behind each running drop's head: how far up the fading refractive streak survives. Low = drops with barely a tail; high = long, slow-fading dribble streaks." },

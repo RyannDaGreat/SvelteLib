@@ -24,9 +24,14 @@
  *       file belonged to another agent; see the note at the section itself);
  *     - double-click enters the mode; the HintBar swaps to the mode's OWN
  *       shortcut set; Escape exits and normal editing resumes;
- *     - a drag pans the interior and a wheel zooms it, both writing the WIDGET's
- *       own keyframable state (so a reload / CLI render agrees) — never a
- *       transient view object;
+ *     - THE CANVAS'S OWN GESTURES, one frame down: a plain wheel pans the interior,
+ *       Ctrl+wheel (what a trackpad pinch sends) zooms it, and a PLAIN DRAG still
+ *       MOVES THE WIDGET — the user's correction, and the reason the mode declares
+ *       no onPan at all;
+ *     - the mode mounts the widget's floating coordinate bar as its visual
+ *       indication, and the bar survives dragging the widget around;
+ *     - every interior gesture writes the WIDGET's own keyframable state (so a
+ *       reload / CLI render agrees) — never a transient view object;
  *     - ONE undo unit per gesture, proven by counting app.commit calls: 8 wheel
  *       ticks = 1 commit, and ONE undo restores the pre-gesture value;
  *     - a property bound to an `=` equation REFUSES the mode loudly instead of
@@ -37,12 +42,13 @@
  *   node src/demo_apps/PowerRP/tests/activation_probe.js [shot_dir]
  */
 import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
 
-const repo = process.cwd();
-const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
+// Every path resolves from THIS FILE, never process.cwd(): the probe must run
+// correctly from any directory, and a cwd-relative root silently pointed at the
+// wrong tree the moment it was invoked from anywhere but the repo root.
 const shots = process.argv[2] ?? "/tmp/activation_probe";
 await mkdir(shots, { recursive: true });
 
@@ -55,7 +61,8 @@ const PROBE_H = 120;
 const PROBE_ITER = 60;
 const SETTLE_MS = 260; // one reactive paint + Skia frame at probe size
 const WHEEL_TICKS = 8; // one continuous zoom gesture
-const WHEEL_DELTA = 60; // scroll "down" = zoom OUT — at 60 iterations a deeper view is
+const WHEEL_DELTA = 60; // positive on BOTH axes: a plain wheel pans right+down, and
+// with Ctrl held the same sign zooms OUT — at 60 iterations a deeper view is
 // legitimately solid interior colour (the plugin documents that), so zooming out is
 // the direction whose screenshot READS as "the interior moved".
 const ZOOM_IDLE_WAIT_MS = 700; // > ZOOM_GESTURE_IDLE_MS (250), so the gesture ends
@@ -64,7 +71,7 @@ const ZOOM_IDLE_WAIT_MS = 700; // > ZOOM_GESTURE_IDLE_MS (250), so the gesture e
 // stray HMR full-reload mid-probe drops window.__powerrp_app and fails the run for
 // reasons that have nothing to do with what is being tested.
 const server = await createServer({
-  configFile: resolve(webRoot, "vite.config.js"),
+  configFile: fileURLToPath(new URL("../web/vite.config.js", import.meta.url)),
   server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null },
 });
 await server.listen();
@@ -226,72 +233,123 @@ try {
   await dblAt(cx, cy);
   ok(await modeId() === "navigate_interior", `double-click enters interior explore mode (got ${await modeId()})`);
   const modeHints = await hintLabels();
-  ok(modeHints.includes("Drag to pan inside"), `HintBar shows the mode's own pan hint (got ${JSON.stringify(modeHints)})`);
-  ok(modeHints.includes("Zoom inside"), "HintBar shows the mode's own zoom hint");
+  // THE GESTURE VOCABULARY IS THE CANVAS'S OWN (the user's correction: "I asked for
+  // the wrong controls before. It should just reuse the canvas pan zoom … pinch to
+  // zoom and pan to, two fingers to pan. And so that way I can still drag the
+  // element around while I'm editing it."). So: wheel pans, Ctrl+wheel (= a
+  // trackpad pinch) zooms, and a PLAIN DRAG still moves the widget.
+  ok(modeHints.includes("Pan inside"), `HintBar shows the mode's own wheel-pan hint (got ${JSON.stringify(modeHints)})`);
+  ok(modeHints.includes("Zoom inside (pinch)"), "HintBar shows the mode's own pinch-zoom hint");
+  ok(modeHints.includes("Drag to move the widget"), "HintBar SAYS a plain drag still moves the widget");
   ok(modeHints.some((h) => /^Exit explore/.test(h)), "HintBar shows the mode's Escape exit");
   ok(!modeHints.includes("Select / drag"), "the ordinary canvas hints are GONE while the widget owns the canvas");
+  // THE VISUAL INDICATION: the mode mounts the widget's own floating bar ("there's
+  // no visual indication when I'm editing it. There should be a bar just like text
+  // editing or cursors on the top in the canvas").
+  const bar = await page.evaluate(() => {
+    const inputs = [...document.querySelectorAll(".canvas-toolbar-root .canvas-toolbar-fields .canvas-toolbar-field")];
+    return inputs.map((f) => [f.querySelector(".canvas-toolbar-field-label").textContent.trim(), f.querySelector("input").value]);
+  });
+  ok(bar.length === 5, `entering explore mode mounts the widget's floating coordinate bar (got ${JSON.stringify(bar)})`);
+  ok(bar.some(([l]) => l === "Re") && bar.some(([l]) => l === "Im") && bar.some(([l]) => l === "Zoom"),
+    `the bar READS OUT the coordinates being zoomed into (got ${JSON.stringify(bar)})`);
   await page.screenshot({ path: `${shots}/2-mode-active.png` });
 
-  // ── PAN: drag inside the widget → its own state moves, ONE undo unit ───────
+  // ── A PLAIN DRAG MOVES THE WIDGET, and leaves the interior alone ────────────
+  // This is the INVERSION of the gesture this probe used to assert. It is not a
+  // relaxation: the drag must move the item's x/y AND the interior centre must be
+  // untouched, so "the mode swallowed the drag" and "the drag moved the interior"
+  // both fail here.
   await page.evaluate(() => { window.__probeCommits = 0; const app = window.__powerrp_app; const real = app.commit.bind(app); app.commit = (d) => { window.__probeCommits += 1; return real(d); }; });
   await sleep(1500); // let any unrelated async widget commit (latex re-typeset size-to-aspect) land first
   const commitBase = await page.evaluate(() => window.__probeCommits);
+  const itemBefore = { x: await stored(mbId, "x"), y: await stored(mbId, "y") };
   const from = await worldToPage(cx - 30, cy - 20);
   const to = await worldToPage(cx + 20, cy + 15);
-  await page.mouse.move(from.x, from.y);
-  await page.mouse.down();
   // NATIVE-DRAG REGRESSION GUARD: a mode is entered by double-clicking, and a
   // double-click leaves a text selection that Chrome will happily start an HTML5
-  // drag of — which cancels the pointer and truncated the pan to ONE move before
-  // modePointerDown called preventDefault. Watch for both signals.
+  // drag of — which cancels the pointer and truncates the gesture to ONE move.
+  // onDblClick clears the selection for exactly this reason; watch both signals,
+  // because the drag no longer goes through modePointerDown's preventDefault.
   await page.evaluate(() => {
     window.__probeEv = [];
     document.addEventListener("dragstart", () => window.__probeEv.push("dragstart"), true);
     document.querySelector(".overlay").addEventListener("pointercancel", () => window.__probeEv.push("pointercancel"), true);
   });
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
   for (let i = 1; i <= 5; i += 1) {
     await page.mouse.move(from.x + (to.x - from.x) * i / 5, from.y + (to.y - from.y) * i / 5);
     await sleep(40);
   }
-  const midPan = await stored(mbId, "centerX");
-  const panCommitsMid = await page.evaluate(() => window.__probeCommits) - commitBase;
   await page.mouse.up();
   await sleep(SETTLE_MS);
-  const afterPan = { centerX: await stored(mbId, "centerX"), centerY: await stored(mbId, "centerY") };
-  const panCommits = await page.evaluate(() => window.__probeCommits) - commitBase;
-  ok(midPan !== before.centerX, "mid-drag the interior centre is already previewing (live, not on release)");
-  ok(panCommitsMid === 0, `NO document commit during the drag — the preview is undo-free (got ${panCommitsMid})`);
-  ok(panCommits === 1, `the whole pan gesture is ONE undo unit (got ${panCommits} commits)`);
+  const itemAfter = { x: await stored(mbId, "x"), y: await stored(mbId, "y") };
+  const dragCommits = await page.evaluate(() => window.__probeCommits) - commitBase;
   const dragEvents = await page.evaluate(() => window.__probeEv.join(","));
-  ok(dragEvents === "", `no native dragstart / pointercancel truncated the pan gesture (got "${dragEvents}")`);
-  ok(afterPan.centerX !== before.centerX && afterPan.centerY !== before.centerY, `the WIDGET's own stored centre moved (${before.centerX},${before.centerY} → ${afterPan.centerX},${afterPan.centerY})`);
-  await page.screenshot({ path: `${shots}/3-after-pan.png` });
+  ok(dragEvents === "", `no native dragstart / pointercancel truncated the drag (got "${dragEvents}")`);
+  ok(itemAfter.x !== itemBefore.x && itemAfter.y !== itemBefore.y,
+    `a PLAIN DRAG moves the WIDGET while exploring (${itemBefore.x},${itemBefore.y} → ${itemAfter.x},${itemAfter.y})`);
+  ok(await stored(mbId, "centerX") === before.centerX, "that drag did NOT move the interior — the mode does not own the pointer");
+  ok(dragCommits === 1, `the widget move is ONE undo unit (got ${dragCommits} commits)`);
+  ok(await modeId() === "navigate_interior", "and the mode SURVIVES the drag (you can keep exploring)");
+  ok(await page.evaluate(() => !!document.querySelector(".canvas-toolbar-root .canvas-toolbar-fields")), "the bar survives the drag too");
+  await page.screenshot({ path: `${shots}/3-after-widget-drag.png` });
 
-  // ── ZOOM: N wheel ticks = ONE undo unit ───────────────────────────────────
+  // ── TWO-FINGER PAN: a plain wheel pans the INTERIOR, ONE undo unit ─────────
   await page.evaluate(() => { window.__probeCommits = 0; });
   const at = await worldToPage(cx, cy);
   await page.mouse.move(at.x, at.y);
   for (let i = 0; i < WHEEL_TICKS; i += 1) {
+    await page.mouse.wheel({ deltaX: WHEEL_DELTA, deltaY: WHEEL_DELTA });
+    await sleep(30);
+  }
+  const panMidCommits = await page.evaluate(() => window.__probeCommits);
+  const midPan = await stored(mbId, "centerX");
+  await sleep(ZOOM_IDLE_WAIT_MS);
+  const panCommits = await page.evaluate(() => window.__probeCommits);
+  const afterPan = { centerX: await stored(mbId, "centerX"), centerY: await stored(mbId, "centerY") };
+  ok(midPan !== before.centerX, "mid-gesture the interior centre is already previewing (live, not on release)");
+  ok(panMidCommits === 0, `no commit while the wheel is still turning (got ${panMidCommits})`);
+  ok(panCommits === 1, `${WHEEL_TICKS} wheel ticks = ONE undo unit (got ${panCommits} commits)`);
+  ok(afterPan.centerX !== before.centerX && afterPan.centerY !== before.centerY,
+    `a plain wheel pans the INTERIOR (${before.centerX},${before.centerY} → ${afterPan.centerX},${afterPan.centerY})`);
+  ok(await stored(mbId, "zoomExponent") === before.zoomExponent, "a plain wheel does NOT zoom — that is the pinch's job");
+  await page.screenshot({ path: `${shots}/4-after-interior-pan.png` });
+
+  // ── PINCH: Ctrl+wheel zooms the INTERIOR, ONE undo unit ───────────────────
+  // Ctrl+wheel IS what a trackpad pinch delivers, and it is the same combination
+  // the canvas itself binds to zoom (core/shortcut_entries: Ctrl+mouse_scroll →
+  // "Zoom"), which is the whole point of reusing the canvas's vocabulary.
+  await page.evaluate(() => { window.__probeCommits = 0; });
+  await page.mouse.move(at.x, at.y);
+  await page.keyboard.down("Control");
+  for (let i = 0; i < WHEEL_TICKS; i += 1) {
     await page.mouse.wheel({ deltaY: WHEEL_DELTA });
     await sleep(30);
   }
+  await page.keyboard.up("Control");
   const zoomMidCommits = await page.evaluate(() => window.__probeCommits);
   await sleep(ZOOM_IDLE_WAIT_MS);
   const zoomCommits = await page.evaluate(() => window.__probeCommits);
   const afterZoom = await stored(mbId, "zoomExponent");
-  ok(zoomMidCommits === 0, `no commit while the wheel is still turning (got ${zoomMidCommits})`);
-  ok(zoomCommits === 1, `${WHEEL_TICKS} wheel ticks = ONE undo unit (got ${zoomCommits} commits)`);
-  ok(afterZoom < before.zoomExponent, `the widget's own zoomExponent changed with the wheel (${before.zoomExponent} → ${afterZoom})`);
-  await page.screenshot({ path: `${shots}/4-after-zoom.png` });
+  ok(zoomMidCommits === 0, `no commit while the pinch is still going (got ${zoomMidCommits})`);
+  ok(zoomCommits === 1, `${WHEEL_TICKS} pinch ticks = ONE undo unit (got ${zoomCommits} commits)`);
+  ok(afterZoom < before.zoomExponent, `the widget's own zoomExponent changed with the pinch (${before.zoomExponent} → ${afterZoom})`);
+  // And the CANVAS did not zoom underneath it — stopPropagation keeps the event
+  // from the PanZoom container, which is what makes the two gestures one key.
+  ok(Math.abs(await page.evaluate(() => window.__powerrp_app.lastViewport?.zoom ?? 1) - 1) < 1e-9,
+    "the canvas zoom is untouched by an interior pinch");
+  await page.screenshot({ path: `${shots}/5-after-interior-pinch.png` });
 
-  // ONE undo restores the pre-zoom value (proof the gesture is one entry).
+  // ONE undo restores the pre-pinch value (proof the gesture is one entry).
   const preUndoCentre = afterPan.centerX;
   await page.evaluate(() => window.__powerrp_app.undo());
   await sleep(SETTLE_MS);
   const undoneZoom = await stored(mbId, "zoomExponent");
   const undoneCentre = await stored(mbId, "centerX");
-  ok(undoneZoom === before.zoomExponent, `one undo reverts the ENTIRE zoom gesture (got ${undoneZoom}, want ${before.zoomExponent})`);
-  ok(undoneCentre === preUndoCentre, "that same undo does NOT also revert the earlier pan (separate units)");
+  ok(undoneZoom === before.zoomExponent, `one undo reverts the ENTIRE pinch gesture (got ${undoneZoom}, want ${before.zoomExponent})`);
+  ok(undoneCentre === preUndoCentre, "that same undo does NOT also revert the earlier interior pan (separate units)");
   await page.evaluate(() => window.__powerrp_app.redo());
   await sleep(SETTLE_MS);
 
@@ -315,14 +373,64 @@ try {
   const viewAfter = await page.evaluate(() => window.__powerrp_app.lastViewport?.zoom ?? 1);
   ok(Math.abs(viewAfter - 1) < 1e-9, `the CANVAS zoom is untouched by interior zooming (got ${viewAfter})`);
 
+  // ── TYPING A COORDINATE IN THE BAR: exact digits, ONE undo unit ────────────
+  // The user wants to "actually edit those in text on the top", and a 30-digit
+  // coordinate pasted into a field that ran it through Number() would silently lose
+  // half of it — so the digits are asserted, not just the fact that something changed.
+  //
+  // THE UNDO UNIT IS MEASURED BY JSON COMPARE, not by reference identity: undo()
+  // restores an EQUAL document through a fresh reactive proxy, so `===` on the doc
+  // object would report a difference that is not one.
+  await page.evaluate(() => { window.__probeCommits = 0; });
+  const docBefore = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
+  const TYPED = "-0.7435669000000000123456789";
+  const typed = await page.evaluate(async (id, text) => {
+    const app = window.__powerrp_app;
+    // fineExponent 16 is what makes the deep digits storable at all — the widget
+    // reports out loud if you zoom past what fineExponent 0 resolves, and the bar
+    // must not quietly round when it IS set.
+    app.setPreview([[["items", id, "fineExponent"], 16]]);
+    app.commitPreview();
+    await new Promise((r) => setTimeout(r, 200));
+    const field = [...document.querySelectorAll(".canvas-toolbar-field")]
+      .find((f) => f.querySelector(".canvas-toolbar-field-label").textContent.trim() === "Re");
+    const input = field.querySelector("input");
+    input.focus();
+    input.value = text;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 300));
+    return {
+      shown: input.value,
+      coarse: app.storedItemValue(id, ["centerX"]),
+      fine: app.storedItemValue(id, ["centerFineX"]),
+      commits: window.__probeCommits,
+    };
+  }, mbId, TYPED);
+  ok(typed.shown.startsWith(TYPED), `the bar reads back every typed digit (got "${typed.shown}")`);
+  ok(typed.fine !== 0, `the deep digits landed in the FINE slot rather than being rounded away (coarse ${typed.coarse}, fine ${typed.fine})`);
+  ok(typed.coarse !== Number(TYPED) || typed.fine !== 0, "a float64 alone cannot hold this coordinate — the split must be carrying it");
+  // 2 commits: the fineExponent setup above, then the typed coordinate. The COORDINATE
+  // is the one undo unit under test, and one undo must restore the document to a state
+  // JSON-equal to the one before it.
+  ok(typed.commits === 2, `typing a coordinate is ONE undo unit on top of the setup (got ${typed.commits})`);
+  await page.evaluate(() => window.__powerrp_app.undo());
+  await sleep(SETTLE_MS);
+  const afterOneUndo = await stored(mbId, "centerX");
+  ok(afterOneUndo !== typed.coarse, `one undo reverts the typed coordinate (got ${afterOneUndo})`);
+  await page.evaluate(() => window.__powerrp_app.undo()); // and the fineExponent setup
+  await sleep(SETTLE_MS);
+  const docAfter = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
+  ok(docAfter === docBefore, "two undos restore a document JSON-EQUAL to the pre-edit one (no stray half-written leaf)");
+
   // ── Escape exits, normal editing resumes ─────────────────────────────────
   await page.keyboard.press("Escape");
   await sleep(SETTLE_MS);
   ok(await modeId() === null, "Escape exits the mode");
   const afterHints = await hintLabels();
   ok(afterHints.includes("Select / drag"), `normal canvas hints are back (got ${JSON.stringify(afterHints)})`);
-  ok(!afterHints.includes("Drag to pan inside"), "the mode's hints are gone");
-  await page.screenshot({ path: `${shots}/5-after-escape.png` });
+  ok(!afterHints.includes("Pan inside"), "the mode's hints are gone");
+  await page.screenshot({ path: `${shots}/6-after-escape.png` });
 
   // Normal canvas pan/zoom still works (ctrl+wheel = canvas zoom).
   await page.mouse.move(at.x, at.y);

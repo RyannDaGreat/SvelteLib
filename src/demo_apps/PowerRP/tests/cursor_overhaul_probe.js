@@ -58,7 +58,12 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error/i;
+  // …|VideoV7|WebGPU|no WebGPU adapter: headless Chromium has no WebGPU adapter, so
+  // the videoV8/V7 experiments REPORT their 2D fallback at boot. That report is the
+  // widget behaving (a silent fallback would be the bug); it is noise here, and it is
+  // already listed as documented boot noise by tests/activation_probe.js and
+  // tests/activation_migration_probe.js — added rather than re-derived.
+  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error|VideoV7|WebGPU|no WebGPU adapter/i;
   page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
@@ -157,7 +162,12 @@ try {
     const app = window.__powerrp_app;
     const tiles = [...document.querySelectorAll(".canvas-toolbar-tile")];
     const before = app.state().items[window.__curId].cursorKind;
-    const cross = tiles.find((t) => t.title === "Cross");
+    // The tile is found by its thumbnail's ALT text, which carries the cell label.
+    // NOT by `t.title`: native title= is BANNED in this app's chrome (the tiles use
+    // src/lib/Tooltip.svelte), so the old `t.title === "Cross"` matched nothing and
+    // this check passed vacuously-false — it never ran, because the probe aborted at
+    // boot on unrelated WebGPU noise before reaching it.
+    const cross = tiles.find((t) => t.querySelector("img")?.alt === "Cross");
     cross?.click();
     return { count: tiles.length, before, after: app.state().items[window.__curId].cursorKind, clicked: !!cross };
   });

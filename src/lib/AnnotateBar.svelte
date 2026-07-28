@@ -46,6 +46,7 @@
 <script>
   import "iconify-icon";
   import { makeStripeCanvas } from "./stripes.js";
+  import { expZoomFactor } from "./panZoomMath.js";
 
   // -- Pure functions (general) -----------------------------------------------
 
@@ -59,17 +60,10 @@
     return Math.max(min, Math.min(max, value));
   }
 
-  /**
-   * Pure function, general. Exponential zoom factor from a wheel delta.
-   * Matches PanZoom's convention: negative delta (pinch out) zooms in (>1).
-   *
-   * @example expZoomFactor(-100) // ~2 (zoom in)
-   * @example expZoomFactor(100) // ~0.5 (zoom out)
-   * @example expZoomFactor(0) // 1
-   */
-  function expZoomFactor(deltaY, sensitivity = 0.01) {
-    return Math.pow(2, -deltaY * sensitivity);
-  }
+  // expZoomFactor comes from ./panZoomMath.js (imported above) — THE wheel-zoom
+  // law, one definition. This file used to carry its own copy whose docstring said
+  // "Matches PanZoom's convention"; a comment promising two copies agree is what
+  // the shared module replaces.
 
   /**
    * Pure function, general. Round a raw spacing up to a "nice" 1-2-5 step.

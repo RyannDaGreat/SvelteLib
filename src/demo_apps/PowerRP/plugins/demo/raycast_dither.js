@@ -31,7 +31,7 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
-import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { UNIT_SPAN_SCRUB, bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import { particleTime } from "../../render_gpu/particle_clock.js";
 
@@ -44,7 +44,13 @@ const STREAK_DIAGONAL = Math.PI / 4;
 // grainScale/cornerRadius are WORLD px (the backend scales to device). The default
 // red-on-black palette was sampled from the live raycast.com hero.
 const CUSTOM = customProps([
-  { name: "speed", kind: "number", default: 1.0, min: 0, help: "Animation speed multiplier for the drifting streaks. 0 = a frozen still; higher = faster flow." },
+  // SCRUB: the unit-nominal RATE multiplier — 1 = the authored drift, 0 = frozen.
+  // `default: 1.0` is written fractional, but JS stores the integer 1, so nothing in
+  // the row proves it fractional and it fell back to 1 unit/px: one drag-pixel DOUBLED
+  // the speed and 1.5x was unreachable. This is the SAME knob, verbatim, as
+  // plugins/demo/rainy_window.js `speed` and plugins/demo/sky.js skyClouds `speed`; all
+  // three take the one shared constant so the three copies cannot drift apart.
+  { name: "speed", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Animation speed multiplier for the drifting streaks. 0 = a frozen still; higher = faster flow." },
   { name: "zoom", kind: "number", default: 0.58, min: 0.05, help: "Pattern zoom: bigger = fewer, larger streaks that fill more of the frame; smaller = more, tighter streaks." },
   { name: "streakAngle", kind: "angle", display: "degrees", default: STREAK_DIAGONAL, help: "Streak direction. 45° is the classic top-left → bottom-right diagonal; 0° = horizontal streaks." },
   { name: "elongation", kind: "number", default: 4.2, min: 1, help: "How far the colour blobs stretch ALONG the streak axis. 1 = round blobs; higher = long diagonal streaks (the Raycast look)." },

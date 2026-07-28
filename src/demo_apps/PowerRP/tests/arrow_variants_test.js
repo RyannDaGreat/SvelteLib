@@ -14,6 +14,7 @@ import { elbowArrowPlugin } from "../plugins/elbow_arrow.js";
 import { curvedArrowPlugin } from "../plugins/curved_arrow.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { arrowPlugin } from "../plugins/arrow.js";
+import { modifierWrite } from "../core/derive.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -82,20 +83,22 @@ test("elbowArrowPlugin.modifierPoints: ONE handle at elbowHandle's position", ()
   approx(mps[0].y, (from.y + to.y) / 2);
 });
 
-test("elbowArrowPlugin.modifierPoints: apply() round-trips — dragging the handle to a known x recovers the exact elbow proportion", () => {
+test("elbowArrowPlugin.modifierPoints: a drag round-trips — dragging the handle to a known x recovers the exact elbow proportion", () => {
   const state = elbowArrowPlugin.defaults;
   const mp = elbowArrowPlugin.modifierPoints(state)[0];
   // Drag to x = from.x + 0.75*(to.x-from.x) — expect elbow ≈ 0.75.
   const targetX = state.from.x + 0.75 * (state.to.x - state.from.x);
-  const result = mp.apply(state, { x: targetX, y: mp.y + 999 }); // y is ignored by design
+  // modifierWrite = the protocol's driver (core/derive.js): the handle's own
+  // `constrain` removes the y offset before `apply` ever sees it.
+  const result = modifierWrite(mp, state, { x: targetX, y: mp.y + 999 });
   approx(result.elbow, 0.75);
 });
 
-test("elbowArrowPlugin.modifierPoints: apply() clamps to [0, 1] beyond the endpoints", () => {
+test("elbowArrowPlugin.modifierPoints: the CONSTRAINT clamps to [0, 1] beyond the endpoints", () => {
   const state = elbowArrowPlugin.defaults;
   const mp = elbowArrowPlugin.modifierPoints(state)[0];
-  approx(mp.apply(state, { x: state.from.x - 500, y: 0 }).elbow, 0);
-  approx(mp.apply(state, { x: state.to.x + 500, y: 0 }).elbow, 1);
+  approx(modifierWrite(mp, state, { x: state.from.x - 500, y: 0 }).elbow, 0);
+  approx(modifierWrite(mp, state, { x: state.to.x + 500, y: 0 }).elbow, 1);
 });
 
 test("elbowArrowPlugin: headMode 'both' mirrors a head at both ends", () => {

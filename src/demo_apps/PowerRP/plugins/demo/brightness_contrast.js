@@ -50,7 +50,7 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
-import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { UNIT_SPAN_SCRUB, bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
 
 // select ids → the shader's numeric mode codes (brightness_contrast_shader.js).
@@ -73,7 +73,17 @@ export const NEUTRAL_CONTRAST = 1;
 // `cornerRadius` is the one WORLD-px knob (the backend scales it to device).
 const CUSTOM = customProps([
   { name: "mode", kind: "select", options: MODE_OPTIONS, optionLabels: MODE_LABELS, default: "smooth", help: "Which tone math the two knobs mean. Smooth (the default) is built for a finished on-screen image: it fixes black and white, so it CANNOT crush shadows or blow highlights however far you push it. Linear light treats brightness as a real exposure change in stops and contrast as a power about 18% grey — physically what a camera does, and it CAN clip past white. sRGB direct is the naive slider every other tool ships; it is here so you can see what the other two avoid." },
-  { name: "brightness", kind: "number", default: NEUTRAL_BRIGHTNESS, help: "0 = unchanged. Positive brightens, negative darkens. In Smooth mode this is a midtone lift that leaves pure black and pure white alone (+1 lifts 25% grey to 50%). In Linear-light mode it is an EXPOSURE in stops (+1 = twice the light, and whites clip). In sRGB mode it is a flat offset added to every channel." },
+  // SCRUB, measured against `contrast` below — its twin in this widget, and the row
+  // that shows how far out this one was. `contrast` (default 1.4) scrubs at 0.014/px
+  // by inference from its fractional default; `brightness` is the ZERO-default,
+  // fully-open shape inference provably cannot reach (the census's "paletteOffset
+  // shape": no bounds, no magnitude, so nothing in the row says it is fractional), so
+  // it fell back to 1 unit/px — SEVENTY TIMES coarser than its twin on a knob whose
+  // own help says +1 is a whole STOP of exposure. One drag-pixel therefore blew the
+  // image out. The useful domain is unit-scaled about 0 in every one of the three
+  // modes (a midtone lift, a stop, or a flat channel offset), so one 100px drag run
+  // now spans one unit, i.e. one stop.
+  { name: "brightness", kind: "number", default: NEUTRAL_BRIGHTNESS, scrub: UNIT_SPAN_SCRUB, help: "0 = unchanged. Positive brightens, negative darkens. In Smooth mode this is a midtone lift that leaves pure black and pure white alone (+1 lifts 25% grey to 50%). In Linear-light mode it is an EXPOSURE in stops (+1 = twice the light, and whites clip). In sRGB mode it is a flat offset added to every channel." },
   { name: "contrast", kind: "number", default: 1.4, min: 0, help: "1 = unchanged, higher = punchier, 0 = flat grey. This is the SLOPE of the tone curve at mid-grey in every mode, so it means the same thing here as a contrast slider anywhere else — the modes differ only in what happens far from mid-grey, where the naive version clips and Smooth rolls off instead." },
   { name: "preserveHue", kind: "boolean", default: false, help: "Off (the usual look): each colour channel is toned on its own, so raising contrast also deepens colour. On: only the brightness of each pixel changes and its hue and saturation are held exactly — the honest choice when the point is to re-tone a photo or figure without recolouring it. Boosting a saturated colour with this on can push a channel out of range and clip it." },
   { name: "cornerRadius", kind: "number", default: 0, min: 0, help: "Rounded-corner radius of the adjusted region (world px). 0 = sharp corners." },

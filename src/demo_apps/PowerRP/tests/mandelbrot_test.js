@@ -47,7 +47,10 @@ import { newDocument, withNewItem, withNewSlide, keyframed, foldState, tweenedSt
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { getMaterial, resolveProxyFill, isBackdropMaterial, materialIds } from "../render_gpu/skia/materials.js";
-import { mandelbrotPlugin, cachedOrbit, cachedPalette, paletteStopsFor, approxCentre, paletteCycles, zoomTweenLam, zoomTweenAxis } from "../plugins/demo/mandelbrot.js";
+import {
+  mandelbrotPlugin, cachedOrbit, cachedPalette, paletteStopsFor, approxCentre, paletteCycles,
+  zoomTweenLam, zoomTweenAxis, splitCentreText, parseSplitCentre,
+} from "../plugins/demo/mandelbrot.js";
 import {
   MANDELBROT_ESCAPE_RADIUS,
   MANDELBROT_MATERIAL, MANDELBROT_REF_LEN, MANDELBROT_PALETTE_STOPS, MANDELBROT_MAX_ITERATIONS,
@@ -930,6 +933,131 @@ test("the hook is DECLARED on the plugin, so the generic tween can find it", () 
   for (const key of Object.keys(a)) assert.ok(key in mandelbrotPlugin.defaults, `interpolateState writes "${key}", which is not a state key of this widget`);
   // And it leaves the zoom itself to the linear lerp — that IS the constant-rate zoom.
   assert.ok(!("zoomExponent" in a), "zoomExponent must stay linear in alpha");
+});
+
+// ── (7) THE FLOATING COORDINATE BAR (floatingToolbar + fieldWrites) ───────────
+//
+// The user's request: the explore mode needs "a bar just like text editing or cursors
+// on the top in the canvas … that tells me the coordinates that I'm zooming into and
+// stuff so that I can actually edit those in text on the top".
+//
+// THE ONE THING THAT CAN GO SILENTLY WRONG HERE is precision. The bar is the ONLY
+// place a 30-digit coordinate is typed, and a field that ran it through `Number()`
+// would quietly drop half of it — the exact failure the split centre exists to
+// prevent, arriving through the new door. So these tests bite on the round trip.
+
+test("splitCentreText: the EXACT sum, and the short form when there is no fine part", () => {
+  // No fine part → the shortest decimal that IS this float64 (not its 18-place
+  // expansion), which is what every shipped preset shows.
+  assert.equal(splitCentreText(-0.7435669, 0, 0), "-0.7435669");
+  assert.equal(splitCentreText(0, 0, 0), "0");
+  // With a fine part → the exact decimal sum, checked against `independentSplit`, the
+  // 90-decimal BigInt arbiter this file already judges splitCentreFixed by, so the
+  // text is measured against arithmetic and not against the code that made it. The
+  // text is re-read as ONE coarse number at exponent 0 (fine off), which is exactly
+  // the case where a float64 CANNOT hold it — so this only passes if the text is the
+  // true sum AND the BigInt path never touches a float64.
+  assert.equal(splitCentreText(0.5, 5, 1), "1");
+  const fe = 16, coarse = -0.7435669, fine = 3, bits = bitsForDepth(30);
+  const text = splitCentreText(coarse, fine, fe);
+  assert.equal(text, "-0.7435668999999997306016545437159948");
+  assert.equal(coarse.toFixed(34), "-0.7435669000000000306016545437159948", "the coarse float64's own exact decimal");
+  // …and the text is the coarse value plus exactly 3e-16, digit for digit.
+  assert.equal(text.slice(0, 19), "-0.7435668999999997"); // ...0000000306 + 3e-16 → ...9999997306
+  // ROUND TRIP THROUGH THE SHADER'S OWN ARITHMETIC: re-splitting the text gives a
+  // DIFFERENT (coarse, fine) pair — it must, since the text pins a value the original
+  // pair only approximates — but the same fixed-point point, to the last bit at the
+  // depth this coordinate is for. Exactness as far as the renderer can see is the
+  // property that matters; the pairs' own last digits are below its resolution.
+  const back = parseSplitCentre(text, fe);
+  assert.equal(splitCentreFixed(back.coarse, back.fine, fe, bits), splitCentreFixed(coarse, fine, fe, bits));
+  assert.equal(splitCentreText(back.coarse, back.fine, fe), text, "text → pair → text must be a fixed point");
+  // And it carries digits float64 CANNOT — the whole reason the field is a string.
+  assert.notEqual(text, String(Number(text)), "the exact text must carry more digits than a float64 can hold");
+});
+
+test("parseSplitCentre: a 25-DECIMAL paste survives, where Number() would not", () => {
+  const TYPED = "-0.7435669000000000123456789";
+  const fe = 16;
+  const split = parseSplitCentre(TYPED, fe);
+  assert.ok(split, "a valid decimal must parse");
+  // Every typed digit reads back.
+  assert.equal(splitCentreText(split.coarse, split.fine, fe).slice(0, TYPED.length), TYPED);
+  // The float64 route loses everything past the 17th digit — the failure this exists
+  // to prevent, stated as a measurement rather than a worry.
+  assert.notEqual(String(Number(TYPED)), TYPED);
+  // Idempotent: re-reading what it prints changes nothing, so a field the user opens
+  // and closes without typing cannot drift the coordinate one digit at a time.
+  const text = splitCentreText(split.coarse, split.fine, fe);
+  const again = parseSplitCentre(text, fe);
+  assert.equal(splitCentreText(again.coarse, again.fine, fe), text);
+  const bits = bitsForDepth(30);
+  assert.equal(
+    splitCentreFixed(again.coarse, again.fine, fe, bits),
+    splitCentreFixed(split.coarse, split.fine, fe, bits),
+    "a display round trip must land on the identical fixed-point centre",
+  );
+  // Junk is REFUSED rather than committed as a guess.
+  for (const bad of ["", "  ", "banana", "1e5", "--1", "0x10", "1.2.3"])
+    assert.equal(parseSplitCentre(bad, 0), null, `"${bad}" must not parse`);
+});
+
+test("the bar READS the view: five fields, exact coordinates, and the right knobs", () => {
+  const s = stateOf();
+  const spec = mandelbrotPlugin.floatingToolbar(s);
+  const ids = spec.fields.map((f) => f.id);
+  assert.deepEqual(ids, ["centreRe", "centreIm", "zoom", "iterations", "bands"]);
+  // The coordinate fields show the EXACT split sum — never approxCentre's float64.
+  const fe = Math.max(0, Math.round(s.fineExponent));
+  assert.equal(spec.fields[0].value, splitCentreText(s.centerX, s.centerFineX, fe));
+  assert.equal(spec.fields[1].value, splitCentreText(s.centerY, s.centerFineY, fe));
+  assert.equal(spec.fields[2].value, String(s.zoomExponent));
+  // Every field declares the stored leaves it writes, which is what lets the host
+  // refuse to clobber an `=` equation on any of them — and every one of those leaves
+  // must really be a state key of this widget.
+  for (const f of spec.fields) {
+    assert.ok(f.keys?.length > 0, `field "${f.id}" declares no stored keys`);
+    for (const key of f.keys) assert.ok(key in mandelbrotPlugin.defaults, `field "${f.id}" names "${key}", which is not a state key here`);
+    assert.ok(f.help?.length > 20, `field "${f.id}" has no help text`);
+  }
+  // THE TWO EXTRA KNOBS ARE AN ARGUED SELECTION, NOT A GUESS: they are the only two
+  // properties this file itself names as the thing to reach for. Read off the source,
+  // so a reword that withdraws either claim fails here and the bar has to be
+  // re-argued rather than quietly keeping a knob nothing justifies any more.
+  const source = readFileSync(new URL("../plugins/demo/mandelbrot.js", import.meta.url), "utf8");
+  assert.match(source, /FIRST thing to turn down if a slide feels slow/, "the maxIterations claim is gone from the file");
+  assert.match(mandelbrotPlugin.inspector.find((r) => r.key === "paletteScale").help, /knob to reach for/);
+});
+
+test("the bar WRITES the view: every field, its floor, and a refusal", () => {
+  const s = stateOf();
+  const w = (id, text) => mandelbrotPlugin.fieldWrites(s, id, text);
+  assert.deepEqual(w("centreRe", "-0.75"), { centerX: -0.75, centerFineX: 0 });
+  assert.deepEqual(w("centreIm", "0.25"), { centerY: 0.25, centerFineY: 0 });
+  assert.deepEqual(w("zoom", "6"), { zoomExponent: 6 });
+  assert.deepEqual(w("iterations", "1200"), { maxIterations: 1200 });
+  assert.deepEqual(w("bands", "40"), { paletteScale: 40 });
+  // The floors are the INSPECTOR ROWS' own, read off the declarations so the two
+  // cannot drift: a typed value may not go anywhere a scrub cannot.
+  const rowMin = (key) => mandelbrotPlugin.inspector.find((r) => r.key === key).min;
+  assert.equal(w("zoom", "-999").zoomExponent, rowMin("zoomExponent"));
+  assert.equal(w("bands", "0").paletteScale, rowMin("paletteScale"));
+  assert.equal(w("iterations", "0").maxIterations, rowMin("maxIterations"));
+  assert.equal(w("iterations", "99999999").maxIterations, mandelbrotPlugin.inspector.find((r) => r.key === "maxIterations").max);
+  assert.equal(w("iterations", "12.7").maxIterations, 13, "an integer row must round");
+  // Junk commits NOTHING rather than a guess.
+  for (const bad of ["", "banana", "  "]) {
+    assert.equal(w("centreRe", bad), null, `centreRe accepted "${bad}"`);
+    assert.equal(w("zoom", bad), null, `zoom accepted "${bad}"`);
+  }
+  // An unknown field id is a programming error and must be LOUD, not a silent no-op.
+  assert.throws(() => w("nope", "1"), /unknown field/);
+  // AT fineExponent > 0 a typed coordinate goes into the FINE slot's precision.
+  const deep = stateOf({ fineExponent: 16 });
+  const writes = mandelbrotPlugin.fieldWrites(deep, "centreRe", "-0.7435669000000000123456789");
+  assert.equal(writes.centerX, -0.7435669);
+  assert.ok(writes.centerFineX !== 0, "the deep digits must land in the fine slot, not be rounded away");
+  assert.equal(splitCentreText(writes.centerX, writes.centerFineX, 16).slice(0, 28), "-0.7435669000000000123456789");
 });
 
 // The widget must be REACHABLE, and by exactly ONE route. This used to assert it

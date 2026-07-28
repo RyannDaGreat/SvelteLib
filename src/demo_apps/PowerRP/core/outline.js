@@ -86,10 +86,11 @@ export function pointInPolygon(points, px, py) {
  * @example distToSegment(-3, 0, {x: 0, y: 0}, {x: 10, y: 0}) // 3
  */
 export function distToSegment(px, py, a, b) {
-  const abx = b.x - a.x, aby = b.y - a.y;
-  const len2 = abx * abx + aby * aby;
-  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - a.x) * abx + (py - a.y) * aby) / len2));
-  return Math.hypot(px - (a.x + abx * t), py - (a.y + aby * t));
+  // The foot of the perpendicular IS closestPointOnSegment (declared below —
+  // hoisted, so the order here is readability only): ONE segment-projection
+  // derivation serves both the distance and the point.
+  const q = closestPointOnSegment(a, b, { x: px, y: py });
+  return Math.hypot(px - q.x, py - q.y);
 }
 
 /**
@@ -139,6 +140,101 @@ export function projectOntoAxis(a, frame, p) {
  */
 export function projectOntoNormal(a, frame, p) {
   return (p.x - a.x) * frame.nx + (p.y - a.y) * frame.ny;
+}
+
+// ── Constraint-set projections (the MODIFIER-POINT constraint vocabulary) ─────
+// A constrained handle's ALLOWED SET is a curve or region, and the one operation
+// every consumer needs is its CLOSEST-POINT MAP proj_S(desired) → the nearest
+// point of S — the same "a rim IS its closest-point map" modeling the
+// dynamic-anchor solvers below already use, applied to handle trajectories
+// instead of rims. The functions here are the reusable sets (line / ray /
+// segment / ring); core/derive.js declares the protocol that binds one to a
+// handle. They are metric projections, hence IDEMPOTENT and nonexpansive.
+
+/**
+ * Pure function. The NEAREST point to `p` on the axis {o + t·d : t ∈ [tMin, tMax]}
+ * — ONE derivation covering a full LINE, a RAY, and a SEGMENT, which is every
+ * one-dimensional trajectory a MODIFIER POINT is pinned to (manifest ARCHITECTURE
+ * PLAN #1: "highly-constrained ... often parameterized by ONE number").
+ *
+ *   t* = clamp((p − o)·d / (d·d), t_min, t_max),   proj = o + t*·d
+ *
+ * `t` is in units of `d`, NOT arc length: a SEGMENT a→b is o = a, d = b − a with
+ * range [0, 1]; a RAY is a direction with range [0, ∞); a LINE is the default
+ * unbounded range. A degenerate (zero-length) `d` describes the single point o,
+ * which is then the only possible answer.
+ *
+ * EXACTNESS: the CONSTRAINED degrees of freedom come back exact (a coordinate
+ * that d cannot move is copied through `o` untouched), while the free coordinate
+ * re-rounds through the affine round-trip o + ((p−o)·d/|d|²)·d — so a point
+ * already on an OBLIQUE axis returns equal to within floating-point rounding,
+ * not bit-identical (measured bound in tests/handle_constraints_test.js).
+ *
+ * Args:
+ *   o ({x, y}): a point on the axis (the ray's origin / the segment's start)
+ *   d ({x, y}): the axis direction (need NOT be unit)
+ *   p ({x, y}): the desired point
+ *   tMin, tMax (number): the allowed range of t, in units of d
+ *
+ * Returns:
+ *   {x, y}: the nearest allowed point
+ *
+ * @example closestPointOnAxisRange({x: 0, y: 0}, {x: 1, y: 0}, {x: 30, y: 5}) // {x: 30, y: 0} (full line — perpendicular foot)
+ * @example closestPointOnAxisRange({x: 0, y: 0}, {x: 1, y: 0}, {x: -8, y: 5}, 0) // {x: 0, y: 0} (ray: t clamps to 0, NOT the mirrored +8)
+ * @example closestPointOnAxisRange({x: 0, y: 0}, {x: 10, y: 0}, {x: 40, y: 5}, 0, 1) // {x: 10, y: 0} (segment: past the far end)
+ * @example closestPointOnAxisRange({x: 3, y: 4}, {x: 0, y: 0}, {x: 9, y: 9}) // {x: 3, y: 4} (degenerate direction — the set is the point o)
+ */
+export function closestPointOnAxisRange(o, d, p, tMin = -Infinity, tMax = Infinity) {
+  const dd = d.x * d.x + d.y * d.y;
+  if (dd === 0) return { x: o.x, y: o.y };
+  const t = Math.max(tMin, Math.min(((p.x - o.x) * d.x + (p.y - o.y) * d.y) / dd, tMax));
+  return { x: o.x + t * d.x, y: o.y + t * d.y };
+}
+
+/**
+ * Pure function. The NEAREST point to `p` on the SEGMENT a→b (the foot of the
+ * perpendicular, clamped to the endpoints) — closestPointOnAxisRange over
+ * t ∈ [0, 1]. Shared by distToSegment and by every handle pinned between two
+ * geometric limits (a donut's inner radius runs center→rim, a fancy arrow's head
+ * length runs tip→tail).
+ *
+ * @example closestPointOnSegment({x: 0, y: 0}, {x: 10, y: 0}, {x: 4, y: 7}) // {x: 4, y: 0}
+ * @example closestPointOnSegment({x: 0, y: 0}, {x: 10, y: 0}, {x: -6, y: 3}) // {x: 0, y: 0} (before the start — clamped)
+ * @example closestPointOnSegment({x: 2, y: 2}, {x: 2, y: 2}, {x: 9, y: 9}) // {x: 2, y: 2} (zero-length segment)
+ */
+export function closestPointOnSegment(a, b, p) {
+  return closestPointOnAxisRange(a, { x: b.x - a.x, y: b.y - a.y }, p, 0, 1);
+}
+
+/**
+ * Pure function. The NEAREST point to `p` in the closed ANNULUS (ring) of center
+ * `c` and radii [rMin, rMax]: the RADIUS is clamped and the DIRECTION is kept,
+ * which is the metric projection because the set is radially convex. This is the
+ * allowed set of a handle free to swing to any angle but held between two
+ * lengths — a clock hand's tip is the canonical one.
+ *
+ *   r* = clamp(|p − c|, r_min, r_max),   proj = c + r*·unit(p − c)
+ *
+ * A query ALREADY in the ring is returned bit-identically (no radial round-trip
+ * is performed at all), so the set's fixed points are exact.
+ *
+ * A query exactly AT the center has no direction; `fallbackDir` (a UNIT vector)
+ * decides, the same explicit-fallback convention polygon.js's closestPointOnChain
+ * uses — callers pass the direction their own parameterization's degenerate case
+ * already produces rather than inheriting an arbitrary house default.
+ *
+ * @example closestPointInAnnulus({x: 0, y: 0}, 2, 10, {x: 100, y: 0}, {x: 1, y: 0}) // {x: 10, y: 0} (outside → outer rim)
+ * @example closestPointInAnnulus({x: 0, y: 0}, 2, 10, {x: 0.6, y: 0.8}, {x: 1, y: 0}) // {x: 1.2, y: 1.6} (inside the hole → inner rim, same heading)
+ * @example closestPointInAnnulus({x: 0, y: 0}, 2, 10, {x: 3, y: 4}, {x: 1, y: 0}) // {x: 3, y: 4} (already in the ring — unchanged)
+ * @example closestPointInAnnulus({x: 5, y: 5}, 2, 10, {x: 5, y: 5}, {x: 0, y: 1}) // {x: 5, y: 7} (at the center → fallbackDir at rMin)
+ */
+export function closestPointInAnnulus(c, rMin, rMax, p, fallbackDir) {
+  const dx = p.x - c.x, dy = p.y - c.y;
+  const d = Math.hypot(dx, dy);
+  if (d === 0) return { x: c.x + rMin * fallbackDir.x, y: c.y + rMin * fallbackDir.y };
+  const r = Math.max(rMin, Math.min(d, rMax));
+  if (r === d) return { x: p.x, y: p.y };
+  return { x: c.x + (r * dx) / d, y: c.y + (r * dy) / d };
 }
 
 /**

@@ -161,7 +161,17 @@ const SKY_CUSTOM = customProps([
   // backend-defined garbage). render_gpu/skia/sky_shader.js now floors that divisor with
   // BETA_FLOOR, which makes 0 the exact physical limit (no scattering ⇒ a black airless
   // sky with only the ground band) and leaves every positive value byte-identical.
-  { name: "atmosphere", kind: "number", default: 1, min: 0, help: "Overall atmosphere thickness — scales all scattering. Higher = denser/brighter sky (past ~100 the dome saturates into its own haze); 0 is the airless limit, a black sky with only the ground showing. 0 is a REAL floor: this is the divisor of the scattering integral." },
+  // SCRUB, measured against `exposure` below — the same knob CLASS in the same
+  // widget: a half-open unit-nominal multiplier with a saturation point far above 1.
+  // `exposure` scrubs at 0.011/px, and it gets that for FREE only because its default
+  // happens to be written 1.1: numberStep.js infers |default|/RANGE_DRAG_PX from a
+  // fractional default. `atmosphere`'s default is the integer 1, which is no proof of
+  // fractionality, so inference correctly declines and the row fell back to 1 unit/px
+  // — a 1px twitch DOUBLED the air. It is fractional in use (the shader takes it as a
+  // plain linear scale, betaR = BETA_R * uAtmosphere, and its own header notes 0.001
+  // already renders the airless frame), so it declares the shared constant, which
+  // matches its twin's 0.011 to within 10%.
+  { name: "atmosphere", kind: "number", default: 1, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Overall atmosphere thickness — scales all scattering. Higher = denser/brighter sky (past ~100 the dome saturates into its own haze); 0 is the airless limit, a black sky with only the ground showing. 0 is a REAL floor: this is the divisor of the scattering integral." },
   // NO BOUNDS (the old min:0.05 was ARBITRARY). 0 is a black day sky and NEGATIVE values
   // are honoured, not swallowed: the tone map 1 − exp(−exposure·daySky) turns them into
   // SUBTRACTED light — measured, −1, −2 and −5 each render a distinct twilight (mean luma
@@ -404,7 +414,13 @@ const CLOUDS_CUSTOM = customProps([
   { name: "cloudScale", kind: "number", default: 2.4, help: "Spatial frequency of the cloud noise — bigger = smaller, more numerous puffs; no bounds. 0 collapses the field to a single flat wash, and a negative scale mirrors the noise." },
   // NO FLOOR (the old min:0 was ARBITRARY — the SkSL offsets the field by uTime·uSpeed·0.03,
   // so a negative speed simply drifts the other way; −1 and −8 render distinct frames).
-  { name: "speed", kind: "number", default: 1, help: "Drift speed (animated). 0 = a frozen still; negative drifts the clouds the other way; no cap." },
+  // SCRUB: a unit-nominal RATE multiplier — 1 = the authored drift, 0 = frozen. Fully
+  // open, and its default is the integer 1, so nothing in the row proved it fractional
+  // and it fell back to 1 unit/px: dragging one pixel DOUBLED the speed, and 1.5x was
+  // unreachable by dragging at all. Every other row of this widget sits at 0.01/px
+  // (coverage by its 0..1 range, softness by declaring this same constant), so the
+  // shared unit-span constant both fixes the row and matches its siblings.
+  { name: "speed", kind: "number", default: 1, scrub: UNIT_SPAN_SCRUB, help: "Drift speed (animated). 0 = a frozen still; negative drifts the clouds the other way; no cap." },
   { name: "ambient", kind: "color", default: "#8fa6c8", help: "Cool sky ambient lighting the shadowed sides/undersides of the clouds fall back to." },
   { name: "base", kind: "color", default: "#eef1f6", help: "Cloud base tint (lit sides go toward white·this, dense cores darken)." },
   { name: "cornerRadius", kind: "number", default: 0, min: 0, help: "Rounded-corner radius of the region (world px). Floor 0 is GEOMETRIC — a radius is a length, and render_gpu/ir.js materialFill clamps it there too." },

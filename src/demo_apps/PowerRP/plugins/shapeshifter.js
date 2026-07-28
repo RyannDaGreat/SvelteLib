@@ -53,6 +53,7 @@ import {
   ringSectorOutline, polygonStarOutline, cornerRectOutline, quadWedgeOutline,
   crossPlusOutline, frameOutline, gearOutline, calloutOutline, bannerOutline,
   bracketOutline, arrowOutline, pointInOutlines, closestPointOnRoundedRect,
+  closestPointOnSegment, closestPointOnAxisRange,
 } from "../core/outline.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { path } from "../render_gpu/ir.js";
@@ -90,6 +91,85 @@ const angleAt = (g, x, y) => Math.atan2((y - g.cy) / g.ry, (x - g.cx) / g.rx);
 // the direction `a` — donut's radial-handle projection, generalized to any dir.
 const radialT = (g, x, y, a) => ((x - g.cx) / g.rx) * Math.cos(a) + ((y - g.cy) / g.ry) * Math.sin(a);
 
+// ── The families' shared CONSTRAINT vocabulary ────────────────────────────────
+// THE HANDLE-CONSTRAINT PROTOCOL (core/derive.js): every handle declares
+// `constrain(state, desired) → allowed`, the projection onto its allowed set, and
+// `apply(state, allowed)` then only reads that point back as a number. The
+// ellipse-fitted families' handles all ride either a RADIAL segment or the RIM,
+// so both projections are declared ONCE here.
+//
+// "NEAREST" for these two is nearest in the ellipse's NORMALIZED frame — the same
+// frame angleAt/radialT already read — which coincides with nearest-in-local
+// exactly when rx === ry. That is the established house convention for elliptical
+// closest-point maps (donut.js's and circle.js's closestAnchor say the same
+// thing: "identical convention to circle.js, exact when w === h"), and it is the
+// right frame because the PARAMETER these handles write is defined in it.
+
+/** Pure function. The ellipse point at normalized radius `t` and angle `a` (rad).
+ *  @example ellipsePoint({cx: 100, cy: 50, rx: 100, ry: 50}, 1, 0) // {x: 200, y: 50} */
+const ellipsePoint = (g, t, a) => ({ x: g.cx + g.rx * t * Math.cos(a), y: g.cy + g.ry * t * Math.sin(a) });
+
+/** Pure function. Nearest point on the RADIAL SEGMENT at angle `a`, normalized
+ *  radius t ∈ [tMin, tMax] — the allowed set of every "ratio of the radius" handle.
+ *  @example radialConstrain({cx: 100, cy: 100, rx: 100, ry: 100}, 0, {x: 999, y: 40}, 0, 1) // {x: 200, y: 100} */
+const radialConstrain = (g, a, p, tMin, tMax) => ellipsePoint(g, clamp(radialT(g, p.x, p.y, a), tMin, tMax), a);
+
+/** Pure function. Nearest point on the ellipse RIM (t = 1, any angle) — the allowed
+ *  set of every handle that only sets an ANGLE.
+ *  @example rimConstrain({cx: 100, cy: 100, rx: 100, ry: 100}, {x: 140, y: 100}) // {x: 200, y: 100} */
+const rimConstrain = (g, p) => ellipsePoint(g, 1, angleAt(g, p.x, p.y));
+
+/** Pure function. Read a number out of the ellipse frame — or KEEP the stored one
+ *  when the box has no extent to read it from (angleAt/radialT divide by rx and ry,
+ *  so a zero-extent axis yields ±Infinity or NaN). Same reasoning as ratioOf below:
+ *  a collapsed allowed set has nothing to say, so the stored value stands.
+ *  @example readOrKeep({rx: 100, ry: 50}, () => 0.25, 0.9) // 0.25
+ *  @example readOrKeep({rx: 0, ry: 50}, () => 0.25, 0.9) // 0.9 (no extent — the stored value stands) */
+const readOrKeep = (g, read, held) => (g.rx > 0 && g.ry > 0 ? read() : held);
+
+/** Pure function. A ratio read from an extent — or the value it ALREADY had when
+ *  the extent is 0. A zero-extent box has no length to take a fraction OF, so
+ *  there is nothing to read and the stored value stands: the zero-extent KEEP
+ *  precedent (polygon.js, quoting lens_flare — "a technical guard on division,
+ *  not a bound on any value"). It replaces two `|| 1` fallbacks that silently
+ *  divided by a fabricated extent of one pixel.
+ *  @example ratioOf(30, 120, 0.9) // 0.25
+ *  @example ratioOf(30, 0, 0.9) // 0.9 (no extent — the stored value stands) */
+const ratioOf = (numer, extent, existing) => (extent > 0 ? numer / extent : existing);
+
+// A sweep under this many degrees draws nothing at all, so the `end` handle's
+// parameterization reads it as a FULL turn instead — the allowed set of that
+// handle is the rim MINUS this sliver past the start angle (a genuine discrete
+// step, not a clamp). Pre-existing behaviour, named here rather than inline.
+const MIN_SWEEP_DEG = 1;
+const FULL_SWEEP_DEG = 360;
+// A star/polygon COUNT comes from the angular gap between two adjacent points, so
+// a gap this small or smaller would divide out to an unbounded count; it is the
+// floor on that gap. Pre-existing behaviour, named here rather than inline.
+const MIN_POINT_GAP_RAD = 1e-3;
+
+/** Pure function. The sweep (degrees, [MIN_SWEEP_DEG, FULL_SWEEP_DEG]) that a rim
+ *  point at `angleDeg` describes from `startDeg` — ONE reading shared by the `end`
+ *  handle's constraint and its write, so the discrete step cannot drift between them.
+ *  @example sweepFromAngle(-90, 30) // 120
+ *  @example sweepFromAngle(-90, -90) // 360 (a vanishing sweep reads as a full turn) */
+const sweepFromAngle = (startDeg, angleDeg) => {
+  const sw = (((angleDeg - startDeg) % FULL_SWEEP_DEG) + FULL_SWEEP_DEG) % FULL_SWEEP_DEG;
+  return sw < MIN_SWEEP_DEG ? FULL_SWEEP_DEG : sw;
+};
+
+/** Pure function. The point COUNT a rim point at angle `a` (rad) describes as the
+ *  gap from `startRad` — ONE reading shared by the `points` handle's constraint and
+ *  its write. Rounds in COUNT (never below 3), which is why the resulting rim point
+ *  is the nearest ALLOWED COUNT rather than the nearest allowed ANGLE.
+ *  @example pointCountFromAngle(0, Math.PI / 2) // 4
+ *  @example pointCountFromAngle(0, Math.PI) // 3 (a half-turn gap wants 2 points; the count floors at 3)
+ *  @example pointCountFromAngle(0, 0) // 6283 (a vanishing gap floors at MIN_POINT_GAP_RAD, giving 2π/1e-3 points) */
+const pointCountFromAngle = (startRad, a) => {
+  const gap = Math.max(MIN_POINT_GAP_RAD, (((a - startRad) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI));
+  return Math.max(3, Math.round((2 * Math.PI) / gap));
+};
+
 /**
  * THE FAMILY REGISTRY. Each entry: identity + a param seed (defaults) + inline
  * Inspector rows + `outline(state)` (the pure core generator, degrees→radians
@@ -113,14 +193,41 @@ export const FAMILIES = [
       SEL("cap", "Cap", ["pie", "chord"], { pie: "Pie (radial)", chord: "Chord (flat)" }, "How a solid partial slice closes: pie draws two straight edges to the center, chord draws a single straight line across the opening."),
     ],
     outline: (s) => ringSectorOutline({ ...ellipseGeom(s), inner: s.inner ?? 0.5, a0: (s.startAngle ?? -90) * DEG, a1: ((s.startAngle ?? -90) + (s.sweep ?? 360)) * DEG, cap: s.cap ?? "pie" }),
+    // inner rides the RADIAL SEGMENT along the start angle (t ∈ [0, 1]); start and
+    // end ride the RIM (any angle), end's rim punctured by MIN_SWEEP_DEG.
     modifierPoints(s) {
       const g = ellipseGeom(s);
-      const a0 = (s.startAngle ?? -90) * DEG, a1 = a0 + (s.sweep ?? 360) * DEG;
+      const a0 = (s.startAngle ?? -90) * DEG, a1 = a0 + (s.sweep ?? FULL_SWEEP_DEG) * DEG;
       const inner = clamp(s.inner, 0, 1);
+      const startOf = (st) => st.startAngle ?? -90;
       return [
-        { id: "inner", x: g.cx + g.rx * inner * Math.cos(a0), y: g.cy + g.ry * inner * Math.sin(a0), apply(st, p) { const gg = ellipseGeom(st); return { inner: clamp(radialT(gg, p.x, p.y, (st.startAngle ?? -90) * DEG), 0, 1) }; } },
-        { id: "start", x: g.cx + g.rx * Math.cos(a0), y: g.cy + g.ry * Math.sin(a0), apply(st, p) { const gg = ellipseGeom(st); return { startAngle: angleAt(gg, p.x, p.y) / DEG }; } },
-        { id: "end", x: g.cx + g.rx * Math.cos(a1), y: g.cy + g.ry * Math.sin(a1), apply(st, p) { const gg = ellipseGeom(st); let sw = ((angleAt(gg, p.x, p.y) / DEG - (st.startAngle ?? -90)) % 360 + 360) % 360; return { sweep: sw < 1 ? 360 : sw }; } },
+        {
+          id: "inner", x: g.cx + g.rx * inner * Math.cos(a0), y: g.cy + g.ry * inner * Math.sin(a0),
+          constrain: (st, p) => radialConstrain(ellipseGeom(st), startOf(st) * DEG, p, 0, 1),
+          apply: (st, p) => {
+            const gg = ellipseGeom(st);
+            return { inner: readOrKeep(gg, () => radialT(gg, p.x, p.y, startOf(st) * DEG), clamp(st.inner, 0, 1)) };
+          },
+        },
+        {
+          id: "start", x: g.cx + g.rx * Math.cos(a0), y: g.cy + g.ry * Math.sin(a0),
+          constrain: (st, p) => rimConstrain(ellipseGeom(st), p),
+          apply: (st, p) => {
+            const gg = ellipseGeom(st);
+            return { startAngle: readOrKeep(gg, () => angleAt(gg, p.x, p.y) / DEG, startOf(st)) };
+          },
+        },
+        {
+          id: "end", x: g.cx + g.rx * Math.cos(a1), y: g.cy + g.ry * Math.sin(a1),
+          constrain: (st, p) => {
+            const gg = ellipseGeom(st);
+            return ellipsePoint(gg, 1, (startOf(st) + sweepFromAngle(startOf(st), angleAt(gg, p.x, p.y) / DEG)) * DEG);
+          },
+          apply: (st, p) => {
+            const gg = ellipseGeom(st);
+            return { sweep: readOrKeep(gg, () => sweepFromAngle(startOf(st), angleAt(gg, p.x, p.y) / DEG), st.sweep ?? FULL_SWEEP_DEG) };
+          },
+        },
       ];
     },
   },
@@ -134,15 +241,36 @@ export const FAMILIES = [
       ANGLE("startAngle", "Rotation", { help: "Spins the shape about its center, in degrees. 0 puts the first point straight up." }),
     ],
     outline: (s) => polygonStarOutline(s.w, s.h, { points: s.points ?? 5, innerRatio: s.innerRatio ?? 0.5, cornerRadius: s.cornerRadius ?? 0, startAngle: (s.startAngle ?? 0) * DEG }),
+    // innerRatio rides the RADIAL SEGMENT along the first notch's angle; points rides
+    // a DISCRETE set of rim points, one per whole achievable count (pointCountFromAngle).
     modifierPoints(s) {
       const g = ellipseGeom(s);
       const p = Math.max(2, Math.round(s.points ?? 5));
       const inner = clamp(s.innerRatio, 0, 1);
-      const start = -Math.PI / 2 + (s.startAngle ?? 0) * DEG;
+      const startOf = (st) => -Math.PI / 2 + (st.startAngle ?? 0) * DEG;
+      const notchAngleOf = (st) => startOf(st) + Math.PI / Math.max(2, Math.round(st.points ?? 5));
+      const start = startOf(s);
       const innerA = start + Math.PI / p, countA = start + (2 * Math.PI) / p;
       return [
-        { id: "innerRatio", x: g.cx + g.rx * inner * Math.cos(innerA), y: g.cy + g.ry * inner * Math.sin(innerA), apply(st, pt) { const gg = ellipseGeom(st); const pp = Math.max(2, Math.round(st.points ?? 5)); const a = -Math.PI / 2 + (st.startAngle ?? 0) * DEG + Math.PI / pp; return { innerRatio: clamp(radialT(gg, pt.x, pt.y, a), 0, 1) }; } },
-        { id: "points", x: g.cx + g.rx * Math.cos(countA), y: g.cy + g.ry * Math.sin(countA), apply(st, pt) { const gg = ellipseGeom(st); const s0 = -Math.PI / 2 + (st.startAngle ?? 0) * DEG; let da = (angleAt(gg, pt.x, pt.y) - s0) % (2 * Math.PI); da = (da + 2 * Math.PI) % (2 * Math.PI); if (da < 1e-3) da = 1e-3; return { points: Math.max(3, Math.round((2 * Math.PI) / da)) }; } },
+        {
+          id: "innerRatio", x: g.cx + g.rx * inner * Math.cos(innerA), y: g.cy + g.ry * inner * Math.sin(innerA),
+          constrain: (st, pt) => radialConstrain(ellipseGeom(st), notchAngleOf(st), pt, 0, 1),
+          apply: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return { innerRatio: readOrKeep(gg, () => radialT(gg, pt.x, pt.y, notchAngleOf(st)), clamp(st.innerRatio, 0, 1)) };
+          },
+        },
+        {
+          id: "points", x: g.cx + g.rx * Math.cos(countA), y: g.cy + g.ry * Math.sin(countA),
+          constrain: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return ellipsePoint(gg, 1, startOf(st) + (2 * Math.PI) / pointCountFromAngle(startOf(st), angleAt(gg, pt.x, pt.y)));
+          },
+          apply: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return { points: readOrKeep(gg, () => pointCountFromAngle(startOf(st), angleAt(gg, pt.x, pt.y)), Math.max(3, Math.round(st.points ?? 5))) };
+          },
+        },
       ];
     },
   },
@@ -157,22 +285,28 @@ export const FAMILIES = [
       SEL("cornerStyle", "Corner style", ["round", "snip"], { round: "Round", snip: "Snip / chamfer" }, "How non-zero corners are cut: round is a smooth fillet, snip is a straight diagonal chamfer."),
     ],
     outline: (s) => cornerRectOutline(s.w, s.h, { r0: s.r0 ?? 0, r1: s.r1 ?? 0, r2: s.r2 ?? 0, r3: s.r3 ?? 0, cornerStyle: s.cornerStyle ?? "round" }),
+    // Each corner's handle slides from its vertex along the edge toward the next
+    // vertex, as far as the geometric maximum radius (half the shorter side): an
+    // AXIS-ALIGNED SEGMENT, so the projection is the plain metric one.
     modifierPoints(s) {
-      const box = [[0, 0], [s.w, 0], [s.w, s.h], [0, s.h]];
       const keys = ["r0", "r1", "r2", "r3"];
-      const maxR = Math.min(s.w, s.h) / 2;
-      return box.map((v, i) => {
-        const next = box[(i + 1) % 4];
-        const dx = next[0] - v[0], dy = next[1] - v[1], len = Math.hypot(dx, dy) || 1;
-        const rr = clamp(s[keys[i]], 0, 1) * maxR;
+      const armOf = (st, i) => {
+        const bx = [[0, 0], [st.w, 0], [st.w, st.h], [0, st.h]];
+        const v = { x: bx[i][0], y: bx[i][1] }, next = bx[(i + 1) % 4];
+        const dx = next[0] - v.x, dy = next[1] - v.y, len = Math.hypot(dx, dy);
+        const maxR = Math.min(st.w, st.h) / 2;
+        const u = len > 0 ? { x: dx / len, y: dy / len } : { x: 0, y: 0 };
+        return { v, u, maxR, end: { x: v.x + u.x * maxR, y: v.y + u.y * maxR } };
+      };
+      return keys.map((key, i) => {
+        const a = armOf(s, i);
+        const rr = clamp(s[key], 0, 1) * a.maxR;
         return {
-          id: keys[i], x: v[0] + (dx / len) * rr, y: v[1] + (dy / len) * rr,
+          id: key, x: a.v.x + a.u.x * rr, y: a.v.y + a.u.y * rr,
+          constrain(st, pt) { const q = armOf(st, i); return closestPointOnSegment(q.v, q.end, pt); },
           apply(st, pt) {
-            const bx = [[0, 0], [st.w, 0], [st.w, st.h], [0, st.h]];
-            const vv = bx[i], nx = bx[(i + 1) % 4];
-            const ddx = nx[0] - vv[0], ddy = nx[1] - vv[1], l = Math.hypot(ddx, ddy) || 1;
-            const t = ((pt.x - vv[0]) * ddx + (pt.y - vv[1]) * ddy) / l;
-            return { [keys[i]]: clamp(t / (Math.min(st.w, st.h) / 2), 0, 1) };
+            const q = armOf(st, i);
+            return { [key]: ratioOf((pt.x - q.v.x) * q.u.x + (pt.y - q.v.y) * q.u.y, q.maxR, clamp(st[key], 0, 1)) };
           },
         };
       });
@@ -188,12 +322,25 @@ export const FAMILIES = [
       N("cornerRadius", "Corner radius", { min: 0, max: 0.5, help: "Rounds all four corners by this fraction of half the shorter side." }),
     ],
     outline: (s) => quadWedgeOutline(s.w, s.h, { taper: s.taper ?? 1, shear: s.shear ?? 0, topOffset: s.topOffset ?? 0, cornerRadius: s.cornerRadius ?? 0 }),
+    // Both handles ride the TOP EDGE (y = 0): taper along the RAY running +x from the
+    // top edge's centre (a width has a floor of 0 and no cap), shear along the whole
+    // LINE (it leans either way, unbounded).
     modifierPoints(s) {
       const topW = Math.max(0, s.taper ?? 1) * s.w;
+      const taperBase = (st) => ({ x: st.w / 2 + ((st.topOffset ?? 0) + (st.shear ?? 0)) * st.w, y: 0 });
+      const shearBase = (st) => ({ x: st.w / 2 + (st.topOffset ?? 0) * st.w, y: 0 });
       const cxTop = s.w / 2 + (s.topOffset ?? 0) * s.w + (s.shear ?? 0) * s.w;
       return [
-        { id: "taper", x: cxTop + topW / 2, y: 0, apply(st, pt) { const base = st.w / 2 + ((st.topOffset ?? 0) + (st.shear ?? 0)) * st.w; return { taper: Math.max(0, (2 * (pt.x - base)) / st.w) }; } },
-        { id: "shear", x: cxTop, y: 0, apply(st, pt) { const off = st.w / 2 + (st.topOffset ?? 0) * st.w; return { shear: (pt.x - off) / st.w }; } },
+        {
+          id: "taper", x: cxTop + topW / 2, y: 0,
+          constrain: (st, pt) => closestPointOnAxisRange(taperBase(st), { x: 1, y: 0 }, pt, 0),
+          apply: (st, pt) => ({ taper: ratioOf(2 * (pt.x - taperBase(st).x), st.w, Math.max(0, st.taper ?? 1)) }),
+        },
+        {
+          id: "shear", x: cxTop, y: 0,
+          constrain: (st, pt) => closestPointOnAxisRange(shearBase(st), { x: 1, y: 0 }, pt),
+          apply: (st, pt) => ({ shear: ratioOf(pt.x - shearBase(st).x, st.w, st.shear ?? 0) }),
+        },
       ];
     },
   },
@@ -206,13 +353,36 @@ export const FAMILIES = [
       N("cornerRadius", "Corner radius", { min: 0, max: 0.5, help: "Rounds the twelve corners by this fraction of half the shorter side." }),
     ],
     outline: (s) => crossPlusOutline(s.w, s.h, { armThickness: s.armThickness ?? 1 / 3, armLengthRatio: s.armLengthRatio ?? 1, cornerRadius: s.cornerRadius ?? 0 }),
+    // armThickness's handle is the arms' INNER CORNER, so thickening moves it right AND
+    // up: its allowed set is a DIAGONAL segment, and the drag reads only x — an OBLIQUE
+    // retraction onto that segment (the corner tracks the cursor's x and rides the
+    // diagonal), NOT the metric nearest point. Deliberate and pre-existing: the reading
+    // is "how thick", which is a horizontal measurement.
+    // armLengthRatio's handle is the vertical arm's top, a VERTICAL segment from the box
+    // top down to the arm's own crotch — the plain metric projection.
     modifierPoints(s) {
       const t = clamp(s.armThickness, 0.02, 1), half = t / 2;
       const x2 = (0.5 + half) * s.w, y1 = (0.5 - half) * s.h;
       const lr = clamp(s.armLengthRatio, 0, 1), top = (1 - lr) * (0.5 - half) * s.h;
+      const [LO, HI] = [0.05, 1]; // the bounds the `armThickness` DRAG has always written within
+      // The x-fraction that reads back as the stored thickness, so a box with no width
+      // (nothing to take a fraction of) leaves the value exactly where it was.
+      const heldFraction = (st) => 0.5 + clamp(st.armThickness, LO, HI) / 2;
+      const thicknessAt = (st, x) => clamp(2 * ratioOf(x, st.w, heldFraction(st)) - 1, LO, HI);
+      // The vertical arm's available room: zero when the arms already fill the box
+      // (armThickness 1), which is a single-point allowed set — the handle cannot move.
+      const roomOf = (st) => (0.5 - clamp(st.armThickness, 0.02, 1) / 2) * st.h;
       return [
-        { id: "armThickness", x: x2, y: y1, apply(st, pt) { return { armThickness: clamp(2 * (pt.x / st.w - 0.5), 0.05, 1) }; } },
-        { id: "armLengthRatio", x: s.w / 2, y: top, apply(st, pt) { const h2 = clamp(st.armThickness, 0.02, 1) / 2; const denom = (0.5 - h2) * st.h || 1; return { armLengthRatio: clamp(1 - pt.y / denom, 0, 1) }; } },
+        {
+          id: "armThickness", x: x2, y: y1,
+          constrain(st, pt) { const th = thicknessAt(st, pt.x) / 2; return { x: (0.5 + th) * st.w, y: (0.5 - th) * st.h }; },
+          apply: (st, pt) => ({ armThickness: 2 * ratioOf(pt.x, st.w, heldFraction(st)) - 1 }),
+        },
+        {
+          id: "armLengthRatio", x: s.w / 2, y: top,
+          constrain: (st, pt) => closestPointOnSegment({ x: st.w / 2, y: 0 }, { x: st.w / 2, y: roomOf(st) }, pt),
+          apply: (st, pt) => ({ armLengthRatio: 1 - ratioOf(pt.y, roomOf(st), 1 - clamp(st.armLengthRatio, 0, 1)) }),
+        },
       ];
     },
   },
@@ -224,9 +394,19 @@ export const FAMILIES = [
       SEL("sides", "Sides", ["frame", "half", "corner", "bar"], { frame: "Full frame", half: "Half-frame (U)", corner: "L-shape", bar: "Single bar" }, "Which edges the border keeps: a full frame (hole in the middle), a three-sided U, an L corner, or one bar."),
     ],
     outline: (s) => frameOutline(s.w, s.h, { thickness: s.thickness ?? 0.15, sides: s.sides ?? "frame" }),
+    // The border's INNER CORNER, so thickening moves it right AND down: a DIAGONAL
+    // allowed set read by x alone — the same OBLIQUE retraction the cross's inner
+    // corner uses (a thickness is a horizontal measurement), not the metric nearest.
     modifierPoints(s) {
-      const b = clamp(s.thickness, 0, 0.5) * Math.min(s.w, s.h);
-      return [{ id: "thickness", x: b, y: b, apply(st, pt) { return { thickness: clamp(pt.x / (Math.min(st.w, st.h) || 1), 0, 0.5) }; } }];
+      const [LO, HI] = [0, 0.5]; // the `thickness` row's declared bounds
+      const shortSide = (st) => Math.min(st.w, st.h);
+      const thicknessAt = (st, x) => clamp(ratioOf(x, shortSide(st), clamp(st.thickness, LO, HI)), LO, HI);
+      const b = clamp(s.thickness, LO, HI) * shortSide(s);
+      return [{
+        id: "thickness", x: b, y: b,
+        constrain(st, pt) { const q = thicknessAt(st, pt.x) * shortSide(st); return { x: q, y: q }; },
+        apply: (st, pt) => ({ thickness: ratioOf(pt.x, shortSide(st), clamp(st.thickness, LO, HI)) }),
+      }];
     },
   },
   {
@@ -239,15 +419,43 @@ export const FAMILIES = [
       N("holeRatio", "Center hole", { min: 0, max: 0.9, help: "Radius of a hole through the center as a fraction of the outer radius. 0 is solid." }),
     ],
     outline: (s) => gearOutline(s.w, s.h, { teeth: s.teeth ?? 8, innerRatio: s.innerRatio ?? 0.7, toothWidth: s.toothWidth ?? 0.5, holeRatio: s.holeRatio ?? 0 }),
+    // innerRatio rides the RADIAL SEGMENT straight up (t ∈ [0.05, 0.98]). toothWidth
+    // rides the RIM, but its reading is the ABSOLUTE angular gap from 12 o'clock, so —
+    // like the fancy arrow's half-widths — it MIRRORS a point on the far side onto the
+    // one side the handle is drawn (a tooth is symmetric about its centre line): an
+    // idempotent retraction, not the metric nearest point.
     modifierPoints(s) {
+      const TOOTH_TOP = -Math.PI / 2; // the reference tooth is centred at 12 o'clock
       const g = ellipseGeom(s);
       const root = clamp(s.innerRatio, 0.05, 0.98);
       const tw = clamp(s.toothWidth, 0.02, 0.98);
-      const N_ = Math.max(3, Math.round(s.teeth ?? 8));
-      const halfTop = (tw * (2 * Math.PI / N_)) / 2, c0 = -Math.PI / 2;
+      const pitchOf = (st) => (2 * Math.PI) / Math.max(3, Math.round(st.teeth ?? 8));
+      // Half the tooth top's angular width, from an angle on the rim.
+      const halfTopAt = (st, a) => {
+        const pitch = pitchOf(st);
+        return clamp((2 * Math.min(Math.abs(TOOTH_TOP - a), pitch / 2)) / pitch, 0.02, 0.98) * pitch / 2;
+      };
+      const halfTop = (tw * pitchOf(s)) / 2;
       return [
-        { id: "innerRatio", x: g.cx + g.rx * root * Math.cos(c0), y: g.cy + g.ry * root * Math.sin(c0), apply(st, pt) { const gg = ellipseGeom(st); return { innerRatio: clamp(radialT(gg, pt.x, pt.y, -Math.PI / 2), 0.05, 0.98) }; } },
-        { id: "toothWidth", x: g.cx + g.rx * Math.cos(c0 - halfTop), y: g.cy + g.ry * Math.sin(c0 - halfTop), apply(st, pt) { const gg = ellipseGeom(st); const nn = Math.max(3, Math.round(st.teeth ?? 8)); const pitch = 2 * Math.PI / nn; const da = Math.min(Math.abs(-Math.PI / 2 - angleAt(gg, pt.x, pt.y)), pitch / 2); return { toothWidth: clamp((2 * da) / pitch, 0.02, 0.98) }; } },
+        {
+          id: "innerRatio", x: g.cx + g.rx * root * Math.cos(TOOTH_TOP), y: g.cy + g.ry * root * Math.sin(TOOTH_TOP),
+          constrain: (st, pt) => radialConstrain(ellipseGeom(st), TOOTH_TOP, pt, 0.05, 0.98),
+          apply: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return { innerRatio: readOrKeep(gg, () => radialT(gg, pt.x, pt.y, TOOTH_TOP), clamp(st.innerRatio, 0.05, 0.98)) };
+          },
+        },
+        {
+          id: "toothWidth", x: g.cx + g.rx * Math.cos(TOOTH_TOP - halfTop), y: g.cy + g.ry * Math.sin(TOOTH_TOP - halfTop),
+          constrain: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return ellipsePoint(gg, 1, TOOTH_TOP - halfTopAt(st, angleAt(gg, pt.x, pt.y)));
+          },
+          apply: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return { toothWidth: readOrKeep(gg, () => (2 * halfTopAt(st, angleAt(gg, pt.x, pt.y))) / pitchOf(st), clamp(st.toothWidth, 0.02, 0.98)) };
+          },
+        },
       ];
     },
   },
@@ -259,8 +467,10 @@ export const FAMILIES = [
       N("tailWidth", "Tail width", { min: 0.02, max: 0.9, help: "How wide the tail's base is as a fraction of the body width. Thin is a pointer, wide is a speech-bubble beak." }),
     ],
     outline: (s) => calloutOutline(s.w, s.h, { cornerRadius: s.cornerRadius ?? 0.2, tailX: s.tailX, tailY: s.tailY, tailWidth: s.tailWidth ?? 0.22 }),
+    // The tail tip goes ANYWHERE (a speech bubble may point off its own box), so this
+    // handle declares NO `constrain`: the identity default is the truthful statement.
     modifierPoints(s) {
-      return [{ id: "tail", x: s.tailX ?? s.w * 0.25, y: s.tailY ?? s.h, apply(_st, pt) { return { tailX: pt.x, tailY: pt.y }; } }];
+      return [{ id: "tail", x: s.tailX ?? s.w * 0.25, y: s.tailY ?? s.h, apply: (_st, pt) => ({ tailX: pt.x, tailY: pt.y }) }];
     },
   },
   {
@@ -271,10 +481,17 @@ export const FAMILIES = [
       N("notchDepth", "Notch depth", { help: "How deep the forked notch cuts in, as a fraction of the width; a negative value forks the ends outward instead, and past ~0.5 the chevrons cross into a bowtie. Drag the notch handle." }),
     ],
     outline: (s) => bannerOutline(s.w, s.h, { endStyle: s.endStyle ?? "forked", notchDepth: s.notchDepth ?? 0.15 }),
+    // The notch's point, on the banner's horizontal midline: the allowed set is that
+    // whole LINE (notchDepth is unbounded either way — it forks outward when negative
+    // and crosses into a bowtie past ~0.5, both documented as legal).
     modifierPoints(s) {
       if ((s.endStyle ?? "forked") !== "forked") return [];
       const nd = (s.notchDepth ?? 0.15) * s.w;
-      return [{ id: "notchDepth", x: s.w - nd, y: s.h / 2, apply(st, pt) { return { notchDepth: (st.w - pt.x) / st.w }; } }];
+      return [{
+        id: "notchDepth", x: s.w - nd, y: s.h / 2,
+        constrain: (st, pt) => closestPointOnAxisRange({ x: st.w, y: st.h / 2 }, { x: 1, y: 0 }, pt),
+        apply: (st, pt) => ({ notchDepth: ratioOf(st.w - pt.x, st.w, st.notchDepth ?? 0.15) }),
+      }];
     },
   },
   {
@@ -284,9 +501,15 @@ export const FAMILIES = [
       N("thickness", "Thickness", { min: 0.02, max: 0.9, help: "Width of the bracket's bar and arms as a fraction of the width. Drag the inner handle. Rotate the widget to orient the bracket." }),
     ],
     outline: (s) => bracketOutline(s.w, s.h, { thickness: s.thickness ?? 0.2 }),
+    // The bar's inner edge, on the bracket's horizontal midline: a horizontal SEGMENT
+    // spanning the thickness bounds — the plain metric projection.
     modifierPoints(s) {
-      const t = clamp(s.thickness, 0.02, 0.9) * s.w;
-      return [{ id: "thickness", x: t, y: s.h / 2, apply(st, pt) { return { thickness: clamp(pt.x / (st.w || 1), 0.02, 0.9) }; } }];
+      const [LO, HI] = [0.02, 0.9]; // the `thickness` row's declared bounds
+      return [{
+        id: "thickness", x: clamp(s.thickness, LO, HI) * s.w, y: s.h / 2,
+        constrain: (st, pt) => closestPointOnSegment({ x: LO * st.w, y: st.h / 2 }, { x: HI * st.w, y: st.h / 2 }, pt),
+        apply: (st, pt) => ({ thickness: ratioOf(pt.x, st.w, clamp(st.thickness, LO, HI)) }),
+      }];
     },
   },
   {

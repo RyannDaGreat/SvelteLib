@@ -34,6 +34,17 @@
     onText    — tooltip when true  (what a click will DO: turn it off).
     offText   — tooltip when false (what a click will DO: turn it on).
     disabled  — grays the control and blocks interaction (not-yet-created rows).
+    oncommit  — OPTIONAL write override, called with the flipped boolean instead
+                of this field writing `path` itself. For a caller whose write is
+                NOT a single scalar: web/ListField.svelte's per-element
+                visibility toggle writes the whole canonicalized visibility
+                COMPANION array (core/lists.withElementActive), which is also
+                what the canvas handle toolbar writes — one hide mechanism, not
+                two. EXACTLY the reason AngleField already takes this pair for
+                PaintField's gradient direction; the default (no callback) is
+                byte-identical to before, so every existing boolean row is
+                unchanged. `path` is still required, for the keyframe controls
+                the row wraps this field with.
   Styling lives in app.css (.boolfield; app convention: no <style>).
 -->
 <script>
@@ -50,6 +61,7 @@
     onText = null,
     offText = null,
     disabled = false,
+    oncommit = null,
   } = $props();
 
   // Tooltip describes the ACTION a click performs (flip), falling back to a
@@ -60,9 +72,17 @@
       : (offText ?? `${label}: off — click to turn on`)
   );
 
-  /** Flips the boolean: preview (live re-render) then commit as one undo unit. */
+  /** Command. Flips the boolean: preview (live re-render) then commit as one undo
+   * unit. A caller-supplied `oncommit` OWNS the write instead (it may be more
+   * than this one scalar — see the header); it is handed the flipped value and is
+   * responsible for its own single undo unit, exactly as AngleField's oncommit
+   * callers are. */
   function toggle() {
     if (disabled) return;
+    if (oncommit) {
+      oncommit(!value);
+      return;
+    }
     app.setPreview([[path, !value]]);
     app.commitPreview();
   }

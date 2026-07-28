@@ -288,6 +288,56 @@ export function packBrightnessContrastUniforms(u) {
   return out;
 }
 
+// A +1 midtone lift is DEFINED by this material's own `brightness` help text as "25%
+// grey to 50%". Compositing white at alpha a over 0.25 gives 0.25 + 0.75a, which
+// reaches 0.5 at a = 1/3 — so one unit of brightness IS a one-third veil, and the
+// proxy overlay's alpha-per-unit is read off the shader's own documented behaviour
+// rather than picked to look nice.
+const PROXY_TONE_ALPHA_PER_UNIT = 1 / 3;
+// …capped, because brightness is unbounded and a fully opaque veil would erase the
+// content beneath. A thumbnail must still show WHAT is being dimmed, not just that
+// something is.
+const PROXY_TONE_MAX_ALPHA = 0.72;
+
+/**
+ * Pure function. This material's PROXY-quality stand-in (materials.resolveProxyBackdrop
+ * — the backdrop mirror of `proxyFill`): the cheap translucent overlay thumbnails and
+ * the minimap draw instead of running the tone curve per pixel.
+ *
+ * WHY IT IS DECLARED. The shared default stand-in is a faint translucent WHITE, which
+ * LIGHTENS. This material's whole purpose is to move tone in EITHER direction, so a
+ * widget configured to DIM used to read as a BRIGHTENING one in its own thumbnail —
+ * the preview contradicted the setting. The direction is the one thing a flat overlay
+ * can carry faithfully, so it carries exactly that: white to brighten, black to dim,
+ * alpha from |brightness| at the rate the knob's own documentation defines.
+ *
+ * WHAT IT DELIBERATELY DROPS. `contrast` is the SLOPE of the curve; a single flat
+ * overlay cannot express a slope in either direction, and faking one with a fixed
+ * veil would reintroduce the exact bug above. So a pure contrast change resolves to
+ * alpha 0 — no overlay, the real content beneath shown untouched, which is honest
+ * (and the blurBackdrop precedent for "the content beneath IS the proxy"). `mode` and
+ * `preserveHue` are dropped for the same reason: they change WHERE the curve bends,
+ * not which way it goes.
+ *
+ * COST: one Color4f. No offscreen, no shader, no per-pixel work — the proxy path's
+ * whole reason to exist.
+ *
+ * @param {{brightness?: number}} params - the material's flat op params
+ * @returns {{tint: [number, number, number, number]}} overlay colour, channels 0..1
+ *
+ * @example brightnessContrastProxyBackdrop({brightness: 0}) // {tint: [0, 0, 0, 0]} (neutral: no overlay)
+ * @example brightnessContrastProxyBackdrop({brightness: -1.2}) // {tint: [0, 0, 0, 0.4]} (the "dim for text" preset reads DARK)
+ * @example brightnessContrastProxyBackdrop({brightness: 1}) // {tint: [1, 1, 1, 0.3333333333333333]} (+1 = the documented 25% -> 50% lift)
+ * @example brightnessContrastProxyBackdrop({brightness: -40}) // {tint: [0, 0, 0, 0.72]} (capped: the content beneath stays visible)
+ * @example brightnessContrastProxyBackdrop({}) // {tint: [0, 0, 0, 0]} (absent knob reads as neutral)
+ */
+export function brightnessContrastProxyBackdrop(params) {
+  const brightness = params?.brightness ?? 0;
+  const channel = brightness > 0 ? 1 : 0; // brighten with white, darken with black
+  const alpha = Math.min(PROXY_TONE_MAX_ALPHA, Math.abs(brightness) * PROXY_TONE_ALPHA_PER_UNIT);
+  return { tint: [channel, channel, channel, alpha] };
+}
+
 /**
  * THE BRIGHTNESS / CONTRAST MATERIAL DESCRIPTOR — the registry entry
  * (render_gpu/skia/materials.js). A BACKDROP material: its SkSL declares the standard
@@ -311,6 +361,7 @@ export const BRIGHTNESS_CONTRAST_MATERIAL = {
   pack: packBrightnessContrastUniforms,
   uniformFloats: BRIGHTNESS_CONTRAST_UNIFORM_FLOATS,
   backdrop: true,
+  proxyBackdrop: brightnessContrastProxyBackdrop,
   usesBlurredBackdrop: false,
   // NO `maxSampleReach` YET — DELIBERATELY, AND NOT FOR LACK OF THE ANSWER.
   //

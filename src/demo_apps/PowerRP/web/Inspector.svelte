@@ -43,6 +43,7 @@
   import PaintField from "./PaintField.svelte";
   import AngleField from "./AngleField.svelte";
   import AssetField from "./AssetField.svelte";
+  import ListField from "./ListField.svelte";
   import EquationSuggest from "./EquationSuggest.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
@@ -52,6 +53,7 @@
   } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
+  import { LIST_ROW_KIND } from "../core/lists.js";
   import { isHexColor } from "../core/interpolators.js";
   import { getPath } from "../core/deltas.js";
   import { copyText } from "./clipboard.js";
@@ -278,6 +280,23 @@
   }
 
   /**
+   * Query. The element an insert into an EMPTY list row should create: the FIRST
+   * element of the owning plugin's own default for that property. It exists
+   * because core/lists.insertedElement refuses an empty list — "there is nothing
+   * to interpolate from, and the honest answer is for the caller to seed the first
+   * element from the property's default" — so this is that caller. Reads the
+   * plugin's `defaults`, which is where a default lives (a ROW cannot carry one:
+   * core/properties.js row() strips it), the same lookup equationCapable() and
+   * NumericField already use. null when there is no selection, no default list, or
+   * an empty default.
+   */
+  function listSeedElement(row) {
+    if (sel == null) return null;
+    const declared = getPath(sel.plugin.defaults, row.key.split("."));
+    return Array.isArray(declared) ? (declared[0] ?? null) : null;
+  }
+
+  /**
    * Pure function. Reads a possibly-dotted key ("from.x", "rotationAnchor.x")
    * out of a state object; returns undefined for a missing path. Used to display
    * a row's value from a flat OR nested key uniformly.
@@ -347,6 +366,14 @@
   // elements opaque to equation detection (PaintField's header: "an EQUATION
   // typed into a stop offset/color is not evaluated"). The Inspector ROW is what
   // knows the value is a real equation slot, so the affordance lives exactly here.
+  // NOT "list", deliberately, and it is a KNOWN BOUND rather than a rule: core
+  // DOES type a whole list as bindable by reference (core/expressions.js
+  // listSlotKind(["points"]) === "list", so `= other.points` evaluates and
+  // listResultProblem validates the shape), but this field has no way to SEED
+  // one — equationSeed() has no literal form for an array, so opening entry on a
+  // list row would offer `=""`, i.e. a string result in a list slot, rejected
+  // loudly. The per-ELEMENT `=` the user asked for works through the element
+  // fields' own controls inside ListField (a NumericField per coordinate/offset).
   const EQUATION_KINDS = new Set(["color", "boolean", "asset", "select", "text"]);
   // Characters of the evaluated value shown in the inline "= …" badge before it
   // is elided — a color hex (9) or a short enum fits; a long string must not
@@ -821,7 +848,13 @@
   {@const eqStored = eqCapable ? rowStored(row) : null}
   {@const eqActive = eqCapable && equationActive(row, eqStored)}
   {@const eqRowPath = eqCapable ? ["items", pickedItemId, ...row.key.split(".")] : null}
-  <div class="row" class:row-disabled={disabled}>
+  <!-- A LIST row (core/lists.js) keeps the label + keyframe line in the shared
+       grid but gives the LIST ITSELF the panel's full width on a second line: one
+       element row carries an index, a visibility eye, several field controls, the
+       keyframe triad and a purge button, which does not fit the single value cell
+       a scalar row uses. app.css .row-list places the two lines; nothing else
+       about the row changes. -->
+  <div class="row" class:row-disabled={disabled} class:row-list={rowKind(row) === LIST_ROW_KIND}>
     <!-- Row-label hover chrome: PATH tooltip on the LABEL (never a label echo
          — banned) + two LEFT-side hover-only icons (round-11 field-chrome
          precedent — .numfield .eq-open mirrors the same idiom on the value
@@ -1102,6 +1135,30 @@
       value={valueAt(state, row.key)}
       disabled={disabled}
     />
+  {:else if kind === LIST_ROW_KIND}
+    <!-- LIST rows (core/lists.js): a variable-length list of multi-field
+         elements — a polygon's `points`, and (through PaintField) a gradient's
+         `stops`. ListField is driven ENTIRELY by the declaration the ROW ITSELF
+         carries (element fields + kinds, order flavour, visibility companion key,
+         length floor), so `row` IS the `decl` — there is no second table to keep
+         in step, and the next list property needs no code here.
+
+         THIS BRANCH IS LOAD-BEARING FOR SAFETY, not just for looks: without it a
+         list row fell through to this dispatcher's catch-all TEXT input, whose
+         oninput would commit a STRING over the element array — a crashed
+         renderer, and the reason no list row could be declared before now. The
+         `.list-cell` wrapper is what app.css .row-list places on the row's
+         second line (a component root cannot be grid-placed from outside). -->
+    <span class="list-cell">
+      <ListField
+        {app}
+        decl={row}
+        path={["items", pickedItemId, ...row.key.split(".")]}
+        label={row.label}
+        {disabled}
+        seedElement={listSeedElement(row)}
+      />
+    </span>
   {:else if kind === "boolean"}
     {#if itemMode}
       <!-- Standard boolean control (BooleanField): a square toggle whose state

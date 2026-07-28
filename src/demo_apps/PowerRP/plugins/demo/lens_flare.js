@@ -45,6 +45,7 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
+import { closestPointOnAxisRange } from "../../core/outline.js";
 import { UNIT_SPAN_SCRUB, bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
@@ -145,7 +146,13 @@ const CUSTOM = customProps([
   { name: "halo", kind: "number", default: 0.45, min: 0, help: "Intensity of the halo ring around the optical centre. 0 = off; floor 0 as above." },
   { name: "haloRadius", kind: "number", default: 0.45, min: 0, help: "Radius of the halo ring (normalized to widget height, measured from the centre). No upper cap — a huge ring simply passes outside the box. Floor 0 because a radius cannot be negative." },
   { name: "starburst", kind: "number", default: 0.4, min: 0, help: "Intensity of the diffraction starburst (the radial spikes from the aperture blades). 0 = off; floor 0 as above." },
-  { name: "blades", kind: "number", default: 8, min: 3, help: "Aperture blade count. Diffraction physics: an EVEN count gives that many spikes; an ODD count gives twice as many (e.g. 9 blades → 18 spikes). Also shapes the ghost iris polygon. Floor 3 is geometric (an iris polygon needs three sides) and matches the shader's own MIN_BLADES — below it the shader would silently clamp." },
+  // `step: 1` for the same reason ghostCount carries it: this is a COUNT. Being
+  // half-open (min only) it derives NO grid at all, so the row would happily accept
+  // 8.37 blades — a value the shader's spike-angle maths turns into a non-repeating
+  // star and no user ever meant. The SENSITIVITY is left alone at 1 blade per
+  // drag-pixel, which is already the right feel for a small count. Same treatment,
+  // same reason as demo_mandelbrot.stripeDensity (an unbounded count with step: 1).
+  { name: "blades", kind: "number", default: 8, min: 3, step: 1, help: "Aperture blade count. Diffraction physics: an EVEN count gives that many spikes; an ODD count gives twice as many (e.g. 9 blades → 18 spikes). Also shapes the ghost iris polygon. Floor 3 is geometric (an iris polygon needs three sides) and matches the shader's own MIN_BLADES — below it the shader would silently clamp." },
   // THE OLD FLOOR OF 1 WAS ARBITRARY AND IS GONE. Exponents in (0,1) render perfectly
   // well and give exactly the "soft, fat rays" this help promises, so blocking them was
   // taste. The floor that REMAINS at 0 is TECHNICAL: the profile is pow(|cos θ|, sharp)
@@ -162,7 +169,16 @@ const CUSTOM = customProps([
   // Named "glow" (NOT "bloom") deliberately: the effects bundle already owns a
   // nested `bloom` object (bloom.radius/strength, a vector-glow substrate), so a
   // scalar self.bloom would collide with it. This is the flare's OWN in-shader glow.
-  { name: "glow", kind: "number", default: 1.0, min: 0, help: "Bloom / veiling glare intensity — the tight hot core at the light plus a broad soft haze that washes the frame. Floor 0 (off) as above." },
+  // SCRUB, measured against its own siblings. Every other unit-nominal intensity /
+  // mix knob in this file lands between 0.0033 and 0.01 per drag-pixel — starburst
+  // 0.4 and ghostSpacing 0.33 by inference from their fractional defaults, dirt and
+  // flareScale by declaring UNIT_SPAN_SCRUB. `glow` was the ONE exception, at 1
+  // unit/px (100x coarser), purely because its default is the integer 1: an integer
+  // default is no proof of fractionality, so numberStep.js correctly declines to
+  // guess and only a declaration can reach the row. It is the same knob shape as
+  // flareScale — a multiplier whose nominal is 1 and whose 0 is off — so it takes
+  // the same constant, putting a full 0 -> 1 sweep on one 100px drag run.
+  { name: "glow", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Bloom / veiling glare intensity — the tight hot core at the light plus a broad soft haze that washes the frame. Floor 0 (off) as above." },
   { name: "dirt", kind: "number", default: 0.18, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Procedural lens-dirt/grunge modulation: 0 = clean glass; 1 = the whole flare is broken up by a dusty grime field (all procedural — no texture asset). No upper cap — past 1 the grime mix extrapolates, crushing the dirtiest patches all the way to black for a harsher, higher-contrast grime. Floor 0 (clean) as above." },
   { name: "colorTemp", kind: "number", default: 5200, min: 1000, max: 12000, help: "Colour temperature in Kelvin of the light's cast on the flare: ~3200 K = warm amber, 6500 K = neutral white, ~9000 K+ = cool blue. The range is the domain of the Kelvin→RGB fit the shader uses (render_gpu/skia/lens_flare_shader.js KELVIN_TABLE); outside it the fit is undefined and the packer would silently pin the value." },
   { name: "tint", kind: "color", default: "#fff2e6", help: "Explicit colour multiply over the whole flare, on top of the temperature cast." },
@@ -467,22 +483,26 @@ export const lensFlarePlugin = {
    * core/derive.js nodeModifierPoints) — the flare's two on-canvas gestures, one for
    * WHERE the light is and one for HOW BIG its features are.
    *
+   * These two are the protocol's (core/derive.js) contrast case: one handle is
+   * genuinely UNCONSTRAINED and one is genuinely constrained, in the same widget.
+   *
    * "light" — at the light source. Dragging it writes lightX/lightY = the drag's
    * LOCAL point ÷ the box extent, UNCLAMPED: the handle follows the cursor anywhere,
    * including far outside the widget, because an off-box light source is the entire
    * point of an off-frame sun. (It used to clamp the fractions to [0,1], which pinned
    * the handle to the border and silently discarded the drag.) It mirrors the analog
-   * clock's hand-tip handles.
+   * clock's hand-tip handles. It therefore declares NO `constrain` — the whole plane
+   * is allowed, so the identity default is the truthful declaration, not an omission.
    *
    * "scale" — the FEATURE SCALE, a RADIAL control on the optical centre (the widget
    * centre, which is what every scaled feature is measured from). It sits at 3
    * o'clock, `scaleHandleArm × flareScale` local px out — the DONUT's inner-rim
    * convention exactly, matching the east resize handle — and its DISTANCE from the
    * centre IS the value, so at flareScale 1 it lands on the default halo ring and
-   * dragging it literally resizes the rings. `apply` projects onto that one
-   * horizontal axis (the y-component is ignored BY DESIGN: "a modifier point's
-   * trajectory is intentionally restricted"), so the handle tracks the cursor's x
-   * exactly, like the donut's.
+   * dragging it literally resizes the rings. Its allowed set is the horizontal RAY
+   * running +x from the centre: a ray, not a segment, because flareScale has a floor
+   * (a size cannot be negative) and NO upper cap. Dropping the drag's y-component IS
+   * that ray's y, and the old `Math.max(0, …)` IS its origin.
    *
    * The scale handle is listed SECOND so the overlay draws it ON TOP: the two only
    * coincide at flareScale 0 with the light dead-centre, and there the one that must
@@ -491,9 +511,7 @@ export const lensFlarePlugin = {
    *
    * The `w/h > 0` guards are TECHNICAL (division by the box extent / by the handle's
    * arm), not a bound on any value: a zero-extent box has no fraction to compute, so
-   * each `apply` keeps the existing value rather than returning NaN. `Math.max(0, …)`
-   * on the scale is the SAME technical floor its row declares (a size cannot be
-   * negative, and the shader's own guard would silently swallow a negative one).
+   * each `apply` keeps the existing value rather than returning NaN.
    * CanvasView draws/hit-tests both in world space and inverts the drag back through
    * node.world, so rotation is handled for us.
    */
@@ -515,10 +533,14 @@ export const lensFlarePlugin = {
       id: "scale",
       x: w / 2 + scaleHandleArm(s) * (s.flareScale ?? 1),
       y: h / 2,
-      apply(state, localPoint) {
+      constrain(state, desired) {
+        const centre = { x: (state.w ?? 0) / 2, y: (state.h ?? 0) / 2 };
+        return closestPointOnAxisRange(centre, { x: 1, y: 0 }, desired, 0);
+      },
+      apply(state, allowed) {
         const arm = scaleHandleArm(state);
         if (arm <= 0) return { flareScale: state.flareScale ?? 1 };
-        return { flareScale: Math.max(0, (localPoint.x - (state.w ?? 0) / 2) / arm) };
+        return { flareScale: (allowed.x - (state.w ?? 0) / 2) / arm };
       },
     }];
   },

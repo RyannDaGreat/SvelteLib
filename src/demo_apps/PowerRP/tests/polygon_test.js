@@ -570,16 +570,26 @@ test("CLOSED GAP: `points` is a declared LIST property, so the whole list has a 
   assert.deepEqual(foldState(doc, 1, 1).items.poly.points, SQUARE);
 });
 
-test("CLOSED GAP: a list ROW_KIND exists; the widget still declares NO points row (the UI half is not built here)", async () => {
+test("CLOSED GAP: a list ROW_KIND exists, and the widget NOW declares its points row", async () => {
   const { ROW_KINDS, PROPS } = await import("../core/properties.js");
   assert.ok(ROW_KINDS.includes("list"), `the list row kind must exist: ${JSON.stringify(ROW_KINDS)}`);
   assert.equal(PROPS.points.kind, "list");
   assert.equal(PROPS.points.order, "sequence", "the order IS the outline — sorting would be a different polygon");
   assert.equal(PROPS.points.element.storage, "tuple", "tuples keep the tween on interpolate's plain-lerp branch");
-  // STILL FALSE, and deliberately: the Inspector's list CONTROL is a separate
-  // build. Declaring the row before the control exists renders a plain text box
-  // over an array, which is worse than no row. Flip this when the control lands.
-  assert.equal(registered.inspector.some((r) => r.key === "points"), false, "declaring a row with no control would render a plain text box over an array");
+  // FLIPPED (this assertion used to demand the row's ABSENCE): the Inspector's
+  // list CONTROL now exists — web/ListField.svelte, reached by the dispatcher's
+  // `kind === LIST_ROW_KIND` branch — so the row is safe to declare. Before that
+  // branch existed a list row fell through the catch-all TEXT input, whose
+  // oninput would have committed a string over the vertex array; that is why the
+  // row and the control had to land together.
+  const pointsRow = registered.inspector.find((r) => r.key === "points");
+  assert.ok(pointsRow, "the vertex list must be an Inspector row now that the list control exists");
+  assert.equal(pointsRow.kind, "list");
+  // The ROW IS THE DECLARATION — ListField reads element/order/activeKey off it,
+  // so there is no second table for the control to drift from.
+  assert.equal(pointsRow.element, PROPS.points.element, "one declaration object, read by reference");
+  assert.equal(pointsRow.order, "sequence");
+  assert.equal(pointsRow.activeKey, "pointsActive");
   // `closed` DOES have one (a boolean), so the widget is not row-less.
   assert.equal(registered.inspector.find((r) => r.key === "closed").kind, "boolean");
   // The plugin reads the SAME declaration back rather than re-typing it.
@@ -623,7 +633,8 @@ test("HIDE does NOT RENUMBER: the handle set, and every vertex ADDRESS, survives
   // Each handle still sits on ITS OWN stored vertex and names ITS OWN index — this
   // is the invariant equations depend on: `points.3.x` still means vertex 3.
   for (let i = 0; i < all.length; i++) {
-    assert.deepEqual(registered.modifierPoints(after)[i].element, { listKey: "points", index: i });
+    assert.equal(registered.modifierPoints(after)[i].element.list, POINTS_LIST, "the declaration is carried BY REFERENCE");
+    assert.equal(registered.modifierPoints(after)[i].element.index, i);
     approx(registered.modifierPoints(after)[i].x, all[i][0] * 100);
     approx(registered.modifierPoints(after)[i].y, all[i][1] * 100);
   }

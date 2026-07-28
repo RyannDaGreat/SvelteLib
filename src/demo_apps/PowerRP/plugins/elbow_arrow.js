@@ -29,7 +29,7 @@
 import { polyline, polygon } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { elbowRoute, elbowHandle } from "../core/outline.js";
+import { elbowRoute, elbowHandle, closestPointOnSegment } from "../core/outline.js";
 import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The route generator's params for a state.
@@ -143,26 +143,34 @@ export const elbowArrowPlugin = {
   /**
    * Pure function. ONE modifier point at the elbow's mid-segment midpoint
    * (core/outline.js's elbowHandle — "the PPT yellow square on the elbow"),
-   * dragged to scrub `elbow` (0..1). `apply` projects the dragged point onto
-   * the x-span (the handle's ONE constrained trajectory, matching the
-   * generator's own `t = (x1−x0)`-relative parameterization) — the y-drag
-   * component is intentionally ignored, same "highly-constrained... often
-   * parameterized by ONE number" rule donut's inner-radius handle follows.
+   * dragged to scrub `elbow` (0..1).
+   *
+   * THE HANDLE-CONSTRAINT PROTOCOL (core/derive.js):
+   *   `constrain` — the allowed set is the SEGMENT the elbow slides along:
+   *     y is pinned to the vertical run's midpoint (where elbowHandle always
+   *     puts it) and x spans from.x → to.x, matching the generator's own
+   *     `t = (x1−x0)`-relative parameterization. Ignoring the drag's
+   *     y-component IS that segment's y; clamping t to [0, 1] IS its extent.
+   *   `apply` — reads the already-allowed x back as the fraction t.
+   *
+   * Both hooks re-derive from the LIVE state they are handed (not the state
+   * modifierPoints was called with): the drag handler re-reads them on every
+   * move against the current node, so each must be self-contained.
    */
   modifierPoints(s) {
     const h = elbowHandle(routeParams(s));
     return [{
       id: "elbow", x: h.x, y: h.y,
-      apply(state, localPoint) {
-        // Re-derive the span from the LIVE state passed at drag time (not
-        // the state modifierPoints was originally called with) — the drag
-        // handler re-reads apply() on every move against the current node,
-        // so this must be self-contained (same discipline donut's apply
-        // follows: "apply operates entirely in the item's own local frame").
+      constrain(state, desired) {
+        const midY = (state.from.y + state.to.y) / 2;
+        return closestPointOnSegment({ x: state.from.x, y: midY }, { x: state.to.x, y: midY }, desired);
+      },
+      apply(state, allowed) {
         const span = state.to.x - state.from.x;
-        if (span === 0) return { elbow: state.elbow ?? 0.5 }; // no x-span to project onto — leave unchanged
-        const t = (localPoint.x - state.from.x) / span;
-        return { elbow: Math.max(0, Math.min(t, 1)) };
+        // A zero x-span has no fraction to read (the allowed set collapsed to a
+        // point) — a technical division guard, not a bound on `elbow`.
+        if (span === 0) return { elbow: state.elbow ?? 0.5 };
+        return { elbow: (allowed.x - state.from.x) / span };
       },
     }];
   },

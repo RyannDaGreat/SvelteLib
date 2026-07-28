@@ -16,7 +16,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, bundleNestedDefaults } from "../core/properties.js";
+import { UNIT_SPAN_SCRUB, bundle, bundleNestedDefaults } from "../core/properties.js";
 import { normalizeRichText, richTextIsEmpty } from "../core/richtext.js";
 import { text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
@@ -112,7 +112,18 @@ export const textPlugin = {
     // per-paragraph horizontal `align`, whose primary surface is the WYSIWYG
     // toolbar; this box-level valign has no toolbar equivalent). Round 15.6.
     { key: "valign", label: "V-Align", kind: "select", options: ["top", "middle", "bottom"], optionLabels: { top: "Top", middle: "Middle", bottom: "Bottom" }, category: "text" },
-    { key: "lineSpacing", label: "Line spacing", kind: "number", min: 0, category: "text" },
+    // SCRUB on lineSpacing only. It is a MULTIPLE of the natural line height
+    // (core/richtext.js: naturalHeight = (ascent + descent) * lineSpacing), nominal 1
+    // — so the values people actually want are 1.15, 1.5, 2. Half-open with an integer
+    // default, which is no proof of fractionality, so numberStep.js declined to infer
+    // and the row fell back to DraggableNumber's 1 unit per drag-pixel: DRAGGING COULD
+    // ONLY REACH WHOLE MULTIPLES. src/lib/numberStep.js's own header names this row as
+    // one of the 437 fractional-in-use integer-default rows for exactly this reason;
+    // only a declared scrub can reach it. One 100px drag now spans one whole multiple.
+    // charSpacing / wordSpacing get NOTHING, deliberately: those two are PX offsets
+    // (same source), and 1 px per drag-pixel is already the right scale for a length —
+    // the identical treatment x/y/w/h get.
+    { key: "lineSpacing", label: "Line spacing", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "text" },
     { key: "charSpacing", label: "Char spacing", kind: "number", category: "text" },
     { key: "wordSpacing", label: "Word spacing", kind: "number", category: "text" },
     { key: "color", label: "Color", kind: "color", category: "formatting" },

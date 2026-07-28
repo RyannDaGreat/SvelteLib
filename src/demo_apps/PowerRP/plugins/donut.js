@@ -32,7 +32,7 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { donutOutline, triangulated, pointInPolygon } from "../core/outline.js";
+import { donutOutline, triangulated, pointInPolygon, closestPointOnSegment } from "../core/outline.js";
 import { polygon, polyline } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
@@ -143,13 +143,18 @@ export const donutPlugin = {
   /**
    * Pure function. ONE modifier point on the inner rim's 3-o'clock position
    * (local space, same convention as the east resize handle): dragging it
-   * toward/away from the center scrubs `inner`. `apply` projects the dragged
-   * LOCAL point onto the handle's one-dimensional trajectory (the horizontal
-   * radius from center through the handle) and returns the resulting `inner`
-   * as a partial-state write — the derivation-stage rotation/scale live in
-   * node.world (nodeModifierPoints wraps this for display; CanvasView inverts
-   * the drag back to local before calling apply), so this function never
-   * reasons about rotation itself.
+   * toward/away from the center scrubs `inner`.
+   *
+   * THE HANDLE-CONSTRAINT PROTOCOL (core/derive.js), the showcase case:
+   *   `constrain` — the allowed set is the SEGMENT from the center to the
+   *     horizontal rim, {(cx + t·rx, cy) : t ∈ [0, 1]}. Both restrictions the
+   *     drag used to perform imperatively are that one set: dropping the drag's
+   *     y-component IS the projection onto the line y = cy, and clamping to
+   *     [0, 1] IS the segment's extent (donutOutline's own domain).
+   *   `apply` — reads the already-allowed point's distance from the center as a
+   *     fraction of rx. No clamp of its own: the set already said so.
+   * Rotation/scale live in node.world (nodeModifierPoints wraps for display,
+   * CanvasView inverts back to local first), so neither hook sees them.
    */
   modifierPoints(s) {
     const { cx, cy, rx } = ringGeom(s);
@@ -158,16 +163,16 @@ export const donutPlugin = {
       id: "inner",
       x: cx + rx * inner,
       y: cy,
-      apply(state, localPoint) {
+      constrain(state, desired) {
         const g = ringGeom(state);
+        return closestPointOnSegment({ x: g.cx, y: g.cy }, { x: g.cx + g.rx, y: g.cy }, desired);
+      },
+      apply(state, allowed) {
+        const g = ringGeom(state);
+        // A zero-extent donut has no radius to take a fraction OF — a technical
+        // division guard, not a bound on `inner` (the lens_flare precedent).
         if (g.rx <= 0) return { inner: 0 };
-        // Project onto the horizontal radius (the handle's ONE constrained
-        // axis) — the y-component of the drag is ignored by design (a
-        // modifier point's trajectory is intentionally restricted; the
-        // manifest: "highly-constrained... often parameterized by ONE
-        // number"). Clamped to [0, 1] (donutOutline's own domain).
-        const t = (localPoint.x - g.cx) / g.rx;
-        return { inner: Math.max(0, Math.min(t, 1)) };
+        return { inner: (allowed.x - g.cx) / g.rx };
       },
     }];
   },
