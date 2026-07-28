@@ -1281,3 +1281,447 @@ export function arrowOutline(w, h, { headRatio = 0.4, headWidth = 0.6, shaftRati
   }
   return bboxFitSubpaths([raw], w, h, Math.min(w, h) * 0.06).subpaths;
 }
+
+// ══ HARDWARE FAMILIES (bolt / screw / screw-head) ═════════════════════════════
+// Metal fasteners as parametric vector silhouettes (manifest #56). Threads are a
+// TRIANGLE-WAVE flank: the crest sits at the shank edge, the root cuts `depth`
+// inward, and the LEFT flank is offset half a pitch from the RIGHT (a `phase`
+// swap) so the crests on one side line up with the roots on the other — the same
+// diagonal banding a real helical thread reads as in a side profile. Everything
+// is a plain polyline (roundedVerts / sampled arcs only), so it round-trips
+// through all three backends like every other shapeshifter outline.
+
+/**
+ * Pure function. One threaded FLANK: `2·threads + 1` points marching from `topY`
+ * to `botY`, alternating between the crest x (`crestX`) and the root x (`rootX`)
+ * — a triangle wave. `phase` (0 or 1) chooses whether the FIRST point is a crest
+ * (0) or a root (1); the two flanks of a shank pass opposite phases so the thread
+ * reads as a helix. `threads <= 0` returns a straight two-point edge (a smooth,
+ * unthreaded shank — a legal degenerate, not an error).
+ *
+ * Args:
+ *   topY, botY (number): the flank's vertical span (screen y-down)
+ *   crestX, rootX (number): outer (crest) and inner (root) x of the thread
+ *   threads (number): tooth count (rounded; <= 0 ⇒ smooth)
+ *   phase (0|1): half-pitch offset selector
+ *
+ * Returns:
+ *   number[][]: points top→bottom
+ *
+ * @example threadFlankPts(0, 40, 10, 6, 2, 0) // [[10, 0], [6, 10], [10, 20], [6, 30], [10, 40]]
+ * @example threadFlankPts(0, 40, 10, 6, 2, 1) // [[6, 0], [10, 10], [6, 20], [10, 30], [6, 40]]
+ * @example threadFlankPts(0, 40, 10, 6, 0, 0) // [[10, 0], [10, 40]] (no threads — smooth edge)
+ */
+export function threadFlankPts(topY, botY, crestX, rootX, threads, phase) {
+  const n = Math.max(0, Math.round(threads));
+  if (n <= 0) return [[crestX, topY], [crestX, botY]];
+  const steps = 2 * n;
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const y = topY + ((botY - topY) * i) / steps;
+    const onCrest = (i + phase) % 2 === 0;
+    pts.push([onCrest ? crestX : rootX, y]);
+  }
+  return pts;
+}
+
+/**
+ * Pure function. HARDWARE: a hex-head BOLT seen from the side (manifest #56) —
+ * chamfered hex head at the top, an optional washer, then a straight threaded
+ * shank with a flat end. All fractions are of the bbox; the bolt points DOWN
+ * (head at y=0) and is symmetric about x=w/2. `chamfer` bevels the head's four
+ * corners (the hex bevel read side-on); `threads`/`threadDepth` drive the flank
+ * zigzag; `washer` inserts a wider collar between head and shank.
+ *
+ * @example boltOutline(100, 200, {threads: 0, washer: false})[0].length // 15 (head bevel box + smooth shank)
+ * @example boltOutline(100, 200, {threads: 6})[0].some(([, y]) => y === 200) // true (shank reaches the flat bottom)
+ * @example boltOutline(100, 200, {washer: true})[0].length > boltOutline(100, 200, {washer: false})[0].length // true (washer adds vertices)
+ */
+export function boltOutline(w, h, { headWidth = 0.74, headHeight = 0.2, shankWidth = 0.42, threads = 8, threadDepth = 0.14, washer = false, washerWidth = 0.6, washerHeight = 0.05, chamfer = 0.24 } = {}) {
+  const cx = w / 2;
+  const headHalf = Math.max(0.02, Math.min(headWidth, 1)) * w / 2;
+  const shankHalf = Math.max(0.02, Math.min(shankWidth, 1)) * w / 2;
+  const washerHalf = Math.max(shankHalf, Math.min(washerWidth, 1) * w / 2);
+  const headBot = Math.max(0.02, Math.min(headHeight, 0.8)) * h;
+  const cham = Math.max(0, Math.min(chamfer, 0.9)) * Math.min(headHalf, headBot / 2);
+  const washerBot = washer ? headBot + Math.max(0, washerHeight) * h : headBot;
+  const shankTop = washerBot;
+  const depth = Math.max(0, Math.min(threadDepth, 0.95)) * shankHalf;
+  const poly = [];
+  // Head: top bevel, right side, bottom bevel.
+  poly.push([cx - headHalf + cham, 0], [cx + headHalf - cham, 0], [cx + headHalf, cham], [cx + headHalf, headBot - cham], [cx + headHalf - cham, headBot]);
+  if (washer) poly.push([cx + washerHalf, headBot], [cx + washerHalf, washerBot]);
+  poly.push([cx + shankHalf, shankTop]);
+  for (const p of threadFlankPts(shankTop, h, cx + shankHalf, cx + shankHalf - depth, threads, 0)) poly.push(p);
+  poly.push([cx - shankHalf, h]); // flat bottom
+  for (const p of threadFlankPts(shankTop, h, cx - shankHalf, cx - shankHalf + depth, threads, 1).reverse()) poly.push(p);
+  poly.push([cx - shankHalf, shankTop]);
+  if (washer) poly.push([cx - washerHalf, washerBot], [cx - washerHalf, headBot]);
+  poly.push([cx - headHalf + cham, headBot], [cx - headHalf, headBot - cham], [cx - headHalf, cham]);
+  return [poly];
+}
+
+/**
+ * Pure function. `headStyle` → the screw head's cap silhouette, a point list from
+ * the body's LEFT top corner, UP and over the top, to the body's RIGHT top corner
+ * (so it splices onto a downward-built body). "flat" = a countersunk cone (wide
+ * flat top), "pan" = a low dome with a flattish top, "round" = a full elliptical
+ * dome. Local coords, y-down, symmetric about `cx`.
+ *
+ * @example screwHeadCap("flat", 50, 35, 17, 30) // [[33, 30], [15, 0], [85, 0], [67, 30]]
+ * @example screwHeadCap("round", 50, 35, 17, 30).length // 35 (sampled dome arc)
+ * @example screwHeadCap("pan", 50, 35, 17, 30)[0] // [33, 30] (starts at body-left top)
+ */
+export function screwHeadCap(headStyle, cx, headHalf, shankHalf, bodyTop) {
+  const L = [cx - shankHalf, bodyTop], R = [cx + shankHalf, bodyTop];
+  if (headStyle === "flat") return [L, [cx - headHalf, 0], [cx + headHalf, 0], R];
+  if (headStyle === "round") {
+    const dome = [];
+    for (let i = 0; i <= ARC_SEGMENTS / 4 * 2; i++) {
+      const a = Math.PI - (Math.PI * i) / (ARC_SEGMENTS / 2); // π (left) → 0 (right)
+      dome.push([cx + headHalf * Math.cos(a), bodyTop - bodyTop * Math.sin(a)]);
+    }
+    return [L, ...dome, R];
+  }
+  // pan: shallow rounded-top box, wider than the shank.
+  const topY = bodyTop * 0.35;
+  const box = [[cx - headHalf, bodyTop], [cx - headHalf, topY], [cx - headHalf * 0.72, 0], [cx + headHalf * 0.72, 0], [cx + headHalf, topY], [cx + headHalf, bodyTop]];
+  return [L, ...box, R];
+}
+
+/**
+ * Pure function. HARDWARE: a side-view wood/machine SCREW (manifest #56) — a
+ * selectable head (flat / pan / round via `headStyle`), a threaded body that
+ * TAPERS to a sharp point at the bottom, and a gimlet tip. `taper` is the
+ * fraction of the body length over which it narrows to the point (large = a long
+ * cone, small = a mostly-straight body with a short point). Threads shrink with
+ * the taper so they vanish cleanly into the tip. Symmetric about x=w/2, points
+ * DOWN.
+ *
+ * @example screwOutline(100, 220, {threads: 9})[0].some(([x, y]) => Math.abs(x - 50) < 1e-9 && y === 220) // true (sharp tip at bottom center)
+ * @example screwOutline(100, 220, {headStyle: "flat"}).length // 1
+ * @example screwOutline(100, 220, {headStyle: "round"})[0].length > 20 // true (domed head samples)
+ */
+export function screwOutline(w, h, { headStyle = "flat", headWidth = 0.72, headHeight = 0.16, shankWidth = 0.36, threads = 10, threadDepth = 0.18, taper = 0.5 } = {}) {
+  const cx = w / 2;
+  const headHalf = Math.max(0.02, Math.min(headWidth, 1)) * w / 2;
+  const shankHalf = Math.max(0.02, Math.min(shankWidth, 1)) * w / 2;
+  const bodyTop = Math.max(0.02, Math.min(headHeight, 0.6)) * h;
+  const depth = Math.max(0, Math.min(threadDepth, 0.95)) * shankHalf;
+  const nT = Math.max(0, Math.round(threads));
+  const pointFrac = Math.max(0.05, Math.min(taper, 1));
+  const narrowStart = 1 - pointFrac;
+  const hwAt = (t) => (t <= narrowStart ? shankHalf : shankHalf * (1 - (t - narrowStart) / (1 - narrowStart)));
+  const steps = Math.max(2, 2 * nT);
+  const flank = (sign, phase) => {
+    const out = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const hw = hwAt(t);
+      const onCrest = (i + phase) % 2 === 0;
+      const off = onCrest ? hw : Math.max(0, hw - depth);
+      out.push([cx + sign * off, bodyTop + (h - bodyTop) * t]);
+    }
+    return out;
+  };
+  const right = flank(1, 0);              // body top → tip
+  const left = flank(-1, 1).reverse();    // tip → body top
+  const cap = screwHeadCap(headStyle, cx, headHalf, shankHalf, bodyTop);
+  return [[...right, ...left, ...cap]];
+}
+
+/**
+ * Pure function. `drive` → the screw-head DRIVE RECESS as ONE closed inner
+ * contour (the hole that reads under fillRule "evenodd"), centered at (cx,cy),
+ * sized to radius `rad` (already the recess radius in local units). "slot" = a
+ * single bar, "phillips" = a plus/cross, "hex" = a hexagon socket, "torx" = a
+ * six-lobe rounded star. `barW` is the slot/cross bar half-width in local units.
+ *
+ * @example driveRecess("hex", 50, 50, 20).length // 6 (hexagon socket)
+ * @example driveRecess("slot", 50, 50, 20, 6) // [[30, 44], [70, 44], [70, 56], [30, 56]]
+ * @example driveRecess("phillips", 50, 50, 20, 6).length // 12 (plus-shaped cross)
+ */
+export function driveRecess(drive, cx, cy, rad, barW = 6) {
+  if (drive === "slot") return [[cx - rad, cy - barW], [cx + rad, cy - barW], [cx + rad, cy + barW], [cx - rad, cy + barW]];
+  if (drive === "phillips") {
+    const a = rad, b = barW;
+    return [
+      [cx - b, cy - a], [cx + b, cy - a], [cx + b, cy - b], [cx + a, cy - b], [cx + a, cy + b], [cx + b, cy + b],
+      [cx + b, cy + a], [cx - b, cy + a], [cx - b, cy + b], [cx - a, cy + b], [cx - a, cy - b], [cx - b, cy - b],
+    ];
+  }
+  if (drive === "torx") {
+    const lobes = 6, inner = 0.62;
+    const verts = [];
+    for (let i = 0; i < 2 * lobes; i++) {
+      const ang = SHAPE_TOP_UP + (i * Math.PI) / lobes;
+      const r = i % 2 === 0 ? rad : rad * inner;
+      verts.push([cx + r * Math.cos(ang), cy + r * Math.sin(ang)]);
+    }
+    return roundedVerts(verts, rad * 0.16);
+  }
+  // hex socket (default): a regular hexagon, flat-top up.
+  const verts = [];
+  for (let i = 0; i < 6; i++) {
+    const ang = SHAPE_TOP_UP + (i * 2 * Math.PI) / 6 + Math.PI / 6;
+    verts.push([cx + rad * Math.cos(ang), cy + rad * Math.sin(ang)]);
+  }
+  return verts;
+}
+
+/**
+ * Pure function. HARDWARE: a top-down SCREW HEAD (manifest #56) — the head disc
+ * with the drive recess punched through it as an even-odd hole. Returns
+ * [outerCircle, recess] (2 subpaths, fillRule "evenodd"). `drive` picks the
+ * recess (slot / phillips / hex / torx); `driveSize` is its radius as a fraction
+ * of the head radius; `barWidth` is the slot/cross bar width as a fraction of the
+ * head radius.
+ *
+ * @example screwHeadOutline(100, 100, {drive: "hex"}).length // 2 (disc + hole)
+ * @example screwHeadOutline(100, 100, {drive: "slot"})[0].length // 64 (sampled head circle)
+ * @example screwHeadOutline(100, 100, {drive: "phillips"})[1].length // 12 (plus recess)
+ */
+export function screwHeadOutline(w, h, { drive = "phillips", driveSize = 0.55, barWidth = 0.16 } = {}) {
+  const cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
+  const outer = [];
+  for (let i = 0; i < ARC_SEGMENTS; i++) {
+    const a = (i * 2 * Math.PI) / ARC_SEGMENTS;
+    outer.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
+  }
+  const R = Math.max(0.05, Math.min(driveSize, 0.95)) * Math.min(rx, ry);
+  const barW = Math.max(0.02, Math.min(barWidth, 0.9)) * Math.min(rx, ry);
+  return [outer, driveRecess(drive, cx, cy, R, barW)];
+}
+
+// ══ VICTORIAN SCROLL-WORK FAMILIES (scroll / scroll-pair / iron finial) ═══════
+// Wrought-iron ornament as parametric vector RIBBONS (manifest #57). The unit of
+// construction is a CENTERLINE (a polyline) turned into a closed filled ribbon of
+// given half-width by offsetting ±normal (ribbonOutline). A logarithmic spiral
+// centerline gives the volute/scroll that reads as a fence-post curl. Multi-part
+// pieces (a finial + its volutes) return several subpaths under fillRule
+// "nonzero" so consistently-wound overlapping ribbons UNION into one iron shape
+// (evenodd would punch holes where they cross).
+
+const SPIRAL_SEGMENTS_PER_TURN = 48;
+
+/**
+ * Pure function. Centerline of a LOGARITHMIC spiral r(θ) = r0·growth^(θ/2π),
+ * sampled `samples+1` points from angle a0 to a1 (radians). growth is the radius
+ * multiplier PER FULL TURN (> 1 spirals outward); it is clamped just above 1 (a
+ * growth of exactly 1 is a circle, below 1 an inward spiral — the caller always
+ * passes the outward sense and controls direction by ordering the walk). This is
+ * the volute skeleton every scroll ribbon rides.
+ *
+ * @example logSpiralPoints({cx: 0, cy: 0, r0: 1, growth: 2, a0: 0, a1: 0, samples: 1}) // [[1, 0], [1, 0]]
+ * @example logSpiralPoints({cx: 0, cy: 0, r0: 1, growth: 2, a0: 0, a1: 2 * Math.PI, samples: 1})[1].map((v) => Math.round(v)) // [2, 0] (one full turn ⇒ radius doubled)
+ * @example logSpiralPoints({cx: 0, cy: 0, r0: 1, growth: 2, a0: 0, a1: Math.PI, samples: 4}).length // 5
+ */
+export function logSpiralPoints({ cx, cy, r0, growth, a0, a1, samples }) {
+  const k = Math.log(Math.max(1.0001, growth)) / (2 * Math.PI);
+  const n = Math.max(1, Math.round(samples));
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + ((a1 - a0) * i) / n;
+    const r = r0 * Math.exp(k * a);
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+/**
+ * Pure function. Turn an open CENTERLINE polyline into a CLOSED filled ribbon of
+ * the given half-width(s): offset each point ±(unit normal)·halfWidth (normal
+ * from the central-difference tangent), walk the right edge forward then the left
+ * edge back. `halfWidths` may be a single number (uniform) or a per-point array
+ * (a tapering ribbon). This is the bridge from every scroll/volute skeleton to a
+ * fillable outline — all-polyline, backend-safe.
+ *
+ * @example ribbonOutline([[0, 0], [10, 0], [20, 0]], 2) // [[0, 2], [10, 2], [20, 2], [20, -2], [10, -2], [0, -2]]
+ * @example ribbonOutline([[0, 0], [10, 0]], 3).length // 4 (2 points ⇒ 4-vertex quad)
+ * @example ribbonOutline([[0, 0], [0, 10], [0, 20]], [1, 2, 3])[0] // [-1, 0] (per-point width at the start)
+ */
+export function ribbonOutline(centerline, halfWidths) {
+  const n = centerline.length;
+  const hwAt = (i) => (Array.isArray(halfWidths) ? halfWidths[i] : halfWidths);
+  const right = [], left = [];
+  for (let i = 0; i < n; i++) {
+    const p = centerline[i];
+    const a = centerline[Math.max(0, i - 1)], b = centerline[Math.min(n - 1, i + 1)];
+    let tx = b[0] - a[0], ty = b[1] - a[1];
+    const len = Math.hypot(tx, ty) || 1;
+    tx /= len; ty /= len;
+    const nx = -ty, ny = tx;
+    const hw = hwAt(i);
+    right.push([p[0] + nx * hw, p[1] + ny * hw]);
+    left.push([p[0] - nx * hw, p[1] - ny * hw]);
+  }
+  return [...right, ...left.reverse()];
+}
+
+/** Pure function. Rotate points by `ang` (rad) about (ox,oy).
+ *  @example rotatePts([[1, 0]], Math.PI / 2).map(([x, y]) => [Math.round(x), Math.round(y)]) // [[0, 1]] */
+function rotatePts(pts, ang, ox = 0, oy = 0) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return pts.map(([x, y]) => { const dx = x - ox, dy = y - oy; return [ox + dx * c - dy * s, oy + dx * s + dy * c]; });
+}
+/** Pure function. Reflect points across the horizontal line y = axisY.
+ *  @example reflectPtsY([[3, 1]], 5) // [[3, 9]] */
+function reflectPtsY(pts, axisY) { return pts.map(([x, y]) => [x, 2 * axisY - y]); }
+/** Pure function. Angle (rad) of a polyline's final segment.
+ *  @example endTangentAngle([[0, 0], [1, 1]]) // 0.7853981633974483 */
+function endTangentAngle(pts) {
+  const a = pts[pts.length - 2], b = pts[pts.length - 1];
+  return Math.atan2(b[1] - a[1], b[0] - a[0]);
+}
+
+/**
+ * Pure function. A tapering half-width array for a scroll ribbon: width goes from
+ * `hwMax·(1−taper)` at the EYE (t=0) to `hwMax` at the OUTER end (t=1). taper=0 is
+ * a uniform ribbon; taper=1 tapers the eye to a point (the classic volute that
+ * curls to nothing).
+ *
+ * @example scrollHalfWidths(3, 10, 0) // [10, 10, 10]
+ * @example scrollHalfWidths(3, 10, 1) // [0, 5, 10]
+ */
+export function scrollHalfWidths(n, hwMax, taper) {
+  const tp = Math.max(0, Math.min(taper, 1));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const t = n <= 1 ? 1 : i / (n - 1);
+    out.push(hwMax * ((1 - tp) + tp * t));
+  }
+  return out;
+}
+
+/**
+ * Pure function. A single scroll centerline (eye at the origin → outer end),
+ * already oriented so the OUTER END TANGENT points along +x (so pieces can be
+ * chained by a horizontal stem). Returns {center, hws, outerR}: the point list,
+ * the tapering half-widths (relative to outerR·ribbonWidth), and the outer radius.
+ * Shared by ss_scroll, ss_scrollPair and ss_ironFinial's volutes.
+ */
+function scrollSkeleton({ turns, growth, ribbonWidth, taper }) {
+  const T = Math.max(0.1, turns);
+  const g = Math.max(1.05, growth);
+  const a1 = T * 2 * Math.PI;
+  const samples = Math.max(8, Math.round(SPIRAL_SEGMENTS_PER_TURN * T));
+  let center = logSpiralPoints({ cx: 0, cy: 0, r0: 1, growth: g, a0: 0, a1, samples });
+  center = rotatePts(center, -endTangentAngle(center)); // outer-end tangent → +x
+  const outerR = Math.exp((Math.log(g) / (2 * Math.PI)) * a1);
+  const hwMax = Math.max(0.01, ribbonWidth) * outerR;
+  const hws = scrollHalfWidths(center.length, hwMax, taper);
+  return { center, hws, outerR };
+}
+
+/**
+ * Pure function. VICTORIAN: a single SCROLL / volute (manifest #57) — a
+ * logarithmic-spiral ribbon curling into a tight eye, the wrought-iron building
+ * block. `turns` how many revolutions; `growth` the radius multiplier per turn
+ * (loose vs tight coil); `ribbonWidth` the iron bar width; `taper` narrows the
+ * eye to a point. Uniformly fitted to the bbox so the whole curl stays visible.
+ *
+ * @example scrollOutline(200, 200, {turns: 2}).length // 1
+ * @example scrollOutline(200, 200, {turns: 2})[0].length % 2 // 0 (ribbon = right edge + left edge)
+ * @example scrollOutline(200, 200, {turns: 2})[0].every(([x, y]) => x >= 0 && x <= 200 && y >= 0 && y <= 200) // true (fitted in-bounds)
+ */
+export function scrollOutline(w, h, { turns = 2.25, growth = 2, ribbonWidth = 0.16, taper = 0.6 } = {}) {
+  const { center, hws } = scrollSkeleton({ turns, growth, ribbonWidth, taper });
+  const ribbon = ribbonOutline(center, hws);
+  return bboxFitSubpaths([ribbon], w, h, Math.min(w, h) * 0.06).subpaths;
+}
+
+/**
+ * Pure function. VICTORIAN: the classic S / C SCROLL PAIR (manifest #57) — two
+ * mirrored volutes joined by a stem, as ONE continuous ribbon (eye → out → stem →
+ * out → eye). `symmetry` "S" gives 180°-rotational symmetry (an S), "C" gives
+ * mirror symmetry across the stem (a C); `stemLength` the bar between the coils
+ * (fraction of a scroll's outer radius); `turns`/`growth`/`ribbonWidth`/`taper`
+ * shape each coil. Uniformly fitted to the bbox.
+ *
+ * @example scrollPairOutline(300, 200, {symmetry: "S"}).length // 1 (one continuous ribbon)
+ * @example scrollPairOutline(300, 200, {symmetry: "C"}).length // 1
+ * @example scrollPairOutline(300, 200, {})[0].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) // true
+ */
+export function scrollPairOutline(w, h, { symmetry = "S", stemLength = 1.4, turns = 1.5, growth = 2.1, ribbonWidth = 0.13, taper = 0.55 } = {}) {
+  const { center, hws, outerR } = scrollSkeleton({ turns, growth, ribbonWidth, taper });
+  const pEnd = center[center.length - 1];
+  const stem = Math.max(0, stemLength) * outerR;
+  const pStem = [pEnd[0] + stem, pEnd[1]];
+  const stemPts = [pEnd, pStem];
+  let centerB, hwsB;
+  if (symmetry === "C") {
+    // Reflect across the stem's horizontal axis, shift by the stem, walk out→eye.
+    centerB = reflectPtsY(center, pEnd[1]).map(([x, y]) => [x + stem, y]);
+    centerB = centerB.slice().reverse();
+    hwsB = hws.slice().reverse();
+  } else {
+    // 180° about the stem midpoint: eye→out maps to (far)→pStem; walk out→eye.
+    const mid = [(pEnd[0] + pStem[0]) / 2, (pEnd[1] + pStem[1]) / 2];
+    centerB = rotatePts(center, Math.PI, mid[0], mid[1]).slice().reverse();
+    hwsB = hws.slice().reverse();
+  }
+  const fullCenter = [...center, ...stemPts, ...centerB];
+  const fullHws = [...hws, hws[hws.length - 1], hwsB[0], ...hwsB];
+  const ribbon = ribbonOutline(fullCenter, fullHws);
+  return bboxFitSubpaths([ribbon], w, h, Math.min(w, h) * 0.06).subpaths;
+}
+
+/**
+ * Pure function. The central PROFILE polygon of a fence-post finial: "spear" is a
+ * lance blade (a tall pointed leaf on a neck), "fleur" is a fleur-de-lis-ish
+ * trefoil bud. Built in a natural [-1,1]×[0,H] frame (tip at top, base at y=H);
+ * the caller fits it. Symmetric about x=0.
+ *
+ * @example ironFinialProfile("spear", 3).length // 7 (blade + neck)
+ * @example ironFinialProfile("fleur", 3).length // 13 (trefoil bud has more lobes)
+ * @example ironFinialProfile("spear", 3)[0] // [0, 0] (tip at top center)
+ */
+export function ironFinialProfile(profile, H) {
+  if (profile === "fleur") {
+    // A central pointed petal flanked by two side buds, over a neck.
+    return [
+      [0, 0], [0.16, 0.22 * H], [0.34, 0.36 * H], [0.16, 0.42 * H], [0.28, 0.6 * H],
+      [0.1, 0.66 * H], [0.1, H], [-0.1, H], [-0.1, 0.66 * H], [-0.28, 0.6 * H],
+      [-0.16, 0.42 * H], [-0.34, 0.36 * H], [-0.16, 0.22 * H],
+    ];
+  }
+  // spear: a symmetric lance blade tapering to a neck.
+  return [
+    [0, 0], [0.34, 0.34 * H], [0.12, 0.6 * H], [0.12, H],
+    [-0.12, H], [-0.12, 0.6 * H], [-0.34, 0.34 * H],
+  ];
+}
+
+/**
+ * Pure function. VICTORIAN: a wrought-iron FINIAL silhouette (manifest #57) — a
+ * central spear/fleur blade (`profile`) with `voluteCount` scroll volutes flanking
+ * each side of the base, curling outward, mirrored left/right. Returns the central
+ * profile plus 2·voluteCount volute ribbons (fillRule "nonzero" so they union).
+ * `voluteSize` scales the coils; `ribbonWidth`/`turns`/`growth` shape them.
+ * Uniformly fitted to the bbox as one group.
+ *
+ * @example ironFinialOutline(200, 300, {voluteCount: 1}).length // 3 (profile + 2 volutes)
+ * @example ironFinialOutline(200, 300, {voluteCount: 2}).length // 5 (profile + 4 volutes)
+ * @example ironFinialOutline(200, 300, {voluteCount: 0}).length // 1 (bare profile)
+ */
+export function ironFinialOutline(w, h, { profile = "spear", voluteCount = 2, voluteSize = 0.9, ribbonWidth = 0.16, turns = 1.4, growth = 2.1, taper = 0.6 } = {}) {
+  const H = 3; // natural profile height
+  const central = ironFinialProfile(profile, H);
+  const nV = Math.max(0, Math.round(voluteCount));
+  const { center, hws, outerR } = scrollSkeleton({ turns, growth, ribbonWidth, taper });
+  const scale = (Math.max(0.05, voluteSize) * 0.8) / outerR; // coil size in natural units
+  const unit = center.map(([x, y]) => [x * scale, y * scale]);
+  const unitHws = hws.map((v) => v * scale);
+  const subs = [central];
+  for (let i = 0; i < nV; i++) {
+    const t = nV <= 1 ? 0.5 : i / (nV - 1);
+    const anchorY = (0.62 + 0.32 * t) * H; // stack volutes up the lower blade
+    // Right volute: place the eye near the blade, curl outward-and-down.
+    const right = rotatePts(unit, Math.PI * 0.75).map(([x, y]) => [x + 0.18 * H, y + anchorY]);
+    subs.push(ribbonOutline(right, unitHws));
+    // Left volute: mirror of the right across x=0.
+    const left = right.map(([x, y]) => [-x, y]);
+    subs.push(ribbonOutline(left.slice().reverse(), unitHws.slice().reverse()));
+  }
+  return bboxFitSubpaths(subs, w, h, Math.min(w, h) * 0.06).subpaths;
+}

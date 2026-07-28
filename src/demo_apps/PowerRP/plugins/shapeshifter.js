@@ -55,6 +55,8 @@ import {
   crossPlusOutline, frameOutline, gearOutline, calloutOutline, bannerOutline,
   bracketOutline, arrowOutline, pointInOutlines, closestPointOnRoundedRect,
   closestPointOnSegment, closestPointOnAxisRange,
+  boltOutline, screwOutline, screwHeadOutline,
+  scrollOutline, scrollPairOutline, ironFinialOutline,
 } from "../core/outline.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { path } from "../render_gpu/ir.js";
@@ -529,6 +531,100 @@ export const FAMILIES = [
     // no single well-conditioned handle trajectory across the full straight↔
     // circular range). On-canvas handles are BACKBURNER — the shape still fully
     // shapeshifts and tweens via its param slots.
+    modifierPoints: () => [],
+  },
+  // ── HARDWARE FAMILIES (manifest #56) ────────────────────────────────────────
+  // Metal fasteners. Pure vector silhouettes with the chamfers / recesses a metal
+  // material's silhouette-SDF shading reads as facets and drive slots; the shadow
+  // effects bundle casts the drop shadow. Inspector-driven (no on-canvas handles —
+  // the same BACKBURNER stance as ss_arrow; the shapes still fully shapeshift and
+  // tween through their param slots).
+  {
+    type: "ss_bolt", title: "Bolt", icon: "mdi:screw-machine-flat-top", fill: "#b8c0cc",
+    defaults: { headWidth: 0.74, headHeight: 0.2, chamfer: 0.24, shankWidth: 0.42, threads: 8, threadDepth: 0.14, washer: false, washerWidth: 0.6, washerHeight: 0.05, w: 120, h: 260 },
+    rows: [
+      N("headWidth", "Head width", { min: 0.1, max: 1, help: "Width of the hex head across the flats, as a fraction of the box." }),
+      N("headHeight", "Head height", { min: 0.05, max: 0.8, help: "Height of the head as a fraction of the box." }),
+      N("chamfer", "Head bevel", { min: 0, max: 0.9, help: "Bevels the head's corners — the chamfer of a hex head read side-on. 0 is a plain rectangle head." }),
+      N("shankWidth", "Shank width", { min: 0.05, max: 1, help: "Width of the threaded shank as a fraction of the box." }),
+      N("threads", "Threads", { min: 0, help: "Number of thread turns down the shank; 0 is a smooth (unthreaded) shank." }),
+      N("threadDepth", "Thread depth", { min: 0, max: 0.95, help: "How deep each thread cuts into the shank, as a fraction of its half-width." }),
+      BOOL("washer", "Washer", "Inserts a wider washer collar between the head and the shank."),
+      N("washerWidth", "Washer width", { min: 0.1, max: 1, help: "Width of the washer as a fraction of the box (only with Washer on)." }),
+      N("washerHeight", "Washer height", { min: 0, max: 0.3, help: "Thickness of the washer as a fraction of the box (only with Washer on)." }),
+    ],
+    outline: (s) => boltOutline(s.w, s.h, { headWidth: s.headWidth ?? 0.74, headHeight: s.headHeight ?? 0.2, chamfer: s.chamfer ?? 0.24, shankWidth: s.shankWidth ?? 0.42, threads: s.threads ?? 8, threadDepth: s.threadDepth ?? 0.14, washer: s.washer ?? false, washerWidth: s.washerWidth ?? 0.6, washerHeight: s.washerHeight ?? 0.05 }),
+    modifierPoints: () => [],
+  },
+  {
+    type: "ss_screw", title: "Screw", icon: "mdi:screw-lag", fill: "#b8c0cc",
+    defaults: { headStyle: "flat", headWidth: 0.72, headHeight: 0.16, shankWidth: 0.36, threads: 11, threadDepth: 0.2, taper: 0.5, w: 120, h: 280 },
+    rows: [
+      SEL("headStyle", "Head style", ["flat", "pan", "round"], { flat: "Flat / countersunk", pan: "Pan", round: "Round / dome" }, "The screw-head profile seen from the side: a countersunk cone, a low pan, or a full dome."),
+      N("headWidth", "Head width", { min: 0.1, max: 1, help: "Width of the head as a fraction of the box." }),
+      N("headHeight", "Head height", { min: 0.05, max: 0.6, help: "Height of the head as a fraction of the box." }),
+      N("shankWidth", "Shank width", { min: 0.05, max: 1, help: "Width of the body at the top, as a fraction of the box." }),
+      N("threads", "Threads", { min: 0, help: "Number of thread turns down the tapered body; 0 is a smooth body." }),
+      N("threadDepth", "Thread depth", { min: 0, max: 0.95, help: "How deep each thread cuts, as a fraction of the shank half-width." }),
+      N("taper", "Point taper", { min: 0.05, max: 1, help: "Fraction of the body length over which it narrows to the point: large is a long cone, small is a straight body with a short gimlet point." }),
+    ],
+    outline: (s) => screwOutline(s.w, s.h, { headStyle: s.headStyle ?? "flat", headWidth: s.headWidth ?? 0.72, headHeight: s.headHeight ?? 0.16, shankWidth: s.shankWidth ?? 0.36, threads: s.threads ?? 11, threadDepth: s.threadDepth ?? 0.2, taper: s.taper ?? 0.5 }),
+    modifierPoints: () => [],
+  },
+  {
+    type: "ss_screwHead", title: "Screw Head (top)", icon: "mdi:screw-flat-top", fill: "#b8c0cc", fillRule: "evenodd",
+    defaults: { drive: "phillips", driveSize: 0.55, barWidth: 0.16, w: 200, h: 200 },
+    rows: [
+      SEL("drive", "Drive", ["slot", "phillips", "hex", "torx"], { slot: "Slotted", phillips: "Phillips", hex: "Hex socket", torx: "Torx" }, "The drive recess punched into the head, seen from the top: a single slot, a Phillips cross, a hex socket, or a six-lobe Torx."),
+      N("driveSize", "Recess size", { min: 0.05, max: 0.95, help: "Radius of the drive recess as a fraction of the head radius." }),
+      N("barWidth", "Bar width", { min: 0.02, max: 0.9, help: "Width of the slot/cross bar as a fraction of the head radius (ignored for hex/torx)." }),
+    ],
+    outline: (s) => screwHeadOutline(s.w, s.h, { drive: s.drive ?? "phillips", driveSize: s.driveSize ?? 0.55, barWidth: s.barWidth ?? 0.16 }),
+    modifierPoints: () => [],
+  },
+  // ── VICTORIAN SCROLL-WORK FAMILIES (manifest #57) ───────────────────────────
+  // Wrought-iron ornament. Logarithmic-spiral ribbons that read as fence-post /
+  // lamp-post curls, generously parameterized (turns, growth, ribbon width, taper,
+  // symmetry, stem, volute count). Inspector-driven, like the arrow.
+  {
+    type: "ss_scroll", title: "Iron Scroll", icon: "mdi:vector-curve", fill: "#3b3b42",
+    defaults: { turns: 2.25, growth: 2, ribbonWidth: 0.16, taper: 0.6, w: 200, h: 200 },
+    rows: [
+      N("turns", "Turns", { min: 0.25, scrub: 0.02, help: "How many revolutions the scroll coils through. More turns wind a tighter eye." }),
+      N("growth", "Growth per turn", { min: 1.1, scrub: 0.02, help: "How fast the coil expands each turn: near 1 is a tight even coil, larger flares open into a loose volute." }),
+      N("ribbonWidth", "Bar width", { min: 0.02, max: 0.6, help: "Thickness of the iron bar as a fraction of the coil's outer radius." }),
+      N("taper", "Eye taper", { min: 0, max: 1, help: "Narrows the bar toward the eye: 0 is a uniform ribbon, 1 tapers the eye to a point (the classic volute)." }),
+    ],
+    outline: (s) => scrollOutline(s.w, s.h, { turns: s.turns ?? 2.25, growth: s.growth ?? 2, ribbonWidth: s.ribbonWidth ?? 0.16, taper: s.taper ?? 0.6 }),
+    modifierPoints: () => [],
+  },
+  {
+    type: "ss_scrollPair", title: "S / C Scroll", icon: "mdi:vector-bezier", fill: "#3b3b42",
+    defaults: { symmetry: "S", stemLength: 1.4, turns: 1.5, growth: 2.1, ribbonWidth: 0.13, taper: 0.55, w: 300, h: 180 },
+    rows: [
+      SEL("symmetry", "Symmetry", ["S", "C"], { S: "S-scroll (opposite curls)", C: "C-scroll (mirrored curls)" }, "How the two coils relate: an S curls in opposite directions (rotational symmetry); a C curls the same way (mirror symmetry) — the two classic wrought-iron units."),
+      N("stemLength", "Stem length", { min: 0, scrub: 0.02, help: "Length of the straight bar joining the two coils, as a multiple of a coil's radius." }),
+      N("turns", "Turns", { min: 0.25, scrub: 0.02, help: "Revolutions in each coil." }),
+      N("growth", "Growth per turn", { min: 1.1, scrub: 0.02, help: "How fast each coil expands per turn." }),
+      N("ribbonWidth", "Bar width", { min: 0.02, max: 0.6, help: "Iron bar thickness as a fraction of a coil's outer radius." }),
+      N("taper", "Eye taper", { min: 0, max: 1, help: "Narrows the bar toward each eye (1 tapers to a point)." }),
+    ],
+    outline: (s) => scrollPairOutline(s.w, s.h, { symmetry: s.symmetry ?? "S", stemLength: s.stemLength ?? 1.4, turns: s.turns ?? 1.5, growth: s.growth ?? 2.1, ribbonWidth: s.ribbonWidth ?? 0.13, taper: s.taper ?? 0.55 }),
+    modifierPoints: () => [],
+  },
+  {
+    type: "ss_ironFinial", title: "Iron Finial", icon: "mdi:fleur-de-lis", fill: "#3b3b42",
+    defaults: { profile: "spear", voluteCount: 2, voluteSize: 0.9, ribbonWidth: 0.16, turns: 1.4, growth: 2.1, taper: 0.6, w: 180, h: 300 },
+    rows: [
+      SEL("profile", "Profile", ["spear", "fleur"], { spear: "Spear / lance", fleur: "Fleur-de-lis" }, "The central finial blade: a pointed spear head or a fleur-de-lis bud."),
+      N("voluteCount", "Volutes per side", { min: 0, help: "Number of scroll volutes flanking each side of the base (mirrored left/right). 0 is a bare blade." }),
+      N("voluteSize", "Volute size", { min: 0.1, max: 2, scrub: 0.02, help: "Size of each flanking volute coil." }),
+      N("ribbonWidth", "Volute bar width", { min: 0.02, max: 0.6, help: "Thickness of the volute iron bar as a fraction of its outer radius." }),
+      N("turns", "Volute turns", { min: 0.25, scrub: 0.02, help: "Revolutions in each flanking volute." }),
+      N("growth", "Volute growth", { min: 1.1, scrub: 0.02, help: "How fast each flanking volute expands per turn." }),
+      N("taper", "Volute taper", { min: 0, max: 1, help: "Narrows each volute bar toward its eye." }),
+    ],
+    outline: (s) => ironFinialOutline(s.w, s.h, { profile: s.profile ?? "spear", voluteCount: s.voluteCount ?? 2, voluteSize: s.voluteSize ?? 0.9, ribbonWidth: s.ribbonWidth ?? 0.16, turns: s.turns ?? 1.4, growth: s.growth ?? 2.1, taper: s.taper ?? 0.6 }),
     modifierPoints: () => [],
   },
 ];

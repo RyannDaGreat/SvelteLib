@@ -17,6 +17,8 @@ import {
   arcPoints, ringSectorOutline, roundedVerts, pointInOutlines,
   polygonStarOutline, cornerRectOutline, quadWedgeOutline, crossPlusOutline,
   frameOutline, gearOutline, calloutOutline, bannerOutline, bracketOutline, arrowOutline,
+  threadFlankPts, boltOutline, screwOutline, screwHeadOutline,
+  logSpiralPoints, ribbonOutline, scrollOutline, scrollPairOutline, ironFinialOutline,
 } from "../core/outline.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { FAMILIES, makeFamilyPlugin, shapeshifterPlugins } from "../plugins/shapeshifter.js";
@@ -59,6 +61,18 @@ const GEN_CASES = [
   ["bracket", () => bracketOutline(60, 120, {})],
   ["arrow straight", () => arrowOutline(100, 100, { curvature: 0 })],
   ["arrow bent", () => arrowOutline(100, 100, { curvature: 0.6 })],
+  // ── HARDWARE + VICTORIAN families (manifest #56, #57) ──
+  ["bolt", () => boltOutline(120, 260, {})],
+  ["bolt washer", () => boltOutline(120, 260, { washer: true })],
+  ["screw flat", () => screwOutline(120, 280, { headStyle: "flat" })],
+  ["screw round", () => screwOutline(120, 280, { headStyle: "round" })],
+  ["screwHead phillips", () => screwHeadOutline(200, 200, { drive: "phillips" })],
+  ["screwHead torx", () => screwHeadOutline(200, 200, { drive: "torx" })],
+  ["scroll", () => scrollOutline(200, 200, {})],
+  ["scrollPair S", () => scrollPairOutline(300, 180, { symmetry: "S" })],
+  ["scrollPair C", () => scrollPairOutline(300, 180, { symmetry: "C" })],
+  ["ironFinial spear", () => ironFinialOutline(180, 300, { profile: "spear" })],
+  ["ironFinial fleur", () => ironFinialOutline(180, 300, { profile: "fleur" })],
 ];
 for (const [name, gen] of GEN_CASES) {
   test(`${name}: closed subpaths, finite verts, path d has no A command`, () => {
@@ -82,11 +96,56 @@ test("generators are total over clamp-worthy extremes (never throw / never NaN)"
     () => gearOutline(100, 100, { teeth: 1, innerRatio: 5, toothWidth: 5, holeRatio: 5 }),
     () => arrowOutline(100, 100, { headRatio: 5, headWidth: 5, shaftRatio: 5, curvature: 5 }),
     () => quadWedgeOutline(100, 100, { taper: 9, shear: 9 }),
+    () => boltOutline(120, 260, { headWidth: 9, shankWidth: 9, threads: 300, threadDepth: 9, chamfer: 9, washer: true, washerWidth: 9 }),
+    () => screwOutline(120, 280, { headWidth: 9, shankWidth: 9, threads: 400, threadDepth: 9, taper: 9 }),
+    () => screwHeadOutline(200, 200, { driveSize: 9, barWidth: 9 }),
+    () => scrollOutline(200, 200, { turns: 0, growth: 0.01, ribbonWidth: 9, taper: 9 }),
+    () => scrollPairOutline(300, 180, { turns: 0, growth: 0.01, stemLength: -9, ribbonWidth: 9 }),
+    () => ironFinialOutline(180, 300, { voluteCount: 80, voluteSize: 9, turns: 0, growth: 0.01 }),
   ];
   for (const fn of extremes) {
     const subs = fn();
     for (const sp of subs) for (const [x, y] of sp) assert.ok(Number.isFinite(x) && Number.isFinite(y));
   }
+});
+
+// ── new-family SHAPE-SPECIFIC invariants (manifest #56, #57) ──────────────────
+test("threadFlankPts: crest/root triangle wave, half-pitch phase, smooth degenerate", () => {
+  assert.deepEqual(threadFlankPts(0, 40, 10, 6, 2, 0), [[10, 0], [6, 10], [10, 20], [6, 30], [10, 40]]);
+  assert.deepEqual(threadFlankPts(0, 40, 10, 6, 2, 1), [[6, 0], [10, 10], [6, 20], [10, 30], [6, 40]]); // phase = opposite flank
+  assert.deepEqual(threadFlankPts(0, 40, 10, 6, 0, 0), [[10, 0], [10, 40]]); // 0 threads ⇒ smooth edge
+});
+test("bolt/screw: point counts RESPOND to the thread + washer knobs", () => {
+  const few = boltOutline(120, 260, { threads: 4 })[0].length;
+  const many = boltOutline(120, 260, { threads: 20 })[0].length;
+  assert.ok(many > few, "more threads ⇒ more vertices");
+  assert.ok(boltOutline(120, 260, { washer: true })[0].length > boltOutline(120, 260, { washer: false })[0].length, "washer adds vertices");
+  // screw tapers to a SHARP point at bottom-center.
+  assert.ok(screwOutline(120, 280, { threads: 9 })[0].some(([x, y]) => Math.abs(x - 60) < 1e-9 && y === 280), "screw tip at bottom center");
+});
+test("screwHead: outer disc + drive recess as an even-odd HOLE", () => {
+  for (const drive of ["slot", "phillips", "hex", "torx"]) {
+    const subs = screwHeadOutline(200, 200, { drive });
+    assert.equal(subs.length, 2, `${drive} = disc + recess`);
+    assert.equal(pointInOutlines(subs, 100, 100), false, `${drive} center is in the recess hole`);
+    assert.equal(pointInOutlines(subs, 100, 12), true, `${drive} near the rim is head metal`);
+  }
+});
+test("logSpiral/ribbon: a turn multiplies the radius; ribbon closes to an even vertex count", () => {
+  approx(logSpiralPoints({ cx: 0, cy: 0, r0: 1, growth: 2, a0: 0, a1: 2 * Math.PI, samples: 1 })[1][0], 2); // one turn ⇒ ×2
+  assert.equal(ribbonOutline([[0, 0], [10, 0], [20, 0]], 2).length % 2, 0); // right edge + left edge
+});
+test("scrollPair: S and C both produce ONE continuous ribbon, in-bounds", () => {
+  for (const symmetry of ["S", "C"]) {
+    const subs = scrollPairOutline(300, 180, { symmetry });
+    assert.equal(subs.length, 1, `${symmetry} = one ribbon`);
+    for (const [x, y] of subs[0]) assert.ok(x >= -0.01 && x <= 300.01 && y >= -0.01 && y <= 180.01, "fitted in-bounds");
+  }
+});
+test("ironFinial: subpath count = profile + 2·voluteCount", () => {
+  assert.equal(ironFinialOutline(180, 300, { voluteCount: 0 }).length, 1);
+  assert.equal(ironFinialOutline(180, 300, { voluteCount: 1 }).length, 3);
+  assert.equal(ironFinialOutline(180, 300, { voluteCount: 2 }).length, 5);
 });
 
 // ── plugin emit: one `path` op, PDF-safe, effects-wrapped pass-through ────────
