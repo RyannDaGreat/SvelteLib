@@ -45,10 +45,9 @@ import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { reportOnce } from "../../core/report.js";
 import { materialBackdrop, parseColor } from "../../render_gpu/ir.js";
-import { MAX_METABALLS } from "../../render_gpu/skia/metaballs_shader.js";
+import { MAX_METABALLS, METABALLS_FILL_PARAMS, metaballsGlobalParams } from "../../render_gpu/skia/metaballs_shader.js";
 
 const IDENTITY = { x: 0, y: 0, rotation: 0, scale: 1 };
-const LIGHT_ANGLE_DEFAULT = -Math.PI * 0.68; // direction TO the light: upper, slightly left — the water sheen
 // The fused region is the balls' bounding box GROWN by this fraction of the largest
 // ball's reach — a margin that comfortably holds the isosurface past the raw ball
 // radii (threshold-fattening + smooth-union neck bulge + the coverage AA band) for
@@ -56,13 +55,6 @@ const LIGHT_ANGLE_DEFAULT = -Math.PI * 0.68; // direction TO the light: upper, s
 // widgets) is never clipped at the region edge.
 const REGION_PAD_FRAC = 0.6;
 
-// The fresh-droplet FLUID look: a watery aqua whose ALPHA is the "coloredness" —
-// how strongly the fluid tints the refracted background. Clearly visible but
-// translucent (the user wants "a color for the fluid"), NOT the near-colorless
-// 0.06 of the old water tint.
-const DEFAULT_FLUID_ALPHA = 0.35;
-const DEFAULT_FLUID_RGB_HEX = "2fd9e0"; // aqua
-const DEFAULT_FLUID_COLOR = `#${DEFAULT_FLUID_RGB_HEX}${Math.round(DEFAULT_FLUID_ALPHA * 255).toString(16).padStart(2, "0")}`;
 // A ball with no owning-widget appearance (a geometry-only test/direct-emit path):
 // zero-strength color = no tint; zero refraction. Real widgets always supply both.
 const FALLBACK_FLUID_COLOR = [0, 0, 0, 0];
@@ -73,26 +65,17 @@ const TYPE_OPTIONS = ["sphere", "tube", "box"];
 const TYPE_LABELS = { sphere: "Sphere", tube: "Tube", box: "Box" };
 const TYPE_CODE = { sphere: 0, tube: 1, box: 2 };
 
+// THE LOOK KNOBS LIVE IN THE SHADER ENTRY now (metaballs_shader.METABALLS_FILL_PARAMS
+// — the fill-material framework's single-declaration rule: "custom properties become
+// material properties"). This widget spreads that SAME schema into its customProps and
+// adds only its widget-side `shape` selector: the ball PRIMITIVE (Sphere/Tube/Box)
+// needs the bbox aspect a material fill never has, so it stays widget-side (a fill is
+// always a lone centered sphere — metaballs_shader.metaballsFillUniformParams).
 const CUSTOM = customProps([
-  // ── the ball (this widget's single primitive) ────────────────────────────────
+  // ── the ball (this widget's single primitive) — WIDGET-SIDE geometry ──────────
   { name: "shape", kind: "select", options: TYPE_OPTIONS, optionLabels: TYPE_LABELS, default: "sphere", label: "Shape", help: "This droplet's primitive: Sphere (a round drop filling the box's short side), Tube (a capsule spanning the long side — good for a neck), or Box (a rounded-square drop filling the box). Place two metaball widgets close to MERGE them." },
-  // ── the fluid material (PER-WIDGET; blends across merges) ─────────────────────
-  { name: "fluidColor", kind: "color", default: DEFAULT_FLUID_COLOR, label: "Fluid color", help: "The fluid's body color; its ALPHA is how strongly the fluid is colored (0 = clear water, 1 = fully colored). When two droplets merge, their colors BLEND — a red drop meeting a blue drop gives a purple neck." },
-  { name: "refraction", kind: "number", default: 0.27, min: 0, label: "Refraction", help: "Maximum lens displacement (fraction of the mean ball radius) of the refracted background — how hard this droplet magnifies/bends the content beneath it. Blends across a merge with a neighbour's refraction." },
-  // ── the field (merge + surface) — GLOBAL (leader-wide) ────────────────────────
-  { name: "smoothK", kind: "number", default: 0.90, min: 0, label: "Merge (smooth-k)", help: "Smooth-union merge amount (fraction of the MEAN BALL RADIUS). 0 = a hard union of separate shapes; larger fuses neighbours (including balls from other metaball widgets) into one bulging blob with a smooth neck — THE metaball merge." },
-  { name: "threshold", kind: "number", default: 0.08, min: 0, label: "Threshold", help: "Isosurface level (fraction of the mean ball radius): raises the fluid 'level' so every blob fattens and gaps close. Higher = plumper, more-merged droplets." },
-  { name: "bulge", kind: "number", default: 0.80, min: 0.05, label: "Bulge", help: "Dome thickness (fraction of the mean ball radius): small = tall, sharply-curved beads (strong refraction); large = flatter puddles." },
-  // ── the water look (reuses the glass refraction + lighting math) — GLOBAL ─────
-  { name: "chromatic", kind: "number", default: 0.05, min: 0, label: "Chromatic", help: "Chromatic dispersion at the rim: the R/B channels refract slightly more/less than G. A tiny value gives a real colored-edge fringe; too much makes a rainbow swirl at each bead's core." },
-  { name: "lightAngle", kind: "angle", display: "degrees", default: LIGHT_ANGLE_DEFAULT, label: "Light angle", help: "Direction TO the light (screen space; -90° is straight above, 0° is from the right). The upper face of each bead catches the specular glint." },
-  { name: "specular", kind: "number", default: 1.75, min: 0, label: "Specular", help: "Strength of the Blinn-Phong glint — the bright sparkle a real water droplet throws back at the light. The key water cue." },
-  { name: "shininess", kind: "number", default: 66, min: 1, label: "Shininess", help: "Specular exponent: higher = a tighter, sharper pinpoint glint; lower = a broad soft sheen." },
-  { name: "fresnel", kind: "number", default: 0.95, min: 0, label: "Fresnel rim", help: "Brightness of the grazing rim, where a droplet catches a ring of the bright surroundings (environment reflection). Gives the bead its lit edge." },
-  { name: "ambient", kind: "number", default: 0.28, min: 0, max: 1, label: "Contact shade", help: "Soft darkening on the unlit rim (0 = flat, higher = a rounder, seated bead). The shadow side that makes it read as 3D." },
-  // ── render controls (world units + sample resolution) ────────────────────────
-  { name: "blurRadius", kind: "number", default: 7, min: 0, label: "Environment blur", help: "Gaussian blur radius (world px) of the surroundings used for the fresnel rim glow. Softer = a smoother environment reflection." },
-  { name: "backdropScale", kind: "number", default: 1.5, min: 0.25, max: 2, label: "Backdrop scale", help: "RESOLUTION FACTOR the content beneath is re-rendered at for the refraction: 1 = screen res, 2 = supersample (crisper droplets, slower), 0.5 = half res (faster, softer)." },
+  // ── the fluid material + surface + lighting — the SHARED fill schema ──────────
+  ...METABALLS_FILL_PARAMS,
 ]);
 
 /**
@@ -265,18 +248,12 @@ export const metaballsPlugin = {
       blurRadius: s.blurRadius,
       backdropScale: s.backdropScale,
       params: {
+        // The fused-scene balls are the WIDGET path's own (metaballRegion); the
+        // GLOBAL surface/light knobs use the SAME mapping the fill path shares.
         balls: region.balls,
         ballCount: region.count,
         unit: region.unit,
-        smoothK: s.smoothK,
-        threshold: s.threshold,
-        chromatic: s.chromatic,
-        lightAngle: s.lightAngle,
-        specular: s.specular,
-        shininess: s.shininess,
-        fresnel: s.fresnel,
-        bulge: s.bulge,
-        ambient: s.ambient,
+        ...metaballsGlobalParams(s),
       },
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,

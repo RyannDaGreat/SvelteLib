@@ -102,6 +102,8 @@
  * comic_shader.js. `parseColor` is not needed: this material exposes no colour knob.
  */
 
+import { UNIT_SPAN_SCRUB } from "../../core/properties.js";
+
 // ── named constants (WHY each exists — no magic numbers) ──────────────────────
 export const BRIGHTNESS_CONTRAST_SKSL = `
 const float AA_PX = 1.0;      // coverage antialias half-width (~1 device px), matching frosted/comic
@@ -338,6 +340,67 @@ export function brightnessContrastProxyBackdrop(params) {
   return { tint: [channel, channel, channel, alpha] };
 }
 
+// select ids → the shader's numeric mode codes. Exported so the demo widget and
+// the fill-material UI both name the SAME three modes (one declaration).
+export const MODE_OPTIONS = ["smooth", "linear", "srgb"];
+export const MODE_LABELS = {
+  smooth: "Smooth (cannot clip)",
+  linear: "Linear light (exposure in stops)",
+  srgb: "sRGB direct (naive — clips)",
+};
+const MODE_CODE = { smooth: 0, linear: 1, srgb: 2 };
+
+/**
+ * THE BRIGHTNESS / CONTRAST KNOB SCHEMA — the ONE declaration of the material's
+ * look knobs, in the customProps row shape. Both consumers derive from it (the
+ * end-state ruling "custom properties become material properties"):
+ *   - plugins/demo/brightness_contrast.js spreads it into its customProps (self.* rows);
+ *   - the FILL-material UI renders it as the paint's param rows, resolved
+ *     sparse-over-defaults by materials.resolveMaterialPaint.
+ * Geometry knobs (cornerRadius) stay widget-side — a fill's shape IS its geometry.
+ *
+ * DEFAULTS MATCH THE WIDGET, NOT THE NEUTRAL POINT (byte-compat with the pre-fill
+ * widget): `contrast` defaults to 1.4 — a visible punch, the blur.js "default is a
+ * plainly visible amount, not the identity" precedent — while the EXACT identity is
+ * still 0 / 1 (isNeutralTone, the emit short-circuit). `brightness` carries the
+ * load-bearing `scrub: UNIT_SPAN_SCRUB`: it is the fully-open zero-default shape that
+ * scrub inference cannot reach (it would fall back to 1 unit/px — SEVENTY times too
+ * coarse on a knob whose +1 is a whole stop), so the sensitivity is declared here.
+ */
+export const BRIGHTNESS_CONTRAST_FILL_PARAMS = [
+  { name: "mode", kind: "select", options: MODE_OPTIONS, optionLabels: MODE_LABELS, default: "smooth", help: "Which tone math the two knobs mean. Smooth (the default) is built for a finished on-screen image: it fixes black and white, so it CANNOT crush shadows or blow highlights however far you push it. Linear light treats brightness as a real exposure change in stops and contrast as a power about 18% grey — physically what a camera does, and it CAN clip past white. sRGB direct is the naive slider every other tool ships; it is here so you can see what the other two avoid." },
+  { name: "brightness", kind: "number", default: 0, scrub: UNIT_SPAN_SCRUB, help: "0 = unchanged. Positive brightens, negative darkens. In Smooth mode this is a midtone lift that leaves pure black and pure white alone (+1 lifts 25% grey to 50%). In Linear-light mode it is an EXPOSURE in stops (+1 = twice the light, and whites clip). In sRGB mode it is a flat offset added to every channel." },
+  { name: "contrast", kind: "number", default: 1.4, min: 0, help: "1 = unchanged, higher = punchier, 0 = flat grey. This is the SLOPE of the tone curve at mid-grey in every mode, so it means the same thing here as a contrast slider anywhere else — the modes differ only in what happens far from mid-grey, where the naive version clips and Smooth rolls off instead." },
+  { name: "preserveHue", kind: "boolean", default: false, help: "Off (the usual look): each colour channel is toned on its own, so raising contrast also deepens colour. On: only the brightness of each pixel changes and its hue and saturation are held exactly — the honest choice when the point is to re-tone a photo or figure without recolouring it. Boosting a saturated colour with this on can push a channel out of range and clip it." },
+];
+
+/**
+ * Pure function. SCHEMA params (BRIGHTNESS_CONTRAST_FILL_PARAMS names/kinds — the
+ * `mode` select STRING, the `preserveHue` BOOLEAN, the two numeric curve knobs) →
+ * the PACKER's numeric params (mode code, 0/1 bool). THE one mapping both consumers
+ * share: the demo widget's emit() and the fill-material regionOp synthesis
+ * (paint_skia handleMaterialPaintShape reads it as entry.toUniformParams). Throws
+ * LOUD on an unknown mode (the crt.js maskType precedent — silently grading with the
+ * wrong tone math is worse than a stopped render).
+ *
+ * @param {object} p - schema-shaped params (resolved: every knob present)
+ * @returns {object} packBrightnessContrastUniforms-shaped params
+ *
+ * @example brightnessContrastUniformParams({mode: "linear", brightness: -1.2, contrast: 1, preserveHue: false}).mode // 1
+ * @example brightnessContrastUniformParams({mode: "smooth", brightness: 0, contrast: 1.4, preserveHue: true}).preserveHue // 1
+ */
+export function brightnessContrastUniformParams(p) {
+  const mode = MODE_CODE[p.mode];
+  if (mode === undefined)
+    throw new Error(`brightnessContrastUniformParams: unknown mode ${JSON.stringify(p.mode)} (expected one of ${MODE_OPTIONS.join(", ")})`);
+  return {
+    mode,
+    brightness: p.brightness,
+    contrast: p.contrast,
+    preserveHue: p.preserveHue ? 1 : 0,
+  };
+}
+
 /**
  * THE BRIGHTNESS / CONTRAST MATERIAL DESCRIPTOR — the registry entry
  * (render_gpu/skia/materials.js). A BACKDROP material: its SkSL declares the standard
@@ -363,6 +426,8 @@ export const BRIGHTNESS_CONTRAST_MATERIAL = {
   backdrop: true,
   proxyBackdrop: brightnessContrastProxyBackdrop,
   usesBlurredBackdrop: false,
+  fillParams: BRIGHTNESS_CONTRAST_FILL_PARAMS,
+  toUniformParams: brightnessContrastUniformParams,
   // NO `maxSampleReach` YET — DELIBERATELY, AND NOT FOR LACK OF THE ANSWER.
   //
   // This material's true outward reach IS ZERO: `main` evaluates sharpBackdrop.eval(p)

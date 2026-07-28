@@ -552,10 +552,70 @@ export function corkboardThumbtackProxyFill(params, region) {
   };
 }
 
+// ── FILL-MATERIAL SCHEMAS (materials as PAINT on any shape) ──────────────────────
+// The look knobs of the fill-capable family members, in the customProps row shape —
+// the ONE declaration both consumers derive from (the end-state ruling: "custom
+// properties become material properties"): plugins/demo/corkboard.js spreads each into
+// its widget customProps (self.* rows), and the FILL-material UI (PaintField) renders
+// it as the paint's param rows, resolved sparse-over-defaults by resolveMaterialPaint.
+// The board and the thumbtack opt in; both are FOREGROUND fills that synthesize their
+// whole look from uniforms. Their schema knob NAMES equal the packer's own param keys
+// (packCork / packTack read them straight), and no knob needs a unit conversion — the
+// light angle is stored in radians and the packer's lightVec reads radians — so NEITHER
+// declares `toUniformParams`: the framework passes the resolved params to `pack`
+// unchanged. Widget-side keys stay in the plugin: the region's `cornerRadius` is
+// GEOMETRY (a fill's shape IS its geometry; a shape fill carries cornerRadius 0 and the
+// clip shapes it), and the note/tack drop-shadow is a materialFill `shadow` descriptor,
+// which a shape fill does not carry. (The NOTE is deliberately NOT opted in: its
+// curlCorner→curlDir select mapping plus its interleaved widget-only shadow knobs make
+// it widget-specific, not a trivial identity like these two.)
+//
+// The family's SINGLE light lives here beside the schema that defaults to it: the
+// direction TO the light in SCREEN space, upper-left (design Part 3). cork / note / tack
+// / yarn all default their `lightAngle` to it, so the whole family shares one look yet
+// each knob stays independently overridable / equation-bindable.
+export const FAMILY_LIGHT_ANGLE = Math.atan2(-0.83, -0.55); // ≈ -2.157 rad; dir ≈ (-0.55, -0.83)
+
+/**
+ * THE CORKBOARD (board) FILL-PARAM SCHEMA — every packCork look knob EXCEPT the
+ * region cornerRadius (widget geometry). Schema names = packCork's param keys, so
+ * the identity resolved-params map feeds the packer directly (no toUniformParams).
+ */
+export const CORK_FILL_PARAMS = [
+  { name: "baseColor", kind: "color", default: "rgb(190,143,86)", help: "The warm tan base tone of the cork panel (before the granular texture)." },
+  { name: "grainScale", kind: "number", default: 0.2, min: 0, help: "Granule frequency (cycles per world unit) — the fine mm-scale speckle that is cork's dominant signature. Higher = finer, denser granules." },
+  { name: "mottleScale", kind: "number", default: 0.02, min: 0, help: "Coarse blotch frequency (cycles per world unit) — the gentle cm-scale tone drift beneath the granules." },
+  { name: "mottleStrength", kind: "number", default: 0.12, min: 0, max: 1, help: "How strong the coarse tone drift is. Keep LOW — too high and the board reads as smoke instead of cork." },
+  { name: "pitStrength", kind: "number", default: 0.34, min: 0, max: 1, help: "Density/darkness of the small dark pores between granules." },
+  { name: "fleckStrength", kind: "number", default: 0.24, min: 0, max: 1, help: "Brightness of the pale granule faces catching the light." },
+  { name: "vignette", kind: "number", default: 0.2, min: 0, max: 1, help: "Inner-edge darkening, so the board reads as an inset panel." },
+  { name: "frameWidth", kind: "number", default: 26, min: 0, help: "Width (world px) of the dark wood frame rim around the board. 0 = no frame." },
+  { name: "frameColor", kind: "color", default: "rgb(92,58,30)", help: "The colour of the wood frame rim." },
+  { name: "seed", kind: "number", default: 7, help: "Texture seed — changes the granule pattern deterministically (NOT animated)." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the family light (screen space; upper-left by default). Drives the shading + shadow direction of the whole family." },
+];
+
+/**
+ * THE THUMBTACK FILL-PARAM SCHEMA — packTack's four look knobs (the head is a DISK,
+ * so it exposes no region cornerRadius; its contact shadow is a widget-side descriptor,
+ * not a knob). Schema names = packTack's param keys ⇒ identity, no toUniformParams.
+ * There is deliberately NO `seed` row: a tack head is a smooth plastic dome with no
+ * procedural texture to decorrelate (TACK_SKSL reads no seed; measured byte-identical
+ * across seeds) — an Inspector control that promised a change and delivered none.
+ */
+export const TACK_FILL_PARAMS = [
+  { name: "color", kind: "color", default: "rgb(210,45,45)", help: "The plastic head colour of the pin." },
+  { name: "domeGain", kind: "number", default: 0.95, min: 0, max: 1, help: "Press-in DEPTH, 1 = fully out/proud (a tall glossy dome), low = pushed in flat. ANIMATE this: it flattens the dome AND shrinks the contact shadow." },
+  { name: "shininess", kind: "number", default: 20, min: 1, help: "Glossiness of the head's specular hotspot — higher = a tighter, brighter highlight." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (screen space). Shared with the family; places the hotspot and the contact shadow." },
+];
+
 // ── material descriptors (registry entries) ─────────────────────────────────────
 // FOREGROUND materials: `backdrop: false` tells the framework to bind NO children
 // and the materialFill handler to skip the below-content re-render. `id` matches
 // the plugin's `material` op field. `proxyFill` gives each a cheap thumbnail stand-in.
-export const CORK_MATERIAL = { id: "corkboard", sksl: CORK_SKSL, pack: packCork, uniformFloats: CORK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardProxyFill };
+// `fillParams` opts a material into being PAINT on any shape (cork + tack; both identity
+// mappings ⇒ no toUniformParams). The NOTE stays widget-only (see the schema note above).
+export const CORK_MATERIAL = { id: "corkboard", sksl: CORK_SKSL, pack: packCork, uniformFloats: CORK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardProxyFill, fillParams: CORK_FILL_PARAMS };
 export const NOTE_MATERIAL = { id: "corkboardNote", sksl: NOTE_SKSL, pack: packNote, uniformFloats: NOTE_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardNoteProxyFill };
-export const TACK_MATERIAL = { id: "corkboardThumbtack", sksl: TACK_SKSL, pack: packTack, uniformFloats: TACK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardThumbtackProxyFill };
+export const TACK_MATERIAL = { id: "corkboardThumbtack", sksl: TACK_SKSL, pack: packTack, uniformFloats: TACK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardThumbtackProxyFill, fillParams: TACK_FILL_PARAMS };

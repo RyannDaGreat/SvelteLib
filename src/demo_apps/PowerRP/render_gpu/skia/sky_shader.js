@@ -34,6 +34,9 @@
  */
 
 import { parseColor } from "../ir.js";
+import * as T from "../../core/transform.js";
+import { collectSkyScene } from "../../core/derive.js";
+import { particleTime } from "../particle_clock.js";
 
 /** Max suns/moons the sky reads (fixed uniform-array sizes; the packer pads). */
 export const SKY_MAX_SUNS = 4;
@@ -370,9 +373,256 @@ export function skyProxyFill(params, region) {
   };
 }
 
+// ── THE FILL-MATERIAL HALF (sky as the FILL of any shape) ─────────────────────
+// The end-state ruling "demo widgets are just shapes with material; custom
+// properties become material properties" (render_gpu/skia/materials.js). Sky is
+// the SCENE-COUPLED member of the framework: its scattering reads the sibling
+// skySun/skyMoon nodes. That coupling is the material's `sceneParams(node,
+// nodesById)` hook — resolveMaterialPaint (materials.js), THE one resolution
+// site, calls it once per op at scene-build time and folds its result into
+// `resolvedParams`, so every sky-filled shape on a slide shares the same suns and
+// the painter stays scene-blind. The `sky` WIDGET (plugins/demo/sky.js) derives
+// its customProps from SKY_FILL_PARAMS and routes its OWN gather through the same
+// mapSkyScene declaration — one gather, two consumers.
+
+// ── the scrub feel of the sky rows (moved here with SKY_FILL_PARAMS) ───────────
+// web/NumericField.svelte only range-scales a row that carries BOTH bounds; a
+// half-open or fully open row falls back to 1 unit per drag-pixel. Every freed row
+// declares an explicit `scrub` = (the span it used to have) / RANGE_DRAG_PX, which
+// reproduces EXACTLY the bounded feel. Same rule and derivation as
+// core/properties.js SECONDS_SCRUB / UNIT_SPAN_SCRUB (the one-unit case, imported).
+// plugins/demo/sky.js imports RANGE_DRAG_PX to derive the sun disc's own span.
+export const RANGE_DRAG_PX = 100; // web/NumericField.svelte's own constant (px of drag per full range)
+// The ONE-UNIT span (== core/properties.js UNIT_SPAN_SCRUB, which is also 1/RANGE_DRAG_PX):
+// atmosphere/timeOfDay. Re-derived from RANGE_DRAG_PX rather than imported so this shader
+// entry stays OFF the core/properties.js import hub (importing it perturbs a latent
+// module-init cycle through properties.js — the sky WIDGET still imports the canonical
+// UNIT_SPAN_SCRUB for its sun/moon/cloud rows).
+const UNIT_SPAN_SCRUB = 1 / RANGE_DRAG_PX;
+// Rows that span TWO units: the [−1, +1] BOX FRAME the sky shaders work in (the
+// horizon row) and the Milky-Way strength (whose old 0..2 range has the same span).
+const BOX_SPAN_SCRUB = 2 / RANGE_DRAG_PX;
+// Turbidity's old 1..12 haze range (span 11).
+const HAZE_SPAN_SCRUB = 11 / RANGE_DRAG_PX;
+
+/**
+ * THE `sky` KNOB SCHEMA — the ONE declaration of the material's look knobs, in the
+ * customProps row shape (the fill-material framework's single-declaration rule).
+ * Both consumers derive from it: plugins/demo/sky.js spreads it into the widget's
+ * self.* customProps (adding only the widget-side `cornerRadius` geometry knob), and
+ * the FILL-material PaintField renders it as the paint's param rows, resolved sparse-
+ * over-defaults by materials.resolveMaterialPaint. Geometry (`cornerRadius`) and the
+ * scene-derived params (suns/moonlight) are NOT here — geometry is the shape, and the
+ * suns come from sceneParams. Every bound below is GEOMETRIC or TECHNICAL and says why
+ * on its row (the manifest "no arbitrary constraints" audit); a taste-only limit is
+ * dropped and the row carries the `scrub` that preserves its old feel.
+ */
+export const SKY_FILL_PARAMS = [
+  // NO FLOOR (the old min:−1 was ARBITRARY — a position in the box frame capped at the
+  // box's own edges, which blocked the legitimate all-sky framing). Pushing the horizon
+  // below the bottom edge only GROWS the mapping's denominator (1 − horizon), so the
+  // dome stays smooth and simply compresses toward the zenith: −2 and −4 render clean,
+  // distinct, sun-lit skies with no ground band. The CEILING OF +1 IS TECHNICAL and
+  // stays: this shader maps box height to elevation with
+  // `(up − uHorizon) / max(1 − uHorizon, EPS)`, whose denominator is exactly 0 at +1 and
+  // NEGATIVE (a sign flip of the whole dome) above it. Its `max(·, EPS)` divide guard
+  // already SILENTLY swallows anything past +1 — measured: horizon 1.5 and horizon 4
+  // render byte-identically — and a silent clamp discards the user's value, which is
+  // the same disease as a UX cap. +1 is not a taste line either: it already IS the
+  // all-ground framing (the whole box is below the horizon), so nothing is lost.
+  { name: "horizon", kind: "number", default: -0.15, max: 1, scrub: BOX_SPAN_SCRUB, help: "Horizon height in the box frame (−1 bottom … +1 top). Below it is ground, above it is sky. Lower = more sky, and NO lower bound — push it past −1 for an all-sky framing with no ground at all (the dome just compresses toward the zenith). +1 is the top edge: the whole box becomes ground, which is as far as the horizon can go." },
+  // NO CEILING (the old max:12 was ARBITRARY — 40, 500 and 10000 render distinct,
+  // progressively thicker smogs). THE FLOOR OF 0 IS TECHNICAL and 0 itself is a real,
+  // useful sky (pure Rayleigh — the deepest blue there is). Turbidity scales the MIE
+  // coefficient, and the dome's closed-form scatter divides by the TOTAL extinction
+  // betaTot = uAtmosphere·(BETA_R + BETA_M·uTurbidity/3): a NEGATIVE turbidity walks each
+  // colour channel's divisor through its own zero (red at −8.286, green at −19.3, blue at
+  // −47.3) and flips that channel's transmittance exp(−betaTot·airmass) into exponential
+  // GROWTH. Measured: −4 punches a black hole around the sun, −20 is neon yellow/magenta
+  // channel-clipping bands, and everything at or below −1000 collapses to ONE flat white
+  // frame (−1000 and −100000 are byte-identical — a silent swallow). A scattering
+  // coefficient cannot be negative; this floor is where the model stops being a model.
+  { name: "turbidity", kind: "number", default: 3, min: 0, scrub: HAZE_SPAN_SCRUB, help: "Atmospheric haze: scales Mie scattering. 0 = pure Rayleigh (the deepest, cleanest blue), ~2 = very clear, ~8 = hazy/washed-out with a broad sun glow, and NO upper cap — hundreds give a thick warm smog. 0 is a REAL floor, not taste: turbidity scales a scattering coefficient, and a negative one drives the sky's own divisor through zero." },
+  // FLOOR NOW 0 (the old min:0.1 was ARBITRARY — 0.001, 0.02 and 0.1 render distinct,
+  // ever-thinner skies). 0 ITSELF IS TECHNICAL AND IS NOW LEGAL: betaTot is the divisor of
+  // the closed-form single scatter and vanishes with uAtmosphere, so 0 used to be an
+  // UNGUARDED 0/0 — measured, the whole dome came out flat white (a NaN rendering as
+  // backend-defined garbage). This shader now floors that divisor with BETA_FLOOR, which
+  // makes 0 the exact physical limit (no scattering ⇒ a black airless sky with only the
+  // ground band) and leaves every positive value byte-identical. SCRUB is UNIT_SPAN_SCRUB
+  // (its twin `exposure` scrubs the same, a half-open unit-nominal multiplier).
+  { name: "atmosphere", kind: "number", default: 1, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Overall atmosphere thickness — scales all scattering. Higher = denser/brighter sky (past ~100 the dome saturates into its own haze); 0 is the airless limit, a black sky with only the ground showing. 0 is a REAL floor: this is the divisor of the scattering integral." },
+  // NO BOUNDS (the old min:0.05 was ARBITRARY). 0 is a black day sky and NEGATIVE values
+  // are honoured, not swallowed: the tone map 1 − exp(−exposure·daySky) turns them into
+  // SUBTRACTED light — measured, −1, −2 and −5 each render a distinct twilight (mean luma
+  // 9.450 / 9.460 / 9.580) before −50 and below bottom out at one solid black frame.
+  { name: "exposure", kind: "number", default: 1.1, help: "HDR tone-map exposure. Higher = brighter overall (past ~20 the day sky blows out to white); 0 leaves a black day sky, and there is no floor — a negative exposure SUBTRACTS light, crushing the dome through twilight to black." },
+  // FLOOR NOW 0 (the old min:1 was ARBITRARY: densities 0, 0.5, 1 and 1.4 render DISTINCT
+  // skies — at a star-sphere rotation where the coarse grid actually lands a star). 0 IS
+  // THE TECHNICAL FLOOR: the SkSL passes max(uStarDensity, EPS) into starField, so
+  // anything below silently becomes EPS — measured, −46 and −100 are byte-identical to 0.
+  { name: "starDensity", kind: "number", default: 46, min: 0, help: "Star-field grid resolution — more = more stars (visible at night); no upper cap. Below ~1 the grid is coarser than the whole sky, so stars thin out to none. 0 is the floor because the shader's own guard would silently swallow anything under it." },
+  // NO BOUNDS (both were ARBITRARY). Past the old max:2 the band keeps brightening —
+  // 8 and 100 are distinct, ever more blazing galaxies — and NEGATIVE values are honoured
+  // too (−1 and −5 render distinct night skies, mean luma 9.46 vs 8.05): the band is
+  // SUBTRACTED, carving a dark dust lane out of the night. Neither end swallows.
+  { name: "milkyWay", kind: "number", default: 1, scrub: BOX_SPAN_SCRUB, help: "Milky-Way band strength (0 = off). Only visible at night. Unbounded both ways: past 2 the band keeps brightening until its core saturates white, and a negative value subtracts it, carving the band out of the sky as a dark dust lane." },
+  // NO BOUNDS: the rotation is PERIODIC — the SkSL does rot2(g, uTimeOfDay·TWO_PI) — so the
+  // old 0..1 cap was ARBITRARY and it blocked keyframing a multi-turn spin (0 → 3).
+  // Measured byte-identical: 0 ≡ 1 ≡ 3, and 0.25 ≡ 1.25 ≡ 12.25 ≡ 100.25 (the float32
+  // argument survives 10 000 turns), 0.5 ≡ 2.5 ≡ −0.5.
+  { name: "timeOfDay", kind: "number", default: 0.2, scrub: UNIT_SPAN_SCRUB, help: "Rotates the star sphere + Milky Way: 0..1 is ONE full turn, and it is unbounded because the rotation is periodic — keyframe 0 → 3 to spin the night sky three whole turns (2.5 renders exactly like 0.5, as a turn should), or go negative to wheel the other way. The day/night look itself is driven by the SUN widgets' elevation, not this." },
+  { name: "zenith", kind: "color", default: "#ffffff", help: "Zenith colour multiplier applied to the scattered day sky. White = pure physics; tint to warm/cool the whole dome." },
+  { name: "ground", kind: "color", default: "#0d1017", help: "Ground/foreground colour below the horizon (darkens at night)." },
+  { name: "night", kind: "color", default: "#04060e", help: "Deep night-sky colour the dome fades to once every sun is below the horizon." },
+  { name: "galaxyTint", kind: "color", default: "#46567c", help: "Milky-Way glow tint (a cool dusty blue; the bright core adds warm highlights)." },
+];
+
+// ── the SIBLING GATHER (moved out of the widget's emit; ONE declaration) ──────
+const EMPTY_SCENE = { suns: [], moons: [] };
+const IDENTITY = { x: 0, y: 0, rotation: 0, scale: 1 };
+// The sky's night-ambient lift per fully-lit moon (a dim silvery wash, not daylight).
+const MOONLIGHT_GAIN = 0.28;
+
+/**
+ * Pure function. Maps a WORLD point into a reader box's LOCAL [-1,1] frame — the
+ * exact frame the shaders use (fuv = pl/uHalfSize, box centre = 0, edges = ±1). The
+ * box's stored geometry is a local [0..w]×[0..h] rect centred at (w/2, h/2), so a
+ * world point is inverted through `world`, re-centred, and normalized by the half
+ * extent. Rotation/scale of the box are handled by the world inverse, so the sun
+ * lands where it visually sits regardless of how the sky box is posed.
+ *
+ * @param {object} world - the reader node's local→world similarity {x,y,rotation,scale}
+ * @param {number} w - box width (local units)
+ * @param {number} h - box height (local units)
+ * @param {number} wx - world x of the sibling
+ * @param {number} wy - world y of the sibling
+ * @returns {{sx: number, sy: number}} box-frame coords (fuv space; sy is y-DOWN)
+ *
+ * @example mapToBoxFrame({x: 0, y: 0, rotation: 0, scale: 1}, 200, 100, 100, 50) // {sx: 0, sy: 0} (centre)
+ * @example mapToBoxFrame({x: 0, y: 0, rotation: 0, scale: 1}, 200, 100, 200, 50) // {sx: 1, sy: 0} (right edge)
+ * @example mapToBoxFrame({x: 0, y: 0, rotation: 0, scale: 1}, 200, 100, 100, 0) // {sx: 0, sy: -1} (top edge)
+ */
+export function mapToBoxFrame(world, w, h, wx, wy) {
+  const local = T.apply(T.invert(world), wx, wy);
+  return { sx: (local.x - w / 2) / (w / 2), sy: (local.y - h / 2) / (h / 2) };
+}
+
+/**
+ * Pure function. The queried suns mapped into a reader box's frame, ready for the
+ * packer: each sun's world CENTRE becomes {sx, sy} in the box's [-1,1] frame, its
+ * colour/intensity carried through. Shared by the `sky` fill (via mapSkyScene) and the
+ * `skyClouds`/`sky` widgets' emit.
+ *
+ * @param {{suns?: object[]}} scene - collectSkyScene result (world coords)
+ * @param {object} world - the reader node's local→world similarity
+ * @param {number} w - box width
+ * @param {number} h - box height
+ * @returns {Array<{sx:number, sy:number, color:string, intensity:number}>}
+ *
+ * @example mappedSuns({suns: [{x: 200, y: 50, color: "#fff", intensity: 2}]}, {x: 0, y: 0, rotation: 0, scale: 1}, 200, 100) // [{sx: 1, sy: 0, color: "#fff", intensity: 2}]
+ * @example mappedSuns({suns: []}, {x: 0, y: 0, rotation: 0, scale: 1}, 100, 100) // []
+ */
+export function mappedSuns(scene, world, w, h) {
+  return (scene.suns ?? []).map((s) => {
+    const { sx, sy } = mapToBoxFrame(world, w, h, s.x, s.y);
+    return { sx, sy, color: s.color, intensity: s.intensity };
+  });
+}
+
+/**
+ * Pure function. A moon's illuminated fraction for its phase, f = (1 − cos ε)/2 with
+ * elongation ε = 2π·phase (0 new → 0, 0.5 full → 1). The sky's night ambient is lifted
+ * by how much moonlight the moon(s) provide.
+ *
+ * @param {number} phase - 0..1
+ * @returns {number} 0..1
+ *
+ * @example illuminatedFraction(0)    // 0   (new moon)
+ * @example illuminatedFraction(0.5)  // 1   (full moon)
+ * @example illuminatedFraction(0.25) // 0.5 (first quarter)
+ */
+export function illuminatedFraction(phase) {
+  return (1 - Math.cos(2 * Math.PI * phase)) / 2;
+}
+
+/**
+ * Pure function. THE `sky` SCENE MAPPING — the ONE declaration of how a collected
+ * {suns, moons} scene becomes the sky's scene-derived params in a reader box's local
+ * frame: the suns mapped into [-1,1] and the moons folded into a single moonlight lift
+ * (MOONLIGHT_GAIN × Σ illuminated fraction). Both the SKY_MATERIAL.sceneParams fill
+ * hook (gathering from nodesById) and the `sky` WIDGET's emit (consuming its derive-
+ * attached s.skyScene) route through this, so a sky-filled shape and the sky widget
+ * compute suns identically.
+ *
+ * @param {{suns?: object[], moons?: object[]}} scene - collectSkyScene result
+ * @param {object} world - the box's local→world similarity
+ * @param {number} w - box width
+ * @param {number} h - box height
+ * @returns {{suns: Array, moonlight: number}}
+ *
+ * @example mapSkyScene({suns: [{x: 200, y: 50, color: "#fff", intensity: 2}], moons: []}, {x: 0, y: 0, rotation: 0, scale: 1}, 200, 100).suns[0].sx // 1
+ * @example mapSkyScene({suns: [], moons: [{phase: 0.5}]}, {x: 0, y: 0, rotation: 0, scale: 1}, 100, 100).moonlight // 0.28
+ * @example mapSkyScene({suns: [], moons: []}, {x: 0, y: 0, rotation: 0, scale: 1}, 100, 100) // {suns: [], moonlight: 0}
+ */
+export function mapSkyScene(scene, world, w, h) {
+  const moonlight = MOONLIGHT_GAIN * (scene.moons ?? []).reduce((a, m) => a + illuminatedFraction(m.phase), 0);
+  return { suns: mappedSuns(scene, world, w, h), moonlight };
+}
+
+/**
+ * Query. THE FILL-MATERIAL SCENE HOOK (materials.resolveMaterialPaint calls it). Gathers
+ * the sibling skySun/skyMoon nodes from `nodesById` — the same collectSkyScene the derive
+ * stage runs — and maps them into THIS node's own box frame, so any shape with a sky fill
+ * gets the scene's suns without being a skyReader itself. A SUNLESS scene resolves to
+ * `{suns: [], moonlight: 0}` (a night sky), never a throw — the empty case is the common
+ * one (a lone sky-filled shape).
+ *
+ * @param {{world?: object, state?: object}|null} node - the emitting render node
+ * @param {Map|null} nodesById - itemId → derived node (its values are the scene)
+ * @returns {{suns: Array, moonlight: number}} the scene-derived resolved params
+ *
+ * @example skySceneParams(null, null) // {suns: [], moonlight: 0}
+ * @example skySceneParams(null, null).suns.length // 0
+ */
+export function skySceneParams(node, nodesById) {
+  const scene = nodesById ? collectSkyScene([...nodesById.values()]) : EMPTY_SCENE;
+  const world = node?.world ?? IDENTITY;
+  return mapSkyScene(scene, world, node?.state?.w ?? 0, node?.state?.h ?? 0);
+}
+
+/**
+ * Near-pure function (reads the ambient particle clock). SCHEMA params
+ * (SKY_FILL_PARAMS names + the sceneParams-derived suns/moonlight) → packSky's
+ * numeric params, adding the ambient `time`. THE one mapping both consumers share:
+ * the demo widget builds the same shape by hand in emit(), and the fill-material
+ * regionOp synthesis (paint_skia handleMaterialPaintShape) reads it as
+ * entry.toUniformParams. Names already match packSky, so this is mostly a pass-through
+ * that injects `time` and defaults the scene params (a paint with no sceneParams still
+ * resolves — though sky always declares one).
+ *
+ * @param {object} p - resolved params (every SKY_FILL_PARAMS knob + suns + moonlight)
+ * @returns {object} packSky-shaped params
+ *
+ * @example skyUniformParams({horizon: -0.15, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 46, milkyWay: 1, timeOfDay: 0.2, zenith: "#ffffff", ground: "#0d1017", night: "#04060e", galaxyTint: "#46567c", suns: [], moonlight: 0}).horizon // -0.15
+ * @example skyUniformParams({horizon: 0, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 46, milkyWay: 1, timeOfDay: 0.2, zenith: "#fff", ground: "#000", night: "#000", galaxyTint: "#000", suns: [], moonlight: 0}).suns.length // 0
+ */
+export function skyUniformParams(p) {
+  return {
+    time: particleTime(),
+    horizon: p.horizon, turbidity: p.turbidity, atmosphere: p.atmosphere, exposure: p.exposure,
+    starDensity: p.starDensity, milkyWay: p.milkyWay, timeOfDay: p.timeOfDay,
+    moonlight: p.moonlight ?? 0,
+    zenith: p.zenith, ground: p.ground, night: p.night, galaxyTint: p.galaxyTint,
+    suns: p.suns ?? [],
+  };
+}
+
 /** FOREGROUND generative material descriptor (backdrop:false). `proxyFill` gives the
  * thumbnail/minimap (quality:"proxy") path a cheap vertical-gradient stand-in
- * instead of the full analytic-atmosphere SkSL. */
+ * instead of the full analytic-atmosphere SkSL. `fillParams`/`toUniformParams`/
+ * `sceneParams` opt it into the fill-material framework: any shape can carry a sky
+ * fill, and its scattering reads the scene's suns through the sibling gather. */
 export const SKY_MATERIAL = {
   id: "sky",
   sksl: SKY_SKSL,
@@ -380,4 +630,7 @@ export const SKY_MATERIAL = {
   uniformFloats: SKY_UNIFORM_FLOATS,
   backdrop: false,
   proxyFill: skyProxyFill,
+  fillParams: SKY_FILL_PARAMS,
+  toUniformParams: skyUniformParams,
+  sceneParams: skySceneParams,
 };

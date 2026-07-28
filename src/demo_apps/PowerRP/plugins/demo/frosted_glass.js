@@ -43,6 +43,7 @@
 
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { FROSTED_FILL_PARAMS, frostedUniformParams } from "../../render_gpu/skia/frosted_shader.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
 
 // The frosted look knobs, all self.* custom properties. `blurRadius` / `cornerRadius`
@@ -52,11 +53,13 @@ import { materialBackdrop } from "../../render_gpu/ir.js";
 // FROST AND ABSORB ARE THE SAME COLOUR APPLIED IN OPPOSITE DIRECTIONS, which is what
 // lets one tint knob serve both a milky pane and a body-tinted one. `absorb` defaults
 // to 0, so the shipped widget is byte-for-byte the veil-only frost it always was.
+//
+// THE LOOK KNOBS LIVE IN THE SHADER ENTRY now (frosted_shader.FROSTED_FILL_PARAMS
+// — the fill-material framework's single-declaration rule: "custom properties become
+// material properties"). This widget spreads that SAME schema into its customProps
+// and adds only its widget-side geometry knob (cornerRadius).
 const CUSTOM = customProps([
-  { name: "blurRadius", kind: "number", default: 12, min: 0, help: "Gaussian blur radius (world px) of the content seen through the panel — the defining frosted-glass blur. Higher = a softer, more obscured backdrop." },
-  { name: "frost", kind: "number", default: 0.2, min: 0, max: 1, help: "Frost/tint opacity, from 0 (a clear blur, no veil) to 1 (a solid tinted panel). A subtle value (~0.2) gives the milky frosted-material look while the backdrop still reads through." },
-  { name: "tint", kind: "color", default: "rgb(255,255,255)", help: "The tint COLOUR, shared by Frost and Absorb. White is the classic frosted material; a hue makes it coloured glass. Its strength is those two knobs (this colour's own alpha is ignored)." },
-  { name: "absorb", kind: "number", default: 0, min: 0, max: 1, help: "How much the tint also ABSORBS, from 0 (off — the frost veil alone) to 1 (the backdrop is multiplied by the tint). Frost ADDS the tint on top of everything, so it lifts blacks and reads as milky surface frost; Absorb SUBTRACTS through the pane, so blacks stay black and only lit areas take the hue — the body-tinted look of green, blue or bronze architectural glass." },
+  ...FROSTED_FILL_PARAMS,
   { name: "cornerRadius", kind: "number", default: 32, min: 0, help: "Rounded-corner radius of the panel (world px). A capsule when it reaches half the shorter side." },
 ]);
 
@@ -210,11 +213,8 @@ export const frostedGlassPlugin = {
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       cornerRadius: s.cornerRadius,
       blurRadius: s.blurRadius,
-      params: {
-        frost: s.frost,
-        tint: s.tint,
-        absorb: s.absorb,
-      },
+      // The SAME schema→uniform mapping the fill-material path uses (one declaration).
+      params: frostedUniformParams(s),
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,
       opacity: s.opacity ?? 1,

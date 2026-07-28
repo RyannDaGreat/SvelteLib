@@ -33,17 +33,18 @@
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialFill, path, parseColor, BLUR_SUPPORT_SIGMAS } from "../../render_gpu/ir.js";
+// THE LOOK KNOBS LIVE IN THE SHADER ENTRY now (corkboard_shader.CORK_FILL_PARAMS /
+// TACK_FILL_PARAMS — the fill-material framework's single-declaration rule: "custom
+// properties become material properties"). Each widget spreads that SAME schema into
+// its customProps and adds only its widget-side keys (the region cornerRadius). The
+// family's shared light angle lives there too, beside the schema that defaults to it.
+import { CORK_FILL_PARAMS, TACK_FILL_PARAMS, FAMILY_LIGHT_ANGLE } from "../../render_gpu/skia/corkboard_shader.js";
 // paddedPointsBBox: the arrow family's effect-bounds helper (arrow.js /
 // elbow_arrow.js / fancy_arrow.js import it the same way). corkboardYarn has no
 // bbox — it is a sagging curve between two thumbtacks — so it declares
 // effectBounds to say where its effect substrate lives.
 import { paddedPointsBBox } from "../../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../../core/endpoints.js";
-
-// The family's SINGLE light: direction TO the light in screen space, upper-left
-// (design Part 3). Exposed on every widget as `lightAngle` (radians) so the whole
-// family shares one look yet each is independently overridable / equation-bindable.
-const FAMILY_LIGHT_ANGLE = Math.atan2(-0.83, -0.55); // ≈ -2.157 rad; dir ≈ (-0.55, -0.83)
 
 // Corner selector for the note curl: each component ±1 picks a corner (y-down, so
 // top = -1). corner = (dir.x·halfW, dir.y·halfH).
@@ -149,19 +150,12 @@ function makeMaterialWidget(cfg) {
 }
 
 // ── CORKBOARD (the board) ───────────────────────────────────────────────────────
+// The look knobs come from the shader entry (CORK_FILL_PARAMS); the widget adds only
+// its region cornerRadius (GEOMETRY — kept widget-side, exactly as the comic exemplar
+// keeps its cornerRadius). The fill-material path resolves that same schema itself.
 const CORK_CUSTOM = customProps([
-  { name: "baseColor", kind: "color", default: "rgb(190,143,86)", help: "The warm tan base tone of the cork panel (before the granular texture)." },
-  { name: "grainScale", kind: "number", default: 0.2, min: 0, help: "Granule frequency (cycles per world unit) — the fine mm-scale speckle that is cork's dominant signature. Higher = finer, denser granules." },
-  { name: "mottleScale", kind: "number", default: 0.02, min: 0, help: "Coarse blotch frequency (cycles per world unit) — the gentle cm-scale tone drift beneath the granules." },
-  { name: "mottleStrength", kind: "number", default: 0.12, min: 0, max: 1, help: "How strong the coarse tone drift is. Keep LOW — too high and the board reads as smoke instead of cork." },
-  { name: "pitStrength", kind: "number", default: 0.34, min: 0, max: 1, help: "Density/darkness of the small dark pores between granules." },
-  { name: "fleckStrength", kind: "number", default: 0.24, min: 0, max: 1, help: "Brightness of the pale granule faces catching the light." },
-  { name: "vignette", kind: "number", default: 0.2, min: 0, max: 1, help: "Inner-edge darkening, so the board reads as an inset panel." },
-  { name: "frameWidth", kind: "number", default: 26, min: 0, help: "Width (world px) of the dark wood frame rim around the board. 0 = no frame." },
-  { name: "frameColor", kind: "color", default: "rgb(92,58,30)", help: "The colour of the wood frame rim." },
+  ...CORK_FILL_PARAMS,
   { name: "cornerRadius", kind: "number", default: 30, min: 0, help: "Rounded-corner radius of the board (world px)." },
-  { name: "seed", kind: "number", default: 7, help: "Texture seed — changes the granule pattern deterministically (NOT animated)." },
-  { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the family light (screen space; upper-left by default). Drives the shading + shadow direction of the whole family." },
 ]);
 
 const corkboardPlugin = makeMaterialWidget({
@@ -239,18 +233,10 @@ const TACK_SHADOW_BLUR_BASE = 0.30, TACK_SHADOW_BLUR_GAIN = 0.40; // blur sigma 
 const TACK_SHADOW_GROW_BASE = 0.05, TACK_SHADOW_GROW_GAIN = 0.14; // grow as radius·(...)
 const TACK_SHADOW_A_BASE = 0.30, TACK_SHADOW_A_GAIN = 0.14;      // alpha = base + gain·proud
 
-const TACK_CUSTOM = customProps([
-  { name: "color", kind: "color", default: "rgb(210,45,45)", help: "The plastic head colour of the pin." },
-  { name: "domeGain", kind: "number", default: 0.95, min: 0, max: 1, help: "Press-in DEPTH, 1 = fully out/proud (a tall glossy dome), low = pushed in flat. ANIMATE this: it flattens the dome AND shrinks the contact shadow." },
-  { name: "shininess", kind: "number", default: 20, min: 1, help: "Glossiness of the head's specular hotspot — higher = a tighter, brighter highlight." },
-  // NO `seed` ROW, unlike the cork board and the note beside it, whose seeds really do
-  // re-roll a texture. A tack head is a smooth plastic dome with NO procedural texture
-  // to decorrelate: the row shipped admitting its own uselessness ("no visible effect"),
-  // which makes it an Inspector control that promises a change and delivers none —
-  // measured, seed 0 and 9999 were byte-identical. Deleted with its dead uniform and its
-  // packer slot; see render_gpu/skia/corkboard_shader.js's TACK_SKSL note.
-  { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (screen space). Shared with the family; places the hotspot and the contact shadow." },
-]);
+// The tack's four look knobs live in the shader entry (TACK_FILL_PARAMS — an identity
+// fill schema). No widget-side geometry knob: the head is a DISK (cornerRadius is
+// derived below), and the contact shadow is a widget-side descriptor, not a knob.
+const TACK_CUSTOM = customProps(TACK_FILL_PARAMS);
 
 const corkboardThumbtackPlugin = makeMaterialWidget({
   type: "corkboardThumbtack",

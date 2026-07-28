@@ -46,15 +46,15 @@
 
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnAxisRange } from "../../core/outline.js";
-import { UNIT_SPAN_SCRUB, bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
+import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
-import { MAX_GHOSTS } from "../../render_gpu/skia/lens_flare_shader.js";
-
-// UNIT_SPAN_SCRUB (core/properties.js, beside SECONDS_SCRUB) is the scrub
-// sensitivity for the UNBOUNDED normalized knobs below — the light position, the
-// dirt mix, the feature scale. It used to be declared here; three plugins had
-// hand-written the same constant, so it moved to the registry.
+// THE LOOK KNOBS AND THEIR schema→uniform MAPPING live in the shader entry now
+// (LENS_FLARE_FILL_PARAMS + lensFlareUniformParams — the fill-material framework's
+// single-declaration rule: "custom properties become material properties"). This
+// widget spreads that SAME schema into its customProps and emit() shares that SAME
+// mapping, so the widget and the fill-material shape path can never drift.
+import { LENS_FLARE_FILL_PARAMS, lensFlareUniformParams } from "../../render_gpu/skia/lens_flare_shader.js";
 
 /**
  * The reference radius the FEATURE-SCALE handle rides, in the shader's HEIGHT-
@@ -107,82 +107,14 @@ function scaleHandleArm(s) {
   return SCALE_HANDLE_REF_RADIUS * (s.h ?? 0) / 2;
 }
 
-// The look knobs, all self.* custom properties. Dimensionless field knobs are
-// normalized to the widget's own extent, so the look holds at any zoom/size; light
-// position is expressed as a fraction of the widget (0.5,0.5 = centre) but is NOT
-// confined to it. The defaults are a tasteful warm cinematic flare (the Presets pane
-// offers twelve further looks).
-//
-// BOUNDS POLICY (manifest "no arbitrary constraints invented by Claude"): every
-// remaining min/max here is GEOMETRIC or TECHNICAL and says so. A knob whose only
-// limit was taste carries none — a value the shader renders is a value the user may
-// ask for. Where a floor of 0 survives, it is because the shader's own guard would
-// SILENTLY swallow the negative (a silent clamp discards the user's value, which is
-// the same disease as a UX cap) — see each row's note.
-const CUSTOM = customProps([
-  { name: "lightX", kind: "number", default: 0.72, scrub: UNIT_SPAN_SCRUB, help: "Light-source horizontal position as a fraction of the widget: 0 = left edge, 0.5 = centre, 1 = right edge. UNBOUNDED — negative or above 1 puts the light off the box entirely (the off-frame sun), and the ghost chain still marches from there through the widget centre and sweeps across the frame." },
-  { name: "lightY", kind: "number", default: 0.3, scrub: UNIT_SPAN_SCRUB, help: "Light-source vertical position as a fraction of the widget: 0 = top, 0.5 = centre, 1 = bottom. UNBOUNDED, exactly like the horizontal position — a sun above or below the frame is a normal thing to want." },
-  { name: "brightness", kind: "number", default: 1.2, min: 0, help: "Overall gain on the whole flare — the adjustable master intensity of the additive light added to the scene. Floor 0 (off): the shader clamps the assembled flare to [0,1] before premultiplying, so a negative gain would be silently swallowed rather than subtract light." },
-  // THE FEATURE SCALE — the master SIZE knob, paired here with the master GAIN above.
-  // Every other size knob below is normalized to the widget's own height, so the box
-  // size is otherwise the ONLY thing that sets how big the rings are; this decouples
-  // the two. Set it by dragging the second yellow handle (see modifierPoints), or by
-  // keyframing/binding it like any other property.
-  { name: "flareScale", kind: "number", default: 1, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Master size of every flare FEATURE — the ghosts, the halo ring, the streak, the glow and the starburst spikes all scale together, about their own centres. 1 = the sizes the knobs below name literally; 0.5 = a flare half the size in a box of the same size; 0 = every feature collapses (off). This is how a full-frame flare can still carry small rings: resize the box for the flare's REACH, then drag the second yellow handle to set the ring size independently. No upper cap — a big value simply grows the features past the box. Floor 0 because a size cannot be negative; below it the shader's own guard would silently swallow the value (and the bloom core's exponential would invert to infinity)." },
-  // `step: 1` because this is a COUNT, not a magnitude. Being bounded, it would
-  // otherwise derive its grid from the range (numberStep.js resolveScrub: a
-  // 0..MAX_GHOSTS span across one drag run gives a 0.01 grid), and a fractional
-  // count means nothing to the shader — an explicit step is the only thing
-  // inference is not allowed to guess, by that module's own doctrine. Same
-  // treatment as the other integer-valued knobs that declare it
-  // (demo_mandelbrot's fineExponent and maxIterations).
-  { name: "ghostCount", kind: "number", default: 6, min: 0, max: MAX_GHOSTS, step: 1, help: `Number of aperture "ghosts" (iris reflections) marching along the axis through the centre. 0 = none; up to ${MAX_GHOSTS} — that ceiling is the shader's FIXED loop bound (SkSL cannot loop a uniform number of times), not a matter of taste.` },
-  { name: "ghostSpacing", kind: "number", default: 0.33, help: "How far apart the ghosts are spaced along the axis: ghost i sits at light·(1 − spacing·i), so ~0.3 puts one near the centre. Higher = more spread out; 0 stacks them all on the light; a negative value marches the chain outward AWAY from the centre instead." },
-  { name: "ghostSize", kind: "number", default: 0.11, min: 0, help: "Base radius of the ghost discs (normalized to widget height). Ghosts grow along the chain from this base. Floor 0 because a radius cannot be negative; 0 itself is a valid vanishing point (the shader guards the divide)." },
-  { name: "ghostIntensity", kind: "number", default: 0.4, min: 0, help: "Brightness of the ghost chain. Floor 0 (off) for the same reason as the master gain — negative light is clamped away, not subtracted." },
-  { name: "anamorphic", kind: "number", default: 0.5, min: 0, help: "Intensity of the horizontal anamorphic streak (the blue JJ-Abrams light bar). 0 = off; floor 0 as above." },
-  { name: "streakLength", kind: "number", default: 0.4, min: 0, help: "Horizontal length (σx) of the anamorphic streak, in normalized units. Longer = a wider light bar. Floor 0 because a gaussian σ cannot be negative; 0 itself collapses the streak (the shader guards the divide)." },
-  { name: "streakColor", kind: "color", default: "#6fa8ff", help: "Colour of the anamorphic streak — classically a coating blue." },
-  { name: "halo", kind: "number", default: 0.45, min: 0, help: "Intensity of the halo ring around the optical centre. 0 = off; floor 0 as above." },
-  { name: "haloRadius", kind: "number", default: 0.45, min: 0, help: "Radius of the halo ring (normalized to widget height, measured from the centre). No upper cap — a huge ring simply passes outside the box. Floor 0 because a radius cannot be negative." },
-  { name: "starburst", kind: "number", default: 0.4, min: 0, help: "Intensity of the diffraction starburst (the radial spikes from the aperture blades). 0 = off; floor 0 as above." },
-  // `step: 1` for the same reason ghostCount carries it: this is a COUNT. Being
-  // half-open (min only) it derives NO grid at all, so the row would happily accept
-  // 8.37 blades — a value the shader's spike-angle maths turns into a non-repeating
-  // star and no user ever meant. The SENSITIVITY is left alone at 1 blade per
-  // drag-pixel, which is already the right feel for a small count. Same treatment,
-  // same reason as demo_mandelbrot.stripeDensity (an unbounded count with step: 1).
-  { name: "blades", kind: "number", default: 8, min: 3, step: 1, help: "Aperture blade count. Diffraction physics: an EVEN count gives that many spikes; an ODD count gives twice as many (e.g. 9 blades → 18 spikes). Also shapes the ghost iris polygon. Floor 3 is geometric (an iris polygon needs three sides) and matches the shader's own MIN_BLADES — below it the shader would silently clamp." },
-  // THE OLD FLOOR OF 1 WAS ARBITRARY AND IS GONE. Exponents in (0,1) render perfectly
-  // well and give exactly the "soft, fat rays" this help promises, so blocking them was
-  // taste. The floor that REMAINS at 0 is TECHNICAL: the profile is pow(|cos θ|, sharp)
-  // and |cos θ| is exactly 0 perpendicular to every spike, where pow(0, e ≤ 0) is
-  // UNDEFINED in the shading language. render_gpu/skia/lens_flare_shader.js now floors
-  // that BASE with SPIKE_BASE_EPS (the same `max(x, EPS)` it already applies to the
-  // ghost size, halo thickness and streak sigma), which is what makes 0 itself legal
-  // and deterministic. Below 0 the pow INVERTS — it diverges as the cosine goes to
-  // zero, so the peak is pinned by SPIKE_BASE_EPS and the final [0,1] clamp rather than
-  // by this knob, i.e. the value stops being a sharpness at all.
-  { name: "starburstSharp", kind: "number", default: 18, min: 0, help: "Spike thinness (exponent). Higher = razor-thin spikes; lower = soft, fat rays; 0 = no spikes at all, just an even radial glow. No upper cap — a huge exponent is simply a hairline star." },
-  { name: "starburstRotation", kind: "angle", display: "degrees", default: 0.2, help: "Rotation of the starburst spikes — keyframe it (or bind an equation) to make the spikes swim as a camera turns. Uncapped: past 360° keeps counting, so a keyframed 720° spins twice." },
-  { name: "chromatic", kind: "number", default: 0.02, help: "Chromatic dispersion amount: how far the red/blue channels split at each iris/halo edge (spectral fringing). Tiny is realistic; a negative value disperses the other way (blue outside instead of red)." },
-  // Named "glow" (NOT "bloom") deliberately: the effects bundle already owns a
-  // nested `bloom` object (bloom.radius/strength, a vector-glow substrate), so a
-  // scalar self.bloom would collide with it. This is the flare's OWN in-shader glow.
-  // SCRUB, measured against its own siblings. Every other unit-nominal intensity /
-  // mix knob in this file lands between 0.0033 and 0.01 per drag-pixel — starburst
-  // 0.4 and ghostSpacing 0.33 by inference from their fractional defaults, dirt and
-  // flareScale by declaring UNIT_SPAN_SCRUB. `glow` was the ONE exception, at 1
-  // unit/px (100x coarser), purely because its default is the integer 1: an integer
-  // default is no proof of fractionality, so numberStep.js correctly declines to
-  // guess and only a declaration can reach the row. It is the same knob shape as
-  // flareScale — a multiplier whose nominal is 1 and whose 0 is off — so it takes
-  // the same constant, putting a full 0 -> 1 sweep on one 100px drag run.
-  { name: "glow", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Bloom / veiling glare intensity — the tight hot core at the light plus a broad soft haze that washes the frame. Floor 0 (off) as above." },
-  { name: "dirt", kind: "number", default: 0.18, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Procedural lens-dirt/grunge modulation: 0 = clean glass; 1 = the whole flare is broken up by a dusty grime field (all procedural — no texture asset). No upper cap — past 1 the grime mix extrapolates, crushing the dirtiest patches all the way to black for a harsher, higher-contrast grime. Floor 0 (clean) as above." },
-  { name: "colorTemp", kind: "number", default: 5200, min: 1000, max: 12000, help: "Colour temperature in Kelvin of the light's cast on the flare: ~3200 K = warm amber, 6500 K = neutral white, ~9000 K+ = cool blue. The range is the domain of the Kelvin→RGB fit the shader uses (render_gpu/skia/lens_flare_shader.js KELVIN_TABLE); outside it the fit is undefined and the packer would silently pin the value." },
-  { name: "tint", kind: "color", default: "#fff2e6", help: "Explicit colour multiply over the whole flare, on top of the temperature cast." },
-]);
+// The look knobs come from the shader entry (LENS_FLARE_FILL_PARAMS) — the ONE
+// declaration the widget and the fill-material UI share. Widget GEOMETRY (the
+// camera-bound box) and the effects bundle stay in this plugin's defaults below; the
+// schema carries only look. All 22 knobs are dimensionless field values normalized to
+// the widget's own extent (so the look holds at any zoom/size), except the light
+// position, which is a fraction of the widget but is NOT confined to it. The defaults
+// are a tasteful warm cinematic flare; the Presets pane offers twelve further looks.
+const CUSTOM = customProps(LENS_FLARE_FILL_PARAMS);
 
 /**
  * A PRESET: `{name, description?, props}`. `props` is a flat map of item-state keys
@@ -445,15 +377,9 @@ export const lensFlarePlugin = {
       material: "lens_flare",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       cornerRadius: 0,
-      params: {
-        lightX: s.lightX, lightY: s.lightY, brightness: s.brightness, flareScale: s.flareScale,
-        ghostCount: s.ghostCount, ghostSpacing: s.ghostSpacing, ghostSize: s.ghostSize, ghostIntensity: s.ghostIntensity,
-        anamorphic: s.anamorphic, streakLength: s.streakLength, streakColor: s.streakColor,
-        halo: s.halo, haloRadius: s.haloRadius,
-        starburst: s.starburst, blades: s.blades, starburstSharp: s.starburstSharp, starburstRotation: s.starburstRotation,
-        chromatic: s.chromatic, bloom: s.glow, dirt: s.dirt,
-        colorTemp: s.colorTemp, tint: s.tint,
-      },
+      // The SAME schema→uniform mapping the fill-material path uses (one declaration):
+      // renames the schema's `glow` to the shader's `bloom`, everything else identity.
+      params: lensFlareUniformParams(s),
       opacity: s.opacity ?? 1,
     });
     return applyEffects([op], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });

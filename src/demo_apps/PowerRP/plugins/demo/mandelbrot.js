@@ -80,12 +80,16 @@ import { cyclicRampStops, evenlySpacedRampStops } from "../../core/ramps.js";
 import { reportOnce } from "../../core/report.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import {
-  MANDELBROT_AXIS_CODE, MANDELBROT_ESCAPE_RADIUS, MANDELBROT_MAX_FINE_EXPONENT, MANDELBROT_MAX_ITERATIONS,
-  MANDELBROT_REF_LEN,
-  bakeMandelbrotRamp, bitsForDepth, centreResolutionDecades, referenceOrbit, scaledDecimal, splitCentreFixed,
+  MANDELBROT_FILL_PARAMS, MANDELBROT_MAX_FINE_EXPONENT, MANDELBROT_MAX_ITERATIONS, MANDELBROT_REF_LEN,
+  MIN_PALETTE_SCALE, MIN_ZOOM_EXPONENT,
+  approxCentre, bakeMandelbrotRamp, bitsForDepth, centreResolutionDecades,
+  mandelbrotUniformParams, referenceOrbitFor, scaledDecimal,
 } from "../../render_gpu/skia/mandelbrot_shader.js";
 
-const DEG2RAD = Math.PI / 180;
+// approxCentre now lives beside the split-centre helpers in mandelbrot_shader.js (the
+// fill mapper needs it there, and it belongs with splitCentreFixed) — re-exported so
+// the widget's public surface, and the tests that read it here, are unchanged.
+export { approxCentre };
 
 // THE PALETTE IS A SHARED COLOUR RAMP (core/ramps.js + the `ramp` BUNDLE), not a
 // widget-private select. It used to be a `palette` select over six hard-coded
@@ -145,37 +149,12 @@ export function referenceExhaustionRisk(s, ref) {
     && (s.zoomExponent ?? 0) > EXHAUSTION_SAFE_DECADES;
 }
 
-/**
- * Smallest `zoomExponent` the Inspector accepts. NEGATIVE, because the half-width
- * is 10^(-zoomExponent) and the whole set needs a half-width of about 1.6 — i.e.
- * an exponent of -0.2. A floor of 0 would make the widget unable to frame its own
- * home view, which is exactly the bug this constant exists to prevent. -1 allows a
- * half-width of 10, far outside anything worth looking at.
- */
-const MIN_ZOOM_EXPONENT = -1;
-
-/**
- * Smallest `paletteScale` the Inspector accepts — iterations per colour cycle, so
- * zero would divide by zero in the colour axis. Named because BOTH the Inspector
- * row and the floating bar's Bands field enforce it, and two copies of a floor is
- * how they come to disagree.
- */
-const MIN_PALETTE_SCALE = 0.001;
-
-const AXIS_OPTIONS = ["iteration", "logIteration", "distance"];
-const AXIS_LABELS = {
-  iteration: "Iteration (classic)",
-  logIteration: "Log iteration (n..2n is one cycle)",
-  distance: "Screen distance (zoom-invariant)",
-};
-
-const INTERIOR_OPTIONS = ["derivative", "off"];
-const INTERIOR_LABELS = {
-  derivative: "Derivative certificate (fast)",
-  off: "Off (always run to Max iterations)",
-};
-
-const INTERIOR_CODE = { off: 0, derivative: 1 };
+// MIN_ZOOM_EXPONENT / MIN_PALETTE_SCALE (the row floors, also enforced by the
+// gestures and the floating bar) and the colour-axis / interior-test select
+// options + codes now live in render_gpu/skia/mandelbrot_shader.js beside the fill
+// schema (MANDELBROT_FILL_PARAMS), the single declaration the widget and the paint
+// UI both derive from. The two MIN_* are imported back here for clampedZoomExponent
+// and fieldWrites; the select constants stay entirely shader-side now.
 
 /** Reference orbits kept alive between derives, keyed by the state that
  *  determines them. A derive re-runs emit() on every frame of a drag, and one
@@ -207,11 +186,9 @@ export function cachedOrbit(s) {
   const key = `${s.centerX}|${s.centerY}|${s.centerFineX}|${s.centerFineY}|${fineExponent}|${bits}`;
   const hit = _orbitCache.get(key);
   if (hit) return hit;
-  const built = referenceOrbit(
-    splitCentreFixed(s.centerX ?? 0, s.centerFineX ?? 0, fineExponent, bits),
-    splitCentreFixed(s.centerY ?? 0, s.centerFineY ?? 0, fineExponent, bits),
-    bits, MANDELBROT_REF_LEN,
-  );
+  // The orbit pipeline (splitCentreFixed → referenceOrbit) is shared with the fill
+  // path through referenceOrbitFor; this function only adds the memo.
+  const built = referenceOrbitFor(s);
   if (_orbitCache.size >= ORBIT_CACHE_LIMIT) _orbitCache.delete(_orbitCache.keys().next().value);
   _orbitCache.set(key, built);
   return built;
@@ -266,25 +243,6 @@ export function cachedPalette(s) {
   if (_paletteCache.size >= PALETTE_CACHE_LIMIT) _paletteCache.delete(_paletteCache.keys().next().value);
   _paletteCache.set(key, built);
   return built;
-}
-
-/**
- * Pure function. The centre's coarse+fine parts collapsed to one float64 — the
- * ONLY thing the shader needs the absolute coordinate for (the triangle-inequality
- * average's |c|, an aesthetic channel where fp32 error is invisible). Everything
- * geometric goes through the long-number reference orbit instead, which is why
- * this deliberately lossy sum is safe.
- *
- * @param {number} coarse - the leading digits
- * @param {number} fine - the fine offset, in units of 10^(-fineExponent)
- * @param {number} fineExponent - a non-negative integer
- * @returns {number}
- *
- * @example approxCentre(-0.5, 0, 0) // -0.5
- * @example approxCentre(0.5, 5, 1) // 1
- */
-export function approxCentre(coarse, fine, fineExponent) {
-  return (coarse ?? 0) + (fine ?? 0) * Math.pow(10, -Math.max(0, Math.round(fineExponent ?? 0)));
 }
 
 /** Pure function. A state's fine exponent, normalized the one way every reader
@@ -676,39 +634,15 @@ function spliceRampRows(rows) {
   return [...rows.slice(0, at), ...bundle("ramp", recategorised), ...rows.slice(at)];
 }
 
+// THE LOOK + EXPLORATION KNOBS LIVE IN THE SHADER ENTRY now (mandelbrot_shader.
+// MANDELBROT_FILL_PARAMS — the fill-material framework's single-declaration rule:
+// "custom properties become material properties"). This widget spreads that SAME
+// schema into its customProps and adds only its widget-side geometry knob
+// (cornerRadius). The RAMP is deliberately NOT in that schema — a stop-list is not a
+// v1 row kind — so it stays the shared `ramp` BUNDLE, spliced into the Inspector by
+// spliceRampRows() just before `paletteScale` and defaulted in `defaults` below.
 const CUSTOM = customProps([
-  // ── WHERE (the split centre + the zoom) ──────────────────────────────────────
-  { name: "centerX", kind: "number", default: -0.7435669, label: "Centre X", help: "Real part of the view centre — the leading digits. A plain number, so it keyframes and takes a `= …` equation like anything else. For a deep location, put the first ~16 digits here and the next ~16 in Centre X fine." },
-  { name: "centerY", kind: "number", default: 0.1314023, label: "Centre Y", help: "Imaginary part of the view centre — the leading digits." },
-  { name: "centerFineX", kind: "number", default: 0, label: "Centre X fine", help: "Extra precision for Centre X, in units of 10^(-Fine exponent). The true centre is Centre X + Centre X fine x 10^(-Fine exponent), summed in exact decimal arithmetic — two plain numbers give about 32 significant digits, which is what makes a deep centre keyframable at all." },
-  { name: "centerFineY", kind: "number", default: 0, label: "Centre Y fine", help: "Extra precision for Centre Y, in units of 10^(-Fine exponent)." },
-  { name: "fineExponent", kind: "number", default: 0, min: 0, max: MANDELBROT_MAX_FINE_EXPONENT, step: 1, label: "Fine exponent", help: `Decimal exponent of the fine centre offsets: 0 turns the fine part off entirely, ${MANDELBROT_MAX_FINE_EXPONENT} continues the coordinate right where the coarse number's digits run out. AT 0 THE CENTRE ONLY RESOLVES TO ABOUT 1e-${centreResolutionDecades(0)}, so any zoom deeper than that needs this set (the widget reports it out loud if you forget). ${MANDELBROT_MAX_FINE_EXPONENT} IS ALSO THE CEILING, and not as a matter of taste: two plain numbers resolve about 1e-33 however this is set (measured), so a larger exponent is the same precision written with a bigger fine value — and a fine value that big overflows the exact-decimal sum on an ordinary pan.` },
-  { name: "zoomExponent", kind: "number", default: 2.9416, min: MIN_ZOOM_EXPONENT, label: "Zoom exponent", help: `Magnification: the view's half-width is 10^(-Zoom exponent), so 3 is a 1e-3 window and 30 is a 1e-30 one; NEGATIVE values zoom OUT (the whole set needs about -0.2, a half-width of 1.6). TWEEN THIS, LINEARLY, for a constant-rate zoom — it is the one property a zoom animation should touch. Past 1e-${centreResolutionDecades(0)} you must also set Fine exponent, or the centre quantizes; with it set the split centre reaches about 1e-${centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT)} and no deeper. Verified with real structure to about 1e-11; deeper than that the reference orbit that rides to the GPU may be too short for the depth (its length is fixed by how much uniform space a graphics card is guaranteed to have), and the way that shows up is a FLAT frame rather than a noisy one.` },
-  // ── HOW HARD (the speed knobs) ───────────────────────────────────────────────
-  { name: "maxIterations", kind: "number", default: 900, min: 1, max: MANDELBROT_MAX_ITERATIONS, step: 1, label: "Max iterations", help: `The iteration BUDGET, and it is NOT a smooth quality dial — this is the knob whose behaviour surprises people. A pixel that neither escapes nor is certified interior by the budget is painted the INTERIOR COLOUR, so a view set too low does not go blurry, it goes BLACK, and the black looks exactly like real set. Measured: at 0.3x the needed budget the whole-set view costs 1.25x less and the 1e-10.5 view goes 100% black, because at depth the whole frame escapes within a few iterations of each other. So set it to what the PLACE needs and leave it — each Location preset carries a measured value. Cost is what is left over: it is close to linear in the iterations a pixel ACTUALLY runs, which is far below this ceiling wherever most of the frame escapes early (measured 30 per pixel on the whole set at a budget of 2048, against 504 at 1e-10.5). There is deliberately no automatic value: demand follows the local structure, not the zoom. Capped at ${MANDELBROT_MAX_ITERATIONS}, twice the ${MANDELBROT_REF_LEN}-point reference orbit — as far past the reference as reusing it has been measured to hold up.` },
-  { name: "interiorTest", kind: "select", options: INTERIOR_OPTIONS, optionLabels: INTERIOR_LABELS, default: "derivative", label: "Interior test", help: "How points INSIDE the set are recognised early. The derivative certificate watches the product of 2z along the orbit: it collapses toward zero for a point captured by a cycle, which proves the point is interior long before Max iterations. Measured on the whole-set view: 4.3x faster (608 ms against 2638 ms) with pixel-identical results — 14.6% interior either way, so no wrongly-filled pixels. It saves nothing on a view with no interior in frame (measured 1.00x on the seahorse tail), because there is nothing to certify. Turn it off only to check it against a brute-force render." },
-  { name: "interiorThreshold", kind: "number", default: 1e-3, min: 0, label: "Interior threshold", help: "How small the derivative product must get before a point is declared interior. Smaller is more cautious and slower; larger is faster but can eventually fill a pixel that would have escaped." },
-  { name: "escapeRadius", kind: "number", default: MANDELBROT_ESCAPE_RADIUS, min: 16, label: "Escape radius", help: "How far a point must fly before it counts as escaped. 256 is calibrated, not arbitrary: the smooth iteration count's error is 3.1 iterations at radius 2 but 0.0000047 at 256, and the distance estimate needs at least 100 to be meaningful at all. Lower it only to see the banding come back." },
-  // ── THE PALETTE ─────────────────────────────────────────────────────────────
-  // The RAMP itself is not declared here: it is the shared `ramp` BUNDLE, spliced
-  // into the Inspector at this point (see `inspector` below) so the colour rows
-  // still read in one block. `paletteScale` stays a widget knob because iterations
-  // per colour cycle is escape-time domain knowledge, not a ramp aspect.
-  { name: "paletteScale", kind: "number", default: 18, min: MIN_PALETTE_SCALE, label: "Palette scale", help: "Iterations per colour cycle (or octaves per cycle on the Screen distance axis). Small = tight rainbow banding; large = broad sweeps of one colour. This is the knob to reach for when a view looks either stripey or washed out." },
-  { name: "colorAxis", kind: "select", options: AXIS_OPTIONS, optionLabels: AXIS_LABELS, default: "iteration", label: "Colour axis", help: "What the palette is indexed by. Iteration is the familiar escape-time look. Log iteration makes the band n..2n one cycle, so the banding density holds as you zoom. Screen distance uses the distance estimate in pixels, which is distributed identically at every depth and therefore needs no retuning — flatter looking, but it never needs adjusting mid-zoom." },
-  // ── THE TEXTURE (orbit averages) ─────────────────────────────────────────────
-  { name: "stripeAmount", kind: "number", default: 0.45, min: 0, max: 1, step: 0.01, label: "Silk (stripe average)", help: "Stripe Average Colouring: the running average of a wave riding on the orbit's ANGLE, which drapes the escape-time field in silk or brushed metal. The single biggest visual difference between this and a 1990s rainbow fractal. 0 is exactly off." },
-  { name: "stripeDensity", kind: "number", default: 4, min: 1, step: 1, label: "Silk density", help: "How many light/dark silk bands the orbit's angle sweeps through per full turn. Low is broad satin, high is fine thread." },
-  { name: "triangleAmount", kind: "number", default: 0.3, min: 0, max: 1, step: 0.01, label: "Cloth (triangle average)", help: "Triangle Inequality Average: the same idea as Silk but built from the orbit's LENGTH instead of its angle, so it looks nothing like it and the two mix well — silk over woven cloth. 0 is exactly off." },
-  // ── THE LIGHT (relief + glow) ────────────────────────────────────────────────
-  { name: "shadeAmount", kind: "number", default: 0.45, min: 0, max: 1, step: 0.01, label: "Relief", help: "Lambert shading from the orbit's derivative, which gives the set a lit three-dimensional relief with no extra samples at all. 0 is exactly off." },
-  { name: "lightAngle", kind: "angle", display: "degrees", default: -45, label: "Light angle", help: "Direction TO the light for the relief (screen space; -90 is straight above). KEYFRAME THIS for a light sweeping across the fractal." },
-  { name: "lightHeight", kind: "number", default: 1.5, min: 0, label: "Light height", help: "How far the relief light sits out of the plane. Low is dramatic raking shadow; high flattens the relief toward evenly lit." },
-  { name: "glowAmount", kind: "number", default: 0.3, min: 0, label: "Boundary glow", help: "Brightens pixels the distance estimate says are within a hair of the set, which recovers the hair-fine filaments that point sampling loses entirely. 0 is off." },
-  { name: "glowWidth", kind: "number", default: 1, min: 0.05, label: "Glow width", help: "How far the boundary glow reaches, measured in screen pixels of estimated distance to the set. About 1 keeps it to a crisp rim; larger gives a soft halo." },
-  { name: "bandLimit", kind: "boolean", default: true, label: "Band limit", help: "Antialiases the PALETTE analytically: the colour gradient is known exactly from the distance estimate, so where one pixel would span a whole colour cycle the palette fades to its own average instead of aliasing into noise. Free, since the distance estimate is already computed. Turn it off to see the noise it removes." },
-  { name: "boundaryAA", kind: "boolean", default: false, label: "Edge coverage blend", help: "Blends toward the interior colour where the distance estimate says the set covers part of the pixel — the physically-motivated antialias of the set's edge. OFF by default because the estimate is a LOWER bound (within a factor of four), so it overstates coverage and turns dense filament fields dark; measured, it made the seahorse preset's cream lace black. The Boundary glow is the treatment that actually looks right. On is available for the physical reading." },
-  { name: "interiorColor", kind: "color", default: "#000000", label: "Interior colour", help: "Colour of points inside the set. Its ALPHA makes the interior see-through, so content behind the widget shows through the black heart of the set." },
+  ...MANDELBROT_FILL_PARAMS,
   { name: "cornerRadius", kind: "number", default: 0, min: 0, label: "Corner radius", help: "Rounded-corner radius of the panel (world px). 0 = sharp corners." },
 ]);
 
@@ -1406,7 +1340,7 @@ export const mandelbrotPlugin = {
   emit(s) {
     const strokeW = s.strokeWidth ?? 0;
     const ref = cachedOrbit(s);
-    const { palette, mean } = cachedPalette(s);
+    const pal = cachedPalette(s);
     const fineExponent = Math.max(0, Math.round(s.fineExponent ?? 0));
     // A zoom deeper than the split centre can resolve does not fail — it renders a
     // perfectly valid view of a QUANTIZED neighbour of the requested point, which
@@ -1438,36 +1372,13 @@ export const mandelbrotPlugin = {
       material: "mandelbrot",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       cornerRadius: s.cornerRadius,
-      params: {
-        centerApproxX: approxCentre(s.centerX, s.centerFineX, fineExponent),
-        centerApproxY: approxCentre(s.centerY, s.centerFineY, fineExponent),
-        halfWidth: Math.pow(10, -(s.zoomExponent ?? 0)),
-        maxIter: s.maxIterations,
-        refCount: ref.count,
-        escapeRadius: s.escapeRadius,
-        interiorTest: INTERIOR_CODE[s.interiorTest] ?? 1,
-        interiorThreshold: s.interiorThreshold,
-        colorAxis: MANDELBROT_AXIS_CODE[s.colorAxis] ?? 0,
-        paletteScale: s.paletteScale,
-        // uPaletteOffset is the shader's name for the RAMP PHASE (core/ramps.js):
-        // it is added to the colour-axis position before the cyclic table read, so
-        // one baked table serves every phase and a phase animation re-bakes nothing.
-        paletteOffset: rampOf(s).phase,
-        stripeAmount: s.stripeAmount,
-        stripeDensity: s.stripeDensity,
-        triangleAmount: s.triangleAmount,
-        shadeAmount: s.shadeAmount,
-        lightAngle: s.lightAngle * DEG2RAD,
-        lightHeight: s.lightHeight,
-        glowAmount: s.glowAmount,
-        glowWidth: s.glowWidth,
-        bandLimit: s.bandLimit ? 1 : 0,
-        boundaryAA: s.boundaryAA ? 1 : 0,
-        interiorColor: s.interiorColor,
-        palette,
-        paletteMean: mean,
-        orbit: ref.orbit,
-      },
+      // THE ONE schema→uniform mapper the fill path also uses
+      // (mandelbrot_shader.mandelbrotUniformParams): the widget passes its MEMOIZED
+      // orbit (cachedOrbit) and its STATE-ramp palette (cachedPalette); a fill passes
+      // a fresh orbit + the default gold palette. `s` carries rampPhase (the ramp
+      // bundle key, default 0), which the mapper reads as the shader's paletteOffset —
+      // identical to the old inline `rampOf(s).phase`.
+      params: mandelbrotUniformParams(s, ref, pal),
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,
       opacity: s.opacity ?? 1,

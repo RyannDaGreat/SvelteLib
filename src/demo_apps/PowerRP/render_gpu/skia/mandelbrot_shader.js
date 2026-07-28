@@ -197,7 +197,7 @@
  */
 
 import { parseColor } from "../ir.js";
-import { bakeRampLut, linearToSrgb, srgbToLinear } from "../../core/ramps.js";
+import { bakeRampLut, cyclicRampStops, linearToSrgb, srgbToLinear } from "../../core/ramps.js";
 
 // ── sizes (compile-time in the SkSL, so exported for the plugin and the tests) ─
 
@@ -927,6 +927,27 @@ export function fixedToFloat(n, bits) {
 }
 
 /**
+ * Pure function. The centre's coarse+fine parts collapsed to one float64 — the
+ * ONLY thing the shader needs the ABSOLUTE coordinate for (the triangle-inequality
+ * average's |c|, an aesthetic channel where fp32 error is invisible). Everything
+ * geometric goes through the long-number reference orbit instead, which is why
+ * this deliberately lossy sum is safe. Lives HERE beside the split-centre math
+ * (splitCentreFixed / fixedToFloat) and is re-exported by the plugin, so the widget
+ * emit and the fill-material mapper collapse the same coordinate one way.
+ *
+ * @param {number} coarse - the leading digits
+ * @param {number} fine - the fine offset, in units of 10^(-fineExponent)
+ * @param {number} fineExponent - a non-negative integer
+ * @returns {number}
+ *
+ * @example approxCentre(-0.5, 0, 0) // -0.5
+ * @example approxCentre(0.5, 5, 1) // 1
+ */
+export function approxCentre(coarse, fine, fineExponent) {
+  return (coarse ?? 0) + (fine ?? 0) * Math.pow(10, -Math.max(0, Math.round(fineExponent ?? 0)));
+}
+
+/**
  * Query (allocates one Float32Array). THE REFERENCE ORBIT: iterates
  * Z' = Z^2 + C in BigInt fixed point from Z_0 = 0 and stores each point
  * DOWN-CONVERTED to fp32, interleaved as [re, im, re, im, ...] — the layout the
@@ -1108,9 +1129,215 @@ export function mandelbrotProxyFill(params, region) {
   };
 }
 
+// ── THE FILL-MATERIAL KNOBS + MAPPING (the fill framework's single declaration) ─
+// The end-state ruling "custom properties become material properties": the knob
+// SCHEMA and the schema→uniform MAPPING live in THIS entry (comic_shader.js is the
+// exemplar), and plugins/demo/mandelbrot.js derives BOTH from here — its customProps
+// spread MANDELBROT_FILL_PARAMS, and its emit() calls mandelbrotUniformParams — so a
+// widget and a Mat-mode fill of any shape render from one source of truth.
+
+// select ids → the shader's numeric codes (the metaballs TYPE_CODE pattern). Home is
+// HERE because the fill mapper needs them; the widget derives its select rows from the
+// schema below and never re-types the codes.
+const AXIS_OPTIONS = ["iteration", "logIteration", "distance"];
+const AXIS_LABELS = {
+  iteration: "Iteration (classic)",
+  logIteration: "Log iteration (n..2n is one cycle)",
+  distance: "Screen distance (zoom-invariant)",
+};
+const INTERIOR_OPTIONS = ["derivative", "off"];
+const INTERIOR_LABELS = {
+  derivative: "Derivative certificate (fast)",
+  off: "Off (always run to Max iterations)",
+};
+const INTERIOR_CODE = { off: 0, derivative: 1 };
+
+// degrees → radians for the light-angle knob (the user edits familiar degrees).
+const DEG2RAD = Math.PI / 180;
+
+/**
+ * Smallest `zoomExponent` the Inspector / paint UI accepts. NEGATIVE, because the
+ * half-width is 10^(-zoomExponent) and the whole set needs a half-width of about 1.6
+ * — i.e. an exponent of -0.2. A floor of 0 would make the widget unable to frame its
+ * own home view. -1 allows a half-width of 10, far outside anything worth looking at.
+ * The plugin imports it back for its own clamp (clampedZoomExponent), so a gesture, a
+ * typed value and the row cannot disagree about how far out the view may go.
+ */
+export const MIN_ZOOM_EXPONENT = -1;
+
+/**
+ * Smallest `paletteScale` accepted — iterations per colour cycle, so zero would divide
+ * by zero in the colour axis. Named here (and imported by the plugin's floating-bar
+ * Bands field) because two copies of a floor is how they come to disagree.
+ */
+export const MIN_PALETTE_SCALE = 0.001;
+
+/**
+ * THE MANDELBROT FILL-KNOB SCHEMA — the ONE declaration of the material's EXPLORATION
+ * (centre / zoom / iterations) and LOOK (colour axis, silk, cloth, relief, glow,
+ * interior) knobs, in the customProps row shape. Both consumers derive from it:
+ *   - plugins/demo/mandelbrot.js spreads it into its customProps (self.* rows) and
+ *     adds only its widget-side geometry knob (cornerRadius);
+ *   - the FILL-material paint UI renders it as the paint's param rows, resolved
+ *     sparse-over-defaults by materials.resolveMaterialPaint.
+ *
+ * WHAT IS DELIBERATELY LEFT OUT, and why:
+ *   · cornerRadius  — GEOMETRY. A fill's shape IS its geometry (the clip does the
+ *                     shaping; the synthesized region op carries cornerRadius 0), so
+ *                     it stays widget-side exactly as comic's does.
+ *   · the RAMP (rampStops / rampLoop / rampSpace / rampPhase) — the shared `ramp`
+ *     BUNDLE, whose `rampStops` is a STOP LIST, not one of the v1 row kinds
+ *     (number / color / select / boolean / angle). A fill therefore carries NO ramp
+ *     and bakes the DEFAULT gold palette (DEFAULT_FILL_PALETTE below); the widget
+ *     keeps the full ramp bundle. Giving the paint UI a real gradient editor is the
+ *     stroke/ramp-material framework's future work, not a knob to fake here.
+ */
+export const MANDELBROT_FILL_PARAMS = [
+  // ── WHERE (the split centre + the zoom) ──────────────────────────────────────
+  { name: "centerX", kind: "number", default: -0.7435669, label: "Centre X", help: "Real part of the view centre — the leading digits. A plain number, so it keyframes and takes a `= …` equation like anything else. For a deep location, put the first ~16 digits here and the next ~16 in Centre X fine." },
+  { name: "centerY", kind: "number", default: 0.1314023, label: "Centre Y", help: "Imaginary part of the view centre — the leading digits." },
+  { name: "centerFineX", kind: "number", default: 0, label: "Centre X fine", help: "Extra precision for Centre X, in units of 10^(-Fine exponent). The true centre is Centre X + Centre X fine x 10^(-Fine exponent), summed in exact decimal arithmetic — two plain numbers give about 32 significant digits, which is what makes a deep centre keyframable at all." },
+  { name: "centerFineY", kind: "number", default: 0, label: "Centre Y fine", help: "Extra precision for Centre Y, in units of 10^(-Fine exponent)." },
+  { name: "fineExponent", kind: "number", default: 0, min: 0, max: MANDELBROT_MAX_FINE_EXPONENT, step: 1, label: "Fine exponent", help: `Decimal exponent of the fine centre offsets: 0 turns the fine part off entirely, ${MANDELBROT_MAX_FINE_EXPONENT} continues the coordinate right where the coarse number's digits run out. AT 0 THE CENTRE ONLY RESOLVES TO ABOUT 1e-${centreResolutionDecades(0)}, so any zoom deeper than that needs this set (the widget reports it out loud if you forget). ${MANDELBROT_MAX_FINE_EXPONENT} IS ALSO THE CEILING, and not as a matter of taste: two plain numbers resolve about 1e-33 however this is set (measured), so a larger exponent is the same precision written with a bigger fine value — and a fine value that big overflows the exact-decimal sum on an ordinary pan.` },
+  { name: "zoomExponent", kind: "number", default: 2.9416, min: MIN_ZOOM_EXPONENT, label: "Zoom exponent", help: `Magnification: the view's half-width is 10^(-Zoom exponent), so 3 is a 1e-3 window and 30 is a 1e-30 one; NEGATIVE values zoom OUT (the whole set needs about -0.2, a half-width of 1.6). TWEEN THIS, LINEARLY, for a constant-rate zoom — it is the one property a zoom animation should touch. Past 1e-${centreResolutionDecades(0)} you must also set Fine exponent, or the centre quantizes; with it set the split centre reaches about 1e-${centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT)} and no deeper. Verified with real structure to about 1e-11; deeper than that the reference orbit that rides to the GPU may be too short for the depth (its length is fixed by how much uniform space a graphics card is guaranteed to have), and the way that shows up is a FLAT frame rather than a noisy one.` },
+  // ── HOW HARD (the speed knobs) ───────────────────────────────────────────────
+  { name: "maxIterations", kind: "number", default: 900, min: 1, max: MANDELBROT_MAX_ITERATIONS, step: 1, label: "Max iterations", help: `The iteration BUDGET, and it is NOT a smooth quality dial — this is the knob whose behaviour surprises people. A pixel that neither escapes nor is certified interior by the budget is painted the INTERIOR COLOUR, so a view set too low does not go blurry, it goes BLACK, and the black looks exactly like real set. Measured: at 0.3x the needed budget the whole-set view costs 1.25x less and the 1e-10.5 view goes 100% black, because at depth the whole frame escapes within a few iterations of each other. So set it to what the PLACE needs and leave it — each Location preset carries a measured value. Cost is what is left over: it is close to linear in the iterations a pixel ACTUALLY runs, which is far below this ceiling wherever most of the frame escapes early (measured 30 per pixel on the whole set at a budget of 2048, against 504 at 1e-10.5). There is deliberately no automatic value: demand follows the local structure, not the zoom. Capped at ${MANDELBROT_MAX_ITERATIONS}, twice the ${MANDELBROT_REF_LEN}-point reference orbit — as far past the reference as reusing it has been measured to hold up.` },
+  { name: "interiorTest", kind: "select", options: INTERIOR_OPTIONS, optionLabels: INTERIOR_LABELS, default: "derivative", label: "Interior test", help: "How points INSIDE the set are recognised early. The derivative certificate watches the product of 2z along the orbit: it collapses toward zero for a point captured by a cycle, which proves the point is interior long before Max iterations. Measured on the whole-set view: 4.3x faster (608 ms against 2638 ms) with pixel-identical results — 14.6% interior either way, so no wrongly-filled pixels. It saves nothing on a view with no interior in frame (measured 1.00x on the seahorse tail), because there is nothing to certify. Turn it off only to check it against a brute-force render." },
+  { name: "interiorThreshold", kind: "number", default: 1e-3, min: 0, label: "Interior threshold", help: "How small the derivative product must get before a point is declared interior. Smaller is more cautious and slower; larger is faster but can eventually fill a pixel that would have escaped." },
+  { name: "escapeRadius", kind: "number", default: MANDELBROT_ESCAPE_RADIUS, min: 16, label: "Escape radius", help: "How far a point must fly before it counts as escaped. 256 is calibrated, not arbitrary: the smooth iteration count's error is 3.1 iterations at radius 2 but 0.0000047 at 256, and the distance estimate needs at least 100 to be meaningful at all. Lower it only to see the banding come back." },
+  // ── THE PALETTE. The RAMP itself is NOT a schema knob (a stop-list is not a v1
+  //    row kind): a fill uses the default gold ramp, the widget splices in the
+  //    shared `ramp` bundle. `paletteScale` IS a knob — iterations per colour cycle
+  //    is escape-time domain knowledge, not a ramp aspect.
+  { name: "paletteScale", kind: "number", default: 18, min: MIN_PALETTE_SCALE, label: "Palette scale", help: "Iterations per colour cycle (or octaves per cycle on the Screen distance axis). Small = tight rainbow banding; large = broad sweeps of one colour. This is the knob to reach for when a view looks either stripey or washed out." },
+  { name: "colorAxis", kind: "select", options: AXIS_OPTIONS, optionLabels: AXIS_LABELS, default: "iteration", label: "Colour axis", help: "What the palette is indexed by. Iteration is the familiar escape-time look. Log iteration makes the band n..2n one cycle, so the banding density holds as you zoom. Screen distance uses the distance estimate in pixels, which is distributed identically at every depth and therefore needs no retuning — flatter looking, but it never needs adjusting mid-zoom." },
+  // ── THE TEXTURE (orbit averages) ─────────────────────────────────────────────
+  { name: "stripeAmount", kind: "number", default: 0.45, min: 0, max: 1, step: 0.01, label: "Silk (stripe average)", help: "Stripe Average Colouring: the running average of a wave riding on the orbit's ANGLE, which drapes the escape-time field in silk or brushed metal. The single biggest visual difference between this and a 1990s rainbow fractal. 0 is exactly off." },
+  { name: "stripeDensity", kind: "number", default: 4, min: 1, step: 1, label: "Silk density", help: "How many light/dark silk bands the orbit's angle sweeps through per full turn. Low is broad satin, high is fine thread." },
+  { name: "triangleAmount", kind: "number", default: 0.3, min: 0, max: 1, step: 0.01, label: "Cloth (triangle average)", help: "Triangle Inequality Average: the same idea as Silk but built from the orbit's LENGTH instead of its angle, so it looks nothing like it and the two mix well — silk over woven cloth. 0 is exactly off." },
+  // ── THE LIGHT (relief + glow) ────────────────────────────────────────────────
+  { name: "shadeAmount", kind: "number", default: 0.45, min: 0, max: 1, step: 0.01, label: "Relief", help: "Lambert shading from the orbit's derivative, which gives the set a lit three-dimensional relief with no extra samples at all. 0 is exactly off." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: -45, label: "Light angle", help: "Direction TO the light for the relief (screen space; -90 is straight above). KEYFRAME THIS for a light sweeping across the fractal." },
+  { name: "lightHeight", kind: "number", default: 1.5, min: 0, label: "Light height", help: "How far the relief light sits out of the plane. Low is dramatic raking shadow; high flattens the relief toward evenly lit." },
+  { name: "glowAmount", kind: "number", default: 0.3, min: 0, label: "Boundary glow", help: "Brightens pixels the distance estimate says are within a hair of the set, which recovers the hair-fine filaments that point sampling loses entirely. 0 is off." },
+  { name: "glowWidth", kind: "number", default: 1, min: 0.05, label: "Glow width", help: "How far the boundary glow reaches, measured in screen pixels of estimated distance to the set. About 1 keeps it to a crisp rim; larger gives a soft halo." },
+  { name: "bandLimit", kind: "boolean", default: true, label: "Band limit", help: "Antialiases the PALETTE analytically: the colour gradient is known exactly from the distance estimate, so where one pixel would span a whole colour cycle the palette fades to its own average instead of aliasing into noise. Free, since the distance estimate is already computed. Turn it off to see the noise it removes." },
+  { name: "boundaryAA", kind: "boolean", default: false, label: "Edge coverage blend", help: "Blends toward the interior colour where the distance estimate says the set covers part of the pixel — the physically-motivated antialias of the set's edge. OFF by default because the estimate is a LOWER bound (within a factor of four), so it overstates coverage and turns dense filament fields dark; measured, it made the seahorse preset's cream lace black. The Boundary glow is the treatment that actually looks right. On is available for the physical reading." },
+  { name: "interiorColor", kind: "color", default: "#000000", label: "Interior colour", help: "Colour of points inside the set. Its ALPHA makes the interior see-through, so content behind the widget shows through the black heart of the set." },
+];
+
+/**
+ * Query (allocates one Float32Array; near-pure — a pure function of its inputs). THE
+ * REFERENCE ORBIT for a widget/fill state, straight from the split centre and the
+ * zoom: the ONE composition of splitCentreFixed + referenceOrbit that both the
+ * widget's memoized cachedOrbit and the fill mapper call, so the orbit pipeline is
+ * shared, not duplicated. Un-memoized (the widget wraps it in a cache; the fill
+ * builds it fresh each paint).
+ *
+ * @param {object} s - state with centerX, centerY, centerFineX, centerFineY, fineExponent, zoomExponent
+ * @returns {{orbit: Float32Array, count: number, escaped: boolean}}
+ *
+ * @example referenceOrbitFor({centerX: 0, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent: 0, zoomExponent: 0}).count // 1024 (C = 0 never escapes: a full-length reference)
+ * @example referenceOrbitFor({centerX: 1, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent: 0, zoomExponent: 0}).escaped // true (C = 1 escapes)
+ */
+export function referenceOrbitFor(s) {
+  const fineExponent = Math.max(0, Math.round(s.fineExponent ?? 0));
+  const bits = bitsForDepth(s.zoomExponent ?? 0);
+  return referenceOrbit(
+    splitCentreFixed(s.centerX ?? 0, s.centerFineX ?? 0, fineExponent, bits),
+    splitCentreFixed(s.centerY ?? 0, s.centerFineY ?? 0, fineExponent, bits),
+    bits, MANDELBROT_REF_LEN,
+  );
+}
+
+/**
+ * The DEFAULT palette a FILL bakes, since a fill carries no ramp bundle (see
+ * MANDELBROT_FILL_PARAMS): the shipped "gold" cyclic ramp, looped and blended in
+ * OKLab — the same ramp + aspects a FRESH widget gets — baked ONCE at import. A fill
+ * therefore renders molten-gold like the widget's default look; recolouring a fill is
+ * the ramp-material framework's future work.
+ */
+const DEFAULT_FILL_PALETTE = bakeMandelbrotRamp(cyclicRampStops("gold"), { loop: true, space: "oklab" });
+
+/**
+ * Pure function. SCHEMA params (MANDELBROT_FILL_PARAMS names/kinds — the split
+ * centre, degrees, select strings, booleans) + a prebuilt reference orbit + a baked
+ * palette → the params `packMandelbrot` expects (centerApprox, radians, numeric mode
+ * codes, the orbit/palette arrays). THE one mapping both consumers share: the demo
+ * widget's emit() (passing its memoized orbit + its state-ramp palette) and the
+ * fill-material regionOp synthesis (passing referenceOrbitFor + DEFAULT_FILL_PALETTE,
+ * via mandelbrotFillUniformParams below, read by paint_skia as entry.toUniformParams).
+ *
+ * `paletteOffset` reads `rampPhase ?? 0`: the widget passes its state (rampPhase is a
+ * ramp-bundle key, defaulting to 0), a fill has no ramp so it defaults to 0 — the
+ * shader adds it per pixel, so one baked table serves every phase.
+ *
+ * @param {object} p - schema-shaped params (resolved: every knob present)
+ * @param {{orbit: Float32Array, count: number}} ref - a reference orbit (referenceOrbitFor / cachedOrbit)
+ * @param {{palette: number[], mean: number[]}} pal - a baked palette (bakeMandelbrotRamp / cachedPalette)
+ * @returns {object} packMandelbrot-shaped params
+ *
+ * @example mandelbrotUniformParams({centerX: -0.5, centerFineX: 0, centerY: 0, centerFineY: 0, fineExponent: 0, zoomExponent: 2, maxIterations: 100, escapeRadius: 256, interiorTest: "derivative", interiorThreshold: 1e-3, colorAxis: "iteration", paletteScale: 18, stripeAmount: 0, stripeDensity: 4, triangleAmount: 0, shadeAmount: 0, lightAngle: 90, lightHeight: 1.5, glowAmount: 0, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#000000"}, {orbit: new Float32Array(2), count: 100}, {palette: [], mean: [0, 0, 0]}).halfWidth // 0.01
+ * @example mandelbrotUniformParams({centerX: 0, centerFineX: 0, centerY: 0, centerFineY: 0, fineExponent: 0, zoomExponent: 0, maxIterations: 1, escapeRadius: 256, interiorTest: "off", interiorThreshold: 1e-3, colorAxis: "distance", paletteScale: 18, stripeAmount: 0, stripeDensity: 4, triangleAmount: 0, shadeAmount: 0, lightAngle: 0, lightHeight: 1.5, glowAmount: 0, glowWidth: 1, bandLimit: false, boundaryAA: false, interiorColor: "#000000"}, {orbit: new Float32Array(2), count: 1}, {palette: [], mean: [0, 0, 0]}).colorAxis // 2
+ */
+export function mandelbrotUniformParams(p, ref, pal) {
+  const fineExponent = Math.max(0, Math.round(p.fineExponent ?? 0));
+  return {
+    centerApproxX: approxCentre(p.centerX, p.centerFineX, fineExponent),
+    centerApproxY: approxCentre(p.centerY, p.centerFineY, fineExponent),
+    halfWidth: Math.pow(10, -(p.zoomExponent ?? 0)),
+    maxIter: p.maxIterations,
+    refCount: ref.count,
+    escapeRadius: p.escapeRadius,
+    interiorTest: INTERIOR_CODE[p.interiorTest] ?? 1,
+    interiorThreshold: p.interiorThreshold,
+    colorAxis: MANDELBROT_AXIS_CODE[p.colorAxis] ?? 0,
+    paletteScale: p.paletteScale,
+    // uPaletteOffset is the shader's name for the ramp PHASE (core/ramps.js), added
+    // to the colour-axis position before the cyclic table read.
+    paletteOffset: p.rampPhase ?? 0,
+    stripeAmount: p.stripeAmount,
+    stripeDensity: p.stripeDensity,
+    triangleAmount: p.triangleAmount,
+    shadeAmount: p.shadeAmount,
+    lightAngle: p.lightAngle * DEG2RAD,
+    lightHeight: p.lightHeight,
+    glowAmount: p.glowAmount,
+    glowWidth: p.glowWidth,
+    bandLimit: p.bandLimit ? 1 : 0,
+    boundaryAA: p.boundaryAA ? 1 : 0,
+    interiorColor: p.interiorColor,
+    palette: pal.palette,
+    paletteMean: pal.mean,
+    orbit: ref.orbit,
+  };
+}
+
+/**
+ * Pure function. THE material entry's `toUniformParams` — resolved fill-schema
+ * params → the packer's params, building the reference orbit fresh (referenceOrbitFor)
+ * and using the DEFAULT gold palette (a fill carries no ramp). paint_skia calls this
+ * once per painted material fill. It reuses the SAME orbit pipeline and the SAME
+ * mapper the widget's emit does; only the palette source and the memoization differ.
+ *
+ * @param {object} p - resolved schema params (materials.resolveMaterialPaint)
+ * @returns {object} packMandelbrot-shaped params
+ *
+ * @example mandelbrotFillUniformParams({centerX: -0.5, centerFineX: 0, centerY: 0, centerFineY: 0, fineExponent: 0, zoomExponent: 1, maxIterations: 50, escapeRadius: 256, interiorTest: "derivative", interiorThreshold: 1e-3, colorAxis: "iteration", paletteScale: 18, stripeAmount: 0, stripeDensity: 4, triangleAmount: 0, shadeAmount: 0, lightAngle: 0, lightHeight: 1.5, glowAmount: 0, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#000000"}).orbit.length // 2048
+ */
+export function mandelbrotFillUniformParams(p) {
+  return mandelbrotUniformParams(p, referenceOrbitFor(p), DEFAULT_FILL_PALETTE);
+}
+
 /** FOREGROUND, GENERATIVE material: `backdrop: false` binds NO children and skips
  *  the below-content re-render — handleMaterialFill just makeShader+fill.
  *  `proxyFill` keeps the thumbnail/minimap path off the per-pixel iteration.
+ *
+ *  `fillParams` + `toUniformParams` OPT THIS MATERIAL INTO BEING A FILL of any shape
+ *  (materials.js fill contract): the paint UI derives its rows from the schema, and
+ *  paint_skia maps the resolved knobs through mandelbrotFillUniformParams — the same
+ *  orbit + mapper the widget uses. A fill bakes the DEFAULT gold palette (no ramp
+ *  bundle); the widget keeps its own ramp.
  *
  *  `uniformRows` DECLARES what the compiled program costs the GL driver, because
  *  this material is the one whose cost can exceed a device's capability, and a
@@ -1129,4 +1356,6 @@ export const MANDELBROT_MATERIAL = {
   uniformRows: MANDELBROT_UNIFORM_ROWS,
   backdrop: false,
   proxyFill: mandelbrotProxyFill,
+  fillParams: MANDELBROT_FILL_PARAMS,
+  toUniformParams: mandelbrotFillUniformParams,
 };

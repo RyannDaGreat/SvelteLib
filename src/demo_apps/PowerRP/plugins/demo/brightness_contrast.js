@@ -42,25 +42,22 @@
  * Blender-style mechanism): each is an equation-capable widget-state key (a literal, an
  * expression, or a `= …` equation, referenceable as self.<name>) with ZERO
  * evaluation-engine changes — the material framework carries the params straight to the
- * SkSL uniforms. `mode` is a `select` knob stored as a STRING; emit() maps it to the
- * shader's numeric code (the metaballs/comic TYPE_CODE pattern).
+ * SkSL uniforms. The look knobs LIVE IN THE SHADER ENTRY now
+ * (brightness_contrast_shader.BRIGHTNESS_CONTRAST_FILL_PARAMS — the fill-material
+ * framework's single-declaration rule, "custom properties become material properties",
+ * comic.js's exact pattern): this widget spreads that same schema into its customProps
+ * and adds only its geometry knob (cornerRadius). `mode` is a `select` knob stored as a
+ * STRING; the shared brightnessContrastUniformParams maps it to the shader's numeric
+ * code (the metaballs/comic TYPE_CODE pattern), for BOTH emit() and the fill path.
  *
  * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-free /
  * bare-node-safe at import time.
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
-import { UNIT_SPAN_SCRUB, bundle, customProps, defaults, props } from "../../core/properties.js";
+import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { BRIGHTNESS_CONTRAST_FILL_PARAMS, brightnessContrastUniformParams } from "../../render_gpu/skia/brightness_contrast_shader.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
-
-// select ids → the shader's numeric mode codes (brightness_contrast_shader.js).
-const MODE_OPTIONS = ["smooth", "linear", "srgb"];
-const MODE_LABELS = {
-  smooth: "Smooth (cannot clip)",
-  linear: "Linear light (exposure in stops)",
-  srgb: "sRGB direct (naive — clips)",
-};
-const MODE_CODE = { smooth: 0, linear: 1, srgb: 2 };
 
 // THE NEUTRAL POINT — the settings at which this widget is an exact identity, and the
 // values emit() short-circuits on. Named because "0" and "1" alone do not say WHY those
@@ -71,21 +68,15 @@ export const NEUTRAL_CONTRAST = 1;
 // The tone knobs, all self.* custom properties. Every one is DIMENSIONLESS (a curve
 // parameter, not a length), so nothing here is resolution- or zoom-dependent;
 // `cornerRadius` is the one WORLD-px knob (the backend scales it to device).
+// THE LOOK KNOBS LIVE IN THE SHADER ENTRY now (BRIGHTNESS_CONTRAST_FILL_PARAMS
+// — the fill-material framework's single-declaration rule: "custom properties
+// become material properties"). This widget spreads that SAME schema (mode,
+// brightness with its load-bearing scrub, contrast, preserveHue) into its
+// customProps and adds only its widget-side geometry knob (cornerRadius). Byte-
+// compatible with the pre-fill widget: the schema's defaults ARE the old inline
+// defaults (contrast 1.4, brightness 0), and the NEUTRAL identity is still 0 / 1.
 const CUSTOM = customProps([
-  { name: "mode", kind: "select", options: MODE_OPTIONS, optionLabels: MODE_LABELS, default: "smooth", help: "Which tone math the two knobs mean. Smooth (the default) is built for a finished on-screen image: it fixes black and white, so it CANNOT crush shadows or blow highlights however far you push it. Linear light treats brightness as a real exposure change in stops and contrast as a power about 18% grey — physically what a camera does, and it CAN clip past white. sRGB direct is the naive slider every other tool ships; it is here so you can see what the other two avoid." },
-  // SCRUB, measured against `contrast` below — its twin in this widget, and the row
-  // that shows how far out this one was. `contrast` (default 1.4) scrubs at 0.014/px
-  // by inference from its fractional default; `brightness` is the ZERO-default,
-  // fully-open shape inference provably cannot reach (the census's "paletteOffset
-  // shape": no bounds, no magnitude, so nothing in the row says it is fractional), so
-  // it fell back to 1 unit/px — SEVENTY TIMES coarser than its twin on a knob whose
-  // own help says +1 is a whole STOP of exposure. One drag-pixel therefore blew the
-  // image out. The useful domain is unit-scaled about 0 in every one of the three
-  // modes (a midtone lift, a stop, or a flat channel offset), so one 100px drag run
-  // now spans one unit, i.e. one stop.
-  { name: "brightness", kind: "number", default: NEUTRAL_BRIGHTNESS, scrub: UNIT_SPAN_SCRUB, help: "0 = unchanged. Positive brightens, negative darkens. In Smooth mode this is a midtone lift that leaves pure black and pure white alone (+1 lifts 25% grey to 50%). In Linear-light mode it is an EXPOSURE in stops (+1 = twice the light, and whites clip). In sRGB mode it is a flat offset added to every channel." },
-  { name: "contrast", kind: "number", default: 1.4, min: 0, help: "1 = unchanged, higher = punchier, 0 = flat grey. This is the SLOPE of the tone curve at mid-grey in every mode, so it means the same thing here as a contrast slider anywhere else — the modes differ only in what happens far from mid-grey, where the naive version clips and Smooth rolls off instead." },
-  { name: "preserveHue", kind: "boolean", default: false, help: "Off (the usual look): each colour channel is toned on its own, so raising contrast also deepens colour. On: only the brightness of each pixel changes and its hue and saturation are held exactly — the honest choice when the point is to re-tone a photo or figure without recolouring it. Boosting a saturated colour with this on can push a channel out of range and clip it." },
+  ...BRIGHTNESS_CONTRAST_FILL_PARAMS,
   { name: "cornerRadius", kind: "number", default: 0, min: 0, help: "Rounded-corner radius of the adjusted region (world px). 0 = sharp corners." },
 ]);
 
@@ -187,23 +178,16 @@ export const brightnessContrastPlugin = {
   emit(s) {
     if (isNeutralTone(s)) return [];
     const strokeW = s.strokeWidth ?? 0;
-    // LOUD on an unknown mode (the crt.js maskType precedent): silently grading with
-    // the wrong tone math is worse than a stopped render.
-    const mode = MODE_CODE[s.mode];
-    if (mode === undefined)
-      throw new Error(`brightness_contrast.emit: unknown mode ${JSON.stringify(s.mode)} (expected one of ${MODE_OPTIONS.join(", ")})`);
     return [materialBackdrop({
       material: "brightness_contrast",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       cornerRadius: s.cornerRadius,
       blurRadius: 0,
       backdropScale: 1,
-      params: {
-        mode,
-        brightness: s.brightness,
-        contrast: s.contrast,
-        preserveHue: s.preserveHue ? 1 : 0,
-      },
+      // The SAME schema→uniform mapping the fill-material path uses (one declaration):
+      // maps the `mode` select string to its numeric code and `preserveHue` to 0/1, and
+      // throws LOUD on an unknown mode (the crt.js maskType precedent).
+      params: brightnessContrastUniformParams(s),
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,
       opacity: s.opacity ?? 1,

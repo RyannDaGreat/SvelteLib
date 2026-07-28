@@ -126,6 +126,12 @@
  */
 
 import { parseColor } from "../ir.js";
+// UNIT_SPAN_SCRUB (core/properties.js) is the scrub sensitivity for the UNBOUNDED
+// normalized knobs in the fill-param schema below (the light position, the dirt mix,
+// the feature scale, the glow). Imported here because THE KNOB SCHEMA now lives in
+// this shader file (the fill-material single-declaration rule) — rainy_window_shader.js
+// imports the same constant for the same reason. core/ is DOM-free / bare-node-safe.
+import { UNIT_SPAN_SCRUB } from "../../core/properties.js";
 
 // uCenter 2 + uHalfSize 2 + uAngle 1 = 5 (framework geometry)
 //   + uLight 2 + 17 scalar knobs + uStreakColor 3 + uTempTint 3 + uTint 3
@@ -589,11 +595,85 @@ export function lensFlareProxyFill(params, region) {
   };
 }
 
+// ── FILL-MATERIAL SCHEMA (materials as PAINT on any shape) ────────────────────
+/**
+ * THE LENS-FLARE FILL-PARAM SCHEMA — the ONE declaration of the flare's look knobs,
+ * in the customProps row shape (the end-state ruling "custom properties become
+ * material properties"). Both consumers derive from it: plugins/demo/lens_flare.js
+ * spreads it into its widget customProps (self.* rows), and the FILL-material UI
+ * (PaintField) renders it as the paint's param rows, resolved sparse-over-defaults
+ * by resolveMaterialPaint.
+ *
+ * WIDGET GEOMETRY IS NOT HERE. The flare's box (x/y/w/h) — bound to the camera by
+ * `= camera.*` equations in the plugin's defaults — is positioning, not a look knob;
+ * it stays widget-side. So does the widget's effects bundle (the "screen" blend that
+ * makes the standalone widget composite additively). As the FILL of a shape the flare
+ * paints its premultiplied field straight into the clip.
+ *
+ * BOUNDS POLICY (manifest "no arbitrary constraints invented by Claude"): every
+ * remaining min/max is GEOMETRIC or TECHNICAL and says so in its help. A knob whose
+ * only limit was taste carries none. Where a floor of 0 survives it is because the
+ * shader's own guard would SILENTLY swallow a negative (a silent clamp discards the
+ * user's value) — so the Inspector refuses it at the row instead.
+ */
+export const LENS_FLARE_FILL_PARAMS = [
+  { name: "lightX", kind: "number", default: 0.72, scrub: UNIT_SPAN_SCRUB, help: "Light-source horizontal position as a fraction of the widget: 0 = left edge, 0.5 = centre, 1 = right edge. UNBOUNDED — negative or above 1 puts the light off the box entirely (the off-frame sun), and the ghost chain still marches from there through the widget centre and sweeps across the frame." },
+  { name: "lightY", kind: "number", default: 0.3, scrub: UNIT_SPAN_SCRUB, help: "Light-source vertical position as a fraction of the widget: 0 = top, 0.5 = centre, 1 = bottom. UNBOUNDED, exactly like the horizontal position — a sun above or below the frame is a normal thing to want." },
+  { name: "brightness", kind: "number", default: 1.2, min: 0, help: "Overall gain on the whole flare — the adjustable master intensity of the additive light added to the scene. Floor 0 (off): the shader clamps the assembled flare to [0,1] before premultiplying, so a negative gain would be silently swallowed rather than subtract light." },
+  { name: "flareScale", kind: "number", default: 1, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Master size of every flare FEATURE — the ghosts, the halo ring, the streak, the glow and the starburst spikes all scale together, about their own centres. 1 = the sizes the knobs below name literally; 0.5 = a flare half the size in a box of the same size; 0 = every feature collapses (off). This is how a full-frame flare can still carry small rings: resize the box for the flare's REACH, then drag the second yellow handle to set the ring size independently. No upper cap — a big value simply grows the features past the box. Floor 0 because a size cannot be negative; below it the shader's own guard would silently swallow the value (and the bloom core's exponential would invert to infinity)." },
+  { name: "ghostCount", kind: "number", default: 6, min: 0, max: MAX_GHOSTS, step: 1, help: `Number of aperture "ghosts" (iris reflections) marching along the axis through the centre. 0 = none; up to ${MAX_GHOSTS} — that ceiling is the shader's FIXED loop bound (SkSL cannot loop a uniform number of times), not a matter of taste.` },
+  { name: "ghostSpacing", kind: "number", default: 0.33, help: "How far apart the ghosts are spaced along the axis: ghost i sits at light·(1 − spacing·i), so ~0.3 puts one near the centre. Higher = more spread out; 0 stacks them all on the light; a negative value marches the chain outward AWAY from the centre instead." },
+  { name: "ghostSize", kind: "number", default: 0.11, min: 0, help: "Base radius of the ghost discs (normalized to widget height). Ghosts grow along the chain from this base. Floor 0 because a radius cannot be negative; 0 itself is a valid vanishing point (the shader guards the divide)." },
+  { name: "ghostIntensity", kind: "number", default: 0.4, min: 0, help: "Brightness of the ghost chain. Floor 0 (off) for the same reason as the master gain — negative light is clamped away, not subtracted." },
+  { name: "anamorphic", kind: "number", default: 0.5, min: 0, help: "Intensity of the horizontal anamorphic streak (the blue JJ-Abrams light bar). 0 = off; floor 0 as above." },
+  { name: "streakLength", kind: "number", default: 0.4, min: 0, help: "Horizontal length (σx) of the anamorphic streak, in normalized units. Longer = a wider light bar. Floor 0 because a gaussian σ cannot be negative; 0 itself collapses the streak (the shader guards the divide)." },
+  { name: "streakColor", kind: "color", default: "#6fa8ff", help: "Colour of the anamorphic streak — classically a coating blue." },
+  { name: "halo", kind: "number", default: 0.45, min: 0, help: "Intensity of the halo ring around the optical centre. 0 = off; floor 0 as above." },
+  { name: "haloRadius", kind: "number", default: 0.45, min: 0, help: "Radius of the halo ring (normalized to widget height, measured from the centre). No upper cap — a huge ring simply passes outside the box. Floor 0 because a radius cannot be negative." },
+  { name: "starburst", kind: "number", default: 0.4, min: 0, help: "Intensity of the diffraction starburst (the radial spikes from the aperture blades). 0 = off; floor 0 as above." },
+  { name: "blades", kind: "number", default: 8, min: 3, step: 1, help: "Aperture blade count. Diffraction physics: an EVEN count gives that many spikes; an ODD count gives twice as many (e.g. 9 blades → 18 spikes). Also shapes the ghost iris polygon. Floor 3 is geometric (an iris polygon needs three sides) and matches the shader's own MIN_BLADES — below it the shader would silently clamp." },
+  { name: "starburstSharp", kind: "number", default: 18, min: 0, help: "Spike thinness (exponent). Higher = razor-thin spikes; lower = soft, fat rays; 0 = no spikes at all, just an even radial glow. No upper cap — a huge exponent is simply a hairline star." },
+  { name: "starburstRotation", kind: "angle", display: "degrees", default: 0.2, help: "Rotation of the starburst spikes — keyframe it (or bind an equation) to make the spikes swim as a camera turns. Uncapped: past 360° keeps counting, so a keyframed 720° spins twice." },
+  { name: "chromatic", kind: "number", default: 0.02, help: "Chromatic dispersion amount: how far the red/blue channels split at each iris/halo edge (spectral fringing). Tiny is realistic; a negative value disperses the other way (blue outside instead of red)." },
+  { name: "glow", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Bloom / veiling glare intensity — the tight hot core at the light plus a broad soft haze that washes the frame. Floor 0 (off) as above. (Named 'glow', not 'bloom': the effects bundle owns a separate nested `bloom` vector-glow substrate — toUniformParams renames glow → the shader's uBloom.)" },
+  { name: "dirt", kind: "number", default: 0.18, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Procedural lens-dirt/grunge modulation: 0 = clean glass; 1 = the whole flare is broken up by a dusty grime field (all procedural — no texture asset). No upper cap — past 1 the grime mix extrapolates, crushing the dirtiest patches all the way to black for a harsher, higher-contrast grime. Floor 0 (clean) as above." },
+  { name: "colorTemp", kind: "number", default: 5200, min: 1000, max: 12000, help: "Colour temperature in Kelvin of the light's cast on the flare: ~3200 K = warm amber, 6500 K = neutral white, ~9000 K+ = cool blue. The range is the domain of the Kelvin→RGB fit the shader uses (KELVIN_TABLE); outside it the fit is undefined and the packer would silently pin the value." },
+  { name: "tint", kind: "color", default: "#fff2e6", help: "Explicit colour multiply over the whole flare, on top of the temperature cast." },
+];
+
+/**
+ * Pure function. SCHEMA params (LENS_FLARE_FILL_PARAMS names) → the PACKER's params
+ * (packLensFlare's keys). The ONLY difference is the ONE deliberate rename glow →
+ * bloom (the schema knob is called "glow" to avoid colliding with the effects
+ * bundle's nested `bloom`; the shader uniform is uBloom); every other knob passes
+ * through by the same name. THE one mapping both consumers share: the demo widget's
+ * emit() AND the fill-material shape path (paint_skia handleMaterialPaintShape reads
+ * it as entry.toUniformParams).
+ *
+ * @param {object} p - schema-shaped params (resolved: every knob present)
+ * @returns {object} packLensFlare-shaped params
+ *
+ * @example lensFlareUniformParams({lightX: 0.72, lightY: 0.3, brightness: 1.2, flareScale: 1, ghostCount: 6, ghostSpacing: 0.33, ghostSize: 0.11, ghostIntensity: 0.4, anamorphic: 0.5, streakLength: 0.4, streakColor: "#6fa8ff", halo: 0.45, haloRadius: 0.45, starburst: 0.4, blades: 8, starburstSharp: 18, starburstRotation: 0.2, chromatic: 0.02, glow: 1, dirt: 0.18, colorTemp: 5200, tint: "#fff2e6"}).bloom // 1
+ * @example lensFlareUniformParams({glow: 0.6}).bloom // 0.6
+ */
+export function lensFlareUniformParams(p) {
+  return {
+    lightX: p.lightX, lightY: p.lightY, brightness: p.brightness, flareScale: p.flareScale,
+    ghostCount: p.ghostCount, ghostSpacing: p.ghostSpacing, ghostSize: p.ghostSize, ghostIntensity: p.ghostIntensity,
+    anamorphic: p.anamorphic, streakLength: p.streakLength, streakColor: p.streakColor,
+    halo: p.halo, haloRadius: p.haloRadius,
+    starburst: p.starburst, blades: p.blades, starburstSharp: p.starburstSharp, starburstRotation: p.starburstRotation,
+    chromatic: p.chromatic, bloom: p.glow, dirt: p.dirt,
+    colorTemp: p.colorTemp, tint: p.tint,
+  };
+}
+
 // ── material descriptor (registry entry) ──────────────────────────────────────
 // FOREGROUND, GENERATIVE material: `backdrop: false` binds NO children and skips
 // the below-content re-render — handleMaterialFill just makeShader+fill. `id`
 // matches the plugin's `material` op field. `proxyFill` gives the thumbnail/minimap
 // (quality:"proxy") path a cheap radial-glow stand-in instead of the 21-knob SkSL.
+// `fillParams` + `toUniformParams` opt the flare into being PAINT on any shape.
 export const LENS_FLARE_MATERIAL = {
   id: "lens_flare",
   sksl: LENS_FLARE_SKSL,
@@ -601,4 +681,6 @@ export const LENS_FLARE_MATERIAL = {
   uniformFloats: LENS_FLARE_UNIFORM_FLOATS,
   backdrop: false,
   proxyFill: lensFlareProxyFill,
+  fillParams: LENS_FLARE_FILL_PARAMS,
+  toUniformParams: lensFlareUniformParams,
 };

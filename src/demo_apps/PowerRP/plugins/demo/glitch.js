@@ -22,9 +22,14 @@
  *
  * Every look knob is a CUSTOM self.* property (core/properties.js customProps): each
  * is an equation-capable widget-state key with ZERO evaluation-engine changes — the
- * material framework carries the params straight to the SkSL uniforms. `splitMode`
- * is a `select` knob stored as a STRING; emit() maps it to the shader's numeric code
- * (the metaballs TYPE_CODE pattern).
+ * material framework carries the params straight to the SkSL uniforms.
+ *
+ * THE LOOK KNOBS LIVE IN THE SHADER ENTRY now (glitch_shader.GLITCH_FILL_PARAMS —
+ * the fill-material framework's single-declaration rule: "custom properties become
+ * material properties"). This widget spreads that SAME schema into its customProps
+ * and adds only its widget-side geometry knob (cornerRadius). `splitMode` is a
+ * `select` stored as a STRING; glitchUniformParams maps it to the shader's numeric
+ * code and injects the ambient `time` — the SAME mapping the fill-material path uses.
  *
  * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-free
  * / bare-node-safe at import time.
@@ -32,46 +37,15 @@
 
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { GLITCH_FILL_PARAMS, glitchUniformParams } from "../../render_gpu/skia/glitch_shader.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
-import { particleTime } from "../../render_gpu/particle_clock.js";
 
-// select ids → the shader's numeric split-mode code (glitch_shader.js).
-const SPLIT_OPTIONS = ["horizontal", "radial"];
-const SPLIT_LABELS = { horizontal: "Horizontal", radial: "Radial (from centre)" };
-const SPLIT_CODE = { horizontal: 0, radial: 1 };
-
-// The glitch look knobs, all self.* custom properties. Distance knobs (rgbSplitPx,
-// maxShiftPx, jitterPx, wobbleAmp) are WORLD px (the packer scales to device so the
-// look is size-proportional); rates/counts/fractions are dimensionless.
+// The glitch look knobs live in the shader entry (GLITCH_FILL_PARAMS) so the widget
+// AND the fill-material paint UI derive from one declaration. This widget spreads
+// that schema into its customProps and adds only the widget-side geometry knob.
 const CUSTOM = customProps([
-  { name: "seed", kind: "number", default: 1337, help: "Random seed — decorrelates two glitch widgets so they don't corrupt in lockstep. Any number; change it for a different glitch pattern." },
-  { name: "intensity", kind: "number", default: 0.9, min: 0, max: 1, help: "Master mix from the untouched backdrop (0) to fully glitched (1). A clean off-switch for the whole effect." },
-  { name: "rgbSplitPx", kind: "number", default: 2.5, min: 0, help: "RGB channel-split distance (world px) at full burst — how far the red/blue fringes separate (chromatic aberration)." },
-  { name: "splitMode", kind: "select", options: SPLIT_OPTIONS, optionLabels: SPLIT_LABELS, default: "horizontal", help: "Direction of the RGB split: Horizontal (a classic sideways fringe) or Radial (fringes fan outward from the centre — a lens/hologram look)." },
-  { name: "blockCount", kind: "number", default: 22, min: 1, help: "Number of horizontal displacement BANDS down the height — the granularity of the block glitch and the scanline bands." },
-  { name: "maxShiftPx", kind: "number", default: 12, min: 0, help: "Max per-block horizontal displacement (world px) — how far a corrupted band jumps sideways." },
-  { name: "density", kind: "number", default: 0.35, min: 0, max: 1, help: "Fraction of blocks that are displaced at once (0 = none, 1 = every band). How busy the block glitch is." },
-  { name: "tearRate", kind: "number", default: 8, min: 0, help: "Re-roll rate (Hz) of the blocks/jitter — how choppy the digital cadence is. Higher = faster, more frantic corruption." },
-  { name: "jitterPx", kind: "number", default: 1, min: 0, help: "Fine per-scanline horizontal jitter (world px) — the shivering tape-tracking wobble on every line." },
-  { name: "tearHeight", kind: "number", default: 0.12, min: 0, max: 1, help: "Height of the rolling coarse TEAR band as a fraction of the region — the wide slab that rips sideways." },
-  { name: "tearSpeed", kind: "number", default: 0.6, min: 0, help: "How fast the tear band rolls down the region (cycles/sec). 0 = a static tear at the top." },
-  { name: "dropout", kind: "number", default: 0.05, min: 0, max: 1, help: "Probability a block drops to greyscale (signal loss / dead colour). Higher = more washed-out corrupted bands." },
-  { name: "wobbleAmp", kind: "number", default: 0, min: 0, help: "Analog horizontal WOBBLE amplitude (world px) — a smooth sinusoidal warp (the VHS/analog sway). 0 = purely digital." },
-  { name: "wobbleFreq", kind: "number", default: 30, min: 0, help: "Vertical spatial frequency of the wobble — how many sway cycles fit down the region." },
-  { name: "wobbleSpeed", kind: "number", default: 5, min: 0, help: "Temporal speed of the wobble sway." },
-  { name: "corrupt", kind: "number", default: 0.04, min: 0, max: 1, help: "Probability a block's colour channels are cyclically swapped (RGB→GBR) — lurid colour corruption." },
-  { name: "posterize", kind: "number", default: 0, min: 0, help: "Quantize each channel into this many levels (bit-crushed colour). 0 or 1 = off; e.g. 4–6 = chunky posterized colour." },
-  { name: "pixelate", kind: "number", default: 0, min: 0, help: "Chunky pixelation: number of pixel CELLS across the region (0 = off). Low values = big blocky mosaic pixels." },
-  { name: "scanlineDepth", kind: "number", default: 0.2, min: 0, max: 1, help: "Darkness of the scanline bands (0 = none, 1 = black gaps) — the CRT/monitor line texture." },
-  { name: "grain", kind: "number", default: 0.06, min: 0, max: 1, help: "Static / noise grain amount over the whole region — signal snow." },
-  { name: "glow", kind: "number", default: 0.15, min: 0, help: "Bloom: how much of a blurred copy of the content is added back as a soft glow (a lit-screen/hologram bleed)." },
-  { name: "burstRate", kind: "number", default: 6, min: 0, help: "How often burst windows are rolled (Hz) — the tempo of the intermittent glitch hits." },
-  { name: "burstThreshold", kind: "number", default: 0.55, min: 0, max: 1, help: "How rare the bursts are (higher = rarer, so the region reads clean more of the time between violent hits)." },
-  { name: "tint", kind: "color", default: "#ffffff", help: "Colour cast blended into the glitched pixels (a cyan hologram, a warm VHS). White = no cast." },
-  // ── geometry / render controls (world units + the sample resolution) ─────────
+  ...GLITCH_FILL_PARAMS,
   { name: "cornerRadius", kind: "number", default: 8, min: 0, help: "Rounded-corner radius of the glitch region (world px). 0 = sharp corners (a full screen)." },
-  { name: "blurRadius", kind: "number", default: 8, min: 0, help: "Gaussian blur radius (world px) of the bloom-glow source — how soft the glow is." },
-  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at: 1 = screen resolution, 2 = supersample (crisper, slower)." },
 ]);
 
 // The 6 canonical looks, surfaced by web/ToolsPane.svelte (props = a flat knob map).
@@ -132,12 +106,13 @@ export const glitchPlugin = {
   ],
   presets: PRESETS,
   /**
-   * Near-pure function (reads the AMBIENT particle clock; pure w.r.t. document
-   * state). State → display-list: ONE materialBackdrop op naming the "glitch"
-   * material. The bbox (w, h) IS the screen region (local space; sceneIR wraps it in
-   * the node's world). uTime comes from particleTime() — frozen in the editor/CLI, the
-   * wall clock in the presenter. The `splitMode` select string maps to the shader's
-   * numeric code; everything else passes through and the SkSL packer clamps/parses it.
+   * Near-pure function (glitchUniformParams reads the AMBIENT particle clock; pure
+   * w.r.t. document state). State → display-list: ONE materialBackdrop op naming the
+   * "glitch" material. The bbox (w, h) IS the screen region (local space; sceneIR
+   * wraps it in the node's world). The SAME schema→uniform mapping the fill-material
+   * path uses (one declaration): glitchUniformParams maps the `splitMode` select
+   * string to the shader's numeric code and injects `time` from particleTime() —
+   * frozen in the editor/CLI, the wall clock in the presenter.
    */
   emit(s) {
     const strokeW = s.strokeWidth ?? 0;
@@ -147,33 +122,7 @@ export const glitchPlugin = {
       cornerRadius: s.cornerRadius,
       blurRadius: s.blurRadius,
       backdropScale: s.backdropScale,
-      params: {
-        time: particleTime(),
-        seed: s.seed,
-        intensity: s.intensity,
-        rgbSplitPx: s.rgbSplitPx,
-        splitMode: SPLIT_CODE[s.splitMode] ?? 0,
-        blockCount: s.blockCount,
-        maxShiftPx: s.maxShiftPx,
-        density: s.density,
-        tearRate: s.tearRate,
-        jitterPx: s.jitterPx,
-        tearHeight: s.tearHeight,
-        tearSpeed: s.tearSpeed,
-        dropout: s.dropout,
-        wobbleAmp: s.wobbleAmp,
-        wobbleFreq: s.wobbleFreq,
-        wobbleSpeed: s.wobbleSpeed,
-        corrupt: s.corrupt,
-        posterize: s.posterize,
-        pixelate: s.pixelate,
-        scanlineDepth: s.scanlineDepth,
-        grain: s.grain,
-        glow: s.glow,
-        burstRate: s.burstRate,
-        burstThreshold: s.burstThreshold,
-        tint: s.tint,
-      },
+      params: glitchUniformParams(s),
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,
       opacity: s.opacity ?? 1,

@@ -64,8 +64,12 @@
  * a PURE fract-hash of a cell id (NO sin-hash, NO Date.now, NO Math.random), so the
  * same (p, uTime, knobs) ⇒ byte-identical pixels, and two uTime values move drops.
  *
- * DOM-free at import (only string SkSL + a pure packer), like glass_shader.js /
- * crt_shader.js. `parseColor` (render_gpu/ir.js) is the shared node-safe parser.
+ * DOM-free at import (string SkSL + a pure packer + a small node-safe param
+ * schema/mapping), like glass_shader.js / crt_shader.js. `parseColor`
+ * (render_gpu/ir.js) is the shared node-safe parser. `particleTime`
+ * (render_gpu/particle_clock.js — DOM-free at import, reads the wall clock only
+ * when CALLED) is the ambient animation clock the fill-material mapping reads for
+ * uTime, exactly as the demo widget's emit() does.
  *
  * Sources (technique inspiration; no code copied):
  *   - Martijn Steinrucken "Heartfelt", https://www.shadertoy.com/view/ltffzl (CC BY-NC-SA 3.0)
@@ -73,6 +77,14 @@
  */
 
 import { parseColor } from "../ir.js";
+import { particleTime } from "../particle_clock.js";
+import { UNIT_SPAN_SCRUB } from "../../core/properties.js";
+
+// Direction TO the light: just left of straight-up, so drops catch a top-left glint.
+// (Stored in RADIANS with display:"degrees" — the `rotation` convention, NOT the
+// comic screen-angle convention of raw degrees; the mapping passes it straight
+// through with no conversion, so byte-compat with the demo widget holds.)
+export const LIGHT_ANGLE_DEFAULT = -Math.PI * 0.6;
 
 // uCenter 2 + uHalfSize 2 + uCornerRadius 1 + uAngle 1 + uTime 1 = 7 geometry/time
 //   + 9 scalar knobs (speed…lightAngle, incl. streakiness) + uTint float3 (3) = 19
@@ -422,11 +434,75 @@ export function packRainyWindow(u) {
 }
 
 /**
+ * THE RAINY WINDOW LOOK-KNOB SCHEMA — the ONE declaration of the material's look
+ * knobs, in the customProps row shape. Both consumers derive from it (the fill-
+ * material framework's single-declaration rule, "custom properties become material
+ * properties"):
+ *   - plugins/demo/rainy_window.js spreads it into its customProps (self.* rows),
+ *     adding only its widget-side geometry knob (cornerRadius);
+ *   - the FILL-material UI (PaintField) renders it as the paint's param rows,
+ *     resolved sparse-over-defaults by materials.resolveMaterialPaint.
+ * Geometry knobs (cornerRadius) stay widget-side — a fill's shape IS its geometry.
+ * `blurRadius`/`backdropScale` are render controls the fill path reads straight off
+ * resolvedParams (paint_skia handleMaterialPaintShape), so they live HERE, not in
+ * the uniform mapping. `time` is NOT a knob: it is the ambient particle clock,
+ * injected by the mapping below.
+ */
+export const RAINY_WINDOW_FILL_PARAMS = [
+  { name: "rain", kind: "number", default: 0.8, min: 0, max: 1, help: "Rain AMOUNT (0..1): how much water is on the glass. Drives drop density/rate — low = a fine mist of static beads, high = heavy running drops with trails." },
+  { name: "fog", kind: "number", default: 0.5, min: 0, max: 1, help: "Fog / steam amount (0..1): how steamed-up the dry pane is (a blurred, lifted, desaturated view). Running drops and trails wipe the fog clear." },
+  { name: "speed", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Fall-speed multiplier for the running drops. 0 = a frozen still; higher = faster running rain." },
+  { name: "dropSize", kind: "number", default: 1.0, min: 0.1, help: "Overall drop-size multiplier — scales both the running-drop heads and the static beads." },
+  { name: "columns", kind: "number", default: 6, min: 1, help: "Number of running-drop columns across the width — the density granularity. More = finer, more-numerous streaks." },
+  { name: "streakiness", kind: "number", default: 1.0, min: 0.1, max: 4, help: "Trail LENGTH / persistence behind each running drop's head: how far up the fading refractive streak survives. Low = drops with barely a tail; high = long, slow-fading dribble streaks." },
+  { name: "refraction", kind: "number", default: 0.06, min: 0, help: "Droplet refraction strength, as a fraction of the widget's short half-size: how strongly each drop bends the background behind it (the lens). 0 = flat wet patches." },
+  { name: "shine", kind: "number", default: 0.9, min: 0, help: "Droplet SHININESS — the strength of the specular glint + fresnel rim on each drop's curved surface. 0 = matte water." },
+  { name: "lightAngle", kind: "angle", display: "degrees", default: LIGHT_ANGLE_DEFAULT, help: "Direction TO the light (screen space; -90° = straight above, 0° = from the right). Sets where the specular glints sit on each drop." },
+  { name: "tint", kind: "color", default: "#dfe8f0", help: "The fog/steam colour cast — the tone the steamed-up glass is pulled toward (a cool near-white reads as cold-window condensation)." },
+  { name: "blurRadius", kind: "number", default: 8, min: 0, help: "Gaussian blur radius (world px) of the fog/steam source — how soft the steamed-up glass is." },
+  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen resolution, 2 = supersample (crisper, slower), 0.5 = half res (faster, softer)." },
+];
+
+/**
+ * Near-pure function (reads the AMBIENT particle clock; pure w.r.t. its argument).
+ * SCHEMA params (RAINY_WINDOW_FILL_PARAMS names — the look knobs) → the PACKER's
+ * params, injecting `time` from particleTime() (the freeze constant in the
+ * editor/CLI ⇒ a deterministic still, the wall clock in the presenter ⇒ running
+ * rain). THE one mapping both consumers share: the demo widget's emit() and the
+ * fill-material regionOp synthesis (paint_skia handleMaterialPaintShape reads it as
+ * entry.toUniformParams). Unlike comic's screen-angle knobs (raw degrees →
+ * radians), `lightAngle` is already stored in radians (display:"degrees"), so it
+ * passes straight through. `blurRadius`/`backdropScale` are NOT packer uniforms —
+ * they are region-op fields the fill path reads directly — so they are dropped here.
+ *
+ * @param {object} p - schema-shaped look params (resolved: every knob present)
+ * @returns {object} packRainyWindow-shaped params (with `time`)
+ *
+ * @example rainyWindowUniformParams({rain: 0.8, fog: 0.5, speed: 1, dropSize: 1, columns: 6, streakiness: 1, refraction: 0.06, shine: 0.9, lightAngle: -1.88, tint: "#dfe8f0"}).rain // 0.8
+ * @example rainyWindowUniformParams({rain: 0.5, fog: 0, speed: 2, dropSize: 1, columns: 8, streakiness: 2, refraction: 0.1, shine: 1, lightAngle: -1.88, tint: "#fff"}).columns // 8
+ */
+export function rainyWindowUniformParams(p) {
+  return {
+    time: particleTime(),
+    speed: p.speed, rain: p.rain, fog: p.fog,
+    refraction: p.refraction, shine: p.shine, dropSize: p.dropSize,
+    columns: p.columns, streakiness: p.streakiness, lightAngle: p.lightAngle, tint: p.tint,
+  };
+}
+
+/**
  * THE RAINY WINDOW MATERIAL DESCRIPTOR — the registry entry (materials.js). `id`
  * matches the plugin's `material` op field; `sksl` is the shader; `pack` maps the
  * framework's normalized `u` (device geometry + the material's own knobs) to the
  * uniform Float32Array. `backdrop: true` binds the standard {blurred, sharp}
  * children and re-renders the content beneath (the same machinery CRT/glass use).
+ *
+ * `fillParams` + `toUniformParams` OPT THIS MATERIAL INTO BEING A FILL (the comic
+ * exemplar's contract): any shape can carry it as its fill paint, and the same
+ * knob schema feeds both the demo widget and the paint UI. This is the FIRST
+ * time-driven material to opt in — the mapping reads particleTime() so a filled
+ * shape's rain runs (presenter) / freezes deterministically (editor/CLI) exactly
+ * as the widget's does.
  */
 export const RAINY_WINDOW_MATERIAL = {
   id: "rainy_window",
@@ -434,4 +510,6 @@ export const RAINY_WINDOW_MATERIAL = {
   pack: packRainyWindow,
   uniformFloats: RAINY_WINDOW_UNIFORM_FLOATS,
   backdrop: true,
+  fillParams: RAINY_WINDOW_FILL_PARAMS,
+  toUniformParams: rainyWindowUniformParams,
 };

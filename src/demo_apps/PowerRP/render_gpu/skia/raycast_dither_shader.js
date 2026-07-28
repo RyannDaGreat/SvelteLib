@@ -48,9 +48,14 @@
  */
 
 import { parseColor } from "../ir.js";
+import { UNIT_SPAN_SCRUB } from "../../core/properties.js";
+import { particleTime } from "../particle_clock.js";
 
 /** The palette length (one colour spot per entry). */
 export const MAX_COLORS = 5;
+
+// The classic top-left → bottom-right diagonal the raycast hero streaks run along.
+const STREAK_DIAGONAL = Math.PI / 4;
 
 // uCenter 2 + uHalfSize 2 + uCornerRadius 1 + uAngle 1 + uTexScale 1
 //   + 10 scalar knobs + uBackground 3 + uColors[5] float4 (20) = 7 + 10 + 3 + 20 = 40
@@ -305,11 +310,73 @@ export function raycastDitherProxyFill(params, region) {
   return { kind: "linear", x0: region.cx - dx, y0: region.cy - dy, x1: region.cx + dx, y1: region.cy + dy, stops };
 }
 
+/**
+ * THE RAYCAST DITHER KNOB SCHEMA — the ONE declaration of the material's look knobs,
+ * in the customProps row shape. Both consumers derive from it (the end-state ruling
+ * "custom properties become material properties"):
+ *   - plugins/demo/raycast_dither.js spreads it into its customProps (self.* rows),
+ *     ADDING only its widget-side `cornerRadius` (a fill's shape IS its geometry);
+ *   - the FILL-material UI renders it as the paint's param rows, resolved
+ *     sparse-over-defaults by materials.resolveMaterialPaint.
+ * `time` is NOT a knob — it is the ambient animation clock, injected by
+ * raycastDitherUniformParams (below). The default red-on-black palette was sampled
+ * from the live raycast.com hero; each palette colour's ALPHA is its spot weight.
+ */
+export const RAYCAST_DITHER_FILL_PARAMS = [
+  // SCRUB: the unit-nominal RATE multiplier — 1 = the authored drift, 0 = frozen.
+  // The SAME shared constant as rainy_window/sky `speed` so the copies can't drift.
+  { name: "speed", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Animation speed multiplier for the drifting streaks. 0 = a frozen still; higher = faster flow." },
+  { name: "zoom", kind: "number", default: 0.58, min: 0.05, help: "Pattern zoom: bigger = fewer, larger streaks that fill more of the frame; smaller = more, tighter streaks." },
+  { name: "streakAngle", kind: "angle", display: "degrees", default: STREAK_DIAGONAL, help: "Streak direction. 45° is the classic top-left → bottom-right diagonal; 0° = horizontal streaks." },
+  { name: "elongation", kind: "number", default: 4.2, min: 1, help: "How far the colour blobs stretch ALONG the streak axis. 1 = round blobs; higher = long diagonal streaks (the Raycast look)." },
+  { name: "softness", kind: "number", default: 0.17, min: 0.01, help: "Gaussian blob radius — the softness/overlap of the streaks. Bigger = softer, blurrier, more overlap; smaller = crisper cores." },
+  { name: "warp", kind: "number", default: 0.18, min: 0, help: "Domain-warp amount: how much an animated value-noise field wobbles the streak edges, so they read as organic aurora rather than perfect ellipses. 0 = clean edges." },
+  { name: "grain", kind: "number", default: 0.09, min: 0, help: "Film-grain / DITHER amount — luminance noise added just before 8-bit output. Doubles as dither: it shatters the banding a very smooth gradient would otherwise show. 0 = smooth (banding visible)." },
+  { name: "grainScale", kind: "number", default: 1.0, min: 0.05, help: "Grain cell size in world px. ~1 = a fine per-pixel film grain; larger = chunkier speckle. The grain is world-locked (a texture painted on the widget), so it scales with zoom." },
+  { name: "grainSpeed", kind: "number", default: 18.0, min: 0, help: "Grain re-randomize rate in Hz — how fast the grain flickers frame to frame. 0 = a static grain texture." },
+  { name: "background", kind: "color", default: "#050608", help: "The base/darkest colour filling the dark gaps between the streaks (a near-black, faintly cool tone on the live hero)." },
+  { name: "color0", kind: "color", default: "#ff5e73", help: "Palette spot 1 (a bright pink-red streak core). The colour's ALPHA is the spot's weight — a fully-opaque colour is full strength; drop alpha to fade it, alpha 0 disables the spot." },
+  { name: "color1", kind: "color", default: "#eb1f36", help: "Palette spot 2 (crimson). Alpha = spot weight (0 disables)." },
+  { name: "color2", kind: "color", default: "#990d1c", help: "Palette spot 3 (deep red). Alpha = spot weight (0 disables)." },
+  { name: "color3", kind: "color", default: "#ff4257", help: "Palette spot 4 (vivid red). Alpha = spot weight (0 disables)." },
+  { name: "color4", kind: "color", default: "#520814", help: "Palette spot 5 (dark maroon). Alpha = spot weight (0 disables)." },
+];
+
+/**
+ * Near-pure function (reads the AMBIENT particle clock; pure w.r.t. document state).
+ * SCHEMA params (RAYCAST_DITHER_FILL_PARAMS names) → the PACKER's params. THE one
+ * mapping both consumers share: the demo widget's emit() and the fill-material
+ * regionOp synthesis (paint_skia handleMaterialPaintShape reads it as
+ * entry.toUniformParams). The look knobs pass straight through by name (streakAngle
+ * is already radians via the display:"degrees" bridge — no conversion); `time` is
+ * INJECTED from particleTime() (the freeze constant in editor/CLI, the wall clock in
+ * the presenter), which is why a raycast_dither FILL animates exactly like the widget
+ * and how time reaches the fill path (the schema carries no time knob).
+ *
+ * @param {object} p - resolved schema-shaped params (every look knob present)
+ * @returns {object} packRaycastDither-shaped params (+ `time` from the clock)
+ *
+ * @example raycastDitherUniformParams({speed: 1, zoom: 0.58, streakAngle: 0.785, elongation: 4.2, softness: 0.17, warp: 0.18, grain: 0.09, grainScale: 1, grainSpeed: 18, background: "#050608", color0: "#ff5e73", color1: "#eb1f36", color2: "#990d1c", color3: "#ff4257", color4: "#520814"}).zoom // 0.58
+ * @example raycastDitherUniformParams({speed: 0, zoom: 1, streakAngle: 0, elongation: 1, softness: 0.2, warp: 0, grain: 0, grainScale: 1, grainSpeed: 0, background: "#000", color0: "#fff", color1: "#fff", color2: "#fff", color3: "#fff", color4: "#fff"}).time // 2 (EDITOR_FREEZE_TIME, the paused default)
+ */
+export function raycastDitherUniformParams(p) {
+  return {
+    time: particleTime(),
+    speed: p.speed, zoom: p.zoom, streakAngle: p.streakAngle,
+    elongation: p.elongation, softness: p.softness, warp: p.warp,
+    grain: p.grain, grainScale: p.grainScale, grainSpeed: p.grainSpeed,
+    background: p.background,
+    color0: p.color0, color1: p.color1, color2: p.color2, color3: p.color3, color4: p.color4,
+  };
+}
+
 // ── material descriptor (registry entry) ──────────────────────────────────────
 // FOREGROUND, GENERATIVE material: `backdrop: false` binds NO children and skips
 // the below-content re-render — handleMaterialFill just makeShader+fill. `id`
 // matches the plugin's `material` op field. `proxyFill` gives the thumbnail/minimap
 // (quality:"proxy") path a cheap streak-gradient stand-in instead of the SkSL.
+// `fillParams` + `toUniformParams` opt it into being a FILL on any shape (the
+// animated mesh-gradient clipped to the shape — materials.isFillCapableMaterial).
 export const RAYCAST_DITHER_MATERIAL = {
   id: "raycast_dither",
   sksl: RAYCAST_DITHER_SKSL,
@@ -317,4 +384,6 @@ export const RAYCAST_DITHER_MATERIAL = {
   uniformFloats: RAYCAST_DITHER_UNIFORM_FLOATS,
   backdrop: false,
   proxyFill: raycastDitherProxyFill,
+  fillParams: RAYCAST_DITHER_FILL_PARAMS,
+  toUniformParams: raycastDitherUniformParams,
 };

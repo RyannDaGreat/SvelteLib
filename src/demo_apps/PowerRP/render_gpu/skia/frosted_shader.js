@@ -238,19 +238,69 @@ export function frostedProxyBackdrop(params) {
 }
 
 /**
+ * THE FROSTED KNOB SCHEMA — the ONE declaration of the material's look knobs, in
+ * the customProps row shape. Both consumers derive from it (the end-state ruling
+ * "custom properties become material properties"):
+ *   - plugins/demo/frosted_glass.js spreads it into its customProps (self.* rows);
+ *   - the FILL-material UI renders it as the paint's param rows, resolved
+ *     sparse-over-defaults by materials.resolveMaterialPaint.
+ * `blurRadius` is a WORLD-px length the OP consumes directly (the below-content
+ * blur sigma), so it lives in the schema but is READ by the fill router from
+ * resolvedParams — toUniformParams does NOT forward it to the shader packer (the
+ * SkSL has no blur uniform; the framework builds the blurred child). Geometry
+ * knobs (cornerRadius) stay widget-side — a fill's shape IS its geometry.
+ */
+export const FROSTED_FILL_PARAMS = [
+  { name: "blurRadius", kind: "number", default: 12, min: 0, help: "Gaussian blur radius (world px) of the content seen through the panel — the defining frosted-glass blur. Higher = a softer, more obscured backdrop." },
+  { name: "frost", kind: "number", default: 0.2, min: 0, max: 1, help: "Frost/tint opacity, from 0 (a clear blur, no veil) to 1 (a solid tinted panel). A subtle value (~0.2) gives the milky frosted-material look while the backdrop still reads through." },
+  { name: "tint", kind: "color", default: "rgb(255,255,255)", help: "The tint COLOUR, shared by Frost and Absorb. White is the classic frosted material; a hue makes it coloured glass. Its strength is those two knobs (this colour's own alpha is ignored)." },
+  { name: "absorb", kind: "number", default: 0, min: 0, max: 1, help: "How much the tint also ABSORBS, from 0 (off — the frost veil alone) to 1 (the backdrop is multiplied by the tint). Frost ADDS the tint on top of everything, so it lifts blacks and reads as milky surface frost; Absorb SUBTRACTS through the pane, so blacks stay black and only lit areas take the hue — the body-tinted look of green, blue or bronze architectural glass." },
+];
+
+/**
+ * Pure function. SCHEMA params (FROSTED_FILL_PARAMS names/kinds) → the PACKER's
+ * numeric params (packFrostedUniforms's own key names). THE one mapping both
+ * consumers share: the demo widget's emit() and the fill-material regionOp
+ * synthesis (paint_skia handleMaterialPaintShape reads it as entry.toUniformParams).
+ *
+ * Unlike comic's mapping there is no unit conversion (no select codes, no
+ * degrees→radians): the three shader knobs pass straight through under their own
+ * names. `blurRadius` is DROPPED — it is not a shader uniform; the fill router
+ * reads it from resolvedParams to size the below-content blur, exactly as the
+ * widget's emit reads it into the op's `blurRadius` field.
+ *
+ * @param {object} p - schema-shaped params (resolved: every knob present)
+ * @returns {{frost: number, tint: (string|number[]), absorb: number}} packFrostedUniforms-shaped params
+ *
+ * @example frostedUniformParams({blurRadius: 12, frost: 0.2, tint: "rgb(255,255,255)", absorb: 0}).frost // 0.2
+ * @example frostedUniformParams({blurRadius: 40, frost: 0.45, tint: "rgb(168,212,240)", absorb: 0.3}).absorb // 0.3
+ * @example frostedUniformParams({blurRadius: 10, frost: 0.02, tint: "rgb(78,82,96)", absorb: 0.88}).blurRadius // undefined  (op-level, not a shader knob)
+ */
+export function frostedUniformParams(p) {
+  return {
+    frost: p.frost,
+    tint: p.tint,
+    absorb: p.absorb,
+  };
+}
+
+/**
  * THE FROSTED GLASS MATERIAL DESCRIPTOR — the registry entry
  * (render_gpu/skia/materials.js). A BACKDROP material (no `backdrop`/`sampler`
  * flag => defaults to backdrop): its SkSL declares the standard {blurredBackdrop,
  * sharpBackdrop} children, so the `materialBackdrop` op + handleMaterialBackdrop
  * re-render the content beneath to feed them. `id` matches the plugin's
  * `material` op field; `pack` maps the framework's normalized `u` to the uniform
- * Float32Array.
+ * Float32Array. `fillParams` + `toUniformParams` opt it into being a FILL on any
+ * shape (the fill-material framework, materials.isFillCapableMaterial).
  */
 export const FROSTED_MATERIAL = {
   id: "frosted",
   sksl: FROSTED_SKSL,
   pack: packFrostedUniforms,
   uniformFloats: FROSTED_UNIFORM_FLOATS,
+  fillParams: FROSTED_FILL_PARAMS,
+  toUniformParams: frostedUniformParams,
   proxyBackdrop: frostedProxyBackdrop,
   // ZERO outward reach — the DEFINING property of the basic frost, not a tuning
   // choice: `main` evaluates `blurredBackdrop.eval(p)` at the fragment's own device

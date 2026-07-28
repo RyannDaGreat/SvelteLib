@@ -71,14 +71,32 @@ registerAll(registry, createCommands());
  * material-filled shapes unless `withShapes` is false — the baseline). */
 function matrixDoc(materialId, withShapes) {
   let doc = newDocument(), z = 1;
+  // Configure THE mandatory camera (the only item newDocument creates) to W×H, so
+  // the render maps world 1:1 to output px. ADDING a second camera is a latent bug:
+  // repair keeps exactly one and picks the lexicographically-SMALLEST uuid
+  // (core/document.js withExtraCamerasDropped), so ~half the time the DEFAULT
+  // 1280×720 camera survived instead, rescaled the scene, and the outside-silhouette
+  // clip checks failed — a 50/50 flaky gate that only passed at commit time by luck.
+  doc.meta = { ...doc.meta, slideW: W, slideH: H };
+  const items0 = doc.slides[0].delta.items;
+  const camId = Object.keys(items0)[0];
+  items0[camId] = { ...items0[camId], x: 0, y: 0, w: W, h: H, background: BG };
   const add = (type, over) => { [doc] = withNewItem(doc, 0, { ...registry.get(type).defaults, ...over, active: true, z: z++ }); };
-  add("camera", { name: "Camera", x: 0, y: 0, w: W, h: H, z: 1000, background: BG });
   // The underlay backdrop materials transform: a bright gradient band + discs + text.
   add("rect", {
     x: 0, y: 0, w: W, h: H, strokeWidth: 0,
     fill: { type: "linearGradient", solid: "#ffffff", linear: { stops: [{ offset: 0, color: "#ffd166" }, { offset: 0.5, color: "#ef476f" }, { offset: 1, color: "#118ab2" }], angle: 20 }, radial: { stops: [{ offset: 0, color: "#fff" }, { offset: 1, color: "#000" }], center: { x: 0.5, y: 0.5 }, r: 0.5 } },
   });
-  for (let i = 0; i < 7; i++) add("circle", { x: 30 + i * 130, y: (i % 2) * 150 + 20, w: 110, h: 110, fill: i % 2 ? "#06d6a0" : "#f8f9fa", strokeWidth: 0 });
+  // NO discs near the cell corners: a backdrop material triggers a REGION
+  // re-render of the scene beneath, and Skia's antialiased rims are not
+  // invariant under that (the documented materials.js maxSampleReach wobble,
+  // ±dozens of levels ON CURVED EDGES ONLY) — two agents independently traced
+  // the first matrix's outside-clip "failures" to the no-shapes BASELINE
+  // differing at disc rims, not to any clip leak. The OUTSIDE samples must sit
+  // on rasterization-STABLE flat gradient, so the underlay keeps its tone
+  // variety INSIDE the cells (gradient band + text) and puts its discs in the
+  // horizontal gutter strip that no cell's corner samples touch.
+  for (let i = 0; i < 4; i++) add("circle", { x: 120 + i * 220, y: 95, w: 110, h: 110, fill: i % 2 ? "#06d6a0" : "#f8f9fa", strokeWidth: 0 });
   add("text", { x: 20, y: 120, w: 880, h: 60, text: "MATERIAL FILL MATRIX — tone under every cell", size: 40, color: "#1b1b2f", bold: true });
   if (withShapes) {
     for (const cell of CELLS) {

@@ -30,52 +30,22 @@
 
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
+import { CRT_FILL_PARAMS, crtUniformParams } from "../../render_gpu/skia/crt_shader.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
 
-// Phosphor-mask menu → the numeric code the SkSL uMaskType branch expects. The
-// plugin exposes readable names; emit() maps to the code so the packer stays
-// numeric (a select whose value never reaches the uniform block as a string).
-const MASK_TYPES = ["aperture", "shadow", "slot", "none"];
-const MASK_LABELS = { aperture: "Aperture grille", shadow: "Shadow mask", slot: "Slot mask", none: "None" };
-const MASK_CODE = { aperture: 0, shadow: 1, slot: 2, none: 3 };
-
-// The CRT look knobs, all self.* custom properties, grouped by Inspector category.
-// Dimensionless knobs (fractions, gains, counts) are resolution-independent — the
-// look holds at any zoom/size. maskPitch/cornerRadius/blurRadius are WORLD px (the
+// THE LOOK KNOBS LIVE IN THE SHADER ENTRY now (crt_shader.CRT_FILL_PARAMS — the
+// fill-material framework's single-declaration rule: "custom properties become
+// material properties", comic.js is the exemplar). This widget spreads that SAME
+// schema (grouped by Inspector category: signal/scanlines/mask/glow/geometry/
+// color/distress/render) into its customProps and adds ONLY its widget-side
+// geometry knob (cornerRadius — a fill's shape IS its geometry). cornerRadius
+// carries category "geometry" so it groups back into the geometry accordion after
+// bezel, exactly where it was before the split. Dimensionless knobs are
+// resolution-independent; maskPitch/cornerRadius/blurRadius are WORLD px (the
 // backend scales world→device by world.scale·zoom·dpr).
 const CUSTOM = customProps([
-  // ── SIGNAL — the input band-limit + display gamma ────────────────────────────
-  { name: "sourceTVL", kind: "number", default: 240, min: 120, max: 1200, category: "signal", help: "Horizontal source resolution in TV Lines: the finite sharpness of the INPUT signal. ~240 = composite/VHS (soft), ~400 = consumer RGB, ~600 = Sony PVM, ~1000 = broadcast BVM (near-crisp). Applies a horizontal-only Gaussian band-limit of sigma = 0.512·pictureWidth/sourceTVL before scanlines/mask." },
-  { name: "gammaIn", kind: "number", default: 2.4, min: 1, max: 3, category: "signal", help: "Decode gamma: the exponent that linearizes the sampled content before all CRT processing (a real CRT's display gamma is ~2.4). All stages run in linear light." },
-  { name: "gammaOut", kind: "number", default: 2.2, min: 1, max: 3, category: "signal", help: "Encode gamma: the exponent the finished linear colour is re-encoded with on output (~2.2 for a standard surface)." },
-  // ── SCANLINES — the raster beam ──────────────────────────────────────────────
-  { name: "scanlineStrength", kind: "number", default: 0.5, min: 0, max: 1, category: "scanlines", help: "How dark the gaps between scanlines are, from 0 (no lines) to 1 (black gaps). The signature CRT raster texture." },
-  { name: "scanlineCount", kind: "number", default: 240, min: 0, max: 2000, category: "scanlines", help: "Number of source scanlines across the screen height (raster line pitch). ~240 for a 240p tube (arcade/console), ~480 for a hi-res VGA/BVM." },
-  { name: "brightBoost", kind: "number", default: 1.2, min: 0, max: 4, category: "scanlines", help: "Overall beam gain. A CRT runs its beam hot; this also compensates the dimming from the phosphor mask and scanlines." },
-  { name: "beamBloom", kind: "number", default: 0.4, min: 0, max: 1, category: "scanlines", help: "How much a BRIGHT line's beam widens: 0 = every line the same tight width; 1 = bright lines bloom fat and nearly fill the gap (the classic highlight bloom). Eases the scanline Gaussian from tight (dark) to fat (bright)." },
-  // ── MASK — the phosphor sub-pixel structure ──────────────────────────────────
-  { name: "maskType", kind: "select", default: "aperture", options: MASK_TYPES, optionLabels: MASK_LABELS, category: "mask", help: "Phosphor mask geometry: Aperture grille (Trinitron vertical RGB stripes), Shadow mask (offset RGB dots), Slot mask (staggered vertical segments), or None (a single-gun monochrome tube — no colour triads)." },
-  { name: "maskStrength", kind: "number", default: 0.35, min: 0, max: 1, category: "mask", help: "Strength of the phosphor RGB mask, from 0 (off) to 1 (full colour separation). The visible coloured sub-pixel structure of the tube." },
-  { name: "maskPitch", kind: "number", default: 3, min: 1, max: 20, category: "mask", help: "Phosphor triad width (dot pitch) in world px. Smaller = finer phosphor (a sharp pro monitor); larger = chunky consumer phosphor. The mask lives in screen space, so it does NOT curve with the tube." },
-  // ── GLOW — halation + diffusion (single blurred kernel; see shader header) ────
-  { name: "halation", kind: "number", default: 0.12, min: 0, max: 1, category: "glow", help: "Warm under-glass halation: a diffuse orange-red ring bright areas bleed into (the phosphor colour on a monochrome terminal). Scaled by the blurred content's luminance." },
-  { name: "diffusion", kind: "number", default: 0.15, min: 0, max: 1, category: "glow", help: "Neutral diffusion glow: a soft content-coloured bloom from the frosted glass. Shares the single blurred kernel with halation (blurRadius sets its softness)." },
-  { name: "blurRadius", kind: "number", default: 6, min: 0, max: 40, category: "glow", help: "Gaussian blur radius (world px) of the glow source shared by halation + diffusion — how soft/wide the bloom is." },
-  // ── GEOMETRY — tube shape ────────────────────────────────────────────────────
-  { name: "curvature", kind: "number", default: 0.06, min: 0, max: 0.5, category: "geometry", help: "Tube/barrel curvature: 0 = a flat panel, higher = a fatter CRT bulge. The image compresses at the center and stretches to the edges." },
-  { name: "convergence", kind: "number", default: 0.02, min: 0, max: 0.2, category: "geometry", help: "Beam-convergence error: how far the red/blue channels split radially, growing with r² toward the edge (as a fraction of the half-size). Tiny is realistic; pro monitors are near-perfectly converged." },
-  { name: "vignette", kind: "number", default: 0.3, min: 0, max: 1, category: "geometry", help: "Corner darkening, from 0 (even) to 1 (heavy). The falloff of light toward the edges of the curved tube." },
-  { name: "bezel", kind: "number", default: 0.05, min: 0, max: 0.5, category: "geometry", help: "Width of the black inner tube border around the lit screen, as a fraction of the half-size. The dark frame between the glass edge and the picture." },
+  ...CRT_FILL_PARAMS,
   { name: "cornerRadius", kind: "number", default: 44, min: 0, category: "geometry", help: "Rounded-corner radius of the tube face (world px). Old CRTs have generously rounded corners." },
-  // ── COLOR — phosphor tint + white point ──────────────────────────────────────
-  { name: "monochrome", kind: "number", default: 0, min: 0, max: 1, category: "color", help: "Collapse the picture to a single phosphor colour: 0 = full colour tube, 1 = a monochrome phosphor terminal / B&W tube (luminance × the phosphor tint below)." },
-  { name: "whiteBalance", kind: "number", default: 0, min: -1, max: 1, category: "color", help: "White point: -1 warm (~5000K amber), 0 neutral D65, +1 cold (NTSC-J ~9300K bluish). A scalar (not a colour) so the blue channel can exceed 1.0 on the cold end." },
-  { name: "phosphorTint", kind: "color", default: "#ffffff", category: "color", help: "The monochrome phosphor colour, used only as Monochrome → 1: P39 green (#00ff2b), P3 amber (#ff8c00), a bluish-white B&W tube, etc." },
-  // ── DISTRESS — temporal knobs (DOCUMENTED INERT in a still render) ────────────
-  { name: "flicker", kind: "number", default: 0, min: 0, max: 1, category: "distress", help: "INERT in this build: refresh-flicker needs a time uniform, which a still-frame render does not thread to materials. Exposed for presets/completeness; does nothing until a time source is wired in (not faked)." },
-  { name: "persistence", kind: "number", default: 0, min: 0, max: 1, category: "distress", help: "INERT in this build: phosphor persistence (motion trails) needs a previous-frame texture, which this pipeline has no equivalent of. Exposed for presets/completeness; does nothing until a frame-history source is wired in (not faked)." },
-  // ── RENDER — sample resolution ───────────────────────────────────────────────
-  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, category: "render", help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen resolution, 2 = supersample (crisper, slower), 0.5 = half res (faster, softer)." },
 ]);
 
 /**
@@ -220,46 +190,24 @@ export const crtPlugin = {
   /**
    * Pure function. State → display-list: ONE materialBackdrop op naming the "crt"
    * material. The bbox (w, h) IS the screen region (local space; sceneIR wraps it
-   * in the node's world). The look knobs pass through as the op's `params`; the
-   * maskType SELECT is mapped to its numeric shader code here so the packer stays
-   * numeric. The temporal knobs (flicker, persistence) are DELIBERATELY OMITTED
-   * from params — documented inert (no time / frame-history source in a still
-   * render). cornerRadius / blurRadius / backdropScale are top-level op fields
-   * (consumed by handleMaterialBackdrop for geometry, glow sigma, sample res),
-   * not shader uniforms.
+   * in the node's world). The look knobs pass through the SAME schema→uniform
+   * mapping the fill-material path uses (crtUniformParams — one declaration): it
+   * maps the maskType SELECT to its numeric shader code and drops the documented-
+   * inert temporal knobs (flicker, persistence) plus the non-uniform blurRadius /
+   * backdropScale. cornerRadius / blurRadius / backdropScale are top-level op
+   * fields (consumed by handleMaterialBackdrop for geometry, glow sigma, sample
+   * res), not shader uniforms.
    */
   emit(s) {
     const strokeW = s.strokeWidth ?? 0;
-    const maskType = MASK_CODE[s.maskType];
-    if (maskType === undefined)
-      throw new Error(`crt.emit: unknown maskType ${JSON.stringify(s.maskType)} (expected one of ${MASK_TYPES.join(", ")})`);
     return [materialBackdrop({
       material: "crt",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       cornerRadius: s.cornerRadius,
       blurRadius: s.blurRadius,
       backdropScale: s.backdropScale,
-      params: {
-        sourceTVL: s.sourceTVL,
-        gammaIn: s.gammaIn,
-        gammaOut: s.gammaOut,
-        scanlineStrength: s.scanlineStrength,
-        scanlineCount: s.scanlineCount,
-        brightBoost: s.brightBoost,
-        beamBloom: s.beamBloom,
-        maskType,
-        maskStrength: s.maskStrength,
-        maskPitch: s.maskPitch,
-        halation: s.halation,
-        diffusion: s.diffusion,
-        curvature: s.curvature,
-        convergence: s.convergence,
-        vignette: s.vignette,
-        bezel: s.bezel,
-        monochrome: s.monochrome,
-        whiteBalance: s.whiteBalance,
-        phosphorTint: s.phosphorTint,
-      },
+      // The SAME schema→uniform mapping the fill-material path uses (one declaration).
+      params: crtUniformParams(s),
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,
       opacity: s.opacity ?? 1,

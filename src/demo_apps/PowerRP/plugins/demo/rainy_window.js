@@ -29,39 +29,22 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
-import { UNIT_SPAN_SCRUB, bundle, customProps, defaults, props } from "../../core/properties.js";
+import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
-import { particleTime } from "../../render_gpu/particle_clock.js";
+import { RAINY_WINDOW_FILL_PARAMS, rainyWindowUniformParams } from "../../render_gpu/skia/rainy_window_shader.js";
 
-// Direction TO the light: just left of straight-up, so drops catch a top-left glint.
-const LIGHT_ANGLE_DEFAULT = -Math.PI * 0.6;
-
-// The rain look knobs, all self.* custom properties. Dimensionless field knobs
-// (speed, rain, fog, refraction, shine, dropSize, columns) are resolution-
-// independent — the rain field is normalized to the widget's own extent — so the
-// look holds at any zoom/size; cornerRadius/blurRadius are WORLD px (the backend
-// scales to device).
+// The rain look knobs LIVE IN THE SHADER ENTRY now (rainy_window_shader.
+// RAINY_WINDOW_FILL_PARAMS — the fill-material framework's single-declaration rule:
+// "custom properties become material properties"). This widget spreads that SAME
+// schema into its customProps and adds only its widget-side geometry knob
+// (cornerRadius). All the look knobs are self.* custom properties: dimensionless
+// field knobs (speed, rain, fog, refraction, shine, dropSize, columns) are
+// resolution-independent — the rain field is normalized to the widget's own
+// extent — so the look holds at any zoom/size; cornerRadius/blurRadius are WORLD px
+// (the backend scales to device).
 const CUSTOM = customProps([
-  { name: "rain", kind: "number", default: 0.8, min: 0, max: 1, help: "Rain AMOUNT (0..1): how much water is on the glass. Drives drop density/rate — low = a fine mist of static beads, high = heavy running drops with trails." },
-  { name: "fog", kind: "number", default: 0.5, min: 0, max: 1, help: "Fog / steam amount (0..1): how steamed-up the dry pane is (a blurred, lifted, desaturated view). Running drops and trails wipe the fog clear." },
-  // SCRUB: the unit-nominal RATE multiplier — 1 = the authored fall speed, 0 = frozen.
-  // `default: 1.0` is written fractional, but JS stores the integer 1, so nothing in
-  // the row proves it fractional and it fell back to 1 unit/px: one drag-pixel DOUBLED
-  // the speed and 1.5x was unreachable. This is the SAME knob, verbatim, as
-  // plugins/demo/raycast_dither.js `speed` and plugins/demo/sky.js skyClouds `speed`;
-  // all three take the one shared constant so the three copies cannot drift apart.
-  { name: "speed", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Fall-speed multiplier for the running drops. 0 = a frozen still; higher = faster running rain." },
-  { name: "dropSize", kind: "number", default: 1.0, min: 0.1, help: "Overall drop-size multiplier — scales both the running-drop heads and the static beads." },
-  { name: "columns", kind: "number", default: 6, min: 1, help: "Number of running-drop columns across the width — the density granularity. More = finer, more-numerous streaks." },
-  { name: "streakiness", kind: "number", default: 1.0, min: 0.1, max: 4, help: "Trail LENGTH / persistence behind each running drop's head: how far up the fading refractive streak survives. Low = drops with barely a tail; high = long, slow-fading dribble streaks." },
-  { name: "refraction", kind: "number", default: 0.06, min: 0, help: "Droplet refraction strength, as a fraction of the widget's short half-size: how strongly each drop bends the background behind it (the lens). 0 = flat wet patches." },
-  { name: "shine", kind: "number", default: 0.9, min: 0, help: "Droplet SHININESS — the strength of the specular glint + fresnel rim on each drop's curved surface. 0 = matte water." },
-  { name: "lightAngle", kind: "angle", display: "degrees", default: LIGHT_ANGLE_DEFAULT, help: "Direction TO the light (screen space; -90° = straight above, 0° = from the right). Sets where the specular glints sit on each drop." },
-  { name: "tint", kind: "color", default: "#dfe8f0", help: "The fog/steam colour cast — the tone the steamed-up glass is pulled toward (a cool near-white reads as cold-window condensation)." },
-  // ── geometry / render controls (world units + the sample resolution) ─────────
+  ...RAINY_WINDOW_FILL_PARAMS,
   { name: "cornerRadius", kind: "number", default: 26, min: 0, help: "Rounded-corner radius of the window pane (world px). 0 = sharp corners." },
-  { name: "blurRadius", kind: "number", default: 8, min: 0, help: "Gaussian blur radius (world px) of the fog/steam source — how soft the steamed-up glass is." },
-  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen resolution, 2 = supersample (crisper, slower), 0.5 = half res (faster, softer)." },
 ]);
 
 export const rainyWindowPlugin = {
@@ -89,12 +72,14 @@ export const rainyWindowPlugin = {
     ...CUSTOM.rows, // the look knobs (Inspector "Custom" region)
   ],
   /**
-   * Near-pure function (reads the AMBIENT particle clock; pure w.r.t. document
-   * state). State → display-list: ONE materialBackdrop op naming the "rainy_window"
-   * material. The bbox (w, h) IS the pane region (local space; sceneIR wraps it in
-   * the node's world). uTime comes from particleTime() — the freeze constant in the
-   * editor/CLI (a deterministic still) and the wall clock in the presenter. The look
-   * knobs pass through as the op's `params`; the SkSL packer clamps/parses them.
+   * Near-pure function (reads the AMBIENT particle clock via the shared mapping;
+   * pure w.r.t. document state). State → display-list: ONE materialBackdrop op
+   * naming the "rainy_window" material. The bbox (w, h) IS the pane region (local
+   * space; sceneIR wraps it in the node's world). The SAME schema→uniform mapping
+   * the fill-material path uses (rainyWindowUniformParams — one declaration) builds
+   * the op's `params`, including uTime from particleTime() (the freeze constant in
+   * the editor/CLI ⇒ a deterministic still, the wall clock in the presenter). The
+   * SkSL packer clamps/parses the result.
    */
   emit(s) {
     const strokeW = s.strokeWidth ?? 0;
@@ -104,12 +89,7 @@ export const rainyWindowPlugin = {
       cornerRadius: s.cornerRadius,
       blurRadius: s.blurRadius,
       backdropScale: s.backdropScale,
-      params: {
-        time: particleTime(),
-        rain: s.rain, fog: s.fog, speed: s.speed,
-        refraction: s.refraction, shine: s.shine, dropSize: s.dropSize,
-        columns: s.columns, streakiness: s.streakiness, lightAngle: s.lightAngle, tint: s.tint,
-      },
+      params: rainyWindowUniformParams(s),
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,
       opacity: s.opacity ?? 1,
