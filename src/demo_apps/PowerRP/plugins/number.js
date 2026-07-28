@@ -207,7 +207,10 @@ export const numberPlugin = {
     value: DEFAULT_VALUE,
     decimals: DEFAULT_DECIMALS, pad: "none", padWidth: 0, group: false,
     prefix: "", suffix: "",
-    font: DEFAULT_FONT, size: DEFAULT_TEXT_SIZE, bold: false,
+    // seg7, not DEFAULT_FONT: a number box is a READOUT, and the user ruled a
+    // readout defaults to the seven-segment display face (existing docs store
+    // their font at insert time, so only NEW number widgets are affected).
+    font: "seg7", size: DEFAULT_TEXT_SIZE, bold: false,
     fill: DEFAULT_INK, align: "right", valign: "middle",
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode/innerShadow, all OFF
