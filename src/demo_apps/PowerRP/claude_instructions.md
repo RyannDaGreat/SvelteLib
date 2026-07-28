@@ -652,9 +652,16 @@ widget is the scrubber-with-time-presets.
     reverting on pointer-leave, committing only on click. This is a BASE
     behavior of the select/dropdown row kind, not per-widget work — one
     implementation in the Inspector's dropdown wiring covers every material
-    knob, every widget select, forever. QUEUED behind the HintBar agent's
-    file ownership (Inspector/Dropdown); implement immediately after it
-    lands.
+    knob, every widget select, forever. FIXED (commit 6d5adf0): the base
+    mechanism already existed — makeHoverPreview + the app-agnostic Dropdown
+    onpreview/oncancelpreview callbacks were already powering Inspector
+    selects, the Mat picker, and the texture palette; the ONE un-wired site
+    was PaintField's material-param select knob. Hover now stages exactly
+    what click commits (selectKnobWrite is the shared write, presetExpand
+    honored), pinned by a 20/20 pixel-asserting probe (hover repaints while
+    the doc stays byte-identical, close reverts to a 0.000 pixel baseline,
+    click = one undo unit). Export-config dropdowns (RenderCenterModal)
+    deliberately unwired — nothing on canvas to preview.
 
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
