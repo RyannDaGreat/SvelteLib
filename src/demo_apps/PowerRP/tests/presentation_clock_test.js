@@ -47,6 +47,7 @@ import {
   particleTime, startParticleClock, stopParticleClock, setParticleTimeOverride,
 } from "../render_gpu/particle_clock.js";
 import { renderDocToPng } from "../cli/render.js";
+import { createFrameSampler, subFrameTimes, timelinePlan } from "../web/videoExport.js";
 
 const registry = createRegistry();
 registerAll(registry, createCommands());
@@ -240,6 +241,55 @@ for (const [type, label] of [["clock_analog", "demo-insert-clock-live"], ["clock
     assert.equal(a, aAgain, "the same time rendered different pixels — the render is not deterministic");
   });
 }
+
+// ── (7) THE EXPORT SEAM — fps-correct, through createFrameSampler ─────────────
+//
+// The pixel proof above drives the clock with setParticleTimeOverride DIRECTLY,
+// which is the LEAF of the export path but not the wiring above it. The MP4
+// exporter reaches that leaf through web/videoExport.createFrameSampler: for
+// output frame N it computes the wall-second subFrameTimes(N, 1, fps) = (N+0.5)/fps
+// and hands it to `setTime` (renderJobPage wires setTime = setParticleTimeOverride).
+// So the CLOCK IS A FUNCTION OF WALL SECONDS, not of frame index — which is the
+// whole "render 30 vs 60 fps and it takes that into account" requirement. This
+// section exercises that exact seam in bare node (samples:1 allocates no canvas,
+// so createFrameSampler needs no DOM) with a renderFrame that, instead of pixels,
+// reports the `= time` the evaluator actually saw at the sampler's chosen instant.
+
+/** Query (evaluates; drives the module clock). Runs a `= time` doc through
+ * createFrameSampler at `(frameIndex, fps)` and returns the `time` the evaluator
+ * saw — i.e. the wall-second the export seam selected for that frame.
+ * @example // await sampledTime(clockDoc("clock_digital")[0], id, 0, 30) // 0.0166… ((0+0.5)/30) */
+async function sampledTime(doc, id, frameIndex, fps) {
+  let seen = null;
+  const sampler = createFrameSampler({
+    plan: timelinePlan({ slides: [{}] }, { holdSeconds: 2 }), // duration 2s ⊇ every t below
+    renderFrame: () => { seen = evaluateState(foldState(doc, 0, 1), registry).state.items[id].time; return null; },
+    width: 4, height: 4, fps, samples: 1, setTime: setParticleTimeOverride,
+  });
+  try { await sampler.sample(frameIndex); } finally { sampler.release(); }
+  return seen;
+}
+
+await atest("EXPORT SEAM: frame N at fps f evaluates `= time` to exactly (N+0.5)/f", async () => {
+  const [doc, id] = clockDoc("clock_digital", { x: 0, y: 0 });
+  for (const [n, fps] of [[0, 30], [15, 30], [7, 60], [0, 24]]) {
+    const t = await sampledTime(doc, id, n, fps);
+    assert.equal(t, subFrameTimes(n, 1, fps)[0], `frame ${n} @ ${fps}fps`);
+    assert.equal(t, (n + 0.5) / fps);
+  }
+  assert.equal(particleTime(), EDITOR_FREEZE_TIME); // release() restored the freeze
+});
+
+await atest("EXPORT SEAM: the SAME wall-second yields the SAME value at two frame rates", async () => {
+  // 10fps frame 0 and 30fps frame 1 both land on wall-second 0.05s:
+  //   (0+0.5)/10 = 0.05 = (1+0.5)/30. The clock is seconds-since-start, so a
+  //   deck exported at 10fps and at 30fps agrees wherever their frames coincide.
+  const [doc, id] = clockDoc("clock_digital", { x: 0, y: 0 });
+  const at10 = await sampledTime(doc, id, 0, 10);
+  const at30 = await sampledTime(doc, id, 1, 30);
+  assert.equal(at10, 0.05);
+  assert.equal(at30, at10, "same wall-second rendered a different time at 30fps — the export is frame-index-driven, not time-driven");
+});
 
 console.log(failures ? `\n${failures} presentation-clock test(s) FAILED` : "\npresentation-clock tests passed");
 process.exit(failures ? 1 : 0);
