@@ -52,6 +52,27 @@
  *                                           // render_gpu/effects.effectBoundsOf).
  *                                           // Absent → {0,0,w,h} in the node's
  *                                           // own world (the bbox default).
+ *     cullMargin?(state) → local halo       // the reach this widget's EFFECTS
+ *                                           // throw AROUND its ink, inflating the
+ *                                           // cull/capture AABB (core/view.js).
+ *                                           // Injected automatically for every
+ *                                           // plugin the effects bundle reaches;
+ *                                           // ORTHOGONAL to localBounds, which is
+ *                                           // the ink itself.
+ *     hitTest?(state, lx, ly, tol)          // is a LOCAL point on this widget's
+ *                                           // SILHOUETTE? Absent → the whole bbox
+ *                                           // counts (selection-grab parity with
+ *                                           // every design tool). hitTestWorld?(
+ *                                           // node, wx, wy, nodesById) instead for
+ *                                           // a widget whose geometry lives in
+ *                                           // WORLD space (the arrow family).
+ *     modifierPoints?(state)                // the "PPT yellow squares": LOCAL
+ *       → [{id, x, y, apply, constrain?}]   // draggable handles that each write ONE
+ *                                           // parameter. Wrapped local→world by
+ *                                           // core/derive.nodeModifierPoints — see
+ *                                           // THE HANDLE-CONSTRAINT PROTOCOL below.
+ *     editPoints?(node, nodesById)          // the WORLD-space endpoint handles of a
+ *                                           // two-point widget (core/endpoints.js).
  *     commands?: [{id, title, run(app)}]    // palette commands this plugin adds
  *     presets?: [{name, description, props}] // ONE preset family (see below)
  *     presetFamilies?: [{id, title, presets}] // N ORTHOGONAL preset families
@@ -62,6 +83,75 @@
  * capabilities, shared core modules (e.g. core/endpoints.js), and document
  * state. (A BirdsEye-style convention test suite enforcing this mechanically
  * is planned — see the dump manifest — but does not exist yet.)
+ *
+ * ── NEGATIVE w / h: WHAT A HOOK IS GUARANTEED NOT TO SEE ─────────────────────
+ *
+ * A STORED w or h MAY BE NEGATIVE, and it means a REFLECTION. The pose is a
+ * SIMILARITY ({x, y, rotation, scale}, no skew), which is orientation-preserving
+ * and therefore structurally cannot carry one — so the flip lives in the BOX
+ * instead: `x' = x + scale·w, w' = -w` (commit 76fd076; core/geometry.js
+ * flippedBox). It is a first-class stored form, reachable by Flip Horizontal /
+ * Vertical, by dragging a resize handle THROUGH the opposite edge, by typing a
+ * negative number into the Inspector, and mid-tween on an animated flip.
+ *
+ * A PLUGIN HOOK NEVER SEES IT. Every hook above is handed a state whose x/y/w/h
+ * have already passed through THE SEAM — core/geometry.js `unsignedState`, which
+ * replaces a signed box with the positive box it denotes. Because the flip is an
+ * INVOLUTION, unsigning a flipped box returns the original byte-for-byte, so all
+ * four sign spellings of one footprint derive to the IDENTICAL state, world,
+ * bounds, anchors, snap features, cull answer and IR. So a widget author writes
+ * `halfW = s.w / 2` and `0 <= lx <= s.w` exactly as if flips did not exist, and
+ * cannot get this wrong because there is no sign to get wrong. That is the whole
+ * cost of the feature: the reflection survives ONLY as `node.mirror`, which just
+ * two consumers read — the render walk (render_gpu/ports.js mirrorPush, which
+ * realizes it as a SIGNED similarity at paint time, since mirroring text GLYPHS
+ * needs a real matrix reflection) and hit testing (core/derive.js hitNode, which
+ * reflects the probe point back through core/geometry.js unmirroredLocal).
+ *
+ * SO IS `node.state.w`, AND THAT MATTERS OUTSIDE CORE. A render node's `state` IS
+ * the unsigned box and its `world` is built from that box, so app-shell code that
+ * maps `T.apply(node.world, node.state.w / 2, ...)` is correct as written and must
+ * NOT be "fixed" with render_gpu/ir.js signedApply. signedApply is required
+ * exactly where a frame can carry signX/signY — an IR pushTransform inside a
+ * backend that draws at the device root instead of riding the canvas CTM — and
+ * `node.world` never can.
+ *
+ * TWO ENTRANCES TO THE SEAM, ONE MAP. Most hooks are reached from a derived node,
+ * and `deriveRenderTree` unsigns there. But the EXPRESSION PASS runs BEFORE any
+ * node exists, so it reads RAW item state, and it calls `anchors` and
+ * `closestAnchor` itself; it therefore enters the same map explicitly (as
+ * core/derive.js pointInNodeBox already did). This is not a stylistic detail — it
+ * is where the contract had a hole. `@item.ml` was resolved against the raw box,
+ * whose local origin is the RIGHT edge once w is negative, so the equation
+ * returned the right edge while the `ml` GLYPH the user clicks to write that
+ * equation was drawn at the left edge: a bound arrow jumped the full width of a
+ * widget whose silhouette had not moved. Anchor ids are GEOMETRIC names and a flip
+ * does not move the silhouette, so `ml` is the left edge on BOTH sides of the
+ * feature or the feature is incoherent. tests/negative_size_test.js pins all of
+ * this per widget, data-driven off this registry so a widget added later is
+ * covered with no list to maintain.
+ *
+ * NO HOOK IS EXEMPT. A widget needing to KNOW it is reflected would be asking for
+ * something the contract deliberately withholds; the one place handedness is
+ * genuinely missing is a procedural material's PATTERN (see ports.js mirrorPush),
+ * and closing that means adding a handedness uniform to the material contract, not
+ * relaxing this one.
+ *
+ * ── THE HANDLE-CONSTRAINT PROTOCOL (`modifierPoints[].constrain`) ─────────────
+ *
+ * A constrained handle answers TWO separable questions, and welding them together
+ * is what kept modifier points DRAG-ONLY: `constrain(state, desired) → allowed`
+ * (where may it go — a pure projection) and `apply(state, allowed) → partial
+ * state` (how is that stored). Every constraint used to live imperatively inside
+ * `apply`, clamping on its way to writing a parameter, so nothing could ASK where
+ * a handle was allowed to be without also committing a write — and therefore only
+ * a mouse could drive one. Declaring the projection makes any source of a desired
+ * point a valid driver: a drag, an equation, or a binding to another anchor
+ * (commit 2a81b95). Optional, LOCAL units, defaulted to UNCONSTRAINED (the
+ * identity) by core/derive.js nodeModifierPoints, so a widget with no restricted
+ * handle needs nothing and every consumer may call it unconditionally. Full
+ * reasoning, including why "nearest allowed" is a documented CONVENTION rather
+ * than an enforced law, lives at THE HANDLE-CONSTRAINT PROTOCOL in core/derive.js.
  *
  * THE UNIVERSAL EFFECTS BUNDLE is injected HERE (see withUniversalEffects): a
  * plugin does not opt in, it opts OUT by being ineligible. That is why the

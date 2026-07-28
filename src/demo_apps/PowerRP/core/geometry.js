@@ -306,6 +306,45 @@ export function normalizedBox(state) {
 }
 
 /**
+ * Pure function. THE SEAM, as a state→state map: an item state with any negative
+ * extent replaced by the positive box it denotes (`normalizedBox`), and returned
+ * UNTOUCHED — same object identity — when neither extent is signed.
+ *
+ * WHY IT IS A SEPARATE FUNCTION FROM normalizedBox. Two kinds of caller need this
+ * map, and they need different halves of it. `deriveRenderTree` needs the mirror
+ * FLAGS as well, because it is the render walk's job to realize the reflection; the
+ * PRE-DERIVATION readers (core/expressions.js — the equation pass runs before any
+ * node exists) need only the state, because an equation asks a geometric question
+ * and the reflection is not part of the answer. Handing both the same map is what
+ * makes them agree: before this existed, `@item.ml` evaluated against a RAW flipped
+ * box and returned the box's RIGHT edge, while the `ml` anchor GLYPH the user clicks
+ * to write that equation was drawn at the left edge by the derived path — the arrow
+ * jumped the width of the widget on flip, which is the exact behaviour commit
+ * 76fd076 claimed to have avoided. It had avoided it on the derived side only.
+ *
+ * THE OBJECT-IDENTITY GUARANTEE IS LOAD-BEARING, not an optimization: every item is
+ * re-derived on every frame, and `deriveRenderTree` distinguishes "flipped" from
+ * "not flipped" by `state !== itemState`, so an unflipped item must come back as the
+ * very same object with no `mirror` mark at all.
+ *
+ * @param {object} state - an item state that may carry a negative w and/or h
+ * @returns {object} `state` itself, or a shallow clone with x/y/w/h unsigned
+ *
+ * @example unsignedState({x: 10, y: 20, w: 100, h: 50}).w // 100
+ * @example unsignedState({x: 110, y: 20, w: -100, h: 50}) // {x: 10, y: 20, w: 100, h: 50}
+ * @example unsignedState({x: 110, y: 70, w: -100, h: -50, fill: "#f00"}) // {x: 10, y: 20, w: 100, h: 50, fill: "#f00"}
+ * @example // an unflipped state is the SAME object, not a copy:
+ * @example ((s) => unsignedState(s) === s)({x: 0, y: 0, w: 8, h: 8}) // true
+ * @example // a widget with no box is untouched (nothing to unsign):
+ * @example ((s) => unsignedState(s) === s)({from: {x: 0, y: 0}, to: {x: 1, y: 1}}) // true
+ */
+export function unsignedState(state) {
+  if ((state.w ?? 0) >= 0 && (state.h ?? 0) >= 0) return state;
+  const box = normalizedBox(state);
+  return { ...state, x: box.x, y: box.y, w: box.w, h: box.h };
+}
+
+/**
  * Pure function. Reflects a LOCAL point back through a node's mirror flags, so a
  * point expressed in the widget's on-screen (mirrored) frame lands in the
  * UNMIRRORED frame every plugin's own geometry is written in. The mirror is a

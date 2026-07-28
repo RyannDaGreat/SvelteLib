@@ -92,6 +92,7 @@
 import { isTree, copied, copiedDeep, getPath, setPath, leaves } from "./deltas.js";
 import * as T from "./transform.js";
 import { worldTransform, composedMemberInfluence, memberOwnerGroups } from "./derive.js";
+import { unsignedState } from "./geometry.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 import { isHexColor } from "./interpolators.js";
@@ -1610,11 +1611,18 @@ export function listPropertyPaths(plugin) {
  * undeclared array (a rich-text run list, a filmstrip's frame URLs) silently gains
  * equation semantics — a run whose text happens to begin with "=" is still text.
  *
+ * EXPORTED because `[...leaves(item), ...declaredListLeaves(item)]` filtered by
+ * isEquationValue IS the canonical "every equation slot of one item" walk, and a
+ * consumer OUTSIDE this module needs it: core/document.js clonedItemStates
+ * rewrites the item references inside those slots when a selection is cloned, and
+ * a per-VERTEX `@id` reference (polygon points bound to another widget's anchors)
+ * lives in exactly the declared-list leaf that leaves() cannot see.
+ *
  * @example // for {points: [[0, "=self.w"]], pointsActive: [true, false]} it yields
  * @example //   [["points", 0, 0], 0], [["points", 0, 1], "=self.w"],
  * @example //   [["pointsActive", 0], true], [["pointsActive", 1], false]
  */
-function* declaredListLeaves(node, prefix = []) {
+export function* declaredListLeaves(node, prefix = []) {
   for (const [key, val] of Object.entries(node)) {
     const path = [...prefix, key];
     if (Array.isArray(val)) {
@@ -1679,8 +1687,17 @@ function mutSetPath(tree, path, value) {
 // circle / rect / rounded-rect / crop box / future custom outlines all solve
 // through ONE path with no per-shape branch here.
 
+// BOTH enter THE FLIP SEAM (core/geometry.js unsignedState) on the way in, because
+// this pass runs BEFORE any render node exists and so reads RAW item state, which
+// may carry a signed extent. Without it a vertically-flipped rect's rim answered its
+// BOTTOM edge for a target level with its middle (measured: 70 units off on a
+// 140-tall box) — closestPointOnRoundedRect clamps into [0..h] and a negative h makes
+// that range empty. A rim is a question about the widget's SILHOUETTE, which a flip
+// does not move, so the unsigned box is the honest input.
+
 /** Pure function. The world-space CENTER of a bbox item (its rim's facing-seed hint). */
-function rimCenter(item) {
+function rimCenter(rawItem) {
+  const item = unsignedState(rawItem);
   return T.apply(worldTransform(item), (item.w ?? 0) / 2, (item.h ?? 0) / 2);
 }
 
@@ -1689,8 +1706,9 @@ function rimCenter(item) {
  * closest-point map for one widget's rim: (qx, qy) → the world rim point nearest
  * (qx, qy). Throws if the plugin has no closestAnchor (not a rim widget).
  */
-function rimProjector(item, plugin) {
-  if (!plugin.closestAnchor) throw new Error(`"${item.type}" has no rim (no closestAnchor) for closest_to_rim`);
+function rimProjector(rawItem, plugin) {
+  if (!plugin.closestAnchor) throw new Error(`"${rawItem.type}" has no rim (no closestAnchor) for closest_to_rim`);
+  const item = unsignedState(rawItem);
   const world = worldTransform(item);
   return (qx, qy) => {
     const local = plugin.closestAnchor(item, qx, qy, world);
@@ -2147,13 +2165,23 @@ function computeEvaluatedState(state, registry) {
     // the pivot is a FIXED point. Otherwise (cross-item ref): the PAINTED
     // worldTransform (pivoted about rotationAnchor), PLUS the group influence if
     // the target is a grouped member — byte-identical to derive.js node.world.
-    let world = d.selfBase ? { ...T.fromState(out.items[d.itemId]), rotation: 0 } : worldTransform(out.items[d.itemId]);
+    // RE-READ after the settle (out is mutated in place) and enter THE FLIP SEAM
+    // (core/geometry.js unsignedState): this pass runs BEFORE derivation, so it is
+    // the ONE place a plugin's `anchors` hook can still be handed a signed box.
+    // WHY THAT MATTERS AND IS NOT COSMETIC: anchor ids are GEOMETRIC names and a
+    // flip does not move the silhouette, so `ml` must stay the left edge (76fd076).
+    // The derived path already did that; this one did not, so the `ml` glyph was
+    // drawn at the left edge while the equation the user wrote by clicking it
+    // evaluated to the RIGHT edge — a bound arrow jumped the widget's whole width
+    // on flip. Same map on both sides is what makes the two halves one feature.
+    const target = unsignedState(out.items[d.itemId]);
+    let world = d.selfBase ? { ...T.fromState(target), rotation: 0 } : worldTransform(target);
     if (!d.selfBase) {
       requireGroups(d.itemId);
       const influence = composedMemberInfluence(ownerGroups.get(d.itemId), out);
       if (influence) world = T.compose(influence, world);
     }
-    const anchor = plugin.anchors(out.items[d.itemId]).find((a) => a.id === d.anchorId);
+    const anchor = plugin.anchors(target).find((a) => a.id === d.anchorId);
     return T.apply(world, anchor.x, anchor.y)[d.coord];
   };
 
@@ -2477,6 +2505,81 @@ export function withVariableRenamed(doc, oldName, newName, registry) {
     return delta === slide.delta ? slide : { ...slide, delta };
   });
   return { ...doc, slides };
+}
+
+/**
+ * Pure function. The itemId a STORED "@"-form reference token names, or null
+ * when the token is not an item reference at all (a variable, a function name,
+ * a `self.` reference).
+ *
+ * Mirrors parseStoredRef's split rule — "item ids never contain '_', so the
+ * split is unambiguous" — but WITHOUT its property requirement, so it also
+ * answers for a bare WIDGET-ARGUMENT token (`closest_to_rim(@a, @b)`, where the
+ * id carries no ".<prop>" suffix and parseStoredRef therefore throws).
+ *
+ * @example storedRefItemId("@ab12cd34.x") // "ab12cd34"
+ * @example storedRefItemId("@ab12cd34_tm.y") // "ab12cd34" (anchor form: id, then _anchor)
+ * @example storedRefItemId("@ab12cd34") // "ab12cd34" (a bare widget argument)
+ * @example storedRefItemId("speed") // null (a variable, not an item reference)
+ * @example storedRefItemId("self.w") // null (identity-stable; never rewritten)
+ */
+export function storedRefItemId(token) {
+  if (!token.startsWith("@")) return null;
+  const dot = token.indexOf(".");
+  const head = dot === -1 ? token.slice(1) : token.slice(1, dot);
+  if (!head) return null; // a lone "@" names nothing
+  const us = head.indexOf("_");
+  return us === -1 ? head : head.slice(0, us);
+}
+
+/**
+ * Pure function. Rewrites an equation's STORED item references for a SUBGRAPH
+ * CLONE: every `@<id>` token whose id is a key of `idMap` is re-pointed at the
+ * mapped id (keeping its anchor/property suffix verbatim), and every OTHER
+ * reference is left exactly as it was. Returns the rewritten source PLUS the
+ * itemIds that were deliberately left alone (`external` — the edges that LEAVE
+ * the cloned set), which the caller checks for danglers.
+ *
+ * WHY TOKEN-STRUCTURAL, NOT A STRING REPLACE: a blind replace of "@oldId" also
+ * matches inside a string literal ("@ab12 wins") and matches a PREFIX of a
+ * longer id, so it can corrupt text and mis-point references. mapRefTokens
+ * hands over exactly the REFERENCE tokens (grammar — member projections,
+ * boolean literals — is never offered), which is the same guarantee
+ * withVariableRenamed's rename relies on.
+ *
+ * The UNIVERSAL leading "=" marker is split off before tokenizing and rejoined
+ * verbatim after (the same `EQ_PREFIX_RE` marker isEquationValue tests and
+ * parseExpression strips): tokenize rejects "=" as an unexpected character, so
+ * without this every any-type `= @id.w / 2` binding would fall into the
+ * unparseable branch below and silently keep pointing at the ORIGINAL item.
+ *
+ * A source that does not tokenize is returned VERBATIM with no external ids —
+ * the same ruling withVariableRenamed's renameRefs makes for the same reason:
+ * a malformed equation is reported by its own error affordance, and a clone must
+ * not be the thing that explodes on it.
+ *
+ * @example withItemRefsRemapped("= @a.w / 2", new Map([["a", "z"]])) // {src: "= @z.w / 2", external: []} (the "=" marker survives)
+ * @example withItemRefsRemapped("@a.x + 10", new Map([["a", "z"]])) // {src: "@z.x + 10", external: []}
+ * @example withItemRefsRemapped("@a_tm.x", new Map([["a", "z"]])) // {src: "@z_tm.x", external: []} (anchor suffix kept)
+ * @example withItemRefsRemapped("@a.x + @c.x", new Map([["a", "z"]])) // {src: "@z.x + @c.x", external: ["c"]} (c is outside the set)
+ * @example withItemRefsRemapped("closest_to_rim(@a, @c).x", new Map([["a", "z"]])) // {src: "closest_to_rim(@z, @c).x", external: ["c"]}
+ * @example withItemRefsRemapped("speed * 2", new Map([["a", "z"]])) // {src: "speed * 2", external: []}
+ */
+export function withItemRefsRemapped(src, idMap) {
+  const marker = EQ_PREFIX_RE.exec(src)?.[0] ?? ""; // the universal "=" (tokenize rejects it)
+  const body = src.slice(marker.length);
+  const external = new Set();
+  try {
+    const out = mapRefTokens(body, (token) => {
+      const id = storedRefItemId(token);
+      if (id === null) return token;
+      if (!idMap.has(id)) { external.add(id); return token; }
+      return `@${idMap.get(id)}${token.slice(1 + id.length)}`;
+    });
+    return { src: marker + out, external: [...external] };
+  } catch {
+    return { src, external: [] }; // not a parseable equation — leave it (its own error affordance reports it)
+  }
 }
 
 /** Pure function. The type an item is created with (first slide keying it), or null. */
