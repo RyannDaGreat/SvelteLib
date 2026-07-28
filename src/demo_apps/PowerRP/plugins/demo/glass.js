@@ -49,18 +49,18 @@ const CUSTOM = customProps([
   { name: "materialize", kind: "number", default: 1, min: 0, max: 1, help: "The Spotlight appear ramp: 0 = gone (backdrop merely bulges), 1 = fully settled glass. Keyframe it to animate an appear (v1: not driven by the presenter)." },
   // ── material-character knobs (the values that used to be baked shader
   // constants — now equation-capable self.* props feeding the material) ────────
-  { name: "squircle", kind: "number", default: 4, min: 2, help: "Corner curvature exponent: 2 = a plain circular arc, higher = continuous Apple-style squircle corners (4 ≈ macOS). Superellipse Lp-norm. Surface tension spreads THIS curve over the whole outline." },
+  { name: "squircle", kind: "number", default: 4, min: 2, scrub: 0.05, help: "Corner curvature exponent: 2 = a plain circular arc, higher = continuous Apple-style squircle corners (4 ≈ macOS). Superellipse Lp-norm. Surface tension spreads THIS curve over the whole outline." },
   { name: "surfaceTension", kind: "number", default: 0, min: 0, max: 1, help: "How far the STRAIGHT EDGES have relaxed into the corner curve. 0 = a rectangle with curved corners (flat sides, the default). 1 = the fully relaxed superellipse inscribed in the box — every point of the outline is curved, nothing is flat. Physically it is what surface tension does to a pinned liquid: pull it toward the roundest shape its footprint allows. At 1 the corner radius no longer matters; the exponent alone shapes the whole outline (2 gives a true ellipse, 4 a fat squircle, 8 a nearly-square blob)." },
   { name: "chromatic", kind: "number", default: 0.08, min: 0, help: "Chromatic aberration at the refracting rim: the R/B channels sample slightly off the G. A TINY value gives a faint colored edge fringe like real glass; large = a rainbow smear." },
   { name: "sheen", kind: "number", default: 0.1, min: 0, help: "Strength of the broad surface sheen (the soft gradient of light across the face). Kept low so the interior stays clear." },
-  { name: "specularPower", kind: "number", default: 8, min: 1, help: "Tightness of the edge specular lobe: higher = a thinner, crisper bright hairline on the lit edge." },
+  { name: "specularPower", kind: "number", default: 8, min: 1, scrub: 0.1, help: "Tightness of the edge specular lobe: higher = a thinner, crisper bright hairline on the lit edge." },
   { name: "contactShadow", kind: "number", default: 0.26, min: 0, help: "Darkness of the faint contact shadow on the edge OPPOSITE the light (the glass sitting on the surface)." },
   { name: "caustic", kind: "number", default: 0.12, min: 0, help: "How much SHARP (unblurred) backdrop bleeds into the very rim — the bright refracted streaks. Low to avoid ghosting." },
   { name: "edgeLight", kind: "number", default: 0.14, min: 0, help: "Brightness of the crisp perimeter outline (the glass edge catching light all the way around)." },
   { name: "tintAdaptivity", kind: "number", default: 1, min: 0, max: 1, help: "0 = a fixed frosted tint; 1 = fully luminance-adaptive (pale skin over dark content, smoky over light — the macOS content-adaptive look)." },
   { name: "shadowStrength", kind: "number", default: 0.3, min: 0, help: "Darkness of the soft drop shadow cast beneath the panel (0 = no shadow)." },
   // ── render control: the resolution the below-content is sampled at ───────────
-  { name: "backdropScale", kind: "number", default: 1, min: 0.25, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen (zoom) resolution, 2 = supersample (crisper refraction, slower), 0.5 = half res (faster, softer), higher = sharper still. Any GL-style backdrop effect must pick this trade-off." },
+  { name: "backdropScale", kind: "number", default: 1, min: 0.25, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen (zoom) resolution, 2 = supersample (crisper refraction, slower), 0.5 = half res (faster, softer), higher = sharper still. Any GL-style backdrop effect must pick this trade-off. The min 0.25 floor is a PERFORMANCE guard, not a look choice — below it the backdrop is uselessly coarse." },
 ]);
 
 /**

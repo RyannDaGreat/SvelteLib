@@ -333,7 +333,7 @@ export const RAYCAST_DITHER_FILL_PARAMS = [
   { name: "warp", kind: "number", default: 0.18, min: 0, help: "Domain-warp amount: how much an animated value-noise field wobbles the streak edges, so they read as organic aurora rather than perfect ellipses. 0 = clean edges." },
   { name: "grain", kind: "number", default: 0.09, min: 0, help: "Film-grain / DITHER amount — luminance noise added just before 8-bit output. Doubles as dither: it shatters the banding a very smooth gradient would otherwise show. 0 = smooth (banding visible)." },
   { name: "grainScale", kind: "number", default: 1.0, min: 0.05, help: "Grain cell size in world px. ~1 = a fine per-pixel film grain; larger = chunkier speckle. The grain is world-locked (a texture painted on the widget), so it scales with zoom." },
-  { name: "grainSpeed", kind: "number", default: 18.0, min: 0, help: "Grain re-randomize rate in Hz — how fast the grain flickers frame to frame. 0 = a static grain texture." },
+  { name: "grainSpeed", kind: "number", default: 18.0, min: 0, scrub: 0.5, help: "Grain re-randomize rate in Hz — how fast the grain flickers frame to frame. 0 = a static grain texture." },
   { name: "background", kind: "color", default: "#050608", help: "The base/darkest colour filling the dark gaps between the streaks (a near-black, faintly cool tone on the live hero)." },
   { name: "color0", kind: "color", default: "#ff5e73", help: "Palette spot 1 (a bright pink-red streak core). The colour's ALPHA is the spot's weight — a fully-opaque colour is full strength; drop alpha to fade it, alpha 0 disables the spot." },
   { name: "color1", kind: "color", default: "#eb1f36", help: "Palette spot 2 (crimson). Alpha = spot weight (0 disables)." },

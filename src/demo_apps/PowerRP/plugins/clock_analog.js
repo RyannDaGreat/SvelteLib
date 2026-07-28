@@ -261,8 +261,11 @@ const MINOR_TICK_WIDTH = 1.5;            // canvas units
 const HUB_RADIUS = 6;                    // canvas units — center cap over the pivots
 const HOUR_MARKS = 12;                   // numerals / hour ticks around the dial
 const DEG_PER_HOUR_MARK = FULL_TURN_DEG / HOUR_MARKS; // 30° between hour marks
-const MIN_HAND_LENGTH = 0.05;            // hand-tip drag radius clamp (fraction of R)
-const MAX_HAND_LENGTH = 1;
+const MIN_HAND_LENGTH = 0.05;            // hand-tip drag radius FLOOR (fraction of R): a hand must have length
+// NO upper cap: a hand MAY overhang the face (real clock designs do). Infinity mirrors the
+// hand-WIDTH clamp (clamp(width, MIN_HAND_WIDTH, Infinity)) already shipped below — the render,
+// anchors and the tip-drag annulus all read this, so an author can type or drag a hand past R.
+const MAX_HAND_LENGTH = Infinity;
 // A hand-tip drag landing EXACTLY on the pivot has no direction to read an angle
 // from. This is the heading it resolves to: +y is local screen-down, i.e. 6
 // o'clock — which is where unitVectorToClockAngle's own degenerate branch already
@@ -312,13 +315,13 @@ export const clockAnalogPlugin = {
     BOOL("showSecondHand", "Second hand", "Show the thin, fast second hand (and its drag handle)."),
     COLOR("hourHandColor", "Hour hand color", "Color of the short hour hand."),
     N("hourHandWidth", "Hour hand width", "Thickness of the hour hand, in canvas units.", { min: MIN_HAND_WIDTH }),
-    N("hourHandLength", "Hour hand length", "Length of the hour hand as a fraction of the face radius. Drag its yellow tip handle to spin the clock and change this length at once.", { min: MIN_HAND_LENGTH, max: MAX_HAND_LENGTH }),
+    N("hourHandLength", "Hour hand length", "Length of the hour hand as a fraction of the face radius (no upper cap — it may overhang the face). Drag its yellow tip handle to spin the clock and change this length at once.", { min: MIN_HAND_LENGTH, scrub: 0.01 }),
     COLOR("minuteHandColor", "Minute hand color", "Color of the long minute hand."),
     N("minuteHandWidth", "Minute hand width", "Thickness of the minute hand, in canvas units.", { min: MIN_HAND_WIDTH }),
-    N("minuteHandLength", "Minute hand length", "Length of the minute hand as a fraction of the face radius. Drag its tip to set the minutes.", { min: MIN_HAND_LENGTH, max: MAX_HAND_LENGTH }),
+    N("minuteHandLength", "Minute hand length", "Length of the minute hand as a fraction of the face radius (no upper cap — it may overhang the face). Drag its tip to set the minutes.", { min: MIN_HAND_LENGTH, scrub: 0.01 }),
     COLOR("secondHandColor", "Second hand color", "Color of the second hand."),
     N("secondHandWidth", "Second hand width", "Thickness of the second hand, in canvas units.", { min: MIN_HAND_WIDTH }),
-    N("secondHandLength", "Second hand length", "Length of the second hand as a fraction of the face radius. Drag its tip to set the seconds.", { min: MIN_HAND_LENGTH, max: MAX_HAND_LENGTH }),
+    N("secondHandLength", "Second hand length", "Length of the second hand as a fraction of the face radius (no upper cap — it may overhang the face). Drag its tip to set the seconds.", { min: MIN_HAND_LENGTH, scrub: 0.01 }),
     ...props("opacity"),
     ...bundle("effects"),
   ],

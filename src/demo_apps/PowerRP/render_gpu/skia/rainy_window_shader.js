@@ -454,13 +454,13 @@ export const RAINY_WINDOW_FILL_PARAMS = [
   { name: "speed", kind: "number", default: 1.0, min: 0, scrub: UNIT_SPAN_SCRUB, help: "Fall-speed multiplier for the running drops. 0 = a frozen still; higher = faster running rain." },
   { name: "dropSize", kind: "number", default: 1.0, min: 0.1, help: "Overall drop-size multiplier — scales both the running-drop heads and the static beads." },
   { name: "columns", kind: "number", default: 6, min: 1, help: "Number of running-drop columns across the width — the density granularity. More = finer, more-numerous streaks." },
-  { name: "streakiness", kind: "number", default: 1.0, min: 0.1, max: 4, help: "Trail LENGTH / persistence behind each running drop's head: how far up the fading refractive streak survives. Low = drops with barely a tail; high = long, slow-fading dribble streaks." },
+  { name: "streakiness", kind: "number", default: 1.0, min: 0, scrub: 0.01, help: "Trail LENGTH / persistence behind each running drop's head: how far up the fading refractive streak survives. Low = drops with barely a tail; high = long, slow-fading dribble streaks. NO UPPER CAP — the SkSL divides the fade exponent by max(streakiness, EPS) and the trail stays within [0,1] at any value, so a huge number just gives an ever-longer trail and 0 gives none." },
   { name: "refraction", kind: "number", default: 0.06, min: 0, help: "Droplet refraction strength, as a fraction of the widget's short half-size: how strongly each drop bends the background behind it (the lens). 0 = flat wet patches." },
   { name: "shine", kind: "number", default: 0.9, min: 0, help: "Droplet SHININESS — the strength of the specular glint + fresnel rim on each drop's curved surface. 0 = matte water." },
   { name: "lightAngle", kind: "angle", display: "degrees", default: LIGHT_ANGLE_DEFAULT, help: "Direction TO the light (screen space; -90° = straight above, 0° = from the right). Sets where the specular glints sit on each drop." },
   { name: "tint", kind: "color", default: "#dfe8f0", help: "The fog/steam colour cast — the tone the steamed-up glass is pulled toward (a cool near-white reads as cold-window condensation)." },
   { name: "blurRadius", kind: "number", default: 8, min: 0, help: "Gaussian blur radius (world px) of the fog/steam source — how soft the steamed-up glass is." },
-  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen resolution, 2 = supersample (crisper, slower), 0.5 = half res (faster, softer)." },
+  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen resolution, 2 = supersample (crisper, slower), 0.5 = half res (faster, softer). The 0.25..2 bounds are a PERFORMANCE guard, not a look choice — below 0.25 the backdrop is uselessly coarse and above 2 the re-render cost balloons." },
 ];
 
 /**

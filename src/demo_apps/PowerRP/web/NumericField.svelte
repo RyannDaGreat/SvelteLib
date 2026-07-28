@@ -108,7 +108,18 @@
   // A non-number default (an `=` equation string) is no precision evidence, so it
   // reads as absent.
   let propDefault = $derived.by(() => {
-    if (path[0] !== "items") return null; // a Variables Panel row owns no plugin
+    // A Variables Panel row (["vars", name]) owns no plugin default, so its scrub
+    // used to fall back to 1/px — useless for a variable holding, say, 0.3, whose
+    // domain is otherwise unknowable. The CURRENT value's own magnitude IS
+    // fractional evidence (resolveScrub source 3): feed it as the defaultValue so a
+    // fractional variable scrubs by ~1% of itself per pixel, while an integer or 0
+    // variable is left at 1/px (a count must not be re-scaled — the doctrine in
+    // ../../../lib/numberStep.js). An equation string is no evidence.
+    if (path[0] === "vars") {
+      const cur = getPath(app.rawState(), path);
+      return typeof cur === "number" ? cur : null;
+    }
+    if (path[0] !== "items") return null; // any other non-items row owns no plugin
     const plugin = app.registry.get(app.storedItemValue(path[1], ["type"]));
     const declared = plugin ? getPath(plugin.defaults, path.slice(2)) : undefined;
     return typeof declared === "number" ? declared : null;

@@ -142,12 +142,13 @@ export const textPlugin = {
     // ONLY REACH WHOLE MULTIPLES. src/lib/numberStep.js's own header names this row as
     // one of the 437 fractional-in-use integer-default rows for exactly this reason;
     // only a declared scrub can reach it. One 100px drag now spans one whole multiple.
-    // charSpacing / wordSpacing get NOTHING, deliberately: those two are PX offsets
-    // (same source), and 1 px per drag-pixel is already the right scale for a length —
-    // the identical treatment x/y/w/h get.
+    // charSpacing / wordSpacing are PX offsets, but tracking/word-gap adjustments are
+    // sub-pixel in practice: 1 px per drag-pixel is too coarse. The fine-bias ruling
+    // (2026-07-28) postdates the old "leave them at 1/px like x/y/w/h" argument that
+    // stood here — both now declare scrub 0.1 so a comfortable drag sweeps a few px.
     { key: "lineSpacing", label: "Line spacing", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "text" },
-    { key: "charSpacing", label: "Char spacing", kind: "number", category: "text" },
-    { key: "wordSpacing", label: "Word spacing", kind: "number", category: "text" },
+    { key: "charSpacing", label: "Char spacing", kind: "number", scrub: 0.1, category: "text" },
+    { key: "wordSpacing", label: "Word spacing", kind: "number", scrub: 0.1, category: "text" },
     { key: "color", label: "Color", kind: "color", category: "formatting" },
     { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
     ...bundle("effects"),

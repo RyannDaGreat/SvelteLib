@@ -606,7 +606,7 @@ export const CORK_FILL_PARAMS = [
 export const TACK_FILL_PARAMS = [
   { name: "color", kind: "color", default: "rgb(210,45,45)", help: "The plastic head colour of the pin." },
   { name: "domeGain", kind: "number", default: 0.95, min: 0, max: 1, help: "Press-in DEPTH, 1 = fully out/proud (a tall glossy dome), low = pushed in flat. ANIMATE this: it flattens the dome AND shrinks the contact shadow." },
-  { name: "shininess", kind: "number", default: 20, min: 1, help: "Glossiness of the head's specular hotspot — higher = a tighter, brighter highlight." },
+  { name: "shininess", kind: "number", default: 20, min: 1, scrub: 0.5, help: "Glossiness of the head's specular hotspot — higher = a tighter, brighter highlight." },
   { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (screen space). Shared with the family; places the hotspot and the contact shadow." },
 ];
 

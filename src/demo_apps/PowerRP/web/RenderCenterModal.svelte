@@ -603,7 +603,7 @@
 
     <label class="render-center-row">
       <span class="render-center-label">Hold per slide</span>
-      <span class="render-center-control"><DraggableNumber bind:value={holdSeconds} min={0} max={MAX_HOLD_SECONDS} step={0.5} suffix=" s" label="Seconds each slide is held" /></span>
+      <span class="render-center-control"><DraggableNumber bind:value={holdSeconds} coefficient={0.5} min={0} max={MAX_HOLD_SECONDS} step={0.5} suffix=" s" label="Seconds each slide is held" /></span>
     </label>
 
     <label class="render-center-row">

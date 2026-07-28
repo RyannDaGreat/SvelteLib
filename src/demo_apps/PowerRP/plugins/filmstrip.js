@@ -993,8 +993,10 @@ export const filmstripPlugin = {
     ...props("vertical", "perfFamily", "filmColor"),
     // The two plugin-LOCAL formatting rows, declared inline (the donut `inner`
     // precedent: a property only this widget has does not belong in the shared
-    // registry). `min: 0` also gives `leader` range-scaled scrub sensitivity for free.
-    { key: "leader", label: "Leader / tail", kind: "number", min: 0, category: "formatting", help: "Blank film before the first frame and after the last one, measured in gaps between frames — 1 (the default) leaves the same run at each end as there is between two frames, 0 ends flush on a picture, larger gives a longer head and tail. The sprocket-hole bands run right through it, which is what makes the ends read as film." },
+    // registry). `leader` is a fractional gap-multiple, so it declares `scrub: 0.01`
+    // (min: 0 alone gives NO fine scrub — an unbounded-above row has no span to scale,
+    // so it would fall back to 1/px).
+    { key: "leader", label: "Leader / tail", kind: "number", min: 0, scrub: 0.01, category: "formatting", help: "Blank film before the first frame and after the last one, measured in gaps between frames — 1 (the default) leaves the same run at each end as there is between two frames, 0 ends flush on a picture, larger gives a longer head and tail. The sprocket-hole bands run right through it, which is what makes the ends read as film." },
     { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Fit each frame inside its cell without distorting it (centered, letterboxed against the film base). Turn off to stretch every frame to its cell's exact shape, which squashes them when you resize the strip." },
     // The stroked-BORDER bundle frames the WHOLE strip (all cells together).
     ...bundle("strokedBorder"),

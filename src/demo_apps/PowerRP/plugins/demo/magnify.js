@@ -46,9 +46,9 @@ const CUSTOM = customProps([
   // `magnification` (so a plain magnifier is unchanged / byte-identical). Set
   // both (e.g. = self.w/@source.w and = self.h/@source.h) to make the lens show
   // a source region and STRETCH it to fill a differently-proportioned lens box.
-  { name: "magnificationX", kind: "number", default: 0, min: 0,
+  { name: "magnificationX", kind: "number", default: 0, min: 0, scrub: 0.01,
     help: "Horizontal zoom. 0 = auto (use Magnification). Set independently of Y to squish/stretch the magnified content (anisotropic loupe)." },
-  { name: "magnificationY", kind: "number", default: 0, min: 0,
+  { name: "magnificationY", kind: "number", default: 0, min: 0, scrub: 0.01,
     help: "Vertical zoom. 0 = auto (use Magnification). Set independently of X for an anisotropic loupe." },
   { name: "points", kind: "number", default: 5, min: 2,
     help: "STAR only: how many points the star has. Ignored by the circle and square lenses." },

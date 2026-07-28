@@ -201,9 +201,13 @@ export const pdfPacketPlugin = {
     // report). 0.01/px = one full page turn per 100px of drag.
     { key: "page", label: "Page", kind: "number", min: 1, step: 0.01, scrub: 0.01, category: "formatting", help: "FRACTIONAL: 2.3 means page 2 is 30% through peeling over the staple. Tween or bind it (= t) to animate reading through the packet." },
     { key: "flipAngle", label: "Flip angle", kind: "number", min: 0, max: 360, step: 1, category: "formatting", help: "The direction the turning page's free corner travels, in degrees. Also draggable as the on-canvas handle riding the ray from the staple." },
-    { key: "curl", label: "Curl", kind: "number", min: CURL_MIN, max: CURL_MAX, step: 0.05, category: "formatting", help: "How loosely the turning sheet rolls — the loopity-loop knob. Small = tight scroll, large = wide belly." },
-    { key: "spreadTurned", label: "Turned fan", kind: "number", min: 0, max: 20, step: 0.5, category: "formatting", help: "Degrees between successive already-turned pages fanned around the staple." },
-    { key: "spreadRemaining", label: "Stack fan", kind: "number", min: 0, max: 5, step: 0.1, category: "formatting", help: "The remaining stack's resting jitter — 0 is a machine-perfect stack, higher looks handled." },
+    // NO knob cap: page_curl.turnPose floors the curl radius with Math.max(reach*0.04, …),
+    // so any curl / fan value is sane bounded geometry — the old CURL_MIN..CURL_MAX and the
+    // 20 / 5 fan ceilings were taste. CURL_MIN/CURL_MAX still bound the ON-CANVAS handle below
+    // (a physical screen-reach limit on the draggable ray), which is a different constraint.
+    { key: "curl", label: "Curl", kind: "number", min: 0, step: 0.05, category: "formatting", help: "How loosely the turning sheet rolls — the loopity-loop knob. Small = tight scroll, large = wide belly (no upper cap; the roll radius is floored so 0 is a tight scroll, never degenerate)." },
+    { key: "spreadTurned", label: "Turned fan", kind: "number", min: 0, step: 0.5, category: "formatting", help: "Degrees between successive already-turned pages fanned around the staple (no upper cap)." },
+    { key: "spreadRemaining", label: "Stack fan", kind: "number", min: 0, step: 0.1, category: "formatting", help: "The remaining stack's resting jitter — 0 is a machine-perfect stack, higher looks handled (no upper cap)." },
     { key: "stapleX", label: "Staple X", kind: "number", min: 0, max: 1, step: 0.01, category: "formatting", help: "Staple position across the page width (fraction). Also draggable on canvas." },
     { key: "stapleY", label: "Staple Y", kind: "number", min: 0, max: 1, step: 0.01, category: "formatting", help: "Staple position down the page height (fraction)." },
     { key: "paper", label: "Paper", kind: "color", category: "formatting", help: "The sheet color — the back of every turned page, and the stack edges." },

@@ -463,7 +463,7 @@ export const COMIC_FILL_PARAMS = [
   { name: "angleY", kind: "angle", default: 0, help: "Screen angle (degrees) for Yellow. Classic Y = 0°." },
   { name: "angleK", kind: "angle", default: 45, help: "Screen angle (degrees) for blacK — also REUSED as Green (RGB), the shadow ink (Duotone), and the single Mono screen. Classic K = 45°." },
   { name: "registration", kind: "number", default: 0.15, min: 0, max: 1, help: "Mis-registration / desync: how far each channel's dot grid is shifted (fraction of a cell). 0 = perfect print registration; high = the deliberate off-register / anaglyph split." },
-  { name: "dotGain", kind: "number", default: 0.03, min: 0, max: 0.5, help: "Dot gain — extra dot radius (fraction of a cell) simulating ink spreading on absorbent paper. Fattens every dot slightly (darker print)." },
+  { name: "dotGain", kind: "number", default: 0.03, min: 0, scrub: 0.01, help: "Dot gain — extra dot radius (fraction of a cell) simulating ink spreading on absorbent paper. Fattens every dot slightly (darker print). NO UPPER CAP — the dot coverage is a smoothstep, so it saturates to SOLID ink once the fattened radius fills the cell; a large value just prints solid, never anything unbounded." },
   { name: "gamma", kind: "number", default: 1.0, min: 0.1, help: "Tone gamma applied to coverage before the dot. >1 lightens the mid-tones (smaller mid dots); <1 darkens them." },
   { name: "posterize", kind: "number", default: 0, min: 0, help: "Flatten the tone into this many levels before separation (flat comic fills). 0 or 1 = off (smooth tone); e.g. 4–6 = crisp poster bands." },
   { name: "edgeInk", kind: "number", default: 0, min: 0, max: 1, help: "Black outline ink strength: inks the strong tone edges (a Sobel gradient) black, like a comic's line art. 0 = no outlines." },
@@ -474,7 +474,7 @@ export const COMIC_FILL_PARAMS = [
   { name: "inkA", kind: "color", default: "#ff48b0", help: "Duotone SHADOW ink (the darker-tone spot colour). Only used in Duotone mode." },
   { name: "inkB", kind: "color", default: "#0078bf", help: "Duotone HIGHLIGHT ink (the lighter-tone spot colour). Only used in Duotone mode." },
   { name: "blurRadius", kind: "number", default: 2, min: 0, help: "Gaussian blur radius (world px) of the (unused) blurred child — kept minimal; a print reads the sharp tone." },
-  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the screening: 1 = screen resolution, 2 = supersample (crisper cell-centre tone, slower)." },
+  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the screening: 1 = screen resolution, 2 = supersample (crisper cell-centre tone, slower). The 0.25..2 bounds are a PERFORMANCE guard, not a look choice — below 0.25 the backdrop is uselessly coarse and above 2 the re-render cost balloons." },
 ];
 
 /**
