@@ -34,25 +34,60 @@ import { SEGMENT_SECONDS } from "./mp4Encoder.js";
  * trade-off it is chosen FOR and — the part the user must be told before starting
  * a long render — how precisely it resumes. Order is dropdown order.
  *
- * MEASURED back to back on a plain-HTTP LAN origin (whole pipeline, ms per frame):
- * 320x240 upload 8.5 / wasm 5.8; 1280x720 upload 30.5 / wasm 40.0; 1920x1080
- * upload 86.1 / wasm 92.8. So "upload" is the default — faster at the sizes people
- * export, and it resumes exactly. "wasm" wins where the per-frame round trip
- * dominates the pixels (small outputs), and it moves about 40x less data (1080p:
- * ~1.4 KiB of H.264 per frame against 60 KiB of PNG), which is what matters over a
- * slow link. Full numbers: web/browserRenderJobs.js's header.
+ * WHICH IS FASTER DEPENDS ON THE LINK, so neither label claims to be "fastest"
+ * outright any more. This one did, and it was wrong for the person reading it: the
+ * user measured the in-page encoder FAR faster on their own setup while the label
+ * promised the opposite.
+ *
+ * MEASURED, both encoders over the same frames (tests/browser_encode_measure_probe.js,
+ * A/B section — the loops there carry no instrumentation inside a frame):
+ *
+ *        output      upload            wasm              winner
+ *        320x240     123 fps  8.1 ms   168 fps  6.0 ms   wasm, 1.36x
+ *        1280x720     33 fps 30.6 ms    25 fps 39.2 ms   upload, 1.28x
+ *        1920x1080    17 fps 58.5 ms    10 fps 95.6 ms   upload, 1.64x
+ *
+ * AND THAT TABLE ONLY HOLDS WHEN THE POST IS FREE. It was measured with the browser
+ * and the backend on ONE MACHINE, where a frame upload's round trip costs 3.8 ms
+ * (median, all three sizes — it is latency, not bytes). Upload's whole advantage is
+ * that 3.8 ms, so the crossover is exactly how much MORE a real round trip costs:
+ * upload stops winning once the per-frame POST costs about 9 ms more at 720p or
+ * 37 ms more at 1080p, and it carries 31 KiB / 60 KiB of PNG per frame to get there
+ * against ~1.4 KiB of finished H.264. One network hop with a body that size passes
+ * both thresholds immediately, which is why the two measurements disagree and why
+ * BOTH are right: the numbers above are the same-machine case, and PowerRP exists to
+ * be served to a browser somewhere else.
+ *
+ * NOT MEASURED, and it is not a speed question: the two produce different files.
+ * "upload" ends in ffmpeg/libx264 at a CRF; "wasm" is a baseline-profile encoder at a
+ * quantizer. Nobody has compared their size or quality at matched settings, so this
+ * comment does not pretend to know — see the backburner note in the dump's manifest.
  */
 export const BROWSER_ENCODERS = [
-  { value: "upload", label: "Upload frames — fastest, resumes exactly", resume: "the exact frame it stopped on" },
+  {
+    value: "upload",
+    label: "Upload frames — fastest on this machine, resumes exactly",
+    resume: "the exact frame it stopped on",
+  },
   {
     value: "wasm",
-    label: "Encode in page — no server scratch, resumes per segment",
+    label: "Encode in page — fastest over a network, resumes per segment",
     // The number comes from the encoder itself, so the promise in the UI cannot
     // drift from the segment length that actually governs it.
     resume: `the last ${SEGMENT_SECONDS}-second segment it finished encoding`,
   },
 ];
-/** The default browser encoder — see BROWSER_ENCODERS for why it is this one. */
+/**
+ * The default browser encoder.
+ *
+ * STILL "upload", and deliberately unchanged: the only measurement taken on this
+ * machine says upload wins at every size people export (see BROWSER_ENCODERS), and
+ * it resumes exactly. The case for flipping it is real and quantified above — over a
+ * network the crossover is a few milliseconds of round trip — but it rests on a
+ * measurement from a DIFFERENT machine than the one that can be re-run here, and it
+ * would change the encoder every existing user's renders come out of. It is a
+ * one-word change when that call is made.
+ */
 export const DEFAULT_BROWSER_ENCODER = "upload";
 
 /**

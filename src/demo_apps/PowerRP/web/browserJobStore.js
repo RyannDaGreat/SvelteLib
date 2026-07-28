@@ -48,6 +48,14 @@
  * fighting over it. This is advisory, and honestly so: it prevents the accident,
  * not a determined race.
  *
+ * THE LEASE IS FOR OTHER TABS ONLY, and that boundary is now enforced rather than
+ * assumed. A tab asking whether IT is driving a job must answer from its own memory:
+ * the frame walk blocks the main thread for a whole output frame, so this record's
+ * `heartbeatAt` is arbitrarily late for a completely healthy driver, and reading it
+ * to answer "am I working?" made the Render Center announce "nothing is rendering"
+ * about a render it was itself producing. `driverState` therefore takes that fact as
+ * an argument and refuses to guess it. See LEASE_STALE_MS and driverState.
+ *
  * Everything here is a Query or a Command over one database — no rendering, no
  * encoding, no HTTP. The pure helpers at the bottom (the ones that decide what a
  * stored job MEANS) are node-testable.
@@ -63,9 +71,27 @@ const SEGMENTS_STORE = "segments";
 /** How often a driving tab refreshes its lease. */
 export const LEASE_HEARTBEAT_MS = 2000;
 /**
- * How long a lease survives without a heartbeat before another tab may take the
- * job. Three heartbeats: long enough that a tab busy inside one slow 1080p frame
- * is not declared dead, short enough that reopening after a crash does not wait.
+ * How long a lease survives without a heartbeat before ANOTHER tab may take the
+ * job. Three heartbeats: short enough that reopening after a crash does not wait,
+ * and it must stay a MULTIPLE of the heartbeat — a threshold at or below the
+ * interval would declare every healthy driver dead between two of its own beats.
+ *
+ * THIS THRESHOLD CANNOT BOUND A STARVED HEARTBEAT, and this comment used to claim
+ * the opposite ("long enough that a tab busy inside one slow 1080p frame is not
+ * declared dead"). Measured, with the frame walk running: a 4K frame at 16 temporal
+ * subsamples holds the main thread for 7.4 s in one uninterruptible block, and the
+ * first frame of a shader-backed deck blocked for 77 s while its shaders compiled.
+ * A timer cannot fire inside either, so the heartbeat of a perfectly healthy driver
+ * IS arbitrarily late — bounded by the cost of one output frame, which is unbounded.
+ * The consequence, before this was understood, was the Render Center announcing
+ * "nothing is rendering" about a render it was itself producing frames for
+ * (tests/browser_lease_liveness_probe.js).
+ *
+ * So the lease is NOT how a reader learns whether IT is driving a job — that is a
+ * fact held in memory, and `driverState` now takes it as an argument. The threshold
+ * governs only the question it can actually answer: may this tab take over a job
+ * some OTHER tab claimed? For that question a late heartbeat is still indistinguish-
+ * able from a dead tab, and no timeout fixes it; see driverState's docstring.
  */
 export const LEASE_STALE_MS = 3 * LEASE_HEARTBEAT_MS;
 
@@ -280,25 +306,65 @@ export function framesPersisted(segments) {
 /**
  * Pure function. What a stored job is doing right now, from this tab's point of
  * view: "here" (this tab is driving it), "elsewhere" (another tab's lease is
- * still warm), or "paused" (nothing is driving it — reopening resumes it).
+ * still warm), or "paused" (nothing is driving it — resuming continues it).
  *
  * The distinction exists because the UI must never imply that a render kept going
  * while the tab was shut. It did not; it PAUSED.
  *
+ * `drivingHere` IS THE WHOLE CORRECTNESS ARGUMENT, and it is why this function takes
+ * four arguments instead of three. "Am I driving this?" is a FACT the caller holds in
+ * memory (browserRenderJobs.js's `live`), and a fact cannot go stale. Deriving it
+ * from the lease instead made the answer depend on scheduling: the frame walk blocks
+ * the main thread for the length of one output frame, so a stored heartbeat read
+ * BEFORE such a block, compared against a `Date.now()` taken AFTER it, is older than
+ * LEASE_STALE_MS however healthy the driver is. Measured: this tab reported "paused"
+ * for a job it was mid-frame on, with the heartbeat in the store 0 ms old
+ * (tests/browser_lease_liveness_probe.js). It is required, not optional: an omitted
+ * argument would be falsy and would reinstate exactly that bug at the new call site,
+ * so a non-boolean throws.
+ *
+ * THE HONEST BOUND, which no timeout removes. When `drivingHere` is false the lease
+ * is all there is, and it CANNOT distinguish "that tab died" from "that tab is inside
+ * one very slow frame" — a blocked tab cannot heartbeat. So a warm lease means
+ * "recently alive", and a cold one means "either gone, or busy longer than
+ * LEASE_STALE_MS". This function reports the second case as "paused" because that is
+ * what the user can act on (resuming re-claims the lease), and because the
+ * alternative — refusing forever on a lease nobody will ever refresh — is worse. The
+ * residual risk is two tabs interleaving frames after a >LEASE_STALE_MS block, which
+ * is the advisory nature of the lease and is stated in this file's header. Removing
+ * it needs a heartbeat that cannot be starved (a Worker's timer), not a bigger number.
+ *
  * @param {{driverId: string|null, heartbeatAt: number}} job
  * @param {string} thisDriverId This tab's driver id.
- * @param {number} now Milliseconds (Date.now()).
+ * @param {number} now Milliseconds (Date.now()). Callers reading `job` from the
+ *   database must capture this BEFORE that read, so a delayed read makes the
+ *   heartbeat look YOUNGER than it is (erring toward "taken") instead of older
+ *   (erring toward the "nothing is rendering" lie).
+ * @param {boolean} drivingHere Is this tab driving this job right now? A fact from
+ *   the caller's own memory, never inferred from the record.
  * @returns {"here"|"elsewhere"|"paused"}
  *
- * @example driverState({driverId: "tab-a", heartbeatAt: 1000}, "tab-a", 1500) // "here"
- * @example driverState({driverId: "tab-b", heartbeatAt: 1000}, "tab-a", 1500) // "elsewhere"
- * @example driverState({driverId: "tab-b", heartbeatAt: 1000}, "tab-a", 99000) // "paused"
- * @example driverState({driverId: null, heartbeatAt: 0}, "tab-a", 1500) // "paused"
+ * @example
+ * // A tab that IS driving is "here" — the lease is not even consulted, so an
+ * // ancient heartbeat cannot turn a running render into a paused one:
+ * driverState({driverId: "tab-a", heartbeatAt: 0}, "tab-a", 99000, true) // "here"
+ * @example driverState({driverId: "tab-b", heartbeatAt: 1000}, "tab-a", 1500, false) // "elsewhere"
+ * @example driverState({driverId: "tab-b", heartbeatAt: 1000}, "tab-a", 99000, false) // "paused"
+ * @example driverState({driverId: null, heartbeatAt: 0}, "tab-a", 1500, false) // "paused"
+ * @example
+ * // OUR OWN id on a job we are NOT driving: a lease our drive left behind when it
+ * // ended without cleanup. Nothing is producing frames, so it is paused.
+ * driverState({driverId: "tab-a", heartbeatAt: 1000}, "tab-a", 1500, false) // "paused"
  */
-export function driverState(job, thisDriverId, now) {
+export function driverState(job, thisDriverId, now, drivingHere) {
+  if (typeof drivingHere !== "boolean")
+    throw new Error(`driverState: drivingHere must be a boolean fact from the caller's own state, got ${JSON.stringify(drivingHere)} — inferring it from the lease is the bug this argument exists to prevent.`);
+  if (drivingHere) return "here";
   if (!job.driverId) return "paused";
+  // OUR id without our work behind it is a leftover, not a driver.
+  if (job.driverId === thisDriverId) return "paused";
   if (now - job.heartbeatAt > LEASE_STALE_MS) return "paused";
-  return job.driverId === thisDriverId ? "here" : "elsewhere";
+  return "elsewhere";
 }
 
 /**

@@ -40,27 +40,37 @@
  *
  * MEASURED back to back on the same deck, same frames, on a real plain-HTTP LAN
  * origin (tests/browser_encode_measure_probe.js — the A/B section, whose loops carry
- * no instrumentation inside a frame):
+ * no instrumentation inside a frame). Two independent runs of that probe, months
+ * apart, both on this container:
  *
- *        output        upload        wasm          winner
- *        320x240       8.5 ms/f      5.8 ms/f      wasm, 1.47x
- *        1280x720      30.5 ms/f     40.0 ms/f     upload, 1.31x
- *        1920x1080     86.1 ms/f     92.8 ms/f     upload, 1.08x
+ *        output        upload              wasm                winner
+ *        320x240       8.5 / 8.1 ms/f      5.8 / 6.0 ms/f      wasm, 1.36-1.47x
+ *        1280x720      30.5 / 30.6 ms/f    40.0 / 39.2 ms/f    upload, 1.28-1.31x
+ *        1920x1080     86.1 / 58.5 ms/f    92.8 / 95.6 ms/f    upload, 1.08-1.64x
  *
- * So the in-page encoder is NOT the speed win it was expected to be: the per-frame
- * PNG it replaces costs ~6 ms at 1080p against ~62 ms for a wasm H.264 frame, and
- * only the worker's overlap with rendering keeps the two within 8% of each other.
- * It wins where the round trip dominates the pixels, i.e. small outputs.
+ * So the in-page encoder is NOT the speed win it was expected to be HERE: the
+ * per-frame PNG it replaces costs ~6 ms at 1080p against ~62 ms for a wasm H.264
+ * frame, and only the worker's overlap with rendering keeps them close. It wins
+ * where the round trip dominates the pixels, i.e. small outputs.
  *
- * Where it wins decisively is BYTES ON THE WIRE: at 1080p the probe's PNGs averaged
- * 60 KiB per frame while the finished H.264 came to ~1.4 KiB per frame — about 40x
- * less data, sent once at the end instead of once per frame. On a laptop rendering
- * to a server across Wi-Fi, that is the number that decides it, and it is the one
- * this container's loopback backend cannot show.
+ * READ THAT TABLE WITH ITS PRECONDITION, WHICH IS THE WHOLE STORY. It was measured
+ * with the browser and the backend ON ONE MACHINE, and a frame POST there costs
+ * 3.8 ms — median, IDENTICAL at all three sizes, so it is pure latency and not bytes.
+ * That 3.8 ms is upload's entire advantage, so the crossover is simply how much more
+ * a REAL round trip costs: upload stops winning past about +9 ms per frame at 720p
+ * or +37 ms at 1080p. And it must carry 31 KiB / 60 KiB of PNG per frame to earn it,
+ * against ~1.4 KiB per frame of finished H.264 sent once at the end — about 40x less
+ * data. One network hop with a body that size clears both thresholds at once.
  *
- * "upload" is therefore the default (faster at the sizes people export, and it
- * resumes exactly), and "wasm" is the honest choice for a small output, a machine
- * with no room for scratch frames, a slow link, or a render whose pixels must not
+ * WHICH IS WHY A USER MEASURED THE OPPOSITE and was not mistaken: on a browser
+ * talking to a server that is not the same machine, "Encode in page" is far faster.
+ * Both measurements stand; they measured different links. The default is still
+ * "upload" (it is what this machine's numbers support, and it resumes exactly) and
+ * the dropdown labels now name the condition instead of promising a winner — see
+ * web/browserJobView.js BROWSER_ENCODERS.
+ *
+ * "wasm" is therefore the honest choice for a small output, a machine with no room
+ * for scratch frames, a link that is not loopback, or a render whose pixels must not
  * leave the page. Neither is a fallback for the other: the choice is explicit and
  * the consequence is stated in the UI.
  *
@@ -233,9 +243,18 @@ export async function submitBrowserRenderJob({ project, name, params, doc, regis
  * @returns {Promise<object>} the finished server job record
  */
 export async function driveBrowserJob(record, registry, signal = undefined) {
+  // Same order as browserJobStatuses, for the same reason: `now` before the read.
+  const now = Date.now();
   const fresh = await getBrowserJob(record.id);
   if (!fresh) throw new Error(`browser render job ${record.id} is not in this browser's store`);
-  const state = driverState(fresh, DRIVER_ID, Date.now());
+  const state = driverState(fresh, DRIVER_ID, now, Boolean(live[record.id]));
+  // A SECOND DRIVE IN THIS TAB IS REFUSED, not just a second tab. Two frame walks
+  // into one job interleave frames and corrupt the output whether or not they share
+  // a JS context, and this case was REACHABLE: the lease-derived verdict reported a
+  // job this tab was rendering as "paused", which put a Resume button on it, and
+  // this guard let the click through. It is a fact check now, not a lease check.
+  if (state === "here")
+    throw new Error(`Render "${fresh.name}" is already being rendered by this tab — a second pass over the same job would interleave frames into one movie.`);
   if (state === "elsewhere")
     throw new Error(`Render "${fresh.name}" is already being rendered by another tab of this browser. Close that tab, or wait for it to finish.`);
 
@@ -346,12 +365,21 @@ export async function resumeBrowserRenderJob(jobId, registry) {
  * @returns {Promise<object>} jobId → status
  */
 export async function browserJobStatuses(project) {
-  const stored = await listBrowserJobs(project);
+  // `now` IS CAPTURED BEFORE THE READ, and that order is load-bearing. The frame
+  // walk blocks the main thread for a whole output frame, so this read's callback
+  // can be delayed by seconds; taking `now` afterwards compared a pre-block
+  // heartbeat against a post-block clock and made a healthy lease look expired by
+  // exactly the length of one frame. Captured first, a delayed read can only make
+  // the heartbeat look YOUNGER — see driverState's `now` parameter.
   const now = Date.now();
+  const stored = await listBrowserJobs(project);
   const out = {};
   for (const job of stored) {
-    const driver = driverState(job, DRIVER_ID, now);
     const liveEntry = live[job.id];
+    // WHETHER THIS TAB IS DRIVING IS READ FROM MEMORY, NEVER FROM THE LEASE. A live
+    // entry exists for exactly as long as driveBrowserJob is inside its try block,
+    // so it cannot go stale while frames are landing — which is what the lease did.
+    const driver = driverState(job, DRIVER_ID, now, Boolean(liveEntry));
     // A driving tab's in-memory count is the freshest truth; a paused job's truth
     // is what was written down, which for the wasm encoder is its segments and for
     // the upload encoder is the server's frame count (already in the job list).

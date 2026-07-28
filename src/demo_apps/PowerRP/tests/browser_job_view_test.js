@@ -172,6 +172,13 @@ ok("both browser encoders exist, are distinct, and state their resume precision"
   const resumes = BROWSER_ENCODERS.map((e) => e.resume);
   assert.equal(new Set(resumes).size, 2, "the two encoders must not claim the same resume precision");
   for (const e of BROWSER_ENCODERS) assert.ok(e.label.length > 0 && e.resume.length > 0);
+  // NO LABEL MAY CLAIM TO BE FASTEST OUTRIGHT. Which one wins depends on what a
+  // frame upload's round trip costs, and one of these labels used to say "fastest"
+  // to a user for whom the other one was — measured — far faster. A label must name
+  // the condition, so an unconditional superlative is refused here.
+  for (const e of BROWSER_ENCODERS)
+    assert.ok(!/\bfastest\b(?!\s+(on|over|when|for)\b)/.test(e.label),
+      `encoder label ${JSON.stringify(e.label)} claims to be fastest without saying under what conditions`);
 });
 
 ok("the browser backend derives its timeline from the same pure helpers", () => {
