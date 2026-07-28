@@ -315,6 +315,32 @@ try {
       `alongGradient legacy 2-colour ramp (red→blue) has NO green band (red ${d2.r}, blue ${d2.b}, green ${d2.g} < ${BAND_MIN})`);
     console.log("  shot .claude_vlm_checks/stroke_material_alongGradient_3stop.png");
   }
+
+  // ── WAVY BOIL (the "sketchy stroke", Round 3 #50): the effective seed steps
+  // |boil| times per presentation second through the ONE clock seam. Driven here
+  // by setParticleTimeOverride (the export sampler's own override), proving the
+  // boil is RECORDABLE: same t → byte-identical, different t → a different
+  // wobble; and boil 0 never reads the clock at all.
+  {
+    const eqBuf = (a, b) => Buffer.compare(Buffer.from(a.data), Buffer.from(b.data)) === 0;
+    const clockUrl = "/@fs" + resolve(HERE, "../render_gpu/particle_clock.js");
+    const setT = (t) => page.evaluate(async (u, sec) => { (await import(u)).setParticleTimeOverride(sec); }, clockUrl, t);
+    const SKETCHY = { randomness: 0.6, wander: 0.4, boil: 2, amplitude: 6, frequency: 8 };
+    await setT(0);
+    const boilT0 = await render(matrixDoc("wavy", SKETCHY));
+    const boilT0b = await render(matrixDoc("wavy", SKETCHY));
+    await setT(1);
+    const boilT1 = await render(matrixDoc("wavy", SKETCHY));
+    const stillT0 = await render(matrixDoc("wavy", { ...SKETCHY, boil: 0 }));
+    await setT(0);
+    const stillT0b = await render(matrixDoc("wavy", { ...SKETCHY, boil: 0 }));
+    await page.evaluate(async (u) => { (await import(u)).setParticleTimeOverride(null); }, clockUrl);
+    ok(eqBuf(boilT0, boilT0b), "boil is DETERMINISTIC: same presentation time → byte-identical sketchy stroke");
+    ok(!eqBuf(boilT0, boilT1), "boil BOILS: one second later the squiggle re-rolled (2/s — the cartoon boil)");
+    ok(eqBuf(stillT0, stillT0b), "boil 0 never reads the clock: static wobble byte-identical across times");
+    fs.writeFileSync(resolve(SHOTS, `stroke_material_wavy_boil.png`), PNG.sync.write(boilT1));
+    console.log("  shot .claude_vlm_checks/stroke_material_wavy_boil.png");
+  }
 } finally {
   await browser.close();
   await server.close();

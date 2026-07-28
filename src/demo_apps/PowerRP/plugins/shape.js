@@ -13,7 +13,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
-import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS } from "../core/properties.js";
 import { shapePath } from "../core/shapes.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
@@ -42,6 +42,10 @@ export const shapePlugin = {
     ...bundle("positioning"),
     ...bundle("shape"),
     ...props("fill", "stroke", "strokeWidth"),
+    // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always HAD
+    // render support at the ports seam; it just never declared the rows, which
+    // is why a gear with a texture-brush stroke showed no phase/draw-on knobs).
+    ...props(...STROKE_TRIM_KEYS),
     ...props("opacity"),
     ...bundle("effects"),
   ],

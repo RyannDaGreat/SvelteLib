@@ -52,6 +52,7 @@ import { parseColor } from "../ir.js";
 import { randUnit } from "../../core/particles.js"; // the seeded (seed,i,stream) hash — the sparkler's, reused so a stored seed is property state
 import { elementActive } from "../../core/lists.js"; // the shared per-element visibility read — hidden stops ramp straight past, byte-identically to never authoring them
 import { reportOnce } from "../../core/report.js"; // loud-once sink for a knob outside its physical domain
+import { particleTime } from "../particle_clock.js"; // THE presentation clock seam (recordable state) — wavy's BOIL re-seeds from it; frozen in the editor, driven per-frame by exports (the glitch-shader precedent)
 import { BRUSH_STROKE } from "./brush_strokes.js"; // the 23-archetype textured BRUSH material (drawAtlas stamping), kept in its own file
 import { TEXTURE_BRUSH } from "./texture_brush.js"; // the rp-paint-demo TEXTURE ribbon brush (skia_draw_trail twin, 23 in-repo textures), kept in its own file
 
@@ -528,6 +529,12 @@ function renderDashes(CanvasKit, canvas, path, p, width, opacity, aa) {
  */
 function renderWavy(CanvasKit, canvas, path, p, width, opacity, aa) {
   const rgba = parseColor(p.color);
+  // BOIL: the effective seed steps |boil| times per presentation second (the
+  // particleTime seam — RECORDABLE: the editor freezes it, exports override it
+  // per frame, so a boiling stroke exports correctly and Δt = 0 changes nothing).
+  // boil 0 (the default) never reads the clock: byte-identical static wobble.
+  const boil = p.boil ?? 0;
+  const seed = boil !== 0 ? (p.seed ?? 0) + Math.floor(particleTime() * Math.abs(boil)) : (p.seed ?? 0);
   const paint = strokePaintOf(CanvasKit, rgba, width, opacity, aa);
   forEachContour(CanvasKit, path, (c) => {
     const L = c.length();
@@ -539,7 +546,7 @@ function renderWavy(CanvasKit, canvas, path, p, width, opacity, aa) {
       const d = L * i / steps;
       const pt = c.getPosTan(d);
       const n = unitNormal(pt[2], pt[3]);
-      const disp = wavyDisplacement(d, L, p.amplitude, p.frequency, p.phase, p.randomness, p.wander, p.seed);
+      const disp = wavyDisplacement(d, L, p.amplitude, p.frequency, p.phase, p.randomness, p.wander, seed);
       const x = pt[0] + n[0] * disp, y = pt[1] + n[1] * disp;
       if (i === 0) b.moveTo(x, y); else b.lineTo(x, y);
     }
@@ -625,6 +632,13 @@ export const WAVY_STROKE = {
     { name: "randomness", kind: "number", default: 0, scrub: UNIT_SCRUB, help: "AMPLITUDE JITTER, and the ONLY thing that makes the seed matter. 0 = a clean mechanical sine (seed irrelevant). Away from 0 the wave HEIGHT wanders irregularly along the path — a hand-drawn look — by this fraction of the amplitude (1 ≈ a wobble as tall as the wave; unbounded both ways — a NEGATIVE value flips the jitter stream sign, a different but equally valid wobble). Deterministic: same seed, same wobble." },
     { name: "wander", kind: "number", default: 0, scrub: UNIT_SCRUB, help: "FREQUENCY / PHASE JITTER. 0 = perfectly even wavelength. Away from 0 the peaks drift off the metronome — the wave stretches and compresses along the path — by up to this many cycles of seeded phase drift (unbounded both ways; negative flips the drift stream). Independent of amplitude jitter; 0 by default (seed stays inert until this or Randomness is raised)." },
     { name: "seed", kind: "number", default: 0, min: 0, step: 1, help: "WHICH random wobble — a stored integer (property state, not a live random draw). Only meaningful when Randomness or Wander is above 0; changing it reshuffles the irregularity without touching the underlying sine." },
+    // THE BOIL (Round 3 #50 — the user's "sketchy stroke": seed = round(time·2)).
+    // RECORDABLE state via the ONE clock seam: 0 (default) = static, byte-identical;
+    // above 0 the effective seed re-rolls |boil| times per presentation second, so
+    // the squiggle "boils" like a hand-drawn cartoon while presenting/exporting
+    // (frozen deterministically in the editor, like the sparkler). Sign is
+    // irrelevant (the step count floors either way), so no clamp.
+    { name: "boil", kind: "number", default: 0, scrub: 0.1, help: "Re-rolls the random wobble this many times per second of presentation time, so the stroke looks alive and hand-sketched (2 is a classic cartoon boil). 0 = a still stroke. Frozen in the editor; moves while presenting and in exports. Needs Randomness or Wander above 0 to have anything to re-roll." },
   ],
   render: renderWavy,
 };

@@ -112,7 +112,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { paintModifierPoints } from "../core/paint_handles.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num, polygonPathD, ellipsePoints } from "../core/shapes.js";
-import { bundle, defaults, props } from "../core/properties.js";
+import { bundle, defaults, props, STROKE_TRIM_KEYS } from "../core/properties.js";
 import { elementActive, visibleElements, visibleIndices, withElementFieldValue, withElementInserted } from "../core/lists.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
@@ -654,6 +654,10 @@ export const polygonPlugin = {
     ...props("points"),
     { key: "closed", label: "Closed", kind: "boolean", category: "formatting", help: "Join the last point back to the first, which encloses an area so the shape can be filled. Off draws an open line through the points with no fill. A two-point shape encloses nothing, so it stays a line either way." },
     ...props("fill", "stroke", "strokeWidth"),
+    // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always HAD
+    // render support at the ports seam; it just never declared the rows, which
+    // is why a gear with a texture-brush stroke showed no phase/draw-on knobs).
+    ...props(...STROKE_TRIM_KEYS),
     ...props("opacity"),
   ],
   /**
