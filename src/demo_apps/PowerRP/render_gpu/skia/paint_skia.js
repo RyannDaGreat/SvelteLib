@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, videoV5FrameKey, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement } from "./glass_shader.js";
@@ -48,6 +48,7 @@ import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill, reso
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
+import { MAX_SURFACE_DIM } from "../../core/clip.js"; // the edge below which no surface factory clamps a request
 import { fitBox } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
 import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("videoV2") — self-resolving frame registry (additive; import-safe in node)
@@ -186,6 +187,14 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // bgColor rides on ctx because the backdrop RE-RENDER branch has to reproduce
   // the composite it is standing in for, and a composite starts with THE CLEAR.
   const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality, bgColor };
+  // THE FRAME's pixel count, fixed here and inherited by every nested scratch's ctx
+  // copy: the unit the material raster cache's memory budget is expressed in
+  // (rasterCacheBudget). Nested passes shrink deviceW/deviceH; the frame does not.
+  ctx.frameArea = ctx.deviceW * ctx.deviceH;
+  // ONE paintIR call is ONE pass, and every nested scratch inherits this id through its
+  // ctx copy. The material raster cache reads it as the frame boundary that advances a
+  // context's admission frontier (see _fillRasters).
+  ctx.passId = ++_fillPassSeq;
   // liveGpu: was a real GPU factory passed in (editor/presenter on-screen or GPU
   // offscreen), or are we on a CPU surface (node/tests/gpuService)? The videoV2 op
   // uploads frames STRAIGHT to a GL texture only on the live path; on CPU it falls
@@ -442,14 +451,18 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
   }
 }
 
-/** Command (mutates `canvas` CTM). Applies view+world so local geometry lands in device px (mirrors ir_canvas2d.js). */
+/** Command (mutates `canvas` CTM). Applies view+world so local geometry lands in device px (mirrors ir_canvas2d.js).
+ *  `world.signX`/`signY` (render_gpu/ir.js: the FLIP, a ±1 per-axis reflection, absent = +1)
+ *  ride the scale factor — the ONLY place a reflection enters the raster pipeline.
+ *  `world.scale` itself stays POSITIVE, which is what keeps every length consumer
+ *  (blur sigma, stroke widths, material half-extents) correct without knowing flips exist. */
 function applyView(canvas, view, world) {
   const ds = view.zoom * view.dpr;
   canvas.translate(view.panX * view.dpr, view.panY * view.dpr);
   canvas.scale(ds, ds);
   canvas.translate(world.x, world.y);
   canvas.rotate(world.rotation * RAD2DEG, 0, 0);
-  canvas.scale(world.scale, world.scale);
+  canvas.scale(world.scale * (world.signX ?? 1), world.scale * (world.signY ?? 1));
 }
 
 /**
@@ -464,7 +477,7 @@ function deviceMatrix(CanvasKit, view, world) {
     CanvasKit.Matrix.scaled(ds, ds),
     CanvasKit.Matrix.translated(world.x, world.y),
     CanvasKit.Matrix.rotated(world.rotation),
-    CanvasKit.Matrix.scaled(world.scale, world.scale),
+    CanvasKit.Matrix.scaled(world.scale * (world.signX ?? 1), world.scale * (world.signY ?? 1)),
   );
 }
 
@@ -775,8 +788,8 @@ function handleBlurBackdrop(CanvasKit, target, cmd, world, view) {
 function handleMagnifyBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx, depth) {
   const canvas = target.canvas;
   const opacity = cmd.opacity ?? 1;
-  const centerWorld = T.apply(world, cmd.cx, cmd.cy);
-  const originWorld = T.apply(world, cmd.originX, cmd.originY);
+  const centerWorld = signedApply(world, cmd.cx, cmd.cy);
+  const originWorld = signedApply(world, cmd.originX, cmd.originY);
   const clip = lensClipPath(CanvasKit, cmd, deviceMatrix(CanvasKit, view, world));
   // Per-axis zoom (default to the isotropic magnification). aniso === false ⇒
   // the ISOTROPIC path runs unchanged (byte-identical to pre-anisotropy).
@@ -1011,7 +1024,7 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
   // scale). ds = zoom·dpr (position); sd = world.scale·ds (world length → device px).
   const ds = view.zoom * view.dpr;
   const sd = world.scale * ds;
-  const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+  const centerWorld = signedApply(world, cmd.cx, cmd.cy);
   const cxDev = centerWorld.x * ds + view.panX * view.dpr;
   const cyDev = centerWorld.y * ds + view.panY * view.dpr;
   const halfWDev = cmd.halfW * sd, halfHDev = cmd.halfH * sd;
@@ -1372,7 +1385,7 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   // Device-space region geometry (a similarity transform), identical to glass.
   const ds = view.zoom * view.dpr;
   const sd = world.scale * ds;                 // world length → device px
-  const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+  const centerWorld = signedApply(world, cmd.cx, cmd.cy);
   const cxDev = centerWorld.x * ds + view.panX * view.dpr;
   const cyDev = centerWorld.y * ds + view.panY * view.dpr;
   const halfWDev = cmd.halfW * sd, halfHDev = cmd.halfH * sd;
@@ -1459,6 +1472,14 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
  * AABB. World→device geometry + length scaling mirror handleMaterialBackdrop; `sd`
  * (world length → device px) is handed to the packer as `scale`. `ctx` carries
  * the camera's coverage-AA flag (ctx.antialias) for the hairline border.
+ *
+ * FLIPPED WIDGETS: the center is mapped with `signedApply`, NOT T.apply, because
+ * this handler draws at the DEVICE ROOT and so never rides the CTM reflection a
+ * flip installs — mapping it sign-blind put a flipped material on the far side of
+ * its own box. Half-extents are safe by construction (core/derive normalizes a
+ * negative w/h away before emit, so they are always positive). What a flip does NOT
+ * reach is the PATTERN's handedness — see render_gpu/ports.js mirrorPush's
+ * "KNOWN BOUND" for why that is a uniform-contract change and not a flip change.
  */
 function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   const canvas = target.canvas;
@@ -1470,7 +1491,7 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   // Device-space region geometry (a similarity transform), identical to glass/material backdrop.
   const ds = view.zoom * view.dpr;
   const sd = world.scale * ds;                 // world length → device px
-  const centerWorld = T.apply(world, cmd.cx, cmd.cy);
+  const centerWorld = signedApply(world, cmd.cx, cmd.cy);
   const cxDev = centerWorld.x * ds + view.panX * view.dpr;
   const cyDev = centerWorld.y * ds + view.panY * view.dpr;
   const halfWDev = cmd.halfW * sd, halfHDev = cmd.halfH * sd;
@@ -1480,24 +1501,405 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   // (1) optional soft shadow BENEATH the fill (the glass drawGlassShadow precedent).
   if (cmd.shadow) drawMaterialShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, angle, cmd.shadow, sd);
 
-  // (2) the FOREGROUND fill: pack uniforms, makeShader (NO children), clip AABB, drawPaint.
-  const effect = materialEffect(CanvasKit, material);
-  const u = { cx: cxDev, cy: cyDev, halfW: halfWDev, halfH: halfHDev, cornerRadius: cornerDev, angle, scale: sd, ...cmd.params };
-  const uniforms = material.pack(u);
-  const shader = effect.makeShader(uniforms);
-  if (!shader) throw new Error(`paintIR(skia): material "${cmd.material}" makeShader returned null`);
-  const p = new CanvasKit.Paint();
-  p.setShader(shader);
-  p.setAlphaf(opacity);
+  // (2) the FOREGROUND fill: the shader rasterized into its own REGION-LOCAL raster
+  // (materialFillRaster — reused across frames when the uniforms repeat) and blitted
+  // at the region origin. `opacity` is applied by the BLIT, never baked into the
+  // raster, so a widget fading in reuses one raster for the whole fade.
   const reach = Math.hypot(halfWDev, halfHDev) + COVERAGE_AA_SLOP_PX; // circumradius + AA slop covers any rotation
-  canvas.save();
-  canvas.clipRect(CanvasKit.LTRBRect(cxDev - reach, cyDev - reach, cxDev + reach, cyDev + reach), CanvasKit.ClipOp.Intersect, false);
-  canvas.drawPaint(p);
-  canvas.restore();
-  p.delete(); shader.delete();
+  const region = fillRasterRegion(cxDev, cyDev, reach, ctx.deviceW, ctx.deviceH, rasterCacheBudget(ctx));
+  if (region) {
+    if (!region.retained) noteRasterRefusal(ctx, material, region);
+    // The framework's normalized uniform input, RE-ANCHORED to the region origin so
+    // the raster is a function of the material's own geometry and not of where the
+    // camera happens to put it (reanchoredCenter states why this is exact).
+    const u = {
+      cx: reanchoredCenter(cxDev, region.x0), cy: reanchoredCenter(cyDev, region.y0),
+      halfW: halfWDev, halfH: halfHDev, cornerRadius: cornerDev, angle, scale: sd, ...cmd.params,
+    };
+    const raster = materialFillRaster(CanvasKit, ctx, material, u, region);
+    const p = new CanvasKit.Paint();
+    p.setAlphaf(opacity);
+    canvas.drawImage(raster.img, region.x0, region.y0, p);
+    p.delete();
+    if (!raster.retained) raster.img.delete(); // an un-cached raster is ours to free
+  }
 
   // (3) optional bright hairline border on top (reuses the glass border helper).
   drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, ctx.antialias);
+}
+
+// ── the STATIC MATERIAL RASTER CACHE ──────────────────────────────────────────
+// WHY IT EXISTS. A FOREGROUND material (materialFill, `backdrop: false`) synthesizes
+// its whole look from its own uniforms: it binds no children, reads no composite, and
+// its plugin's emit() never sees the camera. Panning the editor over a 2048-iteration
+// Mandelbrot therefore re-ran a per-pixel shader every frame to produce a picture that
+// had not changed — measured at 6.3 s per frame while panning a 160×120 widget on the
+// software surface, against 5.1 ms once the raster is reused (1229×), and the dominant
+// cost of a material-laden slide on the GPU too. The reference orbit, the palette and
+// the compiled SkSL were already memoized; the PIXELS were not.
+//
+// WHAT MAY CHANGE THE PIXELS, AND WHY THE KEY IS COMPLETE. Everything the shader can
+// see arrives through `pack(u)` as one Float32Array — the device geometry, the
+// world→device scale, and every one of the material's own knobs (an op `param`, i.e.
+// already-evaluated item state, equations and keyframes included). So the KEY IS THE
+// PACKED UNIFORM BYTES, not a hand-listed set of properties: a knob the shader reads
+// cannot escape the key, because it cannot reach the shader except through those bytes.
+// The one thing outside them is the raster's own pixel SIZE, which is keyed beside it.
+// A hand-written mirror of "which properties matter" is exactly the shape that has
+// produced repeated silent defects here; this has no such list.
+//
+// CAMERA ZOOM IS NOT PAN. More device pixels per world unit means a finer sampling of
+// the same window, so `scale` and the half-extents are IN the uniforms and a zoom
+// misses. A PAN at constant zoom moves the region origin by whole device pixels and
+// changes nothing else, so it HITS — which is the entire point.
+//
+// HOW "CACHEABLE" IS DECLARED. It is not declared by name anywhere. A material that
+// animates moves a uniform every frame (`time`, `particleTime`, a tweened knob), so its
+// key never repeats and ADMISSION (see the frontier below) never fires: an animated
+// material cannot be silently cached because it never asks for the same picture twice.
+// A static one is admitted on its second consecutive frame. No allowlist exists to
+// drift out of step with the plugins.
+//
+// THE RASTER PATH IS UNIFORM, CACHED OR NOT. Every materialFill goes through the
+// region raster on every backend, whether or not the entry is kept, so a cache HIT is
+// byte-identical to a MISS by construction — the same producer, the same blit — and the
+// frame does not depend on how long the widget has been on screen. It is the reason the
+// path is not "draw straight to the canvas the first time and blit later": that would
+// make frame 1 and frame 3 different pictures, i.e. a render that depends on how long
+// you looked at it.
+//
+// WHAT THAT COSTS, MEASURED. Going through an 8-bit premultiplied raster instead of
+// blending the shader's float output straight onto the canvas moves a few pixels.
+// Against the previous straight-to-canvas fill, on a 420×260 frame (.frenzy probe, all
+// ten shipped foreground materials, at whole-pixel AND fractional device phases): nine
+// move by at most 1 level of 255, on 0.01%-0.47% of bytes, all of it on the SDF rim.
+// The lens flare moves by at most 5 levels on 1.8% of bytes, because its glow is
+// partial-alpha across the WHOLE region rather than only at a rim, so the premultiplied
+// round trip reaches all of it. Both are the same class as — and smaller than — the
+// region-bounded backdrop re-render's already-accepted rim wobble (max Δ52; see
+// materials.materialSampleReach). RE-ANCHORING the shader's coordinates costs nothing
+// extra: reanchoredCenter is exact, and a Mandelbrot boundary (which amplifies a
+// last-bit difference into a whole colour) measures the same 1 level as everything else.
+
+/** RGBA8888 — the surface format every cached raster is allocated in. */
+const RASTER_BYTES_PER_PX = 4;
+
+/**
+ * How many DEVICE-FRAME-sized rasters the cache may hold, per GL context.
+ *
+ * DERIVED, not chosen: the cache is useless if it cannot hold every cacheable
+ * material a slide shows AT ONCE, and the largest worth holding is one that fills the
+ * frame (a bigger one is mostly off-screen). The shipped `sky*` archetype composes
+ * FOUR camera-bound frame-filling foreground materials on one slide by design (sky +
+ * skyClouds + skySun + skyMoon, which interact through the derive-time sibling query),
+ * so four frame-sized rasters is the smallest budget that serves a composition this
+ * repo ships. It is also the order the backdrop path already peaks at within a single
+ * frame (the scene surface + its snapshot + a region crop + the blurred copy), so the
+ * cache adds no new order of magnitude to the renderer's footprint.
+ */
+const MATERIAL_RASTER_CACHE_FRAMES = 4;
+
+/** ctx.makeSurface identity (≙ one GrContext, the video_v2.js `_gpuBuckets`
+ * precedent and its CALLER CONTRACT: an identity-stable factory per context) →
+ * {entries: Map<key, {img, uniforms, w, h, bytes}>, bytes, prev, cur, passId}. A raster
+ * is a texture on the context that produced it, so it must never be blitted onto
+ * another; partitioning by factory identity is the only handle this file has on "which
+ * context". Insertion order IS the LRU order (a hit re-inserts), like pdf_page_raster's
+ * region cache — for the entries AND for the partitions themselves.
+ *
+ * `prev`/`cur` are that context's ADMISSION FRONTIER: the raster keys it drew in its
+ * previous pass and in this one. An entry is admitted only when its key is in `prev` —
+ * "this context asked for the same picture last frame" — which is what keeps an
+ * animating material out and stops a drag inserting anything. Bounded by construction
+ * (at most the fills of one pass) and rotated when the partition first sees a new
+ * ctx.passId. PER CONTEXT, not global: the editor and the presenter render alternating
+ * passes, and one shared frontier would have each wiping the other's, so neither would
+ * ever admit. */
+const _fillRasters = new Map();
+
+/** Monotonic pass counter — one paintIR call is one pass, and every nested scratch
+ * inherits it through the ctx copy. It is what tells a partition that a frame boundary
+ * has gone by (see the frontier above). */
+let _fillPassSeq = 0;
+
+/**
+ * How many GL contexts may hold rasters at once. DERIVED from the live contexts this
+ * app actually has, which video_v2.js's bucket doc already enumerates: the editor
+ * surface, the presenter surface, and the offscreen pixel service. A fourth would mean
+ * a caller minted a fresh factory closure per paint (the contract violation that leaked
+ * a texture per thumbnail there), so the least-recently-used partition is dropped
+ * whole rather than left to grow: the total memory ceiling is this × the per-context
+ * budget, not "however many closures a caller made".
+ */
+const MATERIAL_RASTER_CONTEXTS = 3;
+
+/** Diagnostics for the probes (the video_v2 `_uploadCount` precedent): monotonic
+ * counts of what the cache did. `bytes` is the live retained total across contexts. */
+const _fillStats = { hits: 0, misses: 0, admits: 0, evictions: 0, refusals: 0 };
+
+/**
+ * Query. A snapshot of the material raster cache's counters — hits, misses, admits,
+ * evictions, budget refusals, live entry count and retained bytes. Exists so a probe
+ * can PROVE a hit happened (rather than infer it from a timing) and that an animated
+ * material is never admitted.
+ *
+ * @returns {{hits: number, misses: number, admits: number, evictions: number, refusals: number, entries: number, bytes: number}}
+ *
+ * @example materialRasterStats().hits // 0 before anything is painted
+ */
+export function materialRasterStats() {
+  let entries = 0, bytes = 0;
+  for (const part of _fillRasters.values()) { entries += part.entries.size; bytes += part.bytes; }
+  return { ..._fillStats, entries, bytes };
+}
+
+/** Pure function. The cache's byte budget: MATERIAL_RASTER_CACHE_FRAMES frames of
+ * RGBA8888 at the size of THE FRAME (ctx.frameArea, fixed at paintIR entry), not of the
+ * surface currently being drawn into. A nested scratch — an effected material's
+ * effectSubtree content, which is very common since the universal effects bundle — is a
+ * few hundred px, and budgeting from IT would make one small nested raster evict the
+ * whole frame's cache every time it rendered.
+ *
+ * @example rasterCacheBudget({frameArea: 500000}) // 8000000 (4 frames × 2 MB)
+ */
+function rasterCacheBudget(ctx) {
+  return MATERIAL_RASTER_CACHE_FRAMES * ctx.frameArea * RASTER_BYTES_PER_PX;
+}
+
+/**
+ * Pure function. The DEVICE-px raster region for a foreground material fill: the
+ * integer box around the SAME clip AABB the fill has always been bounded to (centre ±
+ * `reachDev`, the panel circumradius + AA slop), so its coverage is unchanged — three
+ * shipped materials (corkboardNote's curl, the thumbtack's dome, the lens flare's
+ * ghost chain) really do paint outside their own box and a tighter box would clip them
+ * (measured: 14k-24k bytes lost on a 480×300 frame).
+ *
+ * `retained: true` means the box is the WHOLE unclipped AABB, so it is a function of
+ * the material's geometry alone and survives a pan — the cacheable case. When that box
+ * would not fit `budgetBytes`, or exceeds MAX_SURFACE_DIM on an edge (above that a
+ * surface factory CLAMPS the request, which would silently blit a wrong-sized raster —
+ * core/clip.js), the region falls back to the VISIBLE part: still one raster, still the
+ * same pixels (reanchoredCenter makes the origin choice exact), but tied to the
+ * viewport and therefore not kept.
+ *
+ * Null ⇒ the box misses the device surface entirely: nothing to draw and nothing to
+ * allocate (the fill's clip already made this a no-op).
+ *
+ * @param {number} cxDev - device-px centre x
+ * @param {number} cyDev - device-px centre y
+ * @param {number} reachDev - device-px half-extent of the fill's clip AABB
+ * @param {number} deviceW - target surface width in device px
+ * @param {number} deviceH - target surface height in device px
+ * @param {number} budgetBytes - the cache byte budget (rasterCacheBudget)
+ * @returns {{x0: number, y0: number, x1: number, y1: number, retained: boolean}|null}
+ *
+ * @example fillRasterRegion(100, 80, 20, 400, 300, 4e6) // {x0: 80, y0: 60, x1: 120, y1: 100, retained: true}
+ * @example fillRasterRegion(-100, 80, 20, 400, 300, 4e6) // null (entirely left of the surface)
+ * @example fillRasterRegion(100, 80, 20, 400, 300, 1000) // {x0: 80, y0: 60, x1: 120, y1: 100, retained: false} (6400 B > budget)
+ * @example fillRasterRegion(200, 150, 60, 400, 300, 4e6) // {x0: 140, y0: 90, x1: 260, y1: 210, retained: true} (a box bigger than the widget's own frame is fine)
+ */
+function fillRasterRegion(cxDev, cyDev, reachDev, deviceW, deviceH, budgetBytes) {
+  const x0 = Math.floor(cxDev - reachDev), y0 = Math.floor(cyDev - reachDev);
+  const x1 = Math.ceil(cxDev + reachDev), y1 = Math.ceil(cyDev + reachDev);
+  if (x1 <= 0 || y1 <= 0 || x0 >= deviceW || y0 >= deviceH || x1 <= x0 || y1 <= y0) return null;
+  const w = x1 - x0, h = y1 - y0;
+  if (w <= MAX_SURFACE_DIM && h <= MAX_SURFACE_DIM && w * h * RASTER_BYTES_PER_PX <= budgetBytes)
+    return { x0, y0, x1, y1, retained: true };
+  const cx0 = Math.max(0, x0), cy0 = Math.max(0, y0);
+  const cx1 = Math.min(deviceW, x1), cy1 = Math.min(deviceH, y1);
+  return { x0: cx0, y0: cy0, x1: cx1, y1: cy1, retained: false };
+}
+
+/**
+ * Command (counts + reports once). A fill whose raster is too big to keep re-runs its
+ * shader every frame, which is exactly the cost this cache exists to remove, so it says
+ * so instead of being quietly slow. Reported once per material + raster size, and only
+ * on a caller that could have cached (bare node / the CLI keeps nothing by design, and
+ * a one-shot render has nothing to be told).
+ */
+function noteRasterRefusal(ctx, material, region) {
+  _fillStats.refusals++;
+  if (!ctx.liveGpu) return;
+  const w = region.x1 - region.x0, h = region.y1 - region.y0;
+  reportOnce(`material-raster-oversized:${material.id}:${w}x${h}`, `paintIR(skia): material "${material.id}" needs a raster bigger than the ${MATERIAL_RASTER_CACHE_FRAMES}-frame cache budget (${(rasterCacheBudget(ctx) / 1e6).toFixed(1)} MB at this frame size), so only its visible part is drawn and its shader re-runs EVERY frame — panning it will not be cheap. Shrink the widget or zoom out to bring it inside the budget.`);
+}
+
+/**
+ * Pure function. A device-px centre coordinate expressed RELATIVE to an integer region
+ * origin, in a way that changes no shader arithmetic.
+ *
+ * WHY THE ROUNDING IS EXPLICIT. The uniform the shader receives is `Math.fround(cx)`
+ * (a Float32Array stores nothing else), and the shader's first move is `p - cx`. Doing
+ * the subtraction in float64 first — `fround(cx - x0)` — is NOT the same number as
+ * `fround(cx) - x0`, and a Mandelbrot boundary pixel amplifies that last-bit
+ * difference into a completely different colour (measured: 241 of 255 levels).
+ * Rounding to float32 FIRST and subtracting an integer second is exact (the result has
+ * a smaller magnitude than the operand, so no mantissa bit is lost), which makes
+ * `p_local - cx_local` and `p_device - cx_device` the same real number, rounded the
+ * same way. The raster is therefore independent of where the region origin was put —
+ * which is what lets the origin be chosen for memory (fillRasterRegion) without
+ * changing a pixel.
+ *
+ * @param {number} devCoord - the device-px centre coordinate
+ * @param {number} origin - the region origin (an integer)
+ * @returns {number} the centre in region-local device px
+ *
+ * @example reanchoredCenter(150, 58) // 92
+ * @example reanchoredCenter(150.87, 58) // 92.87000274658203 (float32 of 150.87, minus 58 — exact)
+ */
+function reanchoredCenter(devCoord, origin) {
+  return Math.fround(devCoord) - origin;
+}
+
+/**
+ * Pure function. The cache lookup key for a material raster: the material id, the
+ * raster's pixel size, and an FNV-1a hash of the PACKED UNIFORM BYTES (everything the
+ * shader can see — see this section's header). The hash only has to find a candidate;
+ * the caller confirms with a full byte compare, so a collision costs a re-render and
+ * can never show a stale picture.
+ *
+ * @param {string} id - the material id
+ * @param {Uint8Array} bytes - the packed uniform Float32Array's byte view
+ * @param {number} w - raster width in device px
+ * @param {number} h - raster height in device px
+ * @returns {string}
+ *
+ * @example rasterKey("sky", new Uint8Array([1, 2, 3]), 64, 32) // "sky|64x32|be7b9c5"
+ */
+function rasterKey(id, bytes, w, h) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${id}|${w}x${h}|${(hash >>> 0).toString(16)}`;
+}
+
+/** Pure function. Byte-for-byte equality of two Uint8Arrays (the collision-proof half
+ * of the lookup: a hash finds the entry, this confirms it).
+ *
+ * @example sameBytes(new Uint8Array([1, 2]), new Uint8Array([1, 2])) // true
+ * @example sameBytes(new Uint8Array([1, 2]), new Uint8Array([1, 3])) // false
+ */
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Query→build (near-pure: reads/writes the raster cache; the IMAGE it returns is a
+ * pure function of `material`, `u` and the region size). The material's shader
+ * rasterized over `region` — served from the cache when the same uniforms produced the
+ * same-sized raster in a previous pass, otherwise rendered into a region-sized
+ * offscreen and (if the frontier and the budget allow) retained.
+ *
+ * Returns `{img, retained}`: `retained` true means the CACHE owns the Image (do not
+ * delete it), false means the caller must free it after the blit.
+ */
+function materialFillRaster(CanvasKit, ctx, material, u, region) {
+  const w = region.x1 - region.x0, h = region.y1 - region.y0;
+  const uniforms = material.pack(u);
+  const bytes = new Uint8Array(uniforms.buffer, uniforms.byteOffset, uniforms.byteLength);
+  // Retention needs an identity-stable surface factory (one per GrContext — the
+  // video_v2 caller contract), which is exactly what ctx.liveGpu reports: a caller
+  // that passed none (bare node, the CLI) gets a fresh closure per pass, so it could
+  // never hit and must not accumulate a partition per pass either.
+  const partition = region.retained && ctx.liveGpu ? contextPartition(ctx) : null;
+  const key = partition ? rasterKey(material.id, bytes, w, h) : null;
+  if (partition) {
+    partition.cur.add(key);
+    const hit = partition.entries.get(key);
+    if (hit && sameBytes(hit.uniforms, bytes)) {
+      _fillStats.hits++;
+      partition.entries.delete(key);   // re-insert: insertion order IS the LRU order
+      partition.entries.set(key, hit);
+      return { img: hit.img, retained: true };
+    }
+    _fillStats.misses++;
+  }
+  const img = renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h);
+  if (!partition) return { img, retained: false };
+  // ADMISSION: only a picture this context already asked for in its previous pass. A
+  // first sighting is drawn and dropped, so a drag (a new key every frame) inserts
+  // nothing and evicts nothing, and an animated material never gets in at all.
+  if (!partition.prev.has(key)) return { img, retained: false };
+  // The BUDGET was already applied when the region was chosen (fillRasterRegion returns
+  // retained:false for a raster too big to keep), so an entry that reaches here fits;
+  // what is left is making ROOM for it.
+  const cost = w * h * RASTER_BYTES_PER_PX;
+  const budget = rasterCacheBudget(ctx);
+  while (partition.bytes + cost > budget) {
+    const oldest = partition.entries.keys().next().value;
+    if (oldest === undefined) break;
+    const victim = partition.entries.get(oldest);
+    partition.entries.delete(oldest);
+    partition.bytes -= victim.bytes;
+    victim.img.delete();
+    _fillStats.evictions++;
+  }
+  // A key already present here means a HASH COLLISION whose byte compare failed (the
+  // rasterKey hash finds, sameBytes confirms). The old raster is now unreachable, so it
+  // is freed and un-counted rather than overwritten in place — an overwrite would leak
+  // its texture and drift the byte total.
+  const collided = partition.entries.get(key);
+  if (collided) { partition.bytes -= collided.bytes; collided.img.delete(); }
+  partition.entries.set(key, { img, uniforms: bytes.slice(), w, h, bytes: cost });
+  partition.bytes += cost;
+  _fillStats.admits++;
+  return { img, retained: true };
+}
+
+/**
+ * Query→build (mutates _fillRasters). The raster partition for this pass's GL context —
+ * created on first use, keyed by ctx.makeSurface identity (see _fillRasters) — with its
+ * admission frontier advanced if this is the first time it has seen `ctx.passId`, i.e.
+ * if a frame boundary has gone by since it last drew anything.
+ *
+ * Partitions are themselves LRU-bounded to MATERIAL_RASTER_CONTEXTS: the least recently
+ * used one is dropped WHOLE (freeing its Images) rather than left to accumulate, so a
+ * caller that violates the identity-stable-factory contract costs re-renders instead of
+ * unbounded texture memory.
+ */
+function contextPartition(ctx) {
+  let part = _fillRasters.get(ctx.makeSurface);
+  if (!part) part = { entries: new Map(), bytes: 0, prev: new Set(), cur: new Set(), passId: 0 };
+  else _fillRasters.delete(ctx.makeSurface); // re-insert below: insertion order IS the LRU order
+  _fillRasters.set(ctx.makeSurface, part);
+  if (part.passId !== ctx.passId) { part.prev = part.cur; part.cur = new Set(); part.passId = ctx.passId; }
+  while (_fillRasters.size > MATERIAL_RASTER_CONTEXTS) {
+    const oldest = _fillRasters.keys().next().value;
+    const victim = _fillRasters.get(oldest);
+    _fillRasters.delete(oldest);
+    for (const e of victim.entries.values()) { e.img.delete(); _fillStats.evictions++; }
+  }
+  return part;
+}
+
+/**
+ * Query→build (allocates; returns an Image the caller or the cache owns). Runs the
+ * material's compiled SkSL over a fresh `w`×`h` offscreen — the shader's `main(float2
+ * p)` sees region-LOCAL device coordinates, which is exactly what the re-anchored
+ * uniforms are packed for — and snapshots it. Cleared TRANSPARENT, not to the scene
+ * background: this raster is the material's own silhouette (premultiplied zero outside
+ * its SDF) and is composited SrcOver, unlike the backdrop re-render that stands in for
+ * the composite-so-far and must reproduce THE CLEAR.
+ */
+function renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h) {
+  const effect = materialEffect(CanvasKit, material);
+  const shader = effect.makeShader(uniforms);
+  if (!shader) throw new Error(`paintIR(skia): material "${material.id}" makeShader returned null`);
+  const surf = ctx.makeSurface(w, h);
+  if (!surf) throw new Error(`paintIR(skia): makeSurface(${w}×${h}) for material "${material.id}" returned null`);
+  const c = surf.getCanvas();
+  c.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  const p = new CanvasKit.Paint();
+  p.setShader(shader);
+  c.drawPaint(p);
+  surf.flush();
+  const img = surf.makeImageSnapshot();
+  p.delete(); shader.delete(); surf.dispose();
+  return img;
 }
 
 /**
@@ -2177,7 +2579,7 @@ function contentDeviceBounds(CanvasKit, flat, view, ctx) {
     const local = opLocalBounds(CanvasKit, cmd, ctx);
     if (local === UNBOUNDED_EXTENT) return null;
     for (const [lx, ly] of [[local.x, local.y], [local.x + local.w, local.y], [local.x, local.y + local.h], [local.x + local.w, local.y + local.h]]) {
-      const p = T.apply(world, lx, ly);
+      const p = signedApply(world, lx, ly);
       grow(p.x * ds + px, p.y * ds + py);
     }
   }
