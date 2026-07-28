@@ -210,6 +210,52 @@ try {
       console.log(`  shot .claude_vlm_checks/stroke_material_brush_${b}.png`);
     }
   }
+
+  // G.22 WAVY — the sine/random split is deterministic. randomness 0 is a PURE
+  // sine: byte-identical across two renders AND across seeds (the seed is inert,
+  // which is the whole point of the rework). randomness > 0 is a SEEDED wobble:
+  // still byte-identical for the same seed (property state), but different from
+  // the clean sine and different for a different seed. Byte-identity is asserted on
+  // the whole frame; the sine's visible PERIODICITY is left to the screenshots.
+  if (ids.includes("wavy")) {
+    const eq = (a, b) => Buffer.compare(Buffer.from(a.data), Buffer.from(b.data)) === 0;
+    const wSine1 = await render(matrixDoc("wavy", { amplitude: 10, frequency: 8, randomness: 0, seed: 5 }));
+    const wSine2 = await render(matrixDoc("wavy", { amplitude: 10, frequency: 8, randomness: 0, seed: 999 }));
+    ok(eq(wSine1, wSine2), "wavy randomness=0 is a pure sine — byte-identical across two renders AND across seeds (seed inert)");
+    const wRand1 = await render(matrixDoc("wavy", { amplitude: 10, frequency: 8, randomness: 0.7, wander: 0.15, seed: 3 }));
+    const wRand2 = await render(matrixDoc("wavy", { amplitude: 10, frequency: 8, randomness: 0.7, wander: 0.15, seed: 3 }));
+    ok(eq(wRand1, wRand2), "wavy randomness>0 is SEED-STABLE — same seed → byte-identical");
+    ok(!eq(wRand1, wSine1), "wavy randomness>0 DIFFERS from the clean sine (the random part is visible)");
+    const wSeedB = await render(matrixDoc("wavy", { amplitude: 10, frequency: 8, randomness: 0.7, wander: 0.15, seed: 8 }));
+    ok(!eq(wRand1, wSeedB), "wavy random part depends on the seed — different seed → different wobble");
+    fs.writeFileSync(resolve(SHOTS, `stroke_material_wavy_sine.png`), PNG.sync.write(wSine1));
+    fs.writeFileSync(resolve(SHOTS, `stroke_material_wavy_random.png`), PNG.sync.write(wRand1));
+    console.log("  shot .claude_vlm_checks/stroke_material_wavy_sine.png, stroke_material_wavy_random.png");
+  }
+
+  // G.23 DASHES — the continuous builder reproduces the classic presets. Each
+  // preset paints the rect cell's outline; a Dot is far SPARSER than a Dash (its
+  // coverage is a fraction of the Dash's), which pins that the builder reproduces
+  // the old fixed patterns' periodicity, not just "something". A Custom dash+2-dots
+  // BETWEEN-state renders too. Coverage is counted on the rect cell (CELLS[0]).
+  if (ids.includes("dashes")) {
+    const coverOn = async (params) => {
+      const png = await render(matrixDoc("dashes", params));
+      return { png, cover: changedPixels(png, baseline, CELLS[0]) };
+    };
+    const dash = await coverOn({ pattern: "dash", dash: 16, gap: 10 });
+    const dot = await coverOn({ pattern: "dot", gap: 10 });
+    const dashDot = await coverOn({ pattern: "dashDot", dash: 16, gap: 10 });
+    const custom = await coverOn({ pattern: "custom", dash: 16, gap: 10, dots: 2 });
+    ok(dash.cover >= MIN_CHANGED, `dashes preset "dash" paints the outline (${dash.cover} pts >= ${MIN_CHANGED})`);
+    ok(dot.cover >= 1, `dashes preset "dot" paints round dots (${dot.cover} pts)`);
+    ok(dashDot.cover >= MIN_CHANGED, `dashes preset "dashDot" paints the outline (${dashDot.cover} pts >= ${MIN_CHANGED})`);
+    ok(custom.cover >= MIN_CHANGED, `dashes builder "custom" (dash + 2 dots) renders (${custom.cover} pts >= ${MIN_CHANGED})`);
+    ok(dot.cover < dash.cover, `dashes "dot" is SPARSER than "dash" (${dot.cover} < ${dash.cover}) — the builder reproduces the classic period`);
+    fs.writeFileSync(resolve(SHOTS, `stroke_material_dashes_dot.png`), PNG.sync.write(dot.png));
+    fs.writeFileSync(resolve(SHOTS, `stroke_material_dashes_custom.png`), PNG.sync.write(custom.png));
+    console.log("  shot .claude_vlm_checks/stroke_material_dashes_dot.png, stroke_material_dashes_custom.png");
+  }
 } finally {
   await browser.close();
   await server.close();
