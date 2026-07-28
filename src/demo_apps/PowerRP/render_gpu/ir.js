@@ -596,12 +596,20 @@ export function videoV5FrameKey(ref, seekTime, wrap) {
  * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 1.5}).seekTime // 1.5
  * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0}).wrap // "clamp"
  * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0}).preserveAspect // false
+ * @example videoV5Frame({ref: "clip1", x: 0, y: 0, w: 320, h: 180, seekTime: 0, preserveAspect: true}).preserveAspect // true
  */
-export function videoV5Frame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1 }) {
+export function videoV5Frame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, preserveAspect = false }) {
   if (typeof ref !== "string") throw new Error(`videoV5Frame: "ref" must be a string, got ${JSON.stringify(ref)}`);
   requireFinite("videoV5Frame", { x, y, w, h, seekTime, opacity, sx, sy, sw, sh });
   if (!SCRUB_WRAP_MODES.includes(wrap)) throw new Error(`videoV5Frame: "wrap" must be one of ${SCRUB_WRAP_MODES.join("/")}, got ${JSON.stringify(wrap)}`);
-  return { op: "videoV5Frame", ref, x, y, w, h, seekTime, wrap, opacity, src: sourceRect(sx, sy, sw, sh) };
+  // preserveAspect (default FALSE, unlike latexVector's TRUE): a media quad's
+  // established behaviour is a box→box STRETCH, and image/video/videoFrame/videoV5 all
+  // rely on it — so the letterbox is strictly opt-in and today only plugins/filmstrip.js
+  // opts in (its cells are shaped by the STRIP, so a stretch squashes the pictures).
+  // Handled by whichever backend knows the decoded frame's intrinsic size, which is the
+  // latexVector/mermaidVector contract; the plugin cannot, since emit() is media-free.
+  return { op: "videoV5Frame", ref, x, y, w, h, seekTime, wrap, opacity, preserveAspect: preserveAspect === true, src: sourceRect(sx, sy, sw, sh) };
 }
 
 // ── latexVector (Round 15.1 — TRUE VECTOR EQUATION EXPORT) ────────────────────

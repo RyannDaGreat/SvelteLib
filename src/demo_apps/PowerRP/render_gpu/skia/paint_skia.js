@@ -577,6 +577,24 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
 }
 
 /**
+ * Pure function. `cmd`'s destination box with content of intrinsic size
+ * (contentW x contentH) UNIFORM-scaled to fit inside it and CENTRED — the letterbox
+ * `preserveAspect` asks for, via the same core/geometry.fitBox every other
+ * preserve-aspect path in this file uses. Degenerate content (either extent <= 0, i.e.
+ * an image whose size is not known yet) returns the box unchanged, so the caller falls
+ * back to the plain stretch rather than dividing by zero.
+ *
+ * @example fittedQuad(200, 100, {x: 0, y: 0, w: 100, h: 100}) // {x: 0, y: 25, w: 100, h: 50}
+ * @example fittedQuad(100, 200, {x: 10, y: 10, w: 100, h: 100}) // {x: 35, y: 10, w: 50, h: 100}
+ * @example fittedQuad(0, 100, {x: 0, y: 0, w: 8, h: 4}) // {x: 0, y: 0, w: 8, h: 4} (unknown size: unchanged)
+ */
+function fittedQuad(contentW, contentH, cmd) {
+  if (!(contentW > 0) || !(contentH > 0)) return { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
+  const f = fitBox(contentW, contentH, cmd.w, cmd.h);
+  return { x: cmd.x + f.offsetX, y: cmd.y + f.offsetY, w: contentW * f.scale, h: contentH * f.scale };
+}
+
+/**
  * Command. Draws ONE image `img` as a sampled quad — the shared body of the
  * image / video / videoV5 / videoFrame / videoV5Frame cases (all identical: a
  * source sub-rect of `img` mapped to the dest box at `opacity`; only the
@@ -590,7 +608,16 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
  * loss at ~100px (trilinear ≥ single-level linear on a downscale). FULL keeps
  * the exact drawImageRect(fastSample=false) it always used.
  *
- * @param cmd a draw op carrying {x, y, w, h, src:{sx, sy, sw, sh}}
+ * PRESERVE ASPECT is honoured HERE and nowhere upstream, because here is the first
+ * place the decoded frame's INTRINSIC pixel size exists: a plugin's emit() is
+ * deliberately media-free, so it can only DECLARE the intent on the op (the
+ * latexVector/mermaidVector contract, where the op carries `preserveAspect` and the
+ * backend that owns the content's real size performs the fit). An op that does not
+ * carry the flag — image, video, videoFrame, videoV5, and every hand-built IR — takes
+ * the exact box→box stretch it always did, byte for byte. Today only the FILMSTRIP
+ * sets it: its cells are shaped by the strip, so a stretch squashes the pictures.
+ *
+ * @param cmd a draw op carrying {x, y, w, h, src:{sx, sy, sw, sh}, preserveAspect?}
  * @param opacity {number} folded into the paint's alpha
  * @param quality {"full"|"proxy"} raster-read fidelity (see above)
  */
@@ -598,7 +625,12 @@ function drawSampledQuad(CanvasKit, canvas, img, cmd, opacity, quality) {
   const iw = img.width(), ih = img.height();
   const s = cmd.src;
   const src = CanvasKit.LTRBRect(s.sx * iw, s.sy * ih, (s.sx + s.sw) * iw, (s.sy + s.sh) * ih);
-  const dest = CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h);
+  // The fit is against the SOURCE SUB-RECT's pixel size, not the whole image's, so a
+  // crop and a letterbox compose correctly (crop first, then fit what is left).
+  const box = cmd.preserveAspect === true
+    ? fittedQuad(s.sw * iw, s.sh * ih, cmd)
+    : { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
+  const dest = CanvasKit.LTRBRect(box.x, box.y, box.x + box.w, box.y + box.h);
   const p = new CanvasKit.Paint();
   p.setAlphaf(opacity);
   if (quality === "proxy") canvas.drawImageRectOptions(img, src, dest, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.Linear, p);
