@@ -193,3 +193,18 @@ gear is very large on screen (the near-centre radius clamp in metal_shader's
 radial arc-length-constant brushing); 2) seg7 degree readouts can overlap or
 clip near small adjacent gears in the title framing. Both visible in
 .claude_vlm_checks/gears_v3/final_000018.png.
+
+
+## 2026-07-28 — Equation Zoo delivered (items 68–69) after one hard-failed round
+Round 1 render had 4 crashed slides ("lambda is not defined") — a REAL engine
+gap the deck agent surfaced: graph sources sampled in emit() never saw
+document vars (fixed in ce777ac, capability-gated docVars injection, pinned by
+graph_doc_vars_test). Also the deck agent's own bugs: digest 04's morph params
+were degenerate at the extremes (λ=0 a 16-unit dot, λ=1 a 2850-unit blowout —
+fixed by normalizing r to the spiral's own outer radius; a lesson for anyone
+reusing digest 04 verbatim), and an iso_box collapse flattened Fourier to 16px.
+Final deck: 14 slides, zero repairs, 30.8s 720p MP4 through render_job; the
+catenary ball's document-equation RK4 matches the SymPy table to 5 decimals
+and rendered pixels to <1px at release/valley/turning-point; equal-height
+turning points make energy conservation visible on screen. Coordinator
+eyeballed the centerpiece and the λ=1 morph frame: both pass the Manim bar.
