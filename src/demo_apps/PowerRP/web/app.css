@@ -5367,3 +5367,72 @@ audio.ae-preview-media {
   line-height: 1;
   pointer-events: none;
 }
+
+/* ==========================================================================
+   TEXTURE-BRUSH PALETTE (web/BrushPalette.svelte) — appended block (TEXBRUSH
+   agent). Surgical add: another agent also edits this file, so this lives at the
+   very END and touches nothing above it. A thumbnail grid of the 23 brush-stroke
+   textures over the shared alpha checkerboard; --bp-swatch is the texture URL set
+   inline by the component, mirroring ColorField's --cf-swatch. All sizing/spacing
+   comes from --a-* tokens (the block-local ones are declared here, not in :root,
+   to keep the append self-contained).
+   ========================================================================== */
+.brush-palette {
+  --a-brush-swatch-h: 40px;        /* swatch tile height — reads a stroke's shape at a glance */
+  --a-brush-swatch-min-w: 72px;    /* min tile width; the grid auto-fills the panel */
+  --a-brush-grid-rows: 5;          /* visible rows before the grid scrolls internally */
+  display: block;
+}
+.brush-palette-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--a-sp-2);
+  margin-bottom: var(--a-sp-3);
+}
+.brush-cat-chip {
+  padding: var(--a-sp-1) var(--a-sp-3);
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  background: var(--a-hover-bg);
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-transform: capitalize;
+}
+.brush-cat-chip-active {
+  color: var(--fg);
+  background: var(--a-selection);
+}
+.brush-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--a-brush-swatch-min-w), 1fr));
+  gap: var(--a-sp-2);
+  max-height: calc(
+    var(--a-brush-grid-rows) * var(--a-brush-swatch-h) +
+    (var(--a-brush-grid-rows) - 1) * var(--a-sp-2)
+  );
+  padding: var(--a-sp-1);
+  overflow-y: auto;
+}
+/* Swatch: the texture (with its ALPHA) over the shared transparency checkerboard,
+   so a soft-edged stroke reads as translucent (the ColorField swatch precedent).
+   --bp-swatch is the texture url() set inline by BrushPalette. */
+.brush-swatch {
+  height: var(--a-brush-swatch-h);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  background:
+    var(--bp-swatch) center / contain no-repeat,
+    repeating-conic-gradient(var(--a-checker-dark) 0% 25%, var(--a-checker-light) 0% 50%);
+  background-size: contain, var(--a-checker-size) var(--a-checker-size);
+}
+.brush-swatch:focus-visible {
+  outline: var(--a-selection-stroke) solid var(--a-selection);
+  outline-offset: 1px;
+}
+.brush-swatch-selected {
+  outline: var(--a-selection-stroke) solid var(--a-selection);
+  outline-offset: 1px;
+}

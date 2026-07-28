@@ -54,6 +54,7 @@ const STREAM_ROT = 1;
 const STREAM_FLOW = 2;
 const STREAM_SCATTER_N = 3;    // perpendicular (normal) scatter
 const STREAM_SCATTER_T = 4;    // along-tangent scatter
+const STREAM_COLOR = 5;        // per-stamp colour jitter toward the jitter colour
 
 // ── pure math helpers (doctested) ─────────────────────────────────────────────
 
@@ -495,6 +496,12 @@ export function renderBrush(CanvasKit, canvas, path, params, strokeWidth, opacit
   const B = Math.round(clampUnit(rgba[2]) * 255);
   const colorAlpha = (rgba[3] ?? 1) * opacity;
   const seed = params.seed | 0;
+  // COLOUR JITTER: each stamp's ink is pushed toward `jitterColor` by a seeded
+  // fraction of `colorJitter` (0 = off). Seeded via randUnit → property state,
+  // Δt-invariant, no Math.random (CLAUDE.md). No arbitrary max on the amount.
+  const jitterAmt = Math.max(0, params.colorJitter ?? 0);
+  const jc = parseColor(params.jitterColor ?? "#000000");
+  const jR = Math.round(clampUnit(jc[0]) * 255), jG = Math.round(clampUnit(jc[1]) * 255), jB = Math.round(clampUnit(jc[2]) * 255);
 
   const srcRects = [];
   const dstXforms = [];
@@ -525,7 +532,12 @@ export function renderBrush(CanvasKit, canvas, path, params, strokeWidth, opacit
       // per-stamp seeded flow build-up otherwise.
       const stampFlow = eff.flow * (1 - FLOW_DITHER * randUnit(seed, i, STREAM_FLOW));
       const alphaByte = useLayer ? 255 : Math.round(clampUnit(stampFlow * colorAlpha) * 255);
-      colors.push(CanvasKit.ColorAsInt(R, G, B, alphaByte));
+      // seeded per-stamp colour toward the jitter colour (STREAM_COLOR decorrelates it)
+      const jt = jitterAmt > 0 ? jitterAmt * randUnit(seed, i, STREAM_COLOR) : 0;
+      const sr = jt > 0 ? Math.round(R + (jR - R) * jt) : R;
+      const sg = jt > 0 ? Math.round(G + (jG - G) * jt) : G;
+      const sb = jt > 0 ? Math.round(B + (jB - B) * jt) : B;
+      colors.push(CanvasKit.ColorAsInt(sr, sg, sb, alphaByte));
       i++;
     }
     contour.delete();
@@ -585,10 +597,12 @@ export const BRUSH_STROKE = {
       help: "Which brush archetype to stamp along the stroke (ink, pencil, marker, charcoal, watercolor, airbrush, calligraphy, …).",
     },
     { name: "color", kind: "color", default: "#1b1b2f", help: "The ink colour every stamp is tinted to." },
-    { name: "spacing", kind: "number", default: 1, min: 0.1, max: 4, step: 0.05, help: "Multiplies the brush's natural stamp spacing. 1 = default; <1 denser/smoother; >1 gappier." },
-    { name: "sizeJitter", kind: "number", default: 0, min: 0, max: 1, step: 0.01, help: "ADDS seeded per-stamp size variation on top of the brush's own (0 = brush default)." },
-    { name: "angleJitter", kind: "number", default: 0, min: 0, max: 1, step: 0.01, help: "ADDS seeded per-stamp rotation in turns (0..1 → 0..2π) on top of the brush's own." },
-    { name: "scatter", kind: "number", default: 0, min: 0, max: 2, step: 0.01, help: "ADDS seeded scatter off the path (× stamp size) — pushes stamps sideways for spray/spatter looks." },
+    { name: "spacing", kind: "number", default: 1, min: 0, scrub: 0.01, help: "Multiplies the brush's natural stamp spacing. 1 = default; <1 denser/smoother; >1 gappier. (A near-zero value is floored to a safe minimum step so the walk terminates — no arbitrary upper cap.)" },
+    { name: "sizeJitter", kind: "number", default: 0, min: 0, scrub: 0.01, help: "ADDS seeded per-stamp size variation on top of the brush's own (0 = brush default). Saturates in the stamp math — no arbitrary upper cap." },
+    { name: "angleJitter", kind: "number", default: 0, min: 0, scrub: 0.01, help: "ADDS seeded per-stamp rotation in turns (1 = a full turn) on top of the brush's own — no arbitrary upper cap." },
+    { name: "scatter", kind: "number", default: 0, min: 0, scrub: 0.01, help: "ADDS seeded scatter off the path (× stamp size) — pushes stamps sideways for spray/spatter looks. Wider spray is legitimate; no arbitrary upper cap." },
+    { name: "colorJitter", kind: "number", default: 0, min: 0, scrub: 0.01, help: "Per-stamp colour jitter toward the jitter colour (seeded, deterministic). 0 = none; no arbitrary upper cap (saturates at the jitter colour)." },
+    { name: "jitterColor", kind: "color", default: "#000000", help: "The colour each stamp is randomly pushed toward when colour jitter is on." },
     { name: "flow", kind: "number", default: 1, min: 0, max: 1, step: 0.01, help: "Per-stamp opacity multiplier (build-up). Combines with the brush default and the stroke's opacity." },
     {
       name: "follow", kind: "select",
