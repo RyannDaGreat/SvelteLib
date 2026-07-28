@@ -725,20 +725,43 @@ export function bitsForDepth(depthDecades) {
 }
 
 /**
+ * Largest magnitude `toFixed` renders in PLAIN decimal. At 1e21 and above it
+ * silently switches to EXPONENTIAL notation ((1e21).toFixed(2) === "1e+21",
+ * while (1e20).toFixed(2) === "100000000000000000000.00"), and `BigInt` cannot
+ * parse an exponent — so the digit-splicing below would hand it "1e+21" and it
+ * would throw a bare SyntaxError from deep inside a render. This is a TECHNICAL
+ * limit of the language's own formatter, not a taste cap on how far one may zoom:
+ * a Mandelbrot centre lives in |c| < 2, so no legitimate coordinate is remotely
+ * near it, and anything that is has already gone wrong upstream.
+ */
+const MAX_TO_FIXED_PLAIN = 1e21;
+
+/**
  * Pure function. A finite number as an EXACT BigInt numerator over 10^decimals.
  * This is the only place a float64 coordinate becomes a long number, and it is
  * exact because `toFixed` is exact for the decimal places it accepts.
  *
- * @param {number} v - a finite number
+ * REJECTS a magnitude `toFixed` would render in exponential notation. That was a
+ * real crash: a fine-slot overflow produced a centre of ~1.9e84, `toFixed` handed
+ * back "1.8967841688652096e+84", `BigInt` threw "Cannot convert
+ * 18967841688652096e+68 to a BigInt", and because the throw happened inside
+ * CanvasView's render $effect it tore down the Svelte reactive root and froze the
+ * whole editor. The guard turns that into a named precondition failure naming the
+ * culprit, which is diagnosable; fixing the overflow at its source is separate.
+ *
+ * @param {number} v - a finite number with |v| < 1e21
  * @param {number} decimals - fractional decimal places (0..100)
  * @returns {bigint} round(v * 10^decimals)
  *
  * @example scaledDecimal(0.5, 3) // 500n
  * @example scaledDecimal(-2, 2) // -200n
  * @example scaledDecimal(0.1234, 2) // 12n  (rounded, as toFixed rounds)
+ * @example // scaledDecimal(1e21, 2) throws: toFixed would return "1e+21", which BigInt cannot parse
  */
 export function scaledDecimal(v, decimals) {
   if (!Number.isFinite(v)) throw new Error(`scaledDecimal: expected a finite number, got ${v}`);
+  if (Math.abs(v) >= MAX_TO_FIXED_PLAIN)
+    throw new Error(`scaledDecimal: |${v}| is at or above ${MAX_TO_FIXED_PLAIN}, where toFixed switches to exponential notation and BigInt cannot parse the result. A Mandelbrot coordinate lives in |c| < 2, so this value overflowed upstream — check the split centre (centerX/centerFineX/fineExponent).`);
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > MAX_TO_FIXED_DECIMALS)
     throw new Error(`scaledDecimal: decimals must be an integer in 0..${MAX_TO_FIXED_DECIMALS}, got ${decimals}`);
   const s = v.toFixed(decimals);
