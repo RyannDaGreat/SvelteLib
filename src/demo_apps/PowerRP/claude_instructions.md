@@ -481,7 +481,15 @@ pure function of t, seekable. Supporting laws, all verified: sinθ = tanh(x/a)
 μ ≥ (2/7)·tanθ; unit normal N = (−tanh(x/a), sech(x/a)) (center = contact +
 R·N); spin φ = −s/R + φ0 with NO left/right case split (s monotonic in x —
 one formula, both directions). Worked example a=2, R=0.3, g=9.8, x0=−3:
-period ≈ 4.799 s; spot-check table in the report.
+period ≈ 4.799 s; spot-check table in the report. ADDENDUM (§9, receipts in
+report): the demo needs NO new engine work — core/expressions.js compiles
+full JS (IIFEs/loops explicitly supported, expressions.js:1850–1881) and
+SAFE_MATH has sinh/cosh/tanh/asinh, so the RK4 loop is a legal document
+equation over `time` (recordable, Δt=0-stable, shardable); `vars.ball_s`
+holds the integration ONCE and ball_x/ball_y/ball_phi derive from it
+(state.vars are cycle-detected equation slots, expressions.js:2139); the
+curve/ball themselves are expressible with polygon/paint_path + circle/image
+today — graphLine (item 63) makes it BETTER, not possible.
 
 **06 equation sandbox design** (item 64): THE SANDBOX ALREADY EXISTS —
 core/expressions.js compiles arbitrary JS via
@@ -596,8 +604,28 @@ barCount is DISCRETE (snaps at alpha>0, never lerps); autoscale stays OFF
 (anti-jump); per-bar identity under hide-vs-purge; lagRatio×transition
 length interaction; center-rule ≠ trapezoid rule.
 
-**video-unify investigation**: agent in flight; digest AS IT LANDS
-(standing instruction: "Write all of them down into the manifest").
+**video-unify investigation** (item 72; full risk list in
+.frenzy/video_unify.md): TWO REAL PRE-EXISTING BUGS block the user's exact
+wish TODAY, empirically confirmed — (1) `%` is not in the expression
+grammar: OP_CHARS = "+-*/()" (expressions.js:120), so displayToStored
+throws on `time % 12.5`; (2) `time` fails the UI-FACING validator
+(resolveRef/displayToStored, :950–970/:1126–1158) even though the RUNTIME
+evaluator resolves it fine (:2456) — this contradicts the clock plugins'
+own help text telling users to type "= time" (clock_digital.js:221,
+clock_analog.js:307). Both are small grammar-table fixes, not
+architectural. `self.length` exists NOWHERE — scrubber `duration` is
+hand-typed (video_scrub.js:85–90); the deterministic source is an
+ffprobe-backed endpoint (the server.py:238–256 filmstrip precedent), which
+works before any browser decode and is machine-stable. AUDIO is a real
+loss, not a footnote: the scrubber is hardcoded muted (video_registry.js:
+651) and the only audio precedent (PresentMode transitionAudio) is
+fire-once wall-clock, nothing slaved to particleTime — no pattern to
+steal. Live scrubbing is seek-latency-bound and survives via the
+HOLD+COALESCE machinery (video_registry.js:477–943, built after "153 of
+154 frames blank"). RECOMMENDATION (fits the user's demo-widget scope
+ruling): keep the player; ship the grammar fixes on their own merit
+(`%` + UI-visible `time`); add real self.length via ffprobe; the demo
+widget is the scrubber-with-time-presets.
 
 ### Round 5 open questions (user: "write them all down") — NOT yet answered
 - Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
