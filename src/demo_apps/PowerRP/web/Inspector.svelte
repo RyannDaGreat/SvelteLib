@@ -195,6 +195,13 @@
   const DEFAULT_CATEGORY = "other";
   const CATEGORY_TITLES = {
     positioning: "Positioning",
+    // FILL/STROKE ARE THEIR OWN TOP-LEVEL SECTIONS, peers of Positioning — NOT
+    // rows inside Formatting (user ruling, twice: "they need to be their own
+    // separate drop-down"). The section hosts the whole paint stack for its
+    // slot: the paint mode buttons, solid/gradient editors, the Mat picker and
+    // its knob fold — and, for stroke, width/trim/phase/caps.
+    fillMaterial: "Fill Material",
+    strokeMaterial: "Stroke Material",
     formatting: "Formatting",
     text: "Text",
     arrow: "Arrow",
@@ -207,15 +214,15 @@
     custom: "Custom",
     other: "Other",
   };
-  const CATEGORY_ORDER = ["positioning", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+  const CATEGORY_ORDER = ["positioning", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /** Pure function. Groups plugin inspector rows into ordered category buckets:
    * [{id, title, rows}]. Preserves row order within a category; known
    * categories sort by CATEGORY_ORDER, unknown ones append in first-seen order.
    *
    * Examples:
-   *     >>> // rows [{key:"x",category:"positioning"},{key:"fill",category:"formatting"}]
-   *     >>> // → [{id:"positioning",title:"Positioning",rows:[…x]},{id:"formatting",…}]
+   *     >>> // rows [{key:"x",category:"positioning"},{key:"fill",category:"fillMaterial"}]
+   *     >>> // → [{id:"positioning",title:"Positioning",rows:[…x]},{id:"fillMaterial",…}]
    */
   function groupRows(rows) {
     const buckets = new Map();

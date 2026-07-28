@@ -112,6 +112,21 @@ try {
   ok(rectId, "found a rect item in the demo deck");
   await new Promise((r) => setTimeout(r, 250));
 
+  // ── Round 2 #26 — Fill/Stroke Material are TOP-LEVEL Inspector sections ──────
+  // (peers of Positioning), NOT rows inside Formatting. The user rejected the
+  // first shipped version; this pins the corrected structure permanently.
+  const sections = await page.evaluate(() => {
+    const cats = [...document.querySelectorAll(".inspector .prop-category")];
+    const titleOf = (c) => c.querySelector(".cat-header .cat-title")?.textContent?.trim();
+    const holding = (label) => titleOf(cats.find((c) =>
+      [...c.querySelectorAll(".cat-rows > .row .label")].some((l) => l.textContent === label)));
+    return { titles: cats.map(titleOf), fillIn: holding("Fill"), strokeIn: holding("Stroke") };
+  });
+  ok(sections.titles.includes("Fill Material") && sections.titles.includes("Stroke Material"),
+    `top-level sections "Fill Material" + "Stroke Material" exist; got [${sections.titles.join(", ")}]`);
+  ok(sections.fillIn === "Fill Material", `the Fill row lives IN "Fill Material", not Formatting; got ${JSON.stringify(sections.fillIn)}`);
+  ok(sections.strokeIn === "Stroke Material", `the Stroke row lives IN "Stroke Material", not Formatting; got ${JSON.stringify(sections.strokeIn)}`);
+
   /** Click the "Mat" mode button inside the Inspector row labelled `rowLabel`. */
   const clickMat = (rowLabel) => page.evaluate((lbl) => {
     const rows = [...document.querySelectorAll(".inspector .row")];

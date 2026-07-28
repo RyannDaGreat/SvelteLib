@@ -553,16 +553,19 @@
            CRT does): the app's ONE accordion (.cat-header + chevron + .cat-rows),
            folding this slot's knob list rather than flooding the row's value cell.
            The fold choice is remembered per slot (toggleMatCollapsed). -->
-      <Tooltip text={matCollapsed ? `Show ${label} material knobs (${matSummary})` : `Fold ${label} material knobs away (${matSummary})`}>
+      <!-- Header names the MATERIAL, not the slot: this fold now lives INSIDE
+           the top-level "Fill Material"/"Stroke Material" Inspector section
+           (Round 2 #26), so repeating the slot name would read twice. -->
+      <Tooltip text={matCollapsed ? `Show ${matEntry.title ?? matSub.id} knobs (${matSummary})` : `Fold ${matEntry.title ?? matSub.id} knobs away (${matSummary})`}>
         <button
           type="button"
           class="cat-header"
           aria-expanded={!matCollapsed}
-          aria-label={`${label} material knobs: ${matSummary}`}
+          aria-label={`${matEntry.title ?? matSub.id} knobs: ${matSummary}`}
           onclick={toggleMatCollapsed}
         >
           <iconify-icon icon={matCollapsed ? "mdi:chevron-right" : "mdi:chevron-down"} width="16" height="16"></iconify-icon>
-          <span class="cat-title">{label} material · {matSummary}</span>
+          <span class="cat-title">{matEntry.title ?? matSub.id} · {matSummary}</span>
         </button>
       </Tooltip>
       {#if !matCollapsed}
