@@ -196,6 +196,26 @@ bookkeeping: it decides whether a render can be split across machines.
   sparkler, with no error). Recordable state is SEEKABLE: frame 200 renders
   without frame 199, which is what lets `cli/render_job.js` shard a render by
   strided frame range.
+  **THE DEFINING TEST IS Δt (user ruling, 2026-07-28), and it is sharper than the
+  prose above.** Recordable state is a function of ELAPSED TIME ALONE. So:
+  **Δt = 0 ⟹ recordable state is UNCHANGED.** Not "usually", not "unless
+  something else moved" — by definition. Two consequences that make this worth
+  stating as a law rather than a description:
+    1. RECORDABLE AND PROPERTY STATE ARE ORTHOGONAL. Freeze `t`, vary any property
+       state you like, re-render as many times as you want: the recordable
+       contribution is identical every time, so what changed between those renders
+       is exactly what you changed. That is the whole reason the two kinds are
+       separable, and it is what lets an author A/B a design without the sparkler
+       moving underneath them.
+    2. IT IS MECHANICALLY CHECKABLE, in both directions. Hold `t` and the document
+       fixed: the frame must be BYTE-IDENTICAL. Hold `t` and change one property:
+       only that property's effect may differ. A widget that fails either half is
+       not recordable — it is EPHEMERAL, and we have none (see below).
+  This is why reading a wall clock inside `emit()` is a category error and not
+  merely untidy: it makes Δt = 0 produce two different pictures, which breaks
+  orthogonality, breaks frame-range sharding, and breaks reproducibility of an
+  export, all at once. It is also why carrying state from frame N-1 (a physics
+  sim) is disqualifying — that state is a function of HISTORY, not of `t`.
   CORRECTION, because this bullet used to say otherwise: a video PLAYER's current
   frame is NOT recordable. `gpu/video_registry.js` has NO time-override seam — the
   `<video>` element runs on the browser's OWN playback clock, deliberately, because
