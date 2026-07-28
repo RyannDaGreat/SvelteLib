@@ -1480,7 +1480,7 @@ export const mandelbrotPlugin = {
     return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
   },
   anchors: standardBBoxAnchors,
-  // NO top-level commands: reached ONLY via the "Insert Demo Widget" submenu, like
+  // NO top-level commands: reached ONLY via the "Add Demo Widget" submenu, like
   // every other plugins/demo/ widget. This file previously carried its own
   // `add-demo-mandelbrot` command purely because the submenu is a hand-written list
   // in web/App.svelte and nothing lets a plugin join it — so a plugin command was

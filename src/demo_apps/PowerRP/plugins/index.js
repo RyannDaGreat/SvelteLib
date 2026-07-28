@@ -40,7 +40,7 @@ import { clockAnalogPlugin } from "./clock_analog.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
 import { polygonPlugin } from "./polygon.js"; // freeform polygon/polyline: a variable-length vertex list, every vertex a handle, the whole list one keyframable leaf
 // DEMO widgets (plugins/demo/) — showcase the extensibility story (custom
-// self.* properties). Surfaced via the "Insert Demo Widget" submenu (App.svelte),
+// self.* properties). Surfaced via the "Add Demo Widget" submenu (App.svelte),
 // not the core Add menus.
 import { demoShowcasePlugin } from "./demo/showcase.js";
 import { glassPlugin } from "./demo/glass.js";

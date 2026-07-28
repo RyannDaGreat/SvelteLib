@@ -40,7 +40,7 @@
  * literal, an expression, or a `= …` equation, with ZERO evaluation-engine changes —
  * so e.g. a keyframed `starburstRotation` or `lightX = self.w/1000` is free.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte). DOM-free /
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-free /
  * bare-node-safe at import time.
  */
 
@@ -544,5 +544,5 @@ export const lensFlarePlugin = {
       },
     }];
   },
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };

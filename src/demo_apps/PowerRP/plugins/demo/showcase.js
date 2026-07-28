@@ -14,7 +14,7 @@
  * equations as `self.inset` — all through the EXISTING evaluation path
  * (core/expressions.evaluateState), with no engine changes.
  *
- * Surfaced ONLY through the "Insert Demo Widget" command-palette submenu
+ * Surfaced ONLY through the "Add Demo Widget" command-palette submenu
  * (web/App.svelte) — deliberately NO top-level `commands`, so the core palette
  * stays clean (the manifest's demo-widget organization intent).
  *

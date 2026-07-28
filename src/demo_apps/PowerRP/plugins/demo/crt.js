@@ -24,7 +24,7 @@
  * A still-frame render has neither, so they are exposed for completeness but NOT
  * passed into `params` — they do nothing here, honestly, rather than being faked.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte). DOM-
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-
  * free / bare-node-safe at import time.
  */
 
@@ -272,5 +272,5 @@ export const crtPlugin = {
     return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
   },
   anchors: standardBBoxAnchors,
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };

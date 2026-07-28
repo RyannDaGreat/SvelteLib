@@ -21,7 +21,7 @@
  * self.* prop visibly affecting the render), so nothing routes through a hidden
  * text equation the user would have to remember.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte); no
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte); no
  * top-level commands, keeping the core Add menus clean. Defined in ONE file that
  * exports an ARRAY of plugins (the shapeshifter.js precedent) — the three widgets
  * are 90% identical, so a factory keeps them DRY. DOM-free / bare-node-safe at
@@ -147,14 +147,14 @@ function makeTextMorphPlugin({ type, title, wordProps, morph }) {
     },
     cullMargin: effectsCullMargin,
     anchors: standardBBoxAnchors,
-    // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+    // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
   };
 }
 
 /**
  * The three text-morph demo widgets, in submenu order. Spread into
  * plugins/index.js's allPlugins (the shapeshifter.js precedent). `icon` is the
- * mdi glyph the "Insert Demo Widget" submenu uses.
+ * mdi glyph the "Add Demo Widget" submenu uses.
  */
 export const textMorphPlugins = [
   makeTextMorphPlugin({

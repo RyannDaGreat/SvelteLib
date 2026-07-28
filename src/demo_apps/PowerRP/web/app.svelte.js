@@ -965,6 +965,13 @@ export class PowerRPApp {
   modalAppendBuffer = () => {};
   modalBackspace = () => {};
 
+  // NUDGE hook — installed by CanvasView (which owns translateMembers /
+  // translationPairs, so a nudge and a drag translate the selection through the
+  // SAME rule). (dx, dy) in world px; one undo unit per call; a no-op before
+  // the canvas mounts or with nothing movable selected. The arrow-key bindings
+  // (core/shortcut_entries.js) land here.
+  nudgeSelection = () => {};
+
   // FINALIZE hook for a live multi-step CREATION mode — installed by CanvasView,
   // which holds the in-flight session (a half-drawn polygon is not document state,
   // so it cannot live here). The mode's own `finish` key routes through the shortcut

@@ -649,6 +649,15 @@
     { id: "move-slide-down", title: "Move Slide Down", icon: "mdi:arrow-down", run: (a) => a.moveSlide(+1) },
     { id: "next-slide", title: "Next Slide", icon: "mdi:chevron-right", run: (a) => (a.slideIndex = Math.min(a.slideIndex + 1, a.doc.slides.length - 1)) },
     { id: "prev-slide", title: "Previous Slide", icon: "mdi:chevron-left", run: (a) => (a.slideIndex = Math.max(a.slideIndex - 1, 0)) },
+    // NUDGE — the arrow keys move the SELECTION one pixel (user ruling: "arrow
+    // keys should move widgets by one pixel in the direction I press, not go
+    // between slides" — slide navigation moved to [ and ]). One undo unit per
+    // press; routed through CanvasView's installed nudgeSelection so a nudge
+    // and a drag translate members through the SAME translationPairs rule.
+    { id: "nudge-left", title: "Nudge Left (1px)", icon: "mdi:arrow-left", run: (a) => a.nudgeSelection(-1, 0) },
+    { id: "nudge-right", title: "Nudge Right (1px)", icon: "mdi:arrow-right", run: (a) => a.nudgeSelection(1, 0) },
+    { id: "nudge-up", title: "Nudge Up (1px)", icon: "mdi:arrow-up", run: (a) => a.nudgeSelection(0, -1) },
+    { id: "nudge-down", title: "Nudge Down (1px)", icon: "mdi:arrow-down", run: (a) => a.nudgeSelection(0, 1) },
     { id: "present", title: "Present (fullscreen)", icon: "mdi:play", run: (a) => a.enterPresentMode() },
     // ── STORAGE COMMAND VOCABULARY (the one scheme every title below obeys) ───
     // The user read "open project / load presentation / download project / save
@@ -770,8 +779,8 @@
     // is resolved lazily from the registry at click time, so registration order
     // is irrelevant. Reachable like every submenu: Cmd+Shift+P → drill in.
     {
-      id: "insert-demo-widget",
-      title: "Insert Demo Widget",
+      id: "insert-demo-widget", // id is a stable reference (probes, ShapePicker's sibling); only the TITLE says "Add" — the app's verb (user ruling)
+      title: "Add Demo Widget",
       icon: "mdi:flask-outline",
       children: [
         { id: "demo-insert-showcase", title: "Demo Showcase (custom self.* prop)", icon: "mdi:flask", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_showcase")) },
@@ -863,8 +872,8 @@
     // ShapePicker consumes it). Removing the per-family plugin.commands makes
     // these children the ONLY registration of each add-ss_* id.
     {
-      id: "insert-shape",
-      title: "Insert Shape",
+      id: "insert-shape", // id is a stable reference (ShapePicker reads this command's children); only the TITLE says "Add"
+      title: "Add Shape",
       icon: "mdi:shape-plus",
       children: FAMILIES.map((fam) => ({
         id: `add-${fam.type}`,

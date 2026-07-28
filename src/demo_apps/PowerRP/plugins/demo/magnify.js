@@ -23,7 +23,7 @@
  * (edit as a literal, an expression, or a `= …` equation; reference as self.<name>)
  * with ZERO evaluation-engine changes.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte).
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte).
  * DOM-free / bare-node-safe at import time (mirrors glass.js / crt.js).
  */
 
@@ -193,5 +193,5 @@ export const magnifyPlugin = {
     return [{ kind: "point", x: cx, y: cy, id: "center" }];
   },
   anchors: standardBBoxAnchors,
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };

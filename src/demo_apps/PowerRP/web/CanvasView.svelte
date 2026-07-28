@@ -3052,6 +3052,16 @@
     // routed through the shortcut registry exactly as the modal's Enter is. The
     // session lives here, so this is where the hook has to be.
     app.finishCanvasMode = () => { if (creation) finishCreation(); };
+    // Arrow-key NUDGE (one px per press, one undo unit): the same members and
+    // the same translationPairs rule a body drag uses, so an arrow press and a
+    // one-pixel drag are byte-identical writes (moveBy widgets move their free
+    // coords; equation-bound axes that did not move stay equations).
+    app.nudgeSelection = (dx, dy) => {
+      const members = translateMembers(app.nodes());
+      if (members.length === 0) return;
+      app.setPreview(members.flatMap((m) => translationPairs(m, dx, dy)));
+      app.commitPreview();
+    };
   });
 
   // Point-handle drag Esc-cancel (manifest ARCHITECTURE PLAN #1: "Esc

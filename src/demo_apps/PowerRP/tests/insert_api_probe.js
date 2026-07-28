@@ -12,7 +12,7 @@
  *                       doc = withNormalizedZ(doc)
  *   nodes():  deriveRenderTree(evaluateState(foldState(doc,0,1), registry).state, registry)
  *
- * For each widget it resolves the plugin exactly as the "Insert Demo Widget"
+ * For each widget it resolves the plugin exactly as the "Add Demo Widget"
  * menu does (registry.get("demo_comic")), inserts it, and asserts a node with
  * the new itemId + correct type appears in nodes() AND that node's plugin.emit
  * yields a non-empty display list (what sceneIR feeds the renderer). Loud throw

@@ -36,7 +36,7 @@
  * with ZERO evaluation-engine changes — the material framework carries the params
  * straight to the SkSL uniforms. Deterministic: no time / no random.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte), keeping
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte), keeping
  * the core Add menus clean. DOM-free / bare-node-safe at import time.
  */
 
@@ -290,5 +290,5 @@ export const metaballsPlugin = {
     return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
   },
   anchors: standardBBoxAnchors,
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };

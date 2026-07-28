@@ -34,7 +34,7 @@
  * in ONE undo unit. See PRESET DOCTRINE below for why they are flat, how they pair
  * across widgets, and where every number comes from.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte). DOM-free
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-free
  * / bare-node-safe at import.
  */
 

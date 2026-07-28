@@ -25,7 +25,7 @@
  * MATERIAL_PRESETS / SILHOUETTE_PRESETS below for why they are split, and which
  * knobs deliberately appear in neither.
  *
- * Surfaced ONLY through the "Insert Demo Widget" → "Liquid Glass" submenu
+ * Surfaced ONLY through the "Add Demo Widget" → "Liquid Glass" submenu
  * (web/App.svelte), keeping the core Add menus clean. DOM-free / bare-node-safe
  * at import time (mirrors showcase.js's import set).
  */
@@ -353,5 +353,5 @@ export const glassPlugin = {
     return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
   },
   anchors: standardBBoxAnchors,
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };

@@ -112,9 +112,10 @@ for (const [retired, replacement] of Object.entries(RETIRED_KEY_TOKENS))
  * character": a token is only legal once something registers it, so the list
  * grows with real use and the throw stays informative. "." and "-" are the modal
  * transform's numeric entry; "="/"+" and "-"/"_" are the text size steppers (the
- * unshifted and shifted face of the same physical key — hence both spellings).
+ * unshifted and shifted face of the same physical key — hence both spellings);
+ * "[" and "]" are slide navigation (the arrows nudge the selection instead).
  */
-export const PUNCTUATION_KEY_TOKENS = Object.freeze([".", "-", "=", "+", "_"]);
+export const PUNCTUATION_KEY_TOKENS = Object.freeze([".", "-", "=", "+", "_", "[", "]"]);
 
 /**
  * Pure function. Is this a single PRINTABLE main key — the tokens keyToken()

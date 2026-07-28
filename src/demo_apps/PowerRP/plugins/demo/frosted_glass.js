@@ -37,7 +37,7 @@
  * the op's stroke/strokeWidth (drawn by the shared material border helper), same
  * as CRT / glass — not a self.* knob.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte), keeping
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte), keeping
  * the core Add menus clean. DOM-free / bare-node-safe at import time.
  */
 
@@ -227,5 +227,5 @@ export const frostedGlassPlugin = {
     return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
   },
   anchors: standardBBoxAnchors,
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };

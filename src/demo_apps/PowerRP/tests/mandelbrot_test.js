@@ -1369,13 +1369,13 @@ test("the bar WRITES the view: every field, its floor, and a refusal", () => {
 
 // The widget must be REACHABLE, and by exactly ONE route. This used to assert it
 // shipped its own palette command — which it did, but only as a workaround: the
-// "Insert Demo Widget" submenu is a hand-written list in web/App.svelte and nothing
+// "Add Demo Widget" submenu is a hand-written list in web/App.svelte and nothing
 // lets a plugin join it, so a plugin-level command was the sole way to make the
 // widget insertable at all. It is now in the submenu proper like every sibling, so
 // the assertion is INVERTED rather than dropped: reachable via the submenu, and NOT
 // also via its own command (the registry throws on a duplicate id, and two ids for
 // one action is what the one-owner convention forbids).
-test("the widget is reachable by exactly one route: the Insert Demo Widget submenu", () => {
+test("the widget is reachable by exactly one route: the Add Demo Widget submenu", () => {
   const appSvelte = readFileSync(new URL("../web/App.svelte", import.meta.url), "utf8");
   assert.match(
     appSvelte, /id: "demo-insert-mandelbrot"[^}]*demo_mandelbrot/,

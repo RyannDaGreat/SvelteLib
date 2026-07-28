@@ -390,8 +390,14 @@ export const KEYBINDING_DEFAULTS = [
   { command: "duplicate", keys: ["Cmd", "D"], when: "editSelection" },
   { command: "put-on-top", keys: ["Cmd", "Shift", "F"], when: "editSelection" },
   { command: "put-on-bottom", keys: ["Cmd", "Shift", "B"], when: "editSelection" },
-  { command: "prev-slide", keys: ["Left"], when: "editMode" },
-  { command: "next-slide", keys: ["Right"], when: "editMode" },
+  // Brackets, NOT arrows (user ruling 2026-07-28): the ARROW KEYS nudge the
+  // selection one pixel per press; [ and ] are the slide-navigation keys.
+  { command: "prev-slide", keys: ["["], when: "editMode" },
+  { command: "next-slide", keys: ["]"], when: "editMode" },
+  { command: "nudge-left", keys: ["Left"], when: "editSelection" },
+  { command: "nudge-right", keys: ["Right"], when: "editSelection" },
+  { command: "nudge-up", keys: ["Up"], when: "editSelection" },
+  { command: "nudge-down", keys: ["Down"], when: "editSelection" },
   // P = present (fullscreen), the PowerPoint-parity "play" key. editMode
   // (not editSelection) so it fires whenever the canvas has focus, selection
   // or not; editBase's typing-target exclusion keeps a literal "p" in a text
@@ -430,6 +436,7 @@ export const KEYBINDING_LABELS = {
   "purge-item": "Purge",
   "put-on-top": "To front", "put-on-bottom": "To back",
   "prev-slide": "Prev slide", "next-slide": "Next slide", present: "Present",
+  "nudge-left": "Nudge", "nudge-right": "Nudge", "nudge-up": "Nudge", "nudge-down": "Nudge",
   "band-select-regular": "Box select",
   deselect: "Deselect",
   "hide-points": "Hide points", "purge-points": "Purge points",

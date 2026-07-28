@@ -23,7 +23,7 @@
  * AND — because the yarn endpoints bind to tack anchors — MOVES the yarn; a note
  * curls (curlAmount 0→1) with its self shadow growing.
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte). Defined in
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). Defined in
  * ONE file exporting an ARRAY (the shapeshifter.js / text_morph.js precedent) — the
  * three material widgets share a factory. No plugin imports another (composition is
  * via anchors + document state: the yarn references tack anchors by equation).
@@ -144,7 +144,7 @@ function makeMaterialWidget(cfg) {
       return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
     },
     anchors: cfg.anchors ?? standardBBoxAnchors,
-    // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+    // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
   };
 }
 
@@ -393,7 +393,7 @@ const corkboardYarnPlugin = {
   // context) — the shared arrow-family capability (core/endpoints.js).
   ...endpointPairHooks(),
   placement: "endpoints",
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };
 
 /**

@@ -34,7 +34,7 @@
  * alone — never of the previous frame — frame N renders without frame N-1, so a
  * spinning cursor does not block the frame-range sharding in cli/render_job.js.
  *
- * Surfaced ONLY via the "Insert Demo Widget" submenu (web/App.svelte) — NO
+ * Surfaced ONLY via the "Add Demo Widget" submenu (web/App.svelte) — NO
  * top-level `commands`, keeping the core palette clean (the demo-widget intent).
  * Bare-node-safe at import time (the glob/DOMParser in svg_raster.js are lazy;
  * CURSOR_NAMES is a static list), so plugins/index.js stays node-importable.
@@ -248,6 +248,6 @@ export const cursorPlugin = {
     const local = T.apply(T.invert(world), wx, wy);
     return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
   },
-  // NO top-level `commands`: reachable ONLY via the "Insert Demo Widget" submenu
+  // NO top-level `commands`: reachable ONLY via the "Add Demo Widget" submenu
   // (web/App.svelte), keeping the core command palette clean.
 };

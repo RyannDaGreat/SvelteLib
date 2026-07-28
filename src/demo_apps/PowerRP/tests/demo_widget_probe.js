@@ -1,7 +1,7 @@
 /**
  * DEMO-WIDGET PROBE (browser) — proves the demo-widget infrastructure in the
  * live editor:
- *   (1) The "Insert Demo Widget" command-palette SUBMENU exists as a top-level
+ *   (1) The "Add Demo Widget" command-palette SUBMENU exists as a top-level
  *       entry with children (the color-theme submenu pattern), reachable via a
  *       top-level fuzzy search, and each child arms a real registered plugin.
  *   (2) A Demo Showcase widget's CUSTOM self.* property (`inset`) appears in the
@@ -59,7 +59,7 @@ try {
   const submenu = await page.evaluate(() => {
     const app = window.__powerrp_app;
     const entry = app.commands.get("insert-demo-widget");
-    const topHit = app.commands.search("insert demo").some((c) => c.id === "insert-demo-widget");
+    const topHit = app.commands.search("add demo").some((c) => c.id === "insert-demo-widget"); // title says "Add Demo Widget" now; the id stays
     // Each child must resolve a REAL registered plugin type (loud get() would throw).
     const childTypes = { "demo-insert-showcase": "demo_showcase", "demo-insert-magnifier": "magnifier" };
     const childResolves = entry.children.map((c) => {
@@ -75,7 +75,7 @@ try {
       childResolves,
     };
   });
-  assert(submenu.hasChildren, "'Insert Demo Widget' is a submenu (has children)");
+  assert(submenu.hasChildren, "'Add Demo Widget' is a submenu (has children)");
   assert(submenu.isTopLevelSearchable, "submenu is reachable via a top-level palette search (like color-theme)");
   assert(submenu.childIds.includes("demo-insert-showcase") && submenu.childIds.includes("demo-insert-magnifier"),
     `children include the showcase + magnifier (${submenu.childIds.join(", ")})`);

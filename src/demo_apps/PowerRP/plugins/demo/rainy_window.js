@@ -24,7 +24,7 @@
  * evaluation-engine changes — the material framework carries the params straight to
  * the SkSL uniforms (so e.g. `rain = = 0.5 + 0.5·sin(self.scale)` is free).
  *
- * Surfaced ONLY through the "Insert Demo Widget" submenu (web/App.svelte). DOM-free /
+ * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-free /
  * bare-node-safe at import time.
  */
 
@@ -122,5 +122,5 @@ export const rainyWindowPlugin = {
     return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
   },
   anchors: standardBBoxAnchors,
-  // NO top-level `commands`: reached ONLY via the "Insert Demo Widget" submenu.
+  // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.
 };
