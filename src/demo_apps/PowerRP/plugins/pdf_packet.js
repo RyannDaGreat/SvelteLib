@@ -62,21 +62,25 @@ const CURL_MIN = 0.2, CURL_MAX = 3;
 
 /**
  * Pure function. A similarity that rotates by `deg` ABOUT the point (px, py) —
- * the pushTransform() args for "spin around the staple".
+ * the pushTransform() args for "spin around the staple". The returned
+ * `rotation` is in RADIANS: core similarities store radians (degrees are a
+ * DISPLAY unit — web/displayUnits.js), and passing degrees here rendered a
+ * 1.2° stack jitter as 1.2 rad ≈ 69° — the giant phantom fan a preset agent
+ * isolated to spreadRemaining.
  *
- * @param {number} deg - rotation, degrees
+ * @param {number} deg - rotation, DEGREES (the callers' handle unit)
  * @param {number} px - pivot x
  * @param {number} py - pivot y
- * @returns {{x:number, y:number, rotation:number, scale:number}}
+ * @returns {{x:number, y:number, rotation:number, scale:number}} rotation in RADIANS
  *
  * @example rotationAboutPoint(0, 50, 50) // {x: 0, y: 0, rotation: 0, scale: 1}
  * @example rotationAboutPoint(90, 10, 0).x // 10
- * @example rotationAboutPoint(90, 10, 0).rotation // 90
+ * @example rotationAboutPoint(90, 10, 0).rotation // 1.5707963267948966
  */
 export function rotationAboutPoint(deg, px, py) {
   const a = (deg * Math.PI) / 180;
   const c = Math.cos(a), s = Math.sin(a);
-  return { x: px - (px * c - py * s), y: py - (px * s + py * c), rotation: deg, scale: 1 };
+  return { x: px - (px * c - py * s), y: py - (px * s + py * c), rotation: a, scale: 1 };
 }
 
 /**
