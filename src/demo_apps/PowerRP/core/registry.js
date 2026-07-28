@@ -67,10 +67,24 @@
  *                                           // a widget whose geometry lives in
  *                                           // WORLD space (the arrow family).
  *     modifierPoints?(state)                // the "PPT yellow squares": LOCAL
- *       → [{id, x, y, apply, constrain?}]   // draggable handles that each write ONE
- *                                           // parameter. Wrapped local→world by
+ *       → [{id, x, y, apply, constrain?,    // draggable handles that each write ONE
+ *           shape?, stem?}]                 // parameter. Wrapped local→world by
  *                                           // core/derive.nodeModifierPoints — see
  *                                           // THE HANDLE-CONSTRAINT PROTOCOL below.
+ *                                           // shape?: a glyph name the canvas layer
+ *                                           // draws instead of the square (e.g.
+ *                                           // "triangle"); absent → square. stem?:
+ *                                           // an OPTIONAL local point the handle
+ *                                           // tethers to, drawn as a dashed ghost
+ *                                           // line (a bezier handle → its anchor).
+ *                                           // Both optional & additive, so a widget
+ *                                           // that omits them renders unchanged.
+ *     handleToggles?: [{key, label, icon,   // the on/off states a LIST-ELEMENT
+ *       isOn(el), set(el, on)}]             // handle offers (curve/break on a paint
+ *                                           // path); the universal HandleToolbar and
+ *                                           // point menu render them with no widget
+ *                                           // knowledge, routed through
+ *                                           // app.transformHandleSelectionElements.
  *     editPoints?(node, nodesById)          // the WORLD-space endpoint handles of a
  *                                           // two-point widget (core/endpoints.js).
  *     commands?: [{id, title, run(app)}]    // palette commands this plugin adds

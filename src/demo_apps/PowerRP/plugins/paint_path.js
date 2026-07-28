@@ -89,6 +89,12 @@ export const BREAK_THRESHOLD = 0.5;
  *  fraction of a percent of the true arc length — plenty for a draw-on window. */
 export const SAMPLES_PER_CUBIC = 24;
 
+/** The default mirrored-handle reach (box fraction) a CORNER gets when its curve
+ *  is ENABLED (the toolbar toggle / point menu) — a gentle tangent along +x, big
+ *  enough that the bezier handle appears visibly off the anchor and can be grabbed
+ *  and dragged. */
+export const CURVE_HANDLE_REACH = 0.15;
+
 /** A freshly placed path's stroke — a warm amber the green shape family does not
  *  use, so a placed paint path is visibly its own widget type. */
 const DEFAULT_STROKE = "#e0af68";
@@ -501,6 +507,98 @@ export function withAnchorAt(anchors, index, anchor) {
 }
 
 /**
+ * Pure function. Is this anchor a CURVE point (it carries a non-zero mirrored
+ * handle), as opposed to a sharp CORNER? THE "curve or not" state is encoded by
+ * the handle ITSELF — a zero handle IS a corner (the stated paintPoints invariant,
+ * core/properties.js) — so there is no separate per-point flag to keep in sync and
+ * the all-number tuple law is untouched. The consequence, stated because it is a
+ * deliberate decision: turning a curve OFF discards its handle (withPointCurve
+ * zeroes it), so there is nothing to "remember" and turning it back ON gives the
+ * DEFAULT tangent, not the old one.
+ *
+ * @param {number[]} el - [x, y, hx, hy, brk]
+ * @returns {boolean}
+ *
+ * @example isCurvePoint([0, 0, 0.1, 0, 0]) // true
+ * @example isCurvePoint([0, 0, 0, 0, 0]) // false (a corner)
+ * @example isCurvePoint([0.2, 0.3, 0, -0.2, 1]) // true (hy alone is enough)
+ */
+export function isCurvePoint(el) {
+  return el[2] !== 0 || el[3] !== 0;
+}
+
+/**
+ * Pure function. The same anchor with its curve turned ON or OFF: OFF zeroes the
+ * mirrored handle (a sharp corner); ON gives a CORNER a default tangent
+ * (CURVE_HANDLE_REACH along +x) so a handle appears to drag, while leaving an
+ * ALREADY-curved point's handle untouched. Position (x, y) and break are preserved.
+ *
+ * @param {number[]} el - [x, y, hx, hy, brk]
+ * @param {boolean} on - enable the curve
+ * @returns {number[]} a new element
+ *
+ * @example withPointCurve([0, 0, 0.1, 0.2, 0], false) // [0, 0, 0, 0, 0]
+ * @example withPointCurve([0, 0, 0, 0, 0], true) // [0, 0, 0.15, 0, 0]
+ * @example withPointCurve([0, 0, 0.3, 0, 1], true) // [0, 0, 0.3, 0, 1] (already a curve — handle kept)
+ */
+export function withPointCurve(el, on) {
+  if (!on) return [el[0], el[1], 0, 0, el[4]];
+  if (isCurvePoint(el)) return el;
+  return [el[0], el[1], CURVE_HANDLE_REACH, 0, el[4]];
+}
+
+/**
+ * Pure function. Does this anchor START A NEW SUBPATH (its break flag is set at or
+ * above BREAK_THRESHOLD)?
+ *
+ * @param {number[]} el - [x, y, hx, hy, brk]
+ * @returns {boolean}
+ *
+ * @example isBreakPoint([0, 0, 0, 0, 1]) // true
+ * @example isBreakPoint([0, 0, 0, 0, 0]) // false
+ */
+export function isBreakPoint(el) {
+  return el[4] >= BREAK_THRESHOLD;
+}
+
+/**
+ * Pure function. The same anchor with its break flag set to 1 (start a new subpath
+ * here) or 0 (continue the stroke). Stored 0/1 so the tuple stays numeric and
+ * tweens (the paintPoints storage law).
+ *
+ * @param {number[]} el - [x, y, hx, hy, brk]
+ * @param {boolean} on - start a new subpath here
+ * @returns {number[]} a new element
+ *
+ * @example withPointBreak([0, 0, 0.1, 0, 0], true) // [0, 0, 0.1, 0, 1]
+ * @example withPointBreak([0, 0, 0.1, 0, 1], false) // [0, 0, 0.1, 0, 0]
+ */
+export function withPointBreak(el, on) {
+  return [el[0], el[1], el[2], el[3], on ? 1 : 0];
+}
+
+/**
+ * Pure function. Which per-point INSPECTOR fields are INERT for a given anchor: a
+ * CORNER's handle fields (hx, hy) are grayed, because a corner has no bezier handle
+ * to edit — enabling the curve (the on-canvas toolbar toggle / point menu, which
+ * gives the point a real tangent) is what brings them to life. Position and break
+ * are always editable. Read by web/ListField.svelte through the optional
+ * `elementFieldDisabled` declaration hook — absent on every other list, so those
+ * render byte-identically.
+ *
+ * @param {number[]} el - [x, y, hx, hy, brk]
+ * @param {string} fieldName - the element field's name
+ * @returns {boolean}
+ *
+ * @example paintPointFieldDisabled([0, 0, 0, 0, 0], "hx") // true (a corner's handle)
+ * @example paintPointFieldDisabled([0, 0, 0.1, 0, 0], "hx") // false (a curve point)
+ * @example paintPointFieldDisabled([0, 0, 0, 0, 0], "x") // false (position is always editable)
+ */
+export function paintPointFieldDisabled(el, fieldName) {
+  return (fieldName === "hx" || fieldName === "hy") && !isCurvePoint(el);
+}
+
+/**
  * Pure function. The nearest point ON the visible curve to a LOCAL query point,
  * reported as `{subpath, leg, x, y, dist}`, or null when nothing draws. Walks the
  * FLATTENED polylines (SAMPLES_PER_CUBIC per cubic), so `leg` indexes the segment
@@ -644,8 +742,12 @@ export const paintPathPlugin = {
     ...bundle("positioning"),
     // THE ANCHOR LIST as ONE list row (web/ListField.svelte renders every element
     // with per-field `=`, a visibility eye, insert-between, purge) — the polygon's
-    // `points` row, one field wider.
-    ...props("paintPoints"),
+    // `points` row, one field wider. Augmented with `elementFieldDisabled` so a
+    // CORNER's handle (hx/hy) fields render grayed/inert — the ghost precedent, one
+    // level down (a corner has no bezier handle to type into; enable the curve
+    // first). The augmentation is a SHALLOW COPY per row, so the canonical
+    // PAINT_POINTS_LIST declaration the handles carry by reference is untouched.
+    ...props("paintPoints").map((row) => ({ ...row, elementFieldDisabled: paintPointFieldDisabled })),
     { key: "closed", label: "Closed", kind: "boolean", category: "formatting", help: "Join each subpath's last anchor back to its first, enclosing an area so it can be filled. Off draws open strokes with no fill." },
     ...props("stroke", "strokeWidth"),
     ...props("fill", { fill: { help: "The color or gradient that fills the path's closed subpaths (only when Closed is on). Leave it transparent for a stroke-only path." } }),
@@ -744,19 +846,36 @@ export const paintPathPlugin = {
     return value ? { key: PAINT_POINTS_LIST.key, activeKey: PAINT_POINTS_LIST.activeKey, value } : null;
   },
   /**
-   * Pure function. TWO draggable handles per STORED anchor — its POSITION (`a<i>`)
-   * and its mirrored bezier HANDLE (`h<i>`) — both free (UNCONSTRAINED). Each
-   * `apply` writes the WHOLE list back with only its own anchor changed. Every
-   * STORED anchor gets handles, hidden ones included (a hidden anchor that lost its
-   * handle could never be shown again). Placed and driven in LOCAL units
-   * (CanvasView inverts through node.world first), so rotation/scale need no
-   * reasoning here. A zero-extent axis yields no fraction, so that coordinate is
-   * KEPT rather than returned as NaN (the polygon precedent). The POSITION handle
-   * declares its `element` so the universal hide/show/purge actions reach the list
-   * element; the bezier handle is a sub-handle and declares none.
+   * Pure function. The draggable handles: a POSITION handle (`a<i>`) per STORED
+   * anchor, plus a mirrored bezier HANDLE (`h<i>`) ONLY for a CURVE point — both
+   * free (UNCONSTRAINED). Each `apply` writes the WHOLE list back with only its own
+   * anchor changed. Every STORED anchor gets a position handle, hidden ones included
+   * (a hidden anchor that lost its handle could never be shown again).
    *
-   * @example paintPathPlugin.modifierPoints({paintPoints: [[0, 0, 0.1, 0, 0], [1, 1, 0, 0, 0]], w: 100, h: 50}).map((m) => m.id) // ["a0", "h0", "a1", "h1"]
+   * WHY A CORNER GETS NO `h<i>` (the "line stays a line" fix): a corner's mirrored
+   * handle sits exactly ON its anchor (offset zero), so a click-drag there would
+   * grab the COINCIDENT handle and sprout a curve instead of moving the point. With
+   * the handle omitted for a corner, the drag hits the position handle and MOVES the
+   * point; a curve is enabled deliberately (the toolbar toggle / point menu), which
+   * is when the handle appears.
+   *
+   * The curve handle declares two ADDITIVE render aspects the CanvasView handle
+   * layer reads (both optional in the modifierPoints protocol, so every other widget
+   * renders byte-identically): `shape: "triangle"` (drawn as a triangle, not the
+   * anchors' square, so the two handle roles read apart) and `stem` (the LOCAL
+   * anchor point it tethers to, drawn as a dashed GHOST line so which anchor a handle
+   * belongs to is visible).
+   *
+   * Placed and driven in LOCAL units (CanvasView inverts through node.world first),
+   * so rotation/scale need no reasoning here. A zero-extent axis yields no fraction,
+   * so that coordinate is KEPT rather than returned as NaN (the polygon precedent).
+   * The POSITION handle declares its `element` so the universal hide/show/purge
+   * actions reach the list element; the bezier handle is a sub-handle and declares
+   * none.
+   *
+   * @example paintPathPlugin.modifierPoints({paintPoints: [[0, 0, 0.1, 0, 0], [1, 1, 0, 0, 0]], w: 100, h: 50}).map((m) => m.id) // ["a0", "h0", "a1"]
    * @example paintPathPlugin.modifierPoints({paintPoints: [[0, 0, 0.1, 0, 0]], w: 100, h: 50})[1].x // 10
+   * @example paintPathPlugin.modifierPoints({paintPoints: [[0, 0, 0.1, 0, 0]], w: 100, h: 50})[1].shape // "triangle"
    * @example paintPathPlugin.modifierPoints({paintPoints: [[0, 0, 0.1, 0, 0]], w: 100, h: 50})[0].element.index // 0
    */
   modifierPoints(s) {
@@ -779,23 +898,39 @@ export const paintPathPlugin = {
           ]) };
         },
       });
-      out.push({
-        id: `h${i}`,
-        x: (nx + hx) * w, y: (ny + hy) * h,
-        apply(state, lp) {
-          const a = normalizedAnchors(state), cur = a[i];
-          const ww = state.w ?? 0, hh = state.h ?? 0;
-          return { paintPoints: withAnchorAt(a, i, [
-            cur[0], cur[1],
-            ww === 0 ? cur[2] : lp.x / ww - cur[0],
-            hh === 0 ? cur[3] : lp.y / hh - cur[1],
-            cur[4],
-          ]) };
-        },
-      });
+      if (isCurvePoint([nx, ny, hx, hy])) {
+        out.push({
+          id: `h${i}`,
+          x: (nx + hx) * w, y: (ny + hy) * h,
+          shape: "triangle",
+          stem: { x: nx * w, y: ny * h },
+          apply(state, lp) {
+            const a = normalizedAnchors(state), cur = a[i];
+            const ww = state.w ?? 0, hh = state.h ?? 0;
+            return { paintPoints: withAnchorAt(a, i, [
+              cur[0], cur[1],
+              ww === 0 ? cur[2] : lp.x / ww - cur[0],
+              hh === 0 ? cur[3] : lp.y / hh - cur[1],
+              cur[4],
+            ]) };
+          },
+        });
+      }
     });
     return out;
   },
+  // POINT TOGGLES (F.20 toolbar, F.18 point menu): the on/off states a paint-path
+  // anchor offers, declared so the UNIVERSAL surfaces render them without knowing
+  // what a paint path is. web/HandleToolbar.svelte shows a toggle per entry for the
+  // selected handles; the on-canvas point menu offers the same. Each is a pure
+  // {isOn(element) → bool, set(element, on) → element} pair over the list element,
+  // routed through app.transformHandleSelectionElements (one undo unit).
+  handleToggles: [
+    { key: "curve", label: "Curve", icon: "mdi:vector-curve", isOn: isCurvePoint, set: withPointCurve,
+      help: "Give this point a bezier handle so the path curves through it (off makes a sharp corner)." },
+    { key: "break", label: "New subpath", icon: "mdi:content-cut", isOn: isBreakPoint, set: withPointBreak,
+      help: "Lift the pen at this point so the widget draws it as a separate stroke." },
+  ],
   commands: [
     { id: "add-paint-path", title: "Add Paint Path", icon: "mdi:draw", aliases: ["draw", "pen", "paintable path"], run: (app) => app.armCrosshairPlacement(paintPathPlugin) },
   ],

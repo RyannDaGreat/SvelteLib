@@ -216,6 +216,10 @@ const ACCOUNTED = {
     keys: ["Escape"],
     coverage: "LOCAL: Escape dismisses the open preset popover (same popover convention).",
   },
+  "web/ContextMenu.svelte": {
+    keys: ["Escape"],
+    coverage: "LOCAL: Escape dismisses the open point context menu (the paint-path point menu, F.18) — the same universal dismiss-a-popover convention ShapePicker/ColorField/GradientPresetPicker already record. The menu is opened by a right-click on a handle and closed by a pick, Escape, or an outside click; it holds no app-invented key to teach.",
+  },
   "web/GridSizePicker.svelte": {
     keys: [" ", "Enter"],
     coverage: "LOCAL: Enter/Space activate the focused grid cell — the platform's convention for activating a focused control, on a div that has to implement it by hand because it is not a <button>.",

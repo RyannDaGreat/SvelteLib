@@ -845,6 +845,33 @@ export class PowerRPApp {
   }
 
   /**
+   * Command. Applies a pure `transform(element, index) → element` to EVERY selected
+   * handle's list element, as ONE undo unit — the generic element-EDIT substrate the
+   * paint-path curve / new-subpath toggles route through, exactly as
+   * setHandleSelectionActive is the substrate for the visibility eye. It knows
+   * nothing about what the transform does: a widget declares the on/off pair
+   * (registry `handleToggles`) and the universal HandleToolbar / point menu call
+   * this with it, so no widget-specific write path is added here.
+   *
+   * Writes the list at each element's own list key (no renumbering — a transform
+   * replaces in place, unlike purge). Keeps the handle selection: the same handles
+   * still exist and stay selected so the toggle can flip back.
+   */
+  transformHandleSelectionElements(transform) {
+    const groups = this.#selectedListElements();
+    if (groups.size === 0) return;
+    const id = this.selection;
+    const state = this.state().items?.[id];
+    let doc = this.doc;
+    for (const [listKey, { indices }] of groups) {
+      const chosen = new Set(indices);
+      const list = state[listKey].map((el, i) => (chosen.has(i) ? transform(el, i) : el));
+      doc = keyframed(doc, this.slideIndex, ["items", id, listKey], list);
+    }
+    this.commit(doc);
+  }
+
+  /**
    * Command. Selects every selectable item on the current slide (palette
    * "Select All" — manifest Round 12B). Excludes purgeable:false widgets (the
    * camera) — the same set-operation exclusion `deleteSelection`/

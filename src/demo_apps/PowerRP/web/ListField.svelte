@@ -627,6 +627,7 @@
         <span class="list-fields">
           {#each fields as f (f.name)}
             {@const fieldPath = [...path, index, elementStorageKey(decl.element, f.name)]}
+            {@const fieldInert = decl.elementFieldDisabled?.(el, f.name) ?? false}
             <span class="list-field">
               <!-- The field's NAME is the micro-label (it is the equation
                    address's own last segment — `points.3.x`); its human label +
@@ -635,11 +636,14 @@
               <Tooltip text={f.help ?? f.label ?? f.name}>
                 <span class="list-field-label">{f.name}</span>
               </Tooltip>
-              {#if disabled}
-                <!-- GRAYED display of a NOT-YET-CREATED item's list (the Inspector
-                     renders every row of one, disabled): the value as read-only
-                     text, its .disabled-val idiom — never a live field, which
-                     would write a keyframe for an item that does not exist here. -->
+              {#if disabled || fieldInert}
+                <!-- GRAYED display, in TWO cases sharing one idiom: a NOT-YET-CREATED
+                     item's whole list (`disabled` — the Inspector renders every row of
+                     one), OR a single field the declaration reports INERT for THIS
+                     element (`elementFieldDisabled` — a paint-path corner's hx/hy
+                     handle, which has no bezier handle to edit until its curve is
+                     enabled). Either way: the stored value as read-only .disabled-val
+                     text, never a live field — its value survives, it is just inert. -->
                 <input type="text" class="disabled-val" value={String(elementFieldValue(decl.element, el, f.name) ?? "")} disabled />
               {:else if f.kind === "number"}
                 <NumericField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} min={f.min ?? null} max={f.max ?? null} />

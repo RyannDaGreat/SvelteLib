@@ -60,6 +60,7 @@
   import BentoTargetList from "./BentoTargetList.svelte"; // a canvas mode's LIST of pickable widgets (the second input path for a bento cell bind)
   import CanvasToolbar from "./CanvasToolbar.svelte"; // GENERAL floating canvas toolbar (double-click a widget that declares floatingToolbar); mounted as a canvas overlay
   import HandleToolbar from "./HandleToolbar.svelte"; // the SELECTED-HANDLE tools, on the shared FloatingCanvasPanel shell
+  import ContextMenu from "./ContextMenu.svelte"; // the on-canvas point menu (F.18)
   import VideoV6Overlay from "./VideoV6Overlay.svelte"; // ONE shared WebGPU external-texture canvas over the scene; draws live V6 video frames (WebGL2 upload fallback on plain HTTP)
   import { copyText } from "./clipboard.js"; // HTTP-safe clipboard write (anchor-copy affordance, below)
   // THE WIDGET UI-HANDLER REGISTRY: what CREATION and DOUBLE-CLICK do is declared
@@ -2562,6 +2563,58 @@
     app.dragKind = "modifier";
   }
 
+  // ── POINT CONTEXT MENU (F.18) ────────────────────────────────────────────────
+  // Right-clicking a modifier handle that backs a LIST ELEMENT opens a small menu of
+  // the point's operations. Its entries are DECLARED by the widget (registry
+  // `handleToggles`: curve on/off, new subpath) plus the universal Remove
+  // (keyframe-HIDE, the Delete precedent — never purge), so this host knows nothing
+  // about paint paths. {x, y} are viewport-fixed screen coords from the event.
+  let pointMenu = $state(null);
+
+  /** Command. Opens the point menu on `m` — first SELECTING that handle so the menu
+   *  and toolbar act on the same point (the grab-selects rule startModifier follows).
+   *  Suppresses the browser's own context menu. */
+  function openPointMenu(m, e) {
+    if (!m.hasElement) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!app.handleSelection.includes(m.id)) app.selectHandle(m.id);
+    pointMenu = { x: e.clientX, y: e.clientY, id: m.id };
+  }
+
+  /** Command. Closes the point menu (a pick, Escape, or an outside click). */
+  function closePointMenu() {
+    pointMenu = null;
+  }
+
+  /**
+   * Query. The point menu's entries for the currently-open handle: one per state the
+   * widget declares (checked when ON), then Remove. Each `onselect` routes through
+   * the SAME app writes the HandleToolbar uses, so the two surfaces cannot drift.
+   * Empty (menu renders nothing) when the handle no longer backs an element.
+   */
+  function pointMenuEntries() {
+    const node = app.selectedNode();
+    if (!node || !pointMenu) return [];
+    const mp = nodeModifierPoints(node).find((m) => m.id === pointMenu.id);
+    if (!mp?.element) return [];
+    const raw = node.state?.[mp.element.list.key]?.[mp.element.index];
+    if (!raw) return [];
+    const entries = (node.plugin.handleToggles ?? []).map((t) => ({
+      label: t.label,
+      icon: t.icon,
+      checked: t.isOn(raw),
+      onselect: () => app.transformHandleSelectionElements((el) => t.set(el, !t.isOn(raw))),
+    }));
+    entries.push({
+      label: "Remove",
+      icon: "mdi:eye-off",
+      danger: true,
+      onselect: () => app.setHandleSelectionActive(false),
+    });
+    return entries;
+  }
+
   /**
    * The modifier-point drag: translates EVERY selected handle by the local delta
    * the grabbed one travelled, as one preview.
@@ -3240,6 +3293,14 @@
         id: m.id,
         selected: chosenHandles.has(m.id),
         hidden: !m.active,
+        // ADDITIVE handle aspects (core/derive.nodeModifierPoints): `shape` picks the
+        // glyph (a paint-path bezier handle is a triangle, not the default square),
+        // `stem` is the anchor a curve handle tethers to (a dashed GHOST line so its
+        // ownership is visible), `hasElement` gates the point CONTEXT MENU to handles
+        // that back a list element. All null/false for widgets that declare none.
+        shape: m.shape,
+        stem: m.stem ? actions.worldToScreen(m.stem.x, m.stem.y) : null,
+        hasElement: !!m.element,
         ...actions.worldToScreen(m.x, m.y),
       }))
       : [];
@@ -3609,23 +3670,53 @@
             onpointerdown={(e) => startEndpoint(ep.which, e)}
           />
         {/each}
+        <!-- GHOST STEM LINES (F.16): a thin dashed tether from a curve handle to its
+             anchor, so which anchor a bezier handle belongs to is visible. Drawn
+             BEFORE the handles so the glyphs sit on top. Only curve handles declare a
+             `stem` (core/derive.nodeModifierPoints), so lines appear for curves only.
+             Styled inline from --a-* tokens (constant SCREEN-px chrome, view-scale
+             independent like every other handle glyph) rather than app.css, which the
+             fleet's Inspector agent owns. -->
+        {#each overlay.modifiers as m}
+          {#if m.stem}
+            <line
+              class="handle-stem"
+              x1={m.stem.x} y1={m.stem.y} x2={m.x} y2={m.y}
+              style="stroke: var(--a-modifier); stroke-width: var(--a-handle-stroke); stroke-dasharray: var(--a-selection-dash); opacity: var(--a-anchor-opacity);"
+            />
+          {/if}
+        {/each}
         {#each overlay.modifiers as m}
           <!-- MODIFIER POINTS (manifest ARCHITECTURE PLAN #1 — "the PPT
-               yellow squares"): drawn as a square (not the endpoints' circle)
-               at the SAME 8px footprint as ResizeHandles, so the three handle
-               families (blue resize squares, amber endpoint dots, yellow
-               modifier squares) are each visually distinct at a glance.
-               Two state classes, styled in app.css: .selected marks membership in
-               the handle selection (the app's ONE selection colour, not a new one),
-               .hidden-element marks a list element whose visibility is off. -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <rect
-            class="modifier"
-            class:selected={m.selected}
-            class:hidden-element={m.hidden}
-            x={m.x - 4} y={m.y - 4} width="8" height="8"
-            onpointerdown={(e) => startModifier(m.id, e)}
-          />
+               yellow squares"): an anchor is a SQUARE (the default 8px footprint,
+               like ResizeHandles); a widget may declare `shape: "triangle"` for a
+               handle of a different ROLE (a paint-path bezier handle) so the two read
+               apart. Both reuse the .modifier class (fill/rim/cursor + the .selected
+               and .hidden-element state overrides), so a triangle handle theming and
+               selection-skinning come for free.
+               RIGHT-CLICK a handle that backs a list element (hasElement) opens the
+               point CONTEXT MENU (F.18). -->
+          {#if m.shape === "triangle"}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <polygon
+              class="modifier"
+              class:selected={m.selected}
+              class:hidden-element={m.hidden}
+              points={`${m.x},${m.y - 5} ${m.x + 5},${m.y + 4} ${m.x - 5},${m.y + 4}`}
+              onpointerdown={(e) => startModifier(m.id, e)}
+              oncontextmenu={(e) => openPointMenu(m, e)}
+            />
+          {:else}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <rect
+              class="modifier"
+              class:selected={m.selected}
+              class:hidden-element={m.hidden}
+              x={m.x - 4} y={m.y - 4} width="8" height="8"
+              onpointerdown={(e) => startModifier(m.id, e)}
+              oncontextmenu={(e) => openPointMenu(m, e)}
+            />
+          {/if}
         {/each}
         {#each overlay.anchors as a}
           <g class="anchor" transform={`translate(${a.x} ${a.y})`}>
@@ -3746,10 +3837,17 @@
         />
       {/if}
       {#if selectedHandles.length && actions}
-        <!-- The SELECTED-HANDLE tools (hide/show, purge), on the same
-             FloatingCanvasPanel shell as the widget toolbar above. Universal: it
-             appears for any widget whose handles are list elements. -->
+        <!-- The SELECTED-HANDLE tools (hide/show, purge, and any curve/subpath
+             toggles the widget declares), on the same FloatingCanvasPanel shell as
+             the widget toolbar above. Universal: it appears for any widget whose
+             handles are list elements. -->
         <HandleToolbar {app} handles={selectedHandles} node={app.selectedNode()} worldToScreen={actions.worldToScreen} />
+      {/if}
+      {#if pointMenu}
+        <!-- POINT CONTEXT MENU (F.18): a small menu at the right-clicked handle. Its
+             entries are declared by the widget (curve/subpath toggles) plus Remove;
+             a pick runs the entry and closes, an outside click / Escape closes. -->
+        <ContextMenu x={pointMenu.x} y={pointMenu.y} entries={pointMenuEntries()} onclose={closePointMenu} />
       {/if}
       {#if app.minimapVisible}
         <div class="minimap-dock">

@@ -833,14 +833,22 @@ export function constraintPull(mp, state, desired) {
  *   `active` — whether that element is VISIBLE (a plugin reads it through
  *     core/lists.elementActive, so absent means visible). Defaults to true here so
  *     a handle with no list element is never drawn as "hidden".
+ *   `shape` — an OPTIONAL glyph name the canvas handle layer draws instead of the
+ *     default square (e.g. "triangle" for a paint-path bezier handle, so the two
+ *     handle roles read apart). Absent → the default square, so every existing
+ *     widget's handles render byte-identically.
+ *   `stem` — an OPTIONAL LOCAL point this handle tethers to (its anchor), wrapped
+ *     to WORLD here exactly like x/y so a dashed GHOST line can be drawn from it to
+ *     the handle. Absent → no tether line.
  *
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {}}) // []
- * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined, constrain: UNCONSTRAINED}]
+ * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined, constrain: UNCONSTRAINED, shape: null, stem: null}]
  */
 export function nodeModifierPoints(node) {
   return (node.plugin.modifierPoints?.(node.state) ?? []).map((m) => {
     const p = T.apply(node.world, m.x, m.y);
-    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED };
+    const stem = m.stem ? T.apply(node.world, m.stem.x, m.stem.y) : null;
+    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED, shape: m.shape ?? null, stem: stem ? { x: stem.x, y: stem.y } : null };
   });
 }
 

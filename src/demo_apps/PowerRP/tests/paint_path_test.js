@@ -16,7 +16,8 @@ import {
   paintPathPlugin, splitSubpaths, cubicSegments, subpathBezierD, pathBezierD,
   sampleCubic, flattenPath, polylineLength, trimPolylines, polylinesToPathD,
   pathDForWindow, scaledAnchors, withAnchorInsertedNear, paintPathFromWorldPoints,
-  clamp01, MIN_DRAWN_ANCHORS,
+  clamp01, MIN_DRAWN_ANCHORS, CURVE_HANDLE_REACH,
+  isCurvePoint, withPointCurve, isBreakPoint, withPointBreak, paintPointFieldDisabled,
 } from "../plugins/paint_path.js";
 
 let passed = 0;
@@ -154,6 +155,73 @@ test("withAnchorInsertedNear inserts into the RIGHT subpath after a break", () =
   // the new anchor lands between the two second-subpath anchors (storage index 3)
   assert.deepEqual(out.list[3], [0.5, 1, 0, 0, 0]);
   assert.equal(out.list[2][4], 1, "the break flag stays on the anchor that started the second stroke");
+});
+
+// ── CURVE / CORNER STATE (the editing UX, F.16–21) ───────────────────────────
+test("LINE STAYS A LINE: a corner emits no bezier handle, so a drag moves the point", () => {
+  // Two corners (zero handles). modifierPoints must offer ONLY position handles —
+  // no coincident h<i> to accidentally grab and sprout a curve (the F.19 bug).
+  const corners = { paintPoints: [[0, 0, 0, 0, 0], [1, 1, 0, 0, 0]], w: 100, h: 100 };
+  assert.deepEqual(paintPathPlugin.modifierPoints(corners).map((m) => m.id), ["a0", "a1"]);
+  // Give point 0 a handle → its h0 appears (a curve point exposes its bezier handle).
+  const oneCurve = { paintPoints: [[0, 0, 0.1, 0, 0], [1, 1, 0, 0, 0]], w: 100, h: 100 };
+  assert.deepEqual(paintPathPlugin.modifierPoints(oneCurve).map((m) => m.id), ["a0", "h0", "a1"]);
+  // The a0 position handle moves the POINT and keeps the zero handle a zero handle.
+  const a0 = paintPathPlugin.modifierPoints(corners).find((m) => m.id === "a0");
+  assert.deepEqual(a0.apply(corners, { x: 40, y: 60 }).paintPoints[0], [0.4, 0.6, 0, 0, 0]);
+});
+
+test("curve handle declares a TRIANGLE shape and a STEM back to its anchor", () => {
+  const s = { paintPoints: [[0.2, 0.3, 0.1, 0, 0]], w: 100, h: 100 };
+  const h0 = paintPathPlugin.modifierPoints(s).find((m) => m.id === "h0");
+  assert.equal(h0.shape, "triangle");
+  assert.deepEqual(h0.stem, { x: 20, y: 30 }); // the anchor, in local units
+  const a0 = paintPathPlugin.modifierPoints(s).find((m) => m.id === "a0");
+  assert.equal(a0.shape, undefined, "an anchor keeps the default (square) — no shape declared");
+  assert.equal(a0.stem, undefined, "an anchor has no stem tether");
+});
+
+test("isCurvePoint / withPointCurve: toggle the derivative, keeping the tuple all-number", () => {
+  assert.equal(isCurvePoint([0, 0, 0, 0, 0]), false);
+  assert.equal(isCurvePoint([0, 0, 0.1, 0, 0]), true);
+  assert.equal(isCurvePoint([0, 0, 0, -0.2, 1]), true, "hy alone is enough");
+  // OFF zeroes the handle (a sharp corner), preserving x/y/brk.
+  assert.deepEqual(withPointCurve([0.4, 0.5, 0.1, 0.2, 1], false), [0.4, 0.5, 0, 0, 1]);
+  // ON gives a CORNER a default tangent; an already-curved point is untouched.
+  assert.deepEqual(withPointCurve([0.4, 0.5, 0, 0, 0], true), [0.4, 0.5, CURVE_HANDLE_REACH, 0, 0]);
+  assert.deepEqual(withPointCurve([0.4, 0.5, 0.3, 0, 1], true), [0.4, 0.5, 0.3, 0, 1]);
+  // The result is ALWAYS an all-number tuple (the integer-lerp tween law).
+  for (const el of [withPointCurve([0, 0, 0, 0, 0], true), withPointCurve([0, 0, 0.1, 0.2, 1], false)])
+    assert.ok(el.every((v) => typeof v === "number"), "curve toggle kept the tuple numeric");
+});
+
+test("isBreakPoint / withPointBreak: toggle the new-subpath flag as 0/1", () => {
+  assert.equal(isBreakPoint([0, 0, 0, 0, 0]), false);
+  assert.equal(isBreakPoint([0, 0, 0, 0, 1]), true);
+  assert.deepEqual(withPointBreak([0.2, 0.3, 0.1, 0, 0], true), [0.2, 0.3, 0.1, 0, 1]);
+  assert.deepEqual(withPointBreak([0.2, 0.3, 0.1, 0, 1], false), [0.2, 0.3, 0.1, 0, 0]);
+  assert.ok(withPointBreak([0, 0, 0, 0, 0], true).every((v) => typeof v === "number"));
+});
+
+test("paintPointFieldDisabled: a corner's hx/hy fields are inert, position always live", () => {
+  assert.equal(paintPointFieldDisabled([0, 0, 0, 0, 0], "hx"), true);
+  assert.equal(paintPointFieldDisabled([0, 0, 0, 0, 0], "hy"), true);
+  assert.equal(paintPointFieldDisabled([0, 0, 0.1, 0, 0], "hx"), false, "a curve point's handle is editable");
+  assert.equal(paintPointFieldDisabled([0, 0, 0, 0, 0], "x"), false);
+  assert.equal(paintPointFieldDisabled([0, 0, 0, 0, 0], "brk"), false);
+});
+
+test("the CURVE / BREAK handleToggles round-trip through their own isOn", () => {
+  const toggles = Object.fromEntries(paintPathPlugin.handleToggles.map((t) => [t.key, t]));
+  const corner = [0.1, 0.2, 0, 0, 0];
+  // curve: OFF → ON → the point now reads as a curve
+  assert.equal(toggles.curve.isOn(corner), false);
+  const curved = toggles.curve.set(corner, true);
+  assert.equal(toggles.curve.isOn(curved), true);
+  assert.equal(toggles.curve.isOn(toggles.curve.set(curved, false)), false);
+  // break: OFF → ON
+  assert.equal(toggles.break.isOn(corner), false);
+  assert.equal(toggles.break.isOn(toggles.break.set(corner, true)), true);
 });
 
 console.log(`\npaint_path_test: ${passed} tests passed`);

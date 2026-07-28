@@ -69,6 +69,30 @@
   // of the mixed-state problem: two explicit verbs, never a guessing toggle.
   let elements = $derived(handles.filter((h) => h.element));
   let allVisible = $derived(elements.length > 0 && elements.every((h) => h.active));
+
+  // ── POINT TOGGLES (curve on/off, new-subpath) ────────────────────────────────
+  // The widget DECLARES which on/off states its list-element handles carry
+  // (registry `handleToggles`: {key, label, icon, isOn(element), set(element, on)});
+  // this bar renders one toggle button per entry with NO knowledge of what a paint
+  // path is. A paint path declares Curve and New-subpath; a widget that declares
+  // none simply shows no toggles. Each element's RAW stored tuple is read off the
+  // owning node's state by the handle's list key + index, so `isOn` can report the
+  // group's state and a click flips it for ALL selected points at once.
+  let toggles = $derived(node?.plugin.handleToggles ?? []);
+  /** Query. The raw stored element tuples behind the selected list-element handles. */
+  let rawElements = $derived(
+    elements.map((h) => node?.state?.[h.element.list.key]?.[h.element.index]).filter((el) => el != null)
+  );
+  /** Pure function. Is a toggle ON for the whole selection (every element isOn)? */
+  function toggleAllOn(t) {
+    return rawElements.length > 0 && rawElements.every((el) => t.isOn(el));
+  }
+  /** Command. Flips a toggle for every selected point — ONE undo unit through the
+   *  universal element-edit substrate, so it cannot drift from the point menu's. */
+  function flipToggle(t) {
+    const on = !toggleAllOn(t);
+    app.transformHandleSelectionElements((el) => t.set(el, on));
+  }
 </script>
 
 {#if handles.length && anchor}
@@ -101,6 +125,23 @@
               <iconify-icon icon="mdi:delete-forever-outline" width={ICON} height={ICON}></iconify-icon>
             </button>
           </Tooltip>
+          <!-- POINT TOGGLES (curve on/off, new-subpath): one pressed-state button per
+               state the widget declares. `.btn-icon.active` is the app's existing
+               pressed-toggle idiom (app.css: the selection accent, no fill), so no new
+               styling is introduced here. -->
+          {#each toggles as t (t.key)}
+            <Tooltip text={t.help ?? t.label}>
+              <button
+                class="btn-icon"
+                class:active={toggleAllOn(t)}
+                aria-label={`${t.label} for selected points`}
+                aria-pressed={toggleAllOn(t)}
+                onclick={() => flipToggle(t)}
+              >
+                <iconify-icon icon={t.icon} width={ICON} height={ICON}></iconify-icon>
+              </button>
+            </Tooltip>
+          {/each}
         {/if}
       </div>
     {/snippet}
