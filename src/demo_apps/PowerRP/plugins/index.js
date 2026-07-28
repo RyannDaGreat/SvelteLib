@@ -41,7 +41,7 @@ import { progressBarPlugin } from "./progress_bar.js"; // track+fill two-box bar
 import { clockAnalogPlugin } from "./clock_analog.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
 import { polygonPlugin } from "./polygon.js"; // freeform polygon/polyline: a variable-length vertex list, every vertex a handle, the whole list one keyframable leaf
-import { paintPathPlugin } from "./paint_path.js"; // paintable editable cubic-bezier stroke: mirrored-handle anchor list with BREAKS (multi-subpath) + trimStart/trimEnd draw-on
+import { paintPathPlugin } from "./paint_path.js"; // paintable editable cubic-bezier stroke: mirrored-handle anchor list with BREAKS (multi-subpath) + the universal stroke-trim draw-on (strokeStart/End/phase/caps)
 // DEMO widgets (plugins/demo/) — showcase the extensibility story (custom
 // self.* properties). Surfaced via the "Add Demo Widget" submenu (App.svelte),
 // not the core Add menus.

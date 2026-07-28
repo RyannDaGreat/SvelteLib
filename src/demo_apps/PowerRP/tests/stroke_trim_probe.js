@@ -18,6 +18,9 @@
  *     so the dash pattern starts at a new origin (pattern moved, not just redrawn).
  *   CAPS — round vs flat vs taper at the trimmed ends all render DIFFERENTLY (each
  *     pair byte-differs); taper covers fewer pixels than flat (it narrows to a point).
+ *   PAINT_PATH ADOPTION — a paint_path (a `path`-op emitter, the widget the user had
+ *     selected) draws on via strokeEnd and marches a dashed stroke via strokePhase,
+ *     proving the universal rows reach it through the SAME seam as the boxes.
  *
  * Spawns its own Vite + headless Chromium (swiftshader) — the stroke_material_probe
  * pattern. Frontend-only. Run: node src/demo_apps/PowerRP/tests/stroke_trim_probe.js
@@ -64,6 +67,23 @@ function boxDoc(over = {}, stroke = "#000000") {
 }
 
 const DASHES = { type: "material", material: { id: "dashes", params: { pattern: "dash", dash: 18, gap: 12 } } };
+
+/** Near-pure (fresh ids). A document with THE camera at W×H and one PAINT_PATH
+ *  (the widget the user had selected) carrying the given trim/stroke overrides —
+ *  it now rides the SAME universal stroke-trim seam as the box above. */
+function paintPathDoc(over = {}, stroke = "#000000") {
+  let doc = newDocument(), z = 1;
+  doc.meta = { ...doc.meta, slideW: W, slideH: H };
+  const items0 = doc.slides[0].delta.items;
+  const camId = Object.keys(items0)[0];
+  items0[camId] = { ...items0[camId], x: 0, y: 0, w: W, h: H, background: BG };
+  [doc] = withNewItem(doc, 0, {
+    ...registry.get("paint_path").defaults,
+    x: 40, y: 40, w: 220, h: 180, stroke, strokeWidth: STROKE_W, fill: null,
+    active: true, z: z++, ...over,
+  });
+  return serialize(doc);
+}
 
 /** Pure function. Count of near-black pixels (the stroke) in a decoded PNG. */
 function darkCount(png) {
@@ -135,6 +155,20 @@ try {
   ok(!bytesEq(flat, taper), "taper caps differ from flat at the trimmed ends");
   ok(!bytesEq(round, taper), "taper caps differ from round caps");
   ok(darkCount(taper) < darkCount(flat), `taper narrows to a point — fewer dark px than flat (${darkCount(taper)} < ${darkCount(flat)})`);
+
+  // 5) PAINT_PATH ADOPTION — the widget the user had selected (asking "why no
+  //    phase for the texture brush?") now rides the SAME seam: strokeEnd draws it
+  //    on (the look its private trimEnd used to give), strokePhase marches a dashed
+  //    stroke. Proves the universal rows reach a `path`-op emitter, not just boxes.
+  const ppFull = await render(paintPathDoc({}), "paintpath_full");
+  const ppHalf = await render(paintPathDoc({ strokeEnd: 0.5 }), "paintpath_half");
+  ok(darkCount(ppFull) > 0, `paint_path draws its whole stroke (${darkCount(ppFull)} dark px)`);
+  ok(darkCount(ppHalf) > 0 && darkCount(ppHalf) < darkCount(ppFull) * 0.75,
+    `paint_path strokeEnd 0.5 DRAWS ON partway — a real window, the trimEnd look (${darkCount(ppHalf)} < ${darkCount(ppFull)})`);
+  const ppDash0 = await render(paintPathDoc({ strokePhase: 0 }, DASHES), "paintpath_dash0");
+  const ppDash180 = await render(paintPathDoc({ strokePhase: 180 }, DASHES), "paintpath_dash180");
+  ok(darkCount(ppDash0) > 0, `dashed paint_path paints a pattern (${darkCount(ppDash0)} dark px)`);
+  ok(!bytesEq(ppDash0, ppDash180), "strokePhase MARCHES the dashed paint_path pattern (phase reaches a path-op emitter)");
   console.log("  shots in .claude_vlm_checks/stroke_trim_*.png");
 } finally {
   await browser.close();
@@ -145,4 +179,4 @@ if (fails.length) {
   console.error(`\nFAILED: ${fails.length} — stroke trim framework`);
   process.exit(1);
 }
-console.log("\nPASS — stroke trim framework (byte-identity, trim, phase-on-dashes, caps)");
+console.log("\nPASS — stroke trim framework (byte-identity, trim, phase-on-dashes, caps, paint_path adoption)");

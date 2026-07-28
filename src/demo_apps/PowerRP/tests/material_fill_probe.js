@@ -177,7 +177,7 @@ try {
     const addOne = (type, over) => { [doc] = withNewItem(doc, 0, { ...registry.get(type).defaults, ...over, active: true, z: z++ }); };
     addOne("rect", { x: 0, y: 0, w: 400, h: 300, strokeWidth: 0, fill: "#ef476f" });
     addOne("paint_path", {
-      x: 60, y: 40, w: 280, h: 220, closed: true, trimStart: 0.05, trimEnd: 0.95, strokeWidth: 8,
+      x: 60, y: 40, w: 280, h: 220, closed: true, strokeStart: 0.05, strokeEnd: 0.95, strokeWidth: 8,
       paintPoints: [[0.5, 0.05, 0.2, 0, 0], [0.95, 0.6, 0, 0.2, 0], [0.5, 0.95, -0.2, 0, 0], [0.05, 0.6, 0, -0.2, 0]],
       fill: { type: "material", material: { id: "glass", params: { lightX: 0.3 } } },
       stroke: { type: "material", material: { id: "brush", params: { brush: "fineliner", wStale: 1 } } },

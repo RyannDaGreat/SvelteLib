@@ -14,9 +14,18 @@
  *             non-zero one is a smooth (C1) point.
  *   BREAKS  — an anchor may START A NEW SUBPATH (`brk`), so ONE widget draws as
  *             SEVERAL separate strokes (the user's "multiple segments").
- * Plus the DRAW-ON pair `trimStart`/`trimEnd`: the visible arc-length window, both
- * ordinary equation-capable numbers, so `trimEnd = t` animates the stroke drawing
- * itself on across a slide (the "stroke length" the user meant).
+ * Plus the DRAW-ON: this widget composes the UNIVERSAL STROKE-TRIM framework
+ * (core/properties.js STROKE_TRIM_KEYS — strokeStart/strokeEnd/strokePhase +
+ * the two caps, manifest E.12-15) rather than a private trim of its own. emit()
+ * produces ONE full-length stroked `path` op; the arc-length window, phase and
+ * caps are stamped onto it at the ports seam (render_gpu/ir.applyStrokeTrim) and
+ * cut by paint_skia's ContourMeasure preprocessing — the SAME path every stroked
+ * box takes. So `strokeEnd = t` animates the stroke drawing itself on across a
+ * slide (the "stroke length" the user meant), and a paint path gets phase +
+ * flat/round/taper caps for free. LEGACY docs that stored this widget's older
+ * private `trimStart`/`trimEnd` pair migrate LOUDLY to strokeStart/strokeEnd at
+ * load through the declarative `legacyKeys` seam (the arrow headSize→headLength
+ * precedent, core/document.withLegacyKeysRenamed).
  *
  * ── STATE SHAPE (the "breaks" ruling, and why every field is a NUMBER) ─────────
  *   paintPoints: [[x, y, hx, hy, brk], ...]   a LIST PROPERTY (core/lists.js),
@@ -31,7 +40,10 @@
  *   stroke / strokeWidth    the paint-capable stroke (composes with the stroke
  *                           material framework via props("stroke", "strokeWidth"))
  *   fill / closed           optional: when `closed`, each subpath closes and fills
- *   trimStart / trimEnd     0..1 arc-length window (defaults 0 / 1) — the draw-on
+ *   strokeStart / strokeEnd / strokePhase / strokeCapStart / strokeCapEnd
+ *                           the UNIVERSAL stroke-trim window + phase + caps
+ *                           (core/properties STROKE_TRIM_KEYS), absent-is-identity —
+ *                           NOT stored in defaults, honored at the ports seam
  *
  * STORAGE IS A TUPLE OF NUMBERS, and `brk` is 0/1 rather than a boolean, ON
  * PURPOSE: core/interpolators.js interpolate() rounds a lerp between two integers,
@@ -64,15 +76,16 @@
  * handle) is already in the state shape, so it is a UI addition, not a redesign.
  *
  * The pure functions the creation/insert flows and the emit path all need are
- * exported here (splitSubpaths, cubicSegments, subpathBezierD, sampleCubic,
- * flattenPath, trimPolylines, …) so everything they decide is testable from bare
- * node (tests/paint_path_test.js).
+ * exported here (splitSubpaths, cubicSegments, subpathBezierD, pathBezierD,
+ * sampleCubic, flattenSubpath, …) so everything they decide is testable from bare
+ * node (tests/paint_path_test.js). Arc-length TRIMMING is no longer among them:
+ * it moved to the universal ContourMeasure preprocessing in paint_skia.
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num } from "../core/shapes.js";
-import { bundle, defaults, props } from "../core/properties.js";
+import { bundle, defaults, props, STROKE_TRIM_KEYS } from "../core/properties.js";
 import { elementActive, visibleElements, visibleIndices, withElementFieldValue, withElementInserted } from "../core/lists.js";
 import { path } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -108,17 +121,6 @@ const DEFAULT_STROKE = "#e0af68";
  * only a handle knows which state keys to write.
  */
 export const PAINT_POINTS_LIST = props("paintPoints")[0];
-
-/**
- * Pure function. Clamp a number into [0, 1].
- *
- * @example clamp01(-0.2) // 0
- * @example clamp01(0.4) // 0.4
- * @example clamp01(1.7) // 1
- */
-export function clamp01(v) {
-  return Math.max(0, Math.min(1, v));
-}
 
 /**
  * Pure function. A state's `paintPoints` in the LIST-VALUE shape core/lists.js
@@ -346,109 +348,6 @@ export function flattenSubpath(subpath, closed, samples) {
 }
 
 /**
- * Pure function. Flatten a whole anchor list to one polyline PER subpath (breaks
- * preserved), each in local units. Empty subpaths are dropped.
- *
- * @param {number[][]} anchors - [[x, y, hx, hy, brk], ...] in local units
- * @param {boolean} closed - close each subpath
- * @param {number} samples - samples per cubic
- * @returns {number[][][]} an array of polylines
- *
- * @example flattenPath([[0, 0, 0, 0, 0], [10, 0, 0, 0, 0], [50, 0, 0, 0, 1], [60, 0, 0, 0, 0]], false, 1) // [[[0, 0], [10, 0]], [[50, 0], [60, 0]]]
- */
-export function flattenPath(anchors, closed, samples) {
-  return splitSubpaths(anchors)
-    .map((sp) => flattenSubpath(sp, closed, samples))
-    .filter((poly) => poly.length >= MIN_DRAWN_ANCHORS);
-}
-
-/**
- * Pure function. The total length of a polyline (sum of its segment lengths); 0
- * for fewer than two points.
- *
- * @param {number[][]} poly - [[x, y], ...]
- * @returns {number}
- *
- * @example polylineLength([[0, 0], [3, 4]]) // 5
- * @example polylineLength([[0, 0], [3, 4], [3, 4]]) // 5 (a repeated point adds nothing)
- * @example polylineLength([[1, 1]]) // 0
- */
-export function polylineLength(poly) {
-  let sum = 0;
-  for (let i = 1; i < poly.length; i++) sum += Math.hypot(poly[i][0] - poly[i - 1][0], poly[i][1] - poly[i - 1][1]);
-  return sum;
-}
-
-/**
- * Pure function. THE arc-length TRIM (the draw-on): keep only the portion of the
- * polylines whose GLOBAL arc position lies in [t0, t1] of the total length,
- * summed across ALL subpaths in order. Breaks are preserved — each source
- * polyline that contributes yields its own trimmed polyline — and the window's
- * two ends are placed exactly by interpolating along the segment they fall on, so
- * a partial stroke stops mid-segment rather than snapping to a vertex. The gaps
- * BETWEEN subpaths carry no length (the pen is lifted), so the window advances
- * only along real ink.
- *
- * NEVER NaN, EMPTY WINDOW EMPTY: a zero total length, or t1 <= t0, returns [].
- *
- * @param {number[][][]} polylines - an array of polylines, local units
- * @param {number} t0 - window start fraction [0, 1]
- * @param {number} t1 - window end fraction [0, 1]
- * @returns {number[][][]} the trimmed polylines (only those with >= 2 points)
- *
- * @example trimPolylines([[[0, 0], [100, 0]]], 0, 0.5) // [[[0, 0], [50, 0]]]
- * @example trimPolylines([[[0, 0], [100, 0]]], 0.25, 0.75) // [[[25, 0], [75, 0]]]
- * @example trimPolylines([[[0, 0], [40, 0]], [[0, 10], [40, 10]]], 0, 0.75) // [[[0, 0], [40, 0]], [[0, 10], [20, 10]]]
- * @example trimPolylines([[[0, 0], [100, 0]]], 0.5, 0.5) // [] (empty window)
- */
-export function trimPolylines(polylines, t0, t1) {
-  const total = polylines.reduce((s, p) => s + polylineLength(p), 0);
-  if (!(total > 0) || t1 <= t0) return [];
-  const lo = t0 * total, hi = t1 * total;
-  const out = [];
-  let acc = 0;
-  for (const poly of polylines) {
-    let cur = [];
-    for (let i = 0; i < poly.length - 1; i++) {
-      const a = poly[i], b = poly[i + 1];
-      const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (d === 0) continue;
-      const segStart = acc, segEnd = acc + d;
-      acc = segEnd;
-      const s = Math.max(segStart, lo), e = Math.min(segEnd, hi);
-      if (e <= s) continue; // no real overlap with the window
-      const at = (g) => {
-        const f = (g - segStart) / d;
-        return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-      };
-      if (cur.length === 0) cur.push(at(s));
-      cur.push(at(e));
-    }
-    if (cur.length >= MIN_DRAWN_ANCHORS) out.push(cur);
-  }
-  return out;
-}
-
-/**
- * Pure function. An open SVG path `d` from a list of polylines: an M then L's per
- * polyline (several M's ⇒ separate strokes, so trimmed breaks stay broken).
- * Polylines with fewer than two points are skipped.
- *
- * @param {number[][][]} polylines - an array of polylines, local units
- * @returns {string} SVG path data ("" when nothing draws)
- *
- * @example polylinesToPathD([[[0, 0], [10, 0], [10, 10]]]) // "M0 0 L10 0 L10 10"
- * @example polylinesToPathD([[[0, 0], [10, 0]], [[50, 0], [60, 0]]]) // "M0 0 L10 0 M50 0 L60 0"
- * @example polylinesToPathD([]) // ""
- */
-export function polylinesToPathD(polylines) {
-  return polylines
-    .filter((poly) => poly.length >= MIN_DRAWN_ANCHORS)
-    .map((poly) => `M${num(poly[0][0])} ${num(poly[0][1])}` + poly.slice(1).map(([x, y]) => ` L${num(x)} ${num(y)}`).join(""))
-    .join(" ");
-}
-
-/**
  * Pure function. Does this path FILL? Only when `closed` is on AND at least one
  * subpath can enclose an area (>= MIN_POLYGON area needs >= 3, but a cubic loop of
  * two smooth anchors already bounds a region, so MIN_DRAWN_ANCHORS is the honest
@@ -463,28 +362,6 @@ export function polylinesToPathD(polylines) {
  */
 export function fillsInterior(state) {
   return state.closed === true && splitSubpaths(visibleAnchors(state)).some((sp) => sp.length >= MIN_DRAWN_ANCHORS);
-}
-
-/**
- * Pure function. The path `d` an emit produces for the given trim window: the
- * EXACT beziers when the window is the whole path (crisp curves, fills allowed);
- * the FLATTENED, arc-length-trimmed polyline otherwise (the draw-on). Empty when
- * nothing draws.
- *
- * @param {number[][]} scaled - VISIBLE anchors in local units (scaledAnchors)
- * @param {boolean} closed - close each subpath
- * @param {number} t0 - clamped trimStart
- * @param {number} t1 - clamped trimEnd
- * @returns {string} SVG path data
- *
- * @example pathDForWindow([[0, 0, 10, 0, 0], [100, 0, 10, 0, 0]], false, 0, 1) // "M0 0 C10 0 90 0 100 0"
- * @example pathDForWindow([[0, 0, 0, 0, 0], [100, 0, 0, 0, 0]], false, 0, 0.5).endsWith("L50 0") // true (a trimmed window flattens to a polyline and stops at half length)
- * @example pathDForWindow([[0, 0, 0, 0, 0], [100, 0, 0, 0, 0]], false, 0.5, 0.5) // ""
- */
-export function pathDForWindow(scaled, closed, t0, t1) {
-  if (t1 <= t0) return "";
-  if (t0 <= 0 && t1 >= 1) return pathBezierD(scaled, closed);
-  return polylinesToPathD(trimPolylines(flattenPath(scaled, closed, SAMPLES_PER_CUBIC), t0, t1));
 }
 
 /**
@@ -733,7 +610,9 @@ export const paintPathPlugin = {
     closed: false,
     fill: null,
     stroke: DEFAULT_STROKE, strokeWidth: 4,
-    trimStart: 0, trimEnd: 1,
+    // NO strokeStart/End/Phase/cap defaults: the universal stroke-trim keys are
+    // absent-is-identity (core/properties STROKE_TRIM_KEYS), so a fresh path draws
+    // whole and renders byte-identically until a knob moves off full.
     ...defaults("opacity"), // opacity: 1
     // NO effects fragment: core/registry.withUniversalEffects injects the whole
     // bundle at REGISTRATION (matching the polygon).
@@ -750,11 +629,13 @@ export const paintPathPlugin = {
     ...props("paintPoints").map((row) => ({ ...row, elementFieldDisabled: paintPointFieldDisabled })),
     { key: "closed", label: "Closed", kind: "boolean", category: "formatting", help: "Join each subpath's last anchor back to its first, enclosing an area so it can be filled. Off draws open strokes with no fill." },
     ...props("stroke", "strokeWidth"),
+    // THE DRAW-ON: the UNIVERSAL stroke-trim rows (STROKE_TRIM_KEYS —
+    // strokeStart/strokeEnd window + strokePhase + the two caps), category
+    // strokeMaterial, so they land in the Stroke Material Inspector section right
+    // beside stroke/strokeWidth — the SAME rows every stroked box inherits. `= t`
+    // on strokeEnd animates the stroke drawing itself on across a slide.
+    ...props(...STROKE_TRIM_KEYS),
     ...props("fill", { fill: { help: "The color or gradient that fills the path's closed subpaths (only when Closed is on). Leave it transparent for a stroke-only path." } }),
-    // THE DRAW-ON WINDOW — both plain numbers, so `=` on trimEnd (e.g. `= t`)
-    // animates the stroke drawing itself on across a slide.
-    { key: "trimStart", label: "Trim start", kind: "number", min: 0, max: 1, step: 0.01, category: "formatting", help: "Where the visible stroke BEGINS, as a fraction of the whole path's length (0 = the very start). Raise it to reveal the path from its end." },
-    { key: "trimEnd", label: "Trim end", kind: "number", min: 0, max: 1, step: 0.01, category: "formatting", help: "Where the visible stroke ENDS, as a fraction of the whole path's length (1 = the very end). Keyframe or bind it (= t) to ANIMATE the path drawing itself on." },
     ...props("opacity"),
   ],
   /**
@@ -769,47 +650,47 @@ export const paintPathPlugin = {
   isGhost(state) {
     return !splitSubpaths(visibleAnchors(state)).some((sp) => sp.length >= MIN_DRAWN_ANCHORS);
   },
+  // LEGACY MIGRATION: this widget once carried a PRIVATE trim pair
+  // (trimStart/trimEnd) that predated the universal stroke-trim framework. A doc
+  // that stored them migrates LOUDLY to the universal strokeStart/strokeEnd at
+  // load through the declarative rename seam (core/document.withLegacyKeysRenamed;
+  // the arrow headSize→headLength precedent), value verbatim — so a keyframed
+  // draw-on animation survives the rename. Idempotent: a migrated doc reports
+  // nothing. A `strokeStart`/`strokeEnd` already present wins (the `stale` drop).
+  legacyKeys: { trimStart: "strokeStart", trimEnd: "strokeEnd" },
   /**
-   * Pure function. State → `path` display-list op(s) in LOCAL coords: the bezier
-   * curve, its STROKE arc-length-trimmed to [trimStart, trimEnd]. Exact beziers
-   * when the window is whole (crisp); flattened trimmed polyline otherwise (the
-   * draw-on). THE FILL IS TRIM-INDEPENDENT — the universal stroke-trim law (trim
-   * cuts the stroke, never the fill; core/properties strokeStart/End behave the
-   * same), so a trimmed + filled path emits TWO ops: the full-path fill beneath
-   * the windowed stroke. This used to read `closed && full && fill`, which
-   * silently ERASED a fill — solid or material — the moment either trim knob
-   * moved; caught by the material_fill_probe paint_path regression (a user's
-   * glass fill vanished). Nothing to draw — an empty window, no drawable
-   * subpath, or neither a fill nor a stroke — emits nothing. The effects wrap is
-   * applied by render_gpu/ports.js (registry-injected), never here.
+   * Pure function. State → ONE `path` display-list op in LOCAL coords: the WHOLE
+   * bezier curve (exact cubics — crisp), with its fill and stroke. The universal
+   * stroke-trim seam does the rest: render_gpu/ir.applyStrokeTrim (ports.js)
+   * stamps this widget's strokeStart/End/Phase/cap STATE onto the op, and
+   * paint_skia's ContourMeasure preprocessing cuts the stroke to that arc-length
+   * window before painting — the SAME path every stroked box takes.
+   *
+   * THE FILL IS TRIM-INDEPENDENT and this shape preserves it BYTE-EQUIVALENTLY to
+   * the two-op form 35a393a introduced: the op carries the FULL-path fill, which
+   * drawPathOp paints unconditionally under the (separately) windowed stroke, so
+   * a trimmed + filled path still shows its whole interior — a trim cuts the
+   * stroke, never the fill (the universal law; concerns.md, 2026-07-28). An empty
+   * window is resolved at PAINT time (a stroke that keeps nothing draws nothing,
+   * the fill still shows), not by dropping the op here. Nothing drawable — no
+   * subpath reaching MIN_DRAWN_ANCHORS, or neither a fill nor a stroke — emits
+   * nothing. The effects wrap is applied by render_gpu/ports.js, never here.
    */
   emit(s) {
-    const t0 = clamp01(s.trimStart ?? 0), t1 = clamp01(s.trimEnd ?? 1);
     const closed = fillsInterior(s);
-    const full = t0 <= 0 && t1 >= 1;
-    const d = pathDForWindow(scaledAnchors(s), closed, t0, t1);
+    const d = pathBezierD(scaledAnchors(s), closed);
     if (!d) return [];
     const stroked = (s.strokeWidth ?? 0) > 0;
     const filled = closed && s.fill != null;
     if (!stroked && !filled) return [];
-    if (full || !filled) {
-      return [path({
-        d,
-        fill: filled ? s.fill : null,
-        stroke: stroked ? s.stroke : null,
-        strokeWidth: s.strokeWidth ?? 0,
-        fillRule: "nonzero",
-        opacity: s.opacity ?? 1,
-      })];
-    }
-    // Trimmed + filled: the full-path fill beneath, the windowed stroke on top.
-    const dFull = pathDForWindow(scaledAnchors(s), closed, 0, 1);
-    return [
-      path({ d: dFull, fill: s.fill, stroke: null, strokeWidth: 0, fillRule: "nonzero", opacity: s.opacity ?? 1 }),
-      ...(stroked
-        ? [path({ d, fill: null, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, fillRule: "nonzero", opacity: s.opacity ?? 1 })]
-        : []),
-    ];
+    return [path({
+      d,
+      fill: filled ? s.fill : null,
+      stroke: stroked ? s.stroke : null,
+      strokeWidth: s.strokeWidth ?? 0,
+      fillRule: "nonzero",
+      opacity: s.opacity ?? 1,
+    })];
   },
   // THE BOUNDS PROTOCOL: the ink rect (box ∪ anchor/control hull), not the box —
   // a smooth handle bulges the curve outside it. This one declaration answers every

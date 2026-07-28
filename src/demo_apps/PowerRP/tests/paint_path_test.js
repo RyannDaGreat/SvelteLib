@@ -7,22 +7,24 @@
  * row_kinds_test / tool_groups_test / activation_migration_test / creation_modes_test
  * (its rows, tools, activation and creation mode are well-formed). This file pins
  * what is UNIQUE to plugins/paint_path.js: the bezier path construction, the BREAKS
- * that make one widget several strokes, and the trimStart/trimEnd DRAW-ON.
+ * that make one widget several strokes, and its ADOPTION of the universal
+ * stroke-trim draw-on (emit contract + the legacy trimStart/trimEnd migration).
  *
  * Run: node src/demo_apps/PowerRP/tests/paint_path_test.js
  */
 import assert from "node:assert/strict";
 import {
   paintPathPlugin, splitSubpaths, cubicSegments, subpathBezierD, pathBezierD,
-  sampleCubic, flattenPath, polylineLength, trimPolylines, polylinesToPathD,
-  pathDForWindow, scaledAnchors, withAnchorInsertedNear, paintPathFromWorldPoints,
-  clamp01, MIN_DRAWN_ANCHORS, CURVE_HANDLE_REACH,
+  sampleCubic, scaledAnchors, withAnchorInsertedNear, paintPathFromWorldPoints,
+  MIN_DRAWN_ANCHORS, CURVE_HANDLE_REACH,
   isCurvePoint, withPointCurve, isBreakPoint, withPointBreak, paintPointFieldDisabled,
 } from "../plugins/paint_path.js";
+import { applyStrokeTrim } from "../render_gpu/ir.js";
+import { STROKE_TRIM_KEYS } from "../core/properties.js";
+import { withLegacyKeysRenamed } from "../core/document.js";
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log(`  ok  ${name}`); };
-const dLen = (poly) => polylineLength(poly);
 
 // ── BREAKS: one anchor list, several subpaths ────────────────────────────────
 test("splitSubpaths breaks at brk >= 0.5 (never before the first anchor)", () => {
@@ -37,15 +39,12 @@ test("splitSubpaths breaks at brk >= 0.5 (never before the first anchor)", () =>
   assert.equal(splitSubpaths([[0, 0, 0, 0, 0], [1, 1, 0, 0, 0.5]]).length, 2);
 });
 
-test("a break renders as SEVERAL M commands (separate strokes), both exact and trimmed", () => {
+test("a break renders as SEVERAL M commands (separate strokes)", () => {
   const anchors = [[0, 0, 0, 0, 0], [100, 0, 0, 0, 0], [200, 0, 0, 0, 1], [300, 0, 0, 0, 0]];
   const exact = pathBezierD(anchors, false);
   assert.equal((exact.match(/M/g) || []).length, 2, "two subpaths → two M in the exact bezier d");
-  const trimmed = pathDForWindow(anchors, false, 0, 1); // whole window → exact
-  assert.equal((trimmed.match(/M/g) || []).length, 2);
-  // a PARTIAL window that reaches into the second subpath keeps both strokes
-  const partial = pathDForWindow(anchors, false, 0.4, 0.9);
-  assert.equal((partial.match(/M/g) || []).length, 2, "the window spans the gap → still two strokes");
+  // Each subpath becomes its own ContourMeasure contour downstream, so the
+  // universal stroke-trim windows them independently — no path-level trim here.
 });
 
 // ── BEZIER CONSTRUCTION ──────────────────────────────────────────────────────
@@ -65,50 +64,71 @@ test("sampleCubic is the Bernstein form and hits both endpoints", () => {
   assert.ok(pts[2][0] > 0 && pts[2][0] < 10, "the midpoint is strictly between the ends");
 });
 
-// ── DRAW-ON: trimStart / trimEnd ─────────────────────────────────────────────
-test("trimPolylines is a real arc-length window (endpoints placed mid-segment)", () => {
-  assert.deepEqual(trimPolylines([[[0, 0], [100, 0]]], 0, 0.5), [[[0, 0], [50, 0]]]);
-  assert.deepEqual(trimPolylines([[[0, 0], [100, 0]]], 0.25, 0.75), [[[25, 0], [75, 0]]]);
-  assert.deepEqual(trimPolylines([[[0, 0], [100, 0]]], 0.5, 0.5), [], "empty window → nothing");
-  assert.deepEqual(trimPolylines([], 0, 1), [], "no ink → nothing (never NaN)");
-});
-
-test("DRAW-ON is monotonic: a larger trimEnd reveals strictly more length", () => {
-  const anchors = scaledAnchors({ ...paintPathPlugin.defaults, w: 400, h: 200 });
-  const polylines = flattenPath(anchors, false, 24);
-  const revealed = (t1) => trimPolylines(polylines, 0, t1).reduce((s, p) => s + dLen(p), 0);
-  const a = revealed(0.35), b = revealed(0.7), c = revealed(1.0);
-  assert.ok(a < b && b < c, `expected 0.35 < 0.7 < 1.0 lengths, got ${a.toFixed(1)}, ${b.toFixed(1)}, ${c.toFixed(1)}`);
-  // ~35% of the length revealed at trimEnd 0.35 (sampling makes it approximate)
-  assert.ok(Math.abs(a / c - 0.35) < 0.02, `trimEnd 0.35 revealed ${(a / c * 100).toFixed(1)}% of the path`);
-});
-
-test("the DRAW-ON preserves breaks: a window over two subpaths trims only the last", () => {
-  const out = trimPolylines([[[0, 0], [40, 0]], [[0, 10], [40, 10]]], 0, 0.75);
-  assert.deepEqual(out, [[[0, 0], [40, 0]], [[0, 10], [20, 10]]]);
-  assert.equal(polylinesToPathD(out), "M0 0 L40 0 M0 10 L20 10");
-});
-
-// ── EMIT: the whole pipeline ─────────────────────────────────────────────────
-test("emit: exact beziers when whole, flattened polyline when trimmed, nothing when empty", () => {
+// ── DRAW-ON: the UNIVERSAL stroke-trim adoption ──────────────────────────────
+// paint_path no longer windows the stroke itself — it emits ONE full-length
+// stroked `path` op and the universal seam (applyStrokeTrim → paint_skia
+// ContourMeasure) cuts it. These tests pin the CONTRACT at the emit boundary;
+// the pixel-level draw-on is exercised end-to-end by tests/stroke_trim_probe.js.
+test("emit: ONE full-length exact-bezier path op, whatever the trim state", () => {
   const s = { ...paintPathPlugin.defaults, w: 300, h: 200 };
   const full = paintPathPlugin.emit(s);
   assert.equal(full.length, 1);
   assert.equal(full[0].op, "path");
-  assert.ok(full[0].d.includes("C"), "the whole window draws exact cubic beziers");
-  const trimmed = paintPathPlugin.emit({ ...s, trimEnd: 0.5 })[0];
-  assert.ok(trimmed.d.includes("L") && !trimmed.d.includes("C"), "a trimmed window draws a flattened polyline");
-  assert.deepEqual(paintPathPlugin.emit({ ...s, trimStart: 0.6, trimEnd: 0.6 }), [], "empty window emits nothing");
+  assert.ok(full[0].d.includes("C"), "the whole path draws exact cubic beziers");
+  // A trim in STATE does NOT change the emitted `d` — it is stamped by the seam,
+  // not baked into the op here. So the geometry is byte-identical to the full case.
+  const withTrim = paintPathPlugin.emit({ ...s, strokeEnd: 0.5 });
+  assert.equal(withTrim[0].d, full[0].d, "strokeEnd does not alter the emitted path d (the seam trims it)");
   assert.deepEqual(paintPathPlugin.emit({ ...s, strokeWidth: 0, fill: null }), [], "no stroke and no fill emits nothing");
 });
 
-test("emit clamps a wild trim window instead of producing NaN", () => {
+test("the seam trims THIS op: applyStrokeTrim stamps strokeEnd onto the emitted stroke", () => {
   const s = { ...paintPathPlugin.defaults, w: 300, h: 200 };
-  assert.equal(clamp01(-5), 0);
-  assert.equal(clamp01(9), 1);
-  const ops = paintPathPlugin.emit({ ...s, trimStart: -2, trimEnd: 7 });
-  assert.equal(ops.length, 1);
-  assert.ok(!/NaN/.test(ops[0].d), "no NaN in the path data");
+  const [op] = paintPathPlugin.emit(s);
+  assert.equal(op.strokeEnd, undefined, "emit itself carries no trim (absent-is-identity)");
+  const [stamped] = applyStrokeTrim({ strokeEnd: 0.5 }, [op]);
+  assert.equal(stamped.strokeEnd, 0.5, "the ports seam stamps strokeEnd onto the stroked path op");
+});
+
+test("BYTE-EQUIVALENT two-op-fill survival: a trimmed + filled path carries the FULL fill", () => {
+  // The 35a393a fix (trim cuts the stroke, never the fill) now rides the one-op
+  // form: the op carries the WHOLE-path fill; drawPathOp paints it under the
+  // separately-windowed stroke. So the emitted `d` (which the fill uses) is the
+  // full path even when a trim is active in state.
+  const s = { ...paintPathPlugin.defaults, w: 300, h: 200, closed: true, fill: "#3366ff" };
+  const fullFill = paintPathPlugin.emit(s)[0].d;
+  const trimmed = paintPathPlugin.emit({ ...s, strokeStart: 0.2, strokeEnd: 0.7 })[0];
+  assert.equal(trimmed.fill != null && trimmed.fill.length > 0, true, "the fill survives a trim");
+  assert.equal(trimmed.d, fullFill, "the op's path (and thus its fill) is the FULL path under any trim window");
+});
+
+test("the STROKE-TRIM rows are adopted in the strokeMaterial section (no private trim rows)", () => {
+  const keys = paintPathPlugin.inspector.map((r) => r.key);
+  for (const k of STROKE_TRIM_KEYS) {
+    assert.ok(keys.includes(k), `inspector has the universal ${k} row`);
+    const rowDef = paintPathPlugin.inspector.find((r) => r.key === k);
+    assert.equal(rowDef.category, "strokeMaterial", `${k} lands in the Stroke Material section`);
+  }
+  assert.ok(!keys.includes("trimStart") && !keys.includes("trimEnd"), "the private trimStart/trimEnd rows are gone");
+  // Defaults must NOT bake the trim keys (absent-is-identity), nor the old pair.
+  for (const k of [...STROKE_TRIM_KEYS, "trimStart", "trimEnd"])
+    assert.equal(k in paintPathPlugin.defaults, false, `defaults omit ${k}`);
+});
+
+test("LEGACY MIGRATION: trimStart/trimEnd rename to strokeStart/strokeEnd, value verbatim", () => {
+  const reg = { get: (t) => { if (t === "paint_path") return paintPathPlugin; throw new Error(`unknown ${t}`); } };
+  const doc = { slides: [{ delta: { items: { p: { type: "paint_path", trimStart: 0.1, trimEnd: 0.8, stroke: "#e0af68" } } } }] };
+  const { doc: out, renamed } = withLegacyKeysRenamed(doc, reg);
+  const item = out.slides[0].delta.items.p;
+  assert.equal(item.strokeStart, 0.1, "trimStart migrated to strokeStart, value kept");
+  assert.equal(item.strokeEnd, 0.8, "trimEnd migrated to strokeEnd, value kept");
+  assert.ok(!("trimStart" in item) && !("trimEnd" in item), "the legacy keys are removed");
+  assert.equal(renamed.length, 2, "both renames are REPORTED (loud migration, never silent)");
+  // An equation value (a keyframed draw-on = t) survives the rename verbatim.
+  const animated = { slides: [{ delta: { items: { p: { type: "paint_path", trimEnd: "t" } } } }] };
+  assert.equal(withLegacyKeysRenamed(animated, reg).doc.slides[0].delta.items.p.strokeEnd, "t");
+  // Idempotent: an already-migrated doc reports nothing.
+  assert.equal(withLegacyKeysRenamed(out, reg).renamed.length, 0);
 });
 
 // ── EDITING ──────────────────────────────────────────────────────────────────
