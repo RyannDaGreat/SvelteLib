@@ -719,7 +719,12 @@ function drawPaperCurl(CanvasKit, canvas, cmd, opacity, media, aa = true) {
       Math.round(255 * opacity),
     );
     const c = Math.round(255 * Math.min(1, s));
-    texColors[v] = packRGBA(c, c, c, Math.round(255 * mesh.front[v] * opacity));
+    // The texture stays at FULL alpha through the whole roll (user ruling: a
+    // page "shouldn't be blank till we flip it over") — the mirrored region
+    // samples the same UVs, so the flipped-over part shows the content
+    // MIRRORED, like thin paper read from behind; shade alone differentiates
+    // front from back. mesh.front remains available for an opaque-paper mode.
+    texColors[v] = packRGBA(c, c, c, Math.round(255 * opacity));
   }
 
   // (2) the shaded paper sheet (back face + underlay). White paint + Modulate

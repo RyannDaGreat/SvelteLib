@@ -134,11 +134,16 @@ export function turnPose(t, w, h, staple, angleDeg, curlScale) {
     (w - staple.x) * fx + (h - staple.y) * fy,
     1e-6,
   );
-  // Fold sweep: cosine-eased from full reach (t=0, line beyond every corner —
-  // identity) to 0 (t=1, line through the staple — full 180° flip). The half
-  // roll (π·r) rides PAST the line, so at t=1 the flat mirrored region is the
-  // whole sheet: settled, no residual bump.
-  const sweep = reach * (0.5 + 0.5 * Math.cos(Math.PI * t));
+  // Fold sweep: LINEAR from full reach (t=0, line beyond every corner —
+  // identity) to 0 (t=1, line through the staple — full 180° flip). Linear on
+  // purpose: the slide TWEEN already applies the document's easing curve, and
+  // an eased sweep on top of an eased alpha compressed all visible motion into
+  // a narrow mid-band — a tweened `page` read as pages FLICKING into place
+  // (user report). A linear pose mapping spends motion evenly across t, so
+  // whatever curve drives `page` is exactly the curve the viewer sees. The
+  // half roll (π·r) rides PAST the line, so at t=1 the flat mirrored region is
+  // the whole sheet: settled, no residual bump.
+  const sweep = reach * (1 - t);
   // Curl radius: a fraction of the sheet's reach — tight at lift (grabbing the
   // corner), bellying out through the peel, re-tightening into the flop. The
   // envelope is ASYMMETRIC on purpose (animation-frame reference: the roll
