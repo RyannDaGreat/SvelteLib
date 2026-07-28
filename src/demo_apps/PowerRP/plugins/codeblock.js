@@ -206,6 +206,15 @@ export const codeblockPlugin = {
   type: "codeblock",
   title: "Code Block",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK + code button open the reusable full-screen Monaco editor on the
+  // `code` (ROUND 2 #33 — a code block is THE "lots of code" widget). The editor
+  // language is null (Monaco plaintext): the widget's own `language` picks the
+  // CANVAS highlighter, but the modal hosts Monaco's editor CORE (editor.api,
+  // deliberately without its ~80-language grammar pack — a bundle decision), so
+  // per-language colouring in the modal is a flagged follow-up; it is still a full
+  // multi-line editor with minimap/autocomplete, which is the ask.
+  activate: "code_modal",
+  codeEditor: { property: "code", language: null, title: "Edit Code" },
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
   // the positioning bundle + the full strokedBox bundle (fill/stroke/strokeWidth/
   // cornerRadius — a code block IS a box) + opacity. The box is the code's
@@ -236,7 +245,10 @@ export const codeblockPlugin = {
     // FLAG: a future dedicated code editor row (a monospace textarea with live
     // highlighting, tying into the rich-text editor wave) supersedes this. The
     // string travels + renders fully regardless of the editor control.
-    { key: "code", label: "Code", kind: "text", category: "text", help: "The source code shown in the block. Multi-line text; a dedicated code editor control lands in a later update." },
+    { key: "code", label: "Code", kind: "text", category: "text", help: "The source code shown in the block. Edit inline here, or open the full-screen code editor with the button below (or by double-clicking the block)." },
+    // THE CODE BUTTON (ROUND 2 #33/#35): opens the reusable Monaco editor on the
+    // `code` — same `edit-code-source` command + `action` row idiom as mermaid/latex.
+    { key: "__editcode", label: "Edit in code editor…", kind: "action", command: "edit-code-source", category: "text", help: "Opens the full-screen editor (multi-line, minimap, autocomplete) on the source code — for entering a lot of code at once." },
     // Language: a select over the highlighter's supported grammars (+ Plain).
     { key: "language", label: "Language", kind: "select", options: languageOptions().map((o) => o.value), optionLabels: Object.fromEntries(languageOptions().map((o) => [o.value, o.label])), category: "text", help: "Which language's syntax colors to apply. Pick Plain text for no highlighting; an unknown language also renders plain." },
     { key: "fontSize", label: "Font size", kind: "number", min: 0, category: "text", help: "Monospace font size for the code, in canvas units. Line height and column width scale with it." },

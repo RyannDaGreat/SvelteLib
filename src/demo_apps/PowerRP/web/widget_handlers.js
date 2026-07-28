@@ -286,6 +286,23 @@ const ACTIVATE_HANDLERS = [
       ctx.app.beginTextEdit(ctx.node.itemId);
     },
   },
+  {
+    id: "code_modal",
+    phase: "activate",
+    label: "Edit source in code editor",
+    /** Pure function. `codeEditor: {property, language, title}` names WHICH string
+     * the reusable Monaco modal edits and in what language, so a widget declaring
+     * one wants this trigger (ROUND 2 #32/#33). migrationPlan-only.
+     * @example // claims({codeEditor: {property: "definition"}}) → true */
+    claims: (plugin) => !!plugin.codeEditor,
+    /** Command. Opens the full-screen Monaco editor on the widget's declared code
+     * property (app-signal + CodeEditorModal, so it needs no service beyond `app`).
+     * Save commits ONE undo unit through app.commitCodeModal. */
+    run(ctx) {
+      const ce = ctx.plugin.codeEditor;
+      ctx.app.openCodeModal(ctx.node.itemId, ce.property, { language: ce.language, title: ce.title });
+    },
+  },
   NAVIGATE_INTERIOR_HANDLER,
   INSERT_POINT_HANDLER,
   BENTO_BIND_HANDLER,

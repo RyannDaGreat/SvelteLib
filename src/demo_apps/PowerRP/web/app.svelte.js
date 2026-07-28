@@ -1527,6 +1527,47 @@ export class PowerRPApp {
     else this.cancelCodeEdit();
   }
 
+  // ── Full-screen code-editor MODAL (Monaco; ROUND 2 #32/#33) ────────────────
+  // The REUSABLE 90vw×90vh Monaco editor for any widget property that is "a lot of
+  // code" (Mermaid `definition`, LaTeX `latex`, …). Unlike the inline
+  // CodeEditController overlay it needs NO node pose, NO canvas suppression and NO
+  // crossfade — it covers the canvas — so this is a deliberately tiny lifecycle,
+  // NOT a second copy of the codeEditing seam: open names the target, commit writes
+  // it as ONE undo unit through the universal setPreview→commitPreview path, close
+  // drops it. `codeModal` = { itemId, property, language, title } or null.
+
+  /** { itemId, property, language, title } while the Monaco modal is open, else
+   *  null. A reactive $state field App.svelte mounts CodeEditorModal off. */
+  codeModal = $state(null);
+
+  /** Command. Opens the full-screen code editor on an item's multi-line string
+   *  property. Selects the item so the rest of the UI reflects it. No-op if that
+   *  same item+property is already open.
+   *  @param {string} itemId
+   *  @param {string} property - which string leaf to edit ("definition", "latex", …)
+   *  @param {{language?: string|null, title?: string}} opts */
+  openCodeModal(itemId, property, opts = {}) {
+    if (this.codeModal?.itemId === itemId && this.codeModal?.property === property) return;
+    this.selection = itemId;
+    this.codeModal = { itemId, property, language: opts.language ?? null, title: opts.title ?? "Edit code" };
+  }
+
+  /** Command. Commits the edited source as ONE undo unit (setPreview→commitPreview,
+   *  the path every property edit uses) and closes the modal. A no-op when nothing
+   *  is open. */
+  commitCodeModal(value) {
+    if (!this.codeModal) return;
+    const { itemId, property } = this.codeModal;
+    this.setPreview([[["items", itemId, property], value]]);
+    this.commitPreview();
+    this.codeModal = null;
+  }
+
+  /** Command. Closes the modal WITHOUT committing (Cancel / Esc / backdrop). */
+  closeCodeModal() {
+    this.codeModal = null;
+  }
+
   // ── Item operations ────────────────────────────────────────────────────────
 
   addItem(defaults) {

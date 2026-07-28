@@ -54,7 +54,15 @@ export default defineConfig({
   // render, and the resulting full page reload would kill the render that triggered
   // it. Pre-bundled so that cannot happen. (The wasm encoder itself is imported as
   // `?url` and never parsed, so it needs no entry here.)
-  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive", "mermaid", "mp4-muxer"] },
+  // `monaco-editor` (the VS-Code editor core the reusable CodeEditorModal hosts,
+  // ROUND 2 #32/#33) is a large ESM package with a deep internal module graph;
+  // reached through web/CodeEditorModal.svelte's static import, discovering it
+  // mid-serve would re-optimize and reload the page (the same flake class as the
+  // lazy deps above — worse here because the reload would kill a probe or render).
+  // Pre-bundle the exact editor.api entry the modal imports so first use is
+  // deterministic. (The `?worker` chunk in web/monacoSetup.js is built by Vite's
+  // worker plugin, not optimizeDeps, so it needs no entry here.)
+  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive", "mermaid", "mp4-muxer", "monaco-editor/esm/vs/editor/editor.api"] },
   server: {
     port: 3637,
     host: true,

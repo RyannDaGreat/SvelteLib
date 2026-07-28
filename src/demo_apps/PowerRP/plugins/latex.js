@@ -183,7 +183,15 @@ export const latexPlugin = {
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the
   // WYSIWYG equation editor (a MathLive DOM overlay plus canvas suppression —
   // MathJax has no caret to self-draw, so unlike text this one is NOT Skia-owned).
+  // Double-click keeps opening the WYSIWYG equation editor; the Monaco code editor
+  // is offered as the Inspector "</>" action row below (ROUND 2 #33) for editing the
+  // raw LaTeX SOURCE, which is the "lots of code" surface the reusable modal targets.
   activate: "latex_edit",
+  // THE code-editor descriptor (ROUND 2 #33): the `edit-code-source` command reads
+  // this to open the reusable Monaco modal on the `latex` source with LaTeX syntax
+  // highlighting. Distinct from the WYSIWYG `activate` editor — same widget, two
+  // ways in (structural math field vs. raw source), the user's choice.
+  codeEditor: { property: "latex", language: "latex", title: "Edit LaTeX Source" },
   /**
    * Pure function. Is this equation currently a GHOST (manifest 13.6 CONDITIONAL
    * GHOSTS)? STATE-dependent — a latex widget is a ghost only while its source
@@ -244,7 +252,12 @@ export const latexPlugin = {
     // shared row kind was added (the Inspector's default text input handles
     // "text"); a real multi-line editor is a shared UI follow-up, flagged to the
     // lead like codeblock's same flag.
-    { key: "latex", label: "LaTeX", kind: "text", category: "text", help: "The equation source in LaTeX math syntax (e.g. \\frac{a}{b}, x^2, \\sqrt{n}). Invalid syntax shows a red error box on the canvas with the message." },
+    { key: "latex", label: "LaTeX", kind: "text", category: "text", help: "The equation source in LaTeX math syntax (e.g. \\frac{a}{b}, x^2, \\sqrt{n}). Edit inline here, in the code editor via the button below, or in the WYSIWYG editor by double-clicking the equation. Invalid syntax shows a red error box on the canvas with the message." },
+    // THE CODE BUTTON (ROUND 2 #33/#35): opens the reusable full-screen Monaco
+    // editor on the raw LaTeX source (language "latex"). Same `edit-code-source`
+    // command + `action` row idiom as the mermaid widget — reads this plugin's
+    // `codeEditor` descriptor, so the widget adds the editor with no bespoke UI.
+    { key: "__editlatex", label: "Edit source in code editor…", kind: "action", command: "edit-code-source", category: "text", help: "Opens the full-screen VS-Code-style editor (syntax highlighting, minimap) on the raw LaTeX source — for a big multi-line equation you would rather type as code than build in the WYSIWYG field." },
     // Font size (em) — the equation's rendered scale, like a text box's size.
     // The widget's natural w/h follow from this × the equation's aspect ratio.
     { key: "fontSize", label: "Font size", kind: "number", min: 1, category: "text", help: "The equation's rendered size in canvas units per em (like a text font size). Larger typesets the equation bigger; the box grows to fit." },

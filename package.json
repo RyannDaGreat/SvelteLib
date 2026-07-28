@@ -22,6 +22,7 @@
     "mathjax": "3.2.2",
     "mathlive": "^0.110.0",
     "mermaid": "11.16.0",
+    "monaco-editor": "^0.52.2",
     "mp4-muxer": "^5.2.2",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.149",

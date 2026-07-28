@@ -28,6 +28,7 @@
   import Modal from "../../../lib/Modal.svelte";
   import GridSizePicker from "./GridSizePicker.svelte";
   import RenderCenterModal from "./RenderCenterModal.svelte";
+  import CodeEditorModal from "./CodeEditorModal.svelte";
   import { renderBadgeCount } from "./renderJobView.js";
   import { listRenderJobs } from "./projectApi.js";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
@@ -937,6 +938,25 @@
         run: (a) => a.copyProperty(key),
       })),
     },
+    // EDIT SOURCE IN CODE EDITOR (ROUND 2 #32/#33/#35) — the ONE command that opens
+    // the reusable Monaco modal (CodeEditorModal). It is widget-agnostic: it reads
+    // the selection's plugin `codeEditor: {property, language, title}` descriptor,
+    // so every code-ish widget (mermaid, latex, …) gets the same editor by
+    // DECLARING that descriptor and surfacing this command — as a double-click
+    // activation (web/widget_handlers.js "code_modal") AND as the Inspector's
+    // "</>" action row. `when` gates it to a selection that actually declares one.
+    {
+      id: "edit-code-source",
+      title: "Edit Source in Code Editor",
+      icon: "mdi:code-braces",
+      when: (a) => !!a.selectedNode()?.plugin?.codeEditor,
+      requires: "a selected widget with an editable code source (a Mermaid or LaTeX diagram)",
+      help: "Opens the full-screen VS-Code-style editor (syntax highlighting, autocomplete, minimap) on this widget's source, committing your edit as one undo unit.",
+      run: (a) => {
+        const ce = a.selectedNode()?.plugin?.codeEditor;
+        if (ce) a.openCodeModal(a.selection, ce.property, { language: ce.language, title: ce.title });
+      },
+    },
   ];
   for (const c of coreCommands) app.commands.add(c);
   // Restore MRU only AFTER every command (plugins from the constructor + the
@@ -1738,4 +1758,19 @@
       <RenderCenterModal {app} />
     {/if}
   </Modal>
+
+  <!-- THE reusable Monaco code editor (ROUND 2 #32/#33). Mounted off app.codeModal
+       so any surface (a mermaid/latex double-click, or the Inspector "</>" action
+       row → edit-code-source) opens the SAME editor. `value` is seeded ONCE from
+       the item's current folded property value; the editor owns its buffer after
+       that. Save commits ONE undo unit (app.commitCodeModal); cancel drops it. -->
+  {#if app.codeModal}
+    <CodeEditorModal
+      value={app.state().items?.[app.codeModal.itemId]?.[app.codeModal.property] ?? ""}
+      language={app.codeModal.language}
+      title={app.codeModal.title}
+      onsave={(text) => app.commitCodeModal(text)}
+      oncancel={() => app.closeCodeModal()}
+    />
+  {/if}
 </div>

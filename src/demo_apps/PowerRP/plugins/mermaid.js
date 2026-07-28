@@ -180,6 +180,193 @@ export const MERMAID_TEMPLATES = [
   { name: "Kitchen Sink", definition: KITCHEN_SINK_DEFINITION },
 ];
 
+/**
+ * DEMO PRESETS (manifest ROUND 2 #34) — a "Demo presets" Tools-area dropdown, one
+ * per Mermaid diagram TYPE, populated from Mermaid's OWN official documentation
+ * examples so a user can see "a little of everything" the engine draws. Each entry
+ * is a ToolsPane preset (`{name, description, props}`) whose `props.definition`
+ * REPLACES the widget's source — applied as ONE undo unit through
+ * app.applyPreset, and hover-previewed live like every other preset row.
+ *
+ * SOURCE ATTRIBUTION: each `definition` is the canonical example from the cited
+ * mermaid.js.org syntax page (retrieved 2026-07-28). They are chosen to render on
+ * the widget's htmlLabels:false NATIVE-SVG-TEXT path (flowchart/sequence/class/
+ * state/ER/gantt/pie/gitGraph/journey/quadrant render cleanly); mindmap/timeline
+ * are included for breadth and are the diagram types most likely to fall back to
+ * raster (the widget reports that loudly rather than shipping a hole).
+ *
+ * Data-only (the values ARE the documentation), so no doctest.
+ */
+export const MERMAID_DEMO_PRESETS = [
+  {
+    name: "Flowchart",
+    description: "Decision flowchart with a loop (mermaid.js.org/syntax/flowchart.html)",
+    props: { definition: [
+      "flowchart TD",
+      "    A[Start] --> B{Is it?}",
+      "    B -->|Yes| C[OK]",
+      "    C --> D[Rethink]",
+      "    D --> B",
+      "    B -->|No| E[End]",
+    ].join("\n") },
+  },
+  {
+    name: "Sequence",
+    description: "Message sequence between actors (mermaid.js.org/syntax/sequenceDiagram.html)",
+    props: { definition: [
+      "sequenceDiagram",
+      "    Alice->>John: Hello John, how are you?",
+      "    John-->>Alice: Great!",
+      "    Alice-)John: See you later!",
+    ].join("\n") },
+  },
+  {
+    name: "Class",
+    description: "UML class diagram with inheritance (mermaid.js.org/syntax/classDiagram.html)",
+    props: { definition: [
+      "classDiagram",
+      "    Animal <|-- Duck",
+      "    Animal <|-- Fish",
+      "    Animal <|-- Zebra",
+      "    Animal : +int age",
+      "    Animal : +String gender",
+      "    Animal: +isMammal()",
+      "    Animal: +mate()",
+      "    class Duck{",
+      "      +String beakColor",
+      "      +swim()",
+      "      +quack()",
+      "    }",
+    ].join("\n") },
+  },
+  {
+    name: "State",
+    description: "State machine with start/stop (mermaid.js.org/syntax/stateDiagram.html)",
+    props: { definition: [
+      "stateDiagram-v2",
+      "    [*] --> Still",
+      "    Still --> [*]",
+      "    Still --> Moving",
+      "    Moving --> Still",
+      "    Moving --> Crash",
+      "    Crash --> [*]",
+    ].join("\n") },
+  },
+  {
+    name: "Entity Relationship",
+    description: "ER diagram with cardinalities (mermaid.js.org/syntax/entityRelationshipDiagram.html)",
+    props: { definition: [
+      "erDiagram",
+      "    CUSTOMER ||--o{ ORDER : places",
+      "    ORDER ||--|{ LINE-ITEM : contains",
+      "    CUSTOMER }|..|{ DELIVERY-ADDRESS : uses",
+    ].join("\n") },
+  },
+  {
+    name: "Gantt",
+    description: "Project schedule with sections (mermaid.js.org/syntax/gantt.html)",
+    props: { definition: [
+      "gantt",
+      "    title A Gantt Diagram",
+      "    dateFormat YYYY-MM-DD",
+      "    section Section",
+      "        A task           :a1, 2014-01-01, 30d",
+      "        Another task     :after a1, 20d",
+      "    section Another",
+      "        Task in Anthr    :2014-01-12, 12d",
+      "        another task     :24d",
+    ].join("\n") },
+  },
+  {
+    name: "Pie",
+    description: "Pie chart of labelled values (mermaid.js.org/syntax/pie.html)",
+    props: { definition: [
+      "pie title Pets adopted by volunteers",
+      '    "Dogs" : 386',
+      '    "Cats" : 85',
+      '    "Rats" : 15',
+    ].join("\n") },
+  },
+  {
+    name: "Git graph",
+    description: "Commits, a branch and a merge (mermaid.js.org/syntax/gitgraph.html)",
+    props: { definition: [
+      "gitGraph",
+      "   commit",
+      "   commit",
+      "   branch develop",
+      "   checkout develop",
+      "   commit",
+      "   commit",
+      "   checkout main",
+      "   merge develop",
+      "   commit",
+      "   commit",
+    ].join("\n") },
+  },
+  {
+    name: "User journey",
+    description: "Task satisfaction journey (mermaid.js.org/syntax/userJourney.html)",
+    props: { definition: [
+      "journey",
+      "    title My working day",
+      "    section Go to work",
+      "      Make tea: 5: Me",
+      "      Go upstairs: 3: Me",
+      "      Do work: 1: Me, Cat",
+      "    section Go home",
+      "      Go downstairs: 5: Me",
+      "      Sit down: 5: Me",
+    ].join("\n") },
+  },
+  {
+    name: "Quadrant",
+    description: "Quadrant scatter of campaigns (mermaid.js.org/syntax/quadrantChart.html)",
+    props: { definition: [
+      "quadrantChart",
+      "    title Reach and engagement of campaigns",
+      "    x-axis Low Reach --> High Reach",
+      "    y-axis Low Engagement --> High Engagement",
+      "    quadrant-1 We should expand",
+      "    quadrant-2 Need to promote",
+      "    quadrant-3 Re-evaluate",
+      "    quadrant-4 May be improved",
+      "    Campaign A: [0.3, 0.6]",
+      "    Campaign B: [0.45, 0.23]",
+      "    Campaign C: [0.57, 0.69]",
+      "    Campaign D: [0.78, 0.34]",
+    ].join("\n") },
+  },
+  {
+    name: "Mindmap",
+    description: "Hierarchical mindmap (mermaid.js.org/syntax/mindmap.html)",
+    props: { definition: [
+      "mindmap",
+      "  root((mindmap))",
+      "    Origins",
+      "      Long history",
+      "      Popularisation",
+      "    Research",
+      "      On effectiveness",
+      "    Tools",
+      "      Pen and paper",
+      "      Mermaid",
+    ].join("\n") },
+  },
+  {
+    name: "Timeline",
+    description: "Chronological timeline (mermaid.js.org/syntax/timeline.html)",
+    props: { definition: [
+      "timeline",
+      "    title History of Social Media Platform",
+      "    2002 : LinkedIn",
+      "    2004 : Facebook : Google",
+      "    2005 : YouTube",
+      "    2006 : Twitter",
+    ].join("\n") },
+  },
+];
+
 /** Error-affordance colors — a LOUD, unmissable red treatment (the "not silent,
  * not a blank widget" requirement). Kept literal because the error box is
  * DOM-free IR chrome (emit can't read app.css --a-* tokens). Shared palette with
@@ -239,6 +426,21 @@ export const mermaidPlugin = {
   type: "mermaid",
   title: "Mermaid Diagram",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the
+  // reusable full-screen Monaco code editor on the `definition` (ROUND 2 #32) —
+  // "double-clicking a mermaid diagram opens a 90%×90% VS-Code-style editor".
+  activate: "code_modal",
+  // THE code-editor descriptor the "code_modal" activation AND the "edit-code-source"
+  // command both read (ROUND 2 #33): WHICH multi-line string is the code source, in
+  // what Monaco language, and the modal's title. Declaring this — plus surfacing the
+  // command as the Inspector "</>" action row below — is ALL a code-ish widget needs
+  // to get the shared editor (no per-widget UI).
+  codeEditor: { property: "definition", language: "mermaid", title: "Edit Mermaid Diagram" },
+  // DEMO PRESETS (ROUND 2 #34): a "Demo presets" Tools-area dropdown, one preset per
+  // Mermaid diagram type, from Mermaid's own docs examples (MERMAID_DEMO_PRESETS).
+  // presetFamilies (not presets) so the group is titled "Demo presets" specifically;
+  // each preset writes `definition` as one undo unit via app.applyPreset.
+  presetFamilies: [{ id: "demos", title: "Demo presets", presets: MERMAID_DEMO_PRESETS }],
   /**
    * Pure function. Is this diagram currently a GHOST? STATE-dependent — a mermaid
    * widget is a ghost only while its definition is empty (mermaidIsEmpty is the
@@ -283,7 +485,14 @@ export const mermaidPlugin = {
     // Inspector — identical to how codeblock's `code` is edited (no floating
     // canvas overlay). In EQUATION mode this text property uses the normal
     // equation field; otherwise it is the LITERAL Mermaid source.
-    { key: "definition", label: "Definition", kind: "text", category: "text", help: "The Mermaid diagram source (e.g. 'flowchart TD\\n A-->B'), edited here in the Inspector. Invalid syntax shows a red error box with the parser message." },
+    { key: "definition", label: "Definition", kind: "text", category: "text", help: "The Mermaid diagram source (e.g. 'flowchart TD\\n A-->B'), edited here inline OR — for a real multi-line edit — in the code editor via the button below. Invalid syntax shows a red error box with the parser message." },
+    // THE CODE BUTTON (ROUND 2 #35): "a code button next to the flowchart text …
+    // so I don't have to know to double-click." An `action` row (the existing
+    // command-trigger row kind) surfacing the widget-agnostic `edit-code-source`
+    // command, which reads this plugin's `codeEditor` descriptor and opens the
+    // full-screen Monaco editor on `definition`. Sits right under the Definition
+    // field, in the same "text" category.
+    { key: "__editdefinition", label: "Edit in code editor…", kind: "action", command: "edit-code-source", category: "text", help: "Opens the full-screen VS-Code-style editor (syntax highlighting, autocomplete, minimap) on the diagram source — the same editor double-clicking the diagram opens." },
     // Theme — a Mermaid built-in theme select.
     { key: "theme", label: "Theme", kind: "select", options: MERMAID_THEMES, category: "formatting", help: "Which Mermaid built-in theme to render with. 'default' is dark ink on a light card; 'dark' suits a dark fill." },
     // Aspect-preservation toggle (default ON).
