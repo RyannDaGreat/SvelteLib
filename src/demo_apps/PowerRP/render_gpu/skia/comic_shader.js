@@ -443,6 +443,80 @@ export function packComicUniforms(u) {
  * blur. Only an explicit `false` opts out, and the import-time cross-check below
  * makes lying about it impossible.
  */
+/**
+ * THE COMIC KNOB SCHEMA — the ONE declaration of the material's look knobs, in
+ * the customProps row shape. Both consumers derive from it (the end-state
+ * ruling "custom properties become material properties"):
+ *   - plugins/demo/comic.js spreads it into its customProps (self.* rows);
+ *   - the FILL-material UI renders it as the paint's param rows, resolved
+ *     sparse-over-defaults by materials.resolveMaterialPaint.
+ * Geometry knobs (cornerRadius) stay widget-side — a fill's shape IS its
+ * geometry.
+ */
+export const COMIC_FILL_PARAMS = [
+  { name: "mode", kind: "select", options: ["cmyk", "rgb", "duotone", "mono"], optionLabels: { cmyk: "CMYK print", rgb: "RGB additive", duotone: "Duotone", mono: "Mono" }, default: "cmyk", help: "Which ink separation to print. CMYK = the classic 4-colour comic; RGB = additive light dots over a dark paper (the desync look); Duotone = two spot inks (riso); Mono = a single black screen (newsprint / manga)." },
+  { name: "pitch", kind: "number", default: 11, min: 1, help: "Halftone CELL size in world px — the dot pitch (lower = finer, higher LPI). With World-locked on, this is the dot size ON the artwork." },
+  { name: "worldLocked", kind: "boolean", default: true, help: "On (the printed look): the dots live in CANVAS space — printed ON the artwork, so zooming in magnifies them along with the content. Off: the dots hold a fixed SIZE on screen while the artwork scales under them. Either way the lattice is anchored to this panel and never swims when you pan or zoom." },
+  { name: "dotShape", kind: "select", options: ["round", "square", "ellipse"], optionLabels: { round: "Round", square: "Square", ellipse: "Ellipse" }, default: "round", help: "Dot silhouette. Round is the classic Ben-Day dot; Square gives a coarse pixelly screen; Ellipse is the elongated chain-dot." },
+  { name: "angleC", kind: "angle", default: 15, help: "Screen angle (degrees) for Cyan — also REUSED as Red (RGB mode) and the highlight ink (Duotone). Classic C = 15°." },
+  { name: "angleM", kind: "angle", default: 75, help: "Screen angle (degrees) for Magenta — also REUSED as Blue (RGB mode). Classic M = 75°." },
+  { name: "angleY", kind: "angle", default: 0, help: "Screen angle (degrees) for Yellow. Classic Y = 0°." },
+  { name: "angleK", kind: "angle", default: 45, help: "Screen angle (degrees) for blacK — also REUSED as Green (RGB), the shadow ink (Duotone), and the single Mono screen. Classic K = 45°." },
+  { name: "registration", kind: "number", default: 0.15, min: 0, max: 1, help: "Mis-registration / desync: how far each channel's dot grid is shifted (fraction of a cell). 0 = perfect print registration; high = the deliberate off-register / anaglyph split." },
+  { name: "dotGain", kind: "number", default: 0.03, min: 0, max: 0.5, help: "Dot gain — extra dot radius (fraction of a cell) simulating ink spreading on absorbent paper. Fattens every dot slightly (darker print)." },
+  { name: "gamma", kind: "number", default: 1.0, min: 0.1, help: "Tone gamma applied to coverage before the dot. >1 lightens the mid-tones (smaller mid dots); <1 darkens them." },
+  { name: "posterize", kind: "number", default: 0, min: 0, help: "Flatten the tone into this many levels before separation (flat comic fills). 0 or 1 = off (smooth tone); e.g. 4–6 = crisp poster bands." },
+  { name: "edgeInk", kind: "number", default: 0, min: 0, max: 1, help: "Black outline ink strength: inks the strong tone edges (a Sobel gradient) black, like a comic's line art. 0 = no outlines." },
+  { name: "edgeLo", kind: "number", default: 0.15, min: 0, help: "Edge threshold LOW: gradient magnitude where the outline ink starts to appear." },
+  { name: "edgeHi", kind: "number", default: 0.35, min: 0, help: "Edge threshold HIGH: gradient magnitude where the outline ink is fully black." },
+  { name: "grain", kind: "number", default: 0.06, min: 0, max: 1, help: "Paper grain: a subtle static speckle over the print (aged newsprint tooth). 0 = clean paper." },
+  { name: "paperColor", kind: "color", default: "#fbf3e0", help: "Paper base colour — what shows through between the dots (a warm cream reads as aged newsprint; a dark colour suits the additive-RGB mode)." },
+  { name: "inkA", kind: "color", default: "#ff48b0", help: "Duotone SHADOW ink (the darker-tone spot colour). Only used in Duotone mode." },
+  { name: "inkB", kind: "color", default: "#0078bf", help: "Duotone HIGHLIGHT ink (the lighter-tone spot colour). Only used in Duotone mode." },
+  { name: "blurRadius", kind: "number", default: 2, min: 0, help: "Gaussian blur radius (world px) of the (unused) blurred child — kept minimal; a print reads the sharp tone." },
+  { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the screening: 1 = screen resolution, 2 = supersample (crisper cell-centre tone, slower)." },
+];
+
+/**
+ * Pure function. SCHEMA params (COMIC_FILL_PARAMS names/kinds — strings,
+ * booleans, degrees) → the PACKER's numeric params (mode/shape codes, 0/1
+ * bools, radians, the packer's own key names). THE one mapping both consumers
+ * share: the demo widget's emit() and the fill-material regionOp synthesis
+ * (paint_skia handleMaterialPaintShape reads it as entry.toUniformParams).
+ *
+ * @param {object} p - schema-shaped params (resolved: every knob present)
+ * @returns {object} packComicUniforms-shaped params
+ *
+ * @example comicUniformParams({mode: "rgb", pitch: 9, worldLocked: true, dotShape: "square", angleC: 15, angleM: 75, angleY: 0, angleK: 45, registration: 0.2, dotGain: 0, gamma: 1, posterize: 0, edgeInk: 0, edgeLo: 0.15, edgeHi: 0.35, grain: 0, paperColor: "#fff", inkA: "#f0f", inkB: "#0ff"}).mode // 1
+ * @example comicUniformParams({mode: "cmyk", pitch: 11, worldLocked: false, dotShape: "round", angleC: 0, angleM: 0, angleY: 0, angleK: 0, registration: 0, dotGain: 0, gamma: 1, posterize: 0, edgeInk: 0, edgeLo: 0, edgeHi: 0, grain: 0, paperColor: "#fff", inkA: "#f0f", inkB: "#0ff"}).worldLocked // 0
+ */
+export function comicUniformParams(p) {
+  const MODE_CODE = { cmyk: 0, rgb: 1, duotone: 2, mono: 3 };
+  const SHAPE_CODE = { round: 0, square: 1, ellipse: 2 };
+  const DEG2RAD = Math.PI / 180;
+  return {
+    mode: MODE_CODE[p.mode] ?? 0,
+    pitch: p.pitch,
+    worldLocked: p.worldLocked ? 1 : 0,
+    dotShape: SHAPE_CODE[p.dotShape] ?? 0,
+    angleC: p.angleC * DEG2RAD,
+    angleM: p.angleM * DEG2RAD,
+    angleY: p.angleY * DEG2RAD,
+    angleK: p.angleK * DEG2RAD,
+    reg: p.registration,
+    dotGain: p.dotGain,
+    gamma: p.gamma,
+    posterize: p.posterize,
+    edgeInk: p.edgeInk,
+    edgeLo: p.edgeLo,
+    edgeHi: p.edgeHi,
+    grain: p.grain,
+    paper: p.paperColor,
+    inkA: p.inkA,
+    inkB: p.inkB,
+  };
+}
+
 export const COMIC_MATERIAL = {
   id: "comic",
   sksl: COMIC_SKSL,
@@ -450,6 +524,8 @@ export const COMIC_MATERIAL = {
   uniformFloats: COMIC_UNIFORM_FLOATS,
   backdrop: true,
   usesBlurredBackdrop: false,
+  fillParams: COMIC_FILL_PARAMS,
+  toUniformParams: comicUniformParams,
 };
 
 // LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent): a

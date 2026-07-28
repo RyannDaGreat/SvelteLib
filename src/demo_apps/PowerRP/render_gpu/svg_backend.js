@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -485,7 +485,8 @@ export async function emitRegionSVG(commands, region, out, ctx) {
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
-    } else if (!SVG_VECTOR_OPS.has(cmd.op)) {
+    } else if (!SVG_VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd)) {
+      // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.)
       // GENERAL RASTER FALLBACK (the HYBRID RULE generalized — the SVG twin of
       // pdf_backend.emitRegion's emitRasterOp branch): an op with no SVG vector
       // form (glassBackdrop today; any FUTURE such op automatically) rasterizes

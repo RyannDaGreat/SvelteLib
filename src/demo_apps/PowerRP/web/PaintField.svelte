@@ -75,6 +75,10 @@
   convention puts chrome) — one more reason not to keep a second copy here.
 -->
 <script module>
+  import { fillCapableMaterialIds } from "../render_gpu/skia/materials.js";
+  /** The material a fresh "Mat" paint starts on — the first fill-capable entry
+   * (the registry grows as materials opt in; comic is the exemplar). */
+  const DEFAULT_FILL_MATERIAL = fillCapableMaterialIds()[0] ?? "comic";
   import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE } from "../core/properties.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
@@ -177,7 +181,12 @@
     const radial = isObj && value.radial ? value.radial
       : isObj && value.type === "radialGradient" && Array.isArray(value.stops) ? { stops: value.stops, center: value.center, r: value.r }
       : freshRadial(seed);
-    return { type, solid, linear, radial };
+    // The MATERIAL sub-state (fill-material framework): {id, params} — sparse
+    // params, no state until written. Carried through every mode switch like
+    // linear/radial so choosing a material, trying a gradient, and coming back
+    // loses nothing.
+    const material = isObj && value.material ? value.material : { id: DEFAULT_FILL_MATERIAL, params: {} };
+    return { type, solid, linear, radial, material };
   }
 
   /**
@@ -197,11 +206,14 @@
 
 <script>
   import ColorField from "./ColorField.svelte";
+  import DraggableNumber from "../../../lib/DraggableNumber.svelte";
+  import Dropdown from "../../../lib/Dropdown.svelte";
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
   import ListField from "./ListField.svelte";
   import { GRADIENT_STOPS_LIST } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
+  import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults } from "../render_gpu/skia/materials.js";
 
   let { app, path, paths = null, label, value, disabled = false } = $props();
 
@@ -301,10 +313,22 @@
   const previewDirection = (heading) => writeDirection(heading, false);
   const commitDirection = (heading) => writeDirection(heading, true);
 
+  // ── the MATERIAL mode's derived pieces (fill-material framework) ─────────
+  /** The stored material sub-state ({id, params} — params sparse). */
+  let matSub = $derived((raw && typeof raw === "object" && raw.material) ? raw.material : { id: DEFAULT_FILL_MATERIAL, params: {} });
+  let matEntry = $derived(getMaterial(matSub.id));
+  let matRows = $derived(matEntry.fillParams ?? []);
+  /** Query. A knob's DISPLAY value: stored when written, else its schema default. */
+  function matValue(row) {
+    return matSub.params?.[row.name] ?? row.default;
+  }
+  const MATERIAL_OPTIONS = fillIds().map((id) => ({ value: id, label: getMaterial(id).title ?? id }));
+
   const TYPES = [
     { id: "solid", label: "Solid" },
     { id: "linearGradient", label: "Linear" },
     { id: "radialGradient", label: "Radial" },
+    { id: "material", label: "Mat" },
     { id: "equation", label: "= Eq" },
   ];
 </script>
@@ -332,6 +356,33 @@
     {:else}
       <ColorField {app} path={[...path, "solid"]} paths={writePaths.map((p) => [...p, "solid"])} label={`${label} color`} value={sub.solid} {disabled} />
     {/if}
+  {:else if mode === "material"}
+    <!-- MATERIAL fill (the fill-material framework): pick a registered material,
+         edit its knobs. Params are stored SPARSE — a row writes only when the
+         user commits it; unwritten knobs resolve from the schema at render time
+         (ports.resolveMaterialFillPaints), so "no state until written". -->
+    <Dropdown items={MATERIAL_OPTIONS} value={matSub.id} onchange={(id) => commitAt(["material", "id"], id)} />
+    {#each matRows as mrow (mrow.name)}
+      <div class="paint-material-row">
+        <span class="paint-material-label">{mrow.label ?? mrow.name}</span>
+        <span class="paint-material-control">
+          {#if mrow.kind === "color"}
+            <ColorField {app} path={[...path, "material", "params", mrow.name]} paths={writePaths.map((p) => [...p, "material", "params", mrow.name])} label={mrow.name} value={matValue(mrow)} {disabled} />
+          {:else if mrow.kind === "select"}
+            <Dropdown items={mrow.options.map((o) => ({ value: o, label: mrow.optionLabels?.[o] ?? o }))} value={matValue(mrow)} onchange={(v) => commitAt(["material", "params", mrow.name], v)} />
+          {:else if mrow.kind === "boolean"}
+            <input type="checkbox" checked={matValue(mrow)} {disabled} aria-label={mrow.label ?? mrow.name} onchange={(e) => commitAt(["material", "params", mrow.name], e.target.checked)} />
+          {:else}
+            <!-- number + angle (degrees) share the numeric scrubber. A bare
+                 DraggableNumber, NOT NumericField: the field reads the DOC at
+                 its path, and a sparse unwritten knob stores nothing there —
+                 this control displays the RESOLVED value (stored ?? schema
+                 default) and only a commit writes the knob. -->
+            <DraggableNumber value={matValue(mrow)} min={mrow.min ?? null} max={mrow.max ?? null} step={mrow.step ?? null} label={mrow.label ?? mrow.name} onchange={(v) => commitAt(["material", "params", mrow.name], v)} />
+          {/if}
+        </span>
+      </div>
+    {/each}
   {:else if mode === "equation"}
     <!-- EQUATION → the whole paint is a "=" expression (a computed color).
          evaluateState resolves it and validates the result is a color; a

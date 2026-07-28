@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, opHasMaterialFill, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
@@ -274,6 +274,9 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
 function opReadsComposite(cmd, nested) {
   if (cmd.op === "blurBackdrop" || cmd.op === "glassBackdrop") return true;
   if (cmd.op === "magnifyBackdrop") return !cmd.supersample;
+  // A shape op with a BACKDROP-material fill behaves exactly like a nested
+  // materialBackdrop op (the fill routing synthesizes one).
+  if (nested && opHasMaterialFill(cmd) && isBackdropMaterial(getMaterial(cmd.fill.material.id))) return true;
   return nested && cmd.op === "materialBackdrop";
 }
 
@@ -402,6 +405,15 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
     // thumbnails. FULL never enters this branch.
     if (proxy && cmd.op === "effectSubtree") {
       drawProxyEffect(CanvasKit, target, cmd, world, view, ctx, depth, belowOf(i));
+      continue;
+    }
+    // A SHAPE op whose FILL is a MATERIAL paint (the fill-material framework:
+    // "demo widgets are just shapes with material"). Routed HERE, not in
+    // drawLeafOp: the material machinery needs the view, the below-content and
+    // device space, none of which the leaf branch carries. Proxy mode reuses
+    // the SAME cheap stand-ins widget materials use, clipped to the shape.
+    if (opHasMaterialFill(cmd)) {
+      handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowOf(i), ctx, depth, proxy);
       continue;
     }
     switch (cmd.op) {
@@ -1089,6 +1101,118 @@ function lensStarPoints(cmd) {
 
 /** Query→build. The lens region as a device-space Path (circle, rounded box, or
  * star silhouette). Caller deletes. */
+/**
+ * Pure function. The LOCAL bounding box of a shape op's geometry — the frame a
+ * material fill uses as its region (its cx/cy/halfW/halfH), so a star-filled
+ * CRT's bezel hugs the star's box while the clip does the shaping.
+ *
+ * @param {object} cmd - a rect/ellipse/polygon/path op
+ * @param {object} CanvasKit - for path-op bounds
+ * @returns {{x:number, y:number, w:number, h:number}}
+ */
+function shapeOpLocalBBox(CanvasKit, cmd) {
+  switch (cmd.op) {
+    case "rect": return { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
+    case "ellipse": return { x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry };
+    case "polygon": return pointsBounds(cmd.points);
+    case "path": {
+      const p = CanvasKit.Path.MakeFromSVGString(cmd.d);
+      if (!p) throw new Error(`paintIR(skia): material-fill path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
+      const b = p.getBounds();
+      p.delete();
+      return { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] };
+    }
+    default:
+      throw new Error(`paintIR(skia): op "${cmd.op}" carries a material fill but is not a shape op (rect/ellipse/polygon/path).`);
+  }
+}
+
+/**
+ * Command (allocates; caller deletes). A shape op's geometry as a DEVICE-space
+ * Skia path — the material fill's clip (the lensClipPath pattern).
+ */
+function shapeOpDevicePath(CanvasKit, cmd, deviceM) {
+  const b = new CanvasKit.PathBuilder();
+  switch (cmd.op) {
+    case "rect":
+      b.addRRect(CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius ?? 0, cmd.cornerRadius ?? 0));
+      break;
+    case "ellipse":
+      b.addOval(CanvasKit.LTRBRect(cmd.cx - cmd.rx, cmd.cy - cmd.ry, cmd.cx + cmd.rx, cmd.cy + cmd.ry));
+      break;
+    case "polygon": {
+      b.moveTo(cmd.points[0][0], cmd.points[0][1]);
+      for (let i = 1; i < cmd.points.length; i++) b.lineTo(cmd.points[i][0], cmd.points[i][1]);
+      b.close();
+      break;
+    }
+    case "path": {
+      const p = CanvasKit.Path.MakeFromSVGString(cmd.d);
+      if (!p) throw new Error(`paintIR(skia): material-fill path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
+      b.addPath(p);
+      p.delete();
+      break;
+    }
+    default:
+      throw new Error(`paintIR(skia): op "${cmd.op}" carries a material fill but is not a shape op.`);
+  }
+  b.transform(deviceM);
+  const path = b.detach();
+  b.delete();
+  return path;
+}
+
+/**
+ * Command (draws on target). A SHAPE op whose fill is a MATERIAL paint: clip to
+ * the op's own geometry in device space, then run the EXISTING material
+ * machinery over a synthesized region op whose frame is the shape's local bbox
+ * (cornerRadius 0 — the clip does the shaping): backdrop materials take
+ * handleMaterialBackdrop (below-content re-render and all), foreground ones
+ * handleMaterialFill. Proxy mode reuses the SAME stand-in drawers widget
+ * materials use, inside the same clip. The op's STROKE then draws through the
+ * ordinary leaf path with the fill nulled, on top.
+ */
+function handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowFlat, ctx, depth, proxy) {
+  const fill = cmd.fill;
+  if (!fill.resolvedParams)
+    throw new Error(`paintIR(skia): material fill "${fill.material?.id}" reached the painter UNRESOLVED — render_gpu/ports.js resolveMaterialFillPaints must run on every pipeline that builds IR.`);
+  const material = getMaterial(fill.material.id);
+  const bbox = shapeOpLocalBBox(CanvasKit, cmd);
+  const regionOp = {
+    op: isBackdropMaterial(material) ? "materialBackdrop" : "materialFill",
+    material: material.id,
+    cx: bbox.x + bbox.w / 2, cy: bbox.y + bbox.h / 2,
+    halfW: bbox.w / 2, halfH: bbox.h / 2, cornerRadius: 0,
+    blurRadius: fill.resolvedParams.blurRadius ?? 8,
+    backdropScale: fill.resolvedParams.backdropScale ?? 1,
+    // Schema-shaped resolved params → the packer's numeric params, through the
+    // entry's OWN mapping when it declares one (comicUniformParams et al).
+    params: material.toUniformParams ? material.toUniformParams(fill.resolvedParams) : fill.resolvedParams,
+    stroke: null, strokeWidth: 0,
+    opacity: cmd.opacity ?? 1,
+  };
+  const clip = shapeOpDevicePath(CanvasKit, cmd, deviceMatrix(CanvasKit, view, world));
+  const canvas = target.canvas;
+  canvas.save();
+  canvas.clipPath(clip, CanvasKit.ClipOp.Intersect, true);
+  if (proxy) {
+    if (isBackdropMaterial(material)) drawProxyBackdrop(CanvasKit, canvas, regionOp, view, world, ctx);
+    else drawProxyMaterialFill(CanvasKit, canvas, regionOp, view, world, ctx);
+  } else if (isBackdropMaterial(material)) {
+    handleMaterialBackdrop(CanvasKit, target, regionOp, world, view, belowFlat, ctx, depth);
+  } else {
+    handleMaterialFill(CanvasKit, target, regionOp, world, view, ctx);
+  }
+  canvas.restore();
+  clip.delete();
+  if (cmd.stroke && (cmd.strokeWidth ?? 0) > 0) {
+    canvas.save();
+    applyView(canvas, view, world);
+    drawLeafOp(CanvasKit, canvas, { ...cmd, fill: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
+    canvas.restore();
+  }
+}
+
 function lensClipPath(CanvasKit, cmd, deviceM) {
   const b = new CanvasKit.PathBuilder();
   if (cmd.shape === "box") {

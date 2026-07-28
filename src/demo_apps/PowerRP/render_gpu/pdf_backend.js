@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -1008,7 +1008,9 @@ async function emitRegion(commands, region, out, ctx) {
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
-    } else if (!VECTOR_OPS.has(cmd.op)) {
+    } else if (!VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd)) {
+      // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
+      // no vector form for it, so it takes the same region raster-embed.)
       // GENERAL RASTER FALLBACK (the HYBRID RULE, generalized): an op this vector
       // backend cannot represent — a backdrop/effect op with no vector form
       // (glassBackdrop today; any FUTURE such op automatically) — rasterizes JUST

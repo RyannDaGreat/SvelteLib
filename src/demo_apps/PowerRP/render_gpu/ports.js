@@ -18,8 +18,44 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
+import { resolveMaterialPaint } from "./skia/materials.js";
+import { reportOnce } from "../core/report.js";
+
+/**
+ * Pure function (the report sink aside). Ops with every MATERIAL fill paint
+ * RESOLVED — schema defaults ⊕ the paint's sparse stored params ⊕ the
+ * material's optional sceneParams hook (sky reads its sibling suns there).
+ * THE one resolution site: painters require `resolvedParams` and throw
+ * without it, so a path that skipped this pass fails loudly instead of
+ * rendering with half its knobs missing. Recurses into subtree ops' `content`
+ * (crop/effect subtrees are flattened independently and would otherwise
+ * escape). Ops without material fills pass through IDENTICALLY (same object,
+ * zero cost on the common path).
+ *
+ * @param {object[]} cmds - a node's emitted ops
+ * @param {object} node - the emitting render node (scene hooks read it)
+ * @param {Map} nodesById - itemId → node (scene hooks read siblings)
+ * @returns {object[]}
+ *
+ * @example resolveMaterialFillPaints([{op: "rect", fill: "#fff"}], null, null)[0].fill // "#fff"
+ * @example resolveMaterialFillPaints([{op: "rect", fill: {type: "material", material: {id: "comic"}}}], null, null)[0].fill.resolvedParams.mode // "cmyk"
+ */
+export function resolveMaterialFillPaints(cmds, node, nodesById) {
+  return cmds.map((cmd) => {
+    let out = cmd;
+    if (isMaterialPaint(cmd.fill))
+      out = { ...out, fill: resolveMaterialPaint(cmd.fill, node, nodesById, reportOnce) };
+    if (isMaterialPaint(cmd.stroke))
+      out = { ...out, stroke: resolveMaterialPaint(cmd.stroke, node, nodesById, reportOnce) };
+    if (Array.isArray(cmd.content)) {
+      const content = resolveMaterialFillPaints(cmd.content, node, nodesById);
+      if (content.some((c, i) => c !== cmd.content[i])) out = { ...out, content };
+    }
+    return out;
+  });
+}
 
 /**
  * Pure function. The REFLECTION push that realizes a flipped node's mirror, or
@@ -197,7 +233,10 @@ function emitNode(node, byId, pdfDisplay) {
   // has to travel with the absolute world instead.
   const mirror = mirrorPush(node);
   const emitWorld = mirror ? signedCompose(node.world, mirror) : node.world;
-  const cmds = node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, emitWorld, renderCtx);
+  const cmds = resolveMaterialFillPaints(
+    node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, emitWorld, renderCtx),
+    node, byId,
+  );
   if (cmds.length === 0) return [];
   // THE UNIVERSAL EFFECTS SEAM. This is the ONE place every rendered node passes
   // through, so the shared effects bundle (shadow / bloom / blend / inner shadow

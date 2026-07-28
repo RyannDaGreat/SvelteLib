@@ -5279,6 +5279,26 @@ audio.ae-preview-media {
   overflow-wrap: anywhere;
 }
 
+/* MATERIAL FILL rows (PaintField's "Mat" mode): label + control per knob,
+   compact under the material dropdown. */
+.paint-material-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+}
+
+.paint-material-label {
+  flex: 0 0 auto;
+  min-width: var(--a-render-label-w, 96px);
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+}
+
+.paint-material-control {
+  flex: 1;
+  min-width: 0;
+}
+
 /* MULTI-SELECTION MIXED MARKS — the "…" in a value cell when the selected items
    differ there. TWO faces with one glyph: .mixed-unify is a BUTTON (click sets
    every selected item to the primary's value and the real field takes over), so

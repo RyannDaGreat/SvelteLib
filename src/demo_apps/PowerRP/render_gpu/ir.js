@@ -141,6 +141,65 @@ export const GRADIENT_TYPES = ["linearGradient", "radialGradient"];
 const STUB_PAINT_TYPES = ["pattern", "image", "shader"];
 
 /**
+ * Pure function. True iff a paint value is a MATERIAL paint — the fill mode
+ * that shades the shape with a registered material (render_gpu/skia/
+ * materials.js) instead of a color/gradient. Stored SPARSE:
+ *   {type: "material", material: {id, params?}}
+ * where `params` holds ONLY the knobs the user has written; the full knob set
+ * is resolved against the material's fillParams schema at scene-build time
+ * (render_gpu/ports.js resolveMaterialFillPaints) — the "no stored state until
+ * written" rule. A resolved paint additionally carries `resolvedParams`
+ * (complete, scene-inputs folded in); painters REQUIRE it and throw when
+ * absent, so a paint that skipped resolution can never silently render with
+ * half its knobs missing.
+ *
+ * @param {*} paint - any paint value
+ * @returns {boolean}
+ *
+ * @example isMaterialPaint({type: "material", material: {id: "comic"}}) // true
+ * @example isMaterialPaint({type: "solid", solid: "#fff"}) // false
+ * @example isMaterialPaint("#ff0000") // false
+ * @example isMaterialPaint(null) // false
+ */
+export function isMaterialPaint(paint) {
+  return !!(paint && typeof paint === "object" && !Array.isArray(paint) && paint.type === "material");
+}
+
+/**
+ * Pure function. Does this display-list op carry a MATERIAL fill? The predicate
+ * the painters route on and the vector exporters use to send an otherwise-
+ * vector shape op into the raster-embed fallback (a PDF/SVG cannot express a
+ * shader fill as vectors).
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean}
+ *
+ * @example opHasMaterialFill({op: "rect", fill: {type: "material", material: {id: "comic"}}}) // true
+ * @example opHasMaterialFill({op: "rect", fill: "#fff"}) // false
+ * @example opHasMaterialFill({op: "image", ref: "x"}) // false
+ */
+export function opHasMaterialFill(cmd) {
+  return isMaterialPaint(cmd.fill);
+}
+
+/**
+ * Pure function. Does this op carry a MATERIAL stroke? The STROKE twin of
+ * opHasMaterialFill — the stroke-material framework's routing predicate
+ * (along-path gradients, width profiles, brush stamping). The slot is named
+ * and resolved from day one; painters that predate the stroke renderers throw
+ * loudly via parsePaint rather than silently drawing a gray outline.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean}
+ *
+ * @example opHasMaterialStroke({op: "path", stroke: {type: "material", material: {id: "brush"}}}) // true
+ * @example opHasMaterialStroke({op: "path", stroke: "#000"}) // false
+ */
+export function opHasMaterialStroke(cmd) {
+  return isMaterialPaint(cmd.stroke);
+}
+
+/**
  * Pure function. The representative SOLID color of a paint OBJECT (its remembered
  * `solid`, else the active gradient's first stop, else a legacy inline gradient's
  * first stop). This is how a SINGLE-COLOR consumer (parseColor) reduces a
@@ -155,6 +214,11 @@ const STUB_PAINT_TYPES = ["pattern", "image", "shader"];
  */
 export function paintSolidColor(paint) {
   if (typeof paint.solid === "string" || Array.isArray(paint.solid)) return paint.solid;
+  // A MATERIAL paint with no remembered solid reduces to neutral gray — a
+  // single-color consumer (a border, a shadow tint) has no meaningful "the
+  // color of a comic-halftone shader"; gray is the documented stand-in, the
+  // same role the proxy tints play for whole materials.
+  if (paint.type === "material") return "#888888";
   const g = paint.type === "radialGradient" ? (paint.radial ?? paint) : (paint.linear ?? paint);
   const stops = Array.isArray(g?.stops) ? g.stops : Array.isArray(paint.stops) ? paint.stops : null;
   if (stops && stops[0] && stops[0].color != null) return stops[0].color;
@@ -221,6 +285,13 @@ export function parsePaint(paint) {
       throw new Error(`parsePaint: a solid paint object needs a "solid" color, got ${JSON.stringify(paint.solid)}`);
     return parseColor(paint.solid);
   }
+  // A MATERIAL paint IS its own normalized form (sparse {material: {id,
+  // params}}; ports.resolveMaterialFillPaints adds resolvedParams): the op
+  // builders normalize every fill through parsePaint, so it must pass THROUGH.
+  // A consumer that can only draw colors/gradients still fails loudly — the
+  // gradient shader's type switch throws on the unknown type (never a silent
+  // gray fill).
+  if (type === "material") return paint;
   if (STUB_PAINT_TYPES.includes(type)) throw new Error(`parsePaint: "${type}" paint is not implemented yet (Axis-1 stub — only solid + ${GRADIENT_TYPES.join("/")} are wired)`);
   if (!GRADIENT_TYPES.includes(type)) throw new Error(`parsePaint: unknown paint type ${JSON.stringify(type)} (known: solid, ${GRADIENT_TYPES.join(", ")}, solid string/array)`);
   // Active gradient sub-state: the nested wrapper for this type, else the legacy

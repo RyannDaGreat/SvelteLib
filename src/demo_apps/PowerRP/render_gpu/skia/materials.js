@@ -103,6 +103,89 @@ export function materialIds() {
   return Object.keys(MATERIALS);
 }
 
+// ── THE FILL-MATERIAL CONTRACT (materials as PAINT on any shape) ──────────────
+// A fill paint {type: "material", material: {id, params?}} shades a SHAPE op
+// (rect/ellipse/polygon/path) with a registered material: the painter clips to
+// the op's own geometry and uses the op's bbox as the material's local frame,
+// so a star-shaped CRT is the CRT panel clipped to the star — no shader edits,
+// no new IR op (the end-state ruling: "demo widgets are just shapes with
+// material; custom properties become material properties").
+//
+// A material OPTS IN by declaring `fillParams`: its knob SCHEMA, an array of
+// rows in the customProps shape ({name, kind, default, min?, max?, step?,
+// options?, optionLabels?, help}) — the ONE declaration both the PaintField's
+// generic param rows AND the (interim) demo widget's customProps derive from.
+// Stored paint params are SPARSE (only written knobs — no state until touched);
+// resolveMaterialPaint folds schema defaults + stored + the optional
+// `sceneParams(node, nodesById)` hook (sky reads its sibling suns there) into
+// `resolvedParams` at scene-build time, so painters stay scene-blind.
+
+/**
+ * Pure function. Has this material opted into being a FILL (declared its knob
+ * schema)?
+ *
+ * @param {{fillParams?: Array}} material - a descriptor from getMaterial()
+ * @returns {boolean}
+ *
+ * @example isFillCapableMaterial({id: "x", fillParams: []}) // true
+ * @example isFillCapableMaterial({id: "magnify", sampler: true}) // false
+ */
+export function isFillCapableMaterial(material) {
+  return Array.isArray(material.fillParams);
+}
+
+/** Query. Every fill-capable material id — the PaintField dropdown's list and
+ * the shape-matrix probe's axis, so both grow automatically as materials opt in.
+ * @example Array.isArray(fillCapableMaterialIds()) // true */
+export function fillCapableMaterialIds() {
+  return Object.keys(MATERIALS).filter((id) => isFillCapableMaterial(MATERIALS[id]));
+}
+
+/**
+ * Pure function. A fill-capable material's complete default knob map, from its
+ * fillParams schema.
+ *
+ * @param {{id: string, fillParams: Array}} material - a fill-capable descriptor
+ * @returns {object} {name: default}
+ *
+ * @example materialFillParamDefaults({id: "x", fillParams: [{name: "gain", kind: "number", default: 2}]}) // {gain: 2}
+ */
+export function materialFillParamDefaults(material) {
+  if (!isFillCapableMaterial(material))
+    throw new Error(`materials.materialFillParamDefaults: "${material.id}" declares no fillParams — it is not fill-capable.`);
+  return Object.fromEntries(material.fillParams.map((row) => [row.name, row.default]));
+}
+
+/**
+ * Near-pure function (reports unknown stored knobs once). A material paint with
+ * its COMPLETE `resolvedParams`: schema defaults ⊕ the paint's sparse stored
+ * params ⊕ the material's optional scene hook. Unknown stored keys (a renamed
+ * knob, a stale doc) are DROPPED with a loud report — never silently obeyed,
+ * never a brick. Called once per op at scene-build time
+ * (render_gpu/ports.js); painters REQUIRE the result.
+ *
+ * @param {object} paint - {type: "material", material: {id, params?}}
+ * @param {object|null} node - the emitting render node (scene hooks read it)
+ * @param {Map|object|null} nodesById - derived nodes by id (scene hooks read siblings)
+ * @param {Function} report - reportOnce-shaped sink for the unknown-knob report
+ * @returns {object} the same paint plus resolvedParams
+ *
+ * @example resolveMaterialPaint({type: "material", material: {id: "comic", params: {}}}, null, null, () => {}).resolvedParams.mode // "cmyk"
+ */
+export function resolveMaterialPaint(paint, node, nodesById, report) {
+  const m = getMaterial(paint.material?.id);
+  const defaults = materialFillParamDefaults(m);
+  const stored = paint.material.params ?? {};
+  const known = {};
+  for (const [k, v] of Object.entries(stored)) {
+    if (k in defaults) known[k] = v;
+    else report(`material-fill:unknown-knob:${m.id}:${k}`,
+      `PowerRP materials: fill paint stores unknown "${m.id}" knob "${k}" — dropped (schema: ${Object.keys(defaults).join(", ")}).`);
+  }
+  const scene = m.sceneParams ? m.sceneParams(node, nodesById) : {};
+  return { ...paint, resolvedParams: { ...defaults, ...known, ...scene } };
+}
+
 /**
  * Pure function. Is `material` a BACKDROP material (samples the composite-so-far
  * via children) rather than a FOREGROUND fill? Absence of the flag defaults to
