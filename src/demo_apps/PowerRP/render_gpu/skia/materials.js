@@ -52,6 +52,8 @@ import { COMIC_MATERIAL } from "./comic_shader.js"; // comic-book Ben-Day halfto
 import { GLITCH_MATERIAL } from "./glitch_shader.js"; // animated sci-fi datamosh / broken-signal glitch
 import { MANDELBROT_MATERIAL } from "./mandelbrot_shader.js"; // deep-zoom Mandelbrot (perturbation + rebasing, orbit-average colouring)
 import { BRIGHTNESS_CONTRAST_MATERIAL } from "./brightness_contrast_shader.js"; // tone adjustment (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB)
+import { METAL_MATERIAL } from "./metal_shader.js"; // physically-plausible analytic metal (brass/copper/steel/…; brushing, fake-env reflection, crevice-coupled patina/rust)
+import { METAL_STAMP_MATERIAL } from "./metal_stamp_shader.js"; // backdrop engraver/embosser (relights the metal behind; crevice-coupled aging in the groove)
 
 /**
  * The MAGNIFY material — magnification, expressed as a member of the material
@@ -81,7 +83,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
 // Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
 const MATERIALS = Object.fromEntries(
-  [GLASS_MATERIAL, CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL].map((m) => [m.id, m]),
+  [GLASS_MATERIAL, CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL].map((m) => [m.id, m]),
 );
 
 /**

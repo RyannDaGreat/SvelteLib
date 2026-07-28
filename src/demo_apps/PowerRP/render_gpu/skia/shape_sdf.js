@@ -21,16 +21,21 @@
  * dome follow every tooth and notch. Materials that do NOT declare it are untouched:
  * their fill still uses the base `sksl` and no child is built (byte-identical).
  *
- * ── RESOLUTION / ERROR TRADEOFF ───────────────────────────────────────────────
- * The mask is rasterized at FULL device resolution (1 texel per device px) — no
- * downscale, so there is no downscale error; a downscaled mask + upsampled SDF is a
- * drop-in future optimization but was not needed (shapes are a few hundred px and the
- * transform is O(n)). The distance transform (Felzenszwalb & Huttenlocher) is EXACT
- * Euclidean to the pixel grid; a sub-pixel correction from the antialiased coverage
- * (`d -= cov - 0.5`) places the zero crossing to within ~0.3 px of the true edge,
- * measured. That residual only widens/narrows the soft effect BAND by a fraction of a
- * pixel; it can never move the silhouette, because the CLIP (handleMaterialPaintShape)
- * is the true antialiased edge — the SDF only shapes what happens INSIDE it.
+ * ── RESOLUTION / ERROR TRADEOFF (ZOOM-INVARIANT) ──────────────────────────────
+ * The mask is rasterized ONCE per GEOMETRY at a CAPPED resolution in the shape's LOCAL
+ * space (longest edge = BUILD_MAX_EDGE build px), NOT at device resolution — so a zoom
+ * never rebuilds it, the old 4096 device-px cap and its conformity-fallback report are
+ * gone, and a shape zoomed past its build resolution is UPSAMPLED by the child's linear
+ * filter. Distances are stored in BUILD px and multiplied to DEVICE px at sample time
+ * (see the distance-scaler section): signed distance scales linearly under the similarity
+ * transform, so this is exact up to the build grid. The distance transform (Felzenszwalb
+ * & Huttenlocher) is EXACT Euclidean to that grid; a sub-pixel correction from the
+ * antialiased coverage (`d -= cov - 0.5`) places the zero crossing to within ~0.3 build
+ * px of the true edge. A distance field upsamples far better than a coverage mask (the
+ * bevel is soft and the field is near-linear across it), so the only visible cost at high
+ * zoom is a gently softer rim, never a stairstepped silhouette — the CLIP
+ * (handleMaterialPaintShape) is still the true antialiased edge; the SDF only shapes what
+ * happens INSIDE it.
  *
  * The image is RGBA_F16 (half-float): half-float linear filtering is core in WebGL2
  * (so the child samples smoothly on the runtime Skia/GL surface) and its precision is
@@ -196,115 +201,247 @@ function sdfToF16(sdf, w, h) {
   return out;
 }
 
-// ── the byte-keyed SDF image cache ────────────────────────────────────────────
+// ── the GEOMETRY-keyed, ZOOM-INVARIANT SDF image cache ────────────────────────
 // Building an SDF (rasterize + two distance transforms + a MakeImage upload) is not
-// free, and a static shape fill asks for the SAME silhouette every frame. So the
-// image is memoized, keyed by the shape's CANONICAL outline (its device path with the
-// bounds origin subtracted, so a PAN — which shifts the whole path — is the same key)
-// plus the raster size. This mirrors brush_strokes' byte-keyed stamp cache and the
-// material raster cache's "the key is the bytes the producer sees" doctrine. LRU
-// bounded; a fresh CanvasKit instance (node vs browser) invalidates the whole cache.
-const SHAPE_SDF_CACHE_MAX = 24; // distinct (shape × size) silhouettes kept at once
-const SHAPE_SDF_MAX_DIM = 4096; // device-px edge cap for the SDF raster (a surface factory clamps above this, which would silently mis-map the field)
-const _sdfCache = new Map();    // key → { img, box }
-let _sdfCK = null;              // the CanvasKit the cached images belong to
-const _oversizeWarned = new Set(); // report an over-cap shape ONCE, never silently drop conformity
+// free, and the OLD cache keyed it on the shape's DEVICE size — so EVERY zoom step was a
+// cache miss and a full-resolution rebuild, and past a 4096 device-px cap conformity
+// degraded to the analytic bbox with a (loud) console report. Both defects are gone:
+//
+//   · The field is built ONCE per GEOMETRY, at a capped resolution in the shape's LOCAL
+//     space (its longest edge maps to BUILD_MAX_EDGE build px), and cached by that local
+//     outline alone. A pan never changed the key before; a ZOOM does not now either,
+//     because neither touches the local outline.
+//   · The device PLACEMENT rides the returned `sampleMatrix` (texel→device, carrying the
+//     zoom/rotation), and the field's BUILD-px distances are turned into DEVICE px at
+//     SAMPLE time by ONE multiply — `distScale = deviceScale/buildScale` — applied by the
+//     makeShapeSdfChild wrapper shader. Signed distance scales LINEARLY under a similarity
+//     transform, so this is exact up to the build resolution; the only cost is the field's
+//     upsample at high zoom, and a distance field upsamples far better than a coverage mask
+//     (a soft bevel reads clean well past 8×). There is therefore NO device-px cap to hit
+//     and nothing to report — any zoom reuses the same build.
+//
+// LRU bounded; a fresh CanvasKit instance (node vs browser) invalidates the whole cache.
+const BUILD_MAX_EDGE = 1024;       // the SDF's longest edge, in build px (zoom-invariant)
+const SHAPE_SDF_BUILD_MARGIN = 4;  // build-px validity band outside the outline (AA/refraction read just-outside it; TileMode.Clamp covers any farther reach)
+const SHAPE_SDF_CACHE_MAX = 12;    // distinct geometries kept at once (each ≤ ~BUILD_MAX_EDGE² F16)
+const _sdfCache = new Map();       // token → { img, buildW, buildH }
+let _sdfCK = null;                 // the CanvasKit the cached images (and the scale effect) belong to
 
 /**
- * Query→build (near-pure: reads/writes the module SDF cache; the IMAGE is a pure
- * function of the outline + size). The silhouette SDF for a shape, as
- * `{ img, box }` where `box` is the integer device-px rectangle {x0, y0, w, h} the
- * field covers and `img` is the RGBA_F16 CanvasKit Image (the CACHE owns it — do NOT
- * delete it). Returns null when the shape has no positive-area device bounds (nothing
- * to build).
+ * Pure function. The uniform scale factor of a similarity (or reflection) matrix — the
+ * device px per unit length its upper-2×2 block applies — from a CanvasKit.Matrix
+ * (row-major [sx, kx, tx, ky, sy, ty, …]). A reflection (negative determinant) returns
+ * its POSITIVE magnitude, which is exactly what a distance scale needs.
  *
- * `devicePath` is the shape's outline already transformed to DEVICE space (the same
- * `clip` handleMaterialPaintShape builds). `ctx.makeSurface` rasterizes the coverage
- * mask; on the bare-node CLI that is a software surface, which is why this is testable
- * without a GPU. `margin` is how far OUTSIDE the outline the field stays valid (device
- * px) — a few px is plenty, since the effect band reads INTERIOR distances and only
- * coverage AA reads just-outside ones.
+ * @param {number[]} m - a length-9 CanvasKit.Matrix
+ * @returns {number} sqrt(|sx·sy − kx·ky|)
+ *
+ * @example similarityScale([2, 0, 0, 0, 2, 0, 0, 0, 1]) // 2
+ * @example similarityScale([0, -3, 0, 3, 0, 0, 0, 0, 1]) // 3
+ */
+export function similarityScale(m) {
+  return Math.sqrt(Math.abs(m[0] * m[4] - m[1] * m[3]));
+}
+
+/**
+ * Pure function. The build-space raster dimensions + scale for a shape's LOCAL bounds:
+ * the longer local edge maps to `buildMax` build px (so the field is zoom-invariant and
+ * capped), the shorter keeps aspect, and a `margin` band is added on all four sides. The
+ * returned `buildScale` (build px per local unit) turns local geometry into the
+ * build-space path and, against the device scale, drives the sample-time distance multiply.
+ *
+ * @param {number} localW - local-space bounds width
+ * @param {number} localH - local-space bounds height
+ * @param {number} buildMax - the longest build edge, in px
+ * @param {number} margin - build-px band added on all four sides
+ * @returns {{buildW: number, buildH: number, buildScale: number}}
+ *
+ * @example sdfBuildDims(100, 50, 1000, 5) // {buildW: 1010, buildH: 510, buildScale: 10}
+ * @example sdfBuildDims(40, 80, 800, 0) // {buildW: 400, buildH: 800, buildScale: 10}
+ */
+export function sdfBuildDims(localW, localH, buildMax, margin) {
+  const buildScale = buildMax / Math.max(localW, localH);
+  return {
+    buildW: Math.ceil(localW * buildScale) + 2 * margin,
+    buildH: Math.ceil(localH * buildScale) + 2 * margin,
+    buildScale,
+  };
+}
+
+/**
+ * Pure function. FNV-1a hash of a string as an 8-char hex — the compact geometry token
+ * derived from the build-space outline's SVG (so a pan/zoom, which do not change the
+ * local outline, share one field and one token).
+ *
+ * @example fnv1aHex("AB") // "2cd5218a"
+ */
+function fnv1aHex(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Query→build (near-pure: reads/writes the module SDF cache; the IMAGE is a pure function
+ * of the local outline + build size). The silhouette SDF for a shape, as
+ * `{ img, buildW, buildH, sampleMatrix, distScale, token }`:
+ *   · `img` — the RGBA_F16 CanvasKit Image of the BUILD-space field (distances in BUILD
+ *     px, NEGATIVE inside). The CACHE owns it — do NOT delete it.
+ *   · `sampleMatrix` — maps an image TEXEL to its DEVICE coordinate (so the child image
+ *     shader's localMatrix places the field under the current zoom/rotation).
+ *   · `distScale` — multiply a sampled BUILD-px distance by this to get DEVICE px
+ *     (deviceScale/buildScale); applied by makeShapeSdfChild.
+ *   · `token` — the geometry identity, stable across pan/zoom, for the raster cache key.
+ * Returns null when the shape has no positive-area local bounds (nothing to build).
+ *
+ * `localPath` is the shape's outline in LOCAL (pre-device) space — zoom-invariant, which
+ * is what makes the field cacheable across zoom (shapeOpLocalPath builds it). `deviceM`
+ * is the local→device similarity (deviceMatrix) that positions and scales that outline on
+ * screen this frame. `ctx.makeSurface` rasterizes the build-space coverage mask; on the
+ * bare-node CLI that is a software surface, which is why this is testable without a GPU.
  *
  * @param {object} CanvasKit
- * @param {object} ctx - the paint context (needs makeSurface, deviceW, deviceH)
- * @param {object} devicePath - a CanvasKit.Path in device space
- * @param {number} margin - outward validity margin in device px
- * @returns {{img: object, box: {x0: number, y0: number, w: number, h: number}}|null}
+ * @param {object} ctx - the paint context (needs makeSurface)
+ * @param {object} localPath - a CanvasKit.Path in local space
+ * @param {number[]} deviceM - the local→device CanvasKit.Matrix
+ * @returns {{img: object, buildW: number, buildH: number, sampleMatrix: number[], distScale: number, token: string}|null}
  */
-export function getShapeSdf(CanvasKit, ctx, devicePath, margin) {
+export function getShapeSdf(CanvasKit, ctx, localPath, deviceM) {
   if (_sdfCK !== CanvasKit) { clearShapeSdfCache(); _sdfCK = CanvasKit; }
-  const b = devicePath.getBounds(); // [l, t, r, b] device px
-  const m = Math.ceil(margin) + 1;  // +1 for the AA band
-  const x0 = Math.floor(b[0]) - m, y0 = Math.floor(b[1]) - m;
-  const x1 = Math.ceil(b[2]) + m, y1 = Math.ceil(b[3]) + m;
-  const w = x1 - x0, h = y1 - y0;
-  if (w <= 0 || h <= 0) return null; // offscreen / zero-area: nothing to conform (a legitimate no-op)
-  if (w > SHAPE_SDF_MAX_DIM || h > SHAPE_SDF_MAX_DIM) {
-    // Over the raster cap (a huge shape zoomed right in): the material fill FALLS BACK to
-    // its analytic-bbox edge (non-conforming) rather than mis-mapping a clamped SDF — but
-    // that fallback is REPORTED, never silent, so a lost conformity is discoverable.
-    const wkey = `${w}x${h}`;
-    if (!_oversizeWarned.has(wkey)) {
-      _oversizeWarned.add(wkey);
-      console.warn(`shape_sdf.getShapeSdf: shape device bounds ${wkey} exceed the ${SHAPE_SDF_MAX_DIM}px SDF cap — this fill falls back to its analytic-bbox edge (NOT shape-conforming) for this shape/zoom. Zoom out to restore conformity.`);
-    }
-    return null;
-  }
+  const lb = localPath.getBounds(); // [l, t, r, b] local units
+  const localW = lb[2] - lb[0], localH = lb[3] - lb[1];
+  if (localW <= 0 || localH <= 0) return null; // degenerate / zero-area: nothing to conform (a legitimate no-op)
 
-  // CANONICAL key: the outline in box-local coordinates (origin subtracted) so a pan
-  // does not change it, plus the size. Built through a PathBuilder (Path itself has no
-  // transform in this CanvasKit build; the shapeOpDevicePath precedent transforms on the
-  // builder), which is also the path we rasterize.
-  const lb = new CanvasKit.PathBuilder();
-  lb.addPath(devicePath);
-  lb.transform(CanvasKit.Matrix.translated(-x0, -y0));
-  const local = lb.detach();
-  lb.delete();
-  const key = `${w}x${h}|${local.toSVGString()}`;
-  const hit = _sdfCache.get(key);
+  const m = SHAPE_SDF_BUILD_MARGIN;
+  const { buildW, buildH, buildScale } = sdfBuildDims(localW, localH, BUILD_MAX_EDGE, m);
+
+  // The device-independent bind data, computed per call (cheap — a matrix multiply and a
+  // scalar): where THIS frame's zoom puts the (cached) field, and by how much to scale its
+  // stored build-px distances back into device px.
+  const deviceScale = similarityScale(deviceM);
+  const distScale = deviceScale / buildScale;
+  // sampleMatrix (texel → device) = deviceM · translate(l,t) · scale(1/buildScale) · translate(-m,-m):
+  // texel → build-space content → local (undo the build placement below) → device.
+  const sampleMatrix = CanvasKit.Matrix.multiply(
+    deviceM,
+    CanvasKit.Matrix.translated(lb[0], lb[1]),
+    CanvasKit.Matrix.scaled(1 / buildScale, 1 / buildScale),
+    CanvasKit.Matrix.translated(-m, -m),
+  );
+
+  // The build-space outline: the local path scaled by buildScale into a buildW×buildH box
+  // with the margin as origin. It is BOTH the raster we fill AND (as SVG) the cache token.
+  const buildMatrix = CanvasKit.Matrix.multiply(
+    CanvasKit.Matrix.translated(m, m),
+    CanvasKit.Matrix.scaled(buildScale, buildScale),
+    CanvasKit.Matrix.translated(-lb[0], -lb[1]),
+  );
+  const pb = new CanvasKit.PathBuilder();
+  pb.addPath(localPath);
+  pb.transform(buildMatrix);
+  const buildPath = pb.detach();
+  pb.delete();
+  const token = `${buildW}x${buildH}|${fnv1aHex(buildPath.toSVGString())}`;
+
+  const hit = _sdfCache.get(token);
   if (hit) {
-    local.delete();
-    _sdfCache.delete(key); _sdfCache.set(key, hit); // LRU touch
-    return { img: hit.img, box: { x0, y0, w, h } };
+    buildPath.delete();
+    _sdfCache.delete(token); _sdfCache.set(token, hit); // LRU touch
+    return { img: hit.img, buildW, buildH, sampleMatrix, distScale, token };
   }
 
-  // Rasterize the coverage mask: the box-local path filled white on a transparent
+  // Rasterize the coverage mask: the build-space path filled white on a transparent
   // surface, read back as alpha.
-  const surf = ctx.makeSurface(w, h);
-  if (!surf) throw new Error(`shape_sdf.getShapeSdf: makeSurface(${w}x${h}) returned null`);
+  const surf = ctx.makeSurface(buildW, buildH);
+  if (!surf) throw new Error(`shape_sdf.getShapeSdf: makeSurface(${buildW}x${buildH}) returned null`);
   const canvas = surf.getCanvas();
   canvas.clear(CanvasKit.Color4f(0, 0, 0, 0));
   const paint = new CanvasKit.Paint();
   paint.setColor(CanvasKit.Color4f(1, 1, 1, 1));
   paint.setAntiAlias(true);
-  canvas.drawPath(local, paint);
+  canvas.drawPath(buildPath, paint);
   surf.flush();
-  const info = { width: w, height: h, alphaType: CanvasKit.AlphaType.Unpremul, colorType: CanvasKit.ColorType.RGBA_8888, colorSpace: CanvasKit.ColorSpace.SRGB };
+  const info = { width: buildW, height: buildH, alphaType: CanvasKit.AlphaType.Unpremul, colorType: CanvasKit.ColorType.RGBA_8888, colorSpace: CanvasKit.ColorSpace.SRGB };
   const snap = surf.makeImageSnapshot();
   const rgba = snap.readPixels(0, 0, info);
   if (!rgba) throw new Error("shape_sdf.getShapeSdf: readPixels returned null");
-  snap.delete(); paint.delete(); surf.dispose(); local.delete();
+  snap.delete(); paint.delete(); surf.dispose(); buildPath.delete();
 
-  const cov = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) cov[i] = rgba[i * 4 + 3] / 255; // alpha channel = coverage
-  const sdf = signedDistanceField(cov, w, h);
-  const f16 = sdfToF16(sdf, w, h);
-  const imgInfo = { width: w, height: h, alphaType: CanvasKit.AlphaType.Unpremul, colorType: CanvasKit.ColorType.RGBA_F16, colorSpace: CanvasKit.ColorSpace.SRGB };
-  const img = CanvasKit.MakeImage(imgInfo, new Uint8Array(f16.buffer), w * 4 * 2);
+  const cov = new Float32Array(buildW * buildH);
+  for (let i = 0; i < buildW * buildH; i++) cov[i] = rgba[i * 4 + 3] / 255; // alpha channel = coverage
+  const sdf = signedDistanceField(cov, buildW, buildH);
+  const f16 = sdfToF16(sdf, buildW, buildH);
+  const imgInfo = { width: buildW, height: buildH, alphaType: CanvasKit.AlphaType.Unpremul, colorType: CanvasKit.ColorType.RGBA_F16, colorSpace: CanvasKit.ColorSpace.SRGB };
+  const img = CanvasKit.MakeImage(imgInfo, new Uint8Array(f16.buffer), buildW * 4 * 2);
   if (!img) throw new Error("shape_sdf.getShapeSdf: MakeImage(RGBA_F16) returned null");
 
-  _sdfCache.set(key, { img, box: { x0, y0, w, h } });
+  _sdfCache.set(token, { img, buildW, buildH });
   while (_sdfCache.size > SHAPE_SDF_CACHE_MAX) {
     const oldest = _sdfCache.keys().next().value;
     _sdfCache.get(oldest).img.delete();
     _sdfCache.delete(oldest);
   }
-  return { img, box: { x0, y0, w, h } };
+  return { img, buildW, buildH, sampleMatrix, distScale, token };
 }
 
-/** Command. Drops every cached SDF image (freeing their textures). Called on a
- * CanvasKit instance change and exposed for tests that assert a clean slate. */
+// ── the sample-time DISTANCE SCALER ───────────────────────────────────────────
+// The stored field is in BUILD px; every material fillSksl reads `shapeSdf.eval(p).r` as
+// a DEVICE-px distance (its uEdgeFalloff/rim thresholds are device px and scale with
+// zoom). Rather than re-encode the image per zoom — or edit four material shaders — the
+// `shapeSdf` child is this tiny pass-through RuntimeEffect: it samples the build-space
+// image (whose OWN localMatrix carries the device→build coordinate map) and multiplies
+// the distance by uDistScale to hand back device px. The material shaders are untouched;
+// a zoom only changes the uDistScale uniform and the child localMatrix, never the image.
+const SDF_SCALE_SKSL = `
+uniform shader sdfImage;    // the build-space silhouette SDF (distance in BUILD px)
+uniform float uDistScale;   // BUILD px -> DEVICE px (deviceScale / buildScale)
+half4 main(float2 p) {
+  half d = half(sdfImage.eval(p).r * uDistScale);
+  return half4(d, d, d, 1.0);
+}`;
+
+let _scaleEff = null; // the compiled SDF_SCALE_SKSL, memoized per CanvasKit (with the cache)
+
+/** Query→build (near-pure: memoizes the compiled effect per CanvasKit). The distance-scaler
+ * RuntimeEffect, compiled once. */
+function scaleEffect(CanvasKit) {
+  if (_sdfCK !== CanvasKit) { clearShapeSdfCache(); _sdfCK = CanvasKit; }
+  if (_scaleEff) return _scaleEff;
+  let err = "";
+  const eff = CanvasKit.RuntimeEffect.Make(SDF_SCALE_SKSL, (e) => { err = e; });
+  if (!eff) throw new Error(`shape_sdf: SDF distance-scaler failed to compile:\n${err}`);
+  _scaleEff = eff;
+  return eff;
+}
+
+/**
+ * Query→build (allocates a shader the CALLER must delete). The `shapeSdf` child shader for
+ * a material fill: the geometry-keyed build-space SDF image, wrapped in the distance
+ * scaler so an `.eval(p).r` read returns DEVICE-px signed distance. `extraMatrix` (or
+ * null) is prepended to the field's texel→device sampleMatrix — pass
+ * `translate(-region.x0, -region.y0)` when the parent shader is evaluated in REGION-LOCAL
+ * device space (the foreground raster path), null when it is evaluated at the DEVICE root
+ * (the backdrop path).
+ *
+ * @param {object} CanvasKit
+ * @param {object} sdf - a getShapeSdf() result ({img, sampleMatrix, distScale, …})
+ * @param {number[]|null} extraMatrix - a CanvasKit.Matrix prepended to sampleMatrix, or null
+ * @returns {object} a CanvasKit shader (delete after building the parent shader)
+ */
+export function makeShapeSdfChild(CanvasKit, sdf, extraMatrix) {
+  const localM = extraMatrix ? CanvasKit.Matrix.multiply(extraMatrix, sdf.sampleMatrix) : sdf.sampleMatrix;
+  const imgChild = sdf.img.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, localM);
+  const shader = scaleEffect(CanvasKit).makeShaderWithChildren(new Float32Array([sdf.distScale]), [imgChild]);
+  imgChild.delete();
+  if (!shader) throw new Error("shape_sdf.makeShapeSdfChild: makeShaderWithChildren returned null");
+  return shader;
+}
+
+/** Command. Drops every cached SDF image (freeing their textures) and forgets the
+ * compiled scaler effect. Called on a CanvasKit instance change and exposed for tests
+ * that assert a clean slate. */
 export function clearShapeSdfCache() {
   for (const e of _sdfCache.values()) e.img.delete();
   _sdfCache.clear();
+  _scaleEff = null;
 }

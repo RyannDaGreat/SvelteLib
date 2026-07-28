@@ -31,15 +31,20 @@
  */
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import { PNG } from "pngjs";
 
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
-import { newDocument, withNewItem, serialize } from "../core/document.js";
+import { newDocument, withNewItem, serialize, deserialize, repairedDocument } from "../core/document.js";
 import { renderDocToPng } from "../cli/render.js";
 import { getMaterial } from "../render_gpu/skia/materials.js";
+import { paintIR, materialRasterStats } from "../render_gpu/skia/paint_skia.js";
+import { cameraRect } from "../core/derive.js";
+import { fitRectView } from "../core/view.js";
+import { cameraFrameIR, evaluatedStateAt } from "../web/cameraFrame.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHOTS = resolve(HERE, "../.claude_vlm_checks");
@@ -182,8 +187,56 @@ for (const id of SHAPE_BLIND) {
   ok(rectClipCheck <= HOMO_MAX, `${HOMOGENEOUS}: homogeneous interior (self-diff ${rectClipCheck.toFixed(2)}) — no edge term to conform`);
 }
 
+// ── RASTER-CACHE RESTORATION ──────────────────────────────────────────────────
+// A FOREGROUND material on a real shape used to SKIP the uniform-keyed raster cache: the
+// silhouette-SDF child was not in the packed uniform bytes, so keying on them alone would
+// have served a shape-blind raster. It therefore re-ran its shader EVERY frame — the
+// "corkboard on a gear lags but the demo widget didn't" report. Now the SDF is built once
+// per GEOMETRY (zoom-invariant) and its stable token folds into the raster key, so a
+// shape-conforming fill caches exactly like the old demo-widget rect. Proven by driving
+// paintIR with an identity-stable makeSurface (≙ ctx.liveGpu — what the editor/presenter
+// give and what cli/render's bare-node path deliberately does NOT), across three identical
+// passes: sighting → admit → HIT, with the HIT byte-identical to the MISS.
+{
+  const ckReq = createRequire(import.meta.url);
+  const CanvasKitInit = ckReq("canvaskit-wasm/bin/canvaskit.js");
+  const CK_BIN = dirname(ckReq.resolve("canvaskit-wasm/bin/canvaskit.js"));
+  const CanvasKit = await CanvasKitInit({ locateFile: (f) => resolve(CK_BIN, f) });
+  const fontCollection = CanvasKit.FontCollection.Make();
+  const makeSurface = (w, h) => CanvasKit.MakeSurface(w, h); // ONE identity-stable factory (== one GrContext)
+  const CW = 480, CH = 480;
+
+  const GEAR = { type: "ss_gear", over: { teeth: 10, innerRatio: 0.7, toothWidth: 0.5 } };
+  const gearFill = { type: "material", material: { id: "corkboard", params: {} } };
+  const { doc } = repairedDocument(deserialize(shapeDoc(GEAR, gearFill)), registry);
+  const st = evaluatedStateAt(doc, 0, 1, registry);
+  const camRect = cameraRect(st, doc.meta);
+  const view = fitRectView(camRect, CW, CH, 1);
+  const commands = cameraFrameIR(st, doc.meta, registry);
+
+  const frame = () => {
+    const surf = makeSurface(CW, CH);
+    paintIR(CanvasKit, surf.getCanvas(), commands, view, { fontCollection, background: camRect.background, makeSurface });
+    surf.flush();
+    const px = Buffer.from(surf.makeImageSnapshot().readPixels(0, 0,
+      { width: CW, height: CH, colorType: CanvasKit.ColorType.RGBA_8888, alphaType: CanvasKit.AlphaType.Unpremul, colorSpace: CanvasKit.ColorSpace.SRGB }));
+    surf.dispose();
+    return px;
+  };
+  const diffN = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++; return n; };
+
+  const s0 = materialRasterStats();
+  const miss = frame();   // sighting — drawn, not admitted
+  frame();                // admitted (same key two passes running)
+  const hit = frame();    // HIT
+  const s1 = materialRasterStats();
+  ok(s1.admits - s0.admits === 1, `corkboard on a GEAR admits once (${s1.admits - s0.admits}) — the shape-conforming fill is cacheable again (SDF token folded into the raster key)`);
+  ok(s1.hits - s0.hits === 1, `corkboard on a GEAR HITS on the 3rd identical pass (${s1.hits - s0.hits}) — caches like the old demo-widget rect, not re-running every frame`);
+  ok(diffN(miss, hit) === 0, `a shape-conforming HIT is byte-identical to a MISS (Δ ${diffN(miss, hit)} bytes) — the cache changes no pixel`);
+}
+
 if (fails.length) {
   console.error(`\nFAILED: ${fails.length} — material shape conformance`);
   process.exit(1);
 }
-console.log(`\nPASS — material shape conformance (${RECT_ANALOG.length + SHAPE_BLIND.length} conforming materials + ${HOMOGENEOUS} control)`);
+console.log(`\nPASS — material shape conformance (${RECT_ANALOG.length + SHAPE_BLIND.length} conforming materials + ${HOMOGENEOUS} control + raster-cache restoration)`);

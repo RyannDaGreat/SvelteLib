@@ -40,7 +40,7 @@ import { fileURLToPath } from "url";
 import { paintIR, materialRasterStats } from "../render_gpu/skia/paint_skia.js";
 import { rect, pushTransform, popTransform } from "../render_gpu/ir.js";
 import { allPlugins } from "../plugins/index.js";
-import { materialIds, getMaterial, isBackdropMaterial, isSamplerMaterial } from "../render_gpu/skia/materials.js";
+import { materialIds, getMaterial, isBackdropMaterial, isSamplerMaterial, isFillCapableMaterial, materialFillParamDefaults } from "../render_gpu/skia/materials.js";
 
 const require = createRequire(import.meta.url);
 const CanvasKitInit = require("canvaskit-wasm/bin/canvaskit.js");
@@ -90,6 +90,18 @@ function fixtures() {
       }
     };
     walk(ops);
+  }
+  // PAINT-ONLY foreground materials have NO widget plugin (metal is applied to shapes as a
+  // FILL, never as a standalone widget), so no emit() produces one. Synthesize their
+  // fixture the same way handleMaterialPaintShape does — the material's OWN schema defaults
+  // through toUniformParams — which is still DERIVED from the single source of truth (its
+  // fillParams), not a hand-typed param mirror.
+  for (const id of materialIds()) {
+    const m = getMaterial(id);
+    if (out.has(id) || isSamplerMaterial(m) || isBackdropMaterial(m) || !isFillCapableMaterial(m)) continue;
+    const defaults = materialFillParamDefaults(m);
+    const params = m.toUniformParams ? m.toUniformParams(defaults) : defaults;
+    out.set(id, { op: "materialFill", material: id, params, cornerRadius: 0, opacity: 1 });
   }
   return out;
 }

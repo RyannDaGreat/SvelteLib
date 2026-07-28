@@ -36,9 +36,16 @@
 // ── The registry ─────────────────────────────────────────────────────────────
 // Keyed by material id → ordered preset list. Ordering is content: read top-down.
 import { getMaterial } from "./materials.js";
+import { METAL_PRESETS } from "./metal_shader.js";
+import { METAL_STAMP_PRESETS } from "./metal_stamp_shader.js";
 import { getStrokeMaterial, hasStrokeMaterial } from "./stroke_materials.js";
 
 export const MATERIAL_PRESETS = {
+  // The metal family's canon presets live beside their shaders (METALIMPL
+  // export contract); merged here so the Tools pane and the widget-first
+  // merge see them like any other roster.
+  metal: METAL_PRESETS,
+  metalStamp: METAL_STAMP_PRESETS,
   // FILL: sky (night-sky variants — see the file header note on the missing sun).
   sky: [
     { id: "starfield", title: "Starfield", description: "A crisp, star-dense night with a faint galaxy band.",

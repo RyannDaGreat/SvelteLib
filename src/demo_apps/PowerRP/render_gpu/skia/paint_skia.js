@@ -45,7 +45,7 @@ import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
 import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
-import { getShapeSdf } from "./shape_sdf.js"; // the silhouette signed-distance child that makes a material fill conform to its shape
+import { getShapeSdf, makeShapeSdfChild } from "./shape_sdf.js"; // the silhouette signed-distance child that makes a material fill conform to its shape
 import { getStrokeMaterial } from "./stroke_materials.js";
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
@@ -126,11 +126,6 @@ const PROXY_BACKDROP_OPS = new Set(["blurBackdrop", "magnifyBackdrop", "glassBac
 // such rect here — the glass/material clip AABB and the effectSubtree source
 // region (effectRegion) — so the two can never drift apart.
 const COVERAGE_AA_SLOP_PX = 2;
-// How far OUTSIDE the outline the silhouette SDF (shape_sdf.js) stays valid, in device
-// px — enough for the coverage AA band and the ±1px central-difference normal taps to
-// read a real distance just past the edge. The effect band itself reads INTERIOR
-// distances, which are always in range, so a small margin suffices.
-const SHAPE_SDF_MARGIN_PX = 4;
 
 /**
  * Command (draws on `canvas`). Paints the IR `commands` through `view`
@@ -1252,16 +1247,21 @@ function handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowFlat
     stroke: null, strokeWidth: 0,
     opacity: cmd.opacity ?? 1,
   };
-  const clip = shapeOpDevicePath(CanvasKit, cmd, deviceMatrix(CanvasKit, view, world));
+  const dm = deviceMatrix(CanvasKit, view, world);
+  const clip = shapeOpDevicePath(CanvasKit, cmd, dm);
   // SHAPE-CONFORMING FILL: a material that opts in (materialUsesShapeSdf) gets the
-  // silhouette signed-distance field of its own clip path as an extra child, so its
-  // edge effects (rim / frame / dome / vignette) follow the true outline instead of
-  // the bbox rectangle its analytic SDF assumes. The SDF is byte-keyed + cached
-  // (shape_sdf.js owns the image). NOT built in proxy mode (thumbnails use the flat
-  // stand-ins) and never for a non-declaring material (its fill stays byte-identical).
+  // silhouette signed-distance field of its own outline as an extra child, so its edge
+  // effects (rim / frame / dome / vignette) follow the true outline instead of the bbox
+  // rectangle its analytic SDF assumes. The field is built ONCE per GEOMETRY at a capped,
+  // ZOOM-INVARIANT resolution (shape_sdf.js keys it on the LOCAL outline and owns the
+  // image); the device placement + distance scale for THIS zoom ride the returned
+  // sampleMatrix/distScale. NOT built in proxy mode (thumbnails use the flat stand-ins)
+  // and never for a non-declaring material (its fill stays byte-identical).
   if (!proxy && materialUsesShapeSdf(material)) {
-    const sdf = getShapeSdf(CanvasKit, ctx, clip, SHAPE_SDF_MARGIN_PX);
-    if (sdf) regionOp.shapeSdf = sdf; // {img, box:{x0,y0,w,h}} — the cache owns img
+    const localPath = shapeOpLocalPath(CanvasKit, cmd);
+    const sdf = getShapeSdf(CanvasKit, ctx, localPath, dm);
+    localPath.delete();
+    if (sdf) regionOp.shapeSdf = sdf; // {img, sampleMatrix, distScale, token, …} — the cache owns img
   }
   const canvas = target.canvas;
   canvas.save();
@@ -2078,10 +2078,11 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma, region, needBlur);
 
   // SHAPE-CONFORMING FILL: when the op carries a silhouette SDF (built by
-  // handleMaterialPaintShape for a declaring material), compile the fill variant and
-  // bind the SDF as child 2 in DEVICE space (sample matrix maps a texel to its device
-  // coordinate, translate(box origin) — this handler draws at the device root, so `p`
-  // IS device px). Absent ⇒ the base shader + two children, byte-identical.
+  // handleMaterialPaintShape for a declaring material), compile the fill variant and bind
+  // the SDF as child 2 in DEVICE space. makeShapeSdfChild wraps the geometry-keyed
+  // build-space field so its `.eval(p).r` returns DEVICE-px distance — this handler draws
+  // at the device root, so `p` IS device px and no extra offset is needed (null). Absent ⇒
+  // the base shader + two children, byte-identical.
   const useSdf = cmd.shapeSdf && materialUsesShapeSdf(material);
   const effect = useSdf ? materialFillEffect(CanvasKit, material) : materialEffect(CanvasKit, material);
   const blurSource = bd.blurred ?? bd.sharp;
@@ -2090,8 +2091,7 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   const children = [blurChild, sharpChild];
   let sdfChild = null;
   if (useSdf) {
-    const sm = CanvasKit.Matrix.translated(cmd.shapeSdf.box.x0, cmd.shapeSdf.box.y0);
-    sdfChild = cmd.shapeSdf.img.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, sm);
+    sdfChild = makeShapeSdfChild(CanvasKit, cmd.shapeSdf, null);
     children.push(sdfChild);
   }
   const uniforms = material.pack(u);
@@ -2411,21 +2411,30 @@ function reanchoredCenter(devCoord, origin) {
  * the caller confirms with a full byte compare, so a collision costs a re-render and
  * can never show a stale picture.
  *
+ * A SHAPE-CONFORMING fill also binds a silhouette-SDF child that the uniform bytes do NOT
+ * capture, so its geometry-stable `sdfToken` (shape_sdf.getShapeSdf) is appended: at a
+ * fixed zoom and geometry the SDF's contribution is determined, so this restores the
+ * uniform-keyed cache for gear/star-filled foreground materials (corkboard/tack) that
+ * used to skip it and re-render every frame. Omitted (undefined/null) ⇒ the plain key.
+ *
  * @param {string} id - the material id
  * @param {Uint8Array} bytes - the packed uniform Float32Array's byte view
  * @param {number} w - raster width in device px
  * @param {number} h - raster height in device px
+ * @param {string} [sdfToken] - the silhouette-SDF geometry token, when the fill conforms
  * @returns {string}
  *
  * @example rasterKey("sky", new Uint8Array([1, 2, 3]), 64, 32) // "sky|64x32|be7b9c5"
+ * @example rasterKey("corkboard", new Uint8Array([1, 2, 3]), 64, 32, "512x512|abcd1234") // "corkboard|64x32|be7b9c5|sdf:512x512|abcd1234"
  */
-function rasterKey(id, bytes, w, h) {
+function rasterKey(id, bytes, w, h, sdfToken) {
   let hash = 0x811c9dc5;
   for (let i = 0; i < bytes.length; i++) {
     hash ^= bytes[i];
     hash = Math.imul(hash, 0x01000193);
   }
-  return `${id}|${w}x${h}|${(hash >>> 0).toString(16)}`;
+  const base = `${id}|${w}x${h}|${(hash >>> 0).toString(16)}`;
+  return sdfToken ? `${base}|sdf:${sdfToken}` : base;
 }
 
 /** Pure function. Byte-for-byte equality of two Uint8Arrays (the collision-proof half
@@ -2453,23 +2462,20 @@ function sameBytes(a, b) {
 function materialFillRaster(CanvasKit, ctx, material, u, region, shapeSdf) {
   const w = region.x1 - region.x0, h = region.y1 - region.y0;
   const uniforms = material.pack(u);
-  // A SHAPE-CONFORMING fill binds an extra child (the silhouette SDF) that the packed
-  // uniforms do NOT capture, so it does NOT go through the uniform-keyed raster cache
-  // (a hit there would ignore the shape). It re-renders each frame — correct and, for
-  // the moderate cork/tack shaders, cheap; the SDF IMAGE itself is cached (shape_sdf.js),
-  // so only the fill shader re-runs. `retained: false`, so the caller frees the image.
-  if (shapeSdf) {
-    const matrix = CanvasKit.Matrix.translated(shapeSdf.box.x0 - region.x0, shapeSdf.box.y0 - region.y0);
-    const img = renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h, { img: shapeSdf.img, matrix });
-    return { img, retained: false };
-  }
+  // A SHAPE-CONFORMING fill binds an extra child (the silhouette SDF). The SDF's
+  // contribution is NOT in the packed uniforms, so its geometry-stable token is folded
+  // into the key (rasterKey) — at a fixed zoom + geometry the field's placement/scale is
+  // determined, so the fill is once again fully cacheable (it used to skip the cache and
+  // re-run its shader every frame). `sdfBind` carries the region-local offset the child
+  // needs; renderMaterialRaster builds + frees the wrapper shader.
+  const sdfBind = shapeSdf ? { shapeSdf, extraMatrix: CanvasKit.Matrix.translated(-region.x0, -region.y0) } : null;
   const bytes = new Uint8Array(uniforms.buffer, uniforms.byteOffset, uniforms.byteLength);
   // Retention needs an identity-stable surface factory (one per GrContext — the
   // video_v2 caller contract), which is exactly what ctx.liveGpu reports: a caller
   // that passed none (bare node, the CLI) gets a fresh closure per pass, so it could
   // never hit and must not accumulate a partition per pass either.
   const partition = region.retained && ctx.liveGpu ? contextPartition(ctx) : null;
-  const key = partition ? rasterKey(material.id, bytes, w, h) : null;
+  const key = partition ? rasterKey(material.id, bytes, w, h, shapeSdf ? shapeSdf.token : null) : null;
   if (partition) {
     partition.cur.add(key);
     const hit = partition.entries.get(key);
@@ -2481,7 +2487,7 @@ function materialFillRaster(CanvasKit, ctx, material, u, region, shapeSdf) {
     }
     _fillStats.misses++;
   }
-  const img = renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h);
+  const img = renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h, sdfBind);
   if (!partition) return { img, retained: false };
   // ADMISSION: only a picture this context already asked for in its previous pass. A
   // first sighting is drawn and dropped, so a drag (a new key every frame) inserts
@@ -2548,14 +2554,15 @@ function contextPartition(ctx) {
  * its SDF) and is composited SrcOver, unlike the backdrop re-render that stands in for
  * the composite-so-far and must reproduce THE CLEAR.
  */
-function renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h, sdfChild) {
-  // A SHAPE-CONFORMING foreground fill compiles the fill variant and binds the
-  // silhouette SDF as its single child (sdfChild.matrix maps a texel to this raster's
-  // region-local space); a plain fill compiles the base shader with no children.
-  const effect = sdfChild ? materialFillEffect(CanvasKit, material) : materialEffect(CanvasKit, material);
+function renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h, sdfBind) {
+  // A SHAPE-CONFORMING foreground fill compiles the fill variant and binds the silhouette
+  // SDF as its single child (makeShapeSdfChild wraps the geometry-keyed field with the
+  // region-local offset so `.eval(p).r` is DEVICE-px distance in this raster's local
+  // space); a plain fill compiles the base shader with no children.
+  const effect = sdfBind ? materialFillEffect(CanvasKit, material) : materialEffect(CanvasKit, material);
   let child = null, shader;
-  if (sdfChild) {
-    child = sdfChild.img.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, sdfChild.matrix);
+  if (sdfBind) {
+    child = makeShapeSdfChild(CanvasKit, sdfBind.shapeSdf, sdfBind.extraMatrix);
     shader = effect.makeShaderWithChildren(uniforms, [child]);
   } else {
     shader = effect.makeShader(uniforms);

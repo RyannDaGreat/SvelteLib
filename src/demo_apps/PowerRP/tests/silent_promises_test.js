@@ -227,6 +227,7 @@ const TOLERATED_UNREAD = {
   frosted: ["sharpBackdrop"],
   comic: ["blurredBackdrop"],
   brightness_contrast: ["blurredBackdrop"],
+  metalStamp: ["blurredBackdrop"], // the stamp RE-LIGHTS the sharp backdrop only; declares usesBlurredBackdrop:false (its own import-time guard cross-checks the claim)
   sky: ["uScale"],
   skyClouds: ["uScale"],
   skySun: ["uScale", "uTime"],
