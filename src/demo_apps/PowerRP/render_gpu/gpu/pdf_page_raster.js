@@ -76,7 +76,7 @@
  * NOT part of the DOM-free `core/`.
  */
 
-import { reserveImageSlot, registerRasterizedBitmap } from "./image_registry.js";
+import { reserveImageSlot, registerRasterizedBitmap, releaseImage, BYTES_PER_PIXEL } from "./image_registry.js";
 import { reportOnce } from "../../core/report.js";
 
 // pdfjs-dist is loaded LAZILY (dynamic import, at first use inside
@@ -407,15 +407,54 @@ export const PDF_MAX_RASTER_DIM = 4096;
  * clampSurfaceSize, which clamp silently for the same reason). */
 export const PDF_MAX_DEVICE_DIM = 2 * PDF_MAX_RASTER_DIM;
 
-/** Cap on distinct cached REGION rasters. v1 re-rasters the visible window on
- * every pan/zoom change (TILING for smooth pan is backburnered — manifest), so
- * a long pan/zoom session would otherwise accumulate one entry per distinct
- * view. When the cache exceeds this, the OLDEST entries are evicted (Map keeps
- * insertion order) — a crude bounded LRU. Sized for "a handful of PDF widgets ×
- * a healthy scrollback of recent views" without unbounded growth. */
-export const PDF_REGION_CACHE_MAX = 64;
+/**
+ * THE region-raster cache budget, in BYTES of decoded pixels — the fix for the
+ * reported "zoom into a PDF, pan around a while, the editor dies" crash.
+ *
+ * WHY BYTES AND NOT A COUNT. This cap used to be `PDF_REGION_CACHE_MAX = 64`
+ * entries, and eviction dropped only THIS module's bookkeeping while explicitly
+ * leaving the pixels alive in the image registry ("cheap to re-register"). Both
+ * halves of that were wrong. v1 re-rasters the visible window on EVERY view change
+ * (tiling is backburnered), so panning a zoomed page mints roughly one region per
+ * frame, and each one costs its pixels TWICE: an ImageBitmap, plus a copy inside
+ * the CanvasKit WASM HEAP the moment image_registry.getSkiaImage converts it for
+ * paint. Nothing ever freed either copy. Measured (tests/pdf_pan_leak_probe.js):
+ * the wasm heap grew 1:1 with raster pixels — 1674 MB of growth for 1717 MB of
+ * rasters across 1000 pan steps — and the editor died at exactly 2048.0 MB with
+ * `RuntimeError: memory access out of bounds` inside getSkiaImage. A COUNT cap
+ * cannot prevent that: 64 regions at the PDF_MAX_RASTER_DIM ceiling is 64 · 64 MiB
+ * = 4 GiB, twice the whole heap. The physical quantity is bytes, so the cap is
+ * bytes.
+ *
+ * WHERE THE NUMBER COMES FROM (two independent derivations, same answer):
+ *   · THE HEAP CEILING. CanvasKit's wasm linear memory declares a maximum of
+ *     32768 pages × 64 KiB = 2 GiB (canvaskit.wasm's memory section; its JS glue
+ *     also refuses any heap resize above 2147483648). 256 MiB is ONE EIGHTH of
+ *     that, leaving 1.75 GiB for the things that actually have to be resident —
+ *     the glyph atlas, every other image and video texture, Skia's own
+ *     allocations, and the scratch surfaces paintIR allocates per frame.
+ *   · THE IN-REPO PRECEDENT. core/clip.js already ratifies exactly this quantity
+ *     as safe, for a single allocation: "8192² · 4 = 256 MB, comfortably inside
+ *     the wasm heap" (MAX_SURFACE_DIM). One surface-envelope's worth of pixels is
+ *     a budget this codebase has already reasoned about, so the whole region cache
+ *     gets one of them.
+ * At a typical full-viewport region (~868×519 = 1.8 MB measured above) that is
+ * ~150 recent views of scrollback; at the PDF_MAX_RASTER_DIM extreme it is 4.
+ *
+ * The budget is charged a region's SINGLE-copy size (canvasW · canvasH ·
+ * BYTES_PER_PIXEL). The ImageBitmap-plus-wasm-copy doubling noted above is a
+ * constant factor, so it lives in the one-eighth headroom rather than in the
+ * arithmetic — writing it into the charge would just halve an already conservative
+ * budget twice over. And the budget is a CACHE bound, never a correctness bound:
+ * the regions one frame needs are always kept even if they exceed it, and that
+ * overrun is reported loudly (see trimPdfRegionCache).
+ */
+export const PDF_REGION_CACHE_BYTES = 256 * 1024 * 1024;
 
-/** "<src>|<page>|<sx>,<sy>,<sw>,<sh>|<roundedScale>" → {status, ref, error, promise} */
+/** "<src>|<page>|<sx>,<sy>,<sw>,<sh>|<roundedScale>" → {status, ref, error, promise, bytes}
+ *  `bytes` is the decoded size of this region's raster (0 until it lands), the
+ *  quantity PDF_REGION_CACHE_BYTES budgets. Map insertion order is the LRU order:
+ *  every cache HIT re-inserts, so the front is genuinely the least recently used. */
 const regions = new Map();
 
 /** "<src>|<page>" → monotonically increasing generation int, bumped each time a
@@ -475,7 +514,14 @@ export function pdfPageRegionRef(src, page, sourceRect, scale) {
 export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, point) {
   const ref = pdfPageRegionRef(src, page, sourceRect, scale);
   const key = ref;
-  if (regions.has(key)) return { ref };
+  const hit = regions.get(key);
+  if (hit) {
+    // TOUCH: re-insert so Map order stays true LRU (a view revisited stays hot,
+    // and trimPdfRegionCache's front-first eviction means what it says).
+    regions.delete(key);
+    regions.set(key, hit);
+    return { ref };
+  }
 
   reserveImageSlot(ref); // synchronous, before any await — see the full-page path's reserve note
   const roundedScale = roundPdfScale(scale);
@@ -494,9 +540,9 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
   // fast zoom kicks many successive region renders for this (src,page) and only
   // the latest is still wanted. On resolve we compare against the current
   // generation and DISCARD a superseded bitmap. (Identical-key stampede is
-  // already deduped by the regions.has(key) early-return above.)
+  // already deduped by the cache-hit early-return above.)
   const myGeneration = bumpRegionGeneration(src, page);
-  const entry = { status: "loading", ref, error: null, promise: null };
+  const entry = { status: "loading", ref, error: null, promise: null, bytes: 0 };
   entry.promise = (async () => {
     const doc = await ensurePdfDoc(src);
     if (!doc) throw new Error("PDF document failed to load"); // ensurePdfDoc already reported this
@@ -530,6 +576,7 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
       return null;
     }
     entry.status = "ready";
+    entry.bytes = canvasW * canvasH * BYTES_PER_PIXEL; // what this region costs the budget
     registerRasterizedBitmap(ref, bitmap); // wakes image_registry.onImageLoad → repaint
     return bitmap;
   })().catch((e) => {
@@ -539,8 +586,70 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
     return null;
   });
   regions.set(key, entry);
-  if (regions.size > PDF_REGION_CACHE_MAX) evictOldestRegion();
   return { ref };
+}
+
+/**
+ * Query. The bytes of decoded pixels the region cache currently holds — what
+ * PDF_REGION_CACHE_BYTES budgets. In-flight (still rasterizing) regions count 0
+ * because their pixels do not exist yet.
+ *
+ * @example // pdfRegionCacheBytes() // 0 — nothing rasterized yet
+ */
+export function pdfRegionCacheBytes() {
+  let total = 0;
+  for (const entry of regions.values()) total += entry.bytes;
+  return total;
+}
+
+/**
+ * Command. Brings the region cache back inside PDF_REGION_CACHE_BYTES by FREEING
+ * least-recently-used regions — bookkeeping AND pixels (image_registry.releaseImage
+ * deletes the CanvasKit Image, which is the copy that lives in the wasm heap, and
+ * closes the ImageBitmap). Called once per frame by the display pre-pass
+ * (render_gpu/pdf_display.preRasterizePdfPages); without it nothing ever frees a
+ * region and a pan session walks the wasm heap into its 2 GiB ceiling (see
+ * PDF_REGION_CACHE_BYTES for the measurement).
+ *
+ * `keepRefs` is the set of refs the calling frame just produced and is ABOUT TO
+ * PAINT. They are never evicted, whatever the budget says: a CanvasKit Image is
+ * used synchronously during paint, so freeing one the next paint needs would draw a
+ * hole (or worse, use freed memory). Because every ref a frame needs is touched by
+ * ensurePdfPageRegionRasterized immediately before this call, they are also the
+ * NEWEST entries in LRU order — so front-first eviction reaches them last, and only
+ * when the live set ALONE exceeds the budget. That case is a real (if exotic)
+ * over-subscription — many maximal-resolution PDF widgets co-visible — so it is
+ * REPORTED, loudly and once, rather than silently honoured or silently ignored:
+ * correctness wins, and the user learns the deck is near the heap ceiling.
+ *
+ * In-flight regions are also kept (releaseImage refuses a "loading" slot — there
+ * are no pixels to free, and dropping the reserved slot would send the
+ * compositor's ensureImage fallback off to fetch() a synthetic ref).
+ *
+ * Args:
+ *   keepRefs (Set<string>|string[]): refs the calling frame will paint.
+ *
+ * Returns:
+ *   {evicted: number, freedBytes: number, bytes: number}: how many regions were
+ *   freed, how many bytes that reclaimed, and the cache size afterwards.
+ */
+export function trimPdfRegionCache(keepRefs) {
+  const keep = keepRefs instanceof Set ? keepRefs : new Set(keepRefs ?? []);
+  let bytes = pdfRegionCacheBytes();
+  let evicted = 0;
+  let freedBytes = 0;
+  for (const [key, entry] of regions) {
+    if (bytes <= PDF_REGION_CACHE_BYTES) break;
+    if (keep.has(entry.ref) || entry.status === "loading") continue;
+    regions.delete(key);
+    releaseImage(entry.ref); // frees the wasm-heap Image copy AND the ImageBitmap
+    freedBytes += entry.bytes;
+    bytes -= entry.bytes;
+    evicted++;
+  }
+  if (bytes > PDF_REGION_CACHE_BYTES)
+    reportOnce("pdf_page_raster:budget", `PowerRP pdf_page_raster: the PDF regions ONE frame needs total ${(bytes / 1048576).toFixed(0)} MB, over the ${(PDF_REGION_CACHE_BYTES / 1048576).toFixed(0)} MB region-cache budget — keeping them all (a frame must paint), but this deck is running close to CanvasKit's 2 GiB wasm heap ceiling. Reduce the number of co-visible PDF pages, or their zoom.`);
+  return { evicted, freedBytes, bytes };
 }
 
 /** Pure function. Clamps a raster canvas edge into [1, PDF_MAX_RASTER_DIM],
@@ -556,14 +665,6 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
 export function clampDim(px) {
   if (Number.isNaN(px)) return 1; // NaN is meaningless; ±∞ flow through min/max below
   return Math.max(1, Math.min(PDF_MAX_RASTER_DIM, Math.round(px)));
-}
-
-/** Command. Drops the oldest region-cache entry (Map insertion order = LRU-ish).
- * The evicted bitmap stays in the image registry (bounded by distinct refs, and
- * cheap to re-register); this only bounds THIS module's per-key bookkeeping. */
-function evictOldestRegion() {
-  const oldest = regions.keys().next().value;
-  if (oldest !== undefined) regions.delete(oldest);
 }
 
 /** Command. Bumps and returns the region-render generation for (src, page).
@@ -598,6 +699,7 @@ export function resetPdfPageRaster() {
   docs.clear();
   pages.clear();
   pointSizes.clear();
+  for (const entry of regions.values()) releaseImage(entry.ref); // pixels too, not just bookkeeping
   regions.clear();
   regionGenerations.clear();
 }

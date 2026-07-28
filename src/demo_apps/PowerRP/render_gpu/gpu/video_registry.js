@@ -338,6 +338,25 @@ export function videoStatus(src) {
 }
 
 /**
+ * Query. Every src whose element exists but has no drawable frame yet — the
+ * videoStatus === "loading" set. The TWIN of image_registry.pendingImageRefs,
+ * and it exists for the same one-shot consumer: the headless render-job worker
+ * must not write a PNG while a clip is still buffering its first frame, because
+ * a player with no frame draws NOTHING and the hole would ship silently. An
+ * errored src is NOT pending (it will never resolve; it was already reported).
+ *
+ * @example // nothing requested yet
+ * pendingVideoSrcs() // []
+ * @example // ensureVideo(url) just created the element
+ * // pendingVideoSrcs() // [url]   — and [] once "loadeddata" fires or it errors
+ */
+export function pendingVideoSrcs() {
+  const srcs = [];
+  for (const src of registry.keys()) if (videoStatus(src) === "loading") srcs.push(src);
+  return srcs;
+}
+
+/**
  * Query. A player element's live playback state — {paused, currentTime,
  * presentedFrames} — or null if `src` has no element yet. A diagnostic (like
  * videoUploadCount) so a probe can assert the off-view playback gate actually

@@ -286,5 +286,13 @@ export function preRasterizePdfPages(nodes, view, viewW, viewH) {
     const { ref } = ensurePdfPageRegionRasterized(s.src, page, vsr.sourceRect, scale, point);
     map.set(node.itemId, { ref, x: vsr.localRect.x, y: vsr.localRect.y, w: vsr.localRect.w, h: vsr.localRect.h });
   }
+  // FREE THE REGIONS THIS FRAME NO LONGER NEEDS. "live" mode mints a NEW region ref
+  // per view change, so a pan session accumulates one per frame — and until this
+  // call existed nothing ever freed one, walking CanvasKit's wasm heap into its
+  // 2 GiB ceiling and killing the editor (see PDF_REGION_CACHE_BYTES for the
+  // measurement). THIS is the right place: the pre-pass is the frame boundary, and
+  // the refs in `map` are exactly the ones the paint that follows will use, so they
+  // are handed over as the keep-set and are never freed out from under it.
+  trimPdfRegionCache(new Set([...map.values()].map((d) => d.ref)));
   return map;
 }

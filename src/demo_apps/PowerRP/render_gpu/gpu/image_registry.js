@@ -34,12 +34,38 @@
  * sources ever land they get an explicit invalidation call — not a silent
  * cache bypass (FINDINGS "image refs upload once").
  *
+ * ── CACHED FOREVER IS ONLY SAFE FOR A BOUNDED KEY SPACE ───────────────────────
+ * "Cached forever" above rests entirely on "the count is bounded by the
+ * document's distinct images". A SYNTHETIC ref whose key space is VIEW-dependent
+ * breaks that premise, and this registry has no way to notice: the PDF display
+ * re-raster (render_gpu/gpu/pdf_page_raster.js) mints one region ref per distinct
+ * (sub-rect, scale), i.e. roughly ONE PER FRAME while the user pans a zoomed
+ * page. Each one costs its pixels TWICE — an ImageBitmap here, plus a copy inside
+ * the CanvasKit wasm heap once getSkiaImage converts it — and CanvasKit's wasm
+ * linear memory has a HARD 2 GiB maximum (canvaskit.wasm declares max 32768
+ * pages × 64 KiB; the JS glue's heap-resize also refuses anything above
+ * 2147483648). Measured: a zoomed pan session over one PDF page grew the wasm
+ * heap 1:1 with the raster pixels it produced (1674 MB of growth for 1717 MB of
+ * rasters over 1000 pan steps) and died at exactly 2048.0 MB with the reported
+ * `RuntimeError: memory access out of bounds` inside getSkiaImage below.
+ * So a ref-minting SOURCE owns its refs' lifetime and must call releaseImage()
+ * when it drops one — that is the "explicit invalidation call" the paragraph
+ * above anticipated, now real.
+ *
  * DOM note: decoding needs `createImageBitmap` + `fetch`/`Blob`, which exist in
  * browsers and in node ≥18's global fetch/Blob but NOT `createImageBitmap`. So
  * this module is browser/CLI-facing (like the compositor), NOT part of the
  * DOM-free `core/`. The PDF backend does its own DOM-free base64 decode and
  * does NOT depend on this module.
  */
+
+/** RGBA8888 — the one decoded-pixel format on this path: what `createImageBitmap`
+ * produces and what CanvasKit's MakeImageFromCanvasImageSource copies into the wasm
+ * heap. So a bitmap costs width · height · this bytes in EACH of those two places.
+ * Exported because a ref-minting source has to budget that cost (see
+ * render_gpu/gpu/pdf_page_raster.js PDF_REGION_CACHE_BYTES) and must not restate
+ * the number to do it. */
+export const BYTES_PER_PIXEL = 4;
 
 /** src → {status: "loading"|"ready"|"error", bitmap: ImageBitmap|null, error: Error|null} */
 const registry = new Map();
@@ -199,6 +225,31 @@ export function registerRasterizedBitmap(ref, bitmap) {
 }
 
 /**
+ * Query. Every ref still decoding — the refs a render just asked for and did
+ * NOT get. Empty means every bitmap this page has ever requested has landed or
+ * failed, i.e. a repaint now would draw them all.
+ *
+ * WHY IT EXISTS: the editor never needs this (it is reactive — onImageLoad
+ * nudges a repaint whenever one lands, and a frame with a hole in it is simply
+ * followed by a better one). A ONE-SHOT consumer has no "next frame": the
+ * headless render-job worker (cli/render_job.js) must not write a PNG while an
+ * image / LaTeX equation / Mermaid diagram / PDF page is still rasterizing, or
+ * it ships a frame with a hole and calls it done. So it renders, asks this, and
+ * renders again after the next onImageLoad until the answer is empty. Returning
+ * the REFS rather than a count is what lets a stalled render name what stalled.
+ *
+ * @example // nothing requested yet
+ * pendingImageRefs() // []
+ * @example // ensureImage(url) just kicked a decode
+ * // pendingImageRefs() // [url]   — and [] again once it resolves or errors
+ */
+export function pendingImageRefs() {
+  const refs = [];
+  for (const [ref, entry] of registry) if (entry.status === "loading") refs.push(ref);
+  return refs;
+}
+
+/**
  * Command. Subscribes to decode-resolution events (a src became ready or
  * errored). The editor's paint loop is reactive, so a bitmap that arrives
  * after the frame that requested it needs this to trigger a repaint. Returns
@@ -221,6 +272,42 @@ function notify(src) {
  */
 export function truncate(src) {
   return src.length > 48 ? `${src.slice(0, 24)}…(${src.length} chars)` : src;
+}
+
+/**
+ * Command. Frees ONE ref: deletes its CanvasKit Image (releasing the pixel copy
+ * inside the wasm heap), closes its ImageBitmap, and forgets the slot entirely so
+ * a later request re-produces it from scratch. The per-ref counterpart of
+ * resetImageRegistry, and the "explicit invalidation call" the module header's
+ * cached-forever paragraph reserves for a source whose key space is NOT bounded by
+ * the document's distinct images.
+ *
+ * ONLY THE SOURCE THAT MINTED THE REF MAY CALL THIS, and only once it knows no
+ * in-flight paint still holds the Image: a CanvasKit Image handed to paint_skia
+ * through the media map is used SYNCHRONOUSLY during that paint, so a caller must
+ * free between paints, never during one, and never for a ref the NEXT paint will
+ * ask for (pdf_page_raster.trimPdfRegionCache is the worked example — it excludes
+ * the refs the frame it was called from just produced).
+ *
+ * A ref that is still LOADING is NOT freed (there is nothing to free yet, and
+ * dropping the reserved slot would send the compositor's ensureImage fallback off
+ * to fetch() a synthetic ref — see reserveImageSlot). Returns the bytes the freed
+ * Image copy occupied in the wasm heap (0 when nothing was freed), so a caller can
+ * account for what it reclaimed.
+ *
+ * @example // releaseImage("pdfregion:x:1:0,0,1,1:2") // 1798272 — freed a 867x519 region
+ * @example // releaseImage("nope") // 0 — unknown ref, nothing to free
+ */
+export function releaseImage(ref) {
+  const entry = registry.get(ref);
+  if (!entry || entry.status === "loading") return 0;
+  const bitmap = entry.bitmap;
+  const bytes = bitmap ? bitmap.width * bitmap.height * BYTES_PER_PIXEL : 0;
+  skiaImages.get(ref)?.delete?.();
+  skiaImages.delete(ref);
+  bitmap?.close?.();
+  registry.delete(ref);
+  return bytes;
 }
 
 /**
