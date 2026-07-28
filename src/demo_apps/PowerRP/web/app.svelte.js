@@ -12,7 +12,8 @@ import {
   withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
   withSlideToggled, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
   repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
-  itemAnimationKeyframes, lostEquationKeyframes, withKeyframesFrozen,
+  itemCreationSlide, itemAnimationKeyframes, lostEquationKeyframes, withItemsMadeStatic,
+  itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 import { unionRect } from "../core/geometry.js";
@@ -2128,46 +2129,100 @@ export class PowerRPApp {
   }
 
   /**
-   * Query. Which SELECTED items a keyframe freeze would actually change: the
-   * ones carrying at least one keyframe past their creation slide that is not
-   * `active` (per-slide visibility belongs to Delete / Show, never to this
-   * tool — core/document.js's freeze block explains why). The command's
-   * availability gate AND its target list, so a greyed-out control and a
-   * silent no-op click cannot disagree.
+   * Query. Which SELECTED items Make Static would actually change: the ones
+   * carrying at least one non-`active` keyframe past the start of the stretch
+   * they are visible on around this slide (core/document.js's MAKE STATIC block
+   * explains the stretch and why `active` is exempt). The command's availability
+   * gate AND its target list, so a greyed-out control and a silent no-op click
+   * cannot disagree.
    */
-  freezeKeyframeTargets() {
-    return this.selectedIds().filter((id) => itemAnimationKeyframes(this.doc, id).length > 0);
+  makeStaticTargets() {
+    return this.selectedIds().filter((id) => itemAnimationKeyframes(this.doc, this.slideIndex, id).length > 0);
   }
 
   /**
-   * Command (ONE undo unit, or no writes at all). FREEZE the selection's
-   * animation: every selected item keeps only its state as of THIS slide,
-   * written once at its creation slide, and stops changing across the deck
-   * (core/document.js withKeyframesFrozen owns the rule and the reasoning).
+   * Command (ONE undo unit, or no writes at all). MAKE THE SELECTION STATIC from
+   * THIS slide: across the stretch of slides each item is visible on, it keeps only
+   * its state as of here, written once where that stretch begins
+   * (core/document.js withItemsMadeStatic owns the rule and the reasoning).
    * Multi-select falls out naturally — one fold, one commit for the whole set.
    *
    * KEEPS the selection: the items still exist and still look the same here,
    * so deselecting them would only hide the result (deleteSelection's ruling).
    *
-   * REPORTS, NEVER REFUSES. A skipped item says why, and every equation the
-   * collapse replaces is named — an equation still IN FORCE here is written
-   * back verbatim, so the common bound-to-camera case reports nothing.
+   * REPORTS, NEVER REFUSES. A skipped item says why — including the one the user
+   * is most likely to hit, an item HIDDEN on this slide, which has no visible
+   * stretch to be static over. Every equation the collapse replaces is named; one
+   * still IN FORCE here is written back verbatim, so the common bound-to-camera
+   * case reports nothing.
    */
-  freezeSelectionKeyframes() {
-    const ids = this.freezeKeyframeTargets();
+  makeSelectionStatic() {
+    const ids = this.makeStaticTargets();
     if (ids.length === 0) return;
     // An in-progress text/LaTeX edit is a pending write on an item this call is
     // about to rewrite — commit it first (deleteSelection's rule, ROUND 15.2) so
-    // it lands in the state being frozen instead of being lost to the commit
+    // it lands in the state being made static instead of being lost to the commit
     // below, which writes `this.doc` directly and knows nothing about previewDelta.
     this.dismissEdit();
     const lost = ids.flatMap((id) =>
       lostEquationKeyframes(this.doc, this.slideIndex, id, this.registry).map((e) => ({ id, ...e })));
-    const { doc, skipped } = withKeyframesFrozen(this.doc, this.slideIndex, ids);
+    const { doc, skipped } = withItemsMadeStatic(this.doc, this.slideIndex, ids);
     for (const { id, reason } of skipped)
-      console.error(`PowerRP: Remove Animation Keyframes skipped item "${id}" — ${reason}.`);
+      console.error(`PowerRP: Make Static from Current Slide skipped item "${id}" — ${reason}.`);
     if (lost.length)
-      console.error(`PowerRP: Remove Animation Keyframes dropped ${lost.length} equation keyframe(s) the frozen state does not keep: ${lost.map((e) => `items.${e.id}.${e.path.join(".")} on slide ${e.slideIndex} (${JSON.stringify(e.value)})`).join("; ")}. Undo restores them.`);
+      console.error(`PowerRP: Make Static from Current Slide dropped ${lost.length} equation keyframe(s) the static state does not keep: ${lost.map((e) => `items.${e.id}.${e.path.join(".")} on slide ${e.slideIndex} (${JSON.stringify(e.value)})`).join("; ")}. Undo restores them.`);
+    this.commit(doc);
+  }
+
+  /**
+   * Query. Which SELECTED items "Remove Keyframes on This Slide" would actually
+   * clear: the ones THIS slide keyframes that are not CREATED on it (clearing a
+   * creation slide would delete the widget — core/document.js's per-slide block).
+   * The command's availability gate, and DELIBERATELY NOT the same question the
+   * freeze's gate asks: an item can be animated elsewhere and keyed nowhere here,
+   * or keyed only here and static everywhere else.
+   */
+  slideKeyframeTargets() {
+    return this.selectedIds().filter((id) =>
+      this.slideIndex !== itemCreationSlide(this.doc, id)
+      && itemSlideKeyframes(this.doc, this.slideIndex, id).length > 0);
+  }
+
+  /**
+   * Command (ONE undo unit, or no writes at all). Removes THIS SLIDE's keyframes
+   * for every selected item, so each one stops changing here and inherits the
+   * previous slide's values (core/document.js withSlideKeyframesRemoved owns the
+   * rule, the `active` reasoning and the creation-slide refusal).
+   *
+   * KEEPS the selection, like every other keyframe/visibility action: the items
+   * still exist, and the point is to look at what changed.
+   *
+   * THE WHOLE SELECTION IS PASSED, not just the gate's targets, so a creation-slide
+   * item picked up in a multi-selection gets its REFUSAL reported instead of being
+   * dropped on the floor. Items this slide simply says nothing about are neither
+   * cleared nor reported — that is "nothing to do", not a failure.
+   */
+  removeSlideKeyframes() {
+    const targets = this.slideKeyframeTargets();
+    if (targets.length === 0) return;
+    // An in-progress text/LaTeX edit is a pending write on THIS slide, which is
+    // exactly what this call clears — so committing it first would only create a
+    // keyframe for this call to delete. Cancel it instead when the edited item is
+    // one of the targets (purgeSelection's rule: nothing left to commit), and
+    // commit normally when the edit belongs to some other item.
+    const editId = this.editingItemId;
+    if (editId !== null && targets.includes(editId)) { this.cancelTextEdit(); this.cancelLatexEdit(); }
+    else this.dismissEdit();
+    const { doc, cleared, refused } = withSlideKeyframesRemoved(this.doc, this.slideIndex, this.selectedIds());
+    // The equation report is read off `cleared`, never off the selection: a REFUSED
+    // item keeps its keyframes, so naming its equations would be a false alarm.
+    // Read against `this.doc` — the pre-removal document, where they still exist.
+    const lost = cleared.flatMap((id) =>
+      slideEquationKeyframes(this.doc, this.slideIndex, id, this.registry).map((e) => ({ id, ...e })));
+    for (const { id, reason } of refused)
+      console.error(`PowerRP: Remove Keyframes on This Slide refused item "${id}" — ${reason}.`);
+    if (lost.length)
+      console.error(`PowerRP: Remove Keyframes on This Slide dropped ${lost.length} equation keyframe(s) on slide ${this.slideIndex}: ${lost.map((e) => `items.${e.id}.${e.path.join(".")} (${JSON.stringify(e.value)})`).join("; ")}. Undo restores them.`);
     this.commit(doc);
   }
 
@@ -3280,19 +3335,29 @@ export class PowerRPApp {
    * editing the deck a second later cannot splice two documents into one video.
    *
    * backend "server": the server spawns headless workers; the page's job is over.
-   * backend "client": this page fills the SAME job's frame directory (the browser
-   *   has a real GPU and renders media, which the headless path cannot yet), then
-   *   asks for the SAME shared encode. It appears in the same list with the same
-   *   progress bar — one job shape, two frame producers.
+   * backend "client": this page produces the frames (the browser has a real GPU and
+   *   renders media, which the headless path cannot yet). That path now belongs to
+   *   web/browserRenderJobs.js, which also makes it RESUMABLE: closing the tab
+   *   PAUSES such a render and reopening the project continues it. It appears in
+   *   the same list with the same progress bar — one job shape, two frame producers.
    *
    * @param {object} o
    * @param {string} o.name Job name; also the output filename stem.
    * @param {string} o.backend "server" | "client".
    * @param {object} o.params width/height/fps/crf/background/range/samples/…
+   * @param {string} [o.encoder] For the client backend: which browser encoder
+   *   ("upload" | "wasm" — see web/browserRenderJobs.js BROWSER_ENCODERS).
    * @param {AbortSignal} [o.signal] Cancels a CLIENT-backend frame walk.
    * @returns {Promise<object>} the submitted job record (NOT the finished movie)
    */
-  async submitRender({ name, backend, params, signal }) {
+  async submitRender({ name, backend, params, encoder, signal }) {
+    if (backend === "client") {
+      const { submitBrowserRenderJob, DEFAULT_BROWSER_ENCODER } = await import("./browserRenderJobs.js");
+      return submitBrowserRenderJob({
+        project: this.projectName(), name, params, doc: this.doc, registry: this.registry,
+        encoder: encoder ?? DEFAULT_BROWSER_ENCODER,
+      });
+    }
     const { timelinePlan, frameCount, DEFAULT_HOLD_SECONDS } = await import("./videoExport.js");
     const { submitRenderJob } = await import("./projectApi.js");
     const plan = timelinePlan(this.doc, {
@@ -3305,48 +3370,24 @@ export class PowerRPApp {
     // the headless worker uses on the same document — so both agree — and sent
     // only so the bar has a total before the first frame lands.
     const framesTotal = frameCount(plan.duration, params.fps);
-    const job = await submitRenderJob(this.projectName(), {
+    return submitRenderJob(this.projectName(), {
       name, backend, framesTotal, params, doc: this.doc,
     });
-    if (backend === "client") this.#fillClientRenderJob(job, params, plan, signal);
-    return job;
   }
 
   /**
-   * Command (async, fire-and-forget). Render a CLIENT-backend job's frames from
-   * this page and ask for the shared encode.
+   * Command (async, fire-and-forget). Continue a PAUSED browser render job from
+   * where it stopped. Surfaced by the Render Center's Resume button.
    *
-   * DELIBERATELY NOT AWAITED by the caller: the Render Center tracks this job by
-   * POLLING the server like any other, so the modal can be closed while it runs
-   * and a reopened modal picks it straight back up. A failure is reported to the
-   * console AND lands on the job record (the server marks a job failed when its
-   * finish call throws), so it is never a silent stall.
+   * Not awaited by the caller for the same reason a submit is not: the modal may be
+   * closed a second later, and the job is tracked by polling.
+   *
+   * @param {string} jobId
+   * @returns {Promise<object>} the finished job record
    */
-  async #fillClientRenderJob(job, params, plan, signal) {
-    const { exportVideo } = await import("./videoExport.js");
-    const { createJobFrameEncoder } = await import("./serverMp4Encoder.js");
-    const { createLetterboxFrameRenderer } = await import("./transitionRender.js");
-    const { setParticleTimeOverride } = await import("../render_gpu/particle_clock.js");
-    const { cancelRenderJob } = await import("./projectApi.js");
-    const { width, height, fps, samples, background } = params;
-    // THE letterbox composite (transitionRender) — the SAME function exportMp4 and
-    // the server-side headless worker use, so a job's pixels do not depend on
-    // which backend filled its frame directory.
-    const renderFrame = createLetterboxFrameRenderer({ doc: this.doc, registry: this.registry, width, height, background });
-    try {
-      await exportVideo({
-        plan, renderFrame, width, height, fps, samples,
-        encoder: await createJobFrameEncoder({ project: job.project, jobId: job.id }),
-        setTime: setParticleTimeOverride, // controlled time → ambient-clock effects animate + blur
-        signal,
-      });
-    } catch (e) {
-      console.error(`Client render job "${job.name}" failed:`, e);
-      // Abort is a user action, not a failure — leave the job cancelled, not
-      // "failed", so the list tells the truth about why it stopped.
-      await cancelRenderJob(job.project, job.id).catch((err) =>
-        console.error(`Could not mark render job ${job.id} cancelled:`, err));
-    }
+  async resumeRender(jobId) {
+    const { resumeBrowserRenderJob } = await import("./browserRenderJobs.js");
+    return resumeBrowserRenderJob(jobId, this.registry);
   }
 
   // ── Copy selection as PNG/PDF (manifest Round 12B "Palette / selection

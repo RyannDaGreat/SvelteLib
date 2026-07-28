@@ -427,16 +427,30 @@ export function keyframable(plugin) {
 }
 
 /**
- * The Keyframes tool's HELP and REQUIRES sentences, beside `keyframable` for the
- * same reason the camera-bind pair's live beside `frameBindable`: the pool row
- * below and the command ENTRY in web/App.svelte both need the same words, and a
+ * The Keyframes tools' HELP and REQUIRES sentences, beside `keyframable` for the
+ * same reason the camera-bind pair's live beside `frameBindable`: the pool rows
+ * below and the command ENTRIES in web/App.svelte both need the same words, and a
  * sentence transcribed twice is a sentence that can drift.
  *
- * The help states the CONSEQUENCE in full, because "what exactly does this
- * destroy" is the question a freeze has to answer before it is clicked.
+ * THE PAIR DIFFERS BY SCOPE, NOT BY REVERSIBILITY (user: "remove animation
+ * keyframes is not supposed to remove it on every slide, it's just supposed to
+ * remove it on this slide … I think that one needs a different name"). So each
+ * help sentence OPENS with its scope and NAMES the other tool — a user who found
+ * the wrong one has to be told the right one exists, or the pair is a trap.
+ * Both state the consequence in full, because "what exactly does this destroy" is
+ * the question either of them has to answer before it is clicked.
+ *
+ * THEIR TITLES ALSO OPEN WITH DIFFERENT WORDS ("Make Static…" / "Remove
+ * Keyframes…"), and that is a functional requirement rather than a stylistic one:
+ * the palette is FUZZY-SEARCHED, so two titles beginning "Remove Keyframes…" would
+ * both match one query and force the reader into the parentheticals to tell a local
+ * edit from a sweeping one. "Make Static" also names the RESULT rather than the
+ * plumbing, leaving the word "keyframes" to mean the tool that really is about them.
  */
-export const FREEZE_KEYFRAMES_HELP = "Deletes the widget's keyframes on EVERY slide and writes its state back just once, at its creation slide, using the values it holds on the slide you run this from — so it looks the same here and stops changing anywhere else. Per-slide visibility is left alone (Delete and Show still own that). Undo is the only way back: the replaced values are not kept.";
-export const FREEZE_KEYFRAMES_REQUIRES = "a selected widget with keyframes past its creation slide — everything selected here is already static (keyframed visibility does not count, Delete and Show own that)";
+export const MAKE_STATIC_HELP = "EVERY SLIDE FROM WHERE IT APPEARS UNTIL IT IS HIDDEN — not just this one. Deletes the widget's keyframes across that whole stretch and writes its state back once, at the slide the stretch begins on, using the values it holds on the slide you run this from: it looks the same here and stops changing for the rest of the stretch. A widget that is never hidden has one stretch, so that is the whole deck. Per-slide visibility is untouched (Delete and Show own that), and a later stretch that inherited its values from this one moves with it. To clear only the slide you are on, use Remove Keyframes on This Slide. Undo is the only way back: the replaced values are not kept.";
+export const MAKE_STATIC_REQUIRES = "a selected widget that is VISIBLE on this slide and has keyframes past the start of the stretch it is visible on — everything selected here is either hidden here or already static across that stretch (keyframed visibility does not count, Delete and Show own that)";
+export const SLIDE_KEYFRAMES_HELP = "THIS SLIDE ONLY: deletes everything this slide's delta says about the widget, so it stops changing here and INHERITS the previous slide's values instead — the animation passes THROUGH this slide rather than stopping at it, and any later keyframe now tweens from the inherited value. Unlike Make Static it DOES change what you see here, and a keyframed Visible goes with the rest, so a widget you Deleted on this slide reappears. Make Static from Current Slide is the one that flattens a whole stretch at once.";
+export const SLIDE_KEYFRAMES_REQUIRES = "a selected widget that THIS slide actually keyframes and that is not created on it — nothing selected here writes anything on this slide, or this is the slide that brings it into existence (clearing that would delete the widget, which is what Purge Item is for)";
 
 /**
  * THE TOOL POOL — the generic tools, declared ONCE, composed into every widget
@@ -486,13 +500,23 @@ export const TOOL_POOL = [
     // web/Inspector.svelte's CATEGORY_TITLES, which tests/tool_groups_test.js
     // allows for explicitly ("a tools-only group, no shared spelling to pin").
     title: "Keyframes",
+    // NARROWEST SCOPE FIRST, so the destructive whole-deck one is not the first
+    // thing a hand reaches for. Same reason the Inspector puts a widget's own rows
+    // above the universal ones: the local edit is the common case.
     rows: [
       {
         kind: "command",
-        command: "freeze-keyframes",
+        command: "remove-slide-keyframes",
         applies: keyframable,
-        help: FREEZE_KEYFRAMES_HELP,
-        requires: FREEZE_KEYFRAMES_REQUIRES,
+        help: SLIDE_KEYFRAMES_HELP,
+        requires: SLIDE_KEYFRAMES_REQUIRES,
+      },
+      {
+        kind: "command",
+        command: "make-static",
+        applies: keyframable,
+        help: MAKE_STATIC_HELP,
+        requires: MAKE_STATIC_REQUIRES,
       },
     ],
   },

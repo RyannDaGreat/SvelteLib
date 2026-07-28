@@ -408,52 +408,92 @@ export function withItemPurged(doc, itemId) {
   return out;
 }
 
-// ── Freezing an item's animation ─────────────────────────────────────────────
+// ── MAKE STATIC FROM CURRENT SLIDE ───────────────────────────────────────────
 //
 // THE REQUEST (user): "another tool to remove all keyframes … for a given
 // selection or object". Taken literally that is unbuildable: there is no separate
 // items table, so slide 0's delta CREATES every item — deleting every delta entry
 // for an object deletes the OBJECT. The buildable operation is a COLLAPSE: the
-// item keeps exactly ONE full keyframe and stops changing across the deck. That is
-// the same shape as the frame-freeze half of the camera-bind pair (core/registry.js
+// item keeps exactly ONE full keyframe and stops changing. That is the same shape
+// as the frame-freeze half of the camera-bind pair (core/registry.js
 // CAMERA_FREEZE_HELP: "replace equation-bound x / y / w / h with the plain numbers
 // they currently evaluate to … so the widget … stays put").
 //
-// WHICH VALUE SURVIVES: the item's state on the slide the tool was invoked FROM,
-// written at its CREATION slide.
-//   CURRENT-slide values, not creation-slide ones, because every comparable house
-//     operation preserves what the user is looking at — ungroup BAKES the current
-//     group-influenced world so that "removing the group changes nothing visible,
-//     anywhere" (ungroupBakeSlides), and the frame freeze writes the numbers a
-//     property currently evaluates to. Collapsing to the ORIGINAL pose instead
-//     would make the object jump on the very slide the user is watching.
-//   CREATION slide, not the current one, because the item must keep existing on
-//     the slides where it already existed; writing it "here" would delete it from
-//     every earlier slide.
+// It is NOT called "remove keyframes", because that name is the SIBLING's
+// (withSlideKeyframesRemoved below, which clears one slide) and the user reported
+// exactly that confusion: "remove animation keyframes is not supposed to remove it
+// on every slide … I think that one needs a different name". The two tools differ
+// by SCOPE, so their names must differ in their FIRST words — the palette is
+// fuzzy-searched, and two titles opening "Remove Keyframes…" would both match one
+// query and force the reader into the parentheticals to tell them apart.
+//
+// WHICH VALUE SURVIVES: the item's state on the slide the tool was invoked FROM.
+// Current-slide values because every comparable house operation preserves what the
+// user is looking at — ungroup BAKES the current group-influenced world so that
+// "removing the group changes nothing visible, anywhere" (ungroupBakeSlides), and
+// the frame freeze writes the numbers a property currently evaluates to.
+//
+// ── WHERE IT LANDS, AND HOW FAR IT REACHES: THE VISIBLE RUN ───────────────────
+// The write point is the START OF THE CONTIGUOUS RUN OF SLIDES THE ITEM IS VISIBLE
+// ON that contains the invoking slide (visibleRun), and the CLEARING COVERS EXACTLY
+// THAT RUN. User: "that would set the state to the very very first slide of the
+// current slide — or actually the first slide where it's visible, or the previous
+// contiguous one where it's visible rather."
+//
+// He ruled on the write point; the reach FOLLOWS FROM IT, it is not a second
+// preference. Take an item visible on 2-5, hidden on 6-7, visible again on 8-10,
+// invoked from slide 4:
+//   - A deck-wide clear plus a write at the run start (2) would be fine here, but
+//     put the run later — invoke from 9, run start 8 — and clearing slides 2-5
+//     strips the item's `type` from its creation slide, so it no longer EXISTS on
+//     the earlier run. The item's earlier appearance is destroyed.
+//   - Writing at the CREATION slide as well, to keep it alive, makes the run-start
+//     write pure decoration: one full state anywhere at or before everything
+//     already renders identically on every slide, so the write point would have NO
+//     observable consequence and the user's refinement would mean nothing. Worse,
+//     the two copies then disagree the moment either is edited.
+//   - Clearing exactly the run needs no second write, cannot touch the creation
+//     slide unless the run starts there, and is the ONLY reading under which
+//     "where the state is set" is observable at all.
+// So the run is the unit. For the ordinary item — one that is never hidden — the
+// run IS creation-slide-to-end-of-deck, so this is byte-identical to a deck-wide
+// collapse; the distinction only bites on an item with a gap, where it is the
+// difference between refining and destroying.
+//
+// A CONSEQUENCE WORTH STATING: a LATER run that INHERITED its values from this one
+// moves with it (slides 8-10 above, if they key nothing of their own, now inherit
+// the static value). That is inheritance, not a special case — it is what a delta
+// document does — and the run's own slides are the only ones this rewrites.
 //
 // `active` IS NEVER TOUCHED, on any slide. It is not animation, it is EXISTENCE:
 // "`active: false` is how items exist on some slides and not others — Delete
 // keyframes it; Purge actually removes" (core/properties.js PROPS.active).
 // Collapsing it would silently perform a Delete-everywhere or a Show-everywhere —
 // operations that already have their own named commands — and invoking the tool
-// from a slide where the item is HIDDEN would collapse `active: false` onto the
-// whole deck, i.e. the object would disappear from the entire document while still
-// passing a "looks identical on the slide you invoked from" check. So the
-// visibility timeline survives leaf-for-leaf and only the animation goes.
+// from a slide where the item is HIDDEN would collapse `active: false` onto every
+// slide of the run, i.e. the object would disappear while still passing a "looks
+// identical on the slide you invoked from" check. Exempting it is also what makes
+// the run definable at all: the runs are read OFF `active`, so an operation that
+// rewrote it could not say which slides it was allowed to touch.
 // `type` needs no exemption: it is part of the state written back, and an item
 // whose type is set nowhere is an orphan (orphanedItems drops it at load).
 //
+// HIDDEN HERE ⇒ REFUSED. With no visible run containing the invoking slide there
+// is no answer to "static from where, over what", so it reports and changes
+// nothing rather than guessing.
+//
 // EQUATIONS SURVIVE WHERE THEY ARE IN FORCE, because the state written back is the
 // RAW fold (equation strings intact), never the evaluated one — so a widget bound
-// to THE camera is still bound afterwards. An equation stored on some OTHER slide
-// IS destroyed, because it is a keyframe and destroying keyframes is the declared
-// purpose; lostEquationKeyframes names every one so that it is never silent.
+// to THE camera is still bound afterwards. An equation stored on ANOTHER slide OF
+// THE RUN is destroyed, because it is a keyframe and destroying keyframes is the
+// declared purpose; lostEquationKeyframes names every one so it is never silent.
 
-/** The one item leaf the freeze never touches — EXISTENCE, not animation. */
+/** The one item leaf neither keyframe tool's collapse touches — EXISTENCE, not
+ *  animation. (The per-slide REMOVE does clear it; see its own block for why.) */
 const EXISTENCE_LEAF = "active";
 
 /**
- * Pure function. True for the leaf path the freeze must leave alone — the item's
+ * Pure function. True for the leaf path the collapse must leave alone — the item's
  * OWN `active`, not a same-named leaf nested inside some sub-state.
  *
  * @example isExistenceLeaf(["active"]) // true
@@ -465,31 +505,87 @@ function isExistenceLeaf(path) {
 }
 
 /**
- * Pure function. The slide index the frozen state is written at: the first slide
- * that sets `itemId`'s `type` AND actually participates in the fold, or null when
- * there is none. The house's creation-slide rule (renameSelection, ungroupBakeSlides
- * and app.#creationState all take the first slide keying `type`) plus the ENABLED
- * check that rule can normally take for granted — a DISABLED slide's delta is
- * skipped entirely (slideState), so writing the collapsed state there would make
- * the item vanish from the whole document.
+ * Pure function. Is `itemId` VISIBLE in the fold at slide `i` — created (some
+ * slide has written a `type`) and not switched off? Exactly the gate
+ * deriveRenderTree applies before painting, so "visible" here means the same
+ * thing it means on screen.
  *
- * @example freezeTargetSlide({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {x: 1}}}}]}, "a") // 0
- * @example freezeTargetSlide({slides: [{enabled: false, delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {type: "rect"}}}}]}, "a") // 1 (slide 0 is out of the fold)
- * @example freezeTargetSlide({slides: [{delta: {items: {a: {x: 1}}}}]}, "a") // null (no slide sets its type)
+ * @example // an item created on slide 0 and deleted on slide 2:
+ * @example visibleAt({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {}}, {delta: {items: {a: {active: false}}}}]}, "a", 1) // true
+ * @example visibleAt({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {}}, {delta: {items: {a: {active: false}}}}]}, "a", 2) // false
  */
-export function freezeTargetSlide(doc, itemId) {
+function visibleAt(doc, itemId, i) {
+  const s = foldState(doc, i, 1).items?.[itemId];
+  return !!s && typeof s.type === "string" && s.active !== false;
+}
+
+/**
+ * Pure function. The CONTIGUOUS RUN of slides on which `itemId` is visible that
+ * CONTAINS `slideIndex`, as {start, end} inclusive — or null when the item is not
+ * visible there (hidden, not yet created, or never typed), in which case there is
+ * no run and Make Static has nothing to be static over.
+ *
+ * THE RUN START IS ALWAYS AN ENABLED SLIDE, and that is a theorem rather than a
+ * case to handle: a DISABLED slide's delta is skipped entirely, so its folded state
+ * IS its predecessor's — an item visible on a disabled slide is therefore visible
+ * on the slide before it too, so a disabled slide can never be where a run begins.
+ * (At index 0 a disabled slide folds to the empty state, so nothing is visible
+ * there either.) withItemsMadeStatic asserts it rather than trusting this comment.
+ *
+ * Args:
+ *   doc (object): document
+ *   slideIndex (number): the slide the run must contain
+ *   itemId (string): the item
+ *
+ * Returns:
+ *   {start: number, end: number} | null
+ *
+ * @example // visible on 0-1, hidden from 2:
+ * @example visibleRun({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {}}, {delta: {items: {a: {active: false}}}}]}, 1, "a") // {start: 0, end: 1}
+ * @example visibleRun({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {}}, {delta: {items: {a: {active: false}}}}]}, 2, "a") // null (hidden there)
+ * @example // shown again on slide 3 → a SECOND run, found from inside it:
+ * @example visibleRun({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {active: false}}}}, {delta: {}}, {delta: {items: {a: {active: true}}}}]}, 3, "a") // {start: 3, end: 3}
+ */
+export function visibleRun(doc, slideIndex, itemId) {
+  if (!visibleAt(doc, itemId, slideIndex)) return null;
+  let start = slideIndex;
+  while (start > 0 && visibleAt(doc, itemId, start - 1)) start--;
+  let end = slideIndex;
+  while (end < doc.slides.length - 1 && visibleAt(doc, itemId, end + 1)) end++;
+  return { start, end };
+}
+
+/**
+ * Pure function. The slide that BRINGS `itemId` INTO EXISTENCE for the fold: the
+ * first slide that sets its `type` AND actually participates in the fold, or null
+ * when there is none. The house's creation-slide rule (renameSelection,
+ * ungroupBakeSlides and app.#creationState all take the first slide keying `type`)
+ * plus the ENABLED check that rule can normally take for granted — a DISABLED
+ * slide's delta is skipped entirely (slideState), so that slide creates nothing.
+ *
+ * The per-slide REMOVE REFUSES here — clearing this slide's entries would take the
+ * item out of the document, which is Purge Item's job and not a keyframe edit's.
+ * (Make Static writes at its VISIBLE RUN's start instead, which coincides with this
+ * slide for any item that is never hidden; see visibleRun for why that is right.)
+ *
+ * @example itemCreationSlide({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {x: 1}}}}]}, "a") // 0
+ * @example itemCreationSlide({slides: [{enabled: false, delta: {items: {a: {type: "rect"}}}}, {delta: {items: {a: {type: "rect"}}}}]}, "a") // 1 (slide 0 is out of the fold)
+ * @example itemCreationSlide({slides: [{delta: {items: {a: {x: 1}}}}]}, "a") // null (no slide sets its type)
+ */
+export function itemCreationSlide(doc, itemId) {
   for (const i of keyframeIndices(doc, ["items", itemId, "type"]))
     if (doc.slides[i].enabled !== false) return i;
   return null;
 }
 
 /**
- * Pure function. The keyframes a freeze would DESTROY for `itemId`: every leaf of
- * its subtree on every slide EXCEPT the target slide (whose full state is
- * rewritten rather than removed) and EXCEPT `active` (see the block comment).
- * Empty means the item is already static and the tool has nothing to do — which
- * is exactly the command's availability gate, so a greyed-out control and a
- * no-op click cannot disagree.
+ * Pure function. The keyframes Make Static would DESTROY for `itemId` when run
+ * from `slideIndex`: every leaf of its subtree on the slides of its VISIBLE RUN
+ * (visibleRun) EXCEPT the run's first slide — whose full state is rewritten rather
+ * than removed — and EXCEPT `active` (see the block comment). Empty means the item
+ * is already static across that run and the tool has nothing to do, which is
+ * exactly the command's availability gate, so a greyed-out control and a no-op
+ * click cannot disagree. Not visible here ⇒ no run ⇒ empty.
  *
  * A whole-item delta that is not a tree (the `null` delete sentinel) counts as
  * ONE leaf at the empty path, so it is removed too rather than silently surviving
@@ -497,137 +593,147 @@ export function freezeTargetSlide(doc, itemId) {
  *
  * Args:
  *   doc (object): document
+ *   slideIndex (number): the slide the tool is invoked from
  *   itemId (string): the item
  *
  * Returns:
  *   {slideIndex, path, value}[] — `path` is relative to the item's own state
  *
- * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, "a") // [{slideIndex: 1, path: ["x"], value: 9}]
- * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {active: false}}}}]}, "a") // [] (visibility is not animation)
- * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, "a") // [] (already static)
+ * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, "a") // [{slideIndex: 1, path: ["x"], value: 9}]
+ * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {active: false}}}}]}, 0, "a") // [] (visibility is not animation, and the run is slide 0 alone)
+ * @example itemAnimationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, 0, "a") // [] (already static)
  */
-export function itemAnimationKeyframes(doc, itemId) {
-  const target = freezeTargetSlide(doc, itemId);
+export function itemAnimationKeyframes(doc, slideIndex, itemId) {
+  const run = visibleRun(doc, slideIndex, itemId);
+  if (!run) return [];
   const out = [];
-  doc.slides.forEach((s, slideIndex) => {
-    if (slideIndex === target) return;
-    const item = getPath(s.delta, ["items", itemId]);
-    if (item === undefined) return;
+  for (let i = run.start + 1; i <= run.end; i++) {
+    const item = getPath(doc.slides[i].delta, ["items", itemId]);
+    if (item === undefined) continue;
     if (!isTree(item)) {
-      out.push({ slideIndex, path: [], value: item });
-      return;
+      out.push({ slideIndex: i, path: [], value: item });
+      continue;
     }
     for (const [path, value] of leaves(item))
-      if (!isExistenceLeaf(path)) out.push({ slideIndex, path, value });
-  });
+      if (!isExistenceLeaf(path)) out.push({ slideIndex: i, path, value });
+  }
   return out;
 }
 
 /**
- * Pure function. Every EQUATION a freeze from slide `slideIndex` would destroy
- * for `itemId`: an equation-valued leaf stored on ANY slide whose value is not
- * the one the frozen state keeps at that same path.
+ * Pure function. Every EQUATION Make Static from slide `slideIndex` would destroy
+ * for `itemId`: an equation-valued leaf stored on a slide OF THE VISIBLE RUN whose
+ * value is not the one the static state keeps at that same path.
  *
- * WHY THE COMPARISON, rather than "every equation on a non-target slide": the
- * state written back is the RAW fold, so an equation that is IN FORCE on the
- * invoking slide is written back verbatim and loses nothing — the common case
- * (a widget bound to THE camera on its creation slide) reports nothing at all.
- * Only an equation the collapse genuinely replaces is named.
+ * TWO NARROWINGS, each removing a class of false alarm:
+ *   THE RUN — slides outside it are not rewritten at all, so an equation there
+ *     survives untouched and naming it would be a lie.
+ *   THE COMPARISON — the state written back is the RAW fold, so an equation IN
+ *     FORCE on the invoking slide is written back verbatim and loses nothing. The
+ *     common case (a widget bound to THE camera on its creation slide, or a
+ *     `self.`-computed rotationAnchor) reports nothing at all.
  *
  * REPORTING IS THE CALLER'S JOB (the repair pipeline's rule): this only builds
- * the list. Unlike the flip's equation REFUSAL, a freeze proceeds — the flip's
- * write was incidental to a geometric request and had "unbind first" as an
- * escape, whereas here destroying keyframes IS the request and refusing would
- * make the tool unusable on exactly the decks that need it.
+ * the list. Unlike the flip's equation REFUSAL, this proceeds — the flip's write
+ * was incidental to a geometric request and had "unbind first" as an escape,
+ * whereas here destroying keyframes IS the request and refusing would make the
+ * tool unusable on exactly the decks that need it.
  *
  * Args:
  *   doc (object): document
- *   slideIndex (number): the slide the freeze is invoked from
+ *   slideIndex (number): the slide the tool is invoked from
  *   itemId (string): the item
  *   registry (object): plugin registry (.get(type) → plugin; decides equation slots)
  *
  * Returns:
  *   {slideIndex, path, value}[] (empty when nothing is lost)
  *
- * @example // x is "=100" on slide 0 and a literal 9 on slide 1; freezing from slide 1 drops the equation:
+ * @example // x is "=100" on slide 0 and a literal 9 on slide 1; running from slide 1 drops the equation:
  * @example lostEquationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: "=100"}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, "a", reg) // [{slideIndex: 0, path: ["x"], value: "=100"}]
  * @example // the same equation still in force on the invoking slide is written back, so nothing is lost:
  * @example lostEquationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: "=100"}}}}, {delta: {items: {a: {y: 9}}}}]}, 1, "a", reg) // []
  */
 export function lostEquationKeyframes(doc, slideIndex, itemId, registry) {
-  const frozen = foldState(doc, slideIndex, 1).items?.[itemId];
-  if (!frozen || typeof frozen.type !== "string") return [];
+  const run = visibleRun(doc, slideIndex, itemId);
+  if (!run) return [];
+  const frozen = foldState(doc, slideIndex, 1).items[itemId];
   const plugin = registry.get(frozen.type);
   const out = [];
-  doc.slides.forEach((s, i) => {
-    const item = getPath(s.delta, ["items", itemId]);
-    if (!isTree(item)) return;
+  for (let i = run.start; i <= run.end; i++) {
+    const item = getPath(doc.slides[i].delta, ["items", itemId]);
+    if (!isTree(item)) continue;
     for (const [path, value] of leaves(item)) {
       if (isExistenceLeaf(path)) continue;
       if (!isEquationValue(plugin, path, value)) continue;
       if (deepEqual(getPath(frozen, path), value)) continue;
       out.push({ slideIndex: i, path, value });
     }
-  });
+  }
   return out;
 }
 
 /**
- * Pure function. Document with every item in `itemIds` FROZEN at its state on
- * slide `slideIndex`: the item's whole subtree is cleared from every slide
- * (`active` excepted) and its raw folded state written back once, at
- * freezeTargetSlide. The item's appearance on `slideIndex` is unchanged by
- * construction; on every other slide it now shows the same thing.
+ * Pure function. Document with every item in `itemIds` MADE STATIC at its state on
+ * slide `slideIndex`: across the slides of the item's VISIBLE RUN its whole subtree
+ * is cleared (`active` excepted) and its raw folded state is written back once, at
+ * the run's FIRST slide. Its appearance on `slideIndex` is unchanged by
+ * construction; on every other slide of that run it now shows the same thing, and
+ * no slide outside the run is rewritten. See the block comment above for why the
+ * run is the unit and why `active` is exempt.
  *
  * ONE FOLD FOR THE WHOLE SET (not a per-item loop over a shrinking document):
- * an item's folded state depends only on its own leaves, so freezing one cannot
- * move another, and folding once keeps a multi-selection linear rather than
+ * an item's folded state depends only on its own leaves, so making one static
+ * cannot move another, and folding once keeps a multi-selection linear rather than
  * re-folding the deck per item.
  *
- * SKIPS, NEVER THROWS, on the three ways an item can have nothing to freeze —
+ * SKIPS, NEVER THROWS, on the two ways an item can have nothing to make static —
  * and hands the reasons back, because REPORTING IS THE CALLER'S JOB (the repair
  * pipeline's rule; the app console.errors each one). A mixed selection therefore
- * freezes what it can instead of failing whole.
+ * does what it can instead of failing whole. It DOES throw on the one thing that is
+ * structurally impossible (a run beginning on a slide out of the fold), because a
+ * silent write into a skipped delta would delete the item from the document.
  *
  * Args:
  *   doc (object): document
  *   slideIndex (number): the slide whose values survive
- *   itemIds (string[]): the items to freeze
+ *   itemIds (string[]): the items to make static
  *
  * Returns:
- *   {doc, frozen: string[], skipped: {id, reason}[]}
+ *   {doc, madeStatic: string[], skipped: {id, reason}[]}
  *
- * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).doc.slides[0].delta.items.a.x // 9
- * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).doc.slides[1].delta.items // undefined (the animation keyframe is gone)
- * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9, active: false}}}}]}, 1, ["a"]).doc.slides[1].delta.items.a // {active: false} (the visibility timeline survives)
- * @example withKeyframesFrozen({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, 0, ["a"]).skipped // [{id: "a", reason: "it has no keyframes beyond its creation slide — it is already static"}]
+ * @example withItemsMadeStatic({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).doc.slides[0].delta.items.a.x // 9
+ * @example withItemsMadeStatic({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).doc.slides[1].delta.items // undefined (the animation keyframe is gone)
+ * @example // hidden HERE → refused: "static from where, over what" has no answer
+ * @example withItemsMadeStatic({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9, active: false}}}}]}, 1, ["a"]).madeStatic // []
+ * @example withItemsMadeStatic({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, 0, ["a"]).skipped // [{id: "a", reason: "it has no keyframes past the start of the stretch it is visible on — it is already static there"}]
  */
-export function withKeyframesFrozen(doc, slideIndex, itemIds) {
+export function withItemsMadeStatic(doc, slideIndex, itemIds) {
   const state = foldState(doc, slideIndex, 1);
-  const frozen = [];
+  const madeStatic = [];
   const skipped = [];
   let out = doc;
   for (const id of itemIds) {
-    const target = freezeTargetSlide(doc, id);
-    if (target === null) {
-      skipped.push({ id, reason: "no slide in the fold sets its type — an orphan the load repair should have dropped" });
+    const run = visibleRun(doc, slideIndex, id);
+    if (!run) {
+      skipped.push({ id, reason: `it is not visible on slide ${slideIndex} (hidden there, created later, or never given a type), so there is no visible stretch to make static` });
       continue;
     }
-    const value = state.items?.[id];
-    if (!value) {
-      skipped.push({ id, reason: `it has no state on slide ${slideIndex} — it is created later in the deck, so there is nothing here to freeze it at` });
+    if (itemAnimationKeyframes(doc, slideIndex, id).length === 0) {
+      skipped.push({ id, reason: "it has no keyframes past the start of the stretch it is visible on — it is already static there" });
       continue;
     }
-    if (itemAnimationKeyframes(doc, id).length === 0) {
-      skipped.push({ id, reason: "it has no keyframes beyond its creation slide — it is already static" });
-      continue;
-    }
-    // 1. Clear the item's whole subtree on EVERY slide, the target included, so
-    //    step 2 is the ONLY thing that decides its state. Leaving the target's own
-    //    leaves in place would resurrect any key a later `null` delete sentinel had
-    //    removed from the fold — the frozen state would then not be what step 2
-    //    wrote. `active` is exempt everywhere (see the block comment above).
-    for (let i = 0; i < doc.slides.length; i++) {
+    // visibleRun's theorem, asserted rather than trusted: a DISABLED slide folds to
+    // its predecessor's state, so it can never BEGIN a visible run. If that ever
+    // stopped holding, the write below would land in a delta the fold skips and the
+    // item would disappear from the document — far too quiet a way to lose work.
+    if (doc.slides[run.start].enabled === false)
+      throw new Error(`withItemsMadeStatic: the visible run of "${id}" begins on slide ${run.start}, which is DISABLED — a disabled slide's delta is skipped by the fold, so it cannot begin a run (see visibleRun) and writing there would remove the item`);
+    // 1. Clear the item's whole subtree across the RUN, the run's own first slide
+    //    included, so step 2 is the ONLY thing that decides its state there.
+    //    Leaving the first slide's leaves in place would resurrect any key a later
+    //    `null` delete sentinel had removed from the fold — the static state would
+    //    then not be what step 2 wrote. `active` is exempt (see the block comment).
+    for (let i = run.start; i <= run.end; i++) {
       const item = getPath(doc.slides[i].delta, ["items", id]);
       if (item === undefined) continue;
       if (!isTree(item)) {
@@ -637,15 +743,155 @@ export function withKeyframesFrozen(doc, slideIndex, itemIds) {
       for (const [path] of leaves(item))
         if (!isExistenceLeaf(path)) out = unkeyframed(out, i, ["items", id, ...path]);
     }
-    // 2. Write the frozen state back ONCE, leaf-wise — the showSelection walk's
+    // 2. Write the static state back ONCE, leaf-wise — the showSelection walk's
     //    shape (nested subtrees keyframe per leaf, arrays are whole leaf values),
     //    so a `rotationAnchor` lands as two number keyframes and a `points` list
     //    as one.
-    for (const [path, leafValue] of leaves(value))
-      if (!isExistenceLeaf(path)) out = keyframed(out, target, ["items", id, ...path], leafValue);
-    frozen.push(id);
+    for (const [path, leafValue] of leaves(state.items[id]))
+      if (!isExistenceLeaf(path)) out = keyframed(out, run.start, ["items", id, ...path], leafValue);
+    madeStatic.push(id);
   }
-  return { doc: out, frozen, skipped };
+  return { doc: out, madeStatic, skipped };
+}
+
+// ── Clearing ONE slide's keyframes for an item ────────────────────────────────
+//
+// THE REQUEST (user, correcting the scope of Make Static above): "remove keyframes,
+// to just remove the keyframes at the current slide for the currently selected
+// object. That is it." So the two keyframe tools differ by SCOPE, not by
+// reversibility: Make Static flattens a whole VISIBLE STRETCH, this clears ONE SLIDE.
+//
+// WHAT THE USER SEES: the item stops CHANGING here and INHERITS the previous
+// slide's folded values instead — the animation passes THROUGH this slide rather
+// than stopping at it, and any later keyframe now tweens from the inherited value.
+// So unlike Make Static, this is NOT appearance-preserving on the slide it is run
+// from: that is the point of it.
+//
+// `active` GOES TOO, unlike Make Static — and the reasoning does not carry over,
+// because what made the deck-wide case dangerous was the COLLAPSE, not the leaf.
+// There, one `active` value would be imposed on a whole run at once, so running it
+// from a slide where the item was hidden would erase the item over that run. Here the
+// edit is confined to one slide's delta and the result is INHERITANCE, not
+// imposition: the previous slide's visibility flows through exactly as every other
+// property does. The item cannot be destroyed either, because the refusal below
+// protects its creation slide. And the inverse is one click of Delete or Show on
+// this slide, so nothing is lost that the user cannot put back BY HAND — not merely
+// by undo. Carving `active` out would instead leave a filled ◆ on the Visible row
+// of the very slide the user just asked to clear, i.e. the tool would be lying.
+//
+// THE REFUSAL: an item's CREATION slide (itemCreationSlide). Its delta is what
+// brings the item into existence, so clearing it there deletes the item — a
+// keyframe edit must never do Purge Item's job. Reported, per item, never silent.
+
+/**
+ * Pure function. What "Remove Keyframes on This Slide" would delete for `itemId`:
+ * every leaf of its subtree in slide `slideIndex`'s OWN delta. Empty means this
+ * slide says nothing about the item, so there is nothing to remove — the
+ * command's availability gate, which is deliberately DIFFERENT from Make Static's
+ * (an item can be animated elsewhere and keyed nowhere here, and vice versa).
+ *
+ * A whole-item delta that is not a tree (the `null` delete sentinel) counts as ONE
+ * leaf at the empty path, matching itemAnimationKeyframes.
+ *
+ * Args:
+ *   doc (object): document
+ *   slideIndex (number): the slide to clear
+ *   itemId (string): the item
+ *
+ * Returns:
+ *   {path, value}[] — `path` is relative to the item's own state
+ *
+ * @example itemSlideKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, "a") // [{path: ["x"], value: 9}]
+ * @example itemSlideKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 0, "a").length // 2 (the creation slide keys type and x)
+ * @example itemSlideKeyframes({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {}}]}, 1, "a") // [] (this slide says nothing about it)
+ */
+export function itemSlideKeyframes(doc, slideIndex, itemId) {
+  const item = getPath(doc.slides[slideIndex].delta, ["items", itemId]);
+  if (item === undefined) return [];
+  if (!isTree(item)) return [{ path: [], value: item }];
+  return leaves(item).map(([path, value]) => ({ path, value }));
+}
+
+/**
+ * Pure function. Which of slide `slideIndex`'s keyframes for `itemId` hold an
+ * EQUATION — the ones a per-slide removal destroys outright (there is no rewrite
+ * here, so unlike Make Static's lostEquationKeyframes there is nothing to compare
+ * against: every equation on this slide goes).
+ *
+ * WHY REPORT AT ALL, when the Inspector's own ◆ button already drops a single
+ * keyframe silently: this drops the item's WHOLE slide entry in one click, so an
+ * equation the user cannot see from the row they were looking at can go with it.
+ * The keyframe-removal ruling stands — destroying keyframes is the request, so it
+ * proceeds; it just never does so quietly. REPORTING IS THE CALLER'S JOB.
+ *
+ * The item's plugin comes from its folded type on this slide, falling back to the
+ * type its creation slide writes — an item can be keyed here while not yet
+ * existing here (a pre-creation leftover), and it still deserves the report.
+ *
+ * Args:
+ *   doc (object): document
+ *   slideIndex (number): the slide to clear
+ *   itemId (string): the item
+ *   registry (object): plugin registry (.get(type) → plugin; decides equation slots)
+ *
+ * Returns:
+ *   {path, value}[] (empty when this slide keys no equation for the item)
+ *
+ * @example slideEquationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: "=50"}}}}]}, 1, "a", reg) // [{path: ["x"], value: "=50"}]
+ * @example slideEquationKeyframes({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, "a", reg) // [] (a plain number is not an equation)
+ */
+export function slideEquationKeyframes(doc, slideIndex, itemId, registry) {
+  const type = foldState(doc, slideIndex, 1).items?.[itemId]?.type
+    ?? getPath(doc.slides[itemCreationSlide(doc, itemId) ?? slideIndex].delta, ["items", itemId, "type"]);
+  if (typeof type !== "string") return [];
+  const plugin = registry.get(type);
+  return itemSlideKeyframes(doc, slideIndex, itemId)
+    .filter(({ path, value }) => isEquationValue(plugin, path, value));
+}
+
+/**
+ * Pure function. Document with slide `slideIndex`'s ENTIRE delta entry removed for
+ * every item in `itemIds` — so each one stops changing there and inherits the
+ * previous slide's values (see the block comment above for what the user sees and
+ * why `active` is included here but exempt from Make Static).
+ *
+ * TWO OUTCOMES BESIDES SUCCESS, and only one of them is worth a word:
+ *   REFUSED — this is the item's creation slide, so clearing it would delete the
+ *     item from the document. Handed back with a reason; the caller reports it.
+ *   nothing to do — the slide simply keys nothing for that item. NOT a refusal and
+ *     NOT reported: "there was nothing there" is not a failure, and saying so for
+ *     every unrelated item in a multi-selection would be noise.
+ *
+ * Args:
+ *   doc (object): document
+ *   slideIndex (number): the slide to clear
+ *   itemIds (string[]): the items to clear on it
+ *
+ * Returns:
+ *   {doc, cleared: string[], refused: {id, reason}[]}
+ *
+ * @example withSlideKeyframesRemoved({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).doc.slides[1].delta.items // undefined (pruned away)
+ * @example withSlideKeyframesRemoved({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}, {delta: {items: {a: {x: 9}}}}]}, 1, ["a"]).cleared // ["a"]
+ * @example withSlideKeyframesRemoved({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}], }, 0, ["a"]).refused.length // 1 (slide 0 CREATES it)
+ * @example withSlideKeyframesRemoved({slides: [{delta: {items: {a: {type: "rect"}}}}, {delta: {}}]}, 1, ["a"]).cleared // [] (nothing there — not a refusal)
+ */
+export function withSlideKeyframesRemoved(doc, slideIndex, itemIds) {
+  const cleared = [];
+  const refused = [];
+  let out = doc;
+  for (const id of itemIds) {
+    if (slideIndex === itemCreationSlide(doc, id)) {
+      refused.push({ id, reason: `slide ${slideIndex} is the slide that CREATES it, and its delta there IS the item — clearing it would remove the widget from the document (Purge Item is the tool for that)` });
+      continue;
+    }
+    if (itemSlideKeyframes(doc, slideIndex, id).length === 0) continue;
+    // ONE unkeyframe of the whole subtree: deletePath prunes the emptied `items`
+    // entry (and `items` itself) for free, so the slide's delta is left exactly as
+    // it would have been had the item never been touched here.
+    out = unkeyframed(out, slideIndex, ["items", id]);
+    cleared.push(id);
+  }
+  return { doc: out, cleared, refused };
 }
 
 /**
@@ -790,70 +1036,41 @@ export function withMissingDefaultsFilled(doc, registry) {
   return { doc: out, filled };
 }
 
-/**
- * Query. Every stored shadow keyframe that was INVISIBLE under the OLD shadow
- * gate but WOULD render under the NEW one (manifest 14.8) — the "dormant
- * shadow" migration set.
- *
- * WHY this exists: Round 14.8 changed the shadow render gate from
- * `blur > 0 AND opacity > 0` (the only gate ever committed — effects.js
- * ab9a675) to `opacity > 0` alone (blur 0 is now a legal HARD-edged shadow).
- * But the OLD defaults spread `{dx:3, dy:3, blur:0, color, opacity:0.5}` onto
- * every item at creation, so pre-14.8 documents carry a stored shadow with
- * opacity 0.5 and blur 0 — INVISIBLE under the old gate (blur 0), but the new
- * gate would suddenly render it. The user's ruling "existing docs keep stored
- * values" cannot mean "shadows the user never saw suddenly appear"; this
- * migration neutralizes exactly those dormant shadows (and ONLY those) to the
- * new-gate-off form (opacity 0), leaving every VISIBLE shadow untouched.
- *
- * A shadow keyframe is dormant iff, in a single slide's delta, it carries BOTH
- *   opacity > 0  (would render under the new gate) AND
- *   blur <= 0    (was invisible under the old gate: it needed blur > 0)
- * with both leaves present in that same delta (the creation-slide full-object
- * case old docs universally produce). A partial keyframe touching only blur or
- * only opacity is left alone — the old-gate-invisibility test needs both.
- *
- * Args:
- *   doc (object): document
- *
- * Returns:
- *   {id, slideIndex, opacity, blur}[]  (empty when nothing is dormant)
- *
- * @example dormantShadows({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0.5}}}}}]}) // [{id: "a", slideIndex: 0, opacity: 0.5, blur: 0}]
- * @example dormantShadows({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 4, opacity: 0.5}}}}}]}) // [] (blur > 0 = it was visible before; keep it)
- * @example dormantShadows({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0}}}}}]}) // [] (opacity 0 = already off)
- */
-export function dormantShadows(doc) {
-  const out = [];
-  for (let i = 0; i < doc.slides.length; i++)
-    for (const [id, item] of Object.entries(doc.slides[i].delta.items ?? {})) {
-      const sh = item && typeof item === "object" ? item.shadow : null;
-      if (!sh || typeof sh !== "object") continue;
-      const opacity = sh.opacity, blur = sh.blur;
-      // Both leaves must be present in THIS delta (a same-delta full shadow) so
-      // the old-gate-invisibility test is well-defined; skip a partial keyframe.
-      if (typeof opacity !== "number" || typeof blur !== "number") continue;
-      if (opacity > 0 && blur <= 0) out.push({ id, slideIndex: i, opacity, blur });
-    }
-  return out;
-}
-
-/**
- * Pure function. Document with every DORMANT shadow (dormantShadows) rewritten
- * to opacity 0 — the new-gate-off form — plus the migration report. Idempotent
- * (a neutralized shadow has opacity 0, so it is no longer dormant). REPORTING IS
- * THE CALLER'S JOB (printRepairReports); this only builds the {doc, report}.
- *
- * @example withDormantShadowsNeutralized({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0.5}}}}}]}).doc.slides[0].delta.items.a.shadow.opacity // 0
- * @example withDormantShadowsNeutralized({slides: [{delta: {items: {a: {type: "rect", shadow: {blur: 0, opacity: 0.5}}}}}]}).neutralized.length // 1
- */
-export function withDormantShadowsNeutralized(doc) {
-  const neutralized = dormantShadows(doc);
-  let out = doc;
-  for (const { id, slideIndex } of neutralized)
-    out = keyframed(out, slideIndex, ["items", id, "shadow", "opacity"], 0);
-  return { doc: out, neutralized };
-}
+// ── RETIRED: the dormant-shadow migration (ac98586 → deleted) ────────────────
+//
+// `dormantShadows` / `withDormantShadowsNeutralized` used to sit here and zero
+// any stored shadow with `blur <= 0 && opacity > 0`, on the theory that such a
+// shadow could only be a pre-14.8 artifact (the old defaults spread
+// {dx:3, dy:3, blur:0, opacity:0.5} onto every item, invisible under the old
+// `blur > 0 && opacity > 0` gate, resurrected by the 14.8 opacity-only gate).
+//
+// IT WAS DELETED BECAUSE IT WAS A MIGRATION THAT NEVER STOPPED MIGRATING. It ran
+// on every load, and `blur 0, opacity > 0` is not a legacy shape at all — manifest
+// 14.8 makes it the CANONICAL crisp hard-edged shadow ("blur should be allowed to
+// be 0 and still visible — but shadow opacity = 0 gates whether we render it"),
+// and `shadow.blur`'s default IS 0, so merely raising Shadow opacity authors
+// exactly the shape this destroyed. Measured: an authored
+// {dx:0, dy:0, blur:0, opacity:0.5} came back from one save/load as opacity 0.
+//
+// NARROWING IT WAS NOT AVAILABLE. The legacy artifact and a shadow authored today
+// are byte-identical objects, so no predicate can separate them — the shape is
+// what the current editor writes, unlike every OTHER migration in
+// repairedDocument (legacy keys, string text, meta.fps, `duration`, filmstrip
+// frame counts, gradient direction, boolean antialias), each of which detects a
+// shape the current editor CANNOT produce. That property is exactly what makes
+// the others safe to re-run forever, and its absence here was the defect.
+//
+// A one-shot document version marker was rejected too: `meta` is {name, slideW,
+// slideH} with no version concept, none of the seven sibling migrations is
+// version-gated, and it would have bought nothing measurable — no document in
+// `projects/` (10) or `examples/` (1) carries a dormant shadow, so the migration
+// set is empty. The demo fixture was already patched THROUGH the migration at
+// ac98586 and is committed in its migrated form.
+//
+// THE COST OF DELETION, stated plainly: a document saved before 2026-07-15 that
+// still carried the old default shadow would show those shadows. That is visible,
+// on-canvas, and undone by setting Shadow opacity to 0. Keeping the migration
+// cost the user's authored value — data loss. Data loss loses.
 
 /**
  * Pure function. Legacy key renames the document needs: every slide-delta
@@ -1253,10 +1470,6 @@ export function withFilmstripFramesMigrated(doc, buildList) {
  *      the editor's long-tested sequence.
  *   4. missing defaults filled  — typed-but-partial items get plugin defaults so
  *      the strict IR builders never see w: undefined.
- *  4b. dormant shadows off      — AFTER defaults-fill: a stored old-default
- *      shadow (opacity 0.5, blur 0) was invisible under the old gate but the
- *      14.8 opacity-only gate would resurrect it; neutralize to opacity 0
- *      (only shadows that were already invisible — visible shadows untouched).
  *   5. duration → transition    — legacy per-slide `duration` becomes
  *      transition.seconds (round 12).
  *   6. camera ensured + deduped — a doc predating the camera (or one whose
@@ -1345,16 +1558,11 @@ export function repairedDocument(doc, registry) {
   for (const { id, missing } of filled)
     reports.push(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
 
-  // Dormant shadows AFTER defaults-fill (order-critical): a doc missing shadow
-  // entirely gets the NEW effect-off defaults (opacity 0) from the fill above,
-  // which are not dormant — so this step only neutralizes shadows that were
-  // STORED with the old defaults (opacity 0.5, blur 0), invisible under the old
-  // gate but resurrected by the 14.8 opacity-only gate (see dormantShadows).
-  const { doc: deshadowedDoc, neutralized } = withDormantShadowsNeutralized(filledDoc);
-  for (const { id, slideIndex, opacity } of neutralized)
-    reports.push(`PowerRP repair: item "${id}" slide ${slideIndex}: a stored blur-0 shadow (opacity ${opacity}) was invisible under the old gate — set opacity 0 so the 14.8 gate change does not resurrect it`);
+  // NO SHADOW STEP HERE. The dormant-shadow migration that used to sit between
+  // the fill and the duration migration was deleted — see the RETIRED block above
+  // withMissingDefaultsFilled for why (it destroyed authored crisp shadows).
 
-  const { doc: migratedDoc, migrated } = withDurationMigrated(deshadowedDoc);
+  const { doc: migratedDoc, migrated } = withDurationMigrated(filledDoc);
   for (const m of migrated)
     reports.push(`PowerRP repair: slide ${m.index} legacy "duration" (${m.seconds}s) → transition.seconds${m.stale ? " (already had a transition — stale duration dropped)" : ""}`);
 
