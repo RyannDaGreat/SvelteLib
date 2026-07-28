@@ -281,6 +281,26 @@ const BBOX_CENTER = 0.5;
 /** Default linear-gradient direction (0° = left→right) — the old freshLinear "→". */
 export const GRADIENT_DEFAULT_ANGLE = 0;
 
+// THE LINEAR-GRADIENT CENTER + WAVELENGTH (the gradient-handle feature). A linear
+// gradient gained a draggable CENTER (objectBoundingBox 0..1, default box-center)
+// and a WAVELENGTH — the fraction of the axis one full colour ramp spans. w=1 with
+// the default center reproduces today's whole-box axis EXACTLY (render_gpu/ir.js
+// linearGradientRender returns the untouched from/to in that case, so an ABSENT
+// center/wavelength is byte-identical to before the feature — the same absent-is-
+// legacy precedent as the angle-endpoints migration). w≠1 TILES the ramp with a
+// smooth MIRROR repeat centered on `center` (Skia TileMode.Mirror / SVG
+// spreadMethod="reflect"); the vector PDF backend cannot express mirror tiling, so
+// a w≠1 fill routes to its raster fallback (opHasMirrorLinearFill).
+/** Default gradient center (objectBoundingBox) — the box center. */
+export const GRADIENT_DEFAULT_CENTER = { x: 0.5, y: 0.5 };
+/** Default wavelength: one ramp spans the whole axis (today's behaviour). */
+export const GRADIENT_DEFAULT_WAVELENGTH = 1;
+/** Smallest wavelength the UI scrubber and the direction handle allow — a floor
+ * that keeps the ramp from collapsing to a zero-length (degenerate) axis. Not a
+ * hard render bound: parsePaint accepts any positive wavelength and only throws
+ * on <= 0 / non-finite. */
+export const GRADIENT_MIN_WAVELENGTH = 0.05;
+
 /** Fewest stops a gradient can describe — one colour is a solid, so
  *  render_gpu/ir.js normalizeStops throws below this. It is the list
  *  declaration's `minLength`, so the purge affordance refuses to go under it. */
@@ -749,6 +769,39 @@ export const PROPS = {
     order: "sequence",
     activeKey: "pointsActive",
     help: "The polygon's corners, in order — the order IS the outline. Insert between two corners to add one at their midpoint; hide a corner to draw straight past it without losing where it was.",
+  },
+
+  // ── geometry: THE BEZIER PATH POINT LIST (a LIST property — core/lists.js) ───
+  // plugins/paint_path.js's variable-length list of cubic-bezier anchors. A
+  // SEQUENCE (the order IS the path, exactly like the polygon's `points`). Storage
+  // is a TUPLE [x, y, hx, hy, brk] and that is LOAD-BEARING, not cosmetic:
+  // core/interpolators.js interpolate() ROUNDS a lerp between two integers (the
+  // tweenline int rule), and normalized anchor coordinates are routinely exactly 0
+  // and 1 — so a RECORD, or a MIXED tuple carrying a BOOLEAN `brk`, would recurse to
+  // that integer path and SNAP every anchor tween at alpha 0.5. An ALL-NUMBER tuple
+  // takes interpolate's pure-numeric-array branch (a plain lerp, NO rounding, 0↔1
+  // safe), so `brk` is stored as 0/1 rather than a boolean SPECIFICALLY to keep the
+  // tuple numeric — the same reasoning, and conclusion, as the polygon's `points`
+  // and the filmstrip's `frames`. (x, y) is the anchor as a box FRACTION; (hx, hy)
+  // is its MIRRORED control-handle offset (outgoing control = anchor + handle,
+  // incoming = anchor − handle), so every anchor is a smooth C1 point and a zero
+  // handle makes a corner; `brk` >= 0.5 STARTS A NEW SUBPATH (the "breaks" that make
+  // one widget several strokes). No `default` here — the plugin ships its own curve.
+  paintPoints: {
+    label: "Path points", kind: LIST_ROW_KIND, category: "formatting",
+    element: {
+      storage: "tuple",
+      fields: [
+        { name: "x", kind: "number", label: "X", help: "This anchor's horizontal position as a fraction of the widget's box (0 = left edge, 1 = right edge). Values outside 0..1 are allowed — the anchor simply sits outside the box." },
+        { name: "y", kind: "number", label: "Y", help: "This anchor's vertical position as a fraction of the widget's box (0 = top edge, 1 = bottom edge). Values outside 0..1 are allowed — the anchor simply sits outside the box." },
+        { name: "hx", kind: "number", label: "Handle X", help: "The horizontal reach of this anchor's mirrored bezier handle, as a box fraction. The outgoing control point sits at anchor + handle and the incoming one at anchor − handle, so the curve stays smooth through the anchor. Zero on both axes makes a sharp corner." },
+        { name: "hy", kind: "number", label: "Handle Y", help: "The vertical reach of this anchor's mirrored bezier handle, as a box fraction. The outgoing control point sits at anchor + handle and the incoming one at anchor − handle, so the curve stays smooth through the anchor. Zero on both axes makes a sharp corner." },
+        { name: "brk", kind: "number", min: 0, max: 1, label: "New subpath", help: "1 starts a NEW subpath at this anchor — the pen lifts, leaving a gap so the widget draws as several separate strokes; 0 continues the current stroke. (Stored as a number rather than a toggle so the point list tweens exactly, per core/lists.js.)" },
+      ],
+    },
+    order: "sequence",
+    activeKey: "paintPointsActive",
+    help: "The path's anchors, in order — the order IS the path. Each carries a mirrored bezier handle (drag it on canvas) so the segments curve; a New-subpath flag lifts the pen to start a separate stroke. Insert between two anchors to add one on the curve; hide an anchor to draw straight past it without losing it.",
   },
 
   // ── formatting: THE COLOUR RAMP (core/ramps.js) ─────────────────────────────

@@ -15,7 +15,7 @@
  */
 
 export { isGradientPaint } from "../ir.js";
-import { isGradientPaint } from "../ir.js";
+import { isGradientPaint, linearGradientRender } from "../ir.js";
 
 /**
  * Query→build (allocates a CanvasKit Shader — caller deletes). Builds the SkShader
@@ -43,9 +43,14 @@ export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1) {
     CanvasKit.Matrix.scaled(bounds.w || 1e-6, bounds.h || 1e-6),
   );
   if (paint.type === "linearGradient") {
+    // CENTER + WAVELENGTH fold in here (ir.js linearGradientRender): the ramp is
+    // centered at `center` and spans wavelength·axis, tiling with a MIRROR repeat
+    // when wavelength ≠ 1. A default/legacy paint returns the untouched axis with
+    // `mirror` false, so its Clamp shader is byte-identical to before the feature.
+    const { from, to, mirror } = linearGradientRender(paint);
     return CanvasKit.Shader.MakeLinearGradient(
-      [paint.from.x, paint.from.y], [paint.to.x, paint.to.y],
-      colors, positions, CanvasKit.TileMode.Clamp, lm,
+      [from.x, from.y], [to.x, to.y],
+      colors, positions, mirror ? CanvasKit.TileMode.Mirror : CanvasKit.TileMode.Clamp, lm,
     );
   }
   return CanvasKit.Shader.MakeRadialGradient(

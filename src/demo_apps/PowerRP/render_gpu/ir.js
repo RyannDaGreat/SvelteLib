@@ -50,7 +50,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
@@ -299,7 +299,7 @@ export function parsePaint(paint) {
   const g = type === "linearGradient" ? (paint.linear ?? paint) : (paint.radial ?? paint);
   const stops = normalizeStops(visibleStops(g));
   if (type === "linearGradient") {
-    return { type, stops, ...linearAxis(g) };
+    return { type, stops, ...linearAxis(g), ...linearCenterWavelength(g) };
   }
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
@@ -380,6 +380,91 @@ function linearAxis(g) {
   if (g.from != null && g.to != null)
     return { from: requirePoint("linearGradient.from", g.from), to: requirePoint("linearGradient.to", g.to) };
   return angleToLinearEndpoints(GRADIENT_DEFAULT_ANGLE);
+}
+
+/**
+ * Pure function. A linear paint's CENTER (objectBoundingBox) and WAVELENGTH, the
+ * two gradient-handle fields (core/paint_handles.js). Both default to the "today"
+ * values (box-center / whole-axis), so an ABSENT pair is byte-identical to before
+ * the feature (linearGradientRender returns the untouched axis in that case).
+ * Validates loudly: a present center must be a finite point and a present
+ * wavelength a positive finite number (a zero/negative axis is degenerate).
+ *
+ * Args:
+ *   g (object): the linear sub-state — {center?, wavelength?, ...}
+ *
+ * Returns:
+ *   {center: {x, y}, wavelength: number}
+ *
+ * @example linearCenterWavelength({})  // {center: {x: 0.5, y: 0.5}, wavelength: 1}  (absent → defaults)
+ * @example linearCenterWavelength({center: {x: 0.2, y: 0.8}, wavelength: 0.25})  // {center: {x: 0.2, y: 0.8}, wavelength: 0.25}
+ */
+function linearCenterWavelength(g) {
+  const center = g.center != null ? requirePoint("linearGradient.center", g.center) : { ...GRADIENT_DEFAULT_CENTER };
+  let wavelength = GRADIENT_DEFAULT_WAVELENGTH;
+  if (g.wavelength != null) {
+    if (typeof g.wavelength !== "number" || !Number.isFinite(g.wavelength) || g.wavelength <= 0)
+      throw new Error(`parsePaint: linearGradient "wavelength" must be a positive finite number, got ${JSON.stringify(g.wavelength)}`);
+    wavelength = g.wavelength;
+  }
+  return { center, wavelength };
+}
+
+/**
+ * Pure function. THE render endpoints + tile mode of a parsed linear paint, once
+ * its CENTER and WAVELENGTH are folded in. Every backend goes through this so the
+ * Skia shader, the SVG <linearGradient> and the PDF axial shading agree.
+ *
+ * The parsed `from`/`to` are the whole-box axis (the chord through the box).
+ * `half = (to − from)/2` is the axis half-vector; one full ramp of wavelength `w`
+ * centered at `c` spans `w·half` each side:
+ *   from' = c − w·half,   to' = c + w·half
+ * `mirror` is true iff w ≠ 1 (the ramp then tiles with a mirror repeat outside
+ * [from', to']). When c is the box center AND w = 1 the untouched `from`/`to` are
+ * returned by IDENTITY (mirror false), so a default/legacy paint renders
+ * BYTE-IDENTICALLY to before the center/wavelength feature — the endpoints and
+ * clamp tile mode are the same objects/values it always used.
+ *
+ * Args:
+ *   paint (object): a parsed linearGradient paint (carries from, to, center?, wavelength?)
+ *
+ * Returns:
+ *   {from: {x, y}, to: {x, y}, mirror: boolean}
+ *
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, mirror: false}  (default: untouched axis)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, mirror: true}  (half-length ramp, mirror-tiled)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.25, y: 0.5}, wavelength: 1}).from  // {x: -0.25, y: 0.5}  (center shifted, w=1 → clamp)
+ */
+export function linearGradientRender(paint) {
+  const w = paint.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH;
+  const c = paint.center ?? GRADIENT_DEFAULT_CENTER;
+  if (w === 1 && c.x === GRADIENT_DEFAULT_CENTER.x && c.y === GRADIENT_DEFAULT_CENTER.y)
+    return { from: paint.from, to: paint.to, mirror: false };
+  const hx = (paint.to.x - paint.from.x) / 2, hy = (paint.to.y - paint.from.y) / 2;
+  return {
+    from: { x: c.x - w * hx, y: c.y - w * hy },
+    to: { x: c.x + w * hx, y: c.y + w * hy },
+    mirror: w !== 1,
+  };
+}
+
+/**
+ * Pure function. Does this op carry a MIRROR-TILED linear-gradient FILL (a linear
+ * gradient whose wavelength ≠ 1)? The routing predicate the VECTOR PDF backend
+ * uses to send such a fill into its raster fallback — a PDF axial shading extends
+ * (clamps) its ends but cannot express a mirror-repeat tiling, so a tiled ramp is
+ * rasterized rather than silently drawn as a single clamped ramp. The SVG backend
+ * needs no such route (spreadMethod="reflect" expresses it vectorially) and a
+ * clamp/center-only gradient (wavelength === 1) stays a true PDF shading.
+ *
+ * @example opHasMirrorLinearFill({op: "rect", fill: {type: "linearGradient", wavelength: 0.25}}) // true
+ * @example opHasMirrorLinearFill({op: "rect", fill: {type: "linearGradient", wavelength: 1}}) // false
+ * @example opHasMirrorLinearFill({op: "rect", fill: {type: "radialGradient", r: 0.5}}) // false
+ * @example opHasMirrorLinearFill({op: "rect", fill: "#fff"}) // false
+ */
+export function opHasMirrorLinearFill(cmd) {
+  const p = cmd.fill;
+  return !!(p && typeof p === "object" && !Array.isArray(p) && p.type === "linearGradient" && (p.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH) !== 1);
 }
 
 // ── command builders ─────────────────────────────────────────────────────────

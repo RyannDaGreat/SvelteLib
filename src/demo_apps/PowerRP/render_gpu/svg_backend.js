@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, linearGradientRender, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -202,8 +202,16 @@ export function gradientDefSVG(paint, id, opacity = 1) {
     const byte = (v) => Math.round(v * 255);
     return `<stop offset="${fmt(s.offset)}" stop-color="rgb(${byte(r)},${byte(g)},${byte(b)})" stop-opacity="${fmt(a * opacity)}"/>`;
   }).join("");
-  if (paint.type === "linearGradient")
-    return `<linearGradient id="${id}" x1="${fmt(paint.from.x)}" y1="${fmt(paint.from.y)}" x2="${fmt(paint.to.x)}" y2="${fmt(paint.to.y)}">${stops}</linearGradient>`;
+  if (paint.type === "linearGradient") {
+    // CENTER + WAVELENGTH fold in via linearGradientRender: the axis endpoints
+    // move to the centered, wavelength-scaled ramp and a mirror-tiled ramp
+    // (wavelength ≠ 1) becomes spreadMethod="reflect" — SVG expresses the tiling
+    // vectorially, no raster fallback needed. A default/legacy paint returns the
+    // untouched from/to with mirror false, so its def string is byte-identical.
+    const { from, to, mirror } = linearGradientRender(paint);
+    const spread = mirror ? ` spreadMethod="reflect"` : "";
+    return `<linearGradient id="${id}" x1="${fmt(from.x)}" y1="${fmt(from.y)}" x2="${fmt(to.x)}" y2="${fmt(to.y)}"${spread}>${stops}</linearGradient>`;
+  }
   return `<radialGradient id="${id}" cx="${fmt(paint.center.x)}" cy="${fmt(paint.center.y)}" r="${fmt(paint.r)}">${stops}</radialGradient>`;
 }
 
@@ -485,7 +493,7 @@ export async function emitRegionSVG(commands, region, out, ctx) {
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
-    } else if (!SVG_VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd)) {
+    } else if (!SVG_VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd) || opHasMaterialStroke(cmd)) {
       // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.)
       // GENERAL RASTER FALLBACK (the HYBRID RULE generalized — the SVG twin of
       // pdf_backend.emitRegion's emitRasterOp branch): an op with no SVG vector

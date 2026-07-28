@@ -109,6 +109,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { paintModifierPoints } from "../core/paint_handles.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num, polygonPathD, ellipsePoints } from "../core/shapes.js";
 import { bundle, defaults, props } from "../core/properties.js";
@@ -800,7 +801,7 @@ export const polygonPlugin = {
   modifierPoints(s) {
     const w = s.w ?? 0, h = s.h ?? 0;
     const active = s[POINTS_LIST.activeKey];
-    return normalizedPoints(s).map(([nx, ny], i) => ({
+    const vertexHandles = normalizedPoints(s).map(([nx, ny], i) => ({
       id: `p${i}`,
       x: nx * w, y: ny * h,
       element: { list: POINTS_LIST, index: i },
@@ -816,6 +817,9 @@ export const polygonPlugin = {
         };
       },
     }));
+    // Plus the gradient FILL beads (core/paint_handles.js) when the fill is a
+    // gradient — additive, its ids ("fill-grad-*") never collide with "pN".
+    return [...vertexHandles, ...paintModifierPoints(s, "fill")];
   },
   commands: [
     // ONE entry point, and its `run` is UNCHANGED by the click-click-click flow —

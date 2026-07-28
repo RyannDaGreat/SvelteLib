@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, linearGradientRender, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -1008,9 +1008,13 @@ async function emitRegion(commands, region, out, ctx) {
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
-    } else if (!VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd)) {
+    } else if (!VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd)) {
       // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
-      // no vector form for it, so it takes the same region raster-embed.)
+      // no vector form for it, so it takes the same region raster-embed. A
+      // MIRROR-TILED linear gradient fill — wavelength ≠ 1 — is the same story: a
+      // PDF axial shading clamps its ends and cannot mirror-tile, so it too
+      // rasterizes here rather than silently drawing a single clamped ramp. A
+      // center-only / whole-axis gradient stays a true vector PDF shading below.)
       // GENERAL RASTER FALLBACK (the HYBRID RULE, generalized): an op this vector
       // backend cannot represent — a backdrop/effect op with no vector form
       // (glassBackdrop today; any FUTURE such op automatically) — rasterizes JUST
@@ -1996,9 +2000,14 @@ class PdfAssembly {
     if (this._shadings.has(key)) return this._shadings.get(key);
     const ctx = this.doc.context;
     const fnRef = this._gradientColorFn(paint.stops);
+    // A linear shading folds in the CENTER (and, for wavelength === 1, only the
+    // center — a wavelength ≠ 1 mirror-tiled fill never reaches here, it routes to
+    // the raster fallback via opHasMirrorLinearFill). The centered endpoints come
+    // from linearGradientRender; Extend clamps both ends (= Skia Clamp).
+    const axis = paint.type === "linearGradient" ? linearGradientRender(paint) : null;
     const dict = paint.type === "radialGradient"
       ? { ShadingType: 3, ColorSpace: "DeviceRGB", Coords: [paint.center.x, paint.center.y, 0, paint.center.x, paint.center.y, paint.r], Function: fnRef, Extend: [true, true] }
-      : { ShadingType: 2, ColorSpace: "DeviceRGB", Coords: [paint.from.x, paint.from.y, paint.to.x, paint.to.y], Function: fnRef, Extend: [true, true] };
+      : { ShadingType: 2, ColorSpace: "DeviceRGB", Coords: [axis.from.x, axis.from.y, axis.to.x, axis.to.y], Function: fnRef, Extend: [true, true] };
     const ref = ctx.register(ctx.obj(dict));
     const name = `Sh${this._shadings.size + 1}`;
     this._shadingDict().set(PDFName.of(name), ref);

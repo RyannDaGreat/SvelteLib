@@ -47,6 +47,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { paintModifierPoints } from "../core/paint_handles.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import {
@@ -586,7 +587,11 @@ export function makeFamilyPlugin(fam) {
       const local = T.apply(T.invert(world), wx, wy);
       return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, 0, local.x, local.y);
     },
-    modifierPoints: fam.modifierPoints,
+    // The family's OWN parametric handles, PLUS the gradient FILL beads
+    // (core/paint_handles.js) when the fill is a gradient — additive, the
+    // "fill-grad-*" ids never collide with a family's handle ids. A solid/material
+    // fill contributes none, so a non-gradient shapeshifter is byte-identical.
+    modifierPoints: (s) => [...(fam.modifierPoints?.(s) ?? []), ...paintModifierPoints(s, "fill")],
   };
   // No per-family top-level command: the `add-ss_*` ids are surfaced ONLY as
   // children of the single `insert-shape` submenu (web/App.svelte), built from

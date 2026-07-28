@@ -1,6 +1,7 @@
 /** Rectangle widget — the canonical bbox plugin. */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { paintModifierPoints } from "../core/paint_handles.js";
 import { closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
@@ -69,6 +70,10 @@ export const rectPlugin = {
     // bbox border — so a closest-rim arrow lands on the visible rounded edge.
     return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, state.cornerRadius ?? 0, local.x, local.y);
   },
+  // GRADIENT HANDLES (core/paint_handles.js): when the FILL is a gradient, the
+  // center/direction beads that edit its geometry on-canvas. A solid/material fill
+  // yields none, so a plain rect is byte-identical to before.
+  modifierPoints: (s) => paintModifierPoints(s, "fill"),
   commands: [
     // CROSSHAIR PLACEMENT (manifest ARCHITECTURE PLAN #5 / Round 12B "Boxes":
     // "right now it just places a box wherever the hell it wants") — arms
