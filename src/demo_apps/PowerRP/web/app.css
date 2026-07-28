@@ -5271,13 +5271,57 @@ audio.ae-preview-media {
   overflow-wrap: anywhere;
 }
 
-
 .render-center-error {
   margin: 0;
   color: var(--a-eq-error);
   font-size: var(--a-font-sm);
   line-height: var(--a-text-line-height);
   overflow-wrap: anywhere;
+}
+
+/* MULTI-SELECTION MIXED MARKS — the "…" in a value cell when the selected items
+   differ there. TWO faces with one glyph: .mixed-unify is a BUTTON (click sets
+   every selected item to the primary's value and the real field takes over), so
+   it must read as clickable — pointer cursor, field-like chrome, hover response;
+   .mixed-blocked is inert (the row genuinely cannot be jointly edited) and sits
+   flat and dim. The user's report that the dots looked "just uneditable" was
+   both faces rendering as bare unstyled text. */
+.mixed-unify {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: var(--a-sp-1) var(--a-sp-2);
+  font-size: var(--a-font-sm);
+  color: var(--fg);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.mixed-unify:hover {
+  background: var(--a-hover-bg);
+  border-style: solid;
+}
+
+.mixed-blocked {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: var(--a-sp-1) var(--a-sp-2);
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+}
+
+/* The gradient-stops honesty note inside a multi-selection PaintField (the one
+   paint aspect that cannot write to a set yet — see PaintField's fan-out). */
+.paint-stops-multi-note {
+  margin: 0;
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  line-height: var(--a-text-line-height);
 }
 
 /* TOOLBAR NOTIFICATION BADGE — the count of renders still working or finished

@@ -203,7 +203,20 @@
   import { GRADIENT_STOPS_LIST } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
 
-  let { app, path, label, value, disabled = false } = $props();
+  let { app, path, paths = null, label, value, disabled = false } = $props();
+
+  // Fan-out (the NumericField convention): `paths` present = a multi-selection
+  // writes every selected item's paint; absent = the single path, byte-identical.
+  // Reads (raw/mode/sub) stay on `path` — the PRIMARY — which is safe because the
+  // Inspector only mounts a non-mixed multi row, so every target stores an equal
+  // paint. The ONE aspect that cannot fan out is the gradient STOP LIST
+  // (ListField has no `paths`); in multi it is replaced by an honest note below
+  // rather than silently editing the primary alone.
+  let writePaths = $derived(paths ?? [path]);
+  let multi = $derived(writePaths.length > 1);
+  /** Pure-ish per-call helper. The value for ONE fan-out target: objects cloned
+   *  per target so N items never share a stored reference. */
+  const perTarget = (v) => (v !== null && typeof v === "object" ? structuredClone(v) : v);
 
   // THE stored paint — read RAW (not the `value` prop, which the Inspector
   // passes EVALUATED: a "=" equation paint is already resolved to a color there,
@@ -223,17 +236,19 @@
   // solid lives at path+["solid"].
   let solidIsBare = $derived(typeof raw === "string" || raw == null);
 
-  /** Command. Commits the WHOLE paint object to `path` (one undo unit) — used
-   * only when the stored value must be MATERIALIZED into the object form. */
+  /** Command. Commits the WHOLE paint object to every write path (one undo
+   * unit) — used only when the stored value must be MATERIALIZED into the
+   * object form. */
   function commitWhole(paint) {
-    app.setPreview([[path, paint]]);
+    app.setPreview(writePaths.map((p) => [p, perTarget(paint)]));
     app.commitPreview();
   }
 
-  /** Command. Commits a value at a SUB-PATH of the paint (one undo unit) — the
-   * minimal-delta write for type flips, stop add/remove, and geometry. */
+  /** Command. Commits a value at a SUB-PATH of the paint on every write path
+   * (one undo unit) — the minimal-delta write for type flips, stop add/remove,
+   * and geometry. */
   function commitAt(subpath, val) {
-    app.setPreview([[[...path, ...subpath], val]]);
+    app.setPreview(writePaths.map((p) => [[...p, ...subpath], perTarget(val)]));
     app.commitPreview();
   }
 
@@ -280,7 +295,7 @@
    * equation-bindable like every other property (manifest Tier 0), and the write
    * is the same either way (the stored leaf simply carries the expression). */
   function writeDirection(heading, commit) {
-    app.setPreview([[[...path, "linear", "angle"], heading]]);
+    app.setPreview(writePaths.map((p) => [[...p, "linear", "angle"], heading]));
     if (commit) app.commitPreview();
   }
   const previewDirection = (heading) => writeDirection(heading, false);
@@ -313,9 +328,9 @@
     <!-- SOLID → the standard ColorField. A bare-string paint edits `path`
          directly (byte-identical); the object form edits path.solid. -->
     {#if solidIsBare}
-      <ColorField {app} {path} {label} value={raw} {disabled} />
+      <ColorField {app} {path} paths={writePaths} {label} value={raw} {disabled} />
     {:else}
-      <ColorField {app} path={[...path, "solid"]} label={`${label} color`} value={sub.solid} {disabled} />
+      <ColorField {app} path={[...path, "solid"]} paths={writePaths.map((p) => [...p, "solid"])} label={`${label} color`} value={sub.solid} {disabled} />
     {/if}
   {:else if mode === "equation"}
     <!-- EQUATION → the whole paint is a "=" expression (a computed color).
@@ -347,14 +362,24 @@
            hover-preview on the canvas, same one-undo-unit commit — one mount point
            instead of a private one, which is what lets any other ramp property
            have the library at all. -->
-      <ListField
-        {app}
-        decl={GRADIENT_STOPS_LIST}
-        path={[...path, subKey, "stops"]}
-        label={`${label} stop`}
-        {disabled}
-        seedElement={{ offset: 0, color: NEW_STOP_COLOR }}
-      />
+      {#if multi}
+        <!-- ListField has no `paths` fan-out, and a stop edit that silently
+             wrote only the primary would re-diverge a set the user just
+             unified. Say so, beside the thing it gates, instead. -->
+        <p class="paint-stops-multi-note">
+          Gradient stops are edited one item at a time for now — select a single
+          item to edit them. Direction{mode === "radialGradient" ? "/radius" : ""} below writes to all {writePaths.length}.
+        </p>
+      {:else}
+        <ListField
+          {app}
+          decl={GRADIENT_STOPS_LIST}
+          path={[...path, subKey, "stops"]}
+          label={`${label} stop`}
+          {disabled}
+          seedElement={{ offset: 0, color: NEW_STOP_COLOR }}
+        />
+      {/if}
     </div>
 
     <!-- GEOMETRY -->
@@ -367,6 +392,7 @@
         <AngleField
           {app}
           path={[...path, "linear", "angle"]}
+          paths={writePaths.map((p) => [...p, "linear", "angle"])}
           label={`${label} direction`}
           value={linearAngle}
           {disabled}
@@ -378,7 +404,7 @@
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
         <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Radius</span>
         <div style="width:var(--a-input-w);">
-          <NumericField {app} path={[...path, "radial", "r"]} label={`${label} radius`} min={0} />
+          <NumericField {app} path={[...path, "radial", "r"]} paths={writePaths.map((p) => [...p, "radial", "r"])} label={`${label} radius`} min={0} />
         </div>
       </div>
     {/if}

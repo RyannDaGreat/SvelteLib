@@ -26,7 +26,6 @@ import {
   PRESENTATIONAL_ROW_ASPECTS,
   JOINT_EDITABLE_KINDS,
   JOINT_UNEDITABLE_KINDS,
-  PAINT_JOINT_EDIT_PENDING,
   rowContract,
   sameRowContract,
   contractDifferences,
@@ -272,7 +271,9 @@ test("every ROW_KIND is classified, exactly once (the import gate proved live)",
 test("an uneditable kind is LISTED with a reason, never hidden", () => {
   assert.equal(jointEditProblem({ key: "opacity", kind: "number" }), null);
   assert.equal(jointEditProblem({ key: "points", kind: LIST_ROW_KIND }), JOINT_UNEDITABLE_KINDS[LIST_ROW_KIND]);
-  assert.equal(jointEditProblem({ key: "fill", kind: "color", paint: true }), PAINT_JOINT_EDIT_PENDING);
+  // A PAINT row is jointly editable now — PaintField threads `paths` (the
+  // former PAINT_JOINT_EDIT_PENDING handback landed).
+  assert.equal(jointEditProblem({ key: "fill", kind: "color", paint: true }), null);
   // A plain (non-paint) colour row IS jointly editable.
   assert.equal(jointEditProblem({ key: "shadow.color", kind: "color" }), null);
   // Two REAL polygons share `points`, and the panel keeps the row + the reason —

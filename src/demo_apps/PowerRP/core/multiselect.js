@@ -194,13 +194,10 @@ export const JOINT_UNEDITABLE_KINDS = {
   }
 }
 
-/**
- * Why a PAINT row cannot be edited jointly yet. web/PaintField.svelte is the one
- * Tier-1 field not yet threaded with `paths` (it was owned by another agent when
- * this landed — a handback patch is pending), so a joint paint edit would write
- * the primary item only. Reported instead of silently half-applied.
- */
-export const PAINT_JOINT_EDIT_PENDING = "Fills and strokes that can hold a gradient are edited one item at a time for now (the paint control does not yet write to a set).";
+// (PAINT_JOINT_EDIT_PENDING is GONE: web/PaintField.svelte now threads `paths`
+// like every other Tier-1 field — the handback that constant was waiting for.
+// The one paint aspect that still cannot write to a set, the gradient STOP LIST,
+// is reported honestly INSIDE the field, beside the stops it gates.)
 
 /**
  * Pure function. A row's CONTRACT — the row with every presentational aspect
@@ -270,18 +267,18 @@ export function contractDifferences(a, b) {
 /**
  * Pure function. Why this row cannot be edited jointly, or null when it can.
  * A row kind with no fan-out control names itself through JOINT_UNEDITABLE_KINDS;
- * a paint row is pending its field's handback. Everything else returns null.
+ * everything else — paint rows included, since PaintField threads `paths` —
+ * returns null.
  *
  * @param {object} row - a resolved property row
  * @returns {string|null} the reason, shown verbatim to the user
  *
  * @example jointEditProblem({key: "opacity", kind: "number"}) // null
- * @example jointEditProblem({key: "fill", kind: "color", paint: true}) === PAINT_JOINT_EDIT_PENDING // true
+ * @example jointEditProblem({key: "fill", kind: "color", paint: true}) // null (PaintField fans out)
  * @example jointEditProblem({key: "points", kind: "list"}) === JOINT_UNEDITABLE_KINDS.list // true
  */
 export function jointEditProblem(row) {
   if (row.kind in JOINT_UNEDITABLE_KINDS) return JOINT_UNEDITABLE_KINDS[row.kind];
-  if (row.paint) return PAINT_JOINT_EDIT_PENDING;
   return null;
 }
 
@@ -516,9 +513,13 @@ export function fanOutPairs(paths, value) {
  */
 export function unifyPairs(entries, key, value) {
   const path = key.split(".");
+  // An OBJECT value (a gradient paint, a shadow) is cloned PER TARGET: writing
+  // one shared reference into N items would alias their stored state — a later
+  // in-place mutation anywhere would edit all of them silently.
+  const perTarget = () => (value !== null && typeof value === "object" ? structuredClone(value) : value);
   return entries
     .filter((e) => e.state != null && !deepEqual(defaultedValue(e, path), value))
-    .map((e) => [["items", e.itemId, ...path], value]);
+    .map((e) => [["items", e.itemId, ...path], perTarget()]);
 }
 
 /**

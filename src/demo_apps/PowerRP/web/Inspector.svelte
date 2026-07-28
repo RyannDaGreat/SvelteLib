@@ -1290,6 +1290,7 @@
     <PaintField
       {app}
       path={["items", pickedItemId, ...row.key.split(".")]}
+      paths={writePaths}
       label={row.label}
       value={valueAt(state, row.key)}
       disabled={disabled}
