@@ -245,7 +245,7 @@ def video_frame_count(video_path):
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-count_frames", "-show_entries", "stream=nb_read_frames",
              "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
         ).stdout.strip()
     except FileNotFoundError:
         raise RuntimeError("ffprobe not found on PATH — install ffmpeg (brew install ffmpeg)")
@@ -279,7 +279,7 @@ def _extract_indices(video_path, indices, out_dir, frame_h=None, frame_w=None):
         subprocess.run(
             ["ffmpeg", "-y", "-i", video_path, "-vf", vf,
              "-vsync", "0", tmpl],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise RuntimeError("ffmpeg not found on PATH — install ffmpeg (brew install ffmpeg)")
@@ -486,7 +486,7 @@ def encode_export_mp4(session_id, fps, crf):
                  "-c:v", "libx264", "-pix_fmt", "yuv420p",
                  "-crf", str(crf), "-movflags", "+faststart",
                  "-loglevel", "error", out_path],
-                capture_output=True, text=True, check=True,
+                capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
             )
         except FileNotFoundError:
             raise RuntimeError("ffmpeg not found on PATH -- install ffmpeg (brew install ffmpeg)")
@@ -922,6 +922,12 @@ def encode_job_output(name, job_id, record):
     out_name = unique_output_name(name, record["name"])
     out_path = os.path.join(renders_dir(name), out_name)
     pattern = os.path.join(frames, f"frame_%0{EXPORT_FRAME_PAD}d.png")
+    # stdin=DEVNULL on this and every other ffmpeg/ffprobe call: ffmpeg reads its
+    # inherited stdin for interactive commands, and when this server runs as a
+    # background job under the launcher's job control (start_server.sh `set -m`),
+    # that read from the terminal raises SIGTTIN — which STOPS the entire process
+    # group: python, uv, and ffmpeg all freeze mid-encode, the job sticks at
+    # "encoding", and the port stops accepting while the process still looks alive.
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-framerate", str(record["params"]["fps"]), "-start_number", "0",
@@ -930,7 +936,7 @@ def encode_job_output(name, job_id, record):
              "-c:v", "libx264", "-pix_fmt", "yuv420p",
              "-crf", str(record["params"]["crf"]), "-movflags", "+faststart",
              "-loglevel", "error", out_path],
-            capture_output=True, text=True, check=True,
+            capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise RuntimeError("ffmpeg not found on PATH -- install ffmpeg")
