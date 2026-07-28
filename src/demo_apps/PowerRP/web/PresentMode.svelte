@@ -260,6 +260,10 @@
 
   function exit() {
     presenter.stop();
+    // Land the editor on the slide that was being PRESENTED (user ruling
+    // 2026-07-28), not the slide it happened to be on before Present started —
+    // "exit me to the slide which I was last viewing".
+    app.slideIndex = presenter.index;
     if (document.fullscreenElement) document.exitFullscreen();
     app.mode = "edit";
   }
