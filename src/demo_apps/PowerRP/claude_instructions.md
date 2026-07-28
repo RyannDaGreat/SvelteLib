@@ -205,6 +205,200 @@ code exists.
     button beside it that opens the same modal — users must not need to know
     the double-click. Generalize as a `code` row kind where natural.
 
+## ROUND 3 (user live narration, 2026-07-28 — after the camera-background freeze fix)
+
+36. **Paste-as-image bug**: copying a gear widget and pasting produced an IMAGE
+    widget instead of a widget copy ("I thought we had something in place to
+    prevent something silly like that"). The internal widget payload must win
+    over the clipboard's image flavor.
+37. **Bilinear image sampling option**: images should offer bilinear in addition
+    to the current behavior (user believes it is nearest-neighbor — verify the
+    premise first).
+38. **Searchable-dropdown search styling**: no box around the search input —
+    a subtle color difference instead; the command palette's search is the
+    suspected in-app precedent ("the same way that the palette is").
+39. **Material zoom lag on shapes**: zooming into a material-filled gear
+    (metaballs/CRT) is laggy, and past 4096 device px the SDF caps out with a
+    conformity fallback report. Cause: the silhouette SDF cache is keyed on
+    DEVICE size, so every zoom step is a miss + full-res EDT rebuild. Fix:
+    build at a capped resolution and SCALE distances (zoom-invariant cache).
+
+48. **THE GEARS PRESENTATION** (authoring proof, NO CODE): a new presentation
+    ("gear emporium") built purely by driving the tool — meshed gears big/small,
+    speeds LINKED by property equations (gear ratios), number widgets bound to
+    each gear's degrees, a big "GEARS" title slide, camera pans down then
+    gear-to-gear while everything spins, cool materials, multi-slide, ~10–20 s,
+    rendered to a 720p MP4 through the real render pipeline. Sub-agent may not
+    write ANY JavaScript — document JSON + existing tools only.
+
+## ROUND 4 (user live report, 2026-07-28)
+
+51. **Glitch FILL must distort like the glitch WIDGET.** "The digital glitch
+    demo widget looks great. Why doesn't the glitch material look great? The
+    CRT one distorts just fine, liquid glass works fine." Parity investigation
+    + fix; pin widget-vs-fill parity in a probe.
+52. **THE WIDGET'S PRESETS DETERMINE THE MATERIAL'S PRESETS** (a rule): every
+    demo widget's existing preset set must appear for its material in the Tools
+    (mapped through the shared schema); the newly-invented material presets may
+    stay as EXTRAS ("you can add them together — I never object to more").
+    The missing "sci-fi preset" on glitch material is the proof case.
+53. **Liquid glass material has NO presets** — mirror the glass widget's set.
+
+54. **Slide renaming UI**: double-click the slide's title in the navigator to
+    rename it inline, plus a Name field in the slide's properties — agents can
+    author names in JSON; the user must be able to from the UI.
+55. **METAL MATERIALS family** (research first — a SONNET RESEARCH FRENZY, per
+    the user): physically-plausible brass/copper/steel/aluminum fills — brushed
+    (incl. RADIALLY brushed), shiny, lightly rusted, patina — with darker
+    patinaed crevices (the silhouette SDF gives recess distance); plus a
+    METAL-STAMP material that engraves/embosses into metal behind it with real
+    shading. Lighting stays ANALYTIC like glass (user explicitly rejected HDRI:
+    "no HDRI, it's too complicated — regular lighting the way the glass
+    components have lighting").
+    PRESETS demanded (user, second pass): brass, SHINY CHROME, RUSTY STEEL with
+    a rust-spot count/amount knob, silver BEFORE vs AFTER polishing (crusty
+    black in the crevices). And THE STAMP-CREVICE COUPLING: "when we stamp, we
+    create crevices — take the derivative of this material to figure out where
+    the crevices would be when we emboss, because that would result in more
+    rust or less rust" — the engrave material's groove depth-field must feed the
+    same crevice/patina mask the aging uses, so engraved lines patina first.
+
+56. **Hardware shapes**: metal BOLT, SCREW, and SCREW-HEAD shapes (parameterized
+    shapeshifter entries) — hex/thread/slot/Phillips knobs as appropriate.
+57. **Victorian ornamental shapes**: the swirly scroll-work of wrought-iron
+    fence posts / lamp posts ("swirly doodly shapes") — parameterized HEAVILY
+    (scroll turns, curl radii, symmetry, stem length…) in the shape menu, ready
+    to take metal materials.
+58. **Gears deck v2**: add ornamental metal corner pieces FRAMING the camera on
+    all four corners, BOUND to the camera edges by equations (the minimap
+    precedent), using the new metal materials + ornament shapes.
+
+59. **strokePhase cycle calibration**: the user expects 360° = one full sweep;
+    reports needing "many thousands of degrees" — under empirical investigation
+    (the ÷360 seam and trimSegments both check out in isolation).
+60. **Gears deck v3**: lens flares + pizzazz ("use ALL the components — make it
+    look really fucking cool") AND physically-plausible tooth meshing (zoom on
+    the mesh; "I don't think an engineer would approve").
+
+62. **Sophisticated machinery** (user, 2026-07-28, extends 58+60): "Once you
+    have all your bolt screws and metal widgets, implement a more sophisticated
+    machinery for this gear presentation." The v3 deck is not just re-skinned —
+    once items 55–57 land, the composition should read as an actual MACHINE:
+    bolted plates, screw heads at joints, meshed gear trains with plausible
+    ratios, metal-stamped labels, Victorian scroll framing. Sequenced AFTER
+    METALIMPL + ORNAMENT deliver.
+61. **THE HINTBAR COMPLETENESS LAW — NOT NEW, THE ORIGINAL LAW** (user
+    correction on record: "it's always been there... every single keyboard
+    shortcut must always pass through that, and if it doesn't, you fucked
+    up"). The codebase's own constitution says it (CLAUDE.md: the shortcut
+    registry "BOTH dispatches keydowns AND feeds the bottom HintBar — a
+    shortcut that isn't registered there does not exist"); the sweep test's
+    accumulated LOCAL-allowlist entries are DRIFT from that precedent, not a
+    doctrine. Every focused-field convention (Enter commit, Esc cancel,
+    arrows…) must surface CONTEXTUALLY in the HintBar while applicable — the
+    fieldFocus chip mechanism is the established vehicle; audit every LOCAL
+    entry and every key handler as a VIOLATION to migrate.
+
+## ROUND 5 (user, 2026-07-28): THE GRAPH FAMILY + EQUATION ZOO
+
+63. **graphLine — the parameterized polygon widget**: "probably inherit from
+    the polygon widget, except... instead of having a list of parameters for
+    each point, it will be tStart, tEnd, number of points, interpolate between
+    those." A parametric curve: sample an equation over [tStart, tEnd] at N
+    points → polyline. Used for "graphs and different functions like sine
+    waves and stuff that can wiggle and swiggle around the whole screen."
+    NOTE: plugins may not import plugins — "inherit" means shared core helpers
+    + the same capability bundles, not a literal import of polygon.
+
+64. **Equation editor inside graphLine**: text entry AND the Monaco code modal
+    (the mermaid widget's code-button pattern — user: "you just research
+    mermaid, which has the code editor inside of it") "so that I can edit the
+    JavaScript of it with arbitrary JavaScript functions." Presets: "some
+    basic, like x times t, and others might be functions that require for
+    loops or iterators, like Fibonacci of round of time." MUST stay
+    deterministic (three-kinds law): no Date/Math.random/wall clock — same
+    sandbox discipline as core/expressions.js; `time` (particleTime) allowed
+    (recordable). A for-loop integrating 0→t each call is FINE (pure fn of t,
+    seekable); carrying state frame-to-frame is NOT.
+
+65. **THE graph* FAMILY NAMING RULE**: "All these widgets that are graph-like
+    will be prefixed with graph — like graphLine, graphTickMarks, graphGrid,
+    etc. That is a family of widgets."
+
+66. **graphRuler / ticks / grid**: "a ruler widget that measures tick points
+    like 0 1 2 3 4 5 on either the x, the y or both axes, that has optional
+    grid options, very much like Matplotlib. Make sure you do tons of research
+    to figure out all the different components and options... I want to be the
+    maximalist here, tons of options so we can potentially even zoom and pan
+    in it later" — but for now parameterized by equations/properties only.
+    Grid must be able to "snake into existence" — draw the columns and rows in
+    3Blue1Brown/Manim style (staggered draw-in; the stroke trim framework is
+    the obvious mechanism).
+
+67. **Per-widget custom variables (REFACTOR)**: "we're going to need to expose
+    widget custom variables... custom variables on a per-object basis so that
+    I can interpolate between them" — e.g. tween a spiral's own named
+    parameters to morph logarithmic → Archimedean. The global custom-variables
+    section "kind of defeated the whole point... we may need to refactor the
+    whole thing." Per-item vars are PROPERTY STATE (keyframed via deltas like
+    any property); expressions likely address them as self-scoped refs.
+
+68. **THE EQUATIONS DEMO PRESENTATION ("equation zoo")**: a new demo deck
+    demonstrating ALL of the above. "Teach me about math in this" — per-slide
+    demos of different equations (how do you make a heart, how do you make a
+    spiral, logarithmic vs another spiral), LaTeX of each equation popping up
+    as it's drawn. Includes the spiral-interpolation demo (log ↔ Archimedean
+    via per-widget vars). QUALITY BAR, verbatim: "if they don't look
+    professional and they don't look like Manim and they don't look pretty, I
+    don't care — do it over again. Do it over until it fucking looks right...
+    it has to look beautiful and impressive. And correct, of course."
+
+69. **THE CATENARY BALL — the big equation demo**: title "Catenary Curve" with
+    fancy glow; the curve "drawn in from existence because we increase from t,
+    like on a chalkboard"; then a textured glowy ball/orb (texture visible so
+    rotation reads) ROLLS DOWN the catenary with CORRECT math: the ball's
+    BOTTOM touches the curve (center offset R along the normal), rolling
+    without slipping (spin = arcLength/R), and correct acceleration
+    ("the acceleration of it is correct too, because you can parameterize that
+    using equations") — for a rolling solid sphere a = (5/7)·g·sinθ along the
+    tangent; catenary has closed-form arc length s = a·sinh(x/a).
+
+70. **THE PRESETS MANTRA — STANDING RULE, all widgets forever** (user,
+    verbatim): "For every single thing that has tons of controls, we need tons
+    of presets. That's a general old mantra... probably at least 10 unique
+    presets for each one. Presets give me inspiration." And the METHOD is
+    specified too: "to get these unique presets, you need to come at the
+    project from many different angles — you can have mini Sonnet frenzies for
+    every single one of these widgets to give presets for them." So: every
+    knob-rich widget ships ≥10 genuinely distinct presets, authored via a
+    small diversified Sonnet frenzy (different aesthetic/mathematical angles),
+    not one agent's taste. Applies to the whole graph family, the metal
+    family, ornaments — everything with tons of controls, retroactively and
+    going forward.
+
+71. **graphBars — programmatic bar graph widget**: "bar graph widgets...
+    programmatic — program the number of bars and like the area under the
+    curve and stuff, so we can animate all the bars going up, very
+    Manim-like." Bar count N + an equation valuing each bar (e.g. f(x) sampled
+    per bar → Riemann-sum look, "area under the curve"); heights animatable
+    (grow-up entrance via tweened properties); Manim bar-chart aesthetics.
+    Part of the graph* family and subject to the presets mantra (70).
+
+### Round 5 open questions (user: "write them all down") — NOT yet answered
+- Parametric-only (t → (x,y)) or also explicit y=f(x) mode? (Assuming
+  parametric core with a y-of-x preset wrapper unless told otherwise.)
+- Adaptive sampling (curvature-dense) or strictly uniform N points? (Assuming
+  uniform; N is a knob; maximalist option can come later.)
+- Should graph equations see per-widget custom vars AND global vars? (Assuming
+  both: self vars shadow globals.)
+- Does the catenary ball's time law integrate the ODE numerically in-equation
+  (pure fn of t via fixed-step loop from 0) or use a closed form? (Numeric
+  integration is acceptable per the determinism rule; closed form preferred if
+  the research finds one.)
+- graphRuler world-space vs data-space: does the ruler define a data→world
+  mapping other graph widgets share (axes as a coordinate frame), or is each
+  graph widget independently placed? (Design question for the research round.)
+
 ## Verification strategy
 
 - UI structure/behavior items (1, 4, 5, 7, 10, 11, 16–21): extend
