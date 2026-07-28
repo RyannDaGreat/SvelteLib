@@ -149,6 +149,11 @@ export function valignOffset(valign, boxH, contentH) {
  * to carry (so old docs render byte-identically: the single run inherits the
  * widget's font/size/color/bold verbatim).
  *
+ * THIS IS THE READ SIDE ONLY. Its output must never be written back to the
+ * document: resolved runs leave `inherited` nothing to supply, which is exactly
+ * how the box-level typography rows get SHADOWED. The WRITE side is
+ * unresolvedRichText (below) — same shape, style left alone.
+ *
  * Args:
  *   value (string|object): stored text value
  *   inherited (object): {font, size, color, bold} widget-level fallbacks
@@ -230,6 +235,81 @@ export function runFrom(r, inherited = {}) {
     // so it snaps discretely like every run field and survives serialization).
     highlight: r.highlight ?? inherited.highlight ?? "",
   };
+}
+
+/**
+ * Pure function. The STORABLE twin of normalizeRichText: canonicalizes the SHAPE
+ * of a stored `text` value — a {runs, paras} object with one `paras` entry per
+ * paragraph — WITHOUT RESOLVING STYLE. A run keeps ONLY the style keys it
+ * actually carries; an absent key stays absent. Accepts exactly what
+ * normalizeRichText accepts (a legacy string, a rich value, or junk).
+ *
+ * WHY BOTH EXIST — the two functions answer two different questions, and using
+ * one for the other's job is the SHADOWING defect (see runFrom):
+ *   normalizeRichText  → "what does this text LOOK LIKE?"  (resolved; layout,
+ *                         emit(), and every toolbar read need real values)
+ *   unresolvedRichText → "what may this text be WRITTEN BACK as?" (unresolved;
+ *                         the in-place editor's model and every staged value)
+ * The editor derives BOTH from the same stored value, edits the unresolved one,
+ * and displays the resolved one. Feeding a resolved value into the write-back is
+ * how ONE keystroke used to re-materialize all ten run keys and re-shadow the
+ * four box-level typography rows (font/size/bold/color) that 437df12 had just
+ * freed — measured: run keys ["text"] → eleven, and the four rows went
+ * byte-identical under renderDocToPng again.
+ *
+ * IDENTITY THAT MAKES THE SPLIT SAFE (locked by richtext_test): for every value,
+ *   normalizeRichText(unresolvedRichText(v), inherited)
+ *     deep-equals normalizeRichText(v, inherited)
+ * so routing the editor's display through the unresolved value changes NOTHING
+ * about what is drawn. Resolution is not skipped, only deferred to the one layer
+ * that owns it (emit()).
+ *
+ * Args:
+ *   value (string|object): stored text value
+ *
+ * Returns:
+ *   {runs, paras}: canonical SHAPE; runs carry `text` + only their own style
+ *     keys, paras carry only the stored per-paragraph overrides
+ *
+ * @example unresolvedRichText({runs: [{text: "Text"}], paras: [{}]}).runs[0] // {text: "Text"} (set nothing, stores nothing)
+ * @example unresolvedRichText({runs: [{text: "Hi", size: 76}], paras: [{}]}).runs[0] // {text: "Hi", size: 76} (authored size KEPT; the other nine keys stay absent)
+ * @example unresolvedRichText({runs: [{text: "x", size: 36, bold: false}], paras: [{}]}).runs[0] // {text: "x", bold: false, size: 36} (an OLD stamped run keeps its stamp — no migration)
+ * @example unresolvedRichText("a\nb").paras.length // 2 (a legacy string still splits into paragraphs)
+ * @example unresolvedRichText("Hi").runs[0] // {text: "Hi"} (a legacy string carries no run style)
+ * @example unresolvedRichText(null).runs[0] // {text: ""} (junk → one empty run, never throws)
+ */
+export function unresolvedRichText(value) {
+  if (typeof value === "string") {
+    return {
+      runs: [{ text: value }],
+      paras: Array.from({ length: value.split("\n").length }, () => ({})),
+    };
+  }
+  if (value && typeof value === "object" && Array.isArray(value.runs)) {
+    const runs = value.runs.map(bareRun);
+    const paraCount = Math.max(1, runs.map((r) => r.text).join("").split("\n").length);
+    const paras = [];
+    for (let i = 0; i < paraCount; i++) paras.push({ ...(value.paras?.[i] ?? {}) });
+    return { runs, paras };
+  }
+  return { runs: [{ text: "" }], paras: [{}] };
+}
+
+/** Pure function. A run reduced to `text` plus ONLY the RUN_STYLE_KEYS it
+ * actually carries, in canonical key order. The exact complement of runFrom:
+ * runFrom materializes every key, this one materializes none. A `null` style
+ * value counts as ABSENT (runFrom's `??` treats it that way, so keeping it would
+ * break the normalizeRichText∘unresolvedRichText identity). Unknown keys are
+ * dropped, as runFrom drops them.
+ *
+ * @example bareRun({text: "x", bold: true}) // {text: "x", bold: true}
+ * @example bareRun({text: "x", size: undefined, color: null}) // {text: "x"} (absent stays absent)
+ * @example bareRun({}) // {text: ""}
+ */
+function bareRun(r) {
+  const out = { text: typeof r.text === "string" ? r.text : "" };
+  for (const k of RUN_STYLE_KEYS) if (r[k] !== undefined && r[k] !== null) out[k] = r[k];
+  return out;
 }
 
 /**
@@ -807,15 +887,32 @@ export function styleOf(run) {
  * RUN_STYLE_KEY (order-independent), so two runs differing only in text can be
  * concatenated into one.
  *
+ * `inherited` is the WIDGET-LEVEL style an absent run key resolves to (the box's
+ * font/size/bold/color rows — emit()'s `inherited`). It MUST be supplied whenever
+ * the runs may be UNRESOLVED, because "mergeable" means "renders identically",
+ * and what an absent key renders as is decided by that layer. Omitting it
+ * compares against runFrom's hardcoded defaults instead, which silently DESTROYS
+ * authored style: in a box with `bold: true`, an explicit {bold:false} on a word
+ * resolved to false, an ABSENT bold also resolved to false, the two runs merged,
+ * and the un-bold vanished with no pixel change (measured through
+ * renderDocToPng). Same for an explicit size 36 / color #000000 / font "system"
+ * under a box that says otherwise. It defaults to {} only so the many
+ * already-resolved callers (where every key is present and the box layer cannot
+ * matter) read unchanged.
+ *
  * @example sameStyle({text: "a", bold: true}, {text: "b", bold: true}) // true
  * @example sameStyle({text: "a", bold: true}, {text: "b", bold: false}) // false
+ * @example sameStyle({text: "a"}, {text: "b", bold: false}) // true (absent = the default false ⇒ a bold-then-unbold round-trips to ONE run)
+ * @example sameStyle({text: "a"}, {text: "b", bold: false}, {bold: true}) // false (in a BOLD box, absent means bold — the un-bold is real style)
+ * @example sameStyle({text: "a"}, {text: "b", size: 36}, {size: 60}) // false (absent means the box's 60, not the hardcoded 36)
  */
-export function sameStyle(a, b) {
+export function sameStyle(a, b, inherited = {}) {
   // Compare DEFAULTED values (via runFrom) so an ABSENT key and its EXPLICIT
   // DEFAULT are equal for merging: {bold:false} and {} both mean "not bold", so
   // unbolding a bolded range round-trips to ONE canonical run (not two — the
   // stored form must not depend on whether a default was written explicitly).
-  const na = runFrom({ text: "", ...a }), nb = runFrom({ text: "", ...b });
+  // "The default" is `inherited` FIRST (the box row), then runFrom's own floor.
+  const na = runFrom({ text: "", ...a }, inherited), nb = runFrom({ text: "", ...b }, inherited);
   for (const k of RUN_STYLE_KEYS) if (na[k] !== nb[k]) return false;
   return true;
 }
@@ -827,19 +924,32 @@ export function sameStyle(a, b) {
  * renders and stores identically but has no redundant partitions — the canonical
  * form every edit produces.
  *
+ * EMPTIED-OUT LIST → a BARE empty run, never a resolved one. deleteRange over the
+ * whole text leaves NO runs at all, so this branch is on the most ordinary editing
+ * path there is: select all, delete, retype. It used to seed `runFrom({text: ""})`
+ * with no `inherited`, i.e. every key at the HARDCODED floor — so retyping in a
+ * size-60 lora box produced size 36 system, VISIBLY shrinking and re-facing the
+ * text the user had just styled. Seeding `{text: ""}` instead leaves all ten keys
+ * for the box rows to supply, which is what the cursor should inherit.
+ *
+ * `inherited` = the widget-level style an absent run key resolves to; forwarded
+ * verbatim to sameStyle, which is where it decides mergeability (see there for
+ * the authored-style loss it prevents).
+ *
  * @example mergeAdjacentRuns([{text: "a", bold: true}, {text: "b", bold: true}]).length // 1
  * @example mergeAdjacentRuns([{text: "a", bold: true}, {text: "b", bold: true}])[0].text // "ab"
  * @example mergeAdjacentRuns([{text: "a", bold: true}, {text: "b", bold: false}]).length // 2
+ * @example mergeAdjacentRuns([{text: "a"}, {text: "b", bold: false}], {bold: true}).length // 2 (a BOLD box makes the un-bold real — no merge)
  * @example mergeAdjacentRuns([{text: ""}, {text: "x"}]).length // 1 (empty dropped)
  * @example mergeAdjacentRuns([{text: ""}]).length // 1 (lone empty kept)
  */
-export function mergeAdjacentRuns(runs) {
+export function mergeAdjacentRuns(runs, inherited = {}) {
   const nonEmpty = runs.filter((r) => (r.text ?? "").length > 0);
-  if (nonEmpty.length === 0) return [runs[0] ? { ...runs[0] } : runFrom({ text: "" })];
+  if (nonEmpty.length === 0) return [runs[0] ? { ...runs[0] } : { text: "" }];
   const out = [];
   for (const r of nonEmpty) {
     const last = out[out.length - 1];
-    if (last && sameStyle(styleOf(last), styleOf(r))) last.text += r.text;
+    if (last && sameStyle(styleOf(last), styleOf(r), inherited)) last.text += r.text;
     else out.push({ ...r });
   }
   return out;
@@ -889,17 +999,22 @@ export function splitRunAt(runs, offset) {
  * per-selection color, outline, highlight, size, and font ALL route through it
  * with the appropriate delta.
  *
+ * `inherited` = the widget-level style an absent run key resolves to; forwarded
+ * to the canonicalizing merge so a delta that matches runFrom's hardcoded floor
+ * but NOT the box row survives (see sameStyle).
+ *
  * @example applyRunStyle([{text: "abcd"}], 1, 3, {bold: true}).length // 3
  * @example applyRunStyle([{text: "abcd"}], 1, 3, {bold: true})[1].text // "bc"
  * @example applyRunStyle([{text: "abcd"}], 1, 3, {bold: true})[1].bold // true
  * @example applyRunStyle([{text: "abcd", bold: true}], 0, 4, {bold: false}).length // 1 (whole-range unbold → one run)
  * @example applyRunStyle([{text: "abcd"}], 2, 2, {bold: true}).length // 1 (empty selection no-op)
+ * @example applyRunStyle([{text: "abcd"}], 0, 2, {bold: false}, {bold: true}).length // 2 (un-bold half of a BOLD box: kept, not merged away)
  */
-export function applyRunStyle(runs, start, end, styleDelta) {
+export function applyRunStyle(runs, start, end, styleDelta, inherited = {}) {
   const len = runsLength(runs);
   const lo = Math.max(0, Math.min(start, end, len));
   const hi = Math.min(len, Math.max(start, end, 0));
-  if (lo >= hi) return mergeAdjacentRuns(runs);
+  if (lo >= hi) return mergeAdjacentRuns(runs, inherited);
   // Split at BOTH boundaries so [lo, hi) is spanned by whole runs.
   const split = splitRunAt(splitRunAt(runs, lo), hi);
   const out = [];
@@ -911,7 +1026,7 @@ export function applyRunStyle(runs, start, end, styleDelta) {
     else out.push({ ...r });
     pos += rlen;
   }
-  return mergeAdjacentRuns(out);
+  return mergeAdjacentRuns(out, inherited);
 }
 
 /**
@@ -1006,6 +1121,8 @@ export function countNewlines(text) {
  *   value ({runs, paras}): canonical rich value
  *   offset (number): character offset (clamped to [0, length])
  *   text (string): the characters to insert (may include "\n")
+ *   inherited (object): widget-level style an absent run key resolves to,
+ *     forwarded to the canonicalizing merge (see sameStyle)
  *
  * Returns:
  *   {runs, paras}: new rich value
@@ -1014,13 +1131,14 @@ export function countNewlines(text) {
  * @example insertText({runs: [{text: "ab", bold: true}], paras: [{}]}, 2, "c").runs[0].bold // true (inherits left run's style)
  * @example insertText({runs: [{text: "ab"}], paras: [{}]}, 1, "\n").paras.length // 2 (a newline adds a paragraph)
  * @example insertText({runs: [{text: ""}], paras: [{}]}, 0, "hi").runs[0].text // "hi"
+ * @example insertText({runs: [{text: "ab"}], paras: [{}]}, 2, "c").runs[0] // {text: "abc"} (a BARE run stays bare — the typed char stores no style)
  */
-export function insertText(value, offset, text) {
+export function insertText(value, offset, text, inherited = {}) {
   const runs = value.runs ?? [];
   const paras = value.paras ?? [];
   const len = runsLength(runs);
   const at = Math.max(0, Math.min(offset, len));
-  if (text.length === 0) return { runs: mergeAdjacentRuns(runs), paras: [...paras] };
+  if (text.length === 0) return { runs: mergeAdjacentRuns(runs, inherited), paras: [...paras] };
   const style = runStyleAt(runs, at); // caret style (left wins at a boundary)
   const split = splitRunAt(runs, at); // ensure a run boundary exactly at `at`
   const out = [];
@@ -1031,7 +1149,7 @@ export function insertText(value, offset, text) {
     pos += [...(r.text ?? "")].length;
   }
   if (!inserted) out.push({ text, ...style }); // at === len (end of text)
-  return { runs: mergeAdjacentRuns(out), paras: paraInsert(paras, runs, at, countNewlines(text)) };
+  return { runs: mergeAdjacentRuns(out, inherited), paras: paraInsert(paras, runs, at, countNewlines(text)) };
 }
 
 /**
@@ -1047,6 +1165,8 @@ export function insertText(value, offset, text) {
  *   value ({runs, paras}): canonical rich value
  *   start (number): range start offset
  *   end (number): range end offset
+ *   inherited (object): widget-level style an absent run key resolves to,
+ *     forwarded to the canonicalizing merge (see sameStyle)
  *
  * Returns:
  *   {runs, paras}: new rich value
@@ -1055,14 +1175,15 @@ export function insertText(value, offset, text) {
  * @example deleteRange({runs: [{text: "a\nb"}], paras: [{}, {}]}, 1, 2).paras.length // 1 (the newline was deleted → paragraphs merge)
  * @example deleteRange({runs: [{text: "abc"}], paras: [{}]}, 1, 1).runs[0].text // "abc" (empty range no-op)
  * @example deleteRange({runs: [{text: "abcd"}], paras: [{}]}, 0, 4).runs[0].text // "" (all gone → one empty run kept)
+ * @example deleteRange({runs: [{text: "ab"}, {text: "cd", bold: false}], paras: [{}]}, 4, 4, {bold: true}).runs.length // 2 (a no-op delete in a BOLD box does not merge the un-bold away)
  */
-export function deleteRange(value, start, end) {
+export function deleteRange(value, start, end, inherited = {}) {
   const runs = value.runs ?? [];
   const paras = value.paras ?? [];
   const len = runsLength(runs);
   const lo = Math.max(0, Math.min(start, end, len));
   const hi = Math.min(len, Math.max(start, end, 0));
-  if (lo >= hi) return { runs: mergeAdjacentRuns(runs), paras: [...paras] };
+  if (lo >= hi) return { runs: mergeAdjacentRuns(runs, inherited), paras: [...paras] };
   const split = splitRunAt(splitRunAt(runs, lo), hi);
   const out = [];
   let pos = 0;
@@ -1073,7 +1194,7 @@ export function deleteRange(value, start, end) {
     pos += rlen;
   }
   const deletedNewlines = countNewlines([...richTextToPlain(value)].slice(lo, hi).join(""));
-  return { runs: mergeAdjacentRuns(out), paras: paraDelete(paras, runs, lo, deletedNewlines) };
+  return { runs: mergeAdjacentRuns(out, inherited), paras: paraDelete(paras, runs, lo, deletedNewlines) };
 }
 
 /** Pure helper. The paras array after inserting `k` newlines inside the paragraph

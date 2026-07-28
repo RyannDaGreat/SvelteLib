@@ -16,12 +16,20 @@
  *  P4  VERTICAL ALIGN flows into the caret geometry: caretScreen(0).y increases
  *      top → middle → bottom (the layout's valignOffset reaches the editor).
  *  P5  toolbar ALIGN applies per-paragraph (applyPara); ONE undo restores.
+ *  P6  an EDIT does not RE-SHADOW the eight box-level rows: a box whose stored
+ *      rich value is the plugin default (content only) still stores content only
+ *      after a real keystroke / a paragraph-align commit; the toolbar still shows
+ *      the RESOLVED state while editing; an authored per-run size survives; a
+ *      select-all/delete/retype does not reset the box's typography; and
+ *      the eight rows still move pixels on the value the real editor produced
+ *      (byte-diffed through cli/render.js, in this process).
  *
  * Spawns its OWN vite (isolated). Run from SvelteLib root:
  *   node src/demo_apps/PowerRP/tests/text_wysiwyg_probe.js
  */
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
 
@@ -189,6 +197,142 @@ try {
   const parasUndone = await page.evaluate((id) => (window.__powerrp_app.doc.slides[0].delta.items[id].text?.paras ?? []).map((p) => ({ ...p })), textId);
   assert(parasUndone.every((p) => p.align !== "center"), `P5: ONE undo restores the original paragraph align (got ${JSON.stringify(parasUndone)})`);
 
+  // ── P6: an in-place EDIT must not RE-SHADOW the box rows ──────────────────────
+  // 437df12 freed eight box-level rows by storing only what the user set. This
+  // controller then put the stamp straight back: it derived its edit model with
+  // normalizeRichText (RESOLVED runs) and staged the result verbatim, so ONE
+  // keystroke re-materialized all ten run keys (measured: ["text"] → eleven) and
+  // font/size/bold/color went byte-identical under renderDocToPng again. A
+  // paragraph-align commit did it too (applyParaToSelection writes base.runs
+  // through). A bare-node test cannot catch it — only a real keystroke through the
+  // real controller can, which is why this lives here.
+  const BOX_SIZE = 60, BOX_FONT = "lora", BOX_COLOR = "#ffcc00";
+  const BARE_SAMPLE = "Te xt";     // carries a SPACE, so the wordSpacing row can move pixels at all
+  await page.evaluate(({ size, font, color, sample }) => {
+    const app = window.__powerrp_app;
+    const def = (type) => ({ ...app.registry.get(type).defaults, type });
+    const cam = { ...def("camera"), name: "Camera", x: 0, y: 0, w: 400, h: 300, z: 1000, active: true, background: "#101014" };
+    // The PLUGIN DEFAULT rich shape: CONTENT ONLY. Every style below is a BOX row
+    // that runFrom/paraStyleFor resolve UNDER the run/paragraph.
+    const txt = { ...def("text"), name: "Bare", x: 40, y: 40, w: 300, h: 160, z: 1, active: true,
+      text: { runs: [{ text: sample }], paras: [{}] },
+      size, font, color, bold: true, align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0, valign: "top" };
+    const doc = { meta: { name: "bare-rows-probe", slideW: 400, slideH: 300 }, slides: [
+      { id: "s0", name: "Slide 1", transition: { type: "tween", seconds: 0.4, curve: "smooth", sound: null }, delta: { items: { cam, txt } } },
+    ] };
+    app.commit(app.repaired(doc));
+    app.slideIndex = 0;
+    app.selection = null;
+  }, { size: BOX_SIZE, font: BOX_FONT, color: BOX_COLOR, sample: BARE_SAMPLE });
+  await sleep(400);
+
+  const bareId = await page.evaluate(() => {
+    const items = window.__powerrp_app.doc.slides[0].delta.items;
+    return Object.keys(items).find((id) => items[id].type === "text");
+  });
+  /** Query. The stored key set of EVERY run — the shadowing measurement. */
+  const runKeySets = () => page.evaluate((id) => window.__powerrp_app.doc.slides[0].delta.items[id].text.runs.map((r) => Object.keys(r)), bareId);
+  const storedParas = () => page.evaluate((id) => window.__powerrp_app.doc.slides[0].delta.items[id].text.paras.map((p) => ({ ...p })), bareId);
+  const storedPlain = () => page.evaluate((id) => window.__powerrp_app.doc.slides[0].delta.items[id].text.runs.map((r) => r.text).join(""), bareId);
+  async function enterEdit() {
+    const p = await textCenterScreen();
+    await page.mouse.click(p.x, p.y, { clickCount: 2 });
+    await sleep(250);
+  }
+  async function commitEdit() {
+    await focusSink();
+    await page.keyboard.press("Escape");
+    await sleep(220);
+  }
+  assert(JSON.stringify(await runKeySets()) === '[["text"]]', `P6: the fixture starts CONTENT-ONLY (got ${JSON.stringify(await runKeySets())})`);
+
+  // The DISPLAY must stay RESOLVED: the toolbar reads run style to show B/I/U
+  // pressed and the size number. On an UNRESOLVED base those reads are undefined,
+  // so Bold would sit unpressed in a bold box and the size box would show "—".
+  await enterEdit();
+  await page.evaluate(() => window.__powerrp_textEdit.setSelection(0, 5));
+  await sleep(150);
+  const toolbar = await page.evaluate(() => ({
+    size: document.querySelector(".text-format-size")?.textContent?.trim() ?? null,
+    bold: document.querySelector('[aria-label="Bold"]')?.getAttribute("aria-pressed") ?? null,
+  }));
+  assert(toolbar.size === String(BOX_SIZE), `P6: the toolbar size box shows the RESOLVED size ${BOX_SIZE} (got ${JSON.stringify(toolbar.size)})`);
+  assert(toolbar.bold === "true", `P6: Bold reads aria-pressed=true from the box's bold row (got ${JSON.stringify(toolbar.bold)})`);
+
+  // ONE real keystroke, committed. The stored runs must be untouched.
+  await focusSink();
+  await page.evaluate(() => window.__powerrp_textEdit.setSelection(5, 5));
+  await page.keyboard.type("Z");
+  await sleep(150);
+  await commitEdit();
+  assert(!(await isEditing()), "P6: Esc commits the keystroke");
+  assert((await storedPlain()) === `${BARE_SAMPLE}Z`, `P6: the keystroke landed (got ${JSON.stringify(await storedPlain())})`);
+  const keysAfterType = await runKeySets();
+  assert(JSON.stringify(keysAfterType) === '[["text"]]', `P6: ONE keystroke stores NO style — the four typography rows stay live (got ${JSON.stringify(keysAfterType)})`);
+  const typedDoc = await page.evaluate(() => JSON.parse(JSON.stringify(window.__powerrp_app.doc)));
+
+  // A paragraph-align commit writes the runs back — it must write them back BARE.
+  await enterEdit();
+  await page.evaluate(() => window.__powerrp_textEdit.setSelection(0, 6));
+  await page.evaluate(() => window.__powerrp_textEdit.applyPara({ align: "center" }));
+  await sleep(150);
+  await commitEdit();
+  assert((await storedParas()).every((p) => p.align === "center"), `P6: the paragraph align committed (got ${JSON.stringify(await storedParas())})`);
+  assert(JSON.stringify(await runKeySets()) === '[["text"]]', `P6: a paragraph-align commit leaves the RUNS bare (got ${JSON.stringify(await runKeySets())})`);
+
+  // An AUTHORED per-run size must survive a later keystroke (projects/"Untitled
+  // cheese" stores size 76 in a run whose box says 36 — real authored style).
+  const RUN_SIZE = 76;
+  await enterEdit();
+  await page.evaluate((s) => { window.__powerrp_textEdit.setSelection(0, 2); window.__powerrp_textEdit.applyStyle({ size: s }); }, RUN_SIZE);
+  await sleep(150);
+  await commitEdit();
+  await enterEdit();
+  await focusSink();
+  await page.evaluate(() => window.__powerrp_textEdit.setSelection(6, 6));
+  await page.keyboard.type("Q");
+  await sleep(150);
+  await commitEdit();
+  const authoredRuns = await page.evaluate((id) => window.__powerrp_app.doc.slides[0].delta.items[id].text.runs.map((r) => ({ ...r })), bareId);
+  assert(authoredRuns[0]?.size === RUN_SIZE, `P6: the authored per-run size ${RUN_SIZE} survives a later keystroke (got ${JSON.stringify(authoredRuns)})`);
+  assert(authoredRuns.slice(1).every((r) => Object.keys(r).join() === "text"), `P6: only the AUTHORED run carries style; the rest stay bare (got ${JSON.stringify(authoredRuns)})`);
+
+  // SELECT ALL + DELETE + RETYPE. Emptying the run list makes mergeAdjacentRuns
+  // invent the lone empty run the caret inherits from; seeded resolved, the retyped
+  // text came back at runFrom's hardcoded floor (36 / system / black) and VISIBLY
+  // shrank in this size-60 lora box.
+  await enterEdit();
+  await focusSink();
+  await page.keyboard.down("Control");
+  await page.keyboard.press("a");
+  await page.keyboard.up("Control");
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("New");
+  await sleep(150);
+  await commitEdit();
+  assert((await storedPlain()) === "New", `P6: select-all + delete + retype replaced the text (got ${JSON.stringify(await storedPlain())})`);
+  const retypedKeys = await runKeySets();
+  assert(JSON.stringify(retypedKeys) === '[["text"]]', `P6: the retyped run stores NO style, so the box rows still supply it (got ${JSON.stringify(retypedKeys)})`);
+
+  // PIXELS. Byte-diff the eight box rows on the document the real editor produced
+  // after its keystroke, through the shared display list (cli/render.js).
+  const { renderDocToPng } = await import("../cli/render.js");
+  const PNG_W = 320, PNG_H = 240;
+  const rowHash = async (row, value) => {
+    const d = JSON.parse(JSON.stringify(typedDoc));
+    if (row) d.slides[0].delta.items[bareId][row] = value;
+    const png = await renderDocToPng(JSON.stringify(d), { slide: 0, alpha: 1, width: PNG_W, height: PNG_H });
+    return createHash("sha256").update(png).digest("hex");
+  };
+  const baseHash = await rowHash(null, null);
+  const BOX_ROWS = [
+    ["size", BOX_SIZE + 20], ["font", "inter"], ["bold", false], ["color", "#ff0000"],
+    ["align", "right"], ["lineSpacing", 2], ["charSpacing", 6], ["wordSpacing", 12],
+  ];
+  const deadRows = [];
+  for (const [row, value] of BOX_ROWS) if ((await rowHash(row, value)) === baseHash) deadRows.push(row);
+  assert(deadRows.length === 0, `P6: all EIGHT box rows still move pixels after the edit (DEAD: ${deadRows.join(", ") || "none"})`);
+
   if (errors.length) fails.push(...errors.map((e) => `unexpected error: ${e}`));
   if (fails.length) { console.error("WYSIWYG PROBE FAILURES:\n" + fails.join("\n")); process.exit(1); }
   console.log("  P1 in-place edit: dblclick enters, controller over the widget top-left (≤2px), sink present, item renders live.");
@@ -196,6 +340,10 @@ try {
   console.log("  P3 native feel: ENTER = newline (no commit), typing appends, cancel reverts.");
   console.log("  P4 valign: caret top y increases top<middle<bottom (valignOffset reaches the editor geometry).");
   console.log("  P5 paragraph align: applyPara centers every touched paragraph, ONE undo restores.");
+  console.log("  P6 no re-shadowing: a keystroke and a paragraph commit both store CONTENT ONLY, the toolbar still");
+  console.log("     shows the resolved size/bold, an authored per-run size survives, a select-all/delete/retype");
+  console.log("     keeps the box's typography, and all EIGHT box rows still move pixels on the document the");
+  console.log("     editor produced (cli/render.js byte-diff).");
   console.log("\nWYSIWYG rich-text editing probe passed.");
 } finally {
   await browser.close();

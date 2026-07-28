@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import {
-  normalizeRichText, runFrom, isLegacyString, richTextToPlain, richTextIsEmpty,
+  normalizeRichText, unresolvedRichText, runFrom, isLegacyString, richTextToPlain, richTextIsEmpty,
   splitParagraphs, paraStyleFor, wrapParagraph, layoutRichText, richTextDraws, monoMeasure,
   richTextMigrations, withRichTextMigrated, DEFAULT_PARA,
   NATURAL_LINE_HEIGHT, UNDERLINE_OFFSET_FRAC, STRIKE_OFFSET_FRAC,
@@ -55,6 +55,48 @@ test("normalizeRichText: already-rich passes through, paras backfilled EMPTY", (
 test("normalizeRichText: junk value → empty single run (never throws)", () => {
   assert.equal(normalizeRichText(null, {}).runs.length, 1);
   assert.equal(normalizeRichText(42, {}).runs[0].text, "");
+});
+
+// ── the resolved/unresolved pair (the write-back seam) ────────────────────────
+
+test("unresolvedRichText: canonical SHAPE, style left UNRESOLVED", () => {
+  // Nothing set ⇒ nothing stored: the shape is canonical but the run stays bare,
+  // so runFrom's box layer still has something to supply.
+  assert.deepEqual(unresolvedRichText({ runs: [{ text: "Text" }], paras: [{}] }).runs, [{ text: "Text" }]);
+  // An AUTHORED key is kept verbatim (projects/"Untitled cheese" stores size 76
+  // in a run whose box says 36 — real per-run style, and why no migration is safe).
+  assert.deepEqual(unresolvedRichText({ runs: [{ text: "Hi", size: 76 }], paras: [{}] }).runs, [{ text: "Hi", size: 76 }]);
+  // An OLD fully-stamped run keeps its stamp (no migration), in canonical key order.
+  assert.deepEqual(
+    unresolvedRichText({ runs: [{ text: "x", size: 36, bold: false }], paras: [{}] }).runs,
+    [{ text: "x", bold: false, size: 36 }]);
+  // null/undefined count as ABSENT (runFrom's `??` treats them so).
+  assert.deepEqual(unresolvedRichText({ runs: [{ text: "x", size: null, bold: undefined }], paras: [{}] }).runs, [{ text: "x" }]);
+  // paras backfill to the paragraph count with EMPTY overrides, like the resolver.
+  assert.deepEqual(unresolvedRichText({ runs: [{ text: "a\nb" }], paras: [{ align: "center" }] }).paras, [{ align: "center" }, {}]);
+  // A legacy string canonicalizes without inventing run style.
+  assert.deepEqual(unresolvedRichText("a\nb"), { runs: [{ text: "a\nb" }], paras: [{}, {}] });
+  // Junk never throws (mirrors normalizeRichText's contract).
+  assert.deepEqual(unresolvedRichText(null), { runs: [{ text: "" }], paras: [{}] });
+  assert.deepEqual(unresolvedRichText(42), { runs: [{ text: "" }], paras: [{}] });
+});
+
+test("unresolvedRichText: resolving it changes NOTHING about what is drawn", () => {
+  // THE identity that makes the editor's two-value split safe:
+  //   normalizeRichText(unresolvedRichText(v), inherited) === normalizeRichText(v, inherited)
+  // Without it, routing the in-place editor's display through the unresolved
+  // value would be a rendering change rather than a storage change.
+  const inherited = { font: "lora", size: 60, color: "#112233", bold: true };
+  const values = [
+    { runs: [{ text: "Te xt" }], paras: [{}] },
+    { runs: [{ text: "a", size: 76 }, { text: "b" }], paras: [{ align: "right" }] },
+    { runs: [{ text: "a\nb\nc", highlight: "#ff0" }], paras: [{ lineSpacing: 2 }] },
+    "legacy string\nline two",
+    null, 42,
+  ];
+  for (const v of values)
+    assert.deepEqual(normalizeRichText(unresolvedRichText(v), inherited), normalizeRichText(v, inherited),
+      `resolving the unresolved form of ${JSON.stringify(v)} must equal resolving it directly`);
 });
 
 test("runFrom: inheritance + defaults", () => {
@@ -320,6 +362,51 @@ test("runsLength / styleOf / sameStyle", () => {
   assert.deepEqual(styleOf({ text: "x", bold: true, size: 10 }), { bold: true, size: 10 });
   assert.equal(sameStyle({ text: "a", bold: true }, { text: "b", bold: true }), true);
   assert.equal(sameStyle({ text: "a", bold: true }, { text: "b", bold: false }), false);
+});
+
+test("sameStyle: an ABSENT key means the BOX's value, not runFrom's hardcoded floor", () => {
+  // With no box layer, absent and its explicit default MERGE — the documented
+  // rule that makes a bold-then-unbold round-trip to ONE canonical run.
+  assert.equal(sameStyle({ text: "a" }, { text: "b", bold: false }), true);
+  assert.equal(sameStyle({ text: "a" }, { text: "b", size: 36 }), true);
+  // But in a box that says otherwise, the explicit value is REAL per-run style and
+  // the two runs are NOT mergeable. Measured before this was threaded through:
+  // un-bolding a word inside a `bold: true` text box merged the {bold:false} away
+  // and moved ZERO pixels (renderDocToPng byte-identical) — silent loss of an
+  // authored edit. Same for an explicit size 36 under a size-60 box.
+  assert.equal(sameStyle({ text: "a" }, { text: "b", bold: false }, { bold: true }), false);
+  assert.equal(sameStyle({ text: "a" }, { text: "b", size: 36 }, { size: 60 }), false);
+  // And it still merges when the box AGREES with the explicit value.
+  assert.equal(sameStyle({ text: "a" }, { text: "b", size: 60 }, { size: 60 }), true);
+});
+
+test("the edit primitives forward the box layer, so an authored edit survives", () => {
+  // applyRunStyle → mergeAdjacentRuns is where the loss happened: the styled slice
+  // sits next to a BARE run, and merging is decided by sameStyle.
+  const BOLD_BOX = { bold: true }, BIG_BOX = { size: 60 };
+  assert.equal(applyRunStyle([{ text: "Te xt" }], 3, 5, { bold: false }).length, 1);              // merged away
+  assert.equal(applyRunStyle([{ text: "Te xt" }], 3, 5, { bold: false }, BOLD_BOX).length, 2);    // kept
+  assert.equal(applyRunStyle([{ text: "Te xt" }], 3, 5, { size: 36 }, BIG_BOX).length, 2);
+  assert.deepEqual(applyRunStyle([{ text: "Te xt" }], 3, 5, { size: 36 }, BIG_BOX)[1], { text: "xt", size: 36 });
+  // insertText/deleteRange canonicalize too, so they must forward it as well.
+  const authored = { runs: [{ text: "Te " }, { text: "xt", bold: false }], paras: [{}] };
+  assert.equal(insertText(authored, 5, "Z", BOLD_BOX).runs.length, 2);
+  assert.equal(insertText(authored, 5, "Z").runs.length, 1);                                     // no box layer ⇒ merged
+  assert.equal(deleteRange(authored, 5, 5, BOLD_BOX).runs.length, 2);
+});
+
+test("SELECT-ALL + DELETE + retype keeps the box rows (the emptied-list branch)", () => {
+  // deleteRange over the whole text leaves NO runs, so mergeAdjacentRuns has to
+  // invent the lone empty run the cursor inherits from. Seeding it with
+  // runFrom({text: ""}) materialized all ten keys at the HARDCODED floor, so the
+  // next typed character stored size 36 / "system" / black no matter what the box
+  // said — the text visibly shrank and changed face after a select-all retype.
+  const emptied = deleteRange({ runs: [{ text: "Te xt" }], paras: [{}] }, 0, 5);
+  assert.deepEqual(emptied.runs, [{ text: "" }], "an emptied list seeds a BARE run, not a resolved one");
+  assert.deepEqual(insertText(emptied, 0, "New").runs, [{ text: "New" }]);
+  // An emptied list whose ONE run survived keeps that run's own style verbatim —
+  // an authored caret style must not be thrown away by the same branch.
+  assert.deepEqual(mergeAdjacentRuns([{ text: "", size: 76 }]), [{ text: "", size: 76 }]);
 });
 
 test("splitRunAt: cuts a run at an interior offset, no-op at boundaries", () => {

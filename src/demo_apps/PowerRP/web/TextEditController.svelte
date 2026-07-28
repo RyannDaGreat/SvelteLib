@@ -11,6 +11,11 @@
       Selection. Edits go through the pure primitives insertText/deleteRange/
       applyRunStyle/applyParaStyle and app.previewTextValue (one undo unit on
       commit — unchanged from the old overlay).
+    • The model is derived TWICE, and mixing the two is a bug: `rich`
+      (unresolvedRichText) is the STORABLE value every edit starts from and stages,
+      `resolved` (normalizeRichText) is what the layout draws and the toolbar
+      displays. Editing the resolved value re-materializes run keys the user never
+      set and RE-SHADOWS the box-level Inspector rows (see the derivation below).
     • GEOMETRY comes from render_gpu/skia/text_layout.getTextLayout — the EXACT
       Paragraph stack paint_skia.drawTextOp draws — so caret/selection are aligned
       to the visible glyphs. We author ZERO text metrics.
@@ -39,8 +44,8 @@
   import { DEFAULT_FONT } from "../render_gpu/fonts.js";
   import { getTextLayout } from "../render_gpu/skia/text_layout.js";
   import {
-    normalizeRichText, richTextToPlain, runsLength, runStyleAt, commonStyle,
-    applyRunStyle, applyParaStyle, insertText, deleteRange,
+    normalizeRichText, unresolvedRichText, richTextToPlain, runsLength, runStyleAt,
+    commonStyle, applyRunStyle, applyParaStyle, insertText, deleteRange,
   } from "../core/richtext.js";
   import TextFormatToolbar from "./TextFormatToolbar.svelte";
 
@@ -91,7 +96,24 @@
     font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? DEFAULT_TEXT_SIZE,
     color: (plain ? node.state.fill : node.state.color) ?? "#000000", bold: node.state.bold ?? false,
   });
-  let rich = $derived(normalizeRichText(node.state.text, inherited));
+
+  // TWO VALUES, ONE STORED VALUE — the seam that keeps an edit from RE-SHADOWING
+  // the box rows. `rich` is SHAPE-CANONICAL but STYLE-UNRESOLVED: it is what may
+  // be WRITTEN BACK, so every mutation below starts from it and a run keeps only
+  // the keys the user actually set. `resolved` layers the widget-level fallbacks
+  // on top and is what the layout DRAWS and the toolbar DISPLAYS.
+  //
+  // This controller used to edit the RESOLVED value and stage it verbatim, which
+  // re-materialized all ten run keys on the FIRST keystroke (measured: run keys
+  // ["text"] → eleven) and killed the four box-level typography rows 437df12 had
+  // just freed — font/size/bold/color went byte-identical under renderDocToPng
+  // again. A paragraph-align commit did it too (applyParaToSelection writes
+  // base.runs verbatim). Resolution is not skipped, only left to the ONE layer
+  // that owns it: emit(). core/richtext guarantees
+  // normalizeRichText(unresolvedRichText(v), inherited) === normalizeRichText(v,
+  // inherited), so nothing about what is drawn changed.
+  let rich = $derived(unresolvedRichText(node.state.text));
+  let resolved = $derived(normalizeRichText(rich, inherited));
 
   // ── geometry: the CACHED CanvasKit Paragraph stack the RENDER also draws ──────
   // Built through the ONE getTextLayout path with the SAME cmd the text plugin
@@ -103,9 +125,11 @@
     // (getTextLayout wraps it via singleRunRich) so the caret/selection geometry
     // is byte-identical to the plaintext render; RICH mode passes the {runs,paras}
     // value + full paragraph box style, as before.
+    // The layout draws the RESOLVED value: text_layout reads run.size/font/color
+    // directly, so the box → run layering must already have happened here.
     const cmd = plain
       ? {
-          text: richTextToPlain(rich),
+          text: richTextToPlain(resolved),
           size: s.size ?? DEFAULT_TEXT_SIZE,
           color: s.fill ?? "#000000",
           bold: s.bold ?? false,
@@ -115,7 +139,7 @@
           boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
         }
       : {
-          rich,
+          rich: resolved,
           boxW: (s.w ?? 0) > 0 ? s.w : Infinity,
           boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
           boxStyle: { align: s.align ?? "left", lineSpacing: s.lineSpacing ?? 1, charSpacing: s.charSpacing ?? 0, wordSpacing: s.wordSpacing ?? 0, valign: s.valign ?? "top" },
@@ -195,26 +219,26 @@
    * pending empty-caret style), then collapses the caret after the insert. */
   function replaceRange(lo, hi, text) {
     let v = rich;
-    if (hi > lo) v = deleteRange(v, lo, hi);
+    if (hi > lo) v = deleteRange(v, lo, hi, inherited);
     const at = lo;
     const insLen = [...text].length;
-    v = insertText(v, at, text);
+    v = insertText(v, at, text, inherited);
     if (insLen > 0 && Object.keys(pendingStyle).length)
-      v = { runs: applyRunStyle(v.runs, at, at + insLen, pendingStyle), paras: v.paras };
+      v = { runs: applyRunStyle(v.runs, at, at + insLen, pendingStyle, inherited), paras: v.paras };
     preview(v);
     collapse(at + insLen);
     pendingStyle = {};
   }
   function typeText(t) { replaceRange(selStart, selEnd, t); }
   function insertNewline() { replaceRange(selStart, selEnd, "\n"); }
-  function deleteSelection() { preview(deleteRange(rich, selStart, selEnd)); collapse(selStart); }
+  function deleteSelection() { preview(deleteRange(rich, selStart, selEnd, inherited)); collapse(selStart); }
   function backspace() {
     if (selEnd > selStart) return deleteSelection();
-    if (selStart > 0) { preview(deleteRange(rich, selStart - 1, selStart)); collapse(selStart - 1); }
+    if (selStart > 0) { preview(deleteRange(rich, selStart - 1, selStart, inherited)); collapse(selStart - 1); }
   }
   function deleteForward() {
     if (selEnd > selStart) return deleteSelection();
-    if (selStart < textLen()) { preview(deleteRange(rich, selStart, selStart + 1)); collapse(selStart); }
+    if (selStart < textLen()) { preview(deleteRange(rich, selStart, selStart + 1, inherited)); collapse(selStart); }
   }
 
   // ── navigation (all geometry from the shared layout) ──────────────────────────
@@ -242,7 +266,7 @@
    *  the selection — the ONE expression of "styled selection", shared by the
    *  durable edit and the hover preview so they can never drift. */
   function styledOverSelection(base, delta) {
-    return { runs: applyRunStyle(base.runs, selStart, selEnd, delta), paras: base.paras };
+    return { runs: applyRunStyle(base.runs, selStart, selEnd, delta, inherited), paras: base.paras };
   }
 
   // ── style HOVER PREVIEW (the FontPicker's live canvas preview) ────────────────
@@ -262,16 +286,28 @@
   //           commitTextEdit would turn a mere hover into a no-op undo unit.
   let stylePreview = null;
 
-  /** Query. The rich value every style COMMIT and the TOOLBAR must read: the
-   *  pre-hover value while a hover preview is staged, else the live one. A hover
-   *  preview is a transient canvas effect, NOT an edit — so the toolbar must not
-   *  reflect it. This also breaks a FEEDBACK LOOP: the toolbar derives the
-   *  FontPicker's `value` from these runs, so without it a staged preview would
-   *  report the hovered font as the current one and the picker would immediately
-   *  cancel its own preview. */
+  /** Query. The STORABLE rich value every style COMMIT starts from, and the base
+   *  the TOOLBAR reads through styleBaseResolved: the pre-hover value while a
+   *  hover preview is staged, else the live one. A hover preview is a transient
+   *  canvas effect, NOT an edit — so the toolbar must not reflect it. This also
+   *  breaks a FEEDBACK LOOP: the toolbar derives the FontPicker's `value` from
+   *  these runs, so without it a staged preview would report the hovered font as
+   *  the current one and the picker would immediately cancel its own preview. */
   function styleBase() {
     const live = rich; // ALWAYS read, so readers stay subscribed to the live value
     return stylePreview ? stylePreview.value : live;
+  }
+
+  /** Query. styleBase() with the widget-level fallbacks RESOLVED — what every
+   *  style READER must use: the toolbar's B/I/U pressed state, its size box and
+   *  font name, and the two toggles that compute a next value from the current
+   *  one (toggleStyle, stepSize). On an unresolved base those reads see
+   *  `undefined` for a key the run never set, so Bold would render unset in a
+   *  BOLD box (and toggle to bold — a visible no-op), and Cmd+Plus in a size-60
+   *  box would step from runFrom's floor 36 to 38. The WRITE still goes through
+   *  styleBase(), so what is READ is resolved and what is STORED is not. */
+  function styleBaseResolved() {
+    return normalizeRichText(styleBase(), inherited);
   }
 
   /** Command. Live-previews a run-style delta over the selection WITHOUT
@@ -346,7 +382,7 @@
   }
   function toggleStyle(key) {
     if (plain) return; // plain-string widget: no bold/italic/underline runs
-    const base = styleBase(); // read the REAL state, never a hovered preview
+    const base = styleBaseResolved(); // the REAL state, resolved, never a hovered preview
     if (selEnd > selStart) {
       const cur = commonStyle(base.runs, selStart, selEnd, key);
       applyStyleToSelection({ [key]: cur === true ? false : true });
@@ -357,7 +393,7 @@
   }
   function stepSize(delta) {
     if (plain) return; // plain-string widget: size lives on the Inspector row
-    const cur = styleBase(); // read the REAL state, never a hovered preview
+    const cur = styleBaseResolved(); // the REAL state, resolved, never a hovered preview
     const base = commonStyle(cur.runs, selStart, selEnd, "size") ?? runStyleAt(cur.runs, selStart).size ?? DEFAULT_TEXT_SIZE;
     const size = Math.max(1, base + delta);
     if (selEnd > selStart) applyStyleToSelection({ size });
@@ -410,7 +446,7 @@
     pushHistory(); // the whole IME composition is ONE in-session undo step
     composing = true;
     let base = rich;
-    if (selEnd > selStart) { base = deleteRange(base, selStart, selEnd); stageValue(base); }
+    if (selEnd > selStart) { base = deleteRange(base, selStart, selEnd, inherited); stageValue(base); }
     compAnchor = selStart;
     compBase = base;
     collapse(compAnchor);
@@ -418,13 +454,13 @@
   function onCompositionUpdate(e) {
     if (!compBase) return;
     const data = e.data ?? "";
-    stageValue(insertText(compBase, compAnchor, data));
+    stageValue(insertText(compBase, compAnchor, data, inherited));
     const len = [...data].length;
     setSel(compAnchor + len, compAnchor + len);
   }
   function onCompositionEnd(e) {
     const data = e.data ?? "";
-    stageValue(insertText(compBase ?? rich, compAnchor, data));
+    stageValue(insertText(compBase ?? rich, compAnchor, data, inherited));
     collapse(compAnchor + [...data].length);
     composing = false; compBase = null;
     if (sinkEl) sinkEl.textContent = ""; // drop the native composing text (event source only)
@@ -595,7 +631,7 @@
       onstylepreviewend={endStylePreview}
       onparastyle={applyParaToSelection}
       selRange={{ start: selStart, end: selEnd }}
-      runsAt={() => styleBase().runs}
+      runsAt={() => styleBaseResolved().runs}
       parasAt={() => styleBase().paras}
       boxAlign={node.state.align ?? "left"}
     />

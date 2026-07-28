@@ -25,7 +25,10 @@
  */
 
 import assert from "node:assert/strict";
-import { normalizeRichText, layoutRichText, paraStyleFor, monoMeasure, DEFAULT_PARA } from "../core/richtext.js";
+import {
+  normalizeRichText, unresolvedRichText, layoutRichText, paraStyleFor, monoMeasure,
+  insertText, applyParaStyle, DEFAULT_PARA, RUN_STYLE_KEYS,
+} from "../core/richtext.js";
 import { leaves } from "../core/deltas.js";
 import { textPlugin } from "../plugins/text.js";
 import { DEFAULT_FONT } from "../render_gpu/fonts.js";
@@ -163,6 +166,67 @@ test("emit carries all four paragraph rows into boxStyle, and the layout honors 
   assert.equal(out.lines[0].width, spacedWidth);
   assert.equal(out.lines[0].height, LINE_H * BOX_LINE_SPACING);
   assert.equal(out.lines[0].glyphRuns[0].x, BOX_W - spacedWidth); // right-aligned
+});
+
+// ── mechanism 3: an EDIT must not re-shadow what the default stopped shadowing ──
+// Removing the stamp from `defaults.text` freed the eight rows AT REST. The
+// in-place editor then put it straight back: web/TextEditController derived its
+// edit model with normalizeRichText (RESOLVED runs) and staged the result of every
+// primitive verbatim, so ONE keystroke — or a paragraph-align commit, which writes
+// base.runs unchanged — re-materialized all ten run keys. Measured through
+// renderDocToPng: stored run keys ["text"] → eleven, and font/size/bold/color went
+// byte-identical again. The controller now edits unresolvedRichText(stored) and
+// only RESOLVES for the layout and the toolbar. These tests state the property the
+// primitives must have for that to work.
+
+/** Pure function. The run key set a value stores (the shadowing measurement). */
+function runKeys(value) {
+  return Object.keys(value.runs[0]);
+}
+
+test("an edit over the UNRESOLVED value stores no style the user did not set", () => {
+  const before = contentOnly("a b");
+  assert.deepEqual(runKeys(before), ["text"]);
+  const inherited = { size: SIZE, font: "lora", color: "#112233", bold: true };
+  // Typing: the inserted characters inherit the caret's style, and a bare caret
+  // has none — so the run stays bare no matter how the box is styled.
+  assert.deepEqual(runKeys(insertText(unresolvedRichText(before), 3, "Z", inherited)), ["text"]);
+  // A paragraph edit writes the runs back untouched, so it must not touch them.
+  const paraEdited = { runs: unresolvedRichText(before).runs, paras: applyParaStyle(before.paras, before.runs, 0, 3, { align: "center" }) };
+  assert.deepEqual(runKeys(paraEdited), ["text"]);
+  assert.deepEqual(paraEdited.paras, [{ align: "center" }]);
+  // The same edit over the RESOLVED value is the defect: all ten keys land.
+  const reshadowed = insertText(normalizeRichText(before, inherited), 3, "Z");
+  assert.deepEqual(runKeys(reshadowed), ["text", ...RUN_STYLE_KEYS]);
+});
+
+test("all four TYPOGRAPHY rows still reach the run AFTER an edit session", () => {
+  // The end-to-end statement: edit the unresolved value, then resolve through
+  // emit() with each box row changed, exactly as a render does.
+  const typed = insertText(unresolvedRichText(contentOnly("a b")), 3, "Z", { size: SIZE });
+  const BOX_SIZE = 60, BOX_COLOR = "#ff0000", BOX_FONT = "lora";
+  const [op] = textPlugin.emit({ ...textPlugin.defaults, text: typed, size: BOX_SIZE, color: BOX_COLOR, font: BOX_FONT, bold: true }, null, null);
+  assert.equal(op.rich.runs[0].size, BOX_SIZE);
+  assert.equal(op.rich.runs[0].color, BOX_COLOR);
+  assert.equal(op.rich.runs[0].font, BOX_FONT);
+  assert.equal(op.rich.runs[0].bold, true);
+  // …and the four PARAGRAPH rows still reach the layout after the same edit.
+  const [op2] = textPlugin.emit({ ...textPlugin.defaults, w: BOX_W, size: SIZE, text: typed, align: "right" }, null, null);
+  const out = layoutRichText(op2.rich, op2.boxW, monoMeasure, op2.boxStyle, op2.boxH);
+  assert.equal(out.lines[0].glyphRuns[0].x, BOX_W - out.lines[0].width);
+});
+
+test("an AUTHORED per-run size survives an edit (the 'Untitled cheese' case)", () => {
+  // A run that really did set size 76 under a box that says 36. An edit must keep
+  // it — which is the same reason no migration can strip a stamped key.
+  const RUN_SIZE = 76;
+  const authored = { runs: [{ text: "Te", size: RUN_SIZE }, { text: " xt" }], paras: [{}] };
+  const typed = insertText(unresolvedRichText(authored), 5, "Z", { size: SIZE });
+  assert.equal(typed.runs[0].size, RUN_SIZE);
+  assert.deepEqual(Object.keys(typed.runs[1]), ["text"]); // the bare neighbour stays bare
+  const [op] = textPlugin.emit({ ...textPlugin.defaults, text: typed, size: SIZE }, null, null);
+  assert.equal(op.rich.runs[0].size, RUN_SIZE); // authored run wins
+  assert.equal(op.rich.runs[1].size, SIZE);     // bare run takes the box row
 });
 
 // ── round trip: an OLD stored value must resolve exactly as it always did ──────
