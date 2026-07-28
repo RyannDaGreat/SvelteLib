@@ -2114,7 +2114,7 @@ export class PowerRPApp {
     this.commit(keyframed(this.doc, creation, ["items", this.selection, "name"], name));
   }
 
-  // ── Z-order (bisect + normalize; tweened z stays ephemeral) ───────────────
+  // ── Z-order (bisect + normalize; a tweened in-between z is never STORED) ──
 
   zPairs() {
     return this.nodes().map((n) => [n.itemId, n.state.z ?? 0]);
