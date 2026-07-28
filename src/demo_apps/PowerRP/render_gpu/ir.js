@@ -28,7 +28,7 @@
  *   {op:"popTransform"}
  *   {op:"blurBackdrop", radius, opacity}                         // radius in WORLD units
  *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, points, innerRatio, originX, originY, magnification, magnificationX, magnificationY, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"|"star" (points/innerRatio = star silhouette; rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth; magnificationX/Y = per-axis zoom, default to magnification)
- *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
+ *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, surfaceTension, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
  *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, softEdges, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow, +soft edges)
  *   {op:"materialBackdrop", material, cx, cy, halfW, halfH, cornerRadius, blurRadius, backdropScale, params, stroke, strokeWidth, opacity}  // registry-dispatched backdrop MATERIAL (SkSL); generalizes glassBackdrop
@@ -1084,6 +1084,13 @@ export function magnifyBackdrop({
  * solid rgba as a color cast + strength (alpha). `lightAngle` is radians (screen
  * space; -PI/2 = straight above). `materialize` (0..1) is the appear ramp.
  *
+ * `squircle` and `surfaceTension` together decide the SILHOUETTE: the exponent of
+ * the corner curve, and how far the straight edges have relaxed into that same
+ * curve (0 = a rectangle with squircle corners, 1 = the superellipse inscribed in
+ * the box, with no flat edge left anywhere). Everything that draws the boundary —
+ * the shader, the hairline stroke, the drop shadow, the thumbnail stand-in — reads
+ * that one curve from render_gpu/skia/glass_shader.js.
+ *
  * The MATERIAL-CHARACTER knobs (squircle, sheen, specularPower, contactShadow,
  * caustic, edgeLight, tintAdaptivity, chromatic) are the shader-uniform tuning
  * values, and `backdropScale` / `shadowStrength` are CPU-side render controls —
@@ -1096,6 +1103,7 @@ export function magnifyBackdrop({
  * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40}).materialize // 1 (settled by default)
  * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, tint: "rgba(255,255,255,0.14)"}).tint // [1, 1, 1, 0.14]
  * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, cornerRadius: -5}).cornerRadius // 0 (negative radii clamped)
+ * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, surfaceTension: 2}).surfaceTension // 1 (fully relaxed is the end of the family)
  * @example glassBackdrop({cx: 0, cy: 0, halfW: 80, halfH: 40, backdropScale: 5}).backdropScale // 5 (no upper cap; min 0.25)
  */
 export function glassBackdrop({
@@ -1103,7 +1111,7 @@ export function glassBackdrop({
   blurRadius = 8, refractionStrength = 14, edgeFalloff = 22,
   lightAngle = -Math.PI / 2, lightIntensity = 0.8,
   tint = null, saturation = 0.92, materialize = 1,
-  squircle = 4, sheen = 0.1, specularPower = 8, contactShadow = 0.26,
+  squircle = 4, surfaceTension = 0, sheen = 0.1, specularPower = 8, contactShadow = 0.26,
   caustic = 0.12, edgeLight = 0.14, tintAdaptivity = 1, chromatic = 0.08,
   backdropScale = 1, shadowStrength = 0.3,
   stroke = null, strokeWidth = 0, opacity = 1,
@@ -1111,7 +1119,7 @@ export function glassBackdrop({
   requireFinite("glassBackdrop", {
     cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength,
     edgeFalloff, lightAngle, lightIntensity, saturation, materialize,
-    squircle, sheen, specularPower, contactShadow, caustic, edgeLight,
+    squircle, surfaceTension, sheen, specularPower, contactShadow, caustic, edgeLight,
     tintAdaptivity, chromatic, backdropScale, shadowStrength, strokeWidth, opacity,
   });
   return {
@@ -1130,6 +1138,10 @@ export function glassBackdrop({
     materialize: Math.max(0, Math.min(1, materialize)),
     // material-character knobs (shader uniforms) — clamped to sane domains
     squircle: Math.max(2, squircle),          // >=2: never concave (2 == circular arc)
+    // [0,1] is the DEFINITION of the family, not a taste limit: 0 is the
+    // un-relaxed rectangle-plus-corners and 1 is the point at which the inner
+    // rectangle has collapsed entirely, so there is nothing left to relax.
+    surfaceTension: Math.max(0, Math.min(1, surfaceTension)),
     sheen: Math.max(0, sheen),
     specularPower: Math.max(1, specularPower),
     contactShadow: Math.max(0, contactShadow),
