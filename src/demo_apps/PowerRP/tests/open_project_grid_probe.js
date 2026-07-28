@@ -12,6 +12,21 @@
  * previews are visibly different). A screenshot of the grid lands in
  * .claude_vlm_checks/ for a VLM sanity read.
  *
+ * ALSO GUARDS THE SHARED 90% DIALOG, here rather than in a probe of its own
+ * because this is the dialog that CREATED that geometry (`size="large"` was added
+ * for this very grid: a `repeat(auto-fill, minmax(…, 1fr))` grid shrink-wraps to
+ * ONE column when its container's width is indefinite). The rule has since been
+ * loosened once already — Modal's default moved from "large" to content-sized
+ * "auto" — so "large" is now a claim only a measurement can keep honest:
+ *   - this grid's panel measures 90% of the viewport in BOTH axes;
+ *   - the RENDER CENTER's panel does too (it asks for the same shared size
+ *     rather than restating 90% anywhere of its own), and
+ *   - the clapperboard in that dialog's title is the SAME icon string its
+ *     toolbar button draws, read from the one registry entry that owns it — the
+ *     rendered half of the rule tests/toolbar_surfacing_test.js pins at source.
+ * Both dialogs are measured in ONE browser boot; a second probe would pay for a
+ * second Vite, a second backend and a second Skia warm-up to assert one number.
+ *
  * Run (exit-code gated):
  *   node src/demo_apps/PowerRP/tests/open_project_grid_probe.js
  */
@@ -29,6 +44,13 @@ const APP_DIR = resolve(HERE, "..");
 const VLM_DIR = join(APP_DIR, ".claude_vlm_checks");
 const SETTLE_MS = 4000; // Skia wasm + fonts + first paint before we drive the app
 const THUMB_TIMEOUT_MS = 30000; // budget for all previews to rasterize + stream in
+// The shared "large" dialog geometry, expressed as a FRACTION of the viewport so
+// the assertion never restates the viewport size the probe happens to set.
+const LARGE_MODAL_FRACTION = 0.9;
+// Slack for sub-pixel layout: the panel carries a 1px border, and a viewport
+// whose 90% is not an integer rounds. One part in a thousand of a 1400px
+// viewport is well under a pixel, so this still catches a wrong SIZE class.
+const FRACTION_TOLERANCE = 0.002;
 
 /** Query. A free TCP port (bind :0, read the assigned port, release). */
 function freePort() {
@@ -49,6 +71,41 @@ async function waitFor(url, tries = 200) {
     await new Promise((r) => setTimeout(r, 200));
   }
   throw new Error(`server never became ready at ${url}`);
+}
+
+/**
+ * Pure function. True when a measured fraction of the viewport is the shared
+ * "large" dialog's 90%, within FRACTION_TOLERANCE.
+ *
+ * @param {number} f Measured extent ÷ viewport extent.
+ * @returns {boolean}
+ *
+ * @example isLargeFraction(0.9)   // true
+ * @example isLargeFraction(0.9007) // true  (a 1px border on a 1400px viewport)
+ * @example isLargeFraction(0.42)  // false (a content-sized "auto" panel)
+ */
+function isLargeFraction(f) {
+  return Math.abs(f - LARGE_MODAL_FRACTION) <= FRACTION_TOLERANCE;
+}
+
+/**
+ * Query. The currently open `.modal-panel`'s size as a fraction of the layout
+ * viewport, measured from the live DOM (getBoundingClientRect, so it reports what
+ * was actually laid out rather than what the stylesheet asked for). THROWS when no
+ * dialog is open — a silently absent panel would make every ratio check vacuous.
+ *
+ * @param {import('puppeteer').Page} page
+ * @returns {Promise<{w:number,h:number,fw:number,fh:number,vw:number,vh:number}>}
+ */
+async function modalViewportFractions(page) {
+  return page.evaluate(() => {
+    const panel = document.querySelector(".modal-panel");
+    if (!panel) throw new Error("no .modal-panel is open to measure");
+    const r = panel.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    return { w: r.width, h: r.height, fw: r.width / vw, fh: r.height / vh, vw, vh };
+  });
 }
 
 /** Query. A distinct seed doc: a colored camera background + a contrasting
@@ -138,6 +195,15 @@ try {
   const cardCount = await page.$$eval(".open-project-card", (cards) => cards.length);
   if (cardCount !== SEEDS.length) throw new Error(`grid shows ${cardCount} cards, expected ${SEEDS.length}`);
 
+  // The shared 90% dialog, measured on the grid that created it.
+  const gridPanel = await modalViewportFractions(page);
+  console.log(`Open Project panel: ${gridPanel.w}x${gridPanel.h} of ${gridPanel.vw}x${gridPanel.vh} viewport`
+    + ` → ${(gridPanel.fw * 100).toFixed(2)}% x ${(gridPanel.fh * 100).toFixed(2)}%`);
+  if (!isLargeFraction(gridPanel.fw) || !isLargeFraction(gridPanel.fh)) {
+    throw new Error(`Open Project dialog is ${(gridPanel.fw * 100).toFixed(2)}% x ${(gridPanel.fh * 100).toFixed(2)}%`
+      + ` of the viewport, expected ${LARGE_MODAL_FRACTION * 100}% in both axes (size="large")`);
+  }
+
   // Poll until every card's thumbnail is a real (non-empty) data URL.
   const deadline = Date.now() + THUMB_TIMEOUT_MS;
   let states = [];
@@ -180,8 +246,57 @@ try {
   if (loadedName !== target) throw new Error(`clicked "${target}" but loaded project is "${loadedName}"`);
   if (!modalGone) throw new Error("modal did not close after clicking a card");
 
+  // ── The RENDER CENTER: same shared 90%, and one icon string in one place ────
+  // Opened through the registry ENTRY (not a bespoke app method), because that
+  // entry is also where the icon comes from — driving the real action layer is
+  // what makes "the dialog and the button agree" a claim about the product.
+  await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.commands.get("render-center").run(app);
+  });
+  await page.waitForSelector(".modal-panel .modal-title-group", { timeout: 8000 });
+  const rcPanel = await modalViewportFractions(page);
+  console.log(`Render Center panel: ${rcPanel.w}x${rcPanel.h} of ${rcPanel.vw}x${rcPanel.vh} viewport`
+    + ` → ${(rcPanel.fw * 100).toFixed(2)}% x ${(rcPanel.fh * 100).toFixed(2)}%`);
+  if (!isLargeFraction(rcPanel.fw) || !isLargeFraction(rcPanel.fh)) {
+    throw new Error(`Render Center dialog is ${(rcPanel.fw * 100).toFixed(2)}% x ${(rcPanel.fh * 100).toFixed(2)}%`
+      + ` of the viewport, expected ${LARGE_MODAL_FRACTION * 100}% in both axes (size="large")`);
+  }
+
+  const chrome = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const cmd = app.commands.get("render-center");
+    const button = [...document.querySelector(".toolbar").querySelectorAll("button")]
+      .find((b) => b.getAttribute("aria-label") === cmd.title);
+    return {
+      registryIcon: cmd.icon,
+      titleIcon: document.querySelector(".modal-panel .modal-title-icon")?.getAttribute("icon") ?? null,
+      titleText: document.querySelector(".modal-panel .modal-title")?.textContent ?? null,
+      buttonIcon: button ? button.querySelector("iconify-icon")?.getAttribute("icon") ?? null : null,
+    };
+  });
+  console.log("Render Center chrome:", JSON.stringify(chrome));
+  if (!chrome.titleIcon) throw new Error("the Render Center dialog title draws no icon at all");
+  if (chrome.titleIcon !== chrome.registryIcon) {
+    throw new Error(`dialog title icon "${chrome.titleIcon}" is not the registry entry's "${chrome.registryIcon}"`
+      + " — the title must READ the icon, never restate it");
+  }
+  if (chrome.buttonIcon !== chrome.registryIcon) {
+    throw new Error(`toolbar button icon "${chrome.buttonIcon}" is not the registry entry's "${chrome.registryIcon}"`);
+  }
+  const rcShot = join(VLM_DIR, "render_center_dialog.png");
+  await (await page.$(".modal-panel")).screenshot({ path: rcShot });
+  console.log("Screenshot:", rcShot);
+  // Close it: the dialog runs a 1s poll, and leaving it mounted lets that fire
+  // against a backend this probe is about to tear down.
+  await page.evaluate(() => window.__powerrp_app.toggleRenderCenter());
+  await new Promise((r) => setTimeout(r, 300));
+
   if (errors.length) throw new Error("captured errors:\n" + errors.join("\n"));
-  console.log(`OPEN-GRID OK — ${cardCount} preview cards rendered, click loaded "${loadedName}", modal closed.`);
+  console.log(`OPEN-GRID OK — ${cardCount} preview cards rendered, click loaded "${loadedName}", modal closed;`
+    + ` both dialogs measure ${(gridPanel.fw * 100).toFixed(1)}% x ${(gridPanel.fh * 100).toFixed(1)}%`
+    + ` / ${(rcPanel.fw * 100).toFixed(1)}% x ${(rcPanel.fh * 100).toFixed(1)}% of the viewport,`
+    + ` and the Render Center title draws the registry's "${chrome.registryIcon}".`);
 } catch (e) {
   console.error("OPEN-GRID FAILED:", e.message);
   process.exitCode = 1;

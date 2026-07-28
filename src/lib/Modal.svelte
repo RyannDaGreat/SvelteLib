@@ -39,6 +39,13 @@
     - `title` (optional) renders a plain header row with a close icon button
       (iconify-icon, repo convention — never a unicode glyph). Omit `title`
       to render only the content snippet (no header row at all).
+    - `titleIcon` (optional) puts one iconify glyph left of that title. It takes
+      an icon NAME, never markup, so a consumer can hand it the SAME string its
+      button already reads out of a registry instead of transcribing a second
+      copy — a dialog whose icon disagrees with the button that opened it is
+      exactly the hand-maintained mirror this repo keeps deleting. Empty (the
+      default) renders no glyph and no extra element, so a titled modal that
+      passes nothing is unchanged.
 
   Usage:
     <script>
@@ -93,6 +100,7 @@
     --modal-shadow       panel drop shadow          (0 8px 32px rgba(0,0,0,0.5))
     --modal-backdrop     backdrop fill              (rgba(0,0,0,0.55))
     --modal-header-gap   gap between title/close    (12px)
+    --modal-title-gap    gap between icon/title     (8px)
     --modal-title-size   title font size            (1rem)
 -->
 <script module>
@@ -195,6 +203,10 @@
     onclose = undefined,
     /** @type {string} Optional header title. Omit to render no header row. */
     title = "",
+    /** @type {string} Optional iconify icon NAME (e.g. "mdi:movie-open-outline")
+     *  drawn left of `title`. Pass the same string the opening button reads from
+     *  its own registry so the two cannot drift. Empty = no glyph. */
+    titleIcon = "",
     /** @type {import('svelte').Snippet} Arbitrary panel content. */
     children,
     /** @type {boolean} Clicking the backdrop closes the modal. */
@@ -310,7 +322,14 @@
       >
         {#if title}
           <div class="modal-header">
-            <span class="modal-title">{title}</span>
+            <!-- Icon + title are ONE group so the header's space-between keeps
+                 laying out two things (group | close), not three spread apart. -->
+            <span class="modal-title-group">
+              {#if titleIcon}
+                <iconify-icon class="modal-title-icon" icon={titleIcon}></iconify-icon>
+              {/if}
+              <span class="modal-title">{title}</span>
+            </span>
             <button
               type="button"
               class="modal-close"
@@ -369,6 +388,7 @@
     --modal-padding: 16px 20px;
     --modal-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     --modal-header-gap: 12px;
+    --modal-title-gap: 8px;
     --modal-title-size: 1rem;
 
     display: flex;
@@ -424,6 +444,24 @@
     padding: var(--modal-padding);
     border-bottom: 1px solid var(--modal-border);
     flex: none;
+  }
+
+  /* min-width:0 so the TITLE ellipsizes when the header is tight; without it a
+     flex item refuses to shrink below its content and shoves the close button
+     off the row instead. */
+  .modal-title-group {
+    display: flex;
+    align-items: center;
+    gap: var(--modal-title-gap);
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /* iconify-icon renders at 1em, so this sizes the glyph to the title's own
+     type size — one number, not two that can disagree. */
+  .modal-title-icon {
+    flex: none;
+    font-size: var(--modal-title-size);
   }
 
   .modal-title {

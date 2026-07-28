@@ -63,7 +63,7 @@
   // creation's multi-step placement — contributes its own registry entries.
   import { activations, canvasModes, handlerFor } from "./widget_handlers.js";
   import { unionRect, alignedPosition, mirroredPosition, flippedBox } from "../core/geometry.js";
-  import { reportOnce } from "../core/report.js";
+  import { reportAction } from "../core/report.js";
   // The camera-bind pair's sentences live beside `frameBindable`, the predicate
   // they explain, so the Tools pane's pool row and these command entries show the
   // same words without either transcribing the other's (core/registry.js).
@@ -1107,6 +1107,11 @@
    * entry, report, and change nothing (beginTextEdit and the Mandelbrot interior
    * nav both do exactly this), so that is what happens here, atomically: one
    * blocked item blocks the whole flip rather than leaving half a reflection.
+   *
+   * The refusal goes through reportAction, NOT reportOnce: reportOnce's dedup set is
+   * never cleared, so the SECOND click on Flip printed nothing at all and the tool
+   * looked broken rather than refused. A click cannot flood a console — see
+   * core/report.js's header for the rule.
    */
   function flip(a, axis) {
     const { raw, evaluated } = documentState(a);
@@ -1116,8 +1121,7 @@
     const bound = ids.filter((id) => [axis, sizeKey].some((key) =>
       isEquationValue(a.registry.get(raw.items[id].type), [key], raw.items[id][key])));
     if (bound.length > 0) {
-      reportOnce(
-        `flip-blocked-by-equation:${axis}:${bound.join(",")}`,
+      reportAction(
         `PowerRP: Flip ${axis === "x" ? "Horizontal" : "Vertical"} refused — ${bound.length} selected item(s) store an equation on ${axis} or ${sizeKey} (${bound.join(", ")}), and a flip must write both. Nothing was changed. Unbind those properties (or use "Unbind Position & Size") first.`,
       );
       return;
@@ -1367,7 +1371,15 @@
       // CanvasView's onDblClick performs to run the behaviour.
       activation: handlerFor("activate", app.selectedNode()?.plugin ?? {})?.id ?? null,
       modalActive: app.modalXform !== null, // a live G/S transform locks input (Blender modal)
-      snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: "A = anchor snap" while a drag has an active snap
+      snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: a drag has an active snap CORRECTION (what the guides and the toolbar tint read)
+      // ...and whether that correction is one the A release can actually BIND. The two
+      // are not the same, which is the defect: applyResizeSnap raises snapEngaged from
+      // its SIZE-MATCH branch alone, and size-match is DELIBERATELY out of anchor snap's
+      // v1 scope (manifest ARCHITECTURE PLAN #4: "skip size-match snaps"), so the "A —
+      // Anchor snap" chip lit up on a snap where holding A does nothing at all. This
+      // field comes from the SAME provenance the release path reads, so the offer and
+      // the action cannot disagree.
+      snapBindable: app.snapBindable,
       // ── THE FOCUS AXES ────────────────────────────────────────────────────
       // What the FOCUSED ELEMENT owns, mirrored out of the DOM by the focus
       // tracker below. These exist because onKeydown suppresses dispatch on a
@@ -1406,7 +1418,7 @@
   }
 
   let hints = $derived.by(() => {
-    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged; app.textEditing; app.latexEditing; app.codeEditing; app.canvasMode; focus;
+    app.mode; app.paletteOpen; app.selection; app.dragging; app.dragKind; app.crosshair; app.modalXform; app.snapEngaged; app.snapBindable; app.textEditing; app.latexEditing; app.codeEditing; app.canvasMode; focus;
     const base = app.shortcuts.hints(shortcutCtx());
     // While a modal transform is live, LEAD the bar with its announcement —
     // mode · active axis · typed buffer — so the live state is the first thing
@@ -1696,8 +1708,23 @@
   </Modal>
   <!-- RENDER CENTER — submit on the left, this project's renderings on the right.
        A submitted job belongs to the SERVER, so closing this dialog (or the tab)
-       does not touch it; reopening re-reads the same truth from the backend. -->
-  <Modal bind:open={renderCenterVisible} title="Render Center">
+       does not touch it; reopening re-reads the same truth from the backend.
+       SIZE "large" = the shared 90%-of-viewport dialog (src/lib/Modal.svelte's
+       one definition of that geometry, the same one Open Project and the asset
+       picker ask for). Two panes side by side plus a list of video rows has no
+       usable intrinsic width, so the default content-sized "auto" shrink-wrapped
+       it into a column — the case Modal's header already names as the reason
+       "large" exists.
+       titleIcon comes from the REGISTRY ENTRY the toolbar button reads, so the
+       clapperboard in the header and the clapperboard on the button are one
+       string in one place (App.svelte's "render-center" entry) — the same rule
+       Toolbar.svelte follows for every glyph it draws. -->
+  <Modal
+    bind:open={renderCenterVisible}
+    title="Render Center"
+    titleIcon={app.commands.get("render-center").icon}
+    size="large"
+  >
     {#if renderCenterVisible}
       <RenderCenterModal {app} />
     {/if}
