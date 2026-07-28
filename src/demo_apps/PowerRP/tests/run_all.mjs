@@ -49,7 +49,7 @@
  *   BACKEND_URL=… node tests/run_all.mjs   use a backend you already have
  * Run it from anywhere: paths resolve off this file, never process.cwd().
  */
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname, resolve, relative, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -83,21 +83,49 @@ const CONCURRENCY = { node: Math.max(2, Math.min(8, (navigator?.hardwareConcurre
 function collect(kind) {
   const dirs = ["tests", "render_gpu/tests"];
   // `.mjs` is admitted because a probe already used it. One suffix rule, no roster.
-  const suffix = {
-    node: /_test\.m?js$/,
-    browser: /_probe\.m?js$/,
-    python: /_test\.py$/,
-    shell: /_test\.sh$/,
-  }[kind];
+  const TEST_JS = /_test\.m?js$/;
+  const PROBE_JS = /_probe\.m?js$/;
+  const suffix = { node: TEST_JS, browser: PROBE_JS, python: /_test\.py$/, shell: /_test\.sh$/ }[kind];
   if (!suffix) throw new Error(`run_all: unknown kind ${JSON.stringify(kind)} — expected one of ${Object.keys(TIMEOUT_MS).join(", ")}`);
-  const globs = dirs.map((d) => [d, suffix]);
+  // For python and shell the LANGUAGE cannot lie, so the suffix is final. For the two
+  // JS kinds, gather both suffixes and let the file's CONTENT decide which kind it is.
+  const jsKind = kind === "node" || kind === "browser";
   const out = [];
-  for (const [dir, re] of globs) {
+  for (const dir of dirs) {
     const full = resolve(appRoot, dir);
     if (!existsSync(full)) continue;
-    for (const f of readdirSync(full)) if (re.test(f)) out.push(resolve(full, f));
+    for (const f of readdirSync(full)) {
+      const abs = resolve(full, f);
+      if (!jsKind) { if (suffix.test(f)) out.push(abs); continue; }
+      if (!TEST_JS.test(f) && !PROBE_JS.test(f)) continue;
+      if ((PROBE_JS.test(f) || drivesBrowser(abs)) === (kind === "browser")) out.push(abs);
+    }
   }
   return out.sort();
+}
+
+/**
+ * Query (reads the file). Does this test launch a headless browser? True when it
+ * IMPORTS puppeteer — statically or dynamically. That is the one thing every
+ * browser-driving test here has in common, and a file cannot do it by accident.
+ *
+ * THE QUOTES ARE THE WHOLE POINT, and I learned that by getting it wrong: a bare
+ * `grep -l puppeteer` says FOUR `_test.js` files drive a browser. Three of them only
+ * mention it in PROSE — `"no browser/Vite/puppeteer"`, `"in BARE NODE (… no
+ * puppeteer)"`, `"exercised by the puppeteer visual check, not here"`. They are
+ * genuinely DOM-free and correctly classified as bare-node. Requiring the quotes of
+ * a module specifier distinguishes a real import from a docstring that talks about
+ * one, so exactly ONE file reclassifies: video_scrub_determinism_test.js, which was
+ * running at node's x8 concurrency under the short timeout and made `--only=node`
+ * non-hermetic.
+ *
+ * @example drivesBrowser(".../video_scrub_determinism_test.js") // true — imports it
+ * @example drivesBrowser(".../cli_render_test.js")              // false — only says "no puppeteer"
+ * @example drivesBrowser(".../core_test.js")                    // false — never mentions it
+ */
+function drivesBrowser(file) {
+  if (!/\.m?js$/.test(file)) return false;
+  return /["']puppeteer(-core)?["']/.test(readFileSync(file, "utf8"));
 }
 
 /** How long the backend gets to bind and answer before the gate gives up. `uv run`
