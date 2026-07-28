@@ -113,6 +113,11 @@ export function suggestEquation(text, cursor, state, registry, selfId = null) {
   const candidates = [];
   if (headPath === "") {
     if ("self".startsWith(partial.toLowerCase()) || !partial) candidates.push({ text: "self", kind: "keyword" });
+    // `time` — the presentation clock (core/expressions.js scopeGet). Offered here
+    // because it is the ONE host identifier a user has a reason to type, and because
+    // it takes precedence over a variable of the same name (as `Math` and `random`
+    // do): a user who can SEE it reserved will not name a variable over it.
+    if ("time".startsWith(partial.toLowerCase()) || !partial) candidates.push({ text: "time", kind: "keyword" });
     for (const slug of slugs.toId.keys()) candidates.push({ text: slug, kind: "slug" });
     for (const name of Object.keys(state.vars ?? {})) candidates.push({ text: name, kind: "variable" });
     // Equation FUNCTIONS (registry-driven — Lead scope addition): insert with

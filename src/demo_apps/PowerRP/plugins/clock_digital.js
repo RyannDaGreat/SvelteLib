@@ -12,12 +12,21 @@
  * UNIVERSAL `=` marker (core/expressions.js) like every other numeric property:
  * typing `=` in its Inspector field binds it to an equation, and the equation
  * grammar exposes the deterministic host clock as the free identifier `time`
- * (the FOLDED presentation playback time, in seconds — core/expressions.js
- * scopeGet). So binding this widget's `time` to `= time` makes it TICK LIVE with
- * the presentation from the ONE shared time source; binding it to `= time * 2`,
+ * (seconds — core/expressions.js scopeGet, reading THE app-wide presentation clock,
+ * render_gpu/particle_clock.particleTime, the same one the particle emitters and the
+ * sky read). So binding this widget's `time` to `= time` makes it TICK LIVE with the
+ * presentation from the ONE shared time source; binding it to `= time * 2`,
  * `= time + 3600`, etc. drives it off any expression. emit() receives the
  * ALREADY-resolved number in `s.time` and never touches the evaluator — the clock
  * is WYSIWYG-live because emit() recomputes the string from `s.time` every frame.
+ *
+ * WHAT `= time` READS WHERE, so a frozen editor readout is not read as a bug: the
+ * clock has TWO REGIMES (particle_clock.js). In the EDITOR, CLI and thumbnails it is
+ * PAUSED at a fixed freeze time, so the widget shows a deterministic representative
+ * readout and the same document always renders byte-identically. It ticks in PRESENT
+ * mode (the live regime) and advances frame by frame in an MP4 export (which drives
+ * the clock explicitly). A clock that must show a fixed readout everywhere takes a
+ * plain number instead of an equation.
  *
  * ── STYLING = SHARED REGISTRY, one text() op (the plaintext inheritance) ──────
  * Like plaintext.js, it composes the positioning bundle, opacity, the effects

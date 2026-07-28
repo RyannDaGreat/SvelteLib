@@ -12,8 +12,14 @@
  * the hour hand 43200 s (12 h). Its clock-face angle is
  *   angle = wrap360( (time / period) * 360 )   — 0° = 12 o'clock, clockwise.
  * Because `time` is a plain numeric slot, it is equation-bindable through the
- * universal `=` path: `= t` (the live presentation clock), `= alpha*86400`
- * (sweep a whole day across a slide transition), `= otherClock.time`, etc.
+ * universal `=` path: `= time` (THE presentation clock — core/expressions.js
+ * scopeGet over render_gpu/particle_clock.particleTime, so this clock and the
+ * particle/sky widgets share one time), `= time * 3600` (an hour per second),
+ * `= otherClock.time + 900` (a second time zone), etc. `= time` is PAUSED at a fixed
+ * freeze in the editor/CLI (a deterministic still), ticks in Present mode, and is
+ * driven frame by frame in an MP4 export. There is no `alpha` identifier: to sweep a
+ * clock across a transition, KEYFRAME `time` on the two slides and let the tween
+ * interpolate it.
  *
  * ── HANDS → TIME (draggable yellow-square handles) ────────────────────────────
  * Each drawn hand's TIP is a modifier point (the standard yellow handle,

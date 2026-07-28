@@ -17,7 +17,7 @@
   import { fitRectView, canSkipNode } from "../core/view.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
-  import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
+  import { cameraFrameIR, evaluatedStateAt, evaluationAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
   import { assetUrl } from "./projectApi.js";
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
@@ -50,7 +50,7 @@
   // video frame). Re-evaluated ONLY when the frame changes (slide/alpha, in
   // onFrame) — never a per-frame full scene scan (the manifest's cheapness
   // requirement). `restingAnimated` caches that decision; `idleRaf` is the loop.
-  let restingAnimated = false; // does the settled slide hold a visible animated widget?
+  let restingAnimated = false; // visible animated widget, or an equation reading `time`?
   let idleRaf = null; // rAF handle for the at-rest animation loop (null = idle)
 
   const presenter = createPresenter(
@@ -84,7 +84,16 @@
    *  line: filter !canSkipNode(n, rect)) is exactly "visible, including through a
    *  lens" — no separate lens-region math is needed or correct. */
   function currentSlideHasVisibleAnimated() {
-    const state = evaluatedStateAt(app.doc, frame.index, frame.alpha, app.registry);
+    const evaluation = evaluationAt(app.doc, frame.index, frame.alpha, app.registry);
+    const state = evaluation.state;
+    // THE PRESENTATION CLOCK also drives the loop. `clock` is non-null exactly when
+    // some equation on this slide read `time` (core/expressions.evaluateState), so a
+    // clock widget bound to `= time` — or ANY property bound to it, e.g. the
+    // telescopic rig's tween variable — repaints without its plugin having to declare
+    // `animated`. Derived from the pass that ran, so it cannot fall out of sync with
+    // the equations the way a hand-set flag would; a deck that never writes `= time`
+    // gets null and the loop stays off.
+    if (evaluation.clock !== null) return true;
     const rect = cameraRect(state, app.doc.meta);
     return deriveRenderTree(state, app.registry).some(
       (n) => n.state.animated === true && !canSkipNode(n, rect),

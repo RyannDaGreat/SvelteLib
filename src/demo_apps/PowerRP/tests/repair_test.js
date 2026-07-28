@@ -13,7 +13,7 @@ import {
   newDocument, withNewItem, withNewSlide, keyframed, unkeyframed, withSlideDeleted,
   withSlideToggled, foldState, orphanedItems, withOrphanedItemsDropped,
   missingDefaults, withMissingDefaultsFilled, legacyKeyRenames, withLegacyKeysRenamed,
-  dormantShadows, withDormantShadowsNeutralized,
+  serialize, deserialize,
   fancyArrowFillMigrations, withFancyArrowFillMigrated,
   linearGradientAngleMigrations, withLinearGradientAngleMigrated,
   antialiasSelectMigrations, withAntialiasSelectMigrated,
@@ -327,45 +327,59 @@ test("repairedDocument runs legacy renames BEFORE fill (value preserved) and mig
   assert.ok(reports.some((r) => r.includes("duration") && r.includes("transition.seconds")));
 });
 
-test("dormantShadows: only a blur-0, opacity>0 stored shadow (the old default) is dormant", () => {
-  // The exact old-default shadow every pre-14.8 item stored at creation.
-  const oldDefault = { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 };
-  const doc = { slides: [{ delta: { items: {
-    a: { type: "rect", shadow: { ...oldDefault } },            // dormant (blur 0, opacity 0.5)
-    b: { type: "rect", shadow: { ...oldDefault, blur: 4 } },   // VISIBLE before (blur 4) → keep
-    c: { type: "rect", shadow: { ...oldDefault, opacity: 0 } },// already off → not dormant
-    d: { type: "rect" },                                        // no shadow → nothing
-  } } }] };
-  const dormant = dormantShadows(doc);
-  assert.equal(dormant.length, 1);
-  assert.equal(dormant[0].id, "a");
-});
+// ── A CRISP SHADOW SURVIVES A SAVE/LOAD ROUND TRIP ───────────────────────────
+//
+// THESE THREE TESTS REPLACE THREE THAT ENCODED A BUG. The retired ones asserted
+// that repairedDocument ZEROES any stored shadow with blur 0 and opacity > 0 —
+// the "dormant shadow" migration (ac98586). Manifest 14.8 makes that shape the
+// canonical CRISP hard-edged shadow ("blur should be allowed to be 0 and still
+// visible — but shadow opacity = 0 gates whether we render it"), and shadow.blur
+// DEFAULTS to 0, so the migration destroyed the most ordinary authored shadow
+// there is on every single load. The old assertions were therefore pinning the
+// defect in place; they are gone with the migration, and these replace them by
+// asserting the OPPOSITE — the value survives.
 
-test("withDormantShadowsNeutralized: dormant shadow → opacity 0, visible shadow untouched, idempotent", () => {
-  const doc = { slides: [{ delta: { items: {
-    a: { type: "rect", shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 } },
-    b: { type: "rect", shadow: { dx: 3, dy: 3, blur: 4, color: "#000000", opacity: 0.5 } },
-  } } }] };
-  const { doc: fixed, neutralized } = withDormantShadowsNeutralized(doc);
-  assert.equal(fixed.slides[0].delta.items.a.shadow.opacity, 0); // neutralized
-  assert.equal(fixed.slides[0].delta.items.a.shadow.dx, 3);      // dx/dy left as stored
-  assert.equal(fixed.slides[0].delta.items.b.shadow.opacity, 0.5); // visible shadow untouched
-  assert.equal(neutralized.length, 1);
-  // Idempotent: re-running finds nothing dormant.
-  assert.equal(withDormantShadowsNeutralized(fixed).neutralized.length, 0);
-});
-
-test("repairedDocument neutralizes an old-default dormant shadow with a loud report", () => {
+test("a CRISP shadow (blur 0, opacity > 0) survives a save/load round trip", () => {
+  // The most ordinary authored shadow in the app: blur left at its default 0,
+  // Shadow opacity raised off 0. This is precisely what the deleted dormant-shadow
+  // migration reset, and it must now come back byte-identical.
   const [doc, id] = withNewItem(newDocument(registry), 0, {
-    type: "rect", x: 0, y: 0, w: 10, h: 10, active: true,
-    shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 }, // old default
+    ...registry.get("rect").defaults, x: 0, y: 0, w: 100, h: 60, active: true,
+    shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0.5 },
+  });
+  const { doc: loaded, reports } = repairedDocument(deserialize(serialize(doc)), registry);
+  assert.deepEqual(loaded.slides[0].delta.items[id].shadow,
+    { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0.5 });
+  assert.deepEqual(reports.filter((r) => r.includes("shadow")), []); // and nothing to say about it
+  // Still renders through the strict IR.
+  sceneIR(deriveRenderTree(evaluateState(foldState(loaded, 0, 1), registry).state, registry));
+});
+
+test("an OFFSET crisp shadow (blur 0, opacity 1, colored) survives too — and repeated loads never erode it", () => {
+  const [doc, id] = withNewItem(newDocument(registry), 0, {
+    ...registry.get("rect").defaults, x: 0, y: 0, w: 10, h: 10, active: true,
+    shadow: { dx: 12, dy: -4, blur: 0, color: "#ff0000", opacity: 1 },
+  });
+  let out = doc;
+  for (let i = 0; i < 3; i++) out = repairedDocument(deserialize(serialize(out)), registry).doc;
+  assert.deepEqual(out.slides[0].delta.items[id].shadow,
+    { dx: 12, dy: -4, blur: 0, color: "#ff0000", opacity: 1 });
+});
+
+test("the OLD-DEFAULT shadow shape is now kept as stored — it is indistinguishable from an authored one", () => {
+  // {dx:3, dy:3, blur:0, opacity:0.5} was the pre-14.8 creation default, invisible
+  // under the old blur-gated render. It is ALSO exactly what a user authors today by
+  // typing 3 into Shadow X/Y and 0.5 into Shadow opacity — the two documents are
+  // byte-identical, so no predicate can tell them apart. Repair therefore keeps it,
+  // and a pre-14.8 deck shows those shadows. That is visible on canvas and undone by
+  // setting Shadow opacity to 0; the alternative cost the user's authored value.
+  const [doc, id] = withNewItem(newDocument(registry), 0, {
+    ...registry.get("rect").defaults, x: 0, y: 0, w: 10, h: 10, active: true,
+    shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.5 },
   });
   const { doc: fixed, reports } = repairedDocument(doc, registry);
-  assert.equal(fixed.slides[0].delta.items[id].shadow.opacity, 0);
-  assert.ok(reports.some((r) => r.includes(id) && r.includes("opacity 0")));
-  // And it still renders through the strict IR.
-  const state = evaluateState(foldState(fixed, 0, 1), registry).state;
-  sceneIR(deriveRenderTree(state, registry));
+  assert.equal(fixed.slides[0].delta.items[id].shadow.opacity, 0.5);
+  assert.deepEqual(reports.filter((r) => r.includes("shadow")), []);
 });
 
 // ── Round 15.6: the box-level `valign` default fills on OLD text docs ─────────

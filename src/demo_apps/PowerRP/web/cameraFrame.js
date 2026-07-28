@@ -53,7 +53,26 @@ import { rect as rectCmd, parsePaint } from "../render_gpu/ir.js";
  * @example // evaluatedStateAt(newDocument(), 0, 1, registry) // {items:{...}, vars:{...}}
  */
 export function evaluatedStateAt(doc, slideIndex, alpha, registry) {
-  return evaluateState(tweenedState(doc, slideIndex, alpha, registry), registry).state;
+  return evaluationAt(doc, slideIndex, alpha, registry).state;
+}
+
+/**
+ * Query (memoized fold + evaluate). The WHOLE evaluation for (doc, slide, alpha) —
+ * `{state, errors, deps, clock}` — for the one caller that needs more than the
+ * state: the presenter, which reads `clock` to know whether this slide's equations
+ * animate off the presentation clock and therefore need a per-frame repaint.
+ * `evaluatedStateAt` is this plus `.state`, so the two cannot drift.
+ *
+ * @param {object} doc PowerRP document.
+ * @param {number} slideIndex Slide index.
+ * @param {number} alpha Tween alpha.
+ * @param {object} registry Plugin registry.
+ * @returns {object} {state, errors, deps, clock} (see core/expressions.evaluateState).
+ *
+ * @example // evaluationAt(newDocument(), 0, 1, registry).clock // null — a fresh deck reads no clock
+ */
+export function evaluationAt(doc, slideIndex, alpha, registry) {
+  return evaluateState(tweenedState(doc, slideIndex, alpha, registry), registry);
 }
 
 /**

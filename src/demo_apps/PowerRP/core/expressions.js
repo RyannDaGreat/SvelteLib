@@ -102,8 +102,20 @@ import {
   listPathKind, listStoragePath,
 } from "./lists.js";
 import { textDissolve, textType, textScramble } from "./text_transitions.js";
+// The presentation clock behind `= time` (see readClock in computeEvaluatedState).
+// core/ → render_gpu/ is established (core/registry.js → effects.js, core/clip.js →
+// decorate.js), and particle_clock.js is DOM-free bare-node code by its own contract
+// (performance.now() is a node global), so core's bare-node requirement holds.
+import { particleTime } from "../render_gpu/particle_clock.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
+//
+// THE UNIVERSAL "=" MARKER IS NOT IN THIS GRAMMAR. tokenize() rejects "=" as an
+// unexpected character, and it must: its tokens carry SOURCE POSITIONS that the
+// rewriters slice the original string with, so a tokenizer that quietly swallowed
+// a prefix would hand back offsets into a string its caller never had. The marker
+// therefore comes off ABOVE the tokenizer — see withMarkerPreserved (§Equation
+// slots), which is the ONE place that splits it.
 
 const OP_CHARS = "+-*/()";
 const NUM_RE = /^(?:\d+\.?\d*|\.\d+)/;
@@ -907,23 +919,43 @@ export function parseSelfRef(token, selfId) {
   return { kind: "prop", itemId: selfId, path };
 }
 
+// A variable name — and the head of every bare reference token: the ONE spelling
+// rule, shared by the resolver's "is this even a token" guard and the rename's
+// entry check, so the two can never disagree about what a name is.
+const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /**
- * Pure function. Resolves any reference token (display or stored form) to a
+ * Pure function. Resolves ONE reference token (display or stored form) to a
  * descriptor: {kind: "var", name} | {kind: "prop", itemId, path} |
  * {kind: "anchor", itemId, anchorId, coord}. Throws with a helpful message
  * when nothing matches. `slugs` is a slugMap(state). `selfId` (optional) is
  * the owner item's id, enabling `self.…` references.
  *
+ * A TOKEN, NOT A SOURCE. A dotless token used to be handed back as a variable
+ * named whatever it happened to be, so a caller that passed a whole equation
+ * SOURCE got `{kind: "var", name: "= speed"}` — a variable that cannot exist —
+ * and, because callers treat an unresolved reference as "not a variable", the
+ * feature keyed off it silently vanished instead of failing. That is what
+ * NumericField's reference SCRUBBER did for every `= speed` value. A name that is
+ * not an identifier is now a loud error, which catches the whole category (the
+ * "=" marker is the common case, but any source-where-a-token-belongs mistake
+ * lands here) rather than one caller of it.
+ *
  * @example resolveRef("speed", slugMap({items: {}})) // {kind: "var", name: "speed"}
  * @example resolveRef("box.x", slugMap({items: {a1: {type: "rect", name: "Box"}}})) // {kind: "prop", itemId: "a1", path: ["x"]}
  * @example resolveRef("box_tm.x", slugMap({items: {a1: {type: "rect", name: "Box"}}})) // {kind: "anchor", itemId: "a1", anchorId: "tm", coord: "x"}
  * @example resolveRef("self.w", slugMap({items: {}}), "a1") // {kind: "prop", itemId: "a1", path: ["w"]}
+ * @example // resolveRef("= speed", slugMap({items: {}})) throws: "= speed" is not one reference token
  */
 export function resolveRef(token, slugs, selfId = null) {
   if (token.startsWith("@")) return parseStoredRef(token);
   if (token === "self" || token.startsWith("self.")) return parseSelfRef(token, selfId);
   const [head, ...path] = token.split(".");
-  if (path.length === 0) return { kind: "var", name: token };
+  if (path.length === 0) {
+    if (!IDENTIFIER_RE.test(token))
+      throw new Error(`"${token}" is not one reference token — a variable name must be an identifier (a whole equation source, "=" marker and all, is not a token: split it first)`);
+    return { kind: "var", name: token };
+  }
   if (slugs.toId.has(head)) return { kind: "prop", itemId: slugs.toId.get(head), path };
   const us = head.lastIndexOf("_");
   if (us > 0) {
@@ -952,24 +984,34 @@ export function resolveRef(token, slugs, selfId = null) {
  * it (displayToStored/storedToDisplay pass known function names through
  * verbatim).
  *
+ * THE UNIVERSAL "=" MARKER IS SPLIT OFF AND REJOINED (withMarkerPreserved) — so
+ * EVERY rewriter built on this one (withVariableRenamed's rename,
+ * withItemRefsRemapped's clone re-pointing, displayToStored) handles the marker
+ * form without knowing it exists. This is the seam rather than each caller,
+ * because the tokenizer cannot take the marker itself (Tokenizer header) and
+ * because a per-caller split is what silently skipped `= speed * 2` on rename.
+ *
  * @example mapRefTokens("a + b", (t) => t.toUpperCase()) // "A + B"
  * @example mapRefTokens("f(a).x", (t) => t.toUpperCase()) // "F(A).x" (name + arg mapped; the projection .x is grammar, untouched)
  * @example mapRefTokens("a + b", (v, tok) => `${v}@${tok.start}`) // "a@0 + b@4" (mapper gets the token for its span)
  * @example mapRefTokens("true", (t) => t.toUpperCase()) // "true" (a reserved literal is grammar, never mapped)
+ * @example mapRefTokens("= a + b", (t) => t.toUpperCase()) // "= A + B" (the marker survives; token spans stay relative to the body)
  */
 export function mapRefTokens(src, mapToken) {
-  let out = "";
-  let last = 0;
-  const tokens = tokenize(src);
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    if (t.kind !== "ref") continue;
-    if (tokens[i - 1]?.kind === "dot") continue; // member projection coord (.x/.y): grammar, not a ref
-    if (booleanLiteralAt(tokens, i)) continue; // reserved literal (true/false): grammar, not a ref
-    out += src.slice(last, t.start) + mapToken(t.value, t);
-    last = t.end;
-  }
-  return out + src.slice(last);
+  return withMarkerPreserved(src, (body) => {
+    let out = "";
+    let last = 0;
+    const tokens = tokenize(body);
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.kind !== "ref") continue;
+      if (tokens[i - 1]?.kind === "dot") continue; // member projection coord (.x/.y): grammar, not a ref
+      if (booleanLiteralAt(tokens, i)) continue; // reserved literal (true/false): grammar, not a ref
+      out += body.slice(last, t.start) + mapToken(t.value, t);
+      last = t.end;
+    }
+    return out + body.slice(last);
+  });
 }
 
 /**
@@ -1125,15 +1167,27 @@ export function displayToStored(src, state) {
  * camelCase (the plugin's native key spelling). Unknown ids (purged items)
  * are left in @-form so the user can still see and fix the reference. Never
  * throws on resolvable syntax; malformed sources are returned unchanged (the
- * error affordance reports them).
+ * error affordance reports them) — that is a HANDOFF, not a silent failure: the
+ * field's own invalid affordance is what tells the user.
+ *
+ * THE UNIVERSAL "=" MARKER SURVIVES (withMarkerPreserved). Without that split
+ * this returned `= @a1.x` VERBATIM — the raw internal item id, on screen, in the
+ * one place the user reads these strings — because the marker made the whole
+ * source untokenizable and it fell into the verbatim branch above.
  *
  * @example storedToDisplay("@a1.x + 10", {items: {a1: {type: "rect", name: "Box"}}}) // "box.x + 10"
+ * @example storedToDisplay("= @a1.x", {items: {a1: {type: "rect", name: "Box"}}}) // "= box.x" (marker kept, body mapped)
  * @example storedToDisplay("@a1_tm.y", {items: {a1: {type: "rect", name: "Box"}}}) // "box_tm.y"
  * @example storedToDisplay("@a1.endWidth", {items: {a1: {type: "fancy_arrow", name: "Arrow"}}}) // "arrow.end_width"
  * @example storedToDisplay("self.rotationAnchor.x") // "self.rotation_anchor.x"
  * @example storedToDisplay("closest_to_rim(@a1, @a2).x", {items: {a1: {type: "rect", name: "Box"}, a2: {type: "circle", name: "C"}}}) // "closest_to_rim(box, c).x"
  */
 export function storedToDisplay(src, state) {
+  return withMarkerPreserved(String(src), (body) => storedBodyToDisplay(body, state));
+}
+
+/** Pure function. storedToDisplay for a marker-FREE body (see its docs). */
+function storedBodyToDisplay(src, state) {
   const slugs = slugMap(state);
   let tokens;
   try {
@@ -1222,6 +1276,38 @@ export function isNumericSlot(plugin, path) {
 // affordance), regardless of its default kind. Whitespace before "=" is
 // tolerated (parseExpression strips `^\s*=\s*`).
 const EQ_PREFIX_RE = /^\s*=/;
+
+/**
+ * Pure function. Applies `rewrite` to an equation's BODY with the universal "="
+ * MARKER split off, and rejoins the marker verbatim.
+ *
+ * THE ONE PLACE THE MARKER COMES OFF. The marker is not part of the expression
+ * grammar (see the Tokenizer header for why it cannot be), so every rewriter that
+ * hands a STORED value to tokenize() has to split it first — and every rewriter
+ * that split it BY HAND instead was a silent wrong answer waiting to happen:
+ * withVariableRenamed left `= speed * 2` pointing at a variable the rename had
+ * just deleted, and storedToDisplay showed the raw `@a1.x` internal id in the one
+ * place the user reads these strings. Both fell into their own "unparseable →
+ * return it unchanged" branch, which is why neither said a word.
+ *
+ * BECAUSE THIS SITS INSIDE mapRefTokens AND storedToDisplay — the module's only
+ * two functions that tokenize a stored value and return a rewritten SOURCE — every
+ * rewriter built on them is marker-correct for free, and a new one cannot
+ * reintroduce the defect by forgetting.
+ *
+ * NOT for the display→stored direction: displayToStored deliberately DROPS the
+ * marker, because whether a committed value is an equation is the caller's
+ * decision, not the converter's (see its docs).
+ *
+ * @example withMarkerPreserved("= @a.w / 2", (body) => body.replace("@a", "@z")) // "= @z.w / 2"
+ * @example withMarkerPreserved("@a.w", (body) => body.replace("@a", "@z")) // "@z.w" (no marker: `rewrite` sees the whole source)
+ * @example withMarkerPreserved("  =  @a.w", (body) => body.replace("@a", "@z")) // "  =  @z.w" (the marker's spacing survives; the body keeps its own)
+ * @example withMarkerPreserved("=1", (body) => `(${body})`) // "=(1)"
+ */
+export function withMarkerPreserved(src, rewrite) {
+  const marker = EQ_PREFIX_RE.exec(src)?.[0] ?? "";
+  return marker + rewrite(src.slice(marker.length));
+}
 
 /**
  * Pure function. Does this stored string value declare an equation? Either the
@@ -1769,12 +1855,18 @@ const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
 // identifiers (`shape_2.x`, `speed`, `self.w`, `Math.sin`, plus IIFEs, locals,
 // loops, conditionals) all route through the proxy's `get`. `get` is the SINGLE
 // gate: it resolves references (recording each as a DYNAMIC dependency), hands
-// back a determinism-safe host (Math WITHOUT random, a controlled time/frame, a
-// SEEDED random, and the FUNCTIONS registry), and — because `has` is always
-// true — leaves NO path to the real globals (Date/window/globalThis/fetch
-// resolve to undefined, so `Date.now()` throws loudly rather than reaching the
-// wall clock). This keeps RenderTree = pure(document, alpha): evaluation is a
-// deterministic function of the folded state alone.
+// back a determinism-safe host (Math WITHOUT random, the CONTROLLED presentation
+// clock as `time`, a SEEDED random, and the FUNCTIONS registry), and — because
+// `has` is always true — leaves NO path to the real globals
+// (Date/window/globalThis/fetch resolve to undefined, so `Date.now()` throws loudly
+// rather than reaching the wall clock).
+//
+// So evaluation is a deterministic function of (folded state, presentation clock).
+// `time` is the ONLY input beyond the state, it is the app-wide controlled clock
+// rather than a wall clock (frozen for every still; driven per frame by the MP4
+// exporters), and a document that never writes `= time` is a pure function of the
+// state alone — the RenderTree = pure(document, [[slide, alpha]]) case. This is the
+// same RECORDABLE-state bargain a particle emitter or a video frame already makes.
 //
 // UNTAKEN-BRANCH CAVEAT (by design): dependencies are captured by EXECUTION, not
 // by static parsing, so a reference in a branch that does NOT run this pass
@@ -1979,7 +2071,7 @@ function segsToToken(segs) {
  * LOUD: every slot on the cycle gets the "Cyclic expressions: …" message and
  * falls back to its default; slots merely downstream still evaluate.
  *
- * Returns {state, errors, deps}. `errors` maps "items.a1.x"-style joined paths
+ * Returns {state, errors, deps, clock}. `errors` maps "items.a1.x"-style joined paths
  * to human messages; errored slots (syntax errors, unknown references, cycles,
  * wrong-kind or non-finite results, or ANY thrown expression) fall back to the
  * plugin default for the key (0 for variables) — deterministic, never a silent
@@ -2002,12 +2094,26 @@ function segsToToken(segs) {
  *     no wobble. Identical solves within one pass are MEMOIZED, so from.x/from.y
  *     (and the symmetric to-side call) share ONE solve.
  *
+ * `clock` is the presentation-clock value this pass read (particleTime()), or
+ * `null` when no equation mentioned `time`. It is BOTH the memo's invalidation key
+ * and the presenter's "does this slide animate off the clock?" answer — derived
+ * from the pass that actually ran, so it cannot drift from the equations the way a
+ * hand-declared `animated` flag or a static source scan could.
+ *
  * @example evaluateState({vars: {speed: 5}, items: {a1: {type: "rect", x: "speed * 2"}}}, registry).state.items.a1.x // 10
+ * @example evaluateState({vars: {speed: 5}, items: {}}, registry).clock // null (no equation read the clock)
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
  */
 export function evaluateState(state, registry) {
   const memo = evalMemo.get(state);
-  if (memo && memo.registry === registry) return memo.result;
+  // A CLOCK-FREE result is cached forever (the overwhelming majority — this is the
+  // memo drag latency depends on). A clock-READING one is only reused while the
+  // clock still reads the same, so the PAUSED regime (editor/CLI/thumbnails, where
+  // particleTime() is a constant) caches exactly as before, while the LIVE presenter
+  // and the per-frame export override re-evaluate as the clock advances.
+  if (memo && memo.registry === registry
+    && (memo.result.clock === null || memo.result.clock === particleTime()))
+    return memo.result;
   const result = computeEvaluatedState(state, registry);
   evalMemo.set(state, { registry, result });
   return result;
@@ -2071,12 +2177,35 @@ function computeEvaluatedState(state, registry) {
     reportOnce(message, `PowerRP expression error at ${slot.key}: ${message}`);
   };
 
-  // Controlled clock + seeded random (determinism): sourced from the FOLDED
-  // state, never wall-clock. The host folds `time`/`frame` into state for
-  // animation; absent ⇒ 0. The random seed is a hash of the equation set, so a
-  // given document yields a reproducible sequence — RenderTree = pure(document).
-  const time = typeof state.time === "number" ? state.time : 0;
-  const frame = typeof state.frame === "number" ? state.frame : 0;
+  // THE PRESENTATION CLOCK. `time` is RECORDABLE state (manifest THE THREE KINDS
+  // OF STATE): not derivable from [[slide, alpha]], but fully deterministic given a
+  // timeline. There is exactly ONE answer in this codebase to "what animation time
+  // is it right now?" — render_gpu/particle_clock.particleTime() — with a PAUSED
+  // regime (a fixed freeze for the editor, CLI, thumbnails, so every still is
+  // byte-reproducible), a LIVE regime the presenter opts into, and an override the
+  // MP4 exporters already drive per frame. `= time` reads THAT clock, so an
+  // equation-driven widget and an ambient one (particles, sky, cursor) can never
+  // disagree about the time. A second time source would be a second thing to keep
+  // in sync, which is the mirror hazard this codebase keeps paying for.
+  //
+  // It is read ONCE per pass and handed back to the memo (`clockRead`), so the
+  // cache cannot serve a stale clock — see evaluateState.
+  //
+  // `state.time` is NOT consulted. It never was written by anything, and
+  // setParticleTimeOverride is already the one override seam.
+  //
+  // THERE IS NO `frame`. It resolved to a frozen 0 here for the same reason `time`
+  // did, and unlike `time` it cannot be given an honest meaning: a frame number
+  // needs a frame rate, `meta.fps` is dead ("presentations are always uncapped",
+  // stripped by repairedDocument), and the presenter runs one frame per rAF tick —
+  // so the same document would number its frames differently on a 60Hz and a 120Hz
+  // display. `= frame` is now an unknown reference and fails LOUDLY, which is the
+  // honest answer. Divide `time` by a frame rate you choose if you want frames.
+  //
+  // The random seed is a hash of the equation set, so a given document yields a
+  // reproducible sequence.
+  let clockRead = null; // the clock value this pass used, or null if nothing read it
+  const readClock = () => (clockRead ??= particleTime());
   const seededRandom = mulberry32(stringSeed([...slots.keys()].sort().join("|") + "|powerrp"));
 
   // Rim-solve MEMO (per pass): from.x/from.y of one closest ref share ONE solve;
@@ -2324,8 +2453,7 @@ function computeEvaluatedState(state, registry) {
       case "NaN": return NaN;
       case "Infinity": return Infinity;
       case "Math": return SAFE_MATH; // no random
-      case "time": return time;
-      case "frame": return frame;
+      case "time": return readClock(); // the ONE presentation clock (see readClock)
       case "random": return seededRandom; // seeded, deterministic
     }
     if (name in FUNCTIONS) return makeFn(name, slot, selfId);
@@ -2409,7 +2537,7 @@ function computeEvaluatedState(state, registry) {
     reportOnce(message, `PowerRP expression warning: ${message}`);
   }
 
-  return { state: out, errors, deps };
+  return { state: out, errors, deps, clock: clockRead };
 }
 
 // ── Migration + variable rename ──────────────────────────────────────────────
@@ -2445,29 +2573,53 @@ export function withBindingsMigrated(doc) {
 }
 
 /**
- * Pure function. Renames a variable document-wide: every vars.<oldName>
- * keyframe moves to vars.<newName>, and every equation (numeric-slot string
- * in any slide delta, plus every vars equation) has its bare `oldName`
- * reference tokens rewritten. Variables are referenced BY NAME (their name
- * is their identity), so rename must rewrite — unlike items, which are
- * stored by id and never need this. Throws if newName is not a valid
- * identifier or already exists as a variable.
+ * Near-pure function (console.errors each NEW unrewritable equation once — never
+ * silently). Renames a variable document-wide: every vars.<oldName> keyframe
+ * moves to vars.<newName>, and every EQUATION SLOT in any slide delta (the
+ * canonical isEquationValue walk — not just the legacy numeric slots) plus every
+ * vars equation has its bare `oldName` reference tokens rewritten. Variables are
+ * referenced BY NAME (their name is their identity), so rename must rewrite —
+ * unlike items, which are stored by id and never need this. Throws if newName is
+ * not a valid identifier or already exists as a variable.
+ *
+ * WHAT IT CANNOT REWRITE, IT REPORTS. Stored equations are FULL JavaScript
+ * (computeEvaluatedState), while token-structural rewriting only reaches the
+ * RESTRICTED grammar; a textual rewrite is not an option (it would corrupt
+ * `"speed wins"` inside a string literal and any identifier with `speed` as a
+ * substring). So an IIFE/loop equation that names the variable is left ALONE and
+ * console.errored, because the alternative — leaving the document referencing a
+ * name that no longer exists, having reported success — is the silent wrong answer
+ * this replaced. A source that does not mention `oldName` at all needs no rewrite
+ * and says nothing: silent SUCCESS is fine, silent FAILURE is not.
+ *
+ * SKIPS RATHER THAN THROWS, like the keyframe tools in core/document.js: one
+ * unrewritable equation must not abort the rename of a whole document.
  *
  * @example // withVariableRenamed(doc, "speed", "velocity", registry):
- * @example //   delta.vars.speed: 5        → delta.vars.velocity: 5
- * @example //   items.a1.x: "speed * 2"    → items.a1.x: "velocity * 2"
+ * @example //   delta.vars.speed: 5          → delta.vars.velocity: 5
+ * @example //   items.a1.x: "speed * 2"      → items.a1.x: "velocity * 2"
+ * @example //   items.a1.y: "= speed * 2"    → items.a1.y: "= velocity * 2"   (marker form)
+ * @example //   items.t.text: "= speed"      → items.t.text: "= velocity"     (any-type "=" slot)
+ * @example //   items.j.x: "(function () { return speed; })()" → UNCHANGED, and console.errored
  */
 export function withVariableRenamed(doc, oldName, newName, registry) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName))
+  if (!IDENTIFIER_RE.test(newName))
     throw new Error(`"${newName}" is not a valid variable name (letters, digits, _; not starting with a digit)`);
   for (const slide of doc.slides)
     if (slide.delta.vars && newName in slide.delta.vars)
       throw new Error(`A variable named "${newName}" already exists`);
+  // Only an IDENTIFIER can be a reference token, so a non-identifier oldName
+  // cannot be referenced from any equation — there is nothing to rewrite and
+  // nothing to report (which is also why the pattern needs no escaping).
+  const mentionsOld = IDENTIFIER_RE.test(oldName) ? new RegExp(`\\b${oldName}\\b`) : null;
   const renameRefs = (src) => {
     try {
       return mapRefTokens(src, (token) => (token === oldName ? newName : token));
-    } catch {
-      return src; // not a parseable equation — leave it (its own error affordance reports it)
+    } catch (e) {
+      if (!mentionsOld?.test(src)) return src; // nothing of ours in there — silent success
+      const message = `variable "${oldName}" → "${newName}": the equation ${JSON.stringify(src)} is not restricted-grammar rewritable (${e.message}) — it still names "${oldName}", rewrite it by hand`;
+      reportOnce(message, `PowerRP rename incomplete: ${message}`);
+      return src;
     }
   };
   const slides = doc.slides.map((slide) => {
@@ -2486,18 +2638,24 @@ export function withVariableRenamed(doc, oldName, newName, registry) {
     for (const [itemId, sub] of Object.entries(delta.items ?? {})) {
       if (!isTree(sub)) continue;
       const type = getPath(sub, ["type"]);
-      // The item's plugin is needed for numeric-slot detection; the type may
-      // be keyed on an earlier slide, so fall back to scanning all slides.
+      // The item's plugin is needed to decide which leaves are equation slots; the
+      // type may be keyed on an earlier slide, so fall back to scanning all slides.
       const itemType = type ?? findItemType(doc, itemId);
       if (!itemType) continue;
       const plugin = registry.get(itemType);
-      // Declared LIST elements are walked too (see declaredListLeaves): a
-      // per-element equation inside a WHOLE-LIST keyframe is invisible to
-      // leaves(), so a variable rename would have silently skipped it. A SPARSE
-      // per-element delta ({points: {3: {0: "=speed"}}}) is already covered —
-      // leaves() descends plain objects.
+      // THE CANONICAL "every equation slot of one item" WALK, verbatim (see
+      // declaredListLeaves): `[...leaves, ...declaredListLeaves]` filtered by
+      // isEquationValue — the same walk computeEvaluatedState and
+      // clonedItemStates use. This function used to filter by isNumericSlot
+      // instead, which is the LEGACY half of that test: it cannot see a
+      // universal `= …` equation in a slot whose default is not a number
+      // (`text: "= speed"`), so those were never even visited, let alone
+      // rewritten. Declared LIST elements need the second generator because
+      // leaves() keeps arrays opaque; a SPARSE per-element delta
+      // ({points: {3: {0: "=speed"}}}) is already covered — leaves() descends
+      // plain objects.
       for (const [path, value] of [...leaves(sub), ...declaredListLeaves(sub)])
-        if (typeof value === "string" && isNumericSlot(plugin, path)) {
+        if (isEquationValue(plugin, path, value)) {
           const renamed = renameRefs(value);
           if (renamed !== value) delta = setPath(delta, ["items", itemId, ...path], renamed);
         }
@@ -2547,16 +2705,19 @@ export function storedRefItemId(token) {
  * boolean literals — is never offered), which is the same guarantee
  * withVariableRenamed's rename relies on.
  *
- * The UNIVERSAL leading "=" marker is split off before tokenizing and rejoined
- * verbatim after (the same `EQ_PREFIX_RE` marker isEquationValue tests and
- * parseExpression strips): tokenize rejects "=" as an unexpected character, so
- * without this every any-type `= @id.w / 2` binding would fall into the
- * unparseable branch below and silently keep pointing at the ORIGINAL item.
+ * The UNIVERSAL leading "=" marker survives because mapRefTokens splits it off and
+ * rejoins it (withMarkerPreserved) — this function no longer does that itself. Two
+ * hand-rolled copies of the same split were two chances to forget it, and one of
+ * them (storedToDisplay) had.
  *
- * A source that does not tokenize is returned VERBATIM with no external ids —
- * the same ruling withVariableRenamed's renameRefs makes for the same reason:
- * a malformed equation is reported by its own error affordance, and a clone must
- * not be the thing that explodes on it.
+ * A source that does not tokenize is returned VERBATIM with no external ids, and
+ * SILENTLY — unlike withVariableRenamed, which reports. The asymmetry is real: a
+ * FULL-JS equation (the untokenizable case that still WORKS) cannot contain a
+ * stored `@id` at all, because "@" is not a JavaScript token either, so any
+ * untokenizable source with an `@id` in it is already failing loudly at evaluation
+ * and a second report would only duplicate it. Full-JS equations reach siblings by
+ * SLUG instead, which no id remap can see — a clone-time gap worth knowing about,
+ * but not one this function can close.
  *
  * @example withItemRefsRemapped("= @a.w / 2", new Map([["a", "z"]])) // {src: "= @z.w / 2", external: []} (the "=" marker survives)
  * @example withItemRefsRemapped("@a.x + 10", new Map([["a", "z"]])) // {src: "@z.x + 10", external: []}
@@ -2566,17 +2727,15 @@ export function storedRefItemId(token) {
  * @example withItemRefsRemapped("speed * 2", new Map([["a", "z"]])) // {src: "speed * 2", external: []}
  */
 export function withItemRefsRemapped(src, idMap) {
-  const marker = EQ_PREFIX_RE.exec(src)?.[0] ?? ""; // the universal "=" (tokenize rejects it)
-  const body = src.slice(marker.length);
   const external = new Set();
   try {
-    const out = mapRefTokens(body, (token) => {
+    const out = mapRefTokens(src, (token) => {
       const id = storedRefItemId(token);
       if (id === null) return token;
       if (!idMap.has(id)) { external.add(id); return token; }
       return `@${idMap.get(id)}${token.slice(1 + id.length)}`;
     });
-    return { src: marker + out, external: [...external] };
+    return { src: out, external: [...external] };
   } catch {
     return { src, external: [] }; // not a parseable equation — leave it (its own error affordance reports it)
   }
