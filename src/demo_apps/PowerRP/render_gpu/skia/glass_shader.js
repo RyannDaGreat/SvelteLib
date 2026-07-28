@@ -46,6 +46,8 @@
  * pins them together.)
  */
 
+import { parseColor } from "../ir.js";
+
 // The refraction PRE_BULGE (the materialize->0 backdrop bulge). Exported as a JS
 // constant AND interpolated into the SkSL below, so the shader and the JS
 // backdrop-region math (paint_skia.js maxGlassDisplacement) read the SAME value —
@@ -354,6 +356,202 @@ export function packGlassUniforms(u) {
 export function maxGlassDisplacement(refractionDev, chromatic) {
   return refractionDev * GLASS_PRE_BULGE * (1 + chromatic);
 }
+
+// ── THE LIQUID GLASS FILL MATERIAL (registry entry) ──────────────────────────
+// Liquid Glass predates the material registry: the glass WIDGET (plugins/demo/
+// glass.js) emits its own `glassBackdrop` op through paint_skia.js
+// handleGlassBackdrop, a legacy path this descriptor leaves entirely alone and
+// BYTE-IDENTICAL — GLASS_SKSL and packGlassUniforms are UNCHANGED, so the widget
+// renders bit-for-bit as before. This entry is purely ADDITIVE: it opts glass
+// into the FILL-material framework (materials.isFillCapableMaterial) so
+// "Liquid Glass" appears in the paint "Mat" dropdown and can shade ANY shape,
+// exactly like the sibling backdrop materials (frosted / comic / crt). It routes
+// through the SAME machinery those use — paint_skia.js handleMaterialPaintShape
+// synthesizes a region op with cornerRadius 0 over the shape's bbox and CLIPS to
+// the shape, then handleMaterialBackdrop re-renders the content beneath, packs
+// these uniforms, and draws.
+//
+// WHY THE GLASS_SKSL NEEDS NO "PLAIN RECT MODE" UNIFORM. The concern was that
+// glass's signature effect lives at its OWN SDF edge, and a fill wants the glass
+// to cover the whole clip with the clip doing the shaping. But the fill region op
+// arrives at cornerRadius 0, and glassUniformParams below pins squircle = 2 and
+// surfaceTension = 0, which is exactly the shader's own r = 0 / tension = 0
+// DEGENERATE case: sdGlassScaled reduces, term for term, to a plain rectangle SDF
+// whose interior coverage is 1 across the entire bbox. The clip is then the only
+// silhouette. So no new mode uniform was needed — the plain rectangle already IS
+// a code path the shipped shader handles. (A NON-zero surfaceTension would have
+// been actively wrong here: it shrinks the glass to a superellipse inscribed in
+// the bbox, leaving the clip's corners unpainted — which is why the outline knobs
+// are fixed, not exposed. The refraction bevel therefore rides the bbox
+// rectangle edges: for a rectangular shape it traces the outline like real glass;
+// for a star/ellipse the rim bevel appears where the silhouette meets the bbox
+// edge while the interior reads as blurred, tinted, sheened glass. cornerRadius,
+// squircle and surfaceTension stay WIDGET-side per the comic precedent — a fill's
+// shape IS its geometry, and the shape clip, not an SDF, does the shaping.)
+
+// Degrees → radians for the light-angle knob — the comic FILL precedent, whose
+// screen angles are authored as degrees and converted in comicUniformParams.
+const GLASS_DEG2RAD = Math.PI / 180;
+
+/**
+ * THE LIQUID GLASS FILL KNOB SCHEMA — the ONE declaration of the fill's look
+ * knobs, in the customProps row shape (the fill-material framework renders it as
+ * the paint's param rows, resolved sparse-over-defaults by
+ * materials.resolveMaterialPaint). Mirrors the glass WIDGET's optics knobs
+ * (plugins/demo/glass.js) but DELIBERATELY OMITS the ones meaningless for a fill:
+ *   - cornerRadius / squircle / surfaceTension — outline geometry; the shape clip
+ *     is the silhouette (see the block comment above), so these stay widget-side.
+ *   - materialize — the appear RAMP, an animation knob; a fill is settled glass.
+ *   - shadowStrength — the drop shadow is drawn only by the legacy handleGlassBackdrop,
+ *     not by the fill path (handleMaterialBackdrop), so it would be inert here.
+ * `blurRadius` and `backdropScale` are OP-LEVEL (not shader uniforms): the fill
+ * router reads them straight from resolvedParams to size the blurred child and the
+ * below-content re-render, so glassUniformParams does NOT forward them — the
+ * frosted precedent. Fractional knobs carry a small (0.01) scrub per B.2/B.3; the
+ * mins mirror the widget's real bounds (no arbitrary clamps).
+ */
+export const GLASS_FILL_PARAMS = [
+  { name: "blurRadius", kind: "number", default: 8, min: 0, help: "Gaussian blur radius (world px) of the backdrop seen THROUGH the glass. Moderate keeps it readable — Liquid Glass is a frost, not an opaque blur." },
+  { name: "refractionStrength", kind: "number", default: 14, min: 0, help: "Maximum edge displacement (world px). The defining Liquid Glass trait: surrounding content bends inward at the rim (strong at the border, ~0 in the interior). For a fill the rim is the shape's bbox edge." },
+  { name: "edgeFalloff", kind: "number", default: 22, min: 0, help: "How far inward (world px) the refraction + specular band decays. Larger = a wider bevelled rim." },
+  { name: "lightAngle", kind: "angle", default: -111.6, help: "Direction TO the light (degrees, screen space; -90° is straight above, 0° from the right). The lit edge catches the thin bright highlight." },
+  { name: "lightIntensity", kind: "number", default: 0.8, min: 0, step: 0.01, help: "Strength of the top-light specular (the thin rim hairline + the broad soft sheen)." },
+  { name: "tint", kind: "color", default: "rgba(255,255,255,0.14)", help: "The glass skin's colour CAST (rgb) and STRENGTH (alpha). The neutral is luminance-adaptive — pale over dark content, smoky over light — and this tints it; keep the alpha low for clarity." },
+  { name: "saturation", kind: "number", default: 0.92, min: 0, max: 1, step: 0.01, help: "How much backdrop colour is kept (1 = unchanged, 0 = gray). Slightly below 1 for the subtle frosted desaturation." },
+  { name: "sheen", kind: "number", default: 0.1, min: 0, step: 0.01, help: "Strength of the broad surface sheen (the soft gradient of light across the face). Kept low so the interior stays clear." },
+  { name: "specularPower", kind: "number", default: 8, min: 1, help: "Tightness of the edge specular lobe: higher = a thinner, crisper bright hairline on the lit edge." },
+  { name: "contactShadow", kind: "number", default: 0.26, min: 0, step: 0.01, help: "Darkness of the faint contact shadow on the edge OPPOSITE the light (the glass sitting on the surface)." },
+  { name: "caustic", kind: "number", default: 0.12, min: 0, step: 0.01, help: "How much SHARP (unblurred) backdrop bleeds into the very rim — the bright refracted streaks. Low to avoid ghosting." },
+  { name: "edgeLight", kind: "number", default: 0.14, min: 0, step: 0.01, help: "Brightness of the crisp perimeter outline (the glass edge catching light all the way around)." },
+  { name: "tintAdaptivity", kind: "number", default: 1, min: 0, max: 1, step: 0.01, help: "0 = a fixed frosted tint; 1 = fully luminance-adaptive (pale skin over dark content, smoky over light — the macOS content-adaptive look)." },
+  { name: "chromatic", kind: "number", default: 0.08, min: 0, step: 0.01, help: "Chromatic aberration at the refracting rim: the R/B channels sample slightly off the G. A TINY value gives a faint coloured edge fringe like real glass; large = a rainbow smear." },
+  { name: "backdropScale", kind: "number", default: 1, min: 0.25, step: 0.05, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the refraction: 1 = screen resolution, 2 = supersample (crisper refraction, slower), 0.5 = half res (faster, softer)." },
+];
+
+/**
+ * Pure function. SCHEMA params (GLASS_FILL_PARAMS names/kinds — degrees, a colour
+ * string) → the numeric params packGlassMaterial consumes (packGlassUniforms's own
+ * key names). THE one mapping both fill consumers share: the PaintField param rows
+ * and the fill-material region-op synthesis (paint_skia handleMaterialPaintShape
+ * reads it as entry.toUniformParams). `lightAngle` converts degrees → radians (the
+ * comic precedent); `tint` is parsed to an [r,g,b,a] array HERE so the shader
+ * packer and the proxy overlay read one already-resolved colour. `blurRadius` and
+ * `backdropScale` are DROPPED — they are op-level, not shader uniforms (frosted
+ * precedent). squircle/surfaceTension/materialize are PINNED to the plain-rect
+ * fill values (see the block comment above).
+ *
+ * @param {object} p - schema-shaped params (resolved: every knob present)
+ * @returns {object} packGlassMaterial-shaped params
+ *
+ * @example glassUniformParams({refractionStrength:14, edgeFalloff:22, lightAngle:-111.6, lightIntensity:0.8, tint:"rgba(255,255,255,0.14)", saturation:0.92, sheen:0.1, specularPower:8, contactShadow:0.26, caustic:0.12, edgeLight:0.14, tintAdaptivity:1, chromatic:0.08}).squircle // 2
+ * @example glassUniformParams({refractionStrength:14, edgeFalloff:22, lightAngle:-111.6, lightIntensity:0.8, tint:"rgba(255,255,255,0.14)", saturation:0.92, sheen:0.1, specularPower:8, contactShadow:0.26, caustic:0.12, edgeLight:0.14, tintAdaptivity:1, chromatic:0.08}).specPower // 8
+ * @example glassUniformParams({refractionStrength:14, edgeFalloff:22, lightAngle:-111.6, lightIntensity:0.8, tint:"rgba(255,255,255,0.14)", saturation:0.92, sheen:0.1, specularPower:8, contactShadow:0.26, caustic:0.12, edgeLight:0.14, tintAdaptivity:1, chromatic:0.08}).tint // [1, 1, 1, 0.14]
+ */
+export function glassUniformParams(p) {
+  return {
+    refractionStrength: p.refractionStrength, // world px — packGlassMaterial scales by u.scale
+    edgeFalloff: p.edgeFalloff,               // world px — same
+    lightAngle: p.lightAngle * GLASS_DEG2RAD, // schema DEGREES → radians
+    lightIntensity: p.lightIntensity,
+    saturation: p.saturation,
+    tint: parseColor(p.tint),                 // → [r, g, b, a]; alpha is the skin STRENGTH
+    sheen: p.sheen,
+    specPower: p.specularPower,
+    contactShadow: p.contactShadow,
+    caustic: p.caustic,
+    edgeLight: p.edgeLight,
+    adaptivity: p.tintAdaptivity,
+    chromatic: p.chromatic,
+    // FIXED for a fill: the clip is the silhouette, so the glass region is the full
+    // bbox RECTANGLE (a plain rect SDF), and it is settled (no appear ramp).
+    squircle: 2,
+    surfaceTension: 0,
+    materialize: 1,
+  };
+}
+
+/**
+ * Pure function. Packs a glass FILL's uniforms into the Float32Array CanvasKit
+ * expects, by mapping the material framework's normalized `u` onto packGlassUniforms.
+ * `u` carries DEVICE-px region geometry {cx, cy, halfW, halfH, cornerRadius, angle}
+ * + `scale` (world→device length) + glass's own knobs (glassUniformParams output,
+ * spread in by name). The ONLY work beyond forwarding is scaling the two WORLD-px
+ * shader lengths — refractionStrength and edgeFalloff — to device px by `u.scale`,
+ * exactly as the legacy handleGlassBackdrop does (`* sd`). cornerRadius arrives
+ * already device-px (0 for a fill); the tint is already an [r,g,b,a] array.
+ *
+ * @param {object} u - {cx, cy, halfW, halfH, cornerRadius, angle, scale} + glassUniformParams output
+ * @returns {Float32Array} length 25, in shader-uniform order (packGlassUniforms)
+ *
+ * @example packGlassMaterial({cx:100,cy:80,halfW:90,halfH:90,cornerRadius:0,angle:0,scale:1,edgeFalloff:22,refractionStrength:14,lightAngle:-1.95,lightIntensity:0.8,saturation:0.92,tint:[1,1,1,0.14],materialize:1,squircle:2,sheen:0.1,specPower:8,contactShadow:0.26,caustic:0.12,edgeLight:0.14,adaptivity:1,chromatic:0.08,surfaceTension:0}).length // 25
+ * @example packGlassMaterial({cx:100,cy:80,halfW:90,halfH:90,cornerRadius:0,angle:0,scale:2,edgeFalloff:22,refractionStrength:14,lightAngle:-1.95,lightIntensity:0.8,saturation:0.92,tint:[1,1,1,0.14],materialize:1,squircle:2,sheen:0.1,specPower:8,contactShadow:0.26,caustic:0.12,edgeLight:0.14,adaptivity:1,chromatic:0.08,surfaceTension:0})[6] // 28
+ */
+export function packGlassMaterial(u) {
+  return packGlassUniforms({
+    cx: u.cx, cy: u.cy, halfW: u.halfW, halfH: u.halfH,
+    cornerRadius: u.cornerRadius,               // device px — 0 for a fill (the clip shapes it)
+    edgeFalloff: u.edgeFalloff * u.scale,       // world px → device px
+    refractionStrength: u.refractionStrength * u.scale,
+    angle: u.angle,
+    lightAngle: u.lightAngle, lightIntensity: u.lightIntensity,
+    saturation: u.saturation, tint: u.tint, materialize: u.materialize,
+    squircle: u.squircle, sheen: u.sheen, specPower: u.specPower,
+    contactShadow: u.contactShadow, caustic: u.caustic, edgeLight: u.edgeLight,
+    adaptivity: u.adaptivity, chromatic: u.chromatic, surfaceTension: u.surfaceTension,
+  });
+}
+
+/**
+ * Pure function. The glass fill's `proxyBackdrop` hook (materials.resolveProxyBackdrop):
+ * the ONE translucent overlay rounded-rect thumbnails and the minimap draw over the
+ * already-composited content INSTEAD of running the glass SkSL per pixel.
+ *
+ * Glass IS mostly a tinted veil (its interior is nearly clear), so the honest cheap
+ * stand-in is that tint over the content beneath. `params.tint` is already the
+ * [r,g,b,a] glassUniformParams produced, so the overlay is that colour at that
+ * alpha. The default rgba(255,255,255,0.14) yields exactly the shared frost stand-in
+ * ([1,1,1,0.14]); a dark preset (Smoked Obsidian) yields a DARK overlay, so the
+ * thumbnail reads as a dark panel — the same lightens-when-it-should-darken defect
+ * the frosted/brightness hooks exist to end. resolveProxyBackdrop validates the
+ * channels (0..1) and treats alpha 0 as "draw no overlay".
+ *
+ * @param {{tint: number[]}} params - the fill op's params (glassUniformParams output)
+ * @returns {{tint: [number, number, number, number]}} overlay colour, channels 0..1
+ *
+ * @example glassProxyBackdrop({tint: [1, 1, 1, 0.14]}) // {tint: [1, 1, 1, 0.14]}
+ * @example glassProxyBackdrop({tint: [0.07, 0.07, 0.1, 0.62]}).tint[3] // 0.62
+ */
+export function glassProxyBackdrop(params) {
+  const t = params.tint; // [r, g, b, a] — glassUniformParams already parsed it
+  return { tint: [t[0], t[1], t[2], t[3]] };
+}
+
+/**
+ * THE LIQUID GLASS MATERIAL DESCRIPTOR — the registry entry (materials.js). A
+ * BACKDROP material (no `backdrop`/`sampler` flag ⇒ defaults to backdrop): its
+ * `sksl` is GLASS_SKSL, whose two children are the standard {blurredBackdrop,
+ * sharpBackdrop} pair handleMaterialBackdrop feeds. `usesBlurredBackdrop` is
+ * OMITTED (defaults to build the blur) because the glass refraction really does
+ * sample the blurred child. `maxSampleReach` mirrors the legacy glassRegion margin
+ * (maxGlassDisplacement) so the fill gets glass's region-bounded backdrop instead
+ * of a full-surface re-render. `title` is the paint-dropdown label
+ * (PaintField reads `descriptor.title ?? id`). The legacy `glassBackdrop` op path
+ * (the widget) does NOT use this entry.
+ */
+export const GLASS_MATERIAL = {
+  id: "glass",
+  title: "Liquid Glass",
+  sksl: GLASS_SKSL,
+  pack: packGlassMaterial,
+  uniformFloats: GLASS_UNIFORM_FLOATS,
+  fillParams: GLASS_FILL_PARAMS,
+  toUniformParams: glassUniformParams,
+  proxyBackdrop: glassProxyBackdrop,
+  // The glass shader reads the blurred backdrop displaced OUTWARD along the rim
+  // normal, up to maxGlassDisplacement(refractionDev, chromatic) — the same reach
+  // the legacy glassRegion declares. Region-bounds the fill's backdrop re-render.
+  maxSampleReach: (u) => maxGlassDisplacement(u.refractionStrength * u.scale, u.chromatic),
+};
 
 // ── the region boundary, in JS ────────────────────────────────────────────────
 // The other half of the ONE curve definition (see the file header). The SkSL

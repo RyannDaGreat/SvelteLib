@@ -33,6 +33,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { GLASS_MATERIAL } from "./glass_shader.js"; // Liquid Glass as a FILL material (its legacy glassBackdrop op path is unchanged)
 import { CRT_MATERIAL } from "./crt_shader.js";
 import { METABALLS_MATERIAL } from "./metaballs_shader.js";
 import { FROSTED_MATERIAL } from "./frosted_shader.js";
@@ -80,7 +81,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
 // Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
 const MATERIALS = Object.fromEntries(
-  [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL].map((m) => [m.id, m]),
+  [GLASS_MATERIAL, CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL].map((m) => [m.id, m]),
 );
 
 /**
