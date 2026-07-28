@@ -217,12 +217,16 @@
 </script>
 
 <script>
+  import "iconify-icon";
   import ColorField from "./ColorField.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import Dropdown from "../../../lib/Dropdown.svelte";
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
-  import ListField from "./ListField.svelte";
+  import ListField, { collapseKeyFor } from "./ListField.svelte";
+  import { makeHoverPreview } from "./hoverPreview.js";
+  import { resolveScrub } from "../../../lib/numberStep.js";
   import { GRADIENT_STOPS_LIST, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
   import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults } from "../render_gpu/skia/materials.js";
@@ -279,6 +283,14 @@
   function commitAt(subpath, val) {
     app.setPreview(writePaths.map((p) => [[...p, ...subpath], perTarget(val)]));
     app.commitPreview();
+  }
+
+  /** Command. LIVE-previews a value at a SUB-PATH on every write path — the
+   * mid-gesture half of the ColorField preview/commit contract: the viewport
+   * re-renders while the DOCUMENT stays untouched (no undo entry) until commitAt
+   * settles it. Drives the material-knob DraggableNumber's `oninput`. */
+  function previewAt(subpath, val) {
+    app.setPreview(writePaths.map((p) => [[...p, ...subpath], perTarget(val)]));
   }
 
   /** Command. Switches the paint mode. EQUATION mode makes the WHOLE paint a
@@ -361,7 +373,98 @@
   function matValue(row) {
     return matSub.params?.[row.name] ?? row.default;
   }
+
+  // Pixels of drag that span a BOUNDED knob's whole range (and the scale an
+  // unbounded fractional knob spreads over one run). LINKED to NumericField's
+  // RANGE_DRAG_PX = 100 — one calibration for both numeric-scrubber families, so a
+  // material knob and a property row drag at the same feel. Without it every one of
+  // the ~174 material knobs fell back to DraggableNumber's raw 1 unit/px, and a
+  // fully-bounded knob (crt convergence, 0..0.2) swept its whole range in ≤1px.
+  const KNOB_DRAG_PX = 100;
+
+  /**
+   * Pure function. A material knob's calibrated {step, coefficient} for the
+   * DraggableNumber scrubber, via the SHARED resolveScrub — so a bounded knob
+   * sweeps its declared range over KNOB_DRAG_PX pixels rather than 1 unit/px, and
+   * a schema-declared `scrub` (sky turbidity, lens_flare) is honoured instead of
+   * silently dropped. Mirrors NumericField's resolveScrub call; material params
+   * carry no display-unit conversion (an "angle" knob already stores degrees), so
+   * bounds/default pass through raw. Null coefficient = "nothing knowable" (a 0
+   * default, no bounds) → the call site keeps DraggableNumber's own 1 unit/px.
+   *
+   * @example knobScrub({min: 0, max: 0.2, default: 0.1}) // {step: 0.001, coefficient: 0.002}
+   * @example knobScrub({scrub: 0.05, default: 2}) // {step: 0.01, coefficient: 0.05}
+   * @example knobScrub({default: 0}) // {step: null, coefficient: null}
+   */
+  function knobScrub(row) {
+    return resolveScrub({
+      step: row.step ?? null,
+      scrub: row.scrub ?? null,
+      min: row.min ?? null,
+      max: row.max ?? null,
+      defaultValue: row.default ?? null,
+      dragPx: KNOB_DRAG_PX,
+    });
+  }
+
+  // The units-per-pixel for the gradient's fraction-of-box knobs (wavelength,
+  // radial radius): 1 / KNOB_DRAG_PX, so a full 0..1 fraction sweeps over one drag
+  // run. They live inside the paint OBJECT, not a plugin default, so resolveScrub
+  // has no default/bound magnitude to see there and would leave them at 1 unit/px
+  // — an explicit scrub is the only calibration reachable.
+  const FRACTION_SCRUB = 1 / KNOB_DRAG_PX;
   let MATERIAL_OPTIONS = $derived(matRegistryIds.map((id) => ({ value: id, label: matGet(id).title ?? id })));
+
+  // HOVER PREVIEW on the material dropdown (the FontPicker trope): pointing at an
+  // entry stages material.id LIVE on the canvas and reverts on leave, the document
+  // untouched (web/hoverPreview.js owns the contract; the SvelteLib Dropdown owns
+  // the guarded onpreview/oncancelpreview effect, so no effect lives here — the
+  // FontPicker effect_update_depth footgun cannot be reintroduced). Derived so it
+  // re-binds if `app`/`writePaths` change (and reads them reactively, not as a
+  // captured initial value); a multi-selection previews every target.
+  let matHover = $derived(makeHoverPreview(app, (id) => writePaths.map((p) => [[...p, "material", "id"], id])));
+
+  // ── THE MATERIAL KNOBS ARE THEIR OWN COLLAPSIBLE SECTION ──────────────────────
+  // A material's knob list can be long (CRT ships 23), so it MUST fold rather than
+  // flooding the Fill/Stroke row's value cell. It reuses the app's ONE section
+  // accordion (.cat-header + chevron + .cat-rows, the same idiom the Inspector
+  // categories and ListField use) and remembers its OWN collapse choice per SLOT —
+  // keyed by the paint path with the item id dropped ("fill"/"stroke", via
+  // ListField.collapseKeyFor), so folding Fill Material stays folded as the
+  // selection changes, exactly like the Inspector's category rule one level up.
+  const MATERIAL_COLLAPSE_KEY = "powerrp.materialCollapsed";
+  let matCollapseKey = $derived(collapseKeyFor(path));
+  let matSummary = $derived(`${matRows.length} ${matRows.length === 1 ? "knob" : "knobs"}`);
+
+  /** Query (reads localStorage). The persisted collapse map, or {} when absent —
+   *  and a REPORT plus {} when corrupt, never a silent swallow (web/ListField and
+   *  web/Inspector loadCollapsed, verbatim). */
+  function loadMatCollapsed() {
+    try {
+      const raw = localStorage.getItem(MATERIAL_COLLAPSE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      console.warn("PowerRP: bad materialCollapsed setting, ignoring:", e);
+      return {};
+    }
+  }
+
+  // The user's own fold choice for THIS slot. Re-read whenever the key changes,
+  // because one mounted PaintField is reused across selections (ListField's
+  // userCollapsed resync, one level down).
+  let matCollapsed = $state(false);
+  $effect(() => {
+    matCollapsed = loadMatCollapsed()[matCollapseKey] === true;
+  });
+
+  /** Command. Toggles this slot's fold choice and persists it. Re-READS the map
+   *  immediately before writing so a sibling PaintField (a fill gradient's twin
+   *  stroke material section) mounted at the same time is never clobbered. */
+  function toggleMatCollapsed() {
+    const next = !matCollapsed;
+    localStorage.setItem(MATERIAL_COLLAPSE_KEY, JSON.stringify({ ...loadMatCollapsed(), [matCollapseKey]: next }));
+    matCollapsed = next;
+  }
 
   const TYPES = [
     { id: "solid", label: "Solid" },
@@ -399,29 +502,77 @@
     <!-- MATERIAL fill (the fill-material framework): pick a registered material,
          edit its knobs. Params are stored SPARSE — a row writes only when the
          user commits it; unwritten knobs resolve from the schema at render time
-         (ports.resolveMaterialFillPaints), so "no state until written". -->
-    <Dropdown items={MATERIAL_OPTIONS} value={matSub.id} onchange={(id) => commitAt(["material", "id"], id)} />
-    {#each matRows as mrow (mrow.name)}
-      <div class="paint-material-row">
-        <span class="paint-material-label">{mrow.label ?? mrow.name}</span>
-        <span class="paint-material-control">
-          {#if mrow.kind === "color"}
-            <ColorField {app} path={[...path, "material", "params", mrow.name]} paths={writePaths.map((p) => [...p, "material", "params", mrow.name])} label={mrow.name} value={matValue(mrow)} {disabled} />
-          {:else if mrow.kind === "select"}
-            <Dropdown items={mrow.options.map((o) => ({ value: o, label: mrow.optionLabels?.[o] ?? o }))} value={matValue(mrow)} onchange={(v) => commitAt(["material", "params", mrow.name], v)} />
-          {:else if mrow.kind === "boolean"}
-            <input type="checkbox" checked={matValue(mrow)} {disabled} aria-label={mrow.label ?? mrow.name} onchange={(e) => commitAt(["material", "params", mrow.name], e.target.checked)} />
-          {:else}
-            <!-- number + angle (degrees) share the numeric scrubber. A bare
-                 DraggableNumber, NOT NumericField: the field reads the DOC at
-                 its path, and a sparse unwritten knob stores nothing there —
-                 this control displays the RESOLVED value (stored ?? schema
-                 default) and only a commit writes the knob. -->
-            <DraggableNumber value={matValue(mrow)} min={mrow.min ?? null} max={mrow.max ?? null} step={mrow.step ?? null} label={mrow.label ?? mrow.name} onchange={(v) => commitAt(["material", "params", mrow.name], v)} />
-          {/if}
-        </span>
-      </div>
-    {/each}
+         (ports.resolveMaterialFillPaints), so "no state until written".
+         HOVER PREVIEW: pointing at a dropdown entry previews that material LIVE on
+         the canvas and reverts on leave (matHover; web/hoverPreview.js). A pick
+         drops the transient revert FIRST — ListField.pickPreset's discipline — so
+         the commit is the user's choice, never a hovered-past one left staged. -->
+    <Dropdown
+      items={MATERIAL_OPTIONS}
+      value={matSub.id}
+      onchange={(id) => { app.transientPreview = null; commitAt(["material", "id"], id); }}
+      onpreview={matHover.preview}
+      oncancelpreview={matHover.cancel}
+    />
+    {#if matRows.length > 0}
+      <!-- THE KNOBS ARE A DEDICATED COLLAPSIBLE SECTION (A material can ship 23 —
+           CRT does): the app's ONE accordion (.cat-header + chevron + .cat-rows),
+           folding this slot's knob list rather than flooding the row's value cell.
+           The fold choice is remembered per slot (toggleMatCollapsed). -->
+      <Tooltip text={matCollapsed ? `Show ${label} material knobs (${matSummary})` : `Fold ${label} material knobs away (${matSummary})`}>
+        <button
+          type="button"
+          class="cat-header"
+          aria-expanded={!matCollapsed}
+          aria-label={`${label} material knobs: ${matSummary}`}
+          onclick={toggleMatCollapsed}
+        >
+          <iconify-icon icon={matCollapsed ? "mdi:chevron-right" : "mdi:chevron-down"} width="16" height="16"></iconify-icon>
+          <span class="cat-title">{label} material · {matSummary}</span>
+        </button>
+      </Tooltip>
+      {#if !matCollapsed}
+        <div class="cat-rows">
+          {#each matRows as mrow (mrow.name)}
+            {@const scrub = knobScrub(mrow)}
+            <div class="paint-material-row">
+              <span class="paint-material-label">{mrow.label ?? mrow.name}</span>
+              <span class="paint-material-control">
+                {#if mrow.kind === "color"}
+                  <ColorField {app} path={[...path, "material", "params", mrow.name]} paths={writePaths.map((p) => [...p, "material", "params", mrow.name])} label={mrow.name} value={matValue(mrow)} {disabled} />
+                {:else if mrow.kind === "select"}
+                  <Dropdown items={mrow.options.map((o) => ({ value: o, label: mrow.optionLabels?.[o] ?? o }))} value={matValue(mrow)} onchange={(v) => commitAt(["material", "params", mrow.name], v)} />
+                {:else if mrow.kind === "boolean"}
+                  <input type="checkbox" checked={matValue(mrow)} {disabled} aria-label={mrow.label ?? mrow.name} onchange={(e) => commitAt(["material", "params", mrow.name], e.target.checked)} />
+                {:else}
+                  <!-- number + angle (degrees) share the numeric scrubber. A bare
+                       DraggableNumber, NOT NumericField: the field reads the DOC at
+                       its path, and a sparse unwritten knob stores nothing there —
+                       this control displays the RESOLVED value (stored ?? schema
+                       default) and only a commit writes the knob.
+                       LIVE PREVIEW (the ColorField contract): `oninput` stages the
+                       drag on the canvas (previewAt — no undo entry) and `onchange`
+                       settles ONE undo unit (commitAt). CALIBRATED scrub: the knob
+                       schema's step/scrub/bounds/default route through resolveScrub
+                       (knobScrub), so a bounded knob sweeps its range over
+                       KNOB_DRAG_PX instead of DraggableNumber's raw 1 unit/px. -->
+                  <DraggableNumber
+                    value={matValue(mrow)}
+                    min={mrow.min ?? null}
+                    max={mrow.max ?? null}
+                    step={scrub.step}
+                    coefficient={scrub.coefficient ?? 1}
+                    label={mrow.label ?? mrow.name}
+                    oninput={(v) => previewAt(["material", "params", mrow.name], v)}
+                    onchange={(v) => commitAt(["material", "params", mrow.name], v)}
+                  />
+                {/if}
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
   {:else if mode === "equation"}
     <!-- EQUATION → the whole paint is a "=" expression (a computed color).
          evaluateState resolves it and validates the result is a color; a
@@ -498,14 +649,14 @@
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
         <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Wavelength</span>
         <div style="width:var(--a-input-w);">
-          <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={GRADIENT_MIN_WAVELENGTH} />
+          <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={GRADIENT_MIN_WAVELENGTH} scrub={FRACTION_SCRUB} />
         </div>
       </div>
     {:else}
       <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
         <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Radius</span>
         <div style="width:var(--a-input-w);">
-          <NumericField {app} path={[...path, "radial", "r"]} paths={writePaths.map((p) => [...p, "radial", "r"])} label={`${label} radius`} min={0} />
+          <NumericField {app} path={[...path, "radial", "r"]} paths={writePaths.map((p) => [...p, "radial", "r"])} label={`${label} radius`} min={0} scrub={FRACTION_SCRUB} />
         </div>
       </div>
     {/if}

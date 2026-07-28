@@ -42,6 +42,7 @@ const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle
 const errors = [];
 const checks = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Known demo-fixture boot noise (the colorfield_probe allowlist, same reasoning:
 // stale fixture migrations + the software renderer's absent video adapter are
@@ -56,6 +57,37 @@ const FILL_DEFAULT = FILL_IDS[0];
 const STROKE_DEFAULT = STROKE_IDS[0];
 const fillRowCount = (getMaterial(FILL_DEFAULT).fillParams ?? []).length;
 const strokeRowCount = (getStrokeMaterial(STROKE_DEFAULT).strokeParams ?? []).length;
+
+// ── Node-side truth for the SCRUB + LIVE-PREVIEW assertions (audit item 4) ─────
+// A knob is numeric (drives a DraggableNumber) when its kind is number/angle or
+// unset. The registry is the source of truth, so these grow with the schema.
+const isNumericKnob = (r) => r.kind === "number" || r.kind === "angle" || !r.kind;
+// The FILL default's bounded numeric knob with the SMALLEST range — the sharpest
+// witness that the scrub is calibrated: at 1 unit/px a tiny-range knob clamps to a
+// bound in ≤1px, so a partial mid-range landing PROVES resolveScrub is wired
+// (crt's convergence, 0..0.2, is exactly the audit's example).
+const fillKnobRows = getMaterial(FILL_DEFAULT).fillParams ?? [];
+const boundedKnobs = fillKnobRows.filter((r) => isNumericKnob(r) && Number.isFinite(r.min) && Number.isFinite(r.max));
+const boundedKnob = boundedKnobs.reduce((a, b) => (b.max - b.min < a.max - a.min ? b : a), boundedKnobs[0]);
+const boundedIdx = fillKnobRows.indexOf(boundedKnob);
+// Drag TOWARD the bound with more headroom, so the calibrated landing stays
+// interior (a default near a bound would otherwise clamp even when calibrated).
+// Sign: +px increases the value (drag up), -px decreases (drag down).
+const boundedDir = (boundedKnob.default - boundedKnob.min) > (boundedKnob.max - boundedKnob.default) ? -1 : 1;
+// A fill material declaring a `scrub` on a numeric knob — the smallest scrub gives
+// the clearest split from the 1-unit/px fallback. Proves a schema scrub SURVIVES
+// into the control (the 13 dropped-scrub knobs the audit found).
+let scrubMatId = null, scrubKnob = null, scrubIdx = -1;
+for (const id of fillCapableMaterialIds())
+  for (const r of getMaterial(id).fillParams ?? [])
+    if (r.scrub != null && isNumericKnob(r) && (scrubKnob == null || r.scrub < scrubKnob.scrub)) {
+      scrubMatId = id; scrubKnob = r; scrubIdx = (getMaterial(id).fillParams).indexOf(r);
+    }
+// Pixels of the synthetic vertical drag used to exercise a knob's live preview +
+// calibrated coefficient. 10px is comfortably past DraggableNumber's 4px click
+// slop, and small enough that a bounded knob at 1 unit/px would clamp hard while a
+// calibrated one lands mid-range.
+const KNOB_DRAG_PX = 10;
 
 try {
   const page = await browser.newPage();
@@ -147,6 +179,153 @@ try {
   await new Promise((r) => setTimeout(r, 150));
   const afterUndo = JSON.parse(await page.evaluate((id) => JSON.stringify(window.__powerrp_app.doc.slides[0].delta.items[id].stroke ?? null), rectId));
   ok(afterUndo?.type !== "material", "two undos unwind the stroke Mat commit (one unit each)");
+
+  // The two undos above left FILL in Mat mode (its type commit was not unwound),
+  // with no knob params written — a clean base for the section/preview/hover tests.
+  await clickMat("Fill"); // idempotent (setMode returns early when already material)
+  await sleep(150);
+
+  // Reads the Fill row's material-section chrome + committed/preview knob values.
+  // Everything is JSON.stringify'd IN PAGE and parsed here (the doc is a Svelte 5
+  // $state proxy — the PROBE-AUTHOR TRAP the header warns about).
+  const fillMat = (name) => page.evaluate((n, id) => {
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((el) => el.querySelector(".label")?.textContent === "Fill");
+    const header = row?.querySelector(".cat-header");
+    const app = window.__powerrp_app;
+    return {
+      hasHeader: !!header,
+      expanded: header?.getAttribute("aria-expanded") === "true",
+      knobRows: row ? row.querySelectorAll(".paint-material-row").length : -1,
+      committedJson: JSON.stringify(app.doc.slides[0].delta.items[id].fill?.material?.params?.[n] ?? null),
+      previewJson: JSON.stringify(app.previewDelta?.items?.[id]?.fill?.material?.params?.[n] ?? null),
+      matIdJson: JSON.stringify(app.doc.slides[0].delta.items[id].fill?.material?.id ?? null),
+      previewIdJson: JSON.stringify(app.previewDelta?.items?.[id]?.fill?.material?.id ?? null),
+    };
+  }, name, rectId);
+
+  // ── A.1 — the material knobs live in a DEDICATED COLLAPSIBLE section ─────────
+  const secOpen = await fillMat(boundedKnob.name);
+  ok(secOpen.hasHeader, "Fill Mat renders a collapsible section header (.cat-header)");
+  ok(secOpen.expanded && secOpen.knobRows === fillKnobRows.length,
+    `section starts expanded showing all ${fillKnobRows.length} knobs; got expanded=${secOpen.expanded} rows=${secOpen.knobRows}`);
+  const clickMatHeader = () => page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((el) => el.querySelector(".label")?.textContent === "Fill");
+    row.querySelector(".cat-header").click();
+  });
+  await clickMatHeader(); await sleep(120);
+  const secFolded = await fillMat(boundedKnob.name);
+  ok(!secFolded.expanded && secFolded.knobRows === 0,
+    `clicking the header FOLDS the knob list (23-knob CRT problem); got expanded=${secFolded.expanded} rows=${secFolded.knobRows}`);
+  await clickMatHeader(); await sleep(120); // reopen — the drags below need it expanded
+  const secReopened = await fillMat(boundedKnob.name);
+  ok(secReopened.expanded && secReopened.knobRows === fillKnobRows.length, "clicking again REOPENS it");
+
+  /** Synthetic vertical drag of the Nth material-row's DraggableNumber, up (=
+   *  increase) by `dy` px. Dispatched WITHOUT pointerup so the caller can read the
+   *  live preview mid-gesture (the ColorField-probe idiom for a captured pointer:
+   *  headless page.mouse does not route DraggableNumber's pointer-lock scrub). */
+  const knobDown = (idx, dy) => page.evaluate((i, d) => {
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((el) => el.querySelector(".label")?.textContent === "Fill");
+    const dn = [...row.querySelectorAll(".paint-material-row")][i]?.querySelector(".dn");
+    if (!dn) return false;
+    const r = dn.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const mk = (type, cy) => new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, button: 0, clientX: x, clientY: cy });
+    dn.dispatchEvent(mk("pointerdown", y));
+    dn.dispatchEvent(mk("pointermove", y - d)); // up → value increases
+    return true;
+  }, idx, dy);
+  const knobUp = (idx, dy) => page.evaluate((i, d) => {
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((el) => el.querySelector(".label")?.textContent === "Fill");
+    const dn = [...row.querySelectorAll(".paint-material-row")][i]?.querySelector(".dn");
+    const r = dn.getBoundingClientRect();
+    dn.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 - d }));
+  }, idx, dy);
+
+  // ── B.4 — LIVE PREVIEW mid-drag + ONE undo unit on settle (ColorField contract),
+  //          on the bounded knob, which ALSO witnesses the calibrated scrub ──────
+  ok(await knobDown(boundedIdx, boundedDir * KNOB_DRAG_PX), `found the "${boundedKnob.name}" knob's DraggableNumber`);
+  await sleep(80);
+  const mid = await fillMat(boundedKnob.name);
+  const midPreview = JSON.parse(mid.previewJson);
+  const midCommitted = JSON.parse(mid.committedJson);
+  ok(typeof midPreview === "number" && midPreview !== boundedKnob.default,
+    `mid-drag: previewDelta carries the knob change (got ${JSON.stringify(midPreview)}, default ${boundedKnob.default})`);
+  ok(midCommitted === null, `mid-drag: committed DOC knob UNCHANGED (sparse/null); got ${mid.committedJson}`);
+  await knobUp(boundedIdx, boundedDir * KNOB_DRAG_PX);
+  await sleep(120);
+  const settled = await fillMat(boundedKnob.name);
+  const committed = JSON.parse(settled.committedJson);
+  ok(JSON.parse(settled.previewJson) === null, "settle: live preview cleared");
+  ok(committed === midPreview, `settle: committed == last preview (no drift); ${committed} vs ${midPreview}`);
+  // Calibrated: a KNOB_DRAG_PX drag moves ~ (max-min)/dragPx per px — a SMALL slice
+  // of the range — NOT 1 unit/px, which would have clamped straight to a bound.
+  const range = boundedKnob.max - boundedKnob.min;
+  const expected = boundedKnob.default + boundedDir * KNOB_DRAG_PX * (range / 100);
+  ok(Math.abs(committed - expected) < range * 0.05,
+    `bounded knob scrub is CALIBRATED (~range/dragPx per px): ${committed} ≈ ${expected} (range ${range})`);
+  ok(committed > boundedKnob.min + range * 0.02 && committed < boundedKnob.max - range * 0.02,
+    `calibrated knob landed INTERIOR, NOT clamped to the bound a 1-unit/px drag hits (${boundedKnob.min} < ${committed} < ${boundedKnob.max})`);
+  await page.evaluate(() => window.__powerrp_app.undo()); await sleep(100);
+  const afterKnobUndo = await fillMat(boundedKnob.name);
+  ok(JSON.parse(afterKnobUndo.committedJson) === null, "the knob drag was ONE undo unit (undo removes the sparse param)");
+
+  // ── B.5 — HOVER PREVIEW on the material dropdown: sets, then reverts ─────────
+  await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((el) => el.querySelector(".label")?.textContent === "Fill");
+    row.querySelector(".dd-trigger").click(); // open the material picker
+  });
+  await sleep(120);
+  const hovered = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((el) => el.querySelector(".label")?.textContent === "Fill");
+    const items = [...row.querySelectorAll(".dd-item")];
+    const target = items.find((li) => !li.classList.contains("dd-selected")) ?? items[0];
+    target.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true, pointerId: 1 }));
+    return target.querySelector(".dd-item-body")?.textContent?.trim() ?? null;
+  });
+  await sleep(80);
+  const onHover = await fillMat(boundedKnob.name);
+  const hoverPreviewId = JSON.parse(onHover.previewIdJson);
+  ok(typeof hoverPreviewId === "string" && hoverPreviewId !== FILL_DEFAULT,
+    `hover: previewDelta carries the POINTED material id (got ${JSON.stringify(hoverPreviewId)}, current ${FILL_DEFAULT})`);
+  ok(JSON.parse(onHover.matIdJson) === FILL_DEFAULT,
+    `hover: committed DOC material id UNCHANGED (still ${FILL_DEFAULT}); got ${onHover.matIdJson}`);
+  // Close the picker → the Dropdown's guarded preview effect fires oncancelpreview,
+  // which reverts (matHover.cancel). The document was never touched by hovering.
+  await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((el) => el.querySelector(".label")?.textContent === "Fill");
+    row.querySelector(".dd-trigger").click();
+  });
+  await sleep(120);
+  const afterHover = await page.evaluate(() => window.__powerrp_app.previewDelta);
+  ok(afterHover === null, "hover leave/close: previewDelta REVERTED (hovering never mutates the doc)");
+
+  // ── B.4/item-4 — a schema-declared `scrub` SURVIVES into the knob control ────
+  if (scrubMatId) {
+    await page.evaluate((id, mid) => {
+      const app = window.__powerrp_app;
+      app.setPreview([[["items", id, "fill", "material", "id"], mid]]);
+      app.commitPreview();
+    }, rectId, scrubMatId);
+    await sleep(150);
+    ok(await knobDown(scrubIdx, KNOB_DRAG_PX), `switched Fill to "${scrubMatId}"; found its "${scrubKnob.name}" scrub knob`);
+    await knobUp(scrubIdx, KNOB_DRAG_PX);
+    await sleep(120);
+    const scrubbed = JSON.parse(await page.evaluate((id, n) => JSON.stringify(window.__powerrp_app.doc.slides[0].delta.items[id].fill?.material?.params?.[n] ?? null), rectId, scrubKnob.name));
+    const moved = Math.abs(scrubbed - scrubKnob.default);
+    const expectMoved = KNOB_DRAG_PX * scrubKnob.scrub;
+    ok(Math.abs(moved - expectMoved) < Math.max(expectMoved * 0.5, 1e-6),
+      `declared scrub ${scrubKnob.scrub} SURVIVES into the control: ${KNOB_DRAG_PX}px moved "${scrubKnob.name}" by ${moved} ≈ ${expectMoved}`);
+    ok(moved < KNOB_DRAG_PX * 0.5,
+      `scrub knob did NOT drag at the 1-unit/px fallback (${moved} ≪ ${KNOB_DRAG_PX})`);
+  }
 
   if (errors.length) {
     console.error("PROBE ERRORS:\n" + errors.join("\n"));
