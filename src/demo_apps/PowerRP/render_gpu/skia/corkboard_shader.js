@@ -171,6 +171,79 @@ half4 main(float2 fragCoord) {
 }
 `;
 
+// ── CORK BOARD — SHAPE-CONFORMING FILL VARIANT ───────────────────────────────────
+// A cork fill of a gear/star must not draw a rectangular vignette + wood FRAME inside
+// the clip (the "always a square" defect): the frame is the dominant read, so the whole
+// panel looked square. This variant mirrors CORK_SKSL's texture exactly but takes the
+// interior distance (which drives the vignette AND the frame rim) from the silhouette
+// SDF child, so both follow the true outline — the wood rim traces every tooth. The
+// granular texture is world-locked and unchanged (it is homogeneous, not an edge
+// effect). Same uniform block as CORK_SKSL (packCork); uCornerRadius is unused (the SDF
+// carries the silhouette). shapeSdf is the single child (foreground material).
+export const CORK_FILL_SKSL = PRELUDE + `
+const float PIT_SHARPNESS = 1.7;
+const float FLECK_SHARPNESS = 2.1;
+const float PIT_FREQ = 2.2;
+const float FLECK_FREQ = 2.9;
+const float GRANULE_CONTRAST = 0.17;
+const float GRANULE_ANISO = 0.55;
+const float TOPLIGHT_GRAD = 0.06;
+const float PIT_OFFSET = 91.0;
+const float FLECK_OFFSET = 133.0;
+const float VIGNETTE_SPAN = 0.5;
+
+uniform shader shapeSdf;             // child 0: silhouette signed distance (device px, <0 inside)
+uniform float2 uCenter;
+uniform float2 uHalfSize;
+uniform float  uCornerRadius;        // unused in the fill variant (the SDF is the silhouette)
+uniform float  uAngle;
+uniform float  uTexScale;
+uniform float  uSeed;
+uniform float  uGrainScale;
+uniform float  uMottleScale;
+uniform float  uMottleStrength;
+uniform float  uPitStrength;
+uniform float  uFleckStrength;
+uniform float3 uBaseColor;
+uniform float  uVignette;
+uniform float  uFrameWidth;
+uniform float3 uFrameColor;
+uniform float2 uLightDir;
+
+half4 main(float2 fragCoord) {
+  float2 p = rot2(fragCoord - uCenter, -uAngle);   // widget-local (for the world-locked texture)
+  float d = shapeSdf.eval(fragCoord).r;            // silhouette distance (device px, <0 inside)
+  float cov = 1.0 - smoothstep(-1.0, 1.0, d);
+  if (cov <= 0.0) return half4(0.0);
+
+  float2 tc = p / uTexScale + uSeed;
+  float2 aniso = float2(GRANULE_ANISO, 1.0);
+  float mottle  = fbm(tc * uMottleScale);
+  float granule = fbm(tc * aniso * uGrainScale);
+  float pit     = pow(fbm(tc * uGrainScale * PIT_FREQ + PIT_OFFSET), PIT_SHARPNESS);
+  float fleck   = pow(fbm(tc * aniso * uGrainScale * FLECK_FREQ + FLECK_OFFSET), FLECK_SHARPNESS);
+
+  half3 col = half3(uBaseColor);
+  col *= half(1.0 + uMottleStrength * (mottle - 0.5) * 2.0);
+  col *= half(1.0 + GRANULE_CONTRAST * (granule - 0.5) * 2.0);
+  col -= half3(uPitStrength * pit);
+  col += half3(uFleckStrength * fleck);
+
+  float grad = dot(normalize(p + float2(0.0001)), normalize(uLightDir));
+  col += half3(TOPLIGHT_GRAD * grad * 0.5);
+
+  float distIn = -d;                               // interior distance from the SILHOUETTE
+  float vig = smoothstep(0.0, min(uHalfSize.x, uHalfSize.y) * VIGNETTE_SPAN, distIn);
+  col *= half(mix(1.0 - uVignette, 1.0, vig));      // inner-edge vignette follows the outline
+
+  if (uFrameWidth > 0.0) {
+    float rim = 1.0 - smoothstep(uFrameWidth - 1.0, uFrameWidth + 1.0, distIn);
+    col = mix(col, half3(uFrameColor), half(rim));  // dark wood rim traces every tooth/notch
+  }
+  return half4(clamp(col, 0.0, 1.0) * half(cov), half(cov));
+}
+`;
+
 // ── STICKY / LOOSE-LEAF NOTE ────────────────────────────────────────────────────
 // Near-flat paper height field: base colour + subtle fibre; ruled lines (varying
 // strength) + a red margin; optional loose-leaf HOLES and/or a RIPPED (ragged)
@@ -353,6 +426,68 @@ half4 main(float2 fragCoord) {
   body += half3(uColor) * half(RIM_LIGHT * rim);                 // faint translucent-plastic rim
   float ring = smoothstep(1.0 - AO_WIDTH, 1.0, sqrt(r2));
   body *= half(1.0 - AO_RING * ring);                            // AO seating ring at the base
+
+  return half4(clamp(body, 0.0, 1.0) * half(cov), half(cov));
+}
+`;
+
+// ── THUMBTACK — SHAPE-CONFORMING FILL VARIANT ────────────────────────────────────
+// A tack head is a DISK, so its fill was ALWAYS a circular dome clipped to the shape.
+// This variant makes the dome a HEIGHT FIELD over the SILHOUETTE: the height rises from
+// 0 at the outline to a rounded plateau in the interior, driven by the interior
+// distance from the SDF child, and the surface normal tilts along the SDF gradient — so
+// a gear reads as a domed plastic gear with a bevelled, gear-shaped edge, its hotspot
+// and seating AO ring following the outline. The lighting math (Lambert + Blinn hotspot,
+// ambient floor, rim, AO ring) mirrors TACK_SKSL. Same uniform block as TACK_SKSL
+// (packTack); the "radial" coordinate is (1 - distIn/R), the silhouette analog of the
+// disk's |p|. shapeSdf is the single child.
+export const TACK_FILL_SKSL = PRELUDE + `
+const float AO_RING = 0.28;
+const float AO_WIDTH = 0.20;
+const float AMBIENT = 0.5;
+const float RIM_LIGHT = 0.14;
+const float DOME_FLAT = 0.6;
+const float DOME_MIN = 0.05;
+const float LIGHT_XY = 0.85;
+const float LIGHT_Z = 0.55;
+const float AA_PX = 2.0;
+const float NORMAL_EPS_PX = 1.0;
+
+uniform shader shapeSdf;             // child 0: silhouette signed distance (device px, <0 inside)
+uniform float2 uCenter;
+uniform float  uRadius;              // dome reach (device px = halfW); the plateau depth
+uniform float  uDomeGain;
+uniform float3 uColor;
+uniform float  uShininess;
+uniform float2 uLightDir;
+
+half4 main(float2 fragCoord) {
+  float d = shapeSdf.eval(fragCoord).r;            // silhouette distance (device px, <0 inside)
+  float cov = 1.0 - smoothstep(-AA_PX, AA_PX, d);
+  if (cov <= 0.0) return half4(0.0);
+  float distIn = -d;                               // interior distance from the SILHOUETTE
+
+  float R = max(uRadius, 1.0);
+  float t = clamp(distIn / R, 0.0, 1.0);           // 0 at the rim -> 1 at the dome plateau
+  float rr = 1.0 - t;                              // the disk's |p| analog: 1 at rim, 0 at plateau
+  float h = sqrt(max(0.0, 1.0 - rr * rr)) * clamp(uDomeGain, DOME_MIN, 1.0);
+
+  // outward silhouette direction (central difference of the SDF child) = the disk's radial dir.
+  float2 g = float2(
+    shapeSdf.eval(fragCoord + float2(NORMAL_EPS_PX, 0.0)).r - shapeSdf.eval(fragCoord - float2(NORMAL_EPS_PX, 0.0)).r,
+    shapeSdf.eval(fragCoord + float2(0.0, NORMAL_EPS_PX)).r - shapeSdf.eval(fragCoord - float2(0.0, NORMAL_EPS_PX)).r);
+  float glen = length(g);
+  float2 dir = glen > 0.0 ? g / glen : float2(0.0);
+  float3 N = normalize(float3(dir * rr * DOME_FLAT, h + 1e-4));   // spherical-CAP normal over the silhouette
+  float3 L = normalize(float3(normalize(uLightDir) * LIGHT_XY, LIGHT_Z));
+  float2 lit = litDiffSpec(N, L, uShininess);
+
+  half3 body = half3(uColor) * half(AMBIENT + (1.0 - AMBIENT) * lit.x);
+  body += half3(lit.y);                                          // white glossy hotspot
+  float rim = pow(1.0 - max(0.0, h), 2.0);
+  body += half3(uColor) * half(RIM_LIGHT * rim);                 // faint translucent-plastic rim
+  float ring = smoothstep(1.0 - AO_WIDTH, 1.0, rr);              // seating AO ring at the outline
+  body *= half(1.0 - AO_RING * ring);
 
   return half4(clamp(body, 0.0, 1.0) * half(cov), half(cov));
 }
@@ -616,6 +751,6 @@ export const TACK_FILL_PARAMS = [
 // the plugin's `material` op field. `proxyFill` gives each a cheap thumbnail stand-in.
 // `fillParams` opts a material into being PAINT on any shape (cork + tack; both identity
 // mappings ⇒ no toUniformParams). The NOTE stays widget-only (see the schema note above).
-export const CORK_MATERIAL = { id: "corkboard", sksl: CORK_SKSL, pack: packCork, uniformFloats: CORK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardProxyFill, fillParams: CORK_FILL_PARAMS };
+export const CORK_MATERIAL = { id: "corkboard", sksl: CORK_SKSL, pack: packCork, uniformFloats: CORK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardProxyFill, fillParams: CORK_FILL_PARAMS, usesShapeSdf: true, fillSksl: CORK_FILL_SKSL };
 export const NOTE_MATERIAL = { id: "corkboardNote", sksl: NOTE_SKSL, pack: packNote, uniformFloats: NOTE_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardNoteProxyFill };
-export const TACK_MATERIAL = { id: "corkboardThumbtack", sksl: TACK_SKSL, pack: packTack, uniformFloats: TACK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardThumbtackProxyFill, fillParams: TACK_FILL_PARAMS };
+export const TACK_MATERIAL = { id: "corkboardThumbtack", sksl: TACK_SKSL, pack: packTack, uniformFloats: TACK_UNIFORM_FLOATS, backdrop: false, proxyFill: corkboardThumbtackProxyFill, fillParams: TACK_FILL_PARAMS, usesShapeSdf: true, fillSksl: TACK_FILL_SKSL };

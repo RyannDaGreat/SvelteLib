@@ -44,7 +44,8 @@ import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialF
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
-import { getMaterial, materialEffect, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
+import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
+import { getShapeSdf } from "./shape_sdf.js"; // the silhouette signed-distance child that makes a material fill conform to its shape
 import { getStrokeMaterial } from "./stroke_materials.js";
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
@@ -125,6 +126,11 @@ const PROXY_BACKDROP_OPS = new Set(["blurBackdrop", "magnifyBackdrop", "glassBac
 // such rect here — the glass/material clip AABB and the effectSubtree source
 // region (effectRegion) — so the two can never drift apart.
 const COVERAGE_AA_SLOP_PX = 2;
+// How far OUTSIDE the outline the silhouette SDF (shape_sdf.js) stays valid, in device
+// px — enough for the coverage AA band and the ±1px central-difference normal taps to
+// read a real distance just past the edge. The effect band itself reads INTERIOR
+// distances, which are always in range, so a small margin suffices.
+const SHAPE_SDF_MARGIN_PX = 4;
 
 /**
  * Command (draws on `canvas`). Paints the IR `commands` through `view`
@@ -1240,6 +1246,16 @@ function handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowFlat
     opacity: cmd.opacity ?? 1,
   };
   const clip = shapeOpDevicePath(CanvasKit, cmd, deviceMatrix(CanvasKit, view, world));
+  // SHAPE-CONFORMING FILL: a material that opts in (materialUsesShapeSdf) gets the
+  // silhouette signed-distance field of its own clip path as an extra child, so its
+  // edge effects (rim / frame / dome / vignette) follow the true outline instead of
+  // the bbox rectangle its analytic SDF assumes. The SDF is byte-keyed + cached
+  // (shape_sdf.js owns the image). NOT built in proxy mode (thumbnails use the flat
+  // stand-ins) and never for a non-declaring material (its fill stays byte-identical).
+  if (!proxy && materialUsesShapeSdf(material)) {
+    const sdf = getShapeSdf(CanvasKit, ctx, clip, SHAPE_SDF_MARGIN_PX);
+    if (sdf) regionOp.shapeSdf = sdf; // {img, box:{x0,y0,w,h}} — the cache owns img
+  }
   const canvas = target.canvas;
   canvas.save();
   canvas.clipPath(clip, CanvasKit.ClipOp.Intersect, true);
@@ -2054,12 +2070,25 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   }
   const bd = glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, cmd.backdropScale, blurSigma, region, needBlur);
 
-  const effect = materialEffect(CanvasKit, material);
+  // SHAPE-CONFORMING FILL: when the op carries a silhouette SDF (built by
+  // handleMaterialPaintShape for a declaring material), compile the fill variant and
+  // bind the SDF as child 2 in DEVICE space (sample matrix maps a texel to its device
+  // coordinate, translate(box origin) — this handler draws at the device root, so `p`
+  // IS device px). Absent ⇒ the base shader + two children, byte-identical.
+  const useSdf = cmd.shapeSdf && materialUsesShapeSdf(material);
+  const effect = useSdf ? materialFillEffect(CanvasKit, material) : materialEffect(CanvasKit, material);
   const blurSource = bd.blurred ?? bd.sharp;
   const blurChild = blurSource.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
   const sharpChild = bd.sharp.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, bd.sampleMatrix);
+  const children = [blurChild, sharpChild];
+  let sdfChild = null;
+  if (useSdf) {
+    const sm = CanvasKit.Matrix.translated(cmd.shapeSdf.box.x0, cmd.shapeSdf.box.y0);
+    sdfChild = cmd.shapeSdf.img.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, sm);
+    children.push(sdfChild);
+  }
   const uniforms = material.pack(u);
-  const shader = effect.makeShaderWithChildren(uniforms, [blurChild, sharpChild]);
+  const shader = effect.makeShaderWithChildren(uniforms, children);
   if (!shader) throw new Error(`paintIR(skia): material "${cmd.material}" makeShaderWithChildren returned null`);
   const p = new CanvasKit.Paint();
   p.setShader(shader);
@@ -2070,7 +2099,7 @@ function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, 
   canvas.drawPaint(p);
   canvas.restore();
 
-  p.delete(); shader.delete(); blurChild.delete(); sharpChild.delete();
+  p.delete(); shader.delete(); blurChild.delete(); sharpChild.delete(); sdfChild?.delete();
   bd.blurred?.delete(); bd.sharp.delete(); // blurred is null when the material opted out
 
   // Optional bright hairline border on top (reuses the glass border helper — the
@@ -2132,7 +2161,8 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
       cx: reanchoredCenter(cxDev, region.x0), cy: reanchoredCenter(cyDev, region.y0),
       halfW: halfWDev, halfH: halfHDev, cornerRadius: cornerDev, angle, scale: sd, ...cmd.params,
     };
-    const raster = materialFillRaster(CanvasKit, ctx, material, u, region);
+    const shapeSdf = cmd.shapeSdf && materialUsesShapeSdf(material) ? cmd.shapeSdf : null;
+    const raster = materialFillRaster(CanvasKit, ctx, material, u, region, shapeSdf);
     const p = new CanvasKit.Paint();
     p.setAlphaf(opacity);
     canvas.drawImage(raster.img, region.x0, region.y0, p);
@@ -2413,9 +2443,19 @@ function sameBytes(a, b) {
  * Returns `{img, retained}`: `retained` true means the CACHE owns the Image (do not
  * delete it), false means the caller must free it after the blit.
  */
-function materialFillRaster(CanvasKit, ctx, material, u, region) {
+function materialFillRaster(CanvasKit, ctx, material, u, region, shapeSdf) {
   const w = region.x1 - region.x0, h = region.y1 - region.y0;
   const uniforms = material.pack(u);
+  // A SHAPE-CONFORMING fill binds an extra child (the silhouette SDF) that the packed
+  // uniforms do NOT capture, so it does NOT go through the uniform-keyed raster cache
+  // (a hit there would ignore the shape). It re-renders each frame — correct and, for
+  // the moderate cork/tack shaders, cheap; the SDF IMAGE itself is cached (shape_sdf.js),
+  // so only the fill shader re-runs. `retained: false`, so the caller frees the image.
+  if (shapeSdf) {
+    const matrix = CanvasKit.Matrix.translated(shapeSdf.box.x0 - region.x0, shapeSdf.box.y0 - region.y0);
+    const img = renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h, { img: shapeSdf.img, matrix });
+    return { img, retained: false };
+  }
   const bytes = new Uint8Array(uniforms.buffer, uniforms.byteOffset, uniforms.byteLength);
   // Retention needs an identity-stable surface factory (one per GrContext — the
   // video_v2 caller contract), which is exactly what ctx.liveGpu reports: a caller
@@ -2501,9 +2541,18 @@ function contextPartition(ctx) {
  * its SDF) and is composited SrcOver, unlike the backdrop re-render that stands in for
  * the composite-so-far and must reproduce THE CLEAR.
  */
-function renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h) {
-  const effect = materialEffect(CanvasKit, material);
-  const shader = effect.makeShader(uniforms);
+function renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h, sdfChild) {
+  // A SHAPE-CONFORMING foreground fill compiles the fill variant and binds the
+  // silhouette SDF as its single child (sdfChild.matrix maps a texel to this raster's
+  // region-local space); a plain fill compiles the base shader with no children.
+  const effect = sdfChild ? materialFillEffect(CanvasKit, material) : materialEffect(CanvasKit, material);
+  let child = null, shader;
+  if (sdfChild) {
+    child = sdfChild.img.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, sdfChild.matrix);
+    shader = effect.makeShaderWithChildren(uniforms, [child]);
+  } else {
+    shader = effect.makeShader(uniforms);
+  }
   if (!shader) throw new Error(`paintIR(skia): material "${material.id}" makeShader returned null`);
   const surf = ctx.makeSurface(w, h);
   if (!surf) throw new Error(`paintIR(skia): makeSurface(${w}×${h}) for material "${material.id}" returned null`);
@@ -2514,7 +2563,7 @@ function renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h) {
   c.drawPaint(p);
   surf.flush();
   const img = surf.makeImageSnapshot();
-  p.delete(); shader.delete(); surf.dispose();
+  p.delete(); shader.delete(); child?.delete(); surf.dispose();
   return img;
 }
 

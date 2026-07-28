@@ -275,6 +275,191 @@ half4 main(float2 p) {
 }
 `;
 
+// ── SHAPE-CONFORMING FILL VARIANT ────────────────────────────────────────────
+// A CRT fill of a gear/star drew a rectangular lit screen + black bezel + radial
+// vignette inside the clip — the FRAME read as a square. This variant conforms the
+// three SHAPE terms to the silhouette SDF child: the tube-FACE coverage, the lit-SCREEN
+// region (the silhouette eroded inward by the bezel, so the black bezel traces every
+// tooth), and the VIGNETTE (darkening toward the true edge). Everything that is the
+// rectangular RASTER SIGNAL — barrel curvature, band-limit, convergence, scanlines,
+// phosphor mask, glow — is UNCHANGED (a CRT's raster is rectangular; it is a homogeneous
+// texture, not an edge effect, exactly like cork's noise). The pipeline mirrors CRT_SKSL
+// stage for stage. Same uniform block as CRT_SKSL (packCrtUniforms); uCornerRadius is
+// unused. Children: blurredBackdrop, sharpBackdrop, shapeSdf.
+export const CRT_FILL_SKSL = `
+const float AA_PX = ${AA_PX};
+const float TWO_PI = 6.28318530718;
+const float THIRD_TURN = 2.09439510239;
+const float VIGNETTE_START = 0.55;     // normalized radius at which the (radial, bbox) vignette begins — UNCHANGED from CRT_SKSL so a rect fill matches the base (invariant #3)
+const float SCREEN_FEATHER_PX = 1.5;
+const float BAND_SPAN_SIGMA = ${BAND_SPAN_SIGMA};
+const float BAND_K = ${BAND_K};
+const float MIN_BAND_SIGMA = ${MIN_BAND_SIGMA};
+const float CONV_EPS = 0.0005;
+const float SCAN_HARD_DARK = -16.0;
+const float SCAN_HARD_BRIGHT = -6.0;
+const float MASK_APERTURE_MAX = 0.5;
+const float MASK_SHADOW_MAX = 1.5;
+const float MASK_NONE_MIN = 2.5;
+const float MASK_ROW_FLOOR = 0.35;
+const float MASK_SLOT_FLOOR = 0.35;
+const half3 LUMA = half3(0.2126, 0.7152, 0.0722);
+const half3 WB_COLD = half3(0.92, 0.97, 1.10);
+const half3 WB_WARM = half3(1.06, 1.00, 0.90);
+const half3 HALATION_WARM = half3(1.00, 0.55, 0.30);
+
+uniform shader blurredBackdrop;  // child 0
+uniform shader sharpBackdrop;    // child 1
+uniform shader shapeSdf;         // child 2: silhouette signed distance (device px, <0 inside)
+uniform float2 uCenter;
+uniform float2 uHalfSize;
+uniform float uCornerRadius;     // unused in the fill variant (the SDF is the silhouette)
+uniform float uAngle;
+uniform float uSourceTVL;
+uniform float uGammaIn;
+uniform float uGammaOut;
+uniform float uScanlineStrength;
+uniform float uScanlineCount;
+uniform float uBrightBoost;
+uniform float uBeamBloom;
+uniform float uMaskType;
+uniform float uMaskStrength;
+uniform float uMaskPitch;
+uniform float uHalation;
+uniform float uDiffusion;
+uniform float uCurvature;
+uniform float uConvergence;
+uniform float uVignette;
+uniform float uBezel;
+uniform float uMonochrome;
+uniform float uWhiteBalance;
+uniform float3 uPhosphorTint;
+
+half3 sampleBandLinear(float2 center, float2 xAxis, float sigma, float gin) {
+  half3 acc = half3(0.0);
+  float wsum = 0.0;
+  for (int i = -3; i <= 3; i++) {
+    float s = (float(i) / 3.0) * BAND_SPAN_SIGMA;
+    float w = exp(-0.5 * s * s);
+    half3 c = sharpBackdrop.eval(center + xAxis * (s * sigma)).rgb;
+    acc += pow(c, half3(gin)) * half(w);
+    wsum += w;
+  }
+  return acc / half(wsum);
+}
+
+half3 phosphorMask(float2 lp, float pitch, float type) {
+  if (type > MASK_NONE_MIN) { return half3(1.0); }
+  float triad = lp.x / pitch;
+  float phase = triad * TWO_PI;
+  half3 grille = half3(0.5 + 0.5 * cos(phase),
+                       0.5 + 0.5 * cos(phase - THIRD_TURN),
+                       0.5 + 0.5 * cos(phase + THIRD_TURN));
+  if (type < MASK_APERTURE_MAX) { return grille; }
+  float rows = lp.y / pitch;
+  if (type < MASK_SHADOW_MAX) {
+    float rowParity = step(0.5, fract(rows * 0.5));
+    float phase2 = (triad + rowParity * 0.5) * TWO_PI;
+    half3 dots = half3(0.5 + 0.5 * cos(phase2),
+                       0.5 + 0.5 * cos(phase2 - THIRD_TURN),
+                       0.5 + 0.5 * cos(phase2 + THIRD_TURN));
+    float rowGap = 0.5 + 0.5 * cos(rows * TWO_PI);
+    return dots * half(mix(MASK_ROW_FLOOR, 1.0, rowGap));
+  }
+  float slotParity = step(0.5, fract(triad * 0.5));
+  float slot = 0.5 + 0.5 * cos((rows + slotParity * 0.5) * TWO_PI);
+  return grille * half(mix(MASK_SLOT_FLOOR, 1.0, slot));
+}
+
+half4 main(float2 p) {
+  float ca = cos(uAngle), sa = sin(uAngle);
+  float2 d0 = p - uCenter;
+  float2 pl = float2(ca * d0.x + sa * d0.y, -sa * d0.x + ca * d0.y); // widget-local (for the raster)
+
+  // (1) tube FACE coverage = the SILHOUETTE (SDF child), not the analytic rounded rect.
+  float dSil = shapeSdf.eval(p).r;
+  float covOut = 1.0 - smoothstep(-AA_PX, AA_PX, dSil);
+  if (covOut <= 0.0) { return half4(0.0); }
+  float distIn = -dSil;
+
+  // (2) BARREL curvature over the bbox-normalized coord (the raster stays rectangular).
+  float2 uv = pl / uHalfSize;
+  float r2 = dot(uv, uv);
+  float radLen = sqrt(r2);
+  float2 warp = uv * (1.0 + uCurvature * r2);
+  float2 wl = warp * uHalfSize;
+  float bezelPx = uBezel * min(uHalfSize.x, uHalfSize.y);
+
+  float2 xAxis = float2(ca, sa);
+  float2 yAxis = float2(-sa, ca);
+  float2 sampleDev = wl.x * xAxis + wl.y * yAxis + uCenter;
+
+  // LIT SCREEN = the silhouette eroded inward by the bezel, sampled at the WARPED point
+  // (shapeSdf at sampleDev) so the black bezel traces the outline AND matches the base
+  // shader's warped bezel-inset on a plain rect (eroding a rect by bezelPx == the base's
+  // inset rect) — invariant #3. The black bezel frame therefore follows every tooth.
+  float dScr = shapeSdf.eval(sampleDev).r + bezelPx;
+  float screen = 1.0 - smoothstep(-SCREEN_FEATHER_PX, SCREEN_FEATHER_PX, dScr);
+
+  // (3) INPUT BAND-LIMIT (H only) + (4) CONVERGENCE (radial R/B split).
+  float minHalf = min(uHalfSize.x, uHalfSize.y);
+  float pictureWidth = 2.0 * uHalfSize.x;
+  float bandSigma = max(BAND_K * pictureWidth / max(uSourceTVL, 1.0), MIN_BAND_SIGMA);
+  half3 lin;
+  if (uConvergence <= CONV_EPS || radLen <= 0.0) {
+    lin = sampleBandLinear(sampleDev, xAxis, bandSigma, uGammaIn);
+  } else {
+    float2 dir = uv / radLen;
+    float mag = uConvergence * minHalf * r2;
+    float2 offDev = (dir.x * xAxis + dir.y * yAxis) * mag;
+    lin = half3(sampleBandLinear(sampleDev + offDev, xAxis, bandSigma, uGammaIn).r,
+                sampleBandLinear(sampleDev, xAxis, bandSigma, uGammaIn).g,
+                sampleBandLinear(sampleDev - offDev, xAxis, bandSigma, uGammaIn).b);
+  }
+
+  // (5) COLOUR: monochrome collapse + white-balance (linear light).
+  float lum = dot(lin, LUMA);
+  half3 tintLin = pow(half3(uPhosphorTint), half3(uGammaIn));
+  lin = mix(lin, half3(lum) * tintLin, half(clamp(uMonochrome, 0.0, 1.0)));
+  half3 wb = uWhiteBalance >= 0.0
+    ? mix(half3(1.0), WB_COLD, half(clamp(uWhiteBalance, 0.0, 1.0)))
+    : mix(half3(1.0), WB_WARM, half(clamp(-uWhiteBalance, 0.0, 1.0)));
+  lin *= wb;
+
+  // (6) SCANLINES (warped y so lines curve with the tube).
+  float ny = warp.y * 0.5 + 0.5;
+  float dst = fract(ny * uScanlineCount) - 0.5;
+  float hardness = mix(SCAN_HARD_DARK, SCAN_HARD_BRIGHT, clamp(lum, 0.0, 1.0) * clamp(uBeamBloom, 0.0, 1.0));
+  float beam = exp2(hardness * dst * dst);
+  float scan = mix(1.0 - clamp(uScanlineStrength, 0.0, 1.0), 1.0, beam);
+  lin *= half(scan) * half(max(uBrightBoost, 0.0));
+
+  // (7) PHOSPHOR MASK (screen space).
+  half3 mask = phosphorMask(pl, max(uMaskPitch, 1.0), uMaskType);
+  lin *= mix(half3(1.0), mask, half(clamp(uMaskStrength, 0.0, 1.0)));
+
+  // (8) GLOW (single blurred kernel).
+  half3 bloomCol = pow(blurredBackdrop.eval(sampleDev).rgb, half3(uGammaIn));
+  float bloomLum = dot(bloomCol, LUMA);
+  float mono = clamp(uMonochrome, 0.0, 1.0);
+  half3 halationTint = mix(HALATION_WARM, tintLin, half(mono));
+  lin += half3(bloomLum) * half(max(uHalation, 0.0)) * halationTint;
+  half3 diffCol = mix(bloomCol, half3(bloomLum) * tintLin, half(mono)) * wb;
+  lin += diffCol * half(max(uDiffusion, 0.0));
+
+  // (9) VIGNETTE: the RADIAL bbox corner-darkening, UNCHANGED from CRT_SKSL — a CRT's
+  // vignette is a tube characteristic about the screen centre, not an outline effect, so
+  // keeping it radial is what makes a rect fill match the base shader (invariant #3). The
+  // conformed terms are the tube FACE + the black BEZEL FRAME (which was the rectangle).
+  float vig = 1.0 - clamp(uVignette, 0.0, 1.0) * smoothstep(VIGNETTE_START, 1.0, radLen);
+  lin *= half(vig);
+  half3 outc = pow(max(lin, half3(0.0)), half3(1.0 / max(uGammaOut, 0.1)));
+  half a = half(covOut);
+  outc *= half(screen);
+  return half4(outc * a, a);
+}
+`;
+
 // Uniform slot count — asserted by the packer so a shader edit that changes the
 // uniform block is caught loudly instead of packing a mis-sized array.
 // 6 geometry (cx,cy,halfW,halfH,cornerRadius,angle) + 18 scalar knobs + float3 tint (3) = 27.
@@ -526,4 +711,9 @@ export function crtUniformParams(p) {
  * UI and plugins/demo/crt.js derive from, and the mapping is the ONE schema→uniform
  * step both the widget emit() and the regionOp synthesis run through.
  */
-export const CRT_MATERIAL = { id: "crt", sksl: CRT_SKSL, pack: packCrtUniforms, uniformFloats: CRT_UNIFORM_FLOATS, maxSampleReach: maxCrtSampleReach, fillParams: CRT_FILL_PARAMS, toUniformParams: crtUniformParams };
+export const CRT_MATERIAL = { id: "crt", sksl: CRT_SKSL, pack: packCrtUniforms, uniformFloats: CRT_UNIFORM_FLOATS, maxSampleReach: maxCrtSampleReach, fillParams: CRT_FILL_PARAMS, toUniformParams: crtUniformParams,
+  // SHAPE-CONFORMING FILL: the tube face, the bezel/lit-screen and the vignette follow
+  // the silhouette SDF child, so the black bezel frame traces every tooth instead of
+  // drawing a rectangle inside the shape. The rectangular raster (scanlines/mask/
+  // curvature) is unchanged. The widget path keeps CRT_SKSL, byte-identical.
+  usesShapeSdf: true, fillSksl: CRT_FILL_SKSL };

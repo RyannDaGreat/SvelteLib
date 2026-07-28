@@ -497,3 +497,47 @@ export function materialEffect(CanvasKit, material) {
   _effects.set(material.id, { effect: eff, ck: CanvasKit });
   return eff;
 }
+
+/**
+ * Pure function. Does this material declare a SHAPE-CONFORMING FILL variant — a
+ * `fillSksl` that samples the silhouette SDF child (render_gpu/skia/shape_sdf.js) so
+ * its edge effects follow the real outline instead of the analytic bbox rectangle?
+ * Absence keeps the fill on the base `sksl` (byte-identical to before), so a material
+ * is conforming ONLY when it opts in with both flags.
+ *
+ * @param {{usesShapeSdf?: boolean, fillSksl?: string}} material - a descriptor from getMaterial()
+ * @returns {boolean}
+ *
+ * @example materialUsesShapeSdf({id: "glass", usesShapeSdf: true, fillSksl: "..."}) // true
+ * @example materialUsesShapeSdf({id: "frosted"}) // false (homogeneous fill — nothing to conform)
+ */
+export function materialUsesShapeSdf(material) {
+  return material.usesShapeSdf === true && typeof material.fillSksl === "string";
+}
+
+// The conforming-fill variant effects, keyed id + ":fill" (a shape-conforming fill
+// compiles a DIFFERENT shader than the widget/base path — it declares the extra
+// `shapeSdf` child — so it caches under its own key, the base `_effects` map untouched).
+const _fillEffects = new Map(); // id → { effect, ck }
+
+/**
+ * Query→build (compiles once per material per CanvasKit instance; memoized). The
+ * compiled RuntimeEffect for a material's SHAPE-CONFORMING FILL variant (`fillSksl`).
+ * Throws LOUDLY with the SkSL compiler error on failure — never a silent fallback to
+ * the analytic path (the caller decides that visibly). Only call when
+ * materialUsesShapeSdf(material).
+ *
+ * @param CanvasKit - the initialized CanvasKit module
+ * @param material - a descriptor from getMaterial() declaring `fillSksl`
+ */
+export function materialFillEffect(CanvasKit, material) {
+  if (!materialUsesShapeSdf(material))
+    throw new Error(`materials: "${material.id}" declares no shape-conforming fillSksl — materialFillEffect must not be called for it`);
+  const cached = _fillEffects.get(material.id);
+  if (cached && cached.ck === CanvasKit) return cached.effect;
+  let err = null;
+  const eff = CanvasKit.RuntimeEffect.Make(material.fillSksl, (e) => { err = e; });
+  if (!eff) throw new Error(`materials: "${material.id}" fillSksl failed to compile:\n${err}`);
+  _fillEffects.set(material.id, { effect: eff, ck: CanvasKit });
+  return eff;
+}

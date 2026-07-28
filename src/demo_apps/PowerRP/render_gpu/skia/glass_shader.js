@@ -282,6 +282,112 @@ half4 main(float2 p) {
 }
 `;
 
+// ── THE SHAPE-CONFORMING FILL VARIANT ────────────────────────────────────────
+// The glass FILL of an arbitrary shape (gear, star, blob) must catch its rim light
+// on EVERY tooth and notch, not trace the bbox rectangle. This variant is a
+// character-for-character mirror of GLASS_SKSL's LOOK math (refraction → tint →
+// specular → outline), with ONE difference: the region distance `d` and the surface
+// normal `N` come from the SILHOUETTE SDF child (render_gpu/skia/shape_sdf.js,
+// device px, negative inside) instead of the analytic squircle. So the refraction
+// bevel, the edge specular, the perimeter catch-light and the contact shadow all ride
+// the true outline. The UNIFORM BLOCK is IDENTICAL to GLASS_SKSL (same order, same 25
+// floats — packGlassMaterial is unchanged); the four purely-geometric uniforms
+// (uCornerRadius, uAngle, uSquircle, uSurfaceTension) are simply unused here (the SDF
+// already carries rotation and the exact silhouette). Only the FILL path binds this;
+// the glass WIDGET keeps GLASS_SKSL, byte-identical.
+export const GLASS_FILL_SKSL = `
+const float AA_PX = 1.0;
+const float NORMAL_EPS_PX = 1.0;
+const float SHEEN_POWER = 5.0;
+const float RIM_WEIGHT = 1.15;
+const float PRE_BULGE = ${GLASS_PRE_BULGE};
+const float APPEAR_END = 0.8;
+const float PERIMETER_PX = 2.5;
+const float ADAPT_LO = 0.30;
+const float ADAPT_HI = 0.70;
+const float ADAPT_LIGHT = 0.96;
+const float ADAPT_DARK = 0.06;
+const float ADAPT_FIXED = 0.75;
+const half3 REC709 = half3(0.2126, 0.7152, 0.0722);
+
+uniform shader blurredBackdrop;     // child 0
+uniform shader sharpBackdrop;       // child 1
+uniform shader shapeSdf;            // child 2: silhouette signed distance (device px, <0 inside)
+uniform float2 uCenter;
+uniform float2 uHalfSize;
+uniform float uCornerRadius;        // unused in the fill variant (the SDF is the silhouette)
+uniform float uEdgeFalloff;
+uniform float uRefractionStrength;
+uniform float uAngle;               // unused (the device-space SDF already carries rotation)
+uniform float uLightAngle;
+uniform float uLightIntensity;
+uniform float uSaturation;
+uniform float4 uTint;
+uniform float uMaterialize;
+uniform float uSquircle;            // unused
+uniform float uSheen;
+uniform float uSpecPower;
+uniform float uContactShadow;
+uniform float uCaustic;
+uniform float uEdgeLight;
+uniform float uAdaptivity;
+uniform float uChromatic;
+uniform float uSurfaceTension;      // unused
+
+half4 main(float2 p) {
+  // Silhouette distance + normal, straight from the SDF child (device space).
+  float d = shapeSdf.eval(p).r;
+  float cov = 1.0 - smoothstep(-AA_PX, AA_PX, d);
+  if (cov <= 0.0) { return half4(0.0); }
+  float distInside = -d;
+  float edge = 1.0 - smoothstep(0.0, uEdgeFalloff, distInside);
+  float2 g = float2(
+    shapeSdf.eval(p + float2(NORMAL_EPS_PX, 0.0)).r - shapeSdf.eval(p - float2(NORMAL_EPS_PX, 0.0)).r,
+    shapeSdf.eval(p + float2(0.0, NORMAL_EPS_PX)).r - shapeSdf.eval(p - float2(0.0, NORMAL_EPS_PX)).r);
+  float glen = length(g);
+  float2 N = glen > 0.0 ? g / glen : float2(0.0, -1.0);   // outward silhouette normal (device space)
+
+  float m = clamp(uMaterialize, 0.0, 1.0);
+  float appear = smoothstep(0.0, APPEAR_END, m);
+  float refrAmt = mix(PRE_BULGE, 1.0, m);
+
+  // (4) refraction along the silhouette normal (chromatic split, as the base shader).
+  float2 disp = N * (uRefractionStrength * edge * refrAmt);
+  float caAmt = uChromatic * edge;
+  half3 body = half3(
+    blurredBackdrop.eval(p + disp * (1.0 - caAmt)).r,
+    blurredBackdrop.eval(p + disp).g,
+    blurredBackdrop.eval(p + disp * (1.0 + caAmt)).b
+  );
+  half3 caustic = sharpBackdrop.eval(p + disp).rgb;
+  body = mix(body, caustic, half(uCaustic * edge));
+
+  // (5) desaturate + luminance-adaptive tint (identical to GLASS_SKSL).
+  half lum = dot(body, REC709);
+  body = mix(half3(lum), body, half(uSaturation));
+  float adapt = smoothstep(ADAPT_LO, ADAPT_HI, float(lum));
+  half3 adaptiveNeutral = mix(half3(ADAPT_LIGHT), half3(ADAPT_DARK), half(adapt));
+  half3 neutral = mix(half3(ADAPT_FIXED), adaptiveNeutral, half(clamp(uAdaptivity, 0.0, 1.0)));
+  half3 tintColor = neutral * half3(uTint.rgb);
+  body = mix(body, tintColor, half(uTint.a * appear));
+
+  // (6) specular: rim/contact on the silhouette normal; the broad sheen stays a soft
+  // bbox-directional gradient (it is a face wash, not an edge effect).
+  float2 L = float2(cos(uLightAngle), sin(uLightAngle));
+  float rim = pow(max(dot(N, L), 0.0), uSpecPower) * edge;
+  float grad = dot(p - uCenter, L) / max(length(uHalfSize), 1.0);
+  float sheen = pow(clamp(grad * 0.5 + 0.5, 0.0, 1.0), SHEEN_POWER);
+  float dark = pow(max(dot(N, -L), 0.0), uSpecPower) * edge;
+  float spec = (rim * RIM_WEIGHT + sheen * uSheen) * uLightIntensity;
+
+  float perim = 1.0 - smoothstep(0.0, PERIMETER_PX, distInside);
+  float outline = perim * uEdgeLight * (0.6 + 0.4 * max(dot(N, L), 0.0));
+
+  half3 outc = body + half3((spec + outline) * appear) - half3(dark * uContactShadow * appear);
+  return half4(outc * half(cov), half(cov));
+}
+`;
+
 // Uniform slot count — asserted by the packer so a shader edit that changes the
 // uniform block is caught loudly instead of packing a mis-sized array.
 const GLASS_UNIFORM_FLOATS = 25;
@@ -547,6 +653,12 @@ export const GLASS_MATERIAL = {
   fillParams: GLASS_FILL_PARAMS,
   toUniformParams: glassUniformParams,
   proxyBackdrop: glassProxyBackdrop,
+  // SHAPE-CONFORMING FILL: the fill variant takes its region distance + rim normal
+  // from the silhouette SDF child, so the refraction bevel and edge light follow the
+  // real outline (a glass gear reads as a GLASS GEAR — rim on every tooth). The widget
+  // path keeps GLASS_SKSL, byte-identical.
+  usesShapeSdf: true,
+  fillSksl: GLASS_FILL_SKSL,
   // The glass shader reads the blurred backdrop displaced OUTWARD along the rim
   // normal, up to maxGlassDisplacement(refractionDev, chromatic) — the same reach
   // the legacy glassRegion declares. Region-bounds the fill's backdrop re-render.

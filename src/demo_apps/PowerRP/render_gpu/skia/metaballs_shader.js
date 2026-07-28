@@ -373,6 +373,99 @@ half4 main(float2 p) {
 }
 `;
 
+// ── SHAPE-CONFORMING FILL VARIANT ────────────────────────────────────────────
+// A metaballs FILL was ALWAYS a lone centered SPHERE (its field is one sphere filling
+// the region), so its water dome + fresnel rim + refraction followed the INSCRIBED
+// CIRCLE, not the shape — a gear got a round droplet clipped to a gear. This variant
+// makes the droplet BE the silhouette: the surface is the shape's SDF (child), so the
+// bead bulges to fill the gear and its rim fresnel + refraction follow every tooth (a
+// LIQUID GEAR). The water look (refraction / fresnel / specular / contact shade / fluid
+// tint) mirrors METABALLS_SKSL; the multi-ball field/blend machinery is dropped (a fill
+// is one body — its fluid colour/strength/refraction are read straight from roster slot
+// 0). Same uniform block as METABALLS_SKSL (packMetaballsUniforms); the field/merge
+// uniforms are unused here. Children: blurredBackdrop, sharpBackdrop, shapeSdf.
+export const METABALLS_FILL_SKSL = `
+const float AA_PX = 1.0;
+const float NORMAL_EPS_PX = 1.0;
+const float FRESNEL_POWER = 3.0;
+const float FRESNEL_WHITE = 0.6;
+const float FRESNEL_ENV = 0.4;
+const float LIGHT_ELEVATION = 0.7;
+
+uniform shader blurredBackdrop;  // child 0
+uniform shader sharpBackdrop;    // child 1
+uniform shader shapeSdf;         // child 2: silhouette signed distance (device px, <0 inside)
+uniform float2 uCenter;
+uniform float2 uHalfSize;
+uniform float uAngle;            // unused (device-space SDF carries rotation)
+uniform float uBallCount;        // unused
+uniform float uBalls[${MAX_METABALLS * FIELDS_PER_BALL}]; // only slot 0's fluid appearance (indices 6..10) is read
+uniform float uUnit;             // = 1 for a fill; unit = uUnit*minHalf = minHalf
+uniform float uSmoothK;          // unused
+uniform float uThreshold;        // unused
+uniform float uChromatic;
+uniform float uLightAngle;
+uniform float uSpecular;
+uniform float uShininess;
+uniform float uFresnel;
+uniform float uBulge;
+uniform float uAmbient;
+
+half4 main(float2 p) {
+  float d = shapeSdf.eval(p).r;                   // silhouette distance (device px, <0 inside)
+  float cov = 1.0 - smoothstep(-AA_PX, AA_PX, d);
+  if (cov <= 0.0) { return half4(0.0); }
+  float distIn = -d;
+  float minHalf = min(uHalfSize.x, uHalfSize.y);
+  float unit = uUnit * minHalf;
+
+  // SPHERICAL-CAP dome over the silhouette: omega 1 at the rim (grazing) -> 0 at the
+  // dome plateau. The outward direction is the SDF gradient (device space).
+  float domeDepth = max(uBulge * unit, 1.0);
+  float omega = clamp(1.0 - distIn / domeDepth, 0.0, 1.0);
+  float2 g = float2(
+    shapeSdf.eval(p + float2(NORMAL_EPS_PX, 0.0)).r - shapeSdf.eval(p - float2(NORMAL_EPS_PX, 0.0)).r,
+    shapeSdf.eval(p + float2(0.0, NORMAL_EPS_PX)).r - shapeSdf.eval(p - float2(0.0, NORMAL_EPS_PX)).r);
+  float glen = length(g);
+  float2 D = glen > 0.0 ? g / glen : float2(0.0);
+  float2 Nxy = D * omega;
+  float nz = sqrt(max(1.0 - dot(Nxy, Nxy), 0.0));
+  float3 N = float3(Nxy, nz);
+
+  // Lone-fill fluid appearance = roster slot 0 (colour rgb, strength, refraction).
+  float3 fluidCol = float3(uBalls[6], uBalls[7], uBalls[8]);
+  float fluidStrength = uBalls[9];
+  float fluidRefr = uBalls[10];
+
+  // REFRACTION (magnifying lens toward the bead centre), chromatic split at the rim.
+  float refr = fluidRefr * unit;
+  float2 disp = -Nxy * refr;
+  float caAmt = uChromatic;
+  half3 body = half3(
+    sharpBackdrop.eval(p + disp * (1.0 - caAmt)).r,
+    sharpBackdrop.eval(p + disp).g,
+    sharpBackdrop.eval(p + disp * (1.0 + caAmt)).b
+  );
+  body = mix(body, body * half3(fluidCol), half(fluidStrength));
+
+  // FRESNEL rim (grazing edge catches white + blurred surroundings).
+  float fres = pow(1.0 - nz, FRESNEL_POWER) * uFresnel;
+  half3 env = blurredBackdrop.eval(p).rgb;
+  body = body + half3(fres) * (half3(FRESNEL_WHITE) + env * half(FRESNEL_ENV));
+
+  // SPECULAR (Blinn-Phong glint) + contact shade on the unlit rim.
+  float3 L = normalize(float3(cos(uLightAngle), sin(uLightAngle), LIGHT_ELEVATION));
+  float3 V = float3(0.0, 0.0, 1.0);
+  float3 Hh = normalize(L + V);
+  float spec = pow(max(dot(N, Hh), 0.0), max(uShininess, 1.0)) * uSpecular;
+  float diffuse = 0.5 + 0.5 * dot(N, L);
+  float shade = 1.0 - uAmbient * (1.0 - diffuse) * omega;
+
+  half3 outc = body * half(shade) + half3(spec);
+  return half4(outc * half(cov), half(cov));
+}
+`;
+
 // Uniform slot count — asserted by the packer so a shader edit that changes the
 // uniform block is caught loudly instead of packing a mis-sized array.
 //   float2 uCenter(2) + float2 uHalfSize(2) + uAngle(1) + uBallCount(1)
@@ -553,4 +646,10 @@ export const METABALLS_MATERIAL = {
   uniformFloats: METABALLS_UNIFORM_FLOATS,
   fillParams: METABALLS_FILL_PARAMS,
   toUniformParams: metaballsFillUniformParams,
+  // SHAPE-CONFORMING FILL: the fill droplet takes the shape's silhouette (SDF child),
+  // so a metaballs gear reads as a LIQUID GEAR (dome + fresnel rim + refraction on every
+  // tooth), not a round droplet clipped to a gear. The widget (fused multi-ball) path
+  // keeps METABALLS_SKSL, byte-identical.
+  usesShapeSdf: true,
+  fillSksl: METABALLS_FILL_SKSL,
 };
