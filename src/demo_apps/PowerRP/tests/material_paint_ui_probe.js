@@ -405,6 +405,33 @@ try {
       `preset expansion WROTE the continuous knobs (sizeStart ${JSON.stringify(expanded?.sizeStart)}, blend ${JSON.stringify(expanded?.blend)})`);
   }
 
+  // ── REGRESSION: RE-ENTERING Mat must not crash (the DataCloneError) ─────────
+  // setMode's material branch re-materializes the STORED params, which after a
+  // first commit are a Svelte 5 deep proxy out of the reactive doc — and
+  // structuredClone throws DataCloneError on proxies. The first Mat click cloned
+  // a fresh literal and worked; the SECOND crashed (user-reported live). Drive
+  // the exact sequence: Mat → Solid → Mat again on the SAME slot.
+  {
+    const before = errors.length;
+    const clickMode = (rowLabel, mode) => page.evaluate((lbl, m) => {
+      const rows = [...document.querySelectorAll(".inspector .row")];
+      const row = rows.find((el) => el.querySelector(".label")?.textContent === lbl);
+      const btn = row && [...row.querySelectorAll("button")].find((b) => b.textContent.trim() === m);
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }, rowLabel, mode);
+    ok(await clickMode("Stroke", "Mat"), "re-entry: Mat clicked on Stroke (params now stored/reactive)");
+    await sleep(150);
+    ok(await clickMode("Stroke", "Solid"), "re-entry: switched back to Solid");
+    await sleep(150);
+    ok(await clickMode("Stroke", "Mat"), "re-entry: Mat clicked AGAIN (clones the stored reactive params)");
+    await sleep(200);
+    const reStroke = JSON.parse(await page.evaluate((id) => JSON.stringify(window.__powerrp_app.doc.slides[0].delta.items[id].stroke ?? null), rectId));
+    ok(reStroke?.type === "material", `re-entered Mat stored a material paint; got ${JSON.stringify(reStroke?.type)}`);
+    ok(errors.length === before, `re-entering Mat threw NO page errors (the structuredClone-on-proxy crash); got: ${errors.slice(before).join(" | ") || "none"}`);
+  }
+
   // ── REGRESSION: a MATERIAL paint on the CAMERA BACKGROUND must render ────────
   // The background rect is hand-assembled OUTSIDE sceneIR (cameraFrame /
   // CanvasView), so it was the one paint slot resolution never reached: setting

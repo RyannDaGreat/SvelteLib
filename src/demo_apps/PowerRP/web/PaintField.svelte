@@ -250,8 +250,14 @@
   let writePaths = $derived(paths ?? [path]);
   let multi = $derived(writePaths.length > 1);
   /** Pure-ish per-call helper. The value for ONE fan-out target: objects cloned
-   *  per target so N items never share a stored reference. */
-  const perTarget = (v) => (v !== null && typeof v === "object" ? structuredClone(v) : v);
+   *  per target so N items never share a stored reference. $state.snapshot FIRST:
+   *  a paint assembled from the reactive doc (setMode re-materializing a stored
+   *  material's params, matSub, …) is a Svelte 5 DEEP PROXY, and structuredClone
+   *  THROWS DataCloneError on proxies — clicking Mat crashed the SECOND time
+   *  (the first click cloned a fresh literal; re-entry cloned the live doc
+   *  state; user-reported live). snapshot() unwraps to plain data and is the
+   *  identity on non-reactive values, so every other path is byte-identical. */
+  const perTarget = (v) => (v !== null && typeof v === "object" ? structuredClone($state.snapshot(v)) : v);
 
   // THE stored paint — read RAW (not the `value` prop, which the Inspector
   // passes EVALUATED: a "=" equation paint is already resolved to a color there,
