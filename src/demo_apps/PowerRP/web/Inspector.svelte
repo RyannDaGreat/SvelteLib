@@ -47,6 +47,7 @@
   import ListField from "./ListField.svelte";
   import EquationSuggest from "./EquationSuggest.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
+  import ItemVariablesPanel from "./ItemVariablesPanel.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
@@ -1724,6 +1725,29 @@
           hoverPreview: previewField,
         })}
       {/each}
+      <!-- PER-ITEM VARIABLES (manifest item 67): the selected widget's OWN
+           keyframable vars, referenced as `self.vars.<name>`. A collapsible
+           accordion like every category, keyed apart from the plugin categories
+           so its collapse state is its own (a plugin cannot own the id
+           "__itemvars"). Purgeable gate matches the visibility/name rows: the
+           camera is not an authorable widget. -->
+      {#if purgeable}
+        <div class="prop-category">
+          <button
+            class="cat-header"
+            aria-expanded={!collapsed.__itemvars}
+            onclick={() => toggleCategory("__itemvars")}
+          >
+            <iconify-icon icon={collapsed.__itemvars ? "mdi:chevron-right" : "mdi:chevron-down"} width="16" height="16"></iconify-icon>
+            <span class="cat-title">Variables</span>
+          </button>
+          {#if !collapsed.__itemvars}
+            <div class="cat-rows">
+              <ItemVariablesPanel {app} itemId={sel.itemId} />
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   {:else if pickedItemId != null && creationState}
     <!-- NOT YET CREATED on this slide (manifest Round 12B): show ALL its normal

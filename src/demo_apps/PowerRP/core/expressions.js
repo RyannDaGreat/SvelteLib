@@ -1378,6 +1378,16 @@ export function withMarkerPreserved(src, rewrite) {
  */
 export function isEquationValue(plugin, path, value) {
   if (typeof value !== "string") return false;
+  // PER-ITEM VARIABLES (manifest item 67): any string under an item's `vars`
+  // dict is a numeric equation BY FIAT — the same rule state.vars obeys, one
+  // level deeper. No plugin declares `vars` in its defaults, so isNumericSlot
+  // below cannot see it; without this line a bare-string per-item var ("0.5",
+  // "@b.x") is invisible to every consumer that walks an item's equation slots
+  // through this predicate — the paste ref-remap (clonedItemStates), the
+  // variable-rename ref rewrite (withVariableRenamed), and the make-static
+  // equation-keyframe scans. Slot COLLECTION does NOT rely on this (it has its
+  // own dedicated vars loop that forces kind "number" for "="-prefixed vars).
+  if (path[0] === "vars") return true;
   return EQ_PREFIX_RE.test(value) || isNumericSlot(plugin, path);
 }
 
@@ -2209,12 +2219,30 @@ function computeEvaluatedState(state, registry) {
     // slide sits BELOW a slide that keyframes the item. Skip, never throw.
     if (typeof item?.type !== "string") continue;
     const plugin = registry.get(item.type);
+    // PER-ITEM VARIABLES (manifest item 67): a name-keyed dict `item.vars`
+    // mirroring top-level `state.vars`, one level deeper (`items.<id>.vars.<name>`).
+    // EVERY string value is a numeric equation slot BY FIAT — identical to a
+    // global var (line ~2203) — so vars are collected HERE, not through the
+    // generic isEquationValue gate below: no plugin declares `vars` in its
+    // defaults, so resultKindForSlot would type an "="-prefixed var as
+    // UNRESOLVED (rejected) and isNumericSlot would drop a bare-string one
+    // entirely. Kind "number", always. Read back as `self.vars.<name>` (the
+    // parseSelfRef prop fall-through) and tweened by the generic nested-leaf
+    // delta fold (core/deltas.js mutBlendApply) with zero new code.
+    for (const [name, value] of Object.entries(item.vars ?? {}))
+      if (typeof value === "string") {
+        const key = `items.${id}.vars.${name}`;
+        slots.set(key, { key, path: ["items", id, "vars", name], src: value, kind: "number" });
+      }
     // leaves() keeps arrays OPAQUE (three other consumers need that — see
     // declaredListLeaves), so DECLARED LIST elements are walked separately. Their
     // slots go through the IDENTICAL gate, so a per-element `=` is an equation on
-    // exactly the same terms as any other property.
+    // exactly the same terms as any other property. `vars` is skipped: it is
+    // collected above as a numeric dict, and isEquationValue now reports vars as
+    // an equation (for the paste/rename walks), so WITHOUT this guard an
+    // "="-prefixed var would be RE-collected here with an UNRESOLVED kind.
     for (const [path, value] of [...leaves(item), ...declaredListLeaves(item)])
-      if (isEquationValue(plugin, path, value)) {
+      if (path[0] !== "vars" && isEquationValue(plugin, path, value)) {
         const key = ["items", id, ...path].join(".");
         slots.set(key, { key, path: ["items", id, ...path], src: value, kind: resultKindForSlot(plugin, path, value) });
       }
@@ -2722,6 +2750,96 @@ export function withVariableRenamed(doc, oldName, newName, registry) {
         if (isEquationValue(plugin, path, value)) {
           const renamed = renameRefs(value);
           if (renamed !== value) delta = setPath(delta, ["items", itemId, ...path], renamed);
+        }
+    }
+    return delta === slide.delta ? slide : { ...slide, delta };
+  });
+  return { ...doc, slides };
+}
+
+/**
+ * Near-pure function (console.errors each NEW unrewritable equation once — never
+ * silently). Renames ONE item's per-item variable (manifest item 67), the
+ * item-scoped counterpart to withVariableRenamed — NOT a generalization of it.
+ * The two are structurally different rewrites, which is why this is a sibling:
+ *
+ *   - withVariableRenamed rewrites BARE identifier tokens (`speed`) document-wide,
+ *     because a global var IS a bare identifier and its name is its identity.
+ *   - A per-item var is spelled `self.vars.<name>` (owner) or `@<id>.vars.<name>`
+ *     (cross-item). Both are WHOLE dotted ref tokens (REF_RE matches the dotted
+ *     path as one token), so they are invisible to a bare-token rewrite — the very
+ *     property that makes per-item names collision-proof. So this rewrites those
+ *     WHOLE tokens instead, and touches only THIS item's own vars dict key plus
+ *     the references that name it. A global var and a per-item var may share a
+ *     name; renaming one never disturbs the other.
+ *
+ * Three edits per rename: (1) the owning item's `vars.<oldName>` dict key moves to
+ * `vars.<newName>` on every slide; (2) every `self.vars.<oldName>` token in the
+ * owning item's own equation slots (a var may reference a sibling var) becomes
+ * `self.vars.<newName>`; (3) every `@<itemId>.vars.<oldName>` token in ANY item's
+ * equation slots (a cross-item read) re-points to the new name. Rewrites are
+ * token-structural (mapRefTokens), never textual — a `"self.vars.x wins"` string
+ * literal is safe. Throws if newName is not a valid identifier or the item
+ * already has a var by that name; an unrewritable (full-JS) equation is left
+ * alone and reported, exactly like withVariableRenamed.
+ *
+ * @example // withItemVariableRenamed(doc, "a1", "lambda", "mu", reg):
+ * @example //   items.a1.vars.lambda: 0.5        → items.a1.vars.mu: 0.5
+ * @example //   items.a1.x: "self.vars.lambda"   → items.a1.x: "self.vars.mu"
+ * @example //   items.b2.x: "@a1.vars.lambda*2"  → items.b2.x: "@a1.vars.mu*2"  (cross-item)
+ * @example //   the GLOBAL var "lambda" and OTHER items' "lambda" vars are UNTOUCHED
+ */
+export function withItemVariableRenamed(doc, itemId, oldName, newName, registry) {
+  if (!IDENTIFIER_RE.test(newName))
+    throw new Error(`"${newName}" is not a valid variable name (letters, digits, _; not starting with a digit)`);
+  if (newName === oldName) return doc;
+  for (const slide of doc.slides) {
+    const vars = getPath(slide.delta, ["items", itemId, "vars"]);
+    if (isTree(vars) && newName in vars)
+      throw new Error(`Item already has a variable named "${newName}"`);
+  }
+  const selfOld = `self.vars.${oldName}`, selfNew = `self.vars.${newName}`;
+  const crossOld = `@${itemId}.vars.${oldName}`, crossNew = `@${itemId}.vars.${newName}`;
+  // Report guard: the reference tail we rewrite, so an unparseable equation that
+  // does NOT name this var stays silent (silent success is fine; silent failure
+  // is not — the catch below reports the ones that DO name it).
+  const mentionsOld = new RegExp(`\\.vars\\.${oldName}\\b`);
+  const renameRefs = (src, isOwner) => {
+    try {
+      return mapRefTokens(src, (token) =>
+        isOwner && token === selfOld ? selfNew : token === crossOld ? crossNew : token);
+    } catch (e) {
+      if (!mentionsOld.test(src)) return src;
+      const message = `item "${itemId}" variable "${oldName}" → "${newName}": the equation ${JSON.stringify(src)} is not restricted-grammar rewritable (${e.message}) — it still names "${oldName}", rewrite it by hand`;
+      reportOnce(message, `PowerRP rename incomplete: ${message}`);
+      return src;
+    }
+  };
+  const slides = doc.slides.map((slide) => {
+    let delta = slide.delta;
+    // (1) Move the owning item's own vars dict key on this slide.
+    const ownVars = getPath(delta, ["items", itemId, "vars"]);
+    if (isTree(ownVars) && oldName in ownVars) {
+      const vars = { ...ownVars };
+      vars[newName] = vars[oldName];
+      delete vars[oldName];
+      delta = setPath(delta, ["items", itemId, "vars"], vars);
+    }
+    // (2)+(3) Rewrite reference tokens in every item's equation slots. Owner
+    // slots also get the self.vars.<name> rewrite; every item gets the cross-item
+    // @<itemId>.vars.<name> rewrite. `vars` values ARE equation slots here
+    // (isEquationValue reports the fiat), so a var referencing a sibling var is
+    // covered by the same walk.
+    for (const [id, sub] of Object.entries(delta.items ?? {})) {
+      if (!isTree(sub)) continue;
+      const itemType = getPath(sub, ["type"]) ?? findItemType(doc, id);
+      if (!itemType) continue;
+      const plugin = registry.get(itemType);
+      const isOwner = id === itemId;
+      for (const [path, value] of [...leaves(sub), ...declaredListLeaves(sub)])
+        if (isEquationValue(plugin, path, value)) {
+          const renamed = renameRefs(value, isOwner);
+          if (renamed !== value) delta = setPath(delta, ["items", id, ...path], renamed);
         }
     }
     return delta === slide.delta ? slide : { ...slide, delta };

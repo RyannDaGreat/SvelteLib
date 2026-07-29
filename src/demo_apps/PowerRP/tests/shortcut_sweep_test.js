@@ -268,6 +268,10 @@ const ACCOUNTED = {
     keys: ["Enter"],
     coverage: "contextual:add: Enter 'Add' commits the new-variable input while it has focus (data-hint-scope='add', core fieldScope). The inline RENAME rows commit on blur (onchange) and read no key, so they need no chip; only the add-row reads Enter.",
   },
+  "web/ItemVariablesPanel.svelte": {
+    keys: ["Enter"],
+    coverage: "contextual:add: Enter 'Add' commits the new PER-ITEM variable input while it has focus (data-hint-scope='add', core fieldScope) — the item-scoped mirror of VariablesPanel (manifest item 67). The inline RENAME rows commit on blur (onchange) and read no key, so they need no chip; only the add-row reads Enter.",
+  },
   "web/AssetExplorer.svelte": {
     keys: [],
     dblclick: "OS: double-click an asset tile opens its Modal preview — the desktop 'double-click a file to open it' convention, a mouse gesture the keyboard law does not cover, named in the tile's own Tooltip ('drag onto the canvas to insert at a point, or double-click to preview'). Its keyboard activation rides a real <button>'s Enter (also OS).",

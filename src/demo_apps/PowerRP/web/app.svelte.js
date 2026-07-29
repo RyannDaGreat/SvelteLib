@@ -24,7 +24,7 @@ import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWor
 // The LIST-ELEMENT operations the HANDLE actions route through — one mechanism for
 // per-element hide and purge, shared with the Inspector's list control.
 import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
-import { evaluateState, withVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
+import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
@@ -2547,6 +2547,57 @@ export class PowerRPApp {
       return true;
     } catch (e) {
       console.error(`PowerRP: rename variable failed: ${e.message}`);
+      return false;
+    }
+  }
+
+  // ── Per-item variables (manifest item 67 — the item's OWN vars subtree) ─────
+  // The item-scoped mirror of the global Variables block above: same generic
+  // document helpers (keyframed / unkeyframed are path-generic), one level deeper
+  // at ["items", itemId, "vars", name]. A per-item var is referenced as
+  // `self.vars.<name>` — disjoint from the bare-identifier global namespace, so a
+  // global and a per-item var may share a name with no collision.
+
+  /** RAW per-item vars of `itemId` on the current slide: {name: number | equation}. */
+  itemVarsState(itemId) {
+    return this.rawState().items?.[itemId]?.vars ?? {};
+  }
+
+  /** Creates a per-item variable on `itemId` (value 0, keyframed on the CURRENT
+   * slide, like item/global-var creation). Loud on invalid names / duplicates;
+   * returns success. */
+  addItemVariable(itemId, name) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      console.error(`PowerRP: "${name}" is not a valid variable name (letters, digits, _; not starting with a digit)`);
+      return false;
+    }
+    if (name in this.itemVarsState(itemId)) {
+      console.error(`PowerRP: item "${itemId}" already has a variable named "${name}"`);
+      return false;
+    }
+    this.commit(keyframed(this.doc, this.slideIndex, ["items", itemId, "vars", name], 0));
+    return true;
+  }
+
+  /** Removes a per-item variable FROM EXISTENCE: every keyframe on every slide
+   * (the item-scoped Purge — equations referencing it will error loudly). */
+  deleteItemVariable(itemId, name) {
+    let doc = this.doc;
+    for (let i = 0; i < doc.slides.length; i++) doc = unkeyframed(doc, i, ["items", itemId, "vars", name]);
+    this.commit(doc);
+  }
+
+  /** Renames a per-item variable, rewriting its `self.vars.<name>` /
+   * `@id.vars.<name>` references (core/expressions.withItemVariableRenamed — a
+   * NARROW sibling of the global rename, never a generalization). Loud on
+   * conflicts. */
+  renameItemVariable(itemId, oldName, newName) {
+    if (newName === oldName) return true;
+    try {
+      this.commit(withItemVariableRenamed(this.doc, itemId, oldName, newName, this.registry));
+      return true;
+    } catch (e) {
+      console.error(`PowerRP: rename item variable failed: ${e.message}`);
       return false;
     }
   }

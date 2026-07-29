@@ -208,3 +208,48 @@ catenary ball's document-equation RK4 matches the SymPy table to 5 decimals
 and rendered pixels to <1px at release/valley/turning-point; equal-height
 turning points make energy conservation visible on screen. Coordinator
 eyeballed the centerpiece and the λ=1 morph frame: both pass the Manim bar.
+
+
+## 2026-07-28 — Per-widget custom variables delivered (item 67)
+Implemented `items.<id>.vars.<name>`, the exact structural mirror of top-level
+`state.vars` one level deeper, referenced from equations as `self.vars.<name>`
+(owner) / `@<id>.vars.<name>` (cross-item). The digest-09 analysis held up:
+the delta fold, undo, and repair pipeline needed ZERO changes — a per-item var
+tweens through the generic nested-leaf fold like any property, and back-compat
+is automatic (absent `vars` is byte-identical).
+
+THE ONE LOAD-BEARING GAP was slot collection: `computeEvaluatedState` now walks
+each item's `vars` dict as numeric equation slots (kind "number", always),
+mirroring the top-level vars loop — without it a bare-string or "="-prefixed
+per-item var sat unevaluated (UNRESOLVED kind for the "=" form, since no plugin
+declares `vars` in defaults). The generic leaf loop skips `path[0]==="vars"` to
+avoid re-collecting them with the wrong kind.
+
+Also made `isEquationValue` honor the vars fiat (`path[0]==="vars" ⇒ true`),
+which was NOT cosmetic: it is what lets the canonical "walk an item's equation
+slots" idiom (clonedItemStates paste-remap, withVariableRenamed, the make-static
+scans) reach a per-item var. This closed a real copy/paste gap — a bare-string
+cross-item ref stored INSIDE a per-item var (`b.vars.k = "@a.x"`) would not have
+re-pointed on duplication — and a latent withVariableRenamed gap (a per-item var
+referencing a renamed global). Pinned by item_vars_test.
+
+Rename needed a NARROW sibling `withItemVariableRenamed`, NOT a generalization of
+`withVariableRenamed`: per-item refs are WHOLE dotted tokens (REF_RE matches the
+dotted path), invisible to the bare-identifier rewrite — the very property that
+makes per-item names collision-proof — so a global `lambda` and an item's
+`lambda` never disturb each other. It moves the dict key + rewrites `self.vars.`
+and `@<id>.vars.` whole tokens via mapRefTokens.
+
+SYNERGY confirmed: the graph plugins already merged `{...docVars, ...state.vars}`
+(landed for the equation zoo). Once slot collection EVALUATES the per-item vars,
+a `graph_line` with `vars: {lambda: "=0.25*2"}` samples with lambda=0.5 — pinned.
+
+Files: core/expressions.js (slot loop, isEquationValue fiat, withItemVariableRenamed),
+web/app.svelte.js (add/delete/rename item-var methods), web/ItemVariablesPanel.svelte
+(new; mirrors VariablesPanel), web/Inspector.svelte (collapsible "Variables"
+section on the selected item). Tests: tests/item_vars_test.js (24 assertions),
+tests/item_vars_probe.js (16 checks, drives the real Inspector UI end to end:
+add → bind x to self.vars.lambda → scrub → keyframe across two slides →
+tween=0.75 at alpha 0.5 through cameraFrame.evaluatedStateAt → undo one unit each),
+plus the shortcut-sweep allowlist entry for the new add-row. Gate: 95/95 node,
+hintbar_context_probe + the new probe green.
