@@ -8,7 +8,24 @@
 > the authority for the requirements below. If/when the container manifest is
 > reachable again, merge this into it (semantic merge, keep both histories).
 
-## STATUS: ALL 35 ITEMS DELIVERED (2026-07-28)
+## STATUS: ALL 75 ITEMS DELIVERED (2026-07-28, all five rounds)
+
+Rounds 3–5 (items 36–75) landed in commits 9b421cd…09cef81 on
+render-rewrite-skia: the widget-preset merge (52/53), slide rename (54), the
+METAL family + groove-aging stamp (55, 13+15 presets), six ornament families
+(56/57, 102 geometry presets), Gears v3 with engineer-grade meshing
+(58/60/62, MP4), phase-360 identity pinned (59), THE HINTBAR LAW restored
+with LOCAL abolished (61), the graph* family (63–66/71, 4 widgets + 2 core
+modules + 69 presets), per-widget variables (67, self.vars keyframable),
+the Equation Zoo deck + catenary ball at <1px physics (68/69, MP4), the
+presets mantra applied everywhere (70), the time-scrubber video widget with
+the %/time grammar fixes and ffprobe self.length (72), animated materials
+in the presenter (73), universal option-hover preview (74), and the
+replication study with its findings (75 — codeblock palette is the one
+pixel-parity gap). Engine fixes along the way: docVars injection (ce777ac),
+corrupt job.json hardening (09e268b). Final battery: doctests 2831+/0, node
+gate 95/0, all touched browser probes green (environmental Mac failures
+excluded per the recorded baseline). concerns.md holds every lesson.
 
 Round 1 (items 1–25) and Round 2 (items 26–35) are complete, committed
 (d2c24b7 … 4ad30d6 on render-rewrite-skia), and gated: doctests 2624/0, node
