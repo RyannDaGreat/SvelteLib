@@ -1,78 +1,38 @@
 /**
- * assetRef.js — the PURE grammar of an asset reference string.
+ * web/assetRef.js — the STORAGE-FACING half of the asset-reference vocabulary.
  *
- * A document stores media as `"/asset/<project>/<file>"`. That string is the
- * PORTABLE form and it is what lands in doc.json, in a .zip, and in every
- * `src` keyframe — deliberately NOT a URL that resolves anywhere. Resolving it
- * is the STORAGE ADAPTER's job (web/assetStore.js): the HTTP adapter prefixes
- * the backend origin, the IndexedDB adapter mints a blob: object URL. Because a
- * document never records the resolution, the SAME deck opens identically
- * against a server, against local browser storage, or out of an archive.
+ * THE GRAMMAR ITSELF NOW LIVES IN core/asset_ref.js and is RE-EXPORTED from here
+ * unchanged, so every existing importer of this module is unaffected. It moved
+ * because `core/derive.js` is THE resolution seam (it resolves each node's
+ * relative refs before `emit()` ever sees them) and NO core/ module may import
+ * from web/ — the rule web/assetLocalize.js's docblock records. Forking the parser
+ * to satisfy that would have given the two halves a second opinion about what a
+ * ref is, which is the exact bug class this vocabulary exists to prevent. Read
+ * core/asset_ref.js for the two-form grammar (RELATIVE vs ABSOLUTE), why relative
+ * is now what writers mint, and why no document is migrated.
  *
- * This module is DOM-free and dependency-free so both adapters, the zip
- * round-trip, and the node test suite can share one parser. Every function here
- * is pure; the percent-encoding matches the server's own
- * `urllib.parse.quote(name)` / `quote(fn)` (server/server.py list_assets), which
- * is why parsing decodes each segment exactly once.
+ * WHAT REMAINS HERE is everything that is about STORAGE rather than about the ref
+ * string: kind classification mirroring the server's `asset_kind()`, name and
+ * project de-collision mirroring `unique_asset_name()` / `unique_project_name()`,
+ * document de-proxying for structured clone, and the Asset Explorer's quota and
+ * totals lines. These are the client twins of server/server.py behaviours, which
+ * is why they sit next to the storage adapters that use them.
+ *
+ * Still DOM-free and dependency-light, so the adapters, the zip round-trip and the
+ * node test suite share one implementation with no browser.
  */
 
-/** The one prefix an in-document asset reference starts with. Kept as a
- *  constant because the server mints it (`/asset/<project>/<file>`) and the
- *  client must never spell it differently. */
-export const ASSET_REF_PREFIX = "/asset/";
-
-/**
- * Pure function. Build the portable in-document reference for one asset.
- * Percent-encodes each segment the way the server does, so a project or file
- * with a space or a slash-unsafe character round-trips through a URL path.
- *
- * @param {string} project - project name (unencoded)
- * @param {string} file - asset basename (unencoded)
- * @returns {string} `"/asset/<project>/<file>"`
- *
- * @example assetRef("Imitations", "logo.png")   // "/asset/Imitations/logo.png"
- * @example assetRef("My Talk", "a b.png")       // "/asset/My%20Talk/a%20b.png"
- */
-export function assetRef(project, file) {
-  return `${ASSET_REF_PREFIX}${encodeURIComponent(project)}/${encodeURIComponent(file)}`;
-}
-
-/**
- * Pure function. Split an in-document asset reference back into its parts, or
- * null when `ref` is not one (an absolute http(s) URL, a data: URI, a bare
- * filename, a built-in asset path). Returning null rather than throwing is the
- * point: the resolution seam asks "is this mine?" of EVERY src it sees, and a
- * non-asset src is an ordinary answer, not an error.
- *
- * Only the FIRST two segments after the prefix are taken as project and file,
- * with the remainder kept in `file` — that is how the server's thumbnail paths
- * (`/asset/<project>/.thumbs/<file>/thumb.png`) stay addressable through the
- * same grammar.
- *
- * @param {string} ref - a document `src` value
- * @returns {{project: string, file: string} | null}
- *
- * @example parseAssetRef("/asset/Imitations/logo.png")   // {project: "Imitations", file: "logo.png"}
- * @example parseAssetRef("/asset/My%20Talk/a%20b.png")    // {project: "My Talk", file: "a b.png"}
- * @example parseAssetRef("/asset/Deck/.thumbs/p.pdf/t.png") // {project: "Deck", file: ".thumbs/p.pdf/t.png"}
- * @example parseAssetRef("https://example.com/a.png")     // null
- * @example parseAssetRef("data:image/png;base64,iVBO")    // null
- */
-export function parseAssetRef(ref) {
-  const s = String(ref ?? "");
-  if (!s.startsWith(ASSET_REF_PREFIX)) return null;
-  const rest = s.slice(ASSET_REF_PREFIX.length);
-  const slash = rest.indexOf("/");
-  if (slash <= 0) return null; // no project, or no file after it
-  const project = decodeURIComponent(rest.slice(0, slash));
-  const file = rest
-    .slice(slash + 1)
-    .split("/")
-    .map(decodeURIComponent)
-    .join("/");
-  if (!project || !file) return null;
-  return { project, file };
-}
+// THE GRAMMAR — defined in core/asset_ref.js, re-exported so this module stays the
+// one import site the storage layer already uses.
+export {
+  ASSET_REF_PREFIX,
+  assetRef,
+  assetRefPath,
+  parseAssetRef,
+  isRelativeAssetRef,
+  resolveAssetRef,
+  relativeAssetRef,
+} from "../core/asset_ref.js";
 
 // Extension → asset kind. ONE table, mirroring the server's asset_kind()
 // classes (server/server.py IMAGE_EXTS/VIDEO_EXTS/…), because a locally stored

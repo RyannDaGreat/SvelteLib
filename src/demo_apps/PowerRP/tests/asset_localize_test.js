@@ -240,10 +240,14 @@ test("localizationPlan copies each foreign file ONCE and maps its ref", () => {
   const plan = localizationPlan(refs, "RobotSim", [], uniqueAssetName);
   // Each copy carries its OWN ref/to as well as the names, so a caller dropping
   // one copy (an unreadable source) removes exactly its mapping.
+  // `to` is the RELATIVE form: a localized asset IS a file of the project the
+  // document is becoming, so naming that project inside the ref adds nothing and
+  // goes stale the moment the archive is imported under a de-collided name (the
+  // user's static-site failure). See web/assetLocalize.js localizationPlan.
   assert.deepEqual(plan.copies, [
-    { project: "Untitled", file: "clip.mp4", as: "clip.mp4", ref: "/asset/Untitled/clip.mp4", to: "/asset/RobotSim/clip.mp4" },
+    { project: "Untitled", file: "clip.mp4", as: "clip.mp4", ref: "/asset/Untitled/clip.mp4", to: "clip.mp4" },
   ]);
-  assert.deepEqual(plan.refMap, { "/asset/Untitled/clip.mp4": "/asset/RobotSim/clip.mp4" });
+  assert.deepEqual(plan.refMap, { "/asset/Untitled/clip.mp4": "clip.mp4" });
 });
 
 test("localizationPlan de-collides against local names AND its own copies", () => {
@@ -270,9 +274,12 @@ test("localizationPlan de-collides against local names AND its own copies", () =
       ["P2", "logo 3.png"],
     ],
   );
+  // RELATIVE, and therefore NOT percent-encoded: "logo 2.png" is a filename, not a
+  // URL path. The absolute form had to encode the space; the relative form must not,
+  // or the stored src would name a file called "logo%202.png" that does not exist.
   assert.deepEqual(plan.refMap, {
-    "/asset/P1/logo.png": "/asset/Deck/logo%202.png",
-    "/asset/P2/logo.png": "/asset/Deck/logo%203.png",
+    "/asset/P1/logo.png": "logo 2.png",
+    "/asset/P2/logo.png": "logo 3.png",
   });
 });
 
@@ -292,12 +299,12 @@ test("localizationPlan flattens a NESTED foreign path and keys the ORIGINAL stri
   const refs = documentAssetRefs(doc);
   const plan = localizationPlan(refs, "Deck", [], uniqueAssetName);
   assert.deepEqual(plan.copies, [
-    { project: "P", file: "icons/logo.svg", as: "logo.svg", ref: "/asset/P/icons/logo.svg", to: "/asset/Deck/logo.svg" },
+    { project: "P", file: "icons/logo.svg", as: "logo.svg", ref: "/asset/P/icons/logo.svg", to: "logo.svg" },
   ]);
-  assert.deepEqual(plan.refMap, { "/asset/P/icons/logo.svg": "/asset/Deck/logo.svg" });
+  assert.deepEqual(plan.refMap, { "/asset/P/icons/logo.svg": "logo.svg" });
   // The end-to-end property: the rewrite actually LANDS, so nothing foreign remains.
   const out = rewriteAssetRefs(doc, (e) => plan.refMap[e.ref] ?? null);
-  assert.equal(out.slides[0].delta.items.a.src, "/asset/Deck/logo.svg");
+  assert.equal(out.slides[0].delta.items.a.src, "logo.svg");
   assert.deepEqual(foreignAssetRefs(documentAssetRefs(out), "Deck"), []);
 });
 
@@ -313,7 +320,7 @@ test("localizationPlan is EMPTY for an already self-contained document", () => {
 test("rewriteAssetRefs repoints the user's video and touches nothing else", () => {
   const plan = localizationPlan(documentAssetRefs(robotSimDoc), "RobotSim", [], uniqueAssetName);
   const out = rewriteAssetRefs(robotSimDoc, (e) => plan.refMap[e.ref] ?? null);
-  assert.equal(out.slides[0].delta.items.vid.src, "/asset/RobotSim/Video_20260726_224007_045.mp4");
+  assert.equal(out.slides[0].delta.items.vid.src, "Video_20260726_224007_045.mp4");
   // The rewritten document contains NO foreign ref — the property the archive needs.
   assert.deepEqual(foreignAssetRefs(documentAssetRefs(out), "RobotSim"), []);
   // Every other leaf survives byte-for-byte, including the untouched camera.
@@ -403,8 +410,14 @@ await testAsync("buildProjectZip de-collides a borrowed basename against the loc
   const { bytes, warnings } = await buildProjectZip("Deck", doc, store);
   const { files, doc: archived } = inspect(bytes);
   assert.deepEqual(warnings, []);
-  const refs = documentAssetRefs(archived).map((r) => r.file);
-  assert.deepEqual(refs, ["logo.png", "logo 2.png"]);
+  // Asserted on the STORED SRCS, not on documentAssetRefs: that walk only recognizes
+  // the ABSOLUTE form, so the localized ref — now relative — is invisible to it by
+  // construction. Which is itself the property, asserted just below.
+  const items = archived.slides[0].delta.items;
+  assert.equal(items.own.src, "/asset/Deck/logo.png", "an already-local ref is left exactly as authored");
+  assert.equal(items.borrowed.src, "logo 2.png", "the borrowed one localizes to the RELATIVE de-collided name");
+  assert.deepEqual(documentAssetRefs(archived).map((r) => r.file), ["logo.png"],
+    "only the authored absolute ref remains absolute; the localized one is relative");
   assert.equal(new TextDecoder().decode(files["Deck/assets/logo.png"]), "LOCAL", "the incumbent was overwritten");
   assert.equal(new TextDecoder().decode(files["Deck/assets/logo 2.png"]), "FOREIGN");
 });

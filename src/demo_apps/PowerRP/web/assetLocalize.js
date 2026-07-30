@@ -1,17 +1,31 @@
 /**
  * assetLocalize.js — WHICH ASSETS A DOCUMENT ACTUALLY NEEDS, and how to repoint them.
  *
- * THE PROBLEM THIS EXISTS FOR. A document stores media as the portable string
- * `"/asset/<project>/<file>"` (web/assetRef.js owns that grammar). The project
- * NAME is baked into every one of those strings, but nothing keeps it equal to
- * the folder the document lives in. Save-As is the proof: `app.renameProject`
- * writes `doc.meta.name` and `saveToServer` writes a NEW folder, while every
- * `src` still names the OLD one. The deck keeps working — the server serves any
- * project's assets to anyone — so the divergence is INVISIBLE until the project
- * leaves the machine. Then `zip_project_bytes` walks one folder, ships a doc
- * whose refs point at a folder that is not in the archive, and the import opens
- * a deck with a hole where a video was. That was the user's bug, verbatim: "the
- * robotsim.zip references a video file, but that video file is not in that zip".
+ * THE REF GRAMMAR IS core/asset_ref.js's, and this module deals with exactly one
+ * of its two forms. A `src` may be RELATIVE ("clip.mp4" — a file of whatever
+ * project owns the document, resolved at core/derive.js) or ABSOLUTE
+ * ("/asset/<project>/<file>" — a file of a SPECIFICALLY NAMED project). Everything
+ * below is about the ABSOLUTE form, because a relative ref is already local by
+ * definition: it cannot be foreign, needs no copy, and round-trips through an
+ * export untouched. `parseAssetRef` returns null for one, so the walks here skip it
+ * for free.
+ *
+ * THE PROBLEM THIS EXISTS FOR. An ABSOLUTE ref bakes a project NAME into the
+ * string, and nothing keeps that name equal to the folder the document lives in.
+ * Save-As is the proof: `app.renameProject` writes `doc.meta.name` and
+ * `saveToServer` writes a NEW folder, while every `src` still names the OLD one.
+ * The deck keeps working — the server serves any project's assets to anyone — so
+ * the divergence is INVISIBLE until the project leaves the machine. Then
+ * `zip_project_bytes` walks one folder, ships a doc whose refs point at a folder
+ * that is not in the archive, and the import opens a deck with a hole where a video
+ * was. That was the user's bug, verbatim: "the robotsim.zip references a video
+ * file, but that video file is not in that zip".
+ *
+ * AND THE FIX HAS TWO HALVES, which is why the grammar gained a second form. This
+ * module carries the FOREIGN bytes into the archive; writing the new refs in the
+ * RELATIVE form (see localizationPlan) is what stops the same divergence from being
+ * re-minted the moment the archive is imported under a de-collided name. Copying the
+ * bytes alone left the user with a second, identical failure on the static site.
  *
  * So the export has to ask a question it never asked: WHICH refs does this
  * document contain, and which of them are FOREIGN? That question is pure, it is
@@ -43,7 +57,7 @@
  * itself DOM-free and node-testable, so nothing is lost by sitting next to it.
  */
 
-import { assetRef, parseAssetRef } from "./assetRef.js";
+import { parseAssetRef } from "./assetRef.js";
 
 /**
  * Pure function. Every asset REFERENCE a document contains, in document order,
@@ -92,8 +106,8 @@ export function documentAssetRefs(doc) {
  *
  * @example
  * >>> const doc = {slides: [{delta: {items: {v: {src: "/asset/Untitled/clip.mp4"}}}}]};
- * >>> rewriteAssetRefs(doc, (e) => (e.project === "Untitled" ? assetRef("RobotSim", e.file) : null))
- * {slides: [{delta: {items: {v: {src: "/asset/RobotSim/clip.mp4"}}}}]}
+ * >>> rewriteAssetRefs(doc, (e) => (e.project === "Untitled" ? e.file : null))   // localize: → RELATIVE
+ * {slides: [{delta: {items: {v: {src: "clip.mp4"}}}}]}
  * >>> rewriteAssetRefs(doc, () => null) === doc   // a copy, never the same object
  * false
  */
@@ -159,6 +173,25 @@ export function foreignAssetRefs(refs, project) {
  * mapping instead of reverse-engineering the key from the name. `refMap` is the
  * same information flattened for `rewriteAssetRefs`.
  *
+ * THE NEW REF IS RELATIVE ("clip.mp4"), NOT "/asset/<project>/clip.mp4", and that
+ * is the whole point of localizing rather than merely copying bytes. A localized
+ * asset is BY DEFINITION a file of the project the document is becoming, so naming
+ * that project inside the ref adds nothing and costs everything: the name is not
+ * stable across the archive's future. `zip_project_bytes` writes the folder under
+ * whatever name the export was asked for, and the IMPORT de-collides again
+ * ("RobotSim" → "RobotSim 2" when one already exists) — so an absolute ref minted
+ * here is stale as soon as the zip is opened anywhere that already has that project.
+ * The user proved it: a RobotSim archive dropped on the static site imported its
+ * assets and still rendered no video, because the refs named a project that browser
+ * had never heard of. A relative ref is rename-proof and import-proof by
+ * construction (core/asset_ref.js), which makes the ARCHIVE self-contained in the
+ * sense the name promises, not just byte-complete.
+ *
+ * An ALREADY-RELATIVE ref is never in `refs` at all — `documentAssetRefs` only
+ * recognizes the absolute form — so it is not planned, not copied and not rewritten.
+ * That is correct: it already points at this project, and it round-trips through an
+ * export byte-identically.
+ *
  * @param {Array<{ref: string, project: string, file: string}>} refs - documentAssetRefs output
  * @param {string} project - the project the document is becoming
  * @param {Iterable<string>} localNames - asset basenames already present locally
@@ -170,8 +203,8 @@ export function foreignAssetRefs(refs, project) {
  * ...                                                            b: {src: "/asset/Untitled/clip.mp4"}}}}]});
  * >>> localizationPlan(refs, "RobotSim", [], uniqueAssetName).copies
  * [{project: "Untitled", file: "clip.mp4", as: "clip.mp4",
- *   ref: "/asset/Untitled/clip.mp4", to: "/asset/RobotSim/clip.mp4"}]
- * >>> localizationPlan(refs, "RobotSim", ["clip.mp4"], uniqueAssetName).copies[0].as
+ *   ref: "/asset/Untitled/clip.mp4", to: "clip.mp4"}]
+ * >>> localizationPlan(refs, "RobotSim", ["clip.mp4"], uniqueAssetName).copies[0].to
  * "clip 2.mp4"
  */
 export function localizationPlan(refs, project, localNames, uniqueName) {
@@ -184,7 +217,9 @@ export function localizationPlan(refs, project, localNames, uniqueName) {
     // assets/ folder, which is the layout both zip halves write.
     const as = uniqueName(r.file.split("/").pop(), taken);
     taken.push(as);
-    const to = assetRef(project, as);
+    // THE RELATIVE FORM (see the docblock): the copy lands in THIS project's
+    // assets/, so its ref is the bare name — rename-proof and import-proof.
+    const to = as;
     copies.push({ project: r.project, file: r.file, as, ref: r.ref, to });
     refMap[r.ref] = to;
   }

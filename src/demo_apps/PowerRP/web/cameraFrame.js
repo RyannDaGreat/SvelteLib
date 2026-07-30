@@ -119,19 +119,31 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  * / vector-export fallback, exactly as before (byte-identical to the pre-pivot
  * output for those paths).
  *
+ * THE OWNING PROJECT (`opts.project`) is threaded to deriveRenderTree, which is
+ * where a RELATIVE asset ref ("clip.mp4") becomes the absolute
+ * "/asset/<project>/clip.mp4" every registry already understands
+ * (core/asset_ref.js states the grammar; core/derive.js's docblock states why the
+ * seam is there and not at the op level). It is threaded HERE for the same reason
+ * `evaluationAt` threads `doc.meta.script`: this module is the ONE recipe every
+ * pixel consumer runs, so a value that must reach all of them is passed once here
+ * rather than at each of six call sites, one of which would eventually forget.
+ * Callers that hold a DOCUMENT should pass `doc.meta.name`. Omitting it is safe for
+ * an all-absolute document (every document written before this grammar) and throws
+ * loudly, naming the ref, for one that actually holds a relative ref.
+ *
  * @param {object} state EVALUATED folded state (equations already numbers).
  * @param {object} meta doc.meta ({slideW, slideH}) — the camera-rect fallback.
  * @param {object} registry Plugin registry.
- * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number}} [opts]
+ * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number, project?: string}} [opts]
  *   Optional world-space cull rect + live view (view + device-px canvas size) to
- *   drive the PDF display re-raster.
+ *   drive the PDF display re-raster, and the owning project for ref resolution.
  * @returns {Array} IR command list: [cameraBgRect, ...sceneIR(nodes)].
  *
- * @example // cameraFrameIR(evaluatedState, {slideW:1280,slideH:720}, registry) // [rectCmd(bg), ...scene]
+ * @example // cameraFrameIR(evaluatedState, doc.meta, registry, {project: doc.meta.name}) // [rectCmd(bg), ...scene]
  */
-export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0 } = {}) {
+export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "" } = {}) {
   const rect = cameraRect(state, meta);
-  let nodes = deriveRenderTree(state, registry);
+  let nodes = deriveRenderTree(state, registry, project || meta?.name || "");
   if (cullRect) nodes = nodes.filter((n) => !canSkipNode(n, cullRect));
   const pdfDisplay = view && viewW > 0 && viewH > 0 ? preRasterizePdfPages(nodes, view, viewW, viewH) : null;
   return [

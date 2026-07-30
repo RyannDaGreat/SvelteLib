@@ -42,6 +42,7 @@
 import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
 import { unmirroredLocal, unsignedState } from "./geometry.js";
+import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 
 /**
  * Pure function. An item's LOCAL→WORLD similarity transform, with rotation
@@ -162,8 +163,45 @@ export function pointInNodeBox(itemState, wx, wy) {
  * Sort: ascending z (default 0), ties broken by id for determinism.
  * Callers pass an EVALUATED state (core/expressions.evaluateState — the
  * derivation-stage expression pass), so every numeric property is a number.
+ *
+ * ── THE ASSET-REF RESOLUTION SEAM (core/asset_ref.js) ────────────────────────
+ * `project` is the name of the project that OWNS this document, and it is what
+ * turns a RELATIVE `src` ("clip.mp4") into the absolute `/asset/<project>/clip.mp4`
+ * every downstream reader already understands. THIS is the one seam, for two
+ * reasons that between them rule out every other candidate:
+ *
+ *   1. IT IS UPSTREAM OF `emit()`. Two registries are fed from INSIDE emit —
+ *      `plugins/svg.js` calls `ensureSvgSource(s.svgUrl)` and
+ *      `core/plugin_assets.js assetText` calls `ensureTextAsset(url)` — so an
+ *      op-level rewrite in render_gpu/ports.js (which runs on emit's OUTPUT)
+ *      would resolve the image and video ops and leave those two fetching the
+ *      unresolved string. Resolving the node's STATE fixes every consumer at
+ *      once, including a plugin asset that invents its own ref property.
+ *   2. IT IS THE ONE PLACE EVERY PIXEL CONSUMER PASSES. The editor canvas, the
+ *      presenter, thumbnails, PNG/PDF/SVG export, the bare-node CLI still and
+ *      the headless render-job page all reach paint through deriveRenderTree.
+ *      There is no second path to keep in sync.
+ *
+ * The project is an EXPLICIT ARGUMENT, never a global the walker reaches into —
+ * the same discipline `web/cameraFrame.evaluationAt` follows for `meta.script`,
+ * and for the same reason: a render must stay a pure function of what it was
+ * handed, or a frame rendered on a worker differs from one rendered in the tab.
+ * `web/cameraFrame.js` threads it for the whole browser/CLI family, exactly as it
+ * threads the script.
+ *
+ * OMITTING IT IS SAFE AND MEANS "this state holds no relative refs". Every
+ * all-absolute document — i.e. every document written before this grammar — derives
+ * byte-identically with no project, and so do the ~60 test call sites that predate
+ * it. A state that DOES hold a relative ref and gets no project throws from
+ * resolveAssetRef naming the ref, which is the loud failure the silent-blank-video
+ * bug earned.
+ *
+ * @param {object} state - EVALUATED folded state ({items, vars})
+ * @param {object} registry - plugin registry
+ * @param {string} [project] - the OWNING project's name (relative-ref resolution)
+ * @returns {object[]} z-sorted render nodes
  */
-export function deriveRenderTree(state, registry) {
+export function deriveRenderTree(state, registry, project = "") {
   const items = state.items ?? {};
   // The document's folded variables — injected into docVars-capable nodes below.
   const foldedVars = state.vars ?? {};
@@ -186,6 +224,17 @@ export function deriveRenderTree(state, registry) {
     const state = unsignedState(itemState);
     const mirror = state === itemState ? null : { x: (itemState.w ?? 0) < 0, y: (itemState.h ?? 0) < 0 };
     const plugin = registry.get(itemState.type);
+    // THE ASSET-REF RESOLUTION SEAM (see the function docblock). Every RELATIVE
+    // ref in this item's own ref-bearing properties becomes absolute here, BEFORE
+    // emit() runs — which is what lets the two registries fed from inside emit
+    // (svg_source_registry via plugins/svg.js, text_asset_registry via
+    // core/plugin_assets.assetText) see a resolvable string. Which properties hold
+    // refs is the PLUGIN's answer (its `kind: "asset"` inspector rows, or an
+    // explicit `assetRefProps`), never a central key list that would go stale the
+    // day someone adds a widget. Returns the SAME object when there was nothing to
+    // resolve, so an all-absolute document — every document written before this
+    // grammar — keeps byte-identical node identity and the evaluation memo.
+    const resolved = resolveStateAssetRefs(state, pluginAssetRefProps(plugin), project);
     // DOC-VARS INJECTION: a plugin whose capabilities declare `docVars: true`
     // samples an EQUATION inside emit() (the graph family's Monaco source) and
     // therefore needs the document's folded variables at emit time — emit's
@@ -198,7 +247,7 @@ export function deriveRenderTree(state, registry) {
       id,
       itemId: id,
       type: itemState.type,
-      state: plugin.capabilities?.docVars ? { ...state, docVars: foldedVars } : state,
+      state: plugin.capabilities?.docVars ? { ...resolved, docVars: foldedVars } : resolved,
       world: worldTransform(state),
       plugin,
       ...(mirror ? { mirror } : {}),

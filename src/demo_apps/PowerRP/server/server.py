@@ -71,10 +71,21 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 
 DOC_FILENAME = "doc.json"
 ASSETS_SUBDIR = "assets"
-# The ONE prefix an in-document asset reference starts with — the twin of
-# web/assetRef.js ASSET_REF_PREFIX. Named here because the server both MINTS these
-# strings (list_assets' "url") and now PARSES them (parse_asset_ref, for the
+# The ONE prefix an ABSOLUTE in-document asset reference starts with — the twin of
+# core/asset_ref.js ASSET_REF_PREFIX. Named here because the server both MINTS these
+# strings (list_assets' "url") and PARSES them (parse_asset_ref, for the
 # self-contained export), and the two must never be spelled differently.
+#
+# THE GRAMMAR HAS TWO FORMS and this constant is only about one of them. A document
+# `src` may be RELATIVE ("clip.mp4" — a file of whatever project owns the document)
+# or ABSOLUTE ("/asset/<project>/<file>" — a file of a specifically named project).
+# The SERVER only ever deals with the absolute form: it is what list_assets mints,
+# and it is the only form document_asset_refs recognizes. Resolution of the relative
+# form happens entirely CLIENT-SIDE, at core/derive.js, against the project the
+# document belongs to — the server never needs to, because every asset request that
+# reaches it already names its project in the path. Relative refs are what WRITERS
+# now store and what localization_plan emits, precisely so that a project rename or
+# a de-collided import cannot invalidate them.
 ASSET_REF_PREFIX = "/asset/"
 # Filmstrip frame-extraction cache (the seam the server author reserved): the
 # frames endpoint extracts N evenly-spread frames from a project VIDEO asset and
@@ -1751,6 +1762,24 @@ def localization_plan(refs, project, local_names):
     with the same basename cannot collide with each other either. Two refs to the
     SAME file share ONE copy.
 
+    THE NEW REF IS RELATIVE ("clip.mp4"), not "/asset/<project>/clip.mp4", and that
+    is the point of localizing rather than merely copying bytes. A localized asset is
+    BY DEFINITION a file of the project the document is becoming, so naming that
+    project inside the ref adds nothing and costs everything: the name is not stable
+    across the archive's future. This function writes the folder under whatever name
+    the export was asked for, and the IMPORT de-collides again ("RobotSim" →
+    "RobotSim 2" when one already exists), so an absolute ref minted here is stale as
+    soon as the zip is opened anywhere that already holds that project. The user
+    proved it: a RobotSim archive dropped on the static site imported its assets and
+    still rendered no video, because the refs named a project that browser had never
+    heard of. A relative ref is rename-proof and import-proof by construction. See
+    core/asset_ref.js for the two-form grammar; this is its python twin.
+
+    An ALREADY-RELATIVE ref never appears in `refs` at all — document_asset_refs only
+    recognizes the absolute form — so it is not planned, not copied and not
+    rewritten. That is correct: it already points at this project, and it round-trips
+    through an export byte-identically.
+
     `ref_map` IS KEYED BY THE REF STRING AS THE DOCUMENT SPELLS IT, never by a
     re-minted one: a file part holding a "/" would re-mint as "icons%2Flogo.svg"
     and match nothing, silently leaving the foreign ref in place — the exact class
@@ -1777,8 +1806,8 @@ def localization_plan(refs, project, local_names):
         >>> [(c["file"], c["as"]) for c in copies]
         [('clip.mp4', 'clip.mp4')]
         >>> ref_map
-        {'/asset/Untitled/clip.mp4': '/asset/RobotSim/clip.mp4'}
-        >>> localization_plan(refs, "RobotSim", ["clip.mp4"])[0][0]["as"]
+        {'/asset/Untitled/clip.mp4': 'clip.mp4'}
+        >>> localization_plan(refs, "RobotSim", ["clip.mp4"])[0][0]["to"]
         'clip-2.mp4'
         >>> localization_plan([{"ref": "/asset/D/a.png", "project": "D", "file": "a.png"}], "D", [])
         ([], {})
@@ -1793,7 +1822,9 @@ def localization_plan(refs, project, local_names):
         # both zip halves write.
         as_name = unique_name_among(os.path.basename(r["file"]), taken)
         taken.append(as_name)
-        to = asset_ref(project, as_name)
+        # THE RELATIVE FORM (see the docstring): the copy lands in THIS project's
+        # assets/, so its ref is the bare name — rename-proof and import-proof.
+        to = as_name
         copies.append({"project": r["project"], "file": r["file"], "as": as_name,
                        "ref": r["ref"], "to": to})
         ref_map[r["ref"]] = to

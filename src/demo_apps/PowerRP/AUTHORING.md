@@ -451,9 +451,11 @@ const asset = assetText(s.csvUrl);   // {text, status, error}
 ```
 
 `assetText(url)` (`core/plugin_assets.js`) is **the one way** a plugin asset may
-read data from outside its own state: the text of a project asset, by its served
-URL (`/asset/<Project>/sales.csv`). It reads through
-`render_gpu/gpu/text_asset_registry.js`.
+read data from outside its own state: the text of a project asset. It reads through
+`render_gpu/gpu/text_asset_registry.js`, and it is handed an ALREADY-RESOLVED url
+(`/asset/<Project>/sales.csv`) — a relative `csvUrl` in the widget's state was
+turned into that by the derive seam before `emit()` ran (§7), so a plugin never has
+to know which form the author wrote.
 
 It is **not** a hole in the jail. `fetch` stays blocked; a plugin cannot name a
 URL this does not resolve. What it reaches is the same text the app already served
@@ -532,14 +534,58 @@ then authors the slide — and it is worth reading as a companion to §9.
 
 ## 7. Assets
 
-Project assets live in `projects/<Project>/assets/` and are served at
-`/asset/<Project>/<file>`. Images, videos, SVGs, PDFs, fonts, data files
-(`.csv`, `.tsv`, `.json`) and plugin assets (`*.plugin.js`) all live there
-together; the server classifies them by extension (`server/server.py`).
+Project assets live in `projects/<Project>/assets/`. Images, videos, SVGs, PDFs,
+fonts, data files (`.csv`, `.tsv`, `.json`) and plugin assets (`*.plugin.js`) all
+live there together; the server classifies them by extension
+(`server/server.py`). Assets travel with the project in the zip round-trip, which
+is what makes a deck portable and a data-driven chart deterministic.
 
-Reference an asset from a widget by its **served URL**, not a bare filename.
-Assets travel with the project in the zip round-trip, which is what makes a deck
-portable and a data-driven chart deterministic.
+### How to reference one: relative, unless you mean another project
+
+A `src` (or `svgUrl`, or any `kind: "asset"` property) takes one of **two forms**,
+and both are first-class forever:
+
+| form | looks like | means |
+| --- | --- | --- |
+| **relative** — write this | `"clip.mp4"`, `"icons/logo.svg"` | a file in **this project's** assets, whatever the project is called right now |
+| **absolute** | `"/asset/Shared/bg.png"` | a file in the **specifically named** project — deliberate cross-project borrowing |
+
+**Write the relative form.** It is shorter, and more importantly it is
+*rename-proof*: nothing in the system guarantees a project keeps the name that was
+baked into an absolute ref. Save-As changes the folder while every `src` keeps
+naming the old one, and importing a `.zip` de-collides (`RobotSim` → `RobotSim 2`)
+so the archive lands under a name it was never told. Against a server that never
+shows, because the server serves any project's assets to anyone. It shows the
+moment there is no server:
+
+> A `RobotSim.zip` dragged onto the **static** site imported its assets and still
+> rendered no video — the document said `/asset/Untitled/Video_….mp4` and no
+> project called `Untitled` existed in that browser.
+
+A relative ref has no name to be wrong about. Reach for the absolute form only when
+you actually mean *that other project's* copy.
+
+```js
+{ ...video.defaults, src: "clip.mp4" }                    // this project's — do this
+{ ...svg.defaults, svgSource: "url", svgUrl: "icons/logo.svg" }  // nested paths work
+{ ...image.defaults, src: "/asset/Shared/bg.png" }        // another project's, on purpose
+```
+
+`http(s):`, `data:`, `blob:` and `builtin:` sources are not asset refs and pass
+through untouched.
+
+**Existing decks are not migrated.** Every absolute ref keeps working exactly as
+written — resolution accepts both forms, and repair rewrites nothing. Only what
+*writers* mint changed: the Asset Explorer's copy-path button, the Inspector's
+asset picker, drag-and-drop, upload, and the zip export's localization all now
+produce the relative form for an own-project asset.
+
+**Resolution happens at one seam.** `core/derive.js` turns a relative ref into
+`/asset/<owning project>/<path>` before any plugin's `emit()` runs, so every
+consumer — the canvas, the presenter, thumbnails, PNG/PDF/SVG export, the bare-node
+CLI and the headless render worker — sees the same resolved string. The grammar
+itself is `core/asset_ref.js`. An unresolvable ref fails **loudly** (a named error,
+or the missing-asset affordance), never as a silent blank.
 
 ## 8. Validating what you author
 
@@ -640,7 +686,7 @@ csvchart: {
   ...chart.defaults,
   name: "CSV Bar Graph",
   x: 260, y: 300, w: 1400, h: 560, z: 20,
-  csvUrl: `/asset/${PROJECT}/sample_data.csv`,
+  csvUrl: "sample_data.csv",   // relative to THIS project (§7) — rename-proof
   labelColumn: "stage",
   valueColumn: "seconds",
   colorMode: "alternate",

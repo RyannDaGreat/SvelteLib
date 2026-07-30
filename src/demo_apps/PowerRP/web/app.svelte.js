@@ -50,7 +50,7 @@ import { localAssetStore, localProjectStore } from "./assetStore.js";
 import { buildProjectZip, downloadBytes, importProjectZipLocal } from "./projectZip.js";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
-import { assetRef, uniqueAssetName } from "./assetRef.js";
+import { assetRef, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
 import { documentAssetRefs, foreignAssetRefs, localizationPlan, rewriteAssetRefs } from "./assetLocalize.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -795,7 +795,7 @@ export class PowerRPApp {
   }
 
   nodes() {
-    return deriveRenderTree(this.state(), this.registry);
+    return deriveRenderTree(this.state(), this.registry, this.projectName());
   }
 
   selectedNode() {
@@ -3868,6 +3868,29 @@ export class PowerRPApp {
     return assetStore().resolveUrl(url);
   }
 
+  /** Query. `#resolvedSrc`'s OPPOSITE NUMBER: the string that belongs in the
+   *  DOCUMENT for an asset the user just picked, uploaded or dropped.
+   *
+   *  The two are easy to confuse and must never be swapped. `#resolvedSrc` answers
+   *  "what can I load right now?" and its answer is MODE-DEPENDENT and TRANSIENT —
+   *  a backend URL in HTTP mode, a `blob:` object URL in static mode, dead on the
+   *  next reload. This answers "what should I persist?", and its answer must be
+   *  neither: a document stores a ref, never a resolution (web/assetStore.js's
+   *  invariant), and since core/asset_ref.js's grammar that ref is RELATIVE for an
+   *  asset of this project so a rename, a Save-As or a zip round-trip cannot break
+   *  it. A FOREIGN project's asset keeps its absolute ref, which is the only thing
+   *  that could name it.
+   *
+   *  @param {string} url - the listing's `url` (an absolute ref, or a non-ref src)
+   *  @returns {string} the value to store
+   *
+   *  @example // in project "RobotSim": #storedSrc("/asset/RobotSim/clip.mp4") // "clip.mp4"
+   *  @example // in project "RobotSim": #storedSrc("/asset/Shared/bg.png")     // "/asset/Shared/bg.png"
+   */
+  #storedSrc(url) {
+    return relativeAssetRef(url, this.projectName());
+  }
+
   /**
    * Command. Inserts an image asset (by URL) as a new image widget on the
    * current slide at NATIVE pixel size (manifest Round 12: "because we have
@@ -3880,14 +3903,19 @@ export class PowerRPApp {
    * FAILURE rejects loudly (no silent fallback) so the caller surfaces it.
    */
   async insertImageAsset(url, at = null) {
-    const src = this.#resolvedSrc(url);
+    // TWO DIFFERENT STRINGS, and conflating them was the latent half of the
+    // relative-ref bug. `loadable` is what an <img> can actually decode RIGHT NOW
+    // (a backend URL in HTTP mode, a blob: object URL in static mode); `stored` is
+    // what belongs in the DOCUMENT. Storing the loadable one wrote a blob: URL into
+    // the deck in static mode — dead the moment the page reloaded.
+    const loadable = this.#resolvedSrc(url);
     const { naturalWidth: w, naturalHeight: h } = await new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`insertImageAsset: could not load image "${src}"`));
-      img.src = src;
+      img.onerror = () => reject(new Error(`insertImageAsset: could not load image "${loadable}"`));
+      img.src = loadable;
     });
-    this.#insertMediaAt(imagePlugin.defaults, src, w, h, at);
+    this.#insertMediaAt(imagePlugin.defaults, this.#storedSrc(url), w, h, at);
   }
 
   /**
@@ -3978,15 +4006,16 @@ export class PowerRPApp {
    * rejects loudly.
    */
   async insertVideoAsset(url, at = null) {
-    const src = this.#resolvedSrc(url);
+    // loadable-vs-stored, exactly as insertImageAsset — see its comment.
+    const loadable = this.#resolvedSrc(url);
     const { videoWidth: w, videoHeight: h } = await new Promise((resolve, reject) => {
       const v = document.createElement("video");
       v.preload = "metadata";
       v.onloadedmetadata = () => resolve(v);
-      v.onerror = () => reject(new Error(`insertVideoAsset: could not load video "${src}"`));
-      v.src = src;
+      v.onerror = () => reject(new Error(`insertVideoAsset: could not load video "${loadable}"`));
+      v.src = loadable;
     });
-    this.#insertMediaAt(videoPlugin.defaults, src, w, h, at);
+    this.#insertMediaAt(videoPlugin.defaults, this.#storedSrc(url), w, h, at);
   }
 
   /**
@@ -4349,7 +4378,7 @@ export class PowerRPApp {
     // measureText is the RICH-TEXT layout seam (Round 13.4) — without it the PDF
     // backend degrades a multi-run text box to its first run (and outline/
     // highlight never emit); passing it makes exported rich text match the editor.
-    const bytes = await irToPDF(sceneIR(deriveRenderTree(state, this.registry)), {
+    const bytes = await irToPDF(sceneIR(deriveRenderTree(state, this.registry, this.projectName())), {
       width: rect.w,
       height: rect.h,
       view: fitRectView(rect, rect.w, rect.h, 1),
@@ -4418,7 +4447,7 @@ export class PowerRPApp {
       return { mime: "image/png", bytes: new Uint8Array(await blob.arrayBuffer()) };
     };
 
-    const svg = await irToSVG(sceneIR(deriveRenderTree(state, this.registry)), {
+    const svg = await irToSVG(sceneIR(deriveRenderTree(state, this.registry, this.projectName())), {
       width: rect.w,
       height: rect.h,
       view: fitRectView(rect, rect.w, rect.h, 1),
@@ -4629,7 +4658,7 @@ export class PowerRPApp {
     if (!rect || rect.w <= 0 || rect.h <= 0) return null;
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
     const selected = new Set(this.selectedIds());
-    const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
+    const nodes = deriveRenderTree(state, this.registry, this.projectName()).filter((n) => selected.has(n.itemId));
     return { rect, nodes };
   }
 

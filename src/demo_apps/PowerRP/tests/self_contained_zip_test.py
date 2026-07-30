@@ -22,6 +22,13 @@ this server serves /asset/<any project>/… to anyone, the deck keeps working an
 divergence is INVISIBLE — until zip_project_bytes walks one folder and ships a doc
 whose refs name a folder that is not in the archive.
 
+AND THE FIX HAS TWO HALVES. Carrying the foreign BYTES makes the archive complete;
+writing the localized refs in the RELATIVE form ("clip.mp4" — core/asset_ref.js)
+makes them stay correct afterwards. Without the second half the user hit the same
+class of failure again on the STATIC site: the archive was byte-complete, the assets
+imported into browser storage, and the video still did not render, because the doc
+named a project that browser had never heard of. Check 9 is that repro.
+
 WHY THE ROUND TRIP IS THE TEST, and not just "is the file in the zip". Three things
 can each be individually right and still leave the user broken: the bytes present,
 the archived ref rewritten, and the IMPORTED project's ref actually resolving to a
@@ -52,6 +59,10 @@ CHECKS:
                             NAMED in an X-PowerRP-Warning header. Never silent.
   8. NON-REFS SURVIVE     — equations and http/data URLs sitting next to a real src
                             are untouched by the walk.
+  9. RENAME-PROOF         — THE USER'S STATIC-SITE REPRO. The same archive imported a
+                            SECOND time lands on a de-collided name, and its RELATIVE
+                            ref still resolves there — with no rename repair applied.
+                            This is what an absolute ref could not do.
 
 Run (exit code gated):
     /opt/homebrew/opt/python@3.10/bin/python3.10 tests/self_contained_zip_test.py
@@ -124,8 +135,27 @@ def archive_of(port, project):
 
 
 def refs_of(doc):
-    """Query. The ref strings a document contains, in document order."""
+    """Query. The ABSOLUTE ref strings a document contains, in document order.
+
+    Only absolute ones: document_asset_refs recognizes "/asset/<p>/<f>" and nothing
+    else, by design. So an EMPTY result now means "every ref is relative", which is
+    what a localized archive should look like — use srcs_of to see them.
+    """
     return [r["ref"] for r in server.document_asset_refs(doc)]
+
+
+def srcs_of(doc):
+    """
+    Query. Every item `src` in the document, in slide/item order, WHATEVER FORM it
+    is in — the assertion surface for the relative-ref grammar, where refs_of by
+    construction cannot see the interesting value.
+    """
+    out = []
+    for slide in doc.get("slides", []):
+        for item in (slide.get("delta", {}).get("items", {})).values():
+            if isinstance(item, dict) and isinstance(item.get("src"), str):
+                out.append(item["src"])
+    return out
 
 
 def main():
@@ -153,8 +183,17 @@ def main():
         assert warning is None, f"a localizable asset must not warn: {warning}"
         assert "RobotSim/assets/clip.mp4" in members, f"the borrowed video is NOT in the archive: {members}"
         assert zf.read("RobotSim/assets/clip.mp4") == VIDEO_BYTES, "archived video bytes differ from the source"
-        assert refs_of(archived) == ["/asset/RobotSim/clip.mp4"], f"archived refs not localized: {refs_of(archived)}"
-        print(f"[1] USER'S CASE ok: video present ({len(VIDEO_BYTES)}B) and the archived ref is /asset/RobotSim/clip.mp4")
+        # THE LOCALIZED REF IS RELATIVE ("clip.mp4"), not "/asset/RobotSim/clip.mp4".
+        # That is the second half of the fix and the half the first version missed:
+        # carrying the BYTES made the archive complete, but an absolute ref minted at
+        # export time names a project the archive cannot guarantee will exist — the
+        # import de-collides ("RobotSim" -> "RobotSim 2"), and a static-site import has
+        # no server to paper over the difference. A relative ref has no name to be
+        # wrong about. Asserted via srcs_of because refs_of, by construction, cannot
+        # see a relative ref at all — and that emptiness is itself the property.
+        assert srcs_of(archived) == ["clip.mp4"], f"archived ref not localized to the RELATIVE form: {srcs_of(archived)}"
+        assert refs_of(archived) == [], f"a localized archive must hold NO absolute refs: {refs_of(archived)}"
+        print(f"[1] USER'S CASE ok: video present ({len(VIDEO_BYTES)}B) and the archived ref is the relative \"clip.mp4\"")
 
         # ── 2. THE SOURCE PROJECT IS UNTOUCHED ───────────────────────────────
         # Only the ARCHIVE is rewritten — the author's document keeps saying
@@ -175,12 +214,20 @@ def main():
         imported = reply["name"]
         with open(os.path.join(tmp_root, imported, server.DOC_FILENAME)) as f:
             imported_doc = json.load(f)
-        ref = refs_of(imported_doc)[0]
-        assert ref == f"/asset/{imported}/clip.mp4", f"imported ref is not local: {ref}"
+        # The stored src is still the RELATIVE "clip.mp4" — the import did NOT rewrite
+        # it, and did not need to. THAT is the rename-proofness: the same string is
+        # correct under every name the project could have been imported as. What the
+        # test then resolves is the string a CLIENT would build from it
+        # (core/asset_ref.js resolveAssetRef: relative + owning project -> absolute),
+        # which is the one request the user's "load that zip into the browser" reduces to.
+        stored_src = srcs_of(imported_doc)[0]
+        assert stored_src == "clip.mp4", f"the imported doc's src should be untouched and relative: {stored_src}"
+        assert refs_of(imported_doc) == [], f"import must not re-mint an absolute ref: {refs_of(imported_doc)}"
+        ref = server.asset_ref(imported, stored_src)  # what the client resolves it to
         status, served, _ = get(port, ref)
         assert status == 200, f"the imported deck's own ref does not resolve: {status} for {ref}"
         assert served == VIDEO_BYTES, "the imported ref resolves to DIFFERENT bytes"
-        print(f"[3] IMPORT+RESOLVE ok: {imported} → GET {ref} = 200, {len(served)}B byte-identical")
+        print(f"[3] IMPORT+RESOLVE ok: {imported} holds \"clip.mp4\" → GET {ref} = 200, {len(served)}B byte-identical")
 
         # ── 4. THE LENDER MAY VANISH ─────────────────────────────────────────
         # The property that was missing: before localization the imported deck
@@ -204,7 +251,11 @@ def main():
         zf, warning = archive_of(port, "Deck")
         archived = json.loads(zf.read("Deck/doc.json"))
         assert warning is None, warning
-        assert refs_of(archived) == ["/asset/Deck/logo.png", "/asset/Deck/logo-2.png"], refs_of(archived)
+        # The OWN ref stays exactly as authored (absolute "/asset/Deck/logo.png" — it was
+        # already local, so nothing localizes it and nothing rewrites it); the BORROWED
+        # one becomes the relative "logo-2.png". Both forms in one archived doc, which
+        # is the mixed state every real deck will be in during the transition.
+        assert srcs_of(archived) == ["/asset/Deck/logo.png", "logo-2.png"], srcs_of(archived)
         assert zf.read("Deck/assets/logo.png") == b"LOCAL-LOGO", "the local logo was overwritten by the copy"
         assert zf.read("Deck/assets/logo-2.png") == b"FOREIGN-LOGO", "the copy holds the wrong bytes"
         print("[5] COLLISION-SAFE ok: foreign logo.png landed as logo-2.png; the local one is intact")
@@ -260,8 +311,33 @@ def main():
         assert warning is None, warning
         assert t["text"] == "= 1 + 2" and t["caption"] == equation, t
         assert t["remote"] == "https://example.com/a.png" and t["inline"].startswith("data:"), t
-        assert archived["slides"][0]["delta"]["items"]["v"]["src"] == "/asset/Mixed/logo.png"
+        assert archived["slides"][0]["delta"]["items"]["v"]["src"] == "logo.png"
         print("[8] NON-REFS ok: equations, http and data: URLs untouched; only the real src moved")
+
+        # ── 9. THE USER'S STATIC-SITE REPRO: IMPORTED UNDER A DIFFERENT NAME ──
+        # THE bug this grammar exists for, reduced to the one thing that decides it.
+        # Verbatim: they dragged a RobotSim zip onto the STATIC GitHub Pages site,
+        # "slides loaded, the asset imported into browser storage, but the video did
+        # not render" — because the doc said "/asset/Untitled/Video_….mp4" and no
+        # project called "Untitled" existed there.
+        #
+        # An absolute ref survives an import ONLY because _rename_imported_refs
+        # repoints it, and that repair needs a name to translate FROM. It is exactly
+        # the repair a static site cannot perform and a Save-As already invalidated.
+        # A RELATIVE ref needs no repair at all — so this imports the SAME archive a
+        # SECOND time (landing on a de-collided name), and asserts the deck resolves
+        # under whatever name it happened to get. The archive was never told that name.
+        status, reply = post(port, "/api/import-zip/?name=RobotSim", body)
+        assert status == 200 and reply["ok"], reply
+        renamed = reply["name"]
+        assert renamed != "RobotSim", "fixture: the second import must de-collide, or it proves nothing"
+        with open(os.path.join(tmp_root, renamed, server.DOC_FILENAME)) as f:
+            renamed_doc = json.load(f)
+        assert srcs_of(renamed_doc) == ["clip.mp4"], f"the relative src must survive a de-collided import: {srcs_of(renamed_doc)}"
+        status, served, _ = get(port, server.asset_ref(renamed, "clip.mp4"))
+        assert status == 200 and served == VIDEO_BYTES, (
+            f"the deck did NOT resolve under its de-collided name {renamed!r} — this is the user's static-site bug")
+        print(f"[9] RENAME-PROOF ok: same archive imported as {renamed!r}; \"clip.mp4\" still resolves to the video")
 
         print("\nALL SELF-CONTAINED-ZIP CHECKS PASSED")
     finally:

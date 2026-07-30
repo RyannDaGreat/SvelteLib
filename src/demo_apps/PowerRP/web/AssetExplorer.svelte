@@ -282,7 +282,7 @@
   import { KIND_ICON } from "./assetThumbnail.js";
   import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js";
   import { quotaLine, quotaPercent } from "./assetStore.js";
-  import { libraryTotalsLine } from "./assetRef.js";
+  import { libraryTotalsLine, relativeAssetRef } from "./assetRef.js";
   import { builtinWidgetAssets } from "./builtinAssets.js";
   import { assetStore } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
   import { copyText } from "./clipboard.js";
@@ -565,16 +565,27 @@
     e.dataTransfer.effectAllowed = "copy";
   }
 
-  /** Command. Copies an asset's served path (the project-relative URL every
-   *  widget stores as `src`, e.g. "/asset/MyTalk/clip.mp4") to the system
-   *  clipboard (manifest "ASSET UX ROUND 2": "there should be a copy path
-   *  option on the assets") via the shared clipboard helper (web/clipboard.js:
-   *  secure-context writeText, else an execCommand fallback that works over
-   *  plain HTTP — the fix for the unguarded navigator.clipboard call that threw
-   *  on a non-localhost origin). ON SUCCESS the button flashes a
-   *  "Copied!" check; a genuine failure is reported LOUDLY inside the helper. */
+  /** Command. Copies an asset's REF — the exact string a widget's `src` should
+   *  hold — to the system clipboard (manifest "ASSET UX ROUND 2": "there should be
+   *  a copy path option on the assets") via the shared clipboard helper
+   *  (web/clipboard.js: secure-context writeText, else an execCommand fallback that
+   *  works over plain HTTP — the fix for the unguarded navigator.clipboard call
+   *  that threw on a non-localhost origin).
+   *
+   *  WHAT IT COPIES FOLLOWS THE REF GRAMMAR (core/asset_ref.js), because the point
+   *  of this button is to hand the user something they can PASTE INTO A `src`, and
+   *  what belongs there changed: an asset of THIS project copies as the RELATIVE
+   *  ref ("clip.mp4"), matching what every writer now stores and surviving a rename
+   *  or a zip round-trip; a BUILT-IN or otherwise foreign entry copies unchanged,
+   *  since its absolute spelling is the only thing that names it. Copying the
+   *  absolute form for an own-project asset would hand the user precisely the
+   *  string that breaks on the static site.
+   *
+   *  ON SUCCESS the button flashes a "Copied!" check; a genuine failure is reported
+   *  LOUDLY inside the helper. The flash is keyed on `a.url` (the listing's stable
+   *  identity), NOT on the copied text — two assets could otherwise share a flash. */
   async function copyAssetPath(a) {
-    if (await copyText(a.url, "asset path")) {
+    if (await copyText(relativeAssetRef(a.url, app.projectName()), "asset path")) {
       justCopiedUrl = a.url;
       setTimeout(() => { if (justCopiedUrl === a.url) justCopiedUrl = null; }, COPY_FLASH_MS);
     }

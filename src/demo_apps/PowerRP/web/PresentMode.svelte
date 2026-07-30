@@ -102,7 +102,7 @@
     const cam = Object.values(state.items ?? {}).find((it) => it?.type === "camera" && it.active !== false);
     if (cam && paintIsAnimated(cam.background)) return true;
     const rect = cameraRect(state, app.doc.meta);
-    return deriveRenderTree(state, app.registry).some(
+    return deriveRenderTree(state, app.registry, app.projectName()).some(
       (n) =>
         (n.state.animated === true ||
           // A plain shape with an ANIMATED MATERIAL paint has no widget-level
@@ -209,7 +209,7 @@
     // Pass the live view + device size so cameraFrameIR re-rasters placed PDF
     // pages at the presentation's display resolution (crisp when the camera
     // zooms into a page), bounded to the on-screen region (manifest RENDER PIVOT).
-    const ir = cameraFrameIR(state, app.doc.meta, app.registry, { cullRect: rect, view, viewW: w, viewH: h });
+    const ir = cameraFrameIR(state, app.doc.meta, app.registry, { cullRect: rect, view, viewW: w, viewH: h, project: app.projectName() });
     gpu.render(ir, view, {
       background: [0, 0, 0, 1], // letterbox bars
       scissor: {

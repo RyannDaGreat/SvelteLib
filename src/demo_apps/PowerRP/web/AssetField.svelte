@@ -30,10 +30,15 @@
   silently accepted into the wrong widget).
 
   Write semantics: `assetForm` ("url" | "filename", from the row def) decides
-  what STRING the field writes — the served path (image/video's storage) or
-  the bare basename (filmstrip's storage, resolved server-side by the frames
-  endpoint). One commit per pick/upload/drop (a single undo unit); no live-
-  preview gesture (an asset pick is atomic, unlike a drag scrub).
+  what STRING the field writes — an ASSET REF (image/video's storage) or the bare
+  basename (filmstrip's storage, resolved server-side by the frames endpoint).
+  Since the relative-ref grammar (core/asset_ref.js) the "url" form writes the
+  RELATIVE ref for an asset of THIS project — "clip.mp4", not
+  "/asset/<project>/clip.mp4" — so the document survives a rename, a Save-As and a
+  zip round-trip; a FOREIGN asset still writes the absolute form, because naming
+  the other project is the whole content of that reference. See assetWriteValue.
+  One commit per pick/upload/drop (a single undo unit); no live-preview gesture
+  (an asset pick is atomic, unlike a drag scrub).
 
   Props:
     app         — the app controller (projectName/listProjectAssets/uploadAsset).
@@ -108,18 +113,39 @@
 
   /**
    * Pure function. The property-write STRING for a picked library asset,
-   * given the row's `assetForm`. "url" writes the asset's served path
-   * (image/video storage); "filename" writes the bare basename (filmstrip
-   * storage — resolved against the project's assets/ server-side).
+   * given the row's `assetForm` and the project the document belongs to.
+   *
+   * "filename" writes the bare basename (filmstrip storage). "url" writes an
+   * ASSET REF — and as of the relative-ref grammar (core/asset_ref.js) that ref is
+   * RELATIVE whenever the asset belongs to `project`, i.e. it is the same bare path
+   * "filename" would have written. The two forms converge for an own-project asset
+   * and stay distinct for a FOREIGN one, where "url" keeps the absolute
+   * "/asset/<other>/<file>" that says which project it came from.
+   *
+   * WHY WRITERS GO RELATIVE. An absolute ref bakes a project name that nothing keeps
+   * true — Save-As and zip-import both mint the divergence — and the failure it
+   * causes is invisible until the deck leaves the machine. The user hit it live: a
+   * RobotSim zip dragged onto the static site imported its assets and still showed no
+   * video, because the doc said "/asset/Untitled/Video_….mp4" and no "Untitled"
+   * existed there. A relative ref has no name to be wrong about. Existing documents
+   * are NOT migrated (both forms resolve forever); only new writes changed.
+   *
+   * `project` is passed rather than read from a global so this stays pure and
+   * testable in bare node.
    *
    * Examples:
-   *     >>> assetWriteValue({ name: "clip.mp4", url: "/asset/P/clip.mp4" }, "url")
-   *     '/asset/P/clip.mp4'
-   *     >>> assetWriteValue({ name: "clip.mp4", url: "/asset/P/clip.mp4" }, "filename")
+   *     >>> assetWriteValue({ name: "clip.mp4", url: "/asset/P/clip.mp4" }, "url", "P")
+   *     'clip.mp4'                       // own-project: RELATIVE, rename-proof
+   *     >>> assetWriteValue({ name: "clip.mp4", url: "/asset/Other/clip.mp4" }, "url", "P")
+   *     '/asset/Other/clip.mp4'          // foreign: absolute, deliberately
+   *     >>> assetWriteValue({ name: "clip.mp4", url: "/asset/P/clip.mp4" }, "filename", "P")
    *     'clip.mp4'
+   *     >>> assetWriteValue({ name: "x.svg", url: "builtin:library/x.svg" }, "url", "P")
+   *     'builtin:library/x.svg'          // not an asset ref: untouched
    */
-  export function assetWriteValue(asset, assetForm) {
-    return assetForm === "filename" ? asset.name : asset.url;
+  export function assetWriteValue(asset, assetForm, project) {
+    if (assetForm === "filename") return asset.name;
+    return relativeAssetRef(asset.url, project);
   }
 </script>
 
@@ -129,6 +155,7 @@
   import Modal from "../../../lib/Modal.svelte";
   import AssetThumb from "./AssetThumb.svelte";
   import { ASSET_DRAG_MIME } from "./projectApi.js";
+  import { relativeAssetRef } from "../core/asset_ref.js";
 
   let {
     app,
@@ -210,7 +237,7 @@
   }
 
   function pick(a) {
-    oncommit(assetWriteValue(a, assetForm));
+    oncommit(assetWriteValue(a, assetForm, app.projectName()));
     pickerOpen = false;
   }
 
@@ -239,7 +266,10 @@
         console.error(`AssetField: uploaded "${file.name}" but its kind (${kind}) doesn't match this field's accepted kinds (${assetKinds.join(", ")}).`);
         return;
       }
-      oncommit(assetForm === "filename" ? res.name : res.url);
+      // An UPLOAD lands in THIS project by construction, so the ref it writes is
+      // relative for the same reason a picked own-project asset's is (see
+      // assetWriteValue): the doc must survive a rename and a zip round-trip.
+      oncommit(assetWriteValue({ name: res.name, url: res.url }, assetForm, app.projectName()));
     } catch (e) {
       error = String(e?.message ?? e);
       console.error("AssetField: upload failed:", e);
@@ -337,7 +367,7 @@
         error = `"${a.name}" is a ${a.kind} — this field only accepts ${assetKinds.join("/")}.`;
         return;
       }
-      oncommit(assetWriteValue(a, assetForm));
+      oncommit(assetWriteValue(a, assetForm, app.projectName()));
       return;
     }
     const files = [...e.dataTransfer.files];
