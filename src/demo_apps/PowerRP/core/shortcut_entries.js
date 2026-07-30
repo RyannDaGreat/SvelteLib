@@ -1023,22 +1023,31 @@ export const HINT_PROBE_FLAGS = Object.freeze([
   // it would be checking a context the user never reaches.
   { dialogOpen: true, numericField: "scrubber" },
   { dialogOpen: true, numericField: "scrubber", numericFieldBounded: true },
-  // item-61 COMMITTABLE-FIELD SCOPES. The rename/commit/revert/add fields are plain
-  // <input>s, so they are typing targets and suppress the canvas chips the way a
-  // numericField does; titleRename rides a role="button" span and is NOT a typing
-  // target, so it stays live under editorInput (its Enter/F2 show beside the canvas
-  // chips, colliding with none of them).
-  { typingTarget: true, fieldScope: "rename" },
-  { typingTarget: true, fieldScope: "commit" },
-  { typingTarget: true, fieldScope: "revert" },
-  { typingTarget: true, fieldScope: "add" },
-  { fieldScope: "titleRename" },
-  { fieldScope: "tile" },
-  // item-61 OPEN POPOVERS — each a keyboard TAKEOVER, like a dialog.
-  { popoverOpen: true, popoverKind: "menu" },
-  { popoverOpen: true, popoverKind: "combobox" },
-  { popoverOpen: true, popoverKind: "search" },
-  { popoverOpen: true, popoverKind: "grid" },
+  // item-61 COMMITTABLE-FIELD SCOPES and OPEN POPOVERS — DERIVED from the two
+  // hint tables above rather than listed here.
+  //
+  // WHY DERIVED, and this is not tidying: these two lists used to be typed out by
+  // hand, mirroring FIELD_SCOPE_HINTS and POPOVER_HINTS key for key. A new scope
+  // therefore had to be added in TWO places, and forgetting the second one does not
+  // fail loudly the way a missing entry usually does — it makes the new scope's
+  // chips UNSATISFIABLE, so unsatisfiableEntries reports them as a bug in the
+  // scope's own `when` predicate. The next reader then goes looking for a
+  // contradiction in a predicate that is perfectly correct. That happened on the
+  // very next scope added after this comment's ancestor was written (`filter`, the
+  // Asset Explorer's path search), which is why the mirror is now gone: the hint
+  // tables are the single source, and a scope that exists is probed by construction.
+  //
+  // The TYPING-TARGET distinction still has to be stated, because it is a real
+  // property of the DOM element and not derivable from the table: a plain <input>
+  // scope is a typing target (it suppresses the canvas chips the way a numericField
+  // does), while a role="button" span/div scope is not (it stays live under
+  // editorInput, its chips beside the canvas ones). NON_TYPING_FIELD_SCOPES is the
+  // one place that fact is written, and shortcutEntries reads the SAME list when it
+  // picks each scope's `when` — so the probe and the predicate cannot disagree.
+  ...Object.keys(FIELD_SCOPE_HINTS).map((scope) =>
+    NON_TYPING_FIELD_SCOPES.includes(scope) ? { fieldScope: scope } : { typingTarget: true, fieldScope: scope },
+  ),
+  ...Object.keys(POPOVER_HINTS).map((kind) => ({ popoverOpen: true, popoverKind: kind })),
 ]);
 
 /** The two `mode` values, as an axis. */

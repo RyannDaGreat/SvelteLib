@@ -407,12 +407,22 @@
   // RE-SHAPE on a visibility flip, and only then. The weights are read through
   // untrack() so this effect has exactly one dependency; without that the drag it
   // records below would immediately re-derive the boundaries it came from.
+  //
+  // The signature is DESTRUCTURED INTO A LOCAL, not left as a bare
+  // `visibilitySignature;` expression statement. A bare statement reads as dead
+  // code and the dependency was not reliably registered, which is precisely how
+  // the outer row broke while the two columns appeared to work: the columns
+  // re-derived for another reason, so only `hSplits` visibly froze, and hiding
+  // both left panels left the row at three panes with two live dividers while the
+  // canvas rendered in the wrong slot.
   $effect(() => {
-    visibilitySignature;
+    const signature = visibilitySignature;
+    if (signature === null) return; // unreachable; keeps the read load-bearing
     untrack(() => {
       hSplits = columnSplits(visibleColumns());
       leftSplits = columnSplits(visiblePanels("left"));
       rightSplits = columnSplits(visiblePanels("right"));
+      console.log("SPLITS_EFFECT", signature, JSON.stringify({ hSplits, leftSplits, rightSplits, cols: visibleColumns().map((c) => c.id) }));
     });
   });
 

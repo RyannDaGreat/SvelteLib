@@ -62,7 +62,7 @@
     ["undo", "redo"],
     ["copy-item", "paste"],
     ["put-on-top", "put-on-bottom"],
-    ["save-to-server", "download-zip", "open-project", "clear-doc"],
+    ["save-to-server", "open-project", "download-zip", "clear-doc"],
     ["render-center"],
     ["reset-view", "present"],
   ];
