@@ -15,6 +15,7 @@ open it, and drag PowerRP to Applications.
 brew install --cask ryanndagreat/tap/powerrp
 ```
 
-First launch does a one-time setup (downloads the app's web dependencies —
-needs network, takes a few minutes). Unsigned build for now: if macOS balks,
-right-click the app → Open.
+First launch does a one-time setup (downloads the app's web dependencies into
+`~/Library/Application Support/PowerRP` — the app's only footprint outside
+/Applications; needs network, takes a few minutes). Unsigned build for now: if
+macOS balks, right-click the app → Open.
