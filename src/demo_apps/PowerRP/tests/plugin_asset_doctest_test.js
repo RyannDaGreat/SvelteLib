@@ -39,7 +39,12 @@ const verbose = process.argv.includes("--verbose");
 
 /** Where plugin-asset sources live in-repo (built-in library + checked-in project assets). */
 const PLUGIN_DIRS = ["assets/builtin/library", "projects/Imitations/assets"];
-const MIN_EXECUTED = 100; // floor: raise as coverage grows; lowering needs a stated reason
+const MIN_EXECUTED = 240; // floor: raise as coverage grows; lowering needs a stated reason
+/** Floor on the CORPUS itself, beside the doctest floor. The two catch different
+ *  regressions: MIN_EXECUTED catches a parser that stopped finding examples, this
+ *  catches an ASSET that stopped being discovered (a renamed directory, a migration
+ *  reverted). 14 = the built-in library + the Imitations project assets. */
+const MIN_ASSETS = 14;
 
 const files = PLUGIN_DIRS.flatMap((d) => {
   const dir = resolve(appRoot, d);
@@ -239,4 +244,5 @@ console.log(`plugin_asset_doctest: ${counts.executed} executed pass · ${counts.
 if (failures.length) { console.error(failures.map((f) => `FAIL ${f}`).join("\n")); process.exit(1); }
 assert.equal(counts.syntax, 0, "the SYNTAX bucket must stay empty");
 assert.ok(counts.executed >= MIN_EXECUTED, `coverage floor: ${counts.executed} executed < ${MIN_EXECUTED} — a drop here means the parser or the corpus regressed`);
+assert.ok(files.length >= MIN_ASSETS, `corpus floor: ${files.length} plugin assets < ${MIN_ASSETS} — an asset stopped being discovered`);
 console.log("plugin_asset_doctest_test: all checks passed");

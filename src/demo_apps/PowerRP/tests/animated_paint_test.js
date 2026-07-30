@@ -14,6 +14,15 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paintIsAnimated, materialIds, getMaterial } from "../render_gpu/skia/materials.js";
 import { strokeMaterialIds, getStrokeMaterial } from "../render_gpu/skia/stroke_materials.js";
+// rainy_window — the material this suite exists for — is a PLUGIN ASSET now, not a
+// built-in descriptor, so the library must register before the registry knows it.
+// That is the migration's real cost, and paying it here is the point: the freeze bug
+// this file pins is about the ANIMATED flag surviving, and the flag now has to survive
+// a trip through the jail as declared data.
+import { registerBuiltinPluginAssets } from "../core/builtin_plugin_assets.js";
+import { createRegistry } from "../core/registry.js";
+
+registerBuiltinPluginAssets(createRegistry());
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 let failures = 0;

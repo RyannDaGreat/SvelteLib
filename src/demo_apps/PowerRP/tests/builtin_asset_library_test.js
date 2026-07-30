@@ -54,15 +54,17 @@ function test(name, fn) { fn(); passed += 1; console.log(`  ok  ${name}`); }
 
 // ── (2) THE ROSTER ───────────────────────────────────────────────────────────
 
-test("the library registers all five widgets AND the glass material, with NO reports", () => {
+test("the library registers every widget AND all three materials, with NO reports", () => {
   const { loaded, types, reports } = registerBuiltinPluginAssets(createRegistry());
   assert.deepEqual(reports, [], "a clean library must produce no refusals and no drift");
-  // `glass` is a MATERIAL, not a widget — it registers through the SAME loader and
-  // the SAME jail, and the kind-dispatch table (core/plugin_assets.js) is what sends
-  // it to the material registry instead of the widget one. Its presence in this list
-  // is the proof that a second plugin kind rides the existing library path.
-  assert.deepEqual(loaded, ["clock_analog", "clock_digital", "donut", "glass", "number", "progress_bar"]);
-  assert.equal(Object.keys(types).length, 6);
+  // `glass`, `corkboard` and `rainy_window` are MATERIALS, not widgets — they register
+  // through the SAME loader and the SAME jail, and the kind-dispatch table
+  // (core/plugin_assets.js) is what sends them to the material registry instead of the
+  // widget one. Their presence in this list is the proof that a second plugin kind
+  // rides the existing library path, for a BACKDROP material (glass), a FOREGROUND one
+  // (corkboard, backdrop:false) and an ANIMATED one (rainy_window, fromClock).
+  assert.deepEqual(loaded, ["clock_analog", "clock_digital", "corkboard", "donut", "glass", "number", "progress_bar", "rainy_window"]);
+  assert.equal(Object.keys(types).length, BUILTIN_PLUGIN_ASSET_NAMES.length);
 });
 
 test("BUILTIN_PLUGIN_ASSET_TYPES equals the map registration actually produces", () => {
@@ -92,7 +94,6 @@ test("BARE NODE reads the library off disk — the mode cli/render.js runs in", 
   assert.ok(typeof process !== "undefined" && process.versions?.node, "this suite must be bare node for the assertion below to mean anything");
   const { sources } = builtinPluginAssetSources();
   assert.equal(sources.length, BUILTIN_PLUGIN_ASSET_NAMES.length, "bare node must read every library file off disk");
-  assert.equal(sources.length, 6, "five widgets + the glass material");
 });
 
 test("the built-in library WIDGETS are on the FULL roster (builtinRoster), not allPlugins", () => {
@@ -104,7 +105,14 @@ test("the built-in library WIDGETS are on the FULL roster (builtinRoster), not a
     // and asserting a material onto the widget roster would be asserting the bug.
     if (BUILTIN_PLUGIN_ASSET_KINDS[file] === "material") {
       assert.ok(materialIds().includes(name), `${name} is the library's material but is not in the material registry`);
-      assert.ok(!types.has(name), `${name} is a MATERIAL and must not be on the widget roster`);
+      // The widget roster is NOT asserted to lack this name, and that is deliberate:
+      // THE TWO NAMESPACES ARE SEPARATE (43b9780), and `corkboard` is the live proof —
+      // plugins/demo/corkboard.js is a WIDGET of that type while the material of the
+      // same id now registers from the library. Demanding the name be absent from the
+      // widget roster would forbid exactly the coexistence the kind split exists to
+      // allow. What must hold is that the material half went to the MATERIAL registry,
+      // which the assertion above checks; that a library file did not ALSO register a
+      // widget is covered by the type-table parity test.
       continue;
     }
     assert.ok(types.has(name), `${name} ships with the app but is not on builtinRoster()`);
@@ -120,7 +128,7 @@ test("BUILTIN_PLUGIN_ASSET_KINDS names exactly the non-widget library files", ()
     assert.notEqual(kind, "widget", "only NON-widget files are listed; widget is the default");
   }
   const declaredMaterials = Object.keys(BUILTIN_PLUGIN_ASSET_KINDS).filter((f) => BUILTIN_PLUGIN_ASSET_KINDS[f] === "material");
-  assert.deepEqual(declaredMaterials, ["liquid_glass.material.plugin.js"]);
+  assert.deepEqual(declaredMaterials, ["corkboard.material.plugin.js", "liquid_glass.material.plugin.js", "rainy_window.material.plugin.js"]);
 });
 
 // ── (1) MIGRATION PARITY ─────────────────────────────────────────────────────

@@ -2,8 +2,8 @@
  * MATERIAL PLUGIN PROBE (browser) — the runtime half of the material-plugin
  * contract, in the real editor, on the real GPU (WebGL2 / swiftshader). The node
  * suite (tests/material_plugin_test.js) proves the DESCRIPTOR is byte-identical to
- * the shipped glass; this proves the PIXELS are real, which no amount of deep-equal
- * can. Four claims, each of which fails silently without a probe:
+ * the shipped built-ins; this proves the PIXELS are real, which no amount of
+ * deep-equal can. Five claims, each of which fails silently without a probe:
  *
  *   (1) THE MIGRATED GLASS PAINTS. A rect whose fill material is `glass` — now
  *       delivered as a plugin ASSET, not an imported descriptor — must produce a
@@ -19,6 +19,12 @@
  *       inside the UI, and copy that built-in plugin into a new one"), and the one
  *       claim that a shared-descriptor bug would quietly break: an aliased copy
  *       repaints every glass fill in the document the moment one line changes.
+ *   (5) IT GENERALIZES BEYOND GLASS. Every migrated material (glass, corkboard,
+ *       rainy_window) is plugin-sourced, SELECTABLE in the paint dropdown, and paints
+ *       a non-uniform region; and the edit-a-copy round trip is repeated on CORKBOARD
+ *       — the most-knobbed migrated material (11 params) and a FOREGROUND one, so the
+ *       edited shader reaches the GPU down materialFill rather than the backdrop path
+ *       glass exercises. One material proves the mechanism; two prove the seam.
  *
  * Spawns its OWN isolated Vite + headless Chromium (swiftshader), the
  * glass_probe.js pattern. Frontend-only — backend-absent 404s are ignored.
@@ -115,6 +121,31 @@ try {
   assert(provenance.uniformFloats === 25, `the declared uniform block derives 25 floats (got ${provenance.uniformFloats})`);
   assert(provenance.usesShapeSdf, "the shape-conforming fill variant came across");
 
+  // ── (2b) EVERY migrated material is plugin-sourced AND in the picker ────────
+  // The second wave (corkboard, rainy_window) rides the same path glass proved. This
+  // asserts the LIST the paint dropdown actually renders, because the failure mode is
+  // a material that registers fine but never becomes selectable — invisible to a
+  // descriptor-level test, and the whole point of the user ruling.
+  const MIGRATED = ["glass", "corkboard", "rainy_window"];
+  const roster = await page.evaluate(async (materialsUrl, ids) => {
+    const M = await import(/* @vite-ignore */ materialsUrl);
+    const picker = M.fillCapableMaterialIds();
+    return {
+      picker,
+      rows: ids.map((id) => {
+        const m = M.getMaterial(id);
+        return { id, pluginSource: m.pluginSource === true, isBuiltin: M.isBuiltinMaterialId(id), inPicker: picker.includes(id), title: m.title, floats: m.uniformFloats };
+      }),
+    };
+  }, fsUrl("render_gpu/skia/materials.js"), MIGRATED);
+  for (const row of roster.rows) {
+    assert(row.pluginSource, `${row.id} is PLUGIN-sourced in the live registry`);
+    assert(!row.isBuiltin, `${row.id} is no longer a built-in material id`);
+    assert(row.inPicker, `${row.id} is SELECTABLE in the paint dropdown`);
+    assert(typeof row.title === "string" && row.title.length > 0, `${row.id} carries a dropdown label (got ${JSON.stringify(row.title)})`);
+  }
+  console.log(`  info  paint dropdown lists ${roster.picker.length} fill materials: ${roster.picker.join(", ")}`);
+
   /**
    * Command (in-page). Injects a doc: camera + a colourful backdrop + ONE rect whose
    * FILL is the named material, renders it offscreen through the shared compositor,
@@ -168,6 +199,21 @@ try {
   assert(glassStats.spread >= NON_UNIFORM_MIN,
     `glass paints a NON-UNIFORM region (red spread ${glassStats.spread} >= ${NON_UNIFORM_MIN}) — a failed compile or a mis-packed uniform block would be flat`);
   await page.screenshot({ path: resolve(SHOTS, "material_plugin_glass.png") });
+
+  // ── (1b) the SECOND-WAVE materials paint too ───────────────────────────────
+  // Real SkSL, compiled by Skia from a jailed asset's string, on the real GPU. The
+  // node suite can prove the uniforms are byte-identical and still not notice that a
+  // shader never compiled — this is what closes that gap for corkboard (a FOREGROUND
+  // material, so it exercises the materialFill path rather than the backdrop one) and
+  // rainy_window (whose `fromClock` uniform must arrive as a finite number, or the
+  // packer throws mid-composite).
+  for (const id of ["corkboard", "rainy_window"]) {
+    const stats = await renderMaterial(id);
+    assert(stats.samples > 1000, `${id}: the panel region sampled real pixels (${stats.samples})`);
+    assert(stats.spread >= NON_UNIFORM_MIN,
+      `${id} paints a NON-UNIFORM region (red spread ${stats.spread} >= ${NON_UNIFORM_MIN}) — a failed compile renders flat and exits 0`);
+    await page.screenshot({ path: resolve(SHOTS, `material_plugin_${id}.png`) });
+  }
 
   // ── (3) a COPY registers under a de-collided id and is selectable ──────────
   const copy = await page.evaluate(async (edit) => {
@@ -230,6 +276,66 @@ try {
     `the EDITED copy renders DIFFERENTLY from the original (Δ ${editDelta.toFixed(1)} >= ${EDIT_MIN_DELTA}) — the edit reached the GPU`);
   assert(originalDrift < EDIT_MIN_DELTA,
     `the ORIGINAL still renders the same after the copy+edit (drift ${originalDrift.toFixed(1)} < ${EDIT_MIN_DELTA}) — the copy did not alias it`);
+
+  // ── (5) EDIT-A-COPY on a SECOND material, with the most knobs ──────────────
+  // The user ruling is about editing ANY built-in shader, so proving it on one
+  // material proves the mechanism but not that it generalizes. Corkboard is the right
+  // second case: it has the most params of the migrated set (11), and it is a
+  // FOREGROUND material, so the edited shader reaches the GPU down the materialFill
+  // path rather than the backdrop one glass exercises.
+  //
+  // THE ANCHOR is the BASE TONE assignment — the line every other term modulates, so
+  // it contributes at every pixel of the face under default knobs. Two weaker anchors
+  // were MEASURED and rejected first, which is why this comment names the numbers
+  // rather than asserting a rule: GRANULE_CONTRAST (the shader's own "dominant"
+  // constant) gave Δ 0.6 because it modulates a zero-mean noise field that averages
+  // out over a 25,200-px readback, and TOPLIGHT_GRAD gave Δ 2.8 because it is halved
+  // and multiplied by a signed gradient that cancels across the panel. Both are real
+  // edits that reach the GPU; neither separates cleanly from the rasterization wobble
+  // at a threshold of 3. Swapping the base tone's channels cannot cancel or average.
+  const CORK_EDIT_FROM = "half3 col = half3(uBaseColor);";
+  const CORK_EDIT_TO = "half3 col = half3(uBaseColor.b, uBaseColor.r, uBaseColor.g);";
+  const corkBefore = await renderMaterial("corkboard");
+  const corkCopy = await page.evaluate(async (edit) => {
+    const PA = await import(/* @vite-ignore */ edit.pluginAssetsUrl);
+    const BL = await import(/* @vite-ignore */ edit.builtinLibraryUrl);
+    const M = await import(/* @vite-ignore */ edit.materialsUrl);
+    const { sources } = BL.builtinPluginAssetSources();
+    const cork = sources.find((s) => s.name === "corkboard.material.plugin.js");
+    if (!cork) return { error: "the built-in library does not ship the corkboard material" };
+    const editedId = PA.uniquePluginType("corkboard", M.materialIds());
+    const editedSource = PA.retypedPluginSource(cork.source.split(edit.from).join(edit.to), editedId);
+    const reports = PA.registerPluginAssets(window.__powerrp_app.registry, [{ name: "cork edited.material.plugin.js", source: editedSource }]).reports;
+    return {
+      editedId, reports,
+      anchorCount: cork.source.split(edit.from).length - 1,
+      paramCount: M.getMaterial("corkboard").fillParams.length,
+      inPicker: M.fillCapableMaterialIds().includes(editedId),
+      originalUntouched: M.getMaterial("corkboard").sksl.includes(edit.from),
+    };
+  }, {
+    from: CORK_EDIT_FROM, to: CORK_EDIT_TO,
+    pluginAssetsUrl: fsUrl("core/plugin_assets.js"),
+    builtinLibraryUrl: fsUrl("core/builtin_plugin_assets.js"),
+    materialsUrl: fsUrl("render_gpu/skia/materials.js"),
+  });
+
+  assert(!corkCopy.error, corkCopy.error ?? "the built-in library ships the corkboard material asset");
+  assert(corkCopy.paramCount === 11, `corkboard is the most-knobbed migrated material (${corkCopy.paramCount} params)`);
+  assert(corkCopy.anchorCount === 2, `the cork edit anchor exists in BOTH shaders (found ${corkCopy.anchorCount})`);
+  assert(corkCopy.reports.length === 0, `the edited cork copy registered cleanly (${JSON.stringify(corkCopy.reports)})`);
+  assert(corkCopy.inPicker, `the edited cork copy is SELECTABLE (${corkCopy.editedId})`);
+  assert(corkCopy.originalUntouched, "the ORIGINAL corkboard shader text is untouched by the edit");
+
+  const corkEdited = await renderMaterial(corkCopy.editedId);
+  const corkAgain = await renderMaterial("corkboard");
+  const corkDelta = meanDelta(corkEdited.mean, corkBefore.mean);
+  const corkDrift = meanDelta(corkAgain.mean, corkBefore.mean);
+  assert(corkEdited.spread >= NON_UNIFORM_MIN, `the edited cork copy paints a real region (spread ${corkEdited.spread})`);
+  assert(corkDelta >= EDIT_MIN_DELTA,
+    `the EDITED corkboard renders DIFFERENTLY (Δ ${corkDelta.toFixed(1)} >= ${EDIT_MIN_DELTA}) — the edit reached the GPU`);
+  assert(corkDrift < EDIT_MIN_DELTA,
+    `the ORIGINAL corkboard is unchanged by the copy+edit (drift ${corkDrift.toFixed(1)} < ${EDIT_MIN_DELTA}) — two-sided, like glass`);
 
   if (errors.length) { fails.push(...errors); console.error("PAGE ERRORS:\n" + errors.join("\n")); }
 } finally {

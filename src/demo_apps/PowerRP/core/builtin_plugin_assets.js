@@ -97,11 +97,17 @@ import { registerPluginAssets } from "./plugin_assets.js";
 // `kind: "material"` a thing the loader accepts at all. Without this import the
 // library's glass asset would be refused as an unknown kind — loudly, but wrongly.
 // It also installs the colour parser the synthesized toUniformParams needs.
-import { setMaterialColorParser } from "./material_plugins.js";
+import { setMaterialColorParser, setMaterialClock } from "./material_plugins.js";
 import { resetPluginMaterials } from "../render_gpu/skia/materials.js";
 import { parseColor } from "../render_gpu/ir.js";
+import { particleTime } from "../render_gpu/particle_clock.js";
 
 setMaterialColorParser(parseColor);
+// THE CLOCK SEAM, for a material declaring a `fromClock` uniform (rainy_window's
+// drop animation). particleTime is the ONE presentation clock — frozen in the
+// editor, driven per frame by both exporters — so an ANIMATED plugin material is
+// recordable state, exactly like the animated built-ins, and never ephemeral.
+setMaterialClock(particleTime);
 
 /** The committed built-in plugin-asset directory, relative to THIS module — the
  *  literal Vite's `import.meta.glob` pattern below must also spell (a glob
@@ -131,6 +137,11 @@ const LIBRARY_SUFFIX = ".plugin.js";
 export const BUILTIN_PLUGIN_ASSET_NAMES = Object.freeze([
   "clock_analog.plugin.js",
   "clock_digital.plugin.js",
+  // A FOREGROUND material (`backdrop: false`) and the one that proves the family
+  // travels: corkboard's board migrated while its NOTE and THUMBTACK siblings stayed
+  // built-in (the tack's camelCase id is refused by MATERIAL_ID_RE), so the two halves
+  // demonstrably coexist in one registry.
+  "corkboard.material.plugin.js",
   "donut.plugin.js",
   // THE FIRST MATERIAL in the library — a `kind: "material"` asset, not a widget.
   // It registers through the SAME loader and the SAME jail; only the kind-dispatch
@@ -141,6 +152,10 @@ export const BUILTIN_PLUGIN_ASSET_NAMES = Object.freeze([
   "liquid_glass.material.plugin.js",
   "number.plugin.js",
   "progress_bar.plugin.js",
+  // The ANIMATED material, and the reason `fromClock` exists: its `time` uniform is
+  // supplied by the framework from the ONE seamed presentation clock, so it stays
+  // RECORDABLE state (CLAUDE.md) with no route to a wall clock.
+  "rainy_window.material.plugin.js",
 ]);
 
 /**
@@ -161,6 +176,7 @@ export const BUILTIN_PLUGIN_ASSET_NAMES = Object.freeze([
 export const BUILTIN_PLUGIN_ASSET_TYPES = Object.freeze({
   "clock_analog.plugin.js": "clock_analog",
   "clock_digital.plugin.js": "clock_digital",
+  "corkboard.material.plugin.js": "corkboard",
   "donut.plugin.js": "donut",
   // A MATERIAL's claimed name is its `id`, not a widget `type` — the kind decides
   // which registry the name lives in (core/plugin_assets.js PLUGIN_KINDS.nameOf).
@@ -170,6 +186,7 @@ export const BUILTIN_PLUGIN_ASSET_TYPES = Object.freeze({
   "liquid_glass.material.plugin.js": "glass",
   "number.plugin.js": "number",
   "progress_bar.plugin.js": "progress_bar",
+  "rainy_window.material.plugin.js": "rainy_window",
 });
 
 /**
@@ -183,7 +200,9 @@ export const BUILTIN_PLUGIN_ASSET_TYPES = Object.freeze({
  * table is.
  */
 export const BUILTIN_PLUGIN_ASSET_KINDS = Object.freeze({
+  "corkboard.material.plugin.js": "material",
   "liquid_glass.material.plugin.js": "material",
+  "rainy_window.material.plugin.js": "material",
 });
 
 /**

@@ -44,6 +44,15 @@ import { rect, pushTransform, popTransform } from "../render_gpu/ir.js";
 // (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
 // library and silently left every such sweep. See plugins/index.js builtinRoster.
 import { builtinRoster } from "../plugins/index.js";
+// THE SAME HAZARD, one layer down: `corkboard` is a FOREGROUND material that MIGRATED
+// to the built-in plugin-asset library, so without this registration it would vanish
+// from FOREGROUND (derived from the live registry) and quietly lose its raster-cache
+// coverage — precisely the silent-departure failure the comment above records for
+// widgets. Registering here keeps the sweep honest.
+import { registerBuiltinPluginAssets } from "../core/builtin_plugin_assets.js";
+import { createRegistry } from "../core/registry.js";
+
+registerBuiltinPluginAssets(createRegistry());
 
 const roster = builtinRoster();
 import { materialIds, getMaterial, isBackdropMaterial, isSamplerMaterial, isFillCapableMaterial, materialFillParamDefaults } from "../render_gpu/skia/materials.js";

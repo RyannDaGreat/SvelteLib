@@ -97,6 +97,34 @@ export const MATERIAL_PARAM_KINDS = Object.freeze(new Set(["number", "angle", "c
 const DEG2RAD = Math.PI / 180;
 
 /**
+ * THE CLOCK KNOB. A material whose look advances with presentation time reads the
+ * ONE seamed clock (render_gpu/particle_clock.particleTime) — never a wall clock —
+ * and a DATA-ONLY plugin has no way to call it. So a uniform may declare
+ * `fromClock: true` instead of naming a param, and the framework supplies the
+ * current particle time when it packs.
+ *
+ * This adds NO new kind of state (CLAUDE.md's taxonomy): the value is exactly the
+ * recordable-state seam every animated built-in already reads, which the editor and
+ * CLI freeze and both exporters override per frame. Routing it through the declared
+ * block rather than jailed JS is what keeps Δt = 0 ⟹ an identical frame TRUE for a
+ * plugin material, because the plugin cannot reach any other clock.
+ *
+ * Injected for the same layering reason as the colour parser: core/ must stay
+ * bare-node loadable and particle_clock lives in render_gpu/. Defaults to a LOUD
+ * thrower so a material declaring `fromClock` before the seam is installed fails by
+ * name instead of packing a silent zero and rendering a frozen frame.
+ */
+let clockSource = () => {
+  throw new Error("material_plugins: no clock installed — setMaterialClock must run before a `fromClock` uniform is packed");
+};
+
+/** Command. Installs the presentation clock (render_gpu/particle_clock.particleTime).
+ *  @example // setMaterialClock(particleTime) */
+export function setMaterialClock(clock) {
+  clockSource = clock;
+}
+
+/**
  * Pure function. Why is `params` not a usable material knob SCHEMA? Returns a
  * reason, or null. The schema is an array of customProps-shaped rows — the ONE
  * declaration the paint dropdown's param rows and the uniform packing both read
@@ -123,6 +151,17 @@ export function materialParamsProblem(params) {
     if (!MATERIAL_PARAM_KINDS.has(row.kind))
       return `params[${i}] ("${row.name}") declares kind ${JSON.stringify(row.kind)} — must be one of ${[...MATERIAL_PARAM_KINDS].sort().join(", ")}`;
     if (!("default" in row)) return `params[${i}] ("${row.name}") is missing "default" — a sparse stored param resolves against it`;
+    if ("codes" in row) {
+      // A `codes` row replaces the built-ins' hand-written MODE_CODE / SHAPE_CODE
+      // lookup. Its DEFAULT must have a code, or the material's own defaults would
+      // throw at the first pack — a refusal at registration is the loud version.
+      if (row.codes === null || typeof row.codes !== "object" || Array.isArray(row.codes))
+        return `params[${i}] ("${row.name}") declares "codes" that is not an {option: number} map`;
+      for (const [option, code] of Object.entries(row.codes))
+        if (!Number.isFinite(code)) return `params[${i}] ("${row.name}") maps option "${option}" to ${JSON.stringify(code)} — a code must be a finite number`;
+      if (!(row.default in row.codes))
+        return `params[${i}] ("${row.name}") defaults to ${JSON.stringify(row.default)}, which has no code (declared: ${Object.keys(row.codes).join(", ")})`;
+    }
   }
   return null;
 }
@@ -153,6 +192,10 @@ export function uniformsProblem(uniforms) {
     if (typeof u.name !== "string" || !u.name) return `uniforms[${i}] is missing "name"`;
     if (!Number.isInteger(u.size) || u.size < 1)
       return `uniforms[${i}] ("${u.name}") declares size ${u.size} — must be a positive integer float count (float=1, float2=2, float4=4)`;
+    if (u.fromClock !== undefined && u.fromClock !== true)
+      return `uniforms[${i}] ("${u.name}") declares fromClock ${JSON.stringify(u.fromClock)} — the only legal value is true (the seamed presentation clock)`;
+    if (u.fromClock === true && u.size !== 1)
+      return `uniforms[${i}] ("${u.name}") declares fromClock with size ${u.size} — the clock is a single float`;
   }
   return null;
 }
@@ -300,6 +343,14 @@ const DATA_ONLY_ADVICE = Object.freeze({
  * declaredUniformParams({params: [{name: "specularPower", kind: "number", default: 8, uniform: "specPower"}]},
  *   {specularPower: 8}, () => [])
  * // => {specPower: 8}
+ * @example
+ * // `codes` maps a SELECT's option strings to the integer the shader branches on
+ * // (the crt/comic convention), and a BOOLEAN packs as 0/1.
+ * declaredUniformParams(
+ *   {params: [{name: "maskType", kind: "select", default: "shadow", codes: {aperture: 0, shadow: 1}},
+ *             {name: "worldLocked", kind: "boolean", default: true}]},
+ *   {maskType: "shadow", worldLocked: true}, () => [])
+ * // => {maskType: 1, worldLocked: 1}
  */
 export function declaredUniformParams(material, resolved, parseColor) {
   const out = {};
@@ -312,10 +363,22 @@ export function declaredUniformParams(material, resolved, parseColor) {
     const key = row.uniform ?? row.name;
     const value = resolved[row.name];
     if (row.kind === "color") out[key] = parseColor(value);
+    else if (row.codes) out[key] = codeFor(material, row, value);
+    else if (row.kind === "boolean") out[key] = value ? 1 : 0;
     else if (row.unit === "degrees") out[key] = value * DEG2RAD;
     else out[key] = value;
   }
   return { ...out, ...(material.fixed ?? {}) };
+}
+
+/** Pure. A `codes` row's option string → its shader integer, LOUD on an unknown
+ *  option (crtUniformParams throws on exactly this, and a silent 0 would quietly
+ *  select the WRONG branch of the shader rather than reporting a stale document). */
+function codeFor(material, row, value) {
+  const code = row.codes[value];
+  if (code === undefined)
+    throw new Error(`material "${material.id ?? "?"}": knob "${row.name}" has no code for ${JSON.stringify(value)} (declared: ${Object.keys(row.codes).join(", ")})`);
+  return code;
 }
 
 /**
@@ -349,20 +412,43 @@ export function declaredUniformParams(material, resolved, parseColor) {
  *   {id: "m", uniforms: [{name: "tint", size: 4}, {name: "reach", size: 1, scaleByDevice: true}]},
  *   {tint: [1, 1, 1, 0.5], reach: 14, scale: 2}))
  * // => [1, 1, 1, 0.5, 28]
+ * @example
+ * // A float3 colour packs RGB and DROPS the alpha — the `rgb()` helper the crt,
+ * // comic and rainy_window packers all use for a knob whose alpha is meaningless.
+ * Array.from(packDeclaredUniforms({id: "m", uniforms: [{name: "tint", size: 3}]}, {tint: [1, 0.5, 0.25, 1]}))
+ * // => [1, 0.5, 0.25]
  */
 export function packDeclaredUniforms(material, u) {
   const out = [];
   for (const slot of material.uniforms) {
-    const raw = u[slot.name];
+    // A CLOCK slot takes no param: the framework supplies presentation time, which
+    // is the only ambient input a material may read (see setMaterialClock).
+    const raw = slot.fromClock ? clockSource() : u[slot.name];
+    // A size-2 slot declaring `asVector` packs an ANGLE as its unit direction
+    // [cos, sin] — the corkboard family's `lightVec`, which is a unit conversion on
+    // an angle exactly as `unit: "degrees"` is, not a computation over other knobs.
+    if (slot.asVector) { out.push(...angleVector(raw, material.id, slot.name)); continue; }
     const value = slot.scaleByDevice ? scaledLength(raw, u.scale, material.id, slot.name) : raw;
     if (slot.size === 1) {
       if (!Number.isFinite(value))
         throw new Error(`material "${material.id}": uniform "${slot.name}" is ${value} — every declared uniform must resolve to a finite number`);
       out.push(value);
     } else {
-      if (!Array.isArray(value) || value.length !== slot.size)
+      // A COLOUR slot may still hold its STRING here. `toUniformParams` parses the
+      // knobs it maps, but the fill path spreads the op's raw `params` into `u` and
+      // some callers hand a material's own defaults straight to `pack` — which is why
+      // the built-in `rgb()` packers parse defensively too (packCork does exactly
+      // this). Parsing at the slot keeps the packer total over both shapes rather
+      // than throwing on a string the shipped packer accepted.
+      const parsed = typeof value === "string" ? colorParser(value) : value;
+      // A size-3 slot then packs only RGB: `kind: "color"` always yields four
+      // channels, while the built-in `rgb()` packers emit three for a knob whose
+      // alpha carries no meaning. Truncating here is what lets the colour parse stay
+      // uniform while the BLOCK stays byte-identical to the shader's.
+      const channels = Array.isArray(parsed) && slot.size === 3 && parsed.length === 4 ? parsed.slice(0, 3) : parsed;
+      if (!Array.isArray(channels) || channels.length !== slot.size)
         throw new Error(`material "${material.id}": uniform "${slot.name}" declares size ${slot.size} but its value is ${JSON.stringify(value)} — expected an array of ${slot.size} numbers`);
-      for (const c of value) {
+      for (const c of channels) {
         if (!Number.isFinite(c))
           throw new Error(`material "${material.id}": uniform "${slot.name}" contains a non-finite component (${c})`);
         out.push(c);
@@ -370,6 +456,14 @@ export function packDeclaredUniforms(material, u) {
     }
   }
   return new Float32Array(out);
+}
+
+/** Pure. An angle (radians) as its unit direction [cos, sin] — the corkboard
+ *  family's lightVec. Loud on a non-finite angle, like every other slot. */
+function angleVector(raw, id, name) {
+  if (!Number.isFinite(raw))
+    throw new Error(`material "${id}": uniform "${name}" declares asVector but its angle is ${raw} — expected a finite number of radians`);
+  return [Math.cos(raw), Math.sin(raw)];
 }
 
 /** Pure. A world-px length in device px, loud when either factor is not finite. */

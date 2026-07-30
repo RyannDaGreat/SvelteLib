@@ -36,8 +36,19 @@ import {
   declaredUniformParams, packDeclaredUniforms, declaredSampleReach, declaredProxyBackdrop,
   materialDescriptor, setMaterialCompileProbe, setMaterialColorParser, shaderCompileProblem,
 } from "../core/material_plugins.js";
-import { getMaterial, materialIds, resetPluginMaterials, isBuiltinMaterialId } from "../render_gpu/skia/materials.js";
+import { getMaterial, materialIds, resetPluginMaterials, isBuiltinMaterialId, isBackdropMaterial } from "../render_gpu/skia/materials.js";
 import { GLASS_MATERIAL, GLASS_SKSL, GLASS_FILL_SKSL, GLASS_FILL_PARAMS, maxGlassDisplacement, glassUniformParams, packGlassMaterial, glassProxyBackdrop } from "../render_gpu/skia/glass_shader.js";
+// The MIGRATED materials' modules still export their descriptors — that is the
+// "stays exported as the regression reference" pattern, and these are the references.
+import { CORK_MATERIAL, TACK_MATERIAL } from "../render_gpu/skia/corkboard_shader.js";
+import { RAINY_WINDOW_MATERIAL } from "../render_gpu/skia/rainy_window_shader.js";
+// …and the ones that did NOT migrate, whose blocking hooks are pinned below.
+import { CRT_MATERIAL } from "../render_gpu/skia/crt_shader.js";
+import { COMIC_MATERIAL } from "../render_gpu/skia/comic_shader.js";
+import { FROSTED_MATERIAL } from "../render_gpu/skia/frosted_shader.js";
+import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
+import { setMaterialClock } from "../core/material_plugins.js";
+import { particleTime } from "../render_gpu/particle_clock.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { createRegistry } from "../core/registry.js";
 
@@ -49,6 +60,10 @@ function test(name, fn) {
 }
 
 setMaterialColorParser(parseColor);
+// The clock seam, for the `fromClock` uniform rainy_window declares. Installed here
+// because this suite loads material_plugins.js directly rather than through
+// core/builtin_plugin_assets.js, which is where the app installs it.
+setMaterialClock(particleTime);
 
 /** The shipped built-in glass material asset's source. */
 const GLASS_ASSET_SOURCE = readFileSync(new URL("../assets/builtin/library/liquid_glass.material.plugin.js", import.meta.url), "utf8");
@@ -327,6 +342,197 @@ test("GLASS REGRESSION: the declared proxyBackdrop equals the hook (the darkens-
   // The defect this exists to end: a DARK preset must yield a DARK overlay.
   const dark = d.proxyBackdrop(d.toUniformParams({ ...glassSweep()[0], tint: "rgba(18,18,26,0.62)" }));
   assert.ok(dark.tint[0] < 0.2 && dark.tint[3] > 0.5, "a dark glass preset must stand in DARK, not the shared white frost");
+});
+
+// ── 3b. THE SECOND-WAVE MIGRATIONS: corkboard + rainy_window ─────────────────
+//
+// The same regression glass gets, per material, against the descriptor its module
+// STILL EXPORTS (the "stays exported as the regression reference" pattern). Each
+// exercises a declarative hatch glass did not need, which is the point of migrating
+// more than one:
+//   · corkboard — a FOREGROUND material (backdrop:false), `scale` packed as a uniform
+//     in its own right, and `asVector` (an angle packed as [cos, sin]).
+//   · rainy_window — `fromClock`, the ONE ambient input a material may read.
+// The materials that did NOT migrate are recorded as blocked, with the exact hook, in
+// the BLOCKED section below — a test, not a comment, so a future attempt starts from
+// the real obstacle rather than rediscovering it.
+
+/** Loads a migrated library material through the REAL jail, as a descriptor. */
+function loadLibraryMaterial(file) {
+  resetPluginMaterials();
+  const source = readFileSync(new URL(`../assets/builtin/library/${file}`, import.meta.url), "utf8");
+  const plugin = loadPluginAsset(source, file, new Set());
+  assert.strictEqual(materialShapeProblem(plugin), null, `${file} must satisfy the material contract`);
+  return materialDescriptor(plugin, parseColor);
+}
+
+/**
+ * A parameter SWEEP over a material's OWN schema: its defaults, then every knob
+ * perturbed one at a time in a way appropriate to its kind. Derived from the schema
+ * rather than hand-listed, so a knob added to a material is swept without editing
+ * this file — the glass sweep's 216 cases were hand-built because glass's regression
+ * predates there being more than one migrated material to generalize over.
+ */
+function schemaSweep(fillParams) {
+  const defaults = Object.fromEntries(fillParams.map((r) => [r.name, r.default]));
+  const cases = [defaults];
+  for (const row of fillParams) {
+    if (row.kind === "number") cases.push({ ...defaults, [row.name]: (row.default ?? 0) + 0.37 });
+    if (row.kind === "angle") cases.push({ ...defaults, [row.name]: 33.3 }, { ...defaults, [row.name]: -117 });
+    if (row.kind === "boolean") cases.push({ ...defaults, [row.name]: !row.default });
+    if (row.kind === "color") cases.push({ ...defaults, [row.name]: "rgba(18,200,26,0.62)" });
+    if (row.kind === "select" && Array.isArray(row.options))
+      for (const o of row.options) cases.push({ ...defaults, [row.name]: o });
+  }
+  return cases;
+}
+
+/** Two regions and three scales — the geometry axis every packer reads. */
+const SWEEP_REGIONS = [
+  { cx: 100, cy: 80, halfW: 90, halfH: 60, cornerRadius: 0, angle: 0 },
+  { cx: -5, cy: 12, halfW: 220, halfH: 35, cornerRadius: 18, angle: 0.7 },
+];
+const SWEEP_SCALES = [0.5, 1, 2.75];
+
+/**
+ * THE per-material regression: SkSL byte-identical, and packed uniforms deep-equal to
+ * the shipped packer over the full sweep. Returns the comparison count so the suite
+ * can report the sweep size it actually ran (a sweep that silently shrank to one case
+ * would still pass every assertion).
+ */
+function assertMigrationParity(file, shipped) {
+  const d = loadLibraryMaterial(file);
+  assert.strictEqual(d.sksl, shipped.sksl, `${file}: sksl must be the shipped shader, byte for byte`);
+  assert.strictEqual(d.fillSksl ?? null, shipped.fillSksl ?? null, `${file}: fillSksl must be byte-identical too`);
+  assert.strictEqual(d.uniformFloats, shipped.uniformFloats, `${file}: the declared block must total the shipped float count`);
+  // The BACKDROP/FOREGROUND half is compared through isBackdropMaterial, not by the
+  // raw flag: absence and `true` both MEAN backdrop (materials.js: "absence of the
+  // flag defaults to true"), and materialDescriptor only carries the flag when it is
+  // false. Comparing the field would fail on a cosmetic difference while a genuine
+  // flip — the thing that would bind children to a foreground material, or starve a
+  // backdrop one — is exactly what this predicate catches.
+  assert.strictEqual(isBackdropMaterial(d), isBackdropMaterial(shipped), `${file}: the backdrop/foreground half must not flip`);
+  assert.strictEqual(d.fillParams.length, shipped.fillParams.length, `${file}: the knob schema must keep every row`);
+  let n = 0;
+  for (const region of SWEEP_REGIONS)
+    for (const scale of SWEEP_SCALES)
+      for (const p of schemaSweep(shipped.fillParams)) {
+        const uShipped = { ...region, scale, ...(shipped.toUniformParams ? shipped.toUniformParams(p) : p) };
+        const uPlugin = { ...region, scale, ...d.toUniformParams(p) };
+        assert.deepStrictEqual(
+          Array.from(d.pack(uPlugin)), Array.from(shipped.pack(uShipped)),
+          `${file}: packed uniforms differ at scale=${scale} ${JSON.stringify(p)}`,
+        );
+        n++;
+      }
+  return n;
+}
+
+test("CORKBOARD REGRESSION: byte-identical SkSL + packed uniforms over its schema sweep", () => {
+  const n = assertMigrationParity("corkboard.material.plugin.js", CORK_MATERIAL);
+  assert.strictEqual(n, 78, "the corkboard sweep is 13 param cases x 2 regions x 3 scales — a shrunk sweep still passes every assertion, so its SIZE is pinned");
+  console.log(`      (corkboard sweep: ${n} packed-uniform comparisons)`);
+});
+
+test("CORKBOARD: the FOREGROUND flag and the asVector light direction survive", () => {
+  const d = loadLibraryMaterial("corkboard.material.plugin.js");
+  assert.strictEqual(d.backdrop, false, "corkboard is a FOREGROUND material — it must bind no backdrop children");
+  // lightAngle packs as [cos, sin]: at 0 rad that is exactly [1, 0], which pins the
+  // convention rather than merely the parity (a swapped pair would still deep-equal
+  // the shipped packer if the shipped packer were also swapped).
+  const defaults = Object.fromEntries(CORK_MATERIAL.fillParams.map((r) => [r.name, r.default]));
+  const u = { ...SWEEP_REGIONS[0], scale: 1, ...d.toUniformParams({ ...defaults, lightAngle: 0 }) };
+  const packed = Array.from(d.pack(u));
+  assert.deepStrictEqual(packed.slice(-2), [1, 0], "an angle of 0 must pack as the unit direction [1, 0]");
+});
+
+test("RAINY_WINDOW REGRESSION: byte-identical SkSL + packed uniforms over its schema sweep", () => {
+  // The clock is FROZEN for the comparison so both sides read the same instant —
+  // otherwise the shipped hook and the declared block could sample different times
+  // and the test would flake rather than measure.
+  setParticleTimeOverride(7.25);
+  try {
+    const n = assertMigrationParity("rainy_window.material.plugin.js", RAINY_WINDOW_MATERIAL);
+    assert.strictEqual(n, 84, "the rainy_window sweep is 14 param cases x 2 regions x 3 scales — pinned for the same reason");
+    console.log(`      (rainy_window sweep: ${n} packed-uniform comparisons)`);
+  } finally {
+    setParticleTimeOverride(null);
+  }
+});
+
+test("RAINY_WINDOW: `fromClock` reads the ONE seamed clock, and Δt = 0 is byte-identical", () => {
+  const d = loadLibraryMaterial("rainy_window.material.plugin.js");
+  assert.strictEqual(d.animated, true, "an animated material must declare it, or the presenter stops repainting it");
+  const defaults = Object.fromEntries(RAINY_WINDOW_MATERIAL.fillParams.map((r) => [r.name, r.default]));
+  const packAt = (t) => {
+    setParticleTimeOverride(t);
+    try { return Array.from(d.pack({ ...SWEEP_REGIONS[0], scale: 1, ...d.toUniformParams(defaults) })); }
+    finally { setParticleTimeOverride(null); }
+  };
+  // THE DEFINING TEST (CLAUDE.md): Δt = 0 ⟹ recordable state UNCHANGED. Twice at the
+  // same instant must be byte-identical; a different instant must actually differ, or
+  // the clock is not wired and the material would export as a FROZEN picture.
+  assert.deepStrictEqual(packAt(3), packAt(3), "Δt = 0 must produce identical uniforms");
+  assert.notDeepStrictEqual(packAt(3), packAt(9), "a different presentation time must move the clock uniform");
+  // …and the moving slot is the CLOCK's, not some other knob's.
+  const a = packAt(3), b = packAt(9);
+  const moved = a.map((v, i) => (Object.is(v, b[i]) ? null : i)).filter((i) => i !== null);
+  assert.deepStrictEqual(moved, [6], "exactly the `time` slot (index 6) may move with the clock");
+  assert.strictEqual(a[6], 3, "the packed clock uniform must be the seamed presentation time");
+});
+
+// ── 3c. THE MATERIALS THAT DID NOT MIGRATE, AND THE EXACT HOOK THAT BLOCKED ──
+//
+// Recorded as ASSERTIONS rather than prose so they cannot rot: each one pins the
+// property that makes the material inexpressible as DATA today. If a future contract
+// extension makes one expressible, its assertion here fails and says so — which is the
+// signal to migrate it, not to delete the test.
+
+test("BLOCKED — crt: maxSampleReach is a SUM of geometry terms, not {product, times}", () => {
+  const u = { halfW: 120, halfH: 80, scale: 1, curvature: 0.15, convergence: 0.06, sourceTVL: 480 };
+  const reach = CRT_MATERIAL.maxSampleReach(u);
+  // Not a product: zeroing curvature must NOT zero the reach (the convergence and
+  // band-limit terms remain), which is precisely what a {product} form cannot express.
+  const noCurve = CRT_MATERIAL.maxSampleReach({ ...u, curvature: 0 });
+  assert.ok(noCurve > 0, "the reach is a SUM — zeroing one term must leave the others");
+  assert.ok(reach > noCurve, "curvature must still contribute");
+  // And it is LOAD-BEARING: dropping it falls back to a full-surface backdrop.
+  assert.ok(isBuiltinMaterialId("crt"), "crt must stay BUILT-IN while its reach is inexpressible");
+});
+
+test("BLOCKED — comic: its cell size is a CONDITIONAL world/device lock with a floor", () => {
+  const defaults = Object.fromEntries(COMIC_MATERIAL.fillParams.map((r) => [r.name, r.default]));
+  const at = (worldLocked, scale) => {
+    const u = { ...SWEEP_REGIONS[0], scale, ...COMIC_MATERIAL.toUniformParams({ ...defaults, worldLocked }) };
+    return Array.from(COMIC_MATERIAL.pack(u))[7]; // the cell-size slot
+  };
+  // `scaleByDevice` is unconditional multiplication; comic's is a BRANCH on a knob.
+  assert.strictEqual(at(true, 2), at(true, 1) * 2, "world-locked scales with the device");
+  assert.strictEqual(at(false, 2), at(false, 1), "screen-locked does NOT — no declared slot can say that");
+  assert.ok(isBuiltinMaterialId("comic"));
+});
+
+test("BLOCKED — corkboardThumbtack: its id is camelCase, which MATERIAL_ID_RE refuses", () => {
+  assert.strictEqual(TACK_MATERIAL.id, "corkboardThumbtack");
+  assert.match(
+    materialShapeProblem({ ...MINIMAL, id: TACK_MATERIAL.id }),
+    /must be a lower_snake_case identifier/,
+  );
+  // Renaming it would orphan the material paint of every document that stores the id,
+  // so it stays built-in until a migration carries a rename with it.
+  assert.ok(isBuiltinMaterialId("corkboardThumbtack"));
+});
+
+test("BLOCKED — frosted: proxyBackdrop SOLVES for a colour, far beyond {fromParam}", () => {
+  // {fromParam} returns a knob's colour verbatim. Frosted's hook fits an overlay to a
+  // transmission spectrum, so its result is NOT any of its params — the property that
+  // makes it inexpressible, and the reason the hook is load-bearing (a darkening
+  // preset must not stand in lighter).
+  const dark = FROSTED_MATERIAL.proxyBackdrop({ frost: 0.02, tint: "rgb(78,82,96)", absorb: 0.88 });
+  assert.ok(dark.tint[3] > 0.5, "a smoked preset must stand in DARK");
+  const tintRgb = parseColor("rgb(78,82,96)");
+  assert.notDeepStrictEqual(dark.tint.slice(0, 3), tintRgb.slice(0, 3), "the overlay is SOLVED, not copied from the knob");
+  assert.ok(isBuiltinMaterialId("frosted"));
 });
 
 // ── 4. THE DECLARED-DATA HELPERS, DIRECTLY ───────────────────────────────────

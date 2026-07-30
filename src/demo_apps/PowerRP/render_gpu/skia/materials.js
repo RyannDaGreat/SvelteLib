@@ -39,9 +39,12 @@ import { parseColor } from "../ir.js";
 import { CRT_MATERIAL } from "./crt_shader.js";
 import { METABALLS_MATERIAL } from "./metaballs_shader.js";
 import { FROSTED_MATERIAL } from "./frosted_shader.js";
-import { CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL } from "./corkboard_shader.js";
+// CORK_MATERIAL is NOT imported here — it MIGRATED to a material plugin asset, like
+// glass. Its module still owns the SkSL and still exports the descriptor as the
+// regression reference; only NOTE and TACK remain built-in (see BUILTIN_MATERIALS).
+import { NOTE_MATERIAL, TACK_MATERIAL } from "./corkboard_shader.js";
 import { RAYCAST_DITHER_MATERIAL } from "./raycast_dither_shader.js";
-import { RAINY_WINDOW_MATERIAL } from "./rainy_window_shader.js";
+// RAINY_WINDOW_MATERIAL is NOT imported here either — same migration.
 // The `sky*` archetype — physically-based sky family (generative foreground
 // materials that INTERACT via the derive-time sibling query, core/derive.js).
 import { SKY_MATERIAL } from "./sky_shader.js";
@@ -84,15 +87,34 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     own IR `op` (magnifyBackdrop) + dedicated handler (it samples/re-scales the
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
 // Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
-// GLASS IS DELIBERATELY ABSENT from this list. Liquid Glass has MIGRATED to a
-// plugin asset (assets/builtin/library/liquid_glass.material.plugin.js) — it is the
-// proof of the material-plugin contract, so it must register the way every other
-// material plugin does rather than keeping a private back door. GLASS_MATERIAL is
-// still exported by glass_shader.js and is still THE reference the regression test
-// compares the plugin against; it is simply no longer the thing the registry serves.
+// THREE MATERIALS ARE DELIBERATELY ABSENT from this list — glass, corkboard and
+// rainy_window have MIGRATED to plugin assets (assets/builtin/library/*.material.plugin.js).
+// They are the proof of the material-plugin contract, so they must register the way
+// every other material plugin does rather than keeping a private back door. Each one's
+// module still exports its descriptor (GLASS_MATERIAL, CORK_MATERIAL,
+// RAINY_WINDOW_MATERIAL) and that export is still THE reference
+// tests/material_plugin_test.js compares the plugin against, byte for byte; it is
+// simply no longer the thing the registry serves.
+//
+// WHY THESE AND NOT THE OTHERS, so the boundary is legible rather than folkloric. A
+// material can move when EVERY hook it declares is expressible as DATA (see
+// core/material_plugins.js). The ones that stayed each hit a specific, recorded wall:
+//   · crt — maxSampleReach is barrel + convergence + a band-limit sigma, i.e. a SUM of
+//     geometry-derived terms with hypot/squares/a floor. {product, times,
+//     plusFractionOf} cannot say that, and dropping the declaration is not cosmetic:
+//     measured 8.68x more offscreen backdrop pixels on a 240x160 panel over 960x540.
+//     Encoding it would mean inventing an expression DSL for one material, which is
+//     the jailed-JS hazard the data-only rule exists to avoid.
+//   · comic — its cell size is lockedLengthPx(pitch, scale, worldLocked, MIN_CELL_PX):
+//     a CONDITIONAL world/device lock with a minimum clamp, not a plain scaleByDevice.
+//   · corkboardThumbtack — its id is camelCase, which MATERIAL_ID_RE refuses; renaming
+//     it would silently orphan the material paint of every document that stores it.
+//   · frosted — proxyBackdrop SOLVES for an overlay colour (a transmission-spectrum
+//     fit), far beyond {fromParam}, and its blocked hook is load-bearing: without it a
+//     darkening preset stands in LIGHTER, the exact defect the hook exists to end.
 // The legacy `glassBackdrop` op (the glass WIDGET, plugins/demo/glass.js) never went
 // through this registry at all and is untouched either way.
-const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL];
+const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL];
 
 const MATERIALS = Object.fromEntries(BUILTIN_MATERIALS.map((m) => [m.id, m]));
 
@@ -275,7 +297,12 @@ function materialEntryForPaint(id) {
  * @param {object|string|null|undefined} paint - a fill/stroke/background paint value
  * @returns {boolean}
  *
- * @example paintIsAnimated({type: "material", material: {id: "rainy_window", params: {}}}) // true
+ * The animated example names `glitch` rather than the rainy_window that motivated
+ * this seam, because rainy_window MIGRATED to a plugin asset: it is only in the
+ * registry after the library registers, and a doctest runs against the bare module.
+ * tests/animated_paint_test.js keeps the rainy_window case, with the library loaded.
+ *
+ * @example paintIsAnimated({type: "material", material: {id: "glitch", params: {}}}) // true
  * @example paintIsAnimated({type: "material", material: {id: "wavy", params: {boil: 2}}}) // true
  * @example paintIsAnimated({type: "material", material: {id: "wavy", params: {}}}) // false
  * @example paintIsAnimated("#ff0000") // false
