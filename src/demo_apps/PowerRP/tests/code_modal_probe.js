@@ -48,9 +48,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Known demo-fixture + software-renderer boot noise (the colorfield/material probe
 // allowlist) plus Monaco's worker/CSP chatter, which is not this suite's to own.
 const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i, /no.*adapter|adapters/i, /monaco/i, /worker/i, /Could not create web worker/i,
-  // The pie/quadrant demo presets contain elliptic arcs; mermaid_vector cannot
-  // flatten an "A" arc to PDF-safe vector, so it rasterizes and REPORTS that
-  // loudly (the documented hybrid-rule fallback — a real diagram still draws).
+  // Arcs in the pie/quadrant presets now bake to cubics (core/svg_paths
+  // arcToCubics), so these two entries normally never fire; they stay for the
+  // remaining loud unflattenable cases (e.g. crammed arc-flag syntax).
   /mermaid_vector.*could not be baked/i, /transformPathD.*unsupported/i];
 const isBootNoise = (s) => IGNORE_BOOT.some((re) => re.test(s));
 

@@ -101,12 +101,22 @@ if [ -n "$TLS_CERT" ]; then
   TLS_KEY="$(cd -- "$(dirname -- "$TLS_KEY")" && pwd)/$(basename -- "$TLS_KEY")"
 fi
 
-# Frontend deps (vite, svelte, @sveltejs/vite-plugin-svelte): a fresh — OR
-# PARTIAL — node_modules breaks Vite. Install non-interactively whenever the
-# local vite binary OR the svelte plugin is missing (a half-populated
-# node_modules left by an aborted `npx vite` is exactly what bit the annotator).
-if [ ! -x "${ROOT}/node_modules/.bin/vite" ] \
-   || [ ! -d "${ROOT}/node_modules/@sveltejs/vite-plugin-svelte" ]; then
+# Frontend deps: a fresh — OR PARTIAL, OR STALE — node_modules breaks Vite with
+# per-module "Failed to resolve import" errors. This has bitten twice: a
+# half-populated node_modules from an aborted `npx vite` (the annotator), and a
+# node_modules predating six newer package.json deps (qrcode/monaco/canvaskit/…,
+# 2026-07-29). A two-package spot check missed the second one, so the gate is now
+# exhaustive: EVERY package.json dependency must be installed, plus the vite
+# binary itself. Any gap → announce it and npm install non-interactively.
+MISSING_DEPS="$(cd "${ROOT}" && node -e '
+  const fs = require("fs");
+  const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
+  const missing = deps.filter((d) => !fs.existsSync(`node_modules/${d}/package.json`));
+  process.stdout.write(missing.join(" "));
+')"
+if [ ! -x "${ROOT}/node_modules/.bin/vite" ] || [ -n "$MISSING_DEPS" ]; then
+  [ -n "$MISSING_DEPS" ] && echo "node_modules is missing: ${MISSING_DEPS}"
   echo "Installing frontend deps (npm install in ${ROOT}) …"
   ( cd "${ROOT}" && npm install --no-fund --no-audit )
 fi

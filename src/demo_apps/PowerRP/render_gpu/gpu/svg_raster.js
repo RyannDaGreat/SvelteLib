@@ -34,8 +34,8 @@
  * A malformed SVG (not well-formed XML, or no root <svg>) THROWS from
  * `parseSvgToTree`; the widget catches it and draws a loud in-widget error
  * affordance (plugins/svg.js, the latex errorAffordance precedent). Punted
- * features (arcs, radial/userSpace gradients, masks/clip/filters, <text>/<use>,
- * inline style=) are reported ONCE via core/report.reportOnce (the flatten
+ * features (radial/userSpace gradients, masks/clip/filters, <text>/<use>,
+ * inline style=; arcs bake to cubics since core/svg_paths arcToCubics) are reported ONCE via core/report.reportOnce (the flatten
  * collects them as `warnings`; this adapter surfaces them) — never a silent blank.
  */
 
@@ -264,7 +264,7 @@ export function svgToIR(svgString, boxW, boxH, opts = {}) {
 /**
  * Command (near-pure: memoized parse + reportOnce on punts). svgToIR's body, also
  * handing back the flatten WARNINGS so a caller can surface them IN-APP: an
- * unsupported feature (mask, clip-path, filter, inline style=, an arc, a radial
+ * unsupported feature (mask, clip-path, filter, inline style=, a radial
  * gradient, <text>/<use>) draws DEGRADED art, and a console.error alone lets that
  * pass for correct — the SVG widget turns these into its notice band
  * (plugins/svg.js warningAffordance). The `{value, reports}` shape mirrors

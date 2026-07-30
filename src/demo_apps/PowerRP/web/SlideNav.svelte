@@ -38,6 +38,7 @@
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
+  import { onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
   import { makeSerialSource, thumbnailDirtyKeys, makeIdleThumbScheduler, browserTickDeps, thumbRenderPaused } from "./thumbSchedule.js";
 
   let { app } = $props();
@@ -63,6 +64,9 @@
   // poster refreshes on the next commit).
   let imageEpoch = $state(0);
   $effect(() => onImageLoad(() => (imageEpoch += 1)));
+  // URL-sourced SVG text lands the same way (svg widget, url mode) — fold it
+  // into the same epoch so thumbnails pick the vector art up when it arrives.
+  $effect(() => onSvgSourceLoad(() => (imageEpoch += 1)));
 
   // Per-type icon for the between-rows slice (iconify only — manifest rule).
   // A third type adds one entry; unknown types fall back to a generic glyph.

@@ -43,13 +43,16 @@
  * fill-opacity/stroke-opacity/opacity/fill-rule, fill|stroke = "none"/currentColor
  * (→ widget ink)/hex/rgb()/url(#id) → an objectBoundingBox linearGradient (mapped
  * onto ir.js's existing gradient Paint seam — the Skia path op fills it via the
- * path's own getBounds). Path grammar M L H V C S Q T Z (abs+rel, implicit
- * repeats, S/T smoothing). PUNTED, loudly (a `warnings` string naming the FEATURE
- * and the ELEMENT — reported to the console AND drawn as the SVG widget's
- * in-widget notice band, never silent): arcs (`A` — transformPathD throws;
- * PDF-unsafe anyway), radial/userSpaceOnUse gradients (→ first-stop solid),
- * masks/clip-paths/filters (rendered UNMASKED), <use>/<image>/<text>, and inline
- * `style=` (attributes only).
+ * path's own getBounds). Path grammar M L H V C S Q T Z A (abs+rel, implicit
+ * repeats, S/T smoothing; `A` arcs are CONVERTED to cubic Béziers at bake time —
+ * arcToCubics — so downstream stays PDF-safe; real-world icon sets lean on arcs,
+ * which is why they are supported rather than punted). PUNTED, loudly (a
+ * `warnings` string naming the FEATURE and the ELEMENT — reported to the console
+ * AND drawn as the SVG widget's in-widget notice band, never silent):
+ * radial/userSpaceOnUse gradients (→ first-stop solid), masks/clip-paths/filters
+ * (rendered UNMASKED), <use>/<image>/<text>, inline `style=` (attributes only),
+ * and crammed arc-flag syntax ("A20 20 0 0120 0" — flags must be their own
+ * tokens; transformPathD throws rather than misreading geometry).
  */
 
 import { num } from "./shapes.js";
@@ -175,24 +178,28 @@ export function transformFnMatrix(name, a) {
  * Pure function. Applies an affine matrix to an SVG path `d` string, returning a
  * new ABSOLUTE-coordinate `d`. Supersedes render_gpu/gpu/latex_raster.js's
  * MathJax-only `transformSvgPathD` (which throws on `C`): this handles the full
- * PDF-safe grammar `M L H V C S Q T Z`, ABSOLUTE and RELATIVE (lowercase),
- * implicit coordinate repeats, and S/T smooth-curve reflection. Because a general
+ * grammar `M L H V C S Q T Z A`, ABSOLUTE and RELATIVE (lowercase), implicit
+ * coordinate repeats, and S/T smooth-curve reflection. Because a general
  * matrix rotates axes, H/V become L (both endpoints transform like any point).
- * `A` (elliptic arc) THROWS — arcs are PDF-unsafe (pdf_backend rejects them) and
- * the shape converters here never emit one, so a baked arc is an unsupported
- * user SVG, failed loudly (no silent geometry drop).
+ * `A` (elliptic arc) is CONVERTED to cubic Béziers (arcToCubics) BEFORE the
+ * matrix is applied — an affine maps a Bézier to a Bézier but not an arc to an
+ * arc, and pdf_backend rejects arcs, so the output `d` never contains one.
+ * Arc FLAGS must be standalone 0/1 tokens; the crammed form ("0120" for
+ * "0 1 20") THROWS loudly rather than misreading geometry.
  *
  * Args:
- *   d (string): SVG path data (any M L H V C S Q T Z, abs or rel)
+ *   d (string): SVG path data (any M L H V C S Q T Z A, abs or rel)
  *   m ({a,b,c,d,e,f}): the affine matrix to bake in
  *
  * Returns:
- *   string: the transformed ABSOLUTE-coordinate `d`
+ *   string: the transformed ABSOLUTE-coordinate `d` (arc-free)
  *
  * @example transformPathD("M0 0L10 0", {a: 2, b: 0, c: 0, d: 2, e: 5, f: 5}) // "M5 5L25 5"
  * @example transformPathD("m1 1 l2 0", {a: 1, b: 0, c: 0, d: 1, e: 0, f: 0}) // "M1 1L3 1" (relative resolved to absolute)
  * @example transformPathD("M0 0H10", {a: 1, b: 0, c: 0, d: -1, e: 0, f: 100}) // "M0 100L10 100" (y-flip: H → L)
  * @example transformPathD("M0 0c1 1 2 1 3 0", {a: 1, b: 0, c: 0, d: 1, e: 0, f: 0}) // "M0 0C1 1 2 1 3 0" (relative cubic)
+ * @example transformPathD("M0 0A5 5 0 0 1 10 0", matIdentity()).includes("A") // false (arc → cubics)
+ * @example transformPathD("M0 0A0 5 0 0 1 10 0", matIdentity()) // "M0 0L10 0" (zero radius → line, per spec)
  */
 export function transformPathD(d, m) {
   const px = (x, y) => m.a * x + m.c * y + m.e;
@@ -259,7 +266,21 @@ export function transformPathD(d, m) {
     } else if (C === "Z") {
       out.push("Z"); cx = sx; cy = sy; pcx = pcy = pqx = pqy = null;
     } else if (C === "A") {
-      throw new Error(`transformPathD: elliptic arc "A" is unsupported (PDF-unsafe; the SVG flatten does not emit arcs)`);
+      while (typeof toks[i] === "number") {
+        const arx = toks[i++], ary = toks[i++], phi = toks[i++];
+        const fa = toks[i++], fs = toks[i++];
+        if ((fa !== 0 && fa !== 1) || (fs !== 0 && fs !== 1))
+          throw new Error(`transformPathD: arc flags must be standalone 0/1 tokens (crammed flag syntax is unsupported), got large-arc=${fa} sweep=${fs}`);
+        const ex = toks[i++] + rx0(rel, cx), ey = toks[i++] + rx0(rel, cy);
+        if (arx === 0 || ary === 0) {
+          // Spec (F.6.6): a zero radius degrades the arc to a straight line.
+          out.push(`L${P(ex, ey)}`);
+        } else {
+          for (const s of arcToCubics(cx, cy, arx, ary, phi, fa, fs, ex, ey))
+            out.push(`C${P(s[0], s[1])} ${P(s[2], s[3])} ${P(s[4], s[5])}`);
+        }
+        cx = ex; cy = ey; pcx = pcy = pqx = pqy = null;
+      }
     } else {
       throw new Error(`transformPathD: unknown path command "${cmd}"`);
     }
@@ -294,6 +315,93 @@ export function tokenizePathD(d) {
     else toks.push(Number(match[2]));
   }
   return toks;
+}
+
+/**
+ * Pure function. One SVG elliptic-arc segment → cubic Bézier segments, per the
+ * SVG spec's endpoint→center parameterization (appendix F.6) split into ≤90°
+ * slices, each approximated by one cubic whose control arms are 4/3·tan(δ/4)
+ * along the ellipse tangents (the same on-curve-midpoint criterion as KAPPA,
+ * which is this formula at δ = 90°). Max radial error of a 90° slice is ~2.7e-4
+ * of the radius — invisible at any zoom the app reaches.
+ *
+ * Degenerate inputs follow the spec: identical endpoints → no segments (the arc
+ * is omitted); zero radii are the CALLER's line-fallback (transformPathD), so
+ * rx/ry here are assumed non-zero and are |abs|'d and inflated when too small
+ * to span the endpoints (F.6.6).
+ *
+ * Args:
+ *   x1, y1 (number): segment start (absolute)
+ *   rx, ry (number): ellipse radii (non-zero; sign ignored)
+ *   phiDeg (number): ellipse x-axis rotation, degrees
+ *   largeArc (0|1): pick the >180° arc of the two candidates
+ *   sweep (0|1): 1 = positive-angle (clockwise in y-down SVG space) direction
+ *   x2, y2 (number): segment end (absolute)
+ *
+ * Returns:
+ *   number[][]: cubic segments [c1x, c1y, c2x, c2y, ex, ey], start point implied
+ *
+ * @example arcToCubics(0, 0, 5, 5, 0, 0, 1, 10, 0).length // 2 (a semicircle → two 90° slices)
+ * @example arcToCubics(0, 0, 5, 5, 0, 0, 1, 10, 0)[1].slice(4) // [10, 0] (lands exactly on the endpoint)
+ * @example arcToCubics(3, 4, 5, 5, 0, 0, 1, 3, 4) // [] (identical endpoints → arc omitted per spec)
+ * @example arcToCubics(0, 0, 5, 5, 0, 1, 1, 5, 5).length // 3 (large-arc 270° → three slices)
+ */
+export function arcToCubics(x1, y1, rx, ry, phiDeg, largeArc, sweep, x2, y2) {
+  if (x1 === x2 && y1 === y2) return [];
+  rx = Math.abs(rx); ry = Math.abs(ry);
+  const phi = (phiDeg * Math.PI) / 180;
+  const cosP = Math.cos(phi), sinP = Math.sin(phi);
+
+  // F.6.5 step 1: midpoint-difference vector in the ellipse's axis-aligned frame.
+  const dx = (x1 - x2) / 2, dy = (y1 - y2) / 2;
+  const x1p = cosP * dx + sinP * dy;
+  const y1p = -sinP * dx + cosP * dy;
+
+  // F.6.6 step 3: inflate radii that cannot span the endpoints.
+  const lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+  if (lam > 1) { const s = Math.sqrt(lam); rx *= s; ry *= s; }
+
+  // F.6.5 step 2: center in the primed frame (sign picks the arc pair).
+  const num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+  const den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+  const coef = (largeArc !== sweep ? 1 : -1) * Math.sqrt(Math.max(0, num / den));
+  const cxp = coef * (rx * y1p) / ry;
+  const cyp = coef * (-ry * x1p) / rx;
+
+  // F.6.5 step 3: center back in user space.
+  const cx = cosP * cxp - sinP * cyp + (x1 + x2) / 2;
+  const cy = sinP * cxp + cosP * cyp + (y1 + y2) / 2;
+
+  // F.6.5 steps 4-6: start angle and sweep extent on the unit circle.
+  const ang = (ux, uy, vx, vy) => {
+    const sign = ux * vy - uy * vx < 0 ? -1 : 1;
+    const dot = ux * vx + uy * vy;
+    return sign * Math.acos(Math.max(-1, Math.min(1, dot / (Math.hypot(ux, uy) * Math.hypot(vx, vy)))));
+  };
+  const th1 = ang(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+  let dth = ang((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+  if (!sweep && dth > 0) dth -= 2 * Math.PI;
+  if (sweep && dth < 0) dth += 2 * Math.PI;
+
+  // Ellipse point + tangent at parameter θ (user space).
+  const E = (t) => [cx + rx * cosP * Math.cos(t) - ry * sinP * Math.sin(t),
+                    cy + rx * sinP * Math.cos(t) + ry * cosP * Math.sin(t)];
+  const dE = (t) => [-rx * cosP * Math.sin(t) - ry * sinP * Math.cos(t),
+                     -rx * sinP * Math.sin(t) + ry * cosP * Math.cos(t)];
+
+  const n = Math.max(1, Math.ceil(Math.abs(dth) / (Math.PI / 2)));
+  const delta = dth / n;
+  const alpha = (4 / 3) * Math.tan(delta / 4);
+  const segs = [];
+  for (let k = 0; k < n; k++) {
+    const ta = th1 + k * delta, tb = ta + delta;
+    const [ax, ay] = E(ta), [bx, by] = E(tb);
+    const [dax, day] = dE(ta), [dbx, dby] = dE(tb);
+    // The final slice lands EXACTLY on the authored endpoint (no float drift).
+    const [fx, fy] = k === n - 1 ? [x2, y2] : [bx, by];
+    segs.push([ax + alpha * dax, ay + alpha * day, bx - alpha * dbx, by - alpha * dby, fx, fy]);
+  }
+  return segs;
 }
 
 // ── shape → path-data converters (everything becomes ONE `d` for the path op) ──
@@ -665,7 +773,10 @@ function walkSvgNode(node, parentCTM, inherited, ctx, ops, isRoot) {
     ctx.warnings.add(`svg: <${tag || "?"}> is unsupported in v1 (skipped)`);
     return;
   }
-  const d = matIsIdentity(ctm) ? d0 : transformPathD(d0, ctm);
+  // Identity CTM skips the coordinate bake — EXCEPT when the path contains arc
+  // commands, which must still be rewritten to cubics ('A'/'a' letters can only
+  // be commands in path data, so the regex is a precise arc detector).
+  const d = matIsIdentity(ctm) && !/[Aa]/.test(d0) ? d0 : transformPathD(d0, ctm);
   const fill = foldPaintAlpha(resolvePaint(paint.fill, ctx.ink, ctx.gradients, ctx.warnings), paint.fillOpacity);
   const stroke = foldPaintAlpha(resolvePaint(paint.stroke, ctx.ink, ctx.gradients, ctx.warnings), paint.strokeOpacity);
   const strokeWidth = (Number.isFinite(paint.strokeWidth) ? paint.strokeWidth : 1) * matScale(ctm) * ctx.boxScale;

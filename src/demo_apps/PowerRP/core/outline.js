@@ -881,34 +881,52 @@ export function bboxFitSubpaths(subpaths, w, h, pad = 0) {
  * Args:
  *   x0, y0 (number): start point
  *   x1, y1 (number): end point
- *   elbow (number): 0..1, the mid-segment's position along the x-span
+ *   elbow (number): 0..1, the mid-segment's position along the endpoint span
+ *   orient ("hvh"|"vhv"): leg order — "hvh" (default, the PPT elbow) starts
+ *     and ends HORIZONTAL with a vertical middle leg; "vhv" starts and ends
+ *     VERTICAL with a horizontal middle leg (the flowchart TREE-BRANCH route:
+ *     trunk down, rail across, drop into the target's top anchor)
+ *   bulge (number): signed px OFFSET added to the middle leg's position
+ *     beyond the span-relative `elbow` placement. THE LOOP ENABLER: two
+ *     endpoints with a zero span (mr→mr, ml→ml — a feedback loop between two
+ *     stacked boxes) collapse the elbow to a straight line for every t, and
+ *     only an absolute offset can push the middle leg OUT of the boxes
  *
  * Returns:
- *   number[][]: [[x0,y0], [mx,y0], [mx,y1], [x1,y1]] — an OPEN polyline (not
- *     a closed outline; pass directly to render_gpu/ir.js's polyline())
+ *   number[][]: 4 points, an OPEN polyline (not a closed outline; pass
+ *     directly to render_gpu/ir.js's polyline())
  *
  * @example elbowRoute({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5}) // [[0, 0], [50, 0], [50, 50], [100, 50]]
  * @example elbowRoute({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0}) // [[0, 0], [0, 0], [0, 50], [100, 50]] (flush at the start — a valid degenerate L)
  * @example elbowRoute({x0: 0, y0: 20, x1: 100, y1: 20, elbow: 0.5}) // [[0, 20], [50, 20], [50, 20], [100, 20]] (level span: the "vertical" run has zero length — still a straight line)
+ * @example elbowRoute({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5, orient: "vhv"}) // [[0, 0], [0, 25], [100, 25], [100, 50]] (tree branch: down, across, down)
+ * @example elbowRoute({x0: 200, y0: 0, x1: 200, y1: 100, elbow: 0.5, bulge: 40}) // [[200, 0], [240, 0], [240, 100], [200, 100]] (zero x-span + bulge = a rectangular loop)
  */
-export function elbowRoute({ x0, y0, x1, y1, elbow }) {
+export function elbowRoute({ x0, y0, x1, y1, elbow, orient = "hvh", bulge = 0 }) {
   const t = Math.max(0, Math.min(elbow, 1));
-  const mx = x0 + (x1 - x0) * t;
+  if (orient === "vhv") {
+    const my = y0 + (y1 - y0) * t + bulge;
+    return [[x0, y0], [x0, my], [x1, my], [x1, y1]];
+  }
+  const mx = x0 + (x1 - x0) * t + bulge;
   return [[x0, y0], [mx, y0], [mx, y1], [x1, y1]];
 }
 
 /**
- * Pure function. The midpoint of an H-V-H elbow route's VERTICAL segment (the
- * elbow's ONE modifier point sits here — the manifest's "yellow square on the
- * elbow"): the mid-segment's x (from elbowRoute) at the vertical run's own
- * midpoint y, so the handle sits centered on the segment it controls
- * regardless of how far apart y0/y1 are.
+ * Pure function. The midpoint of an elbow route's MIDDLE segment (the elbow's
+ * ONE modifier point sits here — the manifest's "yellow square on the
+ * elbow"): the middle leg's own coordinate (from elbowRoute, bulge included)
+ * at the leg's midpoint along its length, so the handle sits centered on the
+ * segment it controls regardless of how far apart the endpoints are.
  *
  * @example elbowHandle({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5}) // {x: 50, y: 25}
+ * @example elbowHandle({x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5, orient: "vhv"}) // {x: 50, y: 25}
+ * @example elbowHandle({x0: 200, y0: 0, x1: 200, y1: 100, elbow: 0.5, bulge: 40}) // {x: 240, y: 50} (the handle rides the bulged leg)
  */
-export function elbowHandle({ x0, y0, x1, y1, elbow }) {
+export function elbowHandle({ x0, y0, x1, y1, elbow, orient = "hvh", bulge = 0 }) {
   const t = Math.max(0, Math.min(elbow, 1));
-  return { x: x0 + (x1 - x0) * t, y: (y0 + y1) / 2 };
+  if (orient === "vhv") return { x: (x0 + x1) / 2, y: y0 + (y1 - y0) * t + bulge };
+  return { x: x0 + (x1 - x0) * t + bulge, y: (y0 + y1) / 2 };
 }
 
 /**

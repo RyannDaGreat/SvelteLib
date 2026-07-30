@@ -118,6 +118,13 @@ export const THEMES = [
   { id: "rosepine", title: "Rosé Pine" },
   { id: "monokai", title: "Monokai" },
   { id: "synthwave", title: "Synthwave '84" },
+  // Material set (user: "get more creative … every color theme so far has just
+  // been dark buttons on a different tint") — themes that restructure the
+  // chrome, not just re-tint it: Blueprint draws it as line-work, Sunrise and
+  // Desert are LIGHT (grading-atmospheric and dry-mineral respectively).
+  { id: "blueprint", title: "Blueprint" },
+  { id: "sunrise", title: "Sunrise" },
+  { id: "desert", title: "Desert" },
 ];
 
 /**

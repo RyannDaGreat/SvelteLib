@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import { elbowArrowPlugin } from "../plugins/elbow_arrow.js";
+import { elbowArrowPlugin, elbowArrowInkRect } from "../plugins/elbow_arrow.js";
 import { curvedArrowPlugin } from "../plugins/curved_arrow.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { arrowPlugin } from "../plugins/arrow.js";
@@ -99,6 +99,37 @@ test("elbowArrowPlugin.modifierPoints: the CONSTRAINT clamps to [0, 1] beyond th
   const mp = elbowArrowPlugin.modifierPoints(state)[0];
   approx(modifierWrite(mp, state, { x: state.from.x - 500, y: 0 }).elbow, 0);
   approx(modifierWrite(mp, state, { x: state.to.x + 500, y: 0 }).elbow, 1);
+});
+
+test("elbowArrowPlugin orient 'vhv': the route starts and ends VERTICAL (tree branch)", () => {
+  const s = { ...elbowArrowPlugin.defaults, from: { x: 100, y: 0 }, to: { x: 300, y: 200 }, orient: "vhv", elbow: 0.5 };
+  const cmds = elbowArrowPlugin.emit(s);
+  const pts = cmds[0].points;
+  // First leg vertical (x constant), last leg vertical too.
+  assert.equal(pts[0][0], pts[1][0], "first leg is vertical");
+  assert.equal(pts[2][0], pts[3][0], "last leg is vertical");
+});
+
+test("elbowArrowPlugin bulge: a zero-span mr→mr loop bows OUT instead of collapsing", () => {
+  // Both endpoints on one vertical line — the crop-#4/#5 failure class: every
+  // `elbow` value collapses the route to a straight line down the box edges.
+  const flat = elbowArrowPlugin.emit({ ...elbowArrowPlugin.defaults, from: { x: 500, y: 100 }, to: { x: 500, y: 300 } });
+  assert.ok(flat[0].points.every(([x]) => x === 500), "without bulge the route is a straight line");
+  const looped = elbowArrowPlugin.emit({ ...elbowArrowPlugin.defaults, from: { x: 500, y: 100 }, to: { x: 500, y: 300 }, bulge: 55 });
+  const midXs = looped[0].points.slice(1, 3).map(([x]) => x);
+  assert.deepEqual(midXs, [555, 555], "bulge pushes the middle leg 55px out");
+});
+
+test("elbowArrowPlugin bulge: the ink rect covers the bulged leg (culling/band-select)", () => {
+  const rect = elbowArrowInkRect({ from: { x: 500, y: 100 }, to: { x: 500, y: 300 }, elbow: 0.5, bulge: 55, strokeWidth: 3, headWidth: 12 });
+  assert.ok(rect.x + rect.w >= 555, `ink rect must reach the bulged leg, got ${JSON.stringify(rect)}`);
+});
+
+test("elbowArrowPlugin.modifierPoints: vhv drag round-trips elbow along the Y span", () => {
+  const state = { ...elbowArrowPlugin.defaults, from: { x: 100, y: 0 }, to: { x: 300, y: 200 }, orient: "vhv" };
+  const mp = elbowArrowPlugin.modifierPoints(state)[0];
+  const targetY = state.from.y + 0.25 * (state.to.y - state.from.y);
+  approx(modifierWrite(mp, state, { x: mp.x + 999, y: targetY }).elbow, 0.25);
 });
 
 test("elbowArrowPlugin: headMode 'both' mirrors a head at both ends", () => {

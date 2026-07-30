@@ -37,7 +37,7 @@
  * parser message, vector rect+text — the latex errorAffordance pattern), visible
  * in every backend.
  * A PUNTED FEATURE is the subtler failure and gets the SAME chrome in a softer
- * key: mask/clip-path/filter, inline style=, arcs, radial gradients, <text>/<use>
+ * key: mask/clip-path/filter, inline style=, radial gradients, <text>/<use>
  * all render DEGRADED (e.g. a masked element is drawn UNMASKED), which used to be
  * a console.error only — invisible to the user, so wrong art passed for correct.
  * emit now appends warningAffordance: an amber notice band along the bottom edge
@@ -55,16 +55,32 @@
  * parsed tree by source string. A bare-node emit() (no DOMParser) throws loudly
  * at call time — correct for a browser/CLI-facing widget (the CLI runs puppeteer,
  * which has a DOM, so headless export works).
+ *
+ * ── SOURCE MODES: INLINE vs URL (svgSource selects; an Iconify icon is just a
+ *    url-mode svg) ─────────────────────────────────────────────────────────────
+ * `svgSource: "inline"` renders `svgSrc` exactly as before. `svgSource: "url"`
+ * renders the text behind `svgUrl` (a project `/asset/<Project>/<file>.svg` —
+ * .svg is already an `image`-kind asset server-side — or any URL), loaded
+ * through render_gpu/gpu/svg_source_registry.js: the image_registry contract
+ * mirrored for text (idempotent ensure + sync get + load-event repaints +
+ * pendingSvgSources for the headless render-job gate). An explicit mode select
+ * beats "url wins when non-empty", which would make an authored svgSrc silently
+ * unreachable. While a url is IN FLIGHT the widget draws nothing (a repaint
+ * follows the load — the image precedent); a url that FAILED draws the red
+ * errorAffordance naming the url (never a silent blank). In BARE NODE the
+ * registry reads /asset/ urls off disk synchronously, so cli/render.js renders
+ * url-mode icons in one pass — the one media type that renderer CAN draw.
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { rect, text } from "../render_gpu/ir.js";
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
+import { errorAffordance, warningLabel, warningAffordance } from "../render_gpu/affordances.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { svgToIRWithWarnings, svgIsEmpty } from "../render_gpu/gpu/svg_raster.js";
+import { ensureSvgSource, getSvgSource, svgSourceStatus, svgSourceError } from "../render_gpu/gpu/svg_source_registry.js";
 
 /** The ink for `currentColor` fills/strokes — the INK convention every stroked
  * shape / the text / the latex widget uses (#000000), so an SVG that inherits
@@ -78,37 +94,6 @@ export const SVG_DEFAULT_INK = "#000000";
 export const DEFAULT_SVG_SRC =
   '<svg viewBox="0 0 48 48"><rect x="4" y="4" width="40" height="40" rx="8" fill="#7aa2f7"/><path d="M14 25L21 32L35 16" fill="none" stroke="#ffffff" stroke-width="4"/></svg>';
 
-/** Error-affordance colors — a LOUD, unmissable red treatment (the "not silent,
- * not a blank widget" rule), the SAME literals plugins/latex.js documents (emit
- * can't read app.css --a-* tokens; DOM-free IR chrome). */
-const ERROR_BG = "#f6c9c4";
-const ERROR_BORDER = "#c0392b";
-const ERROR_TEXT = "#7a1210";
-const ERROR_BORDER_WIDTH = 3;
-const ERROR_PADDING = 8;
-const ERROR_TEXT_FRACTION = 0.16; // an SVG error message can be long; a smaller fraction fits more
-
-/** Warning-affordance colors — the SAME rect+text chrome as the error box in an
- * AMBER notice treatment. Deliberately not red and not full-box: a flatten warning
- * means the art DID render, only degraded, so the affordance ANNOTATES it instead
- * of replacing it (a mildly-degraded SVG must stay usable). */
-const WARN_BG = "#f7dfa5";
-const WARN_BORDER = "#a5761b";
-const WARN_TEXT = "#4a3505";
-const WARN_BORDER_WIDTH = 1;
-/** The notice band sits along the BOTTOM edge, at this fraction of the box height
- * but never taller than WARN_BAND_MAX box units — so a small icon is not swallowed
- * and a huge widget gets a slim strip, not a billboard. */
-const WARN_BAND_FRACTION = 0.24;
-const WARN_BAND_MAX = 40;
-/** Slightly translucent, so whatever art the band overlaps stays readable. */
-const WARN_BAND_OPACITY = 0.9;
-const WARN_TEXT_FRACTION = 0.34; // of the BAND height (the band is the text's box)
-const WARN_PADDING = 3;
-/** How many punts the band spells out before summarizing the rest as "+N more" —
- * bounded text keeps the band legible on a badly-degraded SVG. */
-const WARN_MAX_LISTED = 2;
-
 // The custom self.* source property. Declared inline (widget-specific props do
 // NOT belong in the cross-widget core/properties.js registry — the latex `latex`
 // / codeblock `code` precedent). A "text" row round-trips the whole SVG string;
@@ -120,99 +105,40 @@ const CUSTOM = customProps([
     default: DEFAULT_SVG_SRC,
     label: "SVG source",
     category: "formatting",
-    help: "The SVG markup to render as vector (paths, basic shapes, fills/strokes, simple transforms, objectBoundingBox linear gradients). Malformed SVG shows a red error box; an unsupported feature (mask, clip-path, filter, inline style=, arcs, radial gradients) still draws, with an amber band naming what was ignored. currentColor uses the Color below.",
+    help: "The SVG markup to render as vector (paths, basic shapes, fills/strokes, simple transforms, objectBoundingBox linear gradients). Malformed SVG shows a red error box; an unsupported feature (mask, clip-path, filter, inline style=, radial gradients) still draws, with an amber band naming what was ignored. currentColor uses the Color below.",
   },
 ]);
 
-/**
- * Pure function. The loud in-widget ERROR affordance IR: a red-bordered filled
- * box across the widget's local bbox + the parser error message in red, as
- * VECTOR rect+text ops (crisp, identical in every backend — never a blank
- * widget). The plugins/latex.js errorAffordance, verbatim in shape.
- *
- * @example errorAffordance(200, 60, "malformed SVG").length // 2
- * @example errorAffordance(200, 60, "x")[0].op // "rect"
- */
-export function errorAffordance(w, h, message) {
-  const box = rect({ x: 0, y: 0, w, h, cornerRadius: 0, fill: ERROR_BG, stroke: ERROR_BORDER, strokeWidth: ERROR_BORDER_WIDTH });
-  const size = Math.max(1, h * ERROR_TEXT_FRACTION);
-  const label = text({
-    text: `SVG error: ${message}`,
-    x: ERROR_PADDING, y: ERROR_PADDING,
-    size, color: ERROR_TEXT,
-    boxW: Math.max(1, w - 2 * ERROR_PADDING), boxH: Math.max(1, h - 2 * ERROR_PADDING),
-  });
-  return [box, label];
-}
-
-/**
- * Pure function. The user-facing label for a flatten warning list: each notice
- * with core/svg_paths.js's `svg: ` prefix dropped (the band already says SVG),
- * the first WARN_MAX_LISTED spelled out, the rest summarized. Empty list → "".
- *
- * @param {string[]} warnings - core/svg_paths.js flatten warnings
- * @returns {string} the band's text
- *
- * @example warningLabel([]) // ""
- * @example warningLabel(["svg: <text> is unsupported in v1 (skipped)"]) // "Unsupported: <text> is unsupported in v1 (skipped)"
- * @example warningLabel(["svg: a", "svg: b", "svg: c"]) // "Unsupported: a; b (+1 more)"
- */
-export function warningLabel(warnings) {
-  if (!warnings.length) return "";
-  const shown = warnings.slice(0, WARN_MAX_LISTED).map((w) => w.replace(/^svg:\s*/, ""));
-  const rest = warnings.length - shown.length;
-  return `Unsupported: ${shown.join("; ")}${rest > 0 ? ` (+${rest} more)` : ""}`;
-}
-
-/**
- * Pure function. The in-widget WARNING affordance IR: an amber notice band along
- * the widget's BOTTOM edge naming the unsupported features (and the elements
- * carrying them), as the same VECTOR rect+text pair errorAffordance uses — so a
- * degraded SVG (a mask/filter/clip-path ignored, an arc dropped, a radial gradient
- * flattened) can never quietly look correct. The ART IS STILL DRAWN: this band is
- * appended OVER it, not in place of it (the error box's opposite trade).
- *
- * @param {number} w - widget box width (box-local units)
- * @param {number} h - widget box height
- * @param {string[]} warnings - core/svg_paths.js flatten warnings (non-empty)
- * @returns {object[]} [rect, text] IR ops in box-local space
- *
- * @example warningAffordance(200, 100, ["svg: <text> unsupported"]).length // 2
- * @example warningAffordance(200, 100, ["svg: <text> unsupported"])[0].op // "rect"
- * @example warningAffordance(200, 100, ["svg: <text> unsupported"])[0].y // 76  (h − band, the band hugs the bottom edge)
- */
-export function warningAffordance(w, h, warnings) {
-  const band = Math.min(h * WARN_BAND_FRACTION, WARN_BAND_MAX);
-  const top = h - band;
-  const box = rect({
-    x: 0, y: top, w, h: band, cornerRadius: 0,
-    fill: WARN_BG, stroke: WARN_BORDER, strokeWidth: WARN_BORDER_WIDTH, opacity: WARN_BAND_OPACITY,
-  });
-  const label = text({
-    text: warningLabel(warnings),
-    x: WARN_PADDING, y: top + WARN_PADDING,
-    size: Math.max(1, band * WARN_TEXT_FRACTION), color: WARN_TEXT,
-    boxW: Math.max(1, w - 2 * WARN_PADDING), boxH: Math.max(1, band - 2 * WARN_PADDING),
-  });
-  return [box, label];
-}
+// The affordance builders live in render_gpu/affordances.js (hoisted so
+// plugins/iconify.js can draw the identical chrome without a plugin→plugin
+// import); re-exported here so this widget's public surface is unchanged.
+export { errorAffordance, warningLabel, warningAffordance };
 
 export const svgPlugin = {
   type: "svg",
   title: "SVG",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   /**
-   * Pure function. Is this widget a GHOST (empty source)? svgIsEmpty is the
-   * canonical predicate, shared with emit()'s short-circuit.
+   * Pure function. Is this widget a GHOST (empty source)? Mode-aware but in
+   * LOCKSTEP with emit()'s short-circuit: inline → svgIsEmpty(svgSrc) (the
+   * canonical predicate); url → an EMPTY url. An in-flight/errored url is NOT
+   * a ghost — it has a rendered volume coming (or a loud error box).
    * @example svgPlugin.isGhost({ svgSrc: "" }) // true
    * @example svgPlugin.isGhost({ svgSrc: "<svg viewBox='0 0 1 1'></svg>" }) // false
+   * @example svgPlugin.isGhost({ svgSource: "url", svgUrl: "" }) // true
+   * @example svgPlugin.isGhost({ svgSource: "url", svgUrl: "/asset/P/a.svg" }) // false
    */
   isGhost(state) {
+    if (state.svgSource === "url") return !state.svgUrl;
     return svgIsEmpty(state.svgSrc);
   },
   defaults: {
     type: "svg", x: 120, y: 120, w: 160, h: 160, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
+    // SOURCE MODE — "inline" renders svgSrc (the original behavior), "url"
+    // renders the text behind svgUrl via svg_source_registry (see docblock).
+    svgSource: "inline",
+    svgUrl: "",
     // PRESERVE ASPECT default ON (the user directive) — uniform scale-to-fit,
     // centered, no squash; OFF stretches to the box.
     preserveAspect: true,
@@ -227,7 +153,13 @@ export const svgPlugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    ...CUSTOM.rows, // the SVG source
+    // SOURCE MODE — explicit select (a non-empty url must never silently
+    // shadow an authored svgSrc, and vice versa).
+    { key: "svgSource", label: "Source", kind: "select", options: ["inline", "url"], optionLabels: { inline: "Inline markup", url: "URL / asset" }, category: "formatting", help: "Where the SVG comes from. Inline renders the markup below; URL loads an .svg asset (or any URL) — pick one from the project assets, e.g. an Iconify icon dropped into the asset library." },
+    ...CUSTOM.rows, // the SVG source (inline mode)
+    // The url-mode source — the image widget's asset row shape (`.svg` is an
+    // image-kind asset server-side, so the picker offers it already).
+    { key: "svgUrl", label: "SVG URL", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The URL of the SVG to render when Source is set to URL — usually a project asset (/asset/<Project>/<file>.svg). A failed load shows a red error box naming the URL." },
     // INK — the currentColor resolution (a standard color row, keyframable).
     { key: "ink", label: "Color", kind: "color", category: "formatting", help: "The color used wherever the SVG says fill/stroke=currentColor. Ignored by shapes with their own explicit colors." },
     // Aspect-preservation toggle (default ON) — the latex row, verbatim.
@@ -248,11 +180,28 @@ export const svgPlugin = {
    * order rule), so shadow/bloom silhouette the FRAMED svg.
    */
   emit(s, _targetWorldIR, world) {
-    const src = s.svgSrc;
-    if (svgIsEmpty(src)) return []; // GHOST — draws nothing (isGhost grants the editor affordance)
     const w = s.w ?? 0, h = s.h ?? 0;
     if (w <= 0 || h <= 0) return [];
     const style = { x: 0, y: 0, w, h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
+    let src;
+    if (s.svgSource === "url") {
+      if (!s.svgUrl) return []; // GHOST — no url authored (isGhost grants the editor affordance)
+      src = getSvgSource(s.svgUrl);
+      if (src === null) {
+        ensureSvgSource(s.svgUrl); // idempotent kick; in bare node this loads synchronously
+        src = getSvgSource(s.svgUrl);
+      }
+      if (src === null) {
+        // A FAILED url draws the loud error box (never a silent blank); an
+        // in-flight one draws nothing — onSvgSourceLoad repaints when it lands.
+        if (svgSourceStatus(s.svgUrl) === "error")
+          return applyEffects(decorateStrokedBox(errorAffordance(w, h, `failed to load ${s.svgUrl}: ${svgSourceError(s.svgUrl)}`), style, world), s, world, { x: 0, y: 0, w, h });
+        return [];
+      }
+    } else {
+      src = s.svgSrc;
+      if (svgIsEmpty(src)) return []; // GHOST — draws nothing (isGhost grants the editor affordance)
+    }
     let ops;
     try {
       const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? SVG_DEFAULT_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1 });

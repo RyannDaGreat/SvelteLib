@@ -41,6 +41,7 @@
   block, every color/size from an --a-* token).
 -->
 <script>
+  import { untrack } from "svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import FloatingCanvasPanel, { widgetPanelAnchor } from "./FloatingCanvasPanel.svelte";
   import { isEquationValue } from "../core/expressions.js";
@@ -56,6 +57,76 @@
   // The panel anchor: the widget's top/bottom centre in render-area screen px.
   // FloatingCanvasPanel decides which edge to hang from.
   let anchor = $derived(widgetPanelAnchor(node, worldToScreen));
+
+  // ── SEARCHABLE grids (spec.search — the iconify palette) ────────────────────
+  // A spec may pair its grid with a search PROVIDER: {placeholder, run(query) →
+  // Promise<cells>}. The toolbar owns the input and the debounce and swaps the
+  // grid's cells per query, so the plugin stays declarative (it never sees the
+  // input) and the grid keeps its preview→commit mechanics unchanged. The
+  // provider is async because the cells are fetched (the iconify search API);
+  // a static grid (the cursor palette) has no `search` and none of this runs.
+  const SEARCH_DEBOUNCE_MS = 250; // one keystroke-pause, not one request per key
+  let query = $state("");
+  let searchCells = $state(null); // null until the first (empty-query) fill lands
+  let searchStatus = $state(""); // "", "Searching…", "No results", or a loud provider error
+  let searchSeq = 0; // stale-response guard: only the LATEST query may install cells
+
+  // Whether the current spec is searchable — a stable boolean, so the effect
+  // below does NOT rerun on every spec recompute (each hover-preview re-derives
+  // the spec; re-searching on hover would be absurd).
+  let searchable = $derived(!!spec?.search);
+
+  /** Command (async). Runs the spec's search provider for `q` and installs the
+   * result — unless a newer query started meanwhile (the seq guard). A provider
+   * failure is LOUD: named in the status line and reported to the console. */
+  async function runSearch(q) {
+    const seq = ++searchSeq;
+    searchStatus = "Searching…";
+    try {
+      const cells = await spec.search.run(q);
+      if (seq !== searchSeq) return; // a newer query superseded this one
+      searchCells = cells;
+      searchStatus = cells.length ? "" : "No results";
+    } catch (e) {
+      if (seq !== searchSeq) return;
+      searchCells = [];
+      searchStatus = e instanceof Error ? e.message : String(e);
+      console.error(`PowerRP CanvasToolbar: icon search failed — ${searchStatus}`);
+    }
+  }
+
+  // The initial (empty-query) fill on mount, then a debounced run per keystroke.
+  // The timer is the effect's cleanup, so typing inside the window reschedules.
+  // untrack keeps the provider call from subscribing this effect to `spec`.
+  let firstSearch = true;
+  $effect(() => {
+    if (!searchable) return;
+    const q = query;
+    if (firstSearch) {
+      firstSearch = false;
+      untrack(() => runSearch(q));
+      return;
+    }
+    const timer = setTimeout(() => runSearch(q), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  /** Command. Keydown in the search input: Enter searches NOW (skips the
+   * debounce), Escape leaves the input. Both stopPropagation so the canvas's
+   * own key handling stays out of a text field (the field-row ruling). */
+  function onSearchKey(e) {
+    if (e.key === "Enter") {
+      e.stopPropagation();
+      runSearch(e.currentTarget.value);
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      e.currentTarget.blur();
+    }
+  }
+
+  // What the grid shows: the async results when searchable, else the spec's
+  // own static cells (the cursor grid) — one template, two content sources.
+  let gridCells = $derived(searchable ? (searchCells ?? []) : (spec?.grid?.cells ?? []));
 
   // Whether OUR hover currently owns app.previewDelta. A PLAIN (non-$state)
   // bridge variable — written and read imperatively, it must never drive a
@@ -160,13 +231,37 @@
 {#if spec?.grid || spec?.fields}
   <FloatingCanvasPanel x={anchor.x} topY={anchor.topY} bottomY={anchor.bottomY} label={spec.label ?? "Widget toolbar"}>
     {#snippet children()}
+      {#if spec.search}
+        <!-- The searchable palette's input (spec.search) — the toolbar owns it;
+             results replace the grid's cells below. The status line narrates
+             in-flight / empty / failed searches so a blank grid is never mute. -->
+        <div class="canvas-toolbar-search">
+          <input
+            type="text"
+            class="canvas-toolbar-field-input canvas-toolbar-search-input"
+            placeholder={spec.search.placeholder ?? "Search…"}
+            aria-label={spec.search.placeholder ?? "Search"}
+            spellcheck="false"
+            bind:value={query}
+            onkeydown={onSearchKey}
+          />
+          {#if searchStatus}<span class="canvas-toolbar-search-status">{searchStatus}</span>{/if}
+        </div>
+      {/if}
       {#if spec.grid}
         <!-- pointerleave on the GRID (not each tile) reverts only when the
              pointer leaves the tiles entirely; moving BETWEEN tiles fires each
              one's pointerenter, overwriting the preview without a revert in
              between (the ToolsPane preset card-grid precedent). -->
-        <div class="canvas-toolbar-grid" role="listbox" aria-label="Cursor" tabindex="-1" onpointerleave={revert}>
-          {#each spec.grid.cells as cell (cell.value)}
+        <div
+          class="canvas-toolbar-grid"
+          role="listbox"
+          aria-label={spec.label ?? "Palette"}
+          tabindex="-1"
+          style={spec.grid.cols ? `--a-canvas-toolbar-cols: ${spec.grid.cols}` : null}
+          onpointerleave={revert}
+        >
+          {#each gridCells as cell (cell.value)}
             <!-- Cell name on hover via SvelteLib's immediate Tooltip (native
                  title= is banned in app chrome — manifest). Its anchor is
                  display:contents, so the button stays the grid item AND the

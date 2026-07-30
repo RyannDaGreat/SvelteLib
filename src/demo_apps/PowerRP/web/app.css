@@ -784,6 +784,146 @@
   --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.65);
 }
 
+/* ── MATERIAL THEMES (user: "get more creative … every color theme so far has
+   just been dark buttons on a different tint … we can do more interesting than
+   that") — three themes that change the UI's STRUCTURE, not just its hue. Each
+   works the FULL token vocabulary (hover/scrollbar/split-handle/palette-shadow/
+   canvas-vs-panel separation), which is the lever the earlier sets left alone:
+   a theme that only moves --bg and --a-selection can only ever be a re-tint.
+     Blueprint — chrome drawn as LINE-WORK, not filled slabs: --control-bg is
+       pulled to the panel color and --border is a bright OPAQUE cyan, so every
+       button/field/pane seam reads as a drafted rule instead of a lighter box.
+     Sunrise  — the second LIGHT theme, and an atmospheric one: four warm
+       surfaces that GRADE from the lit sky down to unlit ground (panel gold →
+       page peach → toolbar/hintbar deep peach → canvas dusk-rose) instead of
+       the usual flat gray tiers, with a warm-tinted palette shadow.
+     Desert   — a light theme built on MATERIAL contrast: bone paper, a canvas
+       that is DARKER and browner than any other light theme (the shaded ground
+       a page sits on), and hard-noon shadows.
+   Contrast-checked exactly like the sets above (WCAG relative luminance against
+   BOTH --bg and --a-panel-bg): --fg-dim clears 4.3:1, every chroma/accent token
+   clears 3.4:1. The --a-eq-* / --a-code-* palettes need no entries here — they
+   chain off --fg / --fg-dim / --a-selection / --a-guide / --a-keyed / --a-anchor
+   / --a-modifier, all of which each block overrides. */
+
+/* Blueprint — a cyanotype drafting sheet. Deep Prussian-blue stock, and the
+   chrome is DRAWN rather than filled: --control-bg sits a hair off --a-panel-bg
+   and --border is opaque chalk-cyan, so buttons, fields, pane seams and panel
+   headers read as ruled lines on one continuous sheet. The canvas is the darker
+   exposed print bed. Accent identity is the drafting-pencil set that a
+   cyanotype is annotated with: VERMILION guides + red-pencil selection against
+   all that blue, chalk-white keyframe diamonds (the print's own line color, so
+   diamonds look scribed into the sheet), and a pale-cyan modifier keeping eq
+   `self` / code keywords in the line-work family. */
+:root[data-theme="blueprint"] {
+  --bg: #0a2438;
+  --fg: #eaf6ff;
+  --fg-dim: #8fb8d4;
+  --accent: #6fd0f5;
+  --border: #5fa8cc; /* OPAQUE, not an alpha wash — the line IS the chrome here */
+  --control-bg: #0d2e47; /* barely off the panel: fields are outlined, not filled */
+  --a-panel-bg: #082033;
+  --a-canvas-bg: #05161f; /* the print bed, well under the sheet */
+  /* Stronger than the usual ~0.1 wash: with fills this flat, hover is the ONLY
+     thing distinguishing the palette's active row from its neighbours. */
+  --a-hover-bg: rgba(150, 215, 250, 0.2);
+  --a-selection: #ff7a59; /* red drafting pencil — the one warm thing on the sheet */
+  --a-guide: #ff4d3d; /* vermilion ruling line */
+  /* Diamonds are BLUSHED chalk, not plain white: a pure white keyed token came
+     out the same value as --fg and the keyframe controls vanished into the row
+     labels (measured, round 1). This keeps the scribed-into-the-sheet look while
+     staying identifiably its own mark. */
+  --a-keyed: #ffd9c2;
+  --a-anchor: #6fd0f5;
+  --a-modifier: #a8e6ff; /* pale cyan — eq `self` / code keywords stay line-work */
+  --a-scrollbar: rgba(150, 215, 250, 0.3);
+  --a-scrollbar-hover: rgba(150, 215, 250, 0.5);
+  --a-split-handle: #35708f;
+  --a-split-handle-hover: #6fb6d8;
+  --a-palette-shadow: 0 12px 40px rgba(1, 10, 20, 0.78);
+}
+
+/* Sunrise — a LIGHT dawn theme (only one light theme existed; this leans all
+   the way in). The three surfaces GRADE like a horizon instead of stacking as
+   gray tiers: pale-gold panels at the top of the sky, a peach page behind them,
+   and a dusk-rose canvas — the ground still holding night. Indigo remnants of
+   night carry the text and anchors so the warmth never turns mushy; coral is
+   the accent, and the keyframe diamonds are a deep amber "first sun". The
+   palette shadow is warm-tinted (light theme's precedent that shadows are
+   themable) so floating surfaces cast sunrise light, not gray. */
+:root[data-theme="sunrise"] {
+  /* THE GRADE RUNS control → bg → panel, and that order is deliberate: measured
+     with a computed-style probe, --control-bg paints the TOOLBAR and HINTBAR
+     (the full-width bars top and bottom) while --a-panel-bg paints the panes
+     between them. Round 1 had control LIGHTER than panel and the whole theme
+     flattened into one cream sheet — no horizon at all. Inverted here: the bars
+     are the deepest peach, the page sits above them, the panes are the lit gold
+     sky, and the canvas below is the dusk-rose ground. */
+  --bg: #fbdcc4;
+  --fg: #2e2450; /* indigo remnant of night — the ink */
+  --fg-dim: #6b5a84;
+  --accent: #d1452f;
+  --border: rgba(120, 60, 60, 0.28); /* warm brown-rose rule, not a gray wash */
+  --control-bg: #f7cfae; /* deepest peach — the horizon band the bars sit in */
+  --a-panel-bg: #fff2dc; /* pale gold — the lit part of the sky */
+  --a-canvas-bg: #d9a3a0; /* dusk rose — ground that has not caught the sun yet */
+  --a-hover-bg: rgba(209, 69, 47, 0.15);
+  --a-selection: #d8402b; /* coral */
+  --a-guide: #b0155a; /* rose-magenta, distinct from the coral selection */
+  --a-keyed: #a35c00; /* first sun — deep amber, readable on gold */
+  --a-anchor: #453372; /* indigo anchors */
+  --a-modifier: #93316b; /* mulberry — eq `self` / keywords, off the coral so they read apart */
+  --a-scrollbar: rgba(120, 60, 60, 0.3);
+  --a-scrollbar-hover: rgba(120, 60, 60, 0.5);
+  --a-split-handle: #e5ae8b;
+  --a-split-handle-hover: #bd7a55;
+  --a-palette-shadow: 0 12px 40px rgba(150, 70, 40, 0.32); /* warm-tinted dawn shadow */
+}
+
+/* Desert — sun-bleached light, and MINERAL where Sunrise is atmospheric: dry
+   flat surfaces rather than a gradient, and the highest light-theme contrast in
+   the set. Bone-white panels, a sand page, and a canvas that is genuinely
+   DARKER and browner than any other light theme — hard noon light on shaded
+   ground, which also makes a white slide read as an object sitting on the
+   desert floor rather than as more page. Terracotta is the accent identity;
+   guides are sage green (the only living thing out here, and unmistakably not
+   the terracotta), diamonds are dry-clay ochre, anchors are weathered slate.
+   The shadow is near-black and short-throw — noon casts hard edges. */
+:root[data-theme="desert"] {
+  /* THE SEPARATION FROM SUNRISE IS STRUCTURAL, not a hue tweak. Round 1 gave
+     both themes a very pale panel and an ochre --a-keyed, and in the Inspector —
+     which is almost entirely panel plus keyframe diamonds — they were not
+     tellable apart, which fails the accent-identity rule against each OTHER.
+     Two changes fix it: (1) --bg drops to a genuinely DARK sand so the bone
+     panels read as separate slabs laid on ground, where Sunrise's surfaces melt
+     together into one glow; (2) the diamonds are TERRACOTTA, the theme's own
+     identity color, not an amber that reads as Sunrise's first-sun. */
+  --bg: #d9c9a8; /* dark sand — the ground the panels sit ON, not more page */
+  --fg: #2b221a;
+  --fg-dim: #5f5340;
+  --accent: #a83c1e;
+  --border: rgba(70, 50, 30, 0.32); /* dry, definite edges — no soft wash */
+  --control-bg: #e3d5b6; /* the bars, pressed into the sand between the panes */
+  --a-panel-bg: #faf5e9; /* bone paper — the brightest thing here, by a wide step */
+  --a-canvas-bg: #a8977a; /* shaded ground — the darkest light-theme canvas in the app */
+  --a-hover-bg: rgba(168, 60, 30, 0.15);
+  --a-selection: #a83c1e; /* terracotta */
+  --a-guide: #4f7048; /* sage — desert flora, and never confusable with terracotta */
+  /* BURNT terracotta, not an ochre: the diamonds are the one saturated mark
+     repeated down the whole Inspector, so they are what the eye reads the theme
+     by — and an amber here is exactly what made round 1 look like Sunrise. Kept
+     a shade deeper than --a-selection so the two roles stay tellable apart while
+     staying one family. */
+  --a-keyed: #9c3517;
+  --a-anchor: #4d5a66; /* weathered slate */
+  --a-modifier: #7d3466; /* prickly-pear bloom — eq `self` / keywords, the one cool-warm accent */
+  --a-scrollbar: rgba(70, 50, 30, 0.34);
+  --a-scrollbar-hover: rgba(70, 50, 30, 0.54);
+  --a-split-handle: #bda882;
+  --a-split-handle-hover: #8a7550;
+  --a-palette-shadow: 0 8px 24px rgba(40, 28, 14, 0.45); /* hard, short noon shadow */
+}
+
 html,
 body,
 #app {
@@ -1200,6 +1340,28 @@ textarea {
   gap: var(--a-sp-1);
   max-height: var(--a-canvas-toolbar-max-h);
   overflow-y: auto;
+}
+
+/* The searchable palette's search bar (CanvasToolbar spec.search — the iconify
+   widget's whole-catalog picker): one input above the tile grid, wearing the
+   field-input skin, plus a dim status line ("Searching…" / "No results" / a
+   loud provider error) so an empty grid is never mute. The input's width tracks
+   the grid (5 tiles for the iconify palette), not the wide-field token. */
+.canvas-toolbar-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  margin-bottom: var(--a-sp-1);
+}
+
+.canvas-toolbar-search-input {
+  width: 100%;
+  font-family: inherit; /* icon queries are words, not coordinates — no mono */
+}
+
+.canvas-toolbar-search-status {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
 }
 
 /* A LIST inside a floating canvas panel (web/BentoTargetList.svelte). Sibling of

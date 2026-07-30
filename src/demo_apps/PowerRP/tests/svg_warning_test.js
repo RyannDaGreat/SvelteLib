@@ -4,8 +4,9 @@
  *
  * WHY THIS EXISTS. core/svg_paths.js renders several SVG features WRONG rather
  * than not at all: `mask` is a non-rendering tag, so an element carrying `mask=`
- * is drawn UNMASKED; `clip-path`, `filter`, inline `style=`, arcs and radial
- * gradients degrade the same way. Each added a `warnings` string — which only ever
+ * is drawn UNMASKED; `clip-path`, `filter`, inline `style=` and radial
+ * gradients degrade the same way. (Arcs USED to be on this list; they now bake
+ * to cubics — arcToCubics — and are covered by the arc tests at the bottom.) Each added a `warnings` string — which only ever
  * reached console.error through reportOnce. The USER saw plausible-looking art
  * that was simply wrong, with no signal at all; that is how a shipped built-in
  * cursor drew four squares instead of a disc for who knows how long. A malformed
@@ -26,7 +27,7 @@
  */
 
 import assert from "node:assert/strict";
-import { flattenSvgTree } from "../core/svg_paths.js";
+import { flattenSvgTree, transformPathD as transformPathDRef, arcToCubics } from "../core/svg_paths.js";
 import { parseSvgToTree, svgToIR, svgToIRWithWarnings } from "../render_gpu/gpu/svg_raster.js";
 import { svgPlugin, warningAffordance, warningLabel, errorAffordance } from "../plugins/svg.js";
 
@@ -136,6 +137,35 @@ test("warningLabel / warningAffordance doctests", () => {
   assert.equal(aff.length, 2);
   assert.equal(aff[0].op, "rect");
   assert.equal(aff[0].y, 76);
+});
+
+// ── arcs: supported (baked to cubics), NOT a warning ─────────────────────────
+// Real-world icon sets (tabler, mdi, simple-icons, logos) lean on `A` commands;
+// arcToCubics keeps downstream PDF-safe, so an arc must flatten silently.
+
+const ARCED = '<svg viewBox="0 0 24 24"><path fill="#f00" d="M4 6a8 3 0 1 0 16 0A8 3 0 1 0 4 6"/></svg>';
+
+test("an A/a arc path flattens with ZERO warnings and an arc-free d", () => {
+  const { ops, warnings } = flattenSvgTree(parseSvgToTree(ARCED), BOX, BOX, {});
+  assert.equal(warnings.length, 0);
+  assert.equal(ops.length, 1);
+  assert.equal(/[Aa]/.test(ops[0].d), false, "no arc command survives the bake");
+  assert.equal(ops[0].d.includes("C"), true, "arcs became cubics");
+});
+
+test("transformPathD: arc endpoint exactness, zero-radius line, crammed flags throw", () => {
+  const id = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  const d = transformPathDRef("M0 0A5 5 0 0 1 10 0", id);
+  assert.equal(/[Aa]/.test(d), false);
+  assert.equal(d.endsWith("10 0"), true, "final cubic lands EXACTLY on the authored endpoint");
+  assert.equal(transformPathDRef("M0 0A0 5 0 0 1 10 0", id), "M0 0L10 0", "zero radius → line (spec F.6.6)");
+  assert.throws(() => transformPathDRef("M0 0A5 5 0 0130 0", id), /crammed/i, "crammed flag syntax fails loudly");
+});
+
+test("arcToCubics: slice count and degenerate endpoints match the docblock", () => {
+  assert.equal(arcToCubics(0, 0, 5, 5, 0, 0, 1, 10, 0).length, 2, "semicircle → two 90° slices");
+  assert.equal(arcToCubics(0, 0, 5, 5, 0, 1, 1, 5, 5).length, 3, "large-arc 270° → three slices");
+  assert.deepEqual(arcToCubics(3, 4, 5, 5, 0, 0, 1, 3, 4), [], "identical endpoints → omitted per spec");
 });
 
 console.log(`\n${passed} SVG flatten-warning visibility tests passed.`);

@@ -353,6 +353,10 @@
     rosepine: "mdi:flower-outline",
     monokai: "mdi:code-tags",
     synthwave: "mdi:sine-wave",
+    // Material set:
+    blueprint: "mdi:ruler-square-compass",
+    sunrise: "mdi:weather-sunset-up",
+    desert: "mdi:cactus",
   };
   // Local box the `insert-shape` family tile previews are generated in; matches
   // ShapePicker's 100-unit tile viewBox content area (`-6 -6 112 112`).

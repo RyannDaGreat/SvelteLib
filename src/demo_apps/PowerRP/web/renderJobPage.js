@@ -60,6 +60,7 @@ import { createLetterboxFrameRenderer } from "./transitionRender.js";
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
 import { pendingImageRefs, onImageLoad } from "../render_gpu/gpu/image_registry.js";
 import { pendingVideoSrcs, onVideoFrame } from "../render_gpu/gpu/video_registry.js";
+import { pendingSvgSources, onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
 import { gpuAccelerated } from "./gpuService.js";
 
 /**
@@ -99,7 +100,7 @@ let session = null;
  * pendingRasters() // []
  */
 function pendingRasters() {
-  return [...pendingImageRefs(), ...pendingVideoSrcs()];
+  return [...pendingImageRefs(), ...pendingVideoSrcs(), ...pendingSvgSources()];
 }
 
 /**
@@ -111,15 +112,18 @@ function waitForRasterProgress() {
   return new Promise((resolve) => {
     let offImage = null;
     let offVideo = null;
+    let offSvg = null;
     let timer = null;
     const finish = () => {
       offImage?.();
       offVideo?.();
+      offSvg?.();
       clearTimeout(timer);
       resolve();
     };
     offImage = onImageLoad(finish);
     offVideo = onVideoFrame(finish);
+    offSvg = onSvgSourceLoad(finish);
     timer = setTimeout(finish, RASTER_POLL_MS);
   });
 }

@@ -9,9 +9,22 @@
  * fancyArrowOutline (that plugin's own docstring: "The NEXT parametric shape
  * should be another generator + a plugin this shape").
  *
- * `elbow` (0..1): the mid-segment's position along the endpoints' x-span.
- * Controlled by ONE MODIFIER POINT at the vertical segment's midpoint
+ * `elbow` (0..1): the mid-segment's position along the endpoints' span.
+ * Controlled by ONE MODIFIER POINT at the middle segment's midpoint
  * (core/outline.js's elbowHandle) — "the PPT yellow square on the elbow".
+ *
+ * `orient` ("hvh" default | "vhv"): leg order. "vhv" starts and ends VERTICAL
+ * — the flowchart TREE-BRANCH route (trunk down from a box's bm, rail across,
+ * drop into the target's tm), which H-V-H structurally cannot draw (it exits
+ * sideways from a bottom anchor).
+ *
+ * `bulge` (signed px, default 0, Inspector-only): absolute offset of the
+ * middle leg beyond the span-relative `elbow` position. THE LOOP ENABLER: a
+ * feedback loop between two stacked boxes anchors mr→mr (or ml→ml) with a
+ * ZERO span, where every `elbow` value collapses the route to a straight
+ * line down the box edges — only an absolute offset can push the leg out.
+ * The canvas handle scrubs `elbow` only (its constraint segment rides the
+ * bulged leg); `bulge` is set in the Inspector or by an equation.
  *
  * headMode (none|start|end|both, default "end") and the stroke/strokeWidth
  * naming are identical in spirit to the basic arrow — this is a NEW plugin
@@ -33,10 +46,10 @@ import { elbowRoute, elbowHandle, closestPointOnSegment } from "../core/outline.
 import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The route generator's params for a state.
- * @example routeParams({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5}) // {x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5}
+ * @example routeParams({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5}) // {x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5, orient: undefined, bulge: undefined}
  */
 function routeParams(s) {
-  return { x0: s.from.x, y0: s.from.y, x1: s.to.x, y1: s.to.y, elbow: s.elbow };
+  return { x0: s.from.x, y0: s.from.y, x1: s.to.x, y1: s.to.y, elbow: s.elbow, orient: s.orient, bulge: s.bulge };
 }
 
 /**
@@ -48,11 +61,10 @@ function routeParams(s) {
  * ONE ink rect, THREE consumers (the plugins/polygon.js polygonInkRect
  * precedent): the effect substrate in emit() below, and — via the `localBounds`
  * declaration — culling plus rubber-band selection (core/view.js localBoundsOf).
- * The route hull, not the endpoint hull: the vertical leg bends AWAY from the
- * straight line between the endpoints for no elbow value, but the corners p1/p2
- * always share their coordinates with p0/p3 in an H-V-H route, so the two hulls
- * coincide — passing the whole route keeps that an observation rather than an
- * assumption the day the generator learns a new route shape.
+ * The route hull, not the endpoint hull — and since `bulge` landed this is a
+ * REQUIREMENT, not an observation: a bulged middle leg sits OUTSIDE the
+ * endpoints' own AABB (that is its whole point — the rectangular loop), so
+ * only the full 4-point route hull covers the ink.
  *
  * @param {object} s - evaluated item state (from / to / elbow / strokeWidth / headWidth)
  * @returns {{x: number, y: number, w: number, h: number}} local rect
@@ -72,6 +84,8 @@ export const elbowArrowPlugin = {
     type: "elbow_arrow", z: 1,
     from: { x: 200, y: 260 }, to: { x: 420, y: 380 },
     elbow: 0.5,
+    orient: "hvh", // "vhv" = vertical-first (tree branches); see the docblock
+    bulge: 0, // signed px offset of the middle leg (loops); Inspector-only
     stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
@@ -86,15 +100,17 @@ export const elbowArrowPlugin = {
     { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
     { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
     { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start, just the end, or both." },
-    { key: "elbow", label: "Elbow", kind: "number", min: 0, max: 1, category: "arrow", help: "Where the vertical bend sits along the horizontal span, from 0 (flush at the start) to 1 (flush at the end). Drag the yellow handle on canvas." },
+    { key: "elbow", label: "Elbow", kind: "number", min: 0, max: 1, category: "arrow", help: "Where the middle bend sits along the endpoint span, from 0 (flush at the start) to 1 (flush at the end). Drag the yellow handle on canvas." },
+    { key: "orient", label: "Route", kind: "select", options: ["hvh", "vhv"], optionLabels: { hvh: "Horizontal first", vhv: "Vertical first" }, category: "arrow", help: "Leg order. Horizontal-first is the classic side-to-side elbow; vertical-first starts and ends vertically — the flowchart tree branch (out of a box's bottom, across, into the next box's top)." },
+    { key: "bulge", label: "Bulge", kind: "number", scrub: 1, category: "arrow", help: "Pushes the middle leg sideways by this many canvas units beyond its span position (signed). What makes a rectangular feedback LOOP between two same-edge anchors possible — with both endpoints on one vertical line, only an absolute offset can bow the route out of the boxes." },
   ],
   /**
    * Pure function. State → display-list commands. The route is a 4-point
-   * polyline (H-V-H); heads sit on the FINAL leg into each active end (the
-   * last segment before `to` for the end head, the first segment out of
-   * `from` for the start head — both horizontal by construction, since H-V-H
-   * always starts and ends with a horizontal leg), pulled back exactly like
-   * the basic arrow's shaft.
+   * polyline (H-V-H, or V-H-V when `orient` is "vhv"); heads sit on the FINAL
+   * leg into each active end (the last segment before `to` for the end head,
+   * the first segment out of `from` for the start head — the pullback and the
+   * head triangle are direction-generic, so both orients work unchanged),
+   * pulled back exactly like the basic arrow's shaft.
    */
   emit(s, _targetWorldIR, world) {
     // elbowRoute returns [x,y] pairs (render_gpu/ir.js's points convention);
@@ -161,16 +177,29 @@ export const elbowArrowPlugin = {
     const h = elbowHandle(routeParams(s));
     return [{
       id: "elbow", x: h.x, y: h.y,
+      // The allowed set is the SEGMENT the elbow slides along — offset by
+      // `bulge` so it always lies ON the (possibly bulged) middle leg, and
+      // orient-mirrored: hvh slides in x at the vertical run's midpoint,
+      // vhv slides in y at the horizontal run's midpoint. The handle scrubs
+      // `elbow` ONLY; `bulge` stays an Inspector knob (see the docblock).
       constrain(state, desired) {
+        const b = state.bulge ?? 0;
+        if (state.orient === "vhv") {
+          const midX = (state.from.x + state.to.x) / 2;
+          return closestPointOnSegment({ x: midX, y: state.from.y + b }, { x: midX, y: state.to.y + b }, desired);
+        }
         const midY = (state.from.y + state.to.y) / 2;
-        return closestPointOnSegment({ x: state.from.x, y: midY }, { x: state.to.x, y: midY }, desired);
+        return closestPointOnSegment({ x: state.from.x + b, y: midY }, { x: state.to.x + b, y: midY }, desired);
       },
       apply(state, allowed) {
-        const span = state.to.x - state.from.x;
-        // A zero x-span has no fraction to read (the allowed set collapsed to a
+        const b = state.bulge ?? 0;
+        const vhv = state.orient === "vhv";
+        const span = vhv ? state.to.y - state.from.y : state.to.x - state.from.x;
+        // A zero span has no fraction to read (the allowed set collapsed to a
         // point) — a technical division guard, not a bound on `elbow`.
         if (span === 0) return { elbow: state.elbow ?? 0.5 };
-        return { elbow: (allowed.x - state.from.x) / span };
+        const along = vhv ? allowed.y - b - state.from.y : allowed.x - b - state.from.x;
+        return { elbow: along / span };
       },
     }];
   },
