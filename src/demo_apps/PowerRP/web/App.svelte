@@ -13,8 +13,8 @@
   import HintBar from "../../../lib/HintBar.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import Toolbar from "./Toolbar.svelte";
-  import StaticModeNotice from "./StaticModeNotice.svelte";
   import SlideNav from "./SlideNav.svelte";
+  import { isStatic } from "./storageMode.js";
   import AssetExplorer from "./AssetExplorer.svelte";
   import BuiltinAssetBrowser from "./BuiltinAssetBrowser.svelte";
   import CanvasView from "./CanvasView.svelte";
@@ -863,8 +863,12 @@
     // does, so the archive reflects the live document) — a server write the old
     // "Download Project" title hid, so the title now states it.
     { id: "rename-presentation", title: "Rename Project…", icon: "mdi:rename-outline", run: (a) => a.renamePresentation() },
-    { id: "save-to-server", title: "Save Project to Server…", icon: "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
-    { id: "open-project", title: "Open Project from Server…", icon: "mdi:folder-network-outline", run: (a) => a.openProject() },
+    // In STATIC mode the destination is the browser's own storage, and the
+    // titles say so (user ruling 2026-07-30: "save to browser and load from
+    // browser" — the yellow buttons + tooltip in Toolbar.svelte are the same
+    // ruling). Storage mode is a boot constant, so a load-time ternary is honest.
+    { id: "save-to-server", title: isStatic() ? "Save Project to Browser…" : "Save Project to Server…", icon: isStatic() ? "mdi:database-arrow-up-outline" : "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
+    { id: "open-project", title: isStatic() ? "Open Project from Browser…" : "Open Project from Server…", icon: isStatic() ? "mdi:database-arrow-down-outline" : "mdi:folder-network-outline", run: (a) => a.openProject() },
     // ph:file-zip / ph:file-zip-fill: the ONE candidate pair whose glyph carries
     // literal "ZIP" lettering (user ruling 2026-07-30: the zip icon should SAY
     // Zip) while keeping the outline=export / filled=import distinction.
@@ -1796,9 +1800,6 @@
      independent drags would have to keep re-establishing. -->
 <div class="app" style:--a-label-frac={app.labelFrac}>
   <Toolbar {app} {renderBadge} />
-  <!-- Only renders when there is NO backend: says so, names the server-only
-       features that are unavailable, and offers persistent storage. -->
-  <StaticModeNotice {app} />
   <!-- ONE pane body for both columns: which PANEL a pane index maps to is read
        from the VISIBLE subset (`visiblePanels(column)[row]`), never from a literal
        row number. Indexing by position was the bug this replaced — with one panel

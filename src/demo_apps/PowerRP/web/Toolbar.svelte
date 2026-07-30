@@ -32,6 +32,17 @@
   import KeyCombo from "../../../lib/KeyCombo.svelte";
   import ShapePicker from "./ShapePicker.svelte";
   import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
+  import { isStatic } from "./storageMode.js";
+
+  // BROWSER-STORAGE surfacing (user ruling 2026-07-30, replacing the top-left
+  // chip that could overlap the project name): in static mode the save/load
+  // buttons THEMSELVES are the indicator — storage-yellow ink, "Browser" in the
+  // command titles (App.svelte sets those), and a matching yellow tooltip
+  // carrying this note. Storage mode is a boot constant, so this is render-time
+  // static, not reactive state.
+  const isBrowserStorageCmd = (id) => isStatic() && (id === "save-to-server" || id === "open-project");
+  const BROWSER_STORAGE_NOTE = "No project server here — projects live in THIS browser's storage, private to it; clearing site data deletes them. Export a .zip for a durable copy.";
+  const STORAGE_NOUN = isStatic() ? "browser" : "server";
 
   // `renderBadge` is the count of renders still working plus finished ones not
   // yet seen (App.svelte polls it; renderJobView.renderBadgeCount defines it).
@@ -90,8 +101,8 @@
    */
   function saveText(state, at) {
     if (state === "saving") return "Saving…";
-    if (state === "unsaved") return "Unsaved changes — not yet saved to the server";
-    return at ? `Saved to server at ${new Date(at).toLocaleTimeString()}` : "Saved to server";
+    if (state === "unsaved") return `Unsaved changes — not yet saved to the ${STORAGE_NOUN}`;
+    return at ? `Saved to ${STORAGE_NOUN} at ${new Date(at).toLocaleTimeString()}` : `Saved to ${STORAGE_NOUN}`;
   }
 
   // The indicator's state and its sentence, derived together from ONE read of
@@ -275,9 +286,10 @@
       <!-- Disabled state comes from the command's own `when` (grayed out when it
            can't run — e.g. Copy with nothing selected), and the tip says WHY. -->
       <Tooltip>
-        {#snippet tip()}{@render commandTip(id)}{/snippet}
+        {#snippet tip()}{#if isBrowserStorageCmd(id)}<div class="storage-local-tip">{@render commandTip(id, BROWSER_STORAGE_NOTE)}</div>{:else}{@render commandTip(id)}{/if}{/snippet}
         <button
           class="btn-icon"
+          class:storage-local={isBrowserStorageCmd(id)}
           aria-label={badgeFor(id) ? `${app.commands.get(id).title} — ${badgeFor(id)} active or unseen` : app.commands.get(id).title}
           disabled={unavailable(id)}
           onclick={() => app.runCommand(id)}
