@@ -4221,7 +4221,18 @@ audio.ae-preview-media {
 .inspector .row > .label,
 .inspector .row > .row-label-chrome,
 .varspanel .row > .label,
-.varspanel .row > .row-label-chrome {
+.varspanel .row > .row-label-chrome,
+/* THE THIRD label-cell child, found by sweeping every NumericField mount site:
+   a Variables row's identifier is an editable <input class="var-name">, not a
+   .label, so it was getting neither the gutter nor any truncation and the ƒ hung
+   over its trailing edge — the .list-field defect in a third template. An input
+   cannot ellipsize, so the gutter is doing real work here: it keeps the caret
+   and the last typed characters out from under the glyph.
+   :not(.add-row) because the ADD row is also a .row but is NOT a value row — it
+   opts out of the value-column grid entirely (see .varspanel .add-row) and
+   mounts no NumericField, so there is no ƒ to make room for and reserving one
+   would just shrink its text box for nothing. */
+.varspanel .row:not(.add-row) > .var-name {
   /* The affordance is --a-row-chrome-w wide but the row's grid GAP already sits
      between the label and the value, and the affordance hangs across it — so
      only the remainder has to come out of the label's own text width. Reserving
@@ -4573,7 +4584,14 @@ audio.ae-preview-media {
 /* One declared field: its name as a micro-label (the last segment of the
    element's own equation address, e.g. `points.3.x`) plus the kind's standard
    control. The control keeps a floor width and grows with the panel, the same
-   contract the shared row grid gives a normal value cell. */
+   contract the shared row grid gives a normal value cell.
+
+   Deliberately NOT position:relative and NOT overflow:hidden. `.numfield` is
+   already the containing block for its own ƒ (it sets position:relative for
+   exactly that), so the affordance is placed off the numeric field's left edge
+   regardless of what this row does; and clipping here would hide the ƒ outright,
+   since `right:100%` puts it entirely OUTSIDE .numfield and thus in the gutter
+   this row now reserves. The fix is the reserved space below, not a clip. */
 .listfield .list-field {
   display: flex;
   flex: 1;
@@ -4582,8 +4600,50 @@ audio.ae-preview-media {
   min-width: var(--a-list-field-w);
 }
 
+/* THE MICRO-LABEL'S TRAILING GUTTER — the .list-field twin of the top-level
+   `.inspector .row > .label` rule above, and the SAME ruling: an affordance may
+   TRUNCATE a label, never move it and never paint over its glyphs.
+
+   The user's report, on a gradient stop: "when I'm hovering over the elements
+   that are for gradient stops, the ƒ goes on top of it… I can't read the label
+   anymore" — the screenshot shows `offs⨍x` where `offset` should be. Mechanism:
+   .eq-open is 16px (--a-row-chrome-w) hanging left of .numfield's edge, but the
+   only clearance in this flex row was the 2px --a-sp-1 gap, so 14px of the glyph
+   landed squarely on the label's last characters. This is defect-identical to
+   the .paint-sub-label case one level up, which is why the fix is the same rule
+   rather than a new mechanism: reserve the landing space in the label, and let a
+   long name ellipsize into it.
+
+   Subtracting the gap is the same arithmetic the top-level rule documents — the
+   affordance hangs ACROSS the flex gap, so only the remainder has to come out of
+   the label's own text width. Here that gap is --a-sp-1 (2px), not the row grid's
+   --a-sp-2, which is exactly why the value cannot be shared as a token: it is
+   `chrome width − this row's own gap`, and the two rows have different gaps.
+
+   The gutter is UNCONDITIONAL, matching the top-level ruling verbatim: scoping it
+   to fields that actually mount a ƒ (`:has(.numfield)`) would ellipsize a colour
+   stop's label at a different x from a number stop's, which is the misalignment
+   complaint moved rather than fixed. Every field label in a list element starts
+   and ends at the same offsets whatever control follows it.
+
+   `flex: 0 1 auto` replaces the previous `flex: none`, and the change is load
+   bearing: `none` is `0 0 auto`, so the label REFUSED TO SHRINK and could not
+   ellipsize no matter how tight the panel got — it would simply squeeze the
+   numeric control instead. It still never GROWS (flex-grow stays 0; the control
+   takes the slack), it may now shrink to its ellipsis, and min-width:0 is what
+   permits that at all — a flex item's automatic minimum size is its content,
+   the same reasoning .numfield and .list-fields already state.
+
+   Its Tooltip wrapper is display:contents (lib/Tooltip.svelte .tt-anchor,
+   "so it doesn't alter the wrapped element's layout"), so this span IS the flex
+   item and these properties are read against .list-field directly. */
 .listfield .list-field-label {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-right: calc(var(--a-row-chrome-w) - var(--a-sp-1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
   cursor: help; /* its tooltip is the field's MEANING — the .help-btn precedent */
