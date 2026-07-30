@@ -407,6 +407,54 @@ test("chips shown during a takeover are conditional on that takeover", () => {
     }
 });
 
+// ── (5b) EVERY DISPATCHING KEY IS ANNOUNCED SOMEWHERE ─────────────────────────
+// THE REGISTRY-SIDE TWIN of tests/shortcut_sweep_test.js. The sweep scans the
+// SOURCE for inputs nobody registered; this asserts the other half — that an entry
+// which IS registered, and which really fires, is actually reachable on the bar.
+//
+// `hidden: true` is the only way an entry can dispatch without its own chip, and it
+// is legitimate for exactly one reason: the entry is an ALIAS of a visible chip that
+// means the same thing (Delete↔Backspace, Space↔Enter, Cmd++↔Cmd+=). The alias
+// relationship is expressed as a SHARED LABEL, so it is checkable — and when it does
+// not hold, the key is a live input the HintBar never mentions in any context, which
+// is precisely "a shortcut that isn't registered does not exist" being violated from
+// inside the registry.
+//
+// This caught a REAL defect on the commit that introduced it: the twelve modal
+// numeric-entry keys (0-9 . -) all dispatched modalAppendBuffer as hidden entries,
+// while the comment above them claimed "one visible hint below announces the
+// capability" and no such hint existed. The nearest visible chip was Backspace
+// "Edit value" — announcing how to edit a buffer the user was never told they could
+// start. Twelve live keys, zero discoverability, and every existing guard passed:
+// the entries were satisfiable, correctly scoped, and unambiguous. Only this rule
+// sees it.
+test("every hidden (chipless) dispatching entry is an ALIAS of a visible chip", () => {
+  const visibleLabels = new Set(entries.filter((e) => !e.hidden).map((e) => e.label));
+  for (const e of entries.filter((x) => x.hidden))
+    assert.ok(
+      visibleLabels.has(e.label),
+      `"${e.keys.join("+")}" is hidden:true with label "${e.label}", but NO visible entry carries that label — so this key dispatches and the HintBar never announces it in ANY context. A hidden entry is only legitimate as an alias of a visible chip meaning the same thing (the Delete↔Backspace / Space↔Enter pattern). Either give it a visible same-label twin, or drop hidden:true.`,
+    );
+});
+
+test("every hidden alias is live wherever its visible twin is, so the chip is never a lie", () => {
+  const byLabel = new Map();
+  for (const e of entries.filter((x) => !x.hidden)) {
+    if (!byLabel.has(e.label)) byLabel.set(e.label, []);
+    byLabel.get(e.label).push(e);
+  }
+  for (const e of entries.filter((x) => x.hidden && (x.run || x.command))) {
+    const twins = byLabel.get(e.label) ?? [];
+    const ctxWhereAliasLives = contexts.filter((c) => e.when(c));
+    assert.ok(ctxWhereAliasLives.length > 0, `hidden alias "${e.keys.join("+")}" (${e.label}) is unsatisfiable`);
+    for (const ctx of ctxWhereAliasLives)
+      assert.ok(
+        twins.some((t) => t.when(ctx)),
+        `hidden alias "${e.keys.join("+")}" (${e.label}) DISPATCHES in a context where no visible "${e.label}" chip is shown — the alias outlives the chip that justifies it, so in that context it is an unannounced key.`,
+      );
+  }
+});
+
 // ── (6) one key, one meaning, per context ────────────────────────────────────
 test("no context shows two visible chips on one key combo with different labels", () => {
   for (const ctx of contexts) {

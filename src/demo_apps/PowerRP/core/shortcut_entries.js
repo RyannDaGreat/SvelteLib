@@ -787,11 +787,31 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, activ
     { keys: ["Y"], label: "Y axis", when: modalTransform, run: () => app.modalSetAxis("y") },
     // NUMERIC ENTRY: digits / "." / "-" build a value buffer applied EXACTLY
     // (S 2 = factor 2; G X 2 = +2 world units along X). Backspace edits it. The
-    // digit/sign keys DISPATCH but don't each show a chip (hidden) — one visible
-    // hint below announces the capability; the live buffer shows in the modal
-    // announcement. modalAppendBuffer no-ops a grab digit with no axis (ruling).
+    // twelve key entries DISPATCH but are hidden, because twelve chips reading
+    // "0 Type value" … "9 Type value" is noise, not discovery — they are ALIASES
+    // of the one REPRESENTATIVE chip below, exactly the relationship
+    // Delete↔Backspace and Space↔Enter already use. The live buffer shows in the
+    // modal announcement. modalAppendBuffer no-ops a grab digit with no axis (ruling).
+    //
+    // THE REPRESENTATIVE CHIP IS NOT OPTIONAL, and its absence was a real
+    // violation of "a shortcut that isn't registered does not exist": for its whole
+    // life this block's comment claimed "one visible hint below announces the
+    // capability" and NO SUCH HINT EXISTED. The only visible modal chip near it is
+    // Backspace "Edit value", which announces editing a buffer the user was never
+    // told they could START — twelve live keys, zero discoverability. It is
+    // display-only (`when` + no run/command): the twelve entries above own the
+    // dispatch, this one owns the announcement. tests/shortcut_registry_test.js
+    // now fails on ANY hidden entry lacking a visible same-label twin, so this
+    // pairing cannot silently come apart again.
+    //
+    // The chip shows "0" — a REAL key that really works — rather than a "0-9"
+    // range glyph, because validateShortcutKeys admits only tokens dispatch() can
+    // match, and a chip naming an unpressable pseudo-key is the "Plus"/"Minus"
+    // defect (RETIRED_KEY_TOKENS) all over again. The LABEL carries the range,
+    // which is the half the user actually needs to learn.
+    { keys: ["0"], label: "Type value (0-9 . -)", when: modalTransform },
     ...["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "-"].map((ch) => ({
-      keys: [ch], label: "Type value", hidden: true, when: modalTransform, run: () => app.modalAppendBuffer(ch),
+      keys: [ch], label: "Type value (0-9 . -)", hidden: true, when: modalTransform, run: () => app.modalAppendBuffer(ch),
     })),
     { keys: ["Backspace"], label: "Edit value", when: modalTransform, run: () => app.modalBackspace() },
     { keys: ["mouse_scroll"], label: "Pan", when: editMode },
