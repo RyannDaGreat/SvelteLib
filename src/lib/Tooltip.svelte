@@ -15,6 +15,20 @@
     - FOCUS (keyboard): there is no cursor, so the tip anchors to the wrapped
       element's getBoundingClientRect instead.
 
+  `anchor="element"` OVERRIDES the pointer case and anchors to the wrapped
+  element's rect even while hovering, so the tip sits WHOLLY ABOVE OR WHOLLY
+  BELOW the target and can never cover it. Use it when the target is the thing
+  being described and occluding it defeats the tip — PowerRP's asset tiles are
+  the motivating case (user ruling: "the tooltip should never be intersecting
+  [the asset]… fully below or fully above"), since a cursor-anchored tip over a
+  thumbnail hides the very image whose name it is reporting. It is OPT-IN because
+  the cursor anchor is right for a large target: a panel-wide tip pushed below a
+  600px-tall panel would land nowhere near what the pointer is on.
+
+  With `anchor="element"` the tip does NOT follow the cursor (there is nothing to
+  follow — the anchor is a fixed box), which also means it does not jitter while
+  the pointer moves inside the target.
+
   Positioned with fixed coordinates — no dependency on scroll containers or
   transforms. Placement is "top" or "bottom" (relative to the cursor or element);
   it flips automatically when the chosen side would clip the viewport, and is
@@ -39,6 +53,11 @@
       <button>info</button>
     </Tooltip>
 
+  Usage (never cover the target — tip goes wholly above/below its rect):
+    <Tooltip text="logo.png" anchor="element">
+      <div class="tile">…</div>
+    </Tooltip>
+
   CSS custom properties (chain to ambient tokens, with standalone fallbacks):
     --tt-bg        background         (← --control-bg → rgba(0,0,0,0.9))
     --tt-fg        text color         (← --fg → #f0f0f0)
@@ -47,7 +66,12 @@
     --tt-pad       padding            (4px 8px)
     --tt-font-size font size          (0.75rem)
     --tt-gap       offset from anchor (6px default; set it on any ancestor)
-    --tt-max-width max content width  (240px)
+    --tt-max-width max content width  (240px; set it on any ancestor)
+
+  The last two are read off the ANCHOR by the script and applied to the tip
+  inline, because the tip renders as a body-level sibling and so inherits nothing
+  from the host's subtree — the other properties above are plain CSS on the tip and
+  are themed through the ambient --control-bg/--fg/--border tokens instead.
 -->
 <script module>
   /**
@@ -101,6 +125,14 @@
    * Pure function. Chooses the final placement, flipping the requested side
    * when it would clip the viewport but the opposite side fits.
    *
+   * WHEN NEITHER SIDE FITS it picks the side with MORE ROOM rather than honoring
+   * the request. That third case matters only for `anchor="element"`, and there it
+   * is the whole point: the tip must stay outside the target's rect ("fully below
+   * or fully above" — PowerRP's tile ruling), so when the viewport is too short for
+   * either side to be clean, clipping at a viewport edge is the correct sacrifice
+   * and covering the target is not. With a degenerate cursor rect the two rooms are
+   * equal-ish and this branch is a no-op in practice.
+   *
    * @param {"top"|"bottom"} placement Requested side.
    * @param {{top:number,bottom:number}} rect Reference rect (viewport coords); a
    *   real element rect, or a degenerate cursor rect from `pointRect`.
@@ -125,12 +157,20 @@
    * // Cursor near the top edge (degenerate rect): "top" flips to "bottom".
    * resolvePlacement("top", pointRect(500, 10), 20, 6, 800)
    * // => "bottom"
+   * @example
+   * // A tall tip against a short viewport: neither side fits, so the roomier one
+   * // wins (below has 700-410=290px, above has 380) — never on top of the target.
+   * resolvePlacement("bottom", { top: 380, bottom: 410 }, 400, 6, 700)
+   * // => "top"
    */
   export function resolvePlacement(placement, rect, tipHeight, gap, viewH) {
-    const fitsAbove = rect.top - gap - tipHeight >= 0;
-    const fitsBelow = rect.bottom + gap + tipHeight <= viewH;
-    if (placement === "top" && !fitsAbove && fitsBelow) return "bottom";
-    if (placement === "bottom" && !fitsBelow && fitsAbove) return "top";
+    const roomAbove = rect.top - gap - tipHeight;
+    const roomBelow = viewH - (rect.bottom + gap + tipHeight);
+    const fitsAbove = roomAbove >= 0;
+    const fitsBelow = roomBelow >= 0;
+    if (!fitsAbove && !fitsBelow) return roomAbove >= roomBelow ? "top" : "bottom";
+    if (placement === "top" && !fitsAbove) return "bottom";
+    if (placement === "bottom" && !fitsBelow) return "top";
     return placement;
   }
 
@@ -177,6 +217,12 @@
     text = "",
     /** @type {"top"|"bottom"} Preferred side; flips when it would clip. */
     placement = "bottom", // default BELOW the pointer (PowerRP user spec)
+    /** @type {"cursor"|"element"} What the tip is positioned against while
+     *  HOVERING. "cursor" (default) follows the pointer — the long-standing
+     *  behavior. "element" anchors to the wrapped element's rect, so the tip is
+     *  wholly outside it and never covers the target (see the docblock). Keyboard
+     *  focus always anchors to the element regardless, since there is no cursor. */
+    anchor = "cursor",
     /** @type {number} Hover-time threshold in ms before showing (0 = immediate). */
     delay = 0,
     /** @type {boolean} When true, never show the tooltip. */
@@ -187,16 +233,24 @@
     tip = undefined,
   } = $props();
 
-  const GAP = 6; // px between anchor and tooltip; also a CSS var default
+  const GAP = 6; // px between anchor and tooltip; the --tt-gap default
   const EDGE_MARGIN = 4; // px kept from viewport edges when clamping
+  const MAX_WIDTH = 240; // px cap on tip content width; the --tt-max-width default
 
-  let anchor = $state(null); // wrapping span (the hover/focus target)
+  // The wrapping span (the hover/focus target). Named `anchorEl` because `anchor`
+  // is now a PROP (which box the tip is placed against) — the element and the
+  // policy are two different things and must not share a name.
+  let anchorEl = $state(null);
   let tipEl = $state(null); // the floating tooltip element (when shown)
   let shown = $state(false);
   // Resolved side; recomputed by place() before the tip ever renders, so the
   // literal default is never displayed (placement drives the real value).
   let side = $state("top");
   let pos = $state({ left: 0, top: 0 });
+  // Content width cap, read off the anchor by place() (the tip inherits nothing —
+  // see anchorLength). Seeded with the default so the first measured layout is
+  // already correct rather than reflowing from unconstrained.
+  let maxWidth = $state(MAX_WIDTH);
   let showTimer = 0;
   // Last known cursor position (viewport coords) while hovering. Null means the
   // tip was triggered by keyboard focus, which has no cursor → anchor to element.
@@ -205,18 +259,43 @@
   const hasContent = $derived(!!tip || text.length > 0);
 
   /**
-   * Command. Measures the tooltip and positions it. Mutates side/pos.
+   * Query. A px custom property read off the ANCHOR, with a fallback. The tip is a
+   * body-level sibling and inherits NOTHING from the host's subtree, so every
+   * host-settable length has to be fetched from the anchor (which does inherit) and
+   * applied to the tip by the script. Non-numeric/absent values fall back.
+   *
+   * @param {string} prop A custom property name, e.g. "--tt-gap".
+   * @param {number} fallback Value used when unset or unparseable.
+   * @returns {number} px
+   *
+   * @example
+   * // With `--tt-gap: 10px` set on any ancestor of the anchor:
+   * // anchorLength("--tt-gap", 6)  // => 10
+   * @example
+   * // Unset (or a non-length like "auto") falls back to the default:
+   * // anchorLength("--tt-gap", 6)  // => 6
+   */
+  function anchorLength(prop, fallback) {
+    if (!anchorEl) return fallback;
+    return parseFloat(getComputedStyle(anchorEl).getPropertyValue(prop)) || fallback;
+  }
+
+  /**
+   * Command. Measures the tooltip and positions it. Mutates side/pos/maxWidth.
    * Anchors to the live cursor point when hovering, or to the wrapped element's
-   * bounding rect when triggered by keyboard focus (cursor === null).
+   * bounding rect when triggered by keyboard focus (cursor === null) OR when
+   * `anchor="element"` asked for the tip to stay off the target entirely.
    */
   function place() {
     if (!tipEl) return;
-    const ref = cursor ? pointRect(cursor.x, cursor.y) : (anchor && anchorRect(anchor));
+    const useCursor = cursor && anchor !== "element";
+    const ref = useCursor ? pointRect(cursor.x, cursor.y) : (anchorEl && anchorRect(anchorEl));
     if (!ref) return;
+    // The width cap is applied BEFORE measuring, since it is what determines how the
+    // content wraps and therefore both offsetWidth and offsetHeight.
+    maxWidth = anchorLength("--tt-max-width", MAX_WIDTH);
     const { offsetWidth: tipW, offsetHeight: tipH } = tipEl;
-    // Read --tt-gap off the ANCHOR (it inherits the host's value). The tip must
-    // not declare it, or its own declaration would shadow any host override.
-    const gap = anchor ? parseFloat(getComputedStyle(anchor).getPropertyValue("--tt-gap")) || GAP : GAP;
+    const gap = anchorLength("--tt-gap", GAP);
     side = resolvePlacement(placement, ref, tipH, gap, window.innerHeight);
     pos = computePosition(side, ref, tipW, tipH, gap, window.innerWidth, window.innerHeight, EDGE_MARGIN);
   }
@@ -253,9 +332,12 @@
     else reveal();
   }
 
-  /** Command. While hovering, follow the cursor. Mutates cursor and repositions. */
+  /** Command. While hovering, follow the cursor. Mutates cursor and repositions.
+   *  A no-op under `anchor="element"`: the tip is placed against a FIXED box, so
+   *  there is nothing to follow — and re-measuring per pointermove would put layout
+   *  work on the hover path for no visible change. */
   function track(e) {
-    if (!cursor) return; // focus-anchored tip: ignore stray pointermove
+    if (!cursor || anchor === "element") return; // focus- or element-anchored: ignore stray pointermove
     cursor = { x: e.clientX, y: e.clientY };
     if (shown) place();
   }
@@ -297,7 +379,7 @@
      Focus is captured via focusin/focusout which bubble from the real control. -->
 <span
   class="tt-anchor"
-  bind:this={anchor}
+  bind:this={anchorEl}
   onpointerenter={openFromPointer}
   onpointermove={track}
   onpointerleave={close}
@@ -313,7 +395,7 @@
     class="tt-tip tt-{side}"
     role="tooltip"
     bind:this={tipEl}
-    style="left: {pos.left}px; top: {pos.top}px;"
+    style="left: {pos.left}px; top: {pos.top}px; max-width: {maxWidth}px;"
   >
     {#if tip}{@render tip()}{:else}{text}{/if}
   </div>
@@ -335,15 +417,15 @@
     --tt-radius: 2px; /* square-ish; rounding reads as sloppy */
     --tt-pad: 4px 8px;
     --tt-font-size: 0.75rem;
-    /* --tt-gap is deliberately NOT declared here: place() reads it off the
-       anchor so a host override actually applies. Declaring it on the tip would
-       shadow the host's value (the --dd-radius/--dn-radius shadowing class of
-       bug). GAP in the script is the sole default. */
-    --tt-max-width: 240px;
-
+    /* --tt-gap and --tt-max-width are deliberately NOT declared here: the tip is
+       rendered as a BODY-LEVEL SIBLING of the anchor, so it inherits nothing from
+       the host's subtree and a host override of either would never have reached it
+       (and declaring one here would shadow it even if it had — the
+       --dd-radius/--dn-radius shadowing class of bug). Both are therefore READ OFF
+       THE ANCHOR by the script and applied inline: GAP/MAX_WIDTH below are the sole
+       defaults. */
     position: fixed;
     z-index: 2147483647; /* above everything; tooltips are top-most UI */
-    max-width: var(--tt-max-width);
     padding: var(--tt-pad);
     background: var(--tt-bg);
     color: var(--tt-fg);

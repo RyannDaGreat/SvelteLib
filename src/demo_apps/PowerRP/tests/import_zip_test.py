@@ -82,7 +82,20 @@ def main():
         got = json.loads(body)
         assert got["name"] == "Imported Deck", got
         with open(os.path.join(tmp_root, "Imported Deck", "doc.json")) as f:
-            assert json.load(f) == DOC, "imported doc.json differs from the exported one"
+            imported = json.load(f)
+        # AN IMPORT THAT RENAMES ADOPTS THE NEW NAME. This assertion used to demand
+        # the imported doc.json be IDENTICAL to the exported one — which meant
+        # meta.name still said "Zip Deck" inside a folder called "Imported Deck",
+        # and (worse) every "/asset/Zip Deck/…" reference in it pointed at a project
+        # that need not exist on the importing machine. That is the same
+        # dangling-cross-project-reference bug as the .zip export's, arriving by the
+        # other door, so import_project_zip now repoints both. Everything EXCEPT the
+        # name must still round-trip byte-for-byte, which is what the rest of this
+        # asserts.
+        assert imported["meta"]["name"] == "Imported Deck", imported["meta"]
+        assert imported["slides"] == DOC["slides"], "slides must round-trip untouched"
+        assert {k: v for k, v in imported["meta"].items() if k != "name"} == \
+               {k: v for k, v in DOC["meta"].items() if k != "name"}, imported["meta"]
         with open(os.path.join(tmp_root, "Imported Deck", "assets", "logo.png"), "rb") as f:
             assert f.read() == PNG_BYTES, "imported asset bytes differ"
         names = {p["name"] for p in server.list_projects()}

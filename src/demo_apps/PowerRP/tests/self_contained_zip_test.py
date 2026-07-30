@@ -1,7 +1,10 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["rp==0.1.1421", "fire==0.7.1"]
 # ///
+# The deps are server.py's, not this test's: importing it pulls `fire` (its CLI) at
+# module scope, so a run under `uv run python` (which the gate uses) fails at the
+# import without them. Pinned to the same versions the sibling python tests pin.
 """
 SELF-CONTAINED .ZIP EXPORT round-trip test — export → inspect → import → resolve.
 
@@ -231,6 +234,14 @@ def main():
         assert "/asset/Ghost/gone.mp4" in warning, f"the warning must NAME the asset: {warning}"
         assert refs_of(archived) == ["/asset/Ghost/gone.mp4"], f"an uncopyable ref must be left as authored: {refs_of(archived)}"
         assert not any(m.startswith("Broken/assets/") for m in zf.namelist()), zf.namelist()
+        # AND THE ARCHIVE MUST STILL BE INTACT. This assertion exists because the
+        # first version of the warning broke exactly here: header values are
+        # LATIN-1, our warning prose contains an em-dash, and send_header raised
+        # mid-response — so the client received a TRUNCATED body. A warning about a
+        # missing asset destroyed the archive it was attached to. zf.testzip()
+        # reading None proves every member's CRC, i.e. that the whole body arrived.
+        assert zf.testzip() is None, "the archive is corrupt (a truncated response?)"
+        warning.encode("latin-1")  # raises if the header value could not have been sent
         print(f"[7] MISSING SOURCE ok: exported with the ref intact + header warning naming it\n        {warning}")
 
         # ── 8. NON-REFS ARE NOT TOUCHED ──────────────────────────────────────

@@ -205,7 +205,15 @@ async function startBackend() {
  *  — a crashed child is a FAILING TEST, not an error in the runner, and its output is
  *  kept so the report can show why rather than just that. */
 function runOne(kind, file) {
-  const cmd = kind === "python" ? ["uv", ["run", "python", file]]
+  // `uv run <file>` — NOT `uv run python <file>`. Only the former reads the file's
+  // PEP 723 inline `# /// script` dependency block; adding an explicit `python`
+  // interpreter argument makes uv run the script in the AMBIENT environment and
+  // ignore the metadata entirely. Every python test here imports server/server.py,
+  // which imports `fire` at module scope, so all four were failing at the import
+  // with ModuleNotFoundError — a whole test KIND red for an environment reason,
+  // reported identically to a real defect. Found while adding
+  // self_contained_zip_test.py, whose own deps block had no effect either.
+  const cmd = kind === "python" ? ["uv", ["run", file]]
     : kind === "shell" ? ["bash", [file]]
     : ["node", [file]];
   // Browser probes resolve fixtures off the SvelteLib repo root by convention; node

@@ -1590,6 +1590,36 @@ def delete_asset(name, filename):
 # data. This is the PYTHON TWIN of web/assetLocalize.js; the two must agree, and
 # tests/asset_localize_test.py pins them against the same expected plan.
 
+def asset_ref(project, file):
+    """
+    Pure function. Build the portable in-document reference for one asset — the
+    twin of web/assetRef.js assetRef, and the INVERSE of parse_asset_ref.
+
+    Each PATH SEGMENT of `file` is quoted separately so a nested path keeps its
+    slashes as separators (that is how parse_asset_ref reads them back), while a
+    space or a "#" inside a segment is still encoded.
+
+    Args:
+        project: project name (unencoded)
+        file: asset path within the project's assets/ (unencoded)
+
+    Returns:
+        str
+
+    Examples:
+        >>> asset_ref("RobotSim", "clip.mp4")
+        '/asset/RobotSim/clip.mp4'
+        >>> asset_ref("My Talk", "a b.png")
+        '/asset/My%20Talk/a%20b.png'
+        >>> asset_ref("Deck", "icons/logo.svg")
+        '/asset/Deck/icons/logo.svg'
+        >>> parse_asset_ref(asset_ref("My Talk", "icons/a b.svg"))
+        ('My Talk', 'icons/a b.svg')
+    """
+    q = urllib.parse.quote
+    return f"{ASSET_REF_PREFIX}{q(project)}/" + "/".join(q(p) for p in file.split("/"))
+
+
 def parse_asset_ref(ref):
     """
     Pure function. Split an in-document asset reference into (project, file), or
@@ -1763,7 +1793,7 @@ def localization_plan(refs, project, local_names):
         # both zip halves write.
         as_name = unique_name_among(os.path.basename(r["file"]), taken)
         taken.append(as_name)
-        to = f"/asset/{urllib.parse.quote(project)}/{urllib.parse.quote(as_name)}"
+        to = asset_ref(project, as_name)
         copies.append({"project": r["project"], "file": r["file"], "as": as_name,
                        "ref": r["ref"], "to": to})
         ref_map[r["ref"]] = to
@@ -1800,6 +1830,39 @@ def unique_name_among(filename, taken):
     while f"{stem}-{n}{ext}" in taken:
         n += 1
     return f"{stem}-{n}{ext}"
+
+
+def header_safe_warning(warnings):
+    """
+    Pure function. Warning lines joined into ONE value an HTTP header can carry.
+
+    TWO CONSTRAINTS, both learned by breaking the download:
+      * http.server encodes header values as LATIN-1 and raises on anything else.
+        An em-dash in a warning (our prose uses them) crashed send_header mid-response,
+        so the client got a TRUNCATED body — a warning about a missing asset destroyed
+        the archive it was attached to. Non-latin-1 characters are therefore replaced,
+        not passed through and not silently dropped.
+      * A newline would split the response into forged headers, so lines are joined
+        with a separator instead.
+
+    Args:
+        warnings (list[str]): warning lines
+
+    Returns:
+        str: a single-line latin-1-encodable value
+
+    Examples:
+        >>> header_safe_warning(["asset not found: a.png"])
+        'asset not found: a.png'
+        >>> header_safe_warning(["a", "b"])
+        'a | b'
+        >>> header_safe_warning(["gone \\u2014 really"])       # em-dash: not latin-1
+        'gone ? really'
+        >>> header_safe_warning(["one\\ntwo"]).encode("latin-1")
+        b'one two'
+    """
+    joined = " | ".join(w.replace("\n", " ").replace("\r", " ") for w in warnings)
+    return joined.encode("latin-1", "replace").decode("latin-1")
 
 
 def zip_project_bytes(name):
@@ -2025,10 +2088,53 @@ def import_project_zip(data, requested_name=None):
                 with zf.open(member) as src, open(dest, "wb") as out:
                     shutil.copyfileobj(src, out)
             os.makedirs(os.path.join(d, ASSETS_SUBDIR), exist_ok=True)  # an assetless export still gets the folder
+            # AN IMPORT THAT RENAMES MUST REPOINT THE REFS AT THE NEW NAME.
+            # The archive's refs name the project it was EXPORTED as, but the
+            # folder it lands in is `name` — different whenever the user dropped a
+            # renamed .zip or a collision forced "Deck 2". Left alone, every ref
+            # becomes FOREIGN the instant it is imported: the assets sit right there
+            # in the new folder while the document points at the exporter's name.
+            # That resolves anyway on a server holding both projects (which is what
+            # made this invisible), 404s on one that does not, and re-creates
+            # exactly the dangling-reference bug the self-contained export just
+            # fixed. Only refs naming the ARCHIVE'S OWN root move — a deliberately
+            # cross-project ref that survived localization (an unreadable source) is
+            # not silently re-pointed at a file that does not exist.
+            _rename_imported_refs(d, root, name)
         except Exception:
             shutil.rmtree(d, ignore_errors=True)  # never leave a half-written project behind
             raise
     return name
+
+
+def _rename_imported_refs(project_path, archive_root, name):
+    """
+    Command (rewrites the imported doc.json in place). Repoint an imported
+    document's asset references and `meta.name` from the archive's root name to
+    `name`, the folder it actually landed in. A no-op when they already agree (the
+    common case: a .zip imported under the name it was exported as) — including
+    NOT rewriting the file, so an unchanged import leaves doc.json byte-identical
+    to the archive's.
+
+    `archive_root` may be None for a flat archive, which carries no name to
+    translate FROM; the document's own meta.name is then the only candidate.
+    """
+    doc_file = os.path.join(project_path, DOC_FILENAME)
+    with open(doc_file) as f:
+        doc = json.load(f)
+    old = archive_root or (doc.get("meta") or {}).get("name")
+    if not old or old == name:
+        return
+    # Each PATH SEGMENT is quoted separately (quote(..., safe="/") would keep a
+    # nested path's slashes as separators, which is how parse_asset_ref reads them
+    # back), so a ref only ever changes its PROJECT part here.
+    ref_map = {r["ref"]: asset_ref(name, r["file"]) for r in document_asset_refs(doc) if r["project"] == old}
+    out = rewritten_asset_refs(doc, ref_map)
+    # The one-name model: the document's meta.name must agree with the folder it
+    # lives in (the client's loadProject asserts the same thing).
+    out.setdefault("meta", {})["name"] = name
+    with open(doc_file, "w") as f:
+        json.dump(out, f, indent=2)
 
 
 # -- Session clipboard (manifest 14.10 AMENDED) ------------------------------
@@ -2459,8 +2565,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", f'attachment; filename="{name}.zip"')
         self.send_header("Content-Length", str(len(data)))
         if warnings:
-            # Header values must be one line: newlines would split the response.
-            self.send_header("X-PowerRP-Warning", " · ".join(w.replace("\n", " ") for w in warnings))
+            self.send_header("X-PowerRP-Warning", header_safe_warning(warnings))
         self.end_headers()
         self.wfile.write(data)
 

@@ -333,7 +333,9 @@ export async function downloadProjectZip(name) {
   a.download = `${name}.zip`;
   a.click();
   URL.revokeObjectURL(a.href);
-  return { warnings: warning ? warning.split(" · ") : [] };
+  // " | " is the server's join (header_safe_warning) — an HTTP header value is one
+  // line, and it must be latin-1, so the separator is ASCII on purpose.
+  return { warnings: warning ? warning.split(" | ") : [] };
 }
 
 /** Pure function. The project name a dropped/picked .zip file wants: its

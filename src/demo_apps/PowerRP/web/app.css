@@ -311,6 +311,17 @@
      slide-current border). */
   --a-asset-cell-min: 72px;
   --a-asset-dropzone: color-mix(in srgb, var(--a-selection) 14%, transparent);
+  /* Tile hover-action row (copy-path · download · trash — the three ALWAYS-present
+     actions, user ruling). Gap is the tightest step available: three chips must fit
+     across a --a-asset-cell-min-wide tile without wrapping. */
+  --a-tile-actions-gap: var(--a-sp-1);
+  /* Asset tile TOOLTIP (user ruling: filename bold on its own line, then kind ·
+     size italic, then the description). The name line is allowed to WRAP — a long
+     filename is the one thing this tip exists to report, so ellipsizing it here
+     would defeat the whole tip — hence a max-width bump over the Tooltip default. */
+  --a-tile-tip-width: 260px;
+  --a-tile-tip-gap: 3px; /* between the tip's three lines; tighter than --a-sp-2 (4) */
+  --a-tile-tip-meta: color-mix(in srgb, var(--fg) 72%, transparent); /* dimmer than the name, brighter than the prose */
   /* Optimistic upload tile: scrim over the kind icon so the %/bytes caption
      reads, a determinate progress bar (track + accent fill), and an
      indeterminate spinner for when the browser can't report total bytes. */
@@ -3485,21 +3496,28 @@ textarea {
   cursor: pointer;
 }
 
-/* Corner-overlay buttons on a tile — insert (top-right of image tiles), trash
-   (bottom-right of every tile), copy-path (bottom-left), and the failed-upload
-   dismiss (top-right). ALL share the same overlay chrome (absolute, auto-sized,
-   panel-bg chip, hairline border); each rule below sets only its corner and the
-   at-rest opacity (0 for the hover-reveal trio; the dismiss stays visible). */
+/* Overlay buttons on a tile — the ACTION ROW along the bottom edge (copy-path ·
+   download · trash), insert (top-right of image tiles), and the failed-upload
+   dismiss (top-right). ALL share the same overlay chrome (auto-sized, panel-bg
+   chip, hairline border); the corner ones are absolutely positioned, the row's are
+   laid out by their flex parent. */
 .asset-explorer .ae-insert,
 .asset-explorer .ae-trash,
 .asset-explorer .ae-copy-path,
+.asset-explorer .ae-download,
 .asset-explorer .ae-upload-dismiss {
-  position: absolute;
   width: auto;
   height: auto;
   padding: var(--a-sp-1);
   background: var(--a-panel-bg);
   border: var(--a-hairline) solid var(--border);
+}
+
+/* The corner-anchored ones position themselves; the action row's do not (their
+   flex parent is the positioned element). */
+.asset-explorer .ae-insert,
+.asset-explorer .ae-upload-dismiss {
+  position: absolute;
 }
 
 /* Insert affordance, top-right of image tiles. Above the hit target. */
@@ -3514,36 +3532,68 @@ textarea {
   opacity: 1;
 }
 
-/* Trash can, bottom-right of EVERY tile on hover (Round 12C: asset delete).
-   Same hover-reveal overlay chrome as .ae-insert; the glyph takes the danger
-   color on hover (the .btn.danger / --a-guide precedent). */
-.asset-explorer .ae-trash {
+/* THE ALWAYS-PRESENT ACTION ROW (user ruling: copy path, download and trash are
+   all always there). One hover-revealed strip along the bottom edge rather than
+   three corners — a square tile has only two bottom corners and the top-left is
+   the badge's, so a third corner button would have had to overlap something.
+   Right-aligned so the row grows leftward as buttons are added and the trash can
+   stays where muscle memory left it (bottom-right). */
+.asset-explorer .ae-tile-actions {
+  position: absolute;
   bottom: var(--a-sp-1);
   right: var(--a-sp-1);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--a-tile-actions-gap);
   opacity: 0;
 }
 
-.asset-explorer .ae-tile:hover .ae-trash,
-.asset-explorer .ae-trash:focus-visible {
+/* Revealed by hovering the tile, or by keyboard-focusing ANY button inside the
+   row (:focus-within, not :focus-visible on each button: the row is the thing that
+   fades, so the focused child has to raise its parent). */
+.asset-explorer .ae-tile:hover .ae-tile-actions,
+.asset-explorer .ae-tile-actions:focus-within {
   opacity: 1;
 }
 
+/* The trash glyph takes the danger color on hover (the .btn.danger / --a-guide
+   precedent) — it is the one irreversible action in the row. */
 .asset-explorer .ae-trash:hover {
   color: var(--a-guide);
 }
 
-/* Copy-path, bottom-LEFT of every tile on hover (manifest "ASSET UX ROUND 2":
-   "there should be a copy path option on the assets"). Same hover-reveal
-   overlay chrome as .ae-insert/.ae-trash, opposite corner from the trash can. */
-.asset-explorer .ae-copy-path {
-  bottom: var(--a-sp-1);
-  left: var(--a-sp-1);
-  opacity: 0;
+/* ── ASSET TILE TOOLTIP (user ruling) ─────────────────────────────────────────
+   "The file name should always be the top and then everything else comes in a new
+   line after that… the file name should always be bold in that tooltip."
+   Three stacked lines inside the shared Tooltip's box; UNSCOPED like the other
+   .ae-* tile chrome, because AssetField's picker portals to <body> and would
+   otherwise miss these (see the note above .ae-notice). */
+.ae-tip-name {
+  font-weight: 700;
+  word-break: break-all; /* a long filename must WRAP, never ellipsize: it is the point of the tip */
 }
 
-.asset-explorer .ae-tile:hover .ae-copy-path,
-.asset-explorer .ae-copy-path:focus-visible {
-  opacity: 1;
+.ae-tip-meta {
+  font-style: italic;
+  color: var(--a-tile-tip-meta);
+}
+
+.ae-tip-name + .ae-tip-meta,
+.ae-tip-meta + .ae-tip-desc {
+  margin-top: var(--a-tile-tip-gap);
+}
+
+.ae-tip-desc {
+  color: var(--fg-dim);
+}
+
+/* A tile tip is three lines of real content, so it gets more room than the
+   Tooltip's 240px default. Set here on an ANCESTOR of the Tooltip's anchor: the tip
+   renders as a body-level sibling and inherits nothing from this subtree, so
+   Tooltip reads --tt-max-width off its anchor and applies it inline (the same
+   mechanism as --tt-gap). A descendant selector from here could never reach it. */
+.ae-cell {
+  --tt-max-width: var(--a-tile-tip-width);
 }
 
 .ae-name {

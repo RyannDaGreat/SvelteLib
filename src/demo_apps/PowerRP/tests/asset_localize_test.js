@@ -27,14 +27,53 @@
  */
 
 import assert from "node:assert/strict";
+import { unzipSync } from "fflate";
 import { assetRef, uniqueAssetName } from "../web/assetRef.js";
 import { documentAssetRefs, foreignAssetRefs, itemIdForPath, localizationPlan, rewriteAssetRefs } from "../web/assetLocalize.js";
+import { buildProjectZip } from "../web/projectZip.js";
 
 let passed = 0;
 function test(name, fn) {
   fn();
   passed++;
   console.log(`  ok  ${name}`);
+}
+
+/** An async test — buildProjectZip reads a store. Awaited inline (this file runs
+ *  top to bottom), so a rejection still fails the process with a stack. */
+async function testAsync(name, fn) {
+  await fn();
+  passed++;
+  console.log(`  ok  ${name}`);
+}
+
+/**
+ * A minimal in-memory asset store with the two methods buildProjectZip uses.
+ * Stands in for BOTH real adapters (HTTP fetch and IndexedDB) — the export reads
+ * them through one interface by design, and the point under test is the archive's
+ * CONTENT, not either backing.
+ *
+ * @param {Record<string, Record<string, string>>} projects - {project: {file: text}}
+ */
+function fakeStore(projects) {
+  return {
+    list: async (project) => Object.keys(projects[project] ?? {}).map((name) => ({ name })),
+    get: async (project, file) => {
+      const text = projects[project]?.[file];
+      // A missing asset THROWS, which is what both real adapters do (a non-OK
+      // fetch, an absent IndexedDB record) and what the export's warning path
+      // catches for a FOREIGN file.
+      if (text === undefined) throw new Error(`no such asset: ${project}/${file}`);
+      return new Blob([text]);
+    },
+  };
+}
+
+/** The archive as {members, doc} — the same inspection the python test does. */
+function inspect(bytes) {
+  const files = unzipSync(bytes);
+  const docKey = Object.keys(files).find((k) => k.endsWith("/doc.json"));
+  return { members: Object.keys(files).sort(), files, doc: JSON.parse(new TextDecoder().decode(files[docKey])) };
 }
 
 /** THE USER'S ACTUAL CASE, reduced: a project named RobotSim whose video src
@@ -199,7 +238,11 @@ test("localizationPlan copies each foreign file ONCE and maps its ref", () => {
     ],
   });
   const plan = localizationPlan(refs, "RobotSim", [], uniqueAssetName);
-  assert.deepEqual(plan.copies, [{ project: "Untitled", file: "clip.mp4", as: "clip.mp4" }]);
+  // Each copy carries its OWN ref/to as well as the names, so a caller dropping
+  // one copy (an unreadable source) removes exactly its mapping.
+  assert.deepEqual(plan.copies, [
+    { project: "Untitled", file: "clip.mp4", as: "clip.mp4", ref: "/asset/Untitled/clip.mp4", to: "/asset/RobotSim/clip.mp4" },
+  ]);
   assert.deepEqual(plan.refMap, { "/asset/Untitled/clip.mp4": "/asset/RobotSim/clip.mp4" });
 });
 
@@ -248,7 +291,9 @@ test("localizationPlan flattens a NESTED foreign path and keys the ORIGINAL stri
   const doc = { slides: [{ delta: { items: { a: { src: "/asset/P/icons/logo.svg" } } } }] };
   const refs = documentAssetRefs(doc);
   const plan = localizationPlan(refs, "Deck", [], uniqueAssetName);
-  assert.deepEqual(plan.copies, [{ project: "P", file: "icons/logo.svg", as: "logo.svg" }]);
+  assert.deepEqual(plan.copies, [
+    { project: "P", file: "icons/logo.svg", as: "logo.svg", ref: "/asset/P/icons/logo.svg", to: "/asset/Deck/logo.svg" },
+  ]);
   assert.deepEqual(plan.refMap, { "/asset/P/icons/logo.svg": "/asset/Deck/logo.svg" });
   // The end-to-end property: the rewrite actually LANDS, so nothing foreign remains.
   const out = rewriteAssetRefs(doc, (e) => plan.refMap[e.ref] ?? null);
@@ -318,6 +363,85 @@ test("rewriteAssetRefs preserves arrays AS ARRAYS and non-string leaves", () => 
 test("rewriteAssetRefs is a NO-OP shape-wise on a ref-free document", () => {
   const doc = { meta: { name: "D", script: "exports.f = () => 1;" }, slides: [{ delta: { items: { t: { text: "= 1 + 2" } } } }] };
   assert.deepEqual(rewriteAssetRefs(doc, () => "/asset/X/y.png"), doc);
+});
+
+// ── The CLIENT export, which must match the server's archive ────────────────
+// The static-mode twin of server.py zip_project_bytes. Its layout is already
+// covered by asset_store_test.js; what is tested HERE is localization, against the
+// same fixtures tests/self_contained_zip_test.py drives through the server — so a
+// divergence between the two halves shows up as one of these failing.
+
+await testAsync("buildProjectZip carries the BORROWED asset and localizes the archived doc", async () => {
+  // The user's case: RobotSim's assets are EMPTY and its only ref names Untitled.
+  const store = fakeStore({ RobotSim: {}, Untitled: { "Video_20260726_224007_045.mp4": "VIDEO-BYTES" } });
+  const { bytes, warnings } = await buildProjectZip("RobotSim", robotSimDoc, store);
+  const { members, files, doc } = inspect(bytes);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(members, ["RobotSim/assets/Video_20260726_224007_045.mp4", "RobotSim/doc.json"].sort());
+  assert.equal(new TextDecoder().decode(files["RobotSim/assets/Video_20260726_224007_045.mp4"]), "VIDEO-BYTES");
+  assert.deepEqual(foreignAssetRefs(documentAssetRefs(doc), "RobotSim"), []);
+});
+
+await testAsync("buildProjectZip does NOT modify the document it was handed", async () => {
+  // Only the archived copy is rewritten — the stored deck keeps saying what the
+  // author wrote, matching the server's on-disk behavior.
+  const before = JSON.stringify(robotSimDoc);
+  await buildProjectZip("RobotSim", robotSimDoc, fakeStore({ RobotSim: {}, Untitled: { "clip.mp4": "V" } }));
+  assert.equal(JSON.stringify(robotSimDoc), before);
+});
+
+await testAsync("buildProjectZip de-collides a borrowed basename against the local one", async () => {
+  // The client's scheme is uniqueAssetName's "logo 2.png"; the server's is
+  // "logo-2.png". They differ ON PURPOSE (each matches the rest of its own
+  // storage's naming), which is why the ARCHIVE stays interchangeable while the
+  // NAMES need not be identical — the ref and the member always agree.
+  const doc = {
+    meta: { name: "Deck" },
+    slides: [{ delta: { items: { own: { src: "/asset/Deck/logo.png" }, borrowed: { src: "/asset/Lender/logo.png" } } } }],
+  };
+  const store = fakeStore({ Deck: { "logo.png": "LOCAL" }, Lender: { "logo.png": "FOREIGN" } });
+  const { bytes, warnings } = await buildProjectZip("Deck", doc, store);
+  const { files, doc: archived } = inspect(bytes);
+  assert.deepEqual(warnings, []);
+  const refs = documentAssetRefs(archived).map((r) => r.file);
+  assert.deepEqual(refs, ["logo.png", "logo 2.png"]);
+  assert.equal(new TextDecoder().decode(files["Deck/assets/logo.png"]), "LOCAL", "the incumbent was overwritten");
+  assert.equal(new TextDecoder().decode(files["Deck/assets/logo 2.png"]), "FOREIGN");
+});
+
+await testAsync("buildProjectZip WARNS on an unreadable foreign asset and keeps its ref", async () => {
+  // Reported, never silent — and the ref is left as authored, because a findable
+  // broken reference beats one pointing at a local file that does not exist. The
+  // asymmetry with a missing LOCAL asset (which throws) is deliberate: a missing
+  // local asset means this project's own storage is inconsistent.
+  const doc = { meta: { name: "Broken" }, slides: [{ delta: { items: { v: { src: "/asset/Ghost/gone.mp4" } } } }] };
+  const { bytes, warnings } = await buildProjectZip("Broken", doc, fakeStore({ Broken: {} }));
+  const { members, doc: archived } = inspect(bytes);
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0].includes("/asset/Ghost/gone.mp4"), warnings[0]);
+  assert.deepEqual(members, ["Broken/doc.json"]);
+  assert.equal(archived.slides[0].delta.items.v.src, "/asset/Ghost/gone.mp4");
+});
+
+await testAsync("buildProjectZip THROWS on a missing LOCAL asset (not a warning)", async () => {
+  // The store lists it but cannot produce it: this project's own storage is
+  // inconsistent, which is a bug, not an author's problem to see later.
+  const store = {
+    list: async () => [{ name: "ghost.png" }],
+    get: async () => {
+      throw new Error("no such asset");
+    },
+  };
+  await assert.rejects(() => buildProjectZip("Deck", { meta: { name: "Deck" }, slides: [] }, store), /no such asset/);
+});
+
+await testAsync("buildProjectZip leaves a self-contained doc's archive alone", async () => {
+  const doc = { meta: { name: "Solo" }, slides: [{ delta: { items: { i: { src: "/asset/Solo/a.png" } } } }] };
+  const { bytes, warnings } = await buildProjectZip("Solo", doc, fakeStore({ Solo: { "a.png": "A" } }));
+  const { members, doc: archived } = inspect(bytes);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(members, ["Solo/assets/a.png", "Solo/doc.json"]);
+  assert.deepEqual(archived, doc); // no gratuitous rewrite
 });
 
 console.log(`\n${passed} asset-localization tests passed.`);

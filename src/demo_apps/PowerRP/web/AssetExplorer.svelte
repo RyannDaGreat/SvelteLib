@@ -114,47 +114,72 @@
   }
 
   /**
-   * Pure function. An asset tile's hover sentence: name, kind, the two gestures
-   * the tile answers to, and the SIZE + AGE the server already sends in the same
-   * listing object. `size`/`mtime` appear nowhere else in the UI, so this tip is
-   * the only place a near-identical pair of files can be told apart.
+   * Pure function. An asset tile's hover tip as THREE STRUCTURED PARTS, not one
+   * sentence — the shape the user ruled for every tile tip in this app:
+   *
+   *     line 1  the FILE NAME, on its own and BOLD
+   *     line 2  kind · size, ITALIC (size through web/fileSize.js)
+   *     line 3+ the description: the age, and what the tile's gestures do
+   *
+   * Verbatim ruling: "the file name should always be the top and then everything
+   * else comes in a new line after that… Number.plugin.js in the hover tooltip
+   * should always be bold. The file name should always be bold in that tooltip."
+   *
+   * WHY PARTS AND NOT A STRING. The old version returned one em-dash-joined
+   * sentence, which cannot be styled: there is no way for a renderer to bold just
+   * the name inside "clip.mp4 — video · 25.8MB — drag onto…". Returning the parts
+   * lets the Tooltip's `tip` SNIPPET mark each one up (see the grid below) while
+   * keeping every decision about WHAT the tip says pure and testable here. It is
+   * also why `name` is a field rather than being pre-concatenated: the caller bolds
+   * it, so it must arrive unglued from anything else.
    *
    * A missing size or mtime DROPS its clause rather than printing a placeholder —
-   * the projectMetaLine convention (web/projectPreviews.js).
+   * the projectMetaLine convention (web/projectPreviews.js). `meta` is therefore
+   * "kind" alone for a listing with no metadata, never "kind · undefined".
    *
-   * THE DOUBLE-CLICK CLAUSE IS PER KIND, because the gesture now does three
-   * different things (onTileDoubleClick): a PLUGIN asset opens the JavaScript
-   * editor, a DATA asset opens a table, everything else plays/shows its media. One
-   * flat "double-click to preview" was true of all assets until those two kinds
-   * existed and is now a lie about both — and the code editor in particular is the
-   * kind of outcome a user should not discover by accident.
+   * THE DOUBLE-CLICK CLAUSE IS PER KIND, because the gesture does three different
+   * things (onTileDoubleClick): a PLUGIN asset opens the JavaScript editor, a DATA
+   * asset opens a table, everything else plays/shows its media. One flat
+   * "double-click to preview" was true of all assets until those two kinds existed
+   * and is now a lie about both — and the code editor in particular is the kind of
+   * outcome a user should not discover by accident.
    *
-   * @param {{name:string, kind:string, size?:number, mtime?:number}} a - one listAssets entry
+   * @param {{name:string, kind:string, size?:number, mtime?:number, builtin?:boolean}} a - one listAssets entry
    * @param {number} nowMs - current time in MILLISECONDS, for the relative age
-   * @returns {string}
+   * @returns {{name: string, meta: string, description: string}}
    *
    * @example
-   * // A 25.8MB video modified two hours ago:
-   * // assetTip({name:"clip.mp4", kind:"video", size:27100000, mtime:0}, 2*3600*1000)
-   * // => 'clip.mp4 — video · 25.8MB · 2 hours ago — drag onto the canvas to insert at a point, or double-click to preview'
+   * // A 25.8MB video modified two hours ago — name alone, then kind · size, then prose:
+   * // assetTipParts({name:"clip.mp4", kind:"video", size:27100000, mtime:0}, 2*3600*1000)
+   * // => {name: "clip.mp4",
+   * //     meta: "video · 25.8MB",
+   * //     description: "Modified 2 hours ago. Drag onto the canvas to insert at a point, or double-click to preview."}
    * @example
-   * // A listing with no metadata still names the gestures:
-   * // assetTip({name:"x.png", kind:"image"}, 0)
-   * // => 'x.png — image — drag onto the canvas to insert at a point, or double-click to preview'
+   * // A listing with no size/mtime drops both clauses and still names the gestures:
+   * // assetTipParts({name:"x.png", kind:"image"}, 0)
+   * // => {name: "x.png", meta: "image",
+   * //     description: "Drag onto the canvas to insert at a point, or double-click to preview."}
    * @example
    * // A PLUGIN asset's double-click EDITS ITS SOURCE, and the tip says so:
-   * // assetTip({name:"gear.plugin.js", kind:"plugin"}, 0)
-   * // => 'gear.plugin.js — plugin — drag onto the canvas to insert at a point, or double-click to edit its JavaScript'
+   * // assetTipParts({name:"Number.plugin.js", kind:"plugin", size:2048}, 0).description
+   * // => "Drag onto the canvas to insert at a point, or double-click to edit its JavaScript."
    * @example
-   * // A DATA asset's double-click opens a TABLE:
-   * // assetTip({name:"sales.csv", kind:"data"}, 0)
-   * // => 'sales.csv — data — drag onto the canvas to insert at a point, or double-click to view the table'
+   * // A BUILT-IN says so first: it is not in the project and cannot be deleted,
+   * // and its editor opens read-only (a copy is what Save writes).
+   * // assetTipParts({name:"clock_digital.plugin.js", kind:"plugin", size:900, builtin:true}, 0).description
+   * // => "Built-in — ships with the app, not stored in this project. Drag onto the canvas to insert at a point, or double-click to edit its JavaScript."
    */
-  export function assetTip(a, nowMs) {
+  export function assetTipParts(a, nowMs) {
     const facts = [a.kind];
     if (a.size != null) facts.push(humanReadableFileSize(a.size));
-    if (a.mtime != null) facts.push(relativeMtime(a.mtime, nowMs));
-    return `${a.name} — ${facts.join(" · ")} — drag onto the canvas to insert at a point, or ${doubleClickClause(a.kind)}`;
+    const sentences = [];
+    if (a.builtin) sentences.push("Built-in — ships with the app, not stored in this project.");
+    // The AGE moves into the description rather than sitting in the meta line: the
+    // ruling fixes line 2 as "kind · size", and an age is prose about the file's
+    // history rather than an identity fact of the same kind as its type and weight.
+    if (a.mtime != null) sentences.push(`Modified ${relativeMtime(a.mtime, nowMs)}.`);
+    sentences.push(`Drag onto the canvas to insert at a point, or ${doubleClickClause(a.kind)}.`);
+    return { name: a.name, meta: facts.join(" · "), description: sentences.join(" ") };
   }
 
   /**
@@ -555,6 +580,63 @@
     }
   }
 
+  // ── DOWNLOAD ONE ASSET (user ruling: "In addition to the trash icon and copy
+  // path icon, there should also always be a download icon") ──────────────────
+  //
+  // THROUGH THE ASSET STORE, not a link straight at `a.url`. An <a href="/asset/…"
+  // download> works only in HTTP mode; in browser-local (IndexedDB) mode there is no
+  // origin serving that path, so the same markup would download the app's 404 page
+  // under the asset's name — a silent wrong answer of exactly the kind this pane
+  // refuses. store.get() returns the bytes in BOTH modes, so one code path serves
+  // both, and it also covers the built-in library (whose `url` is a
+  // `builtin:` IDENTIFIER that is not fetchable at all — see downloadAsset's
+  // built-in branch).
+  //
+  // The object URL is revoked after the click: unlike the store's own memoized
+  // preview URLs (which must outlive a mounted <img>), this one exists for exactly
+  // one navigation and leaking one per download would be a real leak.
+
+  /** Command (downloads a file; mutates nothing in the app). Save ONE asset to the
+   *  user's disk. Reads the bytes through the storage seam — or, for a BUILT-IN,
+   *  straight from the bundled source string, which is the only place those bytes
+   *  exist — mints a temporary object URL, clicks a synthetic <a download>, and
+   *  revokes it. Failures surface in the pane's own error line AND the console; a
+   *  download that did not happen must never look like one that did. */
+  async function downloadAsset(a) {
+    error = null;
+    try {
+      // A built-in is not in any store: its bytes ARE the bundled source (see
+      // builtinAssets.builtinWidgetAssets). Wrapping it in a Blob here means the
+      // download path below is identical for both origins.
+      const blob = a.builtin
+        ? new Blob([a.source], { type: "text/javascript" })
+        : await assetStore().get(app.projectName(), a.name);
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = a.name; // the asset's own basename, never the resolved URL's
+      // Must be IN the document for the synthetic click to navigate in Firefox;
+      // removed immediately after, so no stray node outlives the download.
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+    } catch (e) {
+      error = String(e?.message ?? e);
+      console.error(`AssetExplorer: could not download "${a.name}":`, e);
+    }
+  }
+
+  /** Query. The download button's hover sentence. It names the FILE and the SIZE
+   *  being written, because that is the one thing a user wants confirmed before a
+   *  25MB video lands in their Downloads folder — and for a built-in it says the
+   *  bytes come from the app rather than from the project. */
+  function downloadTip(a) {
+    const size = a.size != null ? ` (${humanReadableFileSize(a.size)})` : "";
+    if (a.builtin) return `Download “${a.name}”${size} — the built-in widget's source, as shipped with the app.`;
+    return `Download “${a.name}”${size} to your computer.`;
+  }
+
   /** Display label for a using item — the Inspector picker's convention:
    *  authored name, else "<Type> (id-prefix)". */
   function userLabel(u) {
@@ -914,21 +996,43 @@
              built-in of that name and Svelte would refuse the duplicate key. -->
         {#each shownAssets as a (a.url)}
           <div class="ae-cell">
-            <!-- The tip names BOTH of the tile's gestures. Double-click-to-preview
-                 is deliberately NOT a shortcut-registry entry (that bar announces
-                 the canvas context), so this tip is the only thing that can teach
-                 it — and an unannounced double-click is exactly the defect the
-                 canvas half of this pass fixed.
-                 IT ALSO CARRIES SIZE + AGE, which the server already sends in the
-                 same listing object (server.py: {name, size, mtime, kind, url}).
-                 They cost nothing to show and answer "which of these near-identical
-                 files is the one I want" — and this tip is the only place they
-                 appear anywhere in the app.
+            <!-- THE TILE TIP, in the user's ruled STRUCTURE (assetTipParts):
+                   line 1  the FILE NAME, alone and BOLD
+                   line 2  kind · size, ITALIC (size via web/fileSize.js)
+                   line 3  the description — age, and what the gestures do
+                 A `tip` SNIPPET rather than `text=`, because the ruling is about
+                 MARKUP ("the file name should always be bold in that tooltip") and a
+                 flat string cannot bold one of its own clauses. The decisions about
+                 WHAT it says stay in the pure assetTipParts above; this only marks up
+                 the parts it returns.
+
+                 The description names BOTH of the tile's gestures. Double-click is
+                 deliberately NOT a shortcut-registry entry (that bar announces the
+                 canvas context), so this tip is the only thing that can teach it — and
+                 an unannounced double-click is exactly the defect the canvas half of
+                 this pass fixed. The tip also carries SIZE + AGE, which the server
+                 already sends in the same listing object (server.py: {name, size,
+                 mtime, kind, url}) and which appear nowhere else in the app: they
+                 answer "which of these near-identical files is the one I want".
+
                  THE TOOLTIP WRAPS THE WHOLE CELL, not just .ae-tile: .ae-name is
                  ellipsized (app.css), so hovering a truncated name — the most
                  natural way to try to read a truncated name — used to give nothing,
-                 because the label sat outside this wrapper. -->
-            <Tooltip text={assetTip(a, listedNowMs)}>
+                 because the label sat outside this wrapper.
+
+                 anchor="element" IS THE PLACEMENT RULING ("the tooltip should never
+                 be intersecting [the asset]… fully below or fully above"): it pins the
+                 tip to this cell's rect instead of to the cursor, so it sits wholly
+                 above or wholly below and can never cover the thumbnail whose name it
+                 is reporting. Tooltip flips sides by available room, which is what
+                 makes a bottom-row tile's tip go UP. -->
+            <Tooltip anchor="element">
+              {#snippet tip()}
+                {@const parts = assetTipParts(a, listedNowMs)}
+                <div class="ae-tip-name">{parts.name}</div>
+                <div class="ae-tip-meta">{parts.meta}</div>
+                <div class="ae-tip-desc">{parts.description}</div>
+              {/snippet}
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="ae-tile" draggable="true" ondragstart={(e) => onTileDragStart(e, a)}>
                 <!-- Generalized tile media + badge (manifest #25): image/video
@@ -960,27 +1064,61 @@
                     </button>
                   </Tooltip>
                 {/if}
-                <Tooltip text={justCopiedUrl === a.url ? "Copied!" : "Copy served path to clipboard"}>
-                  <button
-                    class="btn-icon ae-copy-path"
-                    aria-label={justCopiedUrl === a.url ? `Copied path for ${a.name}` : `Copy path for ${a.name}`}
-                    onclick={() => copyAssetPath(a)}
-                  >
-                    <iconify-icon icon={justCopiedUrl === a.url ? "mdi:check" : "mdi:content-copy"} width="14" height="14"></iconify-icon>
-                  </button>
-                </Tooltip>
-                <!-- The tip states WHICH of the trash can's two outcomes a click
-                     will take (see deleteTip): an unreferenced asset is deleted
-                     immediately and irreversibly, a referenced one asks first. -->
-                <Tooltip text={deleteTip(a.name, assetUserCounts.get(a.name) ?? 0)}>
-                  <button
-                    class="btn-icon ae-trash"
-                    aria-label={`Delete ${a.name}`}
-                    onclick={() => onTrashClick(a)}
-                  >
-                    <iconify-icon icon="mdi:trash-can-outline" width="14" height="14"></iconify-icon>
-                  </button>
-                </Tooltip>
+                <!-- THE ALWAYS-PRESENT ACTION ROW along the tile's bottom edge:
+                     copy-path, DOWNLOAD, trash. One flex row rather than three
+                     absolutely-positioned corners, because the download button (user
+                     ruling: "there should also always be a download icon") is the
+                     THIRD always-present action and a square tile has only two bottom
+                     corners — the third would have had to overlap one of the others or
+                     move to the top-left, where the PDF page-count badge already
+                     lives. A row also keeps the three reading in one predictable order
+                     instead of the user hunting corners. The insert affordance stays in
+                     its own top-right corner: it is image-only, so it is not part of
+                     this always-present set. -->
+                <div class="ae-tile-actions">
+                  <Tooltip text={justCopiedUrl === a.url ? "Copied!" : "Copy served path to clipboard"}>
+                    <button
+                      class="btn-icon ae-copy-path"
+                      aria-label={justCopiedUrl === a.url ? `Copied path for ${a.name}` : `Copy path for ${a.name}`}
+                      onclick={() => copyAssetPath(a)}
+                    >
+                      <iconify-icon icon={justCopiedUrl === a.url ? "mdi:check" : "mdi:content-copy"} width="14" height="14"></iconify-icon>
+                    </button>
+                  </Tooltip>
+                  <!-- DOWNLOAD — reads the bytes through the asset STORE (or, for a
+                       built-in, its bundled source) so it works in BOTH http and
+                       IndexedDB modes; see downloadAsset. -->
+                  <Tooltip text={downloadTip(a)}>
+                    <button
+                      class="btn-icon ae-download"
+                      aria-label={`Download ${a.name}`}
+                      onclick={() => downloadAsset(a)}
+                    >
+                      <iconify-icon icon="mdi:download" width="14" height="14"></iconify-icon>
+                    </button>
+                  </Tooltip>
+                  <!-- The tip states WHICH of the trash can's two outcomes a click
+                       will take (see deleteTip): an unreferenced asset is deleted
+                       immediately and irreversibly, a referenced one asks first.
+                       A BUILT-IN HAS NO TRASH CAN AT ALL. It is not stored in the
+                       project, so there is nothing to delete: the button used to be
+                       rendered anyway and called deleteProjectAsset on a file the
+                       backend has never heard of, which 404'd — the same
+                       "a built-in tile is not a project asset" defect as the
+                       double-click 404. Absent beats disabled here: an affordance that
+                       could never do anything should not occupy the row. -->
+                  {#if !a.builtin}
+                    <Tooltip text={deleteTip(a.name, assetUserCounts.get(a.name) ?? 0)}>
+                      <button
+                        class="btn-icon ae-trash"
+                        aria-label={`Delete ${a.name}`}
+                        onclick={() => onTrashClick(a)}
+                      >
+                        <iconify-icon icon="mdi:trash-can-outline" width="14" height="14"></iconify-icon>
+                      </button>
+                    </Tooltip>
+                  {/if}
+                </div>
               </div>
               <div class="ae-name">{a.name}</div>
             </Tooltip>
