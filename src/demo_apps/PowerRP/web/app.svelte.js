@@ -48,6 +48,10 @@ import * as projectApi from "./projectApi.js";
 import { assetStore, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason } from "./storageMode.js";
 import { localAssetStore, localProjectStore } from "./assetStore.js";
 import { buildProjectZip, downloadBytes, importProjectZipLocal } from "./projectZip.js";
+// The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
+// Assets" and the self-contained .zip export (web/assetLocalize.js).
+import { assetRef, uniqueAssetName } from "./assetRef.js";
+import { documentAssetRefs, foreignAssetRefs, localizationPlan, rewriteAssetRefs } from "./assetLocalize.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
@@ -3420,6 +3424,74 @@ export class PowerRPApp {
     }
     const { warnings } = await projectApi.downloadProjectZip(name);
     for (const w of warnings) console.warn(`downloadZip(${name}): ${w}`);
+  }
+
+  /** Query. How many of this document's asset references point at ANOTHER project
+   *  — the count "Localize Foreign Assets" would move. Zero means the project is
+   *  already self-contained, which is what gates the command out of the palette. */
+  foreignAssetCount() {
+    return foreignAssetRefs(documentAssetRefs(this.doc), this.projectName()).length;
+  }
+
+  /**
+   * Command (mutates the asset store AND the document; ONE undo unit). Copy every
+   * asset this document borrows from another project INTO this project, and repoint
+   * the references at the local copies.
+   *
+   * WHY THIS EXISTS AS A USER-FACING ACTION and not only inside the exporters. The
+   * exporters localize into the ARCHIVE, which fixes the .zip but leaves the live
+   * project still borrowing — so the next export does the same work again, and the
+   * project remains one deleted folder away from a hole. This makes the fix
+   * PERMANENT and visible: after it runs, the document says what it actually
+   * depends on. The exporters keep their own localization anyway, because an author
+   * must never be REQUIRED to run a maintenance command to get a working archive.
+   *
+   * WHERE THE FOREIGN REFS COME FROM: Save-As. `saveProjectAs` renames
+   * doc.meta.name and saves the document to a NEW project folder, while the assets
+   * stay in the folder they were uploaded to — so every `src` keeps naming the old
+   * project. This server serves `/asset/<any project>/…` to anyone, so nothing
+   * breaks locally and the divergence is invisible until the deck leaves the
+   * machine.
+   *
+   * Runs through the asset store seam, so it works identically in HTTP and static
+   * mode. An unreadable foreign asset is REPORTED and its reference left alone
+   * (still findable) rather than repointed at a local file that will not exist.
+   *
+   * @param {string} name - the project to localize into (default: the open one)
+   * @returns {Promise<{moved: Array<{from: string, to: string}>, warnings: string[]}>}
+   */
+  async localizeForeignAssets(name = this.projectName()) {
+    const store = assetStore();
+    const listing = await store.list(name);
+    const plan = localizationPlan(
+      documentAssetRefs(this.doc),
+      name,
+      listing.map((a) => a.name),
+      uniqueAssetName,
+    );
+    const moved = [];
+    const warnings = [];
+    const landed = {};
+    for (const c of plan.copies) {
+      let blob;
+      try {
+        blob = await store.get(c.project, c.file);
+      } catch (e) {
+        warnings.push(`/asset/${c.project}/${c.file} could not be read (${e?.message ?? e}); its reference was left as-is`);
+        continue;
+      }
+      // `put` de-collides again on its own, so the FINAL name is whatever the store
+      // returns — not the plan's guess. Trusting the guess is how a copy would end
+      // up stored as "logo-2.png" while the document pointed at "logo 2.png".
+      const res = await store.put(name, blob, c.as);
+      landed[c.ref] = assetRef(name, res.name);
+      moved.push({ from: c.ref, to: landed[c.ref] });
+    }
+    if (moved.length) this.commit(rewriteAssetRefs(this.doc, (e) => landed[e.ref] ?? null));
+    for (const w of warnings) console.warn(`localizeForeignAssets(${name}): ${w}`);
+    for (const m of moved) console.log(`localizeForeignAssets(${name}): ${m.from} → ${m.to}`);
+    if (!moved.length && !warnings.length) console.log(`localizeForeignAssets(${name}): already self-contained — nothing to move.`);
+    return { moved, warnings };
   }
 
   // ── Opening a .zip: the inverse of downloadZip ─────────────────────────────

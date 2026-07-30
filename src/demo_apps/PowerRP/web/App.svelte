@@ -866,6 +866,14 @@
     { id: "save-to-server", title: "Save Project to Server…", icon: "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
     { id: "open-project", title: "Open Project from Server…", icon: "mdi:folder-network-outline", run: (a) => a.openProject() },
     { id: "download-zip", title: "Export Project as .zip (with assets; saves to the server first)", icon: "mdi:folder-zip-outline", run: (a) => a.downloadZip() },
+    // A document may reference /asset/<ANOTHER project>/<file> — Save-As mints
+    // exactly that (it renames doc.meta.name and saves to a new folder while the
+    // assets stay where they were uploaded). The exports now localize into the
+    // ARCHIVE on their own, so nobody is REQUIRED to run this; it makes the fix
+    // permanent in the project itself, so the document says what it actually
+    // depends on. Gated OUT when there is nothing foreign, since a command that
+    // reports "nothing to do" is noise in a palette.
+    { id: "localize-foreign-assets", title: "Localize Foreign Assets (copy assets borrowed from other projects into this one)", icon: "mdi:folder-move-outline", aliases: ["self-contained", "foreign assets", "copy assets in", "fix missing asset", "make portable"], when: (a) => a.foreignAssetCount() > 0, requires: "at least one asset referenced from another project", help: "An asset uploaded to a different project keeps its /asset/<that project>/… reference even after Save-As renames this one. Nothing breaks while both projects sit on one server, so the borrowing is invisible — until the deck leaves the machine. This copies those files in and repoints the references, as one undo unit.", run: (a) => a.localizeForeignAssets() },
     // The INVERSE of download-zip, and titled by the same scheme: Import = from
     // LOCAL DISK, the extension named, "…" because it opens a picker. Its noun is
     // PROJECT (assets included), which is exactly what separates it from
