@@ -66,12 +66,13 @@
      Tinted with --a-modifier, the design system's GOLD informational accent,
      not with --a-guide (danger red): static mode is a working mode, and
      coloring it like a failure would misreport what it is. */
-  --a-static-notice-accent: var(--a-modifier);
-  --a-static-notice-bg: color-mix(in srgb, var(--a-modifier) 12%, transparent);
-  --a-static-notice-border: color-mix(in srgb, var(--a-modifier) 40%, transparent);
-  --a-static-notice-text-opacity: 0.8; /* the detail line sits under the title */
-  --a-static-notice-title-weight: 600;
-  --a-static-notice-icon-nudge: 2px; /* aligns the glyph with the title's cap height */
+  /* BROWSER-STORAGE (static mode) accent — the file-ops save/load buttons turn
+     this color and carry a matching tooltip when projects live in IndexedDB
+     (user ruling 2026-07-30, replacing the top-left chip that could overlap the
+     project name). Warning tint, not danger red: a working mode, not an error. */
+  --a-storage-local-ink: var(--a-modifier);
+  --a-storage-local-bg: color-mix(in srgb, var(--a-modifier) 12%, transparent);
+  --a-storage-local-border: color-mix(in srgb, var(--a-modifier) 40%, transparent);
 
   /* Canvas overlay strokes/sizes */
   --a-selection-stroke: 1.5px;
@@ -1676,66 +1677,23 @@ textarea {
   --sp-handle-hit-pad: var(--a-split-handle-hit);
 }
 
-/* ── STATIC-MODE NOTICE (web/StaticModeNotice.svelte) ────────────────────────
-   Shown ONLY when there is no project server: a full-width strip below the
-   toolbar saying the work lives in this browser and naming the server-only
-   features that are therefore unavailable. It is INFORMATIONAL, not an error, so
-   it uses the warning tint rather than the danger red — static mode is a working
-   mode, and coloring it like a failure would misreport it. */
-.static-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--a-sp-3);
-  padding: var(--a-sp-2) var(--a-sp-3);
-  background: var(--a-static-notice-bg);
-  border-bottom: var(--a-hairline) solid var(--a-static-notice-border);
-  flex: 0 0 auto; /* a notice never absorbs the canvas's height */
+/* ── BROWSER-STORAGE BUTTONS (static mode) ────────────────────────────────────────────
+   When there is no project server, the save/load toolbar buttons ARE the
+   indicator: storage-yellow ink and a matching tooltip (Toolbar.svelte adds
+   .storage-local + .storage-local-tip in static mode only). */
+.btn-icon.storage-local {
+  color: var(--a-storage-local-ink);
 }
 
-.static-notice-icon {
-  color: var(--a-static-notice-accent);
-  flex: 0 0 auto;
-  margin-top: var(--a-static-notice-icon-nudge);
-}
-
-.static-notice-body {
-  flex: 1;
-  min-width: 0; /* lets the text wrap rather than widening the strip */
-  display: flex;
-  flex-direction: column;
-  gap: var(--a-sp-1);
-}
-
-.static-notice-title {
-  font-size: var(--a-font-md);
-  font-weight: var(--a-static-notice-title-weight);
-}
-
-.static-notice-text {
-  font-size: var(--a-font-sm);
-  opacity: var(--a-static-notice-text-opacity);
-}
-
-/* The dismissed form: a small always-present badge, so which storage this
-   session uses stays answerable at a glance (see the component's docblock). */
-/* The resting-state chip: pinned to the canvas area's TOP-LEFT corner, out of
-   the layout flow entirely (user ruling: an indicator, not a banner). Sits
-   above the canvas but below floating panels. */
-.static-badge {
-  position: absolute;
-  top: var(--a-sp-2);
-  left: var(--a-sp-2);
-  z-index: var(--a-z-popover);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--a-sp-2);
-  height: var(--a-control-h);
-  padding: 0 var(--a-sp-3);
-  background: var(--a-static-notice-bg);
-  border: var(--a-hairline) solid var(--a-static-notice-border);
-  color: var(--a-static-notice-accent);
-  font-size: var(--a-font-sm);
-  cursor: pointer; /* shrink-wraps: a corner chip, not a row (user ruling) */
+/* The matching tooltip: same warning palette as the buttons. :has() scopes the
+   override to tips whose content Toolbar marked, so every other tooltip keeps
+   the standard chrome. Doubled class = 0,3,0: the component's scoped rule
+   compiles to .tt-tip.svelte-hash (0,2,0) and is injected after this sheet, so
+   a bare .tt-tip:has() would lose the tie (the eq-input font-size lesson). */
+.tt-tip.tt-tip:has(.storage-local-tip) {
+  background: var(--a-storage-local-bg);
+  border-color: var(--a-storage-local-border);
+  color: var(--a-storage-local-ink);
 }
 
 /* ── THE standard controls — reuse these; do not invent new button styles ── */
