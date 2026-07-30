@@ -9,6 +9,7 @@
 -->
 <script>
   import "iconify-icon"; // registers the <iconify-icon> web component (used in the Open Project grid's placeholder tiles)
+  import { untrack } from "svelte"; // panel re-shaping reads pane weights untracked — see the visibility effect
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
@@ -310,8 +311,12 @@
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
 
-  // SplitPane splits are BOUNDARY positions: [0.16, 0.78] → 3 panes.
-  let hSplits = $state([0.16, 0.78]);
+  // The OUTER row: [left column | Canvas | right column]. Same weight-not-boundary
+  // treatment as the columns below, for the same reason and one more: when EVERY
+  // panel in a column is hidden the column itself must go, divider included, or
+  // hiding the last panel of a column would leave a sliver of empty chrome with a
+  // live handle beside it. Weights reproduce the old [0.16, 0.78] boundaries.
+  const COLUMN_WEIGHTS = { left: 0.16, canvas: 0.62, right: 0.22 };
 
   // ── PANEL VISIBILITY LAYOUT (core/panels.js) ────────────────────────────────
   // A pane's SHARE of its column lives as a per-panel WEIGHT, not as a boundary
@@ -357,20 +362,27 @@
     });
   }
 
-  // The two columns' boundary arrays. $state (SplitPane needs `bind:`) kept in
-  // sync with the weights by the effect below rather than $derived, which cannot
-  // be bound to. The effect is the ONLY writer besides SplitPane's own drag.
+  // The two columns' boundary arrays. $state, not $derived, because SplitPane
+  // needs `bind:splits` to write a live drag back — and a $derived cannot be
+  // bound. The effect below is the only other writer.
   let leftSplits = $state(columnSplits(panelsInColumn("left").filter((p) => p.defaultVisible)));
   let rightSplits = $state(columnSplits(panelsInColumn("right").filter((p) => p.defaultVisible)));
-  // Reads the VISIBILITY only (not the weights): re-deriving on every weight
-  // change would fight the live drag it just recorded. A visibility flip is the
-  // one event that must re-shape the column.
+
+  /** Query. The visible-panel signature of a column ("1,0" style), the ONE thing a
+   *  visibility change alters and a drag does not. Depending on this instead of on
+   *  the panels themselves is what stops the re-shaping effect from firing on every
+   *  drag frame and stomping the boundaries SplitPane just wrote. */
+  const visibilitySignature = $derived(PANELS.map((p) => (app.panelVisible[p.id] ? 1 : 0)).join(","));
+
+  // RE-SHAPE on a visibility flip, and only then. The weights are read through
+  // untrack() so this effect has exactly one dependency; without that the drag it
+  // records below would immediately re-derive the boundaries it came from.
   $effect(() => {
-    const leftIds = panelsInColumn("left").map((p) => app.panelVisible[p.id]).join();
-    const rightIds = panelsInColumn("right").map((p) => app.panelVisible[p.id]).join();
-    leftIds; rightIds; // the tracked reads; the untracked weights come from below
-    leftSplits = columnSplits(visiblePanels("left"));
-    rightSplits = columnSplits(visiblePanels("right"));
+    visibilitySignature;
+    untrack(() => {
+      leftSplits = columnSplits(visiblePanels("left"));
+      rightSplits = columnSplits(visiblePanels("right"));
+    });
   });
 
   // ── Core commands (plugins added theirs at registration) ──────────────────
