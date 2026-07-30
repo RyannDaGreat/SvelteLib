@@ -39,6 +39,10 @@ jobs:
         working-directory: src/demo_apps/PowerRP/desktop
         run: npm run package:dmg
 
+      - name: FIRST-RUN SMOKE TEST — a release that cannot boot never ships
+        working-directory: src/demo_apps/PowerRP/desktop
+        run: bash smoke_test.sh
+
       - name: Stable-name copy for /releases/latest/download/PowerRP.dmg
         working-directory: src/demo_apps/PowerRP/desktop
         run: cp dist/PowerRP-*.dmg dist/PowerRP.dmg
