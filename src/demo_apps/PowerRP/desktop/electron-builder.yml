@@ -18,6 +18,9 @@ mac:
   target:
     - dir
     - dmg
-  # Unsigned on purpose (v1, local). Shipping to others = Developer ID +
-  # notarization via CI secrets — see .github/workflows/release-app.yml.
-  identity: null
+  # NO identity key: electron-builder then applies its own AD-HOC signature,
+  # which keeps the bundle seal VALID. `identity: null` (tried first) skips
+  # signing entirely after the bundle is modified — a BROKEN seal, which
+  # macOS greets with the "will damage your computer" malware dialog, not the
+  # ordinary "unverified developer" one. Real Developer ID + notarization for
+  # shipping to strangers lands via CI secrets — see release-app.yml.

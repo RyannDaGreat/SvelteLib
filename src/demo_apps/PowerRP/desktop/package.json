@@ -7,8 +7,9 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "package": "node write_repo_path.js && electron-builder --dir",
-    "package:dmg": "node write_repo_path.js && electron-builder"
+    "package": "node write_repo_path.js && electron-builder --dir && npm run dequarantine",
+    "package:dmg": "node write_repo_path.js && electron-builder && npm run dequarantine",
+    "dequarantine": "xattr -cr dist/mac-arm64/PowerRP.app"
   },
   "devDependencies": {
     "electron": "^31.3.0",
