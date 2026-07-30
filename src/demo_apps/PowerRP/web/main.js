@@ -12,6 +12,54 @@ import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
 // share one memoized promise; each awaits it before its first frame.
 const fontsLoaded = loadFonts();
 import { assetStore, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
+import { REPO_PARAM, fetchProjectFromRepo } from "./githubProject.js";
+import { localAssetStore, localProjectStore } from "./assetStore.js";
+import { uniqueProjectName } from "./assetRef.js";
+import { mimeForAsset } from "./projectZip.js";
+
+/**
+ * Command (network + storage + app mutation). ?repo=<owner>/<name> BOOT WIRING —
+ * opens a GitHub-hosted project (the share-link the README documents).
+ *
+ * TEMPORARY SHAPE, deliberately: this is the direct-import form — the draft-open
+ * model will subsume this call so a repo opens as an UNSAVED DRAFT; until then a
+ * REVISIT of the same link REOPENS the project it already imported (matched by
+ * name) instead of minting "X 2" copies. Static mode only for now: the local
+ * stores are the import target and the library the app lists. Every failure is
+ * LOUD — a share link that silently does nothing is how this bug shipped once.
+ */
+async function openRepoParamProject() {
+  const slug = new URLSearchParams(location.search).get(REPO_PARAM);
+  if (!slug || new URLSearchParams(location.search).has("cli")) return;
+  const app = await (async () => {
+    const APP_WAIT_MS = 10000, POLL_MS = 50; // the app mounts in well under a second; 10s means something broke
+    for (let waited = 0; waited < APP_WAIT_MS; waited += POLL_MS) {
+      if (window.__powerrp_app) return window.__powerrp_app;
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+    throw new Error("?repo=: the app never mounted");
+  })();
+  if (!isStatic()) { console.error(`PowerRP: ?repo=${slug} is not wired for server mode yet — open the static site, or import the repo as a zip.`); return; }
+  try {
+    const existing = (await localProjectStore.list()).map((p) => p.name);
+    const { root, doc, assets } = await fetchProjectFromRepo(slug, {
+      onProgress: ({ message }) => console.info(`PowerRP ?repo=: ${message}`),
+    });
+    const wanted = (root || slug.split("/").pop() || "Imported Project").trim();
+    let name = existing.includes(wanted) ? wanted : null; // idempotent revisit: reopen, don't duplicate
+    if (!name) {
+      name = uniqueProjectName(wanted, existing);
+      await localProjectStore.save(name, { ...doc, meta: { ...doc.meta, name } });
+      for (const a of assets) await localAssetStore.put(name, new Blob([a.bytes], { type: mimeForAsset(a.name) }), a.name);
+    }
+    await localAssetStore.primeUrls(name);
+    await app.loadProject(name);
+    app.assetsVersion++;
+  } catch (e) {
+    console.error(`PowerRP: could not open ?repo=${slug} — ${e?.message ?? e}`);
+    throw e;
+  }
+}
 import { buildProjectZip, parseProjectZip } from "./projectZip.js";
 
 // DECIDE WHERE STORAGE LIVES BEFORE THE APP MOUNTS. One cheap GET at
@@ -120,6 +168,7 @@ if (!new URLSearchParams(location.search).has("cli")) {
     .then(() => {
       bootStage("mount", "Building the editor", {});
       mount(App, { target: document.getElementById("app") });
+      openRepoParamProject(); // after mount: needs the live app (fire-and-forget, loud on failure)
     })
     // BOOT FAILURE IS THE OTHER GRAY BOX. Anything that throws before the first
     // frame — a font load that rejects, the storage probe, a mount error — used
