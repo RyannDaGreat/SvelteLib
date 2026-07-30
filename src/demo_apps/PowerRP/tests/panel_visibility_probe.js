@@ -240,10 +240,13 @@ try {
   }
 
   // ── Scenario 5: hide a WHOLE column — the column and its handle both go ─────
-  const canvasWidth = () => page.evaluate(() => document.querySelector(".canvas-view, .canvasview, .canvas")?.getBoundingClientRect().width ?? null);
+  // `.canvas-wrap` is CanvasView's root; the OUTER row's layout is `.main`'s first
+  // .sp-layout (SplitPane wraps it in a .sv-root, so `.main > .sp-layout` finds
+  // nothing — that returned null and read as a failure rather than a bad selector).
+  const canvasWidth = () => page.evaluate(() => document.querySelector(".canvas-wrap")?.getBoundingClientRect().width ?? null);
   const outerHandles = () =>
     page.evaluate(() => {
-      const outer = document.querySelector(".main > .sp-layout");
+      const outer = document.querySelector(".main .sp-layout");
       return outer ? [...outer.children].filter((c) => c.classList.contains("sp-handle")).length : null;
     });
   const canvasBefore = await canvasWidth();

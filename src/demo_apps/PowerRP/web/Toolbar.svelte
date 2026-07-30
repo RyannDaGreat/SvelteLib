@@ -62,7 +62,7 @@
     ["undo", "redo"],
     ["copy-item", "paste"],
     ["put-on-top", "put-on-bottom"],
-    ["save-to-server", "open-project", "clear-doc"],
+    ["save-to-server", "download-zip", "open-project", "clear-doc"],
     ["render-center"],
     ["reset-view", "present"],
   ];
@@ -242,14 +242,6 @@
       tabindex="0"
       aria-label={saveIndicator.text}
     ></span>
-  </Tooltip>
-  <!-- Export-as-zip, beside the save state (user ruling: "a save zip icon next
-       to the save to server icon… a picture of a zip folder") — runs the same
-       registry command the palette offers. -->
-  <Tooltip text="Export project as .zip (with assets)">
-    <button class="btn-icon" aria-label="Export project as .zip" onclick={() => app.runCommand("download-zip")}>
-      <iconify-icon icon="mdi:folder-zip-outline" width="16" height="16"></iconify-icon>
-    </button>
   </Tooltip>
   <!-- The presentation TITLE. SINGLE-click (or Enter/F2 when focused) opens the
        Rename modal, which writes doc.meta.name — the one name model shared with
