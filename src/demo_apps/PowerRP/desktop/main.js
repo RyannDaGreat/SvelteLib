@@ -67,6 +67,10 @@ function childEnv() {
   const env = {
     ...process.env,
     PATH: [...bundledBins, process.env.PATH, "/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local/bin")].filter(Boolean).join(":"),
+    // The shell IS the window — Vite must not ALSO open a system browser
+    // (vite.config.js: `open: !process.env.NO_OPEN`; the globe button is the
+    // deliberate hop-to-browser affordance).
+    NO_OPEN: "1",
   };
   if (app.isPackaged) {
     // uv's python + package caches must be writable (Resources is not).
