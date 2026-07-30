@@ -167,7 +167,56 @@ export async function detectStorageMode(search = typeof location === "undefined"
   }
   const say = mode === "local" ? console.warn : console.log;
   say(`PowerRP storage: ${mode.toUpperCase()} (${reason})`);
+  // TEACH THE RESOLUTION SEAM WHAT A PROJECT NAME MEANS IN THIS MODE. Every
+  // derive turns a document's asset ref into the URL the media registries load,
+  // and in LOCAL mode that answer must be a `blob:` URL from the store —
+  // "/asset/…" resolves to nothing without a server, which the browser reported
+  // as "MediaError code 4: Format error" while the canvas stayed blank.
+  //
+  // INSTALLED ON core/asset_ref, not passed to one render entry point, because
+  // six production call sites derive with the bare project NAME and never reach
+  // web/cameraFrame.js (app.svelte.js nodes()/PDF/SVG/copy, CanvasView, PresentMode
+  // — see setProjectNameResolver). Installing it here makes all of them agree.
+  // A DYNAMIC import so bare node never loads this module: cli/render.js imports
+  // the render path, and assetStore.js → projectApi.js reads `location` at module
+  // scope. The browser boot is the one place a DOM is guaranteed.
+  const { setProjectNameResolver } = await import("../core/asset_ref.js");
+  setProjectNameResolver(mode === "local" ? await staticRefResolverFactory() : null);
   return mode;
+}
+
+/**
+ * Query (reads the live asset store). THE local-mode resolver FACTORY:
+ * `(project) => (ref) => url`, the thing a bare project NAME means when there is
+ * no server. Every ref — relative or absolute — becomes a `blob:` object URL from
+ * browser storage, or the LOUD missing sentinel.
+ *
+ * A NAMED EXPORT rather than the inline closure it started as, so the exact
+ * mapping the app installs is the one a probe can reinstall. A probe that must
+ * impersonate an HTTP boot uninstalls the resolver, and reaching for a hand-rolled
+ * copy to restore it afterwards would let the test's idea of local mode drift away
+ * from the app's — which is the whole class of bug the single-seam design exists
+ * to prevent.
+ *
+ * @returns {function} `(project) => (ref) => url`
+ *
+ * @example
+ * >>> setProjectNameResolver(await staticRefResolverFactory())
+ * >>> // now derive() turns "clip.mp4" into "blob:http://…" everywhere
+ */
+export async function staticRefResolverFactory() {
+  // Dynamic import so BARE NODE never loads this: cli/render.js imports the render
+  // path, and assetStore.js → projectApi.js reads `location` at module scope. The
+  // browser boot is the one place a DOM is guaranteed.
+  const { resolveAssetRef } = await import("../core/asset_ref.js");
+  return (project) => {
+    const store = assetStore();
+    // Lift RELATIVE → ABSOLUTE first: resolveUrl's memo is keyed on the absolute
+    // form (primeUrls mints `assetRef(project, file)` keys), so a relative ref and
+    // a legacy own-project absolute ref — the user's real RobotSim.zip, and every
+    // document written before the relative grammar — become the same lookup.
+    return (ref) => store.resolveUrl(resolveAssetRef(ref, project));
+  };
 }
 
 /** Query. The decided mode. Throws if read before detectStorageMode() — a

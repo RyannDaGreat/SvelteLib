@@ -17,11 +17,13 @@
  * WHY RELATIVE IS NOW THE DEFAULT, and why it is a bug fix rather than a taste
  * change. The absolute form BAKES A PROJECT NAME into every `src`, and nothing in
  * the system keeps that name equal to the project the document actually lives in.
- * Save-As mints the divergence on purpose (`app.renameProject` writes
- * `doc.meta.name` and `saveToServer` writes a NEW folder while every `src` still
- * names the OLD one — see web/assetLocalize.js's docblock), and an IMPORT mints it
- * again (a zip adopted under a de-collided name carries refs naming the name it had
- * before). Against a server the divergence is INVISIBLE, because the server will
+ * An IMPORT mints the divergence (a zip adopted under a de-collided name carries
+ * refs naming the name it had before — see web/assetLocalize.js's docblock), and
+ * a RENAME used to mint it too, which is exactly the defect the relative form
+ * retires: renaming now MOVES the project and RELATIVIZES its own absolute refs
+ * first (app.renameProject), so a relative ref rides the move for free and an
+ * absolute self-ref is gone before it can be stranded. Against a server the
+ * divergence is INVISIBLE, because the server will
  * serve any project's assets to anyone. It becomes visible the moment there is no
  * server: the user dragged a RobotSim zip onto the STATIC GitHub Pages site, the
  * slides loaded and the assets imported into browser storage, and the video did not
@@ -257,7 +259,8 @@ export function relativeAssetRef(ref, project) {
  *
  * @param {object} state - one item's folded+evaluated state
  * @param {string[]} refProps - the property names that hold asset refs
- * @param {string} project - the OWNING project's name
+ * @param {string|function} project - the OWNING project's name, OR a
+ *   `(ref) => url` resolver (see refResolver)
  * @returns {object} the state, resolved (the SAME object when nothing changed)
  *
  * @example
@@ -267,16 +270,140 @@ export function relativeAssetRef(ref, project) {
  * {type: "video", src: "/asset/Shared/b.mp4"}    // absolute stands, SAME object
  * >>> resolveStateAssetRefs({type: "rect", w: 10}, [], "RobotSim")
  * {type: "rect", w: 10}                          // SAME object: nothing to resolve
+ * >>> resolveStateAssetRefs({type: "video", src: "clip.mp4"}, ["src"], () => "blob:x")
+ * {type: "video", src: "blob:x"}                 // a RESOLVER gets the last word
+ * >>> resolveStateAssetRefs({type: "video", src: "/asset/D/b.mp4"}, ["src"], () => "blob:x")
+ * {type: "video", src: "blob:x"}                 // …on the ABSOLUTE form too
  */
 export function resolveStateAssetRefs(state, refProps, project) {
+  const resolve = refResolver(project);
   let out = state;
   for (const key of refProps) {
     const value = state[key];
-    if (!isRelativeAssetRef(value)) continue;
+    // A REAL RESOLVER sees BOTH ref forms; the plain-grammar default only ever
+    // rewrites the RELATIVE one (an absolute ref is already its own answer under
+    // a server). That asymmetry is the whole static-mode fix: in a browser-local
+    // deck an own-project ABSOLUTE ref — every document written before the
+    // relative grammar, and half of the user's real RobotSim deck — must ALSO
+    // become a blob: URL, because no server will ever answer "/asset/…".
+    //
+    // THE GUARD KEYS ON THE RESOLVER, NOT ON THIS FUNCTION'S ARGUMENT SHAPE, and
+    // that distinction is the entire bug this line was written to fix and got
+    // wrong on the first pass. Asking `typeof project === "function"` describes
+    // how THIS call was spelled, but every one of the six production callers
+    // spells it with a project NAME (`app.projectName()`) and gets its resolver
+    // from the installed hook — so the narrow branch ran, an absolute ref was
+    // skipped before the static resolver was ever consulted, and the canvas kept
+    // the dead "/asset/…" path that the browser reports as "MediaError code 4:
+    // Format error". `refResolver` is the one thing that knows whether a real
+    // resolver is in play, so it answers the question.
+    if (resolve.resolvesAbsolute ? !isAssetRef(value) : !isRelativeAssetRef(value)) continue;
+    const resolved = resolve(value);
+    if (resolved === value) continue; // resolver declined: keep node identity
     if (out === state) out = { ...state };
-    out[key] = resolveAssetRef(value, project);
+    out[key] = resolved;
   }
   return out;
+}
+
+/**
+ * Pure function. True when `ref` is an asset reference in EITHER form — the
+ * question a mode-aware resolver asks, as opposed to `isRelativeAssetRef`'s
+ * narrower one. A non-ref src (http/data/blob/builtin/"") is false, so a
+ * resolver never sees a URL that is already an answer.
+ *
+ * @param {*} ref - a document `src` value
+ * @returns {boolean}
+ *
+ * @example isAssetRef("clip.mp4")               // true   (relative)
+ * @example isAssetRef("/asset/Deck/clip.mp4")   // true   (absolute)
+ * @example isAssetRef("blob:http://x/1234")     // false  (already resolved)
+ * @example isAssetRef("https://x.com/a.png")    // false
+ * @example isAssetRef("")                       // false  (nothing authored)
+ */
+export function isAssetRef(ref) {
+  return isRelativeAssetRef(ref) || parseAssetRef(ref) !== null;
+}
+
+/**
+ * Pure function. THE normalizer for the `project | resolver` argument that
+ * `deriveRenderTree` and `resolveStateAssetRefs` both take: a string becomes
+ * `(ref) => resolveAssetRef(ref, project)`, a function is returned as-is.
+ *
+ * ONE FUNCTION, TWO SHAPES, so the string form stays the DEFAULT and stays
+ * EXACTLY what it always was. That equivalence is not a convenience — it is what
+ * makes the generalization provably non-breaking for cli/render.js and every
+ * bare-node caller, and it is pinned by a test rather than asserted here.
+ *
+ * @param {string|function} project - the owning project's name, or a resolver
+ * @returns {function} `(ref) => url`
+ *
+ * ── `resolvesAbsolute`: WHICH REF FORMS THE RESULT WANTS TO SEE ──────────────
+ * The returned function carries this flag, and `resolveStateAssetRefs` reads it
+ * to decide whether an ABSOLUTE ref is also its business. It is true for a REAL
+ * resolver (an explicit function, or one from the installed hook) and false for
+ * the plain-grammar default, whose answer for an absolute ref is that ref itself.
+ * The flag exists because the caller cannot tell the two apart: every production
+ * caller passes a project NAME, so branching on the argument's type answers a
+ * different question than the one being asked (see resolveStateAssetRefs).
+ *
+ * @param {string|function} project - the owning project's name, or a resolver
+ * @returns {function} `(ref) => url`, tagged with `resolvesAbsolute`
+ *
+ * @example refResolver("RobotSim")("clip.mp4")        // "/asset/RobotSim/clip.mp4"
+ * @example refResolver("RobotSim").resolvesAbsolute   // false (plain grammar)
+ * @example refResolver((r) => `blob:${r}`)("clip.mp4") // "blob:clip.mp4"
+ * @example refResolver((r) => r).resolvesAbsolute      // true  (a real resolver)
+ */
+export function refResolver(project) {
+  if (typeof project === "function") return tagResolver(project, true);
+  if (projectNameResolver) return tagResolver(projectNameResolver(project), true);
+  return tagResolver((ref) => resolveAssetRef(ref, project), false);
+}
+
+/** Pure function. Tag a resolver with the ref forms it wants (see refResolver).
+ *  Assigns rather than wraps so an already-correct tag costs nothing and a
+ *  resolver stays the identical function object across calls.
+ *
+ *  @example tagResolver((r) => r, true).resolvesAbsolute  // true */
+function tagResolver(fn, resolvesAbsolute) {
+  if (fn.resolvesAbsolute !== resolvesAbsolute) fn.resolvesAbsolute = resolvesAbsolute;
+  return fn;
+}
+
+/** The installed PROJECT-NAME resolver factory (`(project) => (ref) => url`), or
+ *  null for the plain grammar default. See setProjectNameResolver. */
+let projectNameResolver = null;
+
+/**
+ * Command (mutates this module's resolver hook). Install THE resolver that a bare
+ * PROJECT-NAME argument means, process-wide. Injected, never imported, so core/
+ * stays DOM-free and bare node keeps the pure-grammar default.
+ *
+ * WHY A HOOK AND NOT JUST THE EXPLICIT ARGUMENT. Threading a resolver through
+ * `deriveRenderTree`'s third argument only fixes the callers that thread it, and a
+ * survey found SIX production call sites that pass the bare project NAME and never
+ * touch web/cameraFrame.js: `web/app.svelte.js` nodes() (which feeds the editor
+ * canvas), its PDF / SVG / copy-capture exporters, `web/CanvasView.svelte`'s paint
+ * path, and `web/PresentMode.svelte`. That is why the measured bug SURVIVED the
+ * cameraFrame threading: the canvas never ran that code. Fixing the meaning of the
+ * name itself is what makes the six agree, and it keeps the invariant that a
+ * document's stored ref is resolved in exactly ONE place.
+ *
+ * The string→resolver equivalence still holds: with nothing installed this is
+ * `(ref) => resolveAssetRef(ref, project)`, byte-for-byte what it always was.
+ *
+ * @param {function|null} factory - `(project) => (ref) => url`, or null to restore
+ *   the pure-grammar default
+ *
+ * @example
+ * >>> setProjectNameResolver((p) => (ref) => `blob:${p}/${ref}`)
+ * >>> refResolver("RobotSim")("clip.mp4")
+ * "blob:RobotSim/clip.mp4"
+ * >>> setProjectNameResolver(null)   // back to "/asset/RobotSim/clip.mp4"
+ */
+export function setProjectNameResolver(factory) {
+  projectNameResolver = factory;
 }
 
 /**

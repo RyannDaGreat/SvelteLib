@@ -32,7 +32,7 @@ import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { rasterizeIrPng } from "./gpuService.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
-import { videoUploadCount, videoPlaybackState } from "../render_gpu/gpu/video_registry.js";
+import { videoUploadCount, videoPlaybackState, videoStatus } from "../render_gpu/gpu/video_registry.js";
 import { videoV5UploadCount, videoV5State, videoV5ScrubState } from "../render_gpu/skia/video_v5.js";
 
 // Dev/test seams (like __powerrp_render / __powerrp_app): the running total of
@@ -41,6 +41,14 @@ import { videoV5UploadCount, videoV5State, videoV5ScrubState } from "../render_g
 // off-view players PAUSE and RESUME from their prior currentTime). Zero prod effect.
 window.__powerrp_videoUploadCount = videoUploadCount;
 window.__powerrp_videoState = videoPlaybackState;
+// And the LOAD verdict for one src: "unloaded" | "loading" | "ready" | "error".
+// Exposed because a probe cannot ask the DOM this question — the registry's
+// <video> elements are deliberately NEVER appended (they exist only to be uploaded
+// as GPU textures), so `document.querySelectorAll("video")` finds ZERO of them no
+// matter how healthy playback is. A release-acceptance script that asserted on
+// that selector therefore measured nothing, and would have reported the canvas
+// broken while it drew perfectly. This is the honest question: did THIS src decode?
+window.__powerrp_videoStatus = videoStatus;
 // V5 off-main-thread video diagnostics (its own registry): ImageBitmap→texture
 // upload count (the seq gate keeps it at ~video-rate) and a per-src snapshot
 // ({status, mode, paused, currentTime, seq, hasBitmap}) — a probe asserts motion

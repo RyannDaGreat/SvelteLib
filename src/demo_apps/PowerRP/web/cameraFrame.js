@@ -31,7 +31,6 @@ import { canSkipNode } from "../core/view.js";
 import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
 import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
 import { rect as rectCmd } from "../render_gpu/ir.js";
-
 /**
  * Query (memoized fold + evaluate). THE evaluated folded state for
  * (doc, slide, alpha): folds the slide deltas then evaluates every equation, so
@@ -120,16 +119,22 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  * output for those paths).
  *
  * THE OWNING PROJECT (`opts.project`) is threaded to deriveRenderTree, which is
- * where a RELATIVE asset ref ("clip.mp4") becomes the absolute
- * "/asset/<project>/clip.mp4" every registry already understands
- * (core/asset_ref.js states the grammar; core/derive.js's docblock states why the
- * seam is there and not at the op level). It is threaded HERE for the same reason
- * `evaluationAt` threads `doc.meta.script`: this module is the ONE recipe every
- * pixel consumer runs, so a value that must reach all of them is passed once here
- * rather than at each of six call sites, one of which would eventually forget.
- * Callers that hold a DOCUMENT should pass `doc.meta.name`. Omitting it is safe for
- * an all-absolute document (every document written before this grammar) and throws
- * loudly, naming the ref, for one that actually holds a relative ref.
+ * where an asset ref becomes a URL a registry can actually load (core/asset_ref.js
+ * states the grammar; core/derive.js's docblock states why the seam is there and
+ * not at the op level). Callers that hold a DOCUMENT should pass `doc.meta.name`.
+ * Omitting it is safe for an all-absolute document (every document written before
+ * this grammar) and throws loudly, naming the ref, for one that actually holds a
+ * relative ref.
+ *
+ * WHAT THAT NAME RESOLVES TO IS MODE-AWARE, and deliberately NOT decided here.
+ * In static mode it must become a `blob:` URL from browser storage, and this
+ * module is not the only derive entry point — web/app.svelte.js's nodes(), its
+ * PDF/SVG/copy exporters, CanvasView and PresentMode all derive with the project
+ * NAME and never call this function. So the mapping is installed once on
+ * core/asset_ref (`setProjectNameResolver`, from web/storageMode.js at boot) and
+ * every one of those paths gets the same answer. Threading a resolver through
+ * this argument instead would have fixed only the callers that thread it — which
+ * is exactly why the measured blank-video bug survived an earlier attempt.
  *
  * @param {object} state EVALUATED folded state (equations already numbers).
  * @param {object} meta doc.meta ({slideW, slideH}) — the camera-rect fallback.

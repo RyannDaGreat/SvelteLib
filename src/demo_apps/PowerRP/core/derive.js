@@ -196,9 +196,31 @@ export function pointInNodeBox(itemState, wx, wy) {
  * resolveAssetRef naming the ref, which is the loud failure the silent-blank-video
  * bug earned.
  *
+ * ── WHY THE THIRD ARGUMENT MAY ALSO BE A FUNCTION ────────────────────────────
+ * The project-NAME form resolves a ref only as far as the ABSOLUTE `/asset/…`
+ * path, because that is the whole answer WHEN A SERVER EXISTS TO ANSWER IT. In
+ * STATIC mode nothing does, and the measured consequence was precise and awful:
+ * the import worked, the bytes were in IndexedDB, the Explorer tiles drew — and
+ * the canvas showed nothing, because the derived `src` reaching
+ * render_gpu/gpu/video_registry.js was a dead `/asset/RobotSim/Video_….mp4` that
+ * the browser reported as `MediaError code 4: Format error`. A missing file
+ * masquerading as a corrupt one is the worst possible diagnostic.
+ *
+ * So the third argument generalizes to `project | resolver`, where a RESOLVER is
+ * `(ref) => url` and gets the LAST word on every ref-bearing property. The
+ * string form is kept, is the default, and is EXACTLY equivalent to passing
+ * `(ref) => resolveAssetRef(ref, project)` — so bare-node callers, cli/render.js
+ * and the ~60 pre-existing test call sites are untouched by construction.
+ *
+ * CORE STAYS DOM-FREE: the resolver is INJECTED, never imported. The one that
+ * knows about blob: URLs and IndexedDB lives in web/cameraFrame.js, which is
+ * already the module that threads `project` and `meta.script` for every pixel
+ * consumer. This module keeps knowing only the grammar.
+ *
  * @param {object} state - EVALUATED folded state ({items, vars})
  * @param {object} registry - plugin registry
- * @param {string} [project] - the OWNING project's name (relative-ref resolution)
+ * @param {string|function} [project] - the OWNING project's name, OR a
+ *   `(ref) => url` resolver that gets the final say (see above)
  * @returns {object[]} z-sorted render nodes
  */
 export function deriveRenderTree(state, registry, project = "") {
