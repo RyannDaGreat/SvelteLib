@@ -302,6 +302,11 @@
         <iconify-icon icon="mdi:plus" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
+    <Tooltip text="New blank slide (deactivates every visible item)">
+      <button class="btn-icon" aria-label="New blank slide" onclick={() => app.runCommand("new-blank-slide")}>
+        <iconify-icon icon="mdi:plus-box" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
     <Tooltip text="Move slide up">
       <button class="btn-icon" aria-label="Move slide up" onclick={() => app.runCommand("move-slide-up")}>
         <iconify-icon icon="mdi:arrow-up" width="16" height="16"></iconify-icon>
