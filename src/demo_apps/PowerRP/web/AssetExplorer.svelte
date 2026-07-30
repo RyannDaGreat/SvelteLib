@@ -444,6 +444,33 @@
       // modal's openNowMs precedent (web/App.svelte). A relative age that
       // recomputed on every render would make every tile tooltip a fresh string.
       listedNowMs = Date.now();
+      // PRIME THE OBJECT-URL MEMO BEFORE ANYTHING RESOLVES A REF FROM THIS LISTING.
+      //
+      // THE BUG THIS FIXES (user, verbatim): "I drag and drop that zip onto the
+      // static website, and I refresh the page, and it's broken… it shows a big
+      // exclamation mark, but it still knows how many megabytes were in it, and when
+      // I click download it still downloads."
+      //
+      // That split — metadata and bytes fine, PREVIEW broken — is the signature of an
+      // unprimed memo, not of a bad URL. In LOCAL mode `resolveUrl` is SYNCHRONOUS by
+      // contract (derive/paint cannot await), so it can only answer from a memo of
+      // object URLs minted ahead of time. `loadProject()` primes that memo, which is
+      // why an import looks fine — but a RELOAD does not open a project: App.svelte
+      // restores the deck from the localStorage autosave, so on the next boot the memo
+      // is EMPTY while IndexedDB still holds every byte. `list` and `get` read the
+      // database directly and kept working; every `resolveUrl` returned the loud
+      // MISSING sentinel, which is the exclamation mark.
+      //
+      // Priming HERE and not only at open, because this refresh is the one thing that
+      // runs on EVERY boot with the project name in hand (mount, project switch, and
+      // any asset change), so it is the seam where "what the library contains" and
+      // "what its refs resolve to" are guaranteed to agree. Awaited BEFORE the listing
+      // is assigned: `assets` is what renders the tiles, and a tile that resolves its
+      // src before the memo exists caches the sentinel.
+      //
+      // A NO-OP IN HTTP MODE (httpAssetStore.primeUrls is empty) — there a ref
+      // resolves by string rewrite alone, so this costs one already-resolved promise.
+      await assetStore().primeUrls(app.projectName());
       assets = await app.listProjectAssets();
       // A finished ("done") optimistic tile is dropped here — once, and only
       // once its REAL tile is present in this fresh listing — so the swap has
