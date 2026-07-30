@@ -17,6 +17,7 @@
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",
     "canvaskit-wasm": "^0.41.1",
+    "fflate": "^0.8.3",
     "h264-mp4-encoder": "^1.0.12",
     "iconify-icon": "^3.0.2",
     "mathjax": "3.2.2",

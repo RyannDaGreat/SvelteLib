@@ -103,6 +103,12 @@ ASSET_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2",
     ".json": "application/json",
+    # A PLUGIN ASSET (*.plugin.js) is served as PLAIN TEXT, deliberately, not as
+    # text/javascript. The client reads it with .text() and evaluates it inside the
+    # plugin sandbox (core/plugin_assets.js); nothing ever loads it as a script.
+    # Declaring it text/plain means a browser that somehow navigated straight to
+    # the URL would DISPLAY the source rather than run it on this origin.
+    ".js": "text/plain; charset=utf-8",
 }
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
 VIDEO_EXTS = {".mp4", ".webm", ".mov"}
@@ -112,6 +118,14 @@ PDF_EXTS = {".pdf"}
 # font file becomes a project asset of kind "font" and is registered as a
 # selectable family client-side (render_gpu/fonts.js dynamic registry).
 FONT_EXTS = {".ttf", ".otf", ".woff", ".woff2"}
+# PLUGIN ASSETS: a widget delivered as a project asset rather than a source file
+# (core/plugin_assets.js). The marker is the COMPOUND suffix ".plugin.js", not the
+# ".js" extension -- a plain ".js" asset stays kind "other", so dropping a script
+# into a project cannot accidentally make it a widget. Classified server-side only
+# so the Asset Explorer can show these tiles distinctly; the CLIENT decides what to
+# register, and does so through its own suffix check (isPluginAssetName), which is
+# the one that must agree with this string.
+PLUGIN_ASSET_SUFFIX = ".plugin.js"
 
 # A project/asset name component: no path separators, no traversal. Enforced on
 # every write path so a crafted name can never escape PROJECTS_DIR.
@@ -1275,9 +1289,17 @@ def asset_kind(filename):
         'pdf'
         >>> asset_kind("Handwriting.ttf")
         'font'
+        >>> asset_kind("gear.plugin.js")
+        'plugin'
+        >>> asset_kind("helper.js")
+        'other'
         >>> asset_kind("notes.txt")
         'other'
     """
+    # The compound suffix is checked FIRST and on the whole name: os.path.splitext
+    # sees only ".js", which cannot tell a widget from any other script.
+    if filename.lower().endswith(PLUGIN_ASSET_SUFFIX):
+        return "plugin"
     ext = os.path.splitext(filename)[1].lower()
     if ext in IMAGE_EXTS:
         return "image"

@@ -102,6 +102,14 @@ import {
   listPathKind, listStoragePath,
 } from "./lists.js";
 import { textDissolve, textType, textScramble } from "./text_transitions.js";
+// THE PROJECT SCRIPT's compiler. A deliberate import CYCLE (project_script.js
+// imports this file's jail constants BLOCKED_GLOBALS / SAFE_MATH / FUNCTIONS):
+// the script and an equation must share ONE jail definition, and the alternative
+// — a third module holding the constants — would put the jail somewhere neither
+// the equation reader nor the script reader would look for it. Safe because every
+// crossing is at CALL time; see scriptReservedNames for the one place that had to
+// be made lazy to stay out of the temporal dead zone.
+import { compileProjectScript } from "./project_script.js";
 // The presentation clock behind `= time` (see readClock in computeEvaluatedState).
 // core/ → render_gpu/ is established (core/registry.js → effects.js, core/clip.js →
 // decorate.js), and particle_clock.js is DOM-free bare-node code by its own contract
@@ -2168,6 +2176,19 @@ function segsToToken(segs) {
  *     no wobble. Identical solves within one pass are MEMOIZED, so from.x/from.y
  *     (and the symmetric to-side call) share ONE solve.
  *
+ * THE PROJECT SCRIPT (`script`, doc.meta.script — see core/project_script.js) is
+ * an optional per-document JavaScript library compiled in THIS SAME JAIL; its
+ * exports are merged into the equation scope, so `= ease(t)` can call a function
+ * the author wrote once. PRECEDENCE, in scopeGet's order: evaluator keywords
+ * (`time`/`random`/`Math`/…) and the FUNCTIONS library win and are NOT shadowable
+ * (a colliding export is refused at COMPILE time, loudly, by
+ * compileProjectScript); item SLUGS and variables win over an export at READ time
+ * (a slug names something on the canvas the author can see); everything else
+ * resolves to an export if there is one, and only then becomes a reference head.
+ * A script that fails to compile exports NOTHING and its error is reported once —
+ * equations calling its exports then fail loudly per the normal equation-error
+ * path (never a silent 0).
+ *
  * `clock` is the presentation-clock value this pass read (particleTime()), or
  * `null` when no equation mentioned `time`. It is BOTH the memo's invalidation key
  * and the presenter's "does this slide animate off the clock?" answer — derived
@@ -2178,23 +2199,30 @@ function segsToToken(segs) {
  * @example evaluateState({vars: {speed: 5}, items: {}}, registry).clock // null (no equation read the clock)
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
  */
-export function evaluateState(state, registry) {
+export function evaluateState(state, registry, script = "") {
   const memo = evalMemo.get(state);
   // A CLOCK-FREE result is cached forever (the overwhelming majority — this is the
   // memo drag latency depends on). A clock-READING one is only reused while the
   // clock still reads the same, so the PAUSED regime (editor/CLI/thumbnails, where
   // particleTime() is a constant) caches exactly as before, while the LIVE presenter
   // and the per-frame export override re-evaluate as the clock advances.
-  if (memo && memo.registry === registry
+  //
+  // THE SCRIPT IS PART OF THE MEMO KEY (project script round): the folded state is
+  // unchanged by a script edit — the script lives in doc.meta, not in the fold — so
+  // WITHOUT this the editor would serve the pre-edit evaluation from cache and the
+  // canvas would silently ignore a saved script until something else moved. Compared
+  // by SOURCE STRING rather than by compiled identity because that is what the
+  // caller has; compileProjectScript's own cache makes the recompile free.
+  if (memo && memo.registry === registry && memo.script === script
     && (memo.result.clock === null || memo.result.clock === particleTime()))
     return memo.result;
-  const result = computeEvaluatedState(state, registry);
-  evalMemo.set(state, { registry, result });
+  const result = computeEvaluatedState(state, registry, script);
+  evalMemo.set(state, { registry, script, result });
   return result;
 }
 
 /** Pure-core of evaluateState (see its docs); uncached. Full-JS, lazy engine. */
-function computeEvaluatedState(state, registry) {
+function computeEvaluatedState(state, registry, script = "") {
   const out = copied(state);
   const errors = new Map();
   const deps = new Map(); // slotKey → Set(depKey): DYNAMIC dependency capture
@@ -2299,6 +2327,20 @@ function computeEvaluatedState(state, registry) {
   let clockRead = null; // the clock value this pass used, or null if nothing read it
   const readClock = () => (clockRead ??= particleTime());
   const seededRandom = mulberry32(stringSeed([...slots.keys()].sort().join("|") + "|powerrp"));
+
+  // THE PROJECT SCRIPT (core/project_script.js). Compiled ONCE per pass against the
+  // SAME deterministic host the slots get — the seeded random and the one clock —
+  // so a script and an equation can never disagree about what `random` or `time`
+  // means. Its `exports` become scope bindings below (scopeGet). A compile failure
+  // exports nothing and is REPORTED once here rather than thrown: the pass must
+  // still produce a frame, and every equation calling a missing export then fails
+  // loudly on its own line, which is where the fix belongs.
+  //
+  // `time` is read through readClock, so a script that reads it at TOP LEVEL still
+  // marks this pass as clock-reading and the memo invalidates per frame, exactly as
+  // an `= time` equation does.
+  const projectScript = compileProjectScript(script, { random: seededRandom, time: readClock });
+  if (projectScript.error) reportOnce(projectScript.error);
 
   // Rim-solve MEMO (per pass): from.x/from.y of one closest ref share ONE solve;
   // a mutual pair's two endpoints share the SAME joint solve (both read only
@@ -2536,9 +2578,25 @@ function computeEvaluatedState(state, registry) {
     return solvePair(widgetIds[0], widgetIds[1]); // rim vs rim (joint)
   };
 
+  /** Query. Is this bare identifier a DOCUMENT reference head — a declared
+   *  variable, an item slug, or an anchor name's "<slug>_<anchorId>" prefix? Only
+   *  these THREE things can be spelled as a bare head, and each of them names
+   *  something the author can point at on the canvas or in the variables panel;
+   *  everything else is free for a project-script export to claim. Deliberately
+   *  narrower than `resolveRef`, which classifies a dotless head as a variable
+   *  UNCONDITIONALLY (it has no vars table) — asking it here would make every
+   *  export unreachable. */
+  const isDocumentRefHead = (name) => {
+    if (name in (out.vars ?? {})) return true;
+    if (slugs.toId.has(name)) return true;
+    const us = name.lastIndexOf("_");
+    return us > 0 && slugs.toId.has(name.slice(0, us));
+  };
+
   // The scope proxy: `has: () => true` routes EVERY free identifier through `get`
   // (no fall-through to real globals — the determinism guard). `get` returns the
-  // deterministic host, the function library, or a lazy ref proxy.
+  // deterministic host, the function library, a PROJECT SCRIPT export, or a lazy
+  // ref proxy.
   const scopeGet = (name, slot, selfId) => {
     switch (name) {
       case "undefined": return undefined;
@@ -2550,6 +2608,13 @@ function computeEvaluatedState(state, registry) {
     }
     if (name in FUNCTIONS) return makeFn(name, slot, selfId);
     if (BLOCKED_GLOBALS.has(name)) return undefined; // Date/window/… → undefined → member use throws loud
+    // PROJECT SCRIPT EXPORTS sit BELOW every built-in above (a colliding export was
+    // already refused at compile time, so this order can never silently shadow one)
+    // and BELOW document references (a slug or variable wins — it names a thing on
+    // the canvas). An export therefore fills exactly the gap where a bare
+    // identifier would otherwise have become an "Unknown variable" failure.
+    if (name in projectScript.exports && !isDocumentRefHead(name))
+      return projectScript.exports[name];
     return makeRef([name], slot); // a reference HEAD
   };
   const makeScope = (slot) => {

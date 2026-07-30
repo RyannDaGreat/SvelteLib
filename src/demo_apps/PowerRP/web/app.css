@@ -62,6 +62,17 @@
   /* Toolbar */
   --a-toolbar-h: 40px;
 
+  /* STATIC-MODE NOTICE (no project server — work lives in this browser).
+     Tinted with --a-modifier, the design system's GOLD informational accent,
+     not with --a-guide (danger red): static mode is a working mode, and
+     coloring it like a failure would misreport what it is. */
+  --a-static-notice-accent: var(--a-modifier);
+  --a-static-notice-bg: color-mix(in srgb, var(--a-modifier) 12%, transparent);
+  --a-static-notice-border: color-mix(in srgb, var(--a-modifier) 40%, transparent);
+  --a-static-notice-text-opacity: 0.8; /* the detail line sits under the title */
+  --a-static-notice-title-weight: 600;
+  --a-static-notice-icon-nudge: 2px; /* aligns the glyph with the title's cap height */
+
   /* Canvas overlay strokes/sizes */
   --a-selection-stroke: 1.5px;
   --a-selection-dash: 5 3;
@@ -316,6 +327,19 @@
   --a-upload-bar-smooth: 0.1s; /* smooths the discrete onprogress width steps */
   --a-upload-spinner-size: 22px;
   --a-upload-spin-period: 0.8s; /* one full rotation of the indeterminate ring */
+  /* STORAGE BUDGET line (Asset Explorer, browser-local/static mode only): a thin
+     usage bar + one line of text saying how much of the browser's per-origin
+     budget this site is using. Reuses the upload bar's HEIGHT and TRACK so the
+     two horizontal meters in this pane read as one family; the FILL is its own
+     token because it changes meaning with fullness (see the "nearly full" rule
+     below) while the upload bar's never does. */
+  --a-quota-bar-fill: color-mix(in srgb, var(--a-selection) 70%, transparent);
+  /* --a-guide is this design system's DANGER color (see the theme blocks below:
+     "Guide/danger stays red-pink (error semantics)"), so a nearly-full library
+     warns in the same red every theme already uses for an invalid field. */
+  --a-quota-full-fill: var(--a-guide);
+  --a-quota-full-at: 90%; /* the fullness that flips the bar to the warning color */
+  --a-quota-text-opacity: 0.7; /* a passive readout, quieter than the tile captions */
   /* Asset THUMBNAIL + BADGE (manifest #25): a rendered preview bitmap (PDF page
      1) is letterboxed on paper white (a document, not a photo — never cropped);
      the corner badge is a dark chip (readable over any thumbnail) carrying
@@ -1575,6 +1599,64 @@ textarea {
   --sp-handle-hit-pad: var(--a-split-handle-hit);
 }
 
+/* ── STATIC-MODE NOTICE (web/StaticModeNotice.svelte) ────────────────────────
+   Shown ONLY when there is no project server: a full-width strip below the
+   toolbar saying the work lives in this browser and naming the server-only
+   features that are therefore unavailable. It is INFORMATIONAL, not an error, so
+   it uses the warning tint rather than the danger red — static mode is a working
+   mode, and coloring it like a failure would misreport it. */
+.static-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--a-sp-3);
+  padding: var(--a-sp-2) var(--a-sp-3);
+  background: var(--a-static-notice-bg);
+  border-bottom: var(--a-hairline) solid var(--a-static-notice-border);
+  flex: 0 0 auto; /* a notice never absorbs the canvas's height */
+}
+
+.static-notice-icon {
+  color: var(--a-static-notice-accent);
+  flex: 0 0 auto;
+  margin-top: var(--a-static-notice-icon-nudge);
+}
+
+.static-notice-body {
+  flex: 1;
+  min-width: 0; /* lets the text wrap rather than widening the strip */
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+}
+
+.static-notice-title {
+  font-size: var(--a-font-md);
+  font-weight: var(--a-static-notice-title-weight);
+}
+
+.static-notice-text {
+  font-size: var(--a-font-sm);
+  opacity: var(--a-static-notice-text-opacity);
+}
+
+/* The dismissed form: a small always-present badge, so which storage this
+   session uses stays answerable at a glance (see the component's docblock). */
+.static-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-3);
+  background: var(--a-static-notice-bg);
+  border: none;
+  border-bottom: var(--a-hairline) solid var(--a-static-notice-border);
+  color: var(--a-static-notice-accent);
+  font-size: var(--a-font-sm);
+  cursor: pointer;
+  width: 100%;
+  justify-content: flex-start;
+}
+
 /* ── THE standard controls — reuse these; do not invent new button styles ── */
 
 /* Shared base for both standard buttons (labeled .btn + square .btn-icon). */
@@ -1967,6 +2049,11 @@ textarea {
   gap: var(--a-sp-1);
   max-height: var(--a-canvas-toolbar-max-h);
   overflow-y: auto;
+  /* A wheel at the grid's top/bottom boundary never chains outward to pan the
+     canvas (the .fp-menu ruling). FloatingCanvasPanel's onWheel already stops the
+     event reaching PanZoom and preventDefaults it once the grid is pinned; this is
+     the CSS half of the same guarantee, for the boundary crossed MID-event. */
+  overscroll-behavior: contain;
 }
 
 /* The searchable palette's search bar (CanvasToolbar spec.search — the iconify
@@ -1981,14 +2068,65 @@ textarea {
   margin-bottom: var(--a-sp-1);
 }
 
-.canvas-toolbar-search-input {
+/* ── THE PANEL'S TYPOGRAPHY RULE, stated once ──────────────────────────────────
+   The user's report: "it seems like you implemented a custom font and style for
+   that canvas tooltip… it's still a monospace font… I'm okay with monospace,
+   except it's not consistent."
+
+   The rule, which is the app's existing convention and not a new one:
+     IDENTIFIERS and LITERALS → var(--a-mono). An icon id ("tabler:star"), a
+       coordinate, an equation, a URL: things read character by character, or
+       compared against a published string. Precedents: .varspanel .var-name
+       ("it's an identifier — same voice as equations"), .cmd-tip-url.
+     PROSE → the app font (inherited from #app). A search QUERY the user types in
+       words, a status message ("No results", a provider's error text), a human
+       cell title ("Spinning"). Nothing is read character by character here.
+
+   Applied in this panel:
+     .canvas-toolbar-search-input       prose (a query)     → app font
+     .canvas-toolbar-search-status      prose (a message)   → app font (inherits)
+     .canvas-toolbar-tile-label         depends             → per spec.grid.labelKind
+     .canvas-toolbar-field-input        literal (a coord)   → mono
+     .canvas-toolbar-field-label        prose (a name)      → app font (inherits)
+
+   THE SEARCH INPUT IS THE ONE CONFLICT, and the reason it needs the two-class
+   selector below rather than a one-class one. It deliberately wears
+   .canvas-toolbar-field-input for its BOX (height, border, focus ring — one input
+   skin in this panel, not two), and that class also sets mono, correctly, for the
+   coordinate fields it was written for. One class each is a specificity TIE, so
+   source order decides, and .canvas-toolbar-field-input is declared LATER in this
+   file — which is why the `font-family: inherit` written here originally was DEAD.
+   MEASURED at baseline: the query field computed to "ui-monospace, SF Mono, …"
+   while the icon-id tip beside it computed to "system-ui" — proportional
+   identifiers next to a monospace sentence-input, exactly inverted, which is the
+   inconsistency reported. Naming both classes wins on specificity regardless of
+   order, and says in the selector itself what the relationship is: this element has
+   the field's box and the panel's prose voice. */
+.canvas-toolbar-field-input.canvas-toolbar-search-input {
   width: 100%;
-  font-family: inherit; /* icon queries are words, not coordinates — no mono */
+  font-family: var(--a-ui-font); /* a query is words, not a coordinate — see above */
 }
 
 .canvas-toolbar-search-status {
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
+  /* font-family deliberately absent: a status message is prose and inherits the
+     app font from #app. Declaring it would be a second source of truth. */
+}
+
+/* A tile's hover-tip label. .canvas-toolbar-tile-label alone has NO RULE, on
+   purpose: the base case is prose (a human cell title such as the cursor palette's
+   "Spinning") and prose inherits the app font from #app, so declaring anything here
+   would be a second source of truth for the same answer. The class exists as the
+   hook .identifier hangs off — added when the plugin declared grid.labelKind ===
+   "id" — which switches the label to the identifier voice, because an icon id like
+   "tabler:star" is a literal to be read and retyped exactly.
+   `anywhere` because an id is one unbreakable word: a long set:name would
+   otherwise push the tip past --tt-max-width and clip the END, which is the half
+   that distinguishes one icon from another (the .cmd-tip-url lesson, verbatim). */
+.canvas-toolbar-tile-label.identifier {
+  font-family: var(--a-mono);
+  overflow-wrap: anywhere;
 }
 
 /* A LIST inside a floating canvas panel (web/BentoTargetList.svelte). Sibling of
@@ -2006,6 +2144,7 @@ textarea {
   width: var(--a-canvas-toolbar-list-w);
   max-height: var(--a-canvas-toolbar-max-h);
   overflow-y: auto;
+  overscroll-behavior: contain; /* same boundary rule as .canvas-toolbar-grid above */
 }
 
 /* A greyed row's reason sits INSIDE the row, so it is readable without a second
@@ -2085,7 +2224,10 @@ textarea {
 }
 
 /* Monospace and tabular: a coordinate is read digit by digit and compared against
-   a published one, which a proportional font makes needlessly hard. */
+   a published one, which a proportional font makes needlessly hard. This is the
+   LITERAL half of the panel's typography rule — stated in full at
+   .canvas-toolbar-search (which overrides this family, because the search input
+   borrows this box skin but holds prose, not a coordinate). */
 .canvas-toolbar-field-input {
   width: var(--a-canvas-toolbar-field-wide);
   height: var(--a-control-h); /* THE control height, like every other input */
@@ -3398,6 +3540,54 @@ textarea {
   transition: width var(--a-upload-bar-smooth) linear;
 }
 
+/* ── STORAGE BUDGET line ─────────────────────────────────────────────────────
+   Rendered only in browser-local (static) mode — a server has no per-browser
+   quota, so in server mode the component emits nothing at all rather than an
+   empty row. Sits between the action row and the scrolling body: ALWAYS VISIBLE
+   (the user asked to know "how close they are to filling it up", which a figure
+   that scrolls away cannot answer), and it does not scroll with the grid. */
+.asset-explorer .ae-quota {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-2) var(--a-sp-3);
+  border-bottom: var(--a-hairline) solid var(--border);
+}
+
+.asset-explorer .ae-quota-bar {
+  width: 100%;
+  height: var(--a-upload-bar-h);
+  background: var(--a-upload-track);
+  overflow: hidden;
+}
+
+.asset-explorer .ae-quota-bar-fill {
+  height: 100%;
+  width: var(--ae-quota-fill, 0%);
+  background: var(--a-quota-bar-fill);
+}
+
+/* NEARLY FULL warns in the theme's danger color. CSS cannot compare a custom
+   property against a threshold, so the component sets .ae-quota-nearly-full
+   (comparing against --a-quota-full-at's numeric twin QUOTA_FULL_AT_PCT); the
+   COLOR still lives here, in tokens, as the house rules require. */
+.asset-explorer .ae-quota-nearly-full .ae-quota-bar-fill {
+  background: var(--a-quota-full-fill);
+}
+
+.asset-explorer .ae-quota-nearly-full .ae-quota-text {
+  color: var(--a-quota-full-fill);
+  opacity: 1; /* a warning is not a passive readout — full strength */
+}
+
+.asset-explorer .ae-quota-text {
+  font-size: var(--a-font-sm);
+  opacity: var(--a-quota-text-opacity);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Indeterminate ring: shown only when the browser can't report total bytes. */
 .asset-explorer .ae-upload-spinner {
   width: var(--a-upload-spinner-size);
@@ -3830,13 +4020,53 @@ audio.ae-preview-media {
    swallowing the other's pointer events, and a double-strength hairline where
    they overlap.
 
-   So: exactly one divider per expanded category. That IS the user's "multiple
-   lines … in synchronized x position" — each category gets its own segment, all
-   of them positioned from the one --a-label-frac. The Variables Panel's list is
-   the same shape (one rows block that is all rows) and keeps its own. */
-.inspector .cat-rows,
+   ONE PER RUN, NOT ONE PER CATEGORY — the refinement the user's next report
+   forced: "that line is still extending too far down… visually going past the
+   stroke material area". A category is not always all boundary rows either. A
+   FULL-WIDTH row restacks its editor across the panel (`.row-list`, and a paint
+   row via `:has(.gradient-presets)` above), and that editor's mode strip, preset
+   library and stops list have no label⟷value column — so a category-wide strip
+   ran a col-resize cursor down through them, the same defect as the .rows one,
+   one level in. Measured in the gradient-stroke repro: the strip spanned the
+   block's whole 399.3px while the bands at y 30→119.3 had no boundary at all.
+
+   So web/Inspector.svelte splits a category into RUNS (its `rowRuns`) and wraps
+   each boundary run in .cat-row-run, which is what a divider now spans; a
+   full-width row sits between runs with no segment of its own. Inside such an
+   editor the same rule recurses: .paint-sub-rows is the nested equivalent, a
+   contiguous run of paint sub-rows hosting its own segment (PaintField mounts
+   it). Every segment is positioned from the one --a-label-frac, so splitting the
+   strip cannot desynchronize it — which is what makes "multiple lines … in
+   synchronized x position" hold at three depths rather than one.
+
+   NOTE .cat-rows IS NO LONGER A CONTAINING BLOCK. It must not be: a run wrapper
+   inside it is, and if both were, the run's divider would still resolve `top/
+   bottom` against the run (nearest positioned ancestor wins) but `.varspanel
+   .rows` and the nested groups would keep working while .cat-rows silently
+   offered a second, wrong anchor for anything mounted directly in it. Keeping
+   exactly one positioned ancestor per divider is what makes "the strip spans its
+   offsetParent" true by construction. */
+.inspector .cat-row-run,
+.inspector .paint-sub-rows,
 .varspanel .rows {
   position: relative; /* the divider's containing block AND its measuring box */
+}
+
+/* A boundary run stacks its rows EXACTLY as the .cat-rows block it sits in does
+   (same gap, see `.cat-rows` below) — the wrapper is a divider scope, not a new
+   layout, so introducing it must not move a single row. The nested paint groups
+   take the paint stack's own --a-sp-2 rhythm instead, which is the gap the
+   .paintfield column already uses between its sections. */
+.inspector .cat-row-run {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+}
+
+.inspector .paint-sub-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
 }
 
 .label-divider {
@@ -4172,6 +4402,20 @@ audio.ae-preview-media {
 .cmd-tip-note {
   margin-top: var(--a-sp-1);
   color: var(--fg-dim);
+}
+
+/* THE URL a tip reports verbatim — the globe button's "tell me what the URL is".
+   Monospace because it is a literal to be read character by character (a port
+   number, a query string), not prose, and `anywhere` because a URL is one
+   unbreakable word: without it a long project name would push the tip past its
+   --tt-max-width and clip, and clipping the END of a URL hides exactly the part
+   that distinguishes one page from another. */
+.cmd-tip-url {
+  margin-top: var(--a-sp-1);
+  color: var(--fg-dim);
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm);
+  overflow-wrap: anywhere;
 }
 
 /* Text/number inputs fill their grid cell (the value column grows; the
@@ -6433,23 +6677,86 @@ audio.ae-preview-media {
   overflow-wrap: anywhere;
 }
 
-/* MATERIAL FILL rows (PaintField's "Mat" mode): label + control per knob,
-   compact under the material dropdown. */
-.paint-material-row {
+/* ── NESTED PAINT SUB-ROWS — ON THE SAME GRID AS EVERY OTHER ROW ─────────────
+   The rows INSIDE a paint stack: a gradient's Direction/Wavelength/Radius, and
+   the "Mat" mode's per-knob rows. They are label⟷value rows like any other, so
+   they take the row grid — the SAME `calc(var(--a-label-frac) * 100%)` first
+   column the top-level `.inspector .row` uses — instead of the private flex
+   boxes they used to be.
+
+   WHY, and it is two of the user's complaints at once. These were inline-styled
+   flex rows whose label <span> had its INTRINSIC width, so the value edge landed
+   wherever the label's text happened to end. Measured in the gradient-stroke
+   repro: "Direction" put its control at x=1403.0 and "Wavelength" at x=1417.4 —
+   the user's "Direction and Wavelength are not vertically aligned with each
+   other", 14.4px of it — and neither matched the 1436.9 every top-level row in
+   the same panel shares. A flex row cannot fix this by construction: aligning to
+   a fraction of the block is what a grid TRACK does, and the divider the user
+   drags is a readout of that same fraction, so a flex row could never track it.
+
+   It also fixes "the fx goes over them". The ƒ affordance is positioned
+   `right: 100%` off .numfield (out of flow, so revealing it never displaces the
+   value — the earlier fix), and the label zone reserves its landing space with
+   the --a-row-chrome-w gutter, ellipsizing the label to make room. Both of those
+   rules keyed on `.inspector .row > .label`, so a nested flex row got NEITHER:
+   its label had no gutter and no truncation, and the glyph painted straight over
+   the last characters — "Directio𝑓x", "Wavelengt𝑓x", with the label's own span
+   under the glyph's centre. Joining the grid inherits the fix rather than
+   restating it, which is the point: one boundary rule for every row in the
+   panel, at every nesting depth.
+
+   The third column is omitted (no --a-kf-w track): these sub-rows carry no
+   keyframe cluster of their own — a gradient's ◆ lives on the parent Stroke/Fill
+   row — and reserving the gutter would indent their values past every other
+   row's, the same per-kind drift the unconditional label gutter exists to stop. */
+.inspector .paint-sub-row {
+  position: relative; /* anchor for the value-side out-of-flow hover chrome */
+  display: grid;
+  grid-template-columns: calc(var(--a-label-frac) * 100%) minmax(var(--a-input-w), 1fr);
+  align-items: center;
+  gap: var(--a-sp-2);
+  min-height: var(--a-control-h);
+}
+
+/* Truncate, never wrap — the top-level `.inspector .label` contract, so a long
+   nested label ("Wavelength" at a narrow panel) ellipsizes and the value column's
+   left edge stays put. Carries the SAME trailing gutter as a top-level label so
+   the ƒ glyph lands in reserved air instead of on the glyphs. */
+.inspector .paint-sub-label {
+  padding-right: calc(var(--a-row-chrome-w) - var(--a-sp-2));
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* min-width:0 lets the control shrink inside its track (grid children default
+   min-width:auto, same reasoning as .numfield). */
+.inspector .paint-sub-control {
   display: flex;
   align-items: center;
   gap: var(--a-sp-2);
+  min-width: 0;
 }
 
-.paint-material-label {
-  flex: 0 0 auto;
-  min-width: var(--a-render-label-w, 96px);
-  font-size: var(--a-font-sm);
-  color: var(--fg-dim);
+/* Reveal the nested rows' value-side affordances on hover, exactly as the
+   top-level rows do. The `.row:hover` selectors above cannot see these rows —
+   they are not .row — so the same reveal is stated for .paint-sub-row. Opacity
+   only; the width is reserved at rest by the out-of-flow rule. */
+.inspector .paint-sub-row:hover .numfield .eq-open,
+.inspector .paint-sub-row:hover .numfield .eq-ref-mark {
+  opacity: 1;
 }
 
+.inspector .paint-sub-row:hover .numfield .dn .dn-wheel {
+  visibility: visible;
+}
+
+/* MATERIAL FILL rows (PaintField's "Mat" mode): a nested paint sub-row, so the
+   grid and the label contract come from .paint-sub-row above. This adds only the
+   material-specific bit — see .paint-material-control .dn below. */
 .paint-material-control {
-  flex: 1;
   min-width: 0;
 }
 
@@ -6650,6 +6957,19 @@ audio.ae-preview-media {
 .code-modal-hint {
   color: var(--fg-dim);
   font-size: 0.85em;
+}
+/* The PROBLEM line (a project script that will not compile) — same footer slot as
+   the hint, in the app's EQUATION-ERROR ink, because that is exactly what it is:
+   the same failure a red equation field reports, told at the place the code was
+   written. `min-width: 0` + ellipsis so a long V8 message cannot push the Save
+   button off the panel; the full text is on the report line in the console. */
+.code-modal-problem {
+  min-width: 0;
+  color: var(--a-eq-error);
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .code-modal-actions {
   display: flex;

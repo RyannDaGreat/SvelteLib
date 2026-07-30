@@ -246,6 +246,82 @@
     }));
   }
 
+  /**
+   * Pure function. True iff this row RESTACKS to the panel's full width, i.e. it
+   * has no label⟷value boundary at --a-label-frac for a divider to mark.
+   *
+   * Two kinds do: a LIST row (app.css `.row.row-list` — the list gets its own
+   * full-width second line) and a PAINT row (`:has(.gradient-presets)` — the
+   * gradient stack's mode strip, preset library and stops list span the panel).
+   * Both are declared by the ROW, which is why this is answerable here without
+   * touching the DOM — the earlier attempt measured offsetTop at runtime and kept
+   * racing the category's mount (see LabelDivider's header).
+   *
+   * @param {{kind: string, paint?: boolean}} row An inspector row def.
+   * @returns {boolean}
+   *
+   * @example fullWidthRow({key: "x", kind: "number"})
+   * false
+   * @example // a fill/stroke paint row — PaintField's stack spans the panel
+   * fullWidthRow({key: "stroke", kind: "color", paint: true})
+   * true
+   * @example // a plain colour row keeps the shared value column
+   * fullWidthRow({key: "shadowColor", kind: "color"})
+   * false
+   * @example // a list row (a polygon's points) restacks onto a second line
+   * fullWidthRow({key: "points", kind: "list"})
+   * true
+   */
+  function fullWidthRow(row) {
+    const kind = rowKind(row);
+    return kind === LIST_ROW_KIND || (kind === "color" && !!row.paint);
+  }
+
+  /**
+   * Pure function. Splits a category's rows into RUNS for divider purposes: each
+   * run is a maximal stretch of rows that all share the label⟷value boundary,
+   * and full-width rows sit BETWEEN runs, in their own single-row run.
+   *
+   * WHY THE PANEL NEEDS THIS, and it is the user's complaint verbatim: "that line
+   * is still extending too far down… visually going past the stroke material
+   * area". One divider per CATEGORY spanned everything the category held —
+   * including a gradient paint stack's mode strip and preset library, which have
+   * no column to resize. Splitting into runs means each divider spans only rows
+   * that actually have a boundary, which is the same rule that moved the divider
+   * from `.rows` to `.cat-rows`, applied one level deeper.
+   *
+   * A run carries `boundary`: true for a stretch of ordinary rows (mount a
+   * divider), false for a full-width row (mount none — PaintField mounts its own
+   * around the sub-rows INSIDE its stack).
+   *
+   * @param {Array<object>} rows A category's rows, in order.
+   * @returns {Array<{boundary: boolean, rows: Array<object>}>}
+   *
+   * @example // an all-ordinary category is ONE boundary run — one divider, as before
+   * rowRuns([{key: "x", kind: "number"}, {key: "y", kind: "number"}])
+   * // => [{boundary: true, rows: [{key: "x", …}, {key: "y", …}]}]
+   * @example // Stroke Material: the paint row first, then width/caps below it
+   * rowRuns([{key: "stroke", kind: "color", paint: true}, {key: "strokeWidth", kind: "number"}])
+   * // => [{boundary: false, rows: [stroke]}, {boundary: true, rows: [strokeWidth]}]
+   * @example // a paint row BETWEEN ordinary rows splits them into two runs
+   * rowRuns([{key: "a", kind: "number"}, {key: "fill", kind: "color", paint: true}, {key: "b", kind: "number"}]).map((r) => r.boundary)
+   * // => [true, false, true]
+   * @example rowRuns([])
+   * // => []
+   */
+  function rowRuns(rows) {
+    const runs = [];
+    for (const row of rows) {
+      const boundary = !fullWidthRow(row);
+      const last = runs[runs.length - 1];
+      // A full-width row always starts its own run (never merges), so two adjacent
+      // paint rows stay separable and neither gets a divider.
+      if (last && last.boundary && boundary) last.rows.push(row);
+      else runs.push({ boundary, rows: [row] });
+    }
+    return runs;
+  }
+
   let itemCategories = $derived(sel ? groupRows(sel.plugin.inspector ?? []) : []);
   let creationCategories = $derived(
     creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? []) : []
@@ -1550,10 +1626,30 @@
              not-created note — regions with no value column at all, where the
              strip was a col-resize cursor over text that has no column to
              resize. Collapse a category and its divider goes with it, which is
-             the same rule stated from the other side. -->
-        {@render labelDivider()}
-        {#each cat.rows as row (row.key)}
-          {@render propRow(row, state, opts)}
+             the same rule stated from the other side.
+
+             AND ONE PER RUN, not one per category (rowRuns above): a FULL-WIDTH
+             row — a gradient paint stack, a list's second line — has no boundary
+             either, so a single category-wide strip ran straight through its mode
+             strip and preset library. That was the user's "that line is still
+             extending too far down… visually going past the stroke material
+             area". Each boundary run gets its own segment and a full-width row
+             gets none; PaintField mounts its own around the sub-rows inside its
+             stack. Every segment is positioned from the one --a-label-frac, so
+             splitting the strip does not desynchronize it. -->
+        {#each rowRuns(cat.rows) as run (run.rows[0].key)}
+          {#if run.boundary}
+            <div class="cat-row-run">
+              {@render labelDivider()}
+              {#each run.rows as row (row.key)}
+                {@render propRow(row, state, opts)}
+              {/each}
+            </div>
+          {:else}
+            {#each run.rows as row (row.key)}
+              {@render propRow(row, state, opts)}
+            {/each}
+          {/if}
         {/each}
       </div>
     {/if}

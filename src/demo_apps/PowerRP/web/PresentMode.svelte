@@ -20,7 +20,8 @@
   import { cameraFrameIR, evaluatedStateAt, evaluationAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
   import { paintIsAnimated } from "../render_gpu/skia/materials.js"; // an animated MATERIAL fill/stroke/background must also keep the loop alive
-  import { assetUrl } from "./projectApi.js";
+  import { assetStore } from "./storageMode.js"; // resolves a sound ref for THIS page's storage
+  import { assetRef } from "./assetRef.js"; // the one "/asset/<project>/<file>" spelling
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 
@@ -143,9 +144,13 @@
    *  uses for image/video src, extended to any scheme so a pasted URL/data URI
    *  works too). */
   function soundUrl(sound) {
-    if (sound.startsWith("/")) return assetUrl(sound); // served path → resolve through the backend base
+    // Resolution goes through THE STORAGE SEAM (assetStore().resolveUrl), so a
+    // transition sound plays from the backend in server mode and from a blob:
+    // object URL in browser-local mode. Previously this always built a server
+    // path, so a static-mode deck's transition sounds silently 404'd.
+    if (sound.startsWith("/")) return assetStore().resolveUrl(sound); // served path → this page's storage
     if (/^[a-z][a-z0-9+.-]*:/i.test(sound)) return sound; // has a URI scheme (data:/http:/https:/blob:) → use verbatim
-    return assetUrl(`/asset/${encodeURIComponent(app.projectName())}/${encodeURIComponent(sound)}`); // bare filename → project asset
+    return assetStore().resolveUrl(assetRef(app.projectName(), sound)); // bare filename → project asset
   }
 
   /** Command. Plays a transition's sound ONCE, at transition start. No sound

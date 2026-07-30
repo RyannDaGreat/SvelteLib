@@ -175,7 +175,9 @@
   import Modal from "../../../lib/Modal.svelte";
   import AssetThumb from "./AssetThumb.svelte";
   import { KIND_ICON } from "./assetThumbnail.js";
-  import { assetUrl, ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js";
+  import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js";
+  import { quotaLine, quotaPercent } from "./assetStore.js";
+  import { assetStore } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
   import { copyText } from "./clipboard.js";
 
   let { app } = $props();
@@ -203,6 +205,47 @@
   let confirmOpen = $state(false);
   let fileInput; // hidden <input type=file> for the Upload button
 
+  // ── STORAGE BUDGET (user ruling: "if there is a certain amount of storage per
+  // user, per browser, it should say that amount of storage so they know how
+  // close they are to filling it up") ────────────────────────────────────────
+  // The reading from navigator.storage.estimate(), refreshed alongside the asset
+  // list (so an upload's effect on the number is visible immediately). In HTTP
+  // mode quota() reports {supported:false} with no error and quotaLine() returns
+  // null, so NOTHING renders — a server has no per-browser budget to be near.
+  // Percent-full at which the line switches to the theme's danger color. The
+  // numeric twin of app.css's --a-quota-full-at (CSS cannot compare a custom
+  // property to a threshold, so the COMPARISON is here and the COLOR is there).
+  const QUOTA_FULL_AT_PCT = 90;
+  let quota = $state(null);
+  let quotaText = $derived(quotaLine(quota, humanReadableFileSize));
+  let quotaPct = $derived(quotaPercent(quota));
+  let quotaNearlyFull = $derived(quotaPct !== null && quotaPct >= QUOTA_FULL_AT_PCT);
+
+  /** Command. Re-read the storage budget. Called from refresh(), so the line
+   *  tracks every upload/delete. A quota() reading NEVER throws (it reports
+   *  {supported:false, error} instead — see localDb.storageBudget): this readout
+   *  must not be able to break the pane that hosts the asset grid. */
+  async function refreshQuota() {
+    quota = await app.storageQuota();
+  }
+
+  /** Query. The quota tooltip's detail sentence: the exact percent, whether the
+   *  browser has granted PERSISTENT storage, and what to do about it. The line
+   *  itself is deliberately short ("4.6MB of 2.0GB used"); the reason a user
+   *  cares — that non-persistent storage can be EVICTED — belongs in the detail
+   *  rather than the pane's one visible row. */
+  function quotaDetail() {
+    const parts = [`Browser storage for this site: ${quotaText}.`];
+    if (quotaPct !== null) parts.push(`That is ${quotaPct}% of the browser's budget for this origin.`);
+    parts.push(
+      quota?.persisted
+        ? "Storage is PERSISTENT — the browser will not evict your projects under storage pressure."
+        : "Storage is BEST-EFFORT: the browser may evict it under storage pressure. Export a .zip for a durable copy.",
+    );
+    parts.push("The figure is an estimate covering everything this site stores, and browsers round it deliberately.");
+    return parts.join(" ");
+  }
+
   // HOW MANY WIDGETS USE EACH ASSET — asset name → user count, recomputed ONCE
   // PER COMMIT and read per tile.
   //
@@ -220,9 +263,12 @@
     return counts;
   });
 
-  /** Query. Absolute (proxy-aware) URL for an asset's served path. */
+  /** Query. A LOADABLE URL for an asset, through THE STORAGE SEAM: the backend
+   *  base in server mode, a blob: object URL in browser-local mode. Resolving it
+   *  as a server path unconditionally is how the preview modal 404'd in static
+   *  mode against a file the browser was in fact holding. */
   function urlOf(a) {
-    return assetUrl(a.url);
+    return assetStore().resolveUrl(a.url);
   }
 
   /**
@@ -251,6 +297,9 @@
       // Register any FONT assets as selectable families (#26) — a manual folder
       // drop or a returning project must offer its uploaded fonts in the dropdown.
       app.registerFontAssets(assets);
+      // The storage line tracks the library, so it is re-read with it. Awaited
+      // INSIDE the try only for ordering; it cannot throw (see refreshQuota).
+      await refreshQuota();
     } catch (e) {
       error = String(e?.message ?? e);
       assets = null;
@@ -440,6 +489,26 @@
     <!-- Hidden file input drives the Upload button. -->
     <input class="ae-file" type="file" multiple bind:this={fileInput} onchange={onFileChosen} />
   </div>
+
+  <!-- STORAGE BUDGET LINE — always visible in browser-local (static) mode, and
+       ABSENT in server mode, where there is no per-browser quota to be near
+       (quotaText is null then, so this whole block does not render). The visible
+       row is deliberately one short sentence plus a fill bar; the tooltip carries
+       the detail (exact percent, persistent-vs-evictable, and the estimate
+       caveat). Immediate Tooltip: a storage warning must answer on hover, not
+       after a delay. -->
+  {#if quotaText}
+    <Tooltip text={quotaDetail()}>
+      <div class="ae-quota" class:ae-quota-nearly-full={quotaNearlyFull} aria-label={`Storage: ${quotaText}`}>
+        {#if quotaPct !== null}
+          <div class="ae-quota-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={quotaPct}>
+            <div class="ae-quota-bar-fill" style={`--ae-quota-fill:${Math.min(100, quotaPct)}%`}></div>
+          </div>
+        {/if}
+        <div class="ae-quota-text">{quotaText}</div>
+      </div>
+    </Tooltip>
+  {/if}
 
   <div class="ae-body">
     <!-- OPTIMISTIC UPLOAD TILES — always first, above the real grid. Each shows

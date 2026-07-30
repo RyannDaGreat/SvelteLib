@@ -14,6 +14,19 @@ import { dirname, resolve } from "path";
 const root = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(root, "../../../.."); // src/lib + src/styles live here
 const BACKEND = process.env.BACKEND_URL || "http://localhost:3638";
+// STATIC BUILD BASE PATH. GitHub Pages serves a project site under
+// "https://<user>.github.io/<repo>/", so every emitted asset URL must be
+// prefixed with that subpath or the bundle 404s on its own modules. Vite bakes
+// `base` into the built HTML/JS at BUILD time (it cannot be discovered at
+// runtime), which is why this is an env var the workflow sets rather than a
+// constant: the same config serves `npm run dev` (base "/"), a local
+// `vite preview --base /SvelteLib/` rehearsal, and the Pages deploy.
+//
+// It MUST end in a slash — Vite joins it to asset paths by concatenation, so
+// "/SvelteLib" would emit "/SvelteLibassets/…". Normalized here rather than
+// trusted, because the failure is silent in the build and total at runtime.
+const rawBase = process.env.POWERRP_BASE || "/";
+const BASE = rawBase.endsWith("/") ? rawBase : `${rawBase}/`;
 const TLS_CERT = process.env.POWERRP_TLS_CERT;
 const TLS_KEY = process.env.POWERRP_TLS_KEY;
 const PUBLIC_HOST = process.env.POWERRP_PUBLIC_HOST;
@@ -31,7 +44,20 @@ const HMR = PUBLIC_HOST
 
 export default defineConfig({
   root,
+  base: BASE,
   plugins: [svelte()],
+  build: {
+    // Emitted at the REPO ROOT (next to the existing dist/), not inside the app
+    // folder: a build must never land in the source tree it was built from, and
+    // the Pages workflow uploads exactly this directory. `repoRoot` is already
+    // computed above for fs.allow, so the path cannot drift from it.
+    outDir: resolve(repoRoot, "dist-powerrp"),
+    emptyOutDir: true,
+    // canvaskit.wasm is ~7 MB and every font is a few hundred kB; the default
+    // 500 kB warning would fire on assets whose size is inherent, so the
+    // threshold is raised to keep real regressions visible instead of drowned.
+    chunkSizeWarningLimit: 4000,
+  },
   // pdfjs-dist is only ever reached through pdf_page_raster's LAZY
   // `await import(...)` (a bare-node-safety requirement), so vite would
   // otherwise discover it mid-session on first serve, re-optimize deps, and

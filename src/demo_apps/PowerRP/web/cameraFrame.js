@@ -72,7 +72,14 @@ export function evaluatedStateAt(doc, slideIndex, alpha, registry) {
  * @example // evaluationAt(newDocument(), 0, 1, registry).clock // null — a fresh deck reads no clock
  */
 export function evaluationAt(doc, slideIndex, alpha, registry) {
-  return evaluateState(tweenedState(doc, slideIndex, alpha, registry), registry);
+  // THE PROJECT SCRIPT (doc.meta.script) is threaded here rather than at each of
+  // this module's callers, because this is the one place that holds the DOCUMENT
+  // and evaluateState only ever sees the FOLD — the script cannot ride in the
+  // folded state, so a seam that forgot it would render a scripted deck with every
+  // scripted property fallen back to its default. Every pixel consumer (thumbnails,
+  // PNG/MP4 export, the presenter, the CLI hook) reaches evaluation through here,
+  // so threading it once covers all of them.
+  return evaluateState(tweenedState(doc, slideIndex, alpha, registry), registry, doc.meta.script ?? "");
 }
 
 /**

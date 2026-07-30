@@ -9,10 +9,17 @@
   how it declares inspector rows — and this component renders it. There are two
   content kinds, and a spec may carry either:
 
-    { grid: { property, value, cells: [{value, label, svg}] } }
+    { grid: { property, value, cells: [{value, label, svg}], labelKind } }
         A visual PICKER. Each cell is its own SVG thumbnail; clicking one writes
         `property = cell.value`. The cursor widget picks a cursor this way instead
         of through an Inspector dropdown.
+        `labelKind` says what a cell's `label` IS, and the only thing it decides is
+        TYPOGRAPHY: "text" (the default) is prose — a human title like "Spinning" —
+        and renders in the app font; "id" is an IDENTIFIER — "tabler:star" — and
+        renders in --a-mono, the app's one voice for identifiers and equations
+        (.varspanel .var-name, .cmd-tip-url). The plugin has to say which, because
+        the toolbar cannot tell them apart and guessing wrong is the inconsistency
+        the user reported ("I'm okay with monospace, except it's not consistent").
 
     { fields: [{ id, label, value, keys, size, help }] }
         An editable READOUT. Each field is a text input showing `value`; committing
@@ -127,6 +134,17 @@
   // What the grid shows: the async results when searchable, else the spec's
   // own static cells (the cursor grid) — one template, two content sources.
   let gridCells = $derived(searchable ? (searchCells ?? []) : (spec?.grid?.cells ?? []));
+
+  // THE THUMBNAIL INK — the theme's --fg, substituted into each cell's SVG for
+  // `currentColor` (see inkedSvg below for why an <img> leaves us no choice).
+  // Reading `app.theme` here is what makes this re-derive on a theme switch: the
+  // token itself is not reactive, so the state that CHANGES it has to be the
+  // dependency. That is CanvasView's paintGrid contract, which touches app.theme
+  // for exactly the same reason (its grid line colour also comes from --fg).
+  let ink = $derived.by(() => {
+    app.theme;
+    return themeInk();
+  });
 
   // Whether OUR hover currently owns app.previewDelta. A PLAIN (non-$state)
   // bridge variable — written and read imperatively, it must never drive a
@@ -266,8 +284,20 @@
                  title= is banned in app chrome — manifest). Its anchor is
                  display:contents, so the button stays the grid item AND the
                  listbox's own option child. NOTE: the tip is position:fixed, so
-                 the panel must not carry a transform — see FloatingCanvasPanel. -->
-            <Tooltip text={cell.label}>
+                 the panel must not carry a transform — see FloatingCanvasPanel.
+
+                 The `tip` snippet rather than plain `text` so the label can carry
+                 a CLASS: an "id" label is an identifier and wears --a-mono (the
+                 .cmd-tip-url precedent — a literal read character by character),
+                 a "text" label is prose and wears the app font. spec.grid.labelKind
+                 is what distinguishes them; see the header. `disabled` restores the
+                 guard the snippet form loses: Tooltip's own hasContent test is
+                 `!!tip || text.length > 0`, so a snippet is ALWAYS content and an
+                 unlabelled cell would pop an empty tip box on hover. -->
+            <Tooltip disabled={!cell.label}>
+              {#snippet tip()}
+                <span class="canvas-toolbar-tile-label" class:identifier={spec.grid.labelKind === "id"}>{cell.label}</span>
+              {/snippet}
               <button
                 type="button"
                 class="canvas-toolbar-tile"
@@ -277,7 +307,7 @@
                 onpointerenter={() => preview(spec.grid.property, cell.value)}
                 onclick={() => pick(spec.grid.property, cell.value)}
               >
-                <img class="canvas-toolbar-thumb" src={dataUri(cell.svg)} alt={cell.label} draggable="false" />
+                <img class="canvas-toolbar-thumb" src={dataUri(cell.svg, ink)} alt={cell.label} draggable="false" />
               </button>
             </Tooltip>
           {/each}
@@ -311,10 +341,60 @@
 {/if}
 
 <script module>
-  /** Pure function. A self-contained SVG data URI for an <img> thumbnail.
-   * @example dataUri("<svg/>").startsWith("data:image/svg+xml,") // true
+  /** Ink to fall back to when no computed style can resolve --fg (a non-DOM path).
+   *  A mid grey, deliberately: legible against a dark AND a light panel, so a
+   *  failure to read the theme degrades to "dim" rather than to "invisible". */
+  const INK_FALLBACK = "#808080";
+
+  /**
+   * Pure function. `svg` with every `currentColor` replaced by `ink`.
+   *
+   * WHY THIS EXISTS. The monochrome Iconify sets (tabler, mdi, lucide, weui…) are
+   * authored with `fill="currentColor"` / `stroke="currentColor"` so a host page can
+   * colour them by CSS inheritance. A tile thumbnail is an `<img src="data:…">`,
+   * and an `<img>` is a SEPARATE document: no CSS crosses into it, so `currentColor`
+   * resolves against the SVG's OWN initial color — black. MEASURED at baseline: on
+   * the graphite theme the palette drew black glyphs on an rgb(26,26,26) panel, the
+   * user's report "It's dark on dark right now." Substituting the ink into the
+   * markup is the only fix available to an `<img>`; the alternative (inline the SVG
+   * so it inherits) would hand 50 untrusted remote documents to the DOM.
+   *
+   * ONLY WHERE `currentColor` APPEARS. Full-colour sets (logos, twemoji, flags…)
+   * carry explicit colours and must pass through byte-identical — recolouring a
+   * brand logo would be worse than the bug. A string with no `currentColor` is
+   * returned unchanged, which is exactly what replace() does anyway.
+   *
+   * @param {string} svg - the icon's SVG text
+   * @param {string} ink - a CSS colour, e.g. the theme's --fg
+   * @returns {string}
+   *
+   * @example inkedSvg('<path fill="currentColor" d="M0 0"/>', "#e6e6e6")
+   * @example // '<path fill="#e6e6e6" d="M0 0"/>'
+   * @example inkedSvg('<path fill="#74aa9c" d="M0 0"/>', "#e6e6e6") // unchanged — a full-colour logo
+   * @example // '<path fill="#74aa9c" d="M0 0"/>'
    */
-  function dataUri(svg) {
-    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  function inkedSvg(svg, ink) {
+    return svg.replaceAll("currentColor", ink);
+  }
+
+  /** Pure function. A self-contained SVG data URI for an <img> thumbnail, with
+   * `currentColor` resolved to `ink` (see inkedSvg for why that substitution is
+   * the only option inside an <img>).
+   * @example dataUri("<svg/>", "#fff").startsWith("data:image/svg+xml,") // true
+   * @example decodeURIComponent(dataUri('<svg fill="currentColor"/>', "#fff"))
+   * @example // 'data:image/svg+xml,<svg fill="#fff"/>'
+   */
+  function dataUri(svg, ink) {
+    return `data:image/svg+xml,${encodeURIComponent(inkedSvg(svg, ink))}`;
+  }
+
+  /** Query. The theme's foreground colour as a concrete CSS colour string, read
+   * off :root — the ink a `currentColor` thumbnail must be drawn in so it contrasts
+   * with the panel it sits on. Falls back to INK_FALLBACK with no DOM.
+   * @example themeInk() // "#e6e6e6" on graphite (dark); "#2b221a" on desert (light)
+   */
+  function themeInk() {
+    if (typeof getComputedStyle === "undefined") return INK_FALLBACK;
+    return getComputedStyle(document.documentElement).getPropertyValue("--fg").trim() || INK_FALLBACK;
   }
 </script>

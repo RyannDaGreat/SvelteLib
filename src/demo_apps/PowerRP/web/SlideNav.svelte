@@ -243,6 +243,17 @@
           {#if slide.enabled === false}
             <div class="tool-tip-requires">Disabled — its delta is skipped, so later slides inherit as if it were not here</div>
           {/if}
+          <!-- THE RENAME AFFORDANCE, hosted here because this tip already covers
+               the name span (see that span's note: a nested Tooltip on it drew two
+               boxes over each other). It replaces a native title= on the span —
+               banned, and the reason the ban exists: it waited ~1s while the eye
+               toggle beside it answered instantly.
+
+               STILL DOUBLE-CLICK, unlike the toolbar's project title, which became
+               single-click in the same pass: a slide card's SINGLE click SELECTS
+               the slide, so rename must be the second gesture here or it would
+               fight navigation. The toolbar title has no first gesture to lose. -->
+          <div class="cmd-tip-note">Double-click the name to rename</div>
         {/snippet}
         <button
           class="slide"
@@ -268,7 +279,19 @@
                 aria-label={`Rename slide ${i + 1}`}
               />
             {:else}
-              <span class="name" ondblclick={(e) => { e.stopPropagation(); startRename(i, slide.name); }} title="Double-click to rename">{slide.name}</span>
+              <!-- NO TOOLTIP OF ITS OWN, and no native title= either (banned —
+                   manifest; tests/native_tooltip_ban_test.js enforces it). This
+                   span carried a native title for exactly the reason the ban
+                   exists: it predated the convention, so it waited ~1s while the
+                   eye toggle beside it answered instantly.
+
+                   The rename hint moved UP into the CARD's tip (above) rather
+                   than becoming a nested Tooltip here. A nested one was built
+                   first and was visibly wrong: the card's tip covers this span
+                   too, so hovering the name fired BOTH and painted two boxes over
+                   each other — the card's "Slide 1" landing across the middle of
+                   "Double-click to rename". One hover target owes one tip. -->
+              <span class="name" ondblclick={(e) => { e.stopPropagation(); startRename(i, slide.name); }}>{slide.name}</span>
             {/if}
             <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
               <span

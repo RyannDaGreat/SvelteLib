@@ -33,6 +33,34 @@
   in editors with draggable splits, and it is the only way back to the default
   for a preference with no toggle.
 
+  HOW FAR DOWN IT RUNS is decided by WHERE IT IS MOUNTED, and by nothing else:
+  this component always spans its offsetParent. That is deliberate — it keeps the
+  component free of any notion of which rows deserve a boundary, which is a
+  question about ROW DEFINITIONS and belongs to whoever renders them.
+
+  So a caller must mount one per RUN OF BOUNDARY ROWS, not one per category. A
+  category is usually all boundary rows and gets exactly one; but a category
+  holding a RESTACKED editor (a gradient paint stack, a list's full-width second
+  line) is split by it, because a mode strip, a preset library and a stops list
+  have no label⟷value column — and a col-resize strip over those was the user's
+  "that line is still extending too far down… visually going past the stroke
+  material area". That is the same defect that moved the divider from .rows to
+  .cat-rows in the first place, one level deeper, and it has the same fix: mount
+  on the smallest block that is all boundary rows. web/Inspector.svelte splits a
+  category into runs (rowRuns) and PaintField mounts one around its own geometry
+  sub-rows and its material knobs. Every segment reads the one app.labelFrac, so
+  they stay in x-sync — the user's "multiple lines, in synchronized x position",
+  now at two nesting depths.
+
+  A DOM-MEASURING VERSION WAS BUILT AND REVERTED. It published the offsetTop of
+  the first full-width child as a CSS variable and ended the strip there. It kept
+  losing the measurement: `.cat-rows` is inside the category's `{#if !collapsed}`,
+  so expanding a category builds a FRESH block with no inline style, and the
+  effect ran before the paint stack mounted — leaving a stale full-block span with
+  no mutation to trigger a remeasure. Two observers were added to chase it and it
+  was still racy. The row defs already know which rows are full-width, so
+  measuring the DOM to rediscover it was the wrong layer.
+
   Props: app (the PowerRPApp — owns labelFrac and its persistence).
   Styling lives in app.css (.label-divider; app convention: no <style>).
 -->

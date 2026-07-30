@@ -80,6 +80,7 @@
     STANDARD_RESOLUTIONS, evenDim, settingsFromJob, sanitizeSettings, loadSettings, saveSettings,
   } from "./renderCenterSettings.js";
   import { listRenderJobs, cancelRenderJob, deleteRenderJob, markRenderJobSeen, renderUrl } from "./projectApi.js";
+  import { UNAVAILABLE_IN_STATIC } from "./storageMode.js"; // the by-name reason render jobs need a server
   // The job vocabulary (active? unseen? how far? what does this state MEAN?)
   // lives in one pure module because the toolbar badge reads the same
   // predicates — two copies would be two chances to disagree about what the
@@ -359,6 +360,16 @@
    *  backend that has gone away must be visible, not a list that silently stops
    *  updating. */
   async function refresh() {
+    // STATIC MODE: render jobs are a server-owned noun, so there is no list to
+    // read. The pane says WHY, by name, instead of showing the fetch error a
+    // request to a nonexistent route would produce — "a visible notice, not a
+    // 404". The sentence is UNAVAILABLE_IN_STATIC's, so the refusal the code
+    // would raise and the text the user reads are the same string.
+    if (app.isStatic()) {
+      jobs = [];
+      listError = UNAVAILABLE_IN_STATIC.renderJobs;
+      return;
+    }
     try {
       jobs = await listRenderJobs(project);
       browserStatus = await browserJobStatuses(project);
@@ -372,10 +383,18 @@
   // Resume data for a job the server has already finished (or lost) is dead weight
   // AND a lie — it would let the dialog offer to resume something that is over. One
   // sweep per open, reported rather than silent.
-  pruneFinishedBrowserJobs(project)
-    .then((dropped) => { if (dropped.length) console.info(`Render Center: dropped local resume data for ${dropped.length} finished render job(s).`); })
-    .catch((e) => console.error("Render Center: could not prune finished browser render jobs:", e));
-  poll = setInterval(refresh, POLL_MS);
+  // Skipped in static mode: pruning compares local resume data against the
+  // SERVER's job list, and with no server there is no list to compare against —
+  // asking would just log a 404 for a route that cannot exist here.
+  if (!app.isStatic()) {
+    pruneFinishedBrowserJobs(project)
+      .then((dropped) => { if (dropped.length) console.info(`Render Center: dropped local resume data for ${dropped.length} finished render job(s).`); })
+      .catch((e) => console.error("Render Center: could not prune finished browser render jobs:", e));
+  }
+  // No poll in static mode: refresh() is a constant there (the same
+  // unavailability notice every time), so re-running it on a timer would only
+  // burn wakeups. The unavailability is stated once, on open.
+  if (!app.isStatic()) poll = setInterval(refresh, POLL_MS);
   onDestroy(() => clearInterval(poll));
 
   // ── Derived effective params ──────────────────────────────────────────────
@@ -631,10 +650,22 @@
     {/if}
 
     <div class="render-center-actions">
-      <button type="button" class="btn" disabled={submitting} onclick={submit}>
-        <iconify-icon icon="mdi:movie-play-outline" width="16" height="16"></iconify-icon>
-        Submit Render Job
-      </button>
+      <!-- DISABLED in static mode, with the reason on hover. A live Submit that
+           could only fail is worse than an honestly dead one: it invites someone
+           to configure a whole render before finding out. -->
+      {#if app.isStatic()}
+        <Tooltip text={UNAVAILABLE_IN_STATIC.renderJobs}>
+          <button type="button" class="btn" disabled>
+            <iconify-icon icon="mdi:movie-off-outline" width="16" height="16"></iconify-icon>
+            Submit Render Job — needs a server
+          </button>
+        </Tooltip>
+      {:else}
+        <button type="button" class="btn" disabled={submitting} onclick={submit}>
+          <iconify-icon icon="mdi:movie-play-outline" width="16" height="16"></iconify-icon>
+          Submit Render Job
+        </button>
+      {/if}
     </div>
     <!-- (The paragraph that used to sit here — "A Server job keeps rendering if
          you close this dialog…" — has moved into BACKENDS' server `hint`, up

@@ -21,7 +21,11 @@
   import Thumbnail from "../../../lib/Thumbnail.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import VideoThumbnail from "./VideoThumbnail.svelte";
-  import { assetUrl } from "./projectApi.js";
+  // Through THE STORAGE SEAM, not projectApi.assetUrl: a tile must preview a
+  // BROWSER-LOCAL asset too, and only the adapter knows that such a ref resolves
+  // to a blob: URL. Resolving it as a server path was how every thumbnail in
+  // static mode 404'd against the static host.
+  import { assetStore } from "./storageMode.js";
   import { assetTilePresentation } from "./assetThumbnail.js";
 
   // app — the controller (for ensureAssetThumbnail); asset — {name,kind,url,mtime,thumbnail?,badge?};
@@ -54,15 +58,21 @@
 
   // The bitmap URL actually shown: a server-cached thumbnail (already absolute
   // via the /asset seam) or the freshly client-rendered data URL.
-  let imgSrc = $derived(pres.mode === "thumbnail" ? assetUrl(pres.src) : rendered?.thumbnail ?? null);
+  let imgSrc = $derived(pres.mode === "thumbnail" ? assetStore().resolveUrl(pres.src) : rendered?.thumbnail ?? null);
   // Badge: the freshly-rendered page count wins over the server-cached one.
   let badge = $derived(rendered?.badge ?? pres.badge);
 </script>
 
 {#if pres.mode === "image"}
-  <Thumbnail src={assetUrl(pres.src)} title="" {onclick} />
+  <!-- `title` is deliberately NOT passed: SvelteLib's Thumbnail spreads it onto its
+       root as a NATIVE title attribute, which this app bans (manifest; enforced by
+       tests/native_tooltip_ban_test.js). It used to be passed as "" — inert, but it
+       read as "this tile has no name" rather than "this app does not use that
+       affordance". The asset's name is shown by the Asset Explorer's own label and
+       its hover tip, both of which use the immediate Tooltip. -->
+  <Thumbnail src={assetStore().resolveUrl(pres.src)} {onclick} />
 {:else if pres.mode === "video"}
-  <VideoThumbnail src={assetUrl(pres.src)} {onclick} />
+  <VideoThumbnail src={assetStore().resolveUrl(pres.src)} {onclick} />
 {:else if imgSrc}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <img class="ae-thumb-img" src={imgSrc} alt="" loading="lazy" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)} />

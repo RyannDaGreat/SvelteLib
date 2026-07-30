@@ -232,6 +232,11 @@
   import AngleField from "./AngleField.svelte";
   import ListField, { collapseKeyFor } from "./ListField.svelte";
   import BrushPalette from "./BrushPalette.svelte";
+  // The paint stack's own label⟷value divider segments — one per nested run of
+  // boundary rows (the geometry rows, the material knobs). Same component and the
+  // same app.labelFrac the Inspector's category dividers use, which is what keeps
+  // every segment at one x. See the .paint-sub-rows group comment below.
+  import LabelDivider from "./LabelDivider.svelte";
   import { makeHoverPreview } from "./hoverPreview.js";
   import { resolveScrub } from "../../../lib/numberStep.js";
   import { GRADIENT_STOPS_LIST, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
@@ -648,6 +653,13 @@
       </Tooltip>
       {#if !matCollapsed}
         <div class="cat-rows">
+          <!-- The knob list is its own divider group, for the same reason the
+               geometry rows are: it is a contiguous run of label⟷value rows, and
+               the category strip above it now stops before this full-width editor.
+               (A `stops` knob row mounts a ListField, which is full-width and has
+               no boundary — app.css ends this segment above one, exactly as it
+               does for the category strip.) -->
+          <LabelDivider {app} />
           {#each matRows as mrow (mrow.name)}
             {#if mrow.kind === "stops"}
               <!-- STOPS — THE REAL GRADIENT EDITOR, mounted for a material colour ramp
@@ -675,9 +687,17 @@
               {/if}
             {:else}
             {@const scrub = knobScrub(mrow)}
-            <div class="paint-material-row">
-              <span class="paint-material-label">{mrow.label ?? mrow.name}</span>
-              <span class="paint-material-control">
+            <!-- A NESTED PAINT SUB-ROW (app.css .paint-sub-row): the material
+                 knobs ride the same label⟷value grid as every other row in the
+                 panel, so their value edge is the one --a-label-frac boundary the
+                 divider drags and their labels truncate under the ƒ gutter. The
+                 .paint-material-* names stay ALONGSIDE the shared ones: they are
+                 what tests/material_paint_ui_probe.js and
+                 tests/option_hover_preview_probe.js select knob rows by, and they
+                 still carry the material-only `.dn` sizing. -->
+            <div class="paint-sub-row paint-material-row">
+              <span class="paint-sub-label paint-material-label">{mrow.label ?? mrow.name}</span>
+              <span class="paint-sub-control paint-material-control">
                 {#if mrow.kind === "color"}
                   <ColorField {app} path={[...path, "material", "params", mrow.name]} paths={writePaths.map((p) => [...p, "material", "params", mrow.name])} label={mrow.name} value={matValue(mrow)} {disabled} />
                 {:else if mrow.kind === "select"}
@@ -782,42 +802,74 @@
       {/if}
     </div>
 
-    <!-- GEOMETRY -->
+    <!-- GEOMETRY — its own DIVIDER GROUP (.paint-sub-rows), so the label⟷value
+         divider spans exactly these rows and stops.
+
+         WHY THE GROUP EXISTS, and it is the user's complaint verbatim: "that line
+         is still extending too far down… visually going past the stroke material
+         area". A gradient paint row RESTACKS (app.css `:has(.gradient-presets)`):
+         its label keeps line 1 and this editor spans the panel's FULL WIDTH on
+         line 2. So the category's own divider — one absolute strip over the whole
+         .cat-rows block — ran down through the mode strip, the preset library and
+         the stops list, none of which HAS a label⟷value boundary at
+         --a-label-frac. Measured in the gradient-stroke repro: the strip spanned
+         y 0→399.3 of the block while the bands at y 30→119.3 (Solid/Linear/Radial/
+         Mat/=Eq, then "Preset library") had no column to resize at all.
+
+         That is the SAME defect the divider's move from .rows to .cat-rows fixed
+         one level up (app.css: a .rows block "also covers the category HEADERS,
+         the Name row … regions with no label⟷value grid at all"), reappearing one
+         level deeper — a full-width editor nested INSIDE a category is another
+         such region. The fix is the same shape too: the divider belongs to the
+         smallest block that is all boundary rows. So these geometry rows form one,
+         and app.css ends the category strip above a restacked paint editor. Both
+         segments read the one --a-label-frac, which is what keeps them in x-sync —
+         the user's "multiple lines, but in synchronized x position", now at two
+         nesting depths. -->
+    <div class="paint-sub-rows">
+      <LabelDivider {app} />
     {#if mode === "linearGradient"}
       <!-- DIRECTION — a continuous rotary dial (AngleField) in place of the old
            four ↑↓ preset buttons. It writes the paint's authoritative `angle`
            (writeDirection), as a degrees number or an "=" equation. -->
-      <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
-        <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Direction</span>
-        <AngleField
-          {app}
-          path={[...path, "linear", "angle"]}
-          paths={writePaths.map((p) => [...p, "linear", "angle"])}
-          label={`${label} direction`}
-          value={linearAngle}
-          {disabled}
-          onpreview={previewDirection}
-          oncommit={commitDirection}
-        />
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Direction</span>
+        <span class="paint-sub-control">
+          <AngleField
+            {app}
+            path={[...path, "linear", "angle"]}
+            paths={writePaths.map((p) => [...p, "linear", "angle"])}
+            label={`${label} direction`}
+            value={linearAngle}
+            {disabled}
+            onpreview={previewDirection}
+            oncommit={commitDirection}
+          />
+        </span>
       </div>
       <!-- WAVELENGTH — the fraction of the box one full colour ramp spans (the
            on-canvas direction bead sets it too). 1 = the whole-box axis (today);
            below 1 the ramp mirror-tiles (render_gpu/ir.js linearGradientRender).
            A keyframable NumericField like the radial Radius, floored at
            GRADIENT_MIN_WAVELENGTH so the axis can't collapse. -->
-      <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
-        <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Wavelength</span>
-        <div style="width:var(--a-input-w);">
+      <!-- The value track is `minmax(--a-input-w, 1fr)` on the shared grid, so
+           these fields no longer need the fixed-width wrapper div they used to
+           carry: the track IS the width, and it is the same track every other row
+           in the panel resolves against. -->
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Wavelength</span>
+        <span class="paint-sub-control">
           <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={GRADIENT_MIN_WAVELENGTH} scrub={FRACTION_SCRUB} />
-        </div>
+        </span>
       </div>
     {:else}
-      <div style="display:flex; align-items:center; gap:var(--a-sp-2);">
-        <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">Radius</span>
-        <div style="width:var(--a-input-w);">
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Radius</span>
+        <span class="paint-sub-control">
           <NumericField {app} path={[...path, "radial", "r"]} paths={writePaths.map((p) => [...p, "radial", "r"])} label={`${label} radius`} min={0} scrub={FRACTION_SCRUB} />
-        </div>
+        </span>
       </div>
     {/if}
+    </div>
   {/if}
 </div>

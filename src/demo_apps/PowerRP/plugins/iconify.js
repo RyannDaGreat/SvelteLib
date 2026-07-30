@@ -213,12 +213,16 @@ export const iconifyPlugin = {
    * `icon`, plus a `search` provider — CanvasToolbar renders the search bar,
    * debounces input, and swaps the grid's cells for each query's results
    * (empty query → the curated starter palette). `cols` narrows the grid to
-   * the user-spec 5-wide scrollable palette.
+   * the user-spec 5-wide scrollable palette. `labelKind: "id"` says each cell's
+   * label is an IDENTIFIER ("tabler:star") and not prose, so the toolbar renders
+   * the hover tip in the app's identifier font (--a-mono) rather than the UI font
+   * — the same voice as an equation or a variable name. The cursor palette, whose
+   * labels are human titles ("Spinning"), omits it and gets the UI font.
    */
   floatingToolbar(state) {
     return {
       label: "Iconify icons",
-      grid: { property: "icon", value: state.icon ?? DEFAULT_ICON, cells: [], cols: PALETTE_COLS },
+      grid: { property: "icon", value: state.icon ?? DEFAULT_ICON, cells: [], cols: PALETTE_COLS, labelKind: "id" },
       search: { placeholder: "Search all of Iconify…", run: searchIconifyCells },
     };
   },

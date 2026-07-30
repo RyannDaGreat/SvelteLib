@@ -2,7 +2,13 @@
  * The PowerRP document model.
  *
  * A document is ONLY:
- *   { meta: {name, slideW, slideH}, slides: [{id, name, transition, delta}] }
+ *   { meta: {name, slideW, slideH, script}, slides: [{id, name, transition, delta}] }
+ *
+ * `meta.script` is THE PROJECT SCRIPT — one per-document JavaScript function
+ * library, compiled in the equation jail, whose exports every property equation
+ * can call (core/project_script.js). It is a first-class meta field defaulted to
+ * "", never absent: repairedDocument fills it in on any document written before it
+ * existed, so no consumer needs an undefined branch.
  *
  * `slide.transition` = {type, seconds, curve, sound} describes how the
  * presenter animates INTO this slide from its predecessor (core/transitions.js;
@@ -83,7 +89,12 @@ export function newDocument() {
   // Every document is born with THE camera (one per document, manifest spec):
   // a bbox item covering the meta slide rect, tweenable like any other item.
   const cameraId = uuid();
-  const meta = { name: "Untitled", slideW: DEFAULT_SLIDE_W, slideH: DEFAULT_SLIDE_H };
+  // `script` is THE PROJECT SCRIPT (core/project_script.js): one JavaScript
+  // function library per document, reusable from every property equation. It is
+  // born EMPTY and FIRST-CLASS rather than absent-until-written, so there is no
+  // undefined-vs-"" ambiguity anywhere downstream — the equation evaluator, the
+  // Monaco modal and the save format all read one always-present string.
+  const meta = { name: "Untitled", slideW: DEFAULT_SLIDE_W, slideH: DEFAULT_SLIDE_H, script: "" };
   return {
     // No meta.fps: presentations are always UNCAPPED (round 11 ruling —
     // frame caps don't exist; one frame per rAF tick at any display rate).
@@ -1585,6 +1596,9 @@ export function legacyBindings(doc) {
  *  2c. antialias boolean→select — the camera's `antialias` boolean became a
  *      quality SELECT (true→"standard", false→"off"). A VALUE migration; the key
  *      is present either way so its order vs defaults-fill is not load-bearing.
+ *  2d. meta.script normalized  — THE PROJECT SCRIPT is filled to "" when absent
+ *      (quietly — an old deck has no library and an empty one means the same) and
+ *      DISCARDED loudly when it is not a string. meta-only, order-free.
  *   3. meta.fps stripped        — frame caps are dead (round 11); meta-only, so
  *      its position among the item/slide steps is free — placed here to match
  *      the editor's long-tested sequence.
@@ -1680,6 +1694,27 @@ export function repairedDocument(doc, registry) {
   for (const line of rampMigrationReports(rampsMigrated)) reports.push(line);
 
   let out = rampDoc;
+
+  // THE PROJECT SCRIPT's meta field (core/project_script.js). Normalized here so
+  // every consumer downstream reads a plain string and none needs an undefined
+  // branch. TWO cases, deliberately reported DIFFERENTLY:
+  //
+  //   ABSENT → filled with "" and NOT reported. Every document written before the
+  //     project script existed lacks the key, so reporting it would print a line
+  //     for every old deck on every load while describing no change to the render
+  //     and no data lost — the "silent repairs are forbidden" rule exists to
+  //     surface CHANGES TO MEANING, and an empty library means exactly what no
+  //     library meant. (An absent key is also the ONE case here that is expected,
+  //     which is the bar for staying quiet.)
+  //   WRONG TYPE → the value is DISCARDED, and that is loud: a non-string script is
+  //     a damaged or hand-edited document, the discard destroys whatever was there,
+  //     and it must never look like the author's code simply stopped working.
+  if (typeof out.meta.script !== "string") {
+    if ("script" in out.meta)
+      reports.push(`PowerRP repair: meta.script was ${typeof out.meta.script}, not a string — discarded; the project script is one JavaScript source string`);
+    out = { ...out, meta: { ...out.meta, script: "" } };
+  }
+
   if ("fps" in out.meta) {
     const meta = { ...out.meta };
     delete meta.fps;

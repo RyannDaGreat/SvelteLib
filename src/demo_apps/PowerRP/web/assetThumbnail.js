@@ -29,6 +29,11 @@ export const KIND_ICON = {
   image: "mdi:image-outline",
   pdf: "mdi:file-pdf-box",
   font: "mdi:format-font",
+  // A PLUGIN ASSET (*.plugin.js) declares a whole WIDGET TYPE, so it gets its own
+  // glyph rather than the generic file icon: it is the one asset kind whose tile
+  // represents something that appears in the Insert menu, not something a widget
+  // points AT (core/plugin_assets.js).
+  plugin: "mdi:puzzle-outline",
   other: "mdi:file-outline",
 };
 

@@ -74,18 +74,26 @@ test("the `groups` table holds command ids and nothing else", () => {
   }
 });
 
-// ── (2) the icon exceptions are exactly the documented three ────────────────
-test("only the three documented buttons still name their own glyphs", () => {
-  // Each exception is a case the registry's single `icon` string cannot express:
+// ── (2) the icon exceptions are exactly the documented four ─────────────────
+test("only the four documented buttons still name their own glyphs", () => {
+  // Each exception is a case the registry's single `icon` string cannot express,
+  // or a button that has no registry entry to read one from:
   //   toggle-anchors  — magnet + X composite (round-11 user correction)
   //   toggle-ghosts   — box + eye composite (manifest ARCHITECTURE PLAN #2)
+  //   open-in-browser — DESKTOP-SHELL ONLY, and deliberately NOT a command: in a
+  //     plain browser it would be a palette entry that silently does nothing, so
+  //     it is not registered and has no registry icon to read. It is the only
+  //     button here gated on the runtime environment rather than on app state.
   //   toggle-light-dark — a STATEFUL glyph: it names the theme the click switches
   //     TO, so it is two literals, not one. It used to be here for a WEAKER reason
   //     ("has NO command entry at all"); it has one now, so its label and tip come
   //     from the registry like every other button's and only the glyph is local.
+  // Order is DOM order — the assertion below compares the flattened sequence, so
+  // an exception moving in the file is reported as loudly as one appearing.
   const EXPECTED = [
     ["mdi:magnet", "mdi:close"], // toggle-anchors
     ["mdi:square-outline", "mdi:eye-outline"], // toggle-ghosts
+    ["mdi:web"], // open-in-browser (Electron shell only)
     ["mdi:weather-night", "mdi:weather-sunny"], // toggle-light-dark
   ];
   const found = [...toolbar.matchAll(/"(mdi:[a-z0-9-]+)"/g)].map((m) => m[1]);

@@ -24,13 +24,22 @@
 // The core editor worker, as a Vite worker chunk. Static import so Vite builds the
 // worker at server start (deterministic), not on first modal open (mid-session).
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import { JS_KEYWORDS } from "../core/codeHighlight.js";
 
 /**
- * The custom languages this app registers with Monaco, as `{id, keywords}` so the
- * completion provider and the docs stay in sync. Monarch token rules are declared
- * per-language in registerLanguages() below.
+ * The custom languages this app registers with Monaco. Monarch token rules are
+ * declared per-language in registerLanguages() below.
+ *
+ * `javascript` IS IN THIS LIST, which reads like a mistake and is not: the modal
+ * imports `editor.api`, which ships NO built-in languages at all (see the worker
+ * note above), so Monaco knows nothing about JavaScript unless this app teaches it.
+ * Without the grammar registered here, `language: "javascript"` fell through to
+ * plaintext — the editor opened, took the text, and coloured NOTHING, which is the
+ * silent-degradation shape this codebase refuses. THE PROJECT SCRIPT
+ * (core/project_script.js) is edited in JavaScript, and the user asked for "the
+ * modal with full syntax highlighting" in the same sentence that asked for it.
  */
-export const MONACO_LANGUAGES = ["mermaid", "latex"];
+export const MONACO_LANGUAGES = ["mermaid", "latex", "javascript"];
 
 let didSetup = false;
 
@@ -71,9 +80,11 @@ const MERMAID_KEYWORDS = [
   "TB", "TD", "BT", "RL", "LR",
 ];
 
-/** Command (browser-only). Registers the Mermaid + LaTeX Monarch grammars and a
- *  keyword completion provider for Mermaid. Called once by setupMonacoOnce. */
+/** Command (browser-only). Registers the Mermaid + LaTeX + JavaScript Monarch
+ *  grammars and a keyword completion provider for Mermaid. Called once by
+ *  setupMonacoOnce. */
 function registerLanguages(monaco) {
+  registerJavaScript(monaco);
   // ── Mermaid ────────────────────────────────────────────────────────────────
   monaco.languages.register({ id: "mermaid" });
   monaco.languages.setMonarchTokensProvider("mermaid", {
@@ -127,6 +138,105 @@ function registerLanguages(monaco) {
         [/[&^_]/, "operator"],
         [/\$+/, "string"],             // $ / $$ math delimiters
         [/\d+(\.\d+)?/, "number"],
+      ],
+    },
+  });
+}
+
+/**
+ * Command (browser-only). Registers the JAVASCRIPT grammar — the language THE
+ * PROJECT SCRIPT (core/project_script.js) is written in. See MONACO_LANGUAGES for
+ * why this app has to ship its own JS grammar at all.
+ *
+ * Keywords come from core/codeHighlight.js's JS_KEYWORDS, the SAME list the canvas
+ * code-block widget colours by, so the two surfaces cannot disagree about what a
+ * keyword is. Like that highlighter, this is deliberately SHALLOW — keywords,
+ * strings (including template literals), comments, numbers, regex-free operators
+ * and bracket pairs — which is what makes code readable while editing. Monaco's own
+ * bracket-pair colourization, folding and word-based autocomplete (all enabled in
+ * CodeEditorModal) work off the token stream, so they come along for free.
+ *
+ * A DIVERGENCE FROM MONACO'S BUNDLED TYPESCRIPT SERVICE, stated rather than
+ * implied: there is no type checking, no IntelliSense over the jail's globals and
+ * no squiggles. Correctness feedback for a script is the COMPILER's job
+ * (compileProjectScript's error, surfaced at the script) — a second, weaker opinion
+ * from an editor that does not know about the jail would be worse than none, since
+ * it would flag `time` and `random` as undefined while missing every real problem.
+ */
+function registerJavaScript(monaco) {
+  monaco.languages.register({ id: "javascript" });
+  monaco.languages.setLanguageConfiguration("javascript", {
+    comments: { lineComment: "//", blockComment: ["/*", "*/"] },
+    brackets: [["{", "}"], ["[", "]"], ["(", ")"]],
+    autoClosingPairs: [
+      { open: "{", close: "}" }, { open: "[", close: "]" }, { open: "(", close: ")" },
+      { open: '"', close: '"', notIn: ["string"] },
+      { open: "'", close: "'", notIn: ["string"] },
+      { open: "`", close: "`", notIn: ["string"] },
+    ],
+  });
+  monaco.languages.setMonarchTokensProvider("javascript", {
+    keywords: [...JS_KEYWORDS],
+    tokenizer: {
+      root: [
+        [/\/\/.*$/, "comment"],
+        [/\/\*/, { token: "comment", next: "@blockComment" }],
+        [/"/, { token: "string.quote", next: "@doubleString" }],
+        [/'/, { token: "string.quote", next: "@singleString" }],
+        [/`/, { token: "string.quote", next: "@template" }],
+        // A NUMBER before the identifier rule, so `0x1f` and `1e3` stay whole.
+        [/\b0[xX][0-9a-fA-F]+\b/, "number.hex"],
+        [/\b\d+(\.\d+)?([eE][-+]?\d+)?\b/, "number"],
+        // A call site (`name(`) is coloured as a function rather than a plain
+        // identifier — the one cue that makes a library of helpers readable at a
+        // glance, and the same one core/codeHighlight.js emits.
+        [/[a-zA-Z_$][\w$]*(?=\s*\()/, { cases: { "@keywords": "keyword", "@default": "type.identifier" } }],
+        [/[a-zA-Z_$][\w$]*/, { cases: { "@keywords": "keyword", "@default": "identifier" } }],
+        [/[{}()[\]]/, "@brackets"],
+        [/=>|[-+*/%=<>!&|^~?:]+/, "operator"],
+        [/[;,.]/, "delimiter"],
+      ],
+      blockComment: [
+        [/[^/*]+/, "comment"],
+        [/\*\//, { token: "comment", next: "@pop" }],
+        [/[/*]/, "comment"],
+      ],
+      // Each string state pops on its OWN quote and consumes `\"`-style escapes as
+      // one unit, so an escaped quote does not end the string.
+      doubleString: [
+        [/\\./, "string.escape"],
+        [/[^\\"]+/, "string"],
+        [/"/, { token: "string.quote", next: "@pop" }],
+      ],
+      singleString: [
+        [/\\./, "string.escape"],
+        [/[^\\']+/, "string"],
+        [/'/, { token: "string.quote", next: "@pop" }],
+      ],
+      // A template literal's ${…} is CODE, which is why template literals get their
+      // own state: `${a + b}` must colour as an expression, not as string body.
+      //
+      // The interpolation pushes a DEDICATED state rather than re-entering @root: a
+      // `next: "@root"` push has no way back — root's bracket rule matches the
+      // closing `}` as an ordinary bracket and never pops — so the rest of the file
+      // after the first `${…}` would have been tokenized as if still inside it.
+      template: [
+        [/\\./, "string.escape"],
+        [/\$\{/, { token: "delimiter.bracket", next: "@templateExpr" }],
+        [/[^\\`$]+/, "string"],
+        [/\$/, "string"],
+        [/`/, { token: "string.quote", next: "@pop" }],
+      ],
+      // Interpolation body: the expression cues worth colouring, and the `}` that
+      // hands control back to the surrounding template.
+      templateExpr: [
+        [/\}/, { token: "delimiter.bracket", next: "@pop" }],
+        [/"/, { token: "string.quote", next: "@doubleString" }],
+        [/'/, { token: "string.quote", next: "@singleString" }],
+        [/\b\d+(\.\d+)?\b/, "number"],
+        [/[a-zA-Z_$][\w$]*/, { cases: { "@keywords": "keyword", "@default": "identifier" } }],
+        [/[-+*/%=<>!&|^~?:.,]+/, "operator"],
+        [/[([\])]/, "@brackets"],
       ],
     },
   });

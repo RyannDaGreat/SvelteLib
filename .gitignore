@@ -1,5 +1,9 @@
 node_modules/
 dist/
+# The PowerRP static bundle (vite build of src/demo_apps/PowerRP/web). Built by
+# the Pages workflow on every push, so it is a build artifact, never committed —
+# it is ~90 MB (canvaskit.wasm plus 50 bundled font files).
+dist-powerrp/
 package-lock.json
 .claude_logs/
 .claude_vlm_checks/

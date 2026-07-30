@@ -55,7 +55,12 @@ export const KINDS = ["keyword", "string", "comment", "number", "function", "pro
 // declaration words a reader expects colored. Not a full spec (see the module
 // header's "intentionally shallow" note).
 
-const JS_KEYWORDS = new Set([
+/** EXPORTED for web/monacoSetup.js's JavaScript Monarch grammar (THE PROJECT
+ *  SCRIPT's editor). Monaco's `editor.api` ships NO built-in languages, so the app
+ *  registers its own JS grammar — and it colours the SAME words the canvas code
+ *  block colours by reading this one list, rather than keeping a second copy that
+ *  could drift into disagreeing with itself about what a keyword is. */
+export const JS_KEYWORDS = new Set([
   "const", "let", "var", "function", "return", "if", "else", "for", "while", "do",
   "break", "continue", "switch", "case", "default", "throw", "try", "catch", "finally",
   "new", "delete", "typeof", "instanceof", "in", "of", "class", "extends", "super",

@@ -55,6 +55,12 @@
     language = null,
     /** @type {string} Modal header title. */
     title = "Code",
+    /** @type {string|null} A compile/validation problem with the CURRENTLY STORED
+     *  source, shown in the footer. Reactive on purpose (unlike `value`, which the
+     *  editor takes ownership of): the caller recomputes it after each save, so the
+     *  same dialog that took a broken script reports why it is broken instead of the
+     *  author having to hunt for a console line. Null = nothing wrong. */
+    problem = null,
     /** @type {(text: string) => void} Called with the current text on Save/Cmd+Enter. */
     onsave = undefined,
     /** @type {() => void} Called on Cancel/Esc/backdrop. */
@@ -137,7 +143,16 @@
          is the only child. -->
     <div class="code-modal-editor" bind:this={hostEl}></div>
     <div class="code-modal-footer">
-      <span class="code-modal-hint">Esc to cancel · {cmdLabel}+Enter to save</span>
+      <!-- THE PROBLEM LINE, when the caller reports one about the stored source (a
+           project script that will not compile). It REPLACES the keyboard hint
+           rather than sitting beside it: the hint is standing ceremony the reader
+           has already learned by the time anything is broken, and two competing
+           lines in a one-line footer is how a real error goes unread. -->
+      {#if problem}
+        <span class="code-modal-problem" role="alert">{problem}</span>
+      {:else}
+        <span class="code-modal-hint">Esc to cancel · {cmdLabel}+Enter to save</span>
+      {/if}
       <span class="code-modal-actions">
         <button type="button" class="code-modal-btn" onclick={cancel}>Cancel</button>
         <button type="button" class="code-modal-btn code-modal-primary" onclick={save}>Save</button>

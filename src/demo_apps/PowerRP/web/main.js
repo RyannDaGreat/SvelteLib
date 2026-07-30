@@ -10,6 +10,18 @@ import { loadFonts } from "./fontLoader.js";
 // rule). Kicked at module load so BOTH the editor mount and the CLI render hook
 // share one memoized promise; each awaits it before its first frame.
 const fontsLoaded = loadFonts();
+import { assetStore, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
+import { buildProjectZip, parseProjectZip } from "./projectZip.js";
+
+// DECIDE WHERE STORAGE LIVES BEFORE THE APP MOUNTS. One cheap GET at
+// /api/projects/ answers "is there a backend?"; the answer picks the HTTP
+// adapter (today's server behavior) or the IndexedDB adapter (static mode, e.g.
+// GitHub Pages). It MUST resolve before the mount, because App.svelte reads
+// app.isStatic() during its first render and every storage call goes through the
+// chosen adapter — a mount that raced this would read storage before the mode
+// existed and throw by design (see storageMode()). ?static=1 forces local;
+// ?backend=… forces HTTP and never falls back.
+const storageReady = detectStorageMode();
 import { deserialize, repairedDocument, printRepairReports } from "../core/document.js";
 import { cameraRect } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
@@ -38,6 +50,13 @@ window.__powerrp_videoV5State = videoV5State;
 // snapshot ({status, paused, currentTime, duration}) — a probe asserts a paused
 // decoder parks at the requested scrubTime deterministically. Zero prod effect.
 window.__powerrp_videoV5ScrubState = videoV5ScrubState;
+// STORAGE diagnostics (this feature): the resolved mode plus the live stores and
+// the zip round-trip, so a probe can assert the static-mode contract — that an
+// asset ref resolves to a blob: URL, that a client-built archive has the SERVER's
+// layout, and that a re-import lands as a new project — WITHOUT test-only methods
+// being added to the app class. Same zero-prod-effect convention as the video
+// diagnostics above.
+window.__powerrp_storage = { storageMode, isStatic, assetStore, projectStore, buildProjectZip, parseProjectZip };
 
 /**
  * Browser render hook (a few in-browser pixel-parity probes await it via
@@ -83,5 +102,9 @@ if (!new URLSearchParams(location.search).has("cli")) {
   // dwarfs it, so this adds no perceptible boot delay while making correctness
   // deterministic rather than timing-dependent. (A font that FAILS to load is
   // reported loudly inside loadFonts and still lets the mount proceed.)
-  fontsLoaded.then(() => mount(App, { target: document.getElementById("app") }));
+  //
+  // ALSO awaits the storage-mode probe (see storageReady above) — the two run
+  // CONCURRENTLY (both promises were started at module load) so the probe adds
+  // no boot latency beyond the font load it hides behind.
+  Promise.all([fontsLoaded, storageReady]).then(() => mount(App, { target: document.getElementById("app") }));
 }

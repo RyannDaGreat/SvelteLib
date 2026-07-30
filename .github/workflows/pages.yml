@@ -1,0 +1,112 @@
+# PowerRP — the STATICALLY HOSTED build, deployed to GitHub Pages.
+#
+# User ruling: "I would like a statically hostable version of this on the github
+# too." A static host serves files and nothing else, so the deployed app runs
+# WITHOUT the Python project server: it boots on browser-local storage
+# (IndexedDB) and marks the genuinely server-only features (render jobs,
+# server-side ffmpeg encoding, ffprobe clip length) as unavailable IN THE UI
+# rather than failing with a 404. See web/storageMode.js for how that is decided
+# and web/StaticModeNotice.svelte for how it is stated.
+#
+# ── ONE MANUAL SETTINGS STEP (a workflow cannot do this itself) ───────────────
+# In the repo: Settings → Pages → "Build and deployment" → Source = GITHUB
+# ACTIONS. Until that is set, this workflow's deploy step fails with "Pages site
+# not found" (actions/deploy-pages cannot enable Pages, only publish to it).
+# Nothing else needs configuring — no gh-pages branch, no CNAME.
+#
+# Deployed URL: https://<owner>.github.io/SvelteLib/
+#
+# ── WHY THE BASE PATH MATTERS ─────────────────────────────────────────────────
+# A GitHub project site is served from a SUBPATH ("/SvelteLib/"), not the domain
+# root, and Vite bakes asset URLs in at BUILD time — it cannot discover the
+# prefix at runtime. So POWERRP_BASE is passed to the build (web/vite.config.js
+# reads it into `base`). Get it wrong and the page loads but every module, the
+# ~7 MB canvaskit.wasm and all 50 bundled fonts 404: a blank editor with a
+# console full of misses. Rehearse locally with a plain static host at the same
+# subpath, NOT with `vite preview` — preview inherits the config's /api proxy and
+# would boot the app in server mode, testing the opposite of what ships here.
+name: pages
+
+on:
+  push:
+    branches: ["powerrp"]
+  # Manual runs, so a Pages deploy can be re-triggered without an empty commit
+  # (useful right after the one-time Settings change above).
+  workflow_dispatch:
+
+# GITHUB_TOKEN permissions required by the Actions-based Pages flow: `pages` to
+# publish, `id-token` because deploy-pages authenticates with OIDC.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. `cancel-in-progress: false` so a running deploy is
+# allowed to FINISH rather than being killed mid-publish (a half-published site
+# is worse than a slightly stale one); the newer run simply queues.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` needs the lockfile; this repo gitignores it, so install from
+      # package.json. Dev deps are required — vite and the svelte plugin do the
+      # build. --no-audit/--no-fund keep the log about the build, not advisories.
+      - name: Install deps
+        run: npm install --no-fund --no-audit
+
+      # The bare-node half of the test gate. Browser probes are deliberately NOT
+      # run here: they need Chrome plus a live backend, which is exactly what a
+      # static deployment does not have. A green node suite is the gate that is
+      # meaningful for THIS artifact.
+      - name: Storage-seam tests (bare node)
+        run: node src/demo_apps/PowerRP/tests/asset_store_test.js
+
+      - name: Build the static bundle
+        env:
+          # MUST match the repo name, with both slashes — Vite concatenates it,
+          # so "/SvelteLib" (no trailing slash) emits "/SvelteLibassets/…".
+          POWERRP_BASE: /${{ github.event.repository.name }}/
+        run: npx vite build --config src/demo_apps/PowerRP/web/vite.config.js
+
+      # Fail LOUDLY here rather than shipping a bundle that 404s in the browser:
+      # assert the built HTML actually references the subpath, and that
+      # canvaskit's wasm was emitted (it is loaded via a `?url` import, so a
+      # bundler change could silently drop it and only the editor's first paint
+      # would notice).
+      - name: Verify the built bundle
+        run: |
+          set -euo pipefail
+          BASE="/${{ github.event.repository.name }}/"
+          test -f dist-powerrp/index.html
+          grep -q "${BASE}assets/" dist-powerrp/index.html \
+            || { echo "::error::built index.html does not reference ${BASE}assets/ — POWERRP_BASE did not apply"; exit 1; }
+          ls dist-powerrp/assets/*.wasm >/dev/null \
+            || { echo "::error::no .wasm in the bundle — canvaskit would fail to load"; exit 1; }
+          echo "bundle OK: $(du -sh dist-powerrp | cut -f1), $(ls dist-powerrp/assets | wc -l) assets"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-powerrp
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -80,10 +80,33 @@ import { brightnessContrastPlugin } from "./demo/brightness_contrast.js"; // ton
 
 export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, progressBarPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, polygonPlugin, paintPathPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, brightnessContrastPlugin];
 
-/** Command. Registers every plugin and its palette commands. */
+/**
+ * Command. Registers every plugin TYPE into `registry`, and nothing else.
+ *
+ * SPLIT OUT FROM registerAll BECAUSE THE TWO REGISTRIES HAVE DIFFERENT LIFETIMES,
+ * which a bug made explicit: a PLUGIN registry is per-project (a `*.plugin.js`
+ * project asset defines a widget type — core/plugin_assets.js), so opening a
+ * project REBUILDS it, while palette COMMANDS are process-lifetime and are added
+ * once at construction. Calling registerAll a second time to rebuild the types
+ * therefore re-added every command and threw `Duplicate command id "add-rect"`,
+ * making the editor unopenable on the second project open. This is the entry point
+ * for "give me the built-in types again"; it cannot touch commands, so it cannot
+ * reintroduce that failure.
+ *
+ * @param {object} registry - a core/registry.js registry
+ * @returns {void}
+ *
+ * @example // registerPlugins(createRegistry())  → every built-in type registered
+ */
+export function registerPlugins(registry) {
+  for (const plugin of allPlugins) registry.register(plugin);
+}
+
+/** Command. Registers every plugin and its palette commands — the ONE-TIME boot
+ *  path (app.svelte.js's constructor). To re-register only the TYPES (a project
+ *  switch), call registerPlugins: adding the commands twice throws. */
 export function registerAll(registry, commands) {
-  for (const plugin of allPlugins) {
-    registry.register(plugin);
+  registerPlugins(registry);
+  for (const plugin of allPlugins)
     for (const cmd of plugin.commands ?? []) commands.add(cmd);
-  }
 }

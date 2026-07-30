@@ -13,6 +13,7 @@
   import HintBar from "../../../lib/HintBar.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import Toolbar from "./Toolbar.svelte";
+  import StaticModeNotice from "./StaticModeNotice.svelte";
   import SlideNav from "./SlideNav.svelte";
   import AssetExplorer from "./AssetExplorer.svelte";
   import BuiltinAssetBrowser from "./BuiltinAssetBrowser.svelte";
@@ -291,8 +292,16 @@
       renderBadge = 0;
     }
   }
-  pollRenderBadge();
-  setInterval(pollRenderBadge, RENDER_BADGE_POLL_MS);
+  // NOT POLLED IN STATIC MODE. Render jobs are a SERVER-OWNED noun (a detached
+  // process running ffmpeg), so with no backend there is nothing to count and the
+  // badge stays 0 — polling a route that cannot exist every 4 seconds forever
+  // would be a network error every 4 seconds forever. The absence is stated
+  // LOUDLY instead, by the static-mode notice below and by the Render Center's
+  // own unavailability panel — never as a silent zero.
+  if (!app.isStatic()) {
+    pollRenderBadge();
+    setInterval(pollRenderBadge, RENDER_BADGE_POLL_MS);
+  }
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
@@ -423,7 +432,12 @@
    */
   function documentState(a) {
     const raw = foldState(a.doc, a.slideIndex, 1);
-    return { raw, evaluated: evaluateState(raw, a.registry).state };
+    // The PROJECT SCRIPT rides along (a.projectScript()) for the same reason it does
+    // everywhere else: it lives in doc.meta, not in the fold, so an evaluation that
+    // omits it sees every script-driven property fall back to its default — and a
+    // "is there anything left to unbind?" gate reading defaults would answer about a
+    // document the user is not looking at.
+    return { raw, evaluated: evaluateState(raw, a.registry, a.projectScript()).state };
   }
 
   /**
@@ -998,6 +1012,21 @@
         const ce = a.selectedNode()?.plugin?.codeEditor;
         if (ce) a.openCodeModal(a.selection, ce.property, { language: ce.language, title: ce.title });
       },
+    },
+    // THE PROJECT SCRIPT (core/project_script.js) — the per-document JavaScript
+    // library whose exported functions and values every property equation can call.
+    // A REGISTRY COMMAND, not a bare toolbar onclick, because that is the rule here:
+    // the palette, the keyboard and the toolbar are surfacings of one action layer,
+    // and an action that only exists as a button can never be found by search or
+    // bound to a key. NO `when` gate: a document always has a script (it may be
+    // empty), so this is never unavailable.
+    {
+      id: "edit-project-script",
+      title: "Project Script…",
+      icon: "mdi:script-text-outline",
+      aliases: ["global script", "project functions", "javascript library", "script editor"],
+      help: "One JavaScript file per project. Assign to `exports` and any property equation can call it: `exports.ease = t => t*t` makes `= ease(0.5)` work everywhere. It runs in the same sandbox equations do, so Date and Math.random stay unavailable and `time` and the seeded `random` are the same ones equations see.",
+      run: (a) => a.openProjectScript(),
     },
   ];
   for (const c of coreCommands) app.commands.add(c);
@@ -1646,6 +1675,9 @@
      independent drags would have to keep re-establishing. -->
 <div class="app" style:--a-label-frac={app.labelFrac}>
   <Toolbar {app} {renderBadge} />
+  <!-- Only renders when there is NO backend: says so, names the server-only
+       features that are unavailable, and offers persistent storage. -->
+  <StaticModeNotice {app} />
   <div class="main">
     <SplitPane orientation="horizontal" bind:splits={hSplits}>
       {#snippet children(col)}
@@ -1870,13 +1902,15 @@
   </Modal>
 
   <!-- THE reusable Monaco code editor (ROUND 2 #32/#33). Mounted off app.codeModal
-       so any surface (a mermaid/latex double-click, or the Inspector "</>" action
-       row → edit-code-source) opens the SAME editor. `value` is seeded ONCE from
-       the item's current folded property value; the editor owns its buffer after
-       that. Save commits ONE undo unit (app.commitCodeModal); cancel drops it. -->
+       so any surface (a mermaid/latex double-click, the Inspector "</>" action
+       row → edit-code-source, or the toolbar's PROJECT SCRIPT icon) opens the SAME
+       editor. `value` is seeded ONCE from app.codeModalValue() — the one place that
+       maps the modal's target to its stored source, so an item leaf and a doc.meta
+       field are read the same way; the editor owns its buffer after that. Save
+       commits ONE undo unit (app.commitCodeModal); cancel drops it. -->
   {#if app.codeModal}
     <CodeEditorModal
-      value={app.state().items?.[app.codeModal.itemId]?.[app.codeModal.property] ?? ""}
+      value={app.codeModalValue()}
       language={app.codeModal.language}
       title={app.codeModal.title}
       onsave={(text) => app.commitCodeModal(text)}

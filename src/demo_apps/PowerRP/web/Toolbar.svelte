@@ -140,6 +140,63 @@
   function badgeFor(id) {
     return id === "render-center" ? renderBadge : 0;
   }
+
+  // THE SHELL SEAM. True only inside the Electron desktop shell, where "open this
+  // in a web browser" is a meaningful action; in a plain browser you are already
+  // there, so the globe button does not render at all.
+  //
+  // WHY THE USER AGENT and not something cleaner: the shell runs with
+  // contextIsolation and NO preload script, so there is no bridge object to test
+  // for — `window.require`, `process.versions.electron` and an injected
+  // `window.powerrp` are all absent by design. Electron still stamps "Electron/…"
+  // into navigator.userAgent, which makes the UA the only seam that exists here.
+  // Read ONCE at module init rather than per render: a user agent cannot change
+  // over a page's life, and re-testing it every reactive pass would imply it can.
+  const IN_ELECTRON_SHELL = navigator.userAgent.includes("Electron");
+
+  // THE URL THE TIP REPORTS. `location.href` is not reactive — nothing re-renders
+  // when the app pushes a new history entry (opening a project rewrites the query
+  // string), so a $derived over it would show whatever the URL was when this
+  // component last happened to re-render. Mirroring it in state and refreshing on
+  // the events that can change it keeps the tip honest about the CURRENT page,
+  // which is the whole point of a tooltip that claims to tell you the URL.
+  //
+  // Only mounted in the shell (IN_ELECTRON_SHELL below); in a browser the listener
+  // would run for a button that does not exist.
+  let pageUrl = $state(location.href);
+  /** Command. Refreshes the mirrored URL from the address bar. Mutates pageUrl. */
+  function syncPageUrl() {
+    pageUrl = location.href;
+  }
+  $effect(() => {
+    if (!IN_ELECTRON_SHELL) return;
+    // popstate covers back/forward; hashchange covers fragment-only edits, which
+    // popstate does not always report. NEITHER fires for the app's own
+    // history.pushState — nothing does — so the button ALSO syncs on pointerenter
+    // (see the markup), which is the moment before the tip can be read. Between
+    // them there is no path to a stale tip that a user could actually observe.
+    window.addEventListener("popstate", syncPageUrl);
+    window.addEventListener("hashchange", syncPageUrl);
+    return () => {
+      window.removeEventListener("popstate", syncPageUrl);
+      window.removeEventListener("hashchange", syncPageUrl);
+    };
+  });
+
+  /**
+   * Command. Hops the current page out of the desktop shell and into the system
+   * browser: the shell's setWindowOpenHandler (desktop/main.js) catches
+   * window.open and hands the URL to shell.openExternal, denying the in-app
+   * window. Not rendered in a plain browser, so there is no case where this
+   * merely opens a duplicate tab of the page you are already looking at.
+   *
+   * Reads location.href live rather than the mirrored `pageUrl`: the click must
+   * open what the address bar says NOW, even if a pushState landed between the
+   * last sync and the click.
+   */
+  function openInBrowser() {
+    window.open(location.href);
+  }
 </script>
 
 <!-- THE ONE command-tip body. Every button in this file renders THIS, so there is
@@ -186,17 +243,29 @@
       aria-label={saveIndicator.text}
     ></span>
   </Tooltip>
-  <!-- The presentation TITLE. Double-click (or Enter/F2 when focused) opens the
+  <!-- The presentation TITLE. SINGLE-click (or Enter/F2 when focused) opens the
        Rename modal, which writes doc.meta.name — the one name model shared with
-       Save and Open. role/tabindex/onkeydown keep the double-click affordance
-       keyboard-accessible (it is the sole in-place rename trigger). -->
-  <Tooltip text="Double-click to rename">
+       Save and Open. role/tabindex/onkeydown keep the affordance keyboard-
+       accessible (it is the sole in-place rename trigger).
+
+       SINGLE-CLICK, on the user's question: "why does the name have to be
+       double-click to rename? Why not single-click?" There is no competing
+       gesture on this element to protect — the title is not selectable, not
+       draggable and not a drop target, so the second click was pure ceremony. It
+       is `onclick`, not a rename-on-focus, so tabbing THROUGH the toolbar does not
+       pop a modal.
+
+       SLIDES KEEP DOUBLE-CLICK (SlideNav) — reaffirmed by the user, and the
+       distinction has a reason: a slide card's single click SELECTS it, so rename
+       there must be the second gesture or it would fight navigation. This title
+       has no first gesture to lose. -->
+  <Tooltip text="Click to rename">
     <span
       class="doc-name"
       data-hint-scope="titleRename"
       role="button"
       tabindex="0"
-      ondblclick={() => app.renamePresentation()}
+      onclick={() => app.renamePresentation()}
       onkeydown={(e) => { if (e.key === "Enter" || e.key === "F2") { e.preventDefault(); app.renamePresentation(); } }}
     >{app.doc.meta.name}</span>
   </Tooltip>
@@ -322,6 +391,67 @@
     </button>
   </Tooltip>
   <span class="spacer"></span>
+  <!-- THE PROJECT SCRIPT, verbatim: "a global script per project… on the top right
+       as an icon with a script icon, which would actually be a repository of
+       functions written in JavaScript that can then be used in different
+       properties… complex code can be reused in many places."
+
+       Top right, where it was asked for, and FIRST in that cluster — it is the only
+       button there that edits the DOCUMENT (the globe, the theme and the palette
+       beside it act on the app or the window), so it sits nearest the document side
+       of the bar rather than being buried among the app-level controls.
+
+       Composed tip like every other button here (registry title + binding +
+       reason): the "immediate tooltip" the ruling asks for is the Tooltip
+       component's own behaviour, which is the app-wide default — a native title=
+       is banned. The note is the clause the command title cannot carry, and it is
+       the one thing a first-time reader needs: WHERE the functions come out. -->
+  <Tooltip>
+    {#snippet tip()}{@render commandTip("edit-project-script", "Functions and values you assign to `exports` become callable from any property equation in this project.")}{/snippet}
+    <button
+      class="btn-icon"
+      aria-label={app.commands.get("edit-project-script").title}
+      onclick={() => app.runCommand("edit-project-script")}
+    >
+      <iconify-icon icon={app.commands.get("edit-project-script").icon} width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
+  <!-- OPEN IN A WEB BROWSER, verbatim: "another button on the top right of the
+       screen that has a global icon, a web icon, that when I hover over it, an
+       immediate tooltip tells me what the URL is, and when I click it, opens the
+       current thing inside a web browser."
+
+       DESKTOP SHELL ONLY (IN_ELECTRON_SHELL — see the UA note in the script). In a
+       plain browser the button would offer to open the page you are already on,
+       which is why it is absent there rather than merely disabled: an unavailable
+       command stays visible so it can be learned (core/registry.js TOOL GROUPS),
+       but this one is not unavailable — outside the shell it does not exist.
+
+       THE TIP IS THE URL ITSELF, which is what was asked for, so it is the one
+       button here whose tip is NOT composed from the registry: there is no command
+       to read a title from, and the useful text is live page state. `.cmd-tip-url`
+       wraps it — a URL with a long project name is the one tip that can outgrow
+       the tooltip's max-width, and breaking it mid-path beats clipping it.
+
+       NOT a registry command, deliberately: it would be the only palette entry
+       that silently does nothing for every user not in the desktop shell. -->
+  {#if IN_ELECTRON_SHELL}
+    <Tooltip>
+      {#snippet tip()}
+        <div class="cmd-tip-head"><span>Open in a web browser</span></div>
+        <div class="cmd-tip-url">{pageUrl}</div>
+      {/snippet}
+      <button
+        class="btn-icon"
+        aria-label={`Open in a web browser: ${pageUrl}`}
+        onpointerenter={syncPageUrl}
+        onfocus={syncPageUrl}
+        onclick={openInBrowser}
+      >
+        <iconify-icon icon="mdi:web" width="18" height="18"></iconify-icon>
+      </button>
+    </Tooltip>
+  {/if}
   <!-- LIGHT/DARK. Used to be the one button with no registry entry — so the one
        button that could never take a keybinding or appear in the palette, with its
        label and tip written out by hand. It now runs `toggle-light-dark` like every

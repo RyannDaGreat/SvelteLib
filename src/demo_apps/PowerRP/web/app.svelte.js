@@ -33,12 +33,22 @@ import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { imageSignature } from "./clipboard.js"; // canvas-clipboard disambiguation signature
 import * as projectApi from "./projectApi.js";
+// THE STORAGE SEAM (web/assetStore.js). Assets and documents move through
+// assetStore()/projectStore(), NOT through projectApi directly, so the same
+// commands work against the Python backend OR browser-local IndexedDB (static
+// mode). projectApi is still imported for the calls that are inherently
+// server-only (clipboard, render jobs, ffprobe duration) — those refuse loudly
+// in static mode rather than fetching a URL that cannot exist.
+import { assetStore, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason } from "./storageMode.js";
+import { localAssetStore, localProjectStore } from "./assetStore.js";
+import { buildProjectZip, downloadBytes, importProjectZipLocal } from "./projectZip.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
 import { DRAG_KINDS } from "./canvas/dragKinds.js"; // the dragKind setter's allowlist
 import { createUndo } from "../core/undo.js";
-import { registerAll } from "../plugins/index.js";
+import { registerAll, registerPlugins } from "../plugins/index.js"; // registerPlugins = types only (a project switch rebuilds the plugin registry, NOT the commands)
+import { loadProjectPluginAssets, printPluginAssetReports } from "./pluginAssetLoader.js"; // widgets delivered as project assets (*.plugin.js), sandboxed by core/plugin_assets.js
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
@@ -566,6 +576,10 @@ export class PowerRPApp {
     this.shortcuts = createShortcuts(); // App.svelte rebuilds this from the keybinding registry
     this.undoLog = createUndo(this.snapshot(this.doc));
     this.canvasActions = null; // PanZoom actions, set by CanvasView
+    // Types registered by the CURRENT project's *.plugin.js assets (see
+    // reloadPluginAssets). Empty until a project is opened — a fresh document has
+    // only the built-in roster.
+    this.pluginAssetTypes = [];
     registerAll(this.registry, this.commands);
   }
 
@@ -609,9 +623,33 @@ export class PowerRPApp {
   }
 
   /** The derivation-stage expression pass over rawState(): {state, errors}.
-   * Memoized on state identity inside evaluateState. */
+   * Memoized on state identity (and script source) inside evaluateState.
+   *
+   * THE PROJECT SCRIPT rides along as the third argument: it lives in doc.meta, so
+   * the folded state alone cannot carry it, and evaluateState keys its memo on the
+   * source string for exactly that reason (a script edit leaves the fold identical,
+   * so without it the canvas would keep showing the pre-edit evaluation). */
   evalInfo() {
-    return evaluateState(this.rawState(), this.registry);
+    return evaluateState(this.rawState(), this.registry, this.projectScript());
+  }
+
+  /** The PROJECT SCRIPT source — one always-present string (repairedDocument fills
+   *  it), so no consumer branches on undefined. */
+  projectScript() {
+    return this.doc.meta.script ?? "";
+  }
+
+  /** Query. Why the CURRENTLY STORED project script does not compile, or null when
+   *  it does (an empty script always does). Drives the Monaco modal's footer
+   *  problem line.
+   *
+   *  Compiled through the same memoized compileProjectScript the evaluator calls, so
+   *  asking this costs nothing and — more importantly — CANNOT disagree with what
+   *  the canvas actually ran. The host is a throwaway: a compile that FAILS never
+   *  reached a point where `random` or `time` mattered, and a compile that succeeds
+   *  is served from the cache the evaluator populated with the real one. */
+  projectScriptError() {
+    return compileProjectScript(this.projectScript(), { random: () => 0, time: () => 0 }).error;
   }
 
   /** Folded + EVALUATED state — every numeric property is a number. All
@@ -1624,10 +1662,21 @@ export class PowerRPApp {
   // crossfade — it covers the canvas — so this is a deliberately tiny lifecycle,
   // NOT a second copy of the codeEditing seam: open names the target, commit writes
   // it as ONE undo unit through the universal setPreview→commitPreview path, close
-  // drops it. `codeModal` = { itemId, property, language, title } or null.
+  // drops it.
+  //
+  // `codeModal` names its target in ONE of two SCOPES:
+  //   { scope: "item", itemId, property, language, title }  a widget's string leaf
+  //   { scope: "document", property, language, title }      a doc.meta field
+  // The DOCUMENT scope exists for THE PROJECT SCRIPT (doc.meta.script — the
+  // per-project JavaScript library every equation can call). It is a second SCOPE
+  // rather than a second modal lifecycle on purpose: the dialog, the Monaco wiring,
+  // the Escape/Cmd+Enter contract and the "one undo unit on save" rule are identical
+  // in both cases, and the only thing that differs is which path the value is
+  // written to. A parallel lifecycle would be two of everything above, kept in sync
+  // by hand — the mirror hazard this codebase pays for wherever it appears.
 
-  /** { itemId, property, language, title } while the Monaco modal is open, else
-   *  null. A reactive $state field App.svelte mounts CodeEditorModal off. */
+  /** The open Monaco modal's target (see the SCOPES note above), else null. A
+   *  reactive $state field App.svelte mounts CodeEditorModal off. */
   codeModal = $state(null);
 
   /** Command. Opens the full-screen code editor on an item's multi-line string
@@ -1639,17 +1688,55 @@ export class PowerRPApp {
   openCodeModal(itemId, property, opts = {}) {
     if (this.codeModal?.itemId === itemId && this.codeModal?.property === property) return;
     this.selection = itemId;
-    this.codeModal = { itemId, property, language: opts.language ?? null, title: opts.title ?? "Edit code" };
+    this.codeModal = { scope: "item", itemId, property, language: opts.language ?? null, title: opts.title ?? "Edit code" };
   }
 
-  /** Command. Commits the edited source as ONE undo unit (setPreview→commitPreview,
-   *  the path every property edit uses) and closes the modal. A no-op when nothing
-   *  is open. */
+  /** Command. Opens the full-screen code editor on THE PROJECT SCRIPT
+   *  (doc.meta.script) — the per-document JavaScript library whose exports every
+   *  property equation can call (core/project_script.js). No-op when it is already
+   *  open, so a second click on the toolbar icon does not reseed the buffer and
+   *  discard what the user has typed.
+   *
+   *  Does NOT touch the selection: the script belongs to the document, not to
+   *  whatever widget happened to be selected when it was opened. */
+  openProjectScript() {
+    if (this.codeModal?.scope === "document" && this.codeModal?.property === "script") return;
+    this.codeModal = {
+      scope: "document", property: "script", language: "javascript",
+      title: "Project script — functions and values every equation can use",
+    };
+  }
+
+  /** Query. The value the open code modal is editing (an item's string leaf, or a
+   *  doc.meta field), or "" when nothing is open. The modal seeds its buffer from
+   *  this ONCE; the ONE place that maps a target to its stored source, so the read
+   *  and the write below cannot address different things.
+   *
+   *  Reads the RAW stored value (rawState / doc.meta), never the evaluated one: a
+   *  code source is source, and an evaluated read would hand the editor a
+   *  script's or diagram's *result* to edit. */
+  codeModalValue() {
+    const t = this.codeModal;
+    if (!t) return "";
+    if (t.scope === "document") return this.doc.meta[t.property] ?? "";
+    return this.rawState().items?.[t.itemId]?.[t.property] ?? "";
+  }
+
+  /** Command. Commits the edited source as ONE undo unit and closes the modal. An
+   *  ITEM target goes through the universal setPreview→commitPreview path every
+   *  property edit uses; a DOCUMENT target commits a new doc.meta straight through
+   *  `commit`, which is the same path renameProject uses — so both land in the
+   *  global undo stack and both mark the document dirty for the save indicator.
+   *  A no-op when nothing is open. */
   commitCodeModal(value) {
-    if (!this.codeModal) return;
-    const { itemId, property } = this.codeModal;
-    this.setPreview([[["items", itemId, property], value]]);
-    this.commitPreview();
+    const t = this.codeModal;
+    if (!t) return;
+    if (t.scope === "document") {
+      this.commit({ ...this.doc, meta: { ...this.doc.meta, [t.property]: value } });
+    } else {
+      this.setPreview([[["items", t.itemId, t.property], value]]);
+      this.commitPreview();
+    }
     this.codeModal = null;
   }
 
@@ -1854,7 +1941,7 @@ export class PowerRPApp {
         if (bakes.has(memberId)) continue; // a member belongs to ONE group (no nested groups)
         const perSlide = [];
         for (const slide of ungroupBakeSlides(origDoc, memberId, g.itemId)) {
-          const state = evaluateState(foldState(origDoc, slide, 1), this.registry).state;
+          const state = evaluateState(foldState(origDoc, slide, 1), this.registry, origDoc.meta.script ?? "").state;
           const m = deriveRenderTree(state, this.registry).find((n) => n.itemId === memberId);
           if (!m) continue; // member not active on this slide — nothing to bake there
           const world = m.world; // group-influenced (derivation stage) at THIS slide
@@ -1995,10 +2082,16 @@ export class PowerRPApp {
     }
     // 2. Item JSON (+ signature) → the server-side session clipboard (cross-tab).
     //    Failure is loud but NOT fatal any more — the mirror covers this browser.
-    try {
-      await projectApi.setClipboard(json);
-    } catch (e) {
-      console.error("Copy: could not reach the server-side clipboard (cross-TAB paste needs the project server; this browser can still paste via the mirror):", e.message);
+    //    SKIPPED ENTIRELY in static mode: there is no backend session to hold it,
+    //    the mirror above already did the useful work, and a per-copy console
+    //    error about an absent server would be noise, not a report. The bound is
+    //    stated once by the static-mode notice (UNAVAILABLE_IN_STATIC.serverClipboard).
+    if (!isStatic()) {
+      try {
+        await projectApi.setClipboard(json);
+      } catch (e) {
+        console.error("Copy: could not reach the server-side clipboard (cross-TAB paste needs the project server; this browser can still paste via the mirror):", e.message);
+      }
     }
     // 3. Rendered PNG → the OS clipboard (for pasting into OTHER apps). Failure
     //    is reported, not fatal — the internal paste still works.
@@ -2047,7 +2140,14 @@ export class PowerRPApp {
    *  reference: uuid() ids are 8 chars of hex/base36. */
   async #readClipboardPayload() {
     let raw;
-    try {
+    // Static mode has no server clipboard to read — go straight to this browser's
+    // mirror, which is where every static-mode copy wrote. Not a fallback: it is
+    // the ONLY store in this mode, and asking a nonexistent server first would
+    // just log an error before doing the same thing.
+    if (isStatic()) {
+      raw = localStorage.getItem(CLIPBOARD_MIRROR_KEY);
+      if (!raw) return null;
+    } else try {
       raw = await projectApi.getClipboard();
     } catch (e) {
       // The server is the CROSS-TAB authority; unreachable, fall back to THIS
@@ -2850,7 +2950,7 @@ export class PowerRPApp {
     const sent = this.doc;
     this.saving = true;
     try {
-      await projectApi.saveProject(name, sent);
+      await projectStore().save(name, sent);
       this.savedDoc = sent;
       this.lastSavedAt = Date.now();
     } finally {
@@ -2886,7 +2986,7 @@ export class PowerRPApp {
    *  Open modal renders. Exposed so the UI can be a lib Modal (built in
    *  parallel); no ad-hoc dialog is built here. */
   async listProjects() {
-    return projectApi.listProjects();
+    return projectStore().list();
   }
 
   /** Query. Fetch a project's raw {doc, assets} from the server WITHOUT loading
@@ -2894,7 +2994,7 @@ export class PowerRPApp {
    *  Open modal's preview grid uses this to rasterize each project's slide 0
    *  off to the side. Throws loudly on a non-OK response (same as loadProject). */
   async fetchProjectDoc(name) {
-    return projectApi.loadProject(name);
+    return projectStore().load(name);
   }
 
   /** Command. Load a project from the server by name into the editor (same
@@ -2902,8 +3002,23 @@ export class PowerRPApp {
    *  project's font assets must re-register so a text run's `font` id resolves,
    *  so dynamic fonts are cleared (drop the prior project's) then re-synced. */
   async loadProject(name) {
-    const { doc } = await projectApi.loadProject(name);
+    const { doc } = await projectStore().load(name);
+    // PRIME THE ASSET URLS BEFORE THE FIRST PAINT. #resolvedSrc is synchronous
+    // (derive/paint cannot await), so in LOCAL mode every one of this project's
+    // blob: object URLs must exist before the deck renders — otherwise the first
+    // frame resolves every image to the MISSING sentinel and reports a library
+    // full of broken assets that are actually present. A no-op in HTTP mode,
+    // where a ref resolves by string rewrite alone.
+    await assetStore().primeUrls(name);
     clearDynamicFonts(); // drop the previous project's uploaded font families
+    // PLUGIN ASSETS BEFORE REPAIR — THE ORDER IS LOAD-BEARING, NOT STYLISTIC.
+    // A `*.plugin.js` asset registers a widget TYPE, and repairedDocument's first
+    // step drops every item whose type no plugin claims (core/document.js
+    // orphanedItems). Repairing first would therefore delete every instance of an
+    // asset-defined widget AND save the deletion back — data loss, in the exact
+    // case the feature exists for (a deck someone else authored, whose widgets
+    // travel with it). Awaited, and awaited HERE, for that reason.
+    await this.reloadPluginAssets(name);
     // OPENING SETS THE NAME: the server folder is authoritative, so the title,
     // any future Save, and a possibly-stale stored meta.name all agree on `name`
     // (keeps title / open / save consistent — the one-name-model invariant).
@@ -2923,6 +3038,56 @@ export class PowerRPApp {
     this.syncFontAssets(name); // fire-and-forget: register + load this project's font assets
   }
 
+  // ── PLUGIN ASSETS: a widget that is a project asset ─────────────────────────
+  // A `*.plugin.js` asset declares a whole widget type (core/plugin_assets.js
+  // runs it in the equation evaluator's jail). Its lifecycle is per-PROJECT, so
+  // it is rebuilt on every open — see reloadPluginAssets for why "rebuild" rather
+  // than "deregister".
+
+  /**
+   * Command (rebuilds this.registry; reports). Point the app's registry at
+   * `name`'s plugin assets: the built-in roster, then that project's `*.plugin.js`
+   * assets. MUST be awaited before repairedDocument sees the project's document
+   * (see the comment at the call site in loadProject).
+   *
+   * A REBUILD, NOT A DEREGISTER. core/registry.js exposes register/get/all and no
+   * removal, deliberately — a plugin map that could shrink under a live document
+   * lets a derive walk meet a node whose plugin vanished mid-frame. So switching
+   * projects constructs a fresh registry from the built-in roster and loads the
+   * new project's assets into that.
+   *
+   * THE COMMANDS REGISTRY IS DELIBERATELY NOT REBUILT, and passing it here was a
+   * measured bug: `registerAll(registry, commands)` adds each plugin's palette
+   * commands as well as the plugin, and core/commands.js refuses a duplicate id —
+   * so the second project open threw `Duplicate command id "add-rect"` and left
+   * the editor unopenable. The right model is that the two registries have
+   * DIFFERENT lifetimes: plugin types are per-project (an asset defines one), while
+   * palette commands are process-lifetime and were fully populated by the
+   * constructor. Nothing project-scoped can be in there to drop, because a plugin
+   * asset may not declare `commands` at all (the sandbox withholds the live app).
+   * `registerPlugins` registers the roster WITHOUT touching commands, for exactly
+   * this call.
+   *
+   * Failures are REPORTED, never thrown: one bad plugin asset must not make a
+   * project unopenable, and every refusal is printed naming the file
+   * (printPluginAssetReports). A widget that silently failed to register is
+   * indistinguishable to the user from one that was deleted.
+   */
+  async reloadPluginAssets(name = this.projectName()) {
+    this.registry = createRegistry();
+    registerPlugins(this.registry); // types only — commands are process-lifetime (see above)
+    const result = await loadProjectPluginAssets(this.registry, assetStore(), name);
+    printPluginAssetReports(result, name);
+    this.pluginAssetTypes = result.loaded; // what the Insert menu offers (App.svelte)
+    return result;
+  }
+
+  /** Query. The widget types this project's plugin assets registered, in load
+   *  order. Empty for a project with no `*.plugin.js` assets. */
+  pluginAssetPlugins() {
+    return (this.pluginAssetTypes ?? []).map((type) => this.registry.get(type));
+  }
+
   // ── Fonts as an ASSET (#26): a project-uploaded font file becomes a
   // SELECTABLE family. registerFontAssets makes each font-kind asset resolve
   // (render_gpu/fonts.js dynamic registry) AND loads it into the browser so it
@@ -2939,11 +3104,14 @@ export class PowerRPApp {
     for (const a of assetList ?? []) {
       if (a.kind !== "font") continue;
       const id = fontAssetId(a.name);
+      // Through the STORAGE SEAM: a locally stored font resolves to a blob: URL,
+      // which is what FontFace() needs to load bytes that never touched a server.
+      const src = this.#resolvedSrc(a.url);
       const { cssFamily, url } = fontDescriptor(id).dynamic
         ? fontDescriptor(id)
-        : registerFontFamily(id, { filename: a.name, url: projectApi.assetUrl(a.url), title: a.name });
+        : registerFontFamily(id, { filename: a.name, url: src, title: a.name });
       ids.push(id);
-      loadDynamicFont(cssFamily, url ?? projectApi.assetUrl(a.url)).catch((e) => {
+      loadDynamicFont(cssFamily, url ?? src).catch((e) => {
         console.error(`registerFontAssets: ${e.message}`);
       });
     }
@@ -2954,7 +3122,7 @@ export class PowerRPApp {
    *  (loadProject path). Fire-and-forget; errors surface loudly. */
   async syncFontAssets(name = this.projectName()) {
     try {
-      this.registerFontAssets(await projectApi.listAssets(name));
+      this.registerFontAssets(await assetStore().list(name));
     } catch (e) {
       console.error(`syncFontAssets: could not list assets for "${name}":`, e);
     }
@@ -2971,13 +3139,18 @@ export class PowerRPApp {
     const pres = assetTilePresentation(asset);
     if (!pres.needsClientThumbnail) return null; // already cached, or a kind we don't rasterize
     const { renderPdfThumbnail } = await import("../render_gpu/gpu/asset_thumbnail.js");
-    const { dataUrl, pageCount } = await renderPdfThumbnail(projectApi.assetUrl(asset.url));
+    const { dataUrl, pageCount } = await renderPdfThumbnail(this.#resolvedSrc(asset.url));
     const badge = pageCountBadge(pageCount);
     // Persist for next session — BEST-EFFORT. The thumbnail is already rendered
     // (returned below); a disk-cache write failure must not lose it. If the backend
     // exposes no thumb route (e.g. a frontend-only harness / a backend hiccup), learn
     // it ONCE and stop retrying — thumbnails still render in-session. A failed
     // optional-cache write is non-fatal, so warn ONCE (not error, not per-asset).
+    // In STATIC mode there is no disk cache to persist into — the thumbnail is
+    // already rendered and returned, so the honest behavior is to skip the write
+    // rather than POST at a route that cannot exist. Learned once, reported once
+    // (UNAVAILABLE_IN_STATIC.thumbnailCache names this exact bound).
+    if (isStatic()) this._thumbPersistUnavailable = true;
     if (!this._thumbPersistUnavailable) {
       const png = await (await fetch(dataUrl)).blob();
       projectApi.storeThumb(name, asset.name, asset.mtime, badge, png).catch((e) => {
@@ -2995,6 +3168,15 @@ export class PowerRPApp {
    *  "Download" would have hidden it. */
   async downloadZip(name = this.projectName()) {
     await this.saveToServer(name);
+    // The archive is built where the bytes LIVE: server-side from the project
+    // folder in HTTP mode, in the page from IndexedDB in static mode. Both
+    // produce the SAME layout ("<name>/doc.json" + "<name>/assets/…" — see
+    // web/projectZip.js), so an archive from either half imports into either
+    // half. That interchangeability is the whole transfer story.
+    if (isStatic()) {
+      downloadBytes(await buildProjectZip(name, this.doc, assetStore()), `${name}.zip`);
+      return;
+    }
     await projectApi.downloadProjectZip(name);
   }
 
@@ -3029,7 +3211,14 @@ export class PowerRPApp {
     const requested = projectApi.projectZipName(file.name ?? "");
     let result;
     try {
-      result = await projectApi.importProjectZip(file, requested);
+      // Unpacked where the project will LIVE — into IndexedDB in static mode,
+      // onto the server's disk in HTTP mode. Both enforce the same rules (single
+      // root folder names it, contained members only, doc.json required, NEVER
+      // overwrite) and return the same {ok, name, requested} shape, so the
+      // result handling below is adapter-blind.
+      result = isStatic()
+        ? await importProjectZipLocal(new Uint8Array(await file.arrayBuffer()), requested, { projects: localProjectStore, assets: localAssetStore })
+        : await projectApi.importProjectZip(file, requested);
     } catch (e) {
       this.showImportResult({ ok: false, requested, error: String(e.message ?? e) });
       throw e;
@@ -3097,7 +3286,7 @@ export class PowerRPApp {
     ];
     try {
       await this.saveToServer(name);
-      const res = await projectApi.uploadAsset(name, file, filename, (loaded, total) =>
+      const res = await assetStore().put(name, file, filename, (loaded, total) =>
         this.#patchUpload(id, total ? { loaded, total } : { loaded })
       );
       // Final de-collided basename + full bar; the done tile lingers only until
@@ -3133,22 +3322,70 @@ export class PowerRPApp {
    *  assets/ folder on disk — a manual drop appears after a refresh). This is
    *  the refresh-button data source for the future Asset Explorer pane. */
   async listProjectAssets(name = this.projectName()) {
-    return projectApi.listAssets(name);
+    return assetStore().list(name);
   }
 
   /** Command. Delete one asset from the current project (the server removes
    *  the file AND its cached filmstrip frames). Throws loudly on failure —
    *  the Asset Explorer's trash-can flow surfaces it. */
   async deleteProjectAsset(filename, name = this.projectName()) {
-    await projectApi.deleteAsset(name, filename);
+    await assetStore().delete(name, filename);
     this.assetsVersion++;
+  }
+
+  // ── STORAGE MODE: what the UI asks to know where its bytes live ─────────────
+  // The seam itself is web/storageMode.js (decided once at boot). These are the
+  // read-only surfacings the shell needs: the static-mode notice, and the Asset
+  // Explorer's quota line. Nothing here CHOOSES the mode — that already happened.
+
+  /** Query. "http" (a project server owns storage) or "local" (this browser's
+   *  IndexedDB owns it). */
+  storageMode() {
+    return storageMode();
+  }
+
+  /** Query. Whether this page is running with NO backend — the predicate every
+   *  server-only affordance branches on. */
+  isStatic() {
+    return isStatic();
+  }
+
+  /** Query. The one-sentence reason for the current mode, shown in the
+   *  static-mode notice so the state is explained, not just asserted. */
+  storageModeReason() {
+    return storageModeReason();
+  }
+
+  /** Query. The browser's storage budget: {usage, quota, persisted, supported}.
+   *  `supported:false` in HTTP mode (a server has no per-browser quota), which is
+   *  how the Asset Explorer knows to render NO quota line there. */
+  async storageQuota() {
+    return assetStore().quota();
+  }
+
+  /** Command (asks the browser for a permission). In static mode, ask for
+   *  PERSISTENT storage and return the browser's answer — surfaced because the
+   *  user's decks live only in this browser here, so evictable-vs-persistent is a
+   *  fact they need. A no-op returning false in HTTP mode (nothing to persist:
+   *  the server holds the data). */
+  async requestStoragePersistence() {
+    if (!isStatic()) return false;
+    const granted = await localAssetStore.requestPersistence();
+    console.log(`PowerRP storage persistence: ${granted ? "GRANTED (this browser will not evict your projects under storage pressure)" : "NOT granted (the browser may evict this origin's data under storage pressure — export a .zip to keep a durable copy)"}`);
+    return granted;
+  }
+
+  /** Command. Refuse a server-only feature by name, with the sentence saying why
+   *  and what to use instead — the loud half of the static-mode contract. */
+  refuseInStatic(feature) {
+    refuseInStatic(feature);
   }
 
   /** Query. World point at the center of the CURRENT camera view — the default
    *  placement for inserts that don't come from a canvas drop (the same
    *  cameraRect(evaluateState(foldState(…))) idiom exportPng uses). */
   #viewCenter() {
-    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state, this.doc.meta);
+    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state, this.doc.meta);
     return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
   }
 
@@ -3160,11 +3397,21 @@ export class PowerRPApp {
     this.addItem({ ...defaults, src, w, h, x: p.x - w / 2, y: p.y - h / 2 });
   }
 
-  /** Query. A src string for the document: relative served paths ("/asset/…")
-   *  resolve through the backend base (identity when same-origin/proxied);
-   *  absolute URLs and data: URIs pass through untouched. */
+  /** Query. A src string for the document, resolved through THE STORAGE ADAPTER
+   *  (web/assetStore.js). This is THE ONE resolution seam — a document always
+   *  stores the portable `"/asset/<project>/<file>"` ref and never a resolved
+   *  URL, so which adapter answers here is the only difference between a
+   *  server-backed deck and a browser-local one:
+   *
+   *    HTTP  → the backend base is prefixed (identity when same-origin/proxied),
+   *            which is byte-identical to what this method did before.
+   *    LOCAL → a memoized blob: object URL for the IndexedDB-stored bytes.
+   *
+   *  Either way absolute URLs and data: URIs pass through untouched. SYNCHRONOUS
+   *  by contract (derive/paint call it and cannot await), which is why the local
+   *  adapter primes a project's URLs when it opens — see assetStore.js. */
   #resolvedSrc(url) {
-    return url.startsWith("/") ? projectApi.assetUrl(url) : url;
+    return assetStore().resolveUrl(url);
   }
 
   /**
@@ -3477,7 +3724,7 @@ export class PowerRPApp {
   async exportPng() {
     // THE renderer via the shared pixel service; the camera determines the
     // output size/aspect (evaluated state — its properties may be equations).
-    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state, this.doc.meta);
+    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state, this.doc.meta);
     const canvas = await renderCameraFrame(this.doc, {
       slideIndex: this.slideIndex,
       alpha: 1,
@@ -3514,7 +3761,7 @@ export class PowerRPApp {
     const { getImage } = await import("../render_gpu/gpu/image_registry.js");
     const { ensurePdfPageVector } = await import("../render_gpu/gpu/pdf_page_vector.js");
     const { clampPage, pdfPageCount } = await import("../render_gpu/gpu/pdf_page_raster.js");
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
     const rect = cameraRect(state, this.doc.meta);
 
     // (a) WARM UP the vector ingest for every pdf_page node BEFORE deriving the
@@ -3604,7 +3851,7 @@ export class PowerRPApp {
     const { irToSVG } = await import("../render_gpu/svg_backend.js");
     const { loadFontBytes, measureTextAscent, measureText } = await import("./pdfFonts.js");
     const { getVideo } = await import("../render_gpu/gpu/video_registry.js");
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
     const rect = cameraRect(state, this.doc.meta);
 
     // Any image src that is a URL (asset-server case) must be inlined for a
@@ -3845,7 +4092,7 @@ export class PowerRPApp {
   #selectionRenderJob() {
     const rect = this.selectionWorldAABB();
     if (!rect || rect.w <= 0 || rect.h <= 0) return null;
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry).state;
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
     const selected = new Set(this.selectedIds());
     const nodes = deriveRenderTree(state, this.registry).filter((n) => selected.has(n.itemId));
     return { rect, nodes };

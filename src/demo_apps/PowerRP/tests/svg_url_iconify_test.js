@@ -12,7 +12,12 @@
  *   (3) iconifyIconUrl builds/refuses ids per its docblock, and the iconify
  *       widget in bare node (no fetch target) draws the ERROR affordance — the
  *       documented honest degradation — rather than nothing;
- *   (4) both widgets' defaults survive repairedDocument with ZERO reports
+ *   (4) the iconify palette's floatingToolbar spec declares labelKind "id" while
+ *       the cursor palette's does NOT — the declaration web/CanvasToolbar.svelte
+ *       reads to decide whether a cell's hover tip is an IDENTIFIER (--a-mono) or
+ *       PROSE (the UI font). Pinned in both directions so neither becomes the
+ *       silent default;
+ *   (5) both widgets' defaults survive repairedDocument with ZERO reports
  *       (the missingDefaults gate every hand-authored doc runs through).
  */
 
@@ -21,6 +26,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { svgPlugin } from "../plugins/svg.js";
 import { iconifyPlugin, iconifyIconUrl } from "../plugins/iconify.js";
+import { cursorPlugin } from "../plugins/demo/cursor.js"; // the OTHER floatingToolbar grid — the prose-label control case
 import { svgSourceStatus, resetSvgSourceRegistry } from "../render_gpu/gpu/svg_source_registry.js";
 import { repairedDocument, uuid } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
@@ -82,6 +88,29 @@ try {
     const state = { ...iconifyPlugin.defaults, x: 0, y: 0, w: BOX, h: BOX };
     const ops = iconifyPlugin.emit(state, null, IDENTITY_WORLD);
     assert.ok(ops.some((o) => o.op === "text" && String(o.text).includes("failed to load icon")), "error affordance names the icon");
+  });
+
+  test('iconify floatingToolbar declares labelKind "id" — the tip renders in the identifier font', () => {
+    // TYPOGRAPHY IS A DECLARED PROPERTY OF THE SPEC, not a guess the toolbar makes.
+    // web/CanvasToolbar.svelte renders a cell's hover tip in var(--a-mono) only when
+    // the grid says labelKind === "id", because the label IS an identifier
+    // ("tabler:star") to be read and retyped exactly — the same voice as an equation
+    // (.varspanel .var-name) or a URL (.cmd-tip-url). The cursor palette, whose
+    // labels are prose ("Spinning"), deliberately omits the field and gets the UI
+    // font. Pinned because the user's report was specifically about INCONSISTENCY
+    // here ("I'm okay with monospace, except it's not consistent"), and a silent
+    // drop of this one word would restore the proportional icon ids with no test
+    // failing anywhere.
+    const spec = iconifyPlugin.floatingToolbar({ ...iconifyPlugin.defaults });
+    assert.equal(spec.grid.labelKind, "id");
+    assert.ok(spec.search, "the palette is searchable");
+    assert.equal(spec.grid.property, "icon");
+  });
+
+  test("cursor floatingToolbar declares NO labelKind — its labels are prose, not ids", () => {
+    // The other half of the same contract: proving the default case is the one the
+    // cursor palette actually gets, so "id" cannot quietly become the global default.
+    assert.equal(cursorPlugin.floatingToolbar({ ...cursorPlugin.defaults }).grid.labelKind, undefined);
   });
 
   test("both widgets' defaults survive repairedDocument with ZERO reports", () => {

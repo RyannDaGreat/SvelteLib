@@ -252,13 +252,23 @@ const ACCOUNTED = {
   },
   "web/Toolbar.svelte": {
     keys: ["Enter", "F2"],
-    dblclick: "OS: double-click the project title opens the Rename modal — the desktop file-manager rename gesture (Finder/Explorer), a mouse gesture the keyboard law does not cover, discoverable at the point of use via the title's Tooltip ('Double-click to rename'). Its KEYBOARD twin (Enter/F2) IS chipped — see coverage.",
-    coverage: "contextual:titleRename: Enter and F2 both 'Rename' (open the rename modal) while the project-title span has focus (data-hint-scope='titleRename', core fieldScope via editMode). F2 is app-invented rename vocabulary; Enter is its discoverable twin. The span is a role='button', NOT a typing target, so the two chips ride editMode and show beside the canvas hints while the title is focused.",
+    // NO `dblclick` ANY MORE. The project title used to open the Rename modal on a
+    // double-click, justified here as the Finder/Explorer rename gesture. The user
+    // asked "why does the name have to be double-click to rename? Why not
+    // single-click?" and the answer was that nothing on this span competes for the
+    // first click — it is not selectable, draggable or a drop target — so the
+    // second click was ceremony. It is now `onclick`, its tip reads "Click to
+    // rename", and this field is GONE rather than reworded: the sweep asserts the
+    // ledger describes real handlers, so a rationale for a gesture the code no
+    // longer has is exactly what it should reject.
+    // (SlideNav KEEPS its dblclick entry: a slide card's single click SELECTS the
+    // slide, so rename must stay the second gesture there.)
+    coverage: "contextual:titleRename: Enter and F2 both 'Rename' (open the rename modal) while the project-title span has focus (data-hint-scope='titleRename', core fieldScope via editMode). F2 is app-invented rename vocabulary; Enter is its discoverable twin. The span is a role='button', NOT a typing target, so the two chips ride editMode and show beside the canvas hints while the title is focused. A plain CLICK does the same thing (the mouse path); these are its keyboard equivalents, which is why they are chipped and the click is not.",
   },
   "web/SlideNav.svelte": {
     keys: ["Enter", "Escape"],
     coverage: "contextual:rename: Enter 'Rename' commits and Escape 'Cancel' reverts the inline slide-name editor while its input has focus (data-hint-scope='rename', core fieldScope). The input is a typing target, so the canvas chips already stand down; Escape stopPropagations so it cannot also fire a global dismiss while abandoning the typed name.",
-    dblclick: "OS: double-click a slide's NAME opens its inline rename editor (Round 4 #54) — the desktop-universal rename gesture (Finder/Explorer/every tree view), a mouse gesture the keyboard law does not cover, discoverable via the name's Tooltip. Its keyboard result (the rename input's Enter/Escape) IS chipped — see coverage.",
+    dblclick: "OS: double-click a slide's NAME opens its inline rename editor (Round 4 #54) — the desktop-universal rename gesture (Finder/Explorer/every tree view), a mouse gesture the keyboard law does not cover, discoverable via the slide CARD's Tooltip ('Double-click the name to rename'). The hint sits in the card's tip rather than one of the name span's own: the card tip already covers that span, so a nested Tooltip there fired both and painted two boxes over each other. Its keyboard result (the rename input's Enter/Escape) IS chipped — see coverage.",
   },
   "web/CanvasToolbar.svelte": {
     keys: ["Enter", "Escape"],
