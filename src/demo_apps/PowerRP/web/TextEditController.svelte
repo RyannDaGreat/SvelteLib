@@ -232,13 +232,15 @@
   function typeText(t) { replaceRange(selStart, selEnd, t); }
   function insertNewline() { replaceRange(selStart, selEnd, "\n"); }
   function deleteSelection() { preview(deleteRange(rich, selStart, selEnd, inherited)); collapse(selStart); }
-  function backspace() {
-    if (selEnd > selStart) return deleteSelection();
-    if (selStart > 0) { preview(deleteRange(rich, selStart - 1, selStart, inherited)); collapse(selStart - 1); }
+  function backspace(to = selStart - 1) {
+    if (selEnd > selStart) return deleteSelection(); // a selection wins over any target
+    const from = clampOff(to);
+    if (from < selStart) { preview(deleteRange(rich, from, selStart, inherited)); collapse(from); }
   }
-  function deleteForward() {
+  function deleteForward(to = selStart + 1) {
     if (selEnd > selStart) return deleteSelection();
-    if (selStart < textLen()) { preview(deleteRange(rich, selStart, selStart + 1, inherited)); collapse(selStart); }
+    const end = clampOff(to);
+    if (end > selStart) { preview(deleteRange(rich, selStart, end, inherited)); collapse(selStart); }
   }
 
   // ── navigation (all geometry from the shared layout) ──────────────────────────
@@ -250,15 +252,25 @@
     const nf = layout.lineMove(focus, dir, goalX);
     focus = nf; if (!shift) anchor = nf; // preserve goalX across consecutive vertical moves
   }
+  // macOS word semantics: whitespace between the caret and the word travels
+  // WITH the word (skip it, then take the word boundary) — but a newline is a
+  // hard stop, so a word hop never silently crosses lines. Shared by Alt+Arrow
+  // navigation AND Alt+Backspace/Delete, so they can never disagree.
+  function wordStartBefore(o) {
+    const s = richTextToPlain(rich);
+    while (o > 0 && /\s/.test(s[o - 1]) && s[o - 1] !== "\n") o--;
+    return layout ? layout.wordAt(clampOff(o - 1)).start : o - 1;
+  }
+  function wordEndAfter(o) {
+    const s = richTextToPlain(rich);
+    while (o < s.length && /\s/.test(s[o]) && s[o] !== "\n") o++;
+    if (!layout) return o + 1;
+    const w = layout.wordAt(clampOff(o));
+    return w.end > o ? w.end : layout.wordAt(clampOff(o + 1)).end;
+  }
   function moveWord(dir, shift) {
     if (!layout) return moveTo(focus + dir, shift);
-    if (dir > 0) {
-      const w = layout.wordAt(focus);
-      moveTo(w.end > focus ? w.end : layout.wordAt(clampOff(focus + 1)).end, shift);
-    } else {
-      const w = layout.wordAt(clampOff(focus - 1));
-      moveTo(w.start < focus ? w.start : layout.wordAt(clampOff(focus - 1)).start, shift);
-    }
+    moveTo(dir > 0 ? wordEndAfter(focus) : wordStartBefore(focus), shift);
   }
 
   // ── style edits (toolbar onstyle / Cmd+B·I·U / Cmd±) ──────────────────────────
@@ -434,8 +446,8 @@
     if (k === "ArrowDown") { e.preventDefault(); moveVertical(1, shift); return; }
     if (k === "Home") { e.preventDefault(); moveTo(lineStart(focus), shift); return; }
     if (k === "End") { e.preventDefault(); moveTo(lineEnd(focus), shift); return; }
-    if (k === "Backspace") { e.preventDefault(); backspace(); return; }
-    if (k === "Delete") { e.preventDefault(); deleteForward(); return; }
+    if (k === "Backspace") { e.preventDefault(); if (e.altKey) backspace(wordStartBefore(selStart)); else if (mod) backspace(lineStart(selStart)); else backspace(); return; }
+    if (k === "Delete") { e.preventDefault(); if (e.altKey) deleteForward(wordEndAfter(selStart)); else if (mod) deleteForward(lineEnd(selStart)); else deleteForward(); return; }
     if (k === "Enter") { e.preventDefault(); insertNewline(); return; }
     if (!mod && k.length === 1) { e.preventDefault(); typeText(k); return; } // printable char
   }
