@@ -1,19 +1,18 @@
 # PowerRP desktop app — tag-triggered release build.
 #
-# Cut a release:   git tag v0.1.0 && git push --tags
-# The built .dmg lands on the GitHub Release for that tag;
-# /releases/latest always points at the newest one.
+# Cut a release:   git tag v0.2.0 && git push --tags
+# The built dmg lands on the GitHub Release for that tag, twice: once with its
+# versioned name and once as the STABLE name `PowerRP.dmg`, so
+# /releases/latest/download/PowerRP.dmg is a permanent "newest app" URL (the
+# README links it; the Homebrew cask uses the versioned one + sha256).
 #
-# ── v1 HONESTY ────────────────────────────────────────────────────────────────
-# The v1 shell (desktop/main.js) launches the dump via run_server.sh and, when
-# packaged, finds the repo through Resources/repo-path.txt. In CI we bake that
-# path to the checked-out workspace, which means THIS artifact still expects a
-# machine with node + uv + the repo present — it is a "latest app for people
-# who cloned the repo" build, and the workflow says so on the release notes.
-# v2 (the shippable bundle) replaces repo-path.txt with the repo vendored into
-# Resources/ plus node/uv/ffmpeg runtimes, and adds Developer ID signing +
-# notarization via repo secrets (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
-# CSC_LINK / CSC_KEY_PASSWORD). Marked TODO(v2) below where each lands.
+# The shipped bundle is SELF-CONTAINED: the repo (minus dev-machine projects)
+# plus node and uv are vendored into Resources (desktop/fetch_runtimes.sh +
+# electron-builder.yml); first launch installs web deps into Application
+# Support. Ad-hoc signed (valid seal — no malware dialog); users still
+# right-click → Open once.
+# TODO(signing): with an Apple Developer ID, export CSC_LINK/CSC_KEY_PASSWORD
+# from repo secrets and add notarization — then the dialog disappears entirely.
 name: release-app
 
 on:
@@ -32,27 +31,25 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install root deps (vite build inputs)
-        run: npm ci --no-fund --no-audit
-
       - name: Install shell deps
         working-directory: src/demo_apps/PowerRP/desktop
         run: npm ci --no-fund --no-audit
 
-      # TODO(v2): vite build + vendor the repo and node/uv/ffmpeg runtimes into
-      # extraResources here, replacing the repo-path.txt seam entirely.
-      - name: Package the app (unsigned dmg)
+      - name: Package the app (vendored repo + runtimes, ad-hoc signed dmg)
         working-directory: src/demo_apps/PowerRP/desktop
         run: npm run package:dmg
-        # TODO(v2): signing — export CSC_LINK/CSC_KEY_PASSWORD from secrets and
-        # drop `identity: null` from electron-builder.yml; then notarize.
+
+      - name: Stable-name copy for /releases/latest/download/PowerRP.dmg
+        working-directory: src/demo_apps/PowerRP/desktop
+        run: cp dist/PowerRP-*.dmg dist/PowerRP.dmg
 
       - name: Publish dmg to the tag's release
         uses: softprops/action-gh-release@v2
         with:
-          files: src/demo_apps/PowerRP/desktop/dist/*.dmg
+          files: |
+            src/demo_apps/PowerRP/desktop/dist/PowerRP-*.dmg
+            src/demo_apps/PowerRP/desktop/dist/PowerRP.dmg
           body: |
-            PowerRP desktop shell (v1, unsigned).
-            NOTE: this build launches a PowerRP checkout via run_server.sh and
-            expects node + uv on the machine — see desktop/main.js docblock.
-            First open: right-click → Open (unsigned).
+            PowerRP desktop app (self-contained: repo + node + uv vendored;
+            first launch downloads web deps). Unsigned/ad-hoc build — first
+            open: right-click → Open.

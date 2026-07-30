@@ -1,4 +1,4 @@
-# PowerRP desktop shell — electron-builder config (v1: unsigned, this-machine).
+# PowerRP desktop shell — electron-builder config.
 # asar is OFF because the shell's whole job is spawning real on-disk processes
 # (bash → python via uv → node/vite); nothing here benefits from an archive.
 appId: org.ryancentral.powerrp
@@ -9,10 +9,37 @@ files:
   - main.js
   - package.json
 extraResources:
-  # v1 seam: the dump's absolute path, baked by write_repo_path.js. The v2 CI
-  # build replaces this with the repo itself vendored under Resources/.
+  # Dev-machine fallback seam (mode 3 in main.js): the dump's absolute path,
+  # baked by write_repo_path.js. Present in every build; the vendored repo
+  # below takes precedence when it exists.
   - from: dist-resources/repo-path.txt
     to: repo-path.txt
+  # THE VENDORED REPO (shipped builds; `npm run package:dmg`): the SvelteLib
+  # tree minus the heavyweights — node_modules (npm ci recreates them on the
+  # user's machine), .git, build outputs, and the dev machine's projects/
+  # (1.4 GB of local video; the Imitations demo ships and seeds the user's
+  # projects dir on first run — main.js).
+  - from: ../../../..
+    to: repo
+    filter:
+      - "**/*"
+      - "!node_modules/**"
+      - "!.git/**"
+      - "!public/videos/**"
+      - "!src/demo_apps/PowerRP/desktop/dist/**"
+      - "!src/demo_apps/PowerRP/desktop/dist-resources/**"
+      - "!src/demo_apps/PowerRP/desktop/node_modules/**"
+      - "!src/demo_apps/PowerRP/desktop/runtimes/**"
+      - "!src/demo_apps/PowerRP/projects/**"
+      - "src/demo_apps/PowerRP/projects/Imitations/**"
+      - "!**/.claude_logs/**"
+      - "!**/.claude_vlm_checks/**"
+  # VENDORED RUNTIMES (fetch_runtimes.sh): node dist + static uv binary —
+  # a shipped app needs no preinstalled tooling (main.js prepends these).
+  - from: runtimes/node
+    to: bin/node
+  - from: runtimes/uv
+    to: bin/uv
 asar: false
 mac:
   target:
@@ -24,3 +51,4 @@ mac:
   # macOS greets with the "will damage your computer" malware dialog, not the
   # ordinary "unverified developer" one. Real Developer ID + notarization for
   # shipping to strangers lands via CI secrets — see release-app.yml.
+afterPack: ./sign_adhoc.js
