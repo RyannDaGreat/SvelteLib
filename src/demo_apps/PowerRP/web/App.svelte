@@ -865,7 +865,10 @@
     { id: "rename-presentation", title: "Rename Project…", icon: "mdi:rename-outline", run: (a) => a.renamePresentation() },
     { id: "save-to-server", title: "Save Project to Server…", icon: "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
     { id: "open-project", title: "Open Project from Server…", icon: "mdi:folder-network-outline", run: (a) => a.openProject() },
-    { id: "download-zip", title: "Export Project as .zip (with assets; saves to the server first)", icon: "mdi:folder-zip-outline", run: (a) => a.downloadZip() },
+    // ph:file-zip / ph:file-zip-fill: the ONE candidate pair whose glyph carries
+    // literal "ZIP" lettering (user ruling 2026-07-30: the zip icon should SAY
+    // Zip) while keeping the outline=export / filled=import distinction.
+    { id: "download-zip", title: "Export Project as .zip (with assets; saves to the server first)", icon: "ph:file-zip", run: (a) => a.downloadZip() },
     // A document may reference /asset/<ANOTHER project>/<file> — Save-As mints
     // exactly that (it renames doc.meta.name and saves to a new folder while the
     // assets stay where they were uploaded). The exports now localize into the
@@ -878,7 +881,7 @@
     // LOCAL DISK, the extension named, "…" because it opens a picker. Its noun is
     // PROJECT (assets included), which is exactly what separates it from
     // load-file's DOCUMENT. Dropping a .zip on the canvas runs the same path.
-    { id: "import-zip", title: "Import Project from .zip (with assets; opens it as a new project)…", icon: "mdi:folder-zip", run: (a) => a.importZipFile() },
+    { id: "import-zip", title: "Import Project from .zip (with assets; opens it as a new project)…", icon: "ph:file-zip-fill", run: (a) => a.importZipFile() },
     // Built-in Assets browser (task #68 follow-up): a SEPARATE surface for
     // ship-with-the-app assets (cursors today) — never mixed into the project
     // Asset Explorer. Discovery only; widgets read built-ins directly.
@@ -2066,6 +2069,8 @@
         : app.codeModal.scope === "asset"
           ? app.pluginAssetError
           : null}
+      readOnly={app.codeModal.readOnly ?? false}
+      note={app.codeModal.note ?? null}
       onsave={(text) => app.commitCodeModal(text)}
       oncancel={() => app.closeCodeModal()}
     />
