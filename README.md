@@ -15,6 +15,12 @@ open it, and drag PowerRP to Applications.
 brew install --cask ryanndagreat/tap/powerrp
 ```
 
+**Update:**
+
+```
+brew update && brew upgrade --cask powerrp
+```
+
 First launch does a one-time setup (downloads the app's web dependencies into
 `~/Library/Application Support/PowerRP` — the app's only footprint outside
 /Applications; needs network, takes a few minutes). Unsigned build for now: if
