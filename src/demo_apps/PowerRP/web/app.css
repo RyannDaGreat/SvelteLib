@@ -672,6 +672,30 @@
      at USE time, not at declaration time, so the order is free and grouping the
      rim with the prose that explains it beats grouping it with its consumer. */
   --a-glass-rim: transparent;
+  /* THE TOOLTIP'S SURFACE TINT — the third member of the --a-glass-bg family,
+     and the token that decides whether tooltips are glass at all.
+     A tip is a floating surface by every test this section applies: it is
+     body-level, it carries an elevation shadow, and it floats over arbitrary
+     canvas art rather than over flat chrome. So it gets the same recipe as the
+     palette — the SAME --a-glass-blur, the SAME rounding and rim — and differs
+     only in its tint, which is denser because a tip is small text read for a
+     second (see each glass theme's own note for the number it picked).
+     WHY ITS OWN TOKEN INSTEAD OF TRACKING --a-glass-blur. A theme is glass when
+     it says so, not when a heuristic infers it: Platinum sets --a-glass-rim to
+     a white bevel and is emphatically NOT glass (opaque stamped metal), so any
+     rule keyed on "has a rim" or "has a tint" would have handed it a blurred
+     tooltip it never asked for. Opting in through one token per theme keeps the
+     no-op contract this whole section rests on — unset means today's opaque
+     tooltip, byte for byte.
+     `unset` rather than a colour is what makes that true: the consuming rule
+     uses it as the FIRST term of a var() fallback chain, so an unset token
+     falls through to the tip's own --control-bg default and the rule contributes
+     nothing. */
+  --a-glass-tip-bg: unset;
+  /* The tip's corner, travelling with the tint rather than with
+     --a-radius-floating — see the .tt-tip rule for why the two are kept
+     separate. Unset falls through to the component's own square-ish --tt-radius. */
+  --a-glass-tip-radius: unset;
 }
 
 :root[data-theme="light"] {
@@ -1283,6 +1307,99 @@
   /* Saturate, not just blur, because a plain blur of colourful art averages
      toward grey and the pane ends up looking dirty rather than glassy. */
   --a-glass-rim: rgba(200, 220, 255, 0.16);
+  /* Tooltips join the glass family here (see --a-glass-tip-* in :root). A tip
+     is the smallest floating surface in the app and it floats over EVERYTHING,
+     so if any surface earns the material it does. It opts in per glass theme
+     rather than tracking --a-glass-blur automatically, because Platinum sets a
+     rim without being glass and must keep its opaque tooltip. */
+  --a-glass-tip-bg: rgba(21, 26, 35, 0.82);
+  /* MORE opaque than the palette's 0.72, not less. A tip is ~20px of small text
+     read for a second and dismissed, and at palette alpha the art behind it
+     came through the glyphs; the palette can afford thinness because it is a
+     large surface the eye settles on. Same material, tuned for the size. */
+  --a-glass-tip-radius: 6px;
+  /* Under --a-radius-floating's 10px, and that is the material scaling rather
+     than drifting: 10px on a ~22px-tall tip is most of its half-height, which
+     reads as a pill — a different shape language, and the "rounding only where
+     deliberate" rule says a pane and a label are not the same object. 6px is
+     the same corner seen on a smaller pane. */
+}
+
+/* Daybreak — NOCTURNE AT NOON, and the proof that glass is a material lever
+   rather than a dark-theme trick. Same physics, same three cues (blur, rim,
+   shadow), same floating-only discipline; what changes is what light does when
+   there is a lot of it.
+   THE INVERSION IS NOT A NEGATION, and this is the whole design problem. Take
+   Nocturne's numbers and flip them and you get the classic washed-out light
+   glass: a near-white pane on a near-white page has no edge, so it stops
+   reading as a pane and starts reading as a smudge. Three separate moves fix
+   that, and each addresses a different cue that darkness was doing for free:
+     1. THE PANE IS BRIGHTER THAN THE PAGE, not darker. Over a dark field the
+        blurred backdrop darkens a pane and that IS its edge; over a light field
+        the same blur brightens toward the page and the pane disappears into it.
+        So the tints here are lifted toward white (0.72/0.78 of a near-white)
+        while --bg sits a clear step below — the pane reads as a lit sheet held
+        ABOVE the page, which is the honest thing for a surface that is floating.
+     2. THE RIM MOVES FROM LIT TO DEFINING. Nocturne's rim is a highlight: a pale
+        blue hairline catching light on the top edge, visible because everything
+        around it is dark. A pale hairline on a pale pane is invisible, so a
+        literal port of that token would silently delete one of the three cues.
+        Here the rim is a soft SHADOW-side slate at low alpha instead — it still
+        marks the top edge as an edge, but by contrast in the other direction.
+     3. CONTRAST COMES FROM DEPTH, NOT DARKNESS. The elevation shadow does the
+        work Nocturne got from value separation: a wider, softer, cool-tinted
+        throw (slate rather than black — a black shadow on a bright page reads as
+        dirt, not as air) plus a hairline border with real presence. That is why
+        --border here is a good deal stronger than the other light themes'.
+   SATURATE IS KEPT AND RAISED (150% vs Nocturne's 140%). It matters MORE on
+   light: a blur over a bright field averages toward a flat pale grey even faster
+   than it averages toward grey on dark, and the recovered chroma of the art
+   behind the pane is most of what sells the glass as transmissive rather than
+   as frosted plastic.
+   The palette is a cool daylight blue-grey — Nocturne's own hue family taken up
+   into the light, so the two read as one idea at two times of day and not as two
+   unrelated themes. ONE warm token again (amber keyframes), for the same reason:
+   the Inspector's diamonds must stay findable in all that cool. Deeper amber
+   than Nocturne's, because the same value that glows on a dark panel vanishes on
+   a bright one. */
+:root[data-theme="daybreak"] {
+  --bg: #dce3ec; /* the page — a clear step UNDER the panes that float on it */
+  --fg: #1a2230;
+  --fg-dim: #55617a;
+  --accent: #2f5fb8; /* daylight blue: Nocturne's #7aa2f7 taken down to hold on white */
+  --border: rgba(40, 58, 88, 0.22); /* stronger than the other light themes — see cue 3 */
+  --control-bg: #cdd6e3;
+  --a-panel-bg: #eef2f7; /* the lit sheet — brighter than the page, deliberately */
+  --a-canvas-bg: #b9c4d4; /* the shaded desk: the darkest surface, so a slide reads as ON it */
+  --a-canvas-solid: #b9c4d4; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(47, 95, 184, 0.12);
+  --a-selection: #2f5fb8;
+  --a-guide: #c2185b; /* a magenta-red that stays legible against all this blue */
+  --a-keyed: #96601a; /* deep amber — the one warm mark; lighter ambers vanish on a bright panel */
+  --a-anchor: #4a5b74;
+  --a-modifier: #7b3fa0;
+  --a-scrollbar: rgba(40, 58, 88, 0.26);
+  --a-scrollbar-hover: rgba(40, 58, 88, 0.44);
+  --a-split-handle: #c0cad8;
+  --a-split-handle-hover: #2f5fb8;
+  /* Cool slate rather than black, wide and soft: air under a lit sheet. A black
+     shadow at this size on a bright page reads as grime instead of elevation. */
+  --a-palette-shadow: 0 16px 44px rgba(38, 55, 84, 0.26);
+
+  /* THE LEVERS — pulled exactly where Nocturne pulls them, and nowhere else.
+     --a-radius-control and --a-radius-panel stay square, so docked chrome is as
+     square here as in Graphite; only the floating family rounds. */
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(248, 251, 255, 0.72);
+  --a-glass-bg-panel: rgba(244, 248, 253, 0.78);
+  --a-glass-blur: blur(18px) saturate(150%);
+  --a-glass-rim: rgba(40, 58, 88, 0.14); /* a DEFINING edge, not a lit one — see cue 2 */
+  --a-glass-tip-bg: rgba(246, 250, 255, 0.86);
+  /* Denser than the panel tint for the same reason Nocturne's tip is: small
+     text, briefly read. A touch denser still than Nocturne's 0.82 because dark
+     glyphs on a bright translucent pane lose more to a busy backdrop than pale
+     glyphs on a dark one do. */
+  --a-glass-tip-radius: 6px; /* the pane corner at tip scale — see Nocturne's note */
 }
 
 /* Futura Dark — TYPOGRAPHY-LED, and the proof that --a-ui-font is a real lever.
@@ -1685,13 +1802,74 @@ textarea {
   color: var(--a-storage-local-ink);
 }
 
+/* ── GLASS TOOLTIPS (glass themes only) ──────────────────────────────────────
+   The tip is the smallest floating surface in the app and the one that floats
+   over the most varied backdrop, so in a glass theme it is made of the SAME
+   MATERIAL as the command palette — one recipe, consumed twice, never copied:
+   --a-glass-blur is read VERBATIM from the same token .palette reads, so the
+   blur/saturate a theme authors once is by construction the same on both
+   surfaces. Only the size-dependent parts differ (--a-glass-tip-bg is denser and
+   --a-glass-tip-radius tighter, because a tip is small text on a small pane;
+   see each token's note).
+   INERT UNLESS A THEME OPTS IN. Every declaration below falls back through
+   var() to exactly what Tooltip.svelte's own scoped rule already computes, so a
+   non-glass theme's tooltip is byte-identical to before this rule existed:
+     --a-glass-tip-bg     unset -> var(--control-bg)  = the component's --tt-bg
+     --a-glass-tip-radius unset -> 2px                = the component's --tt-radius
+     --a-glass-blur       `none` at :root             = no backdrop-filter layer
+   The radius gets its OWN token rather than reading --a-radius-floating,
+   because rounding must arrive only WITH the material: a theme that rounds its
+   floating panes without being glass (none today, but the lever is public) must
+   not thereby round every tooltip in the app. Each glass theme sets it to the
+   same value it gives --a-radius-floating, which is the pairing being asserted,
+   not a coincidence to be collapsed.
+   SPECIFICITY — TRIPLED, and the count matters; MEASURED, not reasoned about.
+   The component's scoped rule compiles to `.tt-tip.s-<hash>`, which is TWO
+   classes = (0,2,0), and Svelte injects it AFTER this stylesheet. So a DOUBLED
+   `.tt-tip.tt-tip` is (0,2,0) too — a TIE, which the later sheet wins. This was
+   caught by the probe rather than by reading: the blur applied (it is set on
+   :root and inherited) while background and radius silently did not, which is
+   exactly the half-working symptom a tie produces.
+   Three classes = (0,3,0) and wins outright. The storage-local rule below reads
+   as doubled but is really (0,3,0) as well — its `:has(.storage-local-tip)`
+   contributes the third class — which is why it works and why copying its
+   apparent shape without its :has() does not. */
+.tt-tip.tt-tip.tt-tip {
+  background: var(--a-glass-tip-bg, var(--control-bg));
+  border-radius: var(--a-glass-tip-radius, var(--tt-radius));
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
+}
+
 /* The matching tooltip: same warning palette as the buttons. :has() scopes the
    override to tips whose content Toolbar marked, so every other tooltip keeps
-   the standard chrome. Doubled class = 0,3,0: the component's scoped rule
-   compiles to .tt-tip.svelte-hash (0,2,0) and is injected after this sheet, so
-   a bare .tt-tip:has() would lose the tie (the eq-input font-size lesson). */
+   the standard chrome. Specificity is (0,3,0) — the doubled class contributes
+   two and `:has(.storage-local-tip)` the third, since :has() takes the
+   specificity of its most specific argument. That third class is load-bearing,
+   not decoration: the component's scoped rule compiles to .tt-tip.s-<hash>
+   (0,2,0) and is injected AFTER this sheet, so a merely-doubled (0,2,0)
+   selector TIES and loses. (This comment used to say the doubling alone made
+   0,3,0, which is wrong arithmetic that happened to describe a working rule;
+   the glass rule above was written from it and silently half-applied until a
+   probe caught it. Count the classes.)
+
+   THE GOLD IS A WASH LAID OVER THE SURFACE, NOT A REPLACEMENT FOR IT — two
+   background LAYERS, warning tint above and the surface below. That is what
+   lets it co-occur with the glass rule above, and it is a real bug fixed rather
+   than a precaution: --a-storage-local-bg is a 12%-alpha color-mix, so a single
+   `background:` declaration (which this rule used to be, and which wins the
+   cascade over the glass rule outright — later AND more specific) left 88% of
+   the tip showing straight through to whatever the tooltip floats over. On an
+   opaque theme that was invisible, because the layer underneath was the opaque
+   --control-bg the component paints anyway. In a glass theme there IS no opaque
+   layer underneath, so the static-mode warning tip became small gold text on
+   blurred slide art — the one tooltip in the app that most needs to be read.
+   Layering keeps the theme's dense tip tint underneath in glass themes and
+   resolves to the identical two-layer-over-opaque result everywhere else. */
 .tt-tip.tt-tip:has(.storage-local-tip) {
-  background: var(--a-storage-local-bg);
+  background:
+    linear-gradient(var(--a-storage-local-bg), var(--a-storage-local-bg)),
+    var(--a-glass-tip-bg, var(--control-bg));
   border-color: var(--a-storage-local-border);
   color: var(--a-storage-local-ink);
 }
