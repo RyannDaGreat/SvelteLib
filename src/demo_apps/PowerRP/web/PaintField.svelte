@@ -110,13 +110,15 @@
   /**
    * Pure function. The paint's mode id: "equation" for a leading-"=" string,
    * "solid" for a plain string / null / rgba array or an object whose type is
-   * "solid", else the gradient object's own type.
+   * "solid", else the tagged object's own type ("none" for the OFF paint, the
+   * gradient types, "material").
    *
    * @example paintMode("#f00") // "solid"
    * @example paintMode("=#f00") // "equation"
    * @example paintMode(null) // "solid"
    * @example paintMode({type: "solid", solid: "#f00"}) // "solid"
    * @example paintMode({type: "linearGradient"}) // "linearGradient"
+   * @example paintMode({type: "none"}) // "none" (OFF — paints nothing)
    */
   export function paintMode(value) {
     if (isEquationPaint(value)) return "equation";
@@ -248,7 +250,12 @@
   // then offers the STROKE-material registry (arc-length gradients, width profiles,
   // dashes, wavy) and renders each entry's strokeParams, instead of the fill
   // registry. Default false keeps every fill/background PaintField byte-identical.
-  let { app, path, paths = null, label, value, disabled = false, strokeMaterials = false } = $props();
+  // `offMeans`: the declaring row's one-sentence answer to "what does OFF mean in
+  // THIS slot?" — forwarded from the row declaration by web/Inspector.svelte. A
+  // shape's fill says "hollow"; an SVG's override fill says "keep the artwork's own
+  // colours". Absent → OFF_MEANS_GENERIC below, so every existing paint row is
+  // unchanged.
+  let { app, path, paths = null, label, value, disabled = false, strokeMaterials = false, offMeans = null } = $props();
 
   // Fan-out (the NumericField convention): `paths` present = a multi-selection
   // writes every selected item's paint; absent = the single path, byte-identical.
@@ -317,7 +324,11 @@
    * fresh paint from the default solid (the expression has no sub-states to keep).
    * Between object modes only `type` flips when the object is complete (every
    * sub-state persists — the fix for "switching forgets"); otherwise the full
-   * multi-sub-state object is materialized. */
+   * multi-sub-state object is materialized.
+   * OFF ("none") needs NO branch of its own, and that is the point of storing it as
+   * a `type` tag: it flips `type` exactly like Solid↔Linear does, so turning a fill
+   * off and back on returns the colour/gradient/material the user had — off is a
+   * MODE, not a destructive clear. */
   function setMode(next) {
     if (disabled || next === mode) return;
     if (next === "equation") commitWhole(`=${seedSolid(raw)}`); // seed: a color-literal equation
@@ -568,18 +579,50 @@
     matCollapsed = next;
   }
 
+  // The mode strip. "Off" leads, because it is the ABSENCE of paint and reads as
+  // the zero of the row (the user ruling: "Fill materials should have an option of
+  // off … which basically just means nothing, there is no fill"). Its tooltip is
+  // slot-specific, because what "nothing" MEANS depends on what the slot paints:
+  // on a shape it is hollow, on an SVG it is "keep the artwork's own colours".
+  // `offMeans` (a prop) is how the declaring row says which; the generic sentence
+  // is the fallback.
+  /** What OFF means when the declaring row does not say — the shape case, which is
+   * what every paint row that existed before OFF did is. */
+  const OFF_MEANS_GENERIC = "nothing is painted here";
+  let offText = $derived(offMeans ?? OFF_MEANS_GENERIC);
+
   const TYPES = [
+    { id: "none", label: "Off" },
     { id: "solid", label: "Solid" },
     { id: "linearGradient", label: "Linear" },
     { id: "radialGradient", label: "Radial" },
     { id: "material", label: "Mat" },
     { id: "equation", label: "= Eq" },
   ];
+
+  // ONLY the Off tab carries a tooltip, and deliberately: the other five name
+  // themselves (a "Linear" paint tab is a linear gradient), while "Off" is the one
+  // whose consequence is not in its label and DIFFERS by slot — hollow on a shape,
+  // "keep the artwork's own colours" on an SVG. The row's `offMeans` is the whole
+  // reason the tip can be accurate rather than a hedge.
+  let offTip = $derived(`Paint nothing — ${offText}. The other modes' colours are kept, so turning this back on restores them.`);
 </script>
 
 <div class="paintfield">
   <div class="paint-type-tabs">
     {#each TYPES as t}
+      {#if t.id === "none"}
+        <!-- The one tab whose meaning is slot-dependent gets the tip (see offTip). -->
+        <Tooltip text={offTip}>
+          <button
+            type="button"
+            class="paint-type-tab"
+            {disabled}
+            aria-pressed={mode === t.id}
+            onclick={() => setMode(t.id)}
+          >{t.label}</button>
+        </Tooltip>
+      {:else}
       <button
         type="button"
         class="paint-type-tab"
@@ -587,10 +630,21 @@
         aria-pressed={mode === t.id}
         onclick={() => setMode(t.id)}
       >{t.label}</button>
+      {/if}
     {/each}
   </div>
 
-  {#if mode === "solid"}
+  {#if mode === "none"}
+    <!-- OFF → NO editor, because there is nothing to edit: the paint contributes
+         no fill op at all (render_gpu/ir.js parsePaint returns null for
+         {type:"none"}, and every backend's `if (cmd.fill)` guard already skips
+         that). All this branch owes the user is a plain statement of what the
+         absence MEANS in this slot, which the declaring row supplies via
+         `offMeans` — on a shape "hollow", on an SVG "the artwork keeps its own
+         colours". The other modes' state is still stored and untouched, so the
+         Solid/Linear/Radial/Mat tab the user came from is where they return to. -->
+    <p class="paint-off-note">Off — {offText}.</p>
+  {:else if mode === "solid"}
     <!-- SOLID → the standard ColorField. A bare-string paint edits `path`
          directly (byte-identical); the object form edits path.solid. -->
     {#if solidIsBare}

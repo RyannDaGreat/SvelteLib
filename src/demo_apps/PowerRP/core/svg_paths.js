@@ -695,12 +695,35 @@ export function parseViewBox(attrs) {
  * console AND the SVG widget draws them as an in-widget notice band
  * (plugins/svg.js warningAffordance) — a degraded SVG must never look correct.
  *
+ * ── THE FILL OVERRIDE (`overridePaint`) — MONOCHROME RECOLOUR ────────────────
+ * `overridePaint` is the SVG widget's Fill-material row (plugins/svg.js,
+ * plugins/iconify.js), and it answers the user ruling "we need to be able to color
+ * them, because right now it's just always black". When it is null/absent —
+ * the DEFAULT, and what every document written before it stores — this flatten is
+ * BYTE-IDENTICAL: the artwork keeps its own intrinsic paints, and `ink` still
+ * resolves `currentColor` exactly as before. When it is a paint, EVERY drawn op
+ * takes it for BOTH its fill and its stroke, as a MASK would: a multi-colour icon
+ * becomes one flat tint, which is what "colour an SVG" means for artwork the widget
+ * did not author. Two consequences worth stating because they are choices:
+ *   - fill AND stroke, not fill alone. Half the icon sets (tabler, lucide) draw
+ *     with `fill="none" stroke="currentColor"`; a fill-only override would leave
+ *     those completely unaffected and read as a broken control.
+ *   - an op that painted NOTHING still paints nothing. `fill: null` means the
+ *     author wrote fill="none" — overriding it would ADD ink the artwork never had
+ *     (filling in the middle of a stroked outline icon), so the override REPLACES
+ *     paint, it does not create it. That keeps the override an isomorphism on the
+ *     artwork's own shape.
+ * It lives HERE, in the one pure shared flatten, so both widgets and every backend
+ * (Skia GPU, bare-node CLI, PDF/SVG export) get it through the display list with
+ * zero backend code — and neither plugin imports the other.
+ *
  * Args:
  *   root ({tag, attrs, children}): the parsed <svg> tree
  *   boxW, boxH (number): the target widget box size (box-local units)
- *   opts ({ink, preserveAspect, opacity}): ink for currentColor; preserveAspect
- *     default true; opacity is the widget GROUP opacity seeded onto the root and
- *     compounded into every op (default 1)
+ *   opts ({ink, preserveAspect, opacity, overridePaint}): ink for currentColor;
+ *     preserveAspect default true; opacity is the widget GROUP opacity seeded onto
+ *     the root and compounded into every op (default 1); overridePaint (default
+ *     null) recolours every op's fill AND stroke — see above
  *
  * Returns:
  *   {ops: object[], transform: {x,y,rotation,scale}|null, warnings: string[]}
@@ -708,10 +731,14 @@ export function parseViewBox(attrs) {
  * @example flattenSvgTree({tag: "svg", attrs: {viewBox: "0 0 10 10"}, children: [{tag: "rect", attrs: {x: "0", y: "0", width: "10", height: "10", fill: "#f00"}, children: []}]}, 20, 20, {preserveAspect: false}).ops[0].fill // "#f00"
  * @example flattenSvgTree({tag: "svg", attrs: {viewBox: "0 0 10 10"}, children: []}, 20, 20, {}).ops.length // 0
  * @example flattenSvgTree({tag: "svg", attrs: {viewBox: "0 0 10 10"}, children: [{tag: "rect", attrs: {width: "10", height: "10", fill: "#0f0"}, children: []}]}, 40, 20, {preserveAspect: true}).transform.scale // 2
+ * @example flattenSvgTree({tag: "svg", attrs: {viewBox: "0 0 10 10"}, children: [{tag: "rect", attrs: {width: "10", height: "10", fill: "#0f0"}, children: []}]}, 20, 20, {preserveAspect: false, overridePaint: "#f0f"}).ops[0].fill // "#f0f" (the override wins over the artwork's own green)
+ * @example flattenSvgTree({tag: "svg", attrs: {viewBox: "0 0 10 10"}, children: [{tag: "path", attrs: {d: "M0 0L10 10", fill: "none", stroke: "#000", "stroke-width": "2"}, children: []}]}, 20, 20, {preserveAspect: false, overridePaint: "#f0f"}).ops[0].stroke // "#f0f" (a STROKED outline icon recolours too)
+ * @example flattenSvgTree({tag: "svg", attrs: {viewBox: "0 0 10 10"}, children: [{tag: "path", attrs: {d: "M0 0L10 10", fill: "none", stroke: "#000", "stroke-width": "2"}, children: []}]}, 20, 20, {preserveAspect: false, overridePaint: "#f0f"}).ops[0].fill // null (an unpainted fill stays unpainted — the override replaces paint, never adds it)
  */
 export function flattenSvgTree(root, boxW, boxH, opts = {}) {
   const ink = opts.ink ?? "#000000";
   const preserveAspect = opts.preserveAspect !== false;
+  const overridePaint = opts.overridePaint ?? null;
   const vb = parseViewBox(root.attrs ?? {});
   const gradients = collectGradients(root);
   const warnings = new Set();
@@ -730,7 +757,7 @@ export function flattenSvgTree(root, boxW, boxH, opts = {}) {
 
   const ops = [];
   const rootPaint = { ...ROOT_PAINT, opacity: Number.isFinite(opts.opacity) ? opts.opacity : 1 };
-  walkSvgNode(root, baseCTM, rootPaint, { ink, gradients, warnings, boxScale }, ops, true);
+  walkSvgNode(root, baseCTM, rootPaint, { ink, gradients, warnings, boxScale, overridePaint }, ops, true);
   return { ops, transform, warnings: [...warnings] };
 }
 
@@ -780,16 +807,60 @@ function walkSvgNode(node, parentCTM, inherited, ctx, ops, isRoot) {
   const fill = foldPaintAlpha(resolvePaint(paint.fill, ctx.ink, ctx.gradients, ctx.warnings), paint.fillOpacity);
   const stroke = foldPaintAlpha(resolvePaint(paint.stroke, ctx.ink, ctx.gradients, ctx.warnings), paint.strokeOpacity);
   const strokeWidth = (Number.isFinite(paint.strokeWidth) ? paint.strokeWidth : 1) * matScale(ctm) * ctx.boxScale;
+  // fill is never `undefined` (inheritance seeds it from the spec BLACK root); the
+  // guard only catches an explicit empty fill="" → no paint.
+  const ownFill = fill === undefined ? null : fill;
+  const ownStroke = stroke === undefined ? null : stroke;
   ops.push({
     d,
-    // fill is never `undefined` (inheritance seeds it from the spec BLACK root);
-    // the guard only catches an explicit empty fill="" → no paint.
-    fill: fill === undefined ? null : fill,
-    stroke: stroke === undefined ? null : stroke,
-    strokeWidth: stroke === undefined || stroke === null ? 0 : strokeWidth,
+    // THE FILL OVERRIDE (flattenSvgTree's `overridePaint`): a monochrome recolour of
+    // this op's fill AND stroke. `overridePaintOf` keeps an UNPAINTED slot unpainted,
+    // so the override never invents ink the artwork did not have (see the flatten
+    // docblock), and returns the own paint UNCHANGED — by identity — when there is
+    // no override, which is why an off/absent override is byte-identical.
+    fill: overridePaintOf(ownFill, ctx.overridePaint),
+    stroke: overridePaintOf(ownStroke, ctx.overridePaint),
+    // The stroke WIDTH is a property of the artwork, not of the paint, so it is
+    // decided by whether the ARTWORK stroked this shape — the override changes the
+    // colour of an existing outline, never its thickness (and never turns a
+    // fill-only shape into a stroked one).
+    strokeWidth: ownStroke === null ? 0 : strokeWidth,
     fillRule: paint.fillRule === "evenodd" ? "evenodd" : "nonzero",
     opacity: Number.isFinite(paint.opacity) ? paint.opacity : 1,
   });
+}
+
+/**
+ * Pure function. One paint slot under the widget's fill override: the override when
+ * BOTH an override is active AND the artwork painted this slot, else the artwork's
+ * own paint, returned by identity.
+ *
+ * The "artwork painted this slot" condition is what makes the override a RECOLOUR
+ * rather than a redraw: an op whose fill is null was authored `fill="none"` (an
+ * outline icon's interior), and painting it would fill in a shape the artist left
+ * open. So null is preserved, and the recolour is exactly a substitution on the
+ * paints that exist.
+ *
+ * Args:
+ *   own (string|object|null): the paint the artwork resolved for this slot
+ *   override (string|object|null): the widget's override paint, or null when off
+ *
+ * Returns:
+ *   string|object|null
+ *
+ * Examples:
+ *     >>> // an override replaces a painted slot
+ *     >>> overridePaintOf("#00ff00", "#ff00ff")
+ *     '#ff00ff'
+ *     >>> // ...but never creates paint where there was none (fill="none")
+ *     >>> overridePaintOf(null, "#ff00ff")
+ *     null
+ *     >>> // no override: the artwork's own paint, untouched
+ *     >>> overridePaintOf("#00ff00", null)
+ *     '#00ff00'
+ */
+export function overridePaintOf(own, override) {
+  return override !== null && override !== undefined && own !== null ? override : own;
 }
 
 /** Pure helper. Folds a fill-opacity / stroke-opacity into a SOLID string paint

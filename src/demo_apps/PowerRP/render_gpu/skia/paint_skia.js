@@ -543,6 +543,11 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       break;
     }
     case "polygon": {
+      // FILL-ONLY op: an OFF fill (parsePaint → null) means there is nothing to
+      // draw, so skip before building the path — applyPaint indexes the paint as
+      // an rgba array and would read [0] of null. Same guard the rect/ellipse
+      // cases above already carry.
+      if (!cmd.fill) break;
       const path = buildPath(CanvasKit, cmd.points, true);
       withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, pointsBounds(cmd.points), aa), (p) => canvas.drawPath(path, p));
       path.delete();

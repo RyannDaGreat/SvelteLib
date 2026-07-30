@@ -39,7 +39,7 @@
  * collects them as `warnings`; this adapter surfaces them) — never a silent blank.
  */
 
-import { path, pushTransform, popTransform } from "../ir.js";
+import { path, pushTransform, popTransform, PAINT_NONE_TYPE, isPaintOff } from "../ir.js";
 import { flattenSvgTree } from "../../core/svg_paths.js";
 import { reportOnce } from "../../core/report.js";
 
@@ -282,6 +282,113 @@ export function svgToIRWithWarnings(svgString, boxW, boxH, opts = {}) {
   for (const w of warnings) reportOnce(`svg_raster:${w}`, `PowerRP svg_raster: ${w}`);
   const irOps = ops.map((o) => path(o));
   return { ops: transform ? [pushTransform(transform), ...irOps, popTransform()] : irOps, warnings };
+}
+
+// ── THE SVG WIDGETS' SHARED FILL-OVERRIDE ROW ────────────────────────────────
+// The `fill` Fill-material row is the same property, with the same semantics and
+// the same OFF default, on the svg widget and on the iconify widget. Neither may
+// import the other (the "no plugin imports another plugin" rule), so the DECLARATION
+// and its resolver live HERE — beside the flatten they both already share — and each
+// plugin spreads them. That is what makes "iconify inherits the row" a fact about
+// one declaration rather than a copy that can drift.
+
+/** THE OFF FILL, as a widget default. An SVG/icon's fill row ships OFF (the user
+ * ruling: "in the case of an SVG, that means it just keeps the default"), so the
+ * artwork renders with its own intrinsic paints exactly as it did before this row
+ * existed. Stored as the tagged OFF paint, not as an absent key, so the row has a
+ * real value to keyframe and repairedDocument has a default to check against.
+ *
+ * FROZEN, and that is not decoration. This is the ONLY object-valued default in
+ * the widget set — every other plugin's paint default is a plain colour STRING,
+ * which is immutable for free. A plain object here is spread by reference into
+ * both plugins' `defaults`, so `{...svgPlugin.defaults}` hands EVERY svg and
+ * icon in the document the SAME object: one in-place edit to any one widget's
+ * paint would rewrite the shared plugin default and every other widget's fill
+ * along with it. Freezing turns that whole class of aliasing bug from a silent
+ * document-wide corruption into an immediate loud throw, and `svgFillOff()`
+ * below is the supported way to get a writable one. */
+export const SVG_FILL_OFF = Object.freeze({ type: PAINT_NONE_TYPE });
+
+/**
+ * Pure function. A FRESH, writable OFF paint — the value to store when code needs
+ * an off fill it may then edit in place (SVG_FILL_OFF itself is frozen, and is
+ * shared by every widget that defaults to it).
+ *
+ * Returns:
+ *   object: a new {type: "none"} paint, equal to SVG_FILL_OFF but not identical
+ *
+ * Examples:
+ *     >>> svgFillOff()
+ *     {type: 'none'}
+ *     >>> // a fresh object every call — that is the entire point
+ *     >>> svgFillOff() === svgFillOff()
+ *     false
+ */
+export function svgFillOff() {
+  return { type: PAINT_NONE_TYPE };
+}
+
+/**
+ * The `fill` INSPECTOR ROW both SVG-family widgets declare — a full PAINT row
+ * (`paint: true` → web/PaintField.svelte: Off / solid / linear / radial / material /
+ * equation), keyframable and equation-bindable like every other property.
+ *
+ * `category: "fillMaterial"` puts it in the same Inspector accordion a shape's Fill
+ * lives in, and `offMeans` is what lets the field's Off tab say something TRUE for
+ * this slot instead of the generic "nothing is painted".
+ *
+ * The help text deliberately names the INK row, because the two rows are one system
+ * and reading either alone is what makes an icon mysteriously black: ink decides what
+ * `currentColor` means while this row is OFF, and this row overrides EVERYTHING when
+ * it is on. The ink row's own help says the other half (see SVG_INK_HELP).
+ */
+export const SVG_FILL_ROW = {
+  key: "fill",
+  label: "Fill",
+  kind: "color",
+  paint: true,
+  category: "fillMaterial",
+  offMeans: "the artwork keeps its own colours, and the Color row above decides what its currentColor means",
+  help: "Recolours the WHOLE graphic — every shape's fill and outline take this one paint, like a stencil. Use it to tint a multi-colour icon, or to give any SVG a gradient or material. Off (the default) leaves the artwork's own colours alone, and then the Color row is what its currentColor parts use.",
+};
+
+/**
+ * The `ink` row's help text, shared for the same reason the fill row is: the two
+ * rows have to describe ONE system or the pair reads as contradictory. Names the
+ * relationship in both directions — when ink applies, and what supersedes it.
+ */
+export const SVG_INK_HELP =
+  "The colour used wherever the graphic says fill/stroke=currentColor — which is how the monochrome icon sets (tabler, mdi, lucide…) are authored, and why a fresh icon draws black. Shapes with their own explicit colours ignore it. It applies only while Fill below is Off; a Fill that is on overrides every colour, this one included.";
+
+/**
+ * Pure function. The `overridePaint` a widget's state hands to the shared flatten:
+ * its stored `fill` paint, or null when that fill is OFF or absent.
+ *
+ * This is the ONE place the OFF paint becomes "no override", so both widgets agree
+ * by construction. An absent `fill` is treated as off too — that is what a document
+ * written before this row stores, and it must keep rendering its own colours.
+ *
+ * Args:
+ *   state (object): the widget's evaluated state
+ *
+ * Returns:
+ *   string|object|null: a paint for flattenSvgTree's overridePaint, or null
+ *
+ * Examples:
+ *     >>> svgOverridePaint({fill: {type: "none"}})
+ *     null
+ *     >>> svgOverridePaint({})           // a pre-row document: no override
+ *     null
+ *     >>> svgOverridePaint({fill: "#ff00ff"})
+ *     '#ff00ff'
+ *     >>> // a gradient/material paint passes through whole — ir.path() parses it
+ *     >>> svgOverridePaint({fill: {type: "solid", solid: "#123456"}}).type
+ *     'solid'
+ */
+export function svgOverridePaint(state) {
+  const fill = state?.fill;
+  if (fill === null || fill === undefined || isPaintOff(fill)) return null;
+  return fill;
 }
 
 // ── the BUILT-IN CURSOR LIBRARY (ship-with-the-app SVGs) ──────────────────────

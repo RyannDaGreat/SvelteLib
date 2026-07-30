@@ -136,6 +136,18 @@
      ruling ("I could cut off from the text a little bit, but wouldn't make the
      whole property bar move"). */
   --a-row-chrome-w: 16px;
+  /* The LABEL-SIDE gutter, the mirror of --a-row-chrome-w on the other edge: the
+     strip the copy-path and (?) affordances are absolutely positioned INTO, so
+     they cost the label the same room whether they are shown or not.
+     PERMANENTLY reserved, and that is the whole point. These buttons used to be
+     in-flow at width:0, expanding to 14/15px on hover — which SHOVED the label
+     29px right the moment the pointer arrived, moving the very text the user was
+     reaching for out from under the cursor (measured: label x=1135 w=53 → x=1164
+     w=24, and the pointer then landed on the (?) instead, so the path tooltip
+     never opened). That is the "fx pushes the bar" family the ruling forbids:
+     affordances may TRUNCATE a label, never MOVE it. Width covers both glyphs
+     (13px help icon + air) so neither button needs a size of its own. */
+  --a-row-label-gutter: 15px;
   /* The label⟷value DIVIDER: an invisible grab strip centred on the column
      boundary, revealing a hairline on hover. Hit width is deliberately wider
      than the line, the same relationship --a-split-handle-hit has to
@@ -4372,32 +4384,55 @@ audio.ae-preview-media {
   background: linear-gradient(var(--a-split-handle-hover), var(--a-split-handle-hover)) center / var(--a-row-divider-line) 100% no-repeat;
 }
 
-/* Row-label hover chrome: the copy-path icon + the label, sharing the label
-   column. min-width:0 lets the label still truncate inside the flex row (grid
-   children default min-width:auto, same reasoning as .numfield). */
+/* Row-label hover chrome: the copy-path + (?) icons and the label, sharing the
+   label column. min-width:0 lets the label still truncate inside the flex row
+   (grid children default min-width:auto, same reasoning as .numfield).
+
+   THE LABEL'S LEFT EDGE IS FIXED. The affordances are absolutely positioned into
+   a permanently reserved --a-row-label-gutter (position:relative here is what
+   they resolve against), so the label starts at the same x whether they are
+   hidden or shown — hovering a row reveals chrome without moving one pixel of
+   text. The gutter is UNCONDITIONAL, exactly like the value-side one above and
+   for the same reason: making it depend on which affordances a row happens to
+   carry would start each row's label at a different x, which is the misalignment
+   complaint moved rather than fixed. */
 .inspector .row-label-chrome {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--a-sp-1);
   min-width: 0;
   overflow: hidden;
+  padding-left: var(--a-row-label-gutter);
+}
+/* A row carrying BOTH affordances reserves both slots. Scoped by :has() so a
+   help-only or copy-only row does not pay for a slot it never fills — the label
+   still starts at a fixed x for that row, which is what the ruling asks; what it
+   must not do is MOVE, and neither case does. */
+.inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn) {
+  padding-left: calc(2 * var(--a-row-label-gutter));
 }
 
 /* Row-label hover affordances, LEFT of the label, HOVER-ONLY — mirror
    .numfield .eq-open (round-11 field-chrome minimalism: "it goes on the LEFT...
    hover-only"). The copy-path icon and the (?) property-help icon (manifest
    "property help tooltips": the (?) uses EXACTLY the copy-path idiom/alignment)
-   share ONE base — they differ only in cursor and reveal width. Collapsed to
-   zero width at rest so neither nudges the label or reserves space in the fixed
-   label column; revealed on .row:hover as one continuous rule with the
-   value-side equation affordance. */
+   share ONE base — they differ only in cursor and in which gutter slot they sit
+   in. Both are taken OUT OF FLOW into the reserved --a-row-label-gutter and only
+   their OPACITY changes on reveal, so showing them cannot reflow anything: the
+   label's left edge, its truncation point and every value edge are identical at
+   rest and on hover. (They were formerly in-flow at width:0 and grew to 14/15px
+   on hover — see --a-row-label-gutter for the shift that caused.)
+   pointer-events are off while hidden so an invisible button can never eat the
+   click or the tooltip hover meant for the label underneath it. */
 .inspector .copy-path-btn,
 .inspector .help-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: none;
-  width: 0;
+  width: var(--a-row-label-gutter);
   height: var(--a-control-h);
   padding: 0;
   overflow: hidden;
@@ -4405,31 +4440,41 @@ audio.ae-preview-media {
   color: var(--fg-dim);
   border: 0;
   opacity: 0;
+  pointer-events: none;
   transition: opacity var(--a-row-chrome-fade) ease;
 }
+/* The two gutter SLOTS, in markup order: copy-path outermost, (?) beside it. A
+   row carrying only one affordance still puts it in the outer slot, so the
+   icons of adjacent rows line up down the panel regardless of which affordances
+   each row happens to have. */
 .inspector .copy-path-btn {
+  left: 0;
   cursor: pointer;
 }
 /* The (?) shows the property's MEANING via Tooltip; the label's own tooltip
    shows the PATH — hence the help cursor. */
 .inspector .help-btn {
+  left: 0;
   cursor: help;
+}
+/* Both present → they share the gutter, copy-path first. `:has()` scopes this to
+   exactly that case, leaving a single-affordance row's icon in the outer slot. */
+.inspector .row-label-chrome:has(.copy-path-btn) .help-btn {
+  left: var(--a-row-label-gutter);
 }
 .inspector .copy-path-btn:hover,
 .inspector .help-btn:hover {
   color: var(--fg);
 }
-/* Reveal widths differ only by the icon glyph: copy-path 14px (12px icon +
-   room), help 15px (13px icon + room). Rows without `help` never render the
-   button, so alignment across mixed help/no-help rows is unaffected (the grid
-   label column is fixed; nothing here changes column geometry). */
-.inspector .row:hover .copy-path-btn {
-  width: 14px;
-  opacity: 1;
-}
+/* THE REVEAL — opacity and hit-testing ONLY. No width, no margin, nothing that
+   participates in layout: the buttons already occupy their gutter slots at rest,
+   so the row's geometry on hover is byte-identical to its geometry at rest. That
+   invariant is asserted by tests/equation_discoverability_probe.js, which
+   measures the label's rect before and during hover. */
+.inspector .row:hover .copy-path-btn,
 .inspector .row:hover .help-btn {
-  width: 15px;
   opacity: 1;
+  pointer-events: auto;
 }
 
 /* Path tooltip content: one line per form (self.<path>, then the absolute
@@ -5182,8 +5227,10 @@ audio.ae-preview-media {
 /* One mode tab. Height is --a-control-h like EVERY other control — the strip
    used to size itself from its padding alone and came out 19px, which is what
    made a Fill row read as a different height from the rows around it. flex:1
-   with min-width:0 so five tabs share the column evenly and their labels
-   ellipsize rather than forcing the strip wider than the value column. */
+   with min-width:0 so the SIX tabs (Off / Solid / Linear / Radial / Mat / = Eq)
+   share the column evenly and their labels ellipsize rather than forcing the strip
+   wider than the value column — which is why adding Off needed no width rule of
+   its own. */
 .paint-type-tab {
   flex: 1 1 0;
   min-width: 0;
@@ -7148,6 +7195,18 @@ audio.ae-preview-media {
 /* The gradient-stops honesty note inside a multi-selection PaintField (the one
    paint aspect that cannot write to a set yet — see PaintField's fan-out). */
 .paint-stops-multi-note {
+  margin: 0;
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  line-height: var(--a-text-line-height);
+}
+
+/* THE OFF PAINT'S ONE LINE. An off fill has no editor — the whole content of the
+   mode is "nothing is painted", so the value cell says which nothing it is (the
+   declaring row's `offMeans`: hollow on a shape, own-colours on an SVG). Same
+   dimmed note voice as .paint-stops-multi-note above, deliberately: both are the
+   field explaining why there is no control here rather than showing a dead one. */
+.paint-off-note {
   margin: 0;
   font-size: var(--a-font-sm);
   color: var(--fg-dim);

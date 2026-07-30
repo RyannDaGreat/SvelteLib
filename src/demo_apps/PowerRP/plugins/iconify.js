@@ -31,7 +31,24 @@
  * same preview→commit seam as every palette). An EMPTY query shows a curated
  * starter set (DEFAULT_PALETTE) so the grid is never blank. Each result cell's
  * thumbnail is the icon's real SVG text, fetched through svg_source_registry
- * (cached, deduped, loud on failure).
+ * (cached, deduped, loud on failure). The palette writes `icon` — the one property
+ * emit() reads for its url — so a pick lands on the canvas; nothing here writes a
+ * colour, which is what the two colour rows below are for.
+ *
+ * ── WHY A FRESH ICON IS BLACK, AND THE TWO ROWS THAT DECIDE ITS COLOUR ────────
+ * The mono sets are authored with `currentColor`: `tabler:star` is literally
+ * `fill="none" stroke="currentColor"`. So its colour is not in the icon at all — it
+ * is whatever the host says currentColor is, and here that is the INK row, which
+ * defaults to #000000. That is the whole mechanism behind "it's just always black".
+ * Ink WORKS (setting it recolours the icon), but it is a plain solid and it reaches
+ * only currentColor parts, so it cannot touch a full-colour set like `logos:*`.
+ * The FILL row (a full PAINT row — solid / gradient / material / equation,
+ * keyframable, DEFAULT OFF) is the general answer: on, every path takes that one
+ * paint for its fill AND stroke, like a stencil, so ANY icon tints — including a
+ * multi-colour one. Off, the icon keeps its own paints and ink still governs
+ * currentColor, i.e. exactly the prior behaviour. Both rows and the shared help
+ * strings live in render_gpu/gpu/svg_raster.js, spread by this plugin AND the svg
+ * widget (no plugin imports another).
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
@@ -41,7 +58,7 @@ import * as T from "../core/transform.js";
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { errorAffordance, warningAffordance } from "../render_gpu/affordances.js";
-import { svgToIRWithWarnings } from "../render_gpu/gpu/svg_raster.js";
+import { svgToIRWithWarnings, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint } from "../render_gpu/gpu/svg_raster.js";
 import { ensureSvgSource, getSvgSource, svgSourceStatus, svgSourceError } from "../render_gpu/gpu/svg_source_registry.js";
 
 /** The Iconify API host — icon SVGs (`/<prefix>/<name>.svg`) and the search
@@ -147,6 +164,9 @@ export const iconifyPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     preserveAspect: true, // an icon must keep its shape — uniform scale-to-fit
     ink: ICONIFY_INK, // currentColor resolution for the mono sets
+    // FILL — the whole-icon recolour override, default OFF (the SAME declaration and
+    // the SAME default the svg widget uses; see the docblock's colouring section).
+    fill: SVG_FILL_OFF,
     stroke: "#000000",
     ...defaults("strokeWidth", "cornerRadius", "opacity"), // strokeWidth:0, cornerRadius:0, opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
@@ -155,8 +175,15 @@ export const iconifyPlugin = {
   inspector: [
     ...bundle("positioning"),
     ...CUSTOM.rows, // the icon id
-    { key: "ink", label: "Color", kind: "color", category: "formatting", help: "The color used wherever the icon says currentColor — which is how the monochrome sets (tabler, mdi, lucide…) are authored. Full-color sets (logos, twemoji…) ignore it." },
+    // INK — the currentColor resolution. Help SHARED with the svg widget, because it
+    // is the same system and the pair only makes sense read together (see docblock).
+    { key: "ink", label: "Color", kind: "color", category: "formatting", help: SVG_INK_HELP },
     { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Scale the icon uniformly to fit the box (keeps its shape). Off stretches it to the box's exact width and height." },
+    // THE FILL OVERRIDE — the very same shared row declaration the svg widget mounts,
+    // default OFF. This is what "iconify inherits the row" means concretely: one
+    // declaration, spread by both plugins, so the two can never disagree about the
+    // property name, its category, its off semantics or its help text.
+    SVG_FILL_ROW,
     ...bundle("strokedBorder"),
     ...props("opacity"),
     ...bundle("effects"),
@@ -194,7 +221,10 @@ export const iconifyPlugin = {
     }
     let ops;
     try {
-      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? ICONIFY_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1 });
+      // `overridePaint` is the Fill row — OFF → null → byte-identical to before it
+      // existed (the shared svgOverridePaint is the one place OFF becomes "no
+      // override", so both SVG-family widgets agree by construction).
+      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? ICONIFY_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1, overridePaint: svgOverridePaint(s) });
       ops = flat.warnings.length ? [...flat.ops, ...warningAffordance(w, h, flat.warnings)] : flat.ops;
     } catch (e) {
       ops = errorAffordance(w, h, e instanceof Error ? e.message : String(e));

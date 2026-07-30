@@ -26,9 +26,25 @@
  * ── CAPABILITIES / BOX (a generic box, everything free from the bundles) ──────
  * bbox + transform + resizable + opacity, backdrop:false — composites under
  * magnifiers/blur and culls for free. Composes positioning + the stroked-BORDER
- * slice (a FRAMED svg — no fill row: the SVG's own paint IS its interior, like
- * image/latex) + crop insets? (left out — an SVG has no raster source to UV-crop)
- * + opacity + effects. So shadow/bloom/blend + anchors come for free.
+ * slice (a FRAMED svg) + crop insets? (left out — an SVG has no raster source to
+ * UV-crop) + opacity + effects. So shadow/bloom/blend + anchors come for free.
+ *
+ * ── INK AND FILL ARE ONE SYSTEM (the colouring story) ─────────────────────────
+ * Two rows decide what colour an SVG is, and they are only comprehensible together:
+ *   INK  — what `currentColor` resolves to. It is why a fresh monochrome icon draws
+ *          BLACK: the mono sets (tabler, mdi, lucide) author every path as
+ *          `fill="currentColor"` or `stroke="currentColor"`, and ink defaults to
+ *          #000000. Ink touches ONLY the currentColor parts, so a full-colour set
+ *          (logos, twemoji) ignores it entirely.
+ *   FILL — the whole-graphic OVERRIDE (a full PAINT row: solid, gradient, material,
+ *          equation), DEFAULT OFF. Off means the artwork's own paints stand and ink
+ *          still governs currentColor — i.e. exactly today's behaviour, which is what
+ *          keeps every existing document byte-identical. On means EVERY path takes
+ *          this one paint for its fill AND its stroke, like a stencil, so a
+ *          multi-colour icon becomes a flat tint and an outline icon recolours too.
+ * FILL SUPERSEDES INK when on. Both rows' help text says so, in both directions —
+ * a user reading either one alone must still learn the pair (the shared strings
+ * SVG_FILL_ROW / SVG_INK_HELP in render_gpu/gpu/svg_raster.js).
  *
  * ── ERRORS AND WARNINGS REPORT LOUDLY IN-WIDGET (no silent blank, no silently
  *    WRONG art) ───────────────────────────────────────────────────────────────
@@ -79,7 +95,7 @@ import * as T from "../core/transform.js";
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { errorAffordance, warningLabel, warningAffordance } from "../render_gpu/affordances.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
-import { svgToIRWithWarnings, svgIsEmpty } from "../render_gpu/gpu/svg_raster.js";
+import { svgToIRWithWarnings, svgIsEmpty, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint } from "../render_gpu/gpu/svg_raster.js";
 import { ensureSvgSource, getSvgSource, svgSourceStatus, svgSourceError } from "../render_gpu/gpu/svg_source_registry.js";
 
 /** The ink for `currentColor` fills/strokes — the INK convention every stroked
@@ -144,6 +160,10 @@ export const svgPlugin = {
     preserveAspect: true,
     // INK — the `currentColor` resolution color (the latex ink precedent).
     ink: SVG_DEFAULT_INK,
+    // FILL — the whole-graphic recolour override, default OFF, so the artwork keeps
+    // its own intrinsic paints and this widget renders byte-identically to before
+    // the row existed (render_gpu/gpu/svg_raster.js SVG_FILL_OFF).
+    fill: SVG_FILL_OFF,
     // stroke COLOR default matches every stroked shape (INK); paints only once
     // strokeWidth > 0 (0 by default → an unframed SVG is undecorated).
     stroke: "#000000",
@@ -160,12 +180,25 @@ export const svgPlugin = {
     // The url-mode source — the image widget's asset row shape (`.svg` is an
     // image-kind asset server-side, so the picker offers it already).
     { key: "svgUrl", label: "SVG URL", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The URL of the SVG to render when Source is set to URL — usually a project asset (/asset/<Project>/<file>.svg). A failed load shows a red error box naming the URL." },
-    // INK — the currentColor resolution (a standard color row, keyframable).
-    { key: "ink", label: "Color", kind: "color", category: "formatting", help: "The color used wherever the SVG says fill/stroke=currentColor. Ignored by shapes with their own explicit colors." },
+    // INK — the currentColor resolution (a standard color row, keyframable). Its help
+    // is SHARED with the iconify widget (SVG_INK_HELP) because ink and the Fill row
+    // below are ONE system: ink says what `currentColor` means, Fill overrides
+    // everything. Describing either alone is what left "why is my icon black?"
+    // unanswerable.
+    { key: "ink", label: "Color", kind: "color", category: "formatting", help: SVG_INK_HELP },
     // Aspect-preservation toggle (default ON) — the latex row, verbatim.
     { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Scale the SVG uniformly to fit the box (centered, no distortion). Turn off to stretch it to the box's exact width and height." },
-    // The stroked-BORDER bundle (a FRAMED svg) — no `fill` row: the SVG's own
-    // paint IS its interior, like image/latex.
+    // THE FILL OVERRIDE — a real PAINT row (solid / gradient / material / equation,
+    // keyframable), DEFAULT OFF. Off is not "no row": it is the paint system's
+    // first-class off state, and it means "the SVG's own paints stand", which is why
+    // this widget can have a Fill row at all without changing what an existing
+    // document renders. Declared ONCE in svg_raster.js and shared with iconify
+    // (neither plugin imports the other).
+    SVG_FILL_ROW,
+    // The stroked-BORDER bundle (a FRAMED svg). Deliberately NOT bundle("strokedBox"):
+    // that bundle's `fill` is a solid interior BEHIND the content, which is a
+    // different property from the recolour override above — this widget's interior is
+    // the artwork.
     ...bundle("strokedBorder"),
     ...props("opacity"),
     ...bundle("effects"),
@@ -204,7 +237,11 @@ export const svgPlugin = {
     }
     let ops;
     try {
-      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? SVG_DEFAULT_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1 });
+      // `overridePaint` is the Fill row (OFF → null → byte-identical to before it
+      // existed). Applied inside the SHARED flatten, so every backend — Skia GPU, the
+      // bare-node CLI still, the PDF and SVG vector exporters — gets the recolour
+      // through the one display list with no backend code at all.
+      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? SVG_DEFAULT_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1, overridePaint: svgOverridePaint(s) });
       // A PUNTED feature draws degraded art, so the art is kept AND annotated —
       // never silently wrong (see warningAffordance). A clean SVG adds nothing.
       ops = flat.warnings.length ? [...flat.ops, ...warningAffordance(w, h, flat.warnings)] : flat.ops;

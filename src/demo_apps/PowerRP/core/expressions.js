@@ -1481,9 +1481,13 @@ for (const [key, def] of Object.entries(PROPS))
 // the stop LIST declaration already lives there for exactly that reason.
 const PAINT_MODE_KEYS = ["linear", "radial"]; // the two gradient sub-state wrappers
 const PAINT_LEAF_KINDS = {
-  // Which mode is painted. A string id ("solid" | "linearGradient" |
-  // "radialGradient"); core has no options list for it, so it validates as a
-  // plain string rather than a select with a fake (empty) option set.
+  // Which mode is painted. A string id ("none" | "solid" | "linearGradient" |
+  // "radialGradient" | "material"); core has no options list for it, so it
+  // validates as a plain string rather than a select with a fake (empty) option
+  // set. "none" is the OFF paint (render_gpu/ir.js PAINT_NONE_TYPE): it paints
+  // NOTHING, and being a `type` value rather than a separate boolean is what makes
+  // it equation-visible here for free — `= fill.type == "none"` reads it like any
+  // other leaf, and an equation MAY write it.
   type: "string",
   solid: "color",          // the solid sub-state's color
   angle: "number",         // linear direction, DEGREES (properties.angleToLinearEndpoints)

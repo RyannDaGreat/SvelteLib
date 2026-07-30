@@ -277,6 +277,12 @@ export function vectorCommandToSVG(cmd, world, ctx) {
         `stroke="${rgbaToCss(cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="round" stroke-linejoin="round"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "polygon":
+      // A polygon is FILL-ONLY (it has no stroke slot at all), so an OFF fill —
+      // parsePaint's null — leaves nothing whatsoever to draw and the op is
+      // dropped entirely, exactly like the rect/ellipse/path cases above. Without
+      // this guard the null reached paintRef and threw "paint is not iterable",
+      // which is what an arrow head or a donut with its Fill turned Off produced.
+      if (!cmd.fill) return "";
       return g(`<polygon points="${pointsAttr(cmd.points)}" fill="${paintRef(ctx, cmd.fill)}"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "path":

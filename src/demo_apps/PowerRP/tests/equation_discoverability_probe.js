@@ -192,7 +192,7 @@ try {
     const label = row?.querySelector(".label");
     if (!label) return null;
     const r = label.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, rect: { left: r.left, width: r.width } };
   }, findRow("End width"));
   ok(endWidthRowBox, "End Width row + label found");
 
@@ -200,6 +200,24 @@ try {
   await new Promise((r) => setTimeout(r, 50));
   await page.mouse.move(endWidthRowBox.x + 1, endWidthRowBox.y); // pointermove: Tooltip anchors on real movement
   await new Promise((r) => setTimeout(r, 150));
+
+  // NO LAYOUT SHIFT ON HOVER — the standing ruling ("I could cut off from the
+  // text a little bit, but wouldn't make the whole property bar move"), asserted
+  // rather than trusted. The affordances used to be in-flow at width:0 and grow
+  // to 14/15px on reveal, which pushed this label 29px right (x=1135 w=53 →
+  // x=1164 w=24) the instant the pointer arrived — so the pointer ended up on
+  // the (?) button and the path tooltip never opened, failing 20 of this probe's
+  // 22 checks downstream. Measuring the label's own rect DURING the hover is the
+  // direct check: reserved gutter + opacity-only reveal ⟹ identical geometry.
+  const hoveredRect = await page.evaluate((expr) => {
+    const r = eval(expr)?.querySelector(".label").getBoundingClientRect();
+    return { left: r.left, width: r.width };
+  }, findRow("End width"));
+  ok(Math.abs(hoveredRect.left - endWidthRowBox.rect.left) < 0.5,
+    `hover does not move the label's LEFT edge; rest ${endWidthRowBox.rect.left} vs hover ${hoveredRect.left}`);
+  ok(Math.abs(hoveredRect.width - endWidthRowBox.rect.width) < 0.5,
+    `hover does not resize the label; rest ${endWidthRowBox.rect.width} vs hover ${hoveredRect.width}`);
+
   const tooltipText = await page.evaluate(() =>
     [...document.querySelectorAll(".tt-tip")].map((t) => t.textContent.trim()).join(" | "));
   ok(tooltipText.includes("self.end_width"), `hover tooltip shows the canonical self path; got ${JSON.stringify(tooltipText)}`);

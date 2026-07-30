@@ -1418,9 +1418,15 @@
     />
   {:else if kind === "color" && row.paint}
     <!-- PAINT rows (fill/stroke — Axis-1): PaintField edits a polymorphic paint
-         (solid | linear/radial gradient). A solid delegates to ColorField
-         verbatim (byte-identical to before); a gradient stores a {type,stops,
-         geometry} object at the SAME item path. Same commit contract. -->
+         (OFF | solid | linear/radial gradient | material | equation). A solid
+         delegates to ColorField verbatim (byte-identical to before); a gradient
+         stores a {type,stops,geometry} object at the SAME item path. Same commit
+         contract.
+         `offMeans` is a DECLARATION field, forwarded like every other: the row
+         says what its OFF state means in that slot ("hollow" on a shape, "keep the
+         artwork's own colours" on an SVG), so the strip's Off tooltip is
+         slot-accurate without the Inspector knowing any slot's name. Absent →
+         PaintField's generic sentence. -->
     <PaintField
       {app}
       path={["items", pickedItemId, ...row.key.split(".")]}
@@ -1429,6 +1435,7 @@
       value={valueAt(state, row.key)}
       disabled={disabled}
       strokeMaterials={row.key === "stroke"}
+      offMeans={row.offMeans ?? null}
     />
   {:else if kind === "color"}
     <!-- THE color control: the SvelteLib ColorPicker (integral alpha) wrapped

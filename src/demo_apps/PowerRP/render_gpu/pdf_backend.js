@@ -1481,6 +1481,11 @@ function emitVector(cmd, world, out, ctx) {
       break;
     }
     case "polygon": {
+      // FILL-ONLY op: an OFF fill (parsePaint → null) means nothing to draw. Without
+      // this, paintSetup emitted no colour but the unconditional "h f" below still
+      // filled the shape in whatever colour the graphics state happened to hold —
+      // a WRONG picture rather than a crash, which is the worse of the two.
+      if (!cmd.fill) break;
       if (isGradientPaint(cmd.fill)) {
         ops.push(...gradientShapeOps(pointsPath(cmd.points) + " h", pointsPathBounds(cmd.points), cmd, ctx, false));
         break;
