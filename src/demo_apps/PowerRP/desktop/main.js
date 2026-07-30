@@ -43,7 +43,7 @@
  * dialog and exit nonzero. Never a silent blank window.
  */
 
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, shell } = require("electron");
 const { spawn, spawnSync } = require("node:child_process");
 const { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, appendFileSync } = require("node:fs");
 const http = require("node:http");
@@ -249,6 +249,13 @@ app.whenReady().then(async () => {
       new Promise((_, rej) => setTimeout(() => rej(new Error(`launcher never printed its Local: url.\n\n${outputRef.text.slice(-2000)}`)), READY_TIMEOUT_MS)),
     ]);
     await waitForReady(url, outputRef);
+    // window.open/_blank from the page means "open OUTSIDE the shell": route
+    // it to the system browser (the web UI's globe button rides this seam —
+    // it window.open()s the current URL to hop from the app to a browser).
+    win.webContents.setWindowOpenHandler(({ url: external }) => {
+      shell.openExternal(external);
+      return { action: "deny" };
+    });
     if (!win.isDestroyed()) win.loadURL(url);
   } catch (e) {
     dialog.showErrorBox("PowerRP failed to start", e.message);
