@@ -39,7 +39,9 @@
  * collects them as `warnings`; this adapter surfaces them) — never a silent blank.
  */
 
-import { path, pushTransform, popTransform, PAINT_NONE_TYPE, isPaintOff } from "../ir.js";
+import { path, pushTransform, popTransform, PAINT_NONE_TYPE, isPaintOff, isMaterialPaint } from "../ir.js";
+import { hasStrokeMaterial, strokeMaterialIds } from "../skia/stroke_materials.js";
+import { fillCapableMaterialIds } from "../skia/materials.js";
 import { flattenSvgTree } from "../../core/svg_paths.js";
 import { reportOnce } from "../../core/report.js";
 
@@ -329,6 +331,29 @@ export function svgFillOff() {
 }
 
 /**
+ * The stroke colour a fill-only material degrades to when its paint carries NO `solid`
+ * sub-state (a hand-written or programmatically-built paint — the PaintField always
+ * writes one). Black because that is what an un-inked monochrome icon already draws,
+ * so the fallback-of-the-fallback is the widget's own status quo rather than a new
+ * colour the user never chose. See svgOverrideStrokePaint.
+ */
+const SVG_MATERIAL_STROKE_FALLBACK = "#000000";
+
+/**
+ * Query (reads the fill registry). Can `id` paint a FILL slot? The fill twin of
+ * stroke_materials.hasStrokeMaterial, derived from the exported roster rather than
+ * added as a new export to materials.js, so this file's asymmetry fix stays local.
+ * Not memoized: the roster grows when a material PLUGIN registers, and a cached
+ * "no" would outlive the registration.
+ *
+ * @example hasFillMaterial("crt") // true
+ * @example hasFillMaterial("wavy") // false (stroke-only)
+ */
+function hasFillMaterial(id) {
+  return fillCapableMaterialIds().includes(id);
+}
+
+/**
  * The `fill` INSPECTOR ROW both SVG-family widgets declare — a full PAINT row
  * (`paint: true` → web/PaintField.svelte: Off / solid / linear / radial / material /
  * equation), keyframable and equation-bindable like every other property.
@@ -389,6 +414,80 @@ export function svgOverridePaint(state) {
   const fill = state?.fill;
   if (fill === null || fill === undefined || isPaintOff(fill)) return null;
   return fill;
+}
+
+/**
+ * Pure function. The override paint a given SLOT can actually paint — the paint
+ * itself, or its solid fallback when the slot's registry cannot render it.
+ *
+ * WHY THIS EXISTS. The override is a monochrome recolour: one paint lands in BOTH the
+ * fill and the stroke slot of every op (flattenSvgTree's docblock says why — half the
+ * icon sets draw `fill="none" stroke="currentColor"`, so a fill-only override would do
+ * nothing to them). But fill materials and STROKE materials are TWO REGISTRIES WITH
+ * DISJOINT ROSTERS, and each painter looks up only its own: paint_skia's
+ * drawMaterialStroke calls getStrokeMaterial, its fill twin calls getMaterial, both
+ * unconditionally. So a material in the WRONG slot is not a wrong colour, it is a
+ * CRASH — every frame, canvas dead.
+ *
+ * THE ASYMMETRY RUNS BOTH WAYS, which is the whole reason this takes a `slot`. The
+ * live report was a fill-only material ("crt") reaching a stroke slot on an outline
+ * icon. But a stroke-only material ("wavy", "brush") reaching a FILL slot throws just
+ * as hard, and a one-directional guard leaves that half live — it was caught here only
+ * because the probe rendered the stroke-capable control.
+ *
+ * THE SUBSTITUTION. A material the slot cannot paint degrades to its own SOLID fallback
+ * (`solid`, the sub-state every tagged paint carries — the colour the user last had, so
+ * the slot stays in the family) and reports ONCE naming the material, the slot and the
+ * substitution. It is a substitution rather than a refusal because the alternative is
+ * drawing nothing: on an outline icon the ink IS the stroke, and a silently unpainted
+ * icon is the bug this row was added to fix.
+ *
+ * Everything else passes through BY IDENTITY: a solid, a gradient, a material the slot
+ * CAN paint, and null. Identity matters — it is what keeps an Off override
+ * byte-identical, and it is why this is safe to call unconditionally.
+ *
+ * Capability is asked of the REGISTRIES (`hasStrokeMaterial` / `hasFillMaterial`),
+ * never of a hardcoded name list, so a material added to either roster — or one that
+ * opts into BOTH — is classified correctly the day it lands.
+ *
+ * Args:
+ *   override (string|object|null): the override paint (svgOverridePaint's result)
+ *   slot ("fill"|"stroke"): which slot this paint is destined for
+ *   report (function): reportOnce-shaped (key, line) sink for the substitution notice
+ *
+ * Returns:
+ *   string|object|null: the paint that slot can safely take
+ *
+ * Examples:
+ *     >>> // a FILL-only material degrades in a STROKE slot (the live crash)
+ *     >>> svgOverrideSlotPaint({type: "material", material: {id: "crt"}, solid: "#ff00ff"}, "stroke", () => {})
+ *     '#ff00ff'
+ *     >>> // ...and passes through in the slot it IS made for
+ *     >>> svgOverrideSlotPaint({type: "material", material: {id: "crt"}, solid: "#ff00ff"}, "fill", () => {}).material.id
+ *     'crt'
+ *     >>> // the mirror image: a STROKE-only material degrades in a FILL slot
+ *     >>> svgOverrideSlotPaint({type: "material", material: {id: "wavy"}, solid: "#f0f"}, "fill", () => {})
+ *     '#f0f'
+ *     >>> svgOverrideSlotPaint({type: "material", material: {id: "wavy"}, solid: "#f0f"}, "stroke", () => {}).material.id
+ *     'wavy'
+ *     >>> // non-materials are returned BY IDENTITY (this is what keeps Off byte-identical)
+ *     >>> svgOverrideSlotPaint("#00ff00", "stroke", () => {})
+ *     '#00ff00'
+ *     >>> svgOverrideSlotPaint(null, "fill", () => {})
+ *     null
+ */
+export function svgOverrideSlotPaint(override, slot, report = reportOnce) {
+  if (!isMaterialPaint(override)) return override;
+  const id = override.material?.id;
+  const capable = slot === "stroke" ? hasStrokeMaterial(id) : hasFillMaterial(id);
+  if (capable) return override;
+  const solid = typeof override.solid === "string" ? override.solid : SVG_MATERIAL_STROKE_FALLBACK;
+  const roster = slot === "stroke" ? strokeMaterialIds() : fillCapableMaterialIds();
+  report(
+    `svg_raster:slot-material-substitute:${slot}:${id}`,
+    `PowerRP svg_raster: material "${id}" cannot paint a ${slot.toUpperCase()} (${slot} materials: ${roster.join(", ")}) — ${slot === "stroke" ? "outlines" : "filled shapes"} in this graphic use its solid fallback ${solid} instead. Pick a ${slot}-capable material to shade them too.`,
+  );
+  return solid;
 }
 
 // ── the BUILT-IN CURSOR LIBRARY (ship-with-the-app SVGs) ──────────────────────

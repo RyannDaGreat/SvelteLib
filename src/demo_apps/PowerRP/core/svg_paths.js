@@ -713,6 +713,14 @@ export function parseViewBox(attrs) {
  *     (filling in the middle of a stroked outline icon), so the override REPLACES
  *     paint, it does not create it. That keeps the override an isomorphism on the
  *     artwork's own shape.
+ *   - the stroke slot may take a DIFFERENT paint (`overrideStrokePaint`, defaulting to
+ *     `overridePaint` so the ordinary case is the one paint described above). It exists
+ *     for exactly one asymmetry: fill materials and STROKE materials are separate
+ *     registries with DISJOINT rosters, so a fill-only material ("crt") landing in a
+ *     stroke slot is a painter CRASH, not a wrong colour. The CALLER decides the
+ *     substitution (render_gpu/gpu/svg_raster.svgOverrideStrokePaint asks the stroke
+ *     registry and degrades to the material's solid fallback); this flatten stays pure
+ *     and knows about neither registry.
  * It lives HERE, in the one pure shared flatten, so both widgets and every backend
  * (Skia GPU, bare-node CLI, PDF/SVG export) get it through the display list with
  * zero backend code — and neither plugin imports the other.
@@ -723,7 +731,8 @@ export function parseViewBox(attrs) {
  *   opts ({ink, preserveAspect, opacity, overridePaint}): ink for currentColor;
  *     preserveAspect default true; opacity is the widget GROUP opacity seeded onto
  *     the root and compounded into every op (default 1); overridePaint (default
- *     null) recolours every op's fill AND stroke — see above
+ *     null) recolours every op's fill AND stroke — see above; overrideStrokePaint
+ *     (default: overridePaint) is the stroke slot's paint when it must differ
  *
  * Returns:
  *   {ops: object[], transform: {x,y,rotation,scale}|null, warnings: string[]}
@@ -739,6 +748,10 @@ export function flattenSvgTree(root, boxW, boxH, opts = {}) {
   const ink = opts.ink ?? "#000000";
   const preserveAspect = opts.preserveAspect !== false;
   const overridePaint = opts.overridePaint ?? null;
+  // Defaults to the fill's own paint, so a caller that does not distinguish the two
+  // slots (every caller before the stroke-material split, and every test that passes a
+  // solid) gets the byte-identical monochrome recolour it always got.
+  const overrideStrokePaint = opts.overrideStrokePaint ?? overridePaint;
   const vb = parseViewBox(root.attrs ?? {});
   const gradients = collectGradients(root);
   const warnings = new Set();
@@ -757,7 +770,7 @@ export function flattenSvgTree(root, boxW, boxH, opts = {}) {
 
   const ops = [];
   const rootPaint = { ...ROOT_PAINT, opacity: Number.isFinite(opts.opacity) ? opts.opacity : 1 };
-  walkSvgNode(root, baseCTM, rootPaint, { ink, gradients, warnings, boxScale, overridePaint }, ops, true);
+  walkSvgNode(root, baseCTM, rootPaint, { ink, gradients, warnings, boxScale, overridePaint, overrideStrokePaint }, ops, true);
   return { ops, transform, warnings: [...warnings] };
 }
 
@@ -819,7 +832,12 @@ function walkSvgNode(node, parentCTM, inherited, ctx, ops, isRoot) {
     // docblock), and returns the own paint UNCHANGED — by identity — when there is
     // no override, which is why an off/absent override is byte-identical.
     fill: overridePaintOf(ownFill, ctx.overridePaint),
-    stroke: overridePaintOf(ownStroke, ctx.overridePaint),
+    // The STROKE slot takes `overrideStrokePaint`, which is the same paint as the fill's
+    // in every ordinary case and DIFFERS in exactly one: a fill-only MATERIAL, which the
+    // stroke registry cannot paint at all (see svg_raster.svgOverrideStrokePaint). The
+    // split lives at the call site, not here, so this flatten stays a pure substitution
+    // and knows nothing about either material registry.
+    stroke: overridePaintOf(ownStroke, ctx.overrideStrokePaint),
     // The stroke WIDTH is a property of the artwork, not of the paint, so it is
     // decided by whether the ARTWORK stroked this shape — the override changes the
     // colour of an existing outline, never its thickness (and never turns a

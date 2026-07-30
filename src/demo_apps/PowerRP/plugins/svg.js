@@ -95,7 +95,7 @@ import * as T from "../core/transform.js";
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { errorAffordance, warningLabel, warningAffordance } from "../render_gpu/affordances.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
-import { svgToIRWithWarnings, svgIsEmpty, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint } from "../render_gpu/gpu/svg_raster.js";
+import { svgToIRWithWarnings, svgIsEmpty, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint, svgOverrideSlotPaint } from "../render_gpu/gpu/svg_raster.js";
 import { ensureSvgSource, getSvgSource, svgSourceStatus, svgSourceError } from "../render_gpu/gpu/svg_source_registry.js";
 
 /** The ink for `currentColor` fills/strokes — the INK convention every stroked
@@ -241,7 +241,11 @@ export const svgPlugin = {
       // existed). Applied inside the SHARED flatten, so every backend — Skia GPU, the
       // bare-node CLI still, the PDF and SVG vector exporters — gets the recolour
       // through the one display list with no backend code at all.
-      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? SVG_DEFAULT_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1, overridePaint: svgOverridePaint(s) });
+      // EACH SLOT ASKS ITS OWN REGISTRY. Fill and stroke materials are disjoint
+      // rosters and each painter looks up only its own, so a material in the wrong
+      // slot is a crash, not a colour — in BOTH directions. See svgOverrideSlotPaint.
+      const override = svgOverridePaint(s);
+      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? SVG_DEFAULT_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1, overridePaint: svgOverrideSlotPaint(override, "fill"), overrideStrokePaint: svgOverrideSlotPaint(override, "stroke") });
       // A PUNTED feature draws degraded art, so the art is kept AND annotated —
       // never silently wrong (see warningAffordance). A clean SVG adds nothing.
       ops = flat.warnings.length ? [...flat.ops, ...warningAffordance(w, h, flat.warnings)] : flat.ops;

@@ -111,7 +111,7 @@ import * as T from "../core/transform.js";
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { errorAffordance, warningAffordance } from "../render_gpu/affordances.js";
-import { svgToIRWithWarnings, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint } from "../render_gpu/gpu/svg_raster.js";
+import { svgToIRWithWarnings, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint, svgOverrideSlotPaint } from "../render_gpu/gpu/svg_raster.js";
 import { ensureSvgSource, getSvgSource, svgSourceStatus, svgSourceError } from "../render_gpu/gpu/svg_source_registry.js";
 import { rpFuzzyScore } from "../core/fuzzy.js";
 
@@ -543,7 +543,13 @@ export const iconifyPlugin = {
       // `overridePaint` is the Fill row — OFF → null → byte-identical to before it
       // existed (the shared svgOverridePaint is the one place OFF becomes "no
       // override", so both SVG-family widgets agree by construction).
-      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? ICONIFY_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1, overridePaint: svgOverridePaint(s) });
+      // EACH SLOT ASKS ITS OWN REGISTRY — fill and stroke materials are disjoint
+      // rosters, so a material in the wrong slot is a crash (see svgOverrideSlotPaint).
+      // This widget is the hot path for the stroke half: the monochrome icon sets draw
+      // fill="none" stroke="currentColor", so on a tabler/lucide icon the override lands
+      // ONLY in stroke slots.
+      const override = svgOverridePaint(s);
+      const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? ICONIFY_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1, overridePaint: svgOverrideSlotPaint(override, "fill"), overrideStrokePaint: svgOverrideSlotPaint(override, "stroke") });
       ops = flat.warnings.length ? [...flat.ops, ...warningAffordance(w, h, flat.warnings)] : flat.ops;
     } catch (e) {
       ops = errorAffordance(w, h, e instanceof Error ? e.message : String(e));

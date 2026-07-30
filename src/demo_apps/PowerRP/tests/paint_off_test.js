@@ -49,6 +49,27 @@
  *       And their ink help is the shared string that names the fill relationship,
  *       because the pair is only comprehensible read together (the "why is it
  *       black?" answer).
+ *
+ *   (E) A MATERIAL NEVER REACHES A SLOT ITS REGISTRY CANNOT PAINT — the crash gate.
+ *       THE LIVE BUG: choosing fill material "crt" on an iconify icon threw
+ *       `getStrokeMaterial: unknown stroke material "crt"` EVERY FRAME and killed the
+ *       canvas. Cause: (C) above puts the override in the fill AND stroke slot by
+ *       design, but fill materials and STROKE materials are two registries with
+ *       DISJOINT rosters, and each painter looks up only its own — paint_skia's
+ *       drawMaterialStroke calls getStrokeMaterial, its fill twin calls getMaterial,
+ *       both unconditionally. The monochrome icon sets make this the COMMON case, not
+ *       a corner: they draw fill="none" stroke="currentColor", so on a tabler/lucide
+ *       icon the override lands ONLY in stroke slots.
+ *
+ *       THE ASYMMETRY RUNS BOTH WAYS, and the first fix here only guarded one of them.
+ *       A STROKE-only material ("wavy", "brush") in a FILL slot throws just as hard —
+ *       caught only because the browser probe rendered the stroke-capable control, and
+ *       pinned below so a one-directional guard cannot come back.
+ *
+ *       The rule pinned here: EACH SLOT ASKS ITS OWN REGISTRY; a material that slot
+ *       cannot paint degrades to the paint's own `solid` fallback, reporting ONCE; a
+ *       material the slot CAN paint passes through by identity; and capability is asked
+ *       of the REGISTRIES, never of a hardcoded name list.
  */
 
 import assert from "node:assert/strict";
@@ -61,7 +82,10 @@ import { applied, NONE, blendApplied } from "../core/deltas.js";
 import { interpolate } from "../core/interpolators.js";
 import { svgPlugin } from "../plugins/svg.js";
 import { iconifyPlugin } from "../plugins/iconify.js";
-import { SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint, svgFillOff } from "../render_gpu/gpu/svg_raster.js";
+import { SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint, svgOverrideSlotPaint, svgFillOff } from "../render_gpu/gpu/svg_raster.js";
+import { getStrokeMaterial, hasStrokeMaterial, strokeMaterialIds } from "../render_gpu/skia/stroke_materials.js";
+import { getMaterial, fillCapableMaterialIds } from "../render_gpu/skia/materials.js";
+import { readFileSync } from "node:fs";
 import { repairedDocument, uuid } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -391,6 +415,128 @@ test("both widgets' defaults (fill OFF included) survive repairedDocument with Z
   for (const item of Object.values(out.slides[0].delta.items))
     if (item.type === "svg" || item.type === "iconify")
       assert.deepEqual(item.fill, SVG_FILL_OFF, `${item.type}: fill stayed OFF through repair`);
+});
+
+// ── (E) A FILL-ONLY MATERIAL NEVER REACHES A STROKE SLOT ─────────────────────
+
+/** An OUTLINE icon (the tabler/lucide authoring: fill="none" stroke="currentColor")
+ * plus a FILLED shape, so one fixture exercises both slots at once. */
+const MIXED_ART = { tag: "svg", attrs: { viewBox: "0 0 24 24" }, children: [
+  { tag: "path", attrs: { d: "M4 4L20 20", fill: "none", stroke: "currentColor", "stroke-width": "2" }, children: [] },
+  { tag: "rect", attrs: { width: "10", height: "10", fill: "#00ff00", stroke: "#0000ff", "stroke-width": "1" }, children: [] },
+]};
+
+const CRT_SOLID = "#ff00ff";
+const crtPaint = () => ({ type: "material", material: { id: "crt", params: {} }, solid: CRT_SOLID });
+
+/** Flattens MIXED_ART under `paint` exactly as the two plugins' emit() does, and
+ * collects the reports instead of printing them. */
+function flattenUnderOverride(paint) {
+  const lines = [];
+  const override = svgOverridePaint({ fill: paint });
+  const sink = (_key, line) => lines.push(line);
+  const flat = flattenSvgTree(MIXED_ART, 24, 24, {
+    preserveAspect: false,
+    overridePaint: svgOverrideSlotPaint(override, "fill", sink),
+    overrideStrokePaint: svgOverrideSlotPaint(override, "stroke", sink),
+  });
+  return { ops: flat.ops, lines };
+}
+
+test("crt override: FILLS carry the material, STROKES carry its solid, ONE loud report", () => {
+  const { ops, lines } = flattenUnderOverride(crtPaint());
+  const [outline, filled] = ops;
+  // The outline icon: nothing to fill (the override never invents ink), and its
+  // stroke — the only ink it has — is the SOLID, not the uncastable material.
+  assert.equal(outline.fill, null, "an unpainted fill stays unpainted");
+  assert.equal(outline.stroke, CRT_SOLID, "the outline's stroke degraded to the solid fallback");
+  // The filled shape: the material survives where it is actually paintable.
+  assert.equal(filled.fill.material.id, "crt", "the FILL keeps the material — that is the point of the row");
+  assert.equal(filled.stroke, CRT_SOLID, "but its stroke degraded too");
+  // ONE report, naming the material and the substitution (a per-op report would be
+  // per-frame spam; silence would be the bug this whole section exists for).
+  assert.equal(lines.length, 1, `exactly one report, got ${lines.length}`);
+  assert.match(lines[0], /crt/, "it names the material the user picked");
+  assert.match(lines[0], new RegExp(CRT_SOLID), "and the colour it substituted");
+});
+
+test("crt override: ZERO throws through the painter's own getStrokeMaterial call", () => {
+  // The live crash, reproduced at its exact call site: drawMaterialStroke does this
+  // unconditionally on every material stroke. Before the fix this threw per frame.
+  const { ops } = flattenUnderOverride(crtPaint());
+  for (const op of ops)
+    if (op.stroke && typeof op.stroke === "object" && op.stroke.type === "material")
+      getStrokeMaterial(op.stroke.material.id); // throws LOUDLY if a fill-only id slipped through
+});
+
+test("THE MIRROR IMAGE: a STROKE-only material degrades in the FILL slot", () => {
+  // The half the first fix missed. `wavy` IS stroke-capable, so it passes through to
+  // the stroke — but the fill registry has never heard of it, and getMaterial throws
+  // exactly as getStrokeMaterial did. A one-directional guard leaves this live.
+  const wavy = { type: "material", material: { id: "wavy", params: {} }, solid: "#123456" };
+  const { ops, lines } = flattenUnderOverride(wavy);
+  assert.equal(ops[0].stroke.material.id, "wavy", "the STROKE keeps it — no needless downgrade");
+  assert.equal(ops[1].fill, "#123456", "but the FILL degraded to the solid fallback");
+  assert.equal(lines.length, 1, `exactly one report, got ${lines.length}`);
+  assert.match(lines[0], /FILL/, "and the report names the slot that could not paint it");
+});
+
+test("crt override: ZERO throws through the FILL painter's getMaterial call too", () => {
+  // The fill-side twin of the stroke assertion above — both painters, one fixture.
+  const { ops } = flattenUnderOverride(crtPaint());
+  for (const op of ops)
+    if (op.fill && typeof op.fill === "object" && op.fill.type === "material")
+      getMaterial(op.fill.material.id); // throws LOUDLY if a stroke-only id slipped through
+});
+
+test("capability is asked of the REGISTRIES, not of a hardcoded roster, in BOTH directions", () => {
+  // Every registered material must pass through in the slot it serves and degrade in
+  // the other. This is what keeps the rule correct as either roster grows.
+  for (const id of strokeMaterialIds()) {
+    const paint = { type: "material", material: { id, params: {} }, solid: "#abcdef" };
+    assert.equal(svgOverrideSlotPaint(paint, "stroke", () => {}), paint, `${id}: passes through its OWN (stroke) slot by identity`);
+    if (!fillCapableMaterialIds().includes(id))
+      assert.equal(svgOverrideSlotPaint(paint, "fill", () => {}), "#abcdef", `${id}: degrades in the fill slot it cannot paint`);
+  }
+  for (const id of fillCapableMaterialIds()) {
+    const paint = { type: "material", material: { id, params: {} }, solid: "#abcdef" };
+    assert.equal(svgOverrideSlotPaint(paint, "fill", () => {}), paint, `${id}: passes through its OWN (fill) slot by identity`);
+    if (!hasStrokeMaterial(id))
+      assert.equal(svgOverrideSlotPaint(paint, "stroke", () => {}), "#abcdef", `${id}: degrades in the stroke slot it cannot paint`);
+  }
+  assert.equal(hasStrokeMaterial("crt"), false, "crt is fill-only — the premise of this whole section");
+});
+
+test("a SOLID override is untouched, and OFF is byte-identical to no override at all", () => {
+  const { ops: solidOps, lines: solidLines } = flattenUnderOverride("#123456");
+  assert.equal(solidOps[1].fill, "#123456");
+  assert.equal(solidOps[1].stroke, "#123456", "a solid still recolours both slots (C is intact)");
+  assert.deepEqual(solidLines, [], "a solid is not a material, so nothing is reported");
+  // OFF: the stroke split must not have perturbed the byte-identity gate (B).
+  const { ops: offOps, lines: offLines } = flattenUnderOverride(SVG_FILL_OFF);
+  const bare = flattenSvgTree(MIXED_ART, 24, 24, { preserveAspect: false }).ops;
+  assert.deepEqual(offOps, bare, "OFF renders the artwork's own paints, op for op");
+  assert.deepEqual(offLines, [], "and says nothing");
+});
+
+test("svgOverrideSlotPaint returns non-materials BY IDENTITY (what makes it safe to call always)", () => {
+  const grad = { type: "linearGradient", stops: [] };
+  for (const slot of ["fill", "stroke"]) {
+    assert.equal(svgOverrideSlotPaint(grad, slot, () => {}), grad, `${slot}: a gradient is the same object back`);
+    assert.equal(svgOverrideSlotPaint(null, slot, () => {}), null);
+    assert.equal(svgOverrideSlotPaint("#abc", slot, () => {}), "#abc");
+  }
+});
+
+test("both plugins WIRE BOTH slot guards (a fix only in the helper would be dead code)", () => {
+  // The (D) precedent: assert the wiring, not just the helper. Reading the source is
+  // the only bare-node way to see an option name a plugin passes into the flatten.
+  const src = readFileSync(new URL("../plugins/svg.js", import.meta.url), "utf8")
+            + readFileSync(new URL("../plugins/iconify.js", import.meta.url), "utf8");
+  const stroke = src.match(/overrideStrokePaint:\s*svgOverrideSlotPaint\(override, "stroke"\)/g) ?? [];
+  const fill = src.match(/overridePaint:\s*svgOverrideSlotPaint\(override, "fill"\)/g) ?? [];
+  assert.equal(stroke.length, 2, "both svg.js and iconify.js guard the STROKE slot");
+  assert.equal(fill.length, 2, "...and both guard the FILL slot too (the mirror-image half)");
 });
 
 console.log(`\n${passed} paint-off + svg-fill-override tests passed.`);
