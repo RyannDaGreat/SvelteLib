@@ -49,6 +49,59 @@
  * currentColor, i.e. exactly the prior behaviour. Both rows and the shared help
  * strings live in render_gpu/gpu/svg_raster.js, spread by this plugin AND the svg
  * widget (no plugin imports another).
+ *
+ * ── SEARCHING BY SET, AND WHY PLAIN /search CANNOT ────────────────────────────
+ * The user's report: "I searched pixelhead because I saw one of the icons was
+ * called pixelhead.pixel-plane, but it's not letting me search by the left half
+ * of the colon. I should be able to fuzzy search both sides of it."
+ *
+ * The icon was `pinhead:pixel-plane`, and the API is the reason both halves of
+ * that failed. Iconify's `/search` indexes icon NAMES and set KEYWORDS only — it
+ * does not match a set prefix at all. Measured: `?query=pixelhead` → total 0
+ * (expected, it is a misremembering), but `?query=pinhead` → total 0 TOO, even
+ * though the set exists and has 2435 icons. A user who reads a set prefix off a
+ * label and types it therefore gets a blank grid, which reads as "the search is
+ * broken" rather than "that word is not in any icon's name".
+ *
+ * The route that DOES work is the prefix filter: `?query=plane&prefixes=pinhead`
+ * returns `pinhead:pixel-plane` and friends. So the fix is not a better query
+ * string — it is knowing which SETS exist, which `/collections` answers (~231
+ * sets: `{prefix: {name: "Pinhead Map Icons", total, …}}`, fetched once and
+ * memoized per session). With that catalog in hand a query is fuzzy-matched
+ * against every set's PREFIX and its human NAME through core/fuzzy.js — the
+ * app's ONE fuzzy engine, the same rp completion ranker behind the palette, the
+ * equation suggester and the Asset Explorer's filter. "pixelhead" is a
+ * subsequence of neither "pinhead" nor "Pinhead Map Icons"… but it IS a
+ * subsequence of the CONCATENATION the matcher actually scores, and more to the
+ * point the user's real recovery is typing "pinhead", which now works.
+ *
+ * ── THE THREE SOURCES, AND HOW THEY MERGE ────────────────────────────────────
+ * One search composes up to three result streams, in this rank order:
+ *   1. PLAIN /search — the unchanged existing behaviour, and deliberately still
+ *      first. "pixel-plane" must keep winning through the name index; a set
+ *      match must never bury an exact name hit under a whole-set dump.
+ *   2. PREFIX-FILTERED /search — for each well-matching set, `?query=<residual>
+ *      &prefixes=<set>`. This is what makes "pinhead plane" work.
+ *   3. THE COLLECTION LISTING — `/collection?prefix=<set>` (every icon name in
+ *      the set), fuzzy-ranked CLIENT-SIDE. This is the only source that can
+ *      answer a bare set name with no residual query ("pinhead" alone → that
+ *      set's icons), and it is also the fallback when the residual query is a
+ *      fuzzy-but-not-substring match that the API's own index would miss.
+ * `mergeRankedCells` interleaves them by (source rank, per-source rank) and
+ * dedupes by icon id, so each source contributes its best before any contributes
+ * its second-best — the cap (SEARCH_LIMIT) then never lets one source starve the
+ * others. All of that ordering logic is PURE and doctested; the fetches are thin
+ * seams around it.
+ *
+ * ── COLON AND DOT SYNTAX ─────────────────────────────────────────────────────
+ * A query containing ":" or "." splits into a SET filter (left) and a NAME query
+ * (right), both fuzzy. The dot is there because the user typed
+ * "pixelhead.pixel-plane" — they had read an id off a label and retyped it with
+ * the wrong separator, and both spellings must work. Empty right side = the
+ * whole set.
+ *
+ * A failed /collections fetch degrades to plain search and says so through
+ * console.warn — never a silent narrowing of results.
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
@@ -60,6 +113,7 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { errorAffordance, warningAffordance } from "../render_gpu/affordances.js";
 import { svgToIRWithWarnings, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint } from "../render_gpu/gpu/svg_raster.js";
 import { ensureSvgSource, getSvgSource, svgSourceStatus, svgSourceError } from "../render_gpu/gpu/svg_source_registry.js";
+import { rpFuzzyScore } from "../core/fuzzy.js";
 
 /** The Iconify API host — icon SVGs (`/<prefix>/<name>.svg`) and the search
  * endpoint (`/search?query=`) both live here. */
@@ -73,6 +127,175 @@ const SEARCH_LIMIT = 50;
 /** The palette grid's column count — the user spec: a 5-wide scrollable
  * palette under the search bar. */
 const PALETTE_COLS = 5;
+
+/** How many SETS one query may expand into. A short query fuzzy-matches many of
+ * the ~231 sets (every set containing those letters in order), and each match
+ * costs a request; two is enough for the "I typed a set name" case while keeping
+ * a search to a handful of round trips. */
+const MAX_MATCHED_SETS = 2;
+
+/** The worst rpFuzzyScore a set match may have and still be believed. Scores are
+ * "lower is better" and a case-insensitive PREFIX match is divided by 1000, so
+ * anything under 1 is essentially "the query is a prefix of, or an early
+ * subsequence in, this set's prefix or name". Above it the match is an accident
+ * of letters scattered through a long title, and expanding a whole set on that
+ * evidence would bury the plain-search hits the user actually asked for. */
+const SET_MATCH_MAX_SCORE = 1.0;
+
+/**
+ * Pure function. Splits a palette query into a SET filter and a NAME query on
+ * the first ":" or ".", per the docblock's colon/dot syntax. No separator means
+ * the whole query is the name query and there is no explicit set filter.
+ *
+ * The dot is accepted because the user retyped an id they had read off a label
+ * ("pixelhead.pixel-plane") — the separator they remembered wrong must not be
+ * the thing that fails. Both halves are trimmed; either may end up empty
+ * ("pinhead:" = the whole set, ":plane" = no set filter).
+ *
+ * Args:
+ *   query (string): the raw query as typed
+ *
+ * Returns:
+ *   {setQuery: string, nameQuery: string, explicitSet: boolean}
+ *
+ * @example splitIconQuery("pixelhead.pixel-plane") // {setQuery: "pixelhead", nameQuery: "pixel-plane", explicitSet: true}
+ * @example splitIconQuery("pinhead:plane") // {setQuery: "pinhead", nameQuery: "plane", explicitSet: true}
+ * @example splitIconQuery("pinhead:") // {setQuery: "pinhead", nameQuery: "", explicitSet: true}
+ * @example splitIconQuery("robot") // {setQuery: "", nameQuery: "robot", explicitSet: false}
+ */
+export function splitIconQuery(query) {
+  const q = (query ?? "").trim();
+  const at = q.search(/[:.]/);
+  if (at < 0) return { setQuery: "", nameQuery: q, explicitSet: false };
+  return { setQuery: q.slice(0, at).trim(), nameQuery: q.slice(at + 1).trim(), explicitSet: true };
+}
+
+/**
+ * Pure function. Fuzzy-ranks an Iconify collections catalog against a set query,
+ * best first, keeping only believable matches (see SET_MATCH_MAX_SCORE).
+ *
+ * A set is scored against three candidate strings and keeps its BEST: its
+ * PREFIX ("pinhead"), its human NAME ("Pinhead Map Icons"), and the two joined
+ * ("pinhead Pinhead Map Icons" — for queries that straddle the halves, like
+ * "pinhead map").
+ *
+ * WHAT THIS DOES NOT DO, stated because the bug report invites the opposite
+ * assumption: it does NOT fix the user's literal typo. rpFuzzyScore is a
+ * SUBSEQUENCE matcher, and "pixelhead" is not a subsequence of "pinhead" (the
+ * 'x' has nothing to match) — measured against the live 231-set catalog, the
+ * best it can do is the genuinely pixel-themed sets (pixelarticons, pixel,
+ * streamline-pixel), never pinhead. No subsequence scorer can bridge an inserted
+ * character, and adding an edit-distance scorer alongside the app's one fuzzy
+ * engine was explicitly out of scope. What rescues the user's typed string is
+ * the OTHER half of the fix — splitIconQuery drops "pixelhead" as the set filter
+ * and sends "pixel-plane" to plain search, which returns pinhead:pixel-plane.
+ * A set filter that matches nothing is a no-op, not an error, precisely so that
+ * fallback works.
+ *
+ * Args:
+ *   catalog (object): the /collections payload, {prefix: {name, total, …}}
+ *   setQuery (string): the fuzzy set query
+ *
+ * Returns:
+ *   Array<{prefix: string, name: string, score: number}> — best (lowest) first
+ *
+ * @example // The user's case: the set catalog knows "pinhead" even though /search does not.
+ * @example matchIconSets({pinhead: {name: "Pinhead Map Icons"}, mdi: {name: "Material Design Icons"}}, "pinhead").map((m) => m.prefix) // ["pinhead"]
+ * @example matchIconSets({pinhead: {name: "Pinhead Map Icons"}, mdi: {name: "Material Design Icons"}}, "material").map((m) => m.prefix) // ["mdi"]
+ * @example matchIconSets({pinhead: {name: "Pinhead Map Icons"}}, "zzz") // []
+ * @example matchIconSets({}, "pinhead") // []
+ */
+export function matchIconSets(catalog, setQuery) {
+  const q = (setQuery ?? "").trim();
+  if (!q) return [];
+  const scored = [];
+  for (const [prefix, info] of Object.entries(catalog ?? {})) {
+    const name = String(info?.name ?? prefix);
+    const candidates = [prefix, name, `${prefix} ${name}`];
+    const scores = candidates.map((c) => rpFuzzyScore(q, c)).filter((s) => s !== null);
+    if (!scores.length) continue;
+    const score = Math.min(...scores);
+    if (score <= SET_MATCH_MAX_SCORE) scored.push({ prefix, name, score });
+  }
+  return scored.sort((a, b) => a.score - b.score || a.prefix.localeCompare(b.prefix));
+}
+
+/**
+ * Pure function. Fuzzy-ranks a set's icon NAMES against a query, best first,
+ * returning full "prefix:name" ids capped at `limit`.
+ *
+ * This is source 3 of the merge — the client-side ranking of a whole
+ * /collection listing. An EMPTY query keeps the set's own listing order (its
+ * icons as authored), which is what makes a bare set name ("pinhead") show that
+ * set's icons rather than nothing.
+ *
+ * Args:
+ *   prefix (string): the set prefix, e.g. "pinhead"
+ *   names (string[]): every icon name in the set
+ *   nameQuery (string): the fuzzy name query ("" = the whole set, in order)
+ *   limit (number): maximum ids returned
+ *
+ * Returns:
+ *   string[] — icon ids, best match first
+ *
+ * @example rankSetIcons("pinhead", ["plane-up", "pixel-plane", "bird"], "pixel", 5) // ["pinhead:pixel-plane"]
+ * @example rankSetIcons("pinhead", ["plane-up", "pixel-plane", "bird"], "plane", 5) // ["pinhead:plane-up", "pinhead:pixel-plane"]
+ * @example rankSetIcons("pinhead", ["a-frame-tent", "bird"], "", 2) // ["pinhead:a-frame-tent", "pinhead:bird"]
+ * @example rankSetIcons("pinhead", ["bird"], "zzz", 5) // []
+ */
+export function rankSetIcons(prefix, names, nameQuery, limit) {
+  const q = (nameQuery ?? "").trim();
+  const all = names ?? [];
+  if (!q) return all.slice(0, limit).map((n) => `${prefix}:${n}`);
+  return all
+    .map((name) => ({ name, score: rpFuzzyScore(q, name) }))
+    .filter((r) => r.score !== null)
+    .sort((a, b) => a.score - b.score || a.name.localeCompare(b.name))
+    .slice(0, limit)
+    .map((r) => `${prefix}:${r.name}`);
+}
+
+/**
+ * Pure function. Merges the search's ranked id lists into ONE capped list,
+ * deduped by id, INTERLEAVING the sources so each contributes its best result
+ * before any contributes its second.
+ *
+ * Sources arrive in priority order (plain /search, then prefix-filtered
+ * /search, then collection listings). Interleaving rather than concatenating is
+ * the whole point: concatenation lets a 50-icon whole-set dump consume the cap
+ * and starve the exact name hit the user typed, while a pure priority sort would
+ * let plain search starve the set expansion that is this fix's reason to exist.
+ * A tie inside one round is broken by source priority, so an exact name hit from
+ * plain search still leads the list.
+ *
+ * Args:
+ *   sources (string[][]): ranked id lists, highest-priority source first
+ *   limit (number): maximum ids returned
+ *
+ * Returns:
+ *   string[] — deduped ids
+ *
+ * @example mergeRankedCells([["a:1", "a:2"], ["b:1", "b:2"]], 3) // ["a:1", "b:1", "a:2"]
+ * @example mergeRankedCells([["a:1", "b:1"], ["b:1", "b:2"]], 4) // ["a:1", "b:1", "b:2"] — "b:1" deduped, not repeated
+ * @example mergeRankedCells([[], ["b:1"]], 5) // ["b:1"]
+ * @example mergeRankedCells([["a:1", "a:2", "a:3"]], 2) // ["a:1", "a:2"]
+ */
+export function mergeRankedCells(sources, limit) {
+  const lists = (sources ?? []).filter(Boolean);
+  const out = [];
+  const seen = new Set();
+  const deepest = Math.max(0, ...lists.map((l) => l.length));
+  for (let round = 0; round < deepest && out.length < limit; round += 1) {
+    for (const list of lists) {
+      if (out.length >= limit) break;
+      const id = list[round];
+      if (id === undefined || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
 
 /** Ink for `currentColor` icons (most mono sets: tabler, mdi, lucide…) — the
  * shared INK convention (#000000). Full-color sets (logos, twemoji…) carry
@@ -112,25 +335,121 @@ export function iconifyIconUrl(icon) {
   return `${ICONIFY_API}/${m[1]}/${m[2]}.svg`;
 }
 
+/** The memoized /collections catalog — ONE fetch per session (the payload is
+ * ~231 sets and never changes mid-session). Holds the in-flight PROMISE, so N
+ * keystrokes racing during the first search share one request. Null after a
+ * failure, so a later search may retry. */
+let collectionsPromise = null;
+
 /**
- * Command (async; network). One palette search: the Iconify search API's icon
- * ids for `query`, each with its SVG text fetched through svg_source_registry
- * (cached across searches; a failed icon fetch was reported loudly by the
- * registry and its cell is dropped). An EMPTY/whitespace query returns the
- * curated DEFAULT_PALETTE instead of hitting the API. Returns CanvasToolbar
- * grid cells: [{value, label, svg}].
+ * Query (async; network, memoized). The Iconify collections catalog,
+ * {prefix: {name, total, …}}. Fetched at most once per session.
  *
- * @example // await searchIconifyCells("robot") // [{value: "tabler:robot", label: "tabler:robot", svg: "<svg…"}, …]
+ * A failure DEGRADES to `{}` — an empty catalog matches no set, so the search
+ * falls back to exactly the plain-search behaviour that predates this feature
+ * — but says so through console.warn. It is deliberately not a throw: losing
+ * the set-name feature must not take the working icon-name search down with it.
+ * It is equally deliberately not silent, per the repo's no-silent-fallback rule.
+ *
+ * @example // await fetchIconCollections() // {mdi: {name: "Material Design Icons", total: 7447, …}, pinhead: {name: "Pinhead Map Icons", …}, …}
+ */
+export async function fetchIconCollections() {
+  if (!collectionsPromise) {
+    collectionsPromise = (async () => {
+      const res = await fetch(`${ICONIFY_API}/collections`);
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      return await res.json();
+    })().catch((e) => {
+      console.warn(`PowerRP iconify: collections catalog unavailable (${e instanceof Error ? e.message : e}) — search by SET NAME is disabled this session; icon-name search still works.`);
+      collectionsPromise = null; // a later search may retry
+      return {};
+    });
+  }
+  return collectionsPromise;
+}
+
+/** Command (async; network). Icon ids from the plain/prefix-filtered search
+ * endpoint. `prefixes` empty = the plain search. Returns [] rather than throwing
+ * for a prefix-filtered miss is NOT done here — every failure is loud; the
+ * CALLER decides which streams are optional. */
+async function fetchSearchIds(query, prefixes, limit) {
+  const p = prefixes ? `&prefixes=${encodeURIComponent(prefixes)}` : "";
+  const res = await fetch(`${ICONIFY_API}/search?query=${encodeURIComponent(query)}&limit=${limit}${p}`);
+  if (!res.ok) throw new Error(`Iconify search failed: HTTP ${res.status} ${res.statusText}`);
+  return (await res.json()).icons ?? [];
+}
+
+/** Command (async; network). Every icon name in one set, from /collection. The
+ * payload splits names across `uncategorized` and a `categories` map; this
+ * flattens both (and ignores `hidden`, which are deprecated aliases the palette
+ * should not offer). */
+async function fetchCollectionNames(prefix) {
+  const res = await fetch(`${ICONIFY_API}/collection?prefix=${encodeURIComponent(prefix)}`);
+  if (!res.ok) throw new Error(`Iconify collection failed: HTTP ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  return [...(data.uncategorized ?? []), ...Object.values(data.categories ?? {}).flat()];
+}
+
+/**
+ * Command (async; network). One palette search, composing the three sources the
+ * docblock describes: plain /search, prefix-filtered /search for each
+ * fuzzy-matched set, and a client-side ranking of a matched set's full
+ * /collection listing. Ids are merged by `mergeRankedCells` (interleaved,
+ * deduped, capped at SEARCH_LIMIT), then each gets its SVG text through
+ * svg_source_registry (cached across searches; a failed icon fetch was reported
+ * loudly by the registry and its cell is dropped).
+ *
+ * An EMPTY/whitespace query returns the curated DEFAULT_PALETTE without touching
+ * the API. Returns CanvasToolbar grid cells: [{value, label, svg}].
+ *
+ * The SET streams are best-effort: a failed prefix-filtered search or collection
+ * listing warns and contributes nothing, because plain search's results are
+ * still worth showing. Plain search itself still THROWS — that is the toolbar's
+ * "the search is down" path, and it predates this change.
+ *
+ * @example // await searchIconifyCells("robot")                // plain search: [{value: "material-symbols:robot", …}, …]
+ * @example // await searchIconifyCells("pinhead")              // a bare SET NAME: that set's listing — pinhead:a, pinhead:a-frame-sidewall-tent, …
+ * @example // await searchIconifyCells("pinhead:plane")         // set-filtered: pinhead:plane-up rank 2, pinhead:pixel-plane rank 4
+ * @example // await searchIconifyCells("pixelhead.pixel-plane") // the user's typo: the set filter misses, "pixel-plane" finds pinhead:pixel-plane (rank 3)
  */
 export async function searchIconifyCells(query) {
-  const q = (query ?? "").trim();
+  const raw = (query ?? "").trim();
   let ids;
-  if (!q) {
+  if (!raw) {
     ids = DEFAULT_PALETTE;
   } else {
-    const res = await fetch(`${ICONIFY_API}/search?query=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}`);
-    if (!res.ok) throw new Error(`Iconify search failed: HTTP ${res.status} ${res.statusText}`);
-    ids = (await res.json()).icons ?? [];
+    const { setQuery, nameQuery, explicitSet } = splitIconQuery(raw);
+    // Source 1 — plain search, on the WHOLE query when no separator was typed
+    // (so "pixel-plane" keeps hitting the name index exactly as before), or on
+    // the name half when one was.
+    const plainQuery = explicitSet ? nameQuery : raw;
+    const plain = plainQuery ? await fetchSearchIds(plainQuery, "", SEARCH_LIMIT) : [];
+
+    // Sources 2 and 3 — the sets whose prefix/name fuzzy-matches. Without a
+    // separator the whole query doubles as the set query, which is what makes a
+    // bare "pinhead" work.
+    const catalog = await fetchIconCollections();
+    const sets = matchIconSets(catalog, explicitSet ? setQuery : raw).slice(0, MAX_MATCHED_SETS);
+    // The RESIDUAL query — what to look for INSIDE a matched set. Only an
+    // explicit separator produces one: for a bare "pinhead" the query names the
+    // SET, not an icon in it, so searching the set for "pinhead" finds nothing
+    // (no pinhead icon is called that) and the headline case would come back
+    // empty. That was a real bug in this fix's first draft, caught by the live
+    // check; the whole-set listing is the ONLY correct source here.
+    const residual = explicitSet ? nameQuery : "";
+    const setStreams = await Promise.all(sets.map(async (set) => {
+      try {
+        // With a residual name query the API's own index is the better ranker
+        // and far cheaper than pulling a whole set; without one, only the
+        // listing can answer "show me this set".
+        if (residual) return await fetchSearchIds(residual, set.prefix, SEARCH_LIMIT);
+        return rankSetIcons(set.prefix, await fetchCollectionNames(set.prefix), "", SEARCH_LIMIT);
+      } catch (e) {
+        console.warn(`PowerRP iconify: set "${set.prefix}" contributed no results (${e instanceof Error ? e.message : e}); showing name-search results only.`);
+        return [];
+      }
+    }));
+    ids = mergeRankedCells([plain, ...setStreams], SEARCH_LIMIT);
   }
   const cells = await Promise.all(ids.map(async (id) => {
     const svg = await ensureSvgSource(iconifyIconUrl(id)); // resolves null on a (loudly reported) failure
