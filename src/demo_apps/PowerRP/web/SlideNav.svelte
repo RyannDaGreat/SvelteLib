@@ -34,6 +34,7 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DirtyImage from "../../../lib/DirtyImage.svelte";
+  import InlineRename from "../../../lib/InlineRename.svelte";
   import { resolveTransition, transitionType } from "../core/transitions.js";
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
@@ -179,25 +180,16 @@
   });
 
   // ── SLIDE RENAME (Round 4 #54: "double click the title of the slide to
-  // rename it") — inline editor state: which slide index is being renamed, or
-  // null. Enter/blur commits (ONE undo unit via app.renameSlide; blank restores
-  // the positional default), Escape cancels. The input is a typing target, so
-  // the global shortcut layer already stands down while it is focused.
-  let renamingIndex = $state(null);
-  let renameDraft = $state("");
-  function startRename(i, currentName) {
-    renamingIndex = i;
-    renameDraft = currentName;
-  }
-  function commitRename() {
-    if (renamingIndex == null) return;
-    app.renameSlide(renamingIndex, renameDraft);
-    renamingIndex = null;
-  }
-  function renameKeydown(e) {
-    if (e.key === "Enter") { e.preventDefault(); commitRename(); }
-    else if (e.key === "Escape") { e.stopPropagation(); renamingIndex = null; }
-  }
+  // rename it") — now delegated WHOLESALE to InlineRename (SvelteLib), which
+  // owns the editor state, the focus/select-all timing and the commit/cancel
+  // keys. The bespoke copy that lived here was deleted rather than kept
+  // alongside: two implementations of one gesture is exactly how the two halves
+  // drift apart, and this one lacked BOTH rulings it now inherits — it selected
+  // nothing on open (so typing appended to the old name) and it COMMITTED on
+  // blur (so clicking away saved a half-typed name).
+  //
+  // All this file still owns is the write: renameSlide is ONE undo unit, and a
+  // blank name restores the positional default. InlineRename never mutates.
 </script>
 
 <div class="slidenav">
@@ -267,36 +259,31 @@
         >
           <span class="row-top">
             <span class="num">{i + 1}</span>
-            {#if renamingIndex === i}
-              <!-- svelte-ignore a11y_autofocus — the editor exists BECAUSE the
-                   user just double-clicked here; focusing it is the gesture. -->
-              <input
-                class="name-edit"
-                data-hint-scope="rename"
-                autofocus
-                value={renameDraft}
-                oninput={(e) => (renameDraft = e.target.value)}
-                onkeydown={renameKeydown}
-                onblur={commitRename}
-                onclick={(e) => e.stopPropagation()}
-                ondblclick={(e) => e.stopPropagation()}
-                aria-label={`Rename slide ${i + 1}`}
-              />
-            {:else}
-              <!-- NO TOOLTIP OF ITS OWN, and no native title= either (banned —
-                   manifest; tests/native_tooltip_ban_test.js enforces it). This
-                   span carried a native title for exactly the reason the ban
-                   exists: it predated the convention, so it waited ~1s while the
-                   eye toggle beside it answered instantly.
+            <!-- NO TOOLTIP OF ITS OWN, and no native title= either (banned —
+                 manifest; tests/native_tooltip_ban_test.js enforces it). This
+                 span carried a native title for exactly the reason the ban
+                 exists: it predated the convention, so it waited ~1s while the
+                 eye toggle beside it answered instantly.
 
-                   The rename hint moved UP into the CARD's tip (above) rather
-                   than becoming a nested Tooltip here. A nested one was built
-                   first and was visibly wrong: the card's tip covers this span
-                   too, so hovering the name fired BOTH and painted two boxes over
-                   each other — the card's "Slide 1" landing across the middle of
-                   "Double-click to rename". One hover target owes one tip. -->
-              <span class="name" ondblclick={(e) => { e.stopPropagation(); startRename(i, slide.name); }}>{slide.name}</span>
-            {/if}
+                 The rename hint moved UP into the CARD's tip (above) rather
+                 than becoming a nested Tooltip here. A nested one was built
+                 first and was visibly wrong: the card's tip covers this span
+                 too, so hovering the name fired BOTH and painted two boxes over
+                 each other — the card's "Slide 1" landing across the middle of
+                 "Double-click to rename". One hover target owes one tip.
+
+                 STILL DOUBLE-CLICK (InlineRename's default trigger): a slide
+                 card's SINGLE click SELECTS the slide, so rename must be the
+                 second gesture here or it would fight navigation. -->
+            <InlineRename
+              value={slide.name}
+              onrename={(name) => app.renameSlide(i, name)}
+              ariaLabel={`Rename slide ${i + 1}`}
+            >
+              {#snippet children()}
+                <span class="name">{slide.name}</span>
+              {/snippet}
+            </InlineRename>
             <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
               <span
                 class="eye"

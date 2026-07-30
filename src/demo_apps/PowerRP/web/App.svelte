@@ -27,6 +27,7 @@
   import PresentMode from "./PresentMode.svelte";
   import Panel from "./Panel.svelte";
   import Modal from "../../../lib/Modal.svelte";
+  import { selectAllOnMount } from "../../../lib/selectAllOnMount.js";
   import GridSizePicker from "./GridSizePicker.svelte";
   import RenderCenterModal from "./RenderCenterModal.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
@@ -1965,7 +1966,10 @@
     <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmSave(); }}>
       <label class="name-modal-field">
         <span class="name-modal-label">Project name</span>
-        <!-- svelte-ignore a11y_autofocus -->
+        <!-- PRE-FILLED with the current name, so it opens with ALL TEXT
+             SELECTED and typing REPLACES it (user ruling). selectAllOnMount
+             replaces the old bare `autofocus`, which focused but selected
+             nothing — the caret sat at one end and typing APPENDED. -->
         <input
           class="name-modal-input"
           type="text"
@@ -1973,7 +1977,7 @@
           placeholder="Untitled"
           autocomplete="off"
           spellcheck="false"
-          autofocus
+          use:selectAllOnMount
         />
       </label>
       {#if saveError}
@@ -2007,7 +2011,9 @@
              doc.meta.name. It used to say "Presentation name" here and "Project
              name" there for one value — the three-nouns bug in miniature. -->
         <span class="name-modal-label">Project name</span>
-        <!-- svelte-ignore a11y_autofocus -->
+        <!-- Opens with the current name ALL SELECTED, so the single click on the
+             toolbar title followed by typing renames the whole project — the
+             ruling's own example. Same action as the Save field's; see there. -->
         <input
           class="name-modal-input"
           type="text"
@@ -2015,7 +2021,7 @@
           placeholder="Untitled"
           autocomplete="off"
           spellcheck="false"
-          autofocus
+          use:selectAllOnMount
         />
       </label>
       {#if renameError}

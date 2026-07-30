@@ -3438,20 +3438,21 @@ textarea {
   padding: var(--a-sp-1) var(--a-sp-2);
 }
 
-/* The inline slide-rename editor (Round 4 #54, double-click the name). Sized to
-   sit exactly where the name span sits; the palette-input idiom: no border box,
-   a background tint + bottom hairline. */
-.slidenav .name-edit {
+/* The inline slide-rename editor (Round 4 #54, double-click the name). The
+   editor itself is InlineRename (SvelteLib) now, so this rule only supplies the
+   app's palette-input SKIN through that component's documented custom
+   properties: no border box, a background tint + bottom hairline. It targets
+   .inline-rename-input, the class the component gives its <input>; the old
+   .name-edit selector went with the bespoke input this replaced. */
+.slidenav .inline-rename-input {
   flex: 1;
-  min-width: 0;
-  box-sizing: border-box;
-  font: inherit;
   color: var(--fg);
-  background: var(--control-bg);
-  border: 0;
+  --inline-rename-bg: var(--control-bg);
+  --inline-rename-border: transparent;
+  --inline-rename-radius: 0;
+  --inline-rename-padding: 0 var(--a-sp-1);
   border-bottom: var(--a-hairline) solid var(--border);
   outline: none;
-  padding: 0 var(--a-sp-1);
 }
 
 .slidenav .eye {

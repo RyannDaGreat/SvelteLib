@@ -11,6 +11,7 @@
     { name: "DirtyImage", description: "Lazy, dirty-tracked raster tile — renders via a callback at displayed-size × dpr only when visible AND dirty (crisp thumbnails at scale)", href: "/src/demos/DirtyImage/demo.html" },
     { name: "Modal", description: "Generic modal dialog — portal to body, focus trap + restore, scroll lock, Escape/backdrop dismissal, snippet content", href: "/src/demos/Modal/demo.html" },
     { name: "ColorPicker", description: "S/V square + hue + integral alpha strips (checkerboard underlay), live-apply (no Enter), #rrggbbaa in/out, keyboard accessible", href: "/src/demos/ColorPicker/demo.html" },
+    { name: "InlineRename", description: "In-place name editing — your markup until activated, then an input pre-filled with ALL TEXT SELECTED; Enter commits, Escape and blur cancel", href: "/src/demos/InlineRename/demo.html" },
   ];
 </script>
 
