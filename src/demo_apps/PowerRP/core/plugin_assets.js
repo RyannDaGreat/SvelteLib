@@ -149,6 +149,48 @@ export function isPluginAssetName(filename) {
 }
 
 /**
+ * Pure function. A plugin-asset filename that is not in `existing`, de-collided by
+ * appending " 2", " 3", … to the STEM — i.e. the part before `.plugin.js`.
+ *
+ * WHY THIS EXISTS INSTEAD OF assetRef.uniqueAssetName, which already de-collides
+ * asset names: that one splits at the LAST dot, so "clock_digital.plugin.js"
+ * becomes "clock_digital.plugin 2.js" — which `isPluginAssetName` REJECTS. The copy
+ * would be stored, listed and thumbnailed as an ordinary .js file and would silently
+ * stop being a widget: the loader skips it, its type never registers, and any item
+ * using that type becomes an orphan that repair DROPS. A two-dot suffix needs a
+ * suffix-aware de-collide, so the rule lives here beside the suffix it protects.
+ *
+ * @param {string} filename - a plugin-asset basename (must end in PLUGIN_ASSET_SUFFIX)
+ * @param {Iterable<string>} existing - names already taken
+ * @returns {string} a free name, still ending in PLUGIN_ASSET_SUFFIX
+ *
+ * @example
+ * // Free already ⇒ unchanged.
+ * uniquePluginAssetName("gear.plugin.js", [])
+ * // => "gear.plugin.js"
+ * @example
+ * // Taken ⇒ the STEM is numbered, and the double suffix survives intact
+ * // (contrast uniqueAssetName, which would say "clock_digital.plugin 2.js").
+ * uniquePluginAssetName("clock_digital.plugin.js", ["clock_digital.plugin.js"])
+ * // => "clock_digital 2.plugin.js"
+ * @example
+ * // Counts past every taken variant.
+ * uniquePluginAssetName("donut.plugin.js", ["donut.plugin.js", "donut 2.plugin.js"])
+ * // => "donut 3.plugin.js"
+ */
+export function uniquePluginAssetName(filename, existing) {
+  if (!isPluginAssetName(filename))
+    throw new Error(`uniquePluginAssetName: "${filename}" is not a plugin asset (expected a name ending in "${PLUGIN_ASSET_SUFFIX}")`);
+  const taken = new Set(existing);
+  if (!taken.has(filename)) return filename;
+  const stem = filename.slice(0, -PLUGIN_ASSET_SUFFIX.length);
+  for (let n = 2; ; n++) {
+    const candidate = `${stem} ${n}${PLUGIN_ASSET_SUFFIX}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/**
  * THE PLUGIN-ASSET API — every module binding a sandboxed plugin may name.
  *
  * A plugin asset cannot `import`, so this object IS its whole library, and its
@@ -648,6 +690,82 @@ export function loadPluginAsset(source, label, takenTypes) {
   if (takenTypes.has(plugin.type))
     throw new Error(`plugin asset "${label}": type "${plugin.type}" is already registered — a plugin asset may not shadow a built-in widget or another asset (rename its type)`);
   return jailedPluginHooks(plugin); // the block travels with the hooks (deferred escape)
+}
+
+/**
+ * Pure function. A plugin-asset source REWRITTEN to declare `newType`, by wrapping
+ * the original body and overriding `type` + `defaults.type` on whatever it returned.
+ *
+ * WHY WRAP INSTEAD OF EDITING THE TEXT. The obvious approach — find `type: "x"` and
+ * substitute — has to parse JavaScript with a regex to be correct: `type:` occurs at
+ * least TWICE in every library source (the plugin's own and `defaults.type`, which
+ * pluginShapeProblem REQUIRES to match), and also appears inside comments, inside
+ * nested props, and in any string. A substitution that is right for the five files
+ * shipping today would be wrong for the first widget whose docstring says the word.
+ * Wrapping touches none of the author's text: the original body runs UNCHANGED as a
+ * nested function and only its RESULT is adjusted, so the two required occurrences
+ * are updated together by construction and nothing else can be hit.
+ *
+ * The result is still a plugin-asset source (a function body ending in a `return`),
+ * so it goes through loadPluginAsset and the jail exactly like any other — this
+ * grants no new capability, and a caller must still validate the output.
+ *
+ * WHO NEEDS THIS: copying a BUILT-IN widget into a project. A verbatim copy declares
+ * the built-in's type, which loadPluginAsset refuses ("may not shadow a built-in") —
+ * so the copy would be stored and silently never register. Retyping it is what makes
+ * "start from the shipped widget" produce a widget instead of a dead file.
+ *
+ * @param {string} source - a plugin-asset source (function body ending in `return`)
+ * @param {string} newType - the type the copy should declare (lower_snake_case)
+ * @returns {string} a new plugin-asset source declaring `newType`
+ *
+ * @example
+ * // The copy declares the new type in BOTH required places:
+ * const copy = retypedPluginSource("return {type:'gear', title:'G', capabilities:{}, defaults:{type:'gear', w:10}, emit:()=>[]};", "gear_2");
+ * const p = loadPluginAsset(copy, "gear 2.plugin.js", new Set(["gear"]));
+ * [p.type, p.defaults.type, p.defaults.w]
+ * // => ["gear_2", "gear_2", 10]
+ * @example
+ * // Everything else on the plugin survives untouched — it is the SAME object,
+ * // so hooks, capabilities and titles come across as-is.
+ * loadPluginAsset(retypedPluginSource("return {type:'a', title:'Kept', capabilities:{bbox:true}, defaults:{type:'a'}, emit:()=>[]};", "b"), "b.plugin.js", new Set()).title
+ * // => "Kept"
+ */
+export function retypedPluginSource(source, newType) {
+  // The original body becomes a nested function so its own `return` belongs to it,
+  // not to the wrapper. JSON.stringify on the type keeps an odd-but-valid identifier
+  // from breaking out of the literal.
+  return `const __original = (() => {\n${source}\n})();\nreturn { ...__original, type: ${JSON.stringify(newType)}, defaults: { ...__original.defaults, type: ${JSON.stringify(newType)} } };`;
+}
+
+/**
+ * Pure function. A widget type derived from `base` that is not in `taken`, by
+ * appending `_2`, `_3`, … — the type-level twin of uniquePluginAssetName, and kept
+ * beside it because both exist to keep a COPY of an asset from colliding with its
+ * original. Stays lower_snake_case, which pluginShapeProblem requires.
+ *
+ * @param {string} base - the type being copied, e.g. "clock_digital"
+ * @param {Iterable<string>} taken - type names already registered
+ * @returns {string} a free type name
+ *
+ * @example
+ * uniquePluginType("gear", [])
+ * // => "gear"
+ * @example
+ * // The built-in is registered, so a copy of it gets the next free suffix.
+ * uniquePluginType("clock_digital", ["clock_digital"])
+ * // => "clock_digital_2"
+ * @example
+ * uniquePluginType("donut", ["donut", "donut_2"])
+ * // => "donut_3"
+ */
+export function uniquePluginType(base, taken) {
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const candidate = `${base}_${n}`;
+    if (!used.has(candidate)) return candidate;
+  }
 }
 
 /**

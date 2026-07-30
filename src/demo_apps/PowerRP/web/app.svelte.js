@@ -66,7 +66,15 @@ import { refreshPluginWidgetCommands } from "../plugins/builtin_asset_commands.j
 // same loadPluginAsset the loader uses, so a source the editor accepts is exactly a
 // source the loader would register (a second opinion here is how a save that the
 // dialog called fine becomes an orphan purge on the next open).
-import { PLUGIN_ASSET_SUFFIX, isPluginAssetName, loadPluginAsset } from "../core/plugin_assets.js";
+import {
+  PLUGIN_ASSET_SUFFIX,
+  isPluginAssetName,
+  loadPluginAsset,
+  retypedPluginSource,
+  uniquePluginAssetName,
+  uniquePluginType,
+} from "../core/plugin_assets.js";
+import { builtinWidgetAssets } from "./builtinAssets.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
@@ -102,6 +110,14 @@ const LEGACY_CLIPBOARD_SOURCE_ID = "legacy-clipboard-payload";
 // the mirror keeps ELEMENT paste working when the backend is unreachable, so a
 // dead server never downgrades a widget copy into a flattened image paste).
 const CLIPBOARD_MIRROR_KEY = "powerrp.clipboardMirror";
+
+// What the code editor tells the author when it opens a BUILT-IN widget's source:
+// the buffer is read-only (those bytes are in the app bundle, not in any project),
+// and Save is a COPY-INTO-THIS-PROJECT rather than a write-back. Named here rather
+// than inlined because it is asserted verbatim by the browser probe — the note is
+// the whole reason the read-only dialog is not a dead end, so a silent reword should
+// break a test.
+const BUILTIN_PLUGIN_EDIT_NOTE = "Built-in — Save copies into this project";
 
 // Retina/HiDPI is CAMERA-ONLY (the scene-global "Rendering" bundle on THE
 // camera — core/properties.js). There is deliberately NO browser-level retina
@@ -1885,15 +1901,65 @@ export class PowerRPApp {
   //     its type an ORPHAN that the repair pass would drop on the next load
   //     (pluginAssetLoader's header). So the check runs BEFORE the write, and a
   //     broken source is never stored at all.
+  //
+  // ── A BUILT-IN IS NOT A PROJECT ASSET (the 404 this pass fixed) ──────────────
+  // The Asset Explorer's "show built-ins" toggle lists the shipped widget library
+  // (web/builtinAssets.js) in the SAME grid as the project's own files, and every
+  // method here used to resolve a tile's name against the project's asset store.
+  // So double-clicking clock_digital.plugin.js threw
+  //   httpAssetStore.get(RobotSim, clock_digital.plugin.js): 404
+  // — the file is bundled INSIDE THE APP and has never been in any project folder.
+  // A built-in tile is now a distinct ORIGIN, not a project filename:
+  //
+  //   READ comes from the built-in catalog (`source` is already in hand on the
+  //   listing entry — no I/O at all), never from the store.
+  //   THE EDITOR OPENS READ-ONLY, with a visible note saying so. Editing in place is
+  //   not a thing that could work: the bytes live in the JS bundle, and the next
+  //   `npm run build` would overwrite anything we pretended to save.
+  //   SAVE WRITES A COPY into the current project (a collision-safe FILENAME via
+  //   uniquePluginAssetName), which is the outcome the user actually wants —
+  //   "start from the shipped widget and change it".
+  //
+  // THE COPY IS RETYPED, because a verbatim one would be DEAD ON ARRIVAL. The
+  // loader's rule is explicit: "a plugin asset may not shadow a built-in widget or
+  // another asset" (core/plugin_assets.loadPluginAsset). So a byte-identical copy of
+  // clock_digital.plugin.js — still declaring `type: "clock_digital"` — is REFUSED at
+  // registration: it would be stored, listed and thumbnailed while silently not being
+  // a widget, with the reason only in a console report. A distinct FILENAME does not
+  // help, because the collision is on TYPE. (Verified, not assumed: registering a
+  // verbatim copy reports 'type "clock_digital" is already registered'.)
+  //
+  // So the copy gets a free type (`clock_digital_2`, via uniquePluginType) applied by
+  // core/plugin_assets.retypedPluginSource — which WRAPS the original body rather than
+  // rewriting its text, because `type:` appears at least twice in every library source
+  // and also inside comments and strings. The author's code is not touched.
+  // The copy is VALIDATED BEFORE IT IS WRITTEN, like every other plugin-asset save, so
+  // a refusal keeps the modal open instead of leaving a dead file in the library.
+  //
+  // That is why `codeModal` for this scope carries `builtin` and `readOnly`: the
+  // dialog must both refuse in-place editing AND explain what Save will do instead.
 
   /** The last plugin-asset save's refusal message (null = none). Reactive so
    *  CodeEditorModal's `problem` footer shows it the moment Save is refused. */
   pluginAssetError = $state(null);
 
-  /** Query (asset store). Read one plugin asset's source text through the storage
-   *  seam. Separate from openPluginAssetCode so a probe/test can read the stored
-   *  bytes without opening a dialog. */
+  /** Query (pure over the bundled library). One BUILT-IN widget library entry by
+   *  filename, or null when the name is not in the library. The predicate that
+   *  decides "is this tile a built-in?" — kept in one place so the read, the
+   *  read-only flag and the copy-on-save branch cannot disagree about it. */
+  builtinPluginAsset(filename) {
+    return builtinWidgetAssets().find((a) => a.name === filename) ?? null;
+  }
+
+  /** Query (asset store, EXCEPT for a built-in). Read one plugin asset's source
+   *  text. A BUILT-IN's source is already in the bundled catalog entry, so it is
+   *  returned directly and the store is never asked — asking it is precisely the
+   *  404 this pass fixed (see the block header). A PROJECT asset goes through the
+   *  storage seam as before. Separate from openPluginAssetCode so a probe/test can
+   *  read the bytes without opening a dialog. */
   async pluginAssetSource(filename, project = this.projectName()) {
+    const builtin = this.builtinPluginAsset(filename);
+    if (builtin) return builtin.source;
     const blob = await assetStore().get(project, filename);
     return blob.text();
   }
@@ -1902,6 +1968,10 @@ export class PowerRPApp {
    * Command (async; opens the modal). Open the Monaco editor on a `*.plugin.js`
    * asset's JavaScript. Reads the bytes FIRST and only then opens, so the dialog
    * never appears around an empty buffer that later fills in and clobbers typing.
+   *
+   * A BUILT-IN opens READ-ONLY, with a note saying that Save copies it into this
+   * project — its bytes are in the app bundle and cannot be edited in place (see
+   * the block header). A PROJECT asset opens editable, exactly as before.
    *
    * Refuses a non-plugin filename loudly rather than opening a JavaScript editor
    * on a PNG. A read failure is re-thrown for the caller to surface in the pane's
@@ -1914,12 +1984,20 @@ export class PowerRPApp {
   async openPluginAssetCode(filename, project = this.projectName()) {
     if (!isPluginAssetName(filename))
       throw new Error(`openPluginAssetCode: "${filename}" is not a plugin asset (expected a name ending in "${PLUGIN_ASSET_SUFFIX}")`);
+    const builtin = !!this.builtinPluginAsset(filename);
     const source = await this.pluginAssetSource(filename, project);
     this.pluginAssetError = null;
     this.codeModal = {
-      scope: "asset", property: "source", filename, project, source,
+      scope: "asset", property: "source", filename, project, source, builtin,
+      // READ-ONLY is the built-in's whole point here: Monaco must refuse the edit
+      // rather than accept keystrokes into a buffer whose Save cannot write back to
+      // where they came from.
+      readOnly: builtin,
       language: "javascript",
-      title: `${filename} — widget source (saving re-registers it live)`,
+      note: builtin ? BUILTIN_PLUGIN_EDIT_NOTE : null,
+      title: builtin
+        ? `${filename} — built-in widget source (read-only)`
+        : `${filename} — widget source (saving re-registers it live)`,
     };
   }
 
@@ -1937,6 +2015,10 @@ export class PowerRPApp {
   async commitPluginAssetCode(source) {
     const t = this.codeModal;
     if (!t || t.scope !== "asset") return;
+    // A BUILT-IN's Save is a COPY-INTO-THIS-PROJECT, not a write-back: its bytes
+    // are in the app bundle (see the block header). Routed out first so none of the
+    // replace-in-place logic below can run against a file no project owns.
+    if (t.builtin) return this.copyBuiltinPluginAssetIntoProject(source);
     const taken = new Set(this.registry.all().map((p) => p.type));
     // Whatever type THIS asset currently declares is not a collision with itself.
     try {
@@ -1969,6 +2051,64 @@ export class PowerRPApp {
     await this.reloadPluginAssets(t.project);
     this.assetsVersion++; // the Asset Explorer re-lists (size/mtime changed)
     this.codeModal = null;
+  }
+
+  /**
+   * Command (async; writes a NEW asset, rebuilds the registry). Save-from-a-built-in:
+   * write `source` into the CURRENT project as a new plugin asset and register it.
+   * See the block header for why a built-in cannot be saved in place and why the copy
+   * must be retyped.
+   *
+   * Three things are made collision-safe, in this order, because each depends on the
+   * previous one being settled:
+   *   1. THE FILENAME, against the project's existing assets (uniquePluginAssetName —
+   *      suffix-aware, so the copy is still a `*.plugin.js`).
+   *   2. THE TYPE, against every type currently registered (uniquePluginType). This is
+   *      the one that actually decides whether the copy is a widget at all.
+   *   3. THE SOURCE, retyped to match (retypedPluginSource).
+   *
+   * Then it VALIDATES before writing — same rule as an ordinary plugin-asset save: a
+   * refusal leaves nothing behind and keeps the modal open with the reason in its
+   * footer. On success the copy is stored, the registry is rebuilt so the new widget is
+   * immediately insertable, and the dialog closes.
+   */
+  async copyBuiltinPluginAssetIntoProject(source) {
+    const t = this.codeModal;
+    const project = this.projectName();
+    const existingNames = (await assetStore().list(project)).map((a) => a.name);
+    const filename = uniquePluginAssetName(t.filename, existingNames);
+    const taken = new Set(this.registry.all().map((p) => p.type));
+    // The built-in's own type is the BASE to number from, read from the source the
+    // dialog was seeded with rather than from a name-derived guess.
+    let baseType;
+    try {
+      baseType = loadPluginAsset(t.source, t.filename, new Set()).type;
+    } catch (e) {
+      // The BUILT-IN's own stored source does not load. That is an app-integrity
+      // failure, not a user error, and it must not be papered over into a confusing
+      // copy: report it and refuse.
+      this.pluginAssetError = `the built-in "${t.filename}" does not load, so it cannot be copied: ${e?.message ?? e}`;
+      console.error(`copyBuiltinPluginAssetIntoProject: built-in "${t.filename}" failed to load —`, e);
+      return;
+    }
+    const newType = uniquePluginType(baseType, taken);
+    const retyped = retypedPluginSource(source, newType);
+    try {
+      loadPluginAsset(retyped, filename, taken);
+    } catch (e) {
+      this.pluginAssetError = String(e?.message ?? e);
+      console.error(`copyBuiltinPluginAssetIntoProject: refused to copy "${t.filename}" as "${filename}" —`, e);
+      return; // modal stays open with the reason in its footer
+    }
+    this.pluginAssetError = null;
+    // PUT, not replace: this is a NEW file in the library (the add-a-file verb), the
+    // exact opposite of the edit-in-place case above. The name is already de-collided,
+    // so put's own de-collision has nothing left to do.
+    await assetStore().put(project, new Blob([retyped], { type: "text/javascript" }), filename);
+    await this.reloadPluginAssets(project);
+    this.assetsVersion++; // the Asset Explorer re-lists (a new tile appears)
+    this.codeModal = null;
+    return { filename, type: newType };
   }
 
   // ── Item operations ────────────────────────────────────────────────────────

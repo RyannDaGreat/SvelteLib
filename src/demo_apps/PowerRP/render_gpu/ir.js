@@ -141,6 +141,51 @@ export const GRADIENT_TYPES = ["linearGradient", "radialGradient"];
 const STUB_PAINT_TYPES = ["pattern", "image", "shader"];
 
 /**
+ * THE OFF PAINT'S STORED TYPE TAG — a fill/stroke that paints NOTHING.
+ *
+ * WHY A TAGGED OBJECT AND NOT `null`. `null` is already taken, and taken by
+ * something that would silently do the wrong thing: core/deltas.js NONE === null
+ * is the DELETE sentinel, so storing `fill: null` on a slide does not mean "off
+ * here" — it REMOVES the key, and the folded state falls back to whatever the
+ * previous slide (or the plugin default) says. An off fill has to be a value that
+ * a delta can carry like any other, which means a tag. `{type: "none"}` is that
+ * tag, and it rides the SAME multi-sub-state record every other mode does
+ * ({type, solid, linear, radial, material}) — so switching Off→Solid→Off keeps
+ * every mode's remembered state exactly like the gradient modes already do, and a
+ * paint that has never been anything but a hex string still stays a bare string.
+ *
+ * It also tweens correctly for free: core/interpolators.js is DISCRETE across a
+ * shape change (a hex STRING → a tagged OBJECT is a key-set mismatch), so
+ * keyframing a fill from red to Off switches at alpha > 0 rather than building a
+ * half-off intermediate — the discrete-value rule the manifest already states.
+ *
+ * At the RENDER boundary it collapses to exactly what "no fill" has always been:
+ * parsePaint returns null, and every backend's `if (cmd.fill)` guard already skips
+ * a null fill (paint_skia drawRRect/drawOval/drawPath, the PDF and SVG exporters).
+ * So the off state costs the backends ZERO new code — verified, not assumed.
+ */
+export const PAINT_NONE_TYPE = "none";
+
+/**
+ * Pure function. True iff a STORED paint value is the OFF paint — the fill that
+ * paints nothing (a shape becomes hollow: stroke only; an SVG keeps its own
+ * intrinsic paints). The one predicate every consumer of a stored paint asks;
+ * parsePaint collapses it to null so the display list never carries it.
+ *
+ * @param {*} paint - any stored paint value
+ * @returns {boolean}
+ *
+ * @example isPaintOff({type: "none"}) // true
+ * @example isPaintOff({type: "none", solid: "#f00", linear: {}, radial: {}}) // true (multi-sub-state: the other modes are remembered)
+ * @example isPaintOff("#ff0000") // false
+ * @example isPaintOff({type: "solid", solid: "#f00"}) // false
+ * @example isPaintOff(null) // false (an ABSENT paint, not an off one)
+ */
+export function isPaintOff(paint) {
+  return !!(paint && typeof paint === "object" && !Array.isArray(paint) && paint.type === PAINT_NONE_TYPE);
+}
+
+/**
  * Pure function. True iff a paint value is a MATERIAL paint — the fill mode
  * that shades the shape with a registered material (render_gpu/skia/
  * materials.js) instead of a color/gradient. Stored SPARSE:
@@ -278,6 +323,10 @@ export function parsePaint(paint) {
   if (paint === null || paint === undefined) return null;
   if (!isGradientPaint(paint)) return parseColor(paint); // string / rgba array ⇒ solid
   const type = paint.type;
+  // OFF (`{type: "none"}`) ⇒ the SAME null an absent paint parses to, so every
+  // backend's existing `if (cmd.fill)` guard emits no fill op. See PAINT_NONE_TYPE
+  // for why "off" is a tag and not a bare null in STORAGE.
+  if (type === PAINT_NONE_TYPE) return null;
   // Multi-sub-state SOLID: parse the remembered solid color (byte-identical to a
   // bare-string solid) — the render never sees the stashed linear/radial state.
   if (type === "solid") {

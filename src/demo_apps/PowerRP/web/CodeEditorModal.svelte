@@ -18,6 +18,13 @@
               (core/project_script.js) is the caller that uses it — the app keeps the
               modal OPEN while it is non-null, so a broken script cannot be dismissed
               silently.
+    readOnly  Monaco refuses edits. Save is STILL offered (and relabeled "Save a
+              Copy"), because the caller may have somewhere else to put the text: a
+              BUILT-IN widget's source is read-only here and its Save writes a copy
+              into the project. That is why this is not simply "hide Save".
+    note      a standing fact about the buffer shown in the footer (e.g. "Built-in —
+              Save copies into this project"). Neutral tone; unlike `problem` it is
+              not a failure and is always true of what is open.
     onsave    called with the current editor text on Save / Cmd+Enter — the caller
               turns that into ONE undo unit through the app's commit seam
     oncancel  called on Cancel / Esc / backdrop — the caller drops the edit, no undo
@@ -83,6 +90,17 @@
      *  same dialog that took a broken script reports why it is broken instead of the
      *  author having to hunt for a console line. Null = nothing wrong. */
     problem = null,
+    /** @type {boolean} When true Monaco refuses edits (the buffer is a READ-ONLY
+     *  view of source this dialog cannot write back to). Save is still offered and
+     *  still meaningful — the caller decides what it does with an unmodified buffer;
+     *  a BUILT-IN widget's Save COPIES the source into the project, which is the whole
+     *  reason a read-only editor is not a dead end here (app.svelte.js's asset scope). */
+    readOnly = false,
+    /** @type {string|null} A standing NOTE about this buffer's provenance, shown in
+     *  the footer (e.g. "Built-in — Save copies into this project"). Unlike `problem`
+     *  it is not a failure: it is always true of the thing being edited, so it renders
+     *  in a neutral tone and does not displace the keyboard hint. */
+    note = null,
     /** @type {(text: string) => void} Called with the current text on Save/Cmd+Enter. */
     onsave = undefined,
     /** @type {() => void} Called on Cancel/Esc/backdrop. */
@@ -123,6 +141,12 @@
       value: value ?? "",
       language: language ?? "plaintext",
       theme: monacoThemeForUi(),
+      // READ-ONLY when the caller says the buffer cannot be written back (a built-in
+      // widget's bundled source). `domReadOnly` as well as `readOnly`: the former makes
+      // the underlying textarea itself read-only, so the OS/browser also refuses paste
+      // and IME composition rather than swallowing them silently.
+      readOnly,
+      domReadOnly: readOnly,
       automaticLayout: true,          // track the modal's size (it is 90vw×90vh)
       minimap: { enabled: true },     // the user asked for the minimap explicitly
       fontSize: 14,
@@ -153,6 +177,9 @@
       save,
       cancel,
       hostRect: () => hostEl?.getBoundingClientRect(),
+      // Read off the LIVE editor, not off the prop: the probe's question is "did Monaco
+      // actually refuse the edit", and only the editor's own option answers that.
+      isReadOnly: () => !!editor?.getOption(monaco.editor.EditorOption.readOnly),
     };
 
     return () => {
@@ -177,12 +204,25 @@
            lines in a one-line footer is how a real error goes unread. -->
       {#if problem}
         <span class="code-modal-problem" role="alert">{problem}</span>
+      {:else if note}
+        <!-- A standing fact about the buffer, not a failure: a READ-ONLY built-in
+             saying that Save copies it into the project. It takes the hint's slot
+             because it is strictly more informative than the keyboard ceremony here —
+             the keys still work, but what Save DOES is the thing a reader of a
+             read-only editor needs told. -->
+        <span class="code-modal-note">{note}</span>
       {:else}
         <span class="code-modal-hint">Esc to cancel · {cmdLabel}+Enter to save</span>
       {/if}
       <span class="code-modal-actions">
         <button type="button" class="code-modal-btn" onclick={cancel}>Cancel</button>
-        <button type="button" class="code-modal-btn code-modal-primary" onclick={save}>Save</button>
+        <!-- The primary action's LABEL names what it will actually do. On a read-only
+             built-in that is not "Save" (there is nowhere to save to) but "Save a
+             Copy" — a button announcing an outcome it cannot perform is the same class
+             of lie as an aria-label that names the wrong gesture. -->
+        <button type="button" class="code-modal-btn code-modal-primary" onclick={save}>
+          {readOnly ? "Save a Copy" : "Save"}
+        </button>
       </span>
     </div>
   </div>

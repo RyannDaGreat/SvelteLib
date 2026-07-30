@@ -7307,6 +7307,17 @@ audio.ae-preview-media {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A standing NOTE about the buffer's provenance (a read-only built-in's "Save copies
+   into this project"). Same slot and truncation as .code-modal-problem, but in the
+   ordinary dim ink rather than the error color: it is a fact, not a failure. */
+.code-modal-note {
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .code-modal-actions {
   display: flex;
   gap: var(--a-code-modal-footer-gap);
