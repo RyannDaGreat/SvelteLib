@@ -50,8 +50,8 @@ import { localAssetStore, localProjectStore } from "./assetStore.js";
 import { buildProjectZip, downloadBytes, importProjectZipLocal } from "./projectZip.js";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
-import { assetRef, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
-import { documentAssetRefs, foreignAssetRefs, localizationPlan, rewriteAssetRefs } from "./assetLocalize.js";
+import { assetRef, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
+import { documentAssetRefs, foreignAssetRefs, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "./assetLocalize.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
@@ -216,7 +216,11 @@ export const THEMES = [
   // alongside them (--a-radius-*, --a-glass-*, --a-ui-font). Each justifies
   // exactly one: Nocturne is glass (blur/round/rim on FLOATING surfaces only),
   // the two Futuras are typographic (geometric sans over near-monochrome).
+  // The GLASS PAIR — one material, two times of day. Daybreak is not an
+  // inversion of Nocturne (a flipped light glass washes out); it re-earns each
+  // of the three glass cues for a light field. See its app.css block.
   { id: "nocturne", kind: "dark", title: "Nocturne (glass)" },
+  { id: "daybreak", kind: "light", title: "Daybreak (glass)" },
   { id: "futura-dark", kind: "dark", title: "Futura Dark" },
   { id: "futura-light", kind: "light", title: "Futura Light" },
   // Material set III — one idea each: E-Ink is a REFLECTIVE display (nothing
@@ -1421,8 +1425,35 @@ export class PowerRPApp {
     return { doc, selection: this.selection, selectionSet: this.selectionSet, handleSelection: this.handleSelection, slideIndex: this.slideIndex, viewport: this.lastViewport };
   }
 
+  /**
+   * Command. Install an undo/redo snapshot — THE one seam through which history
+   * replaces the document.
+   *
+   * THE PROJECT NAME IS EXEMPT, and that exemption belongs HERE rather than in
+   * renameProject. Renaming MOVES storage (the server folder, or the IndexedDB
+   * keys), which an undo cannot reverse — so a snapshot that restored the OLD
+   * meta.name would leave the title naming a folder that no longer exists and
+   * every asset lookup under it finding nothing: the user's "all the assets
+   * disappeared" bug, re-created in reverse and with no gesture that repairs it.
+   *
+   * KEEPING RENAME OUT OF `commit` IS NOT SUFFICIENT, which is why this is not
+   * merely belt-and-braces. Every snapshot taken BEFORE a rename still carries the
+   * old name, so undoing any earlier edit — one the user made long before renaming
+   * — would restore it. The name must therefore be pinned at RESTORE time, not
+   * merely omitted at commit time. (A browser probe caught exactly this: the
+   * repro passed, then Undo stranded everything again.)
+   *
+   * The rest of the document is restored verbatim: undo still undoes edits, and it
+   * is only the storage-identity field that history has no authority over.
+   */
   applySnapshot(snap) {
-    this.doc = snap.doc;
+    // The CURRENT name wins over the snapshot's: it is the folder the bytes are
+    // actually in (loadProject/renameProject keep it true), and history is not
+    // allowed to contradict storage.
+    const name = this.doc?.meta?.name;
+    this.doc = name === undefined || snap.doc.meta?.name === name
+      ? snap.doc
+      : { ...snap.doc, meta: { ...snap.doc.meta, name } };
     this.selection = snap.selection;
     // AFTER `selection`, never before: that setter clears BOTH the multi-selection
     // set and the handle selection. Written as the FIELD (not through selectMany,
@@ -1841,9 +1872,10 @@ export class PowerRPApp {
   /** Command. Commits the edited source as ONE undo unit and closes the modal. An
    *  ITEM target goes through the universal setPreview→commitPreview path every
    *  property edit uses; a DOCUMENT target commits a new doc.meta straight through
-   *  `commit`, which is the same path renameProject uses — so both land in the
-   *  global undo stack and both mark the document dirty for the save indicator.
-   *  A no-op when nothing is open. */
+   *  `commit` — so it lands in the global undo stack and marks the document dirty
+   *  for the save indicator. (renameProject deliberately does NOT come through
+   *  here: renaming MOVES storage, which an undo cannot reverse — see its
+   *  docblock.) A no-op when nothing is open. */
   commitCodeModal(value) {
     const t = this.codeModal;
     if (!t) return;
@@ -3279,16 +3311,96 @@ export class PowerRPApp {
     return this.doc.meta.name || "Untitled";
   }
 
-  /** Command (one undo unit). Rename the PROJECT — writes `doc.meta.name`,
-   *  the SINGLE source of the project name (toolbar title, Save default, and the
-   *  name Open sets). Trims; a blank or unchanged name is a no-op, so the title
-   *  can never be emptied. Undoable like any document edit (goes through commit).
-   *  Used by BOTH the toolbar title's double-click rename AND the Save-As path,
-   *  so title / open / save always agree on one name. */
-  renameProject(name) {
+  /**
+   * Command (async; MOVES STORAGE, NOT AN UNDO UNIT). Rename the PROJECT: move
+   * projects/<old> → projects/<new> (HTTP) or re-key its IndexedDB records
+   * (static), then set doc.meta.name to follow. Trims; a blank or unchanged name
+   * is a no-op, so the title can never be emptied.
+   *
+   * THE DEFECT THIS REPLACES (user, verbatim): "as soon as I renamed the project,
+   * all the assets disappeared. That's cursed." Renaming used to write
+   * doc.meta.name and NOTHING ELSE, leaving every asset under the OLD folder while
+   * every reader — the Asset Explorer's listing, and the resolution of every
+   * relative `src` — asked under the NEW name and found nothing.
+   *
+   * THE USER'S RULING: "rename should not copy a project — rename should rename
+   * and MOVE a project… If I rename a project it should rename the folder and
+   * everything inside it is implicitly renamed." THE FOLDER IS THE IDENTITY;
+   * doc.meta.name FOLLOWS it, never the reverse (loadProject stamps the folder
+   * name onto whatever it reads, so a hand-run `mv` renames the project too).
+   *
+   * NOT UNDOABLE, AND THAT IS THE POINT. This does not go through `commit`, so it
+   * makes no undo unit. A document-undo can only restore doc.meta.name; it cannot
+   * move a folder back. So an undoable rename would put the title back to "Old"
+   * while the bytes sat in "New" — the EXACT stranding this fixes, re-created in
+   * reverse and with no gesture that repairs it. Undoing a rename is renaming
+   * back, which genuinely moves back. (Undo-stack contents are otherwise
+   * untouched: the document did not change, so nothing in the history is stale.)
+   *
+   * THE ORDER IS LOAD-BEARING — relativize+save, THEN move, THEN name — and each
+   * step leaves a CONSISTENT state if the next one fails:
+   *
+   *   1. RELATIVIZE own-project absolute refs and SAVE, still under the OLD name.
+   *      A legacy "/asset/Old/clip.mp4" would name a dead folder the instant the
+   *      move happened; "clip.mp4" names no project and survives it. The rewrite
+   *      is semantically a NO-OP AT THIS INSTANT (both spellings resolve to the
+   *      same file while the doc still lives in "Old"), which is what makes it
+   *      safe to persist BEFORE the move rather than after. FAILURE HERE: nothing
+   *      has moved, the document is either its original self or its relativized
+   *      equivalent — both correct under the old name. Fully working project.
+   *   2. MOVE the storage. One os.rename server-side (atomic within a filesystem)
+   *      or one re-key pass locally. FAILURE HERE: the move did not happen, the
+   *      document is still relativized under the OLD name, and meta.name still
+   *      says "Old" because step 3 has not run. Fully working project, and the
+   *      user sees the refusal (a taken name) with nothing to clean up.
+   *   3. SET meta.name. Only now, when the bytes are provably at the new name.
+   *      This is a plain field write, not a commit.
+   *
+   *   The inverse order is what fails: naming first (today's bug) strands every
+   *   asset for the whole window; moving before relativizing leaves legacy
+   *   absolute self-refs pointing at a folder that no longer exists, and the save
+   *   that would fix them would then have to be written to the NEW folder — so a
+   *   crash between the two loses the repair rather than being a no-op.
+   *
+   * The relativize+save in step 1 is SKIPPED when the document holds no
+   * own-project absolute refs (the overwhelmingly common case now that writers
+   * mint relative refs): there is nothing to rewrite, so there is nothing to
+   * persist, and a rename must not push an unrelated in-flight edit to storage.
+   *
+   * @param {string} name - the new project name
+   * @returns {Promise<string|undefined>} the new name, or undefined for a no-op
+   */
+  async renameProject(name) {
     const trimmed = (name ?? "").trim();
-    if (!trimmed || trimmed === this.doc.meta.name) return;
-    this.commit({ ...this.doc, meta: { ...this.doc.meta, name: trimmed } });
+    const from = this.projectName();
+    if (!trimmed || trimmed === from) return;
+
+    // STEP 1 — relativize own-project absolute refs, and persist that BEFORE the
+    // move (see the ordering proof above). `plainDoc` de-proxies the $state doc so
+    // the pure walk sees a plain object; the comparison against it (not against
+    // the proxy) is what makes "nothing to rewrite" a reliable skip.
+    const before = plainDoc(this.doc);
+    const relativized = relativizedOwnRefs(before, from);
+    if (JSON.stringify(relativized) !== JSON.stringify(before)) {
+      this.doc = relativized;
+      await this.saveToServer(from);
+    }
+
+    // STEP 2 — move the storage. Loud on a refusal (missing source, taken name);
+    // meta.name has NOT been touched yet, so the project stays consistent.
+    await projectStore().rename(from, trimmed);
+
+    // STEP 3 — the name follows the folder. A field write, NOT a commit: renaming
+    // is a storage operation and must not enter the document undo stack.
+    this.doc = { ...this.doc, meta: { ...this.doc.meta, name: trimmed } };
+    // The document at the new name IS what storage holds (step 1 persisted any
+    // rewrite; step 2 moved those exact bytes), so the save indicator must not
+    // report a freshly-renamed project as unsaved work.
+    this.savedDoc = this.doc;
+    // The project's plugin assets are keyed by project name — rebuild the registry
+    // against the new one so a *.plugin.js widget keeps resolving after the move.
+    await this.reloadPluginAssets(trimmed);
+    return trimmed;
   }
 
   /** Query. Whether a project FOLDER named `name` already exists on the server —
@@ -3323,6 +3435,52 @@ export class PowerRPApp {
       this.saving = false;
     }
     return name;
+  }
+
+  /**
+   * Command (async; COPIES STORAGE). SAVE-AS = FORK: write the current document
+   * to a NEW project `name` AND copy this project's assets into it, leaving the
+   * ORIGINAL project completely intact and working.
+   *
+   * SAVE-AS IS THE OPPOSITE VERB FROM RENAME, and conflating them is what the old
+   * code did wrong. Rename MOVES (one project, new identity); Save-As FORKS (two
+   * projects, both complete). Save-As used to call renameProject then save, which
+   * minted DIVERGENCE: the new folder got a doc.json and no assets, while every
+   * relative `src` in it now resolved against a library that was not there. The
+   * fork's copy is what makes the new project stand on its own.
+   *
+   * THE ORDER IS COPY-THEN-SAVE. The assets land first, so at no instant does a
+   * doc.json exist at `name` whose refs resolve to nothing — a fork interrupted
+   * after the copy is an asset folder with no document (invisible: the listing
+   * shows it with slideCount null, and the next save completes it), whereas one
+   * interrupted after a save-first would be exactly the broken project this
+   * exists to prevent.
+   *
+   * The copy runs SERVER-SIDE in HTTP mode (one request; a large video never
+   * transits the browser) and blob-by-blob in static mode. Existing destination
+   * files are never overwritten in either mode.
+   *
+   * The editor then FOLLOWS the fork — the open project becomes the new one, which
+   * is what "Save As" means everywhere else — by setting meta.name directly (a
+   * field write, not a commit: like rename, this is a storage operation, and an
+   * undo cannot un-write a folder).
+   *
+   * @param {string} name - the NEW project's name
+   * @returns {Promise<{name: string, copied: string[], skipped: string[]}>}
+   */
+  async saveProjectAsFork(name) {
+    const trimmed = (name ?? "").trim();
+    const from = this.projectName();
+    if (!trimmed) throw new Error("saveProjectAsFork: a fork needs a name");
+    if (trimmed === from) throw new Error(`saveProjectAsFork(${trimmed}): that is the project already open — use Save, not Save As`);
+    const copy = await projectStore().copyAssets(from, trimmed);
+    this.doc = { ...this.doc, meta: { ...this.doc.meta, name: trimmed } };
+    await this.saveToServer(trimmed);
+    // Plugin assets are keyed by project name; the fork has its own copies now.
+    await this.reloadPluginAssets(trimmed);
+    if (copy.skipped?.length)
+      console.warn(`Save As "${trimmed}": ${copy.skipped.length} asset(s) already existed in the destination and were NOT overwritten: ${copy.skipped.join(", ")}`);
+    return { name: trimmed, copied: copy.copied ?? [], skipped: copy.skipped ?? [] };
   }
 
   /** Query. The save indicator's state: "saving" while a request is in flight,

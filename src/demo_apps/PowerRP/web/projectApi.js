@@ -57,6 +57,24 @@ export async function saveProject(name, doc) {
   return jsonOrThrow(res, `saveProject(${name})`);
 }
 
+/** Command. RENAME = MOVE projects/<old> → projects/<new> on the server (one
+ *  os.rename; the project's assets travel with it and its relative refs need no
+ *  rewriting). Returns {ok, name}. Throws loudly on a missing source (404) or an
+ *  occupied destination (409) — a rename never merges or overwrites. */
+export async function renameProject(oldName, newName) {
+  const res = await fetch(`${BACKEND}/api/rename-project/${enc(oldName)}/${enc(newName)}/`, { method: "POST" });
+  return jsonOrThrow(res, `renameProject(${oldName} → ${newName})`);
+}
+
+/** Command. SAVE-AS FORK: copy every asset of `src` into `dst` SERVER-SIDE, so a
+ *  fork of a deck holding a large video never pulls those bytes through the
+ *  browser. Returns {ok, copied:[…], skipped:[…]} — `skipped` names files the
+ *  destination already had (never overwritten). */
+export async function copyProjectAssets(src, dst) {
+  const res = await fetch(`${BACKEND}/api/copy-assets/${enc(src)}/${enc(dst)}/`, { method: "POST" });
+  return jsonOrThrow(res, `copyProjectAssets(${src} → ${dst})`);
+}
+
 /** Query. List a project's assets: [{name, size, kind, url}]. Reflects the
  *  assets/ folder on disk — the source of truth (manual drops appear here). */
 export async function listAssets(name) {

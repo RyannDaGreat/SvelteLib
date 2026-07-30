@@ -29,7 +29,8 @@
 import assert from "node:assert/strict";
 import { unzipSync } from "fflate";
 import { assetRef, uniqueAssetName } from "../web/assetRef.js";
-import { documentAssetRefs, foreignAssetRefs, itemIdForPath, localizationPlan, rewriteAssetRefs } from "../web/assetLocalize.js";
+import { documentAssetRefs, foreignAssetRefs, itemIdForPath, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "../web/assetLocalize.js";
+import { resolveAssetRef } from "../core/asset_ref.js";
 import { buildProjectZip } from "../web/projectZip.js";
 
 let passed = 0;
@@ -455,6 +456,85 @@ await testAsync("buildProjectZip leaves a self-contained doc's archive alone", a
   assert.deepEqual(warnings, []);
   assert.deepEqual(members, ["Solo/assets/a.png", "Solo/doc.json"]);
   assert.deepEqual(archived, doc); // no gratuitous rewrite
+});
+
+// ── relativizedOwnRefs: the pure half of RENAME = MOVE ──────────────────────
+// THE DEFECT (user, verbatim): "as soon as I renamed the project, all the assets
+// disappeared. That's cursed." Rename now MOVES the project folder. A RELATIVE
+// ref survives that for free (it names no project); a LEGACY ABSOLUTE SELF-ref
+// does not, so a rename relativizes its own absolute refs FIRST. These pin the
+// three properties that make that safe: it is a no-op on the refs it must not
+// touch, it is semantically identity at the instant it runs, and it is
+// idempotent (so a retried or double-invoked rename cannot compound).
+
+test("relativizedOwnRefs rewrites OWN absolute refs to their relative spelling", () => {
+  const doc = { meta: { name: "Old" }, slides: [{ delta: { items: { v: { src: "/asset/Old/clip.mp4" } } } }] };
+  assert.deepEqual(relativizedOwnRefs(doc, "Old"), {
+    meta: { name: "Old" },
+    slides: [{ delta: { items: { v: { src: "clip.mp4" } } } }],
+  });
+});
+
+test("relativizedOwnRefs leaves FOREIGN refs absolute", () => {
+  // "/asset/Shared/bg.png" means THAT project's file and keeps meaning it after
+  // this project moves. Relativizing it would silently repoint it at a file this
+  // project does not have — a hole, exactly like the one this module exists for.
+  const doc = { slides: [{ delta: { items: { b: { src: "/asset/Shared/bg.png" } } } }] };
+  assert.deepEqual(relativizedOwnRefs(doc, "Old"), doc);
+});
+
+test("relativizedOwnRefs is a no-op on already-relative refs and non-refs", () => {
+  const doc = {
+    slides: [{ delta: { items: {
+      rel: { src: "clip.mp4" },
+      remote: { src: "https://x.com/a.png" },
+      data: { src: "data:image/png;base64,iVBO" },
+      builtin: { src: "builtin:library/clock_analog.plugin.js" },
+      text: { text: "= 1 + 2" },
+    } } }],
+  };
+  assert.deepEqual(relativizedOwnRefs(doc, "Old"), doc);
+});
+
+test("relativizedOwnRefs handles percent-encoded names and NESTED paths", () => {
+  // A nested path is a legal relative ref, and a space-bearing project name is
+  // percent-encoded in the absolute spelling — both must survive the round trip,
+  // because both are what the move relies on resolving afterwards.
+  const doc = { slides: [{ delta: { items: {
+    l: { src: "/asset/My%20Talk/icons/logo.svg" },
+    s: { src: "/asset/My%20Talk/a%20b.png" },
+  } } }] };
+  assert.deepEqual(relativizedOwnRefs(doc, "My Talk"), {
+    slides: [{ delta: { items: { l: { src: "icons/logo.svg" }, s: { src: "a b.png" } } } }],
+  });
+});
+
+test("relativizedOwnRefs is IDEMPOTENT and never mutates its input", () => {
+  const doc = { slides: [{ delta: { items: { v: { src: "/asset/Old/clip.mp4" } } } }] };
+  const frozen = JSON.stringify(doc);
+  const once = relativizedOwnRefs(doc, "Old");
+  const twice = relativizedOwnRefs(once, "Old");
+  assert.deepEqual(twice, once); // a second pass changes nothing
+  assert.equal(JSON.stringify(doc), frozen); // the caller's document is untouched
+  assert.notEqual(once, doc); // a copy, so `commit`/assignment sees a new object
+});
+
+test("relativizedOwnRefs is SEMANTICALLY IDENTITY at the instant it runs", () => {
+  // The safety argument for relativizing BEFORE the move, made mechanical: while
+  // the document still lives in "Old", resolving the rewritten refs against "Old"
+  // reproduces the original document exactly. Only the LATER move changes what
+  // "relative" means — by which time every self-ref is relative.
+  const doc = { slides: [{ delta: { items: {
+    v: { src: "/asset/Old/clip.mp4" },
+    l: { src: "/asset/Old/icons/logo.svg" },
+    b: { src: "/asset/Shared/bg.png" },
+  } } }] };
+  const relativized = relativizedOwnRefs(doc, "Old");
+  // Resolve every `src` back against the SAME project, using the grammar's own
+  // resolver (core/asset_ref.js) rather than a re-implementation here.
+  const reresolved = JSON.parse(JSON.stringify(relativized), (k, v) =>
+    (k === "src" ? resolveAssetRef(v, "Old") : v));
+  assert.deepEqual(reresolved, doc);
 });
 
 console.log(`\n${passed} asset-localization tests passed.`);

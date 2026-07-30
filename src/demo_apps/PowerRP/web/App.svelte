@@ -165,9 +165,16 @@
   // silently overwrote). Choose/confirm a name (default = the current meta.name)
   // with CONFLICT protection: if a project of that name already exists on the
   // server — the SAME list the Open modal renders — the primary action becomes a
-  // loud "Overwrite" (destructive-action-confirm; never a silent clobber). On
-  // confirm the name is applied (renameProject → the title updates too) then
-  // pushed (saveToServer), so title / open / save all agree on one name.
+  // loud "Overwrite" (destructive-action-confirm; never a silent clobber).
+  //
+  // ONE MODAL, TWO OPERATIONS, AND IT SAYS WHICH. Typing the CURRENT name is a
+  // plain SAVE (update this project). Typing a DIFFERENT name is a SAVE AS —
+  // which FORKS: it copies this project's assets to the new project so the fork
+  // stands on its own, and leaves the original intact. It is emphatically NOT a
+  // rename (that MOVES; see app.renameProject), and the button text plus the note
+  // under the field say which of the two the current input will do — the old code
+  // called renameProject here, which named the new project without carrying
+  // anything to it and left every relative ref in the fork resolving to nothing.
   let saveModalVisible = $state(false);
   let saveName = $state("");
   let saveProjectNames = $state([]); // existing project names, for the conflict check
@@ -196,8 +203,10 @@
     saveBusy = true;
     saveError = null;
     try {
-      app.renameProject(name); // one name model — applies to the title before the push
-      await app.saveToServer(name);
+      // A DIFFERENT name FORKS (copies the assets, original untouched); the
+      // current name is an ordinary update of this project.
+      if (saveIsCurrent) await app.saveToServer(name);
+      else await app.saveProjectAsFork(name);
       saveModalVisible = false;
     } catch (e) {
       saveError = String(e.message ?? e);
@@ -207,19 +216,38 @@
     }
   }
 
-  // Rename modal (bug: double-clicking the top-left title did nothing). A pure
-  // LOCAL edit — writes doc.meta.name via app.renameProject (undoable), no server
-  // round-trip, no conflict check (that is a Save concern). Opened by the toolbar
-  // title's double-click and the "Rename Project…" command.
+  // Rename modal (bug: double-clicking the top-left title did nothing). RENAMING
+  // MOVES THE PROJECT — app.renameProject relativizes the document's own absolute
+  // refs, moves the storage (server folder / IndexedDB keys), then lets
+  // doc.meta.name follow. It is therefore ASYNC and CAN FAIL (a taken name), so
+  // this modal has the same busy + error surface Save does and STAYS OPEN on a
+  // refusal so the name can be corrected. It is also NOT undoable, by design: an
+  // undo cannot move a folder back, so undoing a rename is renaming back.
+  // Opened by the toolbar title's single click and the "Rename Project…" command.
   let renameModalVisible = $state(false);
   let renameName = $state("");
+  let renameBusy = $state(false);
+  let renameError = $state(null);
   app.showRenameModal = () => {
     renameName = app.projectName();
+    renameError = null;
+    renameBusy = false;
     renameModalVisible = true;
   };
-  function confirmRename() {
-    app.renameProject(renameName);
-    renameModalVisible = false;
+  async function confirmRename() {
+    const name = renameName.trim();
+    if (!name || renameBusy) return;
+    renameBusy = true;
+    renameError = null;
+    try {
+      await app.renameProject(name);
+      renameModalVisible = false;
+    } catch (e) {
+      renameError = String(e.message ?? e);
+      console.error("Rename Project failed:", e);
+    } finally {
+      renameBusy = false;
+    }
   }
 
   // Import-a-.zip RESULT modal. Importing an archive is the one storage action
@@ -485,6 +513,8 @@
     desert: "mdi:cactus",
     // Material set II (the non-colour levers):
     nocturne: "mdi:glass-tulip",
+    daybreak: "mdi:glass-cocktail", // the glass pair: same vessel family, lighter stem
+
     "futura-dark": "mdi:format-letter-case",
     "futura-light": "mdi:format-letter-case-upper",
     // Material set III:
@@ -1950,20 +1980,26 @@
         <div class="name-modal-warning">{saveError}</div>
       {:else if saveWouldClobber}
         <div class="name-modal-warning">A different project named “{saveTrimmed}” already exists — saving will OVERWRITE it.</div>
-      {:else if saveNameExists && saveIsCurrent}
+      {:else if saveIsCurrent}
         <div class="name-modal-note">Updates the existing project “{saveTrimmed}”.</div>
+      {:else if saveTrimmed}
+        <!-- Says the thing the old UI left the user to guess: a new name FORKS.
+             Both projects exist afterwards, and the fork gets its own copy of the
+             library — which is what distinguishes this from Rename (which MOVES). -->
+        <div class="name-modal-note">Saves a COPY as “{saveTrimmed}”, assets included. “{app.projectName()}” stays as it is. (To move this project instead, use Rename.)</div>
       {/if}
       <div class="name-modal-actions">
         <button type="button" class="btn" onclick={() => (saveModalVisible = false)}>Cancel</button>
         <button type="submit" class="btn" class:danger={saveWouldClobber} disabled={!saveTrimmed || saveBusy}>
-          {saveWouldClobber ? "Overwrite" : "Save"}
+          {saveWouldClobber ? "Overwrite" : saveIsCurrent ? "Save" : "Save a Copy"}
         </button>
       </div>
     </form>
   </Modal>
-  <!-- Rename Project: writes doc.meta.name — which IS the project name (manifest
-       Round 12) and what the toolbar shows as the title. Opened by the title's
-       double-click and the "Rename Project…" command. -->
+  <!-- Rename Project: MOVES the project — the folder (or the IndexedDB keys) is
+       renamed and doc.meta.name FOLLOWS it, so the assets travel and every
+       relative ref keeps resolving. Distinct from Save's "Save a Copy", which
+       forks. Opened by the title's click and the "Rename Project…" command. -->
   <Modal bind:open={renameModalVisible} title="Rename Project" size="compact">
     <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmRename(); }}>
       <label class="name-modal-field">
@@ -1982,9 +2018,16 @@
           autofocus
         />
       </label>
+      {#if renameError}
+        <!-- A refusal (the name is taken, the source vanished) keeps the modal
+             OPEN with the reason, so the name can be corrected in place. -->
+        <div class="name-modal-warning">{renameError}</div>
+      {:else if renameName.trim() && renameName.trim() !== app.projectName()}
+        <div class="name-modal-note">Moves the project and its assets to “{renameName.trim()}”. (To keep a copy under the old name, use Save instead.)</div>
+      {/if}
       <div class="name-modal-actions">
         <button type="button" class="btn" onclick={() => (renameModalVisible = false)}>Cancel</button>
-        <button type="submit" class="btn" disabled={!renameName.trim()}>Rename</button>
+        <button type="submit" class="btn" disabled={!renameName.trim() || renameBusy}>{renameBusy ? "Renaming…" : "Rename"}</button>
       </div>
     </form>
   </Modal>

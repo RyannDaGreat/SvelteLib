@@ -12,8 +12,8 @@
  *
  * THE PROBLEM THIS EXISTS FOR. An ABSOLUTE ref bakes a project NAME into the
  * string, and nothing keeps that name equal to the folder the document lives in.
- * Save-As is the proof: `app.renameProject` writes `doc.meta.name` and
- * `saveToServer` writes a NEW folder, while every `src` still names the OLD one.
+ * An IMPORT is the proof: a zip adopted under a de-collided name carries refs
+ * naming the name it had before, so every `src` still names the OLD project.
  * The deck keeps working — the server serves any project's assets to anyone — so
  * the divergence is INVISIBLE until the project leaves the machine. Then
  * `zip_project_bytes` walks one folder, ships a doc whose refs point at a folder
@@ -140,6 +140,46 @@ export function rewriteAssetRefs(doc, replace) {
  */
 export function foreignAssetRefs(refs, project) {
   return refs.filter((r) => r.project !== project);
+}
+
+/**
+ * Pure function. The document with every ABSOLUTE ref that names `project`
+ * ITSELF rewritten to its RELATIVE spelling; foreign refs and relative refs are
+ * left exactly as they are.
+ *
+ * WHAT THIS IS FOR: RENAME IS A MOVE (see app.renameProject). A relative ref
+ * names no project, so it survives the move for free — that is the entire payoff
+ * of the two-form grammar. A LEGACY absolute SELF-ref does not: "/asset/Old/
+ * clip.mp4" keeps naming a folder that no longer exists the instant the folder
+ * moves, which is the stranding the user hit. So a rename relativizes its own
+ * absolute refs FIRST, and the rewrite is SEMANTICALLY A NO-OP AT THAT INSTANT:
+ * "/asset/Old/clip.mp4" and "clip.mp4" resolve to the identical file while the
+ * document still lives in "Old". Only afterwards does the move change what
+ * "relative" means, and by then every self-ref is relative.
+ *
+ * FOREIGN REFS ARE UNTOUCHED, deliberately. "/asset/Shared/bg.png" means "that
+ * project's file" and keeps meaning it after this project moves; relativizing it
+ * would silently repoint it at a file this project does not have.
+ *
+ * Returns a deep copy (rewriteAssetRefs never mutates), and is IDEMPOTENT: a
+ * document that has already been relativized has no self-absolute refs left, so
+ * a second pass changes nothing.
+ *
+ * @param {object} doc - a serialized document
+ * @param {string} project - the project that OWNS the document (the folder it lives in)
+ * @returns {object} a new document
+ *
+ * @example
+ * >>> const doc = {slides: [{delta: {items: {v: {src: "/asset/Old/clip.mp4"}}}}]};
+ * >>> relativizedOwnRefs(doc, "Old")
+ * {slides: [{delta: {items: {v: {src: "clip.mp4"}}}}]}
+ * >>> relativizedOwnRefs({slides: [{delta: {items: {b: {src: "/asset/Shared/bg.png"}}}}]}, "Old")
+ * {slides: [{delta: {items: {b: {src: "/asset/Shared/bg.png"}}}}]}   // foreign: kept absolute
+ * >>> relativizedOwnRefs({slides: [{delta: {items: {v: {src: "clip.mp4"}}}}]}, "Old")
+ * {slides: [{delta: {items: {v: {src: "clip.mp4"}}}}]}               // already relative: unchanged
+ */
+export function relativizedOwnRefs(doc, project) {
+  return rewriteAssetRefs(doc, (e) => (e.project === project ? e.file : null));
 }
 
 /**

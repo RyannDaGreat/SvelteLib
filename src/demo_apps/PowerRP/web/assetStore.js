@@ -297,6 +297,17 @@ export const httpProjectStore = {
   load: (name) => projectApi.loadProject(name),
   /** Command. Write a project's document (creates the folder if new). */
   save: (name, doc) => projectApi.saveProject(name, doc),
+
+  /** Command. RENAME = MOVE the project folder (one server-side os.rename). The
+   *  assets travel with it and the document's RELATIVE refs need no rewriting —
+   *  that is the whole payoff of the relative grammar. Loud on a missing source
+   *  or an occupied destination; never merges. */
+  rename: (from, to) => projectApi.renameProject(from, to),
+
+  /** Command. SAVE-AS FORK: duplicate `from`'s assets into `to`, server-side, so
+   *  a large video never transits the browser. The twin of localProjectStore's
+   *  blob-by-blob copy; both leave the source project untouched. */
+  copyAssets: (from, to) => projectApi.copyProjectAssets(from, to),
 };
 
 /**
@@ -348,9 +359,24 @@ export const localProjectStore = {
     return { ok: true, name };
   },
 
-  /** Command (mutates IndexedDB). Rename a project: moves the doc record AND
-   *  re-keys every asset, because an asset's key CARRIES the project name.
-   *  Refuses a collision loudly rather than merging two projects. */
+  /**
+   * Command (mutates IndexedDB). RENAME = MOVE, the local twin of the server's
+   * os.rename: re-key the doc record AND every asset record, because an asset's
+   * IndexedDB key CARRIES the project name (localDb.assetKey) exactly the way a
+   * server path carries the folder name. Nothing is duplicated; the old keys are
+   * gone when this returns.
+   *
+   * The document's RELATIVE refs ("clip.mp4") name no project, so they are moved
+   * verbatim and resolve against the new name for free. LEGACY ABSOLUTE self-refs
+   * are relativized by the CALLER before this runs (app.renameProject) — doing it
+   * here would need the ref grammar in the storage layer, and the caller is the
+   * one place that also owns the save.
+   *
+   * Refuses a collision loudly rather than merging two projects. The moved
+   * assets' memoized blob: URLs are revoked (their refs named the OLD project, so
+   * they are dead keys) and the new name is re-primed, so a synchronous
+   * resolveUrl answers immediately after the rename with no repaint gap.
+   */
   async rename(from, to) {
     const rec = await withStore(DOC_STORE, "readonly", (s) => promisify(s.get(from), `localProjectStore.rename(${from})`));
     if (!rec) throw new Error(`localProjectStore.rename(${from} → ${to}): no such project in local storage`);
@@ -369,6 +395,36 @@ export const localProjectStore = {
     await withStore(DOC_STORE, "readwrite", (s) => promisify(s.delete(from), `localProjectStore.rename(drop ${from})`));
     await localAssetStore.primeUrls(to);
     return { ok: true, name: to };
+  },
+
+  /**
+   * Command (mutates IndexedDB). SAVE-AS FORK: copy every asset of `from` into
+   * `to`, leaving `from` completely intact — the local twin of the server's
+   * copy_project_assets, and the reason Save-As is a different verb from rename.
+   *
+   * The SAME Blob object is stored under both keys. IndexedDB stores blobs by
+   * reference-counted backing file, so this does not double the bytes on disk the
+   * way two independent uploads would, and neither project can mutate the other's
+   * copy (a blob is immutable; `replace` puts a NEW blob under one key only).
+   *
+   * Existing destination files are SKIPPED, never overwritten — matching the
+   * server's rule exactly, so a fork behaves the same in both modes — which makes
+   * this idempotent. Returns {copied, skipped} in the server's reply shape.
+   */
+  async copyAssets(from, to) {
+    if (from === to) throw new Error(`localProjectStore.copyAssets(${from} → ${to}): source and destination are the same project`);
+    const existing = new Set((await localAssetStore.list(to)).map((a) => a.name));
+    const copied = [], skipped = [];
+    for (const a of await getAllByPrefix(ASSET_STORE, `${from}/`)) {
+      if (existing.has(a.file)) {
+        skipped.push(a.file);
+        continue;
+      }
+      await withStore(ASSET_STORE, "readwrite", (s) => promisify(s.put({ ...a, project: to }, assetKey(to, a.file)), `copyAssets ${a.file}`));
+      copied.push(a.file);
+    }
+    await localAssetStore.primeUrls(to);
+    return { ok: true, copied: copied.sort(), skipped: skipped.sort() };
   },
 
   /** Command (mutates IndexedDB). Delete a local project: its document AND all

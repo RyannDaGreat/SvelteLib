@@ -1357,6 +1357,15 @@ def list_projects():
     Query. Every project folder under PROJECTS_DIR, newest-modified first.
     Each: {name, mtime, slideCount}. slideCount is None if doc.json is
     missing/unreadable (a folder created by a manual mkdir is still listed).
+
+    THE FOLDER NAME IS THE PROJECT'S IDENTITY. `name` comes from os.listdir and
+    NOTHING ELSE — doc.json is opened only to count slides, never to name the
+    project. That is what makes a hand-run `mv projects/Old projects/New` a fully
+    supported rename: the listing shows "New" immediately, and opening it makes
+    doc.meta.name follow (the client's loadProject stamps the folder name onto
+    the document it just read). A listing that preferred a stale stored
+    meta.name would show a name no path uses, and every asset lookup under it
+    would find nothing.
     """
     if not os.path.isdir(PROJECTS_DIR):
         return []
@@ -1570,6 +1579,142 @@ def delete_asset(name, filename):
     if os.path.isdir(thumb_cache):
         shutil.rmtree(thumb_cache)  # a deleted asset's cached thumbnail would otherwise orphan
     return filename
+
+
+# -- RENAME IS A MOVE, AND THE FOLDER IS THE IDENTITY -----------------------
+# THE DEFECT THIS EXISTS FOR (user report, verbatim): "as soon as I renamed the
+# project, all the assets disappeared. That's cursed."
+#
+# Nothing was deleted. A rename wrote doc.meta.name and NOTHING ELSE, while every
+# asset stayed on disk under projects/<OLD>/assets/. Every reader — the Asset
+# Explorer's listing, and the resolution of every relative widget `src` — asks
+# under the document's CURRENT name, so the library read empty and the canvas
+# painted the loud missing-asset sentinel.
+#
+# THE USER'S RULING (verbatim): "rename should not copy a project — rename should
+# rename and MOVE a project. Rename moves things, and it should carry all the
+# references automatically because they're all relative references. If I rename a
+# project it should rename the folder and everything inside it is implicitly
+# renamed. If I rename the folder manually I shouldn't have to worry about it — if
+# I rename the folder, the project name should be renamed automatically."
+#
+# THE DEEP PRINCIPLE, stated once: THE FOLDER NAME IS THE PROJECT'S IDENTITY.
+# doc.meta.name FOLLOWS the folder, never the other way around. That is why
+# list_projects() derives every name from os.listdir and never opens doc.json for
+# it, why _handle_load reports the folder name back, and why a `mv` done by hand
+# in a terminal is a fully supported way to rename a project.
+#
+# WHY MOVE BEATS COPY, which an earlier attempt got wrong: the refs inside
+# doc.json are RELATIVE ("clip.mp4"), so they name no project at all and survive
+# the move untouched — that is the entire payoff of the relative grammar. A copy
+# would double every byte of a deck holding a 2 GB video, and would leave a stale
+# twin whose edits silently diverge. Save-As is the operation that WANTS a copy,
+# and it is a different verb (copy_project_assets, below).
+
+def rename_project(old, new):
+    """
+    Command (mutates the filesystem). MOVE projects/<old> → projects/<new>.
+
+    ONE os.rename of the folder. Within a filesystem that is ATOMIC — the
+    directory either has the old name or the new one, never both and never
+    neither — so an interrupted rename cannot strand half a project's assets
+    under one name and half under the other. Both names are traversal-guarded by
+    safe_name, and both resolve under PROJECTS_DIR, so the move is always
+    same-filesystem and the atomicity holds.
+
+    REFUSES LOUDLY, NEVER MERGES: a missing source and an occupied destination are
+    both errors. os.rename on POSIX would silently replace an empty destination
+    directory and raise on a full one — an inconsistent rule for an operation that
+    must never consume a project the user still has — so the destination is
+    checked explicitly first and refused whatever its contents.
+
+    Renaming to the SAME name is a no-op, not an error: the caller (a rename
+    modal that was confirmed unchanged) has nothing to do, and raising would make
+    a harmless gesture report a failure.
+
+    Nothing inside the folder is rewritten. Relative asset refs ("clip.mp4") name
+    no project, so they resolve against the NEW folder for free; legacy ABSOLUTE
+    self-refs would not, which is why the client relativizes them BEFORE calling
+    this (see web/app.svelte.js renameProject for that ordering).
+
+    Args:
+        old (str): the project's current folder name
+        new (str): the folder name to move it to
+
+    Returns:
+        str: the new name
+
+    Examples:
+        >>> # rename_project("Deck", "Deck v2")   → "Deck v2"; projects/Deck is gone
+        >>> rename_project("Deck", "Deck")        # same name: nothing to do
+        'Deck'
+    """
+    src, dst = project_dir(old), project_dir(new)
+    if src == dst:
+        return new
+    if not os.path.isdir(src):
+        raise FileNotFoundError(f"rename_project({old!r} → {new!r}): no such project")
+    if os.path.exists(dst):
+        raise FileExistsError(f"rename_project({old!r} → {new!r}): {new!r} already exists — rename never merges or overwrites")
+    os.rename(src, dst)
+    return new
+
+
+def copy_project_assets(src, dst):
+    """
+    Command (writes files). Copy every asset of project `src` into project `dst`.
+
+    THIS IS SAVE-AS, NOT RENAME. Save-As FORKS: the original project must stay
+    intact and fully working, so its library is duplicated rather than moved. It
+    runs SERVER-SIDE so a fork of a deck holding a large video never pulls those
+    bytes down to the browser and pushes them back.
+
+    The whole assets/ tree travels — subfolders included, because an author's
+    nested path ("icons/logo.svg") is a legal relative ref. The frames/ and
+    .thumbs/ caches are SKIPPED: they are derivable, can be large, and the fork
+    regenerates them on demand.
+
+    A missing source assets/ folder is an empty library, not an error (a project
+    with no assets forks fine). Existing destination files are SKIPPED, never
+    overwritten — the destination file may be a different asset the user put
+    there, and a fork must never destroy it — which also makes this idempotent.
+
+    Args:
+        src (str): source project name
+        dst (str): destination project name (created if new)
+
+    Returns:
+        dict: {"copied": [...], "skipped": [...]}, both sorted, paths relative to
+              assets/ with "/" separators.
+
+    Examples:
+        >>> # copy_project_assets("Deck", "Deck fork")
+        >>> # {'copied': ['clip.mp4', 'icons/logo.svg'], 'skipped': []}
+        >>> copy_project_assets("Deck", "Deck")   # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+        ValueError: ...
+    """
+    if safe_name(src) == safe_name(dst):
+        raise ValueError(f"copy_project_assets: source and destination are the same project ({src!r})")
+    src_dir, dst_dir = assets_dir(src), assets_dir(dst)
+    copied, skipped = [], []
+    if not os.path.isdir(src_dir):
+        return {"copied": copied, "skipped": skipped}  # no library to carry — not an error
+    os.makedirs(dst_dir, exist_ok=True)
+    derivable = (os.path.join(src_dir, FRAMES_SUBDIR), os.path.join(src_dir, THUMBS_SUBDIR))
+    for root, dirs, files in os.walk(src_dir):
+        dirs[:] = [d for d in dirs if os.path.join(root, d) not in derivable]
+        rel_root = os.path.relpath(root, src_dir)
+        for fn in sorted(files):
+            rel = fn if rel_root == "." else f"{rel_root}/{fn}".replace(os.sep, "/")
+            target = os.path.join(dst_dir, *rel.split("/"))
+            if os.path.exists(target):
+                skipped.append(rel)  # destination wins — reported, never clobbered
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(os.path.join(root, fn), target)
+            copied.append(rel)
+    return {"copied": sorted(copied), "skipped": sorted(skipped)}
 
 
 # -- SELF-CONTAINED EXPORT: the asset-reference walk ------------------------
@@ -2225,6 +2370,13 @@ class Handler(BaseHTTPRequestHandler):
                                      project (never an overwrite); {ok, name,
                                      requested} — name != requested means the
                                      drop collided and was renamed
+      POST /api/rename-project/<old>/<new>/  → MOVE projects/<old> → <new>
+                                     (one os.rename); {ok, name}. 404 = no such
+                                     source, 409 = destination taken (never
+                                     merges or overwrites)
+      POST /api/copy-assets/<src>/<dst>/  → SAVE-AS fork: duplicate <src>'s
+                                     assets/ into <dst> server-side;
+                                     {ok, copied:[…], skipped:[…]}
       GET  /api/frames/<name>/<video>/<N>/  → {count, frames:[url,…]}
                                      (extract N evenly-spread frames, cached)
       DELETE /api/asset/<name>/<file>/  → delete one asset (+ its frame cache);
@@ -2433,6 +2585,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_thumb_store(parts[2], parts[3], parsed)
             if parts == ["api", "import-zip"]:  # a dropped/picked .zip → a new project
                 return self._handle_import_zip(parsed)
+            if len(parts) == 4 and parts[:2] == ["api", "rename-project"]:
+                # RENAME = MOVE projects/<old> → projects/<new>. One request, one
+                # os.rename; the relative refs inside travel unchanged.
+                return self._handle_rename_project(parts[2], parts[3])
+            if len(parts) == 4 and parts[:2] == ["api", "copy-assets"]:
+                # SAVE-AS = FORK: duplicate <src>'s library into <dst> server-side,
+                # so a large video never transits the browser. Rename does NOT use
+                # this — it moves (above).
+                return self._handle_copy_assets(parts[2], parts[3])
             if parts == ["api", "export-mp4"]:  # server-side MP4 export
                 return self._handle_export_begin()
             if len(parts) == 5 and parts[:2] == ["api", "export-mp4"] and parts[3] == "frame":
@@ -2522,6 +2683,34 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, "empty thumbnail body")
         url = save_thumb(name, filename, mtime, badge, data)
         self._json({"ok": True, "thumbnail": url, "badge": badge})
+
+    def _handle_rename_project(self, old, new):
+        # RENAME = MOVE the folder (see rename_project). The client has ALREADY
+        # relativized the document's own-project absolute refs and saved, so
+        # nothing inside the folder needs rewriting here.
+        #
+        # THE TWO REFUSALS ARE DISTINCT STATUSES because they are distinct client
+        # states: a missing source is a stale listing (404); an occupied
+        # destination is a name the user must choose again (409). Collapsing both
+        # into a 500 would make "pick another name" look like a server fault.
+        try:
+            rename_project(old, new)
+        except FileNotFoundError as exc:
+            return self._error(404, str(exc))
+        except FileExistsError as exc:
+            return self._error(409, str(exc))
+        self._json({"ok": True, "name": new})
+
+    def _handle_copy_assets(self, src, dst):
+        # SAVE-AS carrying the library: copy projects/<src>/assets/ →
+        # projects/<dst>/assets/ SERVER-SIDE, so a fork of a deck holding a large
+        # video never pulls those bytes through the browser. The destination
+        # project's doc.json is written separately by the ordinary save.
+        try:
+            result = copy_project_assets(src, dst)
+        except ValueError as exc:
+            return self._error(400, str(exc))
+        self._json({"ok": True, **result})
 
     def _handle_export_begin(self):
         # Mint a server-side MP4-export session (the server owns the uuid so the
