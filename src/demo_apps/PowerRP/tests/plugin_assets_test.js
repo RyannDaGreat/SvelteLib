@@ -163,7 +163,14 @@ test("jail: the DEFERRED escape (inside emit, called after load) is blocked", ()
       `return {type: "d_w", title: "D", capabilities: {bbox: true}, defaults: {type: "d_w"}, emit() { return ${route}("return typeof process")(); }};`,
       "deferred.plugin.js", new Set(),
     );
-    assert.throws(() => plugin.emit({}), /may not compile code at runtime/);
+    // The block still fires — but emit is the RENDER path, so the jail degrades
+    // it to the loud in-widget error box instead of killing the frame for every
+    // other widget (the donut-degeneracy lesson). The escape must not succeed:
+    // the ops carry the block's message, never the probed `typeof process`.
+    const ops = plugin.emit({ w: 200, h: 100 });
+    assert.equal(ops[0].op, "rect", "emit degrades to the error-box ops");
+    assert.match(ops[1].text, /may not compile code at runtime/);
+    assert.doesNotMatch(ops[1].text, /object|string/, "the escape's own result must never appear");
   }
 });
 
@@ -176,9 +183,14 @@ test("jail: the host's OWN intrinsics are restored after evaluation (and after a
   assert.throws(() => evaluatePluginSource("throw new Error('boom');", "t"));
   assert.equal(Function.prototype.constructor, before, "must restore even when the source throws");
   assert.equal(Object.getPrototypeOf(async () => {}).constructor.name, "AsyncFunction");
-  // And through a jailed HOOK that throws.
+  // And through a jailed HOOK that throws. A throwing emit returns error-box
+  // ops (it must not kill the render), but the restore must STILL have run.
   const plugin = jailedPluginHooks({ type: "x", emit() { throw new Error("nope"); } });
-  assert.throws(() => plugin.emit());
+  assert.match(plugin.emit()[1].text, /nope/);
+  assert.equal(Function.prototype.constructor, before);
+  // A NON-emit hook keeps throwing — callers handle those individually.
+  const hooks = jailedPluginHooks({ type: "x", anchors() { throw new Error("still throws"); } });
+  assert.throws(() => hooks.anchors(), /still throws/);
   assert.equal(Function.prototype.constructor, before);
 });
 

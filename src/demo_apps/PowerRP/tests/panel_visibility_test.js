@@ -115,9 +115,9 @@ test("a label never carries the word Panel itself (it would double up)", () => {
 
 // ── (3) Global Variables: named, hidden by default, and the key agrees ────────
 
-test("GLOBAL VARIABLES is the one panel off by default, and is named Global Variables", () => {
-  const hidden = PANELS.filter((p) => !p.defaultVisible);
-  assert.deepEqual(hidden.map((p) => p.id), ["globalVariables"], "exactly one panel — Global Variables — starts hidden");
+test("GLOBAL VARIABLES and KEYFRAMES start hidden (user rulings 2026-07-30), nothing else does", () => {
+  const hidden = PANELS.filter((p) => !p.defaultVisible).map((p) => p.id).sort();
+  assert.deepEqual(hidden, ["globalVariables", "keyframes"], "exactly these two panels start hidden");
   const panel = panelById("globalVariables");
   assert.equal(panel.label, "Global Variables");
   assert.equal(panelName(panel), "Global Variables Panel");
