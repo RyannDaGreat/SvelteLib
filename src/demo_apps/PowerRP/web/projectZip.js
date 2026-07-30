@@ -33,7 +33,7 @@
 
 import { unzipSync, zipSync } from "fflate";
 import { assetKindForName, uniqueAssetName, uniqueProjectName } from "./assetRef.js";
-import { documentAssetRefs, localizationPlan, rewriteAssetRefs } from "./assetLocalize.js";
+import { adoptedArchiveRefs, documentAssetRefs, localizationPlan, rewriteAssetRefs } from "./assetLocalize.js";
 
 /** The document's filename inside the archive — the server's DOC_FILENAME. */
 export const DOC_FILENAME = "doc.json";
@@ -264,10 +264,15 @@ export function parseProjectZip(bytes) {
  * {ok: true, name: "My Talk 2", requested: "My Talk"}   // "My Talk" already existed
  */
 export async function importProjectZipLocal(bytes, requested, stores) {
-  const { root, doc, assets } = parseProjectZip(bytes);
+  const { root, doc: rawDoc, assets } = parseProjectZip(bytes);
   const wanted = (requested || root || "Imported Project").trim();
   const existing = (await stores.projects.list()).map((p) => p.name);
   const name = uniqueProjectName(wanted, existing);
+  // ARCHIVE ADOPTION (assetLocalize.adoptedArchiveRefs): an absolute ref whose
+  // file rode inside THIS archive goes relative, so a legacy zip — every
+  // pre-localization export, incl. ones made by a stale server process — opens
+  // working under any name on any host (the user's "/asset/Untitled/…" zips).
+  const doc = adoptedArchiveRefs(rawDoc, assets.map((a) => a.name));
   // The document's own meta.name must agree with the folder it landed in — the
   // one-name model (app.svelte.js loadProject sets the same thing server-side).
   await stores.projects.save(name, { ...doc, meta: { ...doc.meta, name } });

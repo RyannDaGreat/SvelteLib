@@ -2277,10 +2277,49 @@ def import_project_zip(data, requested_name=None):
             # cross-project ref that survived localization (an unreadable source) is
             # not silently re-pointed at a file that does not exist.
             _rename_imported_refs(d, root, name)
+            # ARCHIVE ADOPTION, after the rename repoint: an absolute ref whose
+            # FILE the archive itself carries goes RELATIVE — the archive is the
+            # authority for its own files. This is what heals every
+            # pre-localization export (doc says "/asset/Untitled/clip.mp4",
+            # archive ships assets/clip.mp4 — the user's real zips), which
+            # _rename_imported_refs alone cannot: it only translates the
+            # ARCHIVE'S OWN root name. Refs to files the archive does NOT carry
+            # stay untouched (deliberate cross-project borrows, loud when
+            # missing). Client twin: web/assetLocalize.adoptedArchiveRefs.
+            _adopt_archive_refs(d)
         except Exception:
             shutil.rmtree(d, ignore_errors=True)  # never leave a half-written project behind
             raise
     return name
+
+
+def _adopt_archive_refs(project_path):
+    """
+    Command (rewrites the imported doc.json in place, only when needed).
+    Rewrite every absolute asset ref whose file exists in THIS project's own
+    assets/ folder to the RELATIVE form. Runs only at zip import, on the freshly
+    unpacked folder — so "this project's assets" IS the archive's contents.
+    """
+    doc_file = os.path.join(project_path, DOC_FILENAME)
+    assets_dir = os.path.join(project_path, ASSETS_SUBDIR)
+    have = set()
+    if os.path.isdir(assets_dir):
+        for base, _dirs, files in os.walk(assets_dir):
+            for fn in files:
+                have.add(os.path.relpath(os.path.join(base, fn), assets_dir).replace(os.sep, "/"))
+    if not have:
+        return
+    with open(doc_file) as f:
+        doc = json.load(f)
+    ref_map = {}
+    for r in document_asset_refs(doc):
+        if r["file"] in have:
+            ref_map[r["ref"]] = r["file"]
+    if not ref_map:
+        return
+    doc = rewritten_asset_refs(doc, ref_map)
+    with open(doc_file, "w") as f:
+        json.dump(doc, f, indent=2)
 
 
 def _rename_imported_refs(project_path, archive_root, name):

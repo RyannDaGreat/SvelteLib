@@ -29,7 +29,7 @@
 import assert from "node:assert/strict";
 import { unzipSync } from "fflate";
 import { assetRef, uniqueAssetName } from "../web/assetRef.js";
-import { documentAssetRefs, foreignAssetRefs, itemIdForPath, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "../web/assetLocalize.js";
+import { adoptedArchiveRefs, documentAssetRefs, foreignAssetRefs, itemIdForPath, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "../web/assetLocalize.js";
 import { resolveAssetRef } from "../core/asset_ref.js";
 import { buildProjectZip } from "../web/projectZip.js";
 
@@ -535,6 +535,31 @@ test("relativizedOwnRefs is SEMANTICALLY IDENTITY at the instant it runs", () =>
   const reresolved = JSON.parse(JSON.stringify(relativized), (k, v) =>
     (k === "src" ? resolveAssetRef(v, "Old") : v));
   assert.deepEqual(reresolved, doc);
+});
+
+test("adoptedArchiveRefs: an archive's own files heal ANY absolute ref at import (the user's legacy zips)", () => {
+  // The live failure this pins (user, 2026-07-30): "RobotSim (7).zip" carried
+  // assets/Video_….mp4 while its doc still said "/asset/Untitled/Video_….mp4" —
+  // a pre-localization export (made by a server process older than the export
+  // fixes). Imported on the static site, the resolver treated Untitled as a
+  // FOREIGN project (by design) and the canvas showed nothing. The archive is
+  // the authority for files it carries, whatever project name a stale ref bakes.
+  const doc = { slides: [{ delta: { items: {
+    v: { src: "/asset/Untitled/clip.mp4" },          // stale name, file IS in the archive → adopt
+    n: { src: "/asset/Old/icons/logo.svg" },          // nested path, also carried → adopt
+    b: { src: "/asset/Shared/bg.png" },               // NOT in the archive: a real borrow, untouched
+    r: { src: "already-relative.mp4" },               // relative refs never rewritten
+  } } }] };
+  const healed = adoptedArchiveRefs(doc, ["clip.mp4", "icons/logo.svg", "already-relative.mp4"]);
+  const items = healed.slides[0].delta.items;
+  assert.equal(items.v.src, "clip.mp4");
+  assert.equal(items.n.src, "icons/logo.svg");
+  assert.equal(items.b.src, "/asset/Shared/bg.png");
+  assert.equal(items.r.src, "already-relative.mp4");
+  // Nothing adoptable → the SAME object back (import leaves a clean doc alone).
+  const clean = { slides: [{ delta: { items: { b: { src: "/asset/Shared/bg.png" } } } }] };
+  assert.equal(adoptedArchiveRefs(clean, ["clip.mp4"]), clean);
+  assert.equal(adoptedArchiveRefs(clean, []), clean);
 });
 
 console.log(`\n${passed} asset-localization tests passed.`);

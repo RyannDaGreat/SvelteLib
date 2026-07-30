@@ -143,6 +143,35 @@ export function foreignAssetRefs(refs, project) {
 }
 
 /**
+ * Pure function. THE ARCHIVE-ADOPTION rewrite for a zip IMPORT: any ABSOLUTE
+ * ref whose FILE exists inside the archive's own assets/ becomes the RELATIVE
+ * form. The archive is self-evidently the authority for files it carries — a
+ * legacy zip whose doc still says "/asset/Untitled/clip.mp4" while shipping
+ * assets/clip.mp4 (every pre-localization export, and any export made by a
+ * server process older than the export fixes) must open working, under ANY
+ * project name, on ANY host. Server twin: server.py _adopt_archive_refs.
+ * Refs naming files the archive does NOT carry are left alone — those are
+ * deliberate cross-project borrows and stay the loud-sentinel case.
+ *
+ * @param {object} doc - serialized document
+ * @param {string[]} assetPaths - archive-relative asset paths (e.g. ["clip.mp4", "icons/logo.svg"])
+ * @returns {object} rewritten doc, or the SAME object when nothing adopted
+ *
+ * @example
+ * >>> // adoptedArchiveRefs({slides:[…src:"/asset/Untitled/clip.mp4"…]}, ["clip.mp4"])
+ * >>> // → same doc with src:"clip.mp4" (the file rode in the archive)
+ * @example
+ * >>> // adoptedArchiveRefs({slides:[…src:"/asset/Shared/bg.png"…]}, ["clip.mp4"])
+ * >>> // → SAME object (bg.png is not in the archive: a real foreign borrow)
+ */
+export function adoptedArchiveRefs(doc, assetPaths) {
+  const have = new Set(assetPaths);
+  const any = documentAssetRefs(doc).some((r) => r.file && have.has(r.file));
+  if (!any) return doc; // SAME object: nothing to adopt (rewriteAssetRefs always copies)
+  return rewriteAssetRefs(doc, (e) => (e.file && have.has(e.file) ? e.file : null));
+}
+
+/**
  * Pure function. The document with every ABSOLUTE ref that names `project`
  * ITSELF rewritten to its RELATIVE spelling; foreign refs and relative refs are
  * left exactly as they are.
