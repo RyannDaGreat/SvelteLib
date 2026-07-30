@@ -209,6 +209,18 @@ fi
 echo "    (project backend on :${BACKEND_PORT} — don't open it directly)"
 echo "=================================================="
 
+# Open the app in the DEFAULT browser (vite's own opener is disabled in
+# vite.config.js — its macOS AppleScript preferred any RUNNING Chrome over the
+# actual default). `open`/xdg-open ask the OS, which answers with the browser
+# the user chose. NO_OPEN suppresses (the Electron shell shows its own window).
+if [ -z "${NO_OPEN:-}" ]; then
+  ( sleep 2  # give vite a beat to start listening; a too-early open shows a connection error
+    case "$(uname -s)" in
+      Darwin) open "$APP_URL" ;;
+      *) command -v xdg-open >/dev/null && xdg-open "$APP_URL" ;;
+    esac ) &
+fi
+
 # Frontend with HMR, exposed to the LAN, proxying /api + /asset to the backend.
 cd "$WEB"
 BACKEND_URL="http://localhost:${BACKEND_PORT}" \

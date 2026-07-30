@@ -94,7 +94,14 @@ export default defineConfig({
     host: true,
     https: HTTPS,
     hmr: HMR,
-    open: !process.env.NO_OPEN,
+    // NEVER let Vite open the browser (user ruling 2026-07-30: it launched
+    // Chrome for a Vivaldi user). Vite's macOS opener runs an AppleScript that
+    // REUSES a tab in whichever Chromium is already running, trying "Google
+    // Chrome" BEFORE "Vivaldi" in a hardcoded list — and some Chrome process is
+    // almost always alive, so the system default never got a say. The launcher
+    // (server/start_server.sh) opens the URL itself via `open`/xdg-open, which
+    // IS the default browser; NO_OPEN there still suppresses it (Electron).
+    open: false,
     fs: { allow: [repoRoot] },
     // NOTE the trailing slashes: the app's own modules are e.g. /main.js and
     // /projectApi.js — without the slash, "/api" (or "/asset") could shadow a
