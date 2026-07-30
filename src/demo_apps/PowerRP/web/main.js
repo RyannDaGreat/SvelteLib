@@ -13,20 +13,17 @@ import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
 const fontsLoaded = loadFonts();
 import { assetStore, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
 import { REPO_PARAM, fetchProjectFromRepo } from "./githubProject.js";
-import { localAssetStore, localProjectStore } from "./assetStore.js";
-import { uniqueProjectName } from "./assetRef.js";
-import { mimeForAsset } from "./projectZip.js";
+import { zipSync, strToU8 } from "fflate";
 
 /**
- * Command (network + storage + app mutation). ?repo=<owner>/<name> BOOT WIRING —
- * opens a GitHub-hosted project (the share-link the README documents).
- *
- * TEMPORARY SHAPE, deliberately: this is the direct-import form — the draft-open
- * model will subsume this call so a repo opens as an UNSAVED DRAFT; until then a
- * REVISIT of the same link REOPENS the project it already imported (matched by
- * name) instead of minting "X 2" copies. Static mode only for now: the local
- * stores are the import target and the library the app lists. Every failure is
- * LOUD — a share link that silently does nothing is how this bug shipped once.
+ * Command (network + app mutation). ?repo=<owner>/<name> BOOT WIRING — opens a
+ * GitHub-hosted project as an UNSAVED DRAFT through the ONE zip pipeline: the
+ * fetched repo files are synthesized into an in-memory archive and handed to
+ * app.openDraftFromZipBytes, so a repo is literally a differently-fetched zip —
+ * archive-ref healing, draft staging, and the save flow all apply unchanged.
+ * A revisit rebuilds the draft fresh (a half-downloaded earlier visit can never
+ * be sticky — the flaw the previous direct-import shape had). Every failure is
+ * LOUD — a share link that silently does nothing is how this shipped broken once.
  */
 async function openRepoParamProject() {
   const slug = new URLSearchParams(location.search).get(REPO_PARAM);
@@ -39,22 +36,14 @@ async function openRepoParamProject() {
     }
     throw new Error("?repo=: the app never mounted");
   })();
-  if (!isStatic()) { console.error(`PowerRP: ?repo=${slug} is not wired for server mode yet — open the static site, or import the repo as a zip.`); return; }
   try {
-    const existing = (await localProjectStore.list()).map((p) => p.name);
     const { root, doc, assets } = await fetchProjectFromRepo(slug, {
       onProgress: ({ message }) => console.info(`PowerRP ?repo=: ${message}`),
     });
-    const wanted = (root || slug.split("/").pop() || "Imported Project").trim();
-    let name = existing.includes(wanted) ? wanted : null; // idempotent revisit: reopen, don't duplicate
-    if (!name) {
-      name = uniqueProjectName(wanted, existing);
-      await localProjectStore.save(name, { ...doc, meta: { ...doc.meta, name } });
-      for (const a of assets) await localAssetStore.put(name, new Blob([a.bytes], { type: mimeForAsset(a.name) }), a.name);
-    }
-    await localAssetStore.primeUrls(name);
-    await app.loadProject(name);
-    app.assetsVersion++;
+    const name = (root || slug.split("/").pop() || "Imported Project").trim();
+    const members = { [`${name}/doc.json`]: strToU8(JSON.stringify(doc)) };
+    for (const a of assets) members[`${name}/assets/${a.name}`] = a.bytes;
+    await app.openDraftFromZipBytes(zipSync(members), name, "");
   } catch (e) {
     console.error(`PowerRP: could not open ?repo=${slug} — ${e?.message ?? e}`);
     throw e;
