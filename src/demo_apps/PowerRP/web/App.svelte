@@ -1601,7 +1601,12 @@
   onfocusout={onFocusOut}
 />
 
-<div class="app">
+<!-- --a-label-frac rides the APP ROOT, not either panel: the Property Panel and
+     the Variables Panel are separate subtrees in separate panes, and the
+     round-11 ruling is that their columns LINE UP. One variable on their nearest
+     common ancestor is what makes that structural instead of a coincidence two
+     independent drags would have to keep re-establishing. -->
+<div class="app" style:--a-label-frac={app.labelFrac}>
   <Toolbar {app} {renderBadge} />
   <div class="main">
     <SplitPane orientation="horizontal" bind:splits={hSplits}>

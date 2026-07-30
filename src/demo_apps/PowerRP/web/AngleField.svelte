@@ -92,6 +92,9 @@
   from/to endpoints), display (display-unit name, e.g. "degrees"; null =
   identity), disabled, onpreview(value), oncommit(value) — `value` is a STORED-
   unit number or an "=" equation string.
+  Styling lives in app.css (.numfield / .anglefield-* / .angle-dial; app
+  convention: no <style>, no inline style attributes — the dial's live drag
+  CURSOR is the sole exception, being gesture state rather than a rule).
 -->
 <script module>
   import { wrapDegrees, shortestTurn } from "../core/properties.js";
@@ -648,6 +651,29 @@
       </Tooltip>
     {/if}
 
+    <!-- THE TYPED-DEGREES BOX COMES FIRST, and the dial trails it. That ordering
+         is the alignment fix, not a preference: the dial used to lead, so a
+         Rotation row's first ink sat 54px (dial + gap) right of every other row's
+         field edge while the row still claimed to share the value column. The box
+         is now the standardized field control every other row leads with, on the
+         column edge, and the dial is a trailing accessory. -->
+    <span class="anglefield-degrees">
+      <input
+        type="text"
+        class="anglefield-input"
+        inputmode="numeric"
+        spellcheck="false"
+        aria-label={`${label} degrees`}
+        value={draft}
+        {disabled}
+        oninput={onDegreesInput}
+        onfocus={() => (focused = true)}
+        onblur={onTextBlur}
+        onkeydown={onTextKeydown}
+      />
+      <span class="anglefield-unit" aria-hidden="true">°</span>
+    </span>
+
     <!-- The rotary dial. role=slider for a11y; drag or arrow-key to change.
          NO aria-valuemin/max: the heading is UNBOUNDED (multi-turn — see the
          header), so announcing a 0..360 range would misdescribe it; the raw
@@ -664,6 +690,7 @@
     <svg
       bind:this={svgEl}
       class="angle-dial"
+      class:disabled
       viewBox="0 0 {VIEWBOX} {VIEWBOX}"
       role="slider"
       tabindex={disabled ? -1 : 0}
@@ -675,9 +702,7 @@
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
       onkeydown={onKeydown}
-      style="width:calc(var(--a-control-h) * 2); height:calc(var(--a-control-h) * 2);
-             flex:none; touch-action:none; cursor:{disabled ? 'default' : dragging ? 'grabbing' : 'grab'};
-             opacity:{disabled ? 0.5 : 1}; border-radius:50%; outline:none;"
+      style:cursor={disabled ? "default" : dragging ? "grabbing" : "grab"}
     >
       <!-- ring -->
       <circle cx={CENTER} cy={CENTER} r={RING_R} fill="none" stroke="var(--border)" stroke-width="2" />
@@ -695,25 +720,5 @@
       <circle cx={tipX} cy={tipY} r={KNOB_R} fill="var(--accent)" />
       <circle cx={CENTER} cy={CENTER} r={HUB_R} fill="var(--fg-dim)" />
     </svg>
-
-    <!-- typed-degrees box (SQUARE corners — app chrome is square) -->
-    <span style="display:inline-flex; align-items:center; gap:var(--a-sp-1);">
-      <input
-        type="text"
-        inputmode="numeric"
-        spellcheck="false"
-        aria-label={`${label} degrees`}
-        value={draft}
-        {disabled}
-        oninput={onDegreesInput}
-        onfocus={() => (focused = true)}
-        onblur={onTextBlur}
-        onkeydown={onTextKeydown}
-        style="width:3.2em; box-sizing:border-box; text-align:right; font-size:var(--a-font-sm);
-               color:var(--fg); background:transparent; border:1px solid var(--border);
-               border-radius:0; padding:var(--a-sp-1) var(--a-sp-2);"
-      />
-      <span style="font-size:var(--a-font-sm); color:var(--fg-dim);">°</span>
-    </span>
   {/if}
 </div>

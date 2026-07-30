@@ -264,6 +264,11 @@ const ACCOUNTED = {
     keys: ["Enter", "Escape"],
     coverage: "contextual:commit: Enter 'Commit' and Escape 'Revert' light while a floating-bar readout field has focus (data-hint-scope='commit', core fieldScope) — the Mandelbrot's Re/Im/Zoom. BOTH stopPropagation, the load-bearing half: the bar is mounted BY a canvas mode (interior explore) whose own registered Escape exits the mode, but the field is a typing target so the mode's keys already stand down while it holds focus — so the field's Revert is the ONLY Escape shown, outranking the mode's Exit exactly as required.",
   },
+  "web/LabelDivider.svelte": {
+    keys: [],
+    dblclick: "OS: double-click the label⟷value divider resets the split to its default — the desktop-universal 'double-click a divider to reset it' convention (every IDE, every file manager's column headers, and the same gesture a window manager gives a maximize edge). A mouse gesture on a drag handle, which the keyboard law does not cover; the drag itself is the discoverable part (col-resize cursor + a hairline on hover) and the reset is its standard companion. Deliberately NOT chipped: the divider is a BROWSER SETTING's handle, not a document verb, and the HintBar names document verbs — chipping it would imply an undo entry it does not make.",
+    coverage: "OS: reads no keyboard input of its own — listed for its double-click gesture above. The drag is pointer-only (pointerdown/move/up with pointer capture, the FontPicker and Render Center divider idiom), and it writes a persisted viewer preference rather than document state, so there is nothing here for the shortcut registry to announce.",
+  },
   "web/VariablesPanel.svelte": {
     keys: ["Enter"],
     coverage: "contextual:add: Enter 'Add' commits the new-variable input while it has focus (data-hint-scope='add', core fieldScope). The inline RENAME rows commit on blur (onchange) and read no key, so they need no chip; only the add-row reads Enter.",

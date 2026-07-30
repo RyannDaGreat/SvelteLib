@@ -93,9 +93,32 @@
      Value controls GROW past this to fill the panel (round-11 ruling) — the row
      grid gives the value column minmax(--a-input-w, 1fr) so every value control
      shares ONE growing width, aligned on both edges. */
-  --a-label-w: 84px; /* THE label/identifier column width: fixes the value
-     column's LEFT edge so it aligns across every row (property + variable). Sized
-     to the common labels; longer ones ("Magnification") ellipsis with a tooltip. */
+  /* THE label/identifier column, as a FRACTION of the row's width — it fixes the
+     value column's LEFT edge so it aligns across every row (property + variable).
+     A FRACTION rather than the fixed 84px it replaced, because the user's ruling
+     is "a constant proportion based on the width of that panel": a fixed column
+     left "Rot anchor X" truncated beside a 480px value field the moment the pane
+     was widened, which was the whole complaint. This is the FALLBACK — the live
+     value is published on the app root by App.svelte from app.labelFrac, and the
+     divider drag writes that. Declared here anyway so any .row rendered outside
+     the app shell (a probe, a future standalone panel) still lays out. Default,
+     clamps and persistence live with the setting (web/app.svelte.js SETTINGS). */
+  --a-label-frac: 0.23;
+  /* THE hover-chrome gutter: the strip at the label zone's RIGHT END where a
+     row's hover affordances (ƒ equation-open, the reference link mark) are
+     right-aligned. They are OUT OF FLOW there, so revealing one cannot move the
+     value field — the user's "that actually pushes the bar a little bit to the
+     right, and that's kind of disturbing". Sized for one 14px glyph + air; the
+     label ellipsizes UNDER it when a long label needs the room, which is the
+     ruling ("I could cut off from the text a little bit, but wouldn't make the
+     whole property bar move"). */
+  --a-row-chrome-w: 16px;
+  /* The label⟷value DIVIDER: an invisible grab strip centred on the column
+     boundary, revealing a hairline on hover. Hit width is deliberately wider
+     than the line, the same relationship --a-split-handle-hit has to
+     --a-split-handle-size for the app shell's pane handles. */
+  --a-row-divider-hit: 7px;
+  --a-row-divider-line: 1px;
   --a-kf-btn-w: 20px; /* one keyframe control button (16px icon + 2×--a-sp-1 pad) */
   /* Hover-reveal of a row's hidden chrome (copy-path / help / ƒ / eq-ref marks —
      round-11 "the resting field is minimal"). ONE duration for every one of them,
@@ -3062,15 +3085,28 @@ audio.ae-preview-media {
   gap: var(--a-sp-1);
 }
 
-/* ONE row grid, shared by Property + Variables panels (round-11 ruling): a
-   fixed label/identifier column fixes the value column's LEFT edge; the value
-   column is minmax(--a-input-w, 1fr) so EVERY value control shares one width
-   that GROWS with the panel, aligned on both edges; the trailing controls are
-   auto. The grid template is identical across rows, so columns line up. */
+/* ONE row grid, shared by Property + Variables panels (round-11 ruling): the
+   label/identifier column fixes the value column's LEFT edge; the value column
+   is minmax(--a-input-w, 1fr) so EVERY value control shares one width that GROWS
+   with the panel, aligned on both edges; the trailing controls are auto. The grid
+   template is identical across rows, so columns line up.
+
+   THE LABEL COLUMN IS A PERCENTAGE, not a pixel width, and that is the whole
+   point of the divider: `calc(var(--a-label-frac) * 100%)` resolves against the
+   row's CONTENT box, so every row in both panels lands on the SAME boundary x
+   from ONE number — which is what makes the divider read as the user's "multiple
+   lines, in synchronized x position" rather than a per-row handle. Widening the
+   pane widens the label zone proportionally, so a long label stops being
+   truncated the moment there is room for it.
+
+   `position: relative` is the anchor for the row's out-of-flow hover chrome
+   (.numfield .eq-open / .eq-ref-mark below), which hangs LEFT of the value
+   column's edge instead of displacing the field. */
 .inspector .row,
 .varspanel .row {
+  position: relative;
   display: grid;
-  grid-template-columns: var(--a-label-w) minmax(var(--a-input-w), 1fr) var(--a-kf-w);
+  grid-template-columns: calc(var(--a-label-frac) * 100%) minmax(var(--a-input-w), 1fr) var(--a-kf-w);
   align-items: center;
   gap: var(--a-sp-2);
   min-height: var(--a-control-h);
@@ -3080,7 +3116,7 @@ audio.ae-preview-media {
   margin-top: var(--a-sp-3);
 }
 
-/* Label sits in the fixed first column; truncate (never wrap) so long labels
+/* Label sits in the first column; truncate (never wrap) so long labels
    ("Magnification") keep the value column's left edge aligned — the full text
    is in the row's hover tooltip (now the canonical EQUATION PATH, not a
    label echo — manifest "EQUATION DISCOVERABILITY"). */
@@ -3091,9 +3127,99 @@ audio.ae-preview-media {
   white-space: nowrap;
 }
 
-/* Row-label hover chrome: the copy-path icon + the label, sharing the fixed
-   label column. min-width:0 lets the label still truncate inside the flex
-   row (grid children default min-width:auto, same reasoning as .numfield). */
+/* THE LABEL ZONE'S TRAILING GUTTER — the rule that keeps the value column's
+   left edge SACRED. The value-side hover affordances (ƒ equation-open, the
+   reference link mark) are positioned out of flow at the END of the label zone
+   (see `.numfield .eq-open` below); this reserves the space they land in, so at
+   rest the gutter is empty air and on hover an icon paints into room that was
+   already there. Before this, those affordances grew from 0px INSIDE .numfield
+   and shoved the field's own content right on every hover — the user's "when I
+   hover over and it says fx, that actually pushes the bar a little bit to the
+   right, and that's kind of disturbing".
+   A long label ellipsizes INTO this gutter rather than the value moving, which
+   is the explicit ruling: "I could cut off from the text a little bit, but
+   wouldn't make the whole property bar move."
+   Both grid children that can occupy the label cell must be listed: a row with
+   neither a path nor help renders a BARE .label, and if only the chrome wrapper
+   carried the gutter those rows' labels would run a gutter's width further right
+   than every other row's — the exact per-kind drift these rules exist to prevent.
+   The gutter is likewise UNCONDITIONAL rather than scoped to rows that actually
+   carry an affordance (`:has(.numfield)` would do it): making it conditional
+   would ellipsize a colour row's label at a different x from a number row's,
+   which is the same misalignment complaint moved from the value side to the
+   label side. One boundary for every row is the property being bought here. */
+.inspector .row > .label,
+.inspector .row > .row-label-chrome,
+.varspanel .row > .label,
+.varspanel .row > .row-label-chrome {
+  /* The affordance is --a-row-chrome-w wide but the row's grid GAP already sits
+     between the label and the value, and the affordance hangs across it — so
+     only the remainder has to come out of the label's own text width. Reserving
+     the full width would cost the label 4px it never needed, which at the
+     narrow default panel is a visible character of a truncated label. */
+  padding-right: calc(var(--a-row-chrome-w) - var(--a-sp-2));
+}
+
+/* ── THE LABEL⟷VALUE DIVIDER (web/LabelDivider.svelte) ───────────────────────
+   One instance per rows BLOCK, each spanning only its own block — the user's
+   "it wouldn't be one continuous line, it would be multiple lines, but in
+   synchronized x position". The synchronization is structural, not maintained:
+   every instance is positioned from the SAME --a-label-frac, so they cannot
+   disagree, and dragging any one of them moves all of them.
+
+   `left` lands the strip's CENTRE on the column boundary — the label track ends
+   at frac×100%, and the grid gap straddles it, so the boundary is frac×100% plus
+   half a gap. Then half the hit width comes back off to centre the strip on it.
+
+   INVISIBLE UNTIL HOVERED, per the ruling "the bar doesn't need to be visible
+   unless I'm hovering over it": the resting state paints nothing at all, and the
+   hairline fades in with the same --a-row-chrome-fade every other piece of row
+   chrome uses, so the panel gains no permanent furniture. Its look comes from
+   the --a-split-handle-* tokens the app shell's pane handles and the Render
+   Center's divider read, so the app's three draggable boundaries stay one thing
+   across every theme.
+
+   THE BLOCK IS .rows, NOT .cat-rows, and the distinction is load-bearing: a
+   .rows block already CONTAINS its categories' .cat-rows, so mounting a divider
+   in both would draw two lines over the same pixels at the same x — one strip
+   swallowing the other's pointer events, and a double-strength hairline where
+   they overlap. One divider per .rows block gives the user's "multiple lines"
+   (the Property Panel's sections and the Variables Panel each get their own)
+   with no stacking. */
+.inspector .rows,
+.varspanel .rows {
+  position: relative; /* the divider's containing block AND its measuring box */
+}
+
+.label-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--a-label-frac) * 100% + var(--a-sp-2) / 2 - var(--a-row-divider-hit) / 2);
+  width: var(--a-row-divider-hit);
+  z-index: 1; /* over the rows, so the grab strip is never shadowed by a field */
+  cursor: col-resize;
+  touch-action: none; /* the pointer drag owns the gesture — no scroll/zoom fights it */
+  /* The visible LINE is a centred stripe inside the wider hit strip — the same
+     line-in-a-hit-area relationship .fp-divider draws, and drawn the same way
+     (a background gradient sized to the line width, so no extra element). */
+  background: linear-gradient(var(--a-split-handle), var(--a-split-handle)) center / var(--a-row-divider-line) 100% no-repeat;
+  opacity: 0;
+  transition: opacity var(--a-row-chrome-fade) ease;
+}
+
+.label-divider:hover,
+.label-divider.dragging {
+  opacity: 1;
+}
+
+.label-divider.dragging {
+  background: linear-gradient(var(--a-split-handle-hover), var(--a-split-handle-hover)) center / var(--a-row-divider-line) 100% no-repeat;
+}
+
+/* Row-label hover chrome: the copy-path icon + the label, sharing the label
+   column. min-width:0 lets the label still truncate inside the flex row (grid
+   children default min-width:auto, same reasoning as .numfield). */
 .inspector .row-label-chrome {
   display: flex;
   align-items: center;
@@ -3445,9 +3571,9 @@ audio.ae-preview-media {
    both stretched to fill the SAME growing box (--a-input-w is only the MIN via
    the row grid). Square corners; inline evaluated badge in equation mode. */
 .numfield {
+  position: relative; /* the containing block for the out-of-flow ƒ / link mark */
   display: flex;
   align-items: center;
-  gap: var(--a-sp-1);
   width: 100%;
   min-width: 0; /* grid child: allow shrink below content width */
 }
@@ -3564,61 +3690,75 @@ audio.ae-preview-media {
 .numfield .eq-tok-punct { color: var(--a-eq-punct); }
 .numfield .eq-tok-error { color: var(--a-eq-error); }
 
-/* Reference-scrub write-through mark (manifest "Equation special forms"): a small
-   link glyph on the LEFT of a pure-VARIABLE-reference row, marking it a reference
-   whose scrub writes THROUGH to the variable. HOVER-ONLY, mirroring the ƒ
-   affordance's placement/reveal so the resting row stays minimal (round-11 field-
-   chrome rule). The path tooltip (what it points at) rides the wrapping Tooltip. */
-.numfield .eq-ref-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 0;
-  height: var(--a-control-h);
-  overflow: hidden;
-  color: var(--a-eq-var); /* same chroma as a variable token — it IS a variable ref */
-  opacity: 0;
-  transition: opacity var(--a-row-chrome-fade) ease;
-}
-.inspector .row:hover .numfield .eq-ref-mark,
-.varspanel .row:hover .numfield .eq-ref-mark,
-.numfield:focus-within .eq-ref-mark {
-  width: 16px;
-  opacity: 1;
-}
+/* ── THE VALUE-SIDE HOVER AFFORDANCES, OUT OF FLOW ───────────────────────────
+   The ƒ equation-open and the reference link mark are drawn in the LABEL zone's
+   trailing gutter — LEFT of the divider, right-aligned against the value
+   column's edge — not inside the value box.
 
-/* Equation affordance (round-11 ruling): a small ƒ button on the LEFT of the
-   value, HOVER-ONLY. It opens the same text-entry path a click-without-drag
-   opens (NOT a mode toggle). Hidden at rest (the resting row is just label +
-   value); revealed when the pointer is over the row. Collapsed to zero width at
-   rest so it doesn't reserve space or nudge the value column. */
+   WHY, and it is the user's complaint verbatim: "when I hover over and it says
+   fx, that actually pushes the bar a little bit to the right, and that's kind of
+   disturbing... Perhaps these things should go to the left of the divider."
+   They used to be in-flow flex children of .numfield that animated 0px → 16px on
+   :hover, so revealing one displaced the field AND everything in it. Two things
+   were wrong with that and only one was visible: the shift, and a 2px flex GAP
+   the zero-width button still claimed at rest, which quietly indented every
+   NUMBER row 2px past every colour/select/text row on the same grid.
+
+   `position: absolute; right: 100%` against .numfield puts them just outside its
+   left edge — a placement expressed relative to the VALUE EDGE itself, so it
+   tracks the divider at any fraction with no second number to keep in step. Out
+   of flow means the value column's left edge is IDENTICAL at rest, on hover, and
+   while editing; --a-row-chrome-w reserves the landing space in the label cell
+   (see the label-gutter rule above) so nothing overlaps unless a long label has
+   already ellipsized into it. */
+.numfield .eq-ref-mark,
 .numfield .eq-open {
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: none;
-  width: 0;
+  width: var(--a-row-chrome-w);
   height: var(--a-control-h);
   padding: 0;
-  overflow: hidden;
   background: transparent;
-  color: var(--fg-dim);
   border: 0;
-  cursor: pointer;
   opacity: 0;
   transition: opacity var(--a-row-chrome-fade) ease;
+}
+
+/* Reference-scrub write-through mark (manifest "Equation special forms"): a small
+   link glyph marking a pure-VARIABLE-reference row, whose scrub writes THROUGH to
+   the variable. The path tooltip (what it points at) rides the wrapping Tooltip. */
+.numfield .eq-ref-mark {
+  color: var(--a-eq-var); /* same chroma as a variable token — it IS a variable ref */
+}
+
+/* Equation affordance (round-11 ruling): a small ƒ button, HOVER-ONLY. It opens
+   the same text-entry path a click-without-drag opens (NOT a mode toggle).
+   Hidden at rest (the resting row is just label + value); revealed when the
+   pointer is over the row. Geometry comes from the shared out-of-flow rule
+   above — this adds only what a BUTTON needs over a static mark. */
+.numfield .eq-open {
+  color: var(--fg-dim);
+  cursor: pointer;
 }
 .numfield .eq-open:hover {
   color: var(--fg);
 }
-/* Reveal the affordance + the scrub-wheel ridges only when the row is hovered
+/* Reveal the affordances + the scrub-wheel ridges only when the row is hovered
    (round-11: "I don't even want to see the x and the 1, 2, 3 all the time").
-   The wheel is hidden at rest via .dn-wheel opacity below. */
+   OPACITY ONLY — the width is reserved at rest by the out-of-flow rule above, so
+   there is no geometry left for a reveal to change. That is the fix: the reveal
+   used to animate width 0 → 16px, which is what displaced the value field. */
 .inspector .row:hover .numfield .eq-open,
 .varspanel .row:hover .numfield .eq-open,
-.numfield:focus-within .eq-open {
-  width: 16px;
+.numfield:focus-within .eq-open,
+.inspector .row:hover .numfield .eq-ref-mark,
+.varspanel .row:hover .numfield .eq-ref-mark,
+.numfield:focus-within .eq-ref-mark {
   opacity: 1;
 }
 
@@ -3657,6 +3797,78 @@ audio.ae-preview-media {
   color: var(--a-guide);
   pointer-events: auto; /* hoverable: the tooltip carries the error message */
   display: inline-flex;
+}
+
+/* ── AngleField (the "angle" property field; a rotary dial + typed degrees) ──
+   It reuses .numfield as its wrapper — the same equation chrome, the same value
+   cell — so only its two OWN parts are declared here.
+
+   ORDER MATTERS AND IS THE ALIGNMENT FIX: the degrees box comes first and GROWS
+   like every other value control, and the dial trails it as a fixed accessory.
+   Rotation and Stroke-phase rows used to lead with the dial, so their first ink
+   sat --a-control-h*2 + a gap (54px measured) right of the value column's left
+   edge while every neighbouring row's field started ON it. */
+.anglefield-degrees {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Air between the ° and the dial beside it. It lives HERE, not as a gap on
+     .numfield: that wrapper carries no gap any more (its only other children are
+     the out-of-flow ƒ / link mark, for which a gap was pure indentation — a 2px
+     one that quietly pushed every NUMBER row off the colour rows' left edge). */
+  margin-right: var(--a-sp-2);
+}
+
+/* The typed box IS the standardized field control: it fills the value column and
+   carries the same height, border and square corners as .numfield .dn / .eq-input
+   above, so a Rotation row is indistinguishable from a Width row until the dial. */
+.anglefield-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--a-control-h);
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0; /* square — same as every other field control */
+  font-size: var(--a-font-sm);
+  text-align: right; /* a number reads right-aligned, and the ° sits beside it */
+}
+
+/* The generic panel-input rule (`.inspector input[type="text"]`, 0,2,1) would
+   otherwise outweigh the bare class above and restate its own padding/height —
+   the same specificity-raising idiom `.inspector .numfield .eq-input[type="text"]`
+   uses, and for the same reason. */
+.inspector .anglefield-input[type="text"],
+.varspanel .anglefield-input[type="text"] {
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-2);
+  text-align: right;
+}
+
+.anglefield-unit {
+  flex: none;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+
+/* The dial itself. Square, circular, and NEVER shrinking — it is an accessory to
+   the box beside it, so it keeps its size while the box absorbs the column's
+   growth. Cursor is set inline by the component (live gesture state). */
+.angle-dial {
+  flex: none;
+  width: calc(var(--a-control-h) * 2);
+  height: calc(var(--a-control-h) * 2);
+  border-radius: 50%;
+  outline: none;
+  touch-action: none; /* the pointer drag owns the gesture — no scroll/zoom fights it */
+}
+
+.angle-dial.disabled {
+  opacity: 0.5;
 }
 
 /* ── EquationSuggest (equation autocomplete dropdown) ──────────────────────
@@ -3709,6 +3921,64 @@ audio.ae-preview-media {
 .eqs-text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── PaintField (the polymorphic fill/stroke control; wraps ColorField) ──────
+   A mode strip (Solid / Linear / Radial / Mat / = Eq) stacked over whichever
+   editor that mode needs. Both boxes fill the value column and start EXACTLY on
+   its left edge — no padding or margin of their own — so a Fill row's ink lines
+   up with the plain number field above it. That is not decoration: the user's
+   audit was that "the stroke COLOR stack is indented differently from plain
+   number fields", and the cause was this component styling itself inline. */
+.paintfield {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  width: 100%;
+  min-width: 0;
+}
+
+.paint-type-tabs {
+  display: flex;
+  gap: var(--a-sp-1);
+  min-width: 0;
+}
+
+/* One mode tab. Height is --a-control-h like EVERY other control — the strip
+   used to size itself from its padding alone and came out 19px, which is what
+   made a Fill row read as a different height from the rows around it. flex:1
+   with min-width:0 so five tabs share the column evenly and their labels
+   ellipsize rather than forcing the strip wider than the value column. */
+.paint-type-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-2);
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 0; /* square — same as every other field control */
+  cursor: pointer;
+  font-size: var(--a-font-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The ACTIVE mode. A background wash, not a border swap: swapping the border
+   colour would shift nothing but reads as a focus ring, and the app already
+   spells "this one is chosen" as --a-hover-bg on the toolbar's pressed buttons. */
+.paint-type-tab[aria-pressed="true"] {
+  background: var(--a-hover-bg);
+}
+
+.paint-type-tab:hover:not(:disabled) {
+  background: var(--a-hover-bg);
+}
+
+.paint-type-tab:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ── ColorField (the color property field; wraps the SvelteLib ColorPicker) ──
@@ -4103,6 +4373,34 @@ audio.ae-preview-media {
 .inspector .row .dd {
   width: 100%;
   --dd-radius: 0;
+}
+
+/* A SELECT ROW IS --a-control-h TALL, like every other value control. Dropdown's
+   own trigger takes its height from the font plus --dd-padding and landed at
+   30.4px, so a Start-cap row stood 4.4px taller than the Stroke-width row above
+   it — the user's "a lot of these bars are ever so slightly differently
+   vertically aligned from each other", measured.
+
+   THE HEIGHT IS SET ON THE TRIGGER, NOT VIA --dd-padding, and that distinction
+   is the whole reason this rule is written out rather than being a one-line
+   token override. --dd-padding is the library's hook for BOTH the trigger and
+   every .dd-item in the open menu, so shrinking it to kill the trigger's
+   vertical padding also shortened all 14 rows of the material picker's list.
+   That changed the menu's NATURAL height, which is the exact input
+   Dropdown.positionMenu() compares against the space below the trigger to decide
+   whether to FLIP the menu above it — so a purely cosmetic 4px turned a
+   flips-up-near-the-pane-bottom menu into one that opened downward, and
+   searchable_dropdown_probe caught it. Overriding a shared token to fix one of
+   its two consumers is the trap; padding the one element is the fix.
+
+   Specificity 0,3,0 clears Dropdown's own scoped `.dd-trigger.svelte-hash`
+   (0,2,0) — the same idiom, and the same reason, as --dd-radius / --dn-radius. */
+.inspector .transition-type-row .dd .dd-trigger,
+.inspector .row .dd .dd-trigger,
+.varspanel .row .dd .dd-trigger {
+  height: var(--a-control-h);
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-3); /* horizontal only; the height above owns the vertical */
 }
 
 /* GROUPED SELECT ROWS (Blend mode's six families). A row that declares
@@ -5496,6 +5794,19 @@ audio.ae-preview-media {
 .paint-material-control {
   flex: 1;
   min-width: 0;
+}
+
+/* A material knob's scrubber is a BARE DraggableNumber — no .numfield wrapper —
+   so the `.numfield .dn` height/radius standards one level up never reached it,
+   and it sat at DraggableNumber's own 30.4px next to 26px colour and select
+   knobs in the same list. Same defect as the mode strip's, one level deeper, and
+   the same fix: state the standard where the control actually is. Specificity
+   0,2,0 targeting `.dn` directly is what clears the library's own scoped
+   `.dn.svelte-hash` rule — see the `--dn-radius` comment for the full reasoning. */
+.paint-material-control .dn {
+  --dn-radius: 0; /* square, like every other field control */
+  height: var(--a-control-h);
+  box-sizing: border-box;
 }
 
 /* MULTI-SELECTION MIXED MARKS — the "…" in a value cell when the selected items

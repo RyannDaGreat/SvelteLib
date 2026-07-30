@@ -47,7 +47,7 @@ import {
   TELESCOPIC, telescopicDefaultRects,
   telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
 } from "../plugins/tangent_lines.js";
-import { browserSetting } from "./settings.js";
+import { browserSetting, browserNumberSetting } from "./settings.js";
 // Fonts-as-asset seam (#26): register an uploaded font file as a SELECTABLE
 // family (render_gpu/fonts.js dynamic registry) + load it into the browser.
 import { registerFontFamily, clearDynamicFonts, fontAssetId, fontDescriptor } from "../render_gpu/fonts.js";
@@ -93,7 +93,24 @@ const SETTINGS = {
   ruler: browserSetting("powerrp.ruler", false),
   showGhosts: browserSetting("powerrp.showGhosts", false),
   fps: browserSetting("powerrp.fps", false),
+  // THE label/value split shared by the Property + Variables panels, as a
+  // FRACTION of the row's width rather than a pixel column — the user's ruling:
+  // "it should be a constant proportion based on the width of that panel", so
+  // widening the pane widens the label zone with it instead of leaving labels
+  // ("Rot anchor X", "Stroke phase") truncated beside a 480px-wide value field.
+  // The default reproduces the pre-divider look: the retired --a-label-w was
+  // 84px against a 362px default row, i.e. 0.2318 → 0.23 (a ~0.6px shift, below
+  // the alignment probe's tolerance). Clamps keep BOTH sides usable — 0.15 still
+  // shows a short label, 0.55 still leaves the value column wider than the
+  // labels beside it (the row grid's minmax floor guards the rest).
+  labelFrac: browserNumberSetting("powerrp.labelFrac", 0.23, 0.15, 0.55),
 };
+
+/** The label⟷value split's clamp bounds, re-exported for the divider drag so it
+ *  clamps with the SAME numbers the persist path does rather than restating
+ *  them (two clamps that can drift is how a drag ends up writing a value the
+ *  store then silently rewrites, making the divider stick). */
+export const LABEL_FRAC_BOUNDS = { min: SETTINGS.labelFrac.min, max: SETTINGS.labelFrac.max };
 
 /** Theme catalog — viewer preference (localStorage), NOT document state.
  * Each id matches a `:root[data-theme="…"]` block in app.css. (14.11: five
@@ -344,6 +361,11 @@ export class PowerRPApp {
   // Panel / Keyframe Panel) as a title bar. OFF by default (panels are not
   // first-class — manifest Round 7).
   panelNames = $state(SETTINGS.panelNames.initial);
+  // Property/Variables panel label⟷value split, as a fraction of row width.
+  // Published as --a-label-frac on the app root (App.svelte) so BOTH panels read
+  // ONE number and their columns stay in x-sync across panes — the round-11
+  // "columns line up" ruling, now under user control.
+  labelFrac = $state(SETTINGS.labelFrac.initial);
   // Master snap toggle (gates ALL snapping — move AND resize) and the
   // snap-size / matching-dimension toggle. Both default ON.
   snapEnabled = $state(SETTINGS.snap.initial);
@@ -424,6 +446,21 @@ export class PowerRPApp {
 
   toggleFps() {
     this.fpsVisible = SETTINGS.fps.persist(!this.fpsVisible);
+  }
+
+  /** Command. Sets the Property/Variables label⟷value split fraction (clamped
+   *  + persisted by the SETTINGS descriptor). Called live during a divider drag,
+   *  so it must stay a plain assignment — no undo entry: this is a BROWSER
+   *  setting, not document state. */
+  setLabelFrac(frac) {
+    this.labelFrac = SETTINGS.labelFrac.persist(frac);
+  }
+
+  /** Command. Returns the label⟷value split to its default (the divider's
+   *  double-click), clearing the stored preference rather than writing the
+   *  default over it — so a later change to the default reaches this user. */
+  resetLabelFrac() {
+    this.labelFrac = SETTINGS.labelFrac.reset();
   }
 
   togglePanelNames() {

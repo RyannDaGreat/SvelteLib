@@ -69,10 +69,15 @@
 
   Props mirror ColorField: app, path (["items", id, "fill"|"stroke"]), label,
   value (the raw stored paint — string or multi-sub-state object), disabled.
-  Styling: inline styles over existing app.css --a-*/--fg/--border tokens (this
-  field adds no app.css classes; the house token convention is preserved). The
-  stop list brings its own (.listfield / .list-*, in app.css where the house
-  convention puts chrome) — one more reason not to keep a second copy here.
+  Styling lives in app.css (.paintfield / .paint-type-tab*; app convention: no
+  <style>, no inline style attributes). It USED to inline its own box model over
+  the --a-* tokens, on the theory that using the right tokens was the part that
+  mattered. It was not: the inlined mode strip sized itself from padding alone
+  and landed at 19px against the app's 26px --a-control-h, so a Fill row read as
+  a different height from the Stroke-width row under it — the user's "a lot of
+  these bars are ever so slightly differently vertically aligned from each
+  other" — and nothing in app.css could say otherwise. Named classes are what
+  let ONE height rule reach every control.
 -->
 <script module>
   import { fillCapableMaterialIds } from "../render_gpu/skia/materials.js";
@@ -567,17 +572,15 @@
   ];
 </script>
 
-<div style="display:flex; flex-direction:column; gap:var(--a-sp-2); width:100%;">
-  <div style="display:flex; gap:var(--a-sp-1);">
+<div class="paintfield">
+  <div class="paint-type-tabs">
     {#each TYPES as t}
       <button
         type="button"
+        class="paint-type-tab"
         {disabled}
         aria-pressed={mode === t.id}
         onclick={() => setMode(t.id)}
-        style="flex:1; font-size:var(--a-font-sm); padding:var(--a-sp-1) var(--a-sp-2); cursor:pointer;
-               color:var(--fg); border:1px solid var(--border); border-radius:0;
-               background:{mode === t.id ? 'var(--a-hover-bg)' : 'transparent'};"
       >{t.label}</button>
     {/each}
   </div>

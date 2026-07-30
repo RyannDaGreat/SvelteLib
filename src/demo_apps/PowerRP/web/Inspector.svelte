@@ -48,6 +48,7 @@
   import EquationSuggest from "./EquationSuggest.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import ItemVariablesPanel from "./ItemVariablesPanel.svelte";
+  import LabelDivider from "./LabelDivider.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
@@ -904,6 +905,18 @@
   <span class:picker-invisible={it.invisible}>{it.label}</span>
 {/snippet}
 
+<!-- THE LABEL⟷VALUE DIVIDER, one per .rows block. A snippet rather than the
+     component written out at each of the four blocks, so the placement rule
+     ("first child of a .rows block, never inside a .cat-rows") is stated once
+     and the four sites cannot drift into three-and-a-half. The four blocks are
+     the multi-selection panel, the transition panel, and the created and
+     not-yet-created item panels; the Variables Panel mounts its own from
+     web/VariablesPanel.svelte against the SAME app.labelFrac, which is what
+     keeps the two panels' columns in x-sync. -->
+{#snippet labelDivider()}
+  <LabelDivider {app} />
+{/snippet}
+
 <!-- ONE generic property row: label + control-by-kind + optional keyframe
      controls. Consumed by item categories (keyframes: true) AND transition rows
      (keyframes: false — transitions are config, not keyframable). When
@@ -1599,6 +1612,7 @@
     </div>
     {#if multiPanel.rows.length > 0}
       <div class="rows">
+        {@render labelDivider()}
         {#each multiCategories as cat (cat.id)}
           {@render category(cat, sel?.state ?? {}, {
             keyframes: true,
@@ -1648,6 +1662,7 @@
         <span class="kf-controls" aria-hidden="true"></span>
       </div>
       <div class="rows">
+        {@render labelDivider()}
         {#each transitionCategories as cat (cat.id)}
           {@render category(cat, transitionState, {
             keyframes: false,
@@ -1686,6 +1701,7 @@
       </span>
     </div>
     <div class="rows">
+      {@render labelDivider()}
       <!-- VISIBILITY is a property row like all the others (manifest Round 12) —
            a keyframeable boolean with the ‹ ◆ › controls, ABOVE the categories
            so it is ALWAYS reachable (also the actionable row for not-yet-created
@@ -1775,6 +1791,7 @@
       </span>
     </div>
     <div class="rows">
+      {@render labelDivider()}
       {#if purgeable}
         <!-- Actionable visibility row: OFF here; clicking activates the item on
              this slide (creation-state copy + active:true, one undo unit). -->
