@@ -25,6 +25,7 @@ import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWor
 // per-element hide and purge, shared with the Inspector's list control.
 import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
 import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
+import { projectScriptProblem, projectScriptExports } from "../core/project_script.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
@@ -640,16 +641,29 @@ export class PowerRPApp {
   }
 
   /** Query. Why the CURRENTLY STORED project script does not compile, or null when
-   *  it does (an empty script always does). Drives the Monaco modal's footer
-   *  problem line.
+   *  it does (an empty script always does). Drives the Monaco modal's footer problem
+   *  line.
    *
-   *  Compiled through the same memoized compileProjectScript the evaluator calls, so
-   *  asking this costs nothing and — more importantly — CANNOT disagree with what
-   *  the canvas actually ran. The host is a throwaway: a compile that FAILS never
-   *  reached a point where `random` or `time` mattered, and a compile that succeeds
-   *  is served from the cache the evaluator populated with the real one. */
+   *  Reads the verdict of the compile the EVALUATOR did (projectScriptProblem never
+   *  compiles anything itself), so the dialog cannot report a different opinion from
+   *  the one the canvas is actually running — and cannot perturb it either. A commit
+   *  triggers a derivation pass, so the answer is current by the time it is read. */
   projectScriptError() {
-    return compileProjectScript(this.projectScript(), { random: () => 0, time: () => 0 }).error;
+    return projectScriptProblem(this.projectScript());
+  }
+
+  /** Query. The NAMES the project script exports, as a Set — what an equation may
+   *  legally reference beyond the document's own variables, items and anchors.
+   *
+   *  Feeds the equation-field HIGHLIGHTER (equationTokenSpans), which without it
+   *  painted a perfectly valid `= GUTTER * 4` entirely red: the identifier resolves
+   *  at evaluation but is not a document variable, and a highlighter that contradicts
+   *  the evaluator sends the author hunting a bug that does not exist.
+   *
+   *  Read off the evaluation, so it is the exports the canvas is ACTUALLY running —
+   *  a broken script exports nothing and its callers correctly light up red. */
+  projectScriptExportNames() {
+    return new Set(Object.keys(projectScriptExports(this.projectScript())));
   }
 
   /** Folded + EVALUATED state — every numeric property is a number. All
@@ -1731,13 +1745,23 @@ export class PowerRPApp {
   commitCodeModal(value) {
     const t = this.codeModal;
     if (!t) return;
-    if (t.scope === "document") {
-      this.commit({ ...this.doc, meta: { ...this.doc.meta, [t.property]: value } });
-    } else {
+    if (t.scope !== "document") {
       this.setPreview([[["items", t.itemId, t.property], value]]);
       this.commitPreview();
+      this.codeModal = null;
+      return;
     }
-    this.codeModal = null;
+    this.commit({ ...this.doc, meta: { ...this.doc.meta, [t.property]: value } });
+    // THE COMMIT HAPPENS EITHER WAY — a script that will not compile is still the
+    // author's work, and discarding it on Save (or refusing the save) would lose it.
+    // What a failure changes is whether the DIALOG closes: evalInfo() forces the
+    // derivation pass that compiles the new source (it is memoized, so this is the
+    // same pass the canvas is about to do, not an extra one), and if that pass has a
+    // verdict against it the modal STAYS OPEN with the message in its footer. Closing
+    // on a broken script would put the error only in the console, behind the dialog
+    // the author was looking at — which is how a loud failure becomes a quiet one.
+    this.evalInfo();
+    if (!this.projectScriptError()) this.codeModal = null;
   }
 
   /** Command. Closes the modal WITHOUT committing (Cancel / Esc / backdrop). */

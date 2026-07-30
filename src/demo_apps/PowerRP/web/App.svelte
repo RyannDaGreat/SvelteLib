@@ -1913,6 +1913,7 @@
       value={app.codeModalValue()}
       language={app.codeModal.language}
       title={app.codeModal.title}
+      problem={app.codeModal.scope === "document" ? app.projectScriptError() : null}
       onsave={(text) => app.commitCodeModal(text)}
       oncancel={() => app.closeCodeModal()}
     />

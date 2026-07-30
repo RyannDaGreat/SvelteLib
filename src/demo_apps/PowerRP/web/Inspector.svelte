@@ -717,7 +717,9 @@
   function equationPieces(text, state, selfId) {
     const clean = text.replace(/^\s*=\s*/, "");
     const lead = text.slice(0, text.length - clean.length); // the "=" marker (plain)
-    const spans = equationTokenSpans(clean, state, selfId);
+    // Project-script exports count as resolvable identifiers here too — see
+    // NumericField's note (a working equation must never paint red).
+    const spans = equationTokenSpans(clean, state, selfId, app.projectScriptExportNames());
     const pieces = lead ? [{ text: lead, cls: null }] : [];
     let last = 0;
     for (const s of spans) {

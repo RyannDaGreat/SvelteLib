@@ -354,8 +354,19 @@ const UNMAPPED_TOKEN_CLS = "error";
  * function name, classified positionally EXACTLY as the parser decides so an
  * unknown function name never looks like an unknown variable), "self", "var",
  * "prop", "anchor" (resolved ref kinds), "error" (a ref that does not resolve
- * to a REAL var/item/anchor, or a source that does not tokenize). `state` is the
- * raw state (for slugs + the vars set); `selfId` (optional) enables `self.…`.
+ * to a REAL var/item/anchor/script export, or a source that does not tokenize).
+ * `state` is the raw state (for slugs + the vars set); `selfId` (optional) enables
+ * `self.…`; `scriptExports` (optional Set of names) is THE PROJECT SCRIPT's export
+ * list, so a bare identifier the script provides paints as a "var" instead of red.
+ *
+ * WHY scriptExports IS A PARAMETER AND NOT OPTIONAL-IN-SPIRIT: without it, an
+ * equation that EVALUATES PERFECTLY was painted entirely red — `= 0 + GUTTER * 4`
+ * resolved to 160 on the canvas while the field said the identifier did not exist.
+ * A highlighter that disagrees with the evaluator is worse than none, because the
+ * author trusts it and goes looking for a bug that is not there. (A script-exported
+ * FUNCTION escaped by accident: a ref followed by "(" classifies positionally as a
+ * "call", so `ease(0.5)` looked fine while the VALUE beside it did not — which is
+ * how the inconsistency was found.)
  *
  * DESIGN BOUND (manifest "don't corner the field"): span-based classification is
  * substrate-agnostic — it names character ranges, making no single-line
@@ -376,7 +387,7 @@ const UNMAPPED_TOKEN_CLS = "error";
  * @example // the `time` keyword paints as a keyword (like `self`), the `%` as an op — never an error
  * @example equationTokenSpans("time % 2", {items: {}}).map((s) => s.cls) // ["self", "op", "num"]
  */
-export function equationTokenSpans(src, state, selfId = null) {
+export function equationTokenSpans(src, state, selfId = null, scriptExports = null) {
   const clean = String(src).replace(/^\s*=\s*/, "");
   let tokens;
   try {
@@ -436,7 +447,11 @@ export function equationTokenSpans(src, state, selfId = null) {
       // A bare identifier resolves to {kind:"var"} STRUCTURALLY even when no such
       // variable exists (resolveRef defers the existence check to displayToStored)
       // — flag the nonexistent var as an error so the overlay matches the field.
-      if (d.kind === "var" && !(d.name in vars)) return { start: t.start, end: t.end, cls: "error" };
+      // A PROJECT SCRIPT export counts as existing, in the same precedence order the
+      // evaluator uses (a real variable first, an export second), so the paint and
+      // the value can never disagree.
+      if (d.kind === "var" && !(d.name in vars) && !scriptExports?.has(d.name))
+        return { start: t.start, end: t.end, cls: "error" };
       return { start: t.start, end: t.end, cls: d.kind === "var" ? "var" : d.kind }; // "prop" | "anchor" | "var"
     } catch {
       return { start: t.start, end: t.end, cls: "error" };

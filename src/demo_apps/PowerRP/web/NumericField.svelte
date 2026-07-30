@@ -225,7 +225,11 @@
   function buildHighlightPieces(text) {
     const clean = text.replace(/^\s*=\s*/, "");
     const lead = text.slice(0, text.length - clean.length); // preserved "= " prefix (plain)
-    const spans = equationTokenSpans(clean, app.rawState(), selfId);
+    // The PROJECT SCRIPT's export names go in too: without them a working
+    // `= GUTTER * 4` painted entirely red (the identifier resolves at evaluation
+    // but is not a document variable), and a highlighter that contradicts the
+    // evaluator is worse than none.
+    const spans = equationTokenSpans(clean, app.rawState(), selfId, app.projectScriptExportNames());
     const pieces = lead ? [{ text: lead, cls: null }] : [];
     let last = 0;
     for (const s of spans) {

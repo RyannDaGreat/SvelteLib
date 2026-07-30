@@ -282,7 +282,9 @@
   function buildHighlightPieces(text) {
     const clean = text.replace(EQ_MARKER, "");
     const lead = text.slice(0, text.length - clean.length); // preserved "= " prefix (plain)
-    const spans = bound ? equationTokenSpans(clean, app.rawState(), selfId) : [];
+    // Project-script exports count as resolvable identifiers here too — see
+    // NumericField's note (a working equation must never paint red).
+    const spans = bound ? equationTokenSpans(clean, app.rawState(), selfId, app.projectScriptExportNames()) : [];
     const pieces = lead ? [{ text: lead, cls: null }] : [];
     let last = 0;
     for (const s of spans) {

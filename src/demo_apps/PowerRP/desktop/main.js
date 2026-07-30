@@ -86,10 +86,30 @@ let serverExited = false;
 let shuttingDown = false;
 let win = null;
 
-/** Pure. One-line styled HTML page for setup states. */
-const setupPage = (msg) =>
+/** The LIVE setup page (user ruling: "that's not very responsive — show real
+ * progress"): a phase line, a self-ticking elapsed counter (proves liveness
+ * even while npm is silent), a detail line, and a streaming tail of the real
+ * command output. Updated in place via executeJavaScript — no preload needed
+ * for a page we authored ourselves. */
+const SETUP_PAGE =
   "data:text/html;charset=utf-8," + encodeURIComponent(
-    `<body style="margin:0;display:grid;place-items:center;height:100vh;background:#16161e;color:#c0caf5;font:15px system-ui"><div style="text-align:center;max-width:44em"><h2 style="font-weight:600">PowerRP</h2><p>${msg}</p></div></body>`);
+    `<body style="margin:0;display:grid;place-items:center;height:100vh;background:#16161e;color:#c0caf5;font:15px system-ui"><div style="width:46em;max-width:90vw"><h2 style="font-weight:600;text-align:center">PowerRP</h2><p style="text-align:center"><span id="phase">Starting…</span> · <span id="elapsed" style="color:#7982a9">0s</span></p><p id="detail" style="text-align:center;color:#7982a9;font-size:12px"></p><pre id="log" style="height:14em;overflow:hidden;background:#101017;border:1px solid #2a2f45;border-radius:6px;padding:8px;font:11px ui-monospace,monospace;color:#9aa5ce;white-space:pre-wrap;margin:0"></pre></div><script>const t0=Date.now();setInterval(()=>{document.getElementById("elapsed").textContent=Math.floor((Date.now()-t0)/1000)+"s"},1000)</script></body>`);
+
+/** Command. Sets one of the setup page's fields (phase/detail) — no-op once
+ * the real app page has replaced it. */
+function setSetup(id, text) {
+  if (win && !win.isDestroyed())
+    win.webContents.executeJavaScript(`document.getElementById(${JSON.stringify(id)})?.textContent = ${JSON.stringify(text)};`).catch(() => {});
+}
+
+/** Command. Streams a command-output chunk into the setup page's log tail. */
+const logTail = [];
+function appendSetupLog(chunk) {
+  logTail.push(...chunk.toString().split("\n").filter(Boolean));
+  while (logTail.length > 18) logTail.shift();
+  if (win && !win.isDestroyed())
+    win.webContents.executeJavaScript(`document.getElementById("log")?.textContent = ${JSON.stringify(logTail.join("\n"))};`).catch(() => {});
+}
 
 /** Command. Dies loudly with the message in a dialog. */
 function fatal(title, message) {
@@ -120,19 +140,21 @@ async function ensureSupportRepo(vendoredRepo) {
     requireBin("npm", "It ships beside the bundled node — rebuild with `npm run package:dmg`, or `brew install node`.");
     requireBin("uv", "The bundle should carry it (Resources/bin/uv) — rebuild with `npm run package:dmg`, or `brew install uv`.");
 
-    win.loadURL(setupPage(`First-run setup: installing into<br><code>${verDir}</code><br><br>This downloads the web dependencies once (a few minutes, needs network).<br>Log: <code>${log}</code>`));
+    setSetup("phase", "First-run setup: installing web dependencies (needs network)");
+    setSetup("detail", `into ${verDir} — full log: ${log}`);
     mkdirSync(support, { recursive: true });
     appendFileSync(log, `\n=== setup ${new Date().toISOString()} → ${verDir}\n`);
 
+    setSetup("phase", "Copying app files…");
     rmSync(verDir, { recursive: true, force: true }); // a half-copied previous attempt restarts cleanly
     const cp = spawnSync("cp", ["-R", vendoredRepo, verDir], { env: CHILD_ENV, encoding: "utf8" });
     if (cp.status !== 0) throw new Error(`copying the vendored repo failed: ${cp.stderr}`);
 
     await new Promise((resolve, reject) => {
-      const npm = spawn("npm", ["ci", "--no-fund", "--no-audit"], { cwd: verDir, env: CHILD_ENV });
+      const npm = spawn("npm", ["ci", "--no-fund", "--no-audit", "--loglevel", "info"], { cwd: verDir, env: CHILD_ENV });
       const timer = setTimeout(() => { npm.kill("SIGKILL"); reject(new Error(`npm ci exceeded ${SETUP_TIMEOUT_MS / 60000} minutes — see ${log}`)); }, SETUP_TIMEOUT_MS);
-      npm.stdout.on("data", (b) => appendFileSync(log, b));
-      npm.stderr.on("data", (b) => appendFileSync(log, b));
+      npm.stdout.on("data", (b) => { appendFileSync(log, b); appendSetupLog(b); });
+      npm.stderr.on("data", (b) => { appendFileSync(log, b); appendSetupLog(b); });
       npm.on("exit", (code) => {
         clearTimeout(timer);
         code === 0 ? resolve() : reject(new Error(`npm ci exited ${code} — see ${log}`));
@@ -210,7 +232,7 @@ app.whenReady().then(async () => {
     title: "PowerRP",
     webPreferences: { contextIsolation: true }, // plain web page; no preload, no node in the renderer
   });
-  win.loadURL(setupPage("Starting…"));
+  win.loadURL(SETUP_PAGE);
 
   let appDir;
   try {
@@ -247,7 +269,7 @@ app.whenReady().then(async () => {
   });
 
   try {
-    win.loadURL(setupPage("Starting the PowerRP server…"));
+    setSetup("phase", "Starting the PowerRP server…");
     const url = await Promise.race([
       urlPromise,
       new Promise((_, rej) => setTimeout(() => rej(new Error(`launcher never printed its Local: url.\n\n${outputRef.text.slice(-2000)}`)), READY_TIMEOUT_MS)),

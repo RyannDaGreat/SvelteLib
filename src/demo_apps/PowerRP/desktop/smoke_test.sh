@@ -22,6 +22,9 @@ CDP_PORT=9777
 BOOT_TIMEOUT_S=900
 FAKE_HOME=$(mktemp -d)
 echo "smoke: throwaway HOME=$FAKE_HOME"
+# Pre-existing server processes (a dev machine's own stack) are NOT ours to
+# judge — only pids that APPEAR during this run may count as orphans.
+BEFORE_PIDS=$(pgrep -f 'start_server.sh|server.py serve|vite dev' || true)
 
 HOME="$FAKE_HOME" "$BIN" --remote-debugging-port=$CDP_PORT &
 APP_PID=$!
@@ -49,6 +52,7 @@ kill -TERM "$APP_PID"
 for ((i = 0; i < 30; i++)); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 1; done
 kill -0 "$APP_PID" 2>/dev/null && { echo "SMOKE FAIL: app did not exit on SIGTERM" >&2; exit 1; }
 sleep 2
-LEFT=$(pgrep -f 'start_server.sh|server.py serve|vite dev' || true)
-[ -z "$LEFT" ] || { echo "SMOKE FAIL: orphaned server processes after quit: $LEFT" >&2; exit 1; }
+AFTER_PIDS=$(pgrep -f 'start_server.sh|server.py serve|vite dev' || true)
+LEFT=$(comm -13 <(echo "$BEFORE_PIDS" | sort) <(echo "$AFTER_PIDS" | sort) | tr -d ' ')
+[ -z "$LEFT" ] || { echo "SMOKE FAIL: orphaned server processes after quit (new since launch): $LEFT" >&2; exit 1; }
 echo "SMOKE PASS: cold boot + clean teardown"

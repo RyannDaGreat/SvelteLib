@@ -56,6 +56,12 @@
  * `RenderTree = pure(document, [[slide, alpha]])` survives it — which is the whole
  * reason the script is compiled here rather than with a bare `new Function`.
  *
+ * A script gets MORE of the language than an equation does — the pure value-level
+ * built-ins (`Object`, `Array`, `JSON`, `Map`, `Error`, …) listed and justified at
+ * SCRIPT_STDLIB. Every one of them is a function of its arguments alone, so none
+ * weakens the guarantee above; a library that cannot construct an `Error` or shape
+ * an object is not a library.
+ *
  * WHAT THE SCRIPT DOES *NOT* GET, deliberately: the document. There is no `items`
  * / `vars` / `self` in the script's own scope, because the script body runs ONCE
  * per compile, not once per slot — a reference read there would be a snapshot
@@ -87,10 +93,47 @@ import { BLOCKED_GLOBALS, FUNCTIONS, SAFE_MATH } from "./expressions.js";
 const RESERVED_KEYWORD_NAMES = ["time", "random", "Math", "self", "undefined", "NaN", "Infinity"];
 
 /**
+ * THE DETERMINISTIC STANDARD LIBRARY a project script may reach — beyond `Math`,
+ * `time` and the seeded `random`, which the evaluator serves itself.
+ *
+ * WHY THIS EXISTS AT ALL. An EQUATION is one expression, so it needs almost nothing
+ * from the language. A SCRIPT is a library: it declares helpers, validates their
+ * arguments and shapes data, and it cannot do any of that if `Error`, `Object` and
+ * `Array` are unreachable. Without this list a script could not even
+ * `throw new Error("bad angle")` — the throw failed with "Error is not a
+ * constructor", which blames the jail for the author's perfectly good code. That is
+ * a worse failure than the one the jail is there to prevent.
+ *
+ * EVERY NAME HERE IS A PURE VALUE-LEVEL BUILT-IN — a function of its arguments and
+ * nothing else. NONE of them can read a clock, a device, a network or an entropy
+ * source, so the determinism law is untouched: `Object`, `Array`, `String`,
+ * `Number`, `Boolean`, `JSON`, `Symbol`, `Map`, `Set`, `RegExp`, `parseFloat`,
+ * `parseInt`, `isNaN`, `isFinite` and the error constructors.
+ *
+ * DELIBERATELY ABSENT, each for a stated reason rather than by oversight:
+ *   Date, performance          a clock (BLOCKED_GLOBALS — the whole point)
+ *   Math.random                excised by SAFE_MATH; `random` is the seeded one
+ *   fetch/XHR/WebSocket        I/O, so a frame would depend on a network
+ *   Promise, setTimeout        asynchrony: `emit()` is synchronous, so an async
+ *                              result could only arrive after the frame was drawn
+ *   Function, eval             a second, UNJAILED compiler — the escape hatch
+ *   Proxy, Reflect             can forge the jail's own scope objects
+ *   globalThis, window         the ambient world this jail exists to hide
+ *   WeakMap/WeakRef            observable GC timing (an identity-keyed cache is
+ *                              still available through Map)
+ */
+const SCRIPT_STDLIB = Object.freeze({
+  Object, Array, String, Number, Boolean, JSON, Symbol, Map, Set, RegExp,
+  parseFloat, parseInt, isNaN, isFinite,
+  Error, TypeError, RangeError, SyntaxError,
+});
+
+/**
  * Query (reads a module const of core/expressions.js; memoized). Names a script
- * export may NOT take: the evaluator keywords above plus every FUNCTION-library
- * name, folded in from FUNCTIONS rather than restated so a new library function
- * becomes reserved automatically.
+ * export may NOT take: the evaluator keywords, every FUNCTION-library name, and
+ * every SCRIPT_STDLIB name. The latter two are FOLDED IN from their own
+ * declarations rather than restated, so a new library function or a new stdlib
+ * entry becomes reserved automatically instead of by remembering to edit a list.
  *
  * COMPUTED LAZILY, not at module scope, because this module and
  * core/expressions.js import EACH OTHER: expressions.js needs
@@ -105,7 +148,9 @@ const RESERVED_KEYWORD_NAMES = ["time", "random", "Math", "self", "undefined", "
  * @example scriptReservedNames().has("ease") // false
  */
 export function scriptReservedNames() {
-  return (reservedMemo ??= new Set([...RESERVED_KEYWORD_NAMES, ...Object.keys(FUNCTIONS)]));
+  return (reservedMemo ??= new Set([
+    ...RESERVED_KEYWORD_NAMES, ...Object.keys(FUNCTIONS), ...Object.keys(SCRIPT_STDLIB),
+  ]));
 }
 let reservedMemo = null;
 
@@ -191,9 +236,12 @@ export function scriptScope(cell, exported) {
       }
       // BLOCKED_GLOBALS is listed explicitly for the same reason expressions.js
       // lists it: `has: () => true` already blocks the fall-through, so this is
-      // the self-documenting half of the guard. Everything unknown is undefined,
-      // so a member access on it throws loudly and names the identifier.
+      // the self-documenting half of the guard. It is checked BEFORE the stdlib so
+      // a name appearing in both could only ever resolve to the refusal.
       if (BLOCKED_GLOBALS.has(prop)) return undefined;
+      if (prop in SCRIPT_STDLIB) return SCRIPT_STDLIB[prop]; // pure value-level built-ins
+      // Everything else is undefined, so a member access on it throws loudly and
+      // names the identifier.
       return undefined;
     },
   });
@@ -207,30 +255,17 @@ export function scriptScope(cell, exported) {
 //
 // ── WHY THE HOST IS *NOT* PART OF THE KEY, AND WHY THAT IS SAFE ──────────────
 // The cache means the script BODY runs ONCE per source, with whichever pass's host
-// happened to be first. A body that read `time` or `random` at TOP LEVEL would
-// therefore freeze that reading forever — a silent determinism break of exactly the
-// kind the manifest's Δt law forbids (`Δt = 0` would still be satisfied, but so
-// would `Δt ≠ 0`, which is worse).
+// happened to be first. Two consequences, both handled rather than hoped away:
 //
-// So a top-level read is REFUSED rather than cached: the LIVE_ONLY sentinel below
-// makes `time` and `random` unavailable while the body runs, and available inside
-// an exported FUNCTION — which is called per slot, per pass, so it reads the CURRENT
-// clock. That is the honest shape anyway: the script body is a declaration site, and
-// anything that varies with time is a function of time.
-const scriptCache = new Map();
-
-/**
- * A per-compile latch: the deterministic host is REACHABLE only while an exported
- * function is executing, never while the module body runs (see the cache note).
- * Mutated by computeProjectScript around the body call, read by the scope's
- * `time`/`random` getters.
- *
- * One object per compile, closed over by that compile's scope, so two documents'
- * scripts cannot see each other's latch.
- */
-function makeLiveLatch() {
-  return { live: false };
-}
+//   1. A TOP-LEVEL read of `time`/`random` would freeze that reading forever — a
+//      silent determinism break of exactly the kind the manifest's Δt law forbids.
+//      It is REFUSED: the scope's host cell is null while the body runs, so such a
+//      read throws and becomes the script's compile error, naming the fix.
+//   2. An EXPORTED FUNCTION reading them must see the CURRENT pass's values, not the
+//      first pass's. Each cached entry therefore carries the host CELL its scope
+//      reads through, and compileProjectScript re-points it on every call. So the
+//      function body is compiled once and the clock behind it is always live.
+const scriptCache = new Map(); // source → {exports, error, cell}
 
 /** The result every blank script shares — a stable identity, so a caller may use
  *  it as a cheap "nothing to merge" test. */
@@ -264,7 +299,9 @@ const EMPTY_SCRIPT = Object.freeze({ exports: Object.freeze({}), error: null });
  *
  * Args:
  *   src (string): the script source (doc.meta.script).
- *   host (object): {random, time} — see scriptScope.
+ *   host (object): {random, time} — the seeded PRNG and a `() => number` clock
+ *     reader for THIS pass. Re-pointed into the cached entry's cell on every call,
+ *     so an exported function always reads the current clock (see scriptCache).
  *
  * Returns:
  *   {exports: object, error: string|null}
@@ -279,15 +316,62 @@ export function compileProjectScript(src, host) {
   const source = typeof src === "string" ? src : "";
   if (source.trim() === "") return EMPTY_SCRIPT;
   const cached = scriptCache.get(source);
-  if (cached) return cached;
+  if (cached) {
+    cached.cell.host = host; // this pass's clock + PRNG, behind the once-compiled functions
+    return cached;
+  }
   const result = computeProjectScript(source, host);
   scriptCache.set(source, result);
   return result;
 }
 
-/** Pure-core of compileProjectScript (see its docs); uncached, never throws. */
+/**
+ * Query (reads the compile cache; NEVER compiles and never mutates it). Why `src`
+ * does not compile, or null when it does — the UI's read, for the code modal's
+ * footer problem line.
+ *
+ * IT DOES NOT COMPILE, deliberately: `compileProjectScript` would have to be handed
+ * a host, and a UI-supplied one would overwrite the live cell that this pass's
+ * exported functions read their clock through (see scriptCache) — a status line has
+ * no business changing what the canvas evaluates. So this reports on the compile the
+ * EVALUATOR already did, which is also the only compile whose verdict matters. A
+ * source the evaluator has not reached yet reads as null (nothing known against it),
+ * and the next derivation pass — which a commit always triggers — fills it in.
+ *
+ * @example // projectScriptProblem("") // null (a blank script always compiles)
+ * @example // after the evaluator compiled a broken script: projectScriptProblem(src) // "Project script syntax error: …"
+ */
+export function projectScriptProblem(src) {
+  const source = typeof src === "string" ? src : "";
+  if (source.trim() === "") return null;
+  return scriptCache.get(source)?.error ?? null;
+}
+
+/**
+ * Query (reads the compile cache; NEVER compiles and never mutates it). The exports
+ * of `src` as the EVALUATOR compiled them, or `{}` when it has not compiled this
+ * source (or the source failed). Same non-perturbing contract as
+ * projectScriptProblem, and for the same reason.
+ *
+ * The UI's read: the equation-field highlighter needs to know which bare
+ * identifiers the script legitimately provides, so it does not paint a working
+ * equation red. Reading the EVALUATOR's compile is what makes the paint and the
+ * value agree by construction rather than by two lists staying in step.
+ *
+ * @example // projectScriptExports("") // {} (a blank script exports nothing)
+ * @example // after the evaluator compiled "exports.ease = t => t;": Object.keys(projectScriptExports(src)) // ["ease"]
+ */
+export function projectScriptExports(src) {
+  const source = typeof src === "string" ? src : "";
+  if (source.trim() === "") return EMPTY_SCRIPT.exports;
+  return scriptCache.get(source)?.exports ?? EMPTY_SCRIPT.exports;
+}
+
+/** Pure-core of compileProjectScript (see its docs); uncached, never throws.
+ *  Returns the same shape PLUS the host `cell` the cache re-points per pass. */
 function computeProjectScript(source, host) {
-  const failed = (error) => ({ exports: Object.freeze({}), error });
+  const cell = { host: null }; // null WHILE THE BODY RUNS — see scriptScope
+  const failed = (error) => ({ exports: Object.freeze({}), error, cell });
   let body;
   try {
     // `with(scope)` closes the jail over the WHOLE body (the equation compiler's
@@ -300,10 +384,11 @@ function computeProjectScript(source, host) {
   }
   const exported = Object.create(null);
   try {
-    body(scriptScope(host, exported));
+    body(scriptScope(cell, exported));
   } catch (e) {
     return failed(`Project script threw: ${e.message}`);
   }
+  cell.host = host; // the body is done; exported functions may now read the clock
   const reserved = scriptReservedNames();
   for (const name of Object.keys(exported)) {
     if (!isIdentifier(name))
@@ -311,5 +396,7 @@ function computeProjectScript(source, host) {
     if (reserved.has(name))
       return failed(`Project script export "${name}" collides with a built-in of the same name — built-ins are not shadowable, so rename the export. Reserved: ${[...reserved].sort().join(", ")}`);
   }
-  return { exports: Object.freeze({ ...exported }), error: null };
+  // `cell` rides along so the cache can re-point it per pass — an exported function
+  // reads the CURRENT clock through it, not the clock of the pass that compiled it.
+  return { exports: Object.freeze({ ...exported }), error: null, cell };
 }
