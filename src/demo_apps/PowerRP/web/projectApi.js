@@ -323,3 +323,50 @@ export async function downloadProjectZip(name) {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+/** Pure function. The project name a dropped/picked .zip file wants: its
+ *  basename with the ".zip" extension stripped (any path the browser may have
+ *  prefixed goes too). An empty result means "let the archive's own root folder
+ *  name it" — the server's fallback — so this never invents a name.
+ *
+ *  @example projectZipName("Imitations.zip")        // "Imitations"
+ *  @example projectZipName("decks/My Talk.ZIP")     // "My Talk"
+ *  @example projectZipName(".zip")                  // ""
+ */
+export function projectZipName(filename) {
+  const base = String(filename ?? "").split(/[\\/]/).pop();
+  return base.replace(/\.zip$/i, "").trim();
+}
+
+/** Pure function. Whether a dropped/picked OS File is a project ARCHIVE rather
+ *  than an asset. THE one rule, exported so every drop surface (canvas, asset
+ *  pane) classifies a .zip identically — a file that means "open this whole
+ *  other project" must never be an asset on one surface and a project on
+ *  another. Extension-tested as well as MIME-tested because the OS reports zips
+ *  under several types, and sometimes none at all.
+ *
+ *  @example isProjectZip({name: "Imitations.zip", type: "application/zip"}) // true
+ *  @example isProjectZip({name: "Deck.ZIP", type: ""})                      // true (extension alone)
+ *  @example isProjectZip({name: "logo.png", type: "image/png"})             // false
+ */
+export function isProjectZip(file) {
+  return /\.zip$/i.test(file?.name ?? "") || ["application/zip", "application/x-zip-compressed"].includes(file?.type);
+}
+
+/** Command. Import an exported project .zip as a NEW project on the server —
+ *  the inverse of downloadProjectZip. `file` is the raw archive (a File/Blob);
+ *  `name` is the preferred project name (blank = the archive's root folder
+ *  names it). NEVER overwrites: a colliding name lands as "<Name> 2", and the
+ *  resolved {name, requested} pair comes back so the caller can SAY SO rather
+ *  than quietly opening something with a different title. A rejected archive
+ *  (not a zip, no doc.json, unsafe member) throws loudly with the server's
+ *  reason — the body is JSON on both paths, so jsonOrThrow surfaces it. */
+export async function importProjectZip(file, name = "") {
+  const q = name ? `?${new URLSearchParams({ name })}` : "";
+  const res = await fetch(`${BACKEND}/api/import-zip/${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/zip" },
+    body: file,
+  });
+  return jsonOrThrow(res, `importProjectZip(${name || "unnamed"})`);
+}

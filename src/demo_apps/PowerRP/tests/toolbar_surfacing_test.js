@@ -93,15 +93,40 @@ test("only the three documented buttons still name their own glyphs", () => {
 });
 
 // ── (3) plain-text tips only where there is no command to read ──────────────
-// TIGHTENED from two to one. The second allowance was the light/dark toggle, whose
-// tip was hand-written because it had no command entry to read one from; the entry
-// exists now (`toggle-light-dark`), so that button renders commandTip like the rest
-// and the exception is retired rather than merely re-justified. Strictly stronger:
-// the set of hardcoded tips this file may contain shrank, and the ONE remaining
-// allowance is the only Tooltip here whose target is not a command at all.
+// TIGHTENED from two to one, then re-widened to an ALLOW-LIST rather than a count.
+// The original second allowance was the light/dark toggle, whose tip was
+// hand-written because it had no command entry to read one from; the entry exists
+// now (`toggle-light-dark`), so that button renders commandTip like the rest and
+// that exception stayed retired.
+//
+// WHY THIS IS NOW A LIST AND NOT A NUMBER: the rule being defended is "no BUTTON
+// words its own tip instead of reading the registry", and a bare count enforces
+// that only by accident. Bumping the number to admit a legitimate non-command tip
+// would silently re-permit a hand-written button tip in its place — the exact
+// drift the header documents (three toolbar tips that disagreed with the palette).
+// Naming each allowance makes the exception set readable and makes adding to it a
+// deliberate edit that says which affordance and why.
+//
+// The two allowed tips are the only Tooltips here whose target is not a command:
+//   doc-name        — a double-click RENAME gesture on the title
+//   save-indicator  — a STATUS READOUT (server save state); it runs nothing at all,
+//                     and its sentence is derived with its own dot state so the two
+//                     cannot disagree (Toolbar.svelte: saveIndicator/saveText)
 test("a hardcoded tooltip survives only where no command entry exists", () => {
+  // Each <Tooltip text=…> paired with the class of the element it wraps.
+  const wrapped = [...toolbar.matchAll(/<Tooltip text=[^>]*>\s*<(?:span|button|div)\s+[^>]*class="([^"{]*)/g)]
+    .map((m) => m[1].trim().split(/\s+/)[0]);
+  const ALLOWED = ["doc-name", "save-indicator"];
+  assert.deepEqual(
+    wrapped.slice().sort(),
+    ALLOWED.slice().sort(),
+    `Toolbar.svelte may hardcode a tip ONLY on these non-command affordances: ${ALLOWED.join(", ")}. Everything else — every button — must render the shared commandTip snippet, which reads the title, the keybinding and the disabled reason from the registries.`,
+  );
+  // Belt and braces: the allow-list is only meaningful if it accounts for EVERY
+  // hardcoded tip, so the count must match too. A <Tooltip text=…> the regex above
+  // failed to attribute (a new wrapper shape) would otherwise pass unnoticed.
   const texts = [...toolbar.matchAll(/<Tooltip text=/g)].length;
-  assert.equal(texts, 1, "Toolbar.svelte may hardcode exactly ONE tip: the document-name rename affordance, which is a double-click gesture on the title rather than a command. Everything else — every button — must render the shared commandTip snippet, which reads the title, the keybinding and the disabled reason from the registries.");
+  assert.equal(texts, ALLOWED.length, "a hardcoded <Tooltip text=…> in Toolbar.svelte was not attributed to an allow-listed affordance — either it belongs to a button (use commandTip) or the allow-list above needs to name it deliberately");
   // And the shared tip snippet must still be the thing every other button uses.
   assert.match(toolbar, /\{#snippet commandTip\(id, note = null\)\}/, "the ONE command-tip body is gone — each button would be free to word its own tip again");
 });

@@ -23,6 +23,18 @@
 
   --a-panel-bg: #1a1a1a;
   --a-canvas-bg: #141414;
+  /* The canvas colour as a GUARANTEED-FLAT <color>. --a-canvas-bg is consumed
+     as a `background` (a shorthand that accepts an image), so nothing stops a
+     theme from setting it to a gradient. Consumers needing a real colour —
+     color-mix(), a border, a shadow — must read THIS instead: passing an image
+     to color-mix() makes the whole declaration invalid at computed-value time
+     and the effect vanishes with NO error, which is exactly the silent failure
+     this codebase forbids. --a-upload-scrim hit that and now reads this token.
+     No shipped theme gradients the canvas today (Ember tried and the attempt is
+     documented at its block), so every theme sets the two to the same value —
+     the guard exists because the hazard is one edit away, not because it is
+     currently live. */
+  --a-canvas-solid: #141414;
   --a-hover-bg: rgba(255, 255, 255, 0.12);
   --a-selection: #3f9eff; /* selection/guides need chroma to read against art */
   --a-guide: #ff4d97;
@@ -274,6 +286,14 @@
   --a-transition-chip-pad: 0 var(--a-sp-2);
   --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
 
+  /* Save indicator (the top-left server-save dot). Sized to read as a STATUS
+     MARK beside the title rather than as a control — deliberately smaller than
+     --a-control-h so it cannot be mistaken for a button. Its ring is a full
+     device pixel, not --a-hairline: the hollow "unsaved" state IS the ring, so
+     it has to survive at 1× where a 0.5px border renders faintly or not at all. */
+  --a-save-dot: 9px;
+  --a-save-dot-ring: 1px;
+
   /* Asset Explorer: thumbnail grid cell min-width (auto-fill columns) — a
      visual choice with no in-repo precedent; PENDING USER RATIFICATION. The
      drag-over highlight reuses the selection color (same language as the
@@ -283,7 +303,13 @@
   /* Optimistic upload tile: scrim over the kind icon so the %/bytes caption
      reads, a determinate progress bar (track + accent fill), and an
      indeterminate spinner for when the browser can't report total bytes. */
-  --a-upload-scrim: color-mix(in srgb, var(--a-canvas-bg) 78%, transparent);
+  /* Chained to --a-canvas-SOLID, not --a-canvas-bg: the latter is painted as a
+     `background` and a theme MAY set it to a gradient, but
+     color-mix() takes a <color> — feeding it an image makes the whole
+     declaration invalid at computed-value time and the scrim silently
+     disappears. --a-canvas-solid is the guaranteed-flat twin that exists for
+     exactly this class of consumer. */
+  --a-upload-scrim: color-mix(in srgb, var(--a-canvas-solid) 78%, transparent);
   --a-upload-bar-h: 5px;
   --a-upload-track: color-mix(in srgb, var(--fg) 22%, transparent); /* muted track behind the progress bar AND the spinner ring */
   --a-upload-bar-fill: var(--a-selection);
@@ -435,10 +461,26 @@
   --a-fps-color: #35d07f;
   --a-fps-z: 300;
 
-  /* Floating popover stacking level — the open Dropdown menu (Dropdown reads it
-     as --dd-menu-z). Above every pane / present layer (≤ 300) so a menu that has
-     escaped its pane's overflow also paints over neighbours, and below Tooltip /
-     Modal's 2147483647 ceiling so a dialog opened over a menu still wins. */
+  /* THE FLOATING-POPOVER STACKING LEVEL — the single tier EVERY menu, popover
+     and picker surface in the app sits on: the open Dropdown menu (Dropdown
+     reads it as --dd-menu-z), the toolbar's shape grid, the FontPicker popover,
+     the gradient/grid/brush pickers. Above every pane / present layer (≤ 300) so
+     a menu that has escaped its pane's overflow also paints over neighbours, and
+     below Tooltip / Modal's 2147483647 ceiling so a dialog opened over a menu
+     still wins.
+
+     WHY A POPOVER MAY NOT PICK ITS OWN SMALL NUMBER (the bug this token exists
+     to make unrepresentable): the app shell is a SplitPane, and SplitPane's
+     `.sp-pane` is `position: absolute` with `z-index: auto`. Absolutely
+     positioned boxes with auto z-index paint in DOM ORDER within the root
+     stacking context — so `.main`'s panes, being later siblings than `.toolbar`,
+     paint OVER any toolbar popover whose z-index is a small local number. The
+     toolbar's shape grid carried `z-index: 3` and was therefore covered by the
+     Slide Navigator's slide cards (measured: the slide-1 thumbnail painted over
+     the grid's entire left column, hiding two tiles). A popover is not "above
+     its siblings", it is above THE WHOLE APP, and the only number that expresses
+     that is one shared by all of them. Anything that opens on top of the app
+     reads this token; nothing invents its own. */
   --a-z-popover: 1000;
 
   /* Scrollbars */
@@ -539,11 +581,20 @@
   --control-bg: #e6e6e6;
   --a-panel-bg: #ececec;
   --a-canvas-bg: #d9d9d9;
+  --a-canvas-solid: #d9d9d9; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(0, 0, 0, 0.08);
   --a-selection: #0b6bcb;
   --a-guide: #d0246f;
   --a-keyed: #9a6700;
   --a-anchor: #5a6486;
+  /* Re-based off the PPT-yellow :root default, which this theme was silently
+     inheriting: #ffc72c on a #f4f4f4 page measures 1.42:1, so modifier points,
+     eq `self` pills and code keywords were effectively invisible here. Every
+     other full-override theme re-bases this token; the two light themes were
+     the ones that never did. A deep amber keeps the yellow FAMILY (so the
+     modifier still reads as the adjustment-handle colour) while clearing the
+     3.4:1 graphical floor against both --bg and --a-panel-bg. */
+  --a-modifier: #8a5a00;
   --a-scrollbar: rgba(0, 0, 0, 0.22);
   --a-scrollbar-hover: rgba(0, 0, 0, 0.4);
   --a-split-handle: #bdbdbd;
@@ -556,6 +607,7 @@
   --control-bg: #161616;
   --a-panel-bg: #0a0a0a;
   --a-canvas-bg: #000000;
+  --a-canvas-solid: #000000; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --border: rgba(255, 255, 255, 0.14);
 }
 
@@ -567,6 +619,7 @@
   --border: rgba(255, 240, 220, 0.1);
   --a-panel-bg: #1e1b18;
   --a-canvas-bg: #171513;
+  --a-canvas-solid: #171513; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(255, 240, 220, 0.1);
 }
 
@@ -603,17 +656,24 @@
 :root[data-theme="sepia"] {
   --bg: #f2e8d5;
   --fg: #3a2e1f;
-  --fg-dim: #7a6a52;
+  /* Darkened from #7a6a52, which measured 4.00:1 against the cream --a-panel-bg
+     and so missed the 4.3:1 floor for the app's smallest text. */
+  --fg-dim: #6f6049;
   --accent: #8a5a2b;
   --border: rgba(58, 46, 31, 0.16);
   --control-bg: #e6d9bd;
   --a-panel-bg: #ebe0c8;
   --a-canvas-bg: #e4d6b8;
+  --a-canvas-solid: #e4d6b8; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(58, 46, 31, 0.08);
   --a-selection: #8a5a2b;
   --a-guide: #b0463f;
   --a-keyed: #6b7d3d;
   --a-anchor: #5b6f7a;
+  /* Same silent inheritance the light theme had: the :root PPT-yellow measures
+     1.28:1 on this cream page. An umber keeps eq `self` / code keywords inside
+     Sepia's ink-and-paper family rather than importing a foreign hue. */
+  --a-modifier: #7d4a1e;
   --a-scrollbar: rgba(58, 46, 31, 0.22);
   --a-scrollbar-hover: rgba(58, 46, 31, 0.38);
   --a-split-handle: #cbb98f;
@@ -635,6 +695,7 @@
   --control-bg: #181818;
   --a-panel-bg: #121212;
   --a-canvas-bg: #060606;
+  --a-canvas-solid: #060606; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(255, 255, 255, 0.14);
   --a-selection: #38a8f5;
   --a-guide: #ff5c7a;
@@ -662,6 +723,7 @@
   --control-bg: #343b48;
   --a-panel-bg: #2a2f3a;
   --a-canvas-bg: #242933;
+  --a-canvas-solid: #242933; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(229, 233, 240, 0.1);
   --a-selection: #88c0d0;
   --a-guide: #d88aa8; /* aurora rose — brightened past Nord's stock #bf616a for --a-eq-error legibility */
@@ -691,6 +753,7 @@
   --control-bg: #474034;
   --a-panel-bg: #332f28;
   --a-canvas-bg: #2a2620;
+  --a-canvas-solid: #2a2620; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(235, 219, 178, 0.12);
   --a-selection: #fe8019; /* gruvbox orange — the theme's unmistakable selection */
   --a-guide: #fb4934;
@@ -718,6 +781,7 @@
   --control-bg: #33205c;
   --a-panel-bg: #1f0f3c;
   --a-canvas-bg: #180a30;
+  --a-canvas-solid: #180a30; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(237, 232, 250, 0.12);
   --a-selection: #64e8d2; /* teal */
   --a-guide: #ff4d6d; /* red-pink danger — distinct from the magenta diamonds */
@@ -759,6 +823,7 @@
   --control-bg: #343746;
   --a-panel-bg: #21222c;
   --a-canvas-bg: #1b1c24;
+  --a-canvas-solid: #1b1c24; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(248, 248, 242, 0.1);
   --a-selection: #bd93f9;
   --a-guide: #ff5555;
@@ -783,6 +848,7 @@
   --control-bg: #24283b;
   --a-panel-bg: #16161e;
   --a-canvas-bg: #101018;
+  --a-canvas-solid: #101018; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(192, 202, 245, 0.1);
   --a-selection: #7aa2f7;
   --a-guide: #f7768e;
@@ -807,6 +873,7 @@
   --control-bg: #313244;
   --a-panel-bg: #181825;
   --a-canvas-bg: #11111b;
+  --a-canvas-solid: #11111b; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(205, 214, 244, 0.1);
   --a-selection: #89b4fa;
   --a-guide: #f38ba8;
@@ -833,6 +900,7 @@
   --control-bg: #26233a;
   --a-panel-bg: #1f1d2e;
   --a-canvas-bg: #14121f;
+  --a-canvas-solid: #14121f; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(224, 222, 244, 0.08);
   --a-selection: #9ccfd8;
   --a-guide: #eb6f92;
@@ -858,6 +926,7 @@
   --control-bg: #34352c;
   --a-panel-bg: #1f201b;
   --a-canvas-bg: #191a15;
+  --a-canvas-solid: #191a15; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(248, 248, 242, 0.1);
   --a-selection: #a6e22e;
   --a-guide: #f92672;
@@ -883,6 +952,7 @@
   --control-bg: #2f2a45;
   --a-panel-bg: #1e1b2e;
   --a-canvas-bg: #171325;
+  --a-canvas-solid: #171325; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(255, 126, 219, 0.12);
   --a-selection: #36f9f6;
   --a-guide: #fe4450;
@@ -936,6 +1006,7 @@
   --control-bg: #0d2e47; /* barely off the panel: fields are outlined, not filled */
   --a-panel-bg: #082033;
   --a-canvas-bg: #05161f; /* the print bed, well under the sheet */
+  --a-canvas-solid: #05161f; /* flat twin of --a-canvas-bg (color-mix consumers) */
   /* Stronger than the usual ~0.1 wash: with fills this flat, hover is the ONLY
      thing distinguishing the palette's active row from its neighbours. */
   --a-hover-bg: rgba(150, 215, 250, 0.2);
@@ -979,6 +1050,7 @@
   --control-bg: #f7cfae; /* deepest peach — the horizon band the bars sit in */
   --a-panel-bg: #fff2dc; /* pale gold — the lit part of the sky */
   --a-canvas-bg: #d9a3a0; /* dusk rose — ground that has not caught the sun yet */
+  --a-canvas-solid: #d9a3a0; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(209, 69, 47, 0.15);
   --a-selection: #d8402b; /* coral */
   --a-guide: #b0155a; /* rose-magenta, distinct from the coral selection */
@@ -1018,6 +1090,7 @@
   --control-bg: #e3d5b6; /* the bars, pressed into the sand between the panes */
   --a-panel-bg: #faf5e9; /* bone paper — the brightest thing here, by a wide step */
   --a-canvas-bg: #a8977a; /* shaded ground — the darkest light-theme canvas in the app */
+  --a-canvas-solid: #a8977a; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(168, 60, 30, 0.15);
   --a-selection: #a83c1e; /* terracotta */
   --a-guide: #4f7048; /* sage — desert flora, and never confusable with terracotta */
@@ -1081,6 +1154,7 @@
   --control-bg: #1c222d;
   --a-panel-bg: #151a23;
   --a-canvas-bg: #080a0e; /* the deepest surface — panels float over THIS */
+  --a-canvas-solid: #080a0e; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(160, 190, 245, 0.13);
   --a-selection: #7aa2f7;
   --a-guide: #f7768e;
@@ -1139,6 +1213,7 @@
   --control-bg: #242424;
   --a-panel-bg: #1c1c1c;
   --a-canvas-bg: #0d0d0d;
+  --a-canvas-solid: #0d0d0d; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(240, 239, 236, 0.1);
   --a-selection: #d8543a;
   --a-guide: #c8a04a;
@@ -1171,6 +1246,7 @@
   --control-bg: #e8e5de;
   --a-panel-bg: #fbfaf7;
   --a-canvas-bg: #dedbd3; /* the desk, a clear step under the page */
+  --a-canvas-solid: #dedbd3; /* flat twin of --a-canvas-bg (color-mix consumers) */
   --a-hover-bg: rgba(26, 26, 24, 0.08);
   --a-selection: #c1442a;
   --a-guide: #8a6d1f;
@@ -1183,6 +1259,228 @@
   --a-split-handle-hover: #c1442a;
   --a-palette-shadow: 0 12px 40px rgba(60, 50, 35, 0.2);
   --a-ui-font: Futura, Jost, "Century Gothic", "Avenir Next", system-ui, sans-serif;
+}
+
+/* ── MATERIAL SET III: four more levered themes ──────────────────────────────
+   Same discipline as set II — each exists to justify ONE idea, stated as a
+   thesis it can be judged against, and each is a full harmonized override so it
+   is nameable from any corner of the UI.
+
+   WHY THESE FOUR AND NOT OTHERS. The set already had a warm-paper light theme
+   (Sepia) and a blue line-work theme (Blueprint), so "paper" and "blue" were
+   spoken for; a second of either would be a re-tint of a theme we already
+   shipped, which is the exact failure the material-set header calls out. Each
+   theme below therefore had to clear a redundancy test before a colour was
+   picked: E-Ink is paper that is COLD and reflective where Sepia is warm and
+   absorbent; Phosphor is a light-EMITTING monochrome where every other dark
+   theme is a lit surface; Platinum is the only theme whose identity is the
+   BEVEL rather than the palette; Ember is firelight temperature as a palette.
+
+   NO THEME IN THIS APP USES A GRADIENT, and that is a finding rather than a
+   preference. Ember was designed as the gradient theme — one lit surface on the
+   canvas, the only element where a gradient could not be mistaken for a control
+   style. The CSS worked; it is invisible anyway, because the stage around the
+   artboard is painted by SKIA (the camera's background paint, clipped to the
+   letterbox) over a `.scene` that is `inset: 0` on the wrap the CSS gradient
+   lives on. The only surface that WOULD show it is document state the user
+   authors and exports, which a UI theme must not touch. Full reasoning and the
+   measurements are at Ember's own block. */
+
+/* E-Ink — THESIS: a reflective display, not an emissive one; the brightest
+   thing on screen is paper and nothing glows.
+   The move that makes it read as e-paper rather than as "another light theme"
+   is that the surfaces are COLD and very close together in value — real E Ink
+   has a narrow reflective range (its "white" is about 70% reflectance, its
+   black about 10%), so a page that blazes to #fff would be the one wrong note.
+   Panels are the palest grey, the page a step under, the canvas a clear step
+   under that. NEUTRAL-COLD greys, deliberately: Sepia already owns warm paper,
+   and the temperature is the whole separation between them.
+   ONE chroma, and it is nearly black — this is a monochrome device. Selection
+   and accent are the same deep slate-blue ink; the keyframe diamonds are ink
+   too, because a device that cannot render amber should not pretend to. Guides
+   get the single genuine colour in the theme (a dull red), for the same reason
+   a proofreader's pencil is the one coloured thing on a printed page.
+   NO glass, NO rounding, NO gradient: an e-paper panel has no specular
+   highlight and no elevation. Its floating surfaces are distinguished by a
+   hard, tight, low-opacity shadow — the way a sheet laid on a sheet reads. */
+:root[data-theme="eink"] {
+  --bg: #dcdcd8; /* the page — grey, never white: e-paper's white is ~70% reflectance */
+  --fg: #16171a;
+  --fg-dim: #4e5157;
+  --accent: #2b3442; /* slate ink, not a hue — the device is monochrome */
+  --border: rgba(22, 23, 26, 0.26); /* definite; printed rules, not a soft wash */
+  --control-bg: #cfcfcb; /* the bars, pressed a step INTO the page */
+  --a-panel-bg: #eaeae6; /* the palest sheet — the brightest thing here */
+  --a-canvas-bg: #b9b9b4; /* the tray under the sheet */
+  --a-canvas-solid: #b9b9b4; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(22, 23, 26, 0.09);
+  --a-selection: #2b3442;
+  --a-guide: #9c3a32; /* the proofreader's red — the one true colour on the page */
+  --a-keyed: #16171a; /* ink diamonds: a monochrome device does not do amber */
+  --a-anchor: #4a5560;
+  --a-modifier: #5c4a6b; /* a faint plum for eq `self` / keywords — still nearly ink */
+  --a-scrollbar: rgba(22, 23, 26, 0.24);
+  --a-scrollbar-hover: rgba(22, 23, 26, 0.42);
+  --a-split-handle: #b6b6b1;
+  --a-split-handle-hover: #7d7d78;
+  /* Hard and tight, at low opacity: paper on paper casts a short, sharp edge —
+     it does not float, so a soft 40px throw would be a lie about the material. */
+  --a-palette-shadow: 0 3px 10px rgba(22, 23, 26, 0.22);
+}
+
+/* Phosphor — THESIS: the UI is not lit, it EMITS; the screen is off except
+   where a character is drawn.
+   Every other dark theme in this app is a dark SURFACE with light falling on
+   it. This one inverts the physics: the background is the unlit tube (near
+   black, faintly green because a P1 phosphor screen never reads as neutral
+   black), and everything visible is the glow. That is why the surfaces barely
+   separate — a CRT has no panels, so --control-bg, --a-panel-bg and --bg sit
+   within a few points of each other and the chrome is defined by its BORDER,
+   the same line-work strategy Blueprint uses, here because a monitor's UI was
+   drawn in box-characters.
+   MONOCHROME BY CONSTRUCTION, which is the hard part and the reason it is not
+   kitsch: a green terminal with a blue selection is a themed website, not a
+   terminal. So the entire chroma system is ONE hue at different intensities —
+   selection is the brightest green, diamonds a hair under, anchors and modifier
+   dimmer still. The single exception is the guide, which is amber: amber is the
+   OTHER phosphor that actually existed (P3), so a two-phosphor display is
+   period-honest where a red one would not be.
+   NO glass and NO rounding — a CRT bezel is not the UI, and blurring a
+   translucent pane over a black screen tints nothing. The palette shadow is a
+   green BLOOM rather than a black drop: light sources do not cast shadows, they
+   halate, and that is the one place this theme spends its budget. */
+:root[data-theme="phosphor"] {
+  --bg: #0a0f0a; /* the unlit tube — black with the faintest phosphor cast */
+  --fg: #4ae04a; /* the beam */
+  --fg-dim: #2f9b46; /* decayed trace: dimmer AND slightly cooler, like real falloff */
+  --accent: #4ae04a;
+  --border: rgba(74, 224, 74, 0.24); /* the chrome IS the line-work — box characters */
+  --control-bg: #0e150e; /* barely off the tube: a CRT has no raised buttons */
+  --a-panel-bg: #0c120c;
+  --a-canvas-bg: #050805; /* the deadest part of the screen */
+  --a-canvas-solid: #050805; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(74, 224, 74, 0.16);
+  --a-selection: #7dff7d; /* the brightest the beam goes — a struck cell */
+  --a-guide: #ffb000; /* P3 amber: the OTHER real phosphor, not an arbitrary accent */
+  --a-keyed: #62f062; /* diamonds one notch under selection — still the same hue */
+  --a-anchor: #3fbf5a;
+  --a-modifier: #a8ff8f; /* pale green-white for eq `self` / keywords: hottest, most bloomed */
+  --a-scrollbar: rgba(74, 224, 74, 0.26);
+  --a-scrollbar-hover: rgba(74, 224, 74, 0.45);
+  --a-split-handle: #17301a;
+  --a-split-handle-hover: #4ae04a;
+  /* A BLOOM, not a drop shadow: an emissive surface halates into what surrounds
+     it. Two layers — a tight green core and a wide diffuse one — plus a black
+     base so the pane still separates from the tube behind it. */
+  --a-palette-shadow: 0 0 0 1px rgba(74, 224, 74, 0.18), 0 0 24px rgba(74, 224, 74, 0.13), 0 12px 40px rgba(0, 0, 0, 0.8);
+}
+
+/* Platinum — THESIS: the chrome is a STAMPED METAL PANEL; every edge is a real
+   edge, and the theme's identity is the bevel rather than the colour.
+   This is the retro-with-restraint entry, and the restraint is the point.
+   Authentic System 7/OS 8 Platinum is grey — a famously narrow, famously
+   neutral grey — and its entire visual language is the one-pixel light/dark
+   edge that makes a surface read as raised or recessed. So the palette here is
+   almost aggressively boring, and the work is done by --a-glass-shadow: the
+   floating surfaces carry a WHITE inset top rim (the lit edge of a stamped
+   panel) over a hard black-edged drop. That is the same lever Nocturne uses
+   for translucency, pulled here for the opposite material — which is the best
+   evidence the lever is real and not a one-theme hack.
+   WHAT WAS LEFT OUT, deliberately: no pinstripes, no striped title bars, no
+   scalloped scrollbars. Those are the parts of Platinum that were texture, and
+   texture at 26px row height is noise — it is exactly the "decorated rather
+   than designed" failure. The bevel is the part that carried INFORMATION (this
+   is raised, therefore clickable), so the bevel is the part that survives.
+   SQUARE, at all three radius levers — Platinum's windows were square, and a
+   rounded bevel is a contradiction in terms. The classic BLUE is present, but
+   only as selection, exactly as it was: the highlight colour, nothing else. */
+:root[data-theme="platinum"] {
+  --bg: #d4d0c8; /* THE Platinum grey — warm-neutral, low chroma */
+  --fg: #1c1c1c;
+  --fg-dim: #55534e;
+  --accent: #3a5f8f;
+  --border: #8e8b85; /* OPAQUE hard rule: a stamped edge, not an alpha wash */
+  --control-bg: #dedbd4; /* controls sit ABOVE the page — raised, hence lighter */
+  --a-panel-bg: #cbc7bf; /* panes sit BELOW it — recessed, hence darker */
+  --a-canvas-bg: #9d9a94; /* the desktop the windows sit on */
+  --a-canvas-solid: #9d9a94; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(28, 28, 28, 0.09);
+  --a-selection: #3a5f8f; /* the classic highlight blue, used ONLY for highlight */
+  --a-guide: #a32b2b;
+  --a-keyed: #7a5200; /* a dark ochre that survives on a light grey panel */
+  --a-anchor: #4a5a6b;
+  --a-modifier: #6b3f7a;
+  --a-scrollbar: rgba(28, 28, 28, 0.24);
+  --a-scrollbar-hover: rgba(28, 28, 28, 0.42);
+  --a-split-handle: #a8a49d;
+  --a-split-handle-hover: #6f6c66;
+  --a-palette-shadow: 0 4px 0 rgba(60, 58, 54, 0.42), 0 5px 14px rgba(0, 0, 0, 0.3);
+  /* THE BEVEL, and the whole theme. A white inset hairline along the top edge
+     of every floating surface = the lit edge of a stamped panel; the hard
+     offset drop under it = the panel's thickness. Reuses the glass lever's
+     rim+shadow composite, which is why that token bundles the two: they are one
+     physical claim about the same edge. NOT translucent and NOT blurred —
+     --a-glass-blur stays `none` and the tints stay opaque, because metal is. */
+  --a-glass-rim: rgba(255, 255, 255, 0.85);
+}
+
+/* Ember — a warm, low-light dark theme: a room lit by a fire that is out of
+   frame. THESIS: firelight temperature as a palette — the accents are what a
+   fire actually produces at different heats, so the theme is nameable from the
+   Inspector alone.
+   Selection is the hottest part (a pale gold-white), the keyframe diamonds are
+   ember orange (the identity mark, repeated down every row), guides are the
+   cooler flame edge. Anchors are SMOKE — a desaturated blue-grey, and the only
+   cool token in the theme, so they stay findable against all that warm.
+
+   THIS WAS THE SET'S GRADIENT THEME, AND THE GRADIENT WAS CUT. Recording why,
+   because the reasoning outlives the attempt and the next person will have the
+   same idea:
+   the plan was one lit surface — a vertical warm falloff on the CANVAS, the one
+   element whose gradient could never be mistaken for a control style, with all
+   chrome left flat so the room had exactly one light source. It was written,
+   and it worked as CSS: --a-canvas-bg resolved to a real linear-gradient on
+   .canvas-wrap, confirmed by computed style.
+   It is nevertheless invisible, for a STRUCTURAL reason rather than a stylistic
+   one. `.scene` (the Skia surface) is `position:absolute; inset:0` over that
+   wrap, and the stage around the artboard is painted by SKIA — it is the
+   camera's own background paint, clipped to the letterbox by
+   browser_surface.render's `background` argument. Measured, not assumed: a
+   probe reported the panzoom container covering the wrap at coveredFraction
+   1.0 in the default fit view, and a pixel column down the stage showed zero
+   variation. So the CSS gradient sits UNDER an opaque painted surface at every
+   zoom level where the artboard is fitted.
+   Making it visible would mean theming the canvas background — which is
+   DOCUMENT state (the camera owns it, the user authors it, and it exports into
+   every rendered frame). A theme repainting it would change what the user's
+   deck looks like, and a UI theme must never alter document content. That is a
+   hard line, so the gradient is gone rather than smuggled in.
+   What remains is flat and honest: the firelight PALETTE, which never depended
+   on the gradient. NO glass, NO rounding — a lit room is not a set of floating
+   panes. The set therefore ships with no gradient theme at all, which is the
+   correct outcome: a gradient with no legitimate surface to live on is
+   decoration, and the brief's standard was shipping fewer, better themes. */
+:root[data-theme="ember"] {
+  --bg: #17120f; /* the unlit room */
+  --fg: #f0e6dc;
+  --fg-dim: #a2938a;
+  --accent: #e8823c;
+  --border: rgba(240, 230, 220, 0.13);
+  --control-bg: #221a15;
+  --a-panel-bg: #1b1512;
+  --a-hover-bg: rgba(232, 130, 60, 0.15);
+  --a-selection: #ffcf8a; /* the hottest part of the fire — pale gold */
+  --a-guide: #d64545; /* the cool edge of the flame */
+  --a-keyed: #ff9d3c; /* ember orange — the theme's identity mark, repeated down the Inspector */
+  --a-anchor: #7d8a9c; /* smoke: the ONE cool token, so anchors stay findable */
+  --a-modifier: #c9a227; /* old gold for eq `self` / keywords */
+  --a-scrollbar: rgba(240, 230, 220, 0.18);
+  --a-scrollbar-hover: rgba(240, 230, 220, 0.32);
+  --a-split-handle: #33261f;
+  --a-split-handle-hover: #e8823c;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.72);
+  --a-canvas-bg: #120d0b; /* the unlit end of what was the gradient — see the header */
+  --a-canvas-solid: #120d0b; /* flat twin of --a-canvas-bg (color-mix consumers) */
 }
 
 html,
@@ -1266,6 +1564,10 @@ textarea {
   background: var(--bg);
   color: var(--fg);
   overflow: hidden;
+  /* Every lib Dropdown's open menu sits on THE popover tier (Dropdown reads
+     --dd-menu-z; its own fallback is a literal 1000 that would drift from the
+     token). Set here on .app so every dropdown in the app inherits it. */
+  --dd-menu-z: var(--a-z-popover);
   /* Thin resizable-pane handles (SplitPane reads these). */
   --sp-handle-color: var(--a-split-handle);
   --sp-handle-hover: var(--a-split-handle-hover);
@@ -1353,6 +1655,53 @@ textarea {
 
 /* ONE control height everywhere — no toolbar exception (standardization rule). */
 
+/* ── THE SAVE INDICATOR (top-left, left of the title) ────────────────────────
+   "maybe an empty circle, a filled circle or something" (user, verbatim). The
+   three server-save states are drawn as one circle in three fills, so the shape
+   is constant and only the INK changes — a reader learns one glyph, not three:
+
+     unsaved  ring only (hollow)  — there is work not on the server
+     saved    solid               — the disc is "full", nothing outstanding
+     saving   half-filled         — in between, literally
+
+   COLOUR IS NOT THE SIGNAL, fill is. The dot stays --fg-dim in every state and
+   never turns red/green, for two reasons: an unsaved document is a normal
+   working state, not an error (the app's red, --a-guide, means destructive), and
+   a status conveyed by hue alone is invisible to a colour-blind reader. Fill
+   level survives both.
+
+   The half state is a conic-gradient rather than an animation: a PULSE would
+   have to be either slow enough to miss or fast enough to nag, and a save is
+   usually over in well under a second. A static third glyph reads at a glance
+   and costs no repaint. */
+.toolbar .save-indicator {
+  display: inline-block;
+  width: var(--a-save-dot);
+  height: var(--a-save-dot);
+  border: var(--a-save-dot-ring) solid var(--fg-dim);
+  border-radius: 50%;
+  /* Optically centred against the title's text baseline beside it. */
+  vertical-align: middle;
+  cursor: default; /* reports; it is not a control (see Toolbar.svelte) */
+}
+
+/* Filled = on the server. */
+.toolbar .save-indicator.saved {
+  background: var(--fg-dim);
+}
+
+/* Half = a save in flight. The gradient's hard stop at 50% fills exactly the
+   left half of the disc, so it reads as "partway" next to the other two. */
+.toolbar .save-indicator.saving {
+  background: conic-gradient(from 180deg, var(--fg-dim) 0 50%, transparent 50% 100%);
+}
+
+/* Unsaved is the bare ring — the border alone, no background. Declared so the
+   state is stated in CSS rather than being merely the absence of the other two. */
+.toolbar .save-indicator.unsaved {
+  background: transparent;
+}
+
 .toolbar .doc-name {
   font-size: var(--a-font-md);
   color: var(--fg-dim);
@@ -1391,7 +1740,7 @@ textarea {
   left: 0;
   margin-top: var(--a-sp-2);
   padding: var(--a-sp-3);
-  z-index: 3;
+  z-index: var(--a-z-popover); /* THE popover tier — see the token; a local number loses to .main's panes */
   display: grid;
   grid-template-columns: repeat(4, var(--a-shape-tile));
   gap: var(--a-sp-2);
@@ -2316,7 +2665,7 @@ textarea {
   top: 100%;
   left: 0;
   margin-top: var(--a-sp-1);
-  z-index: 1000;
+  z-index: var(--a-z-popover); /* THE popover tier — was a literal 1000 that duplicated the token's value */
   width: var(--a-fp-pop-w);
   display: flex;
   align-items: stretch;
@@ -3313,6 +3662,27 @@ audio.ae-preview-media {
   color: var(--a-guide);
 }
 
+/* ── THE WIDGET-TYPE CAPTION ────────────────────────────────────────────────
+   "right above the name and below the drop down in small text tell me what kind
+   of widget it is" (user, verbatim). The plugin's `title`, rendered as a
+   CAPTION rather than a property row: a widget's type is fixed for its whole
+   life, so it must not look editable — no row grid, no keyframe column, no
+   control. It therefore borrows the app's existing caption vocabulary (the
+   .cat-header treatment: --fg-dim, --a-font-sm, uppercase at
+   --a-caption-tracking) so it reads as a section label rather than a value,
+   and cannot drift from the panel's other small dim text.
+
+   Indented by --a-sp-1 to line up with the category headers below it, which
+   carry the same padding — the caption and the headers form one left edge. */
+.inspector .widget-type {
+  padding: 0 var(--a-sp-1);
+  margin-top: var(--a-sp-2);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  text-transform: uppercase;
+  letter-spacing: var(--a-caption-tracking);
+}
+
 .inspector .item-actions {
   display: flex;
   gap: var(--a-sp-2);
@@ -3442,14 +3812,29 @@ audio.ae-preview-media {
    Center's divider read, so the app's three draggable boundaries stay one thing
    across every theme.
 
-   THE BLOCK IS .rows, NOT .cat-rows, and the distinction is load-bearing: a
-   .rows block already CONTAINS its categories' .cat-rows, so mounting a divider
-   in both would draw two lines over the same pixels at the same x — one strip
+   THE BLOCK IS .cat-rows — ONE EXPANDED CATEGORY — NOT the whole .rows block,
+   and the distinction is load-bearing in BOTH directions.
+
+   Why not .rows (the previous rule, corrected on the user's ruling that the
+   divider be "only visually shown and clickable in between the drop-down areas
+   for formatting and stroke material, etc."): a .rows block spans more than its
+   property rows. It also covers the category HEADERS, the Name row, the Visible
+   row and the not-created note — regions with no label⟷value grid at all. A
+   full-height strip therefore put a col-resize cursor over text with no column
+   to resize, and drew its hairline straight through the section headers, which
+   is the "table border, not a handle" look the multiple-lines shape exists to
+   avoid.
+
+   Why not BOTH: a .rows block CONTAINS its categories' .cat-rows, so a divider
+   in each would draw two lines over the same pixels at the same x — one strip
    swallowing the other's pointer events, and a double-strength hairline where
-   they overlap. One divider per .rows block gives the user's "multiple lines"
-   (the Property Panel's sections and the Variables Panel each get their own)
-   with no stacking. */
-.inspector .rows,
+   they overlap.
+
+   So: exactly one divider per expanded category. That IS the user's "multiple
+   lines … in synchronized x position" — each category gets its own segment, all
+   of them positioned from the one --a-label-frac. The Variables Panel's list is
+   the same shape (one rows block that is all rows) and keeps its own. */
+.inspector .cat-rows,
 .varspanel .rows {
   position: relative; /* the divider's containing block AND its measuring box */
 }

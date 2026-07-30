@@ -1540,6 +1540,160 @@ def zip_project_bytes(name):
     return buf.getvalue()
 
 
+# -- Project IMPORT: the inverse of zip_project_bytes ------------------------
+# A .zip that LEFT this app comes back as a NEW project folder — never as an
+# overwrite of an existing one (a dropped archive is not a save gesture, and the
+# user cannot be assumed to have meant "clobber the project of that name"). The
+# collision rule is the "Name 2" scheme the request named, deliberately NOT the
+# assets' "name-2.png": a project name is prose the toolbar shows, a filename is
+# not. The archive is UNTRUSTED input, so every entry is re-validated here
+# (zip_relative_path) rather than trusted because we wrote the format: a
+# hand-edited archive with "../../etc/passwd" or an absolute member must land
+# inside the new folder or be refused loudly. Nothing outside PROJECTS_DIR/<new>
+# is ever written.
+
+def zip_root_name(names):
+    """
+    Pure function. The single top-level folder every archive entry sits under,
+    or None when the entries are not rooted in one folder. Our own export roots
+    everything at "<project>/…", so that root IS the exported project's name —
+    which is how a dropped .zip knows what it wants to be called.
+
+    Args:
+        names (list[str]): archive member names (zipfile.namelist()).
+
+    Returns:
+        str | None
+
+    Examples:
+        >>> zip_root_name(["My Talk/doc.json", "My Talk/assets/a.png"])
+        'My Talk'
+        >>> zip_root_name(["doc.json", "assets/a.png"])   # flat: no root folder
+        >>> zip_root_name(["A/doc.json", "B/doc.json"])   # two roots
+    """
+    roots = {n.replace("\\", "/").split("/", 1)[0] for n in names if n.strip()}
+    if len(roots) != 1:
+        return None
+    root = roots.pop()
+    return root if any(n.replace("\\", "/").startswith(root + "/") for n in names) else None
+
+
+def zip_relative_path(member, root):
+    """
+    Pure function. A zip member's path RELATIVE to `root`, validated as a
+    contained relative path, or None for entries to skip (directories, the root
+    itself, archive metadata). Raises ValueError on a member that tries to
+    ESCAPE — absolute paths, drive letters, or any ".." segment — because a
+    crafted archive must fail loudly rather than write outside the new project.
+
+    Args:
+        member (str): the archive member name
+        root (str | None): the archive's single root folder, or None if flat
+
+    Returns:
+        str | None: a relative path using "/" separators, or None to skip
+
+    Examples:
+        >>> zip_relative_path("My Talk/assets/a.png", "My Talk")
+        'assets/a.png'
+        >>> zip_relative_path("My Talk/", "My Talk")      # the root dir entry
+        >>> zip_relative_path("doc.json", None)
+        'doc.json'
+        >>> zip_relative_path("__MACOSX/._doc.json", None)
+        >>> zip_relative_path("../escape.json", None)     # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+        ValueError: ...
+    """
+    path = member.replace("\\", "/")
+    if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
+        raise ValueError(f"unsafe zip member (absolute path): {member!r}")
+    parts = [p for p in path.split("/") if p not in ("", ".")]
+    if ".." in parts:
+        raise ValueError(f"unsafe zip member (traversal): {member!r}")
+    if root is not None:
+        if not parts or parts[0] != root:
+            raise ValueError(f"zip member outside the archive root {root!r}: {member!r}")
+        parts = parts[1:]
+    if not parts or path.endswith("/"):
+        return None  # a directory entry — makedirs handles the tree
+    if parts[0] == "__MACOSX":
+        return None  # Finder's resource-fork sidecar, never a project file
+    return "/".join(parts)
+
+
+def unique_project_name(base):
+    """
+    Query (reads PROJECTS_DIR). A project name that does not collide: "Talk" if
+    free, else "Talk 2", "Talk 3", … — the space-numbered PROSE scheme, distinct
+    from unique_asset_name's "a-2.png" filename scheme. An import NEVER
+    overwrites, so the caller reports the returned name back to the UI when it
+    differs from what the user dropped.
+
+    Examples:
+        >>> #  projects/ holding "Talk"  →  unique_project_name("Talk") == "Talk 2"
+        >>> unique_project_name("A Name No Project Has")
+        'A Name No Project Has'
+    """
+    safe_name(base)
+    candidate = base
+    n = 2
+    while os.path.exists(os.path.join(PROJECTS_DIR, candidate)):
+        candidate = f"{base} {n}"
+        n += 1
+    return candidate
+
+
+def import_project_zip(data, requested_name=None):
+    """
+    Command (mutates the filesystem). Unpack an exported project .zip into a
+    NEW project folder and return its name. `requested_name` (the dropped
+    file's stem) wins when given; otherwise the archive's own root folder names
+    it; a flat archive with neither falls back to "Imported Project". The name
+    is de-collided by unique_project_name — an existing project is never
+    touched. Every member is re-validated by zip_relative_path, so a crafted
+    archive raises rather than writing outside the folder.
+
+    Raises ValueError for a non-zip body, an archive with no doc.json (that is
+    not a PowerRP project export), or an unsafe member. Nothing is left behind
+    on failure: the partial folder is removed before the error propagates.
+
+    Args:
+        data (bytes): the .zip file's bytes
+        requested_name (str | None): preferred project name (no extension)
+
+    Returns:
+        str: the project name actually created
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"not a .zip archive: {exc}") from exc
+    with zf:
+        names = zf.namelist()
+        root = zip_root_name(names)
+        entries = {}
+        for member in names:
+            rel = zip_relative_path(member, root)
+            if rel is not None:
+                entries[rel] = member
+        if DOC_FILENAME not in entries:
+            raise ValueError(f"archive has no {DOC_FILENAME} — not a PowerRP project export")
+        base = (requested_name or root or "Imported Project").strip()
+        name = unique_project_name(safe_name(base))
+        d = os.path.join(PROJECTS_DIR, name)
+        try:
+            for rel, member in entries.items():
+                dest = os.path.join(d, *rel.split("/"))
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with zf.open(member) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+            os.makedirs(os.path.join(d, ASSETS_SUBDIR), exist_ok=True)  # an assetless export still gets the folder
+        except Exception:
+            shutil.rmtree(d, ignore_errors=True)  # never leave a half-written project behind
+            raise
+    return name
+
+
 # -- Session clipboard (manifest 14.10 AMENDED) ------------------------------
 # The user copies an item in one open presentation and pastes it in ANOTHER: a
 # per-BROWSER clipboard the server tracks, keyed by a session cookie, so the two
@@ -1593,6 +1747,10 @@ class Handler(BaseHTTPRequestHandler):
       POST /api/export-mp4/<sid>/encode/     → body {fps, crf}; ffmpeg-encode the
                                      session's PNGs → video/mp4 bytes; cleans up
       GET  /api/download/<name>/     → application/zip of the whole folder
+      POST /api/import-zip/?name=…   → raw .zip body; unpacks it as a NEW
+                                     project (never an overwrite); {ok, name,
+                                     requested} — name != requested means the
+                                     drop collided and was renamed
       GET  /api/frames/<name>/<video>/<N>/  → {count, frames:[url,…]}
                                      (extract N evenly-spread frames, cached)
       DELETE /api/asset/<name>/<file>/  → delete one asset (+ its frame cache);
@@ -1793,6 +1951,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_upload(parts[2], parsed)
             if len(parts) == 4 and parts[:2] == ["api", "thumb"]:
                 return self._handle_thumb_store(parts[2], parts[3], parsed)
+            if parts == ["api", "import-zip"]:  # a dropped/picked .zip → a new project
+                return self._handle_import_zip(parsed)
             if parts == ["api", "export-mp4"]:  # server-side MP4 export
                 return self._handle_export_begin()
             if len(parts) == 5 and parts[:2] == ["api", "export-mp4"] and parts[3] == "frame":
@@ -1946,6 +2106,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _handle_import_zip(self, parsed):
+        # The inverse of _handle_download: a raw .zip body becomes a NEW project.
+        # ?name= is the dropped file's stem (the client strips ".zip"); absent, the
+        # archive's own root folder names it. A bad/unsafe archive is a 400 (the
+        # client's fault, an expected condition), never a 500 — and the response
+        # always carries BOTH the requested and the final name so the UI can say
+        # "imported as 'Talk 2'" instead of silently landing somewhere else.
+        q = urllib.parse.parse_qs(parsed.query)
+        requested = q.get("name", [""])[0].strip() or None
+        data = self._read_body()
+        if not data:
+            return self._error(400, "empty import body")
+        try:
+            name = import_project_zip(data, requested)
+        except ValueError as exc:
+            return self._error(400, str(exc))
+        self._json({"ok": True, "name": name, "requested": requested or name})
 
     def _handle_frames(self, name, video, n_str, query=""):
         # Filmstrip: N evenly-spread frames of a project video, cached under

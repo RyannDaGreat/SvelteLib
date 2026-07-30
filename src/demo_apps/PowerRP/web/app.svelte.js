@@ -142,6 +142,21 @@ export const THEMES = [
   { id: "blueprint", title: "Blueprint" },
   { id: "sunrise", title: "Sunrise" },
   { id: "desert", title: "Desert" },
+  // Material set II — the themes that pull the NON-COLOUR levers introduced
+  // alongside them (--a-radius-*, --a-glass-*, --a-ui-font). Each justifies
+  // exactly one: Nocturne is glass (blur/round/rim on FLOATING surfaces only),
+  // the two Futuras are typographic (geometric sans over near-monochrome).
+  { id: "nocturne", title: "Nocturne (glass)" },
+  { id: "futura-dark", title: "Futura Dark" },
+  { id: "futura-light", title: "Futura Light" },
+  // Material set III — one idea each: E-Ink is a REFLECTIVE display (nothing
+  // glows), Phosphor is an EMISSIVE one (single-hue, bloom instead of shadow),
+  // Platinum's identity is the BEVEL rather than the palette, and Ember is the
+  // set's only gradient — one lit surface, on the canvas alone, never a control.
+  { id: "eink", title: "E-Ink" },
+  { id: "phosphor", title: "Phosphor" },
+  { id: "platinum", title: "Platinum" },
+  { id: "ember", title: "Ember" },
 ];
 
 /**
@@ -183,6 +198,32 @@ function assetKindForFile(file) {
 
 export class PowerRPApp {
   doc = $state(newDocument());
+
+  // ── SERVER SAVE STATE (the toolbar's save indicator reads exactly these) ────
+  // The user asked for "an indicator on the top left ... which when I hover over
+  // it tells me whether or not it's saved". Three fields, because the honest
+  // answer has three cases and a single boolean would have to lie about one of
+  // them: a save IN FLIGHT is neither saved nor unsaved.
+  //
+  // WHAT "SAVED" MEANS HERE, precisely: saved TO THE SERVER (a project folder
+  // under projects/<name>/). It deliberately does NOT mean the localStorage
+  // autosave in commit() below — that one is crash-safety, always on, and never
+  // in doubt, so an indicator for it would be a light that is always green. The
+  // thing a user can actually lose is the server copy, so that is what is
+  // reported. (The manifest's rule: "a project must be saved to the server
+  // explicitly"; this indicator is what makes that state visible.)
+  //
+  // `savedDoc` is the DOCUMENT OBJECT last written to the server, not a boolean
+  // and not a hash. Documents are treated as immutable values here — commit()
+  // installs a NEW object every edit — so identity comparison against the saved
+  // one is an exact, cheap dirty test that needs no bookkeeping at the ~40 call
+  // sites that commit. Undo back to the saved state therefore correctly reads as
+  // CLEAN again, which a monotonic dirty FLAG could not express.
+  savedDoc = $state(null);
+  /** True while a save request is in flight (the third, transient state). */
+  saving = $state(false);
+  /** Epoch ms of the last successful server save, for the hover text. */
+  lastSavedAt = $state(null);
   // [ROUND 15.2] Backed by a private $state through an accessor (mirrors the
   // `selection` accessor immediately below) so that ANY slide switch (~13
   // write sites: SlideNav, KeyframePanel "Go To", jumpKeyframePath, addSlide/
@@ -2796,10 +2837,49 @@ export class PowerRPApp {
 
   /** Command. Save the current document to the server as a project FOLDER
    *  (doc.json under projects/<name>/). Creates the folder if new. Throws
-   *  loudly on failure so the caller can surface it. */
+   *  loudly on failure so the caller can surface it.
+   *
+   *  Maintains the save-indicator state around the request: `saving` is raised
+   *  for the duration and lowered in a `finally` so a THROWN save cannot leave
+   *  the indicator stuck mid-flight, while `savedDoc`/`lastSavedAt` advance only
+   *  on success — a failed save must keep reading as UNSAVED, which is the whole
+   *  point of the indicator. The doc is captured BEFORE the await so an edit
+   *  made while the request is in flight still reads as dirty afterwards
+   *  (marking `this.doc` on return would silently claim that edit was saved). */
   async saveToServer(name = this.projectName()) {
-    await projectApi.saveProject(name, this.doc);
+    const sent = this.doc;
+    this.saving = true;
+    try {
+      await projectApi.saveProject(name, sent);
+      this.savedDoc = sent;
+      this.lastSavedAt = Date.now();
+    } finally {
+      this.saving = false;
+    }
     return name;
+  }
+
+  /** Query. The save indicator's state: "saving" while a request is in flight,
+   *  "saved" when the current document IS the one last written to the server,
+   *  else "unsaved". Identity, not deep equality — see `savedDoc`.
+   *
+   *  A never-saved document reads "unsaved", which is correct: nothing of it
+   *  exists on the server yet.
+   *
+   *  @returns {"saving"|"saved"|"unsaved"}
+   *
+   *  @example
+   *  >>> // fresh app, nothing sent to the server yet
+   *  >>> app.saveState()
+   *  "unsaved"
+   *  >>> await app.saveToServer("Deck"); app.saveState()
+   *  "saved"
+   *  >>> app.commit(editedDoc); app.saveState()
+   *  "unsaved"
+   */
+  saveState() {
+    if (this.saving) return "saving";
+    return this.savedDoc === this.doc ? "saved" : "unsaved";
   }
 
   /** Query. List saved projects on the server (newest first) — the data the
@@ -2829,6 +2909,15 @@ export class PowerRPApp {
     // (keeps title / open / save consistent — the one-name-model invariant).
     const repaired = this.repaired(doc); // repaired() includes bindings migration
     this.commit({ ...repaired, meta: { ...repaired.meta, name } });
+    // A JUST-OPENED project IS the server's copy, so the save indicator must
+    // read SAVED rather than showing a freshly-opened deck as unsaved work.
+    // Marked AFTER commit and from `this.doc`, because commit() is what installs
+    // the object identity savedDoc is compared against — marking the local
+    // literal instead would compare against something the app never adopted.
+    // (If repair rewrote anything, that rewrite is genuinely not on the server;
+    // the repair pipeline reports such migrations loudly on its own channel.)
+    this.savedDoc = this.doc;
+    this.lastSavedAt = Date.now();
     this.slideIndex = 0;
     this.selection = null;
     this.syncFontAssets(name); // fire-and-forget: register + load this project's font assets
@@ -2907,6 +2996,63 @@ export class PowerRPApp {
   async downloadZip(name = this.projectName()) {
     await this.saveToServer(name);
     await projectApi.downloadProjectZip(name);
+  }
+
+  // ── Opening a .zip: the inverse of downloadZip ─────────────────────────────
+  // "I can export a zip — can I OPEN one?" A .zip is the PROJECT payload
+  // (document + assets), so opening one cannot be the DOCUMENT-only loadFile
+  // path: it must land on the server as a folder first, then be opened by name.
+  // That ordering is also why the archive is never merged into the open project
+  // — an import ARRIVES AS ITS OWN PROJECT, and the current deck is untouched
+  // until the load at the end succeeds.
+
+  /** Hook installed by App.svelte: shows the import RESULT (or refusal) as a
+   *  modal. Assigned there so this class stays DOM-free; the default is a
+   *  console report, so a harness without the shell still says what happened
+   *  rather than swallowing it. */
+  showImportResult = (result) => console.log("PowerRP import:", result);
+
+  /**
+   * Command. Import an exported project .zip (a File/Blob from a drop or the
+   * file picker) as a NEW server project, then OPEN it. Returns the resolved
+   * {name, requested}.
+   *
+   * The name comes from the FILE (projectZipName), falling back to the
+   * archive's root folder. A collision NEVER overwrites — the server returns
+   * "<Name> 2" — and because a differently-named project is not what the user
+   * dropped, the rename is surfaced through showImportResult rather than left
+   * for them to notice in the title bar. A refusal (not a zip, no doc.json,
+   * unsafe member) surfaces the same way AND rethrows, so a caller with its own
+   * error affordance still sees it and nothing opens.
+   */
+  async importProjectZip(file) {
+    const requested = projectApi.projectZipName(file.name ?? "");
+    let result;
+    try {
+      result = await projectApi.importProjectZip(file, requested);
+    } catch (e) {
+      this.showImportResult({ ok: false, requested, error: String(e.message ?? e) });
+      throw e;
+    }
+    await this.loadProject(result.name);
+    this.assetsVersion++; // the new project's assets are a different library
+    this.showImportResult({ ...result, ok: true, renamed: result.name !== result.requested });
+    return result;
+  }
+
+  /** Command. Pick a .zip from disk and import it (the menu route to the same
+   *  thing dropping one on the canvas does). Opens the OS file picker, hence
+   *  the ellipsis on its title. Cancelling the picker is a no-op. */
+  async importZipFile() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".zip,application/zip";
+    const file = await new Promise((res) => {
+      input.onchange = () => res(input.files[0]);
+      input.click();
+    });
+    if (!file) return;
+    await this.importProjectZip(file);
   }
 
   // ── Assets: upload / delete / insert / filmstrip frames (one region) ────────

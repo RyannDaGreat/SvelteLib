@@ -175,7 +175,7 @@
   import Modal from "../../../lib/Modal.svelte";
   import AssetThumb from "./AssetThumb.svelte";
   import { KIND_ICON } from "./assetThumbnail.js";
-  import { assetUrl, ASSET_DRAG_MIME } from "./projectApi.js";
+  import { assetUrl, ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js";
   import { copyText } from "./clipboard.js";
 
   let { app } = $props();
@@ -316,10 +316,24 @@
     if (e.currentTarget.contains(e.relatedTarget)) return;
     dragging = false;
   }
-  function onDrop(e) {
+  /** Command. Pane drop. A .zip is a whole PROJECT, not an asset (the one rule
+   *  lives in projectApi.isProjectZip), so it IMPORTS + opens exactly as it does
+   *  on the canvas rather than landing in this library as an opaque archive —
+   *  the two drop surfaces must not disagree about what a .zip means. Everything
+   *  else uploads as before. Errors surface in the pane's own error line. */
+  async function onDrop(e) {
     e.preventDefault();
     dragging = false;
-    uploadFiles([...e.dataTransfer.files]);
+    const files = [...e.dataTransfer.files];
+    const zip = files.find(isProjectZip);
+    if (!zip) return uploadFiles(files);
+    error = null;
+    try {
+      await app.importProjectZip(zip); // reports its own result/refusal in the UI too
+    } catch (err) {
+      error = String(err?.message ?? err);
+      console.error("AssetExplorer: .zip import failed:", err);
+    }
   }
 
   /** Command. Opens the Modal preview for an asset. */

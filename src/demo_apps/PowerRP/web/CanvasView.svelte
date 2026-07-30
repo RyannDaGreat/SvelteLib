@@ -53,7 +53,8 @@
   import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, groupResizeState, creationRect, creationEndpoint, itemGeometryPairs } from "./canvas/dragKinds.js";
   import { diffState } from "../core/deltas.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
-  import { ASSET_DRAG_MIME } from "./projectApi.js"; // asset-tile drop payload type (drop-handler region)
+  import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project rule (drop-handler region)
+  import { reportAction } from "../core/report.js"; // a refused DROP is one user act — reportAction, never the deduped reportOnce
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
@@ -795,9 +796,12 @@
   }
 
   /** Command. The canvas drop: asset-tile payload → insert at the drop point;
-   *  OS files → upload each, then insert at the drop point. A failure in any
-   *  step is REPORTED loudly (console.error) — a user gesture must never fail
-   *  silently, and an event handler has no caller to rethrow to. */
+   *  a dropped .zip → import it as a NEW project and open it (never an asset
+   *  upload — see isProjectZip); other OS files → upload each, then insert at
+   *  the drop point. A failure in any step is REPORTED loudly (console.error)
+   *  — a user gesture must never fail silently, and an event handler has no
+   *  caller to rethrow to. app.importProjectZip ALSO surfaces its own result /
+   *  refusal in the UI, so a rejected archive is visible without the console. */
   async function onCanvasDrop(e) {
     if (!dropAccepts(e.dataTransfer)) return;
     e.preventDefault();
@@ -808,6 +812,16 @@
     const at = worldPoint(e); // world-space drop point (render-area frame)
     try {
       if (payload) return await insertDroppedAsset(JSON.parse(payload), at);
+      // A .zip REPLACES what is on screen (it opens as its own project), so the
+      // first one wins and the rest of the drop is refused rather than each
+      // archive clobbering the last one's freshly-opened editor.
+      const zips = files.filter(isProjectZip);
+      if (zips.length > 0) {
+        if (zips.length > 1) {
+          reportAction(`PowerRP: dropped ${zips.length} .zip archives — each is a whole project, so only "${zips[0].name}" was imported. Drop the others one at a time.`);
+        }
+        return await app.importProjectZip(zips[0]);
+      }
       for (const file of files) {
         const up = await app.uploadAsset(file); // {ok, name, url}
         await insertDroppedAsset({ name: up.name, kind: fileKind(file), url: up.url }, at);

@@ -217,6 +217,30 @@
     renameModalVisible = false;
   }
 
+  // Import-a-.zip RESULT modal. Importing an archive is the one storage action
+  // whose OUTCOME the user cannot read off the screen: the deck that appears is
+  // the one they dropped, so a COLLISION RENAME ("Imitations" → "Imitations 2")
+  // would otherwise be a silent difference between what they dropped and what
+  // they now have. This says it — and says a refusal (not a zip, no doc.json,
+  // an unsafe member) in the same place, so the drop always answers back. The
+  // clean, un-renamed case is not worth a dialog, so it reports to the console
+  // only and the modal stays shut; app.svelte.js owns the import itself and
+  // knows nothing about this DOM (showImportResult is a hook, like the others).
+  let importResult = $state(null); // {ok, name, requested, renamed} | {ok:false, requested, error}
+  let importResultVisible = $state(false);
+  app.showImportResult = (result) => {
+    importResult = result;
+    if (!result.ok) {
+      console.error(`Import Project from .zip failed for "${result.requested}":`, result.error);
+    } else if (result.renamed) {
+      console.warn(`Import Project from .zip: "${result.requested}" already existed — imported as "${result.name}".`);
+    } else {
+      console.log(`Import Project from .zip: opened "${result.name}".`);
+      return; // nothing surprising happened; the open project IS the feedback
+    }
+    importResultVisible = true;
+  };
+
   // Built-in Assets… modal (task #68 follow-up): a SEPARATE, discovery-only
   // browser for ship-with-the-app assets (cursors today), distinct from the
   // project Asset Explorer. Wires app.browseBuiltinAssets()'s hook to the Modal;
@@ -357,6 +381,15 @@
     blueprint: "mdi:ruler-square-compass",
     sunrise: "mdi:weather-sunset-up",
     desert: "mdi:cactus",
+    // Material set II (the non-colour levers):
+    nocturne: "mdi:glass-tulip",
+    "futura-dark": "mdi:format-letter-case",
+    "futura-light": "mdi:format-letter-case-upper",
+    // Material set III:
+    eink: "mdi:book-open-page-variant-outline",
+    phosphor: "mdi:console",
+    platinum: "mdi:desktop-classic",
+    ember: "mdi:fire",
   };
   // Local box the `insert-shape` family tile previews are generated in; matches
   // ShapePicker's 100-unit tile viewBox content area (`-6 -6 112 112`).
@@ -709,6 +742,11 @@
     { id: "save-to-server", title: "Save Project to Server…", icon: "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
     { id: "open-project", title: "Open Project from Server…", icon: "mdi:folder-network-outline", run: (a) => a.openProject() },
     { id: "download-zip", title: "Export Project as .zip (with assets; saves to the server first)", icon: "mdi:folder-zip-outline", run: (a) => a.downloadZip() },
+    // The INVERSE of download-zip, and titled by the same scheme: Import = from
+    // LOCAL DISK, the extension named, "…" because it opens a picker. Its noun is
+    // PROJECT (assets included), which is exactly what separates it from
+    // load-file's DOCUMENT. Dropping a .zip on the canvas runs the same path.
+    { id: "import-zip", title: "Import Project from .zip (with assets; opens it as a new project)…", icon: "mdi:folder-zip", run: (a) => a.importZipFile() },
     // Built-in Assets browser (task #68 follow-up): a SEPARATE surface for
     // ship-with-the-app assets (cursors today) — never mixed into the project
     // Asset Explorer. Discovery only; widgets read built-ins directly.
@@ -1772,6 +1810,28 @@
         <button type="submit" class="btn" disabled={!renameName.trim()}>Rename</button>
       </div>
     </form>
+  </Modal>
+  <!-- Import a .zip: the RESULT. Only opens when the outcome differs from what
+       the user asked for — a collision rename, or a refusal. See showImportResult. -->
+  <Modal bind:open={importResultVisible} title={importResult?.ok ? "Imported as a New Project" : "Import Failed"} size="compact">
+    <div class="name-modal">
+      {#if importResult?.ok}
+        <div class="name-modal-note">
+          A project named “{importResult.requested}” already exists on the server, and an import never overwrites one.
+          This archive was opened as “{importResult.name}”.
+        </div>
+      {:else}
+        <!-- .name-modal-warning is the existing LOUD line of these dialogs (the
+             Save modal's clobber warning) — the refusal reuses it, no new color. -->
+        <div class="name-modal-warning">
+          “{importResult?.requested}” was not imported: {importResult?.error}
+        </div>
+        <div class="name-modal-note">Nothing was changed — the open project is untouched.</div>
+      {/if}
+      <div class="name-modal-actions">
+        <button type="button" class="btn" onclick={() => (importResultVisible = false)}>OK</button>
+      </div>
+    </div>
   </Modal>
   <!-- Built-in Assets browser: a SEPARATE, discovery-only surface for ship-with-
        the-app assets (cursors today). Distinct from the project Asset Explorer —

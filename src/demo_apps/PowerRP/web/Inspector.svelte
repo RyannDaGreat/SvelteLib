@@ -905,16 +905,36 @@
   <span class:picker-invisible={it.invisible}>{it.label}</span>
 {/snippet}
 
-<!-- THE LABEL⟷VALUE DIVIDER, one per .rows block. A snippet rather than the
-     component written out at each of the four blocks, so the placement rule
-     ("first child of a .rows block, never inside a .cat-rows") is stated once
-     and the four sites cannot drift into three-and-a-half. The four blocks are
-     the multi-selection panel, the transition panel, and the created and
-     not-yet-created item panels; the Variables Panel mounts its own from
-     web/VariablesPanel.svelte against the SAME app.labelFrac, which is what
-     keeps the two panels' columns in x-sync. -->
+<!-- THE LABEL⟷VALUE DIVIDER, one per EXPANDED CATEGORY (.cat-rows). A snippet
+     rather than the component written out at each site, so the placement rule
+     ("first child of a .cat-rows block") is stated once.
+
+     IT MOVED HERE FROM .rows, on the user's ruling that it be "only visually
+     shown and clickable in between the drop-down areas for formatting and
+     stroke material, etc." — i.e. inside the collapsible property groups, and
+     nowhere else. A .rows block also spans the category HEADERS, the Name row,
+     the Visible row and the not-created note; a col-resize strip over those
+     offered to resize a column they do not have. Mounting inside the `category`
+     snippet makes the divider a property of the group, so it appears and
+     disappears with the group rather than being maintained alongside it.
+
+     The Variables Panel mounts its own from web/VariablesPanel.svelte against
+     the SAME app.labelFrac, which is what keeps the two panels' columns in
+     x-sync. -->
 {#snippet labelDivider()}
   <LabelDivider {app} />
+{/snippet}
+
+<!-- THE WIDGET-TYPE CAPTION — "what kind of widget is this", sitting between the
+     item dropdown and the Name row. A snippet because BOTH item branches (the
+     created item and the not-yet-created one) render it and must render it the
+     same way; a plugin with no registered title falls back to nothing rather
+     than printing "undefined". Small and dim by design: it is orientation, not
+     an affordance — the type is fixed for an item's whole life. -->
+{#snippet widgetType(plugin)}
+  {#if plugin?.title}
+    <div class="widget-type">{plugin.title}</div>
+  {/if}
 {/snippet}
 
 <!-- ONE generic property row: label + control-by-kind + optional keyframe
@@ -1521,6 +1541,17 @@
     </button>
     {#if !collapsed[cat.id]}
       <div class="cat-rows">
+        <!-- The divider belongs to THE CATEGORY, not the panel: "only visually
+             shown and clickable in between the drop-down areas for formatting
+             and stroke material, etc." (user, verbatim). A category's expanded
+             rows are exactly the region where a label⟷value boundary exists, so
+             the strip spans that and stops. It used to span the whole .rows
+             block, which also covered the section HEADERS, the Name row and the
+             not-created note — regions with no value column at all, where the
+             strip was a col-resize cursor over text that has no column to
+             resize. Collapse a category and its divider goes with it, which is
+             the same rule stated from the other side. -->
+        {@render labelDivider()}
         {#each cat.rows as row (row.key)}
           {@render propRow(row, state, opts)}
         {/each}
@@ -1612,7 +1643,6 @@
     </div>
     {#if multiPanel.rows.length > 0}
       <div class="rows">
-        {@render labelDivider()}
         {#each multiCategories as cat (cat.id)}
           {@render category(cat, sel?.state ?? {}, {
             keyframes: true,
@@ -1662,7 +1692,6 @@
         <span class="kf-controls" aria-hidden="true"></span>
       </div>
       <div class="rows">
-        {@render labelDivider()}
         {#each transitionCategories as cat (cat.id)}
           {@render category(cat, transitionState, {
             keyframes: false,
@@ -1676,6 +1705,15 @@
       <div class="empty">Transition unavailable</div>
     {/if}
   {:else if sel}
+    <!-- WHAT KIND OF WIDGET THIS IS, verbatim: "it should somewhere perhaps
+         right above the name and below the drop down in small text tell me what
+         kind of widget it is". The plugin's own `title` ("Rectangle", "Iconify
+         Icon") — the SAME string the item picker builds its fallback names from
+         (itemFallbackName), so the type a row is named after and the type named
+         here cannot disagree. It is a CAPTION, not a property row: a widget's
+         type is not editable and has no keyframes, so putting it in the row grid
+         would promise an affordance that does not exist. -->
+    {@render widgetType(sel.plugin)}
     <!-- CREATED item. Name row + Purge trash-can share ONE row (manifest Round
          12: "trash can icon… same row as the name… so that we don't confuse them
          with properties"). The trash sits at the name row's RIGHT, occupying the
@@ -1701,7 +1739,6 @@
       </span>
     </div>
     <div class="rows">
-      {@render labelDivider()}
       <!-- VISIBILITY is a property row like all the others (manifest Round 12) —
            a keyframeable boolean with the ‹ ◆ › controls, ABOVE the categories
            so it is ALWAYS reachable (also the actionable row for not-yet-created
@@ -1772,6 +1809,11 @@
          runs activateNotYetCreated() — writes the item's creation-slide state +
          active:true onto THIS slide (lead ruling). The visibility row shows OFF
          (the item does not exist here yet). Name + Purge still act. -->
+    <!-- Type caption here too: an item that does not exist on THIS slide still
+         has a type, and it is read off the SAME registry lookup the creation
+         rows already use — so both branches label a widget identically and
+         neither can be the one that forgets. -->
+    {@render widgetType(app.registry.get(creationState.type))}
     <div class="row name-row">
       <span class="label">Name</span>
       <input
@@ -1791,7 +1833,6 @@
       </span>
     </div>
     <div class="rows">
-      {@render labelDivider()}
       {#if purgeable}
         <!-- Actionable visibility row: OFF here; clicking activates the item on
              this slide (creation-state copy + active:true, one undo unit). -->

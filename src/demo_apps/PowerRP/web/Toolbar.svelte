@@ -68,6 +68,41 @@
   ];
 
   /**
+   * Pure function. The hover sentence for a save state — the ONE place each of
+   * the three cases is put into words.
+   *
+   * "Saved" carries the TIME when there is one, because "saved" alone answers a
+   * narrower question than the user asked: after a long editing session the
+   * useful fact is not that a save happened but when. A never-saved document has
+   * no time to report and says so plainly rather than inventing one.
+   *
+   * @param {"saving"|"saved"|"unsaved"} state From app.saveState()
+   * @param {number|null} at Epoch ms of the last successful save, or null
+   * @returns {string}
+   *
+   * @example saveText("saving", null)
+   * 'Saving…'
+   * @example saveText("unsaved", null)
+   * 'Unsaved changes — not yet saved to the server'
+   * @example // saved, with a time — e.g. "Saved to server at 14:32:05"
+   * saveText("saved", 1750000000000).startsWith("Saved to server at ")
+   * true
+   */
+  function saveText(state, at) {
+    if (state === "saving") return "Saving…";
+    if (state === "unsaved") return "Unsaved changes — not yet saved to the server";
+    return at ? `Saved to server at ${new Date(at).toLocaleTimeString()}` : "Saved to server";
+  }
+
+  // The indicator's state and its sentence, derived together from ONE read of
+  // app.saveState() so the dot and the hover text can never describe different
+  // states (see the markup's note).
+  let saveIndicator = $derived.by(() => {
+    const state = app.saveState();
+    return { state, text: saveText(state, app.lastSavedAt) };
+  });
+
+  /**
    * Query. Is the command `id` currently UNAVAILABLE — i.e. does it declare a
    * `when` gate that says no right now? This is the AVAILABILITY axis (transient,
    * per-app-state), the one core/registry.js's TOOL GROUPS block distinguishes
@@ -127,6 +162,30 @@
 {/snippet}
 
 <div class="toolbar">
+  <!-- THE SAVE INDICATOR, verbatim: "there's no indicator on the top left on
+       whether or not it's been saved to the server. There should be an indicator
+       on the top left, maybe an empty circle, a filled circle or something,
+       which when I hover over it tells me whether or not it's saved."
+
+       A circle, exactly as asked: FILLED = saved to the server, EMPTY (ring
+       only) = unsaved changes, HALF = a save in flight. The state and the
+       sentence come from ONE place (saveIndicator below, off app.saveState()),
+       so the dot and its hover text cannot disagree — the failure mode for a
+       status light is showing green while saying something else.
+
+       It is NOT a button: saving is Cmd+S / the Save command, and a control that
+       looks clickable but only reports would be a lie about its own affordance.
+       It is still focusable (tabindex) because the information is otherwise
+       pointer-only, and Tooltip anchors to the element on keyboard focus. -->
+  <Tooltip text={saveIndicator.text}>
+    <span
+      class="save-indicator {saveIndicator.state}"
+      data-state={saveIndicator.state}
+      role="status"
+      tabindex="0"
+      aria-label={saveIndicator.text}
+    ></span>
+  </Tooltip>
   <!-- The presentation TITLE. Double-click (or Enter/F2 when focused) opens the
        Rename modal, which writes doc.meta.name — the one name model shared with
        Save and Open. role/tabindex/onkeydown keep the double-click affordance
