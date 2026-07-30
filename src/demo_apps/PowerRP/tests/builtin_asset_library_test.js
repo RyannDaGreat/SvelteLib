@@ -142,11 +142,34 @@ test("BUILTIN_PLUGIN_ASSET_KINDS names exactly the non-widget library files", ()
  *  Its behaviour is covered instead — and far more thoroughly than parity ever
  *  could — by tests/progress_bar_plugin_test.mjs (geometry containment, cap
  *  hugging, the zero case, the handle) and tests/progress_bar_handle_probe.js.
- *  A widget may leave this list ONLY with that kind of replacement in hand. */
+ *  A widget may leave this list ONLY with that kind of replacement in hand.
+ *
+ *  `clock_analog` HAS LEFT THIS LIST, for exactly the reason stated above and by
+ *  the same rule the progress bar left it. The dial was DELIBERATELY extended on a
+ *  user request ("more handles and more options for the clock"): it gained tick
+ *  thickness/length rows, a minute-tick toggle, a numeral inset, arabic|roman|none
+ *  numerals, second-hand taper, hour/minute bezel and a PRESET model, plus winding
+ *  drag handles on all three hand tips. Those are new default KEYS, so the
+ *  interface-parity assertion below necessarily fails against the retired module —
+ *  it is measuring an interface the widget has outgrown on purpose, not a
+ *  migration accident.
+ *
+ *  Note precisely WHICH half broke, because it is the whole argument: the PICTURE
+ *  half did not. Every style row defaults to an INHERIT sentinel that resolves to
+ *  the frozen `classic` values, so emit() at all-defaults is still byte-identical
+ *  to the retired module's — verified over 240 state combinations against git HEAD
+ *  rather than against a self-regenerated baseline.
+ *
+ *  Its replacement coverage, which is what earns the removal:
+ *  tests/clock_analog_test.js (the byte-identical gate frozen as DATA, the preset
+ *  model, every new row reaching the display list, the roman IIII table, the
+ *  retired `showNumerals` migration, and the winding arithmetic driven through
+ *  core/derive.js modifierWrite) and tests/clock_wind_probe.js (the same winding
+ *  through REAL puppeteer mouse events, asserting the minute carry and the
+ *  no-snap-at-wrap property the node test cannot reach). */
 const PARITY = [
   ["donut", "../plugins/donut.js", "donutPlugin"],
   ["clock_digital", "../plugins/clock_digital.js", "clockDigitalPlugin"],
-  ["clock_analog", "../plugins/clock_analog.js", "clockAnalogPlugin"],
 ];
 
 // The fixed states every migrated widget is compared on. Deliberately NOT just the
