@@ -13,6 +13,14 @@
  * draft key is UNUSABLE as a project name: `validProjectName(DRAFT_KEY)` is
  * false, and a test pins it so that loosening the server's name rule fails
  * loudly instead of silently making a draft saveable.
+ *
+ * IT ALSO OWNS THE SAVE-GESTURE RULES, for the same reason: `isUnsavedDraft`,
+ * `saveCommandFor`, `saveText` and `openNeedsConfirm` are the four decisions
+ * behind "which Save is available", "what does Cmd+S do", "what does the dot
+ * say" and "must this open ask first". Each is a pure function of state a test
+ * can hand it, so the gate executes the RULE rather than a browser's rendering
+ * of it — and the four surfaces (command gate, keybinding, indicator, guard)
+ * read one definition instead of four agreeing copies.
  */
 
 /**
@@ -83,6 +91,201 @@ export function validProjectName(name) {
   const s = String(name ?? "");
   if (!s || s === "." || s === "..") return false;
   return !/[/\\\0]/.test(s);
+}
+
+/**
+ * The display name a document carries when it has never been named. Repair mints
+ * it and `projectDisplayName()` falls back to it, so the placeholder has ONE
+ * spelling across the app.
+ *
+ * IT IS A DISPLAY DEFAULT, NOT A STATE. It deliberately does NOT appear in
+ * `isUnsavedDraft` — see the ruling recorded there. A document is a draft because
+ * it is not in the library, never because of what it happens to be called.
+ */
+export const UNTITLED_NAME = "Untitled";
+
+/**
+ * Pure function. IS THE OPEN WORKING COPY AN UNSAVED DRAFT — i.e. is it NOT in
+ * the project library?
+ *
+ * ====== THE UNIFICATION (user ruling) ======================================
+ *
+ * "When we are renaming the Untitled project, that should be the same as saving
+ * a new project. Untitled is a special project — I shouldn't be allowed to just
+ * save it; it needs to Save-As-New, just like every other editor."
+ *
+ * The working-copy model shipped with ONE way to be outside the library: an
+ * IMPORTED draft (`draftMode` set — a dropped .zip or a share link). But a FRESH
+ * document is outside it for exactly the same reason and was silently treated as
+ * a saved project called "Untitled" — so Save wrote a library entry named
+ * "Untitled" with no ceremony, and Rename tried to MOVE a folder that was never
+ * there. Both are the same state, so this predicate answers for both:
+ *
+ *   1. `draftMode` — an import. Already the model's answer; unchanged.
+ *   2. `everSaved` IS FALSE — a fresh document. Nothing has ever passed through
+ *      the library seam for this working copy, so there is no entry to write to.
+ *
+ * ====== THE NAME IS NOT PART OF THIS, AND THAT IS THE FIX =================
+ *
+ * An earlier draft of this function ALSO required the name to be the placeholder
+ * ("Untitled" or blank) before it would call a never-saved document a draft. That
+ * is WRONG, and the ruling above is what makes it wrong: renaming an unsaved
+ * document IS naming it at save time, so it cannot be the act that promotes it
+ * into the library. Under the name clause, a user who typed "Draft ideas" into
+ * the title before ever saving would silently acquire a quick-Save that wrote a
+ * library entry with no naming ceremony and no collision check — exactly the
+ * "I shouldn't be allowed to just save it" case, re-created one keystroke later.
+ * So: `everSaved === false` ALONE defines a draft, and the doctest below pins
+ * that renamed-never-saved case forever.
+ *
+ * WHY `everSaved` IS THE HONEST SIGNAL. It is set by the two gestures that put a
+ * working copy in correspondence with a library entry, and by nothing else:
+ * `loadProject` (opened FROM the library) and a successful save INTO it. Opening
+ * "RobotSim" therefore reads as saved even before the first write, which is
+ * correct — the entry exists and Save updates it. And a document genuinely NAMED
+ * "Untitled" in the library is saved too, because it was loaded or written.
+ *
+ * @param {{name: string, sourceUrl: string}|null} draftMode The imported-draft marker, or null.
+ * @param {boolean} everSaved Whether this working copy has ever been read from, or written to, the library.
+ * @returns {boolean}
+ *
+ * @example // a fresh document: nothing in the library to save into
+ * isUnsavedDraft(null, false)
+ * true
+ * @example // THE RULING: renaming a never-saved document does NOT save it
+ * isUnsavedDraft(null, false) // meta.name is now "Draft ideas" — still a draft
+ * true
+ * @example // an imported .zip: the draft marker answers on its own
+ * isUnsavedDraft({name: "RobotSim", sourceUrl: ""}, false)
+ * true
+ * @example // an ordinary open library project — Save writes it in place
+ * isUnsavedDraft(null, true)
+ * false
+ * @example // a library project genuinely NAMED "Untitled" is saved like any other
+ * isUnsavedDraft(null, true)
+ * false
+ */
+export function isUnsavedDraft(draftMode, everSaved) {
+  return Boolean(draftMode) || !everSaved;
+}
+
+/**
+ * Pure function. WHICH SAVE GESTURE Cmd+S means right now — the one dispatch
+ * rule, written where a bare-node test can execute it.
+ *
+ * Cmd+S is the universal editor binding and it means "save", never "open a
+ * dialog" — EXCEPT when there is nothing to save TO. So it resolves to the quick
+ * save for a library project and to the naming flow for a draft, which is exactly
+ * what every other editor does and what makes the key safe to press blind.
+ *
+ * @param {boolean} draft From isUnsavedDraft.
+ * @returns {"save-project"|"save-project-as"} The command id to run.
+ *
+ * @example saveCommandFor(false)
+ * 'save-project'
+ * @example // a draft has no library entry to write into, so Cmd+S must name it first
+ * saveCommandFor(true)
+ * 'save-project-as'
+ */
+export function saveCommandFor(draft) {
+  return draft ? "save-project-as" : "save-project";
+}
+
+/**
+ * Pure function. The save indicator's hover sentence.
+ *
+ * FOUR SENTENCES, NOT THREE, because "unsaved" was answering two different
+ * questions with one string. "Unsaved changes" is a true statement about a
+ * project that EXISTS in the library and has drifted from it; it is a misleading
+ * one about a draft, which has no library copy at all — there are no "changes",
+ * there is nothing there. The dot is the same in both cases (a ring), so the
+ * sentence is the only place the difference can be told.
+ *
+ * @param {"saving"|"saved"|"unsaved"} state From app.saveState().
+ * @param {number|null} at Epoch ms of the last successful save, or null.
+ * @param {boolean} draft From isUnsavedDraft.
+ * @param {string} noun The STORAGE_NOUN — "server" or "browser".
+ * @returns {string}
+ *
+ * @example saveText("saving", null, false, "server")
+ * 'Saving…'
+ * @example // a DRAFT: nothing of it is in the library, so it has no "changes" to be unsaved
+ * saveText("unsaved", null, true, "server")
+ * 'Not saved yet — this draft is not on the server. Use Save As… to name it.'
+ * @example // a saved project that has drifted from its stored copy
+ * saveText("unsaved", null, false, "browser")
+ * 'Unsaved changes — not yet saved to the browser'
+ * @example saveText("saved", null, false, "server")
+ * 'Saved to server'
+ * @example // saved, with a time — e.g. "Saved to server at 14:32:05"
+ * saveText("saved", 1750000000000, false, "server").startsWith("Saved to server at ")
+ * true
+ */
+export function saveText(state, at, draft, noun) {
+  if (state === "saving") return "Saving…";
+  if (state === "unsaved") {
+    if (draft) return `Not saved yet — this draft is not ${noun === "browser" ? "in this browser's library" : "on the server"}. Use Save As… to name it.`;
+    return `Unsaved changes — not yet saved to the ${noun}`;
+  }
+  return at ? `Saved to ${noun} at ${new Date(at).toLocaleTimeString()}` : `Saved to ${noun}`;
+}
+
+/**
+ * WHY quick-Save is unavailable on a draft — the command entry's `requires`
+ * string, which the palette, the Tools pane and the Toolbar all render as
+ * "Unavailable — requires <this>".
+ *
+ * IT LIVES HERE, NOT IN THE COMMAND ENTRY, because the gate and the reason are
+ * two halves of one rule: `when: (a) => !a.isDraft()` and this sentence must
+ * never drift apart, and the browser probe asserts on the exact text.
+ *
+ * @example SAVE_NEEDS_SAVE_AS
+ * 'a saved project — this one is not saved yet, so use Save As…'
+ */
+export const SAVE_NEEDS_SAVE_AS = "a saved project — this one is not saved yet, so use Save As…";
+
+/**
+ * Pure function. Does an OPEN — one that REPLACES the working copy — need to ask
+ * the user first?
+ *
+ * THE RULING (user, verbatim): "if I've been working on something and then
+ * suddenly I open a new URL, what happens? Can opening a link break my project?"
+ * and "perhaps it should ask me — would you like to save this current
+ * presentation before opening a new one? Same thing if I drag a zip into it."
+ *
+ * TWO WAYS TO HAVE WORK AT RISK, and both must prompt, because the loss is the
+ * same size either way:
+ *   · AN UNSAVED DRAFT — nothing of it is in the library, so replacing it loses
+ *     ALL of it.
+ *   · A SAVED PROJECT WITH UNSAVED CHANGES — the library holds an older copy, so
+ *     replacing it loses the edits since.
+ * A saved-and-clean working copy is fully recoverable by reopening it, so it
+ * opens with no ceremony. That exemption is what keeps the prompt meaningful:
+ * a dialog that appears every time is one nobody reads.
+ *
+ * A SAVE IN FLIGHT counts as dirty. `saveState()` reports "saving" while the
+ * request is out, and its outcome is not known yet — treating an unresolved save
+ * as clean would let an open race a write.
+ *
+ * @param {boolean} draft From isUnsavedDraft.
+ * @param {"saving"|"saved"|"unsaved"} state From app.saveState().
+ * @returns {boolean}
+ *
+ * @example // a fresh or imported draft always has everything to lose
+ * openNeedsConfirm(true, "unsaved")
+ * true
+ * @example // a saved project that has drifted from its stored copy
+ * openNeedsConfirm(false, "unsaved")
+ * true
+ * @example // saved and clean: reopening it restores it, so no ceremony
+ * openNeedsConfirm(false, "saved")
+ * false
+ * @example // an in-flight save has an unknown outcome — never treat it as clean
+ * openNeedsConfirm(false, "saving")
+ * true
+ */
+export function openNeedsConfirm(draft, state) {
+  return draft || state !== "saved";
 }
 
 /** Filenames that name a FORMAT rather than a deck. A URL ending in "/deck.zip"

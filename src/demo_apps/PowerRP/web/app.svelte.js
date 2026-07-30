@@ -57,7 +57,7 @@ import { fetchZipBytes, validatedZipUrl, zipFileNameFromUrl } from "./projectUrl
 // THE WORKING-COPY MODEL: a zip or share link opens a DRAFT, not a library
 // entry. web/projectDraft.js states the invariant — read it before touching
 // projectName(), which is the seam the whole model turns on.
-import { DRAFT_KEY, DRAFT_STATE_KEY, draftFromZipBytes, draftStateFromJson, shareUrl, validProjectName } from "./projectDraft.js";
+import { DRAFT_KEY, DRAFT_STATE_KEY, UNTITLED_NAME, draftFromZipBytes, draftStateFromJson, isUnsavedDraft, openNeedsConfirm, shareUrl, validProjectName } from "./projectDraft.js";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
 import { assetRef, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
@@ -308,6 +308,25 @@ export class PowerRPApp {
   saving = $state(false);
   /** Epoch ms of the last successful server save, for the hover text. */
   lastSavedAt = $state(null);
+  /**
+   * IS THIS WORKING COPY IN THE LIBRARY AT ALL — the flag behind `isDraft()`.
+   *
+   * FALSE means there is no library entry for it, so there is nothing for a quick
+   * Save to write INTO. It is set by the only two gestures that put a working copy
+   * in correspondence with a library entry, and by NOTHING else:
+   *   · `loadProject(name)` — opened FROM the library. Saved before the first write.
+   *   · a successful `saveToServer` / `commitDraft` / `saveProjectAsFork` — written
+   *     INTO it. Set only on SUCCESS, so a failed first save leaves a draft a draft.
+   * and cleared by the two that take a working copy back OUT of correspondence:
+   * `clearDoc()` (a brand-new document) and `openDraftFromZipBytes` (an import).
+   *
+   * DISTINCT FROM `savedDoc`, which asks a narrower question. `savedDoc` is "does
+   * the library's copy MATCH what is on screen" (dirty vs clean); this is "is
+   * there a library copy AT ALL". A saved project with edits has everSaved true
+   * and savedDoc stale; a fresh document has neither — and only the second state
+   * makes quick-Save meaningless, which is why one boolean cannot answer both.
+   */
+  everSaved = $state(false);
   // [ROUND 15.2] Backed by a private $state through an accessor (mirrors the
   // `selection` accessor immediately below) so that ANY slide switch (~13
   // write sites: SlideNav, KeyframePanel "Go To", jumpKeyframePath, addSlide/
@@ -3342,7 +3361,7 @@ export class PowerRPApp {
    */
   projectName() {
     if (this.draftMode) return DRAFT_KEY;
-    return this.doc.meta.name || "Untitled";
+    return this.doc.meta.name || UNTITLED_NAME;
   }
 
   /** Query. The HUMAN project name: what the title bar shows and what every
@@ -3356,7 +3375,26 @@ export class PowerRPApp {
    *  the collision was a real crash ("displayName has already been declared"),
    *  caught by draft_open_static_probe.js. */
   projectDisplayName() {
-    return this.doc.meta.name || "Untitled";
+    return this.doc.meta.name || UNTITLED_NAME;
+  }
+
+  /**
+   * Query. IS THE OPEN WORKING COPY AN UNSAVED DRAFT — not in the project library.
+   *
+   * THE ONE PREDICATE the four save surfaces read: the quick-Save command's `when`
+   * gate, the Cmd+S dispatch, the save indicator's sentence, and the unsaved-work
+   * guard. The rule itself is `draftKeys.isUnsavedDraft`, pure and doctested; this
+   * is only the binding of app state to it, so the browser cannot hold an opinion
+   * the bare-node gate does not execute.
+   *
+   * TWO STATES, ONE ANSWER (the user's unification): an IMPORTED draft (a dropped
+   * .zip or a share link — `draftMode`) and a FRESH document (`everSaved` false)
+   * are the same thing, "not in the library yet", and get the same ceremony. Note
+   * the NAME is not consulted: renaming an unsaved document is naming it at save
+   * time, not saving it — see isUnsavedDraft's ruling block.
+   */
+  isDraft() {
+    return isUnsavedDraft(this.draftMode, this.everSaved);
   }
 
   /**
@@ -3423,6 +3461,26 @@ export class PowerRPApp {
     const from = this.projectName();
     if (!trimmed || trimmed === from) return;
 
+    // A DRAFT HAS NO FOLDER TO MOVE — the rename is a WORKING-COPY EDIT, and the
+    // name is held until Save commits it (user ruling: "renaming the Untitled
+    // project… should be the same as saving a new project", i.e. renaming must
+    // NOT be the thing that creates a library entry). The three-step move below is
+    // for SAVED projects only; running it on a draft would ask storage to move
+    // `~draft/current` — a key the server's name rule forbids, so it would fail
+    // loudly, and if it somehow did not, it would mint the very library entry the
+    // working-copy model exists to refuse. Save-As is what promotes this name into
+    // the library, under whatever the working copy holds at that moment.
+    if (this.isDraft()) {
+      this.doc = { ...this.doc, meta: { ...this.doc.meta, name: trimmed } };
+      if (this.draftMode) {
+        // Keep the persisted draft marker's display name in step with the doc, so
+        // a reload restores the deck under the name the user just typed.
+        this.draftMode = { ...this.draftMode, name: trimmed };
+        localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(this.draftMode));
+      }
+      return trimmed;
+    }
+
     // STEP 1 — relativize own-project absolute refs, and persist that BEFORE the
     // move (see the ordering proof above). `plainDoc` de-proxies the $state doc so
     // the pure walk sees a plain object; the comparison against it (not against
@@ -3479,6 +3537,12 @@ export class PowerRPApp {
       await projectStore().save(name, sent);
       this.savedDoc = sent;
       this.lastSavedAt = Date.now();
+      // THE WORKING COPY IS NOW IN THE LIBRARY. Set on SUCCESS only (inside the
+      // try, after the await) so a save that throws leaves a draft a draft — the
+      // same discipline savedDoc/lastSavedAt already follow, and for the same
+      // reason: a failed first save must not hand the user a quick-Save that
+      // writes to an entry which does not exist.
+      this.everSaved = true;
     } finally {
       this.saving = false;
     }
@@ -3569,10 +3633,30 @@ export class PowerRPApp {
     return projectStore().load(name);
   }
 
-  /** Command. Load a project from the server by name into the editor (same
+  /** Command. THE GUARDED OPEN — what the Open Project picker calls when the user
+   *  chooses a project. Asks about unsaved work first (the ONE gate; see
+   *  guardedOpen), then loads. Returns whether the load ran, so the caller can
+   *  tell "opened" from "user cancelled".
+   *
+   *  DISTINCT FROM `loadProject`, DELIBERATELY, and the split is the opposite of
+   *  what it first looks like: the GESTURE is guarded, the API is not.
+   *  `loadProject` is a plain programmatic load with ~a dozen callers — probes and
+   *  fixtures that seed a project, the render-job page, boot paths — none of which
+   *  has a user to answer a dialog. Guarding the API instead would DEADLOCK every
+   *  one of them on a modal nobody can click, which is not a hypothetical: it hung
+   *  project_rename_probe on a CDP timeout the moment it was tried. So the gate
+   *  sits where a human actually is. */
+  async openProjectNamed(name) {
+    return this.guardedOpen(() => this.loadProject(name), `the project "${name}"`);
+  }
+
+  /** Command. Load a project from the library by name into the editor (same
    *  repair + binding migration as loadFile). UI resets mirror loadFile. A new
    *  project's font assets must re-register so a text run's `font` id resolves,
-   *  so dynamic fonts are cleared (drop the prior project's) then re-synced. */
+   *  so dynamic fonts are cleared (drop the prior project's) then re-synced.
+   *
+   *  UNGUARDED, and that is its job — see openProjectNamed above for the split.
+   *  Any USER-FACING open must go through that instead. */
   async loadProject(name) {
     const { doc } = await projectStore().load(name);
     // PRIME THE ASSET URLS BEFORE THE FIRST PAINT. #resolvedSrc is synchronous
@@ -3605,6 +3689,10 @@ export class PowerRPApp {
     // the repair pipeline reports such migrations loudly on its own channel.)
     this.savedDoc = this.doc;
     this.lastSavedAt = Date.now();
+    // OPENED FROM THE LIBRARY, so it IS in the library — quick-Save writes back to
+    // this folder even though this session has not written to it yet. This is the
+    // half of everSaved that a "has been written" flag alone would get wrong.
+    this.everSaved = true;
     this.slideIndex = 0;
     this.selection = null;
     this.syncFontAssets(name); // fire-and-forget: register + load this project's font assets
@@ -3880,15 +3968,21 @@ export class PowerRPApp {
    */
   async importProjectZip(file) {
     const requested = projectApi.projectZipName(file.name ?? "");
-    try {
-      const { name, assetCount } = await this.openDraftFromZipBytes(new Uint8Array(await file.arrayBuffer()), requested, "");
-      const result = { ok: true, name, requested, draft: true, assetCount };
-      this.showImportResult(result);
-      return result;
-    } catch (e) {
-      this.showImportResult({ ok: false, requested, error: String(e.message ?? e) });
-      throw e;
-    }
+    let result = null;
+    // GUARDED: dropping a zip REPLACES the working copy ("Same thing if I drag a
+    // zip into it"). Cancelling returns {ok:false, cancelled:true} rather than
+    // throwing — a user who said "don't" has not hit an error.
+    const opened = await this.guardedOpen(async () => {
+      try {
+        const { name, assetCount } = await this.openDraftFromZipBytes(new Uint8Array(await file.arrayBuffer()), requested, "");
+        result = { ok: true, name, requested, draft: true, assetCount };
+        this.showImportResult(result);
+      } catch (e) {
+        this.showImportResult({ ok: false, requested, error: String(e.message ?? e) });
+        throw e;
+      }
+    }, `"${requested || file.name || "that .zip"}"`);
+    return opened ? result : { ok: false, requested, cancelled: true };
   }
 
   /** Command. Pick a .zip from disk and import it (the menu route to the same
@@ -3922,6 +4016,106 @@ export class PowerRPApp {
   // OPENING A SERVER OR BROWSER-LIBRARY PROJECT IS NOT A DRAFT — that project is
   // the library entry itself and is saved in place, exactly as it always was.
 
+  // ── THE UNSAVED-WORK GUARD: one gate, one seam ─────────────────────────────
+  //
+  // THE RULING (user, verbatim): "if I've been working on something and then
+  // suddenly I open a new URL, what happens? Can opening a link break my project?"
+  // and "perhaps it should ask me — would you like to save this current
+  // presentation before opening a new one? Same thing if I drag a zip into it."
+  //
+  // ONE GATE, NOT SIX. Every gesture that REPLACES the working copy — a dropped
+  // .zip, Open from URL, the ?zip= and ?repo= boot params, Open Project from the
+  // library, New Document — routes through `guardedOpen` below. Guarding
+  // per-caller is how the seventh entry point silently ships without one; this
+  // way, an open that does not go through the gate is visibly not going through
+  // the gate. `openNeedsConfirm` (pure, doctested) decides IF it asks.
+
+  /** UI seam (mirrors showSaveModal): App.svelte sets this to the function that
+   *  raises the Save / Discard / Cancel dialog and resolves to one of those three
+   *  strings. Default answers "discard" so a HARNESS without the shell — and the
+   *  bare-node tests — behave exactly as the app did before the guard existed,
+   *  rather than deadlocking on a dialog nobody can answer. */
+  confirmUnsavedWork = null;
+
+  /**
+   * Command (may save; may not run `open` at all). THE ONE SEAM every working-copy
+   * replacement passes through: ask about unsaved work, then do the open.
+   *
+   * THREE ANSWERS, and Cancel is a real one:
+   *   · SAVE     — run the state-appropriate save (quickSave for a saved project,
+   *                the Save As… naming flow for a draft — the same dispatch Cmd+S
+   *                uses, so "Save" here can never mean something the Save button
+   *                does not), THEN open. If that save fails or the user backs out
+   *                of the naming modal, the open is ABANDONED: proceeding would
+   *                destroy the work the user just asked to keep.
+   *   · DISCARD  — open immediately. The working copy is gone, as asked.
+   *   · CANCEL   — do not open. Returns false, and the caller must not proceed —
+   *                INCLUDING the boot-param case, where the ?zip= / ?repo= URL
+   *                simply does not load and the editor stays on what was open.
+   *
+   * A saved-and-clean working copy is never asked about (openNeedsConfirm), which
+   * is what keeps the dialog meaningful — one that appears every time is one
+   * nobody reads.
+   *
+   * @param {() => Promise<any>} open Runs the actual open. Called at most once.
+   * @param {string} what What is being opened, for the dialog's sentence.
+   * @returns {Promise<boolean>} Whether the open ran.
+   */
+  async guardedOpen(open, what = "another project") {
+    // AN UNTOUCHED DOCUMENT HAS NOTHING TO LOSE, and this exemption is what keeps
+    // the whole gate honest. A freshly-booted editor holds a never-saved, never-
+    // edited blank document — which `isDraft()` correctly calls a draft — so
+    // without this, EVERY ?zip= boot and every first Open of a session would raise
+    // "save your work?" over an empty canvas. That is the dialog nobody reads,
+    // trained on the user in the first ten seconds. `undoLog` is the honest test:
+    // it has a step only if the document was actually edited (commit() is what
+    // pushes one), so this exempts exactly "blank and untouched" and nothing more.
+    if (this.isDraft() && !this.everSaved && !this.undoLog?.canUndo) {
+      await open();
+      return true;
+    }
+    if (!openNeedsConfirm(this.isDraft(), this.saveState())) {
+      await open();
+      return true;
+    }
+    const answer = this.confirmUnsavedWork ? await this.confirmUnsavedWork({ what, draft: this.isDraft(), name: this.projectDisplayName() }) : "discard";
+    if (answer === "cancel") return false;
+    if (answer === "save") {
+      // THE SAME DISPATCH Cmd+S USES, for the same reason: a draft has no library
+      // entry to quick-save into, so its "Save" is the naming flow. `saveAndWait`
+      // resolves false when the naming modal is dismissed without saving — an
+      // explicit backing-out, which must abandon the open rather than silently
+      // discarding the work the user was in the middle of keeping.
+      if (!(await this.saveForGuard())) return false;
+    } else if (answer !== "discard") {
+      throw new Error(`guardedOpen: unknown answer ${JSON.stringify(answer)} — expected "save", "discard" or "cancel".`);
+    }
+    await open();
+    return true;
+  }
+
+  /** UI seam: App.svelte sets this to a function that opens the Save As… modal
+   *  and resolves TRUE only if a save actually completed (false if dismissed).
+   *  The plain `showSaveModal` hook cannot serve here because it resolves as soon
+   *  as the dialog is UP, which the guard would read as a successful save and
+   *  then destroy the document. Null until wired; the guard reports loudly. */
+  saveAsAndWait = null;
+
+  /**
+   * Command (async; saves). Run the save the CURRENT state calls for and report
+   * whether it completed — the guard's "Save" button, and nothing else's.
+   *
+   * @returns {Promise<boolean>} True if the working copy is now in the library.
+   */
+  async saveForGuard() {
+    if (!this.isDraft()) {
+      await this.quickSave();
+      return true;
+    }
+    if (!this.saveAsAndWait) throw new Error("saveForGuard: the Save As… modal is not wired yet (App.svelte hook missing), so an unsaved draft cannot be saved before opening something else.");
+    return Boolean(await this.saveAsAndWait());
+  }
+
   /** Hook installed by App.svelte: renders download progress for a URL import.
    *  Receives `{loaded, total}` (total 0 = unknown, per the boot-splash honesty
    *  rule) or null when finished. Defaults to a no-op so a harness without the
@@ -3951,6 +4145,12 @@ export class PowerRPApp {
   async openDraftFromZipBytes(bytes, requested, sourceUrl = "") {
     const { doc, name, assetCount } = await draftFromZipBytes(bytes, requested);
     this.draftMode = { name, sourceUrl };
+    // OUT of correspondence with the library: whatever was open before, THIS deck
+    // has never been in it. Redundant while draftMode is set (isDraft() short-
+    // circuits on it), and NOT redundant the moment commitDraft clears draftMode —
+    // it is what keeps the flag honest if a future path opens a draft over a
+    // previously-saved project.
+    this.everSaved = false;
     // Persist the two facts autosave cannot carry: that this IS a draft, and
     // where it came from (which is what gates the share link across a reload).
     localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(this.draftMode));
@@ -4113,11 +4313,22 @@ export class PowerRPApp {
    */
   async openProjectFromUrl(rawUrl, onProgress = this.showUrlImportProgress) {
     const url = validatedZipUrl(rawUrl, typeof location === "undefined" ? undefined : location.href);
-    // STATIC MODE HAS NO PROXY. isStatic() means there is no server to ask, so a
-    // blocked fetch must produce the helpful CORS refusal rather than a request
-    // to an endpoint that does not exist.
-    const bytes = await fetchZipBytes(url, onProgress, { proxy: !isStatic() });
-    return this.openDraftFromZipBytes(bytes, projectApi.projectZipName(zipFileNameFromUrl(url)), url);
+    // GUARDED, AND THE GATE COMES BEFORE THE DOWNLOAD. Asking first means a
+    // cancelled open costs no bytes — and, more importantly, that the question is
+    // answered while the working copy is still definitely intact. This is also the
+    // ?zip= / ?repo= BOOT path (App.svelte's openBootZip and main.js both land
+    // here or in openDraftFromZipBytes via guardedOpen), so a share link opened
+    // over live work waits for the answer instead of overwriting it.
+    let opened = null;
+    const ran = await this.guardedOpen(async () => {
+      // STATIC MODE HAS NO PROXY. isStatic() means there is no server to ask, so a
+      // blocked fetch must produce the helpful CORS refusal rather than a request
+      // to an endpoint that does not exist.
+      const bytes = await fetchZipBytes(url, onProgress, { proxy: !isStatic() });
+      opened = await this.openDraftFromZipBytes(bytes, projectApi.projectZipName(zipFileNameFromUrl(url)), url);
+    }, `the project at ${url}`);
+    if (!ran) return { cancelled: true };
+    return opened;
   }
 
   // ── Assets: upload / delete / insert / filmstrip frames (one region) ────────
@@ -4504,14 +4715,40 @@ export class PowerRPApp {
   showSaveModal = null;
   showRenameModal = null;
 
-  /** Command. Open the "Save Project to Server" modal: choose/confirm the name
-   *  (default = meta.name) and, if that name already exists on the server, warn +
-   *  require an explicit Overwrite (never a silent clobber). Delegates to the
-   *  modal hook. The low-level push (saveToServer) is unchanged and still used
-   *  non-interactively by asset upload / project .zip export. */
+  /** Command. Open the "Save Project As…" modal: choose/confirm the name and, if
+   *  that name already exists, warn + require an explicit Overwrite (never a
+   *  silent clobber). Delegates to the modal hook. The low-level push
+   *  (saveToServer) is unchanged and still used non-interactively by asset upload
+   *  / project .zip export.
+   *
+   *  THIS IS THE NAMING FLOW, and for a DRAFT it is the FIRST save — the modal's
+   *  draft branch runs commitDraft, which copies the staged assets into the new
+   *  project through the fork-copy machinery. It is ALWAYS available; quickSave is
+   *  the gated one. */
   saveProjectAs() {
     if (this.showSaveModal) return this.showSaveModal();
-    console.error("Save Project to Server: the save modal is not wired yet (App.svelte hook missing). Use app.saveToServer(name).");
+    console.error("Save Project As: the save modal is not wired yet (App.svelte hook missing). Use app.saveToServer(name).");
+  }
+
+  /**
+   * Command (async; WRITES TO THE LIBRARY). QUICK SAVE — write the current
+   * document straight back to the library entry it came from. No modal, no name
+   * prompt, no collision check: the entry already exists and this IS it.
+   *
+   * REFUSES ON A DRAFT, LOUDLY. The command's `when` gate makes this unreachable
+   * from any surface (button, palette, Cmd+S all dispatch Save As instead), so
+   * arriving here with a draft open is a wiring bug, not a user action — and the
+   * failure mode it prevents is the exact thing the user ruled out: a library
+   * entry minted with no naming ceremony, named whatever the working copy happens
+   * to hold. It would additionally write under `projectName()`, which for a draft
+   * is the draft KEY — a name the server's rule forbids.
+   *
+   * @returns {Promise<string>} The project name written.
+   */
+  async quickSave() {
+    if (this.isDraft())
+      throw new Error(`quickSave: "${this.projectDisplayName()}" is not saved yet, so there is no project to save INTO — use Save As… (the command's when-gate should have prevented this).`);
+    return this.saveToServer();
   }
 
   /** Command. Open the Rename modal for the PROJECT name (writes doc.meta.name
@@ -4662,9 +4899,35 @@ export class PowerRPApp {
    * confirm dialog by design). newDocument() guarantees THE camera exists.
    * UI resets mirror loadFile: slide 0, nothing selected.
    */
+  async newDocument() {
+    // GUARDED like every other working-copy replacement. The old comment on
+    // clearDoc claimed undo was safety net enough ("no confirm dialog by design"),
+    // and for the DOCUMENT it still is — but it never was for the LIBRARY LINK:
+    // after this runs the app points at a fresh unsaved document, and an undo
+    // restores the items without restoring which project they belonged to.
+    //
+    // SAME SPLIT AS openProjectNamed/loadProject, for the same reason: this is the
+    // GESTURE (the "New Empty Document" command), while `clearDoc` stays the plain
+    // programmatic reset that a dozen probes call as setup. A probe has no user to
+    // answer a dialog, so guarding the API would deadlock it.
+    return this.guardedOpen(() => this.clearDoc(), "a new empty document");
+  }
+
+  /** Command. Reset to a fresh document. UNGUARDED — see newDocument above for
+   *  the split. Any USER-FACING "new document" must go through that instead. */
   clearDoc() {
     clearDynamicFonts(); // a fresh doc has no project → drop uploaded font families
     this.commit(newDocument());
+    // A BRAND-NEW DOCUMENT IS AN UNSAVED DRAFT — the unification (user ruling:
+    // "Untitled is a special project — I shouldn't be allowed to just save it").
+    // Both flags reset: `everSaved` because nothing of THIS document is in the
+    // library, and `draftMode` because a new document is not the IMPORTED draft
+    // that may have been open a moment ago — leaving that set would keep
+    // projectName() answering the draft key, so a later Save would commit the
+    // previous deck's staged assets under this empty document's name.
+    this.everSaved = false;
+    this.draftMode = null;
+    localStorage.removeItem(DRAFT_STATE_KEY);
     this.slideIndex = 0;
     this.selection = null;
   }

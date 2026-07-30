@@ -15,6 +15,9 @@
   import Toolbar from "./Toolbar.svelte";
   import SlideNav from "./SlideNav.svelte";
   import { isStatic } from "./storageMode.js";
+  // The quick-Save gate's REASON string lives with the gate's rule (draftKeys.js)
+  // so the two cannot drift — see SAVE_NEEDS_SAVE_AS.
+  import { SAVE_NEEDS_SAVE_AS, saveCommandFor } from "./draftKeys.js";
   import AssetExplorer from "./AssetExplorer.svelte";
   import BuiltinAssetBrowser from "./BuiltinAssetBrowser.svelte";
   import CanvasView from "./CanvasView.svelte";
@@ -165,7 +168,10 @@
   async function pickProject(name) {
     openGeneration++; // stop any in-flight preview renders — we're leaving the grid
     openModalVisible = false;
-    await app.loadProject(name);
+    // openProjectNamed, NOT loadProject: this is the USER GESTURE, so it goes
+    // through the unsaved-work gate. (The grid is closed first so the guard's
+    // dialog is not stacked on top of it.)
+    await app.openProjectNamed(name);
   }
 
   // Save-to-Server modal (bug: "Save to server" gave no way to CHOOSE a name and
@@ -208,8 +214,11 @@
   const saveNameExists = $derived(saveProjectNames.includes(saveTrimmed));
   // Re-saving the open project is expected, not a clobber. A DRAFT is never
   // "current" by this test — it is not in the library at all, so every save of
-  // one is a first commit (the draft branch in confirmSave), never an update.
-  const saveIsCurrent = $derived(!app.draftMode && saveTrimmed === app.projectName());
+  // one is a FIRST SAVE, never an update. `app.isDraft()`, not `app.draftMode`:
+  // the unification means a FRESH never-saved document is a draft too, and
+  // testing the import marker alone would treat a new document called "Untitled"
+  // as an update of a library project that does not exist.
+  const saveIsCurrent = $derived(!app.isDraft() && saveTrimmed === app.projectName());
   const saveWouldClobber = $derived(saveNameExists && !saveIsCurrent);
   async function confirmSave() {
     const name = saveTrimmed;
@@ -218,21 +227,86 @@
     saveError = null;
     try {
       // THREE CASES, and the draft one is why this is not a two-way branch:
-      //  - a DRAFT is not in the library, so saving it COMMITS the working copy
-      //    (staged assets copied into the new project) — see commitDraft.
+      //  - a DRAFT is not in the library, so saving it is its FIRST save. An
+      //    IMPORTED draft has staged assets to carry, so it runs commitDraft; a
+      //    FRESH document has none, so a plain write is the whole job (running
+      //    commitDraft on it would throw — it requires draftMode).
       //  - the current name is an ordinary update of this project.
       //  - a DIFFERENT name FORKS (copies the assets, original untouched).
       if (app.draftMode) await app.commitDraft(name);
+      else if (app.isDraft()) await app.saveToServer(name === app.projectName() ? name : renamedTo(name));
       else if (saveIsCurrent) await app.saveToServer(name);
       else await app.saveProjectAsFork(name);
       saveModalVisible = false;
+      return true;
     } catch (e) {
       saveError = String(e.message ?? e);
-      console.error("Save Project to Server failed:", e);
+      console.error("Save Project As failed:", e);
+      return false;
     } finally {
       saveBusy = false;
     }
   }
+
+  /** Command. Stamp `name` onto the working copy's meta.name and return it — the
+   *  fresh-draft first save. A field write, not a commit: like rename and Save-As,
+   *  naming is a storage operation and must not enter the document undo stack. */
+  function renamedTo(name) {
+    app.doc = { ...app.doc, meta: { ...app.doc.meta, name } };
+    return name;
+  }
+
+  // ── THE UNSAVED-WORK GUARD's dialog ─────────────────────────────────────────
+  // app.guardedOpen raises this and AWAITS one of three strings. Dismissing it any
+  // other way (Escape, click-away) means CANCEL, which is the safe answer: the
+  // open does not happen and nothing is lost. That mapping is why the promise is
+  // settled from an $effect on `guardVisible` rather than from the buttons alone —
+  // a dismissal the buttons never see must still answer, or the open hangs forever
+  // holding a modal-shaped lock on the app.
+  let guardVisible = $state(false);
+  let guardRequest = $state(null);
+  let guardResolve = null;
+  let guardAnswer = null;
+  app.confirmUnsavedWork = (request) => {
+    guardRequest = request;
+    guardAnswer = null;
+    guardVisible = true;
+    return new Promise((resolve) => (guardResolve = resolve));
+  };
+  function answerGuard(answer) {
+    guardAnswer = answer;
+    guardVisible = false; // the $effect below delivers it
+  }
+  $effect(() => {
+    if (!guardVisible && guardResolve) {
+      const resolve = guardResolve;
+      const answer = guardAnswer ?? "cancel"; // dismissed without choosing = Cancel
+      guardResolve = null;
+      guardAnswer = null;
+      resolve(answer);
+    }
+  });
+
+  // THE GUARD'S "Save" BUTTON needs a save it can AWAIT to a verdict, which
+  // showSaveModal cannot give: that hook resolves as soon as the dialog is UP, and
+  // the guard would read that as "saved" and then destroy the document. So this
+  // opens the modal and resolves only when the user has either saved (true) or
+  // dismissed it (false) — see app.saveForGuard.
+  let saveResolve = null;
+  app.saveAsAndWait = async () => {
+    await app.showSaveModal();
+    return new Promise((resolve) => (saveResolve = resolve));
+  };
+  // Settle a pending guard promise whenever the modal closes, whichever way it
+  // went. `saveModalVisible` going false is the ONE event both outcomes share, so
+  // a dismissal (Escape, click-away, Cancel) cannot leave the guard hanging.
+  $effect(() => {
+    if (!saveModalVisible && saveResolve) {
+      const resolve = saveResolve;
+      saveResolve = null;
+      resolve(!app.isDraft());
+    }
+  });
 
   // Rename modal (bug: double-clicking the top-left title did nothing). RENAMING
   // MOVES THE PROJECT — app.renameProject relativizes the document's own absolute
@@ -992,7 +1066,10 @@
     //   placement (a mode with a visible cursor, not a dialog).
     { id: "save-file", title: "Export Document as .powerrp.json (no assets)", icon: "mdi:file-export-outline", run: (a) => a.saveFile() },
     { id: "load-file", title: "Import Document from .powerrp.json…", icon: "mdi:file-import-outline", run: (a) => a.loadFile() },
-    { id: "clear-doc", title: "New Empty Document (replaces this one; undoable)", icon: "mdi:broom", run: (a) => a.clearDoc() },
+    // newDocument(), not clearDoc(): the command is the USER GESTURE, so it asks
+    // about unsaved work first. The title no longer promises undo as the only
+    // safety net — the guard is now the first one, and undo the second.
+    { id: "clear-doc", title: "New Empty Document (replaces this one)", icon: "mdi:broom", run: (a) => a.newDocument() },
     // Project server (manifest Round 12: projects are FOLDERS on the server;
     // the leaving format is a .zip of the folder). Save opens a NAME chooser
     // with conflict/overwrite protection (a project of that name already on the
@@ -1007,7 +1084,41 @@
     // titles say so (user ruling 2026-07-30: "save to browser and load from
     // browser" — the yellow buttons + tooltip in Toolbar.svelte are the same
     // ruling). Storage mode is a boot constant, so a load-time ternary is honest.
-    { id: "save-to-server", title: isStatic() ? "Save Project to Browser…" : "Save Project to Server…", icon: isStatic() ? "mdi:database-arrow-up-outline" : "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
+    // TWO SAVE COMMANDS, in BOTH storage modes (user ruling: "There should be a
+    // quick-save button. Make the distinction between Save and Save-As for every
+    // modality, including server and browser side."):
+    //
+    //   save-project     QUICK SAVE — write straight back to the library entry
+    //                    this document came from. No modal, no name, no collision
+    //                    check, because the entry already exists and this IS it.
+    //                    GATED to saved projects: on an unsaved draft there is
+    //                    nothing to write INTO, and the ruling is explicit that
+    //                    such a document must not be saveable without ceremony
+    //                    ("Untitled is a special project — I shouldn't be allowed
+    //                    to just save it; it needs to Save-As-New").
+    //   save-to-server   SAVE AS… — the naming + collision flow, always available.
+    //                    For a draft it is the FIRST save, which commits the
+    //                    staged assets through the fork-copy machinery.
+    //
+    // THE ID `save-to-server` IS KEPT for Save As even though its title no longer
+    // says "to Server": it is referenced by the Toolbar group literal, the
+    // toolbar-surfacing test and users' muscle memory in the palette, and renaming
+    // it would be a cross-file churn that buys nothing. The NEW command takes the
+    // new id.
+    // CMD+S — the dispatcher the keybinding is bound to. It runs whichever of the
+    // two saves the current state calls for, so the key is safe to press blind: it
+    // never opens a dialog for a saved project, and never silently mints a library
+    // entry for a draft.
+    //
+    // THE RULE IS `draftKeys.saveCommandFor`, PURE AND DOCTESTED, and this maps
+    // its answer to the two ids in use here. It returns the CONCEPT ids
+    // ("save-project" / "save-project-as"); Save As is registered under the
+    // historical id `save-to-server` (see the note on that entry), so this one
+    // line is where the concept meets the registry — deliberately the ONLY place,
+    // rather than teaching the pure helper about a legacy id.
+    { id: "save-dispatch", title: "Save", icon: "mdi:content-save-outline", aliases: ["cmd s", "ctrl s"], help: "Saves. On a project that is already in the library this writes straight back to it; on an unsaved draft it opens Save As… to name it first.", run: (a) => a.runCommand(saveCommandFor(a.isDraft()) === "save-project" ? "save-project" : "save-to-server") },
+    { id: "save-project", title: "Save Project", icon: "mdi:content-save-outline", aliases: ["quick save", "save now", "write"], when: (a) => !a.isDraft(), requires: SAVE_NEEDS_SAVE_AS, help: `Writes this project straight back to the ${isStatic() ? "browser's" : "server's"} copy it came from — no dialog, no questions. Unavailable until the project has been saved once under a name.`, run: (a) => a.quickSave() },
+    { id: "save-to-server", title: isStatic() ? "Save Project As… (to Browser)" : "Save Project As… (to Server)", icon: isStatic() ? "mdi:database-arrow-up-outline" : "mdi:cloud-upload-outline", aliases: ["save as", "save a copy", "name this", "first save"], help: "Names the project and saves it, warning first if that name is taken. For an unsaved draft — a new document, or one opened from a .zip or a link — this is the FIRST save, and it is what puts it in the library.", run: (a) => a.saveProjectAs() },
     { id: "open-project", title: isStatic() ? "Open Project from Browser…" : "Open Project from Server…", icon: isStatic() ? "mdi:database-arrow-down-outline" : "mdi:folder-network-outline", run: (a) => a.openProject() },
     // Open a .zip over the NETWORK — the receiving half of a share link, and the
     // same pipeline "?zip=<url>" boots with. It opens an UNSAVED DRAFT: nothing
@@ -2081,7 +2192,7 @@
   </Modal>
   <!-- Save Project to Server: a NAME chooser with conflict/overwrite protection.
        Shares the one name model (doc.meta.name) with the title and Open. -->
-  <Modal bind:open={saveModalVisible} title="Save Project to Server" size="compact">
+  <Modal bind:open={saveModalVisible} title="Save Project As" size="compact">
     <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmSave(); }}>
       <label class="name-modal-field">
         <span class="name-modal-label">Project name</span>
@@ -2103,11 +2214,14 @@
         <div class="name-modal-warning">{saveError}</div>
       {:else if saveWouldClobber}
         <div class="name-modal-warning">A different project named “{saveTrimmed}” already exists — saving will OVERWRITE it.</div>
-      {:else if app.draftMode && saveTrimmed}
-        <!-- THE COMMITMENT POINT. Until this save runs, the opened .zip/link is a
-             working copy and the library holds nothing — so the note says what is
-             about to change rather than describing a copy of something existing. -->
-        <div class="name-modal-note">Saves this unsaved draft as a new project “{saveTrimmed}”, assets included. This is the first time it enters your {isStatic() ? "browser" : "server"}.</div>
+      {:else if app.isDraft() && saveTrimmed}
+        <!-- THE COMMITMENT POINT. Until this save runs, the working copy — a new
+             document, or an opened .zip/link — is not in the library at all, so
+             the note says what is about to CHANGE rather than describing a copy of
+             something existing. `isDraft()`, not `draftMode`: the unification
+             means a fresh never-saved document reaches this branch too, and it is
+             equally true of it that this is its first entry into the library. -->
+        <div class="name-modal-note">Saves this unsaved draft as a new project “{saveTrimmed}”{app.draftMode ? ", assets included" : ""}. This is the first time it enters your {isStatic() ? "browser" : "server"}.</div>
       {:else if saveIsCurrent}
         <div class="name-modal-note">Updates the existing project “{saveTrimmed}”.</div>
       {:else if saveTrimmed}
@@ -2119,10 +2233,32 @@
       <div class="name-modal-actions">
         <button type="button" class="btn" onclick={() => (saveModalVisible = false)}>Cancel</button>
         <button type="submit" class="btn" class:danger={saveWouldClobber} disabled={!saveTrimmed || saveBusy}>
-          {saveWouldClobber ? "Overwrite" : saveIsCurrent ? "Save" : "Save a Copy"}
+          {saveWouldClobber ? "Overwrite" : saveIsCurrent ? "Save" : app.isDraft() ? "Save" : "Save a Copy"}
         </button>
       </div>
     </form>
+  </Modal>
+  <!-- THE UNSAVED-WORK GUARD (user: "perhaps it should ask me — would you like to
+       save this current presentation before opening a new one? Same thing if I
+       drag a zip into it"). ONE dialog for EVERY working-copy replacement — a zip
+       drop, Open from URL, ?zip=/?repo= at boot, Open Project, New Document —
+       because they all route through app.guardedOpen, which raises this.
+       Three real answers, and Cancel abandons the open entirely. -->
+  <Modal bind:open={guardVisible} title="Save your work first?" size="compact">
+    <div class="name-modal">
+      <div class="name-modal-note">
+        {#if guardRequest?.draft}
+          “{guardRequest.name}” has never been saved, so opening {guardRequest.what} would lose all of it.
+        {:else}
+          “{guardRequest?.name}” has unsaved changes that opening {guardRequest?.what} would lose.
+        {/if}
+      </div>
+      <div class="name-modal-actions">
+        <button type="button" class="btn" onclick={() => answerGuard("cancel")}>Cancel</button>
+        <button type="button" class="btn danger" onclick={() => answerGuard("discard")}>Discard</button>
+        <button type="button" class="btn" onclick={() => answerGuard("save")}>{guardRequest?.draft ? "Save As…" : "Save"}</button>
+      </div>
+    </div>
   </Modal>
   <!-- Rename Project: MOVES the project — the folder (or the IndexedDB keys) is
        renamed and doc.meta.name FOLLOWS it, so the assets travel and every

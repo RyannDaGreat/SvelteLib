@@ -71,6 +71,36 @@
  *     assets are bytes. A repo slug is validated against GitHub's own name
  *     grammar BEFORE any request, so a crafted `?repo=` cannot address anything
  *     but a repository.
+ *
+ * ====== THE GITHUB EXEMPTION FROM THE SAVE / SAVE-AS RULING ================
+ *
+ * THE RULING (user, verbatim): "GitHub is different — there you can just push and
+ * change." Everywhere ELSE in the app a working copy that is not in the library
+ * must go through Save As… before it can be saved (draftKeys.isUnsavedDraft gates
+ * the quick Save, and web/App.svelte's `save-project` command declares that gate).
+ * SAVE-TO-GITHUB IS EXEMPT, and `saveProjectToRepo` below already implements the
+ * exempt shape — this note exists so a later author wiring it to a button does not
+ * "fix" it into consistency with the local rule:
+ *
+ *   · A COMMIT IS A QUICK SAVE. Pushing to a repo you already have a target for
+ *     needs no naming ceremony, because git's own model supplies what Save-As
+ *     supplies locally: the destination is already named, the previous state is
+ *     not destroyed (it is a parent commit), and a mistake is recoverable from
+ *     the history. The local library has none of those properties, which is
+ *     exactly why it needs the ceremony and this does not.
+ *   · THE REPO NAME IS ASKED FOR ONCE — when there is no target repo yet. That is
+ *     the `name` argument, and the create-if-absent branch below is where "no
+ *     target yet" is discovered. With a target in hand, every later push is
+ *     `PUT` + sha, no prompt.
+ *   · SO: a repo-name modal belongs on the FIRST push and must NOT reappear on
+ *     subsequent ones, and the local isDraft() gate must NOT be applied to a
+ *     Save-to-GitHub command. An unsaved local draft is perfectly pushable — that
+ *     is the point of "you can just push and change".
+ *
+ * VERIFIED, not assumed: as of this writing `saveProjectToRepo` is a LIBRARY
+ * FUNCTION WITH NO UI CONSUMER (grep: only main.js's ?repo= LOAD path imports from
+ * this module). There is therefore no redundant prompt to remove today, and
+ * nothing was adjusted. The obligation lands on whoever wires the button.
  */
 
 /** GitHub's REST host. The ONE origin this module talks to for metadata, named

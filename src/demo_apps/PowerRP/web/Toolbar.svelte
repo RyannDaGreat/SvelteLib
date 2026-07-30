@@ -33,6 +33,9 @@
   import ShapePicker from "./ShapePicker.svelte";
   import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
   import { isStatic } from "./storageMode.js";
+  // The save indicator's sentence — pure and doctested, so the four save states
+  // are executed by the bare-node gate rather than read off a screenshot.
+  import { saveText } from "./draftKeys.js";
 
   // BROWSER-STORAGE surfacing (user ruling 2026-07-30, replacing the top-left
   // chip that could overlap the project name): in static mode the save/load
@@ -77,44 +80,33 @@
     // user-specified order rather than reordering it): the two are the same verb
     // over different transports — open from storage, open from the network — so
     // they belong adjacent, before the export/clear pair.
-    ["save-to-server", "open-project", "open-project-url", "download-zip", "clear-doc"],
+    //
+    // QUICK SAVE TAKES THE PRIMARY SPOT and Save As… sits beside it, per the user
+    // ruling that there should be a quick-save button. Also an extension of the given
+    // order, not a reorder: the file-ops group still starts with saving and the
+    // rest is untouched — the group simply gained the gesture it was missing, in
+    // front of the one it already had. Quick-save first because it is the one
+    // pressed constantly; Save As… is the occasional ceremony, and it renders
+    // DISABLED-with-a-reason rather than hidden while a draft is open, so the
+    // distinction is learnable rather than mysterious.
+    ["save-project", "save-to-server", "open-project", "open-project-url", "download-zip", "clear-doc"],
     ["render-center"],
     ["reset-view", "present"],
   ];
 
-  /**
-   * Pure function. The hover sentence for a save state — the ONE place each of
-   * the three cases is put into words.
-   *
-   * "Saved" carries the TIME when there is one, because "saved" alone answers a
-   * narrower question than the user asked: after a long editing session the
-   * useful fact is not that a save happened but when. A never-saved document has
-   * no time to report and says so plainly rather than inventing one.
-   *
-   * @param {"saving"|"saved"|"unsaved"} state From app.saveState()
-   * @param {number|null} at Epoch ms of the last successful save, or null
-   * @returns {string}
-   *
-   * @example saveText("saving", null)
-   * 'Saving…'
-   * @example saveText("unsaved", null)
-   * 'Unsaved changes — not yet saved to the server'
-   * @example // saved, with a time — e.g. "Saved to server at 14:32:05"
-   * saveText("saved", 1750000000000).startsWith("Saved to server at ")
-   * true
-   */
-  function saveText(state, at) {
-    if (state === "saving") return "Saving…";
-    if (state === "unsaved") return `Unsaved changes — not yet saved to the ${STORAGE_NOUN}`;
-    return at ? `Saved to ${STORAGE_NOUN} at ${new Date(at).toLocaleTimeString()}` : `Saved to ${STORAGE_NOUN}`;
-  }
-
   // The indicator's state and its sentence, derived together from ONE read of
   // app.saveState() so the dot and the hover text can never describe different
   // states (see the markup's note).
+  //
+  // THE SENTENCE MOVED TO draftKeys.saveText (pure, doctested, bare-node), because
+  // it now has to tell apart two things a component test cannot easily pose: an
+  // UNSAVED DRAFT (nothing of it is in the library, so it has no "changes" — it
+  // has no copy at all) and a SAVED PROJECT WITH UNSAVED CHANGES. The dot is a
+  // ring in both cases, so the sentence is the only place the difference can be
+  // told, which makes it worth executing in the gate rather than eyeballing.
   let saveIndicator = $derived.by(() => {
     const state = app.saveState();
-    return { state, text: saveText(state, app.lastSavedAt) };
+    return { state, text: saveText(state, app.lastSavedAt, app.isDraft(), STORAGE_NOUN) };
   });
 
   /**

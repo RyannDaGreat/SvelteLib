@@ -421,6 +421,17 @@ export const dialogContext = (c) => c.mode === "edit" && c.dialogOpen;
  */
 export const KEYBINDING_DEFAULTS = [
   { command: "toggle-palette", keys: ["Cmd", "Shift", "P"], when: "editMode" },
+  // THE UNIVERSAL SAVE BINDING, bound to a DISPATCHER rather than to either save
+  // command, because Cmd+S means two different things depending on one piece of
+  // state: quick-save for a project that is in the library, Save As… for a draft
+  // that is not (draftKeys.saveCommandFor is the rule, doctested in bare node).
+  //
+  // WHY NOT TWO ENTRIES with `when` gates. Two bindings on one chord is a conflict
+  // the registry would have to arbitrate at dispatch time — and it is also a lie
+  // to the HintBar, which would have to show both or pick one. One entry, one
+  // shown key, one command that decides; the decision lives in a pure function a
+  // test can execute rather than in the keymap.
+  { command: "save-dispatch", keys: ["Cmd", "S"], when: "editMode" },
   { command: "undo", keys: ["Ctrl", "Z"], when: "editMode" },
   { command: "redo", keys: ["Ctrl", "Shift", "Z"], when: "editMode" },
   { command: "delete-item", keys: ["Backspace"], when: "editSelection" },
@@ -492,6 +503,11 @@ export const KEYBINDING_DEFAULTS = [
  * a missing one, so this map cannot drift out of KEYBINDING_DEFAULTS). */
 export const KEYBINDING_LABELS = {
   "toggle-palette": "Palette", undo: "Undo", redo: "Redo",
+  // ONE LABEL for the one chord, even though it runs one of two commands: the
+  // HintBar shows what the key DOES, and both branches are "save" — which of them
+  // fires is a consequence of state the user can already read off the save
+  // indicator, not a second thing to memorize.
+  "save-dispatch": "Save",
   "delete-item": "Delete", "copy-item": "Copy", paste: "Paste",
   duplicate: "Duplicate",
   "purge-item": "Purge",

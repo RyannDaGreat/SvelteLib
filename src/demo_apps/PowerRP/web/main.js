@@ -37,13 +37,21 @@ async function openRepoParamProject() {
     throw new Error("?repo=: the app never mounted");
   })();
   try {
-    const { root, doc, assets } = await fetchProjectFromRepo(slug, {
-      onProgress: ({ message }) => console.info(`PowerRP ?repo=: ${message}`),
-    });
-    const name = (root || slug.split("/").pop() || "Imported Project").trim();
-    const members = { [`${name}/doc.json`]: strToU8(JSON.stringify(doc)) };
-    for (const a of assets) members[`${name}/assets/${a.name}`] = a.bytes;
-    await app.openDraftFromZipBytes(zipSync(members), name, "");
+    // GUARDED, LIKE EVERY OTHER OPEN (user ruling: "Can opening a link break my
+    // project?"). A boot param is the case the ruling literally names — the user
+    // has live work and a URL arrives — so it waits for Save / Discard / Cancel
+    // instead of overwriting, and Cancel means the repo simply does not load. The
+    // gate is asked BEFORE the fetch so a declined open costs no network.
+    const opened = await app.guardedOpen(async () => {
+      const { root, doc, assets } = await fetchProjectFromRepo(slug, {
+        onProgress: ({ message }) => console.info(`PowerRP ?repo=: ${message}`),
+      });
+      const name = (root || slug.split("/").pop() || "Imported Project").trim();
+      const members = { [`${name}/doc.json`]: strToU8(JSON.stringify(doc)) };
+      for (const a of assets) members[`${name}/assets/${a.name}`] = a.bytes;
+      await app.openDraftFromZipBytes(zipSync(members), name, "");
+    }, `the GitHub project ${slug}`);
+    if (!opened) console.info(`PowerRP ?repo=${slug}: cancelled — kept the project that was already open.`);
   } catch (e) {
     console.error(`PowerRP: could not open ?repo=${slug} — ${e?.message ?? e}`);
     throw e;
