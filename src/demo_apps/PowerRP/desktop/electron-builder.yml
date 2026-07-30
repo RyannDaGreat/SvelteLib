@@ -1,0 +1,23 @@
+# PowerRP desktop shell — electron-builder config (v1: unsigned, this-machine).
+# asar is OFF because the shell's whole job is spawning real on-disk processes
+# (bash → python via uv → node/vite); nothing here benefits from an archive.
+appId: org.ryancentral.powerrp
+productName: PowerRP
+directories:
+  output: dist
+files:
+  - main.js
+  - package.json
+extraResources:
+  # v1 seam: the dump's absolute path, baked by write_repo_path.js. The v2 CI
+  # build replaces this with the repo itself vendored under Resources/.
+  - from: dist-resources/repo-path.txt
+    to: repo-path.txt
+asar: false
+mac:
+  target:
+    - dir
+    - dmg
+  # Unsigned on purpose (v1, local). Shipping to others = Developer ID +
+  # notarization via CI secrets — see .github/workflows/release-app.yml.
+  identity: null

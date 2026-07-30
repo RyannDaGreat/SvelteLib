@@ -382,10 +382,14 @@
      from --a-selection like the text/latex editors. The crossfade MUST equal
      CodeEditController's CROSSFADE_MS (JS unmount timer ↔ CSS opacity). */
   --a-code-edit-crossfade: 120ms;
-  --a-code-edit-bg: var(--a-panel-bg);
+  /* Chained to the panel-family glass tint (same value it had: --a-panel-bg is
+     what --a-glass-bg-panel defaults to) so the code-edit panel joins the other
+     floating surfaces when a glass theme pulls that token, instead of being the
+     one opaque rectangle left floating among seven translucent ones. */
+  --a-code-edit-bg: var(--a-glass-bg-panel);
   --a-code-edit-fg: var(--fg);
   --a-code-edit-border: var(--border);
-  --a-code-edit-radius: var(--radius);
+  --a-code-edit-radius: var(--a-radius-floating); /* it IS a floating panel */
   --a-code-edit-shadow: var(--a-palette-shadow);
   --a-code-edit-font: var(--a-mono);
   --a-code-edit-font-size: var(--a-font-md);
@@ -439,6 +443,91 @@
 
   /* Scrollbars */
   --a-scrollbar-w: 8px;
+
+  /* ── MATERIAL LEVERS: what a THEME may change BESIDES colour ────────────────
+     A theme is a `:root[data-theme=…]` override block, so anything expressed as
+     a token here is themeable. Until now every token in that vocabulary was a
+     COLOUR, which made "theme" and "palette" the same word and put shape and
+     typography out of reach. The user's ruling: "ideally color themes are just
+     CSS overrides so it should be able to override more than color — you could
+     even do a Futura font one".
+     EVERY default below reproduces today's Graphite exactly. That is the
+     contract of this section: introducing the lever must be a NO-OP until a
+     theme pulls it, and the pairs of before/after screenshots in the round's
+     verification are the proof rather than the intention. */
+
+  /* RADIUS, in three levers rather than one, because the app's corner policy is
+     already three different decisions and a single blanket radius would erase
+     the distinction the header states ("CORNERS: square by default... Rounding
+     is reserved for the few floating surfaces"):
+       CONTROL — fields, buttons, tabs, swatches: the app-chrome rule, SQUARE.
+                 A theme that rounds this is making a whole-app statement.
+       PANEL   — docked chrome (panes, headers, docked toolbars): also square,
+                 and separable from controls so a theme can soften the furniture
+                 without rounding every input inside it.
+       FLOATING— the palette, popovers, menus, floating toolbars: the ONLY family
+                 that is already rounded today, at the 4px --radius cap.
+     Named --a-radius-floating rather than --a-radius-palette (the brief's
+     working name) because the palette is one of EIGHT surfaces in that family;
+     naming the lever after one consumer invites the next one to grow a fourth
+     token instead of joining this one. */
+  --a-radius-control: 0; /* square — the app-chrome rule */
+  --a-radius-panel: 0; /* square — docked furniture matches its controls */
+  --a-radius-floating: var(--radius); /* today's 4px cap, the one rounded family */
+
+  /* THE UI FONT, as a lever. Default is the stack `theme.css` sets on body and
+     the `button/input/select/textarea { font-family: inherit }` rule above
+     propagates into form controls — restated here rather than referenced so a
+     theme overriding this token reaches BOTH paths from one place. --a-mono is
+     deliberately NOT chained to it: equations and coordinates read as code in
+     every theme, including a typographic one. */
+  --a-ui-font: system-ui, -apple-system, sans-serif;
+
+  /* GLASS, for FLOATING SURFACES ONLY — the SEVEN that both carry an elevation
+     shadow and actually float over something: the command palette, the canvas
+     toolbar, the shape picker, the two text-format bars, the font-picker pop,
+     and the code-edit panel. The equation-suggest menu (.eqs-menu) is the
+     deliberate omission: it is drawn flush under the field it completes and
+     reads as that field continuing, so blurring it would make a control look
+     like a surface. Docked chrome is excluded for the opposite reason — a
+     blurred pane edge over another pane blurs nothing but flat colour, which
+     spends a compositor layer to render a tint.
+     VERIFIED BEFORE ADOPTION, because the fallback would have been a different
+     design and not a smaller one: `backdrop-filter: blur()` genuinely composites
+     over this app's WebGL2 Skia canvas. Measured by parking a translucent panel
+     over an image-heavy slide and screenshotting it with blur on and off — the
+     art behind it is smeared in one and crisply legible in the other. It holds
+     even under SwiftShader's software GL, so the effect is not GPU-conditional
+     and needs no capability guard.
+     Default = TODAY'S OPAQUE LOOK: no blur, a fully opaque --bg, and the
+     existing shadow. A glass theme pulls all three together; a theme that pulls
+     only the tint gets tint. */
+  --a-glass-blur: none; /* a backdrop-filter value; `none` costs no layer */
+  /* TWO surface tints, not one, because the eight floating surfaces do not all
+     paint the same colour today: the command palette paints --bg (it is a
+     document-level surface) while the six popovers and toolbars paint
+     --a-panel-bg (they are pane-level furniture). Collapsing them to one token
+     would have RECOLOURED six surfaces the moment the token was introduced,
+     which is exactly the no-op contract this section promises. Each keeps its
+     own default and a theme still has one place per family to pull. */
+  --a-glass-bg: var(--bg); /* the palette's surface; opaque by default */
+  --a-glass-bg-panel: var(--a-panel-bg); /* the popovers'/toolbars' surface */
+  /* The elevation shadow AND the lit top rim travel together in ONE token,
+     because they are one physical claim: a pane lifted off the background
+     catches light on its upper edge and casts underneath. Spelling the rim as
+     the first layer of the same box-shadow (an `inset 0 1px 0`) rather than a
+     border keeps the surface's box model untouched — a border would move every
+     floating surface's content by a pixel the moment a theme lit the rim, and
+     "the lever is a no-op until pulled" has to hold for GEOMETRY too, not just
+     colour. Inert by default: the rim layer is `transparent`. */
+  --a-glass-shadow: inset 0 var(--a-hairline) 0 var(--a-glass-rim), var(--a-palette-shadow);
+  /* The hairline a glass pane catches on its top edge — a lit rim, the one cue
+     that reads "pane made of material" rather than "pane made of paint".
+     `transparent` by default, so the shadow layer above that consumes it draws
+     nothing. Declared after its consumer deliberately: custom properties resolve
+     at USE time, not at declaration time, so the order is free and grouping the
+     rim with the prose that explains it beats grouping it with its consumer. */
+  --a-glass-rim: transparent;
 }
 
 :root[data-theme="light"] {
@@ -947,6 +1036,155 @@
   --a-palette-shadow: 0 8px 24px rgba(40, 28, 14, 0.45); /* hard, short noon shadow */
 }
 
+/* ── MATERIAL SET II: the themes that pull the non-colour levers ─────────────
+   The three below are the first themes that change SHAPE and TYPE, not just
+   hue. Each one exists to justify exactly one lever; a theme that pulled all of
+   them at once would prove nothing about any of them and would read as a demo
+   rather than a place to work.
+
+   WHAT WAS DELIBERATELY NOT BUILT — an "aqua" watery theme, which the brief
+   offered conditionally ("not unless you think you can pull it off"). Declining
+   it, with the reasoning, because the reasoning is the useful part:
+   authentic Aqua IS gradient-on-control — the lozenge button with its specular
+   highlight, the pinstriped window, the candy scrollbar. But the same brief
+   rules gradients on controls out ("never on controls, never clashing"), and it
+   is right to: this app's controls are 26px-tall field rows packed forty to a
+   panel, and a gloss on each one turns the Inspector into a wall of glare that
+   is genuinely harder to read. Strip the gradients from Aqua and what remains
+   is a blue theme, and the set already has Nord, Tokyo Night and Blueprint.
+   So the choice was between a bad Aqua and a redundant one. Shipping neither,
+   and spending the effort on making Nocturne's glass actually good, is the
+   better trade — the user's own standard was "shipping fewer, better themes". */
+
+/* Nocturne — THE GLASS THEME, and the showcase for --a-glass-*. A deep blue
+   night in which the floating surfaces are the only things made of MATERIAL:
+   the command palette, the canvas toolbar and the popovers are translucent and
+   blurred, they round their corners, and they catch a lit hairline on their top
+   edge. Everything docked stays flat, square and opaque.
+   THAT SPLIT IS THE ENTIRE DESIGN, and it is the user's "only add them in very
+   deliberate places that make sense" taken literally: rounding and blur are how
+   this theme says "this thing is floating ABOVE the app", so spending them on
+   chrome that is welded to the window would spend the only signal it has. A
+   docked pane that blurs has nothing behind it but another flat pane, so it
+   pays for a compositor layer to tint itself — cost with no information.
+   No gradients anywhere. The elevation reads from the blur, the rim and the
+   shadow, which are three cues for one physical claim and quite enough; a
+   gradient on top would be a fourth saying the same thing less honestly.
+   The palette is near-monochrome blue-grey with ONE warm token (amber
+   keyframes) so the Inspector's diamonds stay findable against all that cool. */
+:root[data-theme="nocturne"] {
+  --bg: #0e1117;
+  --fg: #e4e8f0;
+  --fg-dim: #98a3b8;
+  --accent: #7aa2f7;
+  --border: rgba(180, 200, 235, 0.14);
+  --control-bg: #1c222d;
+  --a-panel-bg: #151a23;
+  --a-canvas-bg: #080a0e; /* the deepest surface — panels float over THIS */
+  --a-hover-bg: rgba(160, 190, 245, 0.13);
+  --a-selection: #7aa2f7;
+  --a-guide: #f7768e;
+  --a-keyed: #e0af68; /* the one warm mark in a cool theme — diamonds stay findable */
+  --a-anchor: #9aa5ce;
+  --a-modifier: #bb9af7;
+  --a-scrollbar: rgba(180, 200, 235, 0.2);
+  --a-scrollbar-hover: rgba(180, 200, 235, 0.36);
+  --a-split-handle: #2f3a4d;
+  --a-split-handle-hover: #7aa2f7;
+  --a-palette-shadow: 0 16px 48px rgba(0, 0, 0, 0.66); /* deeper throw: these panes are LIFTED */
+
+  /* THE LEVERS. Rounding is scoped to the floating family and nothing else —
+     --a-radius-control and --a-radius-panel stay at their square defaults, so
+     every field, button and docked pane is exactly as square as in Graphite. */
+  --a-radius-floating: 10px; /* generous enough to read as a pane, not a hint */
+  /* Translucent tints. Alpha is high (0.72/0.78) on purpose: the blur behind it
+     is doing the work, and a thinner tint lets slide art dominate a surface the
+     user is trying to READ. The panel family is slightly more opaque than the
+     palette because popovers sit over busy canvas more often. */
+  --a-glass-bg: rgba(14, 17, 23, 0.72);
+  --a-glass-bg-panel: rgba(21, 26, 35, 0.78);
+  --a-glass-blur: blur(18px) saturate(140%);
+  /* Saturate, not just blur, because a plain blur of colourful art averages
+     toward grey and the pane ends up looking dirty rather than glassy. */
+  --a-glass-rim: rgba(200, 220, 255, 0.16);
+}
+
+/* Futura Dark — TYPOGRAPHY-LED, and the proof that --a-ui-font is a real lever.
+   The type IS the theme: a geometric sans (Futura where the OS has it, Jost and
+   Century Gothic as the geometric fallbacks) over a near-monochrome palette, so
+   nothing competes with the letterforms. ONE accent — a warm orange-red — used
+   for selection and accent alike, because a geometric-modernist palette earns
+   its energy from a single deliberate colour against greys, not from a spread.
+   Keyframe diamonds are near-white rather than the usual amber: in a
+   monochrome theme the amber was the only warm thing besides the accent and the
+   two fought; bone-white diamonds read as punched holes in the sheet instead.
+   NO rounding and NO glass. Geometric modernism is circles-and-squares, not
+   softened rectangles, and the app's square chrome is already that. Pulling the
+   radius lever here would have been decoration for its own sake — the exact
+   thing the brief warns against.
+   FONT AVAILABILITY IS EXPLICIT, not hopeful: Futura ships on macOS and on
+   basically nothing else. The stack degrades through Jost (the free geometric
+   revival, if a user has installed it), then Century Gothic (the common Windows
+   geometric), then the generic sans. On a headless Linux CI box this renders as
+   whatever the fontconfig default is — which is why the screenshots of this
+   theme were taken on-device, and why the theme's identity does not depend on
+   the font ALONE: the monochrome palette and the single accent carry it even
+   when the geometric face is unavailable. */
+:root[data-theme="futura-dark"] {
+  --bg: #141414;
+  --fg: #f0efec;
+  --fg-dim: #9a9892;
+  --accent: #d8543a;
+  --border: rgba(240, 239, 236, 0.13);
+  --control-bg: #242424;
+  --a-panel-bg: #1c1c1c;
+  --a-canvas-bg: #0d0d0d;
+  --a-hover-bg: rgba(240, 239, 236, 0.1);
+  --a-selection: #d8543a;
+  --a-guide: #c8a04a;
+  --a-keyed: #e8e6e0; /* bone-white diamonds — see the header on why not amber */
+  --a-anchor: #8f9aa8;
+  --a-modifier: #b0a48c;
+  --a-scrollbar: rgba(240, 239, 236, 0.18);
+  --a-scrollbar-hover: rgba(240, 239, 236, 0.32);
+  --a-split-handle: #3a3a3a;
+  --a-split-handle-hover: #d8543a;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  --a-ui-font: Futura, Jost, "Century Gothic", "Avenir Next", system-ui, sans-serif;
+}
+
+/* Futura Light — the same geometry printed rather than projected. Warm paper
+   greys instead of neutral ones (a pure-grey light theme next to Desert and
+   Sunrise would read as the app's default light theme with a different font),
+   the same single orange-red accent, and INK-dark keyframe diamonds: on paper
+   the punched-hole trick inverts, so the diamonds go nearly black.
+   Deliberately NOT a straight inversion of Futura Dark's values — --a-canvas-bg
+   is a distinctly darker warm grey than the page, so a white slide reads as a
+   sheet ON a desk rather than as more page, the same structural move Desert
+   makes and for the same reason. */
+:root[data-theme="futura-light"] {
+  --bg: #f2f0eb;
+  --fg: #1a1a18;
+  --fg-dim: #5f5d57;
+  --accent: #c1442a;
+  --border: rgba(26, 26, 24, 0.16);
+  --control-bg: #e8e5de;
+  --a-panel-bg: #fbfaf7;
+  --a-canvas-bg: #dedbd3; /* the desk, a clear step under the page */
+  --a-hover-bg: rgba(26, 26, 24, 0.08);
+  --a-selection: #c1442a;
+  --a-guide: #8a6d1f;
+  --a-keyed: #3a3833; /* ink diamonds — the dark-theme bone-white, inverted */
+  --a-anchor: #54606e;
+  --a-modifier: #7a5b3a;
+  --a-scrollbar: rgba(26, 26, 24, 0.22);
+  --a-scrollbar-hover: rgba(26, 26, 24, 0.4);
+  --a-split-handle: #cfcbc2;
+  --a-split-handle-hover: #c1442a;
+  --a-palette-shadow: 0 12px 40px rgba(60, 50, 35, 0.2);
+  --a-ui-font: Futura, Jost, "Century Gothic", "Avenir Next", system-ui, sans-serif;
+}
+
 html,
 body,
 #app {
@@ -954,6 +1192,19 @@ body,
   margin: 0;
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+/* THE UI FONT ENTERS HERE, at the app root, and reaches everything else by
+   inheritance — including form controls, via the `font-family: inherit` rule
+   below that already exists to drag them out of the UA's Arial.
+   On #app rather than body: body's family comes from theme.css (the shared
+   demo stylesheet), and overriding a stylesheet we do not own from a rule that
+   only sometimes wins is how a typographic theme ends up applying to half a
+   screen. #app is ours and contains the whole editor, so one declaration here
+   is unconditional. A theme changes the app's voice by setting --a-ui-font and
+   nothing else. */
+#app {
+  font-family: var(--a-ui-font);
 }
 
 /* Kill the browser's default focus ring app-wide (the giant blue/white
@@ -1144,9 +1395,11 @@ textarea {
   display: grid;
   grid-template-columns: repeat(4, var(--a-shape-tile));
   gap: var(--a-sp-2);
-  background: var(--a-panel-bg);
+  background: var(--a-glass-bg-panel);
   border: var(--a-hairline) solid var(--border);
-  box-shadow: var(--a-palette-shadow);
+  box-shadow: var(--a-glass-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
 }
 
 .shape-tile {
@@ -1343,9 +1596,11 @@ textarea {
   pointer-events: auto;
   margin-bottom: var(--a-canvas-toolbar-gap);
   padding: var(--a-sp-2);
-  background: var(--a-panel-bg);
+  background: var(--a-glass-bg-panel);
   border: var(--a-hairline) solid var(--border);
-  box-shadow: var(--a-palette-shadow);
+  box-shadow: var(--a-glass-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
 }
 
 .canvas-toolbar-below {
@@ -1490,7 +1745,7 @@ textarea {
   color: var(--fg);
   background: var(--control-bg);
   border: var(--a-hairline) solid var(--border);
-  border-radius: 0; /* square — app chrome is square */
+  border-radius: var(--a-radius-control); /* square — app chrome is square */
   font-family: var(--a-mono); /* the equation/coordinate font, same as the Inspector's */
   font-size: var(--a-font-sm);
   font-variant-numeric: tabular-nums;
@@ -1912,6 +2167,8 @@ textarea {
   border: var(--a-hairline) solid var(--a-code-edit-border);
   border-radius: var(--a-code-edit-radius);
   box-shadow: var(--a-code-edit-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
   overflow: hidden;
   opacity: 0;
   transition: opacity var(--a-code-edit-crossfade) ease;
@@ -1993,9 +2250,11 @@ textarea {
   align-items: center;
   gap: var(--a-sp-1);
   padding: var(--a-sp-1) var(--a-sp-2);
-  background: var(--a-panel-bg);
+  background: var(--a-glass-bg-panel);
   border: var(--a-hairline) solid var(--border);
-  box-shadow: var(--a-palette-shadow);
+  box-shadow: var(--a-glass-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
   white-space: nowrap;
 }
 .text-format-sep {
@@ -2061,9 +2320,11 @@ textarea {
   width: var(--a-fp-pop-w);
   display: flex;
   align-items: stretch;
-  background: var(--a-panel-bg);
+  background: var(--a-glass-bg-panel);
   border: var(--a-hairline) solid var(--border);
-  box-shadow: var(--a-palette-shadow);
+  box-shadow: var(--a-glass-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
 }
 /* The list column: a fixed search field above the scrolling option list. Its
    width is the DEFAULT token; the divider drag overrides it inline (px), so it
@@ -2261,9 +2522,11 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: var(--a-sp-2);
-  background: var(--a-panel-bg);
+  background: var(--a-glass-bg-panel);
   border: var(--a-hairline) solid var(--border);
-  box-shadow: var(--a-palette-shadow);
+  box-shadow: var(--a-glass-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
 }
 .text-format-range {
   display: flex;
@@ -3040,7 +3303,7 @@ audio.ae-preview-media {
    `.inspector .inspector-head .dd` chain (0,3,0) wins so the picker is square
    like every other field control. */
 .inspector .inspector-head .dd {
-  --dd-radius: 0;
+  --dd-radius: var(--a-radius-control);
 }
 
 /* Picker rows for items NOT VISIBLE on the current slide (not yet created /
@@ -3539,7 +3802,7 @@ audio.ae-preview-media {
   background: var(--control-bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 0; /* square corners — never inherit a UA/rounded default */
+  border-radius: var(--a-radius-control); /* square corners — never inherit a UA/rounded default */
   font-size: var(--a-font-md);
 }
 
@@ -3596,7 +3859,7 @@ audio.ae-preview-media {
    --dn-wheel-radius chains to --dn-radius, so the grip goes square with it. */
 .inspector .numfield .dn,
 .varspanel .numfield .dn {
-  --dn-radius: 0; /* square, like every other field control */
+  --dn-radius: var(--a-radius-control); /* like every other field control */
 }
 
 .numfield .eq-wrap {
@@ -3627,7 +3890,7 @@ audio.ae-preview-media {
   color: transparent;
   caret-color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 0; /* square — same as every other field control */
+  border-radius: var(--a-radius-control); /* same as every other field control */
   font-family: var(--a-mono);
   font-size: var(--a-font-sm); /* mono runs wide; small keeps expressions readable in the box */
 }
@@ -3833,7 +4096,7 @@ audio.ae-preview-media {
   background: var(--control-bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 0; /* square — same as every other field control */
+  border-radius: var(--a-radius-control); /* same as every other field control */
   font-size: var(--a-font-sm);
   text-align: right; /* a number reads right-aligned, and the ° sits beside it */
 }
@@ -3892,7 +4155,14 @@ audio.ae-preview-media {
   overflow-y: auto;
   background: var(--control-bg);
   border: var(--a-hairline) solid var(--border);
-  border-radius: 0; /* square corners — the field-chrome rule applies here too */
+  /* CONTROL, not floating, despite being a menu — deliberately. It is the
+     equation field's own autocomplete, drawn flush under the input it belongs
+     to (`top: 100%; left: 0; min-width: 100%`), so it reads as the field
+     continuing rather than as a surface floating over it, and it is square
+     today for that reason. Routing it to --a-radius-floating would have rounded
+     it, which this round does not get to decide: introducing a lever must not
+     move a pixel. Noted as the one honest ambiguity in the radius audit. */
+  border-radius: var(--a-radius-control); /* square corners — the field-chrome rule applies here too */
   box-shadow: var(--a-palette-shadow);
 }
 
@@ -3957,7 +4227,7 @@ audio.ae-preview-media {
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 0; /* square — same as every other field control */
+  border-radius: var(--a-radius-control); /* same as every other field control */
   cursor: pointer;
   font-size: var(--a-font-sm);
   overflow: hidden;
@@ -4013,7 +4283,7 @@ audio.ae-preview-media {
   padding: 0 var(--a-sp-2);
   background: var(--control-bg);
   border: 1px solid var(--border);
-  border-radius: 0; /* square — same as every other field control */
+  border-radius: var(--a-radius-control); /* same as every other field control */
 }
 
 /* Swatch button: shows the CURRENT color WITH its alpha over the transparency
@@ -4031,7 +4301,7 @@ audio.ae-preview-media {
      only"). The alpha checkerboard underneath already delimits the chip; the
      :focus-visible ring below is transient, which is fine. */
   border: 0;
-  border-radius: 0;
+  border-radius: var(--a-radius-control);
   cursor: pointer;
   background:
     linear-gradient(var(--cf-swatch, #00000000), var(--cf-swatch, #00000000)),
@@ -4360,7 +4630,7 @@ audio.ae-preview-media {
   background: var(--control-bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 0;
+  border-radius: var(--a-radius-control);
   font-size: var(--a-font-md);
 }
 
@@ -4372,7 +4642,7 @@ audio.ae-preview-media {
 .inspector .transition-type-row .dd,
 .inspector .row .dd {
   width: 100%;
-  --dd-radius: 0;
+  --dd-radius: var(--a-radius-control);
 }
 
 /* A SELECT ROW IS --a-control-h TALL, like every other value control. Dropdown's
@@ -4552,10 +4822,12 @@ audio.ae-preview-media {
   left: 50%;
   transform: translateX(-50%);
   width: var(--a-palette-w);
-  background: var(--bg);
+  background: var(--a-glass-bg);
   border: var(--a-hairline) solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--a-palette-shadow);
+  border-radius: var(--a-radius-floating);
+  box-shadow: var(--a-glass-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
   overflow: hidden;
 }
 
@@ -5181,7 +5453,7 @@ audio.ae-preview-media {
   background: var(--control-bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 0; /* square corners — never inherit a UA/rounded default */
+  border-radius: var(--a-radius-control); /* square corners — never inherit a UA/rounded default */
   font-size: var(--a-font-md);
 }
 .name-modal-warning {
@@ -5312,7 +5584,7 @@ audio.ae-preview-media {
   gap: var(--gp-cell-gap);
   padding: var(--a-sp-2);
   outline: none;
-  border-radius: 0;
+  border-radius: var(--a-radius-control);
 }
 .grid-picker-grid:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--gp-accent) 60%, transparent);
@@ -5326,7 +5598,7 @@ audio.ae-preview-media {
   padding: 0;
   background: transparent;
   border: 1px solid var(--gp-border);
-  border-radius: 0;
+  border-radius: var(--a-radius-control);
   cursor: pointer;
 }
 .grid-picker-cell:hover {
@@ -5518,7 +5790,7 @@ audio.ae-preview-media {
   background: var(--control-bg);
   color: var(--fg);
   border: var(--a-hairline) solid var(--border);
-  border-radius: 0;
+  border-radius: var(--a-radius-control);
   font-size: var(--a-font-md);
 }
 
@@ -5529,7 +5801,7 @@ audio.ae-preview-media {
   padding: 0;
   background: none;
   border: var(--a-hairline) solid var(--border);
-  border-radius: 0; /* square — never inherit the UA's rounded swatch */
+  border-radius: var(--a-radius-control); /* never inherit the UA's rounded swatch */
   cursor: pointer;
 }
 
@@ -5804,7 +6076,7 @@ audio.ae-preview-media {
    0,2,0 targeting `.dn` directly is what clears the library's own scoped
    `.dn.svelte-hash` rule — see the `--dn-radius` comment for the full reasoning. */
 .paint-material-control .dn {
-  --dn-radius: 0; /* square, like every other field control */
+  --dn-radius: var(--a-radius-control); /* like every other field control */
   height: var(--a-control-h);
   box-sizing: border-box;
 }

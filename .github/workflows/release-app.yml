@@ -1,0 +1,58 @@
+# PowerRP desktop app — tag-triggered release build.
+#
+# Cut a release:   git tag v0.1.0 && git push --tags
+# The built .dmg lands on the GitHub Release for that tag;
+# /releases/latest always points at the newest one.
+#
+# ── v1 HONESTY ────────────────────────────────────────────────────────────────
+# The v1 shell (desktop/main.js) launches the dump via run_server.sh and, when
+# packaged, finds the repo through Resources/repo-path.txt. In CI we bake that
+# path to the checked-out workspace, which means THIS artifact still expects a
+# machine with node + uv + the repo present — it is a "latest app for people
+# who cloned the repo" build, and the workflow says so on the release notes.
+# v2 (the shippable bundle) replaces repo-path.txt with the repo vendored into
+# Resources/ plus node/uv/ffmpeg runtimes, and adds Developer ID signing +
+# notarization via repo secrets (APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
+# CSC_LINK / CSC_KEY_PASSWORD). Marked TODO(v2) below where each lands.
+name: release-app
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    permissions:
+      contents: write # create the release + upload the dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install root deps (vite build inputs)
+        run: npm ci --no-fund --no-audit
+
+      - name: Install shell deps
+        working-directory: src/demo_apps/PowerRP/desktop
+        run: npm ci --no-fund --no-audit
+
+      # TODO(v2): vite build + vendor the repo and node/uv/ffmpeg runtimes into
+      # extraResources here, replacing the repo-path.txt seam entirely.
+      - name: Package the app (unsigned dmg)
+        working-directory: src/demo_apps/PowerRP/desktop
+        run: npm run package:dmg
+        # TODO(v2): signing — export CSC_LINK/CSC_KEY_PASSWORD from secrets and
+        # drop `identity: null` from electron-builder.yml; then notarize.
+
+      - name: Publish dmg to the tag's release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src/demo_apps/PowerRP/desktop/dist/*.dmg
+          body: |
+            PowerRP desktop shell (v1, unsigned).
+            NOTE: this build launches a PowerRP checkout via run_server.sh and
+            expects node + uv on the machine — see desktop/main.js docblock.
+            First open: right-click → Open (unsigned).
