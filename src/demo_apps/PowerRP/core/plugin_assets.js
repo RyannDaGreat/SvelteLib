@@ -347,7 +347,18 @@ const SAFE_BUILTINS = Object.freeze({
   // `Symbol` is withheld for the same structural reason: Symbol.toPrimitive /
   // Symbol.iterator are how a plugin's returned object could hook host code that
   // later coerces it, and no declarative plugin needs to mint one.
+  // `RegExp` IS EXPOSED, but as a constructor FACADE: the real global also
+  // carries the legacy static match slots (RegExp.$1, RegExp.input, …), which
+  // every regex exec ANYWHERE in the realm updates — reading one would let a
+  // plugin observe host activity, a nondeterminism seam. The facade constructs
+  // real (deterministic) regex objects and nothing else; `x instanceof RegExp`
+  // inside a plugin is the one idiom it cannot support. Found by
+  // tests/plugin_asset_doctest_test.js: the migrated number widget's
+  // thousands-grouping called `new RegExp` and red-boxed the moment
+  // `group: true` was enabled.
+  RegExp: Object.freeze(function (pattern, flags) { return new NATIVE_REGEXP(pattern, flags); }),
 });
+const NATIVE_REGEXP = RegExp;
 
 /**
  * Pure function. A deterministic seeded PRNG (mulberry32) — the ONLY randomness a
