@@ -88,7 +88,9 @@ export function headPlugin(headPath, state, slugs, registry, selfId) {
  * not inside/after an identifier chain). `state` is the item's OWNING
  * document state (app.rawState()); `selfId` is the equation's owner item
  * (enables `self.` completion — pass null outside an item's own equation,
- * e.g. the Variables Panel).
+ * e.g. the Variables Panel). `scriptExports` (optional) is THE PROJECT SCRIPT's
+ * export object (core/project_script.js) — its functions and values are offered too,
+ * because a library nobody can find is not reuse.
  *
  * Each candidate is {text, kind}: `text` is what REPLACES the current
  * fragment's final segment on accept; `kind` is "property" | "slug" |
@@ -103,8 +105,11 @@ export function headPlugin(headPath, state, slugs, registry, selfId) {
  * @example suggestEquation("self.end_wi", 11, state, registry, "a1") // [{text: "end_width", kind: "property"}, ...]
  * @example suggestEquation("spe", 3, {vars: {speed: 5}, items: {}}, registry, null) // [{text: "speed", kind: "variable"}]
  * @example suggestEquation("clos", 4, {items: {}}, registry, null) // [{text: "closest_to_rim(", kind: "function"}]
+ * @example // a project-script export: a FUNCTION suggests with its open paren, a VALUE bare
+ * @example suggestEquation("ea", 2, {items: {}}, registry, null, {ease: (t) => t}) // [{text: "ease(", kind: "function"}]
+ * @example suggestEquation("GUT", 3, {items: {}}, registry, null, {GUTTER: 24}) // [{text: "GUTTER", kind: "variable"}]
  */
-export function suggestEquation(text, cursor, state, registry, selfId = null) {
+export function suggestEquation(text, cursor, state, registry, selfId = null, scriptExports = null) {
   const fragment = currentFragment(text, cursor);
   if (!fragment) return [];
   const { headPath, partial } = splitFragment(fragment);
@@ -123,6 +128,18 @@ export function suggestEquation(text, cursor, state, registry, selfId = null) {
     // Equation FUNCTIONS (registry-driven — Lead scope addition): insert with
     // the open paren so the caret lands inside the call ("closest_to_rim(").
     for (const fn of equationFunctionNames()) candidates.push({ text: `${fn}(`, kind: "function" });
+    // THE PROJECT SCRIPT's exports (core/project_script.js). A library nobody can
+    // FIND is not reuse — the author would have to remember every name they wrote in
+    // a dialog that is currently closed. Offered under the SAME kinds the built-ins
+    // use, chosen by what the value actually IS: a function suggests with its open
+    // paren (a caret parked inside the call, like the library functions above), a
+    // value suggests bare (like a variable). Names are read from the compiled
+    // exports, so a broken script offers nothing — which is honest, since nothing is
+    // what its callers can reach.
+    for (const [name, value] of Object.entries(scriptExports ?? {})) {
+      if (typeof value === "function") candidates.push({ text: `${name}(`, kind: "function" });
+      else candidates.push({ text: name, kind: "variable" });
+    }
   } else {
     const plugin = headPlugin(headPath, state, slugs, registry, selfId);
     if (!plugin) return [];

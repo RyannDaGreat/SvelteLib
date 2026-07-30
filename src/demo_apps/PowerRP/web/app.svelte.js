@@ -25,7 +25,12 @@ import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWor
 // per-element hide and purge, shared with the Inspector's list control.
 import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
 import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
-import { projectScriptProblem, projectScriptExports } from "../core/project_script.js";
+// `compiledScriptExports` is core/project_script.js's `projectScriptExports`,
+// renamed at the import so it cannot be confused with the same-named method below
+// (which resolves the source and delegates here). Two identical names in one file,
+// one shadowing the other inside every method body, is a reader trap even though
+// JS resolves it correctly.
+import { projectScriptProblem, projectScriptExports as compiledScriptExports } from "../core/project_script.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
@@ -124,50 +129,54 @@ const SETTINGS = {
 export const LABEL_FRAC_BOUNDS = { min: SETTINGS.labelFrac.min, max: SETTINGS.labelFrac.max };
 
 /** Theme catalog — viewer preference (localStorage), NOT document state.
+ * `kind` categorizes every theme as "dark"|"light" (user ruling 2026-07-30) —
+ * derived from each theme's --bg relative luminance, verified by
+ * tests/theme_contrast_test.py so a mislabeled or unlabeled theme fails the
+ * gate. Consumers: the Monaco editor picks vs-dark/vs from it.
  * Each id matches a `:root[data-theme="…"]` block in app.css. (14.11: five
  * new moods appended — sepia paper light, high-contrast slate dark, a
  * Nord-inspired cool dark, a gruvbox-inspired warm dark, and a saturated
  * "aurora" dark — each a full token override, see app.css for the palette.) */
 export const THEMES = [
-  { id: "graphite", title: "Graphite (dark)" },
-  { id: "light", title: "Light" },
-  { id: "black", title: "Pure Black" },
-  { id: "warm", title: "Warm Gray (dark)" },
-  { id: "sepia", title: "Sepia" },
-  { id: "slate", title: "Slate" },
-  { id: "nord", title: "Nord" },
-  { id: "gruvbox", title: "Gruvbox" },
-  { id: "aurora", title: "Aurora" },
+  { id: "graphite", kind: "dark", title: "Graphite (dark)" },
+  { id: "light", kind: "light", title: "Light" },
+  { id: "black", kind: "dark", title: "Pure Black" },
+  { id: "warm", kind: "dark", title: "Warm Gray (dark)" },
+  { id: "sepia", kind: "light", title: "Sepia" },
+  { id: "slate", kind: "dark", title: "Slate" },
+  { id: "nord", kind: "dark", title: "Nord" },
+  { id: "gruvbox", kind: "dark", title: "Gruvbox" },
+  { id: "aurora", kind: "dark", title: "Aurora" },
   // Colorful set (user: "make some more colorful color themes") — six beloved
   // editor palettes; full token overrides live in app.css alongside the others.
-  { id: "dracula", title: "Dracula" },
-  { id: "tokyonight", title: "Tokyo Night" },
-  { id: "catppuccin", title: "Catppuccin Mocha" },
-  { id: "rosepine", title: "Rosé Pine" },
-  { id: "monokai", title: "Monokai" },
-  { id: "synthwave", title: "Synthwave '84" },
+  { id: "dracula", kind: "dark", title: "Dracula" },
+  { id: "tokyonight", kind: "dark", title: "Tokyo Night" },
+  { id: "catppuccin", kind: "dark", title: "Catppuccin Mocha" },
+  { id: "rosepine", kind: "dark", title: "Rosé Pine" },
+  { id: "monokai", kind: "dark", title: "Monokai" },
+  { id: "synthwave", kind: "dark", title: "Synthwave '84" },
   // Material set (user: "get more creative … every color theme so far has just
   // been dark buttons on a different tint") — themes that restructure the
   // chrome, not just re-tint it: Blueprint draws it as line-work, Sunrise and
   // Desert are LIGHT (grading-atmospheric and dry-mineral respectively).
-  { id: "blueprint", title: "Blueprint" },
-  { id: "sunrise", title: "Sunrise" },
-  { id: "desert", title: "Desert" },
+  { id: "blueprint", kind: "dark", title: "Blueprint" },
+  { id: "sunrise", kind: "light", title: "Sunrise" },
+  { id: "desert", kind: "light", title: "Desert" },
   // Material set II — the themes that pull the NON-COLOUR levers introduced
   // alongside them (--a-radius-*, --a-glass-*, --a-ui-font). Each justifies
   // exactly one: Nocturne is glass (blur/round/rim on FLOATING surfaces only),
   // the two Futuras are typographic (geometric sans over near-monochrome).
-  { id: "nocturne", title: "Nocturne (glass)" },
-  { id: "futura-dark", title: "Futura Dark" },
-  { id: "futura-light", title: "Futura Light" },
+  { id: "nocturne", kind: "dark", title: "Nocturne (glass)" },
+  { id: "futura-dark", kind: "dark", title: "Futura Dark" },
+  { id: "futura-light", kind: "light", title: "Futura Light" },
   // Material set III — one idea each: E-Ink is a REFLECTIVE display (nothing
   // glows), Phosphor is an EMISSIVE one (single-hue, bloom instead of shadow),
   // Platinum's identity is the BEVEL rather than the palette, and Ember is the
   // set's only gradient — one lit surface, on the canvas alone, never a control.
-  { id: "eink", title: "E-Ink" },
-  { id: "phosphor", title: "Phosphor" },
-  { id: "platinum", title: "Platinum" },
-  { id: "ember", title: "Ember" },
+  { id: "eink", kind: "light", title: "E-Ink" },
+  { id: "phosphor", kind: "dark", title: "Phosphor" },
+  { id: "platinum", kind: "light", title: "Platinum" },
+  { id: "ember", kind: "dark", title: "Ember" },
 ];
 
 /**
@@ -652,18 +661,24 @@ export class PowerRPApp {
     return projectScriptProblem(this.projectScript());
   }
 
-  /** Query. The NAMES the project script exports, as a Set — what an equation may
-   *  legally reference beyond the document's own variables, items and anchors.
+  /** Query. The project script's EXPORT OBJECT — what an equation may legally
+   *  reference beyond the document's own variables, items and anchors.
    *
-   *  Feeds the equation-field HIGHLIGHTER (equationTokenSpans), which without it
-   *  painted a perfectly valid `= GUTTER * 4` entirely red: the identifier resolves
-   *  at evaluation but is not a document variable, and a highlighter that contradicts
-   *  the evaluator sends the author hunting a bug that does not exist.
+   *  TWO consumers, both of which were wrong without it:
+   *    - the equation-field HIGHLIGHTER (equationTokenSpans) painted a perfectly valid
+   *      `= GUTTER * 4` entirely red, because the identifier resolves at evaluation
+   *      but is not a document variable. A highlighter that contradicts the evaluator
+   *      sends the author hunting a bug that does not exist.
+   *    - equation AUTOCOMPLETE offered nothing, so a library was only usable by
+   *      remembering every name written in a dialog that is currently closed.
+   *  The OBJECT (not a name set) because the second one needs each value's TYPE to
+   *  know whether to suggest `ease(` or `GUTTER`.
    *
-   *  Read off the evaluation, so it is the exports the canvas is ACTUALLY running —
-   *  a broken script exports nothing and its callers correctly light up red. */
-  projectScriptExportNames() {
-    return new Set(Object.keys(projectScriptExports(this.projectScript())));
+   *  Read off the evaluator's own compile, so these are the exports the canvas is
+   *  ACTUALLY running — a broken script exports nothing, its callers correctly light
+   *  up red, and autocomplete correctly offers nothing. */
+  projectScriptExports() {
+    return compiledScriptExports(this.projectScript());
   }
 
   /** Folded + EVALUATED state — every numeric property is a number. All

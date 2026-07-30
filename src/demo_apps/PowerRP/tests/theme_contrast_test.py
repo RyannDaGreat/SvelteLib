@@ -150,6 +150,37 @@ def check(name, resolved):
     return fails
 
 
+# ── kind categorization guard (user ruling 2026-07-30): every THEMES entry
+# carries kind "dark"|"light", and the label must MATCH the theme's measured
+# --bg luminance — a mislabeled theme would silently give the code editor the
+# wrong Monaco palette. Parsed textually (app.svelte.js is a rune module, not
+# bare-node importable).
+import re as _re
+
+def _theme_kinds_from_registry(path=CSS.replace("app.css", "app.svelte.js")):
+    """Query. {id: kind} parsed from the THEMES array text.
+
+    >>> isinstance(_theme_kinds_from_registry(), dict)
+    True
+    """
+    src = open(path).read()
+    block = _re.search(r"export const THEMES = \[(.*?)\];", src, _re.S).group(1)
+    return dict(_re.findall(r'id: "([a-z-]+)", kind: "(dark|light)"', block))
+
+def check_kinds(theme_bgs):
+    """Command (asserts). Every theme labeled, every label true to luminance."""
+    kinds = _theme_kinds_from_registry()
+    failures = []
+    for theme, bg in theme_bgs.items():
+        expected = "light" if luminance(bg) > 0.35 else "dark"
+        got = kinds.get(theme)
+        if got is None:
+            failures.append(f"{theme}: NO kind in THEMES (bg {bg} reads as {expected})")
+        elif got != expected:
+            failures.append(f"{theme}: kind '{got}' contradicts --bg {bg} (luminance says {expected})")
+    return failures
+
+
 def main():
     """Command. Prints the table for every theme; exits 1 if any check fails."""
     themes = parse_themes(open(CSS).read())
@@ -158,6 +189,7 @@ def main():
     for name, decls in themes.items():
         resolved = {**base, **decls}  # unset tokens inherit from :root
         all_fails += check(name, resolved)
+    all_fails += check_kinds({n: {**base, **d}["--bg"] for n, d in themes.items()})
     print(f"\n{'=' * 60}")
     if all_fails:
         print(f"FAILURES ({len(all_fails)}):")

@@ -284,7 +284,7 @@
     const lead = text.slice(0, text.length - clean.length); // preserved "= " prefix (plain)
     // Project-script exports count as resolvable identifiers here too — see
     // NumericField's note (a working equation must never paint red).
-    const spans = bound ? equationTokenSpans(clean, app.rawState(), selfId, app.projectScriptExportNames()) : [];
+    const spans = bound ? equationTokenSpans(clean, app.rawState(), selfId, app.projectScriptExports()) : [];
     const pieces = lead ? [{ text: lead, cls: null }] : [];
     let last = 0;
     for (const s of spans) {
@@ -311,7 +311,8 @@
   let highlighted = $state(0);
   let candidates = $derived(
     suggestionsOpen && eqInputEl && bound
-      ? suggestEquation(draft, eqInputEl.selectionStart ?? draft.length, app.rawState(), app.registry, selfId)
+      // Project-script exports are offered here too — see NumericField's note.
+      ? suggestEquation(draft, eqInputEl.selectionStart ?? draft.length, app.rawState(), app.registry, selfId, app.projectScriptExports())
       : [],
   );
   // Clamp the highlight when the candidate set shrinks so it never points past

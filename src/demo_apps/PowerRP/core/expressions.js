@@ -356,8 +356,11 @@ const UNMAPPED_TOKEN_CLS = "error";
  * "prop", "anchor" (resolved ref kinds), "error" (a ref that does not resolve
  * to a REAL var/item/anchor/script export, or a source that does not tokenize).
  * `state` is the raw state (for slugs + the vars set); `selfId` (optional) enables
- * `self.…`; `scriptExports` (optional Set of names) is THE PROJECT SCRIPT's export
- * list, so a bare identifier the script provides paints as a "var" instead of red.
+ * `self.…`; `scriptExports` (optional) is THE PROJECT SCRIPT's export OBJECT, so a
+ * bare identifier the script provides paints as a "var" instead of red. It is the
+ * export object rather than a name set so that every consumer of the exports —
+ * this, and equationSuggest, which needs each value's TYPE to decide whether to
+ * suggest a call — passes the same thing.
  *
  * WHY scriptExports IS A PARAMETER AND NOT OPTIONAL-IN-SPIRIT: without it, an
  * equation that EVALUATES PERFECTLY was painted entirely red — `= 0 + GUTTER * 4`
@@ -450,7 +453,7 @@ export function equationTokenSpans(src, state, selfId = null, scriptExports = nu
       // A PROJECT SCRIPT export counts as existing, in the same precedence order the
       // evaluator uses (a real variable first, an export second), so the paint and
       // the value can never disagree.
-      if (d.kind === "var" && !(d.name in vars) && !scriptExports?.has(d.name))
+      if (d.kind === "var" && !(d.name in vars) && !(scriptExports && d.name in scriptExports))
         return { start: t.start, end: t.end, cls: "error" };
       return { start: t.start, end: t.end, cls: d.kind === "var" ? "var" : d.kind }; // "prop" | "anchor" | "var"
     } catch {

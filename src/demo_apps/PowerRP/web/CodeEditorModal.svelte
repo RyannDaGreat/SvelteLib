@@ -8,8 +8,16 @@
 
     value     the initial source string (read ONCE at mount; the editor then owns
               its own buffer — later prop changes do NOT clobber what the user typed)
-    language  a Monaco language id ("mermaid" / "latex" / "plaintext" / null)
+    language  a Monaco language id this app has registered ("mermaid" / "latex" /
+              "javascript"), or "plaintext" / null for none
     title     the modal header text
+    problem   a problem with the STORED source, shown in the footer (null = none).
+              REACTIVE, unlike `value`: the caller recomputes it after each save, so a
+              source that will not compile explains itself in the dialog the author is
+              looking at instead of only in the console. THE PROJECT SCRIPT
+              (core/project_script.js) is the caller that uses it — the app keeps the
+              modal OPEN while it is non-null, so a broken script cannot be dismissed
+              silently.
     onsave    called with the current editor text on Save / Cmd+Enter — the caller
               turns that into ONE undo unit through the app's commit seam
     oncancel  called on Cancel / Esc / backdrop — the caller drops the edit, no undo
@@ -32,11 +40,15 @@
   is open (the suggest/find popup) consumes its own Escape first.
 
   MONACO + VITE WIRING lives in web/monacoSetup.js (imported for its side effects):
-  it wires the editor web worker and registers the Mermaid + LaTeX Monarch
-  grammars ONCE. `monaco-editor` is a real npm dependency (self-contained, offline,
-  no CDN) and is pre-bundled in web/vite.config.js's optimizeDeps so its first use
-  never triggers a mid-session dep re-optimize (which would reload the page and
-  kill a render/probe — the same flake class pdfjs/mathjax/mermaid are pinned for).
+  it wires the editor web worker and registers the Mermaid + LaTeX + JavaScript
+  Monarch grammars ONCE. All THREE are this app's own: `editor.api` ships no
+  built-in languages at all, so a `language` id it has not registered silently
+  renders as uncoloured plaintext (see MONACO_LANGUAGES).
+
+  `monaco-editor` is a real npm dependency (self-contained, offline, no CDN) and is
+  pre-bundled in web/vite.config.js's optimizeDeps so its first use never triggers a
+  mid-session dep re-optimize (which would reload the page and kill a render/probe —
+  the same flake class pdfjs/mathjax/mermaid are pinned for).
 
   Styling: app.css `.code-modal-*` + `--a-code-modal-*` tokens (the annotator
   convention: web app components carry no <style> block; Monaco draws its own
@@ -47,11 +59,21 @@
   import Modal from "../../../lib/Modal.svelte";
   import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
   import { setupMonacoOnce } from "./monacoSetup.js";
+  import { THEMES } from "./app.svelte.js";
+
+  /** Query. Monaco theme for the CURRENT UI theme via its catalog `kind` —
+   * "vs-dark" for dark themes, "vs" for light (user ruling: the code editor's
+   * dark/light must match the UI theme). data-theme absent = graphite (dark). */
+  function monacoThemeForUi() {
+    const id = document.documentElement.getAttribute("data-theme") ?? "graphite";
+    const kind = THEMES.find((t) => t.id === id)?.kind ?? "dark";
+    return kind === "light" ? "vs" : "vs-dark";
+  }
 
   let {
     /** @type {string} Initial source, read once at mount. */
     value = "",
-    /** @type {string|null} Monaco language id ("mermaid"/"latex"/null → plaintext). */
+    /** @type {string|null} Monaco language id ("mermaid"/"latex"/"javascript"/null → plaintext). */
     language = null,
     /** @type {string} Modal header title. */
     title = "Code",
@@ -92,11 +114,15 @@
 
   onMount(() => {
     setupMonacoOnce(monaco); // idempotent: wires the worker + registers grammars once
-    if (!hostEl) return;
+    // Follow UI theme switches while the modal is open (data-theme is stamped
+    // on <html>; the observer dies with the modal via onMount's cleanup).
+    const themeObserver = new MutationObserver(() => monaco.editor.setTheme(monacoThemeForUi()));
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    if (!hostEl) return themeObserver.disconnect.bind(themeObserver);
     editor = monaco.editor.create(hostEl, {
       value: value ?? "",
       language: language ?? "plaintext",
-      theme: "vs-dark",
+      theme: monacoThemeForUi(),
       automaticLayout: true,          // track the modal's size (it is 90vw×90vh)
       minimap: { enabled: true },     // the user asked for the minimap explicitly
       fontSize: 14,
@@ -130,6 +156,7 @@
     };
 
     return () => {
+      themeObserver.disconnect();
       editor?.dispose();
       editor = null;
       if (window.__powerrp_codeModal) delete window.__powerrp_codeModal;

@@ -580,7 +580,8 @@
   // resolves against the selected item, which owns every row rendered here.
   let eqCandidates = $derived(
     eqSuggestOpen && eqInputEl
-      ? suggestEquation(eqDraft, eqInputEl.selectionStart ?? eqDraft.length, app.rawState(), app.registry, pickedItemId)
+      // Project-script exports are offered here too — see NumericField's note.
+      ? suggestEquation(eqDraft, eqInputEl.selectionStart ?? eqDraft.length, app.rawState(), app.registry, pickedItemId, app.projectScriptExports())
       : [],
   );
   $effect(() => {
@@ -719,7 +720,7 @@
     const lead = text.slice(0, text.length - clean.length); // the "=" marker (plain)
     // Project-script exports count as resolvable identifiers here too — see
     // NumericField's note (a working equation must never paint red).
-    const spans = equationTokenSpans(clean, state, selfId, app.projectScriptExportNames());
+    const spans = equationTokenSpans(clean, state, selfId, app.projectScriptExports());
     const pieces = lead ? [{ text: lead, cls: null }] : [];
     let last = 0;
     for (const s of spans) {

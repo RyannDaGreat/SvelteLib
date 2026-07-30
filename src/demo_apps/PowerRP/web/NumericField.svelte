@@ -229,7 +229,7 @@
     // `= GUTTER * 4` painted entirely red (the identifier resolves at evaluation
     // but is not a document variable), and a highlighter that contradicts the
     // evaluator is worse than none.
-    const spans = equationTokenSpans(clean, app.rawState(), selfId, app.projectScriptExportNames());
+    const spans = equationTokenSpans(clean, app.rawState(), selfId, app.projectScriptExports());
     const pieces = lead ? [{ text: lead, cls: null }] : [];
     let last = 0;
     for (const s of spans) {
@@ -264,7 +264,9 @@
   let highlighted = $state(0);
   let candidates = $derived(
     suggestionsOpen && eqInputEl
-      ? suggestEquation(draft, eqInputEl.selectionStart ?? draft.length, app.rawState(), app.registry, selfId)
+      // The PROJECT SCRIPT's exports are offered alongside slugs, variables and the
+      // function library — a library nobody can FIND is not reuse.
+      ? suggestEquation(draft, eqInputEl.selectionStart ?? draft.length, app.rawState(), app.registry, selfId, app.projectScriptExports())
       : [],
   );
   // Clamp highlight when the candidate set shrinks (e.g. a keystroke narrows

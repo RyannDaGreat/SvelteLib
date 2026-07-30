@@ -380,6 +380,16 @@ function computeProjectScript(source, host) {
     // The trailing newline neutralizes a trailing line comment.
     body = new Function("scope", `with(scope){\n${source}\n}`);
   } catch (e) {
+    // V8's OWN message, verbatim. It is worth knowing that it can name the WRAPPER's
+    // characters rather than the author's — an unclosed `(` reports as "Unexpected
+    // token '}'" even though the script contains no `}` — because the parser reaches
+    // the end of the wrapped text before it notices. Measured against the
+    // alternative of re-parsing the bare source to get a "nicer" message: that only
+    // differs in a minority of cases (`function f( {` → "Unexpected end of input"),
+    // is identical in the common ones, and buys the improvement by parsing the source
+    // twice and reporting on a text we did not actually compile. Left as-is,
+    // documented, rather than half-fixed: the useful facts — that it is a SYNTAX
+    // error and it is in the PROJECT SCRIPT — are both in the prefix.
     return failed(`Project script syntax error: ${e.message}`);
   }
   const exported = Object.create(null);
