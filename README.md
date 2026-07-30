@@ -7,6 +7,19 @@ exports like a print shop.
 full editor, no install (projects live in your browser; export/import zips to
 move them).
 
+## Saving & loading
+
+- **Browser storage** — on the web version, projects live in the browser you opened it in.
+- **Server** — the installed app keeps projects in folders on disk.
+- **Zip** — export a project as a `.zip`; drag one onto the page to open it.
+- **`?zip=<url>`** — share a link to a zip hosted anywhere and it opens on load.
+- **GitHub repo** — Save to GitHub writes `doc.json` + `assets/` to a repo; `?repo=owner/name` opens it.
+
+A repo stays editable after you share it, which a zip does not — the files are right there.
+
+Worked example: [PowerRP-RobotSim-Demo](https://github.com/RyannDaGreat/PowerRP-RobotSim-Demo)
+→ [open it](https://ryanndagreat.github.io/SvelteLib/?repo=RyannDaGreat/PowerRP-RobotSim-Demo)
+
 ## Install
 
 **Download the app:** grab

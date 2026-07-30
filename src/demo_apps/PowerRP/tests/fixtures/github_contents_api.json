@@ -1,0 +1,53 @@
+{
+  "_note": "REAL responses from api.github.com for the demo repo, recorded 2026-07-30. The video entry is the >1MB case: encoding 'none', empty content, download_url set.",
+  "root": [
+    {
+      "name": "README.md",
+      "path": "README.md",
+      "type": "file",
+      "size": 436,
+      "encoding": null,
+      "download_url": "https://raw.githubusercontent.com/RyannDaGreat/PowerRP-RobotSim-Demo/main/README.md",
+      "sha": "e341b986f1637d2db6e2da4a8c63687a8cf67c3d"
+    },
+    {
+      "name": "assets",
+      "path": "assets",
+      "type": "dir",
+      "size": 0,
+      "encoding": null,
+      "download_url": null,
+      "sha": "8286a86c28a58802fdeae1d02ff9bd865b53ac89"
+    },
+    {
+      "name": "doc.json",
+      "path": "doc.json",
+      "type": "file",
+      "size": 12715,
+      "encoding": null,
+      "download_url": "https://raw.githubusercontent.com/RyannDaGreat/PowerRP-RobotSim-Demo/main/doc.json",
+      "sha": "eb603d605443319f1c3345f8a7d46ec3e736bffb"
+    }
+  ],
+  "assets_dir": [
+    {
+      "name": "Video_20260726_224007_045.mp4",
+      "path": "assets/Video_20260726_224007_045.mp4",
+      "type": "file",
+      "size": 1229177,
+      "encoding": null,
+      "download_url": "https://raw.githubusercontent.com/RyannDaGreat/PowerRP-RobotSim-Demo/main/assets/Video_20260726_224007_045.mp4",
+      "sha": "2958da9b2aa9cd0c13e74456dd6dc480569877c8"
+    }
+  ],
+  "video_file": {
+    "name": "Video_20260726_224007_045.mp4",
+    "path": "assets/Video_20260726_224007_045.mp4",
+    "type": "file",
+    "size": 1229177,
+    "encoding": "none",
+    "download_url": "https://raw.githubusercontent.com/RyannDaGreat/PowerRP-RobotSim-Demo/main/assets/Video_20260726_224007_045.mp4",
+    "sha": "2958da9b2aa9cd0c13e74456dd6dc480569877c8",
+    "content": ""
+  }
+}
