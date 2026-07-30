@@ -27,8 +27,9 @@
  * `Toggle Visibility: <label> Panel` — the prefix first so the family sorts
  * and filters together in the palette.
  *
- * The GLOBAL VARIABLES panel is the one panel hidden by default (user ruling:
- * variables panel "by default will be off for now on."), and it is named
+ * GLOBAL VARIABLES and KEYFRAMES both start hidden (user rulings, 2026-07-30:
+ * variables panel "by default will be off for now on."; "the keyframe panel
+ * should be disabled by default"). GLOBAL VARIABLES is named
  * "Global Variables" because those variables ARE global — the per-item
  * variables live in the Property Panel's own Variables category, and calling
  * both "Variables" is what made the distinction invisible.
