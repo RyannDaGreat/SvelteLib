@@ -96,11 +96,25 @@ test("the built-in library widgets are on the FULL roster (builtinRoster), not a
 
 // ── (1) MIGRATION PARITY ─────────────────────────────────────────────────────
 
-/** The four migrated widgets whose retired source module is still on disk to
- *  compare against. `number` is absent: its module was removed outright, so there
- *  is no second side to compare and its behaviour is covered by the sweeps. */
+/** The migrated widgets whose retired source module is still on disk to compare
+ *  against. `number` is absent: its module was removed outright, so there is no
+ *  second side to compare and its behaviour is covered by the sweeps.
+ *
+ *  `progress_bar` HAS LEFT THIS LIST, and the reason is the whole point of the
+ *  list rather than an exception to it. This gate asks "did the migration change
+ *  the picture BY ACCIDENT", so a widget belongs here exactly as long as the
+ *  retired module is still the reference for what the picture should be. The
+ *  progress bar's fill was DELIBERATELY redrawn afterwards, on a user report: it
+ *  used to be a second rounded rect, which at low progress read as a detached pill
+ *  that ignored the track's corners and painted outside them, and it is now the
+ *  intersection of the progress rect with the track's rounded rim (an ir.path),
+ *  emitting NO fill op at all at fraction 0. So the retired module is now the
+ *  thing carrying the defect, and pinning the asset to it would pin the bug.
+ *  Its behaviour is covered instead — and far more thoroughly than parity ever
+ *  could — by tests/progress_bar_plugin_test.mjs (geometry containment, cap
+ *  hugging, the zero case, the handle) and tests/progress_bar_handle_probe.js.
+ *  A widget may leave this list ONLY with that kind of replacement in hand. */
 const PARITY = [
-  ["progress_bar", "../plugins/progress_bar.js", "progressBarPlugin"],
   ["donut", "../plugins/donut.js", "donutPlugin"],
   ["clock_digital", "../plugins/clock_digital.js", "clockDigitalPlugin"],
   ["clock_analog", "../plugins/clock_analog.js", "clockAnalogPlugin"],
