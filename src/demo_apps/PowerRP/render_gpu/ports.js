@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, parsePaint } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, parsePaint, isPaintableFrame, rect, text } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce } from "../core/report.js";
@@ -209,6 +209,80 @@ export function sceneIR(nodes, ctx = {}) {
   return out;
 }
 
+/** Error-affordance colors for a node whose WORLD is not paintable — the same
+ *  loud red treatment render_gpu/affordances.js documents. Restated here rather
+ *  than imported because `errorAffordance` hardcodes an "SVG error: " prefix,
+ *  and this box must name the ITEM and the PROPERTY instead. */
+const NONFINITE_BG = "#f6c9c4";
+const NONFINITE_BORDER = "#c0392b";
+const NONFINITE_TEXT = "#7a1210";
+const NONFINITE_BORDER_WIDTH = 3;
+const NONFINITE_PADDING = 8;
+const NONFINITE_TEXT_FRACTION = 0.16;
+/** The affordance is drawn at the node's LAST-KNOWN-GOOD frame — the identity —
+ *  because the node's own world is exactly what is unusable. This is the box it
+ *  occupies there, in world units, when the state carries no usable w/h either. */
+const NONFINITE_FALLBACK_SIZE = 160;
+
+/**
+ * Pure function. The names of the transform fields that are NOT finite, in the
+ * order `pushTransform` validates them — what the error affordance and the report
+ * line say instead of a bare "something is NaN".
+ *
+ * @param {object} t - a transform-ish {x, y, rotation, scale}
+ * @returns {string[]} the offending field names (empty when the frame is fine)
+ *
+ * @example nonFiniteFrameFields({x: 5, y: 6, rotation: 0, scale: 1})
+ * []
+ * @example // the live defect: a zero-size canvas made both translation terms NaN
+ * nonFiniteFrameFields({x: NaN, y: NaN, rotation: 0, scale: 1})
+ * [ 'x', 'y' ]
+ * @example nonFiniteFrameFields({x: 0, y: 0, rotation: 0, scale: Infinity})
+ * [ 'scale' ]
+ */
+export function nonFiniteFrameFields(t) {
+  const { x = 0, y = 0, rotation = 0, scale = 1 } = t ?? {};
+  return Object.entries({ x, y, rotation, scale })
+    .filter(([, v]) => typeof v !== "number" || !Number.isFinite(v))
+    .map(([k]) => k);
+}
+
+/**
+ * Pure function. THE CONTAINMENT AFFORDANCE for a node whose world transform is
+ * not paintable: a red-bordered box naming the item and the offending fields,
+ * emitted at the IDENTITY frame.
+ *
+ * WHY IDENTITY AND NOT node.world: the node's own world is precisely the thing
+ * that cannot be pushed. Drawing the affordance through it would rethrow, which
+ * is the crash this function exists to prevent. So the box lands at the world
+ * origin — visible, findable, and honest that the widget has no usable position.
+ *
+ * @param {object} node - the render node (reads .itemId, .state.name/.type/.w/.h)
+ * @param {string[]} fields - the non-finite field names (nonFiniteFrameFields)
+ * @returns {object[]} rect + text IR, already at identity (no push/pop needed)
+ *
+ * @example // a text item whose x/y evaluated to NaN draws a named red box:
+ * nonFiniteAffordanceIR({itemId: "cf17cc12", state: {type: "text", w: 260, h: 48}}, ["x", "y"]).length
+ * 2
+ * @example nonFiniteAffordanceIR({itemId: "a1", state: {type: "rect", w: 10, h: 10}}, ["x"])[0].op
+ * 'rect'
+ */
+export function nonFiniteAffordanceIR(node, fields) {
+  const s = node.state ?? {};
+  const w = Number.isFinite(s.w) && s.w > 0 ? s.w : NONFINITE_FALLBACK_SIZE;
+  const h = Number.isFinite(s.h) && s.h > 0 ? s.h : NONFINITE_FALLBACK_SIZE;
+  const who = s.name || s.type || node.itemId;
+  return [
+    rect({ x: 0, y: 0, w, h, cornerRadius: 0, fill: NONFINITE_BG, stroke: NONFINITE_BORDER, strokeWidth: NONFINITE_BORDER_WIDTH }),
+    text({
+      text: `"${who}": ${fields.join("/")} is not a finite number`,
+      x: NONFINITE_PADDING, y: NONFINITE_PADDING,
+      size: Math.max(1, h * NONFINITE_TEXT_FRACTION), color: NONFINITE_TEXT,
+      boxW: Math.max(1, w - 2 * NONFINITE_PADDING), boxH: Math.max(1, h - 2 * NONFINITE_PADDING),
+    }),
+  ];
+}
+
 /**
  * Pure function. Emits ONE render node's IR (its emitted ops wrapped in its world
  * transform), resolving the two cross-node subtree seams sceneIR owns:
@@ -232,6 +306,32 @@ export function sceneIR(nodes, ctx = {}) {
  */
 function emitNode(node, byId, pdfDisplay) {
   if (!node.plugin?.emit) throw new Error(`sceneIR: plugin "${node.type}" has no emit()`);
+  // ── THE NON-FINITE CONTAINMENT SEAM ────────────────────────────────────────
+  // A BROKEN WIDGET COSTS ITSELF, NEVER THE FRAME — the plugin-emit red-box rule
+  // (50a50bc), applied to the other way a node can be unpaintable: its numbers.
+  // This is the ONE place a derived node's evaluated transform enters paint, so
+  // one test here covers every pixel consumer (canvas, minimap, thumbnails,
+  // exporters) — they all walk this function.
+  //
+  // WHAT IT PREVENTS, MEASURED (live user report, 2026-07-30): a text item added
+  // while the canvas was still 0×0 evaluated to a NaN x/y (fitRectView divides by
+  // the canvas size → zoom 0 → a non-finite screen→world conversion). pushTransform
+  // correctly refused it — but it refused it EVERY rAF tick, uncaught, so the whole
+  // canvas stopped painting over one widget's bad number. The refusal was right;
+  // its BLAST RADIUS was wrong.
+  //
+  // Reported ONCE per item+fields (reportOnce): this runs in a frame loop, so an
+  // un-deduped line would be the same console flood by another name. The item and
+  // the offending properties are named, in the console AND on the canvas, because a
+  // silently-skipped widget would be the silent failure this codebase forbids.
+  const badFields = nonFiniteFrameFields(node.world);
+  if (badFields.length) {
+    reportOnce(
+      `ports:nonfinite:${node.itemId}:${badFields.join(",")}`,
+      `PowerRP: item "${node.itemId}" (${node.state?.type}) has a non-finite world transform (${badFields.join(", ")}) — it is drawn as an error box and the rest of the scene still paints. An equation or a placement produced NaN/Infinity.`,
+    );
+    return nonFiniteAffordanceIR(node, badFields);
+  }
   // GROUP SUBTREE: build the folded members' absolute-world IR (recursively).
   const subtreeIR = node.type === "group" && Array.isArray(node.subtreeMemberIds) && node.subtreeMemberIds.length
     ? node.subtreeMemberIds.flatMap((id) => (byId.has(id) ? emitNode(byId.get(id), byId, pdfDisplay) : []))

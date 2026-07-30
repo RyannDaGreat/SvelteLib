@@ -19,6 +19,7 @@
  */
 
 import * as T from "./transform.js";
+import { reportOnce } from "./report.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
 
 /**
@@ -208,15 +209,56 @@ export function canSkipNode(node, viewRectWorld) {
   return defaultCanSkip(node, viewRectWorld);
 }
 
+/** The zoom a DEGENERATE fit falls back to — the identity, i.e. "one world unit
+ *  is one output pixel". It is never a good view; it is a FINITE one, which is
+ *  the whole point (see fitRectView). */
+const DEGENERATE_FIT_ZOOM = 1;
+
 /**
  * Pure function. The view that fits a world rect into a w×h output —
  * THE camera mapping, used by export, presentation, thumbnails, and CLI.
  *
+ * ── WHY THIS GUARDS ITS OWN DIVISION (a live crash, 2026-07-30) ───────────────
+ * `zoom` is min(w/rect.w, h/rect.h), so a zero OUTPUT size gives zoom 0 and a
+ * zero RECT gives Infinity — and neither stays local. This view is inverted to
+ * convert pointer coordinates into world coordinates, and `(screen - pan) / 0`
+ * is ±Infinity or NaN. A user who clicked to place a text item while the canvas
+ * element was still 0×0 (the boot/repo-import window, before layout) therefore
+ * got an item at NaN x/y, whose `self.anchors.center.x` evaluated to NaN, whose
+ * world transform pushTransform then refused EVERY frame — the whole canvas
+ * stopped painting over one silent division.
+ *
+ * A degenerate fit has no correct answer, so this returns a FINITE, USABLE one
+ * (identity zoom, origin at the rect) and REPORTS it. Returning a non-finite
+ * view was the silent failure; throwing would be worse, because a 0×0 canvas is
+ * an ORDINARY TRANSIENT STATE during layout — every consumer would have to catch
+ * a condition that resolves itself a frame later. Loud and finite is the rule
+ * this codebase wants: the console names the degenerate input, and nothing
+ * downstream can turn it into a NaN.
+ *
+ * @param {{x: number, y: number, w: number, h: number}} rect - the world rect to fit
+ * @param {number} w - output width
+ * @param {number} h - output height
+ * @param {number} [dpr] - device pixel ratio, passed through
+ * @returns {{zoom: number, panX: number, panY: number, dpr: number}} always finite
+ *
  * @example fitRectView({x: 0, y: 0, w: 1280, h: 720}, 640, 360, 1) // {zoom: 0.5, panX: 0, panY: 0, dpr: 1}
  * @example fitRectView({x: 100, y: 0, w: 100, h: 100}, 200, 100, 1) // {zoom: 1, panX: -50, panY: 0, dpr: 1}
+ * @example // an UNLAID-OUT canvas (0×0) degrades to identity instead of zoom 0:
+ * fitRectView({x: 0, y: 0, w: 1280, h: 720}, 0, 0, 1)
+ * { zoom: 1, panX: 0, panY: 0, dpr: 1 }
+ * @example // a degenerate RECT would divide by zero the other way:
+ * fitRectView({x: 0, y: 0, w: 0, h: 0}, 640, 360, 1)
+ * { zoom: 1, panX: 320, panY: 180, dpr: 1 }
  */
 export function fitRectView(rect, w, h, dpr = 1) {
-  const zoom = Math.min(w / rect.w, h / rect.h);
+  const degenerate = !(rect.w > 0) || !(rect.h > 0) || !(w > 0) || !(h > 0);
+  if (degenerate)
+    reportOnce(
+      `fitRectView-degenerate:${rect.w}x${rect.h}->${w}x${h}`,
+      `PowerRP: fitRectView got a degenerate fit (rect ${rect.w}×${rect.h} into ${w}×${h}) — falling back to identity zoom so the view stays FINITE. A zero here used to produce a non-finite view, and any pointer position derived from it became NaN.`,
+    );
+  const zoom = degenerate ? DEGENERATE_FIT_ZOOM : Math.min(w / rect.w, h / rect.h);
   return {
     zoom,
     panX: (w - rect.w * zoom) / 2 - rect.x * zoom,

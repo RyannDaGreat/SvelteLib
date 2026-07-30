@@ -1348,6 +1348,45 @@ export function pushTransform({ x = 0, y = 0, rotation = 0, scale = 1, signX = 1
 }
 
 /**
+ * Pure function. IS THIS FRAME PAINTABLE — are the four similarity numbers
+ * `pushTransform` requires all finite?
+ *
+ * THE PREDICATE FORM OF pushTransform's OWN VALIDATION, and it exists so a
+ * caller can ASK instead of catching. `pushTransform` throwing is correct and
+ * stays: a non-finite frame is a real defect and the display list must never
+ * carry one. But a throw is the whole FRAME's problem, and one broken widget
+ * must only cost ITSELF (the plugin-emit red-box precedent, 50a50bc). The scene
+ * walker therefore tests each node's world here and degrades that node to the
+ * loud error affordance, leaving `pushTransform` free to keep throwing for
+ * everybody who did not ask first.
+ *
+ * WHY THIS IS NEEDED AT ALL (measured, 2026-07-30, live user report). A text
+ * item added while the canvas element was still 0×0 got NaN x/y — `fitRectView`
+ * divides by the canvas size, so zoom was 0 and the screen→world conversion
+ * produced non-finite world coordinates. The NaN reached `node.world`, and
+ * `pushTransform` threw EVERY rAF tick: the render loop died repeatedly and the
+ * entire canvas went blank, over one widget's bad number.
+ *
+ * @param {object} t - a transform-ish {x, y, rotation, scale} (missing keys read as their pushTransform defaults)
+ * @returns {boolean} true when every number pushTransform validates is finite
+ *
+ * @example isPaintableFrame({x: 5, y: 6, rotation: 0, scale: 1})
+ * true
+ * @example // the live defect: a NaN world coordinate from a zero-size canvas
+ * isPaintableFrame({x: NaN, y: 0, rotation: 0, scale: 1})
+ * false
+ * @example // omitted keys take pushTransform's defaults, so an empty frame is the identity
+ * isPaintableFrame({})
+ * true
+ * @example isPaintableFrame({x: 0, y: 0, rotation: 0, scale: Infinity})
+ * false
+ */
+export function isPaintableFrame(t) {
+  const { x = 0, y = 0, rotation = 0, scale = 1 } = t ?? {};
+  return [x, y, rotation, scale].every((v) => typeof v === "number" && Number.isFinite(v));
+}
+
+/**
  * Pure function. Does this frame carry a reflection? The gate that keeps the
  * unmirrored path on core/transform.js's plain compose (see flattenIR).
  *
