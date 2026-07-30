@@ -33,6 +33,61 @@
  */
 
 import { builtinCursorAssets } from "../render_gpu/gpu/svg_raster.js";
+import { builtinPluginAssetSources } from "../core/builtin_plugin_assets.js";
+import { assetKindForName } from "./assetRef.js";
+
+/**
+ * Query (reads the built-in library through core/builtin_plugin_assets.js). The
+ * BUILT-IN WIDGET LIBRARY as asset-list entries — the second built-in category.
+ *
+ * These are the tier-1 pure-vector widgets that ship as `*.plugin.js` ASSETS rather
+ * than source modules (donut, progress_bar, number, both clocks). They are already
+ * registered as widgets at boot; this exposes them as browsable/draggable ASSETS so
+ * the "Show built-in assets" toggle can list them and the drop-to-instantiate path
+ * can create one from a tile.
+ *
+ * `size` IS THE SOURCE'S BYTE LENGTH, and it is a real number rather than omitted:
+ * these entries flow into libraryTotalsLine, and a widget the user can see listed
+ * should contribute a truthful figure to the total beside it. It is the size of the
+ * bundled TEXT, which is exactly what the library costs — it is not stored in the
+ * user's quota, which is why the totals line excludes built-ins while they are
+ * hidden (see assetRef.libraryTotalsLine).
+ *
+ * `url` IS THE ASSET REF SHAPE, not a served path: nothing fetches these (the source
+ * is already in hand), but the tile grid and the drag payload both key off `url`, so
+ * a stable unique identifier is required. Prefixed `builtin:` so it can never be
+ * mistaken for, or collide with, a project ref (`/asset/<project>/<file>`).
+ *
+ * @returns {Array<{name: string, kind: string, url: string, source: string, size: number, builtin: true}>}
+ *
+ * @example
+ * // builtinWidgetAssets().map((a) => a.name)
+ * // ["clock_analog.plugin.js", "clock_digital.plugin.js", "donut.plugin.js",
+ * //  "number.plugin.js", "progress_bar.plugin.js"]
+ * @example
+ * // builtinWidgetAssets()[0].kind     // "plugin"
+ * // builtinWidgetAssets()[0].builtin  // true
+ * // builtinWidgetAssets()[0].url      // "builtin:library/clock_analog.plugin.js"
+ */
+export function builtinWidgetAssets() {
+  const { sources, reports } = builtinPluginAssetSources();
+  // Drift is REPORTED, never swallowed: a library file missing from the enumeration
+  // is a widget that silently vanished from both the roster and this list.
+  for (const report of reports) console.error(`PowerRP built-in widget library — ${report}`);
+  return sources.map(({ name, source }) => ({
+    name,
+    kind: assetKindForName(name),
+    url: `${BUILTIN_URL_PREFIX}library/${name}`,
+    source,
+    size: source.length,
+    builtin: true,
+  }));
+}
+
+/** The scheme that marks a built-in asset's `url`. Not a fetchable location — an
+ *  identifier, deliberately unlike a project ref (`/asset/<project>/<file>`) so the
+ *  two can never be confused by a drop handler or a tile key. */
+export const BUILTIN_URL_PREFIX = "builtin:";
 
 /**
  * The declarative built-in-asset category table. Cursors is the first (and
@@ -47,6 +102,14 @@ const CATEGORY_DEFS = [
     description:
       "macOS-style pointer cursors, drawn as crisp vector. The Cursor widget draws these; the beach ball is the classic busy spinner.",
     load: builtinCursorAssets,
+  },
+  {
+    id: "widgets",
+    label: "Widget Library",
+    icon: "mdi:shape-plus-outline",
+    description:
+      "Tier-1 vector widgets that ship as plugin ASSETS rather than source files — the same sandboxed format a user's own custom widget uses. Drag one onto the canvas to add it.",
+    load: builtinWidgetAssets,
   },
 ];
 

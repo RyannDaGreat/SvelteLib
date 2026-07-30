@@ -311,13 +311,6 @@
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
 
-  // The OUTER row: [left column | Canvas | right column]. Same weight-not-boundary
-  // treatment as the columns below, for the same reason and one more: when EVERY
-  // panel in a column is hidden the column itself must go, divider included, or
-  // hiding the last panel of a column would leave a sliver of empty chrome with a
-  // live handle beside it. Weights reproduce the old [0.16, 0.78] boundaries.
-  const COLUMN_WEIGHTS = { left: 0.16, canvas: 0.62, right: 0.22 };
-
   // ── PANEL VISIBILITY LAYOUT (core/panels.js) ────────────────────────────────
   // A pane's SHARE of its column lives as a per-panel WEIGHT, not as a boundary
   // array, because boundaries cannot express absence: SplitPane derives
@@ -362,11 +355,48 @@
     });
   }
 
-  // The two columns' boundary arrays. $state, not $derived, because SplitPane
-  // needs `bind:splits` to write a live drag back — and a $derived cannot be
-  // bound. The effect below is the only other writer.
+  // The OUTER row: [left column | Canvas | right column]. Same weight-not-boundary
+  // treatment as the columns above, for the same reason and one more: when EVERY
+  // panel in a column is hidden the column itself must go, divider included, or
+  // hiding the last panel of a column would leave a sliver of empty chrome with a
+  // live handle beside it. Weights reproduce the old [0.16, 0.78] boundaries. The
+  // CANVAS is not a panel and has no visibility flag, so it is always in this list
+  // — that is what guarantees the row is never empty.
+  const COLUMN_WEIGHTS = { left: 0.16, canvas: 0.62, right: 0.22 };
+  let columnWeights = $state({ ...COLUMN_WEIGHTS });
+
+  /** Query. The outer row's live slots, in order: a column appears iff at least one
+   *  of its panels is visible; the canvas always does. Each carries its current
+   *  (possibly dragged) weight so columnSplits() can size the row exactly the way
+   *  it sizes a column — ONE boundary rule for both axes. */
+  function visibleColumns() {
+    return [
+      { id: "left", weight: columnWeights.left, shown: visiblePanels("left").length > 0 },
+      { id: "canvas", weight: columnWeights.canvas, shown: true },
+      { id: "right", weight: columnWeights.right, shown: visiblePanels("right").length > 0 },
+    ].filter((slot) => slot.shown);
+  }
+
+  // The outer row's and the two columns' boundary arrays. $state, not $derived,
+  // because SplitPane needs `bind:splits` to write a live drag back — and a
+  // $derived cannot be bound. The effect below is the only other writer.
+  let hSplits = $state(columnSplits(visibleColumns()));
   let leftSplits = $state(columnSplits(panelsInColumn("left").filter((p) => p.defaultVisible)));
   let rightSplits = $state(columnSplits(panelsInColumn("right").filter((p) => p.defaultVisible)));
+
+  /**
+   * Command. The outer row's counterpart to commitColumnDrag: writes dragged row
+   * boundaries back to per-column weights, so widening the canvas survives hiding
+   * and re-showing a panel.
+   */
+  function commitRowDrag(splits) {
+    const visible = visibleColumns();
+    const total = visible.reduce((sum, slot) => sum + slot.weight, 0);
+    const edges = [0, ...splits, 1];
+    visible.forEach((slot, i) => {
+      columnWeights[slot.id] = (edges[i + 1] - edges[i]) * total;
+    });
+  }
 
   /** Query. The visible-panel signature of a column ("1,0" style), the ONE thing a
    *  visibility change alters and a drag does not. Depending on this instead of on
@@ -380,6 +410,7 @@
   $effect(() => {
     visibilitySignature;
     untrack(() => {
+      hSplits = columnSplits(visibleColumns());
       leftSplits = columnSplits(visiblePanels("left"));
       rightSplits = columnSplits(visiblePanels("right"));
     });
@@ -1753,7 +1784,7 @@
 />
 
 <!-- --a-label-frac rides the APP ROOT, not either panel: the Property Panel and
-     the Variables Panel are separate subtrees in separate panes, and the
+     the Global Variables Panel are separate subtrees in separate panes, and the
      round-11 ruling is that their columns LINE UP. One variable on their nearest
      common ancestor is what makes that structural instead of a coincidence two
      independent drags would have to keep re-establishing. -->
@@ -1763,55 +1794,41 @@
        features that are unavailable, and offers persistent storage. -->
   <StaticModeNotice {app} />
   <div class="main">
-    <SplitPane orientation="horizontal" bind:splits={hSplits}>
+    <!-- The outer row and both columns are driven by the VISIBLE subset, never by
+         a fixed pane index: `visibleColumns()[col]` and `visiblePanels(…)[row]`
+         are what make a hidden panel contribute no pane AND no divider. Indexing
+         by position would be the bug this replaced — with one panel hidden, slot 2
+         would render the panel that used to be third. -->
+    <SplitPane orientation="horizontal" bind:splits={hSplits} onchange={commitRowDrag}>
       {#snippet children(col)}
         <!-- Panels OPTIONALLY show their canonical name (manifest glossary) as
              a title bar at the top; toggled via the "Toggle Panel Names"
              palette command (OFF by default). The Canvas is exempt — it's an
-             interaction surface, not a first-class named panel. -->
-        {#if col === 0}
+             interaction surface, not a first-class named panel, which is also
+             why it has no visibility toggle. -->
+        {@const slot = visibleColumns()[col]}
+        {#if slot.id === "canvas"}
+          <CanvasView {app} />
+        {:else if slot.id === "left"}
           <!-- Left column stacks the Slide Navigator over the Asset Explorer
-               (manifest Round 12: "a pane BELOW the Slide Navigator"). Same
-               boundary-split pattern as the right column. -->
+               (manifest Round 12: "a pane BELOW the Slide Navigator"); the right
+               stacks Property / Tools / Global Variables / Keyframe. The two are
+               spelled out rather than folded into one <SplitPane> with a
+               conditional binding, because `bind:` takes an IDENTIFIER: a
+               `{get, set}` pair closing over the column is captured ONCE at
+               creation, so after a visibility flip the child kept writing through
+               the stale closure and its pane count never shrank — a hidden panel
+               left its empty pane AND its dead divider behind. The pane bodies are
+               NOT duplicated: both call the {panelPane} snippet below. -->
           <div class="left-col">
-            <SplitPane orientation="vertical" bind:splits={leftSplits}>
-              {#snippet children(row)}
-                {#if row === 0}
-                  <Panel {app} name="Slide Navigator">
-                    <SlideNav {app} />
-                  </Panel>
-                {:else}
-                  <Panel {app} name="Asset Explorer">
-                    <AssetExplorer {app} />
-                  </Panel>
-                {/if}
-              {/snippet}
+            <SplitPane orientation="vertical" bind:splits={leftSplits} onchange={(splits) => commitColumnDrag("left", splits)}>
+              {#snippet children(row)}{@render panelPane("left", row)}{/snippet}
             </SplitPane>
           </div>
-        {:else if col === 1}
-          <CanvasView {app} />
         {:else}
           <div class="right-col">
-            <SplitPane orientation="vertical" bind:splits={rightSplits}>
-              {#snippet children(row)}
-                {#if row === 0}
-                  <Panel {app} name="Property Panel">
-                    <Inspector {app} />
-                  </Panel>
-                {:else if row === 1}
-                  <Panel {app} name="Tools">
-                    <ToolsPane {app} />
-                  </Panel>
-                {:else if row === 2}
-                  <Panel {app} name="Variables Panel">
-                    <VariablesPanel {app} />
-                  </Panel>
-                {:else}
-                  <Panel {app} name="Keyframe Panel">
-                    <KeyframePanel {app} />
-                  </Panel>
-                {/if}
-              {/snippet}
+            <SplitPane orientation="vertical" bind:splits={rightSplits} onchange={(splits) => commitColumnDrag("right", splits)}>
+              {#snippet children(row)}{@render panelPane("right", row)}{/snippet}
             </SplitPane>
           </div>
         {/if}
@@ -1991,13 +2008,24 @@
        editor. `value` is seeded ONCE from app.codeModalValue() — the one place that
        maps the modal's target to its stored source, so an item leaf and a doc.meta
        field are read the same way; the editor owns its buffer after that. Save
-       commits ONE undo unit (app.commitCodeModal); cancel drops it. -->
+       commits ONE undo unit (app.commitCodeModal); cancel drops it — EXCEPT in the
+       "asset" scope, where saving is a file write plus a live plugin re-registration
+       and there is no document to undo (app.svelte.js's scope note).
+
+       THE PROBLEM FOOTER is per-scope because the three scopes fail differently:
+       a document-scope script reports the evaluator's compile verdict, an
+       asset-scope plugin reports the last SAVE's refusal (nothing was written, so
+       the dialog stays open), and an item leaf has no compile step at all. -->
   {#if app.codeModal}
     <CodeEditorModal
       value={app.codeModalValue()}
       language={app.codeModal.language}
       title={app.codeModal.title}
-      problem={app.codeModal.scope === "document" ? app.projectScriptError() : null}
+      problem={app.codeModal.scope === "document"
+        ? app.projectScriptError()
+        : app.codeModal.scope === "asset"
+          ? app.pluginAssetError
+          : null}
       onsave={(text) => app.commitCodeModal(text)}
       oncancel={() => app.closeCodeModal()}
     />

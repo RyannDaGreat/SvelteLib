@@ -499,12 +499,10 @@
        after a delay. -->
   {#if quotaText}
     <Tooltip text={quotaDetail()}>
+      <!-- TEXT ONLY (user ruling: "I don't need the bar… just the text is good
+           enough"): the percent still lives in the hover detail and the
+           nearly-full tint still warns — the fill graph is gone. -->
       <div class="ae-quota" class:ae-quota-nearly-full={quotaNearlyFull} aria-label={`Storage: ${quotaText}`}>
-        {#if quotaPct !== null}
-          <div class="ae-quota-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={quotaPct}>
-            <div class="ae-quota-bar-fill" style={`--ae-quota-fill:${Math.min(100, quotaPct)}%`}></div>
-          </div>
-        {/if}
         <div class="ae-quota-text">{quotaText}</div>
       </div>
     </Tooltip>

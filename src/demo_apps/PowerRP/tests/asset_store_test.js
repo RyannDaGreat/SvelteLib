@@ -69,6 +69,20 @@ test("assetKindForName matches the server's asset_kind classes", () => {
   assert.equal(assetKindForName("Handwriting.ttf"), "font");
   assert.equal(assetKindForName("notes.txt"), "other");
   assert.equal(assetKindForName("noextension"), "other");
+  // DATA + PLUGIN, the two kinds this table was missing until 2026-07-30. Both
+  // have their own tile glyph (web/assetThumbnail.js KIND_ICON) and one of them
+  // (data) now opens a table preview, so a local-mode asset landing in "other"
+  // meant the SAME file looked and behaved differently in static mode than it did
+  // against the Python backend.
+  assert.equal(assetKindForName("sales.CSV"), "data");
+  assert.equal(assetKindForName("readings.tsv"), "data");
+  assert.equal(assetKindForName("table.json"), "data");
+  // The plugin marker is the COMPOUND suffix, case-insensitively (server.py lowers
+  // the whole name before comparing) — a bare .js stays "other" so dropping a
+  // script into a project cannot accidentally make it a widget.
+  assert.equal(assetKindForName("gear.plugin.js"), "plugin");
+  assert.equal(assetKindForName("Gear.Plugin.JS"), "plugin");
+  assert.equal(assetKindForName("helper.js"), "other");
 });
 
 // ── De-collision: an import must NEVER overwrite ────────────────────────────

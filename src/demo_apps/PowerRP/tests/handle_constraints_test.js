@@ -42,7 +42,15 @@ import {
   closestPointOnAxisRange, closestPointOnSegment, closestPointInAnnulus, distToSegment,
 } from "../core/outline.js";
 import { UNCONSTRAINED, modifierWrite, constraintPull, nodeModifierPoints } from "../core/derive.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins. This suite is a PROTOCOL SWEEP over "every
+// shipped widget", and allPlugins is only the SOURCE-MODULE half of the roster —
+// the batch-1 migration moved donut, progress_bar, number and both clocks into the
+// built-in plugin-asset library, so sweeping allPlugins silently stopped covering
+// them. The required-coverage assertion below is what caught that; builtinRoster()
+// is the fix. See plugins/index.js builtinRoster for the full account.
+import { builtinRoster } from "../plugins/index.js";
+
+const roster = builtinRoster();
 
 let passed = 0;
 function test(name, fn) { fn(); passed += 1; console.log(`  ok  ${name}`); }
@@ -119,7 +127,7 @@ const STATE_VARIANTS = [
  *  declares modifier points — the sweep's subject list. */
 function handleCases() {
   const out = [];
-  for (const plugin of allPlugins) {
+  for (const plugin of roster) {
     if (!plugin.modifierPoints) continue;
     for (const makeState of STATE_VARIANTS) {
       const state = makeState(plugin.defaults ?? {});
@@ -160,6 +168,14 @@ const worst = { idempotent: 0, fixed: 0, roundTrip: 0, pull: 0 };
 test(`registry sweep covers every declared handle (${cases.length} handle×state cases)`, () => {
   assert.ok(cases.length > 40, `expected the whole registry, got ${cases.length}`);
   const types = new Set(cases.map((c) => c.type));
+  // THE FLOOR. A sweep over a list can "pass" by covering nothing, so the types it
+  // MUST reach are named. This is not belt-and-braces: it is the assertion that
+  // caught the batch-1 migration dropping five widgets out of this suite (see the
+  // builtinRoster import above). `donut` and `clock_analog` are LIBRARY widgets —
+  // naming them here is what pins that builtinRoster() really does include the
+  // plugin-asset half, from the consumer's side rather than its own. (progress_bar
+  // and number are library widgets too, but declare NO handles, so they correctly
+  // have no place in this sweep; the effects/row-kind sweeps are where they land.)
   for (const required of ["donut", "elbow_arrow", "curved_arrow", "fancy_arrow", "clock_analog", "polygon", "demo_lens_flare", "ss_radialSweep"])
     assert.ok(types.has(required), `${required} declares handles but was not swept`);
 });
@@ -304,7 +320,7 @@ test("CROSS-DEPENDENT SET: fancy_arrow/endWidth round-trips below its threshold"
   // threshold at endWidth 20 — below it the handle lands where the drag left it,
   // above it the anchor slides. Asserting BOTH sides is what makes the exemption a
   // measured bound rather than a shrug.
-  const arrow = allPlugins.find((p) => p.type === "fancy_arrow");
+  const arrow = roster.find((p) => p.type === "fancy_arrow");
   const state = { ...arrow.defaults, from: { x: 100, y: 300 }, to: { x: 400, y: 300 } };
   const landing = (targetWidth) => {
     const mp = handleOf(arrow, state, "endWidth");
@@ -326,7 +342,7 @@ test("MULTI-HANDLE DRAG: one shared delta, INDEPENDENT projections", () => {
   // A polygon vertex is free and a donut's inner radius is not; the same local delta
   // must move the free one exactly and the constrained one only along its own
   // trajectory. That divergence is the constraint working, not drift.
-  const donut = allPlugins.find((p) => p.type === "donut"), poly = allPlugins.find((p) => p.type === "polygon");
+  const donut = roster.find((p) => p.type === "donut"), poly = roster.find((p) => p.type === "polygon");
   const dState = { ...donut.defaults, w: 140, h: 140, inner: 0.5 };
   const dMp = handleOf(donut, dState, "inner");
   const delta = { x: 20, y: 37 };

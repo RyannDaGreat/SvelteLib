@@ -35,7 +35,13 @@ import {
 import { elementActive, withElementActive, withElementPurged, indexAfterPurge } from "../core/lists.js";
 import { pointInPolygon, signedArea } from "../core/outline.js";
 import { createRegistry } from "../core/registry.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster, registerPlugins } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { deriveRenderTree, nodeModifierPoints, nodeAnchors, nodeFeatures, pickNode } from "../core/derive.js";
 import { localBoundsOf, defaultCanSkip } from "../core/view.js";
 import { keyframed, foldState, repairedDocument, serialize } from "../core/document.js";
@@ -47,7 +53,7 @@ function test(name, fn) { fn(); passed += 1; console.log(`  ok  ${name}`); }
 const approx = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
 
 const registry = createRegistry();
-for (const p of allPlugins) registry.register(p);
+registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 const registered = registry.get("polygon");
 
 // A unit SQUARE and a self-crossing PENTAGRAM, the two shapes the fill-rule and
@@ -743,7 +749,7 @@ test("ADD VERTEX is ONE keyframe pair, and the widget declares the activation th
   assert.ok(handlerIds("activate").includes("insert_point"));
   // Every plugin that ships the CONTENT descriptor must also name the handler —
   // the same gate tests/activation_migration_test.js applies globally.
-  assert.deepEqual(migrationPlan(allPlugins), []);
+  assert.deepEqual(migrationPlan(roster), []);
   // The write itself is a plain list keyframe: one leaf, tweenable, undoable.
   const state = polyState({ points: [[0, 0], [1, 0], [1, 1]], closed: false, w: 100, h: 100 });
   const hook = registered.insertPointAt(state, 50, 4);

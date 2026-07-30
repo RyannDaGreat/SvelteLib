@@ -17,7 +17,7 @@
  * widget that never repaints because nobody added it to a list). So the predicates
  * survive for ONE reader, `migrationPlan`, and this suite is the ratchet:
  *
- *   (1) THE GATE — migrationPlan(allPlugins) is EMPTY. Delete any single
+ *   (1) THE GATE — migrationPlan(roster) is EMPTY. Delete any single
  *       `activate:` line and this fails, naming the widget and the one-line fix.
  *   (2) THE TEN — every widget that used to be resolved by a legacy claim now
  *       resolves by its OWN declaration, to the SAME handler it had before.
@@ -39,7 +39,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster, registerPlugins } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { createRegistry } from "../core/registry.js";
 import {
   canvasModes, getHandler, handlerFor, handlerIds, migrationPlan, phaseNames,
@@ -55,7 +61,7 @@ function test(name, fn) {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const registry = createRegistry();
-for (const p of allPlugins) registry.register(p);
+registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 const registered = registry.all();
 const pluginOf = (type) => {
   const p = registered.find((x) => x.type === type);
@@ -83,7 +89,7 @@ const MIGRATED = {
 };
 
 // ── (1) THE GATE ─────────────────────────────────────────────────────────────
-test("migrationPlan(allPlugins) is EMPTY — every widget names its own handler", () => {
+test("migrationPlan(roster) is EMPTY — every widget names its own handler", () => {
   const plan = migrationPlan(registered);
   assert.deepEqual(
     plan, [],

@@ -37,8 +37,14 @@ import { newDocument, withNewItem, clonedItemStates } from "../core/document.js"
 import { storedRefItemId, withItemRefsRemapped } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { registerAll } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { createCommands } from "../core/commands.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster } from "../plugins/index.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -198,7 +204,7 @@ test("clonedItemStates is LOUD about a missing new id", () => {
 // ── The declaration cannot drift ─────────────────────────────────────────────
 
 test("every optionsFrom:\"items\" row's key is declared in its plugin's itemRefs", () => {
-  for (const plugin of allPlugins) {
+  for (const plugin of roster) {
     const declared = new Set((plugin.itemRefs ?? []).map((path) => path.join(".")));
     for (const row of plugin.inspector ?? [])
       if (row.optionsFrom === "items")
@@ -208,7 +214,7 @@ test("every optionsFrom:\"items\" row's key is declared in its plugin's itemRefs
 });
 
 test("itemRefs declarations name REAL state paths (a typo cannot hide)", () => {
-  for (const plugin of allPlugins)
+  for (const plugin of roster)
     for (const path of plugin.itemRefs ?? []) {
       let cur = plugin.defaults;
       for (const key of path) {

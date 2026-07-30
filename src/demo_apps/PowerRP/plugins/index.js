@@ -12,6 +12,7 @@
  * suite) gets the same set with no call-site change.
  */
 
+import { createRegistry } from "../core/registry.js"; // builtinRoster() needs one to evaluate the library through the jail
 import { registerBuiltinPluginAssets } from "../core/builtin_plugin_assets.js"; // the BUILT-IN plugin-asset library (assets/builtin/library/) — the roster's second half
 import { builtinAssetCommands } from "./builtin_asset_commands.js"; // their palette entries (a plugin ASSET may not declare `commands`)
 import { rectPlugin } from "./rect.js";
@@ -123,6 +124,53 @@ export function registerPlugins(registry) {
   const { reports } = registerBuiltinPluginAssets(registry);
   for (const report of reports)
     console.error(`PowerRP built-in widget library REFUSED a widget — ${report}`);
+}
+
+/**
+ * Query (evaluates the built-in library through the jail; memoized downstream).
+ * THE WHOLE BUILT-IN ROSTER as plugin OBJECTS — `allPlugins` PLUS the built-in
+ * plugin-asset library, in registration order.
+ *
+ * ── WHY THIS EXISTS: A SWEEP THAT SILENTLY SHRANK ────────────────────────────
+ * About a dozen node suites are PROTOCOL SWEEPS: they iterate "every shipped
+ * widget" and assert a protocol holds for each one (handle constraints, row
+ * kinds, activation handlers, numeric steps, angle wrapping, effects
+ * composition, list migration). Every one of them iterated `allPlugins`, which
+ * was the same thing as "the roster" right up until the batch-1 migration moved
+ * five widgets to the plugin-asset library. At that moment the sweeps quietly
+ * stopped covering donut, progress_bar, number and both clocks — five widgets
+ * dropped out of eleven protocol checks with no failure anywhere, because
+ * "iterate a shorter list" is not an error.
+ *
+ * Exactly ONE assertion caught it: tests/handle_constraints_test.js names the
+ * types its sweep MUST reach (`assert.ok(types.has("donut"))`), so the list
+ * shrinking was a hard failure instead of a coverage hole. That is the lesson
+ * worth keeping — a sweep over a list needs a floor, or it can pass by covering
+ * nothing — and this function is the fix for the other ten.
+ *
+ * A SWEEP MUST USE THIS, NOT `allPlugins`. `allPlugins` still exists and is
+ * still correct for its one real job: it is the SOURCE-MODULE half, the list
+ * whose `commands` registerAll walks (a plugin asset may not declare any) and
+ * whose objects are imported by identity. Anything asking "what widgets does
+ * this app ship?" wants this function.
+ *
+ * WHY IT BUILDS A REGISTRY rather than concatenating: the library's plugins do
+ * not exist as objects until the jail has evaluated them, and
+ * registerBuiltinPluginAssets is the one path that does that with the collision
+ * refusal and the drift report intact. Reusing it means a sweep sees precisely
+ * the objects the editor registered — jailed hooks and all — rather than a
+ * parallel construction that could disagree.
+ *
+ * @returns {object[]} every built-in plugin object, source modules first
+ *
+ * @example // builtinRoster().length > allPlugins.length   // true
+ * @example // builtinRoster().map((p) => p.type).includes("donut")  // true (a LIBRARY widget)
+ * @example // builtinRoster().map((p) => p.type).includes("rect")   // true (a SOURCE widget)
+ */
+export function builtinRoster() {
+  const registry = createRegistry();
+  registerPlugins(registry);
+  return registry.all();
 }
 
 /** Command. Registers every plugin and its palette commands — the ONE-TIME boot

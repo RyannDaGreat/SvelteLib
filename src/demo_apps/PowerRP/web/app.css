@@ -340,6 +340,26 @@
   --a-quota-full-fill: var(--a-guide);
   --a-quota-full-at: 90%; /* the fullness that flips the bar to the warning color */
   --a-quota-text-opacity: 0.7; /* a passive readout, quieter than the tile captions */
+  /* CSV TABLE preview (web/CsvTable.svelte) — the DATA asset's branch of the
+     Asset Explorer's preview Modal. A fixed-row-height virtual scroller, so the
+     ROW HEIGHT is load-bearing rather than cosmetic: the component MEASURES a
+     real row and hands the number to core/csv.js csvWindow, which sizes the
+     spacer rows that stand in for the unmounted 99,970 rows of a 100k-row file.
+     Changing this token is therefore safe (the measurement follows it) but
+     hardcoding a second copy in the component would not be. */
+  --a-csv-row-h: 22px;
+  --a-csv-cell-pad: 2px 8px;
+  --a-csv-cell-max-w: 260px; /* one 4KB log cell must not push every other column off-screen */
+  --a-csv-gutter-w: 56px; /* the row-number column: fits "100,000" at --a-font-sm */
+  --a-csv-view-h: 62vh; /* the scroll body inside the preview dialog */
+  --a-csv-view-min-w: 520px; /* a table narrower than this reads as a list, not a table */
+  --a-csv-rule: color-mix(in srgb, var(--fg) 14%, transparent); /* cell grid lines */
+  /* The PINNED header needs an OPAQUE fill — rows scroll UNDERNEATH it, and a
+     translucent header would show them through. --control-bg is what
+     lib/Modal.svelte fills its own panel with, so the header matches the dialog
+     it lives in rather than introducing a third surface color. */
+  --a-csv-head-bg: var(--control-bg);
+  --a-csv-zebra: color-mix(in srgb, var(--fg) 4%, transparent);
   /* Asset THUMBNAIL + BADGE (manifest #25): a rendered preview bitmap (PDF page
      1) is letterboxed on paper white (a document, not a photo — never cropped);
      the corner badge is a dark chip (readable over any thumbnail) carrying
@@ -1641,20 +1661,24 @@ textarea {
 
 /* The dismissed form: a small always-present badge, so which storage this
    session uses stays answerable at a glance (see the component's docblock). */
+/* The resting-state chip: pinned to the canvas area's TOP-LEFT corner, out of
+   the layout flow entirely (user ruling: an indicator, not a banner). Sits
+   above the canvas but below floating panels. */
 .static-badge {
+  position: absolute;
+  top: var(--a-sp-2);
+  left: var(--a-sp-2);
+  z-index: var(--a-z-popover);
   display: inline-flex;
   align-items: center;
   gap: var(--a-sp-2);
   height: var(--a-control-h);
   padding: 0 var(--a-sp-3);
   background: var(--a-static-notice-bg);
-  border: none;
-  border-bottom: var(--a-hairline) solid var(--a-static-notice-border);
+  border: var(--a-hairline) solid var(--a-static-notice-border);
   color: var(--a-static-notice-accent);
   font-size: var(--a-font-sm);
-  cursor: pointer;
-  width: 100%;
-  justify-content: flex-start;
+  cursor: pointer; /* shrink-wraps: a corner chip, not a row (user ruling) */
 }
 
 /* ── THE standard controls — reuse these; do not invent new button styles ── */
@@ -3629,6 +3653,119 @@ textarea {
 
 audio.ae-preview-media {
   width: 100%;
+}
+
+/* ── CSV TABLE preview (web/CsvTable.svelte) ─────────────────────────────────
+   The DATA asset's branch of the SAME preview Modal that shows images, video and
+   audio. A virtual scroller: .csv-scroll is the fixed-height viewport, .csv-row
+   is the FIXED-height row the component measures, and .csv-spacer is the empty
+   row standing in for everything outside the window. Every geometric value here
+   is a --a-csv-* token because the component reads the row height back out of
+   the layout — see the token block's note. */
+.csv-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+  min-width: var(--a-csv-view-min-w);
+  max-width: 90vw;
+}
+
+.csv-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+  font-size: var(--a-font-sm);
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.csv-summary-dim {
+  color: var(--fg-dim);
+}
+
+.csv-empty {
+  font-size: var(--a-font-md);
+  color: var(--fg-dim);
+  padding: var(--a-sp-5);
+}
+
+.csv-scroll {
+  height: var(--a-csv-view-h);
+  overflow: auto;
+  border: 1px solid var(--a-csv-rule);
+}
+
+.csv-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: var(--a-mono); /* a data file is read as data: aligned columns, fixed advance */
+  font-size: var(--a-font-sm);
+}
+
+/* STICKY header row. z-index keeps it over the scrolling body; the opaque
+   background (see the token) is what makes "over" mean anything. */
+.csv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--a-csv-head-bg);
+  border-bottom: 1px solid var(--fg-dim);
+}
+
+.csv-head {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.csv-head,
+.csv-cell,
+.csv-gutter {
+  padding: var(--a-csv-cell-pad);
+  border-right: 1px solid var(--a-csv-rule);
+  max-width: var(--a-csv-cell-max-w);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.csv-row {
+  height: var(--a-csv-row-h);
+}
+
+.csv-row:nth-child(even) {
+  background: var(--a-csv-zebra);
+}
+
+/* The ROW-NUMBER gutter: a dim, fixed-width, right-aligned index into the FILE
+   (not into the mounted window — the component passes the absolute row index).
+   It is the only thing that tells a reader they are 40,000 rows down. */
+.csv-gutter {
+  width: var(--a-csv-gutter-w);
+  min-width: var(--a-csv-gutter-w);
+  text-align: right;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* NUMERIC columns (core/csv.js columnAlignments): right-aligned so the digits
+   line up, tabular-nums so they line up even in a proportional fallback font. */
+.csv-right {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The spacer rows are pure height — no padding, no borders, no content. Their
+   height is set inline by the component from csvWindow's padTop/padBottom. */
+.csv-spacer {
+  height: var(--a-csv-spacer-h, 0);
+}
+
+.csv-spacer > td {
+  padding: 0;
+  border: 0;
+  height: var(--a-csv-spacer-h, 0);
 }
 
 /* Delete-with-users confirm modal (Round 12C): message, user rows (each row

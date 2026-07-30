@@ -39,7 +39,13 @@ import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import { paintIR, materialRasterStats } from "../render_gpu/skia/paint_skia.js";
 import { rect, pushTransform, popTransform } from "../render_gpu/ir.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { materialIds, getMaterial, isBackdropMaterial, isSamplerMaterial, isFillCapableMaterial, materialFillParamDefaults } from "../render_gpu/skia/materials.js";
 
 const require = createRequire(import.meta.url);
@@ -77,7 +83,7 @@ const WORLD = { x: 34, y: 26, rotation: 0, scale: 1 };
  */
 function fixtures() {
   const out = new Map();
-  for (const plugin of allPlugins) {
+  for (const plugin of roster) {
     const state = { ...plugin.defaults, x: 0, y: 0, world: { x: 0, y: 0, rotation: 0, scale: 1 } };
     for (const k of ["w", "h", "cx", "cy"]) if (typeof state[k] !== "number") state[k] = k === "w" || k === "cx" ? 240 : 150;
     let ops;

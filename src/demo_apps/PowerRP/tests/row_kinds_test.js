@@ -29,7 +29,13 @@
  */
 
 import assert from "node:assert/strict";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import {
   PROPS,
   ROW_KINDS,
@@ -75,7 +81,7 @@ test("no retired spelling is also a current ROW_KIND", () => {
 
 // ── (1)+(2) the app-wide sweep ───────────────────────────────────────────────
 test("every plugin inspector row declares a known kind", () => {
-  const rows = allRows(allPlugins);
+  const rows = allRows(roster);
   assert.ok(rows.length > 0, "no plugin rows found — the sweep would pass vacuously");
   const unknown = rows.filter((r) => !ROW_KINDS.includes(r.kind) && !(r.kind in RETIRED_ROW_KINDS));
   assert.deepEqual(
@@ -86,7 +92,7 @@ test("every plugin inspector row declares a known kind", () => {
 });
 
 test("no plugin inspector row uses a RETIRED kind spelling", () => {
-  const stale = allRows(allPlugins).filter((r) => r.kind in RETIRED_ROW_KINDS);
+  const stale = allRows(roster).filter((r) => r.kind in RETIRED_ROW_KINDS);
   assert.deepEqual(
     stale,
     [],
@@ -103,7 +109,7 @@ test("the shared registry (PROPS) uses only current kinds", () => {
 });
 
 test("boolean is the ONE on/off kind, and it is actually used", () => {
-  const bools = allRows(allPlugins).filter((r) => r.kind === "boolean");
+  const bools = allRows(roster).filter((r) => r.kind === "boolean");
   assert.ok(bools.length > 0, "no boolean rows — the guard would be vacuous");
   // Anything on/off must be spelled "boolean": there is no second on/off kind.
   const onOffish = ROW_KINDS.filter((k) => /^(bool|check|toggle|switch|flag)/i.test(k));

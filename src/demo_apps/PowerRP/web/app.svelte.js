@@ -55,6 +55,11 @@ import { DRAG_KINDS } from "./canvas/dragKinds.js"; // the dragKind setter's all
 import { createUndo } from "../core/undo.js";
 import { registerAll, registerPlugins } from "../plugins/index.js"; // registerPlugins = types only (a project switch rebuilds the plugin registry, NOT the commands)
 import { loadProjectPluginAssets, printPluginAssetReports } from "./pluginAssetLoader.js"; // widgets delivered as project assets (*.plugin.js), sandboxed by core/plugin_assets.js
+// The plugin-asset GRAMMAR + VALIDATOR, for the code modal's "asset" scope: the
+// same loadPluginAsset the loader uses, so a source the editor accepts is exactly a
+// source the loader would register (a second opinion here is how a save that the
+// dialog called fine becomes an orphan purge on the next open).
+import { PLUGIN_ASSET_SUFFIX, isPluginAssetName, loadPluginAsset } from "../core/plugin_assets.js";
 import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
 import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
@@ -112,6 +117,13 @@ const SETTINGS = {
   ruler: browserSetting("powerrp.ruler", false),
   showGhosts: browserSetting("powerrp.showGhosts", false),
   fps: browserSetting("powerrp.fps", false),
+  // "Show built-in assets" in the Asset Explorer. DEFAULT OFF, per the user's
+  // ruling: "maybe the asset explorer could have a toggle for built-in assets. By
+  // default it's turned off". Off is the right default because the Explorer answers
+  // "what is in MY project" — the built-in library is the same in every project,
+  // cannot be deleted, and costs the user no storage, so listing it by default would
+  // bury a two-file project under the shipped set.
+  showBuiltinAssets: browserSetting("powerrp.showBuiltinAssets", false),
   // THE label/value split shared by the Property + Variables panels, as a
   // FRACTION of the row's width rather than a pixel column — the user's ruling:
   // "it should be a constant proportion based on the width of that panel", so
@@ -525,6 +537,15 @@ export class PowerRPApp {
   // localStorage key live in the descriptor.
   toggleMinimap() {
     this.minimapVisible = SETTINGS.minimap.persist(!this.minimapVisible);
+  }
+
+  /** Command. Flip the Asset Explorer's "Show built-in assets" filter (default
+   *  OFF — see the SETTINGS entry for why). Purely a VIEW filter: it changes what
+   *  the Explorer lists, never what is registered. The built-in widget library is
+   *  loaded at boot in every mode regardless, so a deck using a built-in widget
+   *  renders identically whether the toggle is on or off. */
+  toggleShowBuiltinAssets() {
+    this.showBuiltinAssets = SETTINGS.showBuiltinAssets.persist(!this.showBuiltinAssets);
   }
 
   toggleFps() {
@@ -1783,6 +1804,10 @@ export class PowerRPApp {
   codeModalValue() {
     const t = this.codeModal;
     if (!t) return "";
+    // An ASSET's source is not in the document at all: openPluginAssetCode already
+    // awaited the bytes and put them on the target, so the seed is a field read
+    // rather than a state read. That is the whole reason the open is async.
+    if (t.scope === "asset") return t.source ?? "";
     if (t.scope === "document") return this.doc.meta[t.property] ?? "";
     return this.rawState().items?.[t.itemId]?.[t.property] ?? "";
   }
@@ -1796,6 +1821,10 @@ export class PowerRPApp {
   commitCodeModal(value) {
     const t = this.codeModal;
     if (!t) return;
+    // An ASSET save is a FILE WRITE plus a registry rebuild, not a document commit —
+    // async, and with no undo unit to make (see the scope's note). Routed here so
+    // CodeEditorModal's single `onsave` serves all three scopes.
+    if (t.scope === "asset") return this.commitPluginAssetCode(value);
     if (t.scope !== "document") {
       this.setPreview([[["items", t.itemId, t.property], value]]);
       this.commitPreview();
@@ -1817,6 +1846,113 @@ export class PowerRPApp {
 
   /** Command. Closes the modal WITHOUT committing (Cancel / Esc / backdrop). */
   closeCodeModal() {
+    this.codeModal = null;
+  }
+
+  // ── THE THIRD SCOPE: a PLUGIN ASSET's JavaScript (user ruling: "If I double
+  // click a plugin, it should let me edit the JavaScript inside of it") ────────
+  // A *.plugin.js asset is a whole WIDGET TYPE delivered as a file
+  // (core/plugin_assets.js). Editing it is therefore NOT a document edit at all,
+  // which is the one thing that makes this scope genuinely different from the other
+  // two rather than a third copy of them:
+  //
+  //   - THE VALUE LIVES IN THE ASSET STORE, not in doc.json. So the buffer is read
+  //     ASYNCHRONOUSLY before the dialog opens (openPluginAssetCode awaits the
+  //     bytes and seeds `source` into the target), and Save writes back through
+  //     assetStore().put — the same adapter-blind seam pluginAssetLoader reads
+  //     through, so this works identically against the Python backend and against
+  //     IndexedDB in static mode. That was an explicit requirement.
+  //   - THERE IS NO UNDO UNIT. The global undo stack holds documents; an asset's
+  //     bytes are not in one. Save is a file write, and it says so.
+  //   - SAVING RE-REGISTERS THE WIDGET. reloadPluginAssets rebuilds the registry
+  //     from the built-in roster plus the project's assets, so every instance of
+  //     the edited type re-renders from the new code without a page reload. Without
+  //     that, the author would edit a file and see nothing change — the failure
+  //     mode this ruling exists to remove.
+  //   - A SOURCE THAT WILL NOT COMPILE KEEPS THE MODAL OPEN, with the reason in the
+  //     footer. That is the PROJECT-SCRIPT convention, and it matters more here:
+  //     a refused plugin asset does not merely fail to run, it makes every item of
+  //     its type an ORPHAN that the repair pass would drop on the next load
+  //     (pluginAssetLoader's header). So the check runs BEFORE the write, and a
+  //     broken source is never stored at all.
+
+  /** The last plugin-asset save's refusal message (null = none). Reactive so
+   *  CodeEditorModal's `problem` footer shows it the moment Save is refused. */
+  pluginAssetError = $state(null);
+
+  /** Query (asset store). Read one plugin asset's source text through the storage
+   *  seam. Separate from openPluginAssetCode so a probe/test can read the stored
+   *  bytes without opening a dialog. */
+  async pluginAssetSource(filename, project = this.projectName()) {
+    const blob = await assetStore().get(project, filename);
+    return blob.text();
+  }
+
+  /**
+   * Command (async; opens the modal). Open the Monaco editor on a `*.plugin.js`
+   * asset's JavaScript. Reads the bytes FIRST and only then opens, so the dialog
+   * never appears around an empty buffer that later fills in and clobbers typing.
+   *
+   * Refuses a non-plugin filename loudly rather than opening a JavaScript editor
+   * on a PNG. A read failure is re-thrown for the caller to surface in the pane's
+   * own error line (the Asset Explorer's `error`), which is where every other
+   * asset failure in that pane already appears.
+   *
+   * @param {string} filename - e.g. "gear.plugin.js"
+   * @param {string} [project] - defaults to the current project
+   */
+  async openPluginAssetCode(filename, project = this.projectName()) {
+    if (!isPluginAssetName(filename))
+      throw new Error(`openPluginAssetCode: "${filename}" is not a plugin asset (expected a name ending in "${PLUGIN_ASSET_SUFFIX}")`);
+    const source = await this.pluginAssetSource(filename, project);
+    this.pluginAssetError = null;
+    this.codeModal = {
+      scope: "asset", property: "source", filename, project, source,
+      language: "javascript",
+      title: `${filename} — widget source (saving re-registers it live)`,
+    };
+  }
+
+  /**
+   * Command (async; writes an asset, rebuilds the registry). Save an edited plugin
+   * asset. VALIDATES FIRST against the types registered by everything EXCEPT this
+   * asset — so re-saving a plugin does not refuse itself for colliding with its own
+   * already-registered type, while a rename onto `rect` still is refused.
+   *
+   * On a refusal: nothing is written, `pluginAssetError` carries the reason, and the
+   * modal stays open (App.svelte feeds it to the footer). On success: the bytes are
+   * stored, the registry is rebuilt so live instances re-render, and the dialog
+   * closes.
+   */
+  async commitPluginAssetCode(source) {
+    const t = this.codeModal;
+    if (!t || t.scope !== "asset") return;
+    const taken = new Set(this.registry.all().map((p) => p.type));
+    // Whatever type THIS asset currently declares is not a collision with itself.
+    try {
+      const current = loadPluginAsset(t.source, t.filename, new Set());
+      taken.delete(current.type);
+    } catch {
+      // The STORED source is already broken (that is likely why it is being edited),
+      // so it registered nothing and reserves no type. Not a silent swallow: the
+      // only information this branch discards is "the old source was invalid too",
+      // which changes nothing about validating the NEW one below — and the NEW
+      // source's own verdict is reported either way.
+    }
+    try {
+      loadPluginAsset(source, t.filename, taken);
+    } catch (e) {
+      this.pluginAssetError = String(e?.message ?? e);
+      console.error(`commitPluginAssetCode: refused to save "${t.filename}" —`, e);
+      return; // modal stays open with the reason in its footer
+    }
+    this.pluginAssetError = null;
+    await assetStore().put(t.project, new Blob([source], { type: "text/javascript" }), t.filename);
+    // Re-register: the registry is per-project and REBUILT, never mutated in place
+    // (reloadPluginAssets' header explains why), so every instance of the edited
+    // type derives from the new code on the next pass.
+    await this.reloadPluginAssets(t.project);
+    this.assetsVersion++; // the Asset Explorer re-lists (size/mtime changed)
     this.codeModal = null;
   }
 

@@ -6,9 +6,13 @@
  * AUTHORING.md documents, and the reason the result passes repairedDocument with
  * zero reports (missing keys are impossible when the defaults are the base).
  */
-import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const ROOT = "/Users/ryan/CleanCode/Sandbox/RP_Dumps/PowerRP/SvelteLib/src/demo_apps/PowerRP";
+// RESOLVED RELATIVE TO THIS FILE, never absolute: this directory is a portable
+// dump that may be renamed or moved at any time, so an absolute path here would
+// break the script for everyone but its author.
+const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
 const { createRegistry } = await import(`${ROOT}/core/registry.js`);
 const { createCommands } = await import(`${ROOT}/core/commands.js`);
 const { registerAll } = await import(`${ROOT}/plugins/index.js`);

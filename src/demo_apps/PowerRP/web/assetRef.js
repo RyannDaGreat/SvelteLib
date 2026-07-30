@@ -85,7 +85,21 @@ const KIND_EXTS = {
   sound: ["wav", "mp3", "ogg", "m4a", "aac", "flac"],
   pdf: ["pdf"],
   font: ["ttf", "otf", "woff", "woff2"],
+  // TABULAR DATA (server.py DATA_EXTS): the numbers a chart widget plots and the
+  // asset the CSV table preview opens. Missing here until 2026-07-30, which is
+  // why a .csv in browser-local (static) mode showed the generic file glyph while
+  // the SAME file served by the Python backend showed the table glyph.
+  data: ["csv", "tsv", "json"],
 };
+
+/** The COMPOUND suffix that makes a `.js` asset a WIDGET rather than a script
+ *  (core/plugin_assets.js PLUGIN_ASSET_SUFFIX, server.py's twin). Checked before
+ *  the extension table because os.path.splitext / .split(".").pop() see only
+ *  "js", which cannot tell a widget from any other file. Not imported from
+ *  core/plugin_assets.js on purpose: this module is the DEPENDENCY-FREE grammar
+ *  (its header), and the string is pinned against both twins by
+ *  tests/asset_store_test.js. */
+const PLUGIN_ASSET_SUFFIX = ".plugin.js";
 
 /**
  * Pure function. Classify an asset FILENAME by extension, matching the server's
@@ -94,15 +108,20 @@ const KIND_EXTS = {
  * in server mode.
  *
  * @param {string} filename - asset basename
- * @returns {"image"|"video"|"sound"|"pdf"|"font"|"other"}
+ * @returns {"image"|"video"|"sound"|"pdf"|"font"|"data"|"plugin"|"other"}
  *
  * @example assetKindForName("logo.PNG")        // "image"
  * @example assetKindForName("clip.mp4")        // "video"
  * @example assetKindForName("Handwriting.ttf") // "font"
+ * @example assetKindForName("sales.CSV")       // "data"
+ * @example assetKindForName("gear.plugin.js")  // "plugin"
+ * @example assetKindForName("helper.js")       // "other"  (a bare .js is NOT a widget)
  * @example assetKindForName("notes.txt")       // "other"
  */
 export function assetKindForName(filename) {
-  const ext = String(filename ?? "").split(".").pop()?.toLowerCase() ?? "";
+  const name = String(filename ?? "");
+  if (name.toLowerCase().endsWith(PLUGIN_ASSET_SUFFIX)) return "plugin";
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
   for (const [kind, exts] of Object.entries(KIND_EXTS)) {
     if (exts.includes(ext)) return kind;
   }
@@ -192,6 +211,56 @@ export function quotaLine(q, format) {
   if (!q) return null;
   if (!q.supported) return q.error ? "storage estimate unavailable" : null;
   return `${format(q.usage)} of ${format(q.quota)} used`;
+}
+
+/**
+ * Pure function. The Asset Explorer's LIBRARY TOTALS line — "12 assets · 187MB".
+ *
+ * A SIBLING OF quotaLine, NOT A DUPLICATE, and the distinction is the reason both
+ * exist: quotaLine reports the BROWSER's budget for this origin, which only the
+ * local (IndexedDB) adapter has, so it is null in HTTP mode. This line reports what
+ * is IN THE PROJECT — a figure that is equally true in both modes and is the number a
+ * user actually asked for. So it renders in HTTP mode too, where quotaLine shows
+ * nothing at all.
+ *
+ * `format` is injected for quotaLine's reason: ONE byte formatter
+ * (web/fileSize.js humanReadableFileSize) rules the whole UI, and this module stays
+ * DOM-free and dependency-free so it is testable in bare node. Raw byte counts must
+ * never reach the UI.
+ *
+ * BUILT-INS ARE EXCLUDED WHEN THEY ARE HIDDEN, which is what makes the total honest
+ * rather than merely consistent. The built-in widget library ships inside the app
+ * bundle: it costs the user no storage, it is identical in every project, and it
+ * cannot be deleted. Counting it while the "Show built-in assets" toggle is off
+ * would report assets the user cannot see; counting it while the toggle is ON is
+ * right, because then the number describes the list actually on screen. Hence the
+ * rule is "the totals describe the VISIBLE list", implemented by the caller passing
+ * the same filtered array it renders — not by a flag this function interprets.
+ *
+ * A SIZELESS ASSET CONTRIBUTES 0 rather than NaN. A built-in library entry has no
+ * `size` (it is bundle text, never a stored file), and one `undefined` in a sum
+ * would turn the whole line into "NaN" — a formatting failure that hides the count
+ * too. The count is still exact; only the byte figure omits what it cannot know.
+ *
+ * @param {Array<{size?: number}>} assets - the assets being listed (already filtered to what is VISIBLE)
+ * @param {(bytes: number) => string} format - byte formatter (humanReadableFileSize)
+ * @returns {string|null} the line, or null for an empty list (nothing to total)
+ *
+ * @example
+ * >>> libraryTotalsLine([{size: 1024}, {size: 2048}], humanReadableFileSize)
+ * "2 assets · 3KB"
+ * >>> libraryTotalsLine([{size: 10000000}], humanReadableFileSize)
+ * "1 asset · 9.5MB"
+ * >>> libraryTotalsLine([], humanReadableFileSize)
+ * null
+ * >>> libraryTotalsLine([{size: 1024}, {name: "donut.plugin.js"}], humanReadableFileSize)
+ * "2 assets · 1KB"
+ */
+export function libraryTotalsLine(assets, format) {
+  const list = assets ?? [];
+  if (!list.length) return null;
+  const bytes = list.reduce((sum, a) => sum + (Number.isFinite(a?.size) ? a.size : 0), 0);
+  return `${list.length} ${list.length === 1 ? "asset" : "assets"} · ${format(bytes)}`;
 }
 
 /**

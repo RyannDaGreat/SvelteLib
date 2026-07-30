@@ -7,11 +7,10 @@
   `vite preview`, or ?static=1), a dismissible strip below the toolbar says so,
   names what is missing, and says what to use instead.
 
-  WHY A STRIP AND NOT A MODAL: static mode is a WORKING mode, not an error. A
-  modal would demand acknowledgement before letting someone draw, which
-  overstates it — most of the app is fully functional here. A strip states the
-  bound once, stays available behind an always-visible badge after dismissal, and
-  never blocks the canvas.
+  SHAPE (user ruling 2026-07-30): a small TOP-LEFT CHIP by default — never an
+  unsolicited banner. Clicking the chip expands the full explainer strip;
+  X collapses back to the chip. Static mode is a WORKING mode, not an error —
+  the chip states it at a glance, the strip is on demand.
 
   WHY IT IS NOT SILENT: without it, a user clicking Render would get a fetch
   error against a URL that was never going to exist, and would reasonably
@@ -31,10 +30,11 @@
 
   let { app } = $props();
 
-  // Dismissed for THIS page load only (deliberately not persisted): a reload is
-  // a fresh session, and someone returning to a deck a week later should be told
-  // again where its bytes live before they trust the browser with more work.
-  let dismissed = $state(false);
+  // COLLAPSED BY DEFAULT (user ruling: "that giant banner could really just be
+  // something on the top left… not a banner that takes up a sizable chunk of my
+  // screen at all times"). The chip is the resting state; the full explainer
+  // strip appears only when the chip is clicked, and X returns to the chip.
+  let expanded = $state(false);
 
   /** The server-only features, as [name, reason] rows for the detail list. ONE
    *  source (storageMode.js UNAVAILABLE_IN_STATIC) so a feature can never be
@@ -50,12 +50,13 @@
 </script>
 
 {#if app.isStatic()}
-  {#if dismissed}
-    <!-- After dismissal the notice collapses to a PERSISTENT badge, never to
-         nothing: which storage a session is using must stay answerable at a
-         glance, since it decides whether closing the tab risks the work. -->
+  {#if !expanded}
+    <!-- The RESTING state: a small top-left chip, zero canvas real estate
+         beyond itself. Which storage a session uses stays answerable at a
+         glance (it decides whether closing the tab risks the work); the full
+         explainer is one click away. -->
     <Tooltip text={detail()}>
-      <button class="static-badge" onclick={() => (dismissed = false)} aria-label="Storage: browser-local (no server). Show details">
+      <button class="static-badge" onclick={() => (expanded = true)} aria-label="Storage: browser-local (no server). Show details">
         <iconify-icon icon="mdi:database-outline" width="14" height="14"></iconify-icon>
         <span>Local storage</span>
       </button>
@@ -81,8 +82,8 @@
           <iconify-icon icon="mdi:lock-outline" width="16" height="16"></iconify-icon>
         </button>
       </Tooltip>
-      <Tooltip text="Dismiss (a 'Local storage' badge stays in its place)">
-        <button class="btn-icon" aria-label="Dismiss notice" onclick={() => (dismissed = true)}>
+      <Tooltip text="Collapse back to the corner chip">
+        <button class="btn-icon" aria-label="Collapse notice" onclick={() => (expanded = false)}>
           <iconify-icon icon="mdi:close" width="16" height="16"></iconify-icon>
         </button>
       </Tooltip>

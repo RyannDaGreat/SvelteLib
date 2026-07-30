@@ -33,7 +33,23 @@
  */
 
 import assert from "node:assert/strict";
-import { allPlugins } from "../plugins/index.js";
+// BOTH lists, and the difference between them is this file's actual subject.
+//
+// `roster` (builtinRoster) is the REGISTERED form of every shipped widget — source
+// modules PLUS the built-in plugin-asset library, each already resolved through
+// withUniversalEffects. Sweeps that ask "does every shipped widget satisfy X?" want
+// this: allPlugins is only the source half, so the five batch-1 widgets (donut,
+// progress_bar, number, both clocks) silently left every such sweep when they moved
+// to the library. See plugins/index.js builtinRoster.
+//
+// `allPlugins` is the AUTHORED form, and check (7) below is the one place that is
+// the right input rather than an oversight: `composesEffects` asks "did the plugin's
+// AUTHOR write the effect rows?", which is only answerable before injection. Asking
+// it of a registered plugin answers "yes" for everything the registry injected into,
+// which is why this file needs both lists and not just the longer one.
+import { allPlugins, builtinRoster, registerPlugins } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { createRegistry, effectsInjectable, composesEffects } from "../core/registry.js";
 import { BUNDLES } from "../core/properties.js";
 import { sceneIR } from "../render_gpu/ports.js";
@@ -48,7 +64,7 @@ function test(name, fn) {
 }
 
 const registry = createRegistry();
-for (const p of allPlugins) registry.register(p);
+registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 const registered = registry.all();
 
 // The five effects' GATE rows — one per effect, the keys effectsOff() reads.
@@ -217,6 +233,9 @@ test("(6) every injected plugin's effect substrate can be bounded", () => {
 });
 
 test("composesEffects only reports plugins that authored the rows themselves", () => {
+  // allPlugins, NOT roster — see the import block. composesEffects is a question
+  // about the AUTHORED object, and every registered plugin carries the rows whether
+  // it wrote them or the registry injected them.
   const authored = allPlugins.filter(composesEffects).map((p) => p.type);
   for (const t of authored) assert.ok(!registry.get(t).effectsInjected, `${t} authored the bundle, so nothing must have been injected into it`);
   for (const p of registered) {

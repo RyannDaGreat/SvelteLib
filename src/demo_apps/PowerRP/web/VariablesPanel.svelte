@@ -1,5 +1,13 @@
 <!--
-  Variables Panel — the keyframable variables editor (THE UNIFICATION).
+  Global Variables Panel — the keyframable GLOBAL variables editor (THE
+  UNIFICATION). Named "Global Variables" on its name plate and in its
+  "Toggle Visibility: Global Variables Panel" command (user ruling: "the
+  variables panel should now be called the global variables panel, because
+  they're global variables") — the per-ITEM variables are a different surface,
+  the Property Panel's own Variables category (web/ItemVariablesPanel.svelte),
+  and calling both "Variables" is what made the distinction invisible. The file
+  and component names stay VariablesPanel: the rename is user-facing only.
+  The panel is HIDDEN BY DEFAULT (core/panels.js defaultVisible: false).
 
   Variables live in state.vars ({name: number | equation}) and tween like any
   state: keyframe a variable per slide and every equation referencing it

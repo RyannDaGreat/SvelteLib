@@ -31,10 +31,16 @@ import { shortestTurn, wrapDegrees, FULL_TURN_DEG, HALF_TURN_DEG, PROPS } from "
 import { newDocument, keyframed, foldState, withNewItem, withNewSlide } from "../core/document.js";
 import { evaluateState, resultKindForSlot } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster, registerPlugins } from "../plugins/index.js";
+
+const roster = builtinRoster();
 
 const registry = createRegistry();
-for (const p of allPlugins) registry.register(p);
+registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 
 let passed = 0;
 function test(name, fn) {
@@ -128,7 +134,7 @@ test("rotation is a dial row that still STORES RADIANS", () => {
 });
 
 test('every "angle" row accepts an "=" equation and types as a number', () => {
-  const rows = allPlugins.flatMap((p) => (p.inspector ?? []).filter((r) => r.kind === "angle").map((r) => ({ p, key: r.key })));
+  const rows = roster.flatMap((p) => (p.inspector ?? []).filter((r) => r.kind === "angle").map((r) => ({ p, key: r.key })));
   assert.ok(rows.length > 0, "no angle rows found — the sweep would pass vacuously");
   for (const { p, key } of rows) {
     let doc = newDocument();

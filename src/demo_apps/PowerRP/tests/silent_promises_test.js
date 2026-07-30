@@ -26,7 +26,13 @@
 import assert from "node:assert/strict";
 import * as T from "../core/transform.js";
 import { createRegistry } from "../core/registry.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster, registerPlugins } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { newDocument, withNewItem, keyframed, foldState } from "../core/document.js";
 import { evaluateState } from "../core/expressions.js";
 import { deriveRenderTree, nodeAnchors, nodeFeatures, standardBBoxAnchors } from "../core/derive.js";
@@ -43,7 +49,7 @@ function test(name, fn) {
 }
 
 const registry = createRegistry();
-for (const p of allPlugins) registry.register(p);
+registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 
 /** The nine ids a bbox plugin publishes — DERIVED, never re-listed (bento.js's rule). */
 const STANDARD_NINE = standardBBoxAnchors({ w: 0, h: 0 }).map((a) => a.id);
@@ -175,7 +181,7 @@ test("(3b) NO plugin publishes coincident-at-origin anchors while its ink is els
   // widget declaring it without w/h gets nine anchors on top of each other. That is
   // only honest when the widget really is a 0x0 box at its origin — which a declared
   // `localBounds` can contradict, and did.
-  for (const plugin of allPlugins) {
+  for (const plugin of roster) {
     if (!plugin.anchors || !plugin.localBounds) continue;
     const anchors = plugin.anchors(plugin.defaults);
     if (anchors.length < 2 || anchors.some((a) => a.x !== anchors[0].x || a.y !== anchors[0].y)) continue;

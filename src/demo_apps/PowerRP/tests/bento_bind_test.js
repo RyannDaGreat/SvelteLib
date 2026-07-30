@@ -17,7 +17,13 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import * as T from "../core/transform.js";
 import { createRegistry } from "../core/registry.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster, registerPlugins } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { newDocument, withNewItem, keyframed, foldState, itemFallbackName } from "../core/document.js";
 import { evaluateState, isEquationValue } from "../core/expressions.js";
 import { deriveRenderTree } from "../core/derive.js";
@@ -36,7 +42,7 @@ function test(name, fn) {
 }
 
 const registry = createRegistry();
-for (const p of allPlugins) registry.register(p);
+registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 const bentoPlugin = registry.get("bento");
 
 // A 300x200 2x3 bento at (100, 100) with no gaps and no padding: cell centres are
@@ -221,7 +227,7 @@ test("the CONTENT descriptor is `cellGrid`, so `claims` is a SHAPE test, not a t
     migrationPlan([{ type: "probe_grid", cellGrid: { at: () => null } }]).map((r) => [r.type, r.handlerId, r.edit]),
     [["probe_grid", "bento_bind_cell", 'activate: "bento_bind_cell"']],
   );
-  assert.deepEqual(migrationPlan(allPlugins), [], "…and every shipped widget declares what its shape asks for");
+  assert.deepEqual(migrationPlan(roster), [], "…and every shipped widget declares what its shape asks for");
 });
 
 test("the mode declares two NARRATED steps and an overlay, and canvasModes() sees them", () => {

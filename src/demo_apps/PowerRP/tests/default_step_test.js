@@ -37,7 +37,13 @@ import {
   defaultStep, decimalPlaces, stepAtMost, refinedStep, resolveScrub, COARSEST_DERIVED_STEP,
 } from "../../../lib/numberStep.js";
 import { PROPS } from "../core/properties.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster } from "../plugins/index.js";
+
+const roster = builtinRoster();
 
 // web/NumericField.svelte's own constant: pixels of drag that span a bounded
 // row's full range. Mirrored here so the sweep computes what the field computes.
@@ -198,7 +204,7 @@ test("resolveScrub: an INTEGER default never coarsens (the 437-row hazard)", () 
 // ── (5) THE SWEEP: every numeric row of every registered plugin ────────────────
 // The row aspects a plugin actually declares, paired with the default the plugin
 // actually stores (which is where properties.js keeps it — see the header).
-const numericRows = allPlugins.flatMap((p) =>
+const numericRows = roster.flatMap((p) =>
   (p.inspector ?? [])
     .filter((r) => r.kind === "number")
     .map((r) => ({

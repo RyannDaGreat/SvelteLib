@@ -51,7 +51,13 @@ import {
 import { interpolate } from "../core/interpolators.js";
 import { leaves } from "../core/deltas.js";
 import { createRegistry } from "../core/registry.js";
-import { allPlugins } from "../plugins/index.js";
+// builtinRoster(), NOT allPlugins: this file SWEEPS "every shipped widget", and
+// allPlugins is only the SOURCE-MODULE half of the roster — the five batch-1 widgets
+// (donut, progress_bar, number, both clocks) moved to the built-in plugin-asset
+// library and silently left every such sweep. See plugins/index.js builtinRoster.
+import { builtinRoster, registerPlugins } from "../plugins/index.js";
+
+const roster = builtinRoster();
 import { keyframed, foldState, repairedDocument } from "../core/document.js";
 import { parsePaint } from "../render_gpu/ir.js";
 
@@ -74,7 +80,7 @@ const STOP_EL = STOP_DECL.element;
 const X_DECL = { kind: LIST_ROW_KIND, order: "sequence", activeKey: "xsActive", element: { storage: "tuple", fields: [{ name: "x", kind: "number" }] } };
 
 const registry = createRegistry();
-for (const p of allPlugins) registry.register(p);
+registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 
 // ── (1) THE DECLARATIONS + their guard ───────────────────────────────────────
 
@@ -132,7 +138,7 @@ test("the import-time guard runs over EVERY registered plugin row, not a sample"
   // A list row anywhere in the app must satisfy checkListDeclaration — the same
   // breadth tests/row_kinds_test.js applies to the kind vocabulary.
   let listRows = 0;
-  for (const plugin of allPlugins)
+  for (const plugin of roster)
     for (const row of plugin.inspector ?? [])
       if (row.kind === LIST_ROW_KIND) {
         checkListDeclaration(`${plugin.type}."${row.key}"`, row, ROW_KINDS, NUMERIC_ROW_KINDS);
