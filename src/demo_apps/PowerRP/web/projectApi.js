@@ -312,16 +312,28 @@ export async function deleteRenderJob(project, jobId) {
 }
 
 /** Command. Download the whole project as a .zip (browser save dialog). The
- *  ZIP is built server-side from the folder (doc.json + assets). */
+ *  ZIP is built server-side from the folder (doc.json + assets), and it is
+ *  SELF-CONTAINED: the server copies in any asset the document borrows from
+ *  another project and rewrites the archived doc.json (server.py
+ *  zip_project_bytes).
+ *
+ *  Returns the warnings the server attached, so the caller can SAY that an asset
+ *  could not be localized. They arrive as the X-PowerRP-Warning header rather than
+ *  in the body because the body IS the archive — there is nowhere else to put
+ *  them. The header is CORS-exposed for the ?backend= case; absent (an older
+ *  server, or a proxy that stripped it) reads as "no warnings", which is why the
+ *  server also logs each one to stderr unconditionally. */
 export async function downloadProjectZip(name) {
   const res = await fetch(`${BACKEND}/api/download/${enc(name)}/`);
   if (!res.ok) throw new Error(`downloadProjectZip(${name}): ${res.status}`);
+  const warning = res.headers.get("X-PowerRP-Warning");
   const blob = await res.blob();
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `${name}.zip`;
   a.click();
   URL.revokeObjectURL(a.href);
+  return { warnings: warning ? warning.split(" · ") : [] };
 }
 
 /** Pure function. The project name a dropped/picked .zip file wants: its

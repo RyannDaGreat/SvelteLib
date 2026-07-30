@@ -3418,7 +3418,8 @@ export class PowerRPApp {
       downloadBytes(bytes, `${name}.zip`);
       return;
     }
-    await projectApi.downloadProjectZip(name);
+    const { warnings } = await projectApi.downloadProjectZip(name);
+    for (const w of warnings) console.warn(`downloadZip(${name}): ${w}`);
   }
 
   // ── Opening a .zip: the inverse of downloadZip ─────────────────────────────
