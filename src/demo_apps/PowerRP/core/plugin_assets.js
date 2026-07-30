@@ -632,20 +632,31 @@ export function loadPluginAsset(source, label, takenTypes) {
  * document-wide orphan purge. Every failure is RETURNED as a report entry with
  * its reason; nothing is swallowed.
  *
+ * `types` IS THE FILE→TYPE MAP, and it is returned as well as `loaded` because the
+ * two answer different questions and only one of them is derivable from the other.
+ * `loaded` is "what got registered just now", which is what a boot log prints.
+ * `types` is "which widget does THIS FILE declare", which is what a caller needs to
+ * act on one asset — the drop-to-instantiate path has a filename in hand and must
+ * find its widget. That mapping only exists here, inside the load: a type name is in
+ * the SOURCE, not in the listing, so a caller that has only `loaded` can do no better
+ * than guess (and guessing "the last one" is wrong the moment two assets load).
+ *
  * @param {object} registry - a core/registry.js registry
  * @param {Array<{name: string, source: string}>} sources - the assets to load
- * @returns {{loaded: string[], reports: string[]}} registered types, and one
- *   message per refusal
+ * @returns {{loaded: string[], types: Object<string, string>, reports: string[]}}
+ *   registered types, the asset-name → type map, and one message per refusal
  *
- * @example registerPluginAssets(createRegistry(), []) // {loaded: [], reports: []}
+ * @example registerPluginAssets(createRegistry(), []) // {loaded: [], types: {}, reports: []}
  * @example // registerPluginAssets(reg, [{name: "gear.plugin.js", source: "return {type:'gear',…};"}])
- * //   → {loaded: ["gear"], reports: []}   and reg.get("gear") now resolves
- * @example // a broken asset beside a good one:
- * //   → {loaded: ["gear"], reports: ['plugin asset "bad.plugin.js": is missing "emit"']}
+ * //   → {loaded: ["gear"], types: {"gear.plugin.js": "gear"}, reports: []}
+ * @example // a broken asset beside a good one — the good one still maps:
+ * //   → {loaded: ["gear"], types: {"gear.plugin.js": "gear"},
+ * //      reports: ['plugin asset "bad.plugin.js": is missing "emit"']}
  */
 export function registerPluginAssets(registry, sources) {
   const taken = new Set(registry.all().map((p) => p.type));
   const loaded = [];
+  const types = {};
   const reports = [];
   for (const { name, source } of sources ?? []) {
     try {
@@ -653,9 +664,10 @@ export function registerPluginAssets(registry, sources) {
       registry.register(plugin);
       taken.add(plugin.type);
       loaded.push(plugin.type);
+      types[name] = plugin.type;
     } catch (e) {
       reports.push(e.message); // RETURNED, never swallowed — the caller prints it
     }
   }
-  return { loaded, reports };
+  return { loaded, types, reports };
 }

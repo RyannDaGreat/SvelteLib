@@ -1,10 +1,15 @@
 # Authoring PowerRP decks — a guide for Claude
 
-**This file ships with the app.** It lives in the repo and is vendored into the
-app bundle, so whatever install you are looking at, this copy is the one that
-matches the code you are about to write against. Its file-path citations are
-checked by a test (`tests/authoring_doc_test.js`) precisely so it cannot rot
-silently while the code moves under it.
+**This file ships with the app.** It lives in the repo beside the code, and the
+desktop build vendors the whole repo into the bundle
+(`Contents/Resources/repo/src/demo_apps/PowerRP/AUTHORING.md`), so whatever
+install you are looking at, this copy is the one that matches the code you are
+about to write against. Its file-path citations, the widget roster and the
+permission policy below are all checked by a test
+(`tests/authoring_doc_test.js`) precisely so this guide cannot rot silently while
+the code moves under it.
+
+**All paths in this document are relative to `src/demo_apps/PowerRP/`.**
 
 **Who this is for.** You are an AI assistant, and someone has asked you to build
 a presentation, a figure, or a diagram in PowerRP. This document assumes you know
@@ -520,9 +525,10 @@ clipped edges.
 ### Seeing it work
 
 Slide 5 of the `Imitations` project ("CSV Bar Graph (plugin asset)") is this
-widget plotting `projects/Imitations/assets/sample_data.csv`. Both the widget and
-its data are project assets. `examples/add_csv_chart_slide.mjs` is the generator
-that built that slide, and it is worth reading as a companion to §9.
+widget plotting a `sample_data.csv` in that project's own assets folder. Both the
+widget and its data are project assets. `examples/add_csv_chart_slide.mjs` is the
+generator that built that slide — it seeds both files out of `plugin_assets/` and
+then authors the slide — and it is worth reading as a companion to §9.
 
 ## 7. Assets
 

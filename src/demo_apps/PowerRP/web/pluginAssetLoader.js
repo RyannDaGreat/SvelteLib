@@ -101,15 +101,21 @@ export async function readPluginAssetSources(store, project) {
  * @param {object} registry - a core/registry.js registry
  * @param {object} store - an asset store
  * @param {string} project - project name
- * @returns {Promise<{loaded: string[], reports: string[]}>}
+ * `types` (asset name → widget type) is passed through from registerPluginAssets —
+ * see its docblock for why the map is returned alongside `loaded`. The drop path
+ * needs it: it has a FILENAME and must find that file's widget.
+ *
+ * @returns {Promise<{loaded: string[], types: Object<string, string>, reports: string[]}>}
  *
  * @example // await loadProjectPluginAssets(app.registry, assetStore(), "Imitations")
- * //   → {loaded: ["gear", "superellipse"], reports: []}
+ * //   → {loaded: ["gear", "superellipse"],
+ * //      types: {"gear.plugin.js": "gear", "superellipse.plugin.js": "superellipse"},
+ * //      reports: []}
  */
 export async function loadProjectPluginAssets(registry, store, project) {
   const { sources, reports: readReports } = await readPluginAssetSources(store, project);
-  const { loaded, reports } = registerPluginAssets(registry, sources);
-  return { loaded, reports: [...readReports, ...reports] };
+  const { loaded, types, reports } = registerPluginAssets(registry, sources);
+  return { loaded, types, reports: [...readReports, ...reports] };
 }
 
 /**
@@ -132,6 +138,46 @@ export function printPluginAssetReports({ loaded, reports }, project) {
     console.log(`Registered ${loaded.length} plugin asset${loaded.length === 1 ? "" : "s"} from "${project}": ${loaded.join(", ")}`);
   for (const report of reports)
     console.error(`Plugin asset REFUSED in "${project}" — ${report}`);
+}
+
+/**
+ * Pure function. What should a canvas DROP of this asset do? Returns one of:
+ *
+ *   "widget"  — a `*.plugin.js` asset: ADD ITS WIDGET at the drop point (user
+ *               ruling: "If I drag and drop a widget plugin onto the canvas, it
+ *               should add the widget… from the asset library").
+ *   "media"   — an image/video asset: the pre-existing insert-a-media-widget path.
+ *   "none"    — nothing on the canvas can represent it; the caller REPORTS and the
+ *               asset stays in the library. Never a silent no-op.
+ *
+ * WHY A CLASSIFIER RATHER THAN AN `if` IN THE HANDLER. The drop handler is in a
+ * .svelte file and cannot be tested in bare node, and this decision is the part
+ * worth pinning: a plugin asset dropped on the canvas used to fall through the
+ * media branches into the "no canvas widget for a …" warning, which is a correct
+ * message about the wrong classification. Naming the three outcomes here means the
+ * node suite can assert all three, including the one that reports.
+ *
+ * THE KIND IS NOT TRUSTED OVER THE NAME. The `kind` field comes from whatever
+ * produced the listing (server.py's classifier, or assetRef.assetKindForName), but
+ * the SUFFIX is what makes a file a plugin asset (core/plugin_assets.js
+ * PLUGIN_ASSET_SUFFIX is the one spelling of that rule). So the name is checked
+ * first, and a listing whose `kind` disagrees with its own filename still routes by
+ * the filename — the property the loader itself keys off.
+ *
+ * @param {{name?: string, kind?: string}} asset - a dropped asset payload
+ * @returns {"widget"|"media"|"none"}
+ *
+ * @example assetDropKind({name: "gear.plugin.js", kind: "plugin"}) // "widget"
+ * @example assetDropKind({name: "donut.plugin.js", kind: "other"}) // "widget"  (the SUFFIX decides, not the kind)
+ * @example assetDropKind({name: "logo.png", kind: "image"})        // "media"
+ * @example assetDropKind({name: "clip.mp4", kind: "video"})        // "media"
+ * @example assetDropKind({name: "notes.txt", kind: "other"})       // "none"
+ * @example assetDropKind({})                                       // "none"
+ */
+export function assetDropKind(asset) {
+  if (isPluginAssetName(asset?.name)) return "widget";
+  if (asset?.kind === "image" || asset?.kind === "video") return "media";
+  return "none";
 }
 
 export { PLUGIN_ASSET_SUFFIX };

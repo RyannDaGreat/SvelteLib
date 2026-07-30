@@ -127,6 +127,29 @@ export const BUILTIN_PLUGIN_ASSET_NAMES = Object.freeze([
 ]);
 
 /**
+ * The built-in library's FILE → WIDGET TYPE map, as a static table.
+ *
+ * WHY DECLARED RATHER THAN DERIVED: a type name lives inside the asset's SOURCE, so
+ * reading it means EVALUATING the source through the jail. The consumer here is the
+ * canvas drop path, which needs the answer synchronously and long before it is
+ * willing to compile anything. A stripped-down parse of the text would be a second,
+ * weaker definition of what the jail already decides.
+ *
+ * IT CANNOT DRIFT SILENTLY, which is what makes declaring it safe: the library
+ * registers through the jail at boot in every mode, and
+ * tests/builtin_asset_library_test.js asserts this table equals the map that
+ * registration actually produced. So a renamed type or a mis-keyed row is a test
+ * failure, not a drop that mysteriously adds the wrong widget.
+ */
+export const BUILTIN_PLUGIN_ASSET_TYPES = Object.freeze({
+  "clock_analog.plugin.js": "clock_analog",
+  "clock_digital.plugin.js": "clock_digital",
+  "donut.plugin.js": "donut",
+  "number.plugin.js": "number",
+  "progress_bar.plugin.js": "progress_bar",
+});
+
+/**
  * True in bare Node (cli/render.js + every node suite), false in the browser
  * bundle — THE discriminator between the two loaders below.
  *
@@ -236,6 +259,6 @@ function libraryFromDisk() {
  */
 export function registerBuiltinPluginAssets(registry) {
   const { sources, reports: driftReports } = builtinPluginAssetSources();
-  const { loaded, reports } = registerPluginAssets(registry, sources);
-  return { loaded, reports: [...driftReports, ...reports] };
+  const { loaded, types, reports } = registerPluginAssets(registry, sources);
+  return { loaded, types, reports: [...driftReports, ...reports] };
 }

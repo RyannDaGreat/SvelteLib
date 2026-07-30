@@ -557,6 +557,13 @@ export const FIELD_SCOPE_HINTS = Object.freeze({
   commit: { enter: "Commit", escape: "Revert" }, // CanvasToolbar readouts, Numeric/Angle/Inspector equation inputs
   revert: { escape: "Revert" }, // Inspector property-row text input (Esc reverts the live preview; commit is on blur)
   add: { enter: "Add" }, // VariablesPanel add-variable input (Enter only; the rename rows commit on blur)
+  // A LIVE FILTER box (the Asset Explorer's fuzzy path search). Escape ALONE, and
+  // the absence of Enter is the design: the list re-filters on every keystroke, so
+  // there is nothing to commit and an Enter chip would advertise a key that does
+  // nothing. Its Escape does TWO things at once — clears the query AND closes the
+  // box — so it is worded for both rather than borrowed from `rename`'s "Cancel",
+  // which would suggest the filter merely reverts.
+  filter: { escape: "Clear / Close" },
   // The Toolbar project-title chrome — a role="button" span, NOT a typing target, so
   // it stays live under editorInput and shows alongside the canvas chips. Enter and
   // F2 both open the rename modal; both are announced (F2 is app-invented vocabulary,

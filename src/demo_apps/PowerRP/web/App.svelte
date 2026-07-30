@@ -252,7 +252,7 @@
   // project Asset Explorer. Wires app.browseBuiltinAssets()'s hook to the Modal;
   // the catalog is web/builtinAssets.js (loaded lazily by the browser on open).
   let builtinAssetsVisible = $state(false);
-  app.showBuiltinAssets = () => {
+  app.showBuiltinAssetsModal = () => {
     builtinAssetsVisible = true;
   };
 

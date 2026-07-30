@@ -288,9 +288,9 @@ const ACCOUNTED = {
     coverage: "contextual:add: Enter 'Add' commits the new PER-ITEM variable input while it has focus (data-hint-scope='add', core fieldScope) — the item-scoped mirror of VariablesPanel (manifest item 67). The inline RENAME rows commit on blur (onchange) and read no key, so they need no chip; only the add-row reads Enter.",
   },
   "web/AssetExplorer.svelte": {
-    keys: [],
-    dblclick: "OS: double-click an asset tile opens its Modal preview — the desktop 'double-click a file to open it' convention, a mouse gesture the keyboard law does not cover, named in the tile's own Tooltip ('drag onto the canvas to insert at a point, or double-click to preview'). Its keyboard activation rides a real <button>'s Enter (also OS).",
-    coverage: "OS: reads no keyboard input of its own — listed for its double-click gesture above. Its tiles are real <button>s, so Enter/Space activation is the browser's, not this component's: the one shape of activate-a-focused-control that genuinely IS OS.",
+    keys: ["Escape"],
+    dblclick: "OS: double-click an asset tile OPENS IT, dispatched on kind (onTileDoubleClick): a *.plugin.js asset opens the Monaco JavaScript editor, a .csv/.tsv opens the virtualized table preview, everything else opens the media preview. All three are the same desktop 'double-click a file to open it' convention — a mouse gesture the keyboard law does not cover — and the tile's own Tooltip names WHICH outcome per kind (assetTip → doubleClickClause), as does the hit button's aria-label. Its keyboard activation rides a real <button>'s Enter (also OS).",
+    coverage: "contextual:filter: Escape 'Clear / Close' lights while the fuzzy PATH FILTER box has focus (data-hint-scope='filter', core fieldScope). ONE key, and the absence of Enter is deliberate: the grid re-filters on every keystroke, so there is nothing to commit and an Enter chip would advertise a key that does nothing — this component's first draft consumed Enter and this sweep is what caught it. The Escape does two things at once (clear the query AND close the box), which is why `filter` has its own wording rather than borrowing rename's 'Cancel'. OS: the tiles are real <button>s, so their Enter/Space activation is the browser's, not this component's.",
   },
   "web/AssetThumb.svelte": {
     keys: ["Enter"],

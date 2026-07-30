@@ -55,6 +55,7 @@
   import { diffState } from "../core/deltas.js";
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project rule (drop-handler region)
+  import { assetDropKind } from "./pluginAssetLoader.js"; // what a dropped asset DOES: "widget" (*.plugin.js) | "media" | "none" — declared + bare-node tested
   import { reportAction } from "../core/report.js"; // a refused DROP is one user act — reportAction, never the deduped reportOnce
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
@@ -794,9 +795,25 @@
   /** Command. Insert one asset ({name, kind, url}) centered at world point
    *  `at`. Kinds without a canvas widget are reported, never silently dropped. */
   async function insertDroppedAsset(asset, at) {
-    if (asset.kind === "image") return app.insertImageAsset(asset.url, at);
-    if (asset.kind === "video") return app.insertVideoAsset(asset.url, at);
-    console.warn(`Canvas drop: no canvas widget for a "${asset.kind}" asset (${asset.name}) — it stays in the asset library.`);
+    // THE CLASSIFICATION IS DECLARED, not an if-chain: web/pluginAssetLoader.js
+    // assetDropKind names the three outcomes and is bare-node testable (this file
+    // is not). A `*.plugin.js` asset used to fall through the media branches into
+    // the warning below — a correct message about the wrong classification.
+    switch (assetDropKind(asset)) {
+      case "widget":
+        // A WIDGET PLUGIN AS AN ASSET (user ruling: "If I drag and drop a widget
+        // plugin onto the canvas, it should add the widget… from the asset
+        // library"). ensure-loaded + place at the drop point honouring
+        // placementAnchor — all three live in app.insertPluginAssetWidget.
+        return app.insertPluginAssetWidget(asset, at);
+      case "media":
+        return asset.kind === "image" ? app.insertImageAsset(asset.url, at) : app.insertVideoAsset(asset.url, at);
+      default:
+        // REPORTED, never a silently swallowed gesture. reportAction (not the
+        // deduped reportOnce) because a refused drop is ONE user act — the same
+        // rule the multi-zip refusal above follows.
+        reportAction(`PowerRP: nothing on the canvas can show a "${asset.kind}" asset (${asset.name}) — it stays in the asset library.`);
+    }
   }
 
   /** Command. The canvas drop: asset-tile payload → insert at the drop point;

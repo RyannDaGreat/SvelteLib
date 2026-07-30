@@ -643,12 +643,18 @@
   /** Command. Escape inside the box CLEARS AND CLOSES (the user ruling), and the
    *  key is CONSUMED so it does not also reach the app's global Escape (which
    *  clears the canvas selection — dismissing a filter must not deselect a widget).
-   *  Enter is consumed for the same reason: this is a filter, not a form. */
+   *
+   *  ONLY Escape. ENTER IS DELIBERATELY NOT HANDLED: the grid filters live on every
+   *  keystroke, so there is nothing for Enter to commit, and consuming it would
+   *  oblige this box to advertise an Enter chip for a key that does nothing — the
+   *  lie core/shortcut_entries.js's item-61 doctrine forbids (tests/shortcut_sweep_test.js
+   *  is what caught the first draft doing exactly that). Unhandled, Enter is the
+   *  browser's own inert no-op inside a lone text input, which is correct. */
   function onSearchKeydown(e) {
-    if (e.key !== "Escape" && e.key !== "Enter") return;
+    if (e.key !== "Escape") return;
     e.preventDefault();
     e.stopPropagation();
-    if (e.key === "Escape") toggleSearch();
+    toggleSearch();
   }
 
   // ── DATA (CSV/TSV) PREVIEW: read the text for the preview Modal's table ──────
@@ -772,6 +778,7 @@
         type="text"
         placeholder="Fuzzy filter by path…"
         aria-label="Filter assets by path"
+        data-hint-scope="filter"
         bind:this={searchInput}
         bind:value={searchQuery}
         onkeydown={onSearchKeydown}
@@ -876,6 +883,13 @@
       <!-- Transient: the mount/project-switch effect's refresh() hasn't resolved
            yet (assets load automatically — see the $effect above). -->
       <div class="ae-notice">Loading assets for “{app.projectName()}”…</div>
+    {:else if noMatches}
+      <!-- A FILTER THAT MATCHED NOTHING says so, and says what it filtered — an
+           empty grid is indistinguishable from an empty project, and the user would
+           reasonably conclude their assets were gone. -->
+      <div class="ae-notice">
+        No asset path matches “{searchQuery}”.
+      </div>
     {:else if listedAssets.length === 0}
       <div class="ae-notice">
         No assets yet — Upload, or drop a file onto this pane.
@@ -891,13 +905,14 @@
 
   {#snippet assetGrid()}
       <div class="ae-grid">
-        <!-- listedAssets, and KEYED ON `url`, NOT `name`. Both matter now that
-             built-ins can share the grid: `url` is unique by construction
+        <!-- shownAssets = listedAssets through the fuzzy filter (both view filters
+             STACK — see its derivation), and KEYED ON `url`, NOT `name`. Both matter
+             now that built-ins can share the grid: `url` is unique by construction
              (a project ref is "/asset/<project>/<file>", a built-in is
              "builtin:library/<file>" — see builtinAssets.BUILTIN_URL_PREFIX),
              whereas a project asset named donut.plugin.js would collide with the
              built-in of that name and Svelte would refuse the duplicate key. -->
-        {#each listedAssets as a (a.url)}
+        {#each shownAssets as a (a.url)}
           <div class="ae-cell">
             <!-- The tip names BOTH of the tile's gestures. Double-click-to-preview
                  is deliberately NOT a shortcut-registry entry (that bar announces
@@ -922,11 +937,17 @@
                      assetThumbnail.js. onclick is a no-op (double-click below owns
                      the preview open). -->
                 <AssetThumb {app} asset={a} onclick={() => {}} />
-                <!-- Double-click opens the Modal preview (whole tile is the target). -->
+                <!-- DOUBLE-CLICK, dispatched on kind (onTileDoubleClick): a PLUGIN
+                     asset opens the Monaco JavaScript editor (user ruling), a DATA
+                     asset opens the virtualized table, everything else opens the
+                     media preview. The aria-label names the actual outcome — a
+                     button announced as "Preview" that opens a code editor is a
+                     screen-reader lie, and this is the same sentence the tooltip's
+                     doubleClickClause tells a sighted user. -->
                 <button
                   class="ae-tile-hit"
-                  aria-label={`Preview ${a.name}`}
-                  ondblclick={() => openPreview(a)}
+                  aria-label={`${a.name} — ${doubleClickClause(a.kind)}`}
+                  ondblclick={() => onTileDoubleClick(a)}
                 ></button>
                 {#if a.kind === "image"}
                   <Tooltip text="Insert into current slide">
@@ -969,6 +990,10 @@
   {/snippet}
 </div>
 
+<!-- THE ONE PREVIEW SURFACE, extended rather than forked: a DATA asset gets a
+     fourth branch here (a virtualized table) beside image/video/audio, so
+     "view a CSV just like we can view other assets" is literally the same
+     dialog, opened by the same double-click, titled with the same filename. -->
 <Modal bind:open={previewOpen} title={preview?.name ?? ""}>
   {#if preview?.kind === "image"}
     <img class="ae-preview-media" src={urlOf(preview)} alt={preview.name} />
@@ -977,6 +1002,22 @@
     <video class="ae-preview-media" src={urlOf(preview)} controls autoplay></video>
   {:else if preview?.kind === "sound"}
     <audio class="ae-preview-media" src={urlOf(preview)} controls autoplay></audio>
+  {:else if preview?.kind === "data"}
+    <!-- The text arrives through the asset STORE (loadPreviewText), so this works
+         in HTTP and IndexedDB modes alike. Three states, all of them stated: a
+         failure names itself, a load in flight says it is loading, and only real
+         text becomes a table — an empty table standing in for a failed read is
+         exactly the silent-wrong-answer this pane refuses elsewhere. -->
+    {#if previewTextError}
+      <div class="ae-notice ae-error">
+        <div class="ae-notice-title">Couldn't read this file</div>
+        <div class="ae-notice-detail">{previewTextError}</div>
+      </div>
+    {:else if previewText === null}
+      <div class="ae-notice">Reading {preview.name}…</div>
+    {:else}
+      <CsvTable text={previewText} filename={preview.name} />
+    {/if}
   {/if}
 </Modal>
 

@@ -196,7 +196,15 @@ test("the layout maps pane index through the VISIBLE subset, not through a liter
   // The bug this pins: `{#if row === 2}` rendered the Global Variables pane
   // whenever the pane at index 2 was ANY panel, so hiding Property Panel put the
   // wrong component in every slot below it.
-  assert.ok(appSvelte.includes("visiblePanels(slot.id)[row]"), "the column snippet no longer indexes visiblePanels()");
+  assert.ok(appSvelte.includes("visiblePanels(column)[row]"), "the pane snippet no longer indexes visiblePanels()");
+  // ONE pane body serves both columns (the {panelPane} snippet), so the
+  // index → panel mapping and the six component branches exist exactly once.
+  assert.ok(appSvelte.includes("{#snippet panelPane(column, row)}"), "the shared pane-body snippet is gone");
+  assert.equal(
+    (appSvelte.match(/@render panelPane\(/g) ?? []).length,
+    2,
+    "both columns must render the SHARED pane snippet — a second copy of the body is how the two columns drift apart",
+  );
   assert.ok(appSvelte.includes("visibleColumns()[col]"), "the outer row snippet no longer indexes visibleColumns()");
   assert.doesNotMatch(appSvelte, /\{#if row === \d\}/, "the layout still branches on a literal pane index");
   assert.doesNotMatch(appSvelte, /\{:else if row === \d\}/, "the layout still branches on a literal pane index");
@@ -205,6 +213,29 @@ test("the layout maps pane index through the VISIBLE subset, not through a liter
     if (panel.id === "keyframes") continue; // the final `{:else}` arm
     assert.ok(appSvelte.includes(`panel.id === "${panel.id}"`), `the layout renders nothing for panel "${panel.id}"`);
   }
+});
+
+test("each column binds splits to a PLAIN IDENTIFIER, never a get/set pair over the column", () => {
+  // THE BUG THIS PINS, because it was live and silent: folding both columns into
+  // one <SplitPane> requires a conditional binding, and `bind:splits={cond ? a : b}`
+  // is illegal — so the obvious next move is a `{get, set}` pair closing over the
+  // column. Svelte captures that pair ONCE at component creation, so after a
+  // visibility flip the child kept reading and writing the STALE closure: its
+  // paneCount never shrank, the hidden panel left an empty pane AND a live divider
+  // behind (exactly what the ruling forbids), and the pane body then indexed past
+  // the end of the visible list and threw `Cannot read properties of undefined`.
+  // Two <SplitPane>s with plain identifier bindings is the fix.
+  assert.ok(appSvelte.includes("bind:splits={leftSplits}"), "the left column does not bind splits to a plain identifier");
+  assert.ok(appSvelte.includes("bind:splits={rightSplits}"), "the right column does not bind splits to a plain identifier");
+  assert.ok(appSvelte.includes("bind:splits={hSplits}"), "the outer row does not bind splits to a plain identifier");
+  assert.doesNotMatch(appSvelte, /bind:splits=\{\s*\(\)\s*=>/, "a splits binding is a get/set pair again — it will capture a stale closure");
+  assert.doesNotMatch(appSvelte, /bind:splits=\{[^}]*\?[^}]*:/, "a splits binding is conditional — Svelte binds to an identifier, not an expression");
+});
+
+test("a pane index past the end of the visible list renders NOTHING rather than throwing", () => {
+  // SplitPane can render one flush with the OLD paneCount against the NEW, shorter
+  // panel list; without the guard that frame threw and took the layout down.
+  assert.ok(appSvelte.includes("{#if panel}"), "the pane body no longer guards against a transient index overrun");
 });
 
 test("hiding every panel in a column drops the COLUMN, divider included", () => {
@@ -222,7 +253,11 @@ test("a drag is remembered PER PANEL, so it survives a hide/show", () => {
   assert.ok(appSvelte.includes("function commitColumnDrag(column, splits)"), "column drags are not written back to per-panel weights");
   assert.ok(appSvelte.includes("function commitRowDrag(splits)"), "outer-row drags are not written back to per-column weights");
   assert.ok(appSvelte.includes("onchange={commitRowDrag}"), "the outer SplitPane does not commit its drag");
-  assert.ok(appSvelte.includes("commitColumnDrag(slot.id, splits)"), "the column SplitPane does not commit its drag");
+  for (const column of ["left", "right"])
+    assert.ok(
+      appSvelte.includes(`commitColumnDrag("${column}", splits)`),
+      `the ${column} column's SplitPane does not commit its drag, so a divider drag there is forgotten on the next hide/show`,
+    );
 });
 
 // ── the panel inventory itself ───────────────────────────────────────────────

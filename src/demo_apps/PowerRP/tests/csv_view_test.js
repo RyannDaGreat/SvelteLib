@@ -110,6 +110,10 @@ test("columnAlignments excludes the header from the vote and lets blanks abstain
   // Nothing proved it numeric → left.
   assert.deepEqual(columnAlignments([["h"], [""]], true), ["left"]);
   assert.deepEqual(columnAlignments([], true), []);
+  // With NO header both rows vote, so a lone numeric beside a blank still wins.
+  // (This case's doctest asserted ["left","left"] and was WRONG — the doctest
+  // runner caught it, which is why doctests are executed and not decorative.)
+  assert.deepEqual(columnAlignments([["a", "1"], ["b", ""]], false), ["left", "right"]);
 });
 
 test("columnAlignments bounds its scan with `sample`", () => {

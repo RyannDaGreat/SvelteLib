@@ -55,6 +55,9 @@ import { DRAG_KINDS } from "./canvas/dragKinds.js"; // the dragKind setter's all
 import { createUndo } from "../core/undo.js";
 import { registerAll, registerPlugins } from "../plugins/index.js"; // registerPlugins = types only (a project switch rebuilds the plugin registry, NOT the commands)
 import { loadProjectPluginAssets, printPluginAssetReports } from "./pluginAssetLoader.js"; // widgets delivered as project assets (*.plugin.js), sandboxed by core/plugin_assets.js
+import { BUILTIN_PLUGIN_ASSET_TYPES } from "../core/builtin_plugin_assets.js"; // the built-in widget library's file→type map (a dropped built-in tile resolves through it)
+import { anchoredDefaults } from "./widget_handlers.js"; // THE point-placement arithmetic, shared with crosshair click placement (honours placementAnchor)
+import { refreshPluginWidgetCommands } from "../plugins/builtin_asset_commands.js"; // "Plugin: <name>" palette entries — rebuilt per project (the widget set is per-project)
 // The plugin-asset GRAMMAR + VALIDATOR, for the code modal's "asset" scope: the
 // same loadPluginAsset the loader uses, so a source the editor accepts is exactly a
 // source the loader would register (a second opinion here is how a save that the
@@ -3293,6 +3296,16 @@ export class PowerRPApp {
     const result = await loadProjectPluginAssets(this.registry, assetStore(), name);
     printPluginAssetReports(result, name);
     this.pluginAssetTypes = result.loaded; // what the Insert menu offers (App.svelte)
+    // The FILE→TYPE map, for acting on one asset by its filename (the canvas
+    // drop-to-instantiate path). Replaced, not merged: this rebuilt the whole
+    // registry above, so a stale entry would name a type that is no longer
+    // registered and the drop would throw "Unknown widget type".
+    this.pluginAssetTypeByFile = { ...result.types };
+    // EVERY loaded plugin-asset widget appears in the palette as "Plugin: <name>"
+    // (user ruling). Rebuilt here, on every project load, because the widget SET is
+    // per-project — see plugins/builtin_asset_commands.js for why this is one stable
+    // submenu with replaceable children rather than N registered commands.
+    refreshPluginWidgetCommands(this.pluginAssetPlugins());
     return result;
   }
 
@@ -3651,6 +3664,85 @@ export class PowerRPApp {
   }
 
   /**
+   * Command. Inserts the widget a `*.plugin.js` ASSET declares, at `at` (a canvas
+   * drop point) or the camera-view centre. THE DROP-TO-INSTANTIATE path, per the
+   * user's ruling: "If I drag and drop a widget plugin onto the canvas, it should
+   * add the widget… from the asset library".
+   *
+   * ENSURE-LOADED FIRST, and this is the whole reason the method exists rather than
+   * the drop handler calling addItem. Three cases reach it and only one has its
+   * plugin already registered:
+   *
+   *   · a PROJECT plugin asset in the open project — registered at project open
+   *     (loadProject → loadProjectPluginAssets), so the lookup already resolves.
+   *   · a BUILT-IN library widget — registered at boot in every mode, likewise.
+   *   · an asset the registry does NOT have — a file added since the project
+   *     opened (a manual folder drop, or an upload in another tab). That is the
+   *     case that would otherwise throw an "Unknown widget type" out of a drop
+   *     gesture, so the type is resolved by RE-READING the project's plugin assets
+   *     once before giving up.
+   *
+   * A FAILURE IS LOUD, never a dropped gesture that looks like a miss: an asset
+   * whose source will not compile, or which declares a type nothing registered,
+   * throws with the asset named. The caller (CanvasView's drop) reports it.
+   *
+   * THE PLACEMENT IS THE SAME ARITHMETIC A CLICK USES — widget_handlers'
+   * anchoredDefaults, honouring the plugin's own `placementAnchor` — so a widget
+   * lands in the same place whether it was placed by crosshair or dropped.
+   *
+   * @param {{name: string, kind?: string}} asset - the dropped plugin asset
+   * @param {{x: number, y: number}|null} at - world drop point, or null for the view centre
+   * @returns {Promise<void>}
+   *
+   * @example // await app.insertPluginAssetWidget({name: "donut.plugin.js"}, {x: 400, y: 300})
+   * //   → a donut item added with its centre at (400, 300)
+   */
+  async insertPluginAssetWidget(asset, at = null) {
+    const type = await this.pluginAssetType(asset.name);
+    const plugin = this.registry.get(type); // loud on an unknown type, by contract
+    this.addItem(anchoredDefaults(plugin, at ?? this.#viewCenter()));
+  }
+
+  /**
+   * Query (may re-read the project's assets). The widget TYPE the plugin asset
+   * `filename` declares, ensuring it is REGISTERED first — the ensure-loaded half
+   * of drop-to-instantiate.
+   *
+   * A type name lives in the asset's SOURCE, never in its listing entry, so the map
+   * is built at registration (core/plugin_assets.registerPluginAssets returns it)
+   * rather than inferred from the filename. Inferring would be wrong in both
+   * directions: `my_shapes.plugin.js` may declare `squircle`, and two files can
+   * declare types unrelated to their names.
+   *
+   * THE BUILT-IN LIBRARY IS CONSULTED TOO, because a dropped tile can come from
+   * either surface — the Asset Explorer lists project assets and (with the toggle on)
+   * the built-in widget library, and a drop must work from both. Built-ins are
+   * registered at boot in every mode, so their map needs no re-read.
+   *
+   * @param {string} filename - a plugin asset's basename (e.g. "gear.plugin.js")
+   * @returns {Promise<string>} the registered widget type
+   *
+   * @example // await app.pluginAssetType("donut.plugin.js")  // "donut"  (a built-in)
+   * @example // await app.pluginAssetType("gear.plugin.js")   // "gear"   (a project asset)
+   */
+  async pluginAssetType(filename) {
+    const known = this.pluginAssetTypeByFile?.[filename] ?? BUILTIN_PLUGIN_ASSET_TYPES[filename];
+    if (known) return known;
+    // Unknown under this name — the asset arrived AFTER the project opened (a manual
+    // folder drop, or an upload from another tab). Re-read once. Idempotent: an
+    // already-registered type is REFUSED by the collision rule and reported, never
+    // double-registered.
+    const result = await loadProjectPluginAssets(this.registry, assetStore(), this.projectName());
+    printPluginAssetReports(result, this.projectName());
+    this.pluginAssetTypes = [...(this.pluginAssetTypes ?? []), ...result.loaded];
+    this.pluginAssetTypeByFile = { ...this.pluginAssetTypeByFile, ...result.types };
+    const found = result.types[filename];
+    if (!found)
+      throw new Error(`pluginAssetType: "${filename}" declares no usable widget — it is not registered, and re-reading this project's plugin assets did not register it. See the console for the refusal reason.`);
+    return found;
+  }
+
+  /**
    * Command. Inserts a video asset (by URL) as a new video PLAYER widget at
    * native pixel size, centered at `at` (canvas drop point) or the camera-view
    * center — the video twin of insertImageAsset (manifest Round 12 drag-drop:
@@ -3756,16 +3848,18 @@ export class PowerRPApp {
   }
 
   // Built-in asset browser UI seam (mirrors showOpenModal): App.svelte sets this
-  // to a function that opens the "Built-in Assets" Modal. Built-in assets are
-  // ship-with-the-app (cursors today) and live in a SEPARATE surface from the
-  // project Asset Explorer — this is DISCOVERY only; widgets read built-ins
-  // directly (web/builtinAssets.js is the catalog).
-  showBuiltinAssets = null;
+  // to a function that opens the "Built-in Assets" Modal. NAMED *Modal to stay
+  // clear of `showBuiltinAssets` above — that one is the Asset Explorer's
+  // show-built-ins TOGGLE (a persisted boolean); this one is a modal hook.
+  // Built-in assets are ship-with-the-app and live in a SEPARATE surface from
+  // the project Asset Explorer — this is DISCOVERY only; widgets read
+  // built-ins directly (web/builtinAssets.js is the catalog).
+  showBuiltinAssetsModal = null;
 
   /** Command. Open the built-in asset browser (delegates to the modal hook once
    *  wired by App.svelte). */
   browseBuiltinAssets() {
-    if (this.showBuiltinAssets) return this.showBuiltinAssets();
+    if (this.showBuiltinAssetsModal) return this.showBuiltinAssetsModal();
     console.error("Browse Built-in Assets: the browser modal is not wired yet (App.svelte hook missing).");
   }
 

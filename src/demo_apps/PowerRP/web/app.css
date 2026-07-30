@@ -3326,6 +3326,43 @@ textarea {
   display: none;
 }
 
+/* ── THE FILTER AREA (fuzzy path search) ─────────────────────────────────────
+   One row directly under .ae-actions, present ONLY while the search toggle is on
+   (the component does not render it otherwise), so the unfiltered pane pays no
+   vertical space for it. Same padding + hairline separator as .ae-totals so the
+   three stacked header rows read as one block rather than three inventions. */
+.asset-explorer .ae-search {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-2) var(--a-sp-3);
+  border-bottom: var(--a-hairline) solid var(--border);
+}
+
+.asset-explorer .ae-search-glyph {
+  color: var(--fg-dim);
+  flex: none;
+}
+
+/* The input is the row: it takes all remaining width so a long path is readable,
+   and min-width:0 lets it SHRINK below its intrinsic size inside the flex row (an
+   <input>'s default min-width is its size attribute, which would otherwise force
+   the pane to scroll horizontally in a narrow left column). */
+.asset-explorer .ae-search-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  font-size: var(--a-font-sm);
+  font-family: var(--a-mono); /* it filters PATHS, which are literals — the mono rule */
+  outline: none;
+}
+
+.asset-explorer .ae-search-clear {
+  flex: none;
+}
+
 .asset-explorer .ae-body {
   flex: 1;
   min-height: 0;

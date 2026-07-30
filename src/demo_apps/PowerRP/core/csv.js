@@ -154,7 +154,10 @@ export function isNumericCell(cell) {
  * @example columnAlignments([["region", "units"], ["North", "12"], ["South", "8"]], true)
  * // ["left", "right"]
  * @example columnAlignments([["2024", "2025"], ["1", "2"]], true) // ["right", "right"]
- * @example columnAlignments([["a", "1"], ["b", ""]], false) // ["left", "left"]
+ * @example // hasHeader false ⇒ BOTH rows vote, and the blank abstains, so col 2 is numeric:
+ * columnAlignments([["a", "1"], ["b", ""]], false) // ["left", "right"]
+ * @example // nothing non-blank in a column proves nothing — left is the default:
+ * columnAlignments([["a", ""], ["b", ""]], false) // ["left", "left"]
  * @example columnAlignments([], true) // []
  */
 export function columnAlignments(rows, hasHeader, sample = 200) {

@@ -78,6 +78,23 @@ test("it says up front that it ships with the app", () => {
   const head = GUIDE.slice(0, 2000);
   assert.ok(/ships with the app|vendored|travels with/i.test(head),
     "the top of the guide must state that it ships with the app");
+  // And it must say which directory its paths are relative to. Without that a
+  // reader who opens the bundled copy cannot resolve a single citation, since the
+  // vendored repo root is several levels above this file.
+  assert.ok(/relative to `src\/demo_apps\/PowerRP\/`/.test(head),
+    "the guide must state that its paths are relative to src/demo_apps/PowerRP/");
+});
+
+test("the vendoring claim is true: nothing excludes AUTHORING.md from the bundle", () => {
+  // The guide tells the reader it is vendored into the desktop bundle. That is only
+  // true because electron-builder copies the whole repo as extraResources and
+  // excludes `projects/` alone — so this asserts the file is NOT under an excluded
+  // path, which is the one way the claim could quietly become false.
+  const rel = "src/demo_apps/PowerRP/AUTHORING.md";
+  assert.ok(!rel.includes("/projects/"), "AUTHORING.md must not live under the excluded projects/ tree");
+  // The desktop packaging notes are where the exclusion is recorded; if that file
+  // moves, this test's premise needs rechecking, so its absence is a failure.
+  assert.ok(existsSync(resolve(APP_ROOT, "desktop/main.js")), "desktop/main.js documents the vendoring rule");
 });
 
 // ── (1) EVERY CITED FILE PATH RESOLVES ──────────────────────────────────────
@@ -92,15 +109,23 @@ test("it says up front that it ships with the app", () => {
  * `sales.csv` appear in the prose as generic examples rather than as citations, and
  * treating them as paths would produce false failures on every example.
  *
+ * `projects/` IS DELIBERATELY NOT A CITED DIRECTORY, and this was a real failure
+ * rather than a precaution: `projects/*` is gitignored (it is the user's own
+ * project data), so a path under it exists on the authoring machine and is ABSENT
+ * from a fresh clone. Treating one as a checkable citation makes this test pass or
+ * fail on which working tree it runs in, which is worse than not checking it — so
+ * the guide refers to project files by name in prose instead.
+ *
  * @param {string} md - the guide's markdown
  * @returns {string[]} unique repo-relative paths, in first-appearance order
  *
  * @example citedPaths("see `core/derive.js` and core/view.js:88") // ["core/derive.js", "core/view.js"]
  * @example citedPaths("a plain sales.csv is not a citation") // []
  * @example citedPaths("`plugins/demo/sky.js`") // ["plugins/demo/sky.js"]
+ * @example citedPaths("`projects/Imitations/doc.json` is gitignored") // []
  */
 export function citedPaths(md) {
-  const DIRS = "core|plugins|render_gpu|web|cli|tests|examples|plugin_assets|projects|server|desktop|fonts|assets";
+  const DIRS = "core|plugins|render_gpu|web|cli|tests|examples|plugin_assets|server|desktop|fonts";
   const pattern = new RegExp(`\\b(?:${DIRS})\\/[A-Za-z0-9_./-]*[A-Za-z0-9_)-]`, "g");
   const out = [];
   for (const raw of md.match(pattern) ?? []) {
