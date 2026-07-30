@@ -209,6 +209,15 @@
     const top = side === "top" ? rect.top - gap - tipH : rect.bottom + gap;
     return { left, top };
   }
+
+  // AT MOST ONE TOOLTIP OPEN, app-wide. NESTED anchors are why this must be a
+  // global invariant rather than per-instance hygiene: a tip-wrapped tile inside
+  // a tip-wrapped region receives pointerenter on BOTH anchors (entering the
+  // inner never leaves the outer), so both tips stack (user ruling 2026-07-30:
+  // "two tooltips at the same time — that's stupid"). Native UIs never show two
+  // tips; revealing any tip closes the incumbent. Holds each open instance's
+  // own close(), so identity comparison distinguishes self from incumbent.
+  let openTipClose = null;
 </script>
 
 <script>
@@ -300,9 +309,12 @@
     pos = computePosition(side, ref, tipW, tipH, gap, window.innerWidth, window.innerHeight, EDGE_MARGIN);
   }
 
-  /** Command. Shows the tooltip now (used after any delay elapses). Mutates shown. */
+  /** Command. Shows the tooltip now (used after any delay elapses). Mutates
+   *  shown, and closes any OTHER open tip first (the one-tip invariant above). */
   function reveal() {
     if (disabled || !hasContent) return;
+    if (openTipClose && openTipClose !== close) openTipClose();
+    openTipClose = close;
     shown = true;
   }
 
@@ -342,9 +354,11 @@
     if (shown) place();
   }
 
-  /** Command. Hides the tooltip and cancels any pending show. Mutates shown/timer. */
+  /** Command. Hides the tooltip and cancels any pending show. Mutates shown/timer,
+   *  and releases the one-open-tip slot when this instance holds it. */
   function close() {
     clearTimeout(showTimer);
+    if (openTipClose === close) openTipClose = null;
     shown = false;
   }
 
