@@ -73,7 +73,11 @@
     ["undo", "redo"],
     ["copy-item", "paste"],
     ["put-on-top", "put-on-bottom"],
-    ["save-to-server", "open-project", "download-zip", "clear-doc"],
+    // "open-project-url" sits DIRECTLY AFTER "open-project" (extending the
+    // user-specified order rather than reordering it): the two are the same verb
+    // over different transports — open from storage, open from the network — so
+    // they belong adjacent, before the export/clear pair.
+    ["save-to-server", "open-project", "open-project-url", "download-zip", "clear-doc"],
     ["render-center"],
     ["reset-view", "present"],
   ];

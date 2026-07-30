@@ -33,6 +33,12 @@
   import CodeEditorModal from "./CodeEditorModal.svelte";
   import { renderBadgeCount } from "./renderJobView.js";
   import { listRenderJobs } from "./projectApi.js";
+  // Opening a project from a URL: the "?zip=" boot param and the modal are one
+  // pipeline (web/projectUrlImport.js), and both land as a DRAFT
+  // (web/projectDraft.js) rather than a library entry.
+  import { ZIP_PARAM } from "./projectUrlImport.js";
+  import { bootFailed, bootStage } from "./bootProgress.js";
+  import { humanReadableFileSize } from "./fileSize.js";
   import { PowerRPApp, THEMES } from "./app.svelte.js";
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
@@ -182,7 +188,11 @@
   let saveBusy = $state(false);
   let saveError = $state(null);
   app.showSaveModal = async () => {
-    saveName = app.projectName();
+    // displayName(), not projectName(): while a DRAFT is open the latter is the
+    // draft STORAGE KEY ("~draft/current"), which contains "/" and is not a
+    // legal project name. Prefilling with it would offer the user a name the
+    // server must refuse. The human name is what they meant to save as.
+    saveName = app.projectDisplayName();
     saveError = null;
     saveBusy = false;
     saveProjectNames = [];
@@ -196,7 +206,10 @@
   };
   const saveTrimmed = $derived(saveName.trim());
   const saveNameExists = $derived(saveProjectNames.includes(saveTrimmed));
-  const saveIsCurrent = $derived(saveTrimmed === app.projectName()); // re-saving the open project is expected, not a clobber
+  // Re-saving the open project is expected, not a clobber. A DRAFT is never
+  // "current" by this test — it is not in the library at all, so every save of
+  // one is a first commit (the draft branch in confirmSave), never an update.
+  const saveIsCurrent = $derived(!app.draftMode && saveTrimmed === app.projectName());
   const saveWouldClobber = $derived(saveNameExists && !saveIsCurrent);
   async function confirmSave() {
     const name = saveTrimmed;
@@ -204,9 +217,13 @@
     saveBusy = true;
     saveError = null;
     try {
-      // A DIFFERENT name FORKS (copies the assets, original untouched); the
-      // current name is an ordinary update of this project.
-      if (saveIsCurrent) await app.saveToServer(name);
+      // THREE CASES, and the draft one is why this is not a two-way branch:
+      //  - a DRAFT is not in the library, so saving it COMMITS the working copy
+      //    (staged assets copied into the new project) — see commitDraft.
+      //  - the current name is an ordinary update of this project.
+      //  - a DIFFERENT name FORKS (copies the assets, original untouched).
+      if (app.draftMode) await app.commitDraft(name);
+      else if (saveIsCurrent) await app.saveToServer(name);
       else await app.saveProjectAsFork(name);
       saveModalVisible = false;
     } catch (e) {
@@ -266,14 +283,57 @@
     importResult = result;
     if (!result.ok) {
       console.error(`Import Project from .zip failed for "${result.requested}":`, result.error);
-    } else if (result.renamed) {
-      console.warn(`Import Project from .zip: "${result.requested}" already existed — imported as "${result.name}".`);
-    } else {
-      console.log(`Import Project from .zip: opened "${result.name}".`);
-      return; // nothing surprising happened; the open project IS the feedback
+      importResultVisible = true;
+      return;
     }
-    importResultVisible = true;
+    // THE "renamed" CASE IS GONE, and its absence is the working-copy model
+    // working: an import no longer de-collides into "<Name> 2" because it no
+    // longer creates a library entry to collide with. Opening a zip is now
+    // always the clean case, so it reports to the console and the open draft
+    // (with its UNSAVED indicator) IS the feedback.
+    console.log(`Import Project from .zip: opened "${result.name}" as an unsaved draft.`);
   };
+
+  // ── Open Project from URL… ──────────────────────────────────────────────────
+  // One URL field, a REAL byte-progress bar, and the CORS help when a fetch is
+  // blocked. The progress bar is not decoration: a deck with video is tens of
+  // megabytes, and the user asked for it by name — "there should be a loading bar
+  // in case it takes a while". A long fetch must never look hung.
+  let urlModalVisible = $state(false);
+  let urlValue = $state("");
+  let urlBusy = $state(false);
+  let urlError = $state(null); // string | {title, cause, hostFix, manual, url} (the CORS help)
+  let urlProgress = $state(null); // {loaded, total} | null
+  app.showOpenUrlModal = () => {
+    urlValue = "";
+    urlError = null;
+    urlBusy = false;
+    urlProgress = null;
+    urlModalVisible = true;
+  };
+  /** Query. The download's percentage, or null when the host sent no
+   *  Content-Length. Null drives an INDETERMINATE bar — the boot splash's
+   *  honesty rule: report bytes-so-far, never a synthetic percentage. */
+  const urlPercent = $derived(urlProgress?.total > 0 ? Math.round((urlProgress.loaded / urlProgress.total) * 100) : null);
+  async function confirmOpenUrl() {
+    const url = urlValue.trim();
+    if (!url || urlBusy) return;
+    urlBusy = true;
+    urlError = null;
+    urlProgress = { loaded: 0, total: 0 };
+    try {
+      await app.openProjectFromUrl(url, (p) => (urlProgress = p));
+      urlModalVisible = false;
+    } catch (e) {
+      // A ZipFetchBlockedError carries STRUCTURED help so the message can render
+      // the link as a link and the header as code — parsing prose back out of an
+      // Error string would be the alternative, and a worse one.
+      urlError = e?.help ?? String(e.message ?? e);
+      console.error(`Open Project from URL failed for "${url}":`, e);
+    } finally {
+      urlBusy = false;
+    }
+  }
 
   // Built-in Assets… modal (task #68 follow-up): a SEPARATE, discovery-only
   // browser for ship-with-the-app assets (cursors today), distinct from the
@@ -338,6 +398,55 @@
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
+
+  // ── DRAFTS AT BOOT: restore an unsaved working copy, or open a ?zip= link ────
+  //
+  // ORDER MATTERS, and the two cases are mutually exclusive by design:
+  //   RESTORE runs first and only when there is no ?zip=. loadAutosave() has
+  //   already put the draft's DOCUMENT back (autosave knows nothing about
+  //   drafts); restoreDraft re-establishes that it IS one and primes its staged
+  //   assets. This is the user's "the browser can persist it until later".
+  //
+  //   ?zip= WINS when present, because the link is an explicit instruction that
+  //   arrived after whatever was open. It OVERWRITES the previous draft staging
+  //   — one working copy at a time, like every editor.
+  //
+  // Neither writes to the project library. Both are fire-and-forget async: the
+  // editor is already usable, and failures report themselves loudly.
+  const zipParam = new URLSearchParams(location.search).get(ZIP_PARAM);
+  if (zipParam) openBootZip(zipParam);
+  else app.restoreDraft().catch((e) => console.error(`PowerRP boot: restoring the unsaved draft failed — ${e?.message ?? e}`));
+
+  /**
+   * Command (async). The `?zip=<url>` boot path: download the archive with REAL
+   * byte progress ON THE BOOT SPLASH, then open it as a draft.
+   *
+   * THE SPLASH IS THE RIGHT SURFACE HERE and a modal would be the wrong one: at
+   * boot there is nothing behind the splash yet, so the download IS the boot and
+   * belongs in the same stage list as the wasm and the fonts. The stage reports
+   * bytes honestly — Content-Length when the host sent one, bytes-so-far when it
+   * did not, never a synthetic percentage (bootProgress.js's contract).
+   *
+   * WHEN THE PARAM IS ABSENT NONE OF THIS RUNS, which is what keeps the
+   * warm-load no-flash rule intact: no extra stage is declared, so the splash
+   * lifts exactly when it did before.
+   */
+  async function openBootZip(url) {
+    try {
+      await app.openProjectFromUrl(url, ({ loaded, total }) =>
+        bootStage("zip", "Downloading project", { loaded, total: total > 0 ? total : undefined }),
+      );
+      bootStage("zip", "Downloading project", { done: true });
+    } catch (e) {
+      // A share link that cannot be fetched must SAY WHY on the splash — a boot
+      // that silently drops the link would leave the user staring at an empty
+      // editor wondering where their deck went. The CORS case carries structured
+      // help; anything else reports its own message.
+      const help = e?.help;
+      bootFailed(help ? `${help.title}\n\n${help.cause}\n\nHost fix: ${help.hostFix}\n\n${help.manual}\n${help.url}` : `Could not open ${url}\n\n${e?.message ?? e}`);
+      console.error(`PowerRP boot: ?${ZIP_PARAM}=${url} failed —`, e);
+    }
+  }
 
   // ── PANEL VISIBILITY LAYOUT (core/panels.js) ────────────────────────────────
   // A pane's SHARE of its column lives as a per-panel WEIGHT, not as a boundary
@@ -900,6 +1009,16 @@
     // ruling). Storage mode is a boot constant, so a load-time ternary is honest.
     { id: "save-to-server", title: isStatic() ? "Save Project to Browser…" : "Save Project to Server…", icon: isStatic() ? "mdi:database-arrow-up-outline" : "mdi:cloud-upload-outline", run: (a) => a.saveProjectAs() },
     { id: "open-project", title: isStatic() ? "Open Project from Browser…" : "Open Project from Server…", icon: isStatic() ? "mdi:database-arrow-down-outline" : "mdi:folder-network-outline", run: (a) => a.openProject() },
+    // Open a .zip over the NETWORK — the receiving half of a share link, and the
+    // same pipeline "?zip=<url>" boots with. It opens an UNSAVED DRAFT: nothing
+    // enters the library until the user saves, so following someone's link costs
+    // them nothing. Titled with the transport ("from URL") to sit beside the
+    // other two Open verbs, which name theirs (Browser / Server).
+    { id: "open-project-url", title: "Open Project from URL…", icon: "mdi:link-variant", aliases: ["share link", "zip url", "download project", "open link", "remote"], help: "Downloads a project .zip over the network and opens it as an unsaved draft. Works with any direct link to an exported project — a GitHub release, an S3 bucket, your own web server. The project library is untouched until you save.", run: (a) => a.openProjectFromUrlModal() },
+    // Gated to URL-SOURCED DRAFTS: a locally-dropped zip or a saved project has
+    // no address a recipient could fetch, so there is nothing honest to copy and
+    // the command must be disabled rather than hand over a link that 404s.
+    { id: "copy-share-link", title: "Copy Share Link", icon: "mdi:share-variant-outline", aliases: ["share", "copy link", "send deck"], when: (a) => a.shareLink() !== null, requires: "a project opened from a URL", help: "Copies a link that reopens THIS deck: the page address plus the .zip's URL. Anyone who opens it gets their own unsaved draft of it.", run: (a) => a.copyShareLink() },
     // ph:file-zip / ph:file-zip-fill: the ONE candidate pair whose glyph carries
     // literal "ZIP" lettering (user ruling 2026-07-30: the zip icon should SAY
     // Zip) while keeping the outline=export / filled=import distinction.
@@ -1984,6 +2103,11 @@
         <div class="name-modal-warning">{saveError}</div>
       {:else if saveWouldClobber}
         <div class="name-modal-warning">A different project named “{saveTrimmed}” already exists — saving will OVERWRITE it.</div>
+      {:else if app.draftMode && saveTrimmed}
+        <!-- THE COMMITMENT POINT. Until this save runs, the opened .zip/link is a
+             working copy and the library holds nothing — so the note says what is
+             about to change rather than describing a copy of something existing. -->
+        <div class="name-modal-note">Saves this unsaved draft as a new project “{saveTrimmed}”, assets included. This is the first time it enters your {isStatic() ? "browser" : "server"}.</div>
       {:else if saveIsCurrent}
         <div class="name-modal-note">Updates the existing project “{saveTrimmed}”.</div>
       {:else if saveTrimmed}
@@ -2039,25 +2163,79 @@
   </Modal>
   <!-- Import a .zip: the RESULT. Only opens when the outcome differs from what
        the user asked for — a collision rename, or a refusal. See showImportResult. -->
-  <Modal bind:open={importResultVisible} title={importResult?.ok ? "Imported as a New Project" : "Import Failed"} size="compact">
+  <!-- Only a REFUSAL opens this now. The old "imported as <Name> 2" case cannot
+       happen any more: a zip opens as a draft, which has no library entry to
+       collide with (see showImportResult). -->
+  <Modal bind:open={importResultVisible} title="Could Not Open That .zip" size="compact">
     <div class="name-modal">
-      {#if importResult?.ok}
-        <div class="name-modal-note">
-          A project named “{importResult.requested}” already exists on the server, and an import never overwrites one.
-          This archive was opened as “{importResult.name}”.
-        </div>
-      {:else}
-        <!-- .name-modal-warning is the existing LOUD line of these dialogs (the
-             Save modal's clobber warning) — the refusal reuses it, no new color. -->
-        <div class="name-modal-warning">
-          “{importResult?.requested}” was not imported: {importResult?.error}
-        </div>
-        <div class="name-modal-note">Nothing was changed — the open project is untouched.</div>
-      {/if}
+      <!-- .name-modal-warning is the existing LOUD line of these dialogs (the
+           Save modal's clobber warning) — the refusal reuses it, no new color. -->
+      <div class="name-modal-warning">
+        “{importResult?.requested}” was not opened: {importResult?.error}
+      </div>
+      <div class="name-modal-note">Nothing was changed — the open project is untouched.</div>
       <div class="name-modal-actions">
         <button type="button" class="btn" onclick={() => (importResultVisible = false)}>OK</button>
       </div>
     </div>
+  </Modal>
+  <!-- Open Project from URL: fetch a .zip over the network and open it as an
+       UNSAVED DRAFT. The progress bar shows REAL bytes (indeterminate when the
+       host sends no Content-Length) because a multi-megabyte deck must never
+       look hung. Enter loads, Escape cancels (Modal owns Escape). -->
+  <Modal bind:open={urlModalVisible} title="Open Project from URL" size="compact">
+    <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmOpenUrl(); }}>
+      <label class="name-modal-field">
+        <span class="name-modal-label">Link to a project .zip</span>
+        <input
+          class="name-modal-input"
+          type="text"
+          bind:value={urlValue}
+          placeholder="https://example.com/deck.zip"
+          autocomplete="off"
+          spellcheck="false"
+          disabled={urlBusy}
+          use:selectAllOnMount
+        />
+      </label>
+      {#if urlBusy}
+        <div class="url-progress">
+          <!-- Indeterminate when there is no denominator: the bar animates and
+               the byte counter still ticks, which is honest. Inventing a
+               percentage would not be. -->
+          <div class="url-progress-track" class:is-indeterminate={urlPercent === null}>
+            <div class="url-progress-fill" style={urlPercent === null ? "" : `width: ${urlPercent}%`}></div>
+          </div>
+          <div class="url-progress-label">
+            {#if urlPercent === null}
+              Downloading — {humanReadableFileSize(urlProgress?.loaded ?? 0)} so far…
+            {:else}
+              Downloading — {humanReadableFileSize(urlProgress.loaded)} of {humanReadableFileSize(urlProgress.total)} ({urlPercent}%)
+            {/if}
+          </div>
+        </div>
+      {:else if urlError && typeof urlError === "object"}
+        <!-- THE CORS CASE, rendered from the structured help so each part lands
+             where it belongs: the cause as prose, the one-line host fix as code,
+             and the manual path with the URL as a real clickable link. -->
+        <div class="name-modal-warning">{urlError.title}</div>
+        <div class="name-modal-note">{urlError.cause}</div>
+        <div class="name-modal-note">
+          If you own that server, one response header fixes it: <code class="url-fix">{urlError.hostFix}</code>
+        </div>
+        <div class="name-modal-note">
+          {urlError.manual} <a class="url-link" href={urlError.url} target="_blank" rel="noreferrer noopener">{urlError.url}</a>
+        </div>
+      {:else if urlError}
+        <div class="name-modal-warning">{urlError}</div>
+      {:else}
+        <div class="name-modal-note">Opens as an unsaved draft — nothing is added to your {isStatic() ? "browser" : "server"} until you save it.</div>
+      {/if}
+      <div class="name-modal-actions">
+        <button type="button" class="btn" onclick={() => (urlModalVisible = false)}>Cancel</button>
+        <button type="submit" class="btn" disabled={!urlValue.trim() || urlBusy}>{urlBusy ? "Downloading…" : "Open"}</button>
+      </div>
+    </form>
   </Modal>
   <!-- Built-in Assets browser: a SEPARATE, discovery-only surface for ship-with-
        the-app assets (cursors today). Distinct from the project Asset Explorer —

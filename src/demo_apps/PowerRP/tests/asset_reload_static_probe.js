@@ -136,8 +136,24 @@ try {
   errors.length = 0;
   await page.reload({ waitUntil: "networkidle0" });
   await sleep(4000); // full boot again: wasm, fonts, autosave restore, asset list
-  assert(await page.evaluate(() => window.__powerrp_app.projectName()) === "ReloadDeck",
-    "after RELOAD the autosaved deck came back under its project name");
+  // UPDATED FOR THE WORKING-COPY MODEL. This used to assert
+  // `projectName() === "ReloadDeck"`, which was right when a dropped .zip was
+  // WRITTEN as a project on arrival. It is now opened as an unsaved DRAFT (the
+  // user's ruling: "It shouldn't have to save until the user decides to save —
+  // that goes for uploading zips too"), so after a reload the two names are
+  // deliberately different: projectName() is the draft STORAGE KEY, and the human
+  // name lives on projectDisplayName(). Both are asserted, because "the deck came
+  // back" needs the display name and "it came back AS A DRAFT" needs the key —
+  // and this probe's real subject, that its ASSETS still resolve, is unchanged
+  // below.
+  const restored = await page.evaluate(() => ({
+    key: window.__powerrp_app.projectName(),
+    shown: window.__powerrp_app.projectDisplayName(),
+    isDraft: window.__powerrp_app.draftMode !== null,
+  }));
+  assert(restored.shown === "ReloadDeck", `after RELOAD the autosaved deck came back under its own name (got "${restored.shown}")`);
+  assert(restored.isDraft && restored.key.startsWith("~draft/"),
+    `after RELOAD it is still the unsaved DRAFT it was opened as (draft=${restored.isDraft}, key="${restored.key}")`);
 
   // ── 1. The half that always worked: the listing ─────────────────────────────
   const listed = await page.evaluate(async () => (await window.__powerrp_app.listProjectAssets()).map((a) => ({ name: a.name, size: a.size, kind: a.kind, url: a.url })));

@@ -34,19 +34,23 @@ Run:
 
 import http.cookies
 import io
+import ipaddress
 import json
 import os
 import queue
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
+import urllib.request
 import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2219,6 +2223,182 @@ def unique_project_name(base):
     return candidate
 
 
+# ── The zip PROXY for "Open Project from URL" (SSRF surface — read this) ──────
+#
+# WHY IT EXISTS: a browser cannot fetch a .zip from a host that did not send a
+# CORS header, but a SERVER can — CORS is a rule about what a PAGE may read, and
+# a server-side fetch is not a page. So in HTTP mode a blocked download retries
+# through here. (The static site has no server and therefore no proxy; it shows
+# the CORS explanation instead. web/projectUrlImport.js is the client half.)
+#
+# WHY IT IS DANGEROUS, STATED PLAINLY: this endpoint fetches a URL that an
+# ATTACKER may have chosen, from INSIDE the user's network, and returns the body.
+# That is textbook SSRF — without limits it would happily read a cloud metadata
+# service (169.254.169.254) or a service on the developer's own machine and hand
+# the bytes to a web page. THE POLICY SHIPPED, in full:
+#
+#   1. http(s) ONLY. file:, gopher:, ftp: and friends are refused before any
+#      socket is opened.
+#   2. NO PRIVATE DESTINATIONS. Every resolved IP for the host must be global —
+#      loopback, link-local (incl. the metadata range), RFC1918, CGNAT, unique-
+#      local v6 and reserved space are all refused, by asking the `ipaddress`
+#      module rather than by pattern-matching the hostname (so "localtest.me"
+#      and a DNS name that resolves to 127.0.0.1 are refused too, and there is
+#      no allow-list of names to keep up to date).
+#   3. NO REDIRECT ESCAPES. Redirects are followed MANUALLY, at most
+#      FETCH_ZIP_MAX_REDIRECTS, and every hop is re-checked by 1 and 2 — a
+#      public URL that 302s to 127.0.0.1 is the classic bypass and is refused at
+#      the hop.
+#   4. SIZE CAP. FETCH_ZIP_MAX_BYTES, enforced on the declared Content-Length AND
+#      again while streaming (a lying or absent header is the normal case), so a
+#      URL pointing at an endless stream cannot exhaust memory or disk.
+#   5. STREAMED, not buffered twice: chunks go straight to the client socket.
+#
+# NOT SHIPPED, deliberately: there is no allow-list of hosts, because the feature
+# is "open a deck someone shared with me" and a list would make that useless. The
+# refusals above are what makes the open destination set safe.
+FETCH_ZIP_MAX_BYTES = 512 * 1024 * 1024  # 512 MB — decks with video are large; endless streams are not welcome
+FETCH_ZIP_MAX_REDIRECTS = 5
+FETCH_ZIP_CHUNK = 256 * 1024
+FETCH_ZIP_TIMEOUT_SEC = 30
+
+
+def _refuse_private_host(host):
+    """
+    Query (resolves DNS). Raise ValueError unless every IP `host` resolves to is
+    a GLOBAL address. This is rule 2 of the proxy policy above.
+
+    Asking `ipaddress` about the RESOLVED addresses — not about the name — is the
+    point: a hostname check can be defeated by a name that simply resolves to
+    127.0.0.1, and this cannot.
+
+    Args:
+        host (str): Hostname or literal IP from the URL.
+
+    Raises:
+        ValueError: loudly naming the address that was refused.
+
+    Examples:
+        >>> _refuse_private_host("127.0.0.1")
+        Traceback (most recent call last):
+            ...
+        ValueError: refusing to fetch from a private/loopback address: 127.0.0.1 (127.0.0.1)
+        >>> _refuse_private_host("169.254.169.254")
+        Traceback (most recent call last):
+            ...
+        ValueError: refusing to fetch from a private/loopback address: 169.254.169.254 (169.254.169.254)
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"cannot resolve host {host!r}: {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise ValueError(f"refusing to fetch from a private/loopback address: {host} ({ip})")
+
+
+def checked_fetch_url(raw_url):
+    """
+    Query (DNS). Validate one URL against proxy policy rules 1 and 2, returning
+    the parsed result. Every redirect hop is re-checked through this same
+    function, which is what makes rule 3 hold.
+
+    Args:
+        raw_url (str): The URL to check.
+
+    Returns:
+        urllib.parse.ParseResult
+
+    Raises:
+        ValueError: on a non-http(s) scheme, a missing host, or a private target.
+
+    Examples:
+        >>> checked_fetch_url("file:///etc/passwd")
+        Traceback (most recent call last):
+            ...
+        ValueError: only http:// and https:// URLs can be fetched, got 'file'
+        >>> checked_fetch_url("https://example.com/deck.zip").netloc
+        'example.com'
+    """
+    parsed = urllib.parse.urlparse(raw_url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"only http:// and https:// URLs can be fetched, got {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError(f"no host in URL: {raw_url!r}")
+    _refuse_private_host(parsed.hostname)
+    return parsed
+
+
+def open_checked_url(raw_url):
+    """
+    Query (network). Open `raw_url`, following redirects MANUALLY so that every
+    hop is re-validated by checked_fetch_url (proxy policy rules 1-3).
+
+    urllib's own redirect handling is what we are avoiding: it would follow a
+    302 to 127.0.0.1 without asking anyone, which is exactly the bypass the
+    per-hop check closes.
+
+    Args:
+        raw_url (str): The (already client-validated) URL to fetch.
+
+    Returns:
+        http.client.HTTPResponse: an OPEN response — the caller must close it.
+
+    Raises:
+        ValueError: on a policy refusal or too many redirects.
+
+    Examples:
+        >>> # resp = open_checked_url("https://example.com/deck.zip")
+        >>> # resp.status, resp.headers.get("Content-Length")
+        >>> # (200, '10485760')
+    """
+    url = raw_url
+    for _ in range(FETCH_ZIP_MAX_REDIRECTS + 1):
+        checked_fetch_url(url)
+        # No auto-redirect: `_NoRedirect.redirect_request` returning None makes
+        # urllib STOP at the 3xx instead of following it, which is what lets us
+        # check the Location before going there.
+        opener = urllib.request.build_opener(_NoRedirect)
+        req = urllib.request.Request(url, headers={"User-Agent": "PowerRP/1.0 (project zip proxy)"})
+        try:
+            resp = opener.open(req, timeout=FETCH_ZIP_TIMEOUT_SEC)
+        except urllib.error.HTTPError as exc:
+            # A STOPPED REDIRECT ARRIVES AS AN EXCEPTION, not as a return value —
+            # urllib raises HTTPError for any 4xx/5xx AND for a 3xx it was told
+            # not to follow. The HTTPError IS the response (same .status,
+            # .headers, .read()), so the redirect walk continues from it.
+            #
+            # THIS WAS A REAL BUG, caught by tests/fetch_zip_proxy_test.py: the
+            # loop below used to read `resp.status` from a value that never
+            # arrived, so the per-hop re-check was DEAD CODE and every redirect —
+            # including a legitimate one to a public CDN, which is exactly how
+            # GitHub release downloads work — failed outright instead of being
+            # followed and re-validated.
+            if exc.status not in (301, 302, 303, 307, 308):
+                raise
+            resp = exc
+        if resp.status not in (301, 302, 303, 307, 308):
+            return resp
+        location = resp.headers.get("Location")
+        resp.close()
+        if not location:
+            raise ValueError(f"redirect with no Location from {url}")
+        # RESOLVED AGAINST THE CURRENT HOP so a relative Location works, and fed
+        # back to the top of the loop where checked_fetch_url re-applies rules 1
+        # and 2 — that re-check is the whole of policy rule 3.
+        url = urllib.parse.urljoin(url, location)
+    raise ValueError(f"too many redirects (more than {FETCH_ZIP_MAX_REDIRECTS}) starting at {raw_url}")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Handler that does NOT follow redirects, so open_checked_url can check each
+    hop itself (proxy policy rule 3)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def import_project_zip(data, requested_name=None):
     """
     Command (mutates the filesystem). Unpack an exported project .zip into a
@@ -2576,6 +2756,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_duration(parts[2], parts[3])
             if len(parts) == 3 and parts[:2] == ["api", "render-jobs"]:
                 return self._json({"jobs": list_jobs(parts[2])})
+            if parts == ["api", "fetch-zip"]:
+                # "Open Project from URL" when the browser's own fetch was blocked
+                # by CORS. Attacker-supplied URL => read the SSRF policy block
+                # above checked_fetch_url before touching this.
+                return self._handle_fetch_zip(parsed.query)
             if len(parts) >= 3 and parts[0] == "render":
                 # parts[1] = project, parts[2:] = a file inside renders/. Served
                 # with Range support so the modal's <video> can seek the result.
@@ -2845,6 +3030,63 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self._error(400, str(exc))
         self._json({"ok": True, "name": name, "requested": requested or name})
+
+    def _handle_fetch_zip(self, query):
+        # GET /api/fetch-zip/?url=… -> the remote .zip's BYTES, streamed.
+        #
+        # THE ONLY REASON THIS EXISTS is CORS: the browser refuses to hand a page
+        # bytes from a host that did not opt in, and a server is not subject to
+        # that rule. It is therefore a FALLBACK the client tries only after its
+        # own direct fetch failed (web/projectUrlImport.js fetchZipBytes), never
+        # the default route — a large deck should not transit this server twice.
+        #
+        # Its refusals are the SSRF policy documented above checked_fetch_url: a
+        # bad scheme, a private/loopback destination or a redirect into one is a
+        # 400 with the reason (the client's URL is at fault, an expected
+        # condition), and oversize is a 400 too. A 500 here would mean a bug.
+        q = urllib.parse.parse_qs(query)
+        raw_url = q.get("url", [""])[0].strip()
+        if not raw_url:
+            return self._error(400, "fetch-zip needs ?url=<http(s) url of a .zip>")
+        try:
+            resp = open_checked_url(raw_url)
+        except ValueError as exc:
+            return self._error(400, f"fetch-zip refused {raw_url}: {exc}")
+        except Exception as exc:  # a dead host / TLS failure is the CALLER's URL being wrong
+            return self._error(400, f"fetch-zip could not reach {raw_url}: {type(exc).__name__}: {exc}")
+        with resp:
+            if resp.status != 200:
+                return self._error(400, f"fetch-zip: {raw_url} answered HTTP {resp.status}")
+            declared = resp.headers.get("Content-Length")
+            if declared and int(declared) > FETCH_ZIP_MAX_BYTES:
+                return self._error(400, f"fetch-zip refused {raw_url}: {int(declared)} bytes exceeds the {FETCH_ZIP_MAX_BYTES} byte cap")
+            # Headers go out BEFORE the body so the browser's progress bar has a
+            # denominator whenever the origin gave us one. Content-Length is
+            # forwarded only when it is trustworthy enough to matter; without it
+            # the client reports bytes-so-far, which the boot splash already does.
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/zip")
+            if declared:
+                self.send_header("Content-Length", declared)
+            self.end_headers()
+            # STREAM. Never read the whole archive into memory: these are decks
+            # with video in them, and the cap is 512 MB.
+            total = 0
+            while True:
+                chunk = resp.read(FETCH_ZIP_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > FETCH_ZIP_MAX_BYTES:
+                    # The response is already committed, so this cannot become a
+                    # 400 — the connection is CUT and the reason is logged, which
+                    # surfaces client-side as a truncated (invalid) zip plus this
+                    # line in the server log. Loud in both places.
+                    print(f"[fetch-zip] ABORTED {raw_url}: exceeded the {FETCH_ZIP_MAX_BYTES} byte cap mid-stream", file=sys.stderr)
+                    raise ValueError(f"fetch-zip: {raw_url} exceeded the {FETCH_ZIP_MAX_BYTES} byte cap mid-stream")
+                self.wfile.write(chunk)
+            print(f"[fetch-zip] {raw_url} -> {total} bytes", file=sys.stderr)
 
     def _handle_frames(self, name, video, n_str, query=""):
         # Filmstrip: N evenly-spread frames of a project video, cached under

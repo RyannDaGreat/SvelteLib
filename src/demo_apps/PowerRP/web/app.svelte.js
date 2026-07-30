@@ -37,7 +37,7 @@ import { bundleDefaults } from "../core/properties.js";
 import { multiSelectPanel, unifyPairs } from "../core/multiselect.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
-import { imageSignature } from "./clipboard.js"; // canvas-clipboard disambiguation signature
+import { copyText, imageSignature } from "./clipboard.js"; // canvas-clipboard disambiguation signature + the share-link copy
 import * as projectApi from "./projectApi.js";
 // THE STORAGE SEAM (web/assetStore.js). Assets and documents move through
 // assetStore()/projectStore(), NOT through projectApi directly, so the same
@@ -46,8 +46,18 @@ import * as projectApi from "./projectApi.js";
 // server-only (clipboard, render jobs, ffprobe duration) — those refuse loudly
 // in static mode rather than fetching a URL that cannot exist.
 import { assetStore, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason } from "./storageMode.js";
-import { localAssetStore, localProjectStore } from "./assetStore.js";
-import { buildProjectZip, downloadBytes, importProjectZipLocal } from "./projectZip.js";
+// localAssetStore DIRECTLY (not through the storageMode seam): a DRAFT always
+// stages in the browser, in both storage modes, because the server has no folder
+// for a project the user has not decided to keep. See web/projectDraft.js.
+import { localAssetStore } from "./assetStore.js";
+import { buildProjectZip, downloadBytes } from "./projectZip.js";
+// Opening a project from a URL (the "?zip=" share link and the command that
+// shares its pipeline) — see web/projectUrlImport.js for the fetch rules.
+import { fetchZipBytes, validatedZipUrl, zipFileNameFromUrl } from "./projectUrlImport.js";
+// THE WORKING-COPY MODEL: a zip or share link opens a DRAFT, not a library
+// entry. web/projectDraft.js states the invariant — read it before touching
+// projectName(), which is the seam the whole model turns on.
+import { DRAFT_KEY, DRAFT_STATE_KEY, draftFromZipBytes, draftStateFromJson, shareUrl, validProjectName } from "./projectDraft.js";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
 import { assetRef, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
@@ -3266,7 +3276,7 @@ export class PowerRPApp {
     const blob = new Blob([serialize(this.doc)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${this.projectName()}.powerrp.json`;
+    a.download = `${this.projectDisplayName()}.powerrp.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -3301,13 +3311,51 @@ export class PowerRPApp {
   // (the local-disk region above) — the two nouns are different payloads, and
   // every command title says which one it moves.
 
-  /** Query. The current project name (doc.meta.name), defaulting to "Untitled".
-   *  ALSO the filename stem of every export (document/.zip/PNG/PDF/SVG/MP4), so
-   *  a downloaded file is named the same thing the toolbar title shows. Those
-   *  call sites each used to inline a separate `|| "presentation"` fallback,
-   *  which produced "presentation-slide1.png" for a project the UI was calling
-   *  "Untitled" — two names for one unnamed project. */
+  /**
+   * THE OPEN DRAFT, or null when the open project is an ordinary library entry.
+   * `{name, sourceUrl}` — the human name to display and the URL the zip came
+   * from ("" for a dropped file, which is what gates the share link).
+   *
+   * A DRAFT IS A WORKING COPY THAT IS NOT IN THE LIBRARY (web/projectDraft.js
+   * has the full contract). Only a zip/url import sets this; OPENING A SERVER OR
+   * BROWSER-LIBRARY PROJECT LEAVES IT NULL, because that project IS the library
+   * entry and is saved in place exactly as before. Every draft-aware branch
+   * below is therefore inert in the ordinary case.
+   */
+  draftMode = $state(null);
+
+  /**
+   * Query. THE STORAGE KEY every asset read and write uses — the draft keyspace
+   * while a draft is open, else the project name (doc.meta.name).
+   *
+   * THE INVARIANT, stated where it bites: this ONE function is what repoints the
+   * whole app at a draft's staged assets. `storageMode.js` installs it into
+   * `core/asset_ref`'s resolver and six production call sites derive with its
+   * result, so returning the draft key here makes the canvas, thumbnails,
+   * minimap, exports, the Asset Explorer and plugin assets all resolve against
+   * the staging at once. A "draft" flag threaded through those readers instead
+   * would have to find all six and would drift when a seventh appeared.
+   *
+   * IT IS NOT THE DISPLAY NAME. The draft key contains "/" and can never be a
+   * real project name (server.py `_SAFE_NAME`), so it must never reach the title
+   * bar or an export filename — see `projectDisplayName()`, which is what those use.
+   */
   projectName() {
+    if (this.draftMode) return DRAFT_KEY;
+    return this.doc.meta.name || "Untitled";
+  }
+
+  /** Query. The HUMAN project name: what the title bar shows and what every
+   *  export filename (document/.zip/PNG/PDF/SVG/MP4) is stemmed from, so a
+   *  downloaded file is named the thing the toolbar says. Identical to
+   *  `projectName()` for a saved project; for a DRAFT it is the deck's real name
+   *  ("RobotSim") while `projectName()` is the storage key ("~draft/current").
+   *
+   *  NAMED projectDisplayName, not displayName: `displayName(itemId)` already
+   *  exists on this class and names an ITEM. Two different nouns, so two names —
+   *  the collision was a real crash ("displayName has already been declared"),
+   *  caught by draft_open_static_probe.js. */
+  projectDisplayName() {
     return this.doc.meta.name || "Untitled";
   }
 
@@ -3795,10 +3843,15 @@ export class PowerRPApp {
   // ── Opening a .zip: the inverse of downloadZip ─────────────────────────────
   // "I can export a zip — can I OPEN one?" A .zip is the PROJECT payload
   // (document + assets), so opening one cannot be the DOCUMENT-only loadFile
-  // path: it must land on the server as a folder first, then be opened by name.
-  // That ordering is also why the archive is never merged into the open project
-  // — an import ARRIVES AS ITS OWN PROJECT, and the current deck is untouched
-  // until the load at the end succeeds.
+  // path — it carries assets, which a .powerrp.json does not.
+  //
+  // IT OPENS AS A DRAFT (user ruling; see the DRAFTS region below). This used to
+  // WRITE FIRST — the archive landed on the server or in IndexedDB as a new
+  // project folder before the editor ever showed it, so merely LOOKING at
+  // someone's deck left "RobotSim", "RobotSim 2", "RobotSim 3" behind. Now the
+  // archive is staged into the draft keyspace and the library gains nothing
+  // until the user saves. The current deck is still untouched until the draft
+  // opens successfully.
 
   /** Hook installed by App.svelte: shows the import RESULT (or refusal) as a
    *  modal. Assigned there so this class stays DOM-free; the default is a
@@ -3807,38 +3860,35 @@ export class PowerRPApp {
   showImportResult = (result) => console.log("PowerRP import:", result);
 
   /**
-   * Command. Import an exported project .zip (a File/Blob from a drop or the
-   * file picker) as a NEW server project, then OPEN it. Returns the resolved
-   * {name, requested}.
+   * Command. Open an exported project .zip (a File/Blob from a drop or the file
+   * picker) as a DRAFT. Returns `{ok, name, requested, draft: true}`.
    *
-   * The name comes from the FILE (projectZipName), falling back to the
-   * archive's root folder. A collision NEVER overwrites — the server returns
-   * "<Name> 2" — and because a differently-named project is not what the user
-   * dropped, the rename is surfaced through showImportResult rather than left
-   * for them to notice in the title bar. A refusal (not a zip, no doc.json,
-   * unsafe member) surfaces the same way AND rethrows, so a caller with its own
-   * error affordance still sees it and nothing opens.
+   * NOTHING IS WRITTEN TO THE LIBRARY. The document lands in the working buffer
+   * and the assets in the draft keyspace, so opening the same archive twice
+   * produces two clean drafts and zero projects — which is why the old
+   * "<Name> 2" de-collision no longer appears here. There is no collision to
+   * resolve: a draft has no name in the library to collide with, and the name
+   * shown is simply what the user dropped.
+   *
+   * ADAPTER-BLIND, and now for a stronger reason than before: a draft ALWAYS
+   * stages locally, in both storage modes, so this path no longer branches on
+   * `isStatic()` at all. The server is involved only when the user saves.
+   *
+   * A refusal (not a zip, no doc.json, unsafe member) surfaces through
+   * showImportResult AND rethrows, so a caller with its own error affordance
+   * still sees it and nothing opens.
    */
   async importProjectZip(file) {
     const requested = projectApi.projectZipName(file.name ?? "");
-    let result;
     try {
-      // Unpacked where the project will LIVE — into IndexedDB in static mode,
-      // onto the server's disk in HTTP mode. Both enforce the same rules (single
-      // root folder names it, contained members only, doc.json required, NEVER
-      // overwrite) and return the same {ok, name, requested} shape, so the
-      // result handling below is adapter-blind.
-      result = isStatic()
-        ? await importProjectZipLocal(new Uint8Array(await file.arrayBuffer()), requested, { projects: localProjectStore, assets: localAssetStore })
-        : await projectApi.importProjectZip(file, requested);
+      const { name, assetCount } = await this.openDraftFromZipBytes(new Uint8Array(await file.arrayBuffer()), requested, "");
+      const result = { ok: true, name, requested, draft: true, assetCount };
+      this.showImportResult(result);
+      return result;
     } catch (e) {
       this.showImportResult({ ok: false, requested, error: String(e.message ?? e) });
       throw e;
     }
-    await this.loadProject(result.name);
-    this.assetsVersion++; // the new project's assets are a different library
-    this.showImportResult({ ...result, ok: true, renamed: result.name !== result.requested });
-    return result;
   }
 
   /** Command. Pick a .zip from disk and import it (the menu route to the same
@@ -3854,6 +3904,220 @@ export class PowerRPApp {
     });
     if (!file) return;
     await this.importProjectZip(file);
+  }
+
+  // ── DRAFTS: a zip or a share link opens a WORKING COPY, not a project ───────
+  //
+  // THE RULING (user): "It shouldn't have to save until the user decides to save
+  // — that goes for uploading zips too. Most editors let you edit things UNTIL
+  // you decide to save, and the browser can persist it until later."
+  //
+  // So opening a .zip (drop, picker, ?zip=, or the URL modal) STAGES it: the
+  // healed document goes into the working buffer that autosave already
+  // persists, its assets go into the reserved draft keyspace, and the LIBRARY IS
+  // UNTOUCHED until the user saves. web/projectDraft.js states the invariant in
+  // full; the one line to carry here is that `projectName()` answers the draft
+  // key while `projectDisplayName()` keeps saying "RobotSim".
+  //
+  // OPENING A SERVER OR BROWSER-LIBRARY PROJECT IS NOT A DRAFT — that project is
+  // the library entry itself and is saved in place, exactly as it always was.
+
+  /** Hook installed by App.svelte: renders download progress for a URL import.
+   *  Receives `{loaded, total}` (total 0 = unknown, per the boot-splash honesty
+   *  rule) or null when finished. Defaults to a no-op so a harness without the
+   *  shell — and the boot path, which draws on the splash instead — needs no
+   *  branch. */
+  showUrlImportProgress = () => {};
+
+  /**
+   * Command. Open zip BYTES as a DRAFT: stage its assets under the draft key,
+   * install the healed document, and leave the project library untouched.
+   *
+   * THE ORDER IS STAGE-THEN-INSTALL, and it is load-bearing for the same reason
+   * loadProject primes before it commits: `resolveUrl` is synchronous by
+   * contract, so every asset must be resolvable BEFORE the document that
+   * references it can be painted. Installing first would render one frame of a
+   * deck whose every image is the loud MISSING sentinel.
+   *
+   * `draftMode` is set BEFORE the commit for the same reason — it is what makes
+   * `projectName()` answer the draft key, and a commit with it still null would
+   * derive the first frame against the wrong keyspace.
+   *
+   * @param {Uint8Array} bytes The .zip bytes.
+   * @param {string} requested Preferred display name ("" = let the archive decide).
+   * @param {string} sourceUrl The URL it came from, or "" for a local file.
+   * @returns {Promise<{name: string, assetCount: number}>}
+   */
+  async openDraftFromZipBytes(bytes, requested, sourceUrl = "") {
+    const { doc, name, assetCount } = await draftFromZipBytes(bytes, requested);
+    this.draftMode = { name, sourceUrl };
+    // Persist the two facts autosave cannot carry: that this IS a draft, and
+    // where it came from (which is what gates the share link across a reload).
+    localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(this.draftMode));
+    clearDynamicFonts(); // drop the previous project's uploaded font families
+    // Plugin assets BEFORE repair, for the reason loadProject spells out: repair
+    // drops items whose type no plugin claims, so a deck whose widgets ride
+    // inside the archive would lose them all. The draft key is where they were
+    // just staged.
+    await this.reloadPluginAssets(DRAFT_KEY);
+    this.commit(this.repaired(doc));
+    this.slideIndex = 0;
+    this.selection = null;
+    this.assetsVersion++; // a draft is a different asset library
+    this.syncFontAssets(DRAFT_KEY); // fire-and-forget: register this draft's fonts
+    console.log(`PowerRP: opened "${name}" as an UNSAVED DRAFT (${assetCount} asset(s) staged under ${DRAFT_KEY}) — nothing was added to the project library. Save to keep it.`);
+    return { name, assetCount };
+  }
+
+  /**
+   * Command (WRITES TO THE LIBRARY — the commitment point). Save the open DRAFT
+   * as a real project `name`: copy its staged assets into that project, write
+   * the document, and leave draft mode.
+   *
+   * THIS IS THE ONLY PLACE A DRAFT BECOMES A LIBRARY ENTRY. Until it runs, no
+   * amount of opening, editing or reloading has put anything in the library —
+   * which is the whole point of the working-copy model.
+   *
+   * COPY-THEN-SAVE, REUSING SAVE-AS'S MACHINERY (c2e1bbf): `copyAssets` lands
+   * the files first, so at no instant does a doc.json exist whose refs resolve
+   * to nothing. The copy runs against the LOCAL store because that is where a
+   * draft is always staged (the server has no folder for an unsaved draft) —
+   * in HTTP mode that means uploading each staged blob to the destination
+   * project, which `copyDraftAssetsTo` does through the ordinary asset seam.
+   *
+   * `draftMode` is cleared only AFTER the save succeeds: a failed commit must
+   * leave the user with their draft intact, not with a working copy that now
+   * believes it is a saved project.
+   *
+   * @param {string} name The project name to commit as.
+   * @returns {Promise<{name: string, copied: string[]}>}
+   */
+  async commitDraft(name) {
+    const trimmed = (name ?? "").trim();
+    if (!this.draftMode) throw new Error("commitDraft: no draft is open — use saveToServer or saveProjectAsFork");
+    if (!trimmed) throw new Error("commitDraft: a project needs a name");
+    if (!validProjectName(trimmed)) throw new Error(`commitDraft: "${trimmed}" is not a valid project name (no "/", "\\" or NUL).`);
+    const copied = await this.copyDraftAssetsTo(trimmed);
+    // The document's own meta.name must agree with the project it landed in —
+    // the one-name model (loadProject stamps the same thing on open).
+    this.doc = { ...this.doc, meta: { ...this.doc.meta, name: trimmed } };
+    // LEAVE DRAFT MODE BEFORE THE SAVE: saveToServer reads projectName() through
+    // its default argument in other call paths, and every asset read after this
+    // point must resolve against the REAL project, whose copies now exist.
+    this.draftMode = null;
+    localStorage.removeItem(DRAFT_STATE_KEY);
+    await this.saveToServer(trimmed);
+    await assetStore().primeUrls(trimmed);
+    await this.reloadPluginAssets(trimmed);
+    this.assetsVersion++;
+    console.log(`PowerRP: draft committed as project "${trimmed}" (${copied.length} asset(s) copied out of the draft staging).`);
+    return { name: trimmed, copied };
+  }
+
+  /**
+   * Command (writes assets). Copy every staged draft asset into project `name`.
+   *
+   * MODE-CROSSING BY NATURE, which is why it is its own method: the source is
+   * ALWAYS the local (IndexedDB) store — a draft stages there in both storage
+   * modes — while the destination is whatever `assetStore()` is. In static mode
+   * that is a local→local copy; in HTTP mode it is an upload of each blob to the
+   * server. `localProjectStore.copyAssets` cannot serve the HTTP case, so the
+   * copy goes through the ordinary per-asset seam instead.
+   *
+   * @param {string} name Destination project.
+   * @returns {Promise<string[]>} The asset filenames copied.
+   */
+  async copyDraftAssetsTo(name) {
+    const dest = assetStore();
+    const copied = [];
+    for (const a of await localAssetStore.list(DRAFT_KEY)) {
+      await dest.put(name, await localAssetStore.get(DRAFT_KEY, a.name), a.name);
+      copied.push(a.name);
+    }
+    return copied.sort();
+  }
+
+  /**
+   * Command. Restore an in-progress DRAFT after a reload — the "the browser can
+   * persist it until later" half of the ruling.
+   *
+   * Called from the boot path right after `loadAutosave`, which has already put
+   * the draft's DOCUMENT back (autosave persists on every commit and knows
+   * nothing about drafts). What is left is to remember that the restored doc IS
+   * a draft, and to prime the staged assets so the first paint resolves them.
+   *
+   * Returns whether a draft was restored, so the boot path can skip its ordinary
+   * prime rather than doing both.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async restoreDraft() {
+    const state = draftStateFromJson(localStorage.getItem(DRAFT_STATE_KEY));
+    if (!state) return false;
+    this.draftMode = state;
+    // The draft keyspace, not doc.meta.name: the staged assets are under the
+    // draft key, which is exactly what projectName() now answers.
+    await localAssetStore.primeUrls(DRAFT_KEY);
+    await this.reloadPluginAssets(DRAFT_KEY);
+    console.log(`PowerRP: restored the UNSAVED DRAFT "${state.name}"${state.sourceUrl ? ` (from ${state.sourceUrl})` : ""} — still not in the project library. Save to keep it.`);
+    return true;
+  }
+
+  /** Query. The share link for the open draft, or null when there is nothing
+   *  shareable — a draft that came from a local file, or an ordinary saved
+   *  project, has no URL a recipient could fetch. This is the `when` clause
+   *  behind the Copy Share Link command: a command that cannot do its job must
+   *  be disabled, not pretend. */
+  shareLink() {
+    if (!this.draftMode?.sourceUrl || typeof location === "undefined") return null;
+    return shareUrl(location.href, this.draftMode.sourceUrl);
+  }
+
+  /** Command (writes the clipboard). Copy the open draft's share link. Refuses
+   *  LOUDLY rather than copying nothing if run without a shareable draft — the
+   *  command's `when` clause already prevents that, so reaching here is a bug. */
+  async copyShareLink() {
+    const link = this.shareLink();
+    if (!link) throw new Error("copyShareLink: this project did not come from a URL, so there is no link to share. Export a .zip and host it, then open it by URL.");
+    await copyText(link, "share link");
+    return link;
+  }
+
+  /** UI seam (mirrors showSaveModal): App.svelte sets this to the function that
+   *  opens the "Open Project from URL" modal. */
+  showOpenUrlModal = null;
+
+  /** Command. Open the "Open Project from URL…" modal (delegates to the hook once
+   *  App.svelte has wired it). */
+  openProjectFromUrlModal() {
+    if (this.showOpenUrlModal) return this.showOpenUrlModal();
+    console.error("Open Project from URL: the modal is not wired yet (App.svelte hook missing). Use app.openProjectFromUrl(url).");
+  }
+
+  /**
+   * Command. Fetch a project .zip from `rawUrl` and open it as a DRAFT.
+   *
+   * NO IDEMPOTENCY MEMO, deliberately — drafts made it unnecessary. The
+   * predecessor design remembered url → project name in localStorage so a
+   * five-times-visited share link would not leave five projects behind; with the
+   * working-copy model it leaves ZERO, every time, so there is nothing to
+   * remember and no stale-cache case to reason about. Opening the same link
+   * twice is two clean drafts.
+   *
+   * Every failure is loud: the URL is validated before any network call, and a
+   * blocked fetch raises ZipFetchBlockedError carrying the CORS help.
+   *
+   * @param {string} rawUrl The URL as typed or as read from `?zip=`.
+   * @param {(p: {loaded: number, total: number}) => void} [onProgress]
+   * @returns {Promise<{name: string, assetCount: number}>}
+   */
+  async openProjectFromUrl(rawUrl, onProgress = this.showUrlImportProgress) {
+    const url = validatedZipUrl(rawUrl, typeof location === "undefined" ? undefined : location.href);
+    // STATIC MODE HAS NO PROXY. isStatic() means there is no server to ask, so a
+    // blocked fetch must produce the helpful CORS refusal rather than a request
+    // to an endpoint that does not exist.
+    const bytes = await fetchZipBytes(url, onProgress, { proxy: !isStatic() });
+    return this.openDraftFromZipBytes(bytes, projectApi.projectZipName(zipFileNameFromUrl(url)), url);
   }
 
   // ── Assets: upload / delete / insert / filmstrip frames (one region) ────────
@@ -4463,7 +4727,7 @@ export class PowerRPApp {
     });
     const a = document.createElement("a");
     a.href = canvas.toDataURL("image/png");
-    a.download = `${this.projectName()}-slide${this.slideIndex + 1}.png`;
+    a.download = `${this.projectDisplayName()}-slide${this.slideIndex + 1}.png`;
     a.click();
   }
 
@@ -4558,7 +4822,7 @@ export class PowerRPApp {
     });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
-    a.download = `${this.projectName()}-slide${this.slideIndex + 1}.pdf`;
+    a.download = `${this.projectDisplayName()}-slide${this.slideIndex + 1}.pdf`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -4626,7 +4890,7 @@ export class PowerRPApp {
     });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-    a.download = `${this.projectName()}-slide${this.slideIndex + 1}.svg`;
+    a.download = `${this.projectDisplayName()}-slide${this.slideIndex + 1}.svg`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -4709,7 +4973,7 @@ export class PowerRPApp {
     if (download) {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${this.projectName()}.mp4`;
+      a.download = `${this.projectDisplayName()}.mp4`;
       a.click();
       URL.revokeObjectURL(a.href);
     }
@@ -4936,7 +5200,7 @@ export class PowerRPApp {
     if (!wroteToClipboard) {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${this.projectName()}-selection.pdf`;
+      a.download = `${this.projectDisplayName()}-selection.pdf`;
       a.click();
       URL.revokeObjectURL(a.href);
     }

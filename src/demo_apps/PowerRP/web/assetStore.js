@@ -241,6 +241,28 @@ export const localAssetStore = {
     return { ok: true, name: filename };
   },
 
+  /**
+   * Command (mutates IndexedDB). Delete EVERY asset under one project key,
+   * revoking each object URL. Unlike `delete`, an EMPTY keyspace is not an error
+   * — the caller is asserting "nothing of mine is left here", and the first
+   * draft ever opened clears a key that has never held anything.
+   *
+   * Exists for the DRAFT keyspace (web/projectDraft.js), where re-staging must
+   * replace the previous working copy rather than union with it. Kept here
+   * rather than reaching into localDb from the draft module so that object-URL
+   * revocation stays the responsibility of the store that minted them — a
+   * caller that deleted the records directly would leak one URL per asset.
+   *
+   * @param {string} project The project (or draft) key to empty.
+   * @returns {Promise<number>} How many assets were removed.
+   */
+  async clearProject(project) {
+    const recs = await getAllByPrefix(ASSET_STORE, `${project}/`);
+    for (const rec of recs) revokeUrl(assetRef(project, rec.file));
+    await deleteByPrefix(ASSET_STORE, `${project}/`);
+    return recs.length;
+  },
+
   /** Query. One asset's bytes as a Blob. Loud when absent. */
   async get(project, filename) {
     const rec = await withStore(ASSET_STORE, "readonly", (s) => promisify(s.get(assetKey(project, filename)), `localAssetStore.get(${project}, ${filename})`));
