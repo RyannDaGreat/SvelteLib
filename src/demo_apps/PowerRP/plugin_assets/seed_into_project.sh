@@ -31,5 +31,14 @@ for f in "$here"/*.plugin.js; do
   echo "  -> $(basename "$f")"
   cp -v "$f" "$dest/"
 done
+# COMPANION DATA FILES. csv_bar_graph.plugin.js plots a CSV project asset, so the
+# widget alone is not a working demo -- the file it points at has to travel with
+# it, or the chart seeded into a project renders its (correct, loud) "could not
+# read" error box and looks broken for a reason nothing recorded.
+for f in "$here"/*.csv; do
+  [ -e "$f" ] || continue
+  echo "  -> $(basename "$f")  (data for csv_bar_graph)"
+  cp -v "$f" "$dest/"
+done
 echo "Seeded $(ls -1 "$here"/*.plugin.js | wc -l | tr -d ' ') plugin assets into project \"$project\"."
 echo "Reopen the project in the editor; the widgets register on load."

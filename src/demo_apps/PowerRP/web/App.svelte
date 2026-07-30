@@ -44,6 +44,10 @@
     mapWithConcurrency,
     projectMetaLine,
   } from "./projectPreviews.js";
+  // THE panel inventory: the dockable panels, their column + weight, and the
+  // pure boundary math the two column SplitPanes are driven by. DOM-free core so
+  // tests/panel_visibility_test.js reads the same declaration this layout does.
+  import { PANELS, panelsInColumn, panelName, panelToggleCommand, columnSplits } from "../core/panels.js";
   import { createKeybindings } from "../core/keybindings.js";
   import { createShortcuts } from "../core/shortcuts.js";
   // THE entry set + context predicates (core/shortcut_entries.js). They live in
@@ -308,15 +312,66 @@
 
   // SplitPane splits are BOUNDARY positions: [0.16, 0.78] → 3 panes.
   let hSplits = $state([0.16, 0.78]);
-  // Left column: Slide Navigator (top) / Asset Explorer (bottom) — one split.
-  let leftSplits = $state([0.62]);
-  // Right column: Property Panel / Tools / Variables Panel / Keyframe Panel.
-  // Tools got a little taller than the old Presets pane's 0.18: it now holds
-  // several tools (a category accordion per group), and at 0.18 its FIRST section
-  // header was already scrolled out of sight at rest — which is how the "bind to
-  // camera" tool would look like it was never built. 0.22 shows every tool with
-  // its heading, closed, without scrolling. The 9px comes off the Property Panel.
-  let rightSplits = $state([0.35, 0.57, 0.78]);
+
+  // ── PANEL VISIBILITY LAYOUT (core/panels.js) ────────────────────────────────
+  // A pane's SHARE of its column lives as a per-panel WEIGHT, not as a boundary
+  // array, because boundaries cannot express absence: SplitPane derives
+  // paneCount from `splits.length + 1`, so hiding a panel by rendering nothing
+  // in its slot would leave an empty pane WITH a draggable divider beside it —
+  // a divider that resizes nothing, which is exactly the dead divider the ruling
+  // forbids. Weights over the VISIBLE subset give one pane and one handle per
+  // visible panel and nothing at all for a hidden one.
+  //
+  // Weights start at the panel declarations (which reproduce the pre-toggle
+  // boundaries: left [0.62]; right [0.35, 0.57, 0.78]. The right column's Tools
+  // share is deliberately larger than the old Presets pane's 0.18 — it now holds
+  // a category accordion per tool group, and at 0.18 its FIRST section header was
+  // already scrolled out of sight at rest, which is how the "bind to camera" tool
+  // would look like it was never built) and are REWRITTEN when a divider is
+  // dragged, so a drag survives a later hide/show: re-showing a panel restores
+  // the size it had, not the size it shipped with.
+  let paneWeights = $state(Object.fromEntries(PANELS.map((p) => [p.id, p.weight])));
+
+  /** Query. The VISIBLE panels of one column, in layout order, each carrying its
+   *  current (possibly dragged) weight. [] when the whole column is hidden — the
+   *  caller collapses the column itself then, since a zero-pane SplitPane is not
+   *  a thing. */
+  function visiblePanels(column) {
+    return panelsInColumn(column)
+      .filter((p) => app.panelVisible[p.id])
+      .map((p) => ({ ...p, weight: paneWeights[p.id] }));
+  }
+
+  /**
+   * Command. Writes dragged BOUNDARIES back to per-panel weights, so the drag is
+   * remembered per panel rather than per column-shape and therefore survives a
+   * hide/show of any panel in the column. Only the visible panels' weights change;
+   * a hidden panel keeps whatever share it had, which is what it gets back.
+   */
+  function commitColumnDrag(column, splits) {
+    const visible = visiblePanels(column);
+    const total = visible.reduce((sum, p) => sum + p.weight, 0);
+    const edges = [0, ...splits, 1];
+    visible.forEach((panel, i) => {
+      paneWeights[panel.id] = (edges[i + 1] - edges[i]) * total;
+    });
+  }
+
+  // The two columns' boundary arrays. $state (SplitPane needs `bind:`) kept in
+  // sync with the weights by the effect below rather than $derived, which cannot
+  // be bound to. The effect is the ONLY writer besides SplitPane's own drag.
+  let leftSplits = $state(columnSplits(panelsInColumn("left").filter((p) => p.defaultVisible)));
+  let rightSplits = $state(columnSplits(panelsInColumn("right").filter((p) => p.defaultVisible)));
+  // Reads the VISIBILITY only (not the weights): re-deriving on every weight
+  // change would fight the live drag it just recorded. A visibility flip is the
+  // one event that must re-shape the column.
+  $effect(() => {
+    const leftIds = panelsInColumn("left").map((p) => app.panelVisible[p.id]).join();
+    const rightIds = panelsInColumn("right").map((p) => app.panelVisible[p.id]).join();
+    leftIds; rightIds; // the tracked reads; the untracked weights come from below
+    leftSplits = columnSplits(visiblePanels("left"));
+    rightSplits = columnSplits(visiblePanels("right"));
+  });
 
   // ── Core commands (plugins added theirs at registration) ──────────────────
   const needsSelection = (a) => a.selection !== null;
@@ -676,6 +731,23 @@
     // + a TOGGLE — so the title now matches both the siblings and the manifest.
     { id: "toggle-ghosts", title: "Toggle Ghost Objects (crop box / empty-text / group outlines)", icon: "mdi:eye-outline", run: (a) => a.toggleGhosts() },
     { id: "toggle-panel-names", title: "Toggle Panel Names", icon: "mdi:format-title", run: (a) => a.togglePanelNames() },
+    // PANEL VISIBILITY — one command per dockable panel, GENERATED from
+    // core/panels.js's PANELS rather than written out six times, so a new panel
+    // arrives with its command already registered and its title already obeying
+    // the convention. The user's ruling makes the prefix load-bearing:
+    // "we're going to have toggle visibility as a prefix. It's convention" — so
+    // the whole family filters together in the palette by typing "toggle
+    // visibility", which a "Toggle Global Variables Panel" wording would break.
+    // Titles come from panelToggleCommand(), the same function the layout's name
+    // plates and the node test read; nothing here restates a name.
+    // NO keybindings: a keycap is scarce (see toggle-light-dark's note) and six
+    // layout preferences do not each earn one — the palette is the surfacing.
+    ...PANELS.map((panel) => ({
+      ...panelToggleCommand(panel),
+      icon: panel.icon,
+      help: `Shows or hides the ${panelName(panel)}. The pane and its divider are both removed while hidden — the neighbouring panes take the space — and re-showing restores its previous size. Persists across reloads.`,
+      run: (a) => a.togglePanel(panel.id),
+    })),
     // The QUICK light/dark flip, next to its Toggle… siblings. It was the ONE
     // toolbar button with no entry, which meant the one button that could never
     // take a keybinding, never appear in the palette, and whose label/tip the

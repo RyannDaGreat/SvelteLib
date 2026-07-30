@@ -1,4 +1,26 @@
 /**
+ * ══ OFF THE ROSTER: THIS IS THE PARITY BASELINE, NOT THE SHIPPED WIDGET ══════
+ *
+ * The `clock_digital` widget now SHIPS as a built-in plugin ASSET —
+ * `assets/builtin/library/clock_digital.plugin.js`, registered through the sandbox by
+ * core/builtin_plugin_assets.js. This module is no longer on plugins/index.js's
+ * roster, so the object it exports is NOT what the editor, the CLI or a render job
+ * uses. Read core/builtin_plugin_assets.js for why the migration happened.
+ *
+ * IT IS KEPT ON PURPOSE, for exactly two jobs:
+ *   1. THE PARITY BASELINE. tests/builtin_plugin_assets_test.js drives THIS emit
+ *      and the registered ASSET's emit over the same fixed states and asserts the
+ *      display lists are deep-equal. Deleting this file would leave the migration
+ *      unpinned: the asset could drift and nothing would notice, because "it draws
+ *      something" is not the same claim as "it draws what it used to".
+ *   2. Its pure helper exports, which other suites already import by name.
+ *
+ * SO: A CHANGE HERE IS NOT A CHANGE TO THE WIDGET. Edit the asset; then edit this
+ * file to match, or the parity test fails — which is the point.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+
+/**
  * DIGITAL CLOCK widget — a bbox readout that shows a TIME (a number in SECONDS)
  * as clock digits, "HH:MM:SS" or "MM:SS". It deliberately INHERITS FROM THE
  * PLAINTEXT widget (plugins/plaintext.js): it composes the SAME text-style

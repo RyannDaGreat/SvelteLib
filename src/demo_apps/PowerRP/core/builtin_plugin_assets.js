@@ -23,7 +23,22 @@
  * provided API (HOST_MODULES in core/plugin_assets.js): pure geometry, the IR
  * ops, the shared property registry, the effects bundle. In practice that means
  * PURE-VECTOR widgets — no media decode, no shader, no DOM, no live app.
- * Batch 1 is progress_bar, donut, tangent_lines, clock_digital, clock_analog.
+ * Batch 1 is progress_bar, donut, number, clock_digital, clock_analog.
+ *
+ * WHY `number` AND NOT `tangent_lines`, which the brief listed as a candidate:
+ * tangent_lines was attempted and REJECTED on a specific, recorded blocker, not
+ * on taste. tests/silent_promises_test.js:170 asserts
+ * `registry.get("tangent_lines").anchors === tangentLinesAnchors` — a FUNCTION
+ * IDENTITY check against the module's own export. A plugin asset structurally
+ * cannot satisfy that: jailedPluginHooks WRAPS every function hook (that wrapper
+ * is what closes the deferred-escape hole), so the registered `anchors` is a new
+ * function by construction. Migrating it would have meant weakening a security
+ * test's assertion to accommodate a refactor, which is the wrong trade. Its
+ * module ALSO exports the telescopic-magnifier rig builder that web/app.svelte.js,
+ * web/telescopicRig.js and three probes import, so the file has to stay regardless
+ * and the migration would have split one widget across two homes. `number` cost
+ * nothing by comparison: nothing imports its plugin object, it declares no
+ * `commands`, and its add-command already resolved the type lazily.
  *
  * WHAT IS DELIBERATELY NOT HERE, so the boundary is legible rather than folkloric:
  *   · anything sampling a texture (image/video/pdf/filmstrip) — needs the media
@@ -107,8 +122,8 @@ export const BUILTIN_PLUGIN_ASSET_NAMES = Object.freeze([
   "clock_analog.plugin.js",
   "clock_digital.plugin.js",
   "donut.plugin.js",
+  "number.plugin.js",
   "progress_bar.plugin.js",
-  "tangent_lines.plugin.js",
 ]);
 
 /**

@@ -1,86 +1,48 @@
-/**
- * ══ OFF THE ROSTER: THIS IS THE PARITY BASELINE, NOT THE SHIPPED WIDGET ══════
- *
- * The `clock_analog` widget now SHIPS as a built-in plugin ASSET —
- * `assets/builtin/library/clock_analog.plugin.js`, registered through the sandbox by
- * core/builtin_plugin_assets.js. This module is no longer on plugins/index.js's
- * roster, so the object it exports is NOT what the editor, the CLI or a render job
- * uses. Read core/builtin_plugin_assets.js for why the migration happened.
- *
- * IT IS KEPT ON PURPOSE, for exactly two jobs:
- *   1. THE PARITY BASELINE. tests/builtin_plugin_assets_test.js drives THIS emit
- *      and the registered ASSET's emit over the same fixed states and asserts the
- *      display lists are deep-equal. Deleting this file would leave the migration
- *      unpinned: the asset could drift and nothing would notice, because "it draws
- *      something" is not the same claim as "it draws what it used to".
- *   2. Its pure helper exports, which other suites already import by name.
- *
- * SO: A CHANGE HERE IS NOT A CHANGE TO THE WIDGET. Edit the asset; then edit this
- * file to match, or the parity test fails — which is the point.
- * ═════════════════════════════════════════════════════════════════════════════
- */
-
-/**
- * ANALOG CLOCK widget (`clock_analog`) — a bbox clock face + hands driven by an
- * equation-bindable TIME (the whole point: hook many instances to ONE shared
- * time source). It is a plain bbox widget, so it resizes, tweens, and rides the
- * shared effects bundle exactly like rect/circle/donut, and it renders
- * DETERMINISTICALLY from state (WYSIWYG-live: the same `time` always draws the
- * same hands — no wall clock, no hidden state).
- *
- * ── TIME → HANDS (the render direction) ───────────────────────────────────────
- * `time` is a NUMBER in SECONDS (0 = 12:00:00). Each hand has an angular PERIOD
- * (seconds per full revolution): the second hand 60 s, the minute hand 3600 s,
- * the hour hand 43200 s (12 h). Its clock-face angle is
- *   angle = wrap360( (time / period) * 360 )   — 0° = 12 o'clock, clockwise.
- * Because `time` is a plain numeric slot, it is equation-bindable through the
- * universal `=` path: `= time` (THE presentation clock — core/expressions.js
- * scopeGet over render_gpu/particle_clock.particleTime, so this clock and the
- * particle/sky widgets share one time), `= time * 3600` (an hour per second),
- * `= otherClock.time + 900` (a second time zone), etc. `= time` is PAUSED at a fixed
- * freeze in the editor/CLI (a deterministic still), ticks in Present mode, and is
- * driven frame by frame in an MP4 export. There is no `alpha` identifier: to sweep a
- * clock across a transition, KEYFRAME `time` on the two slides and let the tween
- * interpolate it.
- *
- * ── HANDS → TIME (draggable yellow-square handles) ────────────────────────────
- * Each drawn hand's TIP is a modifier point (the standard yellow handle,
- * core/derive.nodeModifierPoints — LOCAL space, wrapped through node.world for
- * display, the drag inverted back to local before apply()). Dragging a tip does
- * two things at once, so the user can "spin the hands and change their lengths":
- *   1. SPIN → the tip's angle inverts to a `time` write via timeFromHandAngle,
- *      which sets ONLY that hand's BAND of the shared time and preserves the
- *      coarser time above it (drag the minute hand → minutes within the current
- *      hour; the hour hand → the position within the current 12 h). Because all
- *      hands read the ONE `time`, this is the coupling the task asks for.
- *   2. RADIUS → the tip's distance from center sets that hand's LENGTH prop (a
- *      fraction of the face radius). Widths/colors are ordinary props too.
- * Dragging writes a concrete number to `time`, which OVERRIDES any equation
- * previously bound there — the standard direct-manipulation behavior (identical
- * to dragging an equation-bound x/y): bind the time OR set it by hand.
- *
- * No plugin imports another; geometry is pure local-space helpers + the IR
- * ellipse/polyline/text ops (parity across GPU raster + SVG + PDF backends).
- */
-
-import { standardBBoxAnchors } from "../core/derive.js";
-import { closestPointInAnnulus } from "../core/outline.js";
-import { bundle, bundleNestedDefaults, defaults, props, wrapDegrees, FULL_TURN_DEG } from "../core/properties.js";
-import * as T from "../core/transform.js";
-import { ellipse, polyline, text } from "../render_gpu/ir.js";
-import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
-import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
+// clock_analog.plugin.js — A BUILT-IN PLUGIN ASSET (core/builtin_plugin_assets.js).
+//
+// ANALOG CLOCK widget — a dial face with hour/minute/second hands driven by ONE
+// equation-bindable number: `time`, in SECONDS since 12 o'clock. Everything
+// visible is a pure function of that number, so the whole clock is PROPERTY
+// STATE (CLAUDE.md's three kinds of state): bind `time` to `= time` and it
+// follows the presentation clock; keyframe it across two slides and the tween
+// sweeps the hands; leave it a plain number and every render is identical.
+//
+// ── THE HANDS ARE ANCHORS AND SNAP FEATURES, WHICH IS THE POINT ───────────────
+// Each hand contributes a live TIP and MID anchor (handAnchorPoints), so another
+// widget can be bound to `@clock_secondTip.x` and REVOLVE with the second hand,
+// or snapped to a hand tip while dragging. Because those points are a pure
+// function of `time`, nothing had to be added to make them move — the evaluator
+// settles this clock's `time` first and the reference reads the result.
+//
+// ── DRAGGING A HAND WRITES TIME, AND ITS OWN LENGTH ───────────────────────────
+// One yellow modifier point per drawn hand tip. The HANDLE-CONSTRAINT protocol's
+// two-degree-of-freedom case: the allowed set is the ANNULUS between the length
+// clamps (the tip may swing to any angle — that is what dragging a hand means —
+// but its radius is bounded), so `constrain` is a nearest-point-in-annulus
+// projection and `apply` reads BOTH an angle (→ a band-preserving `time`) and a
+// radius (→ this hand's length fraction) out of the already-allowed point.
+//
+// ── WHY THIS IS AN ASSET, AND WHAT THE MOVE NEEDED ────────────────────────────
+// Pure vector: ellipses, polylines and text over the shared registry. Three host
+// bindings had to be exposed for it — `outline` (for closestPointInAnnulus, the
+// handle's allowed-set solver), `wrapDegrees`/`FULL_TURN_DEG` (core/properties.js's
+// angle convention, so a hand wraps exactly as the Inspector's angle dial draws
+// it), and the font table (`DEFAULT_FONT`/`fontOptions`, for the numeral row).
+// Each is a pure helper already part of the declarative plugin vocabulary. Its
+// "Add Analog Clock" palette entry moved to plugins/builtin_asset_commands.js (a
+// plugin asset may not declare `commands`), keeping the id `add-clock_analog`.
 
 const DEG = Math.PI / 180;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(v ?? lo, hi));
-/** Rounds tiny float dust so cos/sin of the cardinal angles land exactly on the
- * axes (e.g. -cos(90°) ≈ -6e-17 → 0) — hands at 12/3/6/9 stay axis-aligned. */
-const tidy = (v) => Math.round(v * 1e10) / 1e10;
+// Rounds tiny float dust so cos/sin of the cardinal angles land exactly on the
+// axes (e.g. -cos(90°) ≈ -6e-17 → 0) — hands at 12/3/6/9 stay axis-aligned.
+const TIDY_SCALE = 1e10;
+const tidy = (v) => Math.round(v * TIDY_SCALE) / TIDY_SCALE;
 
 // ── the three hands' angular PERIODS (seconds per full revolution) ────────────
-export const SECOND_HAND_PERIOD_S = 60;    // one minute
-export const MINUTE_HAND_PERIOD_S = 3600;  // one hour
-export const HOUR_HAND_PERIOD_S = 43200;   // twelve hours
+const SECOND_HAND_PERIOD_S = 60;    // one minute
+const MINUTE_HAND_PERIOD_S = 3600;  // one hour
+const HOUR_HAND_PERIOD_S = 43200;   // twelve hours
 
 /**
  * Pure function. A hand's clock-face angle in DEGREES at `timeSeconds`, given
@@ -99,7 +61,7 @@ export const HOUR_HAND_PERIOD_S = 43200;   // twelve hours
  * @example handAngleDeg(1800, 3600)   // 180  (30 min → minute hand at 6 o'clock)
  * @example handAngleDeg(3600, 3600)   // 0    (a full hour → minute hand back up)
  */
-export function handAngleDeg(timeSeconds, periodSeconds) {
+function handAngleDeg(timeSeconds, periodSeconds) {
   return wrapDegrees((timeSeconds / periodSeconds) * FULL_TURN_DEG);
 }
 
@@ -111,7 +73,7 @@ export function handAngleDeg(timeSeconds, periodSeconds) {
  * @example hourAngle(10800) // 90  (3 h → 3 o'clock)
  * @example hourAngle(21600) // 180 (6 h → 6 o'clock)
  */
-export function hourAngle(timeSeconds) {
+function hourAngle(timeSeconds) {
   return handAngleDeg(timeSeconds, HOUR_HAND_PERIOD_S);
 }
 
@@ -123,7 +85,7 @@ export function hourAngle(timeSeconds) {
  * @example minuteAngle(900)  // 90  (15 min → 3 o'clock)
  * @example minuteAngle(1800) // 180 (30 min → 6 o'clock)
  */
-export function minuteAngle(timeSeconds) {
+function minuteAngle(timeSeconds) {
   return handAngleDeg(timeSeconds, MINUTE_HAND_PERIOD_S);
 }
 
@@ -135,7 +97,7 @@ export function minuteAngle(timeSeconds) {
  * @example secondAngle(15) // 90  (:15 → 3 o'clock)
  * @example secondAngle(30) // 180 (:30 → 6 o'clock)
  */
-export function secondAngle(timeSeconds) {
+function secondAngle(timeSeconds) {
   return handAngleDeg(timeSeconds, SECOND_HAND_PERIOD_S);
 }
 
@@ -153,7 +115,7 @@ export function secondAngle(timeSeconds) {
  * @example clockAngleToUnitVector(90)  // {dx: 1, dy: 0}  (right / 3 o'clock)
  * @example clockAngleToUnitVector(180) // {dx: 0, dy: 1}  (down / 6 o'clock)
  */
-export function clockAngleToUnitVector(deg) {
+function clockAngleToUnitVector(deg) {
   const r = deg * DEG;
   return { dx: tidy(Math.sin(r)), dy: tidy(-Math.cos(r)) };
 }
@@ -170,7 +132,7 @@ export function clockAngleToUnitVector(deg) {
  * @example unitVectorToClockAngle(0, 1)  // 180 (down)
  * @example unitVectorToClockAngle(-1, 0) // 270 (left)
  */
-export function unitVectorToClockAngle(dx, dy) {
+function unitVectorToClockAngle(dx, dy) {
   return wrapDegrees(Math.atan2(dx, -dy) / DEG);
 }
 
@@ -196,7 +158,7 @@ export function unitVectorToClockAngle(dx, dy) {
  * @example timeFromHandAngle(0, 43200, 90)    // 10800 (hour hand to 3 o'clock → 3 h)
  * @example timeFromHandAngle(10000, 43200, 0) // 0     (hour hand to 12 keeps the same 12 h band)
  */
-export function timeFromHandAngle(currentTimeSeconds, periodSeconds, angleDeg) {
+function timeFromHandAngle(currentTimeSeconds, periodSeconds, angleDeg) {
   const band = Math.floor((currentTimeSeconds ?? 0) / periodSeconds) * periodSeconds;
   return band + (wrapDegrees(angleDeg) / FULL_TURN_DEG) * periodSeconds;
 }
@@ -209,7 +171,7 @@ export function timeFromHandAngle(currentTimeSeconds, periodSeconds, angleDeg) {
  * @example faceGeom({w: 220, h: 220}) // {cx: 110, cy: 110, R: 110}
  * @example faceGeom({w: 300, h: 200}) // {cx: 150, cy: 100, R: 100}
  */
-export function faceGeom(s) {
+function faceGeom(s) {
   return { cx: (s.w ?? 0) / 2, cy: (s.h ?? 0) / 2, R: Math.min(s.w ?? 0, s.h ?? 0) / 2 };
 }
 
@@ -220,44 +182,9 @@ export function faceGeom(s) {
  * @example handTip({cx: 110, cy: 110, R: 110}, 90, 0.5) // {x: 165, y: 110} (3 o'clock, half radius)
  * @example handTip({cx: 110, cy: 110, R: 110}, 0, 0.8)  // {x: 110, y: 22}  (12 o'clock)
  */
-export function handTip(g, angleDeg, lengthFraction) {
+function handTip(g, angleDeg, lengthFraction) {
   const d = clockAngleToUnitVector(angleDeg);
   return { x: g.cx + g.R * lengthFraction * d.dx, y: g.cy + g.R * lengthFraction * d.dy };
-}
-
-/**
- * Pure function. The LIVE hand ANCHORS of a clock, in LOCAL space: a TIP and a
- * MID point for each of the three hands, derived from the CURRENT `time` +
- * per-hand length. Because they are a pure function of `time`, they MOVE as time
- * advances (or as a hand is dragged) — a widget bound/snapped to `secondTip`
- * REVOLVES with the second hand (that is the whole point). The hands' shared
- * pivot/base is the bbox CENTER, already named by the standard `cm` anchor, so
- * these add only the moving points.
- *
- * ids (no underscores → they resolve cleanly through the evaluator's
- * `@item_anchorId.x|y` grammar, which splits on the LAST underscore):
- *   hourTip · hourMid · minuteTip · minuteMid · secondTip · secondMid
- *
- * @param {object} s - evaluated clock state ({w, h, time, *HandLength})
- * @returns {{id: string, x: number, y: number}[]} local-space anchor points
- *
- * @example handAnchorPoints({w: 220, h: 220, time: 10800, hourHandLength: 0.5, minuteHandLength: 0.72, secondHandLength: 0.85}).find((a) => a.id === "hourTip") // {id: "hourTip", x: 165, y: 110} (3:00 → hour hand east, half radius)
- * @example handAnchorPoints({w: 220, h: 220, time: 0, hourHandLength: 0.5, minuteHandLength: 0.72, secondHandLength: 0.85}).find((a) => a.id === "minuteTip") // {id: "minuteTip", x: 110, y: 30.8} (12:00 → minute hand straight up)
- * @example handAnchorPoints({w: 0, h: 0, time: 0}) // [] (degenerate clock has no hands)
- */
-export function handAnchorPoints(s) {
-  const g = faceGeom(s);
-  if (g.R <= 0) return [];
-  const time = s.time ?? 0;
-  const out = [];
-  for (const hand of HANDS) {
-    const len = clamp(s[hand.lengthKey], MIN_HAND_LENGTH, MAX_HAND_LENGTH);
-    const angle = hand.angleOf(time);
-    const tip = handTip(g, angle, len);
-    const mid = handTip(g, angle, len / 2);
-    out.push({ id: `${hand.id}Tip`, x: tip.x, y: tip.y }, { id: `${hand.id}Mid`, x: mid.x, y: mid.y });
-  }
-  return out;
 }
 
 // The three hands, in DRAW order (hour under minute under second). `period` is
@@ -283,10 +210,11 @@ const MINOR_TICK_WIDTH = 1.5;            // canvas units
 const HUB_RADIUS = 6;                    // canvas units — center cap over the pivots
 const HOUR_MARKS = 12;                   // numerals / hour ticks around the dial
 const DEG_PER_HOUR_MARK = FULL_TURN_DEG / HOUR_MARKS; // 30° between hour marks
+const DEFAULT_NUMERAL_SIZE = 20;         // canvas units
 const MIN_HAND_LENGTH = 0.05;            // hand-tip drag radius FLOOR (fraction of R): a hand must have length
 // NO upper cap: a hand MAY overhang the face (real clock designs do). Infinity mirrors the
-// hand-WIDTH clamp (clamp(width, MIN_HAND_WIDTH, Infinity)) already shipped below — the render,
-// anchors and the tip-drag annulus all read this, so an author can type or drag a hand past R.
+// hand-WIDTH clamp (clamp(width, MIN_HAND_WIDTH, Infinity)) — the render, anchors and the
+// tip-drag annulus all read this, so an author can type or drag a hand past R.
 const MAX_HAND_LENGTH = Infinity;
 // A hand-tip drag landing EXACTLY on the pivot has no direction to read an angle
 // from. This is the heading it resolves to: +y is local screen-down, i.e. 6
@@ -295,7 +223,42 @@ const MAX_HAND_LENGTH = Infinity;
 const PIVOT_FALLBACK_DIR = { x: 0, y: 1 };
 const MIN_HAND_WIDTH = 0.5;              // canvas units — a hand is always at least hairline-visible
 
-// Inline Inspector row builders (the donut.js / shapeshifter.js precedent — rows
+/**
+ * Pure function. The LIVE hand ANCHORS of a clock, in LOCAL space: a TIP and a
+ * MID point for each of the three hands, derived from the CURRENT `time` +
+ * per-hand length. Because they are a pure function of `time`, they MOVE as time
+ * advances (or as a hand is dragged) — a widget bound/snapped to `secondTip`
+ * REVOLVES with the second hand (that is the whole point). The hands' shared
+ * pivot/base is the bbox CENTER, already named by the standard `cm` anchor, so
+ * these add only the moving points.
+ *
+ * ids (no underscores → they resolve cleanly through the evaluator's
+ * `@item_anchorId.x|y` grammar, which splits on the LAST underscore):
+ *   hourTip · hourMid · minuteTip · minuteMid · secondTip · secondMid
+ *
+ * @param {object} s - evaluated clock state ({w, h, time, *HandLength})
+ * @returns {{id: string, x: number, y: number}[]} local-space anchor points
+ *
+ * @example handAnchorPoints({w: 220, h: 220, time: 10800, hourHandLength: 0.5, minuteHandLength: 0.72, secondHandLength: 0.85}).find((a) => a.id === "hourTip") // {id: "hourTip", x: 165, y: 110} (3:00 → hour hand east, half radius)
+ * @example handAnchorPoints({w: 220, h: 220, time: 0, hourHandLength: 0.5, minuteHandLength: 0.72, secondHandLength: 0.85}).find((a) => a.id === "minuteTip") // {id: "minuteTip", x: 110, y: 30.8} (12:00 → minute hand straight up)
+ * @example handAnchorPoints({w: 0, h: 0, time: 0}) // [] (degenerate clock has no hands)
+ */
+function handAnchorPoints(s) {
+  const g = faceGeom(s);
+  if (g.R <= 0) return [];
+  const time = s.time ?? 0;
+  const out = [];
+  for (const hand of HANDS) {
+    const len = clamp(s[hand.lengthKey], MIN_HAND_LENGTH, MAX_HAND_LENGTH);
+    const angle = hand.angleOf(time);
+    const tip = handTip(g, angle, len);
+    const mid = handTip(g, angle, len / 2);
+    out.push({ id: `${hand.id}Tip`, x: tip.x, y: tip.y }, { id: `${hand.id}Mid`, x: mid.x, y: mid.y });
+  }
+  return out;
+}
+
+// Inline Inspector row builders (the donut / shapeshifter precedent — rows
 // declared in the plugin, so the shared registry needs zero edits). Category
 // "formatting" files the clock knobs alongside fill/stroke, before effects.
 const CAT = "formatting";
@@ -304,7 +267,7 @@ const BOOL = (key, label, help) => ({ key, label, kind: "boolean", category: CAT
 const COLOR = (key, label, help) => ({ key, label, kind: "color", category: CAT, help });
 const FONT = (key, label, help) => ({ key, label, kind: "select", category: CAT, help, options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])) });
 
-export const clockAnalogPlugin = {
+return {
   type: "clock_analog",
   title: "Analog Clock",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
@@ -315,7 +278,7 @@ export const clockAnalogPlugin = {
     fill: "#f7f7fa", stroke: "#000000", strokeWidth: 3,
     // TIME in seconds (0 = 12:00:00) — the equation-bindable time source.
     time: 0,
-    showNumerals: true, numeralFont: DEFAULT_FONT, numeralSize: 20, numeralColor: "#000000",
+    showNumerals: true, numeralFont: DEFAULT_FONT, numeralSize: DEFAULT_NUMERAL_SIZE, numeralColor: "#000000",
     showTicks: true, tickColor: "#000000",
     showSecondHand: true,
     hourHandColor: "#000000", hourHandWidth: 7, hourHandLength: 0.5,
@@ -388,7 +351,7 @@ export const clockAnalogPlugin = {
 
     // 3. Numerals 1..12 (metric-free centering — good enough for 1–2 glyphs).
     if (s.showNumerals) {
-      const size = s.numeralSize ?? 20;
+      const size = s.numeralSize ?? DEFAULT_NUMERAL_SIZE;
       const font = s.numeralFont ?? DEFAULT_FONT;
       for (let n = 1; n <= HOUR_MARKS; n++) {
         const d = clockAngleToUnitVector((n % HOUR_MARKS) * DEG_PER_HOUR_MARK);
@@ -433,16 +396,16 @@ export const clockAnalogPlugin = {
    * Pure function. The standard 9 bbox anchors PLUS the LIVE per-hand tip/mid
    * anchors (handAnchorPoints). The bbox center `cm` doubles as the hands' shared
    * pivot/base. Everything downstream is automatic: nodeAnchors (derive.js) wraps
-   * these through node.world so they are (a) referenceable in `=` equations as
+   * these through node.world so they are referenceable in `=` equations as
    * `@id_secondTip.x` (core/expressions.anchorValue validates + resolves them,
    * settling this clock's `time` first — so a bound widget REVOLVES as time
-   * advances) and (c) drawn by the hover-copy anchor chips.
+   * advances) and drawn by the hover-copy anchor chips.
    */
   anchors(state) {
     return [...standardBBoxAnchors(state), ...handAnchorPoints(state)];
   },
   /**
-   * Pure function. The live hand tip/mid points as SNAP features (b): so another
+   * Pure function. The live hand tip/mid points as SNAP features: so another
    * widget dragged near a hand tip snaps to it. nodeFeatures already contributes
    * the bbox corner/edge/center features for a bbox widget, so this adds ONLY the
    * hand points (no duplication).
@@ -486,7 +449,7 @@ export const clockAnalogPlugin = {
           x: tip.x, y: tip.y,
           constrain(state, desired) {
             const gg = faceGeom(state);
-            return closestPointInAnnulus({ x: gg.cx, y: gg.cy }, MIN_HAND_LENGTH * gg.R, MAX_HAND_LENGTH * gg.R, desired, PIVOT_FALLBACK_DIR);
+            return outline.closestPointInAnnulus({ x: gg.cx, y: gg.cy }, MIN_HAND_LENGTH * gg.R, MAX_HAND_LENGTH * gg.R, desired, PIVOT_FALLBACK_DIR);
           },
           apply(state, allowed) {
             const gg = faceGeom(state);
@@ -501,8 +464,6 @@ export const clockAnalogPlugin = {
       });
   },
   // CROSSHAIR PLACEMENT (the circle/donut precedent): click-drag sizes the bbox,
-  // a plain click drops the default 220×220 clock.
-  commands: [
-    { id: "add-clock_analog", title: "Add Analog Clock", icon: "mdi:clock-outline", run: (app) => app.armCrosshairPlacement(clockAnalogPlugin) },
-  ],
+  // a plain click drops the default 220×220 clock. "Add Analog Clock" lives in
+  // plugins/builtin_asset_commands.js (a plugin asset may not declare `commands`).
 };

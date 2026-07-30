@@ -64,6 +64,9 @@ import {
   telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
 } from "../plugins/tangent_lines.js";
 import { browserSetting, browserNumberSetting } from "./settings.js";
+// THE panel inventory (core/panels.js) — one declaration behind the layout, the
+// per-panel visibility settings here, and the "Toggle Visibility: …" commands.
+import { PANELS, panelSettingKey } from "../core/panels.js";
 // Fonts-as-asset seam (#26): register an uploaded font file as a SELECTABLE
 // family (render_gpu/fonts.js dynamic registry) + load it into the browser.
 import { registerFontFamily, clearDynamicFonts, fontAssetId, fontDescriptor } from "../render_gpu/fonts.js";
@@ -121,6 +124,18 @@ const SETTINGS = {
   // labels beside it (the row grid's minmax floor guards the rest).
   labelFrac: browserNumberSetting("powerrp.labelFrac", 0.23, 0.15, 0.55),
 };
+
+// PER-PANEL VISIBILITY, one descriptor per dockable panel, keyed by panel id and
+// derived from core/panels.js's PANELS rather than transcribed — a new panel gets
+// its setting, its command and its pane from ONE declaration. Each panel's
+// default is its own `defaultVisible` (today's layout, except Global Variables,
+// which the user ruled off by default). Kept OUT of SETTINGS above because that
+// object is a hand-written literal of hand-named settings, and these are a
+// derived family; merging them would make `SETTINGS.slides` read like a
+// hand-authored key when it is not.
+const PANEL_SETTINGS = Object.fromEntries(
+  PANELS.map((p) => [p.id, browserSetting(panelSettingKey(p.id), p.defaultVisible)]),
+);
 
 /** The label⟷value split's clamp bounds, re-exported for the divider drag so it
  *  clamps with the SAME numbers the persist path does rather than restating
@@ -422,6 +437,13 @@ export class PowerRPApp {
   // Panel / Keyframe Panel) as a title bar. OFF by default (panels are not
   // first-class — manifest Round 7).
   panelNames = $state(SETTINGS.panelNames.initial);
+  // PER-PANEL VISIBILITY: {panelId: boolean}, one entry per core/panels.js PANELS
+  // entry, each initialised from its own localStorage key (Global Variables off by
+  // default, everything else on). ONE deep-reactive record rather than six named
+  // fields: the panels are a derived family, so a field per panel would be six
+  // lines that must be edited together every time a panel is added — the exact
+  // four-scattered-edits defect the SETTINGS repo removed for flags.
+  panelVisible = $state(Object.fromEntries(PANELS.map((p) => [p.id, PANEL_SETTINGS[p.id].initial])));
   // Property/Variables panel label⟷value split, as a fraction of row width.
   // Published as --a-label-frac on the app root (App.svelte) so BOTH panels read
   // ONE number and their columns stay in x-sync across panes — the round-11
@@ -526,6 +548,20 @@ export class PowerRPApp {
 
   togglePanelNames() {
     this.panelNames = SETTINGS.panelNames.persist(!this.panelNames);
+  }
+
+  /**
+   * Command. Shows/hides one dockable panel, persisting the choice (the
+   * "Toggle Visibility: … Panel" command family). Throws on an unknown id
+   * rather than creating a phantom entry — a typo'd panel id would otherwise
+   * persist a key nothing reads and silently toggle nothing at all.
+   *
+   * @param {string} id A core/panels.js PANELS entry's `id`.
+   */
+  togglePanel(id) {
+    const setting = PANEL_SETTINGS[id];
+    if (!setting) throw new Error(`togglePanel: no such panel "${id}". Known panels: ${PANELS.map((p) => p.id).join(", ")}`);
+    this.panelVisible[id] = setting.persist(!this.panelVisible[id]);
   }
 
   toggleSnap() {

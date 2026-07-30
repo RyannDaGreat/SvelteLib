@@ -1,8 +1,19 @@
 /**
  * The V1 plugin roster. Registering a widget type is ONE line here (plus its
  * file) — nothing else in the app knows concrete types.
+ *
+ * ── THE ROSTER NOW HAS TWO HALVES ─────────────────────────────────────────────
+ * `allPlugins` below is the SOURCE-MODULE half. The second half is the BUILT-IN
+ * PLUGIN-ASSET LIBRARY (assets/builtin/library/): tier-1 pure-vector widgets that
+ * ship with the app but are delivered as `*.plugin.js` ASSETS and registered
+ * through the sandbox — core/builtin_plugin_assets.js explains why, and which
+ * five moved. registerPlugins() below loads both, so every consumer of "the
+ * built-in roster" (the editor, the render-job page, cli/render.js and every node
+ * suite) gets the same set with no call-site change.
  */
 
+import { registerBuiltinPluginAssets } from "../core/builtin_plugin_assets.js"; // the BUILT-IN plugin-asset library (assets/builtin/library/) — the roster's second half
+import { builtinAssetCommands } from "./builtin_asset_commands.js"; // their palette entries (a plugin ASSET may not declare `commands`)
 import { rectPlugin } from "./rect.js";
 import { shapePlugin } from "./shape.js";
 import { svgPlugin } from "./svg.js";
@@ -23,7 +34,6 @@ import { magnifierPlugin } from "./magnifier.js";
 import { blurPlugin } from "./blur.js";
 import { cameraPlugin } from "./camera.js";
 import { cropboxPlugin } from "./cropbox.js";
-import { donutPlugin } from "./donut.js";
 import { groupPlugin } from "./group.js";
 import { codeblockPlugin } from "./codeblock.js";
 import { anchorPointPlugin } from "./anchor_point.js";
@@ -35,11 +45,7 @@ import { latexPlugin } from "./latex.js";
 import { mermaidPlugin } from "./mermaid.js";
 import { qrcodePlugin } from "./qrcode.js";
 import { plaintextPlugin } from "./plaintext.js";
-import { clockDigitalPlugin } from "./clock_digital.js";
-import { numberPlugin } from "./number.js";
 import { bentoPlugin } from "./bento.js";
-import { progressBarPlugin } from "./progress_bar.js"; // track+fill two-box bar; fraction is equation-bindable (e.g. = a video scrubber's progress export)
-import { clockAnalogPlugin } from "./clock_analog.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
 import { polygonPlugin } from "./polygon.js"; // freeform polygon/polyline: a variable-length vertex list, every vertex a handle, the whole list one keyframable leaf
 import { paintPathPlugin } from "./paint_path.js"; // paintable editable cubic-bezier stroke: mirrored-handle anchor list with BREAKS (multi-subpath) + the universal stroke-trim draw-on (strokeStart/End/phase/caps)
@@ -78,7 +84,7 @@ import { glitchPlugin } from "./demo/glitch.js"; // animated sci-fi datamosh / b
 import { mandelbrotPlugin } from "./demo/mandelbrot.js"; // deep-zoom Mandelbrot (perturbation + rebasing in SkSL; split-number centre so every property keyframes)
 import { brightnessContrastPlugin } from "./demo/brightness_contrast.js"; // tone-adjustment region filter (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB + hue lock)
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, donutPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, numberPlugin, bentoPlugin, progressBarPlugin, clockDigitalPlugin, clockAnalogPlugin, ...shapeshifterPlugins, polygonPlugin, paintPathPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, brightnessContrastPlugin];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, polygonPlugin, paintPathPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, brightnessContrastPlugin];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.
@@ -93,6 +99,20 @@ export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, ci
  * for "give me the built-in types again"; it cannot touch commands, so it cannot
  * reintroduce that failure.
  *
+ * BOTH HALVES OF THE ROSTER: the source modules in `allPlugins`, then the BUILT-IN
+ * PLUGIN-ASSET LIBRARY through the jail (core/builtin_plugin_assets.js). Source
+ * modules go FIRST so their types are already taken when the library registers —
+ * a library file whose `type` collides with a source plugin is then REFUSED with a
+ * message naming the file, rather than silently shadowing a shipped widget.
+ *
+ * A LIBRARY REFUSAL IS REPORTED, NOT THROWN, and that asymmetry is deliberate:
+ * `registry.register` throws on a bad source plugin because that is a build error
+ * the developer must fix, while one unloadable library file must not make the
+ * editor unopenable — the other four widgets, and every document using them, are
+ * still fine. But it is never SILENT: a widget that failed to register is
+ * indistinguishable to the user from one that was deleted, and repair DROPS its
+ * items as orphans, so the failure is printed here with the file named.
+ *
  * @param {object} registry - a core/registry.js registry
  * @returns {void}
  *
@@ -100,13 +120,23 @@ export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, ci
  */
 export function registerPlugins(registry) {
   for (const plugin of allPlugins) registry.register(plugin);
+  const { reports } = registerBuiltinPluginAssets(registry);
+  for (const report of reports)
+    console.error(`PowerRP built-in widget library REFUSED a widget — ${report}`);
 }
 
 /** Command. Registers every plugin and its palette commands — the ONE-TIME boot
  *  path (app.svelte.js's constructor). To re-register only the TYPES (a project
- *  switch), call registerPlugins: adding the commands twice throws. */
+ *  switch), call registerPlugins: adding the commands twice throws.
+ *
+ *  The built-in plugin-asset widgets' commands come from
+ *  plugins/builtin_asset_commands.js, not from the plugin objects: a plugin ASSET
+ *  may not declare `commands` at all (a command's run(app) receives the live app,
+ *  the one capability the sandbox withholds), so their palette entries are declared
+ *  separately and resolve their plugin lazily from the registry. */
 export function registerAll(registry, commands) {
   registerPlugins(registry);
   for (const plugin of allPlugins)
     for (const cmd of plugin.commands ?? []) commands.add(cmd);
+  for (const cmd of builtinAssetCommands) commands.add(cmd);
 }

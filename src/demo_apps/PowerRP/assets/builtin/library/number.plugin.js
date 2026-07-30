@@ -1,66 +1,32 @@
-/**
- * ══ OFF THE ROSTER: THIS IS THE PARITY BASELINE, NOT THE SHIPPED WIDGET ══════
- *
- * The `number` widget now SHIPS as a built-in plugin ASSET —
- * `assets/builtin/library/number.plugin.js`, registered through the sandbox by
- * core/builtin_plugin_assets.js. This module is no longer on plugins/index.js's
- * roster, so the object it exports is NOT what the editor, the CLI or a render job
- * uses. Read core/builtin_plugin_assets.js for why the migration happened.
- *
- * IT IS KEPT ON PURPOSE, for exactly two jobs:
- *   1. THE PARITY BASELINE. tests/builtin_plugin_assets_test.js drives THIS emit
- *      and the registered ASSET's emit over the same fixed states and asserts the
- *      display lists are deep-equal. Deleting this file would leave the migration
- *      unpinned: the asset could drift and nothing would notice, because "it draws
- *      something" is not the same claim as "it draws what it used to".
- *   2. Its pure helper exports, which other suites already import by name.
- *
- * SO: A CHANGE HERE IS NOT A CHANGE TO THE WIDGET. Edit the asset; then edit this
- * file to match, or the parity test fails — which is the point.
- * ═════════════════════════════════════════════════════════════════════════════
- */
-
-/**
- * NUMBER widget — a numeric READOUT. It is a plaintext-like text box whose VALUE
- * is a NUMBER rather than a free string: the number is rendered to text through a
- * PURE numeric FORMAT (decimals / padding / grouping / prefix / suffix) and drawn
- * through the SAME single ir.js text() op the plaintext widget uses. Model this
- * on plugins/plaintext.js — the difference is purely the STORED-VALUE kind (a
- * number, not a string) and the formatting layer in front of emit().
- *
- * ── EQUATION-BINDABLE NUMBER (the headline feature, no engine change) ─────────
- * `value` is a plain-NUMBER item-state leaf, so it is a NUMERIC EQUATION SLOT for
- * free (core/expressions.js: "a property is an equation slot iff the plugin's
- * default is a NUMBER and the folded value is a STRING"). Typing `= slide_number`,
- * `= my_var`, `= box.w`, or `= 3.14159` in its Inspector field binds it to a live
- * computed value; the derive/evaluate stage resolves the equation UP FRONT, so
- * emit() receives the ALREADY-resolved NUMBER in `s.value` and never touches the
- * evaluator. A non-numeric / non-finite equation result is rejected LOUDLY by the
- * shared eval gate (resultMatchesKind → falls back to the default number), so
- * emit() only ever sees a finite number for a real draw.
- *
- * ── STYLING = SHARED REGISTRY, one text() op (the plaintext model) ────────────
- * It composes the SHARED PROPERTY REGISTRY like plaintext.js: the positioning
- * bundle, opacity, the PAINT-capable `fill` prop (relabelled "Color" — a solid
- * colour OR a gradient paints the glyphs for free), and the effects bundle. The
- * numeric-FORMAT knobs (decimals / pad / padWidth / group / prefix / suffix) plus
- * typography (font / size / bold / align / valign) are LOCAL rows — a number
- * format is this widget's own concern, not a shared bundle, so nothing is added
- * to the registry. emit() builds exactly ONE legacy single-run text() op from the
- * formatted string; no new IR op, no plugin imports another.
- *
- * ── NO INLINE EDIT ────────────────────────────────────────────────────────────
- * Unlike plaintext, a number box has NO inline canvas text editor: its value is a
- * number (often an equation), edited in the Inspector's Value field — typing a
- * computed value in place would be meaningless / would clobber the equation. So
- * it deliberately omits plaintext's `inlineTextEdit` opt-in.
- */
-
-import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
-import { text } from "../render_gpu/ir.js";
-import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
-import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
+// number.plugin.js — A BUILT-IN PLUGIN ASSET (core/builtin_plugin_assets.js).
+//
+// NUMBER widget — a numeric READOUT: a plaintext-like box whose content is a
+// NUMBER, formatted (decimals / padding / thousands / prefix / suffix) and, above
+// all, EQUATION-BINDABLE (`= my_var`, `= @box.w`, `= time * 2`). It renders
+// exactly ONE ir.js text() op, so it inherits the whole text pipeline (fonts,
+// wrap, align, gradient ink, effects) with no new IR op.
+//
+// ── NO INLINE EDIT ────────────────────────────────────────────────────────────
+// Unlike plaintext, a number box has NO inline canvas text editor: its value is a
+// number (often an equation), edited in the Inspector's Value field — typing a
+// computed value in place would be meaningless / would clobber the equation. So
+// it deliberately omits plaintext's `inlineTextEdit` opt-in.
+//
+// ── WHY THIS IS AN ASSET ──────────────────────────────────────────────────────
+// It is the cleanest tier-1 case in the batch: everything it draws is one text()
+// op over the shared property registry, and every host binding it needs
+// (`text`, `DEFAULT_FONT`, `fontOptions`, the property bundles, the effects
+// bundle, `standardBBoxAnchors`) is in the sandbox's provided API. It declares no
+// `commands` — its "Add Number" palette entry already lived in web/App.svelte,
+// resolving the type lazily from the registry — so nothing moved to make room for
+// it. That is the point of including it: a widget can cross to an asset with the
+// migration costing NOTHING but the file's location.
+//
+// The formatting contract (formatNumber) is the widget's whole reason for
+// existing and is pinned by tests/builtin_plugin_assets_test.js, which drives the
+// registered asset's emit against the same fixed states the source module's tests
+// used — so a byte-level regression in the jail shows up here as a wrong string,
+// not as a mystery.
 
 // The starting readout value — a plain zero until the user types a number or an
 // `=` equation. A NUMBER default is what makes `value` an equation slot.
@@ -73,6 +39,11 @@ const DEFAULT_DECIMALS = 2;
 const DEFAULT_TEXT_SIZE = 36;
 // The glyph ink used by the sibling text widgets (plaintext/text #000000).
 const DEFAULT_INK = "#000000";
+// A number box is a READOUT, and the user ruled a readout defaults to the
+// seven-segment display face. Existing docs store their font at insert time, so
+// only NEW number widgets are affected; an unregistered id degrades gracefully to
+// the system face (render_gpu/fonts.js fontDescriptor), never to tofu.
+const READOUT_FONT_ID = "seg7";
 
 // Padding STYLES (how a formatted number is widened to `padWidth`) and their
 // human labels. "zero" pads with leading zeros after the sign ("-07.50"); "space"
@@ -85,6 +56,8 @@ const ALIGN_LABELS = { left: "Left", center: "Center", right: "Right" };
 // Vertical placement of the line within the box height (core/richtext.valignOffset).
 const VALIGN_OPTIONS = ["top", "middle", "bottom"];
 const VALIGN_LABELS = { top: "Top", middle: "Middle", bottom: "Bottom" };
+// Thousands grouping is every three digits of the integer part.
+const GROUP_SIZE = 3;
 
 /**
  * Pure function. Thousands-groups the integer part of a non-negative magnitude
@@ -98,9 +71,9 @@ const VALIGN_LABELS = { top: "Top", middle: "Middle", bottom: "Bottom" };
  * @example groupThousands("1234.50") // "1,234.50"
  * @example groupThousands("42") // "42"
  */
-export function groupThousands(magnitude) {
+function groupThousands(magnitude) {
   const [intPart, fracPart] = magnitude.split(".");
-  const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const grouped = intPart.replace(new RegExp(`\\B(?=(\\d{${GROUP_SIZE}})+(?!\\d))`, "g"), ",");
   return fracPart === undefined ? grouped : `${grouped}.${fracPart}`;
 }
 
@@ -149,7 +122,7 @@ export function groupThousands(magnitude) {
  * @example formatNumber(0.5, { decimals: 1, prefix: "$", suffix: "%" }) // "$0.5%"
  * @example formatNumber(2.5, { decimals: 0 }) // "3" (round half away from zero)
  */
-export function formatNumber(value, opts = {}) {
+function formatNumber(value, opts = {}) {
   const {
     decimals = 0, pad = "none", padWidth = 0,
     align = "right", prefix = "", suffix = "", group = false,
@@ -192,11 +165,11 @@ export function formatNumber(value, opts = {}) {
  * @example numberIsEmpty(undefined) // true
  * @example numberIsEmpty(NaN) // true
  */
-export function numberIsEmpty(value) {
+function numberIsEmpty(value) {
   return !Number.isFinite(Number(value));
 }
 
-export const numberPlugin = {
+return {
   type: "number",
   title: "Number",
   // resizable:true → the standard 8 resize handles (same machinery as plaintext);
@@ -211,8 +184,8 @@ export const numberPlugin = {
    * @param {object} state - the folded item state
    * @returns {boolean}
    *
-   * @example numberPlugin.isGhost({ value: 3.14 }) // false
-   * @example numberPlugin.isGhost({ value: undefined }) // true
+   * @example // isGhost({ value: 3.14 }) // false
+   * @example // isGhost({ value: undefined }) // true
    */
   isGhost(state) {
     return numberIsEmpty(state.value);
@@ -229,10 +202,7 @@ export const numberPlugin = {
     value: DEFAULT_VALUE,
     decimals: DEFAULT_DECIMALS, pad: "none", padWidth: 0, group: false,
     prefix: "", suffix: "",
-    // seg7, not DEFAULT_FONT: a number box is a READOUT, and the user ruled a
-    // readout defaults to the seven-segment display face (existing docs store
-    // their font at insert time, so only NEW number widgets are affected).
-    font: "seg7", size: DEFAULT_TEXT_SIZE, bold: false,
+    font: READOUT_FONT_ID, size: DEFAULT_TEXT_SIZE, bold: false,
     fill: DEFAULT_INK, align: "right", valign: "middle",
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode/innerShadow, all OFF

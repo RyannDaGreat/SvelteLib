@@ -50,6 +50,15 @@
  * out matching the editor. Reach for cli/render_job.js whenever the deck contains
  * media, LaTeX, Mermaid, or more than one frame.
  *
+ * WHAT IT *CAN* DRAW THAT LOOKS LIKE MEDIA BUT IS NOT: a widget backed by a TEXT
+ * asset — an `/asset/` SVG (render_gpu/gpu/svg_source_registry.js) or a CSV/JSON
+ * data file a chart plots (render_gpu/gpu/text_asset_registry.js). Both registries
+ * read `/asset/<Project>/<file>` straight off disk SYNCHRONOUSLY in bare node, so
+ * the same emit pass that asks for the text gets it and the picture completes in
+ * one pass. That makes a data-driven chart one of the few asset-backed widgets this
+ * path renders faithfully — see pluginAssetSourcesBeside for the other half (the
+ * WIDGET may itself be a project asset, and is loaded before repair).
+ *
  * KNOWN BOUND (render rewrite Phase 1a, still open): paint_skia.js throws loudly on
  * some backdrop/effect ops it has not implemented. Widgets with effects OFF (the
  * default) render fine.
@@ -85,13 +94,15 @@
  *     [--slide 2] [--alpha 1] [--width 1920] [--height 1080] [--quality full|proxy]
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, readdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { parseArgs } from "./args.js";
 import { deserialize, repairedDocument, printRepairReports } from "../core/document.js";
 import { cameraRect } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
+import { registerPluginAssets, isPluginAssetName } from "../core/plugin_assets.js";
 import { fitRectView } from "../core/view.js";
 import { cameraFrameIR, evaluatedStateAt } from "../web/cameraFrame.js";
 import { renderToPng } from "../render_gpu/skia/node_render.js";
@@ -185,6 +196,53 @@ export function validatedQuality(requested) {
 }
 
 /**
+ * Query (reads a directory). The PLUGIN-ASSET sources beside a document: every
+ * `*.plugin.js` in `<dir>/assets/`, name-sorted (web/pluginAssetLoader.js's
+ * ordering rule — registration order decides which of two colliding types is
+ * refused, so it must not depend on directory listing order).
+ *
+ * WHY THE CLI NEEDS THIS AT ALL. A plugin asset declares a whole widget TYPE, and
+ * core/document.js's repair DROPS any item whose type nothing claims. So a deck
+ * using an asset widget, rendered by a CLI that never loaded the asset, lost those
+ * items and printed `dropped item "x" — unknown type "y"` — a report, but one that
+ * reads as document corruption rather than "this renderer did not look for the
+ * widget". MEASURED: that is exactly what the first render of the Imitations CSV
+ * slide did. The editor has loaded plugin assets before repair since the format
+ * existed (web/app.svelte.js loadProject); this closes the same gap here, so the
+ * CLI's claim to run "the EXACT pipeline the editor runs" is true for a deck with
+ * a custom widget too.
+ *
+ * A project layout is `projects/<Name>/{doc.json, assets/}`, so the assets folder
+ * is a SIBLING of the document — no flag needed for the normal case. A document
+ * with no assets/ dir returns [] silently: that is the overwhelmingly common shape
+ * (an exported .powerrp.json anywhere on disk), not an error.
+ *
+ * @param {string} docPath - path to the document file
+ * @returns {Promise<Array<{name: string, source: string}>>} sources for registerPluginAssets
+ *
+ * @example // await pluginAssetSourcesBeside("projects/Imitations/doc.json")
+ * //   → [{name: "csv_bar_graph.plugin.js", source: "// csv_bar_graph…"}, …]
+ * @example // await pluginAssetSourcesBeside("/tmp/exported.powerrp.json") // []
+ */
+export async function pluginAssetSourcesBeside(docPath) {
+  const assetsDir = join(dirname(docPath), "assets");
+  let names;
+  try {
+    names = await readdir(assetsDir);
+  } catch (e) {
+    // ENOENT is the expected, ordinary case (a document that is not inside a
+    // project folder). ANY OTHER failure — a permission problem, a file where the
+    // directory should be — is reported, because it means plugin assets may exist
+    // and were not loaded, which silently drops items.
+    if (e.code !== "ENOENT")
+      console.error(`cli/render.js: could not list "${assetsDir}" — ${e.message}. Any plugin-asset widgets in this deck will be dropped as unknown types.`);
+    return [];
+  }
+  const plugins = names.filter(isPluginAssetName).sort((a, b) => a.localeCompare(b));
+  return Promise.all(plugins.map(async (name) => ({ name, source: await readFile(join(assetsDir, name), "utf8") })));
+}
+
+/**
  * Command (reads font/wasm files, allocates a CanvasKit surface). Builds a
  * node-safe plugin registry, repairs `docJson`, evaluates (slide, alpha), and
  * returns the encoded PNG bytes for the camera frame at width×height. This is
@@ -199,14 +257,27 @@ export function validatedQuality(requested) {
  *     (paint_skia's cheap stand-ins — NOT the editor's render). Validated LOUDLY,
  *     and a non-full tier is REPORTED to stderr before the render, because a caller
  *     who ends up with stand-in pixels must be told, not left to discover it.
+ *   opts.pluginAssets (Array<{name, source}>): plugin-asset sources to register
+ *     BEFORE repair (see pluginAssetSourcesBeside for why the order matters). The
+ *     CLI entry point fills this from the document's sibling assets/ folder.
  *
  * Returns:
  *   Promise<Uint8Array>: encoded PNG bytes
  */
-export async function renderDocToPng(docJson, { slide, alpha, width, height, quality = DEFAULTS.quality }) {
+export async function renderDocToPng(docJson, { slide, alpha, width, height, quality = DEFAULTS.quality, pluginAssets = [] }) {
   const tier = validatedQuality(quality);
   const registry = createRegistry();
   registerAll(registry, createCommands());
+  // PLUGIN ASSETS FIRST, BEFORE REPAIR. Repair drops items of unknown type, so a
+  // widget delivered as a project asset must be registered before the document is
+  // repaired or every one of its items is dropped (web/app.svelte.js loadProject
+  // has the same ordering, for the same reason). Refusals are printed, never
+  // swallowed — a refused widget looks to the author exactly like a deleted one.
+  if (pluginAssets.length) {
+    const { loaded, reports } = registerPluginAssets(registry, pluginAssets);
+    if (loaded.length) console.error(`cli/render.js: registered ${loaded.length} plugin asset widget(s): ${loaded.join(", ")}`);
+    for (const report of reports) console.error(`cli/render.js: plugin asset REFUSED — ${report}`);
+  }
   // EXACTLY the editor's load-boundary repair (orphans→renames→fps-strip→fill→
   // duration→camera→bindings) so the CLI and editor can never drift. Reports are
   // console.errored — silent repairs are forbidden.
@@ -257,7 +328,7 @@ async function main() {
   const opts = { ...DEFAULTS, ...flags };
   const docJson = await readFile(docPath, "utf8");
   const started = performance.now();
-  const png = await renderDocToPng(docJson, opts);
+  const png = await renderDocToPng(docJson, { ...opts, pluginAssets: await pluginAssetSourcesBeside(docPath) });
   await writeFile(outPath, Buffer.from(png));
   // The elapsed time is part of the summary so a slow slide is legible in a log, and
   // the tier is named so no PNG's provenance has to be guessed at later.
