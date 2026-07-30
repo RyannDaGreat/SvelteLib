@@ -32,7 +32,8 @@
  */
 
 import { unzipSync, zipSync } from "fflate";
-import { assetKindForName, uniqueProjectName } from "./assetRef.js";
+import { assetKindForName, uniqueAssetName, uniqueProjectName } from "./assetRef.js";
+import { documentAssetRefs, localizationPlan, rewriteAssetRefs } from "./assetLocalize.js";
 
 /** The document's filename inside the archive — the server's DOC_FILENAME. */
 export const DOC_FILENAME = "doc.json";
@@ -116,24 +117,41 @@ export function zipEntries(project, doc, assets) {
 
 /**
  * Query (reads the asset store). Build a project .zip in the browser and return
- * its bytes — the client twin of the server's zip_project_bytes, and the archive
- * a static-mode Download produces.
+ * `{bytes, warnings}` — the client twin of the server's zip_project_bytes, and the
+ * archive a static-mode Download produces.
  *
  * Assets are read one at a time (not Promise.all) so a 500 MB library holds one
  * blob in memory at a time rather than all of them; the deflate itself is the
- * memory ceiling either way. A missing/unreadable asset throws LOUDLY — a
- * silently incomplete archive is worse than no archive, because it looks fine
- * until someone opens it.
+ * memory ceiling either way. A missing/unreadable asset OF THIS PROJECT throws
+ * LOUDLY — a silently incomplete archive is worse than no archive, because it
+ * looks fine until someone opens it.
+ *
+ * THE ARCHIVE IS SELF-CONTAINED, matching the server exactly. A document may
+ * reference `/asset/<OTHER project>/<file>` — Save-As mints exactly that, by
+ * renaming doc.meta.name while leaving the assets in the folder they were uploaded
+ * to. Those bytes are COPIED IN under a non-colliding local name and the ARCHIVED
+ * doc's refs rewritten (web/assetLocalize.js plans it; the same plan the server
+ * computes, so the two archives stay interchangeable). The stored document is NOT
+ * modified — only the copy that goes in the archive.
+ *
+ * A FOREIGN ASSET THAT CANNOT BE READ does not throw, unlike a local one: it is
+ * dropped from the plan (its ref stays as authored, so it remains findable) and
+ * named in `warnings`. The asymmetry is deliberate and matches the server — a
+ * missing LOCAL asset means this project's own storage is inconsistent, which is a
+ * bug; a missing FOREIGN asset just means the other project moved on, which is an
+ * author's problem to see and fix, not a reason to refuse them their deck.
  *
  * @param {string} project - project name (the archive's root folder)
  * @param {object} doc - the document to include
  * @param {{list: Function, get: Function}} store - an asset store (either adapter)
- * @returns {Promise<Uint8Array>} the .zip bytes
+ * @returns {Promise<{bytes: Uint8Array, warnings: string[]}>}
  *
  * @example
- * >>> const bytes = await buildProjectZip("My Talk", app.doc, assetStore());
+ * >>> const {bytes, warnings} = await buildProjectZip("My Talk", app.doc, assetStore());
  * >>> bytes.length > 22          // at minimum a zip end-of-central-directory
  * true
+ * >>> warnings                    // empty = every reference resolved into the archive
+ * []
  */
 export async function buildProjectZip(project, doc, store) {
   const listing = await store.list(project);
@@ -142,9 +160,33 @@ export async function buildProjectZip(project, doc, store) {
     const blob = await store.get(project, a.name);
     assets.push({ name: a.name, bytes: new Uint8Array(await blob.arrayBuffer()) });
   }
+  const plan = localizationPlan(
+    documentAssetRefs(doc),
+    project,
+    listing.map((a) => a.name),
+    uniqueAssetName,
+  );
+  const warnings = [];
+  const localized = {};
+  for (const c of plan.copies) {
+    let blob;
+    try {
+      blob = await store.get(c.project, c.file);
+    } catch (e) {
+      warnings.push(
+        `asset not found: /asset/${c.project}/${c.file} — referenced by ${project}'s document but ` +
+          `unreadable from that project's storage (${e?.message ?? e}); the archive keeps the ` +
+          `original reference, which will not resolve after import`,
+      );
+      continue;
+    }
+    assets.push({ name: c.as, bytes: new Uint8Array(await blob.arrayBuffer()) });
+    localized[c.ref] = c.to;
+  }
+  const archivedDoc = Object.keys(localized).length ? rewriteAssetRefs(doc, (e) => localized[e.ref] ?? null) : doc;
   // level 6 = fflate's default deflate: the same tradeoff Python's
   // ZIP_DEFLATED makes, so a client archive is about the size of a server one.
-  return zipSync(zipEntries(project, doc, assets), { level: 6 });
+  return { bytes: zipSync(zipEntries(project, archivedDoc, assets), { level: 6 }), warnings };
 }
 
 /**

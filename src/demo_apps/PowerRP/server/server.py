@@ -2104,6 +2104,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # A cross-origin fetch() cannot READ a response header unless it is
+        # exposed. X-PowerRP-Warning is how the .zip download reports an asset it
+        # could not localize (the body is the archive, so there is nowhere else to
+        # put it) — unexposed, that warning would be silently unreadable in exactly
+        # the ?backend= setup the probes and the desktop shell run in.
+        self.send_header("Access-Control-Expose-Headers", "X-PowerRP-Warning")
 
     def _json(self, obj, status=200):
         body = json.dumps(obj).encode()
@@ -2435,12 +2441,26 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "name": filename})
 
     def _handle_download(self, name):
-        data = zip_project_bytes(name)
+        # The archive is SELF-CONTAINED: zip_project_bytes copies in any asset the
+        # document borrows from another project and rewrites the archived doc.json
+        # (see its docblock for the defect that required it).
+        #
+        # WARNINGS TRAVEL AS A HEADER, not in the body, because the body IS the
+        # .zip — there is nowhere else to put them. X-PowerRP-Warning carries them
+        # for a client that reads it (fetch can, an <a download> cannot), and
+        # stderr carries them unconditionally so an unlocalizable asset is never
+        # silent even when the download was a plain link click.
+        data, warnings = zip_project_bytes(name)
+        for w in warnings:
+            print(f"[download {name}] {w}", file=sys.stderr)
         self.send_response(200)
         self._cors()
         self.send_header("Content-Type", "application/zip")
         self.send_header("Content-Disposition", f'attachment; filename="{name}.zip"')
         self.send_header("Content-Length", str(len(data)))
+        if warnings:
+            # Header values must be one line: newlines would split the response.
+            self.send_header("X-PowerRP-Warning", " · ".join(w.replace("\n", " ") for w in warnings))
         self.end_headers()
         self.wfile.write(data)
 

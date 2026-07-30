@@ -61,7 +61,7 @@ export const PANELS = [
   { id: "properties", label: "Property", column: "right", weight: 0.35, icon: "mdi:tune-vertical", defaultVisible: true },
   { id: "tools", label: "Tools", column: "right", weight: 0.22, icon: "mdi:toolbox-outline", defaultVisible: true },
   { id: "globalVariables", label: "Global Variables", column: "right", weight: 0.21, icon: "mdi:variable", defaultVisible: false },
-  { id: "keyframes", label: "Keyframe", column: "right", weight: 0.22, icon: "mdi:diamond-stone", defaultVisible: true },
+  { id: "keyframes", label: "Keyframe", column: "right", weight: 0.22, icon: "mdi:diamond-stone", defaultVisible: false }, // hidden by default (user ruling 2026-07-30, same as Global Variables)
 ];
 
 /**

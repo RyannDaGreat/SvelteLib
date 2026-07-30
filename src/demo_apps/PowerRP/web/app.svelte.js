@@ -3405,8 +3405,17 @@ export class PowerRPApp {
     // produce the SAME layout ("<name>/doc.json" + "<name>/assets/…" — see
     // web/projectZip.js), so an archive from either half imports into either
     // half. That interchangeability is the whole transfer story.
+    //
+    // BOTH HALVES ALSO LOCALIZE: a document may reference another project's asset
+    // (Save-As mints exactly that), and an archive that shipped such a ref without
+    // the file was the user's "the robotsim.zip references a video file, but that
+    // video file is not in that zip" bug. The foreign bytes are copied in and the
+    // ARCHIVED doc rewritten; the saved project is left as authored. An asset that
+    // could not be copied is WARNED about, never dropped silently.
     if (isStatic()) {
-      downloadBytes(await buildProjectZip(name, this.doc, assetStore()), `${name}.zip`);
+      const { bytes, warnings } = await buildProjectZip(name, this.doc, assetStore());
+      for (const w of warnings) console.warn(`downloadZip(${name}): ${w}`);
+      downloadBytes(bytes, `${name}.zip`);
       return;
     }
     await projectApi.downloadProjectZip(name);

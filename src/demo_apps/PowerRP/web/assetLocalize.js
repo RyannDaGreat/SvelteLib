@@ -153,20 +153,26 @@ export function foreignAssetRefs(refs, project) {
  * match nothing and silently leave the foreign ref in place — the exact class of
  * silent hole this whole module exists to close. A node test pins it.
  *
+ * Each copy carries its own `ref` (the document's spelling) and `to` (the new ref)
+ * as well as the names, so a caller that must DROP one copy — an unreadable foreign
+ * asset, which the exporters report rather than throw on — removes exactly its
+ * mapping instead of reverse-engineering the key from the name. `refMap` is the
+ * same information flattened for `rewriteAssetRefs`.
+ *
  * @param {Array<{ref: string, project: string, file: string}>} refs - documentAssetRefs output
  * @param {string} project - the project the document is becoming
  * @param {Iterable<string>} localNames - asset basenames already present locally
  * @param {(filename: string, taken: string[]) => string} uniqueName - de-collision scheme
- * @returns {{copies: Array<{project: string, file: string, as: string}>, refMap: Record<string, string>}}
+ * @returns {{copies: Array<{project: string, file: string, as: string, ref: string, to: string}>, refMap: Record<string, string>}}
  *
  * @example
  * >>> const refs = documentAssetRefs({slides: [{delta: {items: {a: {src: "/asset/Untitled/clip.mp4"},
  * ...                                                            b: {src: "/asset/Untitled/clip.mp4"}}}}]});
- * >>> localizationPlan(refs, "RobotSim", [], uniqueAssetName)
- * {copies: [{project: "Untitled", file: "clip.mp4", as: "clip.mp4"}],
- *  refMap: {"/asset/Untitled/clip.mp4": "/asset/RobotSim/clip.mp4"}}
- * >>> localizationPlan(refs, "RobotSim", ["clip.mp4"], uniqueAssetName).copies
- * [{project: "Untitled", file: "clip.mp4", as: "clip 2.mp4"}]
+ * >>> localizationPlan(refs, "RobotSim", [], uniqueAssetName).copies
+ * [{project: "Untitled", file: "clip.mp4", as: "clip.mp4",
+ *   ref: "/asset/Untitled/clip.mp4", to: "/asset/RobotSim/clip.mp4"}]
+ * >>> localizationPlan(refs, "RobotSim", ["clip.mp4"], uniqueAssetName).copies[0].as
+ * "clip 2.mp4"
  */
 export function localizationPlan(refs, project, localNames, uniqueName) {
   const taken = [...localNames];
@@ -178,8 +184,9 @@ export function localizationPlan(refs, project, localNames, uniqueName) {
     // assets/ folder, which is the layout both zip halves write.
     const as = uniqueName(r.file.split("/").pop(), taken);
     taken.push(as);
-    copies.push({ project: r.project, file: r.file, as });
-    refMap[r.ref] = assetRef(project, as);
+    const to = assetRef(project, as);
+    copies.push({ project: r.project, file: r.file, as, ref: r.ref, to });
+    refMap[r.ref] = to;
   }
   return { copies, refMap };
 }

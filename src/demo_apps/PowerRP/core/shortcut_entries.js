@@ -1075,8 +1075,22 @@ export const HINT_PROBE_CROSSHAIRS = Object.freeze([null, "band", "place"]);
  * other flag and is orthogonal to every loop axis. Crossing it as a loop would
  * multiply the whole grid by the handler count to reach the same reachable states.
  *
- * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length // 174
- * @example hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: ["insert_point"], app: {}}).length // 180
+ * THE COUNT IS STATED RELATIONALLY, not as a literal. It used to be two pinned
+ * integers (174 and 180), which made every new probe flag — a new field scope, a new
+ * popover kind — fail a doctest with a number nobody could interpret, in a file where
+ * the number is a consequence rather than a decision. It is exactly
+ * modes × dragKinds+1 × crosshairs × modes × steps × flagSets, and the flag-set count
+ * now follows FIELD_SCOPE_HINTS/POPOVER_HINTS by construction (see HINT_PROBE_FLAGS).
+ *
+ * @example
+ * // The grid is the full cross product of its axes; nothing is dropped or deduped.
+ * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length
+ *   === HINT_PROBE_MODES.length * 1 * HINT_PROBE_CROSSHAIRS.length * 1 * 1 * HINT_PROBE_FLAGS.length  // true
+ * @example
+ * // Each activation id adds ONE flag set (it rides the flag axis, not a loop axis).
+ * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: ["insert_point"], app: {}}).length
+ *   - hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length
+ *   === HINT_PROBE_MODES.length * HINT_PROBE_CROSSHAIRS.length  // true
  */
 export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, activationIds, app }) {
   // One extra flag set per activation: the selected widget declares it. Derived, so
