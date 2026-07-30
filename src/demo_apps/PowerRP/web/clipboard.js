@@ -25,12 +25,32 @@ const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
 /**
+ * The app's OWN clipboard MIME type — the OWNERSHIP MARKER. Written alongside
+ * the rendered PNG on every element copy; its PRESENCE on a `paste` event is
+ * proof the clipboard came from this app, so Ctrl+V pastes the ELEMENT.
+ *
+ * WHY THIS EXISTS (measured, 2026-07-30): the original design proved ownership
+ * by hashing the PNG (`png_sig`) and comparing that hash to the pasted image's
+ * bytes. That premise is FALSE. The OS pasteboard RE-ENCODES an image on its
+ * way through: a 581-byte PNG written by Chrome came back as 645 bytes on
+ * macOS. Different bytes ⇒ different signature ⇒ the match NEVER fires for a
+ * real Ctrl+V, so a copied widget pasted back as a FLATTENED IMAGE — exactly
+ * the user report ("Cmd+V pasted it as an IMAGE sometimes"), and exactly why
+ * the toolbar button looked correct: it never consulted the image at all.
+ *
+ * A custom MIME type survives that round trip because the OS carries unknown
+ * flavors VERBATIM instead of transcoding them — it is a label, not a picture.
+ * `web ` prefix: the Async Clipboard API only permits non-standard types when
+ * they carry it, and it is what makes the write legal rather than rejected.
+ */
+export const POWERRP_CLIPBOARD_MIME = "web application/x-powerrp-item";
+
+/**
  * Pure function. A short content signature for a byte buffer (FNV-1a 32-bit,
- * length-prefixed). It is the disambiguation key of the canvas clipboard: on
- * COPY of an element we store the signature of the rendered PNG alongside the
- * internal element payload; on PASTE we sign the incoming OS-clipboard image
- * and an EQUAL signature means "this image is our own element render" → paste
- * the element, not the flattened bitmap.
+ * length-prefixed). RETAINED as a corroborating hint only — it proves an image
+ * is ours when the bytes DO survive intact (same-document, some platforms), but
+ * it can never DISPROVE ownership, because the OS re-encodes images (see
+ * POWERRP_CLIPBOARD_MIME). The authority is the marker; this is a fallback.
  *
  * The length prefix (`<len>.<hash>`) makes two buffers of different lengths
  * never collide regardless of the 32-bit hash — cheap extra separation for a

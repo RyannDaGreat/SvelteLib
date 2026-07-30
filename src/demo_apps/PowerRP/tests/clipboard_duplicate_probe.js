@@ -30,12 +30,17 @@
  *     to the OS clipboard (verified by a best-effort clipboard.read() when
  *     headless allows it, else by the stored signature + clean render).
  *
- *  E. ELEMENT ROUND-TRIP + IMAGE DISAMBIGUATION (behaviors 3 + 4). With a known
- *     {powerrp_item, png_sig} on the server clipboard: pasting an image whose
- *     signature MATCHES png_sig inserts the ELEMENT (not a flattened bitmap);
- *     pasting a DIFFERENT image inserts an IMAGE widget (upload path). The seed
- *     deliberately uses the LEGACY singular `powerrp_item` key, so this section
- *     doubles as the proof that an older session clipboard still pastes.
+ *  E. ELEMENT ROUND-TRIP. With a known {powerrp_item, png_sig} on the server
+ *     clipboard, pasting an image inserts the ELEMENT, not a flattened bitmap —
+ *     whether or not the image's signature matches. Both halves assert the same
+ *     outcome since the 2026-07-30 parity ruling: a signature MISMATCH does not
+ *     prove an image is foreign, because the OS pasteboard re-encodes images in
+ *     transit, so our own render returns with different bytes. While our own
+ *     copy is on the clipboard, Ctrl+V pastes the element. The genuinely foreign
+ *     image (nothing of ours on the internal clipboard) is owned by
+ *     tests/paste_parity_probe.js. The seed deliberately uses the LEGACY
+ *     singular `powerrp_item` key, so this section doubles as the proof that an
+ *     older session clipboard still pastes.
  *
  * Run (exit-code gated):
  *   node src/demo_apps/PowerRP/tests/clipboard_duplicate_probe.js
@@ -451,8 +456,18 @@ try {
   note(e1.pastedElement, "MATCH paste inserted the ELEMENT (rect marker w=333), not a flattened image");
   note(uploadsAfterMatch === 0, "MATCH paste did NOT upload anything (the element came from the server clipboard)");
 
-  // E2. MISMATCH → image paste (behavior 4). Paste a DIFFERENT image → upload +
-  // insert an IMAGE widget (async: poll for the new image widget).
+  // E2. A DIFFERENT image, with our internal clipboard STILL LOADED.
+  //
+  // SUPERSEDED BY THE 2026-07-30 PARITY RULING, and deliberately reversed. This
+  // used to expect an IMAGE widget, on the theory that a signature mismatch
+  // proves the image is foreign. It proves nothing: the OS pasteboard
+  // RE-ENCODES images, so OUR OWN render comes back with a different signature
+  // too (581 bytes in, 645 out, measured on macOS). Treating "mismatch" as
+  // "foreign" is precisely what pasted the user's copied widget as a flattened
+  // bitmap. With an internal payload live, an image-only clipboard is now
+  // resolved toward the ELEMENT — Ctrl+V and the toolbar button are one action.
+  // The genuine foreign-image path (empty internal clipboard) is asserted in
+  // tests/paste_parity_probe.js, which owns this behavior end to end.
   const mmBefore = await page.evaluate(() => Object.keys(window.__powerrp_app.doc.slides[0].delta.items).length);
   await page.evaluate(async ({ b64 }) => {
     const app = window.__powerrp_app;
@@ -461,7 +476,7 @@ try {
     await app.pasteFromClipboard([file]);
   }, { b64: TRANSPARENT_B64 });
   let mmImage = false, mmAfter = mmBefore;
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 20; i++) {
     const r = await page.evaluate(() => {
       const items = window.__powerrp_app.doc.slides[0].delta.items;
       return {
@@ -473,9 +488,9 @@ try {
     if (r.hasImg) { mmImage = true; break; }
     await new Promise((r) => setTimeout(r, 200));
   }
-  note(mmImage, "MISMATCH paste inserted an IMAGE widget for the external image");
-  note(mmAfter === mmBefore + 1, `MISMATCH paste inserted exactly one item (${mmBefore} → ${mmAfter})`);
-  note(uploadCountE >= 1, "MISMATCH paste uploaded the external image (a POST to /api/upload/ fired)");
+  note(!mmImage, "a re-encoded/mismatched image did NOT become an image widget while our own copy is on the clipboard");
+  note(mmAfter === mmBefore + 1, `paste inserted exactly one item (${mmBefore} → ${mmAfter})`);
+  note(uploadCountE === 0, "nothing was uploaded — the ELEMENT was pasted, not the bitmap (the parity ruling)");
 
   await new Promise((r) => setTimeout(r, 200));
   if (consoleErrors.length) errors.push("CONSOLE ERRORS DURING PROBE:\n" + consoleErrors.join("\n"));

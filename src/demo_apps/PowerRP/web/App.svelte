@@ -1350,7 +1350,7 @@
     // a persistent toolbar button rather than a one-shot menu action.
     { id: "render-center", title: "Render Center (Video)…", icon: "mdi:movie-open-outline", help: "Submit a video render and watch every rendering for this project. A Server job keeps going if you close the dialog, refresh the page, or shut the laptop — come back any time.", run: (a) => a.toggleRenderCenter() },
     { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", help: "Copies TWICE, on purpose: the element itself (as deltas, on the server clipboard) and a rendered PNG onto the system clipboard. Pasting back into PowerRP round-trips the real widget; pasting into another app gets the picture.", run: (a) => a.copySelection() },
-    { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the ELEMENT back when the system clipboard still holds the PNG this app wrote for it; any other image or file is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
+    { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the last copied element or property. Identical to Ctrl+V: an image or file copied from ANOTHER app is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
     // 14.9: Duplicate = clone the selection in place (new UUIDs, one undo unit),
     // reusing the copy/paste serialize→insert path locally (no clipboard trip).
     { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", aliases: ["duplicate object", "duplicate widget", "duplicate item", "clone", "copy item"], when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Each copy gets a NEW id and the SAME raw state, equations verbatim — but a reference INTO the duplicated set is rerouted to the new copy, so duplicating two linked widgets gives you a linked pair, not two widgets pointing at the originals.", run: (a) => a.duplicateSelection() },
@@ -2030,19 +2030,25 @@
   /**
    * Command. THE Ctrl+V handler — the single paste authority (the keydown
    * binding is nativeEvent, so it does NOT also fire). Rides the native `paste`
-   * ClipboardEvent because only that event exposes the pasted image bytes,
-   * which the either/or decision needs. Hands the OS-clipboard Files to
-   * app.pasteFromClipboard, which decides between pasting our own copied
-   * ELEMENT (image signature matches the internal payload) and pasting an
-   * EXTERNAL image/video as a new widget, and falls back to the internal
-   * element/property paste when the OS clipboard carries no files. Guarded
-   * identically to onKeydown (skip while typing/present/palette-open).
+   * ClipboardEvent because only that event exposes what the OS clipboard holds:
+   * the pasted files AND the TYPES, which is where our ownership marker rides.
+   *
+   * It hands BOTH to app.pasteFromClipboard, which is the shared decision layer
+   * the toolbar Paste button also runs — Ctrl+V and that button are ONE action
+   * (2026-07-30 ruling). Passing `types` is what lets it recognize a clipboard
+   * this app wrote and paste the ELEMENT instead of the PNG our own copy left
+   * on the OS clipboard.
+   *
+   * The typing guard is load-bearing and must stay: a paste into an <input>,
+   * <textarea>, the WYSIWYG editor or Monaco (all contentEditable) must reach
+   * the browser's native text paste untouched — hence the early return BEFORE
+   * preventDefault. Guarded identically to onKeydown (typing/present/palette).
    */
   function onPaste(e) {
     if (isTypingTarget(document.activeElement)) return;
     if (app.mode === "present" || app.paletteOpen) return;
     e.preventDefault();
-    app.pasteFromClipboard([...(e.clipboardData?.files ?? [])]);
+    app.pasteFromClipboard([...(e.clipboardData?.files ?? [])], [...(e.clipboardData?.types ?? [])]);
   }
 </script>
 

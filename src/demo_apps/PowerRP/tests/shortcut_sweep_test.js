@@ -182,7 +182,7 @@ const ACCOUNTED = {
   },
   "web/App.svelte": {
     keys: [],
-    coverage: "registry: the app-level keydown/paste listeners hand every event to app.shortcuts.dispatch(). It compares no key literal of its own — that is the point of the registry.",
+    coverage: "registry: the app-level keydown/paste listeners hand every event to app.shortcuts.dispatch(). It compares no key literal of its own — that is the point of the registry. The `paste` listener is the ONE exception to 'keydown dispatches everything', and it is registered rather than hidden: the Ctrl+V entry carries `nativeEvent: true`, so keydown SKIPS it (no double fire) while the HintBar still chips it. It must ride the native ClipboardEvent because only that event exposes clipboardData — the files AND the types, where the POWERRP_CLIPBOARD_MIME ownership marker rides. Since 2026-07-30 it routes to the SAME app.pasteFromClipboard the toolbar Paste button reaches, so the key and the button are one action; its typing-target guard (input/textarea/select/math-field/contentEditable) returns BEFORE preventDefault so native text paste in fields and Monaco is untouched. Behavior owned by tests/paste_parity_probe.js.",
   },
   "web/CanvasView.svelte": {
     keys: ["A", "Escape", "a"],

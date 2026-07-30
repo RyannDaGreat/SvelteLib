@@ -37,7 +37,7 @@ import { bundleDefaults } from "../core/properties.js";
 import { multiSelectPanel, unifyPairs } from "../core/multiselect.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
-import { copyText, imageSignature } from "./clipboard.js"; // canvas-clipboard disambiguation signature + the share-link copy
+import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy
 import * as projectApi from "./projectApi.js";
 // THE STORAGE SEAM (web/assetStore.js). Assets and documents move through
 // assetStore()/projectStore(), NOT through projectApi directly, so the same
@@ -2432,15 +2432,25 @@ export class PowerRPApp {
   //
   // DISAMBIGUATION (the canvas-clipboard round-trip): copying an element ALSO
   // puts a rendered PNG on the OS clipboard, so a plain Cmd+V's `paste` event
-  // carries an image (OUR render). We store the SIGNATURE of that PNG
-  // (imageSignature) as `png_sig` ALONGSIDE the item JSON on the SERVER — not in
-  // a per-tab in-memory field — so a SECOND open presentation (different tab,
-  // same session) can still recognize the render as ours: on paste we sign the
-  // incoming image and compare to the server payload's png_sig. Match → paste
-  // the ELEMENT; mismatch (or no internal copy) → paste the image as a new
-  // widget. Storing the signature on the server (not the bytes in a tab-local
-  // field) is what makes the cross-tab round-trip and the stale-copy either/or
-  // both correct — see pasteFromClipboard.
+  // carries an image — OUR OWN render. Ctrl+V must recognize it as ours and
+  // paste the ELEMENT, or a copied widget comes back as a flattened bitmap.
+  //
+  // HOW OWNERSHIP IS PROVEN — and the design error that was corrected here.
+  // The original scheme hashed the PNG at copy time (`png_sig`) and compared
+  // that hash to the pasted image's bytes. THAT PREMISE IS FALSE: the OS
+  // pasteboard RE-ENCODES an image in transit (measured on macOS 2026-07-30, a
+  // 581-byte PNG came back as 645 bytes), so the hashes never matched and every
+  // real Ctrl+V took the "not ours → upload it" branch. That IS the user's bug
+  // ("Cmd+V pasted it as an IMAGE sometimes"); the toolbar button looked correct
+  // only because it never consulted the image at all.
+  //
+  // Ownership is therefore a LABEL, not a hash: every copy writes the custom
+  // MIME POWERRP_CLIPBOARD_MIME beside the PNG, which the OS carries verbatim
+  // because it transcodes pictures, not unknown flavors. A clipboard is ALSO
+  // ours whenever the internal (server/mirror) clipboard simply holds a
+  // pasteable payload — that disjunct is what makes Ctrl+V and the toolbar
+  // button THE SAME ACTION. `png_sig` is still WRITTEN (old sessions' payloads
+  // stay readable) but is no longer a gate — see pasteFromClipboard.
 
   /**
    * Query. The itemIds a clone (copy or Duplicate) covers: the selection,
@@ -2525,17 +2535,39 @@ export class PowerRPApp {
     if (png) await this.#writeImagePngToOs(png);
   }
 
-  /** Command (async). Writes PNG `bytes` to the OS clipboard as image/png.
-   *  Reports loudly (and no-ops) when the browser lacks the async image-write
-   *  API (an insecure/older context) or when the write is denied — a copy must
-   *  never fail silently, and there is no in-app fallback for a system image. */
+  /** Command (async). Writes PNG `bytes` to the OS clipboard as image/png,
+   *  PLUS the OWNERSHIP MARKER (POWERRP_CLIPBOARD_MIME) that tells a later
+   *  Ctrl+V this clipboard is ours so it pastes the ELEMENT, not the bitmap.
+   *  The marker — not the PNG's signature — is the authority, because the OS
+   *  re-encodes images in transit and the signature therefore cannot survive
+   *  (measured; see POWERRP_CLIPBOARD_MIME). Reports loudly (and no-ops) when
+   *  the browser lacks the async image-write API (an insecure/older context) or
+   *  when the write is denied — a copy must never fail silently, and there is no
+   *  in-app fallback for a system image.
+   *
+   *  A browser that REJECTS the custom type (the `web ` prefix is not universally
+   *  supported) must still get its PNG: the marker write is retried without it,
+   *  loudly, since losing the marker only costs the fast path — the mirror and
+   *  server clipboard still identify the copy. */
   async #writeImagePngToOs(bytes) {
     if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
       console.warn("Copy: this browser has no Clipboard image-write API — the item is on the server clipboard (paste works), but no PNG was placed on the OS clipboard.");
       return;
     }
+    const png = new Blob([bytes], { type: "image/png" });
     try {
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": new Blob([bytes], { type: "image/png" }) })]);
+      await navigator.clipboard.write([new ClipboardItem({
+        "image/png": png,
+        // The marker's BODY is deliberately trivial: ownership is carried by the
+        // TYPE's presence, so nothing here needs to survive or be parsed.
+        [POWERRP_CLIPBOARD_MIME]: new Blob(["1"], { type: POWERRP_CLIPBOARD_MIME }),
+      })]);
+      return;
+    } catch (e) {
+      console.warn(`Copy: this browser refused the PowerRP ownership marker (${e.message}) — retrying with the PNG alone; Ctrl+V still pastes the element via the server clipboard / in-browser mirror.`);
+    }
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
     } catch (e) {
       console.error("Copy: OS-clipboard image write was denied or failed (the item is still on the server clipboard — internal paste works):", e.message);
     }
@@ -2618,37 +2650,86 @@ export class PowerRPApp {
   }
 
   /**
-   * Command (async). THE Ctrl+V authority (App.svelte onPaste routes here). The
-   * either/or that makes the canvas clipboard bidirectional:
-   *   • OS clipboard carries file(s): if one is an image whose signature equals
-   *     the server payload's png_sig, this is OUR OWN element render → paste the
-   *     ELEMENT (round-trip, cross-tab safe: the signature lives on the server).
-   *     Otherwise the file(s) are EXTERNAL → upload + insert each as an image/
-   *     video widget (pasteFiles).
-   *   • No files on the OS clipboard → the internal element/property paste.
-   * Exactly one of the two happens per paste — no double insert (the keydown
+   * Command (async). THE Ctrl+V authority (App.svelte onPaste routes here).
+   *
+   * CTRL+V AND THE TOOLBAR PASTE BUTTON ARE THE SAME ACTION (user ruling,
+   * 2026-07-30: "Does Cmd+V do something different than the toolbar Paste
+   * button? The toolbar button is always correct, but Cmd+V pasted it as an
+   * IMAGE sometimes"). They diverged because the button ran the internal paste
+   * unconditionally while Ctrl+V additionally saw the PNG our OWN copy had put
+   * on the OS clipboard and — failing to recognize it — took the upload path.
+   *
+   * PRECEDENCE, in order. The first that applies wins and NOTHING else runs:
+   *   1. WE OWN THIS CLIPBOARD → paste the ELEMENT. Ownership is proven by
+   *      EITHER the marker MIME on the event (POWERRP_CLIPBOARD_MIME, written
+   *      by every copy) OR simply by our internal clipboard holding a pasteable
+   *      payload. The second disjunct is what makes this identical to the
+   *      button: if there is something of ours to paste, Ctrl+V pastes it, and a
+   *      PNG we ourselves wrote never diverts it into an upload.
+   *   2. NO app payload and the OS carries file(s) → a genuine screenshot or
+   *      copied file → upload + insert as an image/video widget.
+   *   3. Nothing at all → pasteClipboard() reports the empty clipboard.
+   *
+   * The png_sig comparison is GONE as a gate. It could only ever return false
+   * for a real Ctrl+V: the OS pasteboard re-encodes images in transit (581
+   * bytes in, 645 bytes out, measured on macOS), so the hash of what comes back
+   * never equals the hash of what we wrote. Keeping it as a condition is what
+   * produced the bug; ownership is now a LABEL that survives the round trip.
+   *
+   * Exactly one insert happens per paste — no double insert (the keydown
    * binding is nativeEvent, so it does not also fire).
    *
    * @param {File[]} files - the OS clipboard's files (App.svelte passes
    *   `[...clipboardData.files]`); empty for a plain internal paste.
+   * @param {string[]} [types] - the event's clipboardData.types, carrying the
+   *   ownership marker when the copy came from this app.
    */
-  async pasteFromClipboard(files) {
-    const imageFile = files.find((f) => f.type.startsWith("image/"));
-    if (imageFile) {
-      const bytes = new Uint8Array(await imageFile.arrayBuffer());
-      const payload = await this.#readClipboardPayload();
-      // Signature match → the pasted image is our own element render; paste the
-      // ELEMENT, not the flattened bitmap (behavior 3 + 4).
-      if (payload?.png_sig && payload.png_sig === imageSignature(bytes)) {
-        this.#insertClipboardPayload(payload);
-        return;
-      }
+  async pasteFromClipboard(files, types = []) {
+    // Read the internal clipboard FIRST: it is the same store the toolbar button
+    // pastes from, and having something in it is what makes this OUR paste.
+    const payload = await this.#readClipboardPayload();
+    if (payload && !this.#isForeignFilePaste(payload, files, types)) {
+      this.#insertClipboardPayload(payload);
+      return;
     }
     if (files.length) {
       await this.pasteFiles(files); // external image/video/file → new widget
       return;
     }
-    await this.pasteClipboard(); // no OS files → internal element/property paste
+    await this.pasteClipboard(); // nothing anywhere → the empty-clipboard report
+  }
+
+  /**
+   * Query. Given that we DO hold an internal payload, is this paste nevertheless
+   * carrying something FOREIGN that should win instead?
+   *
+   * The hard case: with an internal copy live, a bare `image/png` on the OS
+   * clipboard is genuinely ambiguous — it is either the render our own copy
+   * wrote, or a screenshot the user took afterwards. The two are
+   * indistinguishable by BYTES, because the pasteboard re-encodes (that is the
+   * whole bug). So we resolve it by EVIDENCE, in this order:
+   *
+   *   • Our marker is present → ours. Not foreign.
+   *   • A NON-IMAGE file (a .pdf, .mp4, a copied file from the OS file manager)
+   *     → foreign. Our copy only ever writes an image, so a non-image file
+   *     cannot be ours regardless of what we hold internally.
+   *   • Otherwise → NOT foreign: the element wins.
+   *
+   * That last line is the ruling ("if the app-internal clipboard holds a
+   * pasteable widget payload … run the registry paste"), and it is deliberately
+   * biased toward the element: pasting the widget when the user meant the
+   * screenshot is one Ctrl+Z, whereas the old bias silently flattened a widget
+   * into a bitmap and lost its editability. A user who wants the screenshot
+   * copies it AFTER the widget copy is stale, or pastes into a slide where no
+   * internal copy exists.
+   */
+  #isForeignFilePaste(payload, files, types) {
+    if (!files.length) return false; // nothing foreign on the clipboard at all
+    if (types.includes(POWERRP_CLIPBOARD_MIME)) return false; // our marker: ours
+    // Our copy only ever writes an IMAGE, so any non-image file is foreign no
+    // matter what we hold internally. An image alone is ambiguous, and the
+    // ruling resolves the ambiguity toward the element.
+    return files.some((f) => !f.type.startsWith("image/"));
   }
 
   /** Command (one undo unit). Inserts a tagged clipboard payload
