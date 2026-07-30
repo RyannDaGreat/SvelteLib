@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, parsePaint, isPaintableFrame, rect, text } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, parsePaint, isPaintableFrame, rect, text } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce } from "../core/report.js";
@@ -378,7 +378,11 @@ function emitNode(node, byId, pdfDisplay) {
   // applyStrokeTrim). A node with no trim (every existing document) returns `body`
   // untouched and byte-identical, and it never reaches a foreign group member /
   // crop target (they carry no trim and the stamp does not recurse crop content).
-  const body = applyStrokeTrim(node.state, applyNodeEffects(node, cmds));
+  // THE UNIVERSAL STROKE-ALIGNMENT SEAM, stacked on the same choke point: the
+  // inner/outer knob (strokeOffset) is stamped for every stroked box exactly as
+  // the trim fields are, and is likewise absent-when-centered — so this line adds
+  // nothing to any existing document's ops.
+  const body = applyStrokeOffset(node.state, applyStrokeTrim(node.state, applyNodeEffects(node, cmds)));
   return mirror
     ? [pushTransform(node.world), mirror, ...body, popTransform(), popTransform()]
     : [pushTransform(node.world), ...body, popTransform()];

@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, linearGradientRender, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -1454,6 +1454,41 @@ async function emitCrop(cmd, world, region, out, ctx) {
  */
 export const VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon", "path", "text", "latexVector", "image", "video", "videoV5"]);
 
+/**
+ * Command (returns PDF operators; registers alpha ExtGStates via ctx). THE PDF
+ * twin of paint_skia's drawOffsetOpStroke and svg_backend's offsetStrokeSVG: an
+ * off-center stroke as TWO CLIPPED STROKES, staying fully VECTOR.
+ *
+ * PDF has no stroke-alignment operator either, but it has everything the
+ * construction needs: `W n` sets the clip to the current path, and `W* n` does it
+ * with the EVEN-ODD rule. So the inside half is a double-width stroke clipped by
+ * the shape itself, and the outside half is the same stroke clipped by the
+ * even-odd sandwich of a huge covering rect plus the shape — "everything except
+ * the shape", the identical trick the SVG backend uses. Each half is wrapped in
+ * q/Q so the clip cannot leak into later content.
+ *
+ * @param {object} cmd - the stroked op (reads strokeOffset/strokeWidth/stroke/opacity)
+ * @param {string} pathStr - the shape's own path operators (the clip AND stroke geometry)
+ * @param {object} ctx - the pdf assembly (paintSetup registers alpha states on it)
+ * @returns {string[]} PDF content-stream operators
+ */
+function offsetStrokePdfOps(cmd, pathStr, ctx) {
+  const inside = strokeInsideFraction(cmd.strokeOffset);
+  // Covers any page; the outer loop of the even-odd exterior clip.
+  const COVER = 1e6;
+  const coverRect = `${pdfNum(-COVER)} ${pdfNum(-COVER)} ${pdfNum(2 * COVER)} ${pdfNum(2 * COVER)} re`;
+  const ops = [];
+  for (const [depth, isInside] of [[inside, true], [1 - inside, false]]) {
+    if (depth <= 0) continue; // a fully inner/outer stroke has no ink on the other side
+    ops.push("q");
+    ops.push(isInside ? `${pathStr} W n` : `${coverRect} ${pathStr} W* n`);
+    ops.push(...paintSetup(null, cmd.stroke, 2 * depth * cmd.strokeWidth, cmd.opacity, ctx));
+    ops.push(pathStr, "S");
+    ops.push("Q");
+  }
+  return ops;
+}
+
 /** Command (appends operators, registers resources via ctx). One vector drawable. */
 function emitVector(cmd, world, out, ctx) {
   const ops = [];
@@ -1467,6 +1502,16 @@ function emitVector(cmd, world, out, ctx) {
           ? { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }
           : { x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry };
         ops.push(...gradientShapeOps(pathStr, bounds, cmd, ctx, false));
+        break;
+      }
+      if (opStrokeIsOffset(cmd)) {
+        // OFFSET STROKE: fill once through the ordinary path (stroke nulled so
+        // paintOp emits `f`, not `B`), then rebuild the stroke as two clipped halves.
+        if (cmd.fill) {
+          ops.push(...paintSetup(cmd.fill, null, 0, cmd.opacity, ctx));
+          ops.push(pathStr, paintOp(cmd.fill, null, 0));
+        }
+        ops.push(...offsetStrokePdfOps(cmd, pathStr, ctx));
         break;
       }
       ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
@@ -1502,6 +1547,15 @@ function emitVector(cmd, world, out, ctx) {
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return;
       if (isGradientPaint(cmd.fill) || isGradientPaint(cmd.stroke)) {
         ops.push(...gradientShapeOps(svgPathToPdfOps(cmd.d), svgPathBounds(cmd.d), cmd, ctx, cmd.fillRule === "evenodd"));
+        break;
+      }
+      if (opStrokeIsOffset(cmd)) {
+        const pd = svgPathToPdfOps(cmd.d);
+        if (cmd.fill) {
+          ops.push(...paintSetup(cmd.fill, null, 0, cmd.opacity, ctx));
+          ops.push(pd, cmd.fillRule === "evenodd" ? "f*" : "f");
+        }
+        ops.push(...offsetStrokePdfOps(cmd, pd, ctx));
         break;
       }
       ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
@@ -1917,9 +1971,26 @@ function gradientShapeOps(pathStr, bounds, cmd, ctx, evenOdd) {
   if (cmd.stroke && cmd.strokeWidth > 0) {
     const stroke = isGradientPaint(cmd.stroke) ? gradientStrokeSolid(cmd.stroke) : cmd.stroke;
     const gs = ctx.gsAlphaPair(1, stroke[3] * opacity);
+    const rg = `${pdfNum(stroke[0])} ${pdfNum(stroke[1])} ${pdfNum(stroke[2])} RG`;
+    if (opStrokeIsOffset(cmd)) {
+      // A gradient-FILLED shape reaches this branch instead of emitVector's, so the
+      // alignment knob has to be honoured here too or an offset stroke would be
+      // silently centered on exactly the shapes that have a gradient fill.
+      const inside = strokeInsideFraction(cmd.strokeOffset);
+      const COVER = 1e6;
+      const coverRect = `${pdfNum(-COVER)} ${pdfNum(-COVER)} ${pdfNum(2 * COVER)} ${pdfNum(2 * COVER)} re`;
+      for (const [depth, isInside] of [[inside, true], [1 - inside, false]]) {
+        if (depth <= 0) continue;
+        ops.push("q");
+        if (gs) ops.push(gs);
+        ops.push(isInside ? `${pathStr} W n` : `${coverRect} ${pathStr} W* n`);
+        ops.push(rg, `${pdfNum(2 * depth * cmd.strokeWidth)} w`, pathStr, "S", "Q");
+      }
+      return ops;
+    }
     ops.push("q");
     if (gs) ops.push(gs);
-    ops.push(`${pdfNum(stroke[0])} ${pdfNum(stroke[1])} ${pdfNum(stroke[2])} RG`, `${pdfNum(cmd.strokeWidth)} w`, pathStr, "S", "Q");
+    ops.push(rg, `${pdfNum(cmd.strokeWidth)} w`, pathStr, "S", "Q");
   }
   return ops;
 }

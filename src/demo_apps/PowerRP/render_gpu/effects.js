@@ -101,7 +101,7 @@
  * DOM-free pure JS (bare-node testable, like ir.js and decorate.js).
  */
 
-import { effectSubtree, pushTransform, popTransform, BLUR_SUPPORT_SIGMAS } from "./ir.js";
+import { effectSubtree, pushTransform, popTransform, strokeOutwardReach, BLUR_SUPPORT_SIGMAS } from "./ir.js";
 // THE BOUNDS PROTOCOL, read by effectBoundsOf below so a plugin declares its ink
 // rect ONCE. core/view.js imports effectsCullMargin from this module in return, so
 // the two form an import cycle — safe and intentional: both sides export only
@@ -266,8 +266,22 @@ export function applyEffects(content, state, world, bbox) {
  * ½·erfc(d/(σ√2)) = 0.5/255 ⇒ d ≈ 2.89σ, INSIDE the existing margin. So the
  * halo is right for every opacity and needs no opacity term.
  *
+ * THE STROKE'S OUTWARD REACH IS COUNTED HERE TOO, and it is not an effect —
+ * it is admitted deliberately, because this function is THE shared reach seam
+ * (culling and the copy/export capture rect both come through it) and a
+ * bbox widget's `localBounds` is its bare {0,0,w,h} box, which has never included
+ * stroke ink. A CENTERED stroke reaching w/2 outside that box was already
+ * tolerated as slop; an OUTER stroke reaches the FULL width, which is enough to
+ * cull a visible border at the viewport edge or clip it out of an exported PNG.
+ * Adding the reach here fixes both consumers at once, exactly as the docblock
+ * above instructs ("update the reach function... not the callers"). It stays 0
+ * for an unstroked or fully-inner widget, so nothing existing widens.
+ *
  * @example effectsCullMargin({}) // 0
  * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 0.5}}) // 11 (3·2 blur spill + 5 offset length)
+ * @example effectsCullMargin({stroke: "#000", strokeWidth: 12}) // 0 (a CENTERED stroke keeps the historical margin — unchanged to the bit)
+ * @example effectsCullMargin({stroke: "#000", strokeWidth: 12, strokeOffset: 1}) // 6 (a fully OUTER stroke reaches 6 past what a centered one did)
+ * @example effectsCullMargin({stroke: "#000", strokeWidth: 12, strokeOffset: -1}) // 0 (fully INNER: no ink outside the box at all)
  * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 2, color: "#000", opacity: 3}}) // 11 (an OVERDRIVEN shadow needs no wider halo — see above)
  * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 0, color: "#000", opacity: 0.5}}) // 5 (blur 0 = no spill, but the offset silhouette still reaches 5)
  * @example effectsCullMargin({bloom: {radius: 5, strength: 1}}) // 15 (3·5 bloom spill)
@@ -278,9 +292,18 @@ export function effectsCullMargin(state) {
   // shared ir.js constant), matching effectSubtree's build-time margin exactly.
   const shadowOn = (state.shadow?.opacity ?? 0) > 0; // 14.8: opacity gates; a blur-0 shadow still offsets by (dx,dy)
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
+  // The stroke term is the EXCESS over the centered stroke's w/2, never the whole
+  // reach: w/2 of slop was always tolerated (a bbox widget's localBounds excludes
+  // it), so counting only what an offset adds ON TOP leaves every centered-stroke
+  // widget's margin at exactly its historical value.
+  const strokeOn = state.stroke != null && (state.strokeWidth ?? 0) > 0;
+  const strokeExcess = strokeOn
+    ? Math.max(0, strokeOutwardReach(state.strokeWidth, state.strokeOffset) - state.strokeWidth / 2)
+    : 0;
   return Math.max(
     shadowOn ? state.shadow.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(state.shadow.dx ?? 0, state.shadow.dy ?? 0) : 0,
     bloomOn ? (state.bloom.radius ?? 0) * BLUR_SUPPORT_SIGMAS : 0,
+    strokeExcess,
   );
 }
 

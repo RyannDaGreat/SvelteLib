@@ -716,6 +716,31 @@ export const PROPS = {
   fill: { label: "Fill", kind: "color", paint: true, category: "fillMaterial", help: "The color or gradient that fills the widget's interior. Lower a color's alpha for a translucent fill, pick a linear/radial gradient, or set it fully transparent for outline-only." },
   stroke: { label: "Stroke", kind: "color", paint: true, category: "strokeMaterial", help: "The color or gradient of the outline drawn around the widget's edge. Only visible when stroke width is above zero." },
   strokeWidth: { label: "Stroke width", kind: "number", min: 0, category: "strokeMaterial", default: 0, help: "Thickness of the outline in canvas units. Zero means no outline." },
+  // THE STROKE ALIGNMENT knob (user ruling: "-1 means completely inner, 1 means
+  // completely outer, 0 means the default, which is in the middle... for every
+  // stroke thing"). CONTINUOUS, not a three-way select, so it keyframes and takes
+  // an equation like any other number; bounded [-1,1] so NumericField range-scales
+  // its scrub. NO `default` — absent IS centered (the strokeStart/End
+  // absent-is-legacy precedent): nothing bakes it into a widget's state and every
+  // existing document renders byte-identically.
+  //
+  // THE SEMANTICS, once, here: at offset o the ink covers a·w INSIDE the outline
+  // and (1−a)·w OUTSIDE it, where a = (1−o)/2. So o=0 ⇒ a=1/2 (half in, half out —
+  // exactly Skia's centered stroke), o=−1 ⇒ a=1 (all inside), o=+1 ⇒ a=0 (all
+  // outside). render_gpu/ir.js strokeInsideFraction is that formula, single-sourced.
+  //
+  // CLOSED SHAPES ONLY, and that is not a caveat this row has to apologise for:
+  // "inside" is only defined for a closed outline, and EVERY widget that composes
+  // strokedBox/strokedBorder is one (rect/circle/image/video/svg/latex/mermaid/…).
+  // The open-path widgets — line, arrow, fancy_arrow — emit `polyline`, which has
+  // no stroke/strokeWidth pair at all and never composes these bundles, so the row
+  // cannot reach them and there is no silent half-effect to warn about.
+  // NO explicit `step`, deliberately: it carries no `default`, so defaultStep's
+  // precision fallback already resolves to CONTINUOUS scrubbing. opacity and
+  // particleFade need `step: 0.01` only because their integer default 1 would
+  // otherwise snap them to 0/1 — the tests/default_step_test.js rule, which pins
+  // those two as the ONLY number props that may declare one.
+  strokeOffset: { label: "Stroke offset", kind: "number", min: -1, max: 1, category: "strokeMaterial", help: "Which side of the edge the outline sits on: -1 draws it fully inside the shape, 0 straddles the edge, +1 draws it fully outside." },
   cornerRadius: { label: "Corner radius", kind: "number", min: 0, category: "formatting", default: 0, help: "Rounds the widget's corners by this radius in canvas units. Zero is a sharp square corner; larger values round more." },
 
   // ── formatting: THE STROKE-TRIM framework (manifest E.12-15) ─────────────────
@@ -1267,6 +1292,12 @@ checkListRow("GRADIENT_STOPS_LIST", "stops", GRADIENT_STOPS_LIST);
  *  Inspector row order: the arc-length window, its phase, then the two caps. */
 export const STROKE_TRIM_KEYS = ["strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd"];
 
+/** THE STROKE-ALIGNMENT key, single-sourced for the same reason STROKE_TRIM_KEYS
+ *  is: strokedBorder and strokedBox must not drift on whether a box inherits the
+ *  inner/outer knob. It sits immediately after strokeWidth in Inspector order —
+ *  offset is a modifier OF the width, so the two read as one thought. */
+export const STROKE_OFFSET_KEYS = ["strokeOffset"];
+
 export const BUNDLES = {
   positioning: ["x", "y", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
   // The endpoint-pair positioning every arrow-family widget shares (from/to
@@ -1281,9 +1312,9 @@ export const BUNDLES = {
   // in strokedBox) so EVERY stroked box inherits drawing-on/caps for free; they
   // carry no default (absent-is-legacy), so composing them changes no widget's
   // stored state or rendering until a knob moves.
-  strokedBorder: ["stroke", "strokeWidth", "cornerRadius", ...STROKE_TRIM_KEYS],
+  strokedBorder: ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS],
   // The full filled-and-stroked box: fill + the border slice (trim keys included).
-  strokedBox: ["fill", "stroke", "strokeWidth", "cornerRadius", ...STROKE_TRIM_KEYS],
+  strokedBox: ["fill", "stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS],
   // EDGE-CROP INSETS (manifest "Edge-crop insets"): the four per-edge source
   // trims. Media widgets (image/video) compose this; groups will too (their
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
@@ -1399,7 +1430,7 @@ export function props(...args) {
  *   object[]: resolved rows
  *
  * @example bundle("strokedBorder").map((r) => r.key)
- * ["stroke","strokeWidth","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd"]
+ * ["stroke","strokeWidth","strokeOffset","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd"]
  * @example bundle("positioning").length
  * 8
  */

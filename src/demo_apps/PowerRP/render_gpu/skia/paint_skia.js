@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, strokeInsideFraction, strokeOutwardReach, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
@@ -519,6 +519,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+        else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawRRect(rr, p));
         else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
       }
       break;
@@ -529,6 +530,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+        else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawOval(oval, p));
         else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
       }
       break;
@@ -824,6 +826,7 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true) {
     // optional soft `blur` mask does not apply to a trimmed stroke — a niche
     // combination; the fill above still carries it).
     if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+    else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawWith);
     else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), drawWith);
   }
   if (maskBlur) maskBlur.delete();
@@ -1208,6 +1211,50 @@ function shapeOpLocalPath(CanvasKit, cmd) {
   const path = b.detach();
   b.delete();
   return path;
+}
+
+/**
+ * Command (draws on `canvas`, local space under the CTM). THE STROKE-ALIGNMENT
+ * construction: a stroke whose ink sits off-center (cmd.strokeOffset ≠ 0).
+ *
+ * TWO CLIPPED STROKES, and no path offsetting anywhere. At inside fraction
+ * a = (1−o)/2 the ink must cover a·w inside the outline and (1−a)·w outside it.
+ * A Skia stroke is always CENTERED, so each side is drawn as a centered stroke of
+ * DOUBLE the wanted depth and then clipped to that side — a centered stroke of
+ * width 2aw spans aw either way, so intersecting it with the shape's interior
+ * leaves exactly the aw of inside ink; differencing the same interior out of a
+ * centered stroke of width 2(1−a)w leaves exactly the (1−a)w of outside ink. The
+ * two are disjoint (they meet exactly at the outline) so they composite without a
+ * seam even at partial alpha.
+ *
+ * This is EXACT for every closed shape the op family can express — rounded rect,
+ * ellipse, polygon, arbitrary svg path — because the clip IS the shape's own
+ * geometry rather than an approximation of a parallel curve. It is why the
+ * feature needs no per-shape offsetting code and cannot drift between shapes.
+ *
+ * A degenerate side (a = 0 or a = 1) draws only the surviving half — at o = ±1
+ * that is ONE clipped stroke, not two.
+ *
+ * `bounds` is the op's local bbox (the gradient objectBoundingBox), threaded so an
+ * offset stroke gradient-maps identically to a centered one. `drawShape` strokes
+ * the op's own geometry with a supplied paint (the caller's drawRRect/drawOval/
+ * drawPath closure), so this helper stays shape-agnostic.
+ */
+function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawShape) {
+  const width = cmd.strokeWidth;
+  if (!(width > 0) || !cmd.stroke) return;
+  const inside = strokeInsideFraction(cmd.strokeOffset);
+  const clip = shapeOpLocalPath(CanvasKit, cmd);
+  // Each side: a centered stroke of twice the depth, clipped to its own side of
+  // the outline. Intersect keeps the interior half; Difference keeps the exterior.
+  for (const [depth, clipOp] of [[inside, CanvasKit.ClipOp.Intersect], [1 - inside, CanvasKit.ClipOp.Difference]]) {
+    if (depth <= 0) continue; // a fully inner/outer stroke has no ink on the other side
+    canvas.save();
+    canvas.clipPath(clip, clipOp, aa);
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, 2 * depth * width, opacity, bounds, aa), drawShape);
+    canvas.restore();
+  }
+  clip.delete();
 }
 
 /**
@@ -3214,10 +3261,19 @@ function mermaidVectorLocalBounds(cmd) {
  *
  * @example opLocalBounds(CanvasKit, {op: "rect", x: 0, y: 0, w: 200, h: 150, strokeWidth: 0}, ctx) // {x: 0, y: 0, w: 200, h: 150}
  * @example opLocalBounds(CanvasKit, {op: "rect", x: 0, y: 0, w: 200, h: 150, stroke: [0, 0, 0, 1], strokeWidth: 12}, ctx) // {x: -6, y: -6, w: 212, h: 162} (the centred border reaches 6 outside)
+ * @example opLocalBounds(CanvasKit, {op: "rect", x: 0, y: 0, w: 200, h: 150, stroke: [0, 0, 0, 1], strokeWidth: 12, strokeOffset: 1}, ctx) // {x: -12, y: -12, w: 224, h: 174} (a fully OUTER border reaches the whole 12 outside)
+ * @example opLocalBounds(CanvasKit, {op: "rect", x: 0, y: 0, w: 200, h: 150, stroke: [0, 0, 0, 1], strokeWidth: 12, strokeOffset: -1}, ctx) // {x: 0, y: 0, w: 200, h: 150} (a fully INNER border adds nothing)
  * @example opLocalBounds(CanvasKit, {op: "blurBackdrop", radius: 4}, ctx) // UNBOUNDED_EXTENT (a full-canvas sampler has no geometry)
  */
 function opLocalBounds(CanvasKit, cmd, ctx) {
-  const halfStroke = cmd.stroke && cmd.strokeWidth > 0 ? cmd.strokeWidth / 2 : 0;
+  // THE OUTWARD REACH, not a flat half-width: bounds describe where ink can land
+  // OUTSIDE the geometry, and an offset stroke moves that boundary. A centered
+  // stroke still reaches strokeWidth/2 (the historical value, so every existing
+  // op's bounds are unchanged to the bit); a fully OUTER one reaches the whole
+  // width — and getting that wrong is precisely how an outer-stroked rect gets its
+  // border culled at the viewport edge, since this rect feeds culling, band select
+  // and the copy/export capture rect alike.
+  const halfStroke = cmd.stroke && cmd.strokeWidth > 0 ? strokeOutwardReach(cmd.strokeWidth, cmd.strokeOffset) : 0;
   switch (cmd.op) {
     case "text":
       return textOpLocalBounds(CanvasKit, cmd, ctx.fontCollection);

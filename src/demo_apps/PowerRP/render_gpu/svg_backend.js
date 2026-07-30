@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, linearGradientRender, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -168,6 +168,72 @@ export function paintAttrs(cmd, ctx) {
 }
 
 /**
+ * Command (may register a <defs> gradient, via paintRef). The presentation attrs
+ * for a STROKE-ONLY element at an explicit width — the half-stroke element the
+ * offset construction clips. No fill (the caller drew it once already) and no
+ * `opacity` (it rides on the shape's own element, so folding it in here would
+ * double-apply it).
+ */
+function strokeOnlyAttrs(cmd, width, ctx) {
+  return `fill="none" stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(width)}"` +
+    ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "");
+}
+
+/**
+ * Pure function. An ellipse op's outline as an SVG path `d` (two arcs), so the
+ * offset-stroke clip can reference the SAME geometry the <ellipse> draws —
+ * <clipPath> children may be shapes, but a path keeps ONE clip-building code
+ * path for every shape op.
+ *
+ * @example ellipsePathD({cx: 10, cy: 10, rx: 5, ry: 3}) // "M5 10 A5 3 0 1 0 15 10 A5 3 0 1 0 5 10 Z"
+ */
+export function ellipsePathD({ cx, cy, rx, ry }) {
+  return `M${fmt(cx - rx)} ${fmt(cy)} A${fmt(rx)} ${fmt(ry)} 0 1 0 ${fmt(cx + rx)} ${fmt(cy)} ` +
+    `A${fmt(rx)} ${fmt(ry)} 0 1 0 ${fmt(cx - rx)} ${fmt(cy)} Z`;
+}
+
+/**
+ * Command (registers up to two <clipPath> defs on `ctx`). THE SVG twin of
+ * paint_skia's drawOffsetOpStroke: an off-center stroke (cmd.strokeOffset ≠ 0)
+ * as TWO CLIPPED STROKES, staying fully VECTOR.
+ *
+ * SVG HAS NO STROKE-ALIGNMENT ATTRIBUTE — the SVG 2 `stroke-alignment` property
+ * was dropped and no renderer ships it — so the construction is the only faithful
+ * way to express this, and it is the same one Skia uses: at inside fraction
+ * a = (1−o)/2, draw a centered stroke of width 2aw clipped to the shape's
+ * interior, plus one of width 2(1−a)w clipped to its EXTERIOR. SVG clips are
+ * intersect-only, so the exterior clip is built by the even-odd sandwich instead
+ * of a difference op: a huge covering rect PLUS the shape, under
+ * clip-rule="evenodd", is exactly "everything except the shape".
+ *
+ * `geometryD` is the shape's own outline as a path `d` in LOCAL units (the clip
+ * geometry — the same geometry the visible element draws), and `element(width)`
+ * renders the shape's stroke-only element at a given stroke width.
+ *
+ * @param {object} cmd - the stroked op (reads strokeOffset/strokeWidth/stroke)
+ * @param {string} geometryD - the shape outline as an SVG path `d`, local units
+ * @param {function} element - (strokeWidth: number) => SVG element string
+ * @param {object} ctx - the SvgAssembly (nextId/addDef)
+ * @returns {string} the SVG fragment for the offset stroke (local space)
+ */
+export function offsetStrokeSVG(cmd, geometryD, element, ctx) {
+  const inside = strokeInsideFraction(cmd.strokeOffset);
+  // A single rect big enough to cover any content, for the even-odd exterior clip.
+  // It is the clip's OUTER loop; the shape is the hole punched in it.
+  const COVER = 1e6;
+  const parts = [];
+  for (const [depth, isInside] of [[inside, true], [1 - inside, false]]) {
+    if (depth <= 0) continue; // a fully inner/outer stroke has no ink on the other side
+    const clipId = ctx.nextId(isInside ? "sinclip" : "soutclip");
+    ctx.addDef(isInside
+      ? `<clipPath id="${clipId}"><path d="${geometryD}"/></clipPath>`
+      : `<clipPath id="${clipId}" clip-rule="evenodd"><path d="M${-COVER} ${-COVER} H${COVER} V${COVER} H${-COVER} Z ${geometryD}" clip-rule="evenodd"/></clipPath>`);
+    parts.push(`<g clip-path="url(#${clipId})">${element(2 * depth * cmd.strokeWidth)}</g>`);
+  }
+  return parts.join("");
+}
+
+/**
  * Command (may register a <defs> gradient on `ctx`). A fill/stroke Paint → an SVG
  * paint value: a SOLID returns an rgba() string (byte-identical to the old
  * rgbaToCss path); a GRADIENT registers a <linearGradient>/<radialGradient> def
@@ -265,13 +331,23 @@ export const SVG_VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon",
 export function vectorCommandToSVG(cmd, world, ctx) {
   const g = (inner) => groupWrap(similarityTransform(world), inner);
   switch (cmd.op) {
-    case "rect":
+    case "rect": {
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
-      return g(`<rect x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"` +
-        (cmd.cornerRadius > 0 ? ` rx="${fmt(cmd.cornerRadius)}"` : "") + ` ${paintAttrs(cmd, ctx)}/>`);
-    case "ellipse":
+      const rectEl = (attrs) => `<rect x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"` +
+        (cmd.cornerRadius > 0 ? ` rx="${fmt(cmd.cornerRadius)}"` : "") + ` ${attrs}/>`;
+      if (!opStrokeIsOffset(cmd)) return g(rectEl(paintAttrs(cmd, ctx)));
+      // OFFSET STROKE: the fill draws once as usual, then the stroke is rebuilt as
+      // two clipped strokes over the rect's own outline (offsetStrokeSVG).
+      return g(rectEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
+        offsetStrokeSVG(cmd, roundedRectPathD(cmd), (w) => rectEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
+    }
+    case "ellipse": {
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
-      return g(`<ellipse cx="${fmt(cmd.cx)}" cy="${fmt(cmd.cy)}" rx="${fmt(cmd.rx)}" ry="${fmt(cmd.ry)}" ${paintAttrs(cmd, ctx)}/>`);
+      const ellEl = (attrs) => `<ellipse cx="${fmt(cmd.cx)}" cy="${fmt(cmd.cy)}" rx="${fmt(cmd.rx)}" ry="${fmt(cmd.ry)}" ${attrs}/>`;
+      if (!opStrokeIsOffset(cmd)) return g(ellEl(paintAttrs(cmd, ctx)));
+      return g(ellEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
+        offsetStrokeSVG(cmd, ellipsePathD(cmd), (w) => ellEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
+    }
     case "polyline":
       return g(`<polyline points="${pointsAttr(cmd.points)}" fill="none" ` +
         `stroke="${rgbaToCss(cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="round" stroke-linejoin="round"` +
@@ -290,8 +366,15 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       // syntax → emitted verbatim (xml-escaped). fill/stroke/opacity via the
       // shared paintAttrs; fill-rule only when evenodd (nonzero is SVG's default).
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
-      return g(`<path d="${xmlEscape(cmd.d)}" ${paintAttrs(cmd, ctx)}` +
-        (cmd.fillRule === "evenodd" ? ` fill-rule="evenodd"` : "") + `/>`);
+      {
+        const rule = cmd.fillRule === "evenodd" ? ` fill-rule="evenodd"` : "";
+        const pathEl = (attrs) => `<path d="${xmlEscape(cmd.d)}" ${attrs}${rule}/>`;
+        if (!opStrokeIsOffset(cmd)) return g(pathEl(paintAttrs(cmd, ctx)));
+        // A `path`'s own `d` IS the clip geometry, so the construction generalizes
+        // to any outline the shape library or an svg import produces.
+        return g(pathEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
+          offsetStrokeSVG(cmd, xmlEscape(cmd.d), (w) => pathEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
+      }
     case "text":
       return g(textToSVG(cmd, ctx));
     case "image":

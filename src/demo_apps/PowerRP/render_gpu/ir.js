@@ -697,6 +697,129 @@ function stampStrokeTrim(cmd, trim) {
   return out;
 }
 
+// ── THE STROKE-ALIGNMENT framework (strokeOffset) ────────────────────────────
+// A universal stroke option, declared in core/properties.js and stamped on at the
+// SAME ports seam as the trim fields. `strokeOffset` ∈ [-1, 1] says WHICH SIDE of
+// the edge a stroke's ink sits on; the identity is 0 (centered) and, exactly like
+// the trim fields, the identity is ABSENT — a centered stroke carries no field and
+// takes the untouched legacy draw call (THE o=0 FAST PATH; opStrokeIsOffset is the
+// single predicate every backend branches on).
+
+/** Identity offset — the ink straddles the edge, half in and half out. This is
+ *  what Skia/SVG/PDF all do natively, which is why o=0 needs no machinery. */
+export const STROKE_OFFSET_CENTER = 0;
+
+/**
+ * Pure function. THE stroke-alignment formula, single-sourced: the fraction `a`
+ * of a stroke's width that falls INSIDE the outline at offset `o`, a = (1−o)/2.
+ * The remaining (1−a) falls outside. Every backend builds its clip from this one
+ * number, so skia/PDF/SVG cannot drift on what an offset MEANS.
+ *
+ * Args:
+ *   offset (number): the stroke offset, -1 (fully inner) .. +1 (fully outer)
+ *
+ * Returns:
+ *   number: the inside fraction `a`, 1 (all inside) .. 0 (all outside)
+ *
+ * @example strokeInsideFraction(0) // 0.5  (centered — half in, half out)
+ * @example strokeInsideFraction(-1) // 1    (all ink inside the outline)
+ * @example strokeInsideFraction(1) // 0     (all ink outside the outline)
+ * @example strokeInsideFraction(-0.5) // 0.75
+ */
+export function strokeInsideFraction(offset) {
+  return (1 - (offset ?? STROKE_OFFSET_CENTER)) / 2;
+}
+
+/**
+ * Pure function. Does this op's stroke sit OFF-CENTER, so a backend must build
+ * the two-clipped-strokes construction instead of its plain centered draw? False
+ * for an absent/zero offset — that is the byte-identical legacy path.
+ *
+ * @example opStrokeIsOffset({strokeOffset: -1}) // true
+ * @example opStrokeIsOffset({strokeOffset: 0.5}) // true
+ * @example opStrokeIsOffset({strokeOffset: 0}) // false
+ * @example opStrokeIsOffset({}) // false (absent = centered, byte-identical legacy)
+ */
+export function opStrokeIsOffset(cmd) {
+  return (cmd.strokeOffset ?? STROKE_OFFSET_CENTER) !== STROKE_OFFSET_CENTER;
+}
+
+/**
+ * Pure function. How far a stroke of width `w` at offset `o` reaches OUTSIDE the
+ * outline: (1−a)·w. This is what BOUNDS must grow by — a centered stroke reaches
+ * w/2 (the historical `strokeWidth / 2`), a fully OUTER stroke reaches the whole
+ * w, and a fully INNER one reaches 0 because all its ink is within the geometry.
+ *
+ * Args:
+ *   width (number): the stroke width in local units
+ *   offset (number): the stroke offset, -1 .. +1
+ *
+ * Returns:
+ *   number: the outward reach in local units
+ *
+ * @example strokeOutwardReach(12, 0) // 6   (centered: the legacy half-width)
+ * @example strokeOutwardReach(12, 1) // 12  (fully outer: the whole width is outside)
+ * @example strokeOutwardReach(12, -1) // 0  (fully inner: no ink outside the box)
+ * @example strokeOutwardReach(12, 0.5) // 9
+ */
+export function strokeOutwardReach(width, offset) {
+  return (1 - strokeInsideFraction(offset)) * width;
+}
+
+/**
+ * Near-pure helper (throws on bad input — the normalizeStrokeTrim discipline).
+ * Validates a raw strokeOffset and returns it ONLY when non-identity, so a
+ * centered/absent offset returns {} and the op stays byte-identical.
+ *
+ * @param {string} cmdName - the op name, for error messages
+ * @param {object} src - {strokeOffset?}
+ * @returns {object} {} or {strokeOffset}
+ *
+ * @example normalizeStrokeOffset("rect", {}) // {}
+ * @example normalizeStrokeOffset("rect", {strokeOffset: 0}) // {}
+ * @example normalizeStrokeOffset("rect", {strokeOffset: -1}) // {strokeOffset: -1}
+ */
+export function normalizeStrokeOffset(cmdName, src = {}) {
+  const v = src.strokeOffset;
+  if (v == null) return {};
+  if (typeof v !== "number" || !Number.isFinite(v))
+    throw new Error(`${cmdName}: strokeOffset must be a finite number, got ${JSON.stringify(v)}`);
+  if (v < -1 || v > 1)
+    throw new Error(`${cmdName}: strokeOffset is an alignment in [-1,1] (-1 inner, 0 centered, 1 outer), got ${JSON.stringify(v)}`);
+  return v === STROKE_OFFSET_CENTER ? {} : { strokeOffset: v };
+}
+
+/**
+ * Pure function. Stamps a widget's UNIVERSAL STROKE OFFSET (read from its STATE)
+ * onto the stroked ops it emitted — the exact ports-seam twin of applyStrokeTrim,
+ * sharing its OWNERSHIP RULE (a node's own stroke and its own effect wrapper's
+ * content, never a cropSubtree's foreign content). A widget with no offset — the
+ * overwhelming majority, and EVERY existing document — returns `cmds` UNCHANGED.
+ *
+ * @param {object} state - the widget's evaluated state
+ * @param {object[]} cmds - the node's emitted IR
+ * @returns {object[]} cmds, with strokeOffset stamped onto stroked ops (or unchanged)
+ *
+ * @example applyStrokeOffset({}, [{op: "rect", stroke: [0,0,0,1]}]) // [{op: "rect", stroke: [0,0,0,1]}]
+ * @example applyStrokeOffset({strokeOffset: -1}, [{op: "rect", stroke: [0,0,0,1], strokeWidth: 2}])[0].strokeOffset // -1
+ * @example applyStrokeOffset({strokeOffset: -1}, [{op: "rect", fill: [1,0,0,1]}])[0].strokeOffset // undefined (no stroke to offset)
+ */
+export function applyStrokeOffset(state, cmds) {
+  const off = normalizeStrokeOffset("applyStrokeOffset", state ?? {});
+  if (Object.keys(off).length === 0) return cmds;
+  return cmds.map((cmd) => stampStrokeOffset(cmd, off));
+}
+
+/** Pure helper for applyStrokeOffset: the stampStrokeTrim recursion, same
+ *  ownership rule (own stroke + own effect wrapper, never foreign crop content). */
+function stampStrokeOffset(cmd, off) {
+  let out = cmd;
+  if (cmd.stroke != null) out = { ...out, ...off };
+  if (cmd.op === "effectSubtree" && Array.isArray(cmd.content))
+    out = { ...out, content: cmd.content.map((c) => stampStrokeOffset(c, off)) };
+  return out;
+}
+
 /**
  * Pure function. Wraps a turn count into [0, 1) — the modulus for stroke-phase
  * and closed-contour trim positions (frac for positives, folding negatives in).
@@ -783,6 +906,7 @@ export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null,
     stroke: stroke === null ? null : parsePaint(stroke),
     strokeWidth, opacity,
     ...normalizeStrokeTrim("rect", trim), // stroke-trim fields ride along only when non-identity (absent-is-legacy)
+    ...normalizeStrokeOffset("rect", trim), // ditto the alignment field: absent = centered
   };
 }
 
@@ -799,6 +923,7 @@ export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidt
     stroke: stroke === null ? null : parsePaint(stroke),
     strokeWidth, opacity,
     ...normalizeStrokeTrim("ellipse", trim),
+    ...normalizeStrokeOffset("ellipse", trim),
   };
 }
 
@@ -1281,6 +1406,7 @@ export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule 
     fill: fill === null ? null : parsePaint(fill),
     stroke: stroke === null ? null : parsePaint(stroke),
     ...normalizeStrokeTrim("path", trim),
+    ...normalizeStrokeOffset("path", trim),
     // `blur` (optional): a Gaussian MASK-blur radius in LOCAL units — a general
     // soft-path enhancement any consumer can reuse (the corkboard YARN uses it for
     // its soft cast shadow, a blurred stroke, avoiding a heavier effectSubtree
