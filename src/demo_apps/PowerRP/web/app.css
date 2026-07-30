@@ -3612,6 +3612,20 @@ textarea {
   text-overflow: ellipsis;
 }
 
+/* LIBRARY TOTALS LINE ("12 assets · 187MB"). Deliberately the same type size and
+   muted weight as .ae-quota-text: the two are peer readouts stacked above the grid,
+   and one shouting over the other would imply a hierarchy neither has. It carries no
+   nearly-full variant because a count has no threshold to cross. */
+.asset-explorer .ae-totals {
+  padding: var(--a-sp-2) var(--a-sp-3);
+  border-bottom: var(--a-hairline) solid var(--border);
+  font-size: var(--a-font-sm);
+  opacity: var(--a-quota-text-opacity);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Indeterminate ring: shown only when the browser can't report total bytes. */
 .asset-explorer .ae-upload-spinner {
   width: var(--a-upload-spinner-size);

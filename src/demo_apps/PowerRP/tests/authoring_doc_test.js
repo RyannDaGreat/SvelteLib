@@ -206,7 +206,11 @@ test("the user's custom-widget permission ruling is quoted verbatim", () => {
   // it guessing, and a deletion would make it refuse work it is permitted to do.
   // Checked in fragments so that markdown line-wrapping inside the quote block does
   // not break the assertion, while every load-bearing clause is still required.
-  const flat = GUIDE.replace(/\s+/g, " ");
+  // BLOCKQUOTE MARKERS ARE STRIPPED FIRST: the ruling is quoted as a markdown `>`
+  // block, so every wrapped line carries a "> " that lands mid-phrase once newlines
+  // collapse. Without this the test would demand the quote be written as one
+  // unwrapped line, which is a formatting rule masquerading as a content check.
+  const flat = GUIDE.replace(/^\s*>\s?/gm, "").replace(/\s+/g, " ");
   for (const fragment of [
     "it's allowed to create custom widgets if the current widgets are not sufficient",
     "It should try to use current widgets, but if it's cleaner to make its own, it is welcome to do so",

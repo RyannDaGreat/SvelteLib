@@ -247,11 +247,12 @@ test("manual range: it clips, it ANNOUNCES what it dropped, and it refuses inver
   assert.match(texts(disjoint).join(" "), /no sample falls in the range 10 … 20/);
 });
 
-test("reveal: 0 draws flat bars, 1 draws full ones, and the BASE stays put", () => {
+test("reveal: 0 emits nothing, 1 draws full bars, and the BASE stays put", () => {
   const base = { ...PLAIN, values: "1 1 2", binCount: 2 };
-  const none = bars(emit({ ...base, reveal: 0 }));
-  assert.deepEqual(none.map((r) => r.h), [0, 0]);
-  assert.deepEqual(none.map((r) => r.y), [100, 100], "a hidden bar sits ON the baseline");
+  // reveal 0 makes every bar zero-height, and a zero-height bar emits no ink —
+  // so a fully-unrevealed histogram is an EMPTY display list, not a row of
+  // baseline slivers.
+  assert.deepEqual(bars(emit({ ...base, reveal: 0 })), []);
   const half = bars(emit({ ...base, reveal: 0.5 }));
   assert.deepEqual(half.map((r) => r.h), [50, 25]);
   const full = bars(emit({ ...base, reveal: 1 }));
@@ -273,6 +274,32 @@ test("edge labels THIN OUT when there are more bins than fit, keeping first and 
   assert.ok(labels.length < 41 / 2, `expected thinned labels, got ${labels.length}`);
   assert.equal(labels[0], "0");
   assert.equal(labels[labels.length - 1], "40");
+});
+
+test("edge labels never COLLIDE: every drawn label clears its neighbour", () => {
+  // The right-hand end is where thinning and the always-drawn final upper edge
+  // crowd together, and a budget guessed from an average character count put
+  // "21.43 22.21 23" on top of each other in a CLI still. So: sweep the bin
+  // counts a real chart uses and assert the labels are actually disjoint, using
+  // the same glyph estimate the widget lays them out with.
+  const GLYPH = 0.55;
+  for (const binCount of [3, 7, 9, 14, 20, 33]) {
+    for (const w of [300, 560, 900]) {
+      const ops = emit({ ...PLAIN, w, showEdges: true, binMode: "count", binCount, values: "12 14 16 18 20 23" });
+      const labels = ops.filter((o) => o.op === "text");
+      const size = histogram.defaults.labelSize;
+      for (let i = 1; i < labels.length; i++) {
+        const prevEnd = labels[i - 1].x + labels[i - 1].text.length * size * GLYPH;
+        assert.ok(
+          labels[i].x >= prevEnd,
+          `at ${binCount} bins in ${w} units, "${labels[i - 1].text}" overlaps "${labels[i].text}" (${prevEnd.toFixed(1)} > ${labels[i].x.toFixed(1)})`,
+        );
+      }
+      // The range's two ends are always stated, whatever the thinning did.
+      assert.equal(labels[0].text, "12");
+      assert.equal(labels[labels.length - 1].text, "23");
+    }
+  }
 });
 
 test("non-round bin edges are formatted to significant figures, not raw floats", () => {

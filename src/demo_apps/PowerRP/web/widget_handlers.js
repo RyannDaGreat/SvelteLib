@@ -339,9 +339,47 @@ function placeByBBox(ctx) {
     app.addItem({ ...plugin.defaults, x: r.x, y: r.y, w: r.w, h: r.h });
     return;
   }
+  app.addItem(anchoredDefaults(plugin, gesture.startWorld));
+}
+
+/**
+ * Pure function. A plugin's defaults positioned so its PLACEMENT ANCHOR lands on
+ * `at` — the item state a point-placement should add.
+ *
+ * SPLIT OUT OF placeByBBox because a click is no longer the only way to place a
+ * widget at a point: DROPPING a `*.plugin.js` asset from the Asset Explorer onto
+ * the canvas does the same thing, and the user's ruling for it is explicit — "If I
+ * drag and drop a widget plugin onto the canvas, it should add the widget… from the
+ * asset library". A drop has a point but no gesture, so it cannot call placeByBBox;
+ * duplicating these two lines to serve it is exactly how a click-placed cursor and
+ * a drop-placed cursor end up landing in different spots.
+ *
+ * THE ANCHOR IS THE WIDGET'S BUSINESS, DEFAULTING TO THE CENTRE. Most widgets want
+ * their box centred on the point; a widget whose meaningful point is elsewhere
+ * declares `placementAnchor` (plugins/demo/cursor.js returns its TIP, so a
+ * click- or drop-placed cursor points AT where you pointed rather than hanging
+ * half a box away from it).
+ *
+ * @param {object} plugin - a registered plugin (reads `defaults` + optional `placementAnchor`)
+ * @param {{x: number, y: number}} at - the world point the anchor should land on
+ * @returns {object} the item state to add
+ *
+ * @example
+ * // A 100×50 widget with no placementAnchor centres on the point:
+ * // anchoredDefaults({defaults: {type: "rect", w: 100, h: 50}}, {x: 200, y: 300})
+ * // => {type: "rect", w: 100, h: 50, x: 150, y: 275}
+ * @example
+ * // A widget declaring its own anchor puts THAT on the point (a cursor's tip):
+ * // anchoredDefaults({defaults: {type: "cursor", w: 40, h: 40}, placementAnchor: () => ({x: 6, y: 2})}, {x: 100, y: 100})
+ * // => {type: "cursor", w: 40, h: 40, x: 94, y: 98}
+ * @example
+ * // A widget with no w/h anchors at (0,0), landing its origin on the point:
+ * // anchoredDefaults({defaults: {type: "line"}}, {x: 5, y: 7}).x // 5
+ */
+export function anchoredDefaults(plugin, at) {
   const w = plugin.defaults.w ?? 0, h = plugin.defaults.h ?? 0;
   const pa = plugin.placementAnchor ? plugin.placementAnchor(plugin.defaults) : { x: w / 2, y: h / 2 };
-  app.addItem({ ...plugin.defaults, x: gesture.startWorld.x - pa.x, y: gesture.startWorld.y - pa.y });
+  return { ...plugin.defaults, x: at.x - pa.x, y: at.y - pa.y };
 }
 
 const CREATE_HANDLERS = [

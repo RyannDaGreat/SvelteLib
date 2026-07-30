@@ -1793,12 +1793,41 @@
   <!-- Only renders when there is NO backend: says so, names the server-only
        features that are unavailable, and offers persistent storage. -->
   <StaticModeNotice {app} />
+  <!-- ONE pane body for both columns: which PANEL a pane index maps to is read
+       from the VISIBLE subset (`visiblePanels(column)[row]`), never from a literal
+       row number. Indexing by position was the bug this replaced — with one panel
+       hidden, `row === 2` rendered whichever panel used to be third.
+
+       The `{#if panel}` guard is not defensive noise: SplitPane derives paneCount
+       from `splits.length + 1`, and for ONE flush after a visibility flip the child
+       can still be rendering the old count against the new (shorter) panel list.
+       Rendering nothing for that one frame is correct; a MISSING panel that is not
+       merely transient would be a real bug, so it is reported rather than
+       swallowed. -->
+  {#snippet panelPane(column, row)}
+    {@const panel = visiblePanels(column)[row]}
+    {#if panel}
+      <Panel {app} name={panelName(panel)}>
+        {#if panel.id === "slides"}
+          <SlideNav {app} />
+        {:else if panel.id === "assets"}
+          <AssetExplorer {app} />
+        {:else if panel.id === "properties"}
+          <Inspector {app} />
+        {:else if panel.id === "tools"}
+          <ToolsPane {app} />
+        {:else if panel.id === "globalVariables"}
+          <VariablesPanel {app} />
+        {:else}
+          <KeyframePanel {app} />
+        {/if}
+      </Panel>
+    {/if}
+  {/snippet}
   <div class="main">
     <!-- The outer row and both columns are driven by the VISIBLE subset, never by
          a fixed pane index: `visibleColumns()[col]` and `visiblePanels(…)[row]`
-         are what make a hidden panel contribute no pane AND no divider. Indexing
-         by position would be the bug this replaced — with one panel hidden, slot 2
-         would render the panel that used to be third. -->
+         are what make a hidden panel contribute no pane AND no divider. -->
     <SplitPane orientation="horizontal" bind:splits={hSplits} onchange={commitRowDrag}>
       {#snippet children(col)}
         <!-- Panels OPTIONALLY show their canonical name (manifest glossary) as

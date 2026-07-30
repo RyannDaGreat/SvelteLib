@@ -28,6 +28,51 @@
 <script module>
   import { humanReadableFileSize } from "./fileSize.js";
   import { relativeMtime } from "./projectPreviews.js";
+  import { rpFuzzyScore } from "../core/fuzzy.js";
+
+  /**
+   * Pure function. The assets matching a fuzzy query, best match FIRST — the same
+   * ranking the COMMAND PALETTE uses, because it is the same function
+   * (core/fuzzy.js rpFuzzyScore, rp's completion ranker). Reused rather than
+   * reimplemented on purpose: a second scorer would mean typing "vid" ranks
+   * differently in two places in one app, and the user learns one of them wrong.
+   *
+   * The query is matched against the asset's PATH — the served
+   * "/asset/<Project>/<file>" string, not just the basename — per the user ruling
+   * ("just fuzzy search by path. That's all."). That matters even in a flat
+   * library: the path is what a widget's `src` holds and what the copy-path button
+   * copies, so searching for the string you pasted somewhere finds it.
+   *
+   * An EMPTY query returns the list UNCHANGED — same array order, so opening the
+   * search box does not reshuffle the grid before a single character is typed.
+   * A query matching nothing returns [] (the caller shows a no-matches notice, not
+   * a silently empty pane).
+   *
+   * @param {Array<{name: string, url: string}>} assets - a listAssets listing
+   * @param {string} query - the raw filter text
+   * @returns {Array<object>} matching assets, best-scoring first
+   *
+   * @example
+   * // Fuzzy, not substring: "cmp4" finds "clip.mp4" through the gaps.
+   * // filterAssets([{name: "clip.mp4", url: "/asset/D/clip.mp4"}, {name: "logo.png", url: "/asset/D/logo.png"}], "cmp4")
+   * //   => [{name: "clip.mp4", …}]
+   * @example
+   * // An empty query is not a filter — the listing passes through untouched.
+   * // filterAssets([{name: "b.png", url: "/asset/D/b.png"}, {name: "a.png", url: "/asset/D/a.png"}], "  ")
+   * //   => the same two, still b then a
+   * @example
+   * // filterAssets([{name: "logo.png", url: "/asset/D/logo.png"}], "zzz") // => []
+   */
+  export function filterAssets(assets, query) {
+    const list = assets ?? [];
+    const q = String(query ?? "").trim();
+    if (q === "") return list;
+    return list
+      .map((a) => ({ a, score: rpFuzzyScore(q, a.url ?? a.name) }))
+      .filter((r) => r.score !== null)
+      .sort((x, y) => x.score - y.score) // LOWER is better (core/fuzzy.js's convention)
+      .map((r) => r.a);
+  }
 
   /**
    * Pure function. Integer percent of a pending upload (0–100), or null when the
@@ -77,6 +122,13 @@
    * A missing size or mtime DROPS its clause rather than printing a placeholder —
    * the projectMetaLine convention (web/projectPreviews.js).
    *
+   * THE DOUBLE-CLICK CLAUSE IS PER KIND, because the gesture now does three
+   * different things (onTileDoubleClick): a PLUGIN asset opens the JavaScript
+   * editor, a DATA asset opens a table, everything else plays/shows its media. One
+   * flat "double-click to preview" was true of all assets until those two kinds
+   * existed and is now a lie about both — and the code editor in particular is the
+   * kind of outcome a user should not discover by accident.
+   *
    * @param {{name:string, kind:string, size?:number, mtime?:number}} a - one listAssets entry
    * @param {number} nowMs - current time in MILLISECONDS, for the relative age
    * @returns {string}
@@ -89,12 +141,39 @@
    * // A listing with no metadata still names the gestures:
    * // assetTip({name:"x.png", kind:"image"}, 0)
    * // => 'x.png — image — drag onto the canvas to insert at a point, or double-click to preview'
+   * @example
+   * // A PLUGIN asset's double-click EDITS ITS SOURCE, and the tip says so:
+   * // assetTip({name:"gear.plugin.js", kind:"plugin"}, 0)
+   * // => 'gear.plugin.js — plugin — drag onto the canvas to insert at a point, or double-click to edit its JavaScript'
+   * @example
+   * // A DATA asset's double-click opens a TABLE:
+   * // assetTip({name:"sales.csv", kind:"data"}, 0)
+   * // => 'sales.csv — data — drag onto the canvas to insert at a point, or double-click to view the table'
    */
   export function assetTip(a, nowMs) {
     const facts = [a.kind];
     if (a.size != null) facts.push(humanReadableFileSize(a.size));
     if (a.mtime != null) facts.push(relativeMtime(a.mtime, nowMs));
-    return `${a.name} — ${facts.join(" · ")} — drag onto the canvas to insert at a point, or double-click to preview`;
+    return `${a.name} — ${facts.join(" · ")} — drag onto the canvas to insert at a point, or ${doubleClickClause(a.kind)}`;
+  }
+
+  /**
+   * Pure function. What a double-click on a tile of `kind` DOES, as the tail of
+   * assetTip's sentence. Its own function so the three outcomes are one greppable
+   * table rather than a conditional buried in a template string.
+   *
+   * @param {string} kind - an asset kind (server.py asset_kind / assetKindForName)
+   * @returns {string}
+   *
+   * @example doubleClickClause("plugin") // "double-click to edit its JavaScript"
+   * @example doubleClickClause("data")   // "double-click to view the table"
+   * @example doubleClickClause("video")  // "double-click to preview"
+   * @example doubleClickClause("other")  // "double-click to preview"
+   */
+  export function doubleClickClause(kind) {
+    if (kind === "plugin") return "double-click to edit its JavaScript";
+    if (kind === "data") return "double-click to view the table";
+    return "double-click to preview";
   }
 
   /**
@@ -174,9 +253,12 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import Modal from "../../../lib/Modal.svelte";
   import AssetThumb from "./AssetThumb.svelte";
+  import CsvTable from "./CsvTable.svelte"; // the DATA asset's branch of the preview Modal
   import { KIND_ICON } from "./assetThumbnail.js";
   import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js";
   import { quotaLine, quotaPercent } from "./assetStore.js";
+  import { libraryTotalsLine } from "./assetRef.js";
+  import { builtinWidgetAssets } from "./builtinAssets.js";
   import { assetStore } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
   import { copyText } from "./clipboard.js";
 
@@ -204,6 +286,32 @@
   let confirmDelete = $state(null);
   let confirmOpen = $state(false);
   let fileInput; // hidden <input type=file> for the Upload button
+
+  // ── BUILT-IN ASSETS (user ruling: "maybe the asset explorer could have a toggle
+  // for built-in assets. By default it's turned off") ──────────────────────────
+  //
+  // `listedAssets` is THE list every consumer below reads — the grid, the empty
+  // state, and the totals line — so the toggle cannot be honoured by one and missed
+  // by another. That single-source shape is the point: an earlier version of this
+  // pane derived the count separately from the grid, which is exactly how a totals
+  // line ends up disagreeing with the tiles above it.
+  //
+  // Built-ins go AFTER the project's own assets, never interleaved: the pane answers
+  // "what is in MY project" first, and a shipped widget appearing between two of the
+  // user's uploads would make the library feel like project content the user could
+  // delete (it cannot be — see the tile's guard in onTrashClick).
+  //
+  // The toggle is a VIEW filter and nothing more. Every built-in widget is registered
+  // at boot in every mode regardless, so a deck using one renders identically with
+  // the toggle off — hiding them hides ROWS, never capability.
+  let builtinAssets = $derived(app.showBuiltinAssets ? builtinWidgetAssets() : []);
+  let listedAssets = $derived(assets === null ? null : [...assets, ...builtinAssets]);
+
+  // The LIBRARY TOTALS line — "12 assets · 187MB". Formatted through
+  // web/fileSize.js (via libraryTotalsLine's injected formatter), never raw bytes.
+  // It totals `listedAssets`, i.e. exactly what is on screen, which is what makes
+  // built-ins excluded while the toggle is off and included while it is on.
+  let totalsText = $derived(libraryTotalsLine(listedAssets, humanReadableFileSize));
 
   // ── STORAGE BUDGET (user ruling: "if there is a certain amount of storage per
   // user, per browser, it should say that amount of storage so they know how
@@ -243,6 +351,28 @@
         : "Storage is BEST-EFFORT: the browser may evict it under storage pressure. Export a .zip for a durable copy.",
     );
     parts.push("The figure is an estimate covering everything this site stores, and browsers round it deliberately.");
+    return parts.join(" ");
+  }
+
+  /** Query. The built-in toggle's hover sentence. It states the CURRENT state and
+   *  what clicking does, because the button's only visual cue is a tint — and it
+   *  names the one thing a user could otherwise get wrong: hiding built-ins is a
+   *  list filter, not an uninstall, so a deck using one keeps working. */
+  function builtinToggleTip() {
+    return app.showBuiltinAssets
+      ? `Built-in assets are SHOWN (${builtinAssets.length} in the widget library). Click to hide them and list only this project's own assets. Hiding is a view filter — built-in widgets stay available either way.`
+      : "Built-in assets are HIDDEN. Click to also list the widget library that ships with the app — tier-1 vector widgets you can drag onto the canvas.";
+  }
+
+  /** Query. The totals line's detail sentence: what the count covers, and — when
+   *  built-ins are being counted — that part of it is bundled with the app rather
+   *  than stored in the project, since otherwise the figure looks like it contradicts
+   *  the storage line right above it. */
+  function totalsDetail() {
+    const parts = [`This library lists ${totalsText}.`];
+    if (builtinAssets.length)
+      parts.push(`${builtinAssets.length} of those are BUILT-IN widgets that ship inside the app — they travel with every project and cost you no storage.`);
+    parts.push("Sizes are the assets' own bytes; a built-in widget's size is the length of its source.");
     return parts.join(" ");
   }
 
@@ -465,6 +595,112 @@
     confirmOpen = false;
     doDelete(confirmDelete.asset);
   }
+
+  // ── FUZZY PATH SEARCH (user ruling: "a search button in there, which when
+  // clicked will toggle a filter area that lets me fuzzy search… just fuzzy search
+  // by path. That's all.") ────────────────────────────────────────────────────
+  // NOT PERSISTED, deliberately. A filter is a MOMENT, not a preference: coming
+  // back to a project tomorrow and finding two of its twelve assets — because of a
+  // query typed once — would look like data loss, and this pane's whole job is to
+  // tell the truth about what the project contains. So the state is component-local
+  // and dies with the pane, unlike the built-ins toggle beside it (which IS a
+  // preference and IS persisted).
+  //
+  // Filtering is core/fuzzy.js's rpFuzzyScore through filterAssets above — the SAME
+  // ranking the command palette uses.
+  let searchOpen = $state(false);
+  let searchQuery = $state("");
+  let searchInput; // the <input>, focused on open (a toggled search box that needs a click is a two-gesture search)
+
+  /** The listing the grid actually renders: `listedAssets` (project assets plus,
+   *  when its toggle is on, the built-in library) when the box is closed or empty,
+   *  else the fuzzy matches of that, best-first.
+   *
+   *  COMPOSED ON listedAssets, NOT ON `assets`: the two view filters in this
+   *  header — built-ins and search — must STACK, or turning both on would show a
+   *  filtered project list beside an unfiltered built-in library, and the totals
+   *  line would agree with neither. One chain, one truth.
+   *
+   *  Derived, so typing re-ranks without a re-list (no network call per keystroke). */
+  let shownAssets = $derived(
+    searchOpen ? filterAssets(listedAssets, searchQuery) : (listedAssets ?? []),
+  );
+  /** True when a query is active and matched NOTHING — the pane says so rather than
+   *  showing an empty grid, which is indistinguishable from an empty project. */
+  let noMatches = $derived(searchOpen && searchQuery.trim() !== "" && shownAssets.length === 0);
+
+  /** Command. Toggles the filter area. Opening focuses the input; CLOSING clears
+   *  the query, because a hidden filter still filtering is the worst of the three
+   *  states this button can be in — the grid would be short for a reason with no
+   *  visible cause. */
+  function toggleSearch() {
+    searchOpen = !searchOpen;
+    if (!searchOpen) return (searchQuery = "");
+    // The input does not exist until this render commits; focus after it does.
+    requestAnimationFrame(() => searchInput?.focus());
+  }
+
+  /** Command. Escape inside the box CLEARS AND CLOSES (the user ruling), and the
+   *  key is CONSUMED so it does not also reach the app's global Escape (which
+   *  clears the canvas selection — dismissing a filter must not deselect a widget).
+   *  Enter is consumed for the same reason: this is a filter, not a form. */
+  function onSearchKeydown(e) {
+    if (e.key !== "Escape" && e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Escape") toggleSearch();
+  }
+
+  // ── DATA (CSV/TSV) PREVIEW: read the text for the preview Modal's table ──────
+  // Through the asset STORE seam (store.get → Blob → .text()), NOT fetch(): that is
+  // what makes the table work identically against the Python backend and against
+  // IndexedDB in static mode, where there is no origin to fetch from. Same seam
+  // pluginAssetLoader.js reads plugin sources through, for the same reason.
+  let previewText = $state(null);  // the loaded text, or null while loading/none
+  let previewTextError = $state(null);
+
+  /** Command. Loads a data asset's text for the preview table. A failure is shown
+   *  IN THE DIALOG (previewTextError) rather than leaving an empty table that a
+   *  reader would take for an empty file. */
+  async function loadPreviewText(a) {
+    previewText = null;
+    previewTextError = null;
+    try {
+      const blob = await assetStore().get(app.projectName(), a.name);
+      previewText = await blob.text();
+    } catch (e) {
+      previewTextError = String(e?.message ?? e);
+      console.error(`AssetExplorer: could not read "${a.name}" for the table preview:`, e);
+    }
+  }
+
+  // ── DOUBLE-CLICK A PLUGIN ASSET → EDIT ITS JAVASCRIPT (user ruling: "If I
+  // double click a plugin, it should let me edit the JavaScript inside of it") ──
+  // A *.plugin.js tile's double-click opens the Monaco modal instead of the media
+  // preview, because there is no media to preview — the file IS source. The app
+  // owns the whole lifecycle (app.svelte.js's "asset" code-modal scope: read the
+  // bytes, validate on save, write back through the store, re-register the widget);
+  // this pane only routes the gesture and surfaces a read failure in its own error
+  // line, where every other asset failure in this pane already appears.
+
+  /** Command. The tile's double-click: a plugin asset opens the CODE editor, a
+   *  data asset opens the TABLE, everything else opens the media preview. ONE
+   *  gesture, dispatched on kind — the alternative (a second affordance per kind)
+   *  is how a tile ends up with four buttons the user must choose between. */
+  async function onTileDoubleClick(a) {
+    if (a.kind === "plugin") {
+      error = null;
+      try {
+        await app.openPluginAssetCode(a.name);
+      } catch (e) {
+        error = String(e?.message ?? e);
+        console.error(`AssetExplorer: could not open "${a.name}" for editing:`, e);
+      }
+      return;
+    }
+    openPreview(a);
+    if (a.kind === "data") await loadPreviewText(a);
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -486,9 +722,69 @@
         <iconify-icon icon="mdi:upload" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
+    <!-- SHOW BUILT-IN ASSETS — default OFF, persisted per browser (user ruling).
+         A pressed-state toggle button, not a checkbox, to match the other icon
+         toggles in this app's chrome; aria-pressed carries the state for a screen
+         reader since the only visual cue is the button's active tint. Immediate
+         Tooltip, per the house rule against native title=. -->
+    <Tooltip text={builtinToggleTip()}>
+      <button
+        class="btn-icon"
+        class:active={app.showBuiltinAssets}
+        aria-label="Show built-in assets"
+        aria-pressed={app.showBuiltinAssets}
+        onclick={() => app.toggleShowBuiltinAssets()}
+      >
+        <iconify-icon icon="mdi:shape-plus-outline" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
+    <!-- SEARCH — toggles the filter area below this row (user ruling). Same
+         pressed-state icon-button chrome as the built-ins toggle beside it, so the
+         two toggles in this one header row read as one family; aria-pressed carries
+         the state, and the aria-expanded/aria-controls pair says WHAT it toggles
+         (the filter area is a sibling, not a child, so a reader needs the link). -->
+    <Tooltip text="Search this project's assets by path (fuzzy — the command palette's matcher). Escape clears and closes.">
+      <button
+        class="btn-icon"
+        class:active={searchOpen}
+        aria-label="Search assets"
+        aria-pressed={searchOpen}
+        aria-expanded={searchOpen}
+        aria-controls="ae-search-area"
+        onclick={toggleSearch}
+      >
+        <iconify-icon icon="mdi:magnify" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
     <!-- Hidden file input drives the Upload button. -->
     <input class="ae-file" type="file" multiple bind:this={fileInput} onchange={onFileChosen} />
   </div>
+
+  <!-- THE FILTER AREA — present only while the search toggle is on, so the pane
+       costs no vertical space in the (overwhelmingly common) unfiltered case. One
+       input and a clear (×); no options, no scope selector, no kind facets: the
+       ruling was "just fuzzy search by path. That's all." -->
+  {#if searchOpen}
+    <div class="ae-search" id="ae-search-area">
+      <iconify-icon class="ae-search-glyph" icon="mdi:magnify" width="14" height="14" aria-hidden="true"></iconify-icon>
+      <input
+        class="ae-search-input"
+        type="text"
+        placeholder="Fuzzy filter by path…"
+        aria-label="Filter assets by path"
+        bind:this={searchInput}
+        bind:value={searchQuery}
+        onkeydown={onSearchKeydown}
+      />
+      {#if searchQuery}
+        <Tooltip text="Clear the filter (Escape also closes the search box)">
+          <button class="btn-icon ae-search-clear" aria-label="Clear asset filter" onclick={() => (searchQuery = "")}>
+            <iconify-icon icon="mdi:close" width="14" height="14"></iconify-icon>
+          </button>
+        </Tooltip>
+      {/if}
+    </div>
+  {/if}
 
   <!-- STORAGE BUDGET LINE — always visible in browser-local (static) mode, and
        ABSENT in server mode, where there is no per-browser quota to be near
@@ -505,6 +801,17 @@
       <div class="ae-quota" class:ae-quota-nearly-full={quotaNearlyFull} aria-label={`Storage: ${quotaText}`}>
         <div class="ae-quota-text">{quotaText}</div>
       </div>
+    </Tooltip>
+  {/if}
+
+  <!-- LIBRARY TOTALS LINE — "12 assets · 187MB". Renders in BOTH storage modes,
+       unlike the quota line above it: this counts what is IN THE PROJECT, which is
+       equally knowable from a server listing and from IndexedDB, whereas a
+       per-origin browser budget only exists in local mode. Sizes are formatted
+       through web/fileSize.js (rp-faithful), never printed as raw bytes. -->
+  {#if totalsText}
+    <Tooltip text={totalsDetail()}>
+      <div class="ae-totals" aria-label={`Library: ${totalsText}`}>{totalsText}</div>
     </Tooltip>
   {/if}
 
@@ -569,18 +876,28 @@
       <!-- Transient: the mount/project-switch effect's refresh() hasn't resolved
            yet (assets load automatically — see the $effect above). -->
       <div class="ae-notice">Loading assets for “{app.projectName()}”…</div>
-    {:else if assets.length === 0}
+    {:else if listedAssets.length === 0}
       <div class="ae-notice">
         No assets yet — Upload, or drop a file onto this pane.
       </div>
     {:else}
+      <!-- An EMPTY project with built-ins SHOWN still renders the grid: the
+           condition above is on listedAssets, not on `assets`, so turning the
+           toggle on in a fresh project shows the library instead of the
+           "No assets yet" notice contradicted by tiles beneath it. -->
       {@render assetGrid()}
     {/if}
   </div>
 
   {#snippet assetGrid()}
       <div class="ae-grid">
-        {#each assets as a (a.name)}
+        <!-- listedAssets, and KEYED ON `url`, NOT `name`. Both matter now that
+             built-ins can share the grid: `url` is unique by construction
+             (a project ref is "/asset/<project>/<file>", a built-in is
+             "builtin:library/<file>" — see builtinAssets.BUILTIN_URL_PREFIX),
+             whereas a project asset named donut.plugin.js would collide with the
+             built-in of that name and Svelte would refuse the duplicate key. -->
+        {#each listedAssets as a (a.url)}
           <div class="ae-cell">
             <!-- The tip names BOTH of the tile's gestures. Double-click-to-preview
                  is deliberately NOT a shortcut-registry entry (that bar announces

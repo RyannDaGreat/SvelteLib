@@ -445,6 +445,9 @@ export class PowerRPApp {
   // localStorage-or-default value) and a toggle*() using .persist. See the
   // SETTINGS repo above.
   minimapVisible = $state(SETTINGS.minimap.initial);
+  // Whether the Asset Explorer lists the BUILT-IN asset library alongside the
+  // project's own assets. Default OFF (user ruling) — see the SETTINGS entry.
+  showBuiltinAssets = $state(SETTINGS.showBuiltinAssets.initial);
   // Optionally show each panel's canonical name (Slide Navigator / Property
   // Panel / Keyframe Panel) as a title bar. OFF by default (panels are not
   // first-class — manifest Round 7).
