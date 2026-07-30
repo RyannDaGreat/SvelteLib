@@ -227,6 +227,40 @@
      (it is a preview, not the message) but still clearly readable. */
   --a-warning-teaser-opacity: 0.7;
   --a-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* equations read as code */
+  /* ── THE EQUATION-FIELD TEXT METRICS (ONE source for BOTH layers) ─────────
+     The equation editor is two stacked layers — a transparent-text <input> that
+     owns the real caret/selection, and a colorized .eq-highlight div painted
+     behind it. They are aligned BY CONSTRUCTION only if every property that can
+     move a glyph's x-position is IDENTICAL in both, so all of them live here and
+     both layers consume these tokens rather than restating literals.
+
+     THE BUG THIS EXISTS TO PREVENT, measured: `.eq-input` declared
+     `font-size: var(--a-font-sm)` at specificity 0,2,0 while the generic panel
+     rule `.inspector input[type="text"]` (0,2,1) declared `var(--a-font-md)` and
+     WON. The input rendered at 13.6px, the overlay at 11.52px — a 1.18x scale
+     divergence that accumulated ~1.25px PER CHARACTER, reaching 55px by index 44
+     of a 44-char expression. Clicking the 30th glyph put the caret at index 21.
+     A single token, read by both layers at a specificity that beats the generic
+     rule, makes that class of drift unrepresentable.
+
+     --a-eq-kerning / --a-eq-ligatures are `none` on BOTH layers deliberately:
+     the overlay splits the run into per-token <span>s, and a span boundary
+     DEFEATS kerning pairs and ligatures. The input has no such boundaries, so
+     leaving either enabled would make the two layers rasterize the same string
+     to different widths. Disabling both makes every glyph advance independent of
+     its neighbours, which is the only way a segmented run and an unsegmented one
+     can measure identically. Monospace makes this visually free. */
+  --a-eq-font: var(--a-mono);
+  --a-eq-font-size: var(--a-font-sm); /* mono runs wide; small keeps expressions readable in the box */
+  --a-eq-font-weight: 400;
+  --a-eq-letter-spacing: 0;
+  --a-eq-word-spacing: 0;
+  --a-eq-kerning: none;
+  --a-eq-ligatures: none;
+  --a-eq-text-rendering: geometricPrecision; /* advance widths independent of hinting/optimization */
+  --a-eq-tab-size: 4;
+  --a-eq-pad-x: var(--a-sp-2); /* horizontal text inset — the SAME on both layers */
+  --a-eq-border-w: 1px; /* the input's visible border; the overlay mirrors it transparently */
   /* ── EQUATION SYNTAX-HIGHLIGHT PALETTE (Opus25, round-3 field) ──
      One token per highlight class from equationTokenSpans (core/expressions.js).
      CHAINED to existing theme tokens (never fresh colors — the palette then
@@ -4748,8 +4782,10 @@ audio.ae-preview-media {
    fill lives on the overlay (not the input) because an opaque input background
    would OCCLUDE the overlay it sits above — so the overlay owns control-bg, the
    input owns only the border + caret + (transparent) text. Both share the EXACT
-   box model (same padding, font, height, 1px border, box-sizing) so every glyph
-   lands pixel-aligned under the caret. */
+   box model AND text metrics — every glyph-moving property comes from the ONE
+   --a-eq-* block in :root (see its comment for the measured 55px drift that
+   two hand-kept copies produced) — so every glyph lands pixel-aligned under the
+   caret at EVERY index, not just the first. */
 .numfield .eq-input {
   position: relative; /* above the absolutely-positioned .eq-highlight */
   z-index: 1;
@@ -4757,26 +4793,63 @@ audio.ae-preview-media {
   min-width: 0;
   height: var(--a-control-h);
   box-sizing: border-box;
-  padding: 0 var(--a-sp-2);
+  padding: 0 var(--a-eq-pad-x);
   background: transparent; /* the overlay behind carries the box fill */
   color: transparent;
   caret-color: var(--fg);
-  border: 1px solid var(--border);
+  border: var(--a-eq-border-w) solid var(--border);
   border-radius: var(--a-radius-control); /* same as every other field control */
-  font-family: var(--a-mono);
-  font-size: var(--a-font-sm); /* mono runs wide; small keeps expressions readable in the box */
 }
 
-/* The generic panel-input rule `.varspanel input[type="text"]` /
-   `.inspector input[type="text"]` (specificity 0,2,1) sets color:var(--fg) AND
-   background:var(--control-bg), which would OUTWEIGH the bare `.numfield
-   .eq-input` (0,2,0) above — making the text opaque AND the background occlude
-   the overlay behind. Re-assert transparent text + transparent background at
-   0,3,1 (panel prefix + .numfield + .eq-input + [type]) so both win, EXACTLY the
-   specificity-raising idiom `.inspector/.varspanel .numfield .dn` already uses
-   for --dn-radius (see that rule's comment). */
+/* ── THE ONE METRICS RULE — BOTH LAYERS, ONE DECLARATION LIST ────────────────
+   The input and the overlay are listed TOGETHER here on purpose: a shared
+   selector cannot drift the way two adjacent rules can, so "metric-identical by
+   construction" is enforced by the CSS itself and not by a comment asking the
+   next editor to keep two copies in step. Every property that can move a glyph's
+   x-position belongs in THIS list and nowhere else.
+
+   The selector is deliberately over-specific (panel prefix + .numfield + class +
+   [type] = 0,3,1 on the input arm). The generic panel-input rule
+   `.inspector input[type="text"]` / `.varspanel input[type="text"]` is 0,2,1 and
+   sets `font-size: var(--a-font-md)`, which BEAT the bare `.numfield .eq-input`
+   (0,2,0) and is precisely how the input came to render 13.6px text under an
+   11.52px overlay. That rule also sets color + background, which would make the
+   text opaque and occlude the overlay behind it, so those are re-asserted here
+   too. Same specificity-raising idiom as `.inspector/.varspanel .numfield .dn`
+   for --dn-radius (see that rule's comment).
+
+   The unprefixed `.numfield .eq-wrap` arms carry the metrics for any equation
+   field mounted OUTSIDE those two panels, where nothing needs outweighing. */
+.inspector .numfield .eq-input[type="text"],
+.varspanel .numfield .eq-input[type="text"],
+.numfield .eq-wrap .eq-input,
+.numfield .eq-wrap .eq-highlight {
+  font-family: var(--a-eq-font);
+  font-size: var(--a-eq-font-size);
+  font-weight: var(--a-eq-font-weight);
+  font-style: normal;
+  font-stretch: normal;
+  letter-spacing: var(--a-eq-letter-spacing);
+  word-spacing: var(--a-eq-word-spacing);
+  font-kerning: var(--a-eq-kerning);
+  font-variant-ligatures: var(--a-eq-ligatures);
+  font-feature-settings: normal;
+  font-variant-numeric: normal;
+  text-rendering: var(--a-eq-text-rendering);
+  tab-size: var(--a-eq-tab-size);
+  text-indent: 0;
+  text-transform: none;
+  padding: 0 var(--a-eq-pad-x);
+  /* white-space:pre on BOTH: an <input> collapses nothing, but the overlay is a
+     <div> and would collapse runs of spaces — "a +  b" would then paint shorter
+     than the input measures it. */
+  white-space: pre;
+}
+
+/* Input-only re-assertions the generic panel rule would otherwise win back. */
 .inspector .numfield .eq-input[type="text"],
 .varspanel .numfield .eq-input[type="text"] {
+  height: var(--a-control-h);
   background: transparent;
   color: transparent;
   caret-color: var(--fg);
@@ -4792,21 +4865,41 @@ audio.ae-preview-media {
   inset: 0;
   z-index: 0;
   box-sizing: border-box;
-  padding: 0 var(--a-sp-2);
   background: var(--control-bg); /* the field fill (the transparent input reveals it) */
-  border: 1px solid transparent; /* mirror the input's 1px border so text x-origin matches */
+  /* Mirror the input's border TRANSPARENTLY so the text x-origin matches: with
+     box-sizing:border-box the border is part of the same inset the input's is. */
+  border: var(--a-eq-border-w) solid transparent;
   /* Single-line vertical centering that matches an <input>: a line box exactly
      as tall as the content box centers the one line the same way the input does.
      No flex — flex + scrollLeft on a text run is fragile; line-height + overflow
      is the standard "highlight behind a textarea/input" technique. */
-  line-height: calc(var(--a-control-h) - 2px);
+  line-height: calc(var(--a-control-h) - 2 * var(--a-eq-border-w));
   overflow: hidden;
-  white-space: pre; /* preserve spaces exactly like the input; never wrap (single line) */
-  font-family: var(--a-mono);
-  font-size: var(--a-font-sm);
   color: var(--fg); /* plain text (whitespace/unclassified pieces) */
   pointer-events: none;
   user-select: none;
+  /* Font/padding/white-space/kerning come from THE ONE METRICS RULE below —
+     do not restate them here, that is the drift this design removed. */
+}
+
+/* A token span is a COLOR CARRIER AND NOTHING ELSE. It must contribute ZERO
+   width of its own: the input above has no span boundaries, so any padding,
+   margin, border, weight change or display change on a token would shift every
+   glyph AFTER it out from under the caret. `display:inline` keeps the run a
+   single continuous line box (inline-block would make each token its own
+   unbreakable box with its own rounding), and the metrics are inherited from the
+   overlay rather than re-declared. This is why the palette above is color-only. */
+.numfield .eq-tok {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  word-spacing: inherit;
+  font-kerning: inherit;
+  font-variant-ligatures: inherit;
 }
 
 /* Token colors (chained to the eq-palette above, which chains to theme tokens). */
