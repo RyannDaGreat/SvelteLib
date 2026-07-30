@@ -266,9 +266,16 @@ const ACCOUNTED = {
     coverage: "contextual:titleRename: Enter and F2 both 'Rename' (open the rename modal) while the project-title span has focus (data-hint-scope='titleRename', core fieldScope via editMode). F2 is app-invented rename vocabulary; Enter is its discoverable twin. The span is a role='button', NOT a typing target, so the two chips ride editMode and show beside the canvas hints while the title is focused. A plain CLICK does the same thing (the mouse path); these are its keyboard equivalents, which is why they are chipped and the click is not.",
   },
   "web/SlideNav.svelte": {
-    keys: ["Enter", "Escape"],
-    coverage: "contextual:rename: Enter 'Rename' commits and Escape 'Cancel' reverts the inline slide-name editor while its input has focus (data-hint-scope='rename', core fieldScope). The input is a typing target, so the canvas chips already stand down; Escape stopPropagations so it cannot also fire a global dismiss while abandoning the typed name.",
-    dblclick: "OS: double-click a slide's NAME opens its inline rename editor (Round 4 #54) — the desktop-universal rename gesture (Finder/Explorer/every tree view), a mouse gesture the keyboard law does not cover, discoverable via the slide CARD's Tooltip ('Double-click the name to rename'). The hint sits in the card's tip rather than one of the name span's own: the card tip already covers that span, so a nested Tooltip there fired both and painted two boxes over each other. Its keyboard result (the rename input's Enter/Escape) IS chipped — see coverage.",
+    // The bespoke rename input (and its Enter/Escape + the name span's dblclick)
+    // moved WHOLESALE into src/lib/InlineRename.svelte — see that entry. What
+    // remains here is the enable/disable chip's keyboard activation only.
+    keys: ["Enter"],
+    coverage: "contextual: Enter activates the slide enable/disable toggle while its chip has focus — an app-implemented activation on a non-<button> element (the AssetThumb precedent), so it is the component's own input, not the OS's. The rename gesture and its editor keys live in ../../lib/InlineRename.svelte now (delegated, not duplicated).",
+  },
+  "../../lib/InlineRename.svelte": {
+    keys: ["Enter", "Escape", "F2"],
+    coverage: "contextual:rename: the SHARED in-place rename editor (SvelteLib) that SlideNav's slide names consume. While ITS input has focus (a typing target, so canvas chips stand down): Enter 'Rename' commits, Escape 'Cancel' reverts — Escape stopPropagations so it cannot also fire a global dismiss while abandoning the typed name. On the DISPLAY element while focused: Enter/F2 open the editor (the Toolbar title's app-invented rename vocabulary, kept so keyboard users are not forced onto the mouse gesture). BLUR ALSO CANCELS (user ruling: clicking away must not commit a half-typed name) — a pointer path, so it is not chipped.",
+    dblclick: "OS: double-click opens the in-place editor (the component's default trigger) — the desktop-universal rename gesture (Finder/Explorer/every tree view), a mouse gesture the keyboard law does not cover, discoverable via the consumer's Tooltip (SlideNav's card tip says 'Double-click the name to rename'). The editor's own dblclick handler merely stopPropagations so a double-click INSIDE the input selects a word instead of re-triggering. Formerly web/SlideNav.svelte's bespoke span — moved here with the rulings it lacked (select-all on open, blur-cancels).",
   },
   "web/CanvasToolbar.svelte": {
     keys: ["Enter", "Escape"],

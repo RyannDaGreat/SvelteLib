@@ -265,8 +265,13 @@ test("SlideNav still TEACHES double-click rename, in the card's own tip", () => 
     "(the user reaffirmed that convention — a slide's single click selects it); only " +
     "the toolbar's project title became single-click."
   );
-  // And the gesture itself is still wired to the name span.
-  assert.match(src, /class="name"[^>]*ondblclick=/, "the slide name must still start a rename on double-click");
+  // And the gesture itself is still wired — now DELEGATED to the shared
+  // InlineRename component (SvelteLib), whose default trigger is dblclick.
+  // Asserting both halves: SlideNav mounts it for the name, and the component
+  // actually wires the double-click on its display element.
+  assert.match(src, /<InlineRename\b/, "the slide name must delegate rename to the shared InlineRename component");
+  const inlineRename = stripComments(readFileSync(resolve(powerRP, "../../lib/InlineRename.svelte"), "utf8"));
+  assert.match(inlineRename, /ondblclick=\{trigger === "dblclick"/, "InlineRename must start the editor on double-click when so triggered");
 });
 
 test("the toolbar's project title says CLICK to rename, and renames on one click", () => {
