@@ -33,10 +33,12 @@ import { registerPlugins, builtinRoster } from "../plugins/index.js";
 import {
   BUILTIN_PLUGIN_ASSET_NAMES,
   BUILTIN_PLUGIN_ASSET_TYPES,
+  BUILTIN_PLUGIN_ASSET_KINDS,
   builtinPluginAssetSources,
   registerBuiltinPluginAssets,
 } from "../core/builtin_plugin_assets.js";
 import { assetDropKind } from "../web/pluginAssetLoader.js";
+import { materialIds } from "../render_gpu/skia/materials.js";
 import { libraryTotalsLine } from "../web/assetRef.js";
 import { humanReadableFileSize } from "../web/fileSize.js";
 import {
@@ -52,11 +54,15 @@ function test(name, fn) { fn(); passed += 1; console.log(`  ok  ${name}`); }
 
 // ── (2) THE ROSTER ───────────────────────────────────────────────────────────
 
-test("the library registers all five widgets, with NO reports", () => {
+test("the library registers all five widgets AND the glass material, with NO reports", () => {
   const { loaded, types, reports } = registerBuiltinPluginAssets(createRegistry());
   assert.deepEqual(reports, [], "a clean library must produce no refusals and no drift");
-  assert.deepEqual(loaded, ["clock_analog", "clock_digital", "donut", "number", "progress_bar"]);
-  assert.equal(Object.keys(types).length, 5);
+  // `glass` is a MATERIAL, not a widget — it registers through the SAME loader and
+  // the SAME jail, and the kind-dispatch table (core/plugin_assets.js) is what sends
+  // it to the material registry instead of the widget one. Its presence in this list
+  // is the proof that a second plugin kind rides the existing library path.
+  assert.deepEqual(loaded, ["clock_analog", "clock_digital", "donut", "glass", "number", "progress_bar"]);
+  assert.equal(Object.keys(types).length, 6);
 });
 
 test("BUILTIN_PLUGIN_ASSET_TYPES equals the map registration actually produces", () => {
@@ -85,13 +91,36 @@ test("BARE NODE reads the library off disk — the mode cli/render.js runs in", 
   // reporting exists to prevent.
   assert.ok(typeof process !== "undefined" && process.versions?.node, "this suite must be bare node for the assertion below to mean anything");
   const { sources } = builtinPluginAssetSources();
-  assert.equal(sources.length, 5, "bare node must read all five library files off disk");
+  assert.equal(sources.length, BUILTIN_PLUGIN_ASSET_NAMES.length, "bare node must read every library file off disk");
+  assert.equal(sources.length, 6, "five widgets + the glass material");
 });
 
-test("the built-in library widgets are on the FULL roster (builtinRoster), not allPlugins", () => {
+test("the built-in library WIDGETS are on the FULL roster (builtinRoster), not allPlugins", () => {
   const types = new Set(builtinRoster().map((p) => p.type));
-  for (const type of Object.values(BUILTIN_PLUGIN_ASSET_TYPES))
-    assert.ok(types.has(type), `${type} ships with the app but is not on builtinRoster()`);
+  for (const [file, name] of Object.entries(BUILTIN_PLUGIN_ASSET_TYPES)) {
+    // A MATERIAL is not on the widget roster by construction — it registers into the
+    // material registry, and builtinRoster() enumerates widgets. Skipping it here is
+    // the point of BUILTIN_PLUGIN_ASSET_KINDS: the two kinds live in two registries,
+    // and asserting a material onto the widget roster would be asserting the bug.
+    if (BUILTIN_PLUGIN_ASSET_KINDS[file] === "material") {
+      assert.ok(materialIds().includes(name), `${name} is the library's material but is not in the material registry`);
+      assert.ok(!types.has(name), `${name} is a MATERIAL and must not be on the widget roster`);
+      continue;
+    }
+    assert.ok(types.has(name), `${name} ships with the app but is not on builtinRoster()`);
+  }
+});
+
+test("BUILTIN_PLUGIN_ASSET_KINDS names exactly the non-widget library files", () => {
+  // The kind table, like the type table, is DECLARED and must not drift: a consumer
+  // that must not treat a material as a widget (the canvas drop path) reads it
+  // synchronously, without evaluating anything.
+  for (const [file, kind] of Object.entries(BUILTIN_PLUGIN_ASSET_KINDS)) {
+    assert.ok(BUILTIN_PLUGIN_ASSET_NAMES.includes(file), `${file} is in the kind table but not in the library`);
+    assert.notEqual(kind, "widget", "only NON-widget files are listed; widget is the default");
+  }
+  const declaredMaterials = Object.keys(BUILTIN_PLUGIN_ASSET_KINDS).filter((f) => BUILTIN_PLUGIN_ASSET_KINDS[f] === "material");
+  assert.deepEqual(declaredMaterials, ["liquid_glass.material.plugin.js"]);
 });
 
 // ── (1) MIGRATION PARITY ─────────────────────────────────────────────────────

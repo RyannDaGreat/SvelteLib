@@ -676,31 +676,191 @@ export function pluginShapeProblem(plugin) {
   return null;
 }
 
+// ── TYPED PLUGIN KINDS ────────────────────────────────────────────────────────
+// A plugin asset declares WHAT KIND OF THING it is with a `kind` field, and the
+// loader dispatches on it. Until now every asset was a widget by construction;
+// `kind` names that assumption so a second kind can exist beside it.
+//
+// THE USER RULING THAT FORCED THIS (verbatim): "Are material plugins possible?
+// Should we distinguish widget plugins from material plugins and open the door to
+// possibly future new types of plugins? It would be really cool if we could
+// refactor liquid glass as a plugin, and the other materials as plugins — then the
+// user could actually edit the shader inside the UI, and copy that built-in plugin
+// into a new one."
+//
+// DEFAULTING TO "widget" IS THE COMPATIBILITY CONTRACT, and it is load-bearing
+// rather than a convenience. Every plugin asset already written — the five built-in
+// library widgets, the project assets in shipped decks, the template a user's Claude
+// copies — declares no `kind`, and each must keep loading BYTE-IDENTICALLY: same
+// validation, same jail, same registry. So absence means "widget", and
+// tests/plugin_kind_test.js pins that a kind-less source and an explicit
+// `kind: "widget"` source produce the same registration.
+//
+// THE TABLE IS THE POINT. A future kind (a TRANSITION, an EASING curve, a slide
+// TEMPLATE) is ONE entry here — a validator and a register — not a new branch
+// threaded through loadPluginAsset, registerPluginAssets, the built-in library and
+// the app seam. Each entry answers exactly three questions: what shape is valid
+// (`problem`), what NAME does it claim in its own registry (`nameOf`, the thing a
+// collision is refused on), and how does it get registered (`register`). Nothing
+// else in this module needs to know a kind exists.
+export const DEFAULT_PLUGIN_KIND = "widget";
+
+/**
+ * THE KIND DISPATCH TABLE — kind → {noun, problem, nameOf, register}.
+ *
+ *   noun     — the word error messages use ("widget", "material").
+ *   nameField— the FIELD an author renames on a collision ("type" / "id"). Kept
+ *              distinct from `noun` so the widget refusal message is byte-identical
+ *              to the one that shipped before kinds existed.
+ *   problem  — (value) → a human-readable reason it is not a usable plugin of this
+ *              kind, or null. The kind's whole shape contract.
+ *   nameOf   — (plugin) → the id it claims (`type` for a widget, `id` for a
+ *              material). The key a collision is refused on, and the key
+ *              registerPluginAssets reports in `types`.
+ *   register — (registry, plugin) → void. Where it lands. A widget goes to the
+ *              core/registry.js widget registry passed in; a material goes to the
+ *              MATERIAL registry (render_gpu/skia/materials.js), which is a module
+ *              singleton and therefore ignores the `registry` argument.
+ *
+ * `material` is populated by core/material_plugins.js, which OWNS the material
+ * contract and calls definePluginKind below. It is not defined here because
+ * core/plugin_assets.js must stay importable with no knowledge of SkSL — the same
+ * layering that keeps this module DOM-free.
+ */
+const PLUGIN_KINDS = {
+  [DEFAULT_PLUGIN_KIND]: {
+    noun: "widget",
+    nameField: "type",
+    problem: pluginShapeProblem,
+    nameOf: (p) => p.type,
+    register: (registry, p) => registry.register(p),
+  },
+};
+
+/**
+ * Command (mutates the kind table). Registers a plugin KIND — the one extension
+ * point of the dispatch above. Called at module-init time by the module that owns
+ * the kind's contract (core/material_plugins.js for "material"), so this file never
+ * has to import a renderer.
+ *
+ * A duplicate kind is refused LOUDLY: two definitions of what "material" means
+ * would make which one applies depend on import order.
+ *
+ * @param {string} kind - the kind name, as an asset's `kind` field spells it
+ * @param {{noun: string, nameField: string, problem: Function, nameOf: Function, register: Function}} entry
+ * @returns {void}
+ *
+ * @example // definePluginKind("material", {noun: "material", problem: materialShapeProblem, …})
+ * //   → knownPluginKinds() now includes "material"
+ */
+export function definePluginKind(kind, entry) {
+  if (Object.prototype.hasOwnProperty.call(PLUGIN_KINDS, kind))
+    throw new Error(`definePluginKind: kind "${kind}" is already defined — a kind has exactly one contract`);
+  for (const field of ["noun", "nameField", "problem", "nameOf", "register"])
+    if (!(field in entry)) throw new Error(`definePluginKind("${kind}"): entry is missing "${field}"`);
+  PLUGIN_KINDS[kind] = entry;
+}
+
+/**
+ * Query (reads the kind table). The kinds a plugin asset may declare, sorted — the
+ * "known set" an unknown-kind refusal names, and the discoverability seam tests and
+ * docs read instead of restating a list.
+ *
+ * @returns {string[]}
+ *
+ * @example knownPluginKinds().includes("widget") // true
+ */
+export function knownPluginKinds() {
+  return Object.keys(PLUGIN_KINDS).sort();
+}
+
+/**
+ * Pure function. The KIND a loaded plugin object declares, defaulted. A missing
+ * `kind` is "widget" — the compatibility contract every asset written before kinds
+ * existed relies on (see the block comment above).
+ *
+ * @param {*} plugin - the value a plugin asset returned
+ * @returns {string}
+ *
+ * @example pluginKind({type: "gear"}) // "widget"   (absent ⇒ the default)
+ * @example pluginKind({kind: "material", id: "plasma"}) // "material"
+ * @example pluginKind(null) // "widget"   (a non-object is refused later, by shape)
+ */
+export function pluginKind(plugin) {
+  if (plugin === null || typeof plugin !== "object") return DEFAULT_PLUGIN_KIND;
+  return plugin.kind ?? DEFAULT_PLUGIN_KIND;
+}
+
+/**
+ * Query (reads the kind table). The dispatch entry for a loaded plugin, or a LOUD
+ * refusal naming the kind AND the known set — never a silent fall-back to "widget",
+ * which would validate a material as a widget and report a baffling `missing "emit"`
+ * for a typo'd kind.
+ *
+ * @param {*} plugin - the value a plugin asset returned
+ * @returns {{noun: string, nameField: string, problem: Function, nameOf: Function, register: Function}}
+ *
+ * @example pluginKindEntry({type: "gear"}).noun // "widget"
+ * @example // pluginKindEntry({kind: "transition"})
+ * //   → throws 'declares kind "transition", which is not a known plugin kind (known: material, widget)'
+ */
+export function pluginKindEntry(plugin) {
+  const kind = pluginKind(plugin);
+  const entry = PLUGIN_KINDS[kind];
+  if (!entry)
+    throw new Error(`declares kind ${JSON.stringify(kind)}, which is not a known plugin kind (known: ${knownPluginKinds().join(", ")})`);
+  return entry;
+}
+
 /**
  * Query (evaluates the source). ONE plugin asset source → its validated plugin
- * object. Loud on every failure mode, each naming the asset:
+ * object, DISPATCHED BY KIND. Loud on every failure mode, each naming the asset:
  *   - the source will not compile, or throws
- *   - it returns something that is not a plugin (see pluginShapeProblem)
- *   - its `type` collides with an ALREADY-REGISTERED type (a built-in, or an
- *     earlier asset). REFUSED, never shadowed — silently replacing `rect` in a
- *     deck a stranger shared would repaint a document its author never saw.
+ *   - it declares an unknown `kind` (named, alongside the known set)
+ *   - it returns something that is not a plugin OF THAT KIND (the kind's own
+ *     `problem`: pluginShapeProblem for a widget, materialShapeProblem for a
+ *     material)
+ *   - its claimed NAME collides with an ALREADY-REGISTERED one (a built-in, or an
+ *     earlier asset). REFUSED, never shadowed — silently replacing `rect`, or
+ *     `glass`, in a deck a stranger shared would repaint a document its author
+ *     never saw.
+ *
+ * `takenTypes` is the taken-name set FOR THAT KIND: widget types for a widget,
+ * material ids for a material. The two namespaces are separate on purpose — a
+ * material called `donut` does not collide with the donut widget, because nothing
+ * ever looks one up in the other's registry.
  *
  * @param {string} source - the asset's JS text
  * @param {string} label - the asset name (error messages)
- * @param {Set<string>} takenTypes - type names already registered
- * @returns {object} the declarative plugin object
+ * @param {Set<string>} takenTypes - names already registered IN THAT KIND'S registry
+ * @returns {object} the declarative plugin object (a widget's hooks are jailed)
  *
  * @example loadPluginAsset("return {type:'gear', title:'Gear', capabilities:{bbox:true}, defaults:{type:'gear'}, emit:()=>[]};", "gear.plugin.js", new Set()).title // "Gear"
+ * @example loadPluginAsset("return {type:'gear', title:'G', capabilities:{}, defaults:{type:'gear'}, emit:()=>[]};", "g.plugin.js", new Set()).kind // undefined (kind-less: byte-identical to before)
  * @example // loadPluginAsset("return {type:'rect', ...};", "evil.plugin.js", new Set(["rect"]))
  * //   → throws 'plugin asset "evil.plugin.js": type "rect" is already registered …'
  */
 export function loadPluginAsset(source, label, takenTypes) {
   const plugin = evaluatePluginSource(source, label);
-  const problem = pluginShapeProblem(plugin);
+  let entry;
+  try {
+    entry = pluginKindEntry(plugin);
+  } catch (e) {
+    throw new Error(`plugin asset "${label}": ${e.message}`);
+  }
+  const problem = entry.problem(plugin);
   if (problem) throw new Error(`plugin asset "${label}": ${problem}`);
-  if (takenTypes.has(plugin.type))
-    throw new Error(`plugin asset "${label}": type "${plugin.type}" is already registered — a plugin asset may not shadow a built-in widget or another asset (rename its type)`);
-  return jailedPluginHooks(plugin); // the block travels with the hooks (deferred escape)
+  const name = entry.nameOf(plugin);
+  // The message names the FIELD the author must rename (`type` for a widget, `id`
+  // for a material) — that is what `nameField` is for, and it keeps the widget
+  // refusal byte-identical to the one that shipped before kinds existed.
+  if (takenTypes.has(name))
+    throw new Error(`plugin asset "${label}": ${entry.nameField} "${name}" is already registered — a plugin asset may not shadow a built-in ${entry.noun} or another asset (rename its ${entry.nameField})`);
+  // The compilation block travels with the hooks (the DEFERRED escape). A material
+  // has no hooks by contract — it is data plus a shader STRING — so this is a no-op
+  // copy for that kind, which is exactly the property that keeps jailed JS off the
+  // render path.
+  return jailedPluginHooks(plugin);
 }
 
 /**
@@ -741,12 +901,29 @@ export function loadPluginAsset(source, label, takenTypes) {
  * // so hooks, capabilities and titles come across as-is.
  * loadPluginAsset(retypedPluginSource("return {type:'a', title:'Kept', capabilities:{bbox:true}, defaults:{type:'a'}, emit:()=>[]};", "b"), "b.plugin.js", new Set()).title
  * // => "Kept"
+ * @example
+ * // A MATERIAL names itself with `id`, and has no `defaults` — so the copy rewrites
+ * // that field instead, and gains no spurious empty defaults object.
+ * const mat = loadPluginAsset(
+ *   retypedPluginSource(`return {kind:"material", id:"glass", title:"G", params:[], uniforms:[{name:"u",size:1}], sksl:"x"};`, "glass_2"),
+ *   "copy.plugin.js", new Set(["glass"]));
+ * [mat.id, mat.kind, "defaults" in mat]
+ * // => ["glass_2", "material", false]
  */
 export function retypedPluginSource(source, newType) {
   // The original body becomes a nested function so its own `return` belongs to it,
   // not to the wrapper. JSON.stringify on the type keeps an odd-but-valid identifier
   // from breaking out of the literal.
-  return `const __original = (() => {\n${source}\n})();\nreturn { ...__original, type: ${JSON.stringify(newType)}, defaults: { ...__original.defaults, type: ${JSON.stringify(newType)} } };`;
+  //
+  // KIND-AWARE, at RUNTIME rather than here. Which field carries the name depends on
+  // the plugin's kind — `type` + `defaults.type` for a widget, `id` for a material —
+  // and the kind is only knowable by evaluating the source. So the wrapper branches
+  // on the value it just produced rather than this function guessing: one wrapper,
+  // correct for both kinds, and correct for a future kind that also names itself `id`.
+  // A material has no `defaults`, so spreading one would invent an empty object; the
+  // branch avoids that too.
+  const name = JSON.stringify(newType);
+  return `const __original = (() => {\n${source}\n})();\nreturn __original && __original.kind && __original.kind !== "widget"\n  ? { ...__original, id: ${name} }\n  : { ...__original, type: ${name}, defaults: { ...__original.defaults, type: ${name} } };`;
 }
 
 /**
@@ -812,20 +989,74 @@ export function uniquePluginType(base, taken) {
  * //      reports: ['plugin asset "bad.plugin.js": is missing "emit"']}
  */
 export function registerPluginAssets(registry, sources) {
-  const taken = new Set(registry.all().map((p) => p.type));
+  // ONE TAKEN-NAME SET PER KIND. The namespaces are separate: a material called
+  // `donut` does not collide with the donut widget, because nothing ever looks one
+  // up in the other's registry. Seeded lazily — the widget set from the registry
+  // passed in, a material's from the material registry — so a kind that has not
+  // appeared costs nothing and this function still needs no import from a renderer.
+  const takenByKind = { [DEFAULT_PLUGIN_KIND]: new Set(registry.all().map((p) => p.type)) };
   const loaded = [];
   const types = {};
   const reports = [];
   for (const { name, source } of sources ?? []) {
     try {
+      // The kind is read BEFORE the load so the right taken-set is passed in; a bad
+      // kind surfaces from loadPluginAsset with the asset named, as every other
+      // refusal does.
+      const kind = peekPluginKind(source, name);
+      const taken = (takenByKind[kind] ??= new Set(takenNamesForKind(kind)));
       const plugin = loadPluginAsset(source, name, taken);
-      registry.register(plugin);
-      taken.add(plugin.type);
-      loaded.push(plugin.type);
-      types[name] = plugin.type;
+      const entry = pluginKindEntry(plugin);
+      entry.register(registry, plugin);
+      const claimed = entry.nameOf(plugin);
+      taken.add(claimed);
+      loaded.push(claimed);
+      types[name] = claimed;
     } catch (e) {
       reports.push(e.message); // RETURNED, never swallowed — the caller prints it
     }
   }
   return { loaded, types, reports };
+}
+
+/**
+ * Query (evaluates the source — see the caveat). The KIND a source declares,
+ * WITHOUT committing to loading it, so registerPluginAssets can pick the right
+ * taken-name set before validation.
+ *
+ * It evaluates the source once here and once inside loadPluginAsset. That double
+ * evaluation is deliberate and cheap: a plugin source is a declarative object
+ * literal, evaluated at project load only, and the alternative — threading the
+ * evaluated value through loadPluginAsset — would mean a second public entry point
+ * that takes an already-evaluated plugin, i.e. one that skips the jail. Keeping the
+ * jail on the ONLY path into a plugin object is worth evaluating a literal twice.
+ *
+ * A source that will not evaluate returns the default kind; the real error surfaces
+ * from loadPluginAsset a moment later, with its full message.
+ *
+ * @param {string} source - the asset's JS text
+ * @param {string} label - the asset name
+ * @returns {string}
+ *
+ * @example peekPluginKind("return {type: 'gear'};", "gear.plugin.js") // "widget"
+ * @example peekPluginKind("return {kind: 'material', id: 'plasma'};", "p.plugin.js") // "material"
+ * @example peekPluginKind("this is not javascript", "broken.plugin.js") // "widget" (the real error comes from the load)
+ */
+function peekPluginKind(source, label) {
+  try {
+    return pluginKind(evaluatePluginSource(source, label));
+  } catch {
+    return DEFAULT_PLUGIN_KIND; // loadPluginAsset reports the real reason, loudly
+  }
+}
+
+/**
+ * The per-kind TAKEN-NAME source. A kind may declare `takenNames()` — the names
+ * already registered in ITS registry — so a collision with a built-in is refused.
+ * Widgets do not need one (registerPluginAssets seeds theirs from the registry it
+ * was handed); materials do, because their registry is a module singleton.
+ */
+function takenNamesForKind(kind) {
+  const entry = PLUGIN_KINDS[kind];
+  return entry?.takenNames ? entry.takenNames() : [];
 }

@@ -33,7 +33,9 @@
  */
 
 import { parseColor } from "../ir.js";
-import { GLASS_MATERIAL } from "./glass_shader.js"; // Liquid Glass as a FILL material (its legacy glassBackdrop op path is unchanged)
+// Liquid Glass is NOT imported here — it MIGRATED to a material plugin asset (see
+// BUILTIN_MATERIALS below). glass_shader.js still owns the SkSL, and the asset
+// carries that exact text.
 import { CRT_MATERIAL } from "./crt_shader.js";
 import { METABALLS_MATERIAL } from "./metaballs_shader.js";
 import { FROSTED_MATERIAL } from "./frosted_shader.js";
@@ -82,9 +84,87 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     own IR `op` (magnifyBackdrop) + dedicated handler (it samples/re-scales the
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
 // Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
-const MATERIALS = Object.fromEntries(
-  [GLASS_MATERIAL, CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL].map((m) => [m.id, m]),
-);
+// GLASS IS DELIBERATELY ABSENT from this list. Liquid Glass has MIGRATED to a
+// plugin asset (assets/builtin/library/liquid_glass.material.plugin.js) — it is the
+// proof of the material-plugin contract, so it must register the way every other
+// material plugin does rather than keeping a private back door. GLASS_MATERIAL is
+// still exported by glass_shader.js and is still THE reference the regression test
+// compares the plugin against; it is simply no longer the thing the registry serves.
+// The legacy `glassBackdrop` op (the glass WIDGET, plugins/demo/glass.js) never went
+// through this registry at all and is untouched either way.
+const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, CORK_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, RAINY_WINDOW_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL];
+
+const MATERIALS = Object.fromEntries(BUILTIN_MATERIALS.map((m) => [m.id, m]));
+
+/** The ids present before any plugin material registers — the frozen built-in set.
+ *  Captured at module init so registerMaterial can tell a BUILT-IN collision (which
+ *  it refuses by the plugin-asset shadowing rule) from a plugin-vs-plugin one. */
+const BUILTIN_MATERIAL_IDS = Object.freeze(new Set(Object.keys(MATERIALS)));
+
+/**
+ * Pure function. Is `id` a BUILT-IN material (one this module imports), as opposed
+ * to a plugin material registered at load time?
+ *
+ * @param {string} id
+ * @returns {boolean}
+ *
+ * @example isBuiltinMaterialId("crt") // true
+ * @example isBuiltinMaterialId("glass") // false (Liquid Glass MIGRATED to a plugin asset)
+ * @example isBuiltinMaterialId("my_plasma") // false
+ */
+export function isBuiltinMaterialId(id) {
+  return BUILTIN_MATERIAL_IDS.has(id);
+}
+
+/**
+ * Command (mutates the registry). Registers a MATERIAL PLUGIN's descriptor under
+ * its own id — THE seam core/plugin_assets.js's kind dispatch writes through, and
+ * the reason a material can be an ASSET at all.
+ *
+ * WHY THE REGISTRY IS MUTABLE AT ALL, given it was a frozen literal until now. A
+ * material plugin arrives with the DOCUMENT (a `*.material.plugin.js` asset in the
+ * project's assets/, or the built-in library), so it cannot be an import: the
+ * bundle is built long before anyone opens the deck. The mutation window is the
+ * same one plugin widgets already use — synchronous, at project load, BEFORE
+ * repair — so no derive walk can observe the map growing mid-frame. There is
+ * deliberately no `unregister`, mirroring core/registry.js: a live document whose
+ * material vanished mid-paint would be a hole with no error, so switching projects
+ * REPLACES the plugin half wholesale (resetPluginMaterials) instead of shrinking
+ * it in place.
+ *
+ * COLLISION IS REFUSED, NEVER SHADOWED — the plugin-asset rule verbatim. A deck a
+ * stranger mailed you must not be able to redefine `glass` and repaint a document
+ * its author never saw.
+ *
+ * @param {object} material - a descriptor (see THE MATERIAL CONTRACT above)
+ * @returns {void}
+ *
+ * @example // registerMaterial({id: "plasma", title: "Plasma", sksl: "…", fillParams: []})
+ * //   → getMaterial("plasma").title === "Plasma"
+ * @example // registerMaterial({id: "glass", …}) → throws: "glass" is already registered
+ */
+export function registerMaterial(material) {
+  if (Object.prototype.hasOwnProperty.call(MATERIALS, material.id))
+    throw new Error(`materials.registerMaterial: material "${material.id}" is already registered — a material plugin may not shadow a built-in material or another plugin (rename its id)`);
+  MATERIALS[material.id] = material;
+}
+
+/**
+ * Command (mutates the registry). Drops EVERY plugin-registered material, leaving
+ * the built-in set exactly as it was at module init. Called when a project is
+ * switched, so the next project's materials register into a clean map — the
+ * REBUILD discipline web/pluginAssetLoader.js documents for the widget registry,
+ * applied to the one registry that cannot be rebuilt (it is a module singleton).
+ *
+ * @returns {string[]} the ids that were dropped
+ *
+ * @example resetPluginMaterials() // [] (nothing plugin-registered yet)
+ */
+export function resetPluginMaterials() {
+  const dropped = Object.keys(MATERIALS).filter((id) => !BUILTIN_MATERIAL_IDS.has(id));
+  for (const id of dropped) delete MATERIALS[id];
+  return dropped;
+}
 
 /**
  * Query. Resolves a material id to its descriptor. Throws LOUDLY on an unknown
@@ -509,6 +589,29 @@ export function resolveProxyBackdrop(material, params) {
 const _effects = new Map(); // id → { effect, ck }
 
 /**
+ * A ONE-SHOT callback fired with the CanvasKit instance the first time any material
+ * compiles. core/material_plugins.js registers itself here so its SkSL compile probe
+ * arms as soon as a real compiler exists, WITHOUT this module importing it — the two
+ * would otherwise form an import cycle (material_plugins imports registerMaterial
+ * from here). One-shot because the probe only needs installing once, and clearing it
+ * keeps the hot compile path down to a null check.
+ */
+let _onCanvasKitReady = null;
+
+/**
+ * Command (sets the one-shot hook above). Registers a callback to run with the
+ * CanvasKit instance at the first material compile.
+ *
+ * @param {function(object): void} fn - receives the initialized CanvasKit
+ * @returns {void}
+ *
+ * @example // onFirstMaterialCompile((CanvasKit) => setMaterialCompileProbe(makeProbe(CanvasKit)))
+ */
+export function onFirstMaterialCompile(fn) {
+  _onCanvasKitReady = fn;
+}
+
+/**
  * Query→build (compiles once per material per CanvasKit instance; memoized).
  * Returns the compiled RuntimeEffect for `material`. Throws LOUDLY with the SkSL
  * compiler error on failure (no silent fallback) — a shader that will not compile
@@ -518,6 +621,16 @@ const _effects = new Map(); // id → { effect, ck }
  * @param material - a descriptor from getMaterial()
  */
 export function materialEffect(CanvasKit, material) {
+  // THE COMPILE PROBE ARMS ITSELF HERE, the first time any material compiles. A
+  // material PLUGIN must be refused at REGISTRATION when its shader will not build
+  // (a shader that renders nothing is indistinguishable from a correctly-transparent
+  // one), but core/material_plugins.js cannot import CanvasKit — it is core/, and
+  // bare node has no GPU. So the probe is injected, and this is the earliest point
+  // at which a real CanvasKit is known to exist in ANY mode: editor, render-job
+  // page, or the software surface cli/render.js uses. Registrations that happened
+  // before this point were shape-validated only; the first compile of each is still
+  // LOUD (below), so nothing renders silently wrong either way.
+  if (_onCanvasKitReady) { const fn = _onCanvasKitReady; _onCanvasKitReady = null; fn(CanvasKit); }
   if (isSamplerMaterial(material))
     throw new Error(`materials: "${material.id}" is a SAMPLER material (no SkSL) — dispatch its op "${material.op}", do not compile it as an effect`);
   const cached = _effects.get(material.id);

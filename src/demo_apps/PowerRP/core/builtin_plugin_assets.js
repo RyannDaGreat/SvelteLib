@@ -92,6 +92,16 @@
  */
 
 import { registerPluginAssets } from "./plugin_assets.js";
+// IMPORTED FOR ITS SIDE EFFECT, and that is the whole wiring: core/material_plugins.js
+// calls definePluginKind("material", …) at module init, which is what makes
+// `kind: "material"` a thing the loader accepts at all. Without this import the
+// library's glass asset would be refused as an unknown kind — loudly, but wrongly.
+// It also installs the colour parser the synthesized toUniformParams needs.
+import { setMaterialColorParser } from "./material_plugins.js";
+import { resetPluginMaterials } from "../render_gpu/skia/materials.js";
+import { parseColor } from "../render_gpu/ir.js";
+
+setMaterialColorParser(parseColor);
 
 /** The committed built-in plugin-asset directory, relative to THIS module — the
  *  literal Vite's `import.meta.glob` pattern below must also spell (a glob
@@ -122,6 +132,13 @@ export const BUILTIN_PLUGIN_ASSET_NAMES = Object.freeze([
   "clock_analog.plugin.js",
   "clock_digital.plugin.js",
   "donut.plugin.js",
+  // THE FIRST MATERIAL in the library — a `kind: "material"` asset, not a widget.
+  // It registers through the SAME loader and the SAME jail; only the kind-dispatch
+  // table (core/plugin_assets.js PLUGIN_KINDS) sends it to the material registry
+  // instead of the widget one. The `.material.` in the name is a HUMAN label, not a
+  // parsed discriminator — the `kind` field in the source is what decides, so a file
+  // named anything still lands in the right registry.
+  "liquid_glass.material.plugin.js",
   "number.plugin.js",
   "progress_bar.plugin.js",
 ]);
@@ -145,8 +162,28 @@ export const BUILTIN_PLUGIN_ASSET_TYPES = Object.freeze({
   "clock_analog.plugin.js": "clock_analog",
   "clock_digital.plugin.js": "clock_digital",
   "donut.plugin.js": "donut",
+  // A MATERIAL's claimed name is its `id`, not a widget `type` — the kind decides
+  // which registry the name lives in (core/plugin_assets.js PLUGIN_KINDS.nameOf).
+  // It is listed here because this table is "what did THIS FILE register", which the
+  // drift check compares against reality; the canvas DROP path, the one consumer
+  // that wants a widget, filters by BUILTIN_PLUGIN_ASSET_KINDS below.
+  "liquid_glass.material.plugin.js": "glass",
   "number.plugin.js": "number",
   "progress_bar.plugin.js": "progress_bar",
+});
+
+/**
+ * The library's FILE → KIND map. Every file is a widget unless named here — the same
+ * default the loader applies (core/plugin_assets.js DEFAULT_PLUGIN_KIND), restated as
+ * data so a consumer that must NOT treat a material as a widget (the canvas drop
+ * path: dropping a shader on the canvas cannot add an item) can tell them apart
+ * without evaluating anything.
+ *
+ * Pinned against reality by tests/builtin_asset_library_test.js, exactly as the type
+ * table is.
+ */
+export const BUILTIN_PLUGIN_ASSET_KINDS = Object.freeze({
+  "liquid_glass.material.plugin.js": "material",
 });
 
 /**
@@ -259,6 +296,66 @@ function libraryFromDisk() {
  */
 export function registerBuiltinPluginAssets(registry) {
   const { sources, reports: driftReports } = builtinPluginAssetSources();
-  const { loaded, types, reports } = registerPluginAssets(registry, sources);
+  // THE MATERIAL HALF REGISTERS EXACTLY ONCE PER PROCESS, and that asymmetry with
+  // the widget half is deliberate. The widget registry is a per-document OBJECT, so
+  // a fresh one legitimately wants the library registered into it again; the MATERIAL
+  // registry is a module SINGLETON, so a second pass has nothing to add — the same
+  // library, from the same bundle, producing the same descriptors.
+  //
+  // IT MUST NOT RE-REGISTER, AND THIS COST A REAL BUG. Re-registering (even after a
+  // reset) REPLACES the descriptor OBJECT, and callers hold onto that object:
+  // tests/material_shape_conform_test.js toggles `desc.usesShapeSdf` on the live
+  // descriptor and then renders, and cli/render.js's renderDocToPng calls
+  // registerAll on EVERY render — so the toggle was silently discarded between the
+  // set and the paint, and glass measured a Δ of 0.00 (i.e. "the shader is not
+  // running") while every built-in material still passed. Identity is part of this
+  // registry's contract, so the second call is a NO-OP rather than a rebuild.
+  //
+  // A genuine rebuild — switching PROJECTS, where a different deck's materials must
+  // replace this one's — goes through resetPluginMaterials() at the project seam,
+  // which is the one place a swap is both intended and observable.
+  const toRegister = builtinMaterialsRegistered ? sources.filter((s) => !isMaterialSource(s)) : sources;
+  builtinMaterialsRegistered = true;
+  const { loaded, types, reports } = registerPluginAssets(registry, toRegister);
+  // The skipped materials still belong in the RESULT — the caller's question is
+  // "what does this library provide", not "what did this call happen to write" —
+  // and the drift check compares the answer against the declared table.
+  for (const source of sources) {
+    if (toRegister.includes(source)) continue;
+    const id = BUILTIN_PLUGIN_ASSET_TYPES[source.name];
+    loaded.push(id);
+    types[source.name] = id;
+  }
+  loaded.sort();
   return { loaded, types, reports: [...driftReports, ...reports] };
+}
+
+/** Has the library's material half already registered into the module-singleton
+ *  material registry this process? See registerBuiltinPluginAssets for why the
+ *  second call must be a no-op rather than a rebuild. */
+let builtinMaterialsRegistered = false;
+
+/** Pure. Is this library source a MATERIAL (rather than a widget)? Reads the
+ *  declared kind table, not the source text — the same synchronous answer the drop
+ *  path needs. */
+function isMaterialSource(source) {
+  return BUILTIN_PLUGIN_ASSET_KINDS[source.name] === "material";
+}
+
+/**
+ * Command (drops the plugin-registered materials AND re-arms this module). The
+ * PROJECT-SWITCH seam: a new deck's materials must replace the previous deck's, and
+ * the built-in library must then register again into the cleared registry.
+ *
+ * Split from resetPluginMaterials() because that one is the registry's own
+ * primitive; this is the lifecycle event, and it is the only thing that may re-arm
+ * the once-per-process latch above.
+ *
+ * @returns {string[]} the material ids that were dropped
+ *
+ * @example // resetProjectMaterials() → ["deck_specific_shader"]
+ */
+export function resetProjectMaterials() {
+  builtinMaterialsRegistered = false;
+  return resetPluginMaterials();
 }

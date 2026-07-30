@@ -27,6 +27,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createRegistry } from "../core/registry.js";
+import { materialIds, getMaterial } from "../render_gpu/skia/materials.js";
 import {
   loadPluginAsset,
   registerPluginAssets,
@@ -255,24 +256,80 @@ test("EVERY built-in, retyped, registers as a working widget beside its original
   registerBuiltinPluginAssets(registry);
   const { sources } = builtinPluginAssetSources();
   assert.ok(sources.length >= 5, "read no built-in library sources — the loader broke, not the copy");
-  const taken = new Set(registry.all().map((p) => p.type));
+  const taken = new Set([...registry.all().map((p) => p.type), ...materialIds()]);
   for (const { name, source } of sources) {
-    const baseType = loadPluginAsset(source, name, new Set()).type;
-    const newType = uniquePluginType(baseType, taken);
-    assert.notEqual(newType, baseType, `${name}: its own type must already be taken by the registered built-in`);
+    const original = loadPluginAsset(source, name, new Set());
+    // A COPY names itself by its KIND's field — `type` for a widget, `id` for a
+    // material — which is exactly what retypedPluginSource branches on. Sweeping both
+    // kinds through one loop is the point: Save-a-Copy is one flow, and the moment it
+    // silently produced a dead file for one kind, the feature would be broken for
+    // that kind only, which is the hardest failure to notice.
+    const isMaterial = original.kind === "material";
+    const baseName = isMaterial ? original.id : original.type;
+    const newName = uniquePluginType(baseName, taken);
+    assert.notEqual(newName, baseName, `${name}: its own name must already be taken by the registered built-in`);
     const file = uniquePluginAssetName(name, sources.map((s) => s.name));
-    const res = registerPluginAssets(registry, [{ name: file, source: retypedPluginSource(source, newType) }]);
+    const res = registerPluginAssets(registry, [{ name: file, source: retypedPluginSource(source, newName) }]);
     assert.deepEqual(res.reports, [], `${name}: the retyped copy must register cleanly`);
-    assert.deepEqual(res.loaded, [newType]);
-    taken.add(newType);
+    assert.deepEqual(res.loaded, [newName]);
+    taken.add(newName);
+    if (isMaterial) {
+      // A registered MATERIAL that carries no shader is as broken as a widget that
+      // cannot draw — and its ORIGINAL must be untouched beside it.
+      const copy = getMaterial(newName);
+      assert.equal(copy.id, newName);
+      assert.ok(typeof copy.sksl === "string" && copy.sksl.length > 0, `${name}: the copy must carry its shader`);
+      assert.equal(copy.sksl, getMaterial(baseName).sksl, `${name}: a copy starts as the SAME shader — editing it is the next step`);
+      assert.equal(getMaterial(baseName).id, baseName, `${name}: the original must survive the copy`);
+      continue;
+    }
     // A registered type that cannot draw is still a broken widget.
-    const plugin = registry.get(newType);
+    const plugin = registry.get(newName);
     const ops = plugin.emit({ ...plugin.defaults });
     assert.ok(Array.isArray(ops) && ops.length > 0, `${name}: the copy's emit() must produce display-list ops`);
     // And the ORIGINAL is untouched — a copy that shadowed its source would defeat
     // the point of refusing verbatim copies in the first place.
-    assert.equal(registry.get(baseType).type, baseType);
+    assert.equal(registry.get(baseName).type, baseName);
   }
+});
+
+test("EDITING A COPIED MATERIAL changes the copy's shader and leaves the original alone", () => {
+  // The user ruling's payoff, end to end: "the user could actually edit the shader
+  // inside the UI, and copy that built-in plugin into a new one". The copy must be a
+  // SEPARATE material — same registry, different id, independently editable — because
+  // a copy that aliased its original would silently repaint every glass fill in the
+  // document the moment the user changed one line.
+  const registry = createRegistry();
+  registerBuiltinPluginAssets(registry);
+  const { sources } = builtinPluginAssetSources();
+  const glass = sources.find((s) => s.name === "liquid_glass.material.plugin.js");
+  assert.ok(glass, "the built-in library must ship the glass material");
+
+  // De-collides off whatever is registered NOW (an earlier test in this file may
+  // already have made a glass_2), so the assertion is about the RULE, not the order.
+  const copyId = uniquePluginType("glass", materialIds());
+  assert.notEqual(copyId, "glass", "the copy must not shadow the registered original");
+  assert.match(copyId, /^glass_\d+$/, "the copy stays lower_snake_case, numbered off its base");
+  const copySource = retypedPluginSource(glass.source, copyId);
+  assert.deepEqual(registerPluginAssets(registry, [{ name: "glass 2.material.plugin.js", source: copySource }]).reports, []);
+
+  // EDIT the copy: a trivial, visible shader change (a different tint neutral). The
+  // edit is applied to the SOURCE, which is what the Monaco editor saves.
+  const EDIT_FROM = "const float ADAPT_FIXED = 0.75;";
+  const EDIT_TO = "const float ADAPT_FIXED = 0.10;";
+  assert.ok(copySource.includes(JSON.stringify(EDIT_FROM).slice(1, -1)), "the edit anchor must exist in the copy's shader");
+  const editedSource = copySource.replace(JSON.stringify(EDIT_FROM).slice(1, -1), JSON.stringify(EDIT_TO).slice(1, -1));
+  assert.notEqual(editedSource, copySource, "the edit must actually change the source");
+
+  const editedId = uniquePluginType("glass", materialIds());
+  assert.deepEqual(registerPluginAssets(registry, [{ name: "glass 3.material.plugin.js", source: retypedPluginSource(editedSource, editedId) }]).reports, []);
+
+  const edited = getMaterial(editedId);
+  const original = getMaterial("glass");
+  assert.ok(edited.sksl.includes(JSON.stringify(EDIT_TO).slice(1, -1)), "the edited copy must carry the NEW shader");
+  assert.notEqual(edited.sksl, original.sksl, "the edited copy's shader must DIFFER from the original's");
+  assert.ok(original.sksl.includes(JSON.stringify(EDIT_FROM).slice(1, -1)), "the ORIGINAL must be untouched by the edit");
+  assert.equal(getMaterial("glass_2").sksl, original.sksl, "an UNEDITED copy still matches its original");
 });
 
 test("retypedPluginSource rewrites the type WITHOUT touching the author's text", () => {
