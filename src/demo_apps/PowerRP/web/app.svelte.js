@@ -4414,6 +4414,13 @@ export class PowerRPApp {
       // repairedDocument now, so no separate withBindingsMigrated wrap.
       this.doc = this.repaired(deserialize(json));
       this.undoLog = createUndo(this.snapshot(this.doc));
+      // Prime the object-URL memo for THIS project at the boot path itself. A
+      // reload restores from autosave without ever calling loadProject, so the
+      // sync resolveUrl memo used to stay empty until the Explorer's refresh
+      // primed it — one transient 404 per canvas asset on every static reload
+      // (2abe36d put the reachable fix in the Explorer; this is the
+      // architectural home it named). Fire-and-forget: a repaint follows.
+      assetStore().primeUrls(this.projectName()).catch((e) => console.error(`PowerRP boot: primeUrls failed — ${e}`));
     }
   }
 
