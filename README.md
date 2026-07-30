@@ -3,6 +3,10 @@
 Hi, this is PowerRP — a presentation editor that renders like a game engine and
 exports like a print shop.
 
+**Try it in your browser:** https://ryanndagreat.github.io/SvelteLib/ — the
+full editor, no install (projects live in your browser; export/import zips to
+move them).
+
 ## Install
 
 **Download the app:** grab
