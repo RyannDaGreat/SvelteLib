@@ -20,6 +20,27 @@ displayed numbers shift on insert. An item appearing across slides IS the
 "symlink". `active: false` (universal property) is how items exist on some
 slides and not others — Delete keyframes it; Purge actually removes.
 
+`meta.script` is THE PROJECT SCRIPT (`core/project_script.js`): one per-document
+JavaScript library, first-class and defaulted to `""` (repairedDocument fills it
+quietly when absent, discards a non-string LOUDLY). Assign to a provided
+`exports` object and any property equation can call it — `exports.ease = t => …`
+makes `= ease(0.5)` work in every widget. It compiles in the SAME jail equations
+do, so the determinism law is untouched (`Date`/`fetch`/`Math.random` unreachable,
+`Math` = SAFE_MATH, seeded `random` and the one `time` clock available); it gets
+the pure value-level built-ins an equation does not (`Object`/`Array`/`JSON`/
+`Error`/… — `SCRIPT_STDLIB`, justified there). It is NOT part of the fold, so
+`evaluateState(state, registry, script)` takes it as a third argument and MEMOIZES
+ON IT; `web/cameraFrame.evaluationAt` is the ONE seam that threads it for every
+pixel consumer. Precedence: built-ins and the FUNCTIONS library are not
+shadowable (a colliding export is a LOUD compile error), a variable or item slug
+beats an export at read time, and a broken script exports NOTHING so its callers
+fail through the normal equation-error path. Reading `time`/`random` at the
+script's TOP LEVEL is refused — the compile is memoized per source, so such a
+value would freeze forever; read it inside an exported function. Edited in the
+Monaco modal off the top-right `mdi:script-text-outline` button
+(`edit-project-script`); a script that will not compile keeps the modal open with
+the error in its footer.
+
 ## Layout
 
 - `core/` — DOM-free pure JS (MUST run in bare node; tests enforce this).

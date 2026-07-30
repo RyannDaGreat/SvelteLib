@@ -161,9 +161,35 @@
    *     the one known list" to "can anything between here and the panel take it",
    *     because a panel may hold several scroll boxes and the shell knows none of them.
    */
+  /** Query. Does this panel contain ANY scrollable box at all? A panel with no
+   * scrollable content (a button row like the paint-path handle bar, a fields
+   * readout) has no claim on the wheel — the user's ruling: "that's not a
+   * scrollable region; only the scrollable regions need to block scroll". */
+  function panelHasScrollBox() {
+    for (const el of panelEl.querySelectorAll("*")) {
+      const style = getComputedStyle(el);
+      if ((style.overflowY === "auto" || style.overflowY === "scroll") && el.scrollHeight > el.clientHeight)
+        return true;
+    }
+    return false;
+  }
+
+  /** Command. The wheel policy, three tiers:
+   *  1. a scroll box under the cursor with room → capture, native scroll takes it;
+   *  2. no room here but the panel HAS scrollable content somewhere → capture
+   *     and eat (wheeling over a scrolly palette's search bar or a pinned list
+   *     must not surprise-zoom the canvas);
+   *  3. the panel has NO scrollable content at all → fall through untouched, so
+   *     the canvas pans/zooms exactly as if the pointer were on bare canvas. */
   function onWheel(e) {
-    e.stopPropagation();
-    if (!canScrollVertically(e.target, panelEl, e.deltaY)) e.preventDefault();
+    if (canScrollVertically(e.target, panelEl, e.deltaY)) {
+      e.stopPropagation();
+      return;
+    }
+    if (panelHasScrollBox()) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
   }
 </script>
 

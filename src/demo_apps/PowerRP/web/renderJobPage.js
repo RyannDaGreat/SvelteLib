@@ -61,6 +61,7 @@ import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
 import { pendingImageRefs, onImageLoad } from "../render_gpu/gpu/image_registry.js";
 import { pendingVideoSrcs, onVideoFrame } from "../render_gpu/gpu/video_registry.js";
 import { pendingSvgSources, onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
+import { pendingTextAssets, onTextAssetLoad } from "../render_gpu/gpu/text_asset_registry.js"; // CSV/JSON data assets a plugin-asset widget charts (core/plugin_assets.js assetText)
 import { gpuAccelerated } from "./gpuService.js";
 
 /**
@@ -90,9 +91,12 @@ const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 let session = null;
 
 /**
- * Query. Every async raster this page is still waiting on — image decodes,
- * LaTeX typesets, Mermaid renders, PDF page rasters (all of which land in the
- * image registry) plus video elements that have no first frame yet.
+ * Query. Every async load this page is still waiting on — image decodes, LaTeX
+ * typesets, Mermaid renders, PDF page rasters (all of which land in the image
+ * registry), video elements that have no first frame yet, SVG sources, and TEXT
+ * DATA ASSETS (a CSV a chart widget is plotting). The last one is not a raster,
+ * but it gates a frame for exactly the same reason: a chart whose data has not
+ * arrived draws no bars, and writing that frame ships an empty chart at exit 0.
  *
  * @returns {string[]} pending refs/srcs, empty when the scene can be drawn whole
  *
@@ -100,7 +104,7 @@ let session = null;
  * pendingRasters() // []
  */
 function pendingRasters() {
-  return [...pendingImageRefs(), ...pendingVideoSrcs(), ...pendingSvgSources()];
+  return [...pendingImageRefs(), ...pendingVideoSrcs(), ...pendingSvgSources(), ...pendingTextAssets()];
 }
 
 /**
@@ -113,17 +117,20 @@ function waitForRasterProgress() {
     let offImage = null;
     let offVideo = null;
     let offSvg = null;
+    let offText = null;
     let timer = null;
     const finish = () => {
       offImage?.();
       offVideo?.();
       offSvg?.();
+      offText?.();
       clearTimeout(timer);
       resolve();
     };
     offImage = onImageLoad(finish);
     offVideo = onVideoFrame(finish);
     offSvg = onSvgSourceLoad(finish);
+    offText = onTextAssetLoad(finish);
     timer = setTimeout(finish, RASTER_POLL_MS);
   });
 }

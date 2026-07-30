@@ -103,6 +103,10 @@ ASSET_CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".ttf": "font/ttf", ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2",
     ".json": "application/json",
+    # TABULAR DATA a widget plots. The charset is explicit because the text-asset
+    # registry reads these with response.text(), which honours it -- without one a
+    # UTF-8 label ("Montréal") would decode as latin-1 mojibake in the chart.
+    ".csv": "text/csv; charset=utf-8", ".tsv": "text/tab-separated-values; charset=utf-8",
     # A PLUGIN ASSET (*.plugin.js) is served as PLAIN TEXT, deliberately, not as
     # text/javascript. The client reads it with .text() and evaluates it inside the
     # plugin sandbox (core/plugin_assets.js); nothing ever loads it as a script.
@@ -118,6 +122,14 @@ PDF_EXTS = {".pdf"}
 # font file becomes a project asset of kind "font" and is registered as a
 # selectable family client-side (render_gpu/fonts.js dynamic registry).
 FONT_EXTS = {".ttf", ".otf", ".woff", ".woff2"}
+# TEXTUAL DATA assets: a table a widget PLOTS rather than a file it displays
+# (core/plugin_assets.js assetText -> render_gpu/gpu/text_asset_registry.js).
+# Classified as its own kind so an AssetField declaring assetKinds ["data"] can
+# offer exactly the spreadsheets in a project and nothing else -- as kind "other"
+# a CSV was invisible to every picker, which is why a chart widget could not name
+# its own data file. ".txt" is deliberately excluded: a notes file is not a table,
+# and offering one in a chart's picker is a worse error than omitting it.
+DATA_EXTS = {".csv", ".tsv", ".json"}
 # PLUGIN ASSETS: a widget delivered as a project asset rather than a source file
 # (core/plugin_assets.js). The marker is the COMPOUND suffix ".plugin.js", not the
 # ".js" extension -- a plain ".js" asset stays kind "other", so dropping a script
@@ -1291,6 +1303,8 @@ def asset_kind(filename):
         'font'
         >>> asset_kind("gear.plugin.js")
         'plugin'
+        >>> asset_kind("sales.CSV")
+        'data'
         >>> asset_kind("helper.js")
         'other'
         >>> asset_kind("notes.txt")
@@ -1311,6 +1325,8 @@ def asset_kind(filename):
         return "pdf"
     if ext in FONT_EXTS:
         return "font"
+    if ext in DATA_EXTS:
+        return "data"
     return "other"
 
 

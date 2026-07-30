@@ -106,7 +106,8 @@ export function headPlugin(headPath, state, slugs, registry, selfId) {
  * @example suggestEquation("spe", 3, {vars: {speed: 5}, items: {}}, registry, null) // [{text: "speed", kind: "variable"}]
  * @example suggestEquation("clos", 4, {items: {}}, registry, null) // [{text: "closest_to_rim(", kind: "function"}]
  * @example // a project-script export: a FUNCTION suggests with its open paren, a VALUE bare
- * @example suggestEquation("ea", 2, {items: {}}, registry, null, {ease: (t) => t}) // [{text: "ease(", kind: "function"}]
+ * @example // (fuzzy ranking may return other matches beside it — "ea" also matches text_scramble)
+ * @example suggestEquation("ease", 4, {items: {}}, registry, null, {ease: (t) => t}) // [{text: "ease(", kind: "function"}]
  * @example suggestEquation("GUT", 3, {items: {}}, registry, null, {GUTTER: 24}) // [{text: "GUTTER", kind: "variable"}]
  */
 export function suggestEquation(text, cursor, state, registry, selfId = null, scriptExports = null) {

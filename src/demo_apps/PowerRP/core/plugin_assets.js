@@ -122,8 +122,11 @@ import * as properties from "./properties.js";
 import * as shapes from "./shapes.js";
 import * as transform from "./transform.js";
 import * as geometry from "./geometry.js";
+import * as outline from "./outline.js";
 import * as ir from "../render_gpu/ir.js";
-import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
+import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
+import { DEFAULT_FONT, FONTS, fontOptions } from "../render_gpu/fonts.js";
+import { ensureTextAsset, getTextAsset, textAssetStatus, textAssetError } from "../render_gpu/gpu/text_asset_registry.js";
 
 /** The asset-filename suffix that MAKES a file a plugin asset. Checked by the
  *  loader and by the server's asset-kind classifier (server.py PLUGIN_SUFFIX) —
@@ -167,6 +170,12 @@ const HOST_MODULES = Object.freeze({
   defaults: properties.defaults,
   customProps: properties.customProps,
   STROKE_TRIM_KEYS: properties.STROKE_TRIM_KEYS,
+  // ANGLE arithmetic, shared with the Inspector's angle dial so a widget that
+  // wraps a heading wraps it the SAME way the dial draws it (core/properties.js
+  // is the one home for that convention — a plugin asset restating `((d%360)+360)%360`
+  // would be a second definition of it).
+  wrapDegrees: properties.wrapDegrees,
+  FULL_TURN_DEG: properties.FULL_TURN_DEG,
   // The display-list IR (the render API) + the universal effects bundle.
   ir,
   rect: ir.rect,
@@ -177,12 +186,93 @@ const HOST_MODULES = Object.freeze({
   text: ir.text,
   applyEffects,
   effectsCullMargin,
+  // `paddedPointsBBox` (points + a halo pad → an AABB) is the EFFECT-REGION
+  // helper a widget with no w/h needs: a two-point / N-point widget declaring
+  // localBounds has to state its own ink rect, and this is the pure function
+  // plugins/tangent_lines.js already used for exactly that. Exposed rather than
+  // reimplemented in the asset, so the substrate/cull rect a plugin asset reports
+  // cannot drift from the one a source plugin reports.
+  paddedPointsBBox,
   // Geometry / anchors helpers a shape widget needs.
   standardBBoxAnchors,
   shapes,
   T: transform,
   G: geometry,
+  // PARAMETRIC OUTLINE GEOMETRY (core/outline.js): the generator + solver library
+  // the shape family is built on — donutOutline / triangulated / pointInPolygon /
+  // closestPointOnSegment / closestPointInAnnulus and the rest. This is the module
+  // that makes a RING, a SECTOR or a bespoke silhouette expressible as a plugin
+  // asset at all: the IR's polygon op is convex-only, so any concave shape must go
+  // through `triangulated`, and reimplementing an ear-clipper inside a sandboxed
+  // source would be both large and a parity hazard (the same outline must produce
+  // the same triangles in the Skia, PDF and SVG backends).
+  outline,
+  // FONT SELECTION, for a text-bearing widget. Data + pure lookups only: the id
+  // table, the default id, and the Inspector's option list. NOTHING that loads or
+  // rasterizes a face — a plugin asset names a font, it never touches the font
+  // pipeline (which is DOM/GPU-side and outside the jail by construction).
+  DEFAULT_FONT,
+  FONTS,
+  fontOptions,
+  // THE DATA SEAM — read a TEXTUAL project asset (a CSV, a JSON table) by url.
+  assetText,
 });
+
+/**
+ * Query (reads the text-asset cache; kicks an idempotent load). THE ONE WAY a
+ * plugin asset may read data from outside its own state: the text of a project
+ * asset, by its served url. Returns `{text, status, error}` — never a bare string,
+ * because the three cases a data widget MUST distinguish are exactly the three a
+ * bare string cannot express:
+ *
+ *   status "ready"   → `text` is the file's content; draw the chart.
+ *   status "loading" → draw NOTHING this frame. A repaint follows the load
+ *                      (web/CanvasView.svelte subscribes to onTextAssetLoad), and
+ *                      the headless video worker refuses to write the frame while
+ *                      anything is still pending (web/renderJobPage.js
+ *                      pendingRasters).
+ *   status "error"   → draw a LOUD error affordance naming `error`. A typo'd
+ *                      filename must not look like an empty data set.
+ *
+ * WHY THIS IS NOT A HOLE IN THE JAIL. `fetch` stays blocked: a plugin cannot name
+ * a url this does not resolve. What it reaches is the SAME text the app already
+ * served the browser for an asset OF THE PROJECT THE VIEWER OPENED — bytes the
+ * viewer already has, through a cache that only ever holds asset urls
+ * (render_gpu/gpu/text_asset_registry.js, whose bare-node reader resolves
+ * `/asset/<Project>/<file>` off disk and refuses anything else). It is READ-ONLY
+ * and one-way: there is no POST, and nothing here can send what it read anywhere.
+ *
+ * WHY IT IS DETERMINISTIC (the property that lets a widget use it at all). A
+ * project asset travels WITH the document (the zip round-trip carries assets/), so
+ * its bytes are document state, not host state. Δt = 0 leaves this byte-identical,
+ * and so does re-rendering on another machine — which is what keeps frame-range
+ * sharding and CLI stills correct. See CLAUDE.md's three kinds of state.
+ *
+ * @param {string} url - a served asset url, e.g. "/asset/MyDeck/sales.csv"
+ * @returns {{text: string|null, status: string, error: string|null}}
+ *
+ * @example assetText("").status // "error"  (a blank url is reported, not thrown)
+ * @example assetText(null).error // 'assetText: url must be a non-empty string, got null'
+ * @example // in the browser, the frame that first asks for it:
+ * //   assetText("/asset/Deck/sales.csv") // {text: null, status: "loading", error: null}
+ * @example // once it lands (or immediately, via bare node's synchronous disk read):
+ * //   assetText("/asset/Deck/sales.csv") // {text: "region,units\nNorth,12\n", status: "ready", error: null}
+ */
+function assetText(url) {
+  // A BAD URL IS REPORTED, NOT THROWN. This runs inside emit(), which paints every
+  // frame: a throw here would take down the whole render over one widget's typo.
+  // The caller gets status "error" and draws its loud affordance instead — the same
+  // loudness, in the place the author is actually looking.
+  if (typeof url !== "string" || !url)
+    return { text: null, status: "error", error: `assetText: url must be a non-empty string, got ${url === undefined ? "undefined" : JSON.stringify(url)}` };
+  const ready = getTextAsset(url);
+  if (ready !== null) return { text: ready, status: "ready", error: null };
+  ensureTextAsset(url); // idempotent kick; in bare node this resolves synchronously
+  const settled = getTextAsset(url);
+  if (settled !== null) return { text: settled, status: "ready", error: null };
+  const status = textAssetStatus(url);
+  return { text: null, status, error: status === "error" ? textAssetError(url) : null };
+}
 
 /**
  * Names a plugin asset may reference that are NOT host modules: the determinism

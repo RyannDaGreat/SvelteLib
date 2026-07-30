@@ -34,6 +34,11 @@ export const KIND_ICON = {
   // represents something that appears in the Insert menu, not something a widget
   // points AT (core/plugin_assets.js).
   plugin: "mdi:puzzle-outline",
+  // TABULAR DATA (a CSV/TSV/JSON a chart widget plots — server.py DATA_EXTS). Its
+  // own glyph because, like a plugin asset, it is not a file a widget DISPLAYS: it
+  // is the numbers behind one, and a generic file icon hides that distinction in a
+  // project whose assets are half pictures and half spreadsheets.
+  data: "mdi:table-large",
   other: "mdi:file-outline",
 };
 

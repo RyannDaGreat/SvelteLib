@@ -29,6 +29,8 @@
  *   UNDO              — a script edit is an ordinary document commit, so it undoes and
  *                       redoes interleaved with item edits. Asserted against the real
  *                       undo log, not a mock.
+ *   DISCOVERABILITY    — autocomplete offers the exports (a function with its open
+ *                       paren, a value bare). A library nobody can find is not reuse.
  *   HIGHLIGHTER        — the equation field must paint a script-exported identifier as
  *                       a reference, not as red. Found in browser verification: a
  *                       `= 0 + GUTTER * 4` that evaluated to 160 was painted entirely
@@ -46,6 +48,7 @@ import { evaluateState, equationTokenSpans, BLOCKED_GLOBALS, FUNCTIONS } from ".
 import {
   newDocument, repairedDocument, serialize, deserialize, keyframed, foldState,
 } from "../core/document.js";
+import { suggestEquation } from "../core/equationSuggest.js";
 import { createUndo } from "../core/undo.js";
 import { createRegistry } from "../core/registry.js";
 import { rectPlugin } from "../plugins/rect.js";
@@ -341,20 +344,52 @@ test("highlighter: a script-exported identifier paints as a var, not an error", 
   // not there. (An exported FUNCTION escaped by accident — a ref before "(" is
   // classified positionally as a "call" — so only VALUES showed the disagreement.)
   const state = { vars: {}, items: { a1: { type: "rect", x: 0, y: 0, w: 1, h: 1 } } };
-  const exports = new Set(["GUTTER", "ease"]);
+  const exported = { GUTTER: 24, ease: (t) => t };
   assert.deepEqual(equationTokenSpans("GUTTER", state, null).map((s) => s.cls), ["error"],
     "with no script, an unknown identifier is STILL red");
-  assert.deepEqual(equationTokenSpans("GUTTER", state, null, exports).map((s) => s.cls), ["var"],
+  assert.deepEqual(equationTokenSpans("GUTTER", state, null, exported).map((s) => s.cls), ["var"],
     "with the export known, it paints as an ordinary reference");
-  assert.deepEqual(equationTokenSpans("0 + GUTTER * 4", state, null, exports).map((s) => s.cls),
+  assert.deepEqual(equationTokenSpans("0 + GUTTER * 4", state, null, exported).map((s) => s.cls),
     ["num", "op", "var", "op", "num"]);
   // A genuinely unknown name is still red WITH a script present — the widening is
   // exactly the export set, not a blanket amnesty.
-  assert.deepEqual(equationTokenSpans("ghost", state, null, exports).map((s) => s.cls), ["error"]);
+  assert.deepEqual(equationTokenSpans("ghost", state, null, exported).map((s) => s.cls), ["error"]);
   // A real document variable still wins its own class (same precedence as the
   // evaluator's: a variable first, an export second).
   const withVar = { vars: { GUTTER: 1 }, items: {} };
-  assert.deepEqual(equationTokenSpans("GUTTER", withVar, null, exports).map((s) => s.cls), ["var"]);
+  assert.deepEqual(equationTokenSpans("GUTTER", withVar, null, exported).map((s) => s.cls), ["var"]);
+});
+
+test("autocomplete offers the script's exports — a function with its paren, a value bare", () => {
+  const state = { vars: {}, items: {} };
+  const exported = { ease: (t) => t, GUTTER: 24 };
+  // Fuzzy ranking may return other matches too ("ea" also subsequence-matches
+  // text_scramble), so the assertion is on the candidate's PRESENCE and KIND, which
+  // is what the caller renders — not on it being the only row.
+  const has = (partial, text, kind) => {
+    const found = suggestEquation(partial, partial.length, state, registry, null, exported)
+      .find((c) => c.text === text);
+    assert.ok(found, `"${partial}" must offer "${text}"`);
+    assert.equal(found.kind, kind, `"${text}" must be a ${kind}`);
+  };
+  has("ea", "ease(", "function");   // a function suggests as a CALL
+  has("GUT", "GUTTER", "variable"); // a value suggests bare, like a variable
+  // Without the exports, neither is offered — the widening is exactly the library.
+  const bare = suggestEquation("GUT", 3, state, registry, null).map((c) => c.text);
+  assert.ok(!bare.includes("GUTTER"), `an unknown script offers nothing (got ${bare})`);
+  // The built-ins are still offered beside the exports — nothing was displaced.
+  // `e` is a SUBSEQUENCE of the function-library names and both exports, so one
+  // fuzzy query covers those. (`self` and `time` are gated by startsWith, not the
+  // fuzzy matcher — a pre-existing asymmetry in suggestEquation, so they are asked
+  // for with their own prefixes rather than pretended into this list. An EMPTY text
+  // is not usable at all: no fragment under the caret means nothing to complete.)
+  const fuzzy = suggestEquation("e", 1, state, registry, null, exported).map((c) => c.text);
+  for (const expected of ["closest_to_rim(", "ease(", "GUTTER"])
+    assert.ok(fuzzy.includes(expected), `"${expected}" must still be offered (got ${fuzzy})`);
+  for (const kw of ["self", "time"]) {
+    const offered = suggestEquation(kw.slice(0, 2), 2, state, registry, null, exported).map((c) => c.text);
+    assert.ok(offered.includes(kw), `the "${kw}" keyword must still be offered (got ${offered})`);
+  }
 });
 
 // ── Storage: meta.script is first-class ──────────────────────────────────────

@@ -39,6 +39,7 @@
   import { cameraRectAt } from "./cameraFrame.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
+  import { onTextAssetLoad } from "../render_gpu/gpu/text_asset_registry.js"; // CSV/JSON data assets a chart widget plots (core/plugin_assets.js assetText)
   import { makeSerialSource, thumbnailDirtyKeys, makeIdleThumbScheduler, browserTickDeps, thumbRenderPaused } from "./thumbSchedule.js";
 
   let { app } = $props();
@@ -67,6 +68,9 @@
   // URL-sourced SVG text lands the same way (svg widget, url mode) — fold it
   // into the same epoch so thumbnails pick the vector art up when it arrives.
   $effect(() => onSvgSourceLoad(() => (imageEpoch += 1)));
+  // A TEXT DATA asset (the CSV behind a chart) lands the same way — same epoch, so
+  // a thumbnail rendered before the data arrived is redrawn with its bars.
+  $effect(() => onTextAssetLoad(() => (imageEpoch += 1)));
 
   // Per-type icon for the between-rows slice (iconify only — manifest rule).
   // A third type adds one entry; unknown types fall back to a generic glyph.

@@ -32,6 +32,7 @@
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
+  import { onTextAssetLoad } from "../render_gpu/gpu/text_asset_registry.js"; // CSV/JSON data assets a chart widget plots (core/plugin_assets.js assetText)
   import { onVideoFrame, setActiveVideoRefs } from "../render_gpu/gpu/video_registry.js";
   import { onVideoV5Frame, setActiveVideoV5Refs } from "../render_gpu/skia/video_v5.js"; // V5 off-main-thread video: same wake+gate contract as the core video path
   // Video V8 (cohort) — a FRESH, independent overlay player: ONE canvas stacked
@@ -335,6 +336,9 @@
   // URL-sourced SVG text loads are the same async-arrival shape (an svg widget
   // in url mode draws nothing until its source lands) — same epoch, same nudge.
   $effect(() => onSvgSourceLoad(() => (imageEpoch += 1)));
+  // A TEXT DATA asset (a CSV a chart plots) arrives the same way and matters for
+  // the same reason: the frame that requested it drew an empty chart.
+  $effect(() => onTextAssetLoad(() => (imageEpoch += 1)));
   // Playing videos repaint per decoded frame (requestVideoFrameCallback via
   // the registry) — same epoch, same reason (reactive paint, async frames). BUT
   // ONLY for a video the CURRENT frame actually draws: the video registry is

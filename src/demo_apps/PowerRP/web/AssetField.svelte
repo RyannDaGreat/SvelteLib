@@ -257,6 +257,8 @@
    *     'video'
    *     >>> guessKindFromName("shot.png")
    *     'image'
+   *     >>> guessKindFromName("sales.CSV")
+   *     'data'
    *     >>> guessKindFromName("readme.txt")
    *     'other'
    */
@@ -266,6 +268,8 @@
     if ([".mp4", ".webm", ".mov"].includes(ext)) return "video";
     if ([".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"].includes(ext)) return "sound";
     if (ext === ".pdf") return "pdf";
+    // TABULAR DATA (server.py DATA_EXTS) — what a chart widget's picker offers.
+    if ([".csv", ".tsv", ".json"].includes(ext)) return "data";
     return "other";
   }
 
