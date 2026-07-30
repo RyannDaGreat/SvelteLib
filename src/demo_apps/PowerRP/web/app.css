@@ -3740,8 +3740,13 @@ audio.ae-preview-media {
   padding: var(--a-sp-5);
 }
 
+/* MAX-height, not height: a 6-row CSV shrink-wraps to six rows instead of leaving
+   half a screen of empty box under them (measured — the first draft's fixed height
+   made a small file's dialog look broken), while a 100,000-row file still stops at
+   the cap and scrolls. The virtual scroller reads the RESULTING clientHeight, so
+   both cases feed csvWindow a true viewport. */
 .csv-scroll {
-  height: var(--a-csv-view-h);
+  max-height: var(--a-csv-view-h);
   overflow: auto;
   border: 1px solid var(--a-csv-rule);
 }

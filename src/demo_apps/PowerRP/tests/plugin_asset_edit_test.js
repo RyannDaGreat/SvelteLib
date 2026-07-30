@@ -25,6 +25,7 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { createRegistry } from "../core/registry.js";
 import { loadPluginAsset, registerPluginAssets, isPluginAssetName } from "../core/plugin_assets.js";
 
@@ -142,6 +143,36 @@ test("a REFUSED edit leaves the live registry untouched", () => {
   assert.throws(() => loadPluginAsset(`return {type: "gear_edit_probe"};`, "gear.plugin.js", takenTypesForEdit(registry, GEAR, "gear.plugin.js")));
   assert.equal(registry.get("gear_edit_probe"), before, "the registry entry must be the SAME object");
   assert.equal(registry.get("gear_edit_probe").defaults.fill, "#888");
+});
+
+// ── The STORE VERB the save must use ────────────────────────────────────────
+
+test("both asset-store adapters expose `replace`, distinct from `put`", () => {
+  // WHY THIS ASSERTION EXISTS: the first version of the plugin editor saved through
+  // `put`, which DE-COLLIDES a taken filename. So every save wrote a NEW numbered
+  // file ("gear-2.plugin.js") and left the edited asset untouched — the dialog
+  // closed, the widget did not change, and nothing reported a problem. Measured on
+  // the browser probe: four saves produced four numbered copies.
+  //
+  // Read as SOURCE TEXT rather than imported: web/assetStore.js reaches
+  // projectApi.js, which reads `location` at module scope and cannot load in bare
+  // node (the same reason tests/asset_store_test.js imports only assetRef.js).
+  const src = fs.readFileSync(new URL("../web/assetStore.js", import.meta.url), "utf8");
+  for (const store of ["httpAssetStore", "localAssetStore"]) {
+    const body = src.slice(src.indexOf(`export const ${store}`));
+    const next = body.slice(1).search(/\nexport const \w+AssetStore|\nexport const \w+ProjectStore/);
+    const scoped = next === -1 ? body : body.slice(0, next + 1);
+    assert.match(scoped, /\breplace\s*[:(]/, `${store} must define a replace() verb`);
+    assert.match(scoped, /replace overwrites, it does not create/, `${store}.replace must be LOUD when the asset is absent`);
+  }
+});
+
+test("app.svelte.js saves an edited plugin through replace, never put", () => {
+  const src = fs.readFileSync(new URL("../web/app.svelte.js", import.meta.url), "utf8");
+  const commit = src.slice(src.indexOf("async commitPluginAssetCode"));
+  const body = commit.slice(0, commit.indexOf("\n  }\n") + 4);
+  assert.match(body, /assetStore\(\)\.replace\(/, "the save must overwrite in place");
+  assert.doesNotMatch(body, /assetStore\(\)\.put\(/, "put de-collides and cannot save an edit");
 });
 
 console.log(`\n${passed} plugin-asset editing tests passed.`);

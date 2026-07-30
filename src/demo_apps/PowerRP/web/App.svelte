@@ -9,7 +9,6 @@
 -->
 <script>
   import "iconify-icon"; // registers the <iconify-icon> web component (used in the Open Project grid's placeholder tiles)
-  import { untrack } from "svelte"; // panel re-shaping reads pane weights untracked — see the visibility effect
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
@@ -377,17 +376,31 @@
     ].filter((slot) => slot.shown);
   }
 
-  // The outer row's and the two columns' boundary arrays. $state, not $derived,
-  // because SplitPane needs `bind:splits` to write a live drag back — and a
-  // $derived cannot be bound. The effect below is the only other writer.
-  let hSplits = $state(columnSplits(visibleColumns()));
-  let leftSplits = $state(columnSplits(panelsInColumn("left").filter((p) => p.defaultVisible)));
-  let rightSplits = $state(columnSplits(panelsInColumn("right").filter((p) => p.defaultVisible)));
+  // THE BOUNDARIES ARE DERIVED, NOT MIRRORED. The weights above are the single
+  // source of truth for size and `app.panelVisible` for presence, so every boundary
+  // array is a pure function of the two — `$derived`, with no copy to keep in sync.
+  //
+  // This replaced an `$effect` that recomputed three `$state` arrays whenever a
+  // visibility signature changed, and that design was BROKEN IN A WAY WORTH
+  // RECORDING: hiding two panels of one column in a single tick (which the
+  // "hide the whole column" path does) batches both writes, the effect ran once for
+  // the pair, and `hSplits` kept the three-column shape — so the row still had
+  // three panes and two live dividers, and the canvas rendered in a 230px slot
+  // meant for a sidebar. An effect that mirrors derived data into state can always
+  // be out of date by one batch; a `$derived` cannot be.
+  //
+  // A drag still has to write SOMETHING back, and `bind:` needs a settable target,
+  // so each binding is a `{get, set}` pair: the getter returns the derived shape,
+  // and the setter re-attributes the dragged boundaries onto the WEIGHTS (which the
+  // getter then re-derives from). That is what makes a divider drag survive a later
+  // hide/show — the weights remember, the boundaries are always recomputed.
+  const hSplits = $derived(columnSplits(visibleColumns()));
+  const leftSplits = $derived(columnSplits(visiblePanels("left")));
+  const rightSplits = $derived(columnSplits(visiblePanels("right")));
 
   /**
-   * Command. The outer row's counterpart to commitColumnDrag: writes dragged row
-   * boundaries back to per-column weights, so widening the canvas survives hiding
-   * and re-showing a panel.
+   * Command. Writes dragged ROW boundaries back to per-column weights, so widening
+   * the canvas survives hiding and re-showing a panel.
    */
   function commitRowDrag(splits) {
     const visible = visibleColumns();
@@ -397,34 +410,6 @@
       columnWeights[slot.id] = (edges[i + 1] - edges[i]) * total;
     });
   }
-
-  /** Query. The visible-panel signature of a column ("1,0" style), the ONE thing a
-   *  visibility change alters and a drag does not. Depending on this instead of on
-   *  the panels themselves is what stops the re-shaping effect from firing on every
-   *  drag frame and stomping the boundaries SplitPane just wrote. */
-  const visibilitySignature = $derived(PANELS.map((p) => (app.panelVisible[p.id] ? 1 : 0)).join(","));
-
-  // RE-SHAPE on a visibility flip, and only then. The weights are read through
-  // untrack() so this effect has exactly one dependency; without that the drag it
-  // records below would immediately re-derive the boundaries it came from.
-  //
-  // The signature is DESTRUCTURED INTO A LOCAL, not left as a bare
-  // `visibilitySignature;` expression statement. A bare statement reads as dead
-  // code and the dependency was not reliably registered, which is precisely how
-  // the outer row broke while the two columns appeared to work: the columns
-  // re-derived for another reason, so only `hSplits` visibly froze, and hiding
-  // both left panels left the row at three panes with two live dividers while the
-  // canvas rendered in the wrong slot.
-  $effect(() => {
-    const signature = visibilitySignature;
-    if (signature === null) return; // unreachable; keeps the read load-bearing
-    untrack(() => {
-      hSplits = columnSplits(visibleColumns());
-      leftSplits = columnSplits(visiblePanels("left"));
-      rightSplits = columnSplits(visiblePanels("right"));
-      console.log("SPLITS_EFFECT", signature, JSON.stringify({ hSplits, leftSplits, rightSplits, cols: visibleColumns().map((c) => c.id) }));
-    });
-  });
 
   // ── Core commands (plugins added theirs at registration) ──────────────────
   const needsSelection = (a) => a.selection !== null;
@@ -1838,7 +1823,7 @@
     <!-- The outer row and both columns are driven by the VISIBLE subset, never by
          a fixed pane index: `visibleColumns()[col]` and `visiblePanels(…)[row]`
          are what make a hidden panel contribute no pane AND no divider. -->
-    <SplitPane orientation="horizontal" bind:splits={hSplits} onchange={commitRowDrag}>
+    <SplitPane orientation="horizontal" bind:splits={() => hSplits, commitRowDrag} onchange={commitRowDrag}>
       {#snippet children(col)}
         <!-- Panels OPTIONALLY show their canonical name (manifest glossary) as
              a title bar at the top; toggled via the "Toggle Panel Names"
@@ -1860,13 +1845,21 @@
                left its empty pane AND its dead divider behind. The pane bodies are
                NOT duplicated: both call the {panelPane} snippet below. -->
           <div class="left-col">
-            <SplitPane orientation="vertical" bind:splits={leftSplits} onchange={(splits) => commitColumnDrag("left", splits)}>
+            <SplitPane
+              orientation="vertical"
+              bind:splits={() => leftSplits, (splits) => commitColumnDrag("left", splits)}
+              onchange={(splits) => commitColumnDrag("left", splits)}
+            >
               {#snippet children(row)}{@render panelPane("left", row)}{/snippet}
             </SplitPane>
           </div>
         {:else}
           <div class="right-col">
-            <SplitPane orientation="vertical" bind:splits={rightSplits} onchange={(splits) => commitColumnDrag("right", splits)}>
+            <SplitPane
+              orientation="vertical"
+              bind:splits={() => rightSplits, (splits) => commitColumnDrag("right", splits)}
+              onchange={(splits) => commitColumnDrag("right", splits)}
+            >
               {#snippet children(row)}{@render panelPane("right", row)}{/snippet}
             </SplitPane>
           </div>

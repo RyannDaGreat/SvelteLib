@@ -68,6 +68,44 @@ export const httpAssetStore = {
    *  the XHR upload progress the optimistic tile reads. */
   put: (project, file, filename = file.name, onProgress = null) => projectApi.uploadAsset(project, file, filename, onProgress),
 
+  /**
+   * Command. OVERWRITE an EXISTING asset's bytes, keeping its name.
+   *
+   * A DISTINCT VERB FROM `put`, and it has to be. `put` is "add a file to the
+   * library" and DE-COLLIDES: hand it a name that is taken and it writes
+   * "gear-2.plugin.js" instead, which is exactly right for a drop or an upload and
+   * exactly wrong for a save. Editing a plugin asset's source through `put` wrote a
+   * SECOND file and left the original untouched, so the editor reported success,
+   * closed, and changed nothing — a silent failure, and one that also littered the
+   * library with numbered copies. (Measured: four "probe_square.plugin-N.js" files
+   * from four saves.)
+   *
+   * LOUD WHEN THE ASSET IS ABSENT: replacing something that is not there is a
+   * caller bug (a typo'd name, a stale listing), and quietly creating the file
+   * instead would turn "save my edit" into "create a new widget" without saying so.
+   *
+   * HTTP mode is delete-then-upload because that is what the backend offers, and it
+   * is also the CORRECT order: the server's delete drops the asset's cached
+   * thumbnail/frame derivatives, which are stale the moment the bytes change.
+   *
+   * @param {string} project
+   * @param {Blob|File} file - the NEW bytes
+   * @param {string} filename - the EXISTING asset's basename (kept)
+   * @returns {Promise<{ok: boolean, name: string, url: string}>}
+   */
+  async replace(project, file, filename) {
+    const existing = (await this.list(project)).some((a) => a.name === filename);
+    if (!existing) throw new Error(`httpAssetStore.replace(${project}, ${filename}): no such asset — replace overwrites, it does not create`);
+    await projectApi.deleteAsset(project, filename);
+    const res = await projectApi.uploadAsset(project, file, filename);
+    // The name must come back UNCHANGED: the delete freed it, so nothing should
+    // have de-collided. If it did, the library now holds a copy the caller does not
+    // know about, which is the very failure this method exists to prevent.
+    if (res.name !== filename)
+      throw new Error(`httpAssetStore.replace(${project}, ${filename}): the server stored it as "${res.name}" instead — the original was not freed, so the edit did not land on the file it was made against`);
+    return res;
+  },
+
   /** Command. Delete one asset (the server also drops its frame/thumb caches). */
   delete: (project, filename) => projectApi.deleteAsset(project, filename),
 
@@ -171,6 +209,24 @@ export const localAssetStore = {
     objectUrls.set(ref, URL.createObjectURL(file));
     if (onProgress) onProgress(size, size);
     return { ok: true, name, url: ref };
+  },
+
+  /** Command (mutates IndexedDB). OVERWRITE an EXISTING asset's bytes, keeping its
+   *  name — the local twin of httpAssetStore.replace (see its docblock for WHY this
+   *  is a separate verb from `put`, which de-collides and therefore cannot save an
+   *  edit). Loud when the asset is absent: replace overwrites, it never creates.
+   *  The old blob: URL is revoked so a stale object URL cannot outlive its bytes. */
+  async replace(project, file, filename) {
+    const key = assetKey(project, filename);
+    const found = await withStore(ASSET_STORE, "readonly", (s) => promisify(s.get(key), `localAssetStore.replace(${key})`));
+    if (!found) throw new Error(`localAssetStore.replace(${project}, ${filename}): no such asset in local storage — replace overwrites, it does not create`);
+    const size = file.size ?? 0;
+    const rec = { project, file: filename, size, mtime: Date.now(), blob: file };
+    await withStore(ASSET_STORE, "readwrite", (s) => promisify(s.put(rec, key), `localAssetStore.replace(${project}, ${filename})`));
+    const ref = assetRef(project, filename);
+    revokeUrl(ref);
+    objectUrls.set(ref, URL.createObjectURL(file));
+    return { ok: true, name: filename, url: ref };
   },
 
   /** Command (mutates IndexedDB). Delete one asset and revoke its object URL.

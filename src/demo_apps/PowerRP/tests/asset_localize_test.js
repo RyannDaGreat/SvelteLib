@@ -1,0 +1,323 @@
+/**
+ * Asset-localization tests — plain node, no framework, no DOM.
+ * Run: node src/demo_apps/PowerRP/tests/asset_localize_test.js
+ *
+ * WHAT IS UNDER TEST is the pure half of "make an export self-contained":
+ * enumerating every asset reference in a document, deciding which are FOREIGN,
+ * planning the copies, and rewriting the refs.
+ *
+ * THE DEFECT THAT MADE THIS FILE NECESSARY (user report, verbatim): "the
+ * robotsim.zip references a video file, but that video file is not in that zip.
+ * If I were to load that zip into the browser, it wouldn't know where the video
+ * file was". RobotSim's doc.json referenced `/asset/Untitled/<video>` — a
+ * CROSS-PROJECT reference, minted by Save-As (rename doc.meta.name, save to a new
+ * folder, leave the assets behind) — while `zip_project_bytes` walked only
+ * RobotSim's own folder. The archive was structurally valid and silently holed.
+ *
+ * So the assertions below care about three failure modes specifically, because
+ * each of them is silent in production:
+ *   1. A ref the walk MISSES is an asset that does not make it into the archive.
+ *      Hence the nested / array / non-`src` / slide-transition cases.
+ *   2. A non-ref the walk MATCHES corrupts a working document. Hence the equation
+ *      and quoted-literal cases.
+ *   3. A naming decision that differs between the server and the client makes the
+ *      two archives non-interchangeable. Hence the plan is tested as DATA, with
+ *      the de-collision scheme injected, so both halves can be checked against
+ *      the same expected plan.
+ */
+
+import assert from "node:assert/strict";
+import { assetRef, uniqueAssetName } from "../web/assetRef.js";
+import { documentAssetRefs, foreignAssetRefs, itemIdForPath, localizationPlan, rewriteAssetRefs } from "../web/assetLocalize.js";
+
+let passed = 0;
+function test(name, fn) {
+  fn();
+  passed++;
+  console.log(`  ok  ${name}`);
+}
+
+/** THE USER'S ACTUAL CASE, reduced: a project named RobotSim whose video src
+ *  names the project it was saved-as FROM. Reused by several tests below. */
+const robotSimDoc = {
+  meta: { name: "RobotSim", script: "" },
+  slides: [
+    {
+      id: "s1",
+      transition: { type: "cut", seconds: 0, curve: "smooth", sound: null },
+      delta: {
+        items: {
+          cam: { type: "camera", x: 0, w: 1280, h: 720 },
+          vid: { type: "video", src: "/asset/Untitled/Video_20260726_224007_045.mp4", loop: true },
+        },
+      },
+    },
+  ],
+};
+
+// ── Enumeration: every ref, and nothing that is not one ─────────────────────
+
+test("documentAssetRefs finds the user's cross-project video ref", () => {
+  const refs = documentAssetRefs(robotSimDoc);
+  assert.deepEqual(refs, [
+    {
+      path: "slides/0/delta/items/vid/src",
+      itemId: "vid",
+      ref: "/asset/Untitled/Video_20260726_224007_045.mp4",
+      project: "Untitled",
+      file: "Video_20260726_224007_045.mp4",
+    },
+  ]);
+});
+
+test("documentAssetRefs walks NESTED props, ARRAYS, and non-src keys", () => {
+  // Every one of these is a real ref-bearing shape in the app: svgUrl (svg
+  // widget), a filmstrip's frame list, a nested paint/effect sub-object, and a
+  // SLIDE's transition sound (which is not inside an item state at all — that is
+  // why itemId is nullable rather than always a string).
+  const doc = {
+    slides: [
+      {
+        transition: { sound: "/asset/Other/ding.wav" },
+        delta: {
+          items: {
+            a: { svgUrl: "/asset/Other/logo.svg" },
+            b: { frames: ["/asset/Other/f0.png", "/asset/Other/f1.png"] },
+            c: { fill: { texture: { src: "/asset/Other/paper.jpg" } } },
+          },
+        },
+      },
+    ],
+  };
+  const refs = documentAssetRefs(doc);
+  assert.deepEqual(
+    refs.map((r) => [r.path, r.itemId, r.file]),
+    [
+      ["slides/0/transition/sound", null, "ding.wav"],
+      ["slides/0/delta/items/a/svgUrl", "a", "logo.svg"],
+      ["slides/0/delta/items/b/frames/0", "b", "f0.png"],
+      ["slides/0/delta/items/b/frames/1", "b", "f1.png"],
+      ["slides/0/delta/items/c/fill/texture/src", "c", "paper.jpg"],
+    ],
+  );
+});
+
+test("documentAssetRefs reports one entry PER OCCURRENCE, not per file", () => {
+  // A rewrite has to touch both, and a report that said "1 asset" when two
+  // leaves must change would be an incomplete instruction.
+  const doc = {
+    slides: [
+      { delta: { items: { a: { src: "/asset/X/clip.mp4" } } } },
+      { delta: { items: { b: { src: "/asset/X/clip.mp4" } } } },
+    ],
+  };
+  assert.equal(documentAssetRefs(doc).length, 2);
+});
+
+test("documentAssetRefs does NOT match equation strings or non-asset URLs", () => {
+  // Failure mode 2: matching a non-ref corrupts a working document. An equation
+  // is an ordinary string leaf living right next to a real src.
+  const doc = {
+    slides: [
+      {
+        delta: {
+          items: {
+            t: {
+              text: "= 1 + 2",
+              x: "= self.anchors.center.x",
+              // A ref-looking substring INSIDE a bigger expression is NOT a ref:
+              // parseAssetRef is anchored at position 0 and consumes the whole
+              // string, so a quoted literal in an equation is left alone.
+              caption: '= "/asset/X/a.png" + name',
+              // Neither are the other src forms a document legitimately holds.
+              remote: "https://example.com/a.png",
+              inline: "data:image/png;base64,iVBO",
+              bare: "logo.png",
+              builtin: "/builtin/gear.svg",
+            },
+          },
+        },
+      },
+    ],
+  };
+  assert.deepEqual(documentAssetRefs(doc), []);
+});
+
+test("documentAssetRefs handles a document with no slides and odd leaves", () => {
+  assert.deepEqual(documentAssetRefs({ meta: { name: "Empty" }, slides: [] }), []);
+  // null / numbers / booleans are not strings and must not throw the walk.
+  assert.deepEqual(documentAssetRefs({ slides: [{ delta: { items: { a: { x: 1, on: true, s: null } } } }] }), []);
+});
+
+test("itemIdForPath reads the segment after 'items', null outside an item", () => {
+  assert.equal(itemIdForPath(["slides", "0", "delta", "items", "vid", "src"]), "vid");
+  assert.equal(itemIdForPath(["slides", "0", "transition", "sound"]), null);
+  assert.equal(itemIdForPath(["items"]), null); // "items" last: no id follows
+});
+
+// ── Foreign / local split ───────────────────────────────────────────────────
+
+test("foreignAssetRefs keeps only refs naming another project, EXACTLY", () => {
+  const refs = documentAssetRefs({
+    slides: [
+      {
+        delta: {
+          items: {
+            own: { src: "/asset/RobotSim/a.png" },
+            foreign: { src: "/asset/Untitled/clip.mp4" },
+            // Case matters: a project folder name is case-sensitive, and
+            // unique_project_name de-collides by exact match, so folding here
+            // would call a genuinely different project local.
+            cased: { src: "/asset/robotsim/b.png" },
+          },
+        },
+      },
+    ],
+  });
+  assert.deepEqual(
+    foreignAssetRefs(refs, "RobotSim").map((r) => r.project),
+    ["Untitled", "robotsim"],
+  );
+  assert.deepEqual(foreignAssetRefs(refs, "Nothing").length, 3);
+});
+
+test("a project with a SPACE round-trips through the percent-encoded grammar", () => {
+  const doc = { slides: [{ delta: { items: { a: { src: assetRef("My Talk", "a b.png") } } } }] };
+  const [ref] = documentAssetRefs(doc);
+  assert.equal(ref.ref, "/asset/My%20Talk/a%20b.png");
+  assert.deepEqual([ref.project, ref.file], ["My Talk", "a b.png"]);
+  assert.deepEqual(foreignAssetRefs([ref], "My Talk"), []); // decoded, so it is LOCAL
+});
+
+// ── The plan ────────────────────────────────────────────────────────────────
+
+test("localizationPlan copies each foreign file ONCE and maps its ref", () => {
+  const refs = documentAssetRefs({
+    slides: [
+      { delta: { items: { a: { src: "/asset/Untitled/clip.mp4" } } } },
+      { delta: { items: { b: { src: "/asset/Untitled/clip.mp4" } } } }, // same file again
+    ],
+  });
+  const plan = localizationPlan(refs, "RobotSim", [], uniqueAssetName);
+  assert.deepEqual(plan.copies, [{ project: "Untitled", file: "clip.mp4", as: "clip.mp4" }]);
+  assert.deepEqual(plan.refMap, { "/asset/Untitled/clip.mp4": "/asset/RobotSim/clip.mp4" });
+});
+
+test("localizationPlan de-collides against local names AND its own copies", () => {
+  const refs = documentAssetRefs({
+    slides: [
+      {
+        delta: {
+          items: {
+            a: { src: "/asset/P1/logo.png" },
+            b: { src: "/asset/P2/logo.png" }, // same basename, DIFFERENT project
+          },
+        },
+      },
+    ],
+  });
+  // "logo.png" is already taken locally, so both copies must land beside it —
+  // and the second must not collide with the first, which is why `taken` grows
+  // inside the plan rather than being read once.
+  const plan = localizationPlan(refs, "Deck", ["logo.png"], uniqueAssetName);
+  assert.deepEqual(
+    plan.copies.map((c) => [c.project, c.as]),
+    [
+      ["P1", "logo 2.png"],
+      ["P2", "logo 3.png"],
+    ],
+  );
+  assert.deepEqual(plan.refMap, {
+    "/asset/P1/logo.png": "/asset/Deck/logo%202.png",
+    "/asset/P2/logo.png": "/asset/Deck/logo%203.png",
+  });
+});
+
+test("localizationPlan flattens a NESTED foreign path and keys the ORIGINAL string", () => {
+  // Both zip halves write a FLAT assets/ folder, so a ref naming a nested path
+  // (a thumbnail-cache entry addresses through the same grammar) can only land
+  // as its basename.
+  //
+  // THE REGRESSION THIS PINS, caught by this very test while it was being
+  // written: the plan first keyed refMap by `assetRef(project, file)`, i.e. a
+  // RE-MINTED ref. assetRef encodes the file as ONE segment, so a nested path
+  // came back as "/asset/P/icons%2Flogo.svg" — which never equals the document's
+  // own "/asset/P/icons/logo.svg". The rewrite matched nothing, the foreign ref
+  // stayed, and the archive was holed again with every test still green. The key
+  // must be the string the document actually holds.
+  const doc = { slides: [{ delta: { items: { a: { src: "/asset/P/icons/logo.svg" } } } }] };
+  const refs = documentAssetRefs(doc);
+  const plan = localizationPlan(refs, "Deck", [], uniqueAssetName);
+  assert.deepEqual(plan.copies, [{ project: "P", file: "icons/logo.svg", as: "logo.svg" }]);
+  assert.deepEqual(plan.refMap, { "/asset/P/icons/logo.svg": "/asset/Deck/logo.svg" });
+  // The end-to-end property: the rewrite actually LANDS, so nothing foreign remains.
+  const out = rewriteAssetRefs(doc, (e) => plan.refMap[e.ref] ?? null);
+  assert.equal(out.slides[0].delta.items.a.src, "/asset/Deck/logo.svg");
+  assert.deepEqual(foreignAssetRefs(documentAssetRefs(out), "Deck"), []);
+});
+
+test("localizationPlan is EMPTY for an already self-contained document", () => {
+  const refs = documentAssetRefs({ slides: [{ delta: { items: { a: { src: "/asset/Deck/a.png" } } } }] });
+  const plan = localizationPlan(refs, "Deck", ["a.png"], uniqueAssetName);
+  assert.deepEqual(plan.copies, []);
+  assert.deepEqual(plan.refMap, {});
+});
+
+// ── The rewrite ─────────────────────────────────────────────────────────────
+
+test("rewriteAssetRefs repoints the user's video and touches nothing else", () => {
+  const plan = localizationPlan(documentAssetRefs(robotSimDoc), "RobotSim", [], uniqueAssetName);
+  const out = rewriteAssetRefs(robotSimDoc, (e) => plan.refMap[e.ref] ?? null);
+  assert.equal(out.slides[0].delta.items.vid.src, "/asset/RobotSim/Video_20260726_224007_045.mp4");
+  // The rewritten document contains NO foreign ref — the property the archive needs.
+  assert.deepEqual(foreignAssetRefs(documentAssetRefs(out), "RobotSim"), []);
+  // Every other leaf survives byte-for-byte, including the untouched camera.
+  assert.deepEqual(out.slides[0].delta.items.cam, robotSimDoc.slides[0].delta.items.cam);
+  assert.deepEqual(out.meta, robotSimDoc.meta);
+});
+
+test("rewriteAssetRefs NEVER mutates its input (the on-disk doc stays authored)", () => {
+  // The archive's doc.json is rewritten while the on-disk document is not — the
+  // user ruling that the source project is untouched.
+  const before = JSON.stringify(robotSimDoc);
+  const out = rewriteAssetRefs(robotSimDoc, () => "/asset/Other/x.mp4");
+  assert.equal(JSON.stringify(robotSimDoc), before);
+  assert.notEqual(out, robotSimDoc);
+  assert.equal(out.slides[0].delta.items.vid.src, "/asset/Other/x.mp4");
+});
+
+test("rewriteAssetRefs returning null/undefined leaves that ref alone", () => {
+  const doc = {
+    slides: [
+      {
+        delta: {
+          items: {
+            a: { src: "/asset/P1/a.png" },
+            b: { src: "/asset/P2/b.png" },
+          },
+        },
+      },
+    ],
+  };
+  const out = rewriteAssetRefs(doc, (e) => (e.project === "P1" ? "/asset/Deck/a.png" : null));
+  assert.equal(out.slides[0].delta.items.a.src, "/asset/Deck/a.png");
+  assert.equal(out.slides[0].delta.items.b.src, "/asset/P2/b.png");
+});
+
+test("rewriteAssetRefs preserves arrays AS ARRAYS and non-string leaves", () => {
+  // mapStrings rebuilds every container; an array that came back as an object
+  // would be a valid-looking document that no widget could read.
+  const doc = {
+    slides: [{ delta: { items: { b: { frames: ["/asset/P/f0.png"], count: 1, on: true, s: null } } } }],
+  };
+  const out = rewriteAssetRefs(doc, () => "/asset/Deck/f0.png");
+  assert.ok(Array.isArray(out.slides[0].delta.items.b.frames));
+  assert.deepEqual(out.slides[0].delta.items.b, { frames: ["/asset/Deck/f0.png"], count: 1, on: true, s: null });
+});
+
+test("rewriteAssetRefs is a NO-OP shape-wise on a ref-free document", () => {
+  const doc = { meta: { name: "D", script: "exports.f = () => 1;" }, slides: [{ delta: { items: { t: { text: "= 1 + 2" } } } }] };
+  assert.deepEqual(rewriteAssetRefs(doc, () => "/asset/X/y.png"), doc);
+});
+
+console.log(`\n${passed} asset-localization tests passed.`);

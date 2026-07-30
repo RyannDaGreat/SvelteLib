@@ -1953,7 +1953,12 @@ export class PowerRPApp {
       return; // modal stays open with the reason in its footer
     }
     this.pluginAssetError = null;
-    await assetStore().put(t.project, new Blob([source], { type: "text/javascript" }), t.filename);
+    // REPLACE, NOT PUT. `put` is the add-a-file verb and DE-COLLIDES a taken name,
+    // so saving an edit through it wrote "gear-2.plugin.js" and left the edited file
+    // untouched: the dialog closed, the widget did not change, and the library grew a
+    // numbered copy per save. `replace` overwrites in place and is LOUD if the asset
+    // has gone (web/assetStore.js).
+    await assetStore().replace(t.project, new Blob([source], { type: "text/javascript" }), t.filename);
     // Re-register: the registry is per-project and REBUILT, never mutated in place
     // (reloadPluginAssets' header explains why), so every instance of the edited
     // type derives from the new code on the next pass.

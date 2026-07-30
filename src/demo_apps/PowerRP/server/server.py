@@ -71,6 +71,11 @@ WEB_DIR = os.path.join(APP_DIR, "web")
 
 DOC_FILENAME = "doc.json"
 ASSETS_SUBDIR = "assets"
+# The ONE prefix an in-document asset reference starts with — the twin of
+# web/assetRef.js ASSET_REF_PREFIX. Named here because the server both MINTS these
+# strings (list_assets' "url") and now PARSES them (parse_asset_ref, for the
+# self-contained export), and the two must never be spelled differently.
+ASSET_REF_PREFIX = "/asset/"
 # Filmstrip frame-extraction cache (the seam the server author reserved): the
 # frames endpoint extracts N evenly-spread frames from a project VIDEO asset and
 # caches them under assets/frames/<video>/<N>/frame_000.png … so a re-request for
@@ -1556,16 +1561,304 @@ def delete_asset(name, filename):
     return filename
 
 
+# -- SELF-CONTAINED EXPORT: the asset-reference walk ------------------------
+# THE DEFECT THIS SECTION EXISTS FOR (user report, verbatim): "the robotsim.zip
+# references a video file, but that video file is not in that zip. If I were to
+# load that zip into the browser, it wouldn't know where the video file was… The
+# zip should be basically the whole project folder."
+#
+# A document stores media as "/asset/<project>/<file>", and the project NAME is
+# baked into every one of those strings — but nothing keeps it equal to the folder
+# the document lives in. SAVE-AS is how they diverge: the client renames
+# doc.meta.name and saves to a NEW folder (web/App.svelte's save modal calls
+# renameProject then saveToServer), while every src still names the OLD project.
+# On this server the deck keeps working, because /asset/<any project>/… is served
+# to anyone — so the divergence is INVISIBLE until the project leaves the machine.
+# zip_project_bytes walked ONE folder, shipped a doc whose refs named a folder not
+# in the archive, and the import opened a deck with a hole where a video was.
+#
+# The fix is not to forbid the divergence (a cross-project ref is useful while both
+# projects are on one server) but to LOCALIZE at the archive boundary: copy the
+# foreign bytes IN and rewrite the ARCHIVED doc.json. The on-disk source project is
+# never touched — the author's document keeps saying exactly what the author wrote.
+#
+# THE WALK IS BLIND (every string leaf) rather than a list of known keys, and the
+# reason is the same one web/assetLocalize.js gives: `src` is not the only
+# ref-bearing property (svgUrl, a slide's transition.sound, a filmstrip frame
+# list, any property a FUTURE widget invents), so a curated key list would be
+# wrong the day someone adds a widget — silently, and in the direction that loses
+# data. This is the PYTHON TWIN of web/assetLocalize.js; the two must agree, and
+# tests/asset_localize_test.py pins them against the same expected plan.
+
+def parse_asset_ref(ref):
+    """
+    Pure function. Split an in-document asset reference into (project, file), or
+    None when `ref` is not one (an http URL, a data: URI, a bare filename, an
+    equation). The twin of web/assetRef.js parseAssetRef, decoding each segment
+    exactly once because that is how the refs were minted (urllib.parse.quote).
+
+    Only the FIRST segment after the prefix is the project; the remainder stays in
+    `file`, which is how a thumbnail path (".thumbs/p.pdf/thumb.png") remains
+    addressable through the same grammar.
+
+    Args:
+        ref: any string leaf from a document
+
+    Returns:
+        tuple[str, str] | None
+
+    Examples:
+        >>> parse_asset_ref("/asset/Untitled/clip.mp4")
+        ('Untitled', 'clip.mp4')
+        >>> parse_asset_ref("/asset/My%20Talk/a%20b.png")
+        ('My Talk', 'a b.png')
+        >>> parse_asset_ref("/asset/Deck/icons/logo.svg")
+        ('Deck', 'icons/logo.svg')
+        >>> parse_asset_ref("https://example.com/a.png") is None
+        True
+        >>> parse_asset_ref('= "/asset/X/a.png" + name') is None
+        True
+    """
+    if not isinstance(ref, str) or not ref.startswith(ASSET_REF_PREFIX):
+        return None
+    rest = ref[len(ASSET_REF_PREFIX):]
+    project, sep, file_part = rest.partition("/")
+    if not sep or not project or not file_part:
+        return None
+    project = urllib.parse.unquote(project)
+    file = "/".join(urllib.parse.unquote(p) for p in file_part.split("/"))
+    if not project or not file:
+        return None
+    return project, file
+
+
+def document_asset_refs(doc):
+    """
+    Pure function. Every asset REFERENCE in a document, in document order, one
+    entry per OCCURRENCE (the same file referenced twice yields two entries — a
+    rewrite must touch both). `path` is a "/"-joined JSON path so a warning can
+    point a human at the exact leaf.
+
+    Args:
+        doc: a serialized document {meta, slides: [{delta: {items}}]}
+
+    Returns:
+        list[dict]: [{"path", "ref", "project", "file"}]
+
+    Examples:
+        >>> doc = {"slides": [{"delta": {"items": {"v": {"src": "/asset/Untitled/clip.mp4"}}}}]}
+        >>> document_asset_refs(doc) == [{"path": "slides/0/delta/items/v/src",
+        ...                               "ref": "/asset/Untitled/clip.mp4",
+        ...                               "project": "Untitled", "file": "clip.mp4"}]
+        True
+        >>> document_asset_refs({"slides": [{"delta": {"items": {"t": {"text": "= 1 + 2"}}}}]})
+        []
+    """
+    found = []
+
+    def walk(value, path):
+        if isinstance(value, str):
+            parsed = parse_asset_ref(value)
+            if parsed:
+                found.append({"path": "/".join(path), "ref": value,
+                              "project": parsed[0], "file": parsed[1]})
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                walk(v, path + [str(i)])
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                walk(v, path + [str(k)])
+
+    walk(doc, [])
+    return found
+
+
+def rewritten_asset_refs(doc, ref_map):
+    """
+    Pure function. A DEEP COPY of `doc` with every asset ref found in `ref_map`
+    replaced. A ref absent from the map is left exactly as authored, which is how
+    only the FOREIGN refs move. The input is never mutated: the archive's doc.json
+    is rewritten while the on-disk document stays as the author wrote it.
+
+    Args:
+        doc: a serialized document
+        ref_map: {old ref string: new ref string}
+
+    Returns:
+        dict: a new document
+
+    Examples:
+        >>> doc = {"slides": [{"delta": {"items": {"v": {"src": "/asset/Untitled/clip.mp4"}}}}]}
+        >>> out = rewritten_asset_refs(doc, {"/asset/Untitled/clip.mp4": "/asset/RobotSim/clip.mp4"})
+        >>> out["slides"][0]["delta"]["items"]["v"]["src"]
+        '/asset/RobotSim/clip.mp4'
+        >>> doc["slides"][0]["delta"]["items"]["v"]["src"]      # input untouched
+        '/asset/Untitled/clip.mp4'
+    """
+    def convert(value):
+        if isinstance(value, str):
+            return ref_map.get(value, value)
+        if isinstance(value, list):
+            return [convert(v) for v in value]
+        if isinstance(value, dict):
+            return {k: convert(v) for k, v in value.items()}
+        return value
+
+    return convert(doc)
+
+
+def localization_plan(refs, project, local_names):
+    """
+    Pure function. THE PLAN for making a document self-contained as `project`:
+    which foreign files must be copied in, under what LOCAL name, and which ref
+    string maps to which new ref. The twin of web/assetLocalize.js
+    localizationPlan — the two must produce the SAME names, or a server archive
+    and a client archive of the same deck would not be interchangeable, which the
+    zip round-trip explicitly promises they are.
+
+    De-collision is the ASSET scheme ("logo.png" → "logo-2.png"), matching
+    unique_asset_name, and `taken` grows as the plan is built so two foreign files
+    with the same basename cannot collide with each other either. Two refs to the
+    SAME file share ONE copy.
+
+    `ref_map` IS KEYED BY THE REF STRING AS THE DOCUMENT SPELLS IT, never by a
+    re-minted one: a file part holding a "/" would re-mint as "icons%2Flogo.svg"
+    and match nothing, silently leaving the foreign ref in place — the exact class
+    of silent hole this whole section closes.
+
+    Args:
+        refs: document_asset_refs output
+        project: the project the document is becoming
+        local_names: asset basenames already present in the project
+
+    Each copy carries its own `ref` (the document's spelling) and `to` (the new
+    ref), so a caller that must DROP one copy — the missing-source case in
+    zip_project_bytes — can remove exactly its mapping without reverse-engineering
+    the key from the name. `ref_map` is the same information flattened for the
+    rewrite.
+
+    Returns:
+        tuple[list[dict], dict]: ([{"project", "file", "as", "ref", "to"}], {old ref: new ref})
+
+    Examples:
+        >>> refs = [{"ref": "/asset/Untitled/clip.mp4", "project": "Untitled", "file": "clip.mp4"},
+        ...         {"ref": "/asset/Untitled/clip.mp4", "project": "Untitled", "file": "clip.mp4"}]
+        >>> copies, ref_map = localization_plan(refs, "RobotSim", [])
+        >>> [(c["file"], c["as"]) for c in copies]
+        [('clip.mp4', 'clip.mp4')]
+        >>> ref_map
+        {'/asset/Untitled/clip.mp4': '/asset/RobotSim/clip.mp4'}
+        >>> localization_plan(refs, "RobotSim", ["clip.mp4"])[0][0]["as"]
+        'clip-2.mp4'
+        >>> localization_plan([{"ref": "/asset/D/a.png", "project": "D", "file": "a.png"}], "D", [])
+        ([], {})
+    """
+    taken = list(local_names)
+    copies = []
+    ref_map = {}
+    for r in refs:
+        if r["project"] == project or r["ref"] in ref_map:
+            continue  # local, or this exact ref is already planned
+        # Only a BASENAME can land in a flat assets/ folder, which is the layout
+        # both zip halves write.
+        as_name = unique_name_among(os.path.basename(r["file"]), taken)
+        taken.append(as_name)
+        to = f"/asset/{urllib.parse.quote(project)}/{urllib.parse.quote(as_name)}"
+        copies.append({"project": r["project"], "file": r["file"], "as": as_name,
+                       "ref": r["ref"], "to": to})
+        ref_map[r["ref"]] = to
+    return copies, ref_map
+
+
+def unique_name_among(filename, taken):
+    """
+    Pure function. A filename that does not collide with `taken` — the PURE half
+    of unique_asset_name, which asks the filesystem. Same "a-2.png" scheme, so a
+    localized copy is named the way an upload into the same folder would be.
+
+    Args:
+        filename: the wanted basename
+        taken: names already used
+
+    Returns:
+        str
+
+    Examples:
+        >>> unique_name_among("logo.png", [])
+        'logo.png'
+        >>> unique_name_among("logo.png", ["logo.png"])
+        'logo-2.png'
+        >>> unique_name_among("logo.png", ["logo.png", "logo-2.png"])
+        'logo-3.png'
+        >>> unique_name_among("README", ["README"])
+        'README-2'
+    """
+    if filename not in taken:
+        return filename
+    stem, ext = os.path.splitext(filename)
+    n = 2
+    while f"{stem}-{n}{ext}" in taken:
+        n += 1
+    return f"{stem}-{n}{ext}"
+
+
 def zip_project_bytes(name):
     """
     Query (reads the filesystem, no mutation). ZIP archive bytes of the WHOLE
     project folder (doc.json + every asset, frames cache included), entries
     rooted at "<name>/…" so unzipping recreates the folder. This is the
     user-facing Download format (manifest: "these will just be .zip files").
+
+    THE ARCHIVE IS SELF-CONTAINED. Any ref pointing at ANOTHER project has that
+    file COPIED INTO this archive's assets/ under a non-colliding name, and the
+    ARCHIVED doc.json's ref rewritten to the local path. The on-disk project is
+    untouched — only the archive is rewritten. See the section docblock above for
+    the defect and why the ref walk is blind.
+
+    A foreign ref whose SOURCE FILE IS MISSING still exports (a half-broken deck is
+    the author's to fix, and refusing the download would strand them), but it is
+    REPORTED — never silent. That is the second return value.
+
+    Returns:
+        tuple[bytes, list[str]]: the .zip bytes, and warnings naming every foreign
+        ref that could not be localized (empty list = fully self-contained).
     """
     d = project_dir(name)
     if not os.path.isdir(d):
         raise FileNotFoundError(f"project not found: {name}")
+
+    warnings = []
+    localized_doc = None
+    copies = []
+    if os.path.isfile(doc_path(name)):
+        with open(doc_path(name)) as f:
+            doc = json.load(f)
+        local_names = [a["name"] for a in list_assets(name)]
+        planned, ref_map = localization_plan(document_asset_refs(doc), name, local_names)
+        # A planned copy whose source file is gone must NOT be rewritten: pointing
+        # the archive at a local file that will not exist trades a findable broken
+        # ref for an unfindable one. So it is dropped from the plan and reported.
+        for c in planned:
+            try:
+                src = os.path.join(assets_dir(c["project"]), *c["file"].split("/"))
+            except ValueError as exc:
+                # safe_name refused the project part: a hand-edited document can
+                # name "../.." and must not be allowed to read outside PROJECTS_DIR.
+                # Reported, not silently skipped, and the ref stays as authored.
+                del ref_map[c["ref"]]
+                warnings.append(f"unsafe asset reference {c['ref']!r} in {name}'s document: {exc}")
+                continue
+            if os.path.isfile(src):
+                copies.append({**c, "src": src})
+            else:
+                del ref_map[c["ref"]]
+                warnings.append(
+                    f"asset not found: /asset/{c['project']}/{c['file']} — referenced by "
+                    f"{name}'s document but missing from that project's assets/; the archive "
+                    f"keeps the original reference, which will not resolve after import")
+        if ref_map:
+            localized_doc = rewritten_asset_refs(doc, ref_map)
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, _dirs, files in os.walk(d):
@@ -1574,8 +1867,14 @@ def zip_project_bytes(name):
                 if full.endswith(".tmp"):
                     continue  # never ship an in-flight atomic-write temp
                 arcname = os.path.join(name, os.path.relpath(full, d))
+                if localized_doc is not None and os.path.samefile(full, doc_path(name)):
+                    continue  # the rewritten copy is written below instead
                 zf.write(full, arcname)
-    return buf.getvalue()
+        if localized_doc is not None:
+            zf.writestr(os.path.join(name, DOC_FILENAME), json.dumps(localized_doc, indent=2))
+        for c in copies:
+            zf.write(c["src"], os.path.join(name, ASSETS_SUBDIR, c["as"]))
+    return buf.getvalue(), warnings
 
 
 # -- Project IMPORT: the inverse of zip_project_bytes ------------------------

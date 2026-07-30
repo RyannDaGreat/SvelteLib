@@ -75,6 +75,19 @@ const browser = await puppeteer.launch({
 });
 const failures = [];
 const errors = [];
+/**
+ * Console errors this probe must not fail on, each an ENVIRONMENT fact rather than
+ * a defect, and each matched narrowly so a real error with a similar prefix still
+ * fails. A boot-time baseline count is not enough on its own: scenario 7 RELOADS the
+ * page, so the same environmental error is emitted a second time after the baseline
+ * was taken.
+ *
+ * VideoV7 asks for a WebGPU adapter; headless Chrome on SwiftShader has none, and the
+ * app's documented behaviour is to fall back to 2D drawImage and SAY SO. Panel
+ * visibility neither causes nor is affected by it.
+ */
+const ENVIRONMENTAL_ERRORS = [/VideoV7: WebGPU init failed — using 2D drawImage fallback/];
+const isEnvironmental = (text) => ENVIRONMENTAL_ERRORS.some((re) => re.test(text));
 const check = (name, ok, detail = "") => {
   if (!ok) failures.push(`${name}${detail ? `: ${detail}` : ""}`);
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${!ok && detail ? ` — ${detail}` : ""}`);
@@ -92,14 +105,21 @@ try {
   // FRESH PROFILE, deliberately: the autosave deck is seeded but NO
   // powerrp.panel.* key is, so what scenario 1 observes is the DEFAULT — ruling
   // (3) — and not a value some earlier run happened to leave behind.
-  await page.evaluateOnNewDocument((json) => {
-    localStorage.setItem("powerrp.autosave", json);
+  //
+  // The panel keys are cleared ONCE, not from the evaluateOnNewDocument hook: that
+  // hook runs before EVERY navigation, so clearing there also wiped the keys during
+  // scenario 7's reload and the probe then read the defaults back and called the
+  // persistence broken. Seeding the deck is idempotent and stays in the hook.
+  await page.evaluateOnNewDocument((json) => localStorage.setItem("powerrp.autosave", json), demoJson);
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
     for (const key of Object.keys(localStorage)) if (key.startsWith("powerrp.panel.")) localStorage.removeItem(key);
-  }, demoJson);
+  });
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForSelector(".app", { timeout: 20000 });
   await settle();
   const bootErrors = errors.length; // baseline: other agents' in-flight WIP noise, not ours
+  const bootEnvironmental = errors.filter((e) => isEnvironmental(e)).length;
 
   /** Query. The rendered panel name plates, by data-region (Panel.svelte sets it
    *  from `name`, and it is present whether or not the title bar is shown). */
@@ -295,7 +315,7 @@ try {
   check("reload-keeps-global-variables-shown", afterReload.includes("Global Variables Panel"), `regions=${JSON.stringify(afterReload)}`);
   await page.screenshot({ path: `${shots}/panels_after_reload.png` });
 
-  const newErrors = errors.slice(bootErrors);
+  const newErrors = errors.slice(bootErrors).filter((e) => !isEnvironmental(e));
   if (newErrors.length) failures.push(`console errors during panel visibility probe: ${newErrors.join(" | ")}`);
 
   if (failures.length) {
@@ -303,7 +323,10 @@ try {
     if (bootErrors) console.error(`(ignored ${bootErrors} pre-existing boot error(s) from other agents' in-flight work)`);
     process.exit(1);
   }
-  console.log(`Panel visibility probe passed: all scenarios green (ignored ${bootErrors} boot error(s)). Shots in ${shots}`);
+  console.log(
+    `Panel visibility probe passed: all scenarios green ` +
+      `(ignored ${bootErrors} boot error(s), of which ${bootEnvironmental} environmental). Shots in ${shots}`,
+  );
 } finally {
   await browser.close();
   await server.close();

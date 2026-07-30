@@ -116,6 +116,7 @@
  * core/.
  */
 
+import { reportOnce } from "./report.js";
 import { BLOCKED_GLOBALS, SAFE_MATH } from "./expressions.js";
 import { standardBBoxAnchors } from "./derive.js";
 import * as properties from "./properties.js";
@@ -477,6 +478,25 @@ function blockDynamicCompilation() {
  * @example typeof jailedPluginHooks({type: "a", emit: () => []}).emit // "function"
  * @example jailedPluginHooks({type: "a", title: "A"}).title // "A" (non-function values pass through)
  */
+/** Error-affordance colors for a THROWING plugin hook — the same loud red
+ * treatment render_gpu/affordances.js documents, restated as literals because
+ * core/ may not import render_gpu (the layering rule). A plugin whose emit
+ * throws must cost ITSELF its pixels — never the frame (a live crash took the
+ * whole canvas paint down with "triangulated: no ear found", 2026-07-30). */
+const HOOK_ERROR_BG = "#f6c9c4";
+const HOOK_ERROR_BORDER = "#c0392b";
+const HOOK_ERROR_TEXT = "#7a1210";
+const HOOK_ERROR_TEXT_FRACTION = 0.16;
+const HOOK_ERROR_PADDING = 8;
+
+/** Pure. Minimal vector error ops for a plugin box (the affordances.js shape). */
+function pluginErrorOps(w, h, message) {
+  return [
+    { op: "rect", x: 0, y: 0, w, h, cornerRadius: 0, fill: HOOK_ERROR_BG, stroke: HOOK_ERROR_BORDER, strokeWidth: 3 },
+    { op: "text", text: `plugin error: ${message}`, x: HOOK_ERROR_PADDING, y: HOOK_ERROR_PADDING, size: Math.max(1, h * HOOK_ERROR_TEXT_FRACTION), color: HOOK_ERROR_TEXT, boxW: Math.max(1, w - 2 * HOOK_ERROR_PADDING), boxH: Math.max(1, h - 2 * HOOK_ERROR_PADDING) },
+  ];
+}
+
 export function jailedPluginHooks(plugin) {
   const out = {};
   for (const [key, value] of Object.entries(plugin)) {
@@ -488,6 +508,15 @@ export function jailedPluginHooks(plugin) {
       const restore = blockDynamicCompilation();
       try {
         return value.apply(this, args);
+      } catch (e) {
+        // emit() is the render path: a throw there must degrade to the LOUD
+        // in-widget error box, not kill the frame for every other widget.
+        // Every other hook keeps throwing — callers handle those individually.
+        if (key !== "emit") throw e;
+        const msg = e instanceof Error ? e.message : String(e);
+        reportOnce(`plugin_assets:emit:${plugin.type}:${msg}`, `PowerRP plugin "${plugin.type}": emit threw — ${msg}`);
+        const s = args[0] ?? {};
+        return pluginErrorOps(s.w > 0 ? s.w : 160, s.h > 0 ? s.h : 160, msg);
       } finally {
         restore();
       }

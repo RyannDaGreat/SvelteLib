@@ -215,21 +215,35 @@ test("the layout maps pane index through the VISIBLE subset, not through a liter
   }
 });
 
-test("each column binds splits to a PLAIN IDENTIFIER, never a get/set pair over the column", () => {
-  // THE BUG THIS PINS, because it was live and silent: folding both columns into
-  // one <SplitPane> requires a conditional binding, and `bind:splits={cond ? a : b}`
-  // is illegal — so the obvious next move is a `{get, set}` pair closing over the
-  // column. Svelte captures that pair ONCE at component creation, so after a
-  // visibility flip the child kept reading and writing the STALE closure: its
-  // paneCount never shrank, the hidden panel left an empty pane AND a live divider
-  // behind (exactly what the ruling forbids), and the pane body then indexed past
-  // the end of the visible list and threw `Cannot read properties of undefined`.
-  // Two <SplitPane>s with plain identifier bindings is the fix.
-  assert.ok(appSvelte.includes("bind:splits={leftSplits}"), "the left column does not bind splits to a plain identifier");
-  assert.ok(appSvelte.includes("bind:splits={rightSplits}"), "the right column does not bind splits to a plain identifier");
-  assert.ok(appSvelte.includes("bind:splits={hSplits}"), "the outer row does not bind splits to a plain identifier");
-  assert.doesNotMatch(appSvelte, /bind:splits=\{\s*\(\)\s*=>/, "a splits binding is a get/set pair again — it will capture a stale closure");
-  assert.doesNotMatch(appSvelte, /bind:splits=\{[^}]*\?[^}]*:/, "a splits binding is conditional — Svelte binds to an identifier, not an expression");
+test("EVERY boundary array is DERIVED from the weights, never mirrored into $state by an effect", () => {
+  // THE BUG THIS PINS, because it was live, silent, and cost a debugging session.
+  // The boundaries used to be three `$state` arrays that an `$effect` recomputed
+  // whenever a visibility signature changed. Hiding two panels of one column in a
+  // SINGLE TICK — exactly what "hide the whole column" does — batches both writes,
+  // so the effect ran once for the pair and the OUTER row kept its three-column
+  // shape: three panes, two live dividers (the dead divider the ruling forbids),
+  // and the canvas rendering in a 230px slot meant for a sidebar. An effect that
+  // mirrors derived data into state can be one batch stale; a `$derived` cannot.
+  for (const name of ["hSplits", "leftSplits", "rightSplits"])
+    assert.match(
+      appSvelte,
+      new RegExp(`const ${name} = \\$derived\\(columnSplits\\(`),
+      `${name} is not a $derived over columnSplits() — a mirrored copy can be a batch out of date`,
+    );
+  assert.doesNotMatch(appSvelte, /let (h|left|right)Splits = \$state\(/, "a boundary array is $state again; it must be $derived from the weights");
+  // A $derived cannot be bound, so each binding is a {get, set} pair whose setter
+  // re-attributes the drag onto the WEIGHTS the getter derives from. That is what
+  // makes a divider drag survive a later hide/show.
+  assert.ok(appSvelte.includes("bind:splits={() => hSplits, commitRowDrag}"), "the outer row does not bind through a get/set pair");
+  for (const column of ["left", "right"])
+    assert.ok(
+      appSvelte.includes(`bind:splits={() => ${column}Splits, (splits) => commitColumnDrag("${column}", splits)}`),
+      `the ${column} column does not bind through a get/set pair that writes the drag back to the weights`,
+    );
+  // The getters must close over a FIXED column. A pair closing over a varying one
+  // is captured once at creation and then reads the stale closure forever — the
+  // first form of this bug, where one <SplitPane> served both columns.
+  assert.doesNotMatch(appSvelte, /bind:splits=\{[^}]*slot\.id/, "a splits binding closes over the varying column again — it will capture a stale closure");
 });
 
 test("a pane index past the end of the visible list renders NOTHING rather than throwing", () => {
