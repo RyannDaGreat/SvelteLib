@@ -5,9 +5,236 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
     <title>PowerRP</title>
+    <!--
+      THE BOOT SPLASH — inline HTML + inline CSS + inline JS, deliberately.
+
+      The reported bug: "loading the site for the first time its a big gray box
+      with no loading bar." On a cold cache the app shell is blank for seconds
+      while CanvasKit's ~7 MB wasm downloads and boots, and the user gets zero
+      feedback. This markup is parsed and painted BEFORE the module bundle is
+      even requested, which is the only way to cover t=0 — an import cannot
+      paint before it loads, so the splash cannot live in a component.
+
+      It cannot read app.css's --a-* tokens (that stylesheet arrives with the
+      bundle), so the few colours it needs are inlined and mirror the Graphite
+      default dark (--bg #1b1b1b / --fg #e6e6e6 / --fg-dim #8c8c8c) and the
+      light theme (--bg #f4f4f4 / --fg #1a1a1a) via prefers-color-scheme.
+
+      WARM LOADS MUST NOT FLASH. The backdrop covers the gray box from the first
+      paint, but the progress UI (title, bar, stage list) stays at opacity 0
+      until REVEAL_DELAY_MS. A subsecond warm boot therefore shows a plain
+      themed backdrop that lifts silently — no spinner blink, no jank.
+
+      Removal is at the FIRST REAL CANVAS PAINT (CanvasView calls bootDone()
+      after gpu.render), never on a timer. Boot failure calls fail() and the
+      splash turns into a loud error surface, because a gray box forever is the
+      current failure mode too.
+    -->
+    <style>
+      :root {
+        --boot-bg: #1b1b1b;
+        --boot-fg: #e6e6e6;
+        --boot-dim: #8c8c8c;
+        --boot-track: rgba(255, 255, 255, 0.1);
+        --boot-bar: #e6e6e6;
+        --boot-error: #ff6b6b;
+        --boot-reveal-ms: 400ms; /* progress UI fade-in; must match REVEAL_DELAY_MS */
+        --boot-lift-ms: 220ms;   /* splash fade-out once the first frame exists */
+        --boot-gap: 14px;
+        --boot-bar-h: 3px;
+        --boot-bar-w: 260px;
+        --boot-title-size: 15px;
+        --boot-stage-size: 12px;
+        --boot-error-pad: 16px;
+        --boot-error-max-w: 640px;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --boot-bg: #f4f4f4;
+          --boot-fg: #1a1a1a;
+          --boot-dim: #666666;
+          --boot-track: rgba(0, 0, 0, 0.14);
+          --boot-bar: #1a1a1a;
+          --boot-error: #c02626;
+        }
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: var(--boot-gap);
+        background: var(--boot-bg);
+        color: var(--boot-fg);
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        transition: opacity var(--boot-lift-ms) ease;
+      }
+      /* The gray box is covered from t=0, but nothing READS as loading until the
+         boot has proven itself slow — that is what keeps warm loads silent. */
+      #boot-splash > .boot-ui {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--boot-gap);
+        opacity: 0;
+        transition: opacity var(--boot-reveal-ms) ease;
+      }
+      #boot-splash[data-revealed="1"] > .boot-ui { opacity: 1; }
+      #boot-splash[data-lifting="1"] { opacity: 0; pointer-events: none; }
+      .boot-title {
+        font-size: var(--boot-title-size);
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .boot-track {
+        width: var(--boot-bar-w);
+        height: var(--boot-bar-h);
+        background: var(--boot-track);
+        overflow: hidden;
+      }
+      .boot-bar {
+        height: 100%;
+        width: 0%;
+        background: var(--boot-bar);
+        transition: width 120ms linear;
+      }
+      /* Indeterminate: a real download with no Content-Length. The bar sweeps to
+         say "alive" WITHOUT claiming a percentage it does not know. */
+      .boot-track[data-indeterminate="1"] > .boot-bar {
+        width: 35%;
+        transition: none;
+        animation: boot-sweep 1.1s ease-in-out infinite;
+      }
+      @keyframes boot-sweep {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(286%); }
+      }
+      .boot-stage {
+        font-size: var(--boot-stage-size);
+        color: var(--boot-dim);
+        font-variant-numeric: tabular-nums;
+        min-height: 1.2em;
+      }
+      .boot-error {
+        display: none;
+        max-width: var(--boot-error-max-w);
+        padding: var(--boot-error-pad);
+        color: var(--boot-error);
+        font-size: var(--boot-stage-size);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+        text-align: left;
+        line-height: 1.5;
+      }
+      #boot-splash[data-failed="1"] .boot-track,
+      #boot-splash[data-failed="1"] .boot-stage { display: none; }
+      #boot-splash[data-failed="1"] .boot-error { display: block; }
+      #boot-splash[data-failed="1"] > .boot-ui { opacity: 1; }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash, #boot-splash > .boot-ui, .boot-bar { transition: none; }
+        .boot-track[data-indeterminate="1"] > .boot-bar { animation: none; }
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
+    <div id="boot-splash">
+      <div class="boot-ui">
+        <div class="boot-title">PowerRP</div>
+        <div class="boot-track" id="boot-track"><div class="boot-bar" id="boot-bar"></div></div>
+        <div class="boot-stage" id="boot-stage">Starting…</div>
+        <div class="boot-error" id="boot-error"></div>
+      </div>
+    </div>
+    <script>
+      // window.__powerrp_boot — THE seam web/bootProgress.js talks to. It must be
+      // a plain inline script, not a module: this has to exist before the bundle
+      // so the very first loader call has somewhere to report to.
+      (function () {
+        var REVEAL_DELAY_MS = 400;  // below this, a warm boot shows no progress UI at all
+        var LIFT_MS = 220;          // must match --boot-lift-ms
+        var el = document.getElementById("boot-splash");
+        var bar = document.getElementById("boot-bar");
+        var track = document.getElementById("boot-track");
+        var stageEl = document.getElementById("boot-stage");
+        var errorEl = document.getElementById("boot-error");
+        var finished = false;
+        // Stage history, in arrival order — the probe asserts it advances
+        // monotonically, and it is the honest record of what boot actually did.
+        var history = [];
+
+        var revealTimer = setTimeout(function () {
+          if (!finished) el.setAttribute("data-revealed", "1");
+        }, REVEAL_DELAY_MS);
+
+        /** Pure function. Bytes → a short human string ("6.9 MB"). */
+        function mb(bytes) {
+          return (bytes / 1048576).toFixed(1) + " MB";
+        }
+
+        window.__powerrp_boot = {
+          history: history,
+          stage: function (id, label, detail) {
+            if (finished) return;
+            detail = detail || {};
+            history.push({ id: id, label: label, loaded: detail.loaded, total: detail.total, unit: detail.unit || "bytes", done: !!detail.done, t: Date.now() });
+            // `unit` keeps the readout HONEST about what it is counting: the wasm
+            // stage counts bytes ("2.1 MB / 6.9 MB"), the font stage counts FACES
+            // ("7 / 14"), because those download in parallel and a byte total
+            // would be a sum of concurrent unknowns.
+            var count = detail.unit === "count";
+            var fmt = count ? function (n) { return String(n); } : mb;
+            var known = typeof detail.total === "number" && detail.total > 0 && typeof detail.loaded === "number";
+            if (known) {
+              track.removeAttribute("data-indeterminate");
+              var pct = Math.max(0, Math.min(100, (detail.loaded / detail.total) * 100));
+              bar.style.width = pct.toFixed(1) + "%";
+              stageEl.textContent = label + " — " + fmt(detail.loaded) + " / " + fmt(detail.total);
+            } else if (typeof detail.loaded === "number" && detail.loaded > 0) {
+              // Real progress, unknown total (gzip / no Content-Length): show the
+              // count that IS known and sweep. Never a synthetic percentage.
+              track.setAttribute("data-indeterminate", "1");
+              stageEl.textContent = label + " — " + fmt(detail.loaded);
+            } else {
+              track.setAttribute("data-indeterminate", "1");
+              stageEl.textContent = label + "…";
+            }
+          },
+          done: function () {
+            if (finished) return;
+            finished = true;
+            clearTimeout(revealTimer);
+            el.setAttribute("data-lifting", "1");
+            setTimeout(function () { el.remove(); }, LIFT_MS);
+          },
+          fail: function (message) {
+            // A failure OUTRANKS done(): it must be visible even if something
+            // else already tried to lift the splash.
+            finished = false;
+            clearTimeout(revealTimer);
+            el.setAttribute("data-revealed", "1");
+            el.setAttribute("data-failed", "1");
+            el.removeAttribute("data-lifting");
+            errorEl.textContent = "PowerRP failed to start.\n\n" + message;
+          },
+        };
+
+        // A boot that dies before any of our own code runs (a bundle that 404s
+        // under the wrong base path, a syntax error) would otherwise leave the
+        // splash spinning forever — which is the same gray box with extra steps.
+        window.addEventListener("error", function (ev) {
+          if (finished) return;
+          var t = ev.target;
+          if (t && (t.tagName === "SCRIPT" || t.tagName === "LINK")) {
+            window.__powerrp_boot.fail("Failed to load " + (t.src || t.href) + "\n\nThe app bundle could not be fetched. If this is a static deploy, the base path is the usual cause.");
+          }
+        }, true);
+      })();
+    </script>
     <script type="module" src="./main.js"></script>
   </body>
 </html>

@@ -28,6 +28,7 @@
   import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
   import { rect as rectCmd } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
+  import { bootDone, bootFailed } from "./bootProgress.js";
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
@@ -420,6 +421,10 @@
       .catch((e) => {
         gpuError = String(e?.message ?? e);
         console.error("PowerRP: Skia/WebGL init failed:", e);
+        // THE boot splash is still covering the shell at this point (it lifts on
+        // the first paint, which will now never come). Tell it, or the user gets
+        // the gray box forever that this whole feature exists to kill.
+        bootFailed(`Skia/WebGL init failed: ${gpuError}`);
       });
   });
   // Free the Skia/WebGL surface on teardown (remount / HMR / project switch):
@@ -570,7 +575,7 @@
     // never re-renders per keystroke — the async render fires ONCE on commit
     // when the item is un-suppressed during the `closing` crossfade).
     const codeSuppressId = app.codeEditing && !app.codeEditing.closing ? app.codeEditing.itemId : null;
-    const allNodes = deriveRenderTree(state, app.registry);
+    const allNodes = deriveRenderTree(state, app.registry, app.projectName());
     const nodes = allNodes
       .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== latexSuppressId && n.itemId !== codeSuppressId);
     // VIDEO PLAYBACK GATE: only PLAYER videos actually VISIBLE this frame may
@@ -656,6 +661,11 @@
     // on-screen. No-op until the async backend is ready.
     videoV8?.paint(nodes, view, canvasEl.width, canvasEl.height);
     app.renderFrameCount += 1;
+    // THE BOOT SPLASH LIFTS HERE — at the first REAL painted frame, never on a
+    // timer. gpu.render above has just put pixels on the canvas, so there is
+    // something behind the splash the instant it goes. Idempotent on the splash
+    // side, so paying this call every frame costs one nullish check.
+    bootDone();
   }
 
   // Blender-style background grid on a SEPARATE underlay canvas beneath .scene —

@@ -3,6 +3,7 @@ import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { loadFonts } from "./fontLoader.js";
+import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
 
 // Load the committed font FILES (../fonts/) into the browser BEFORE any text
 // rasterizes — the WebGPU glyph atlas draws through canvas2D, which silently
@@ -106,5 +107,25 @@ if (!new URLSearchParams(location.search).has("cli")) {
   // ALSO awaits the storage-mode probe (see storageReady above) — the two run
   // CONCURRENTLY (both promises were started at module load) so the probe adds
   // no boot latency beyond the font load it hides behind.
-  Promise.all([fontsLoaded, storageReady]).then(() => mount(App, { target: document.getElementById("app") }));
+  bootStage("storage", "Checking storage", {});
+  Promise.all([fontsLoaded, storageReady])
+    .then(() => {
+      bootStage("mount", "Building the editor", {});
+      mount(App, { target: document.getElementById("app") });
+    })
+    // BOOT FAILURE IS THE OTHER GRAY BOX. Anything that throws before the first
+    // frame — a font load that rejects, the storage probe, a mount error — used
+    // to leave the shell blank forever with only a console line. Now it lands on
+    // the splash's loud error surface AND is re-raised, because a reported error
+    // that is also swallowed is still a silent failure.
+    .catch((e) => {
+      bootFailed(e?.stack || e?.message || String(e));
+      throw e;
+    });
+} else {
+  // ?cli=1 NEVER MOUNTS CanvasView, so the first-paint seam that normally lifts
+  // the splash does not exist on this page. Lift it here instead — leaving it up
+  // would put a full-screen overlay over the render host, which is the one place
+  // a lingering splash could actually break something rather than just look bad.
+  bootDone();
 }

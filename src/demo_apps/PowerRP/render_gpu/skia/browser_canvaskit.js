@@ -22,6 +22,7 @@
 import CanvasKitInit from "canvaskit-wasm/bin/canvaskit.js";
 import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
 import { committedFaces, FALLBACK_FACES } from "../fonts.js";
+import { bootStage, fetchWithProgress } from "../../web/bootProgress.js";
 
 // Vite inlines every committed + fallback TTF at build time (offline-safe, hashed
 // URLs) — the same mechanism web/fontLoader.js uses, resolved relative to THIS
@@ -30,9 +31,45 @@ import { committedFaces, FALLBACK_FACES } from "../fonts.js";
 const FONT_URLS = import.meta.glob("../../fonts/*.ttf", { query: "?url", import: "default", eager: true });
 
 let _ckPromise = null;
-/** Command (inits the WASM module once; memoized). Returns Promise<CanvasKit module>. */
+/**
+ * Command (inits the WASM module once; memoized). Returns Promise<CanvasKit module>.
+ *
+ * THE BIG COLD-BOOT DOWNLOAD, and therefore the boot splash's main number. The
+ * ~7 MB canvaskit.wasm is what makes a first load "a big gray box" for seconds,
+ * so it is PREFETCHED here with fetch + a ReadableStream reader
+ * (web/bootProgress.fetchWithProgress) to get REAL byte progress.
+ *
+ * WHY A BLOB URL AND NOT `wasmBinary`. Emscripten's documented "here are the
+ * bytes" hooks are `wasmBinary` and `instantiateWasm`, and NEITHER EXISTS in
+ * this CanvasKit build — verified by grep against
+ * node_modules/canvaskit-wasm/bin/canvaskit.js, which contains zero occurrences
+ * of either and unconditionally fetches whatever `locateFile` returns. Passing
+ * `wasmBinary` would therefore be silently ignored and the 7 MB would download
+ * TWICE: once for the progress bar and once for the module. So the prefetched
+ * bytes are wrapped in a Blob and `locateFile` returns THAT object URL — the
+ * module's own fetch then hits the in-memory blob, costs no network, and the
+ * download stays single. The URL is revoked once init settles; holding it would
+ * pin 7 MB for the life of the page.
+ *
+ * `canvaskitWasmUrl` is a Vite `?url` import, so it is already base-prefixed at
+ * BUILD time — the prefetch is correct under `--base /SvelteLib/` for free, with
+ * no runtime base math to get wrong.
+ *
+ * The prefetch failing is NOT swallowed: it rejects, and the caller routes that
+ * to the splash's loud error surface.
+ */
 export function ensureCanvasKit() {
-  if (!_ckPromise) _ckPromise = CanvasKitInit({ locateFile: () => canvaskitWasmUrl });
+  if (!_ckPromise) {
+    _ckPromise = fetchWithProgress(canvaskitWasmUrl, "wasm", "Graphics engine").then(async (bytes) => {
+      bootStage("wasm-init", "Starting graphics engine", {});
+      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "application/wasm" }));
+      try {
+        return await CanvasKitInit({ locateFile: () => blobUrl });
+      } finally {
+        URL.revokeObjectURL(blobUrl);
+      }
+    });
+  }
   return _ckPromise;
 }
 
@@ -58,12 +95,20 @@ async function buildFontCollection(CanvasKit) {
     ...committedFaces().map((f) => ({ family: f.cssFamily, file: f.file })),
     ...FALLBACK_FACES.map((f) => ({ family: f.family, file: f.file })),
   ];
+  // BOOT STAGE 2. These faces are ~12.5 MB (the 10.7 MB colour-emoji face
+  // dominates), so on a cold cache this is a visible slice of boot and the
+  // splash must account for it. Progress is counted in FACES COMPLETED, not
+  // bytes: they download in parallel, so a byte total would be the sum of a
+  // dozen concurrent unknowns — face counts are a number we actually have.
+  let facesDone = 0;
+  bootStage("fonts", "Fonts", { loaded: 0, total: faces.length, unit: "count" });
   await Promise.all(
     faces.map(async ({ family, file }) => {
       const url = FONT_URLS[`../../fonts/${file}`];
       if (!url) { console.error(`browser_canvaskit: font "${file}" has no bundled URL — check fonts.js vs fonts/.`); return; }
       const buf = await (await fetch(url)).arrayBuffer();
       provider.registerFont(buf, family);
+      bootStage("fonts", "Fonts", { loaded: ++facesDone, total: faces.length, unit: "count" });
     }),
   );
   const fc = CanvasKit.FontCollection.Make();
