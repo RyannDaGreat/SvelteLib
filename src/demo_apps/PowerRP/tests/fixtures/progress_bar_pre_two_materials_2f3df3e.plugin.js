@@ -1,18 +1,17 @@
 // progress_bar.plugin.js — A BUILT-IN PLUGIN ASSET (core/builtin_plugin_assets.js).
 //
-// PROGRESS BAR widget — a TRACK region and a FILL region PARTITIONING one rounded
-// rect, split at `fraction` (0..1) of the track along its orientation. The value
-// the widget is built around is `fraction`: an ordinary equation-bindable number,
-// so it hooks to ANY live source through the universal `=` path — most usefully a
-// video's progress export (`= @clip.progress`, from plugins/video_scrub.js),
-// giving a scrubber a real progress readout.
+// PROGRESS BAR widget — literally two boxes. A TRACK rectangle (the full bbox)
+// and a FILL rectangle whose length is `fraction` (0..1) of the track along its
+// orientation. The value the widget is built around is `fraction`: an ordinary
+// equation-bindable number, so it hooks to ANY live source through the universal
+// `=` path — most usefully a video's progress export (`= @clip.progress`, from
+// plugins/video_scrub.js), giving a scrubber a real progress readout.
 //
 // ── STATE ─────────────────────────────────────────────────────────────────────
 // `fraction` (0..1, CLAMPED at render) drives the fill length. `orientation` is
 // "horizontal" (fills left→right, default) or "vertical" (fills bottom→top, a
-// rising bar). `fillColor` / `trackColor` paint the two regions — each a FULL
-// paint slot (solid/gradient/material), not a plain color; `cornerRadius` rounds
-// both (pill bars). The bbox w×h IS the track's size — the standard resize
+// rising bar). `trackColor` / `fillColor` paint the two boxes; `cornerRadius`
+// rounds both (pill bars). The bbox w×h IS the track's size — the standard resize
 // handles size the bar, so there is no separate width/height/thickness prop (a
 // horizontal bar is wide-and-short, a vertical one tall-and-narrow).
 //
@@ -44,33 +43,9 @@
 // clipped away, and the right edge is the straight cut at x = fraction·w.
 //
 // At fraction 0 the intersection is EMPTY and the widget emits NO fill op at all
-// (`regionPathD` returns null). That is the histogram's empty-bin lesson: a
+// (`fillPathD` returns null). That is the histogram's empty-bin lesson: a
 // zero-extent filled/stroked shape is not invisible — antialiasing and any stroke
 // still lay down ink — so the only way to draw nothing is to emit nothing.
-//
-// ── TWO MATERIALS, PARTITIONED — NOT STACKED (user ruling) ───────────────────
-// "I could actually have a striped pattern for one part of the loading bar and
-// another part for the other... two sub-materials: top material and bottom
-// material" (top/bottom is the visual description; the widget's own axes are
-// FILL and TRACK, which stay correct under both orientations — see the
-// orientation note below). The two regions PARTITION the track ring: the TRACK
-// half is no longer a full w×h rect painted first and then covered by the fill —
-// "instead of having one on top of the other" is the explicit ruling — it is the
-// COMPLEMENT of the fill's clip rect, i.e. the same track ring clipped to
-// [cut, far end] instead of [0, cut]. Both clips share ONE helper
-// (`regionPathD`), so the partition is true by construction: fillBox ∪ trackBox
-// is the whole progress-rect superset of the ring, and they share only their
-// common edge (the cut line), which has zero area — no gap, no overlap, and
-// translucent materials never double-darken the seam the way two stacked layers
-// would.
-//
-// `fillColor`/`trackColor` are UNCHANGED KEYS (no document migration): they now
-// take the FULL paint union (`paint: true`, the same Axis-1 seam `fill`/`stroke`/
-// `background` already use) instead of a plain hex string, so a stored solid
-// string is still exactly a solid (parsePaint's back-compat case) and every
-// existing document paints byte-identically. The Inspector labels read "Fill
-// material" / "Track material" per the brief; the storage keys stay
-// `fillColor`/`trackColor` so old documents need no repair-pipeline migration.
 //
 // ── WHY THIS IS AN ASSET AND NOT plugins/progress_bar.js ANY MORE ─────────────
 // It was the simplest widget on the roster whose whole vocabulary — ir ops, the
@@ -81,7 +56,7 @@
 // against the exact op list the source module used to emit.
 //
 // No plugin imports another (composition is through document state + equations):
-// both regions are emitted as `ir.path` ops here, NOT by delegating to rect.js.
+// the fill is emitted as an `ir.path` op here, NOT by delegating to rect.js.
 
 // ── defaults (no magic numbers) ───────────────────────────────────────────────
 const DEFAULT_W = 240;          // a wide, short horizontal bar by default
@@ -137,39 +112,6 @@ function fillRect(w, h, fraction, orientation) {
     return { x: 0, y: (h ?? 0) - fh, w: w ?? 0, h: fh };
   }
   return { x: 0, y: 0, w: (w ?? 0) * f, h: h ?? 0 };
-}
-
-/**
- * Pure function. The TRACK rectangle {x, y, w, h}: the COMPLEMENT of `fillRect`
- * within the w×h box, along the same `orientation` axis. Horizontal: the region
- * to the RIGHT of the cut, [fraction·w, w]. Vertical: the region ABOVE the fill,
- * [0, h − fraction·h] (the fill rises from the bottom, so the unfilled remainder
- * sits at the top).
- *
- * fillRect(w,h,f,o) and complementRect(w,h,f,o) share exactly one edge (the cut
- * line, zero area) and together cover the whole box — the partition the two
- * materials paint into, with no third region and no overlap.
- *
- * @param {number} w - track width (local units)
- * @param {number} h - track height (local units)
- * @param {number} fraction - progress 0..1 (out-of-range clamped)
- * @param {string} orientation - "horizontal" | "vertical"
- * @returns {{x: number, y: number, w: number, h: number}} track rect, local coords
- *
- * @example complementRect(200, 20, 0.25, "horizontal") // {x: 50, y: 0, w: 150, h: 20}
- * @example complementRect(200, 20, 0.75, "horizontal") // {x: 150, y: 0, w: 50, h: 20}
- * @example complementRect(20, 200, 0.25, "vertical")   // {x: 0, y: 0, w: 20, h: 150}
- * @example complementRect(200, 20, 0, "horizontal")    // {x: 0, y: 0, w: 200, h: 20} (no fill yet: track is the whole box)
- * @example complementRect(200, 20, 1, "horizontal")    // {x: 200, y: 0, w: 0, h: 20} (full fill: track is empty)
- */
-function complementRect(w, h, fraction, orientation) {
-  const f = clamp01(fraction);
-  const W = w ?? 0, H = h ?? 0;
-  if (orientation === "vertical") {
-    const fh = H * f;
-    return { x: 0, y: 0, w: W, h: H - fh };
-  }
-  return { x: W * f, y: 0, w: W - W * f, h: H };
 }
 
 // Samples per rounded corner when the track's rim is walked as a vertex ring.
@@ -340,39 +282,7 @@ function ringDoubleArea(ring) {
 }
 
 /**
- * Pure function. THE SHARED CLIP: the SVG path data for the track's rounded rim
- * (roundedRectRing) clipped to an arbitrary axis-aligned `box`, or `null` when the
- * intersection encloses no area (a zero-size bar, a zero-size box, or a
- * fully-clipped-away sliver) and must therefore emit NOTHING.
- *
- * Both the fill region (box = fillRect) and the track region (box =
- * complementRect) go through this ONE function — that is what makes the
- * partition true by construction: the two boxes share only their common edge (the
- * cut line, zero area), so the two clipped rings can never overlap and, together,
- * their vertices span the whole track ring.
- *
- * @param {number} w - track width
- * @param {number} h - track height
- * @param {number} r - corner radius
- * @param {{x: number, y: number, w: number, h: number}} box - the region to clip to
- * @returns {string|null} SVG path data, or null for "draw nothing"
- *
- * @example regionPathD(200, 20, 0, {x: 0, y: 0, w: 100, h: 20}) // "M0 0 L100 0 L100 20 L0 20 Z"
- * @example regionPathD(200, 20, 10, {x: 0, y: 0, w: 0, h: 20}) // null (a zero-width box encloses no area)
- * @example regionPathD(0, 0, 0, {x: 0, y: 0, w: 0, h: 0}) // null (a zero-size bar has no interior)
- * @example regionPathD(200, 20, 10, {x: 0, y: 0, w: 2, h: 20}).includes("A") // false (arcs are pre-sampled — PDF-export-safe)
- */
-function regionPathD(w, h, r, box) {
-  const ring = clipRingToRect(
-    roundedRectRing(w, h, r, CORNER_SEGMENTS),
-    box.x, box.y, box.x + box.w, box.y + box.h,
-  );
-  if (ring.length < 3 || ringDoubleArea(ring) === 0) return null;
-  return shapes.polygonPathD(ring);
-}
-
-/**
- * Pure function. The SVG path data for the FILL region, or `null` when it encloses
+ * Pure function. The SVG path data for the fill, or `null` when the fill encloses
  * no area and must therefore emit NOTHING (fraction 0, a zero-size bar, or a
  * fully-clipped-away sliver).
  *
@@ -394,34 +304,13 @@ function regionPathD(w, h, r, box) {
  * @example fillPathD(200, 20, 10, 0.01, "horizontal").includes("A") // false (arcs are pre-sampled — PDF-export-safe)
  */
 function fillPathD(w, h, r, fraction, orientation) {
-  return regionPathD(w, h, r, fillRect(w, h, fraction, orientation));
-}
-
-/**
- * Pure function. The SVG path data for the TRACK region (the unfilled remainder),
- * or `null` when it encloses no area and must therefore emit NOTHING (fraction 1,
- * a zero-size bar) — the fill's empty-at-zero rule, mirrored: "draw nothing" means
- * emit nothing on EITHER side of the partition, not just the fill's.
- *
- * The figure is the intersection of the COMPLEMENT rect (complementRect) with the
- * track's rounded rim — the same clip fillPathD uses, over the other half of the
- * cut, so the two regions partition the ring with no gap and no overlap (see the
- * module docstring, "TWO MATERIALS, PARTITIONED").
- *
- * @param {number} w - track width
- * @param {number} h - track height
- * @param {number} r - corner radius
- * @param {number} fraction - progress 0..1 (clamped)
- * @param {string} orientation - "horizontal" | "vertical"
- * @returns {string|null} SVG path data, or null for "draw nothing"
- *
- * @example trackPathD(200, 20, 0, 0.5, "horizontal") // "M100 0 L200 0 L200 20 L100 20 Z"
- * @example trackPathD(200, 20, 10, 1, "horizontal") // null (fully filled: no track ink left)
- * @example trackPathD(200, 20, 10, 0, "horizontal") === trackPathD(200, 20, 10, 0, "horizontal") // true (empty fill: track is the whole rim)
- * @example trackPathD(0, 0, 0, 0.5, "horizontal") // null (a zero-size bar has no interior)
- */
-function trackPathD(w, h, r, fraction, orientation) {
-  return regionPathD(w, h, r, complementRect(w, h, fraction, orientation));
+  const box = fillRect(w, h, fraction, orientation);
+  const ring = clipRingToRect(
+    roundedRectRing(w, h, r, CORNER_SEGMENTS),
+    box.x, box.y, box.x + box.w, box.y + box.h,
+  );
+  if (ring.length < 3 || ringDoubleArea(ring) === 0) return null;
+  return shapes.polygonPathD(ring);
 }
 
 /**
@@ -532,35 +421,22 @@ return {
     ...bundle("positioning"),
     { key: "fraction", label: "Fraction", kind: "number", min: 0, max: 1, category: CAT, help: "How full the bar is, 0 to 1. Type a number, or bind it with '=' to a live value — most usefully a video scrubber's progress: = @clip.progress. Keyframe it across slides to animate the fill. Values outside 0..1 are clamped." },
     { key: "orientation", label: "Orientation", kind: "select", options: ORIENTATIONS, optionLabels: ORIENTATION_LABELS, category: CAT, help: "Horizontal fills left to right; vertical fills bottom to top (a rising bar). The bbox size sets the track: make it wide and short for horizontal, tall and narrow for vertical." },
-    // FULL PAINT ROWS (Axis-1, `paint: true` — the same seam as rect's fill/stroke
-    // and the camera's background): the Inspector renders PaintField instead of a
-    // plain ColorField, so each slot takes solid / linear / radial gradient / matte
-    // / shader / equation, and patterns when the sibling material lands. A stored
-    // plain hex string is still exactly a solid (parsePaint's back-compat case),
-    // so an existing document's trackColor/fillColor keeps painting byte-identically
-    // — only the widening is new, not the storage.
-    { key: "fillColor", label: "Fill material", kind: "color", paint: true, category: CAT, help: "What paints the FILLED portion of the bar — solid, gradient, or a material (matte/shader/pattern). Lower a color's alpha for translucency; the fill never overdraws the track, so a translucent fill shows the camera/backdrop behind it, not a double-darkened track." },
-    { key: "trackColor", label: "Track material", kind: "color", paint: true, category: CAT, help: "What paints the UNFILLED remainder of the bar — the empty groove behind the fill. Takes the same paint options as Fill material. The two regions are clipped to partition the bar exactly, so nothing here is ever drawn UNDER the fill." },
+    { key: "trackColor", label: "Track color", kind: "color", category: CAT, help: "The color of the empty groove behind the fill." },
+    { key: "fillColor", label: "Fill color", kind: "color", category: CAT, help: "The color of the filled portion." },
     ...props("cornerRadius", { cornerRadius: { label: "Corner radius", category: CAT, help: "Rounds the corners of both the track and the fill — set it near half the bar's thickness for a pill." } }),
     ...props("opacity"),
     ...bundle("effects"),
   ],
   /**
-   * Pure function. State → display-list commands (local space): the FILL region
-   * and the TRACK region, each an ir.path whose figure is the track's rounded rim
-   * CLIPPED to its own half of the progress cut (fillPathD / trackPathD). The two
-   * PARTITION the track ring — "instead of having one on top of the other" (user
-   * ruling) — so there is no base coat and no overdraw: a translucent material on
-   * either side shows whatever is BEHIND the widget, never the other region's
-   * paint doubled up. Effects (the shared EFFECTS BUNDLE) wrap both ops; all-off =
-   * pass-through.
+   * Pure function. State → display-list commands (local space): the TRACK rect
+   * (the full w×h bbox, an ir.rect with the requested cornerRadius) and then the
+   * FILL — an ir.path whose figure is the track's rounded rim CLIPPED to the
+   * progress rect (fillPathD). Effects (the shared EFFECTS BUNDLE) wrap both ops;
+   * all-off = pass-through.
    *
-   * Either op is OMITTED entirely when its clip encloses no area (the fill at
-   * fraction 0, the track at fraction 1, or a zero-size bar), because a
-   * zero-extent filled path still lays down antialiased ink — "draw nothing" has
-   * to mean "emit nothing". TRACK IS EMITTED FIRST so a fill material that paints
-   * OVER the cut line by a sub-pixel antialiasing sliver reads as intentional
-   * layering order, never as the fill hiding under the track.
+   * The fill op is OMITTED entirely when the clip encloses no area (fraction 0, a
+   * zero-size bar), because a zero-extent filled path still lays down antialiased
+   * ink — "draw nothing" has to mean "emit nothing".
    *
    * @param {object} s - the folded, equation-evaluated item state
    * @param {*} _targetWorldIR - unused (bbox widget)
@@ -571,12 +447,9 @@ return {
     const w = s.w ?? 0, h = s.h ?? 0;
     const cornerRadius = s.cornerRadius ?? 0;
     const opacity = s.opacity ?? 1;
-    const orientation = s.orientation ?? "horizontal";
-    const ops = [];
-    const trackD = trackPathD(w, h, cornerRadius, s.fraction, orientation);
-    if (trackD !== null) ops.push(path({ d: trackD, fill: s.trackColor, opacity }));
-    const fillD = fillPathD(w, h, cornerRadius, s.fraction, orientation);
-    if (fillD !== null) ops.push(path({ d: fillD, fill: s.fillColor, opacity }));
+    const ops = [rect({ x: 0, y: 0, w, h, cornerRadius, fill: s.trackColor, opacity })];
+    const d = fillPathD(w, h, cornerRadius, s.fraction, s.orientation ?? "horizontal");
+    if (d !== null) ops.push(path({ d, fill: s.fillColor, opacity }));
     return applyEffects(ops, s, world, { x: 0, y: 0, w, h });
   },
   /**
