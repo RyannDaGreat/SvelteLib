@@ -16,6 +16,8 @@
   import SlideNav from "./SlideNav.svelte";
   import { isStatic } from "./storageMode.js";
   import { offlineRequirement } from "./connectivity.js";
+  import { searchIconifyCells } from "../plugins/iconify.js"; // the offline probe's hook (see __powerrp_searchIconify)
+  import { commandUnavailableReason } from "../core/commands.js";
   // The quick-Save gate and its REASON are ONE pure function (draftKeys.js) so
   // they cannot drift — see quickSaveBlocker, which answers both.
   import { quickSaveBlocker, saveCommandFor } from "./draftKeys.js";
@@ -488,6 +490,16 @@
   // that boots with no route out is already saying so on its first render.
   app.startConnectivityMirror();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
+
+  // TWO MORE DEV/TEST HOOKS, for the offline probe specifically. In a BUILT
+  // bundle every module filename is a content hash, so a probe running against
+  // the real static deploy has no importable path to a plugin or a core helper —
+  // it can only reach what the app hands it. Both are pure pass-throughs to the
+  // production code paths (no test-only behaviour), so what the probe measures
+  // is what a user gets.
+  window.__powerrp_searchIconify = searchIconifyCells;
+  window.__powerrp_commandReason = (id) =>
+    commandUnavailableReason(coreCommands.find((c) => c.id === id), app);
 
   // ── DRAFTS AT BOOT: restore an unsaved working copy, or open a ?zip= link ────
   //

@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
+    <!--
+      INSTALLABILITY. The manifest and icon are emitted at the bundle root by
+      web/swBuildPlugin.js, so these are RELATIVE hrefs — vite rewrites them with
+      the build's base path, which is "/SvelteLib/" on Pages. An absolute "/…"
+      would resolve to the domain root there and 404.
+
+      They are harmless on the dev server (two 404s in the network tab, no
+      behaviour change) and REQUIRED on the static deploy, where installing to
+      the home screen is the mitigation for iOS evicting an uninstalled site's
+      storage after ~7 days of no visits — an installed PWA is not subject to
+      that sweep, which is what makes "your drafts are still here" true on iOS.
+    -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#1b1b1b" />
     <title>PowerRP</title>
     <!--
       THE BOOT SPLASH — inline HTML + inline CSS + inline JS, deliberately.

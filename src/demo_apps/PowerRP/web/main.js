@@ -14,6 +14,7 @@ const fontsLoaded = loadFonts();
 import { assetStore, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
 import { REPO_PARAM } from "./githubProject.js";
 import { isOnline, offlineMessage, startConnectivityWatch } from "./connectivity.js";
+import { registerServiceWorker } from "./registerServiceWorker.js";
 
 // THE CONNECTIVITY SEAM STARTS FIRST, and unconditionally — before the storage
 // probe, before fonts, before the mount, and in EVERY mode. Two reasons it sits
@@ -25,6 +26,13 @@ import { isOnline, offlineMessage, startConnectivityWatch } from "./connectivity
 //     same mechanism"), and neither of those goes through anything the editor
 //     mount alone would run. It is only two event listeners.
 startConnectivityWatch();
+
+// THE OFFLINE CACHE. Deliberately NOT awaited: registration is a background
+// concern that must not delay the first paint, and its only failure mode ("this
+// visit will not be offline-capable") is reported on the console rather than
+// blocking a boot that is by definition online at that moment. A no-op outside a
+// static build — see registerServiceWorker.js for the three conditions.
+registerServiceWorker();
 
 /**
  * Command (network + app mutation). `?repo=owner/name[@ref]` BOOT WIRING — reads
