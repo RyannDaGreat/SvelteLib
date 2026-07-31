@@ -1065,7 +1065,14 @@
      a special branch here — app.retypeChoices() already returns [] for the
      camera, a group, a scene-structural type and a multi-selection, so "no menu"
      and "not retypeable" are one condition read in one place. A caption is right
-     for those: offering a menu that refuses every choice is a lie. -->
+     for those: offering a menu that refuses every choice is a lie.
+
+     THE NOT-YET-CREATED CALL SITE gets the caption for free, and deliberately:
+     retypeChoices reads app.state().items[id], which does not hold an item that
+     is not on THIS slide, so the menu is empty there. That is the right answer
+     rather than a missing feature — retyping writes a keyframe on the current
+     slide, and an item with no state here has nothing to retype FROM. -->
+
 {#snippet widgetType(plugin)}
   {#if retypeMenu.length > 0}
     <div class="widget-type-picker">
