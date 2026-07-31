@@ -240,6 +240,20 @@ export const videoTimeScrubPlugin = {
     // pattern; surfaced in the command palette like every other Add command).
     { id: "add-video-time-scrub", title: "Add Video Time Scrubber (clock presets)", icon: "mdi:motion-play-outline", run: (app) => app.armCrosshairPlacement(videoTimeScrubPlugin) },
     // Fill `length` from the server (ffprobe) for the selected scrubber's clip.
-    { id: "probe-video-time-scrub-length", title: "Probe Clip Length (ffprobe)", icon: "mdi:ruler-square", run: probeClipLength },
+    // GATED: `probeClipLength` reads app.selection in its first line and throws
+    // when there is none, so without a `when` the palette offered it against an
+    // empty selection and answered with an exception instead of a greyed row —
+    // the defect tests/palette_probe.js's
+    // `sweep-every-selection-command-declares-its-gate` sweep flags. The gate is
+    // narrower than "any selection" because the command is meaningless on any
+    // other widget: it writes THIS plugin's `length` property.
+    {
+      id: "probe-video-time-scrub-length",
+      title: "Probe Clip Length (ffprobe)",
+      icon: "mdi:ruler-square",
+      when: (app) => app.selectedNode()?.type === "demo_video_time_scrub",
+      requires: "a selected Video Time Scrubber — this fills that widget's own `length` from its clip",
+      run: probeClipLength,
+    },
   ],
 };

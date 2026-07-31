@@ -1031,10 +1031,17 @@
     // between slides" — slide navigation moved to [ and ]). One undo unit per
     // press; routed through CanvasView's installed nudgeSelection so a nudge
     // and a drag translate members through the SAME translationPairs rule.
-    { id: "nudge-left", title: "Nudge Left (1px)", icon: "mdi:arrow-left", run: (a) => a.nudgeSelection(-1, 0) },
-    { id: "nudge-right", title: "Nudge Right (1px)", icon: "mdi:arrow-right", run: (a) => a.nudgeSelection(1, 0) },
-    { id: "nudge-up", title: "Nudge Up (1px)", icon: "mdi:arrow-up", run: (a) => a.nudgeSelection(0, -1) },
-    { id: "nudge-down", title: "Nudge Down (1px)", icon: "mdi:arrow-down", run: (a) => a.nudgeSelection(0, 1) },
+    // GATED ON THE SELECTION, like every other command that reads it. These four
+    // read the selection inside `run` (via nudgeSelection) but declared no
+    // `when`, so the palette offered them with nothing selected and they refused
+    // at run time — the exact defect tests/palette_probe.js's
+    // `sweep-every-selection-command-declares-its-gate` exists to catch. The
+    // shortcut registry already knew (core/shortcut_entries.js gates the arrow
+    // keys on `editSelection`); only the command entries were missing it.
+    { id: "nudge-left", title: "Nudge Left (1px)", icon: "mdi:arrow-left", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(-1, 0) },
+    { id: "nudge-right", title: "Nudge Right (1px)", icon: "mdi:arrow-right", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(1, 0) },
+    { id: "nudge-up", title: "Nudge Up (1px)", icon: "mdi:arrow-up", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(0, -1) },
+    { id: "nudge-down", title: "Nudge Down (1px)", icon: "mdi:arrow-down", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(0, 1) },
     { id: "present", title: "Present (fullscreen)", icon: "mdi:play", run: (a) => a.enterPresentMode() },
     // ── STORAGE COMMAND VOCABULARY (the one scheme every title below obeys) ───
     // The user read "open project / load presentation / download project / save
