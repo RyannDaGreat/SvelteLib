@@ -1612,6 +1612,19 @@ export class PowerRPApp {
     return () => this.applyThemeVisual(prev);
   }
 
+  /** Command (viewer preview; never persists — same revert contract as
+   * previewTheme). The LITERAL twin: applies exactly `id`, no polarity
+   * resolution. For entries that NAME their pole — the drilled-in member rows
+   * ("Desert — Light") — where the lock previewed the pole you were already on,
+   * which from the other pole is visibly no preview at all (user: "Once I click
+   * the theme and I hover, they should also preview immediately"). The lock
+   * exists to resolve AMBIGUOUS ids; use previewTheme for those. */
+  previewThemeExact(id) {
+    const prev = this.theme;
+    this.applyThemeVisual(id);
+    return () => this.applyThemeVisual(prev);
+  }
+
   /** Command. Restores the saved theme, migrating a CULLED id through
    * THEME_ALIASES first — loudly, because a silent substitution is
    * indistinguishable from the app forgetting your preference. An id that is

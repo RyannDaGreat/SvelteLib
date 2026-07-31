@@ -1270,14 +1270,16 @@
         preview: (a) => a.previewTheme(f.id),
         children: [
           // Previewable-command hook (see CommandPalette.svelte): hovering/
-          // arrowing applies the family LIVE; moving off restores the previously
+          // arrowing applies the member LIVE; moving off restores the previously
           // applied theme; selecting commits via `run` (which persists).
-          // PREVIEW IS POLARITY-LOCKED AND `run` IS NOT, deliberately: hovering
-          // either pole previews the pole you are ALREADY on (app.previewTheme →
-          // familyMemberForKind), while CLICKING one applies exactly the member
-          // it names. A hover is browsing; a click is a decision.
-          { id: `theme-${f.dark}`, title: `${f.title} — Dark`, icon: "mdi:weather-night", run: (a) => a.setTheme(f.dark), preview: (a) => a.previewTheme(f.dark) },
-          { id: `theme-${f.light}`, title: `${f.title} — Light`, icon: "mdi:weather-sunny", run: (a) => a.setTheme(f.light), preview: (a) => a.previewTheme(f.light) },
+          // MEMBER ROWS PREVIEW LITERALLY, unlike the family row above: a row
+          // named "— Light" names its pole, and polarity-locking it previewed
+          // the pole you were already on — from dark, hovering "Desert — Light"
+          // showed Desert DARK, i.e. visibly nothing (user: "Once I click the
+          // theme and I hover, they should also preview immediately"). The lock
+          // exists to resolve AMBIGUOUS targets; a member row is not ambiguous.
+          { id: `theme-${f.dark}`, title: `${f.title} — Dark`, icon: "mdi:weather-night", run: (a) => a.setTheme(f.dark), preview: (a) => a.previewThemeExact(f.dark) },
+          { id: `theme-${f.light}`, title: `${f.title} — Light`, icon: "mdi:weather-sunny", run: (a) => a.setTheme(f.light), preview: (a) => a.previewThemeExact(f.light) },
         ],
       })),
     },

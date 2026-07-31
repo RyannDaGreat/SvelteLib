@@ -153,11 +153,14 @@ try {
   assert(s.attr === "monokai", `HOVER previews LIVE (attr=${s.attr})`);
   await hoverRow("Monokai — Light");
   s = await applied();
-  // INVERTED, and this is the ruling's sharp edge: hovering the WRONG-POLE
-  // member from a dark theme keeps previewing the DARK one. Skimming a list is
-  // browsing, not a decision, and it must not strobe the app between poles.
-  // Clicking that same row still commits light — see step 6.
-  assert(s.attr === "monokai", `hovering the WRONG-POLE sibling still previews the current pole (attr=${s.attr})`);
+  // RE-INVERTED (user ruling 2026-07-31: "Why is it that when I hover over the
+  // light or dark it does not preview immediately? Once I click the theme and
+  // I hover, they should also preview immediately."). A MEMBER row names its
+  // pole, so it previews LITERALLY — the polarity lock previously applied here
+  // made "— Light" from a dark base preview the dark member, i.e. visibly
+  // nothing. The lock remains correct on FAMILY rows (ambiguous targets, step
+  // 6) — skimming the family list still never strobes between poles.
+  assert(s.attr === "monokai-light", `hovering a member row previews THAT member literally (attr=${s.attr})`);
   assert(s.stored === ORIGINAL, `hover previews still do NOT persist (stored=${s.stored})`);
 
   // ── 5. SELECT commits: click the hovered row → change stays AND persists. ───
@@ -204,14 +207,18 @@ try {
     s = await applied();
     assert(s.attr === want, `[${pole}] HOVERING the family row previews "${want}" (attr=${s.attr})`);
 
-    // (c) both MEMBER rows, including the wrong-pole one — still `want`.
+    // (c) MEMBER rows preview LITERALLY (user ruling 2026-07-31 — a row named
+    // "— Light" names its pole; the lock is for AMBIGUOUS targets only).
+    // Drilling in auto-highlights the first child ("Ember — Dark"), so the
+    // drill-in preview is that member's literal theme from EITHER base —
+    // keyboard and pointer agree, which is the parity the palette guarantees.
     await pressKey("Enter"); // drill into Ember
     s = await applied();
-    assert(s.attr === want, `[${pole}] drilling in previews "${want}" (attr=${s.attr})`);
-    for (const row of ["Ember — Dark", "Ember — Light"]) {
+    assert(s.attr === "ember", `[${pole}] drilling in previews the highlighted first member "ember" (attr=${s.attr})`);
+    for (const [row, wantMember] of [["Ember — Dark", "ember"], ["Ember — Light", "ember-light"]]) {
       await hoverRow(row);
       s = await applied();
-      assert(s.attr === want, `[${pole}] hovering "${row}" previews "${want}" (attr=${s.attr})`);
+      assert(s.attr === wantMember, `[${pole}] hovering "${row}" previews its LITERAL member "${wantMember}" (attr=${s.attr})`);
     }
     assert(s.stored === base, `[${pole}] none of that persisted (stored=${s.stored})`);
 
@@ -236,7 +243,7 @@ try {
   await emberLightRow.hover();
   await sleep(120);
   s = await applied();
-  assert(s.attr === "ember", `pre-click hover still polarity-locked (attr=${s.attr})`);
+  assert(s.attr === "ember-light", `pre-click hover previews the literal member (attr=${s.attr})`);
   await emberLightRow.click();
   await sleep(180);
   s = await applied();
@@ -245,7 +252,7 @@ try {
 
   if (errors.length) fails.push(...errors.map((e) => `unexpected error: ${e}`));
   if (fails.length) { console.error(`\nTHEME PREVIEW PROBE FAILED (${fails.length}):\n` + fails.join("\n")); process.exit(1); }
-  console.log("\nTHEME PREVIEW PROBE PASSED — hover/arrow previews live and POLARITY-LOCKED (family row + both members, from either pole), move-off & close revert, select commits + persists.");
+  console.log("\nTHEME PREVIEW PROBE PASSED — family rows preview POLARITY-LOCKED, member rows preview LITERALLY, from either pole; move-off & close revert, select commits + persists.");
 } finally {
   await browser.close();
   await server.close();
