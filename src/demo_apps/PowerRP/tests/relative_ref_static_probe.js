@@ -17,9 +17,12 @@
  * adapter hides it. So this drives the whole loop through the real app:
  *
  *   1. import a .zip built HERE whose doc uses a RELATIVE ref, under ?static=1
- *   2. assert it landed under a DE-COLLIDED name (the second import), so the
- *      archive is being opened under a name it was never told
- *   3. assert the derived render node's src resolved to THAT name
+ *   2. assert it is open under the DRAFT KEY — a storage key the archive was
+ *      never told, which no exported absolute ref can have baked in. (This step
+ *      used to assert a DE-COLLIDED name; the working-copy model replaced the
+ *      de-collision with the draft key, and the comment on step 2 says why the
+ *      substitution keeps the probe's meaning intact.)
+ *   3. assert the derived render node's src resolved to THAT key
  *   4. assert the storage adapter can actually resolve it — a real blob: URL, not
  *      the MISSING_ASSET_URL sentinel. THIS is "the video renders".
  *   5. assert the LEGACY absolute ref still works when it names the right project
@@ -142,14 +145,29 @@ try {
   await sleep(600);
   assert(first.name === "RobotSim", `first import landed as "${first.name}"`);
 
-  // ── 2. SECOND import — DE-COLLIDES, which is the user's situation ──────────
-  // The archive is now being opened under a name it was never told. An absolute
-  // ref minted at export time would be stale here; a relative one cannot be.
+  // ── 2. THE ARCHIVE IS OPEN UNDER A KEY IT WAS NEVER TOLD ──────────────────
+  // REWRITTEN FOR THE WORKING-COPY MODEL (9f386e9). This step used to import a
+  // second time and assert the name DE-COLLIDED ("RobotSim 2"), because that was
+  // how the app could end up resolving an archive's refs against a name the
+  // archive never knew. A drop no longer creates a library entry, so there is no
+  // second name to collide with and that assertion is unsatisfiable.
+  //
+  // THE PROBE'S POINT IS UNCHANGED AND, IF ANYTHING, SHARPER. The hazard was
+  // never de-collision as such — it was "the storage key differs from the name
+  // baked into an absolute ref at export time". The draft model makes that the
+  // ORDINARY case rather than a corner one: every imported deck now lives under
+  // the draft key `~draft/current`, which no exported document can ever name.
+  // So a relative ref must resolve against the draft key, and an absolute ref
+  // minted at export time is stale by construction — which is exactly what
+  // steps 3-5 below go on to check.
   const second = await importZip("RobotSim.zip");
   await sleep(900);
-  assert(second.name !== "RobotSim", `second import de-collided to "${second.name}" (this is what breaks an absolute ref)`);
-  assert(await page.evaluate(() => window.__powerrp_app.projectName()) === second.name,
-    "the de-collided project is the one now open");
+  assert(second.name === "RobotSim", `a second import opens another clean draft, still named "${second.name}" (no de-collision: nothing was in the library to collide with)`);
+  const openKey = await page.evaluate(() => window.__powerrp_app.projectName());
+  assert(openKey.startsWith("~draft/"),
+    `the open storage key is the DRAFT key, not the archive's own name (got ${JSON.stringify(openKey)}) — a name no exported absolute ref can have baked in`);
+  const libraryAfter = await page.evaluate(async () => (await window.__powerrp_app.listProjects()).map((p) => p.name));
+  assert(libraryAfter.length === 0, `two imports later the library is still EMPTY (${JSON.stringify(libraryAfter)})`);
 
   // ── 3. THE STORED SRC WAS NOT REWRITTEN, and 4. IT RESOLVES ────────────────
   const resolved = await page.evaluate(async () => {

@@ -14,16 +14,25 @@
  * ondrop runs, exactly as it would from Finder. Calling app.importProjectZip()
  * directly would prove the import and skip the actual question.
  *
+ * THE WORKING-COPY MODEL (9f386e9, 31d5a8d) is what scenarios 2-4 assert, and it
+ * REPLACED what they used to assert. A dropped .zip no longer becomes a library
+ * entry at all: it opens an UNSAVED DRAFT, staged under the draft key, and the
+ * library is not written until the user saves ("It shouldn't have to save until
+ * the user decides to save - that goes for uploading zips too"). The old
+ * "<Name> 2" de-collision therefore has nothing left to de-collide, and its
+ * disappearance is the feature — so the checks below prove the library stays
+ * EMPTY of new entries where they once proved a renamed one appeared.
+ *
  * WHAT IS PROVEN, in order:
  *   1. EXPORT     — GET /api/download/<seed>/ yields a real archive.
- *   2. COLLISION  — dropping it back (its name is taken) opens "<seed> 2", the
- *                   ORIGINAL survives untouched, and a modal states the rename.
- *   3. ASSETS     — the imported project's asset is listed AND served with the
- *                   same bytes: a .zip carries the assets, not just doc.json.
- *   4. FREE NAME  — a differently-named drop opens under the dropped file's own
- *                   name with NO modal (nothing surprising happened to report).
- *   5. REFUSAL    — a junk .zip shows the failure, leaves the open project alone,
- *                   and creates no folder.
+ *   2. DRAFT      — dropping it back opens an unsaved draft under the dropped
+ *                   deck's own name; the library still lists ONLY the seed.
+ *   3. ASSETS     — the archive's asset is staged under the draft key and reads
+ *                   back byte-identical: a .zip carries assets, not just doc.json.
+ *   4. REPLACE    — a second drop swaps the working copy and STILL writes
+ *                   nothing to the library.
+ *   5. REFUSAL    — a junk .zip shows the failure, leaves the open working copy
+ *                   alone, and creates no folder.
  *
  * ISOLATION: a throwaway POWERRP_PROJECTS_DIR and an ephemeral backend + Vite on
  * free ports (the asset_ux_probe.js precedent) — never the live dev setup, and
@@ -152,46 +161,88 @@ try {
   await sleep(2500);
   check(await page.evaluate(() => window.__powerrp_app.projectName()) === SEED, "booted into the source project");
 
-  // ── 2. COLLISION — the dropped name is taken, so it lands as "<seed> 2" ────
+  // ── 2. A DROPPED .ZIP OPENS AN UNSAVED DRAFT — the library is NOT touched ──
+  // REWRITTEN FOR THE WORKING-COPY MODEL (9f386e9 + 31d5a8d). This scenario used
+  // to assert the de-collision: dropping a zip whose name was already taken
+  // opened "<seed> 2" and said so in a modal. That behavior is GONE, and its
+  // absence is the model working rather than a regression — app.svelte.js's own
+  // docblock states it: "a draft has no name in the library to collide with, and
+  // the name shown is simply what the user dropped". The user's ruling was "It
+  // shouldn't have to save until the user decides to save - that goes for
+  // uploading zips too".
+  //
+  // So the assertion INVERTS. What used to be proven (a second library entry
+  // appears, renamed) is now exactly what must NOT happen; what must happen is a
+  // draft: `projectName()` returns the DRAFT KEY (the storage keyspace),
+  // `projectDisplayName()` returns the dropped deck's human name, `draftMode` is
+  // set, and `/api/projects/` still lists precisely one project.
   await dropZip(page, `${SEED}.zip`, zipBytes);
   await sleep(IMPORT_SETTLE_MS);
-  const collide = await page.evaluate(() => ({
-    name: window.__powerrp_app.projectName(),
+  const drafted = await page.evaluate(() => ({
+    key: window.__powerrp_app.projectName(),
+    display: window.__powerrp_app.projectDisplayName(),
+    draftMode: window.__powerrp_app.draftMode,
+    everSaved: window.__powerrp_app.everSaved,
     slides: window.__powerrp_app.doc.slides.length,
-    modal: document.querySelector(".name-modal")?.innerText ?? null,
   }));
-  check(collide.name === `${SEED} 2`, `dropped .zip opened as "${SEED} 2" (renamed, never an overwrite)`);
-  check(!!collide.modal && collide.modal.includes(`${SEED} 2`), "the collision rename is REPORTED in a modal, not silent");
-  check(collide.slides === 2, `the imported deck carries its slides (${collide.slides})`);
+  check(drafted.key.startsWith("~draft/"), `the drop staged into the DRAFT keyspace (projectName()=${JSON.stringify(drafted.key)})`);
+  check(drafted.display === SEED, `the draft carries the dropped deck's own name (projectDisplayName()=${JSON.stringify(drafted.display)}, want ${JSON.stringify(SEED)})`);
+  check(!!drafted.draftMode, `draftMode is set, so the app knows this is a working copy (${JSON.stringify(drafted.draftMode)})`);
+  check(drafted.everSaved === false, "an imported draft is NOT in correspondence with the library (everSaved=false)");
+  check(drafted.slides === 2, `the imported deck carries its slides (${drafted.slides})`);
+  // THE LOAD-BEARING HALF: nothing was written to the library. Before the draft
+  // model this listed two projects (the seed and its "<seed> 2" de-collision).
+  const afterDrop = (await (await fetch(`${backendBase}/api/projects/`)).json()).map((p) => p.name);
+  check(afterDrop.length === 1 && afterDrop[0] === SEED,
+    `the library is UNTOUCHED by a drop — still exactly the seed (${JSON.stringify(afterDrop)})`);
   const stillThere = await (await fetch(`${backendBase}/api/project/${encodeURIComponent(SEED)}/`)).json();
-  check(stillThere.doc?.meta?.name === SEED, "the ORIGINAL project of that name survived the import");
-  await page.evaluate(() => [...document.querySelectorAll(".name-modal-actions .btn")].find((b) => b.innerText.trim() === "OK")?.click());
-  await sleep(500);
+  check(stillThere.doc?.meta?.name === SEED, "the ORIGINAL project survived the import");
 
-  // ── 3. ASSETS came with it, and are really served ─────────────────────────
-  const assets = await (await fetch(`${backendBase}/api/assets/${encodeURIComponent(`${SEED} 2`)}/`)).json();
-  check(assets.length === 1 && assets[0].name === "seed.png", `the .zip carried the asset library (${assets.map((a) => a.name).join(", ") || "nothing"})`);
-  const served = Buffer.from(await (await fetch(`${backendBase}${assets[0].url}`)).arrayBuffer());
-  check(served.equals(Buffer.from(PROBE_PNG_B64, "base64")), "the imported asset is served byte-identical");
+  // ── 3. ASSETS came with it, staged under the draft key ────────────────────
+  // Also rewritten: with no library entry there is no `/api/assets/<name>/` to
+  // GET. A draft ALWAYS stages locally (IndexedDB) in both storage modes, so the
+  // asset is read back through the app's own store seam instead of over HTTP —
+  // which is the more faithful check anyway, because that seam is what the
+  // canvas, thumbnails and exports actually resolve through.
+  const stagedAssets = await page.evaluate(async () => {
+    const app = window.__powerrp_app;
+    const list = await app.listProjectAssets(); // defaults to projectName() = the draft key
+    const blob = list.length ? await window.__powerrp_storage.assetStore().get(app.projectName(), list[0].name) : null;
+    const bytes = blob ? [...new Uint8Array(await blob.arrayBuffer())] : null;
+    return { names: list.map((a) => a.name), bytes };
+  });
+  check(stagedAssets.names.length === 1 && stagedAssets.names[0] === "seed.png",
+    `the .zip carried its asset library into the draft staging (${stagedAssets.names.join(", ") || "nothing"})`);
+  check(stagedAssets.bytes !== null && Buffer.from(stagedAssets.bytes).equals(Buffer.from(PROBE_PNG_B64, "base64")),
+    "the staged asset is byte-identical to what the archive carried");
 
-  // ── 4. FREE NAME — opens quietly under the dropped file's own name ─────────
+  // ── 4. A SECOND DROP replaces the working copy, still writing nothing ──────
+  // The old scenario proved a "free" name opened under the dropped file's name
+  // and showed no modal. Under the draft model there is no free-vs-taken
+  // distinction at all, so what is worth proving is that dropping a SECOND zip
+  // swaps the working copy cleanly (rather than accumulating drafts or, worse,
+  // finally writing one to the library).
   await dropZip(page, "Zip Probe Copy.zip", zipBytes);
   await sleep(IMPORT_SETTLE_MS);
-  const free = await page.evaluate(() => ({
-    name: window.__powerrp_app.projectName(),
-    modalOpen: !!document.querySelector(".name-modal"),
+  const second = await page.evaluate(() => ({
+    key: window.__powerrp_app.projectName(),
+    display: window.__powerrp_app.projectDisplayName(),
+    draftMode: !!window.__powerrp_app.draftMode,
   }));
-  check(free.name === "Zip Probe Copy", 'a free name opens under the dropped file\'s own name ("Zip Probe Copy")');
-  check(!free.modalOpen, "no modal when nothing surprising happened");
+  check(second.display === "Zip Probe Copy", `the second drop is now the working copy ("${second.display}")`);
+  check(second.key.startsWith("~draft/") && second.draftMode, "still an unsaved draft, not a library entry");
+  const afterSecond = (await (await fetch(`${backendBase}/api/projects/`)).json()).map((p) => p.name);
+  check(afterSecond.length === 1 && afterSecond[0] === SEED,
+    `two drops later the library is STILL just the seed (${JSON.stringify(afterSecond)})`);
 
   // ── 5. REFUSAL — loud, and it changes nothing ─────────────────────────────
   await dropZip(page, "Broken.zip", Buffer.from("this is definitely not a zip archive"));
   await sleep(3000);
   const junk = await page.evaluate(() => ({
-    name: window.__powerrp_app.projectName(),
+    display: window.__powerrp_app.projectDisplayName(),
     modal: document.querySelector(".name-modal")?.innerText ?? null,
   }));
-  check(junk.name === "Zip Probe Copy", "a refused import leaves the open project untouched");
+  check(junk.display === "Zip Probe Copy", "a refused import leaves the open working copy untouched");
   check(!!junk.modal && /not imported/i.test(junk.modal), "the refusal is REPORTED in a modal");
   const listed = (await (await fetch(`${backendBase}/api/projects/`)).json()).map((p) => p.name);
   check(!listed.includes("Broken"), "a refused import created no project folder");
