@@ -145,11 +145,16 @@ test("the stamp recurses a self-effect wrapper but NOT foreign crop content", ()
 // ── the DECLARATION: one row, inherited by every stroked box ──────────────────
 test("strokeOffset is declared ONCE and both stroke bundles inherit it", () => {
   assert.equal(PROPS.strokeOffset.kind, "number");
-  // The row's range OPENED beyond ±1 (detached parallel contour, stroke_offset_detached_test.js) —
-  // still SYMMETRIC and still comfortably wider than the ±1 attached range it supersedes.
-  assert.ok(PROPS.strokeOffset.min <= -1, "the row must still admit the fully-inner attached value");
-  assert.ok(PROPS.strokeOffset.max >= 1, "the row must still admit the fully-outer attached value");
-  assert.ok(PROPS.strokeOffset.min < -1 && PROPS.strokeOffset.max > 1, "and now admits values beyond ±1 — the detached range");
+  // The row's DOMAIN is unbounded (any finite value is a real detached contour,
+  // stroke_offset_detached_test.js) — so it carries no min/max at all (a
+  // typed/equation write is never clamped, core/properties.js "SCRUB RANGE vs
+  // HARD BOUNDS"). What IS bounded is the DRAG sweep: scrubMin/scrubMax pin it
+  // to the attached range, -1..1, the alignment sweep worth fine-grained
+  // dragging (tests/stroke_offset_scrub_range_test.js covers that split).
+  assert.equal(PROPS.strokeOffset.min, undefined, "no hard lower bound — a typed/equation value beyond -1 is real (detached)");
+  assert.equal(PROPS.strokeOffset.max, undefined, "no hard upper bound — a typed/equation value beyond 1 is real (detached)");
+  assert.equal(PROPS.strokeOffset.scrubMin, -1, "the DRAG still sweeps the attached range's inner end");
+  assert.equal(PROPS.strokeOffset.scrubMax, 1, "the DRAG still sweeps the attached range's outer end");
   assert.ok(!("default" in PROPS.strokeOffset), "no default — absent IS centered, so no document's state changes");
   for (const b of ["strokedBox", "strokedBorder"])
     assert.ok(BUNDLES[b].includes("strokeOffset"), `${b} must inherit the alignment row`);

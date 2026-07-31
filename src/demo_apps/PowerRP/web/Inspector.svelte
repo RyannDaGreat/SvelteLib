@@ -1406,6 +1406,8 @@
         label={row.label}
         min={row.min ?? null}
         max={resolvedMax}
+        scrubMin={row.scrubMin ?? null}
+        scrubMax={row.scrubMax ?? null}
         display={row.display ?? null}
         scrub={row.scrub ?? null}
         step={row.step ?? null}

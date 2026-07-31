@@ -33,12 +33,30 @@
  * ── SHAPE CONTRACT (the Inspector needs ZERO changes) ─────────────────────────
  * `props()`/`bundle()` return ROW ARRAYS whose element shape is byte-identical
  * to the plain-object rows plugins used to hand-write:
- *   {key, label, kind, category, min?, max?, display?, scrub?, options?,
- *    optionsFrom?, optionLabels?}
+ *   {key, label, kind, category, min?, max?, scrubMin?, scrubMax?, display?,
+ *    scrub?, options?, optionsFrom?, optionLabels?}
  * web/Inspector.svelte consumes rows purely by field name (row.key, row.label,
  * row.kind, row.category, row.min, ...), so a registry-composed row drives it
  * exactly as a hand-written one did. `defaults()`/`bundleDefaults()` return a
  * flat state fragment ({x: 100, ...}) plugins spread into their `defaults`.
+ *
+ * ── SCRUB RANGE vs HARD BOUNDS (`scrubMin`/`scrubMax`) ─────────────────────────
+ * `min`/`max` mean "this value cannot go there" — TYPING or an EQUATION binding
+ * beyond them is refused (where anything downstream enforces it at all; most
+ * rows have no such enforcement and `min`/`max` are pure UI/scrub hints, but a
+ * row that WANTS a real hard bound has always used these two names for it).
+ * `scrubMin`/`scrubMax` mean "the mouse sweeps this far" — the DRAG's clamp and
+ * Home/End jump targets, and (via resolveScrub) the span the coefficient is
+ * derived from — with NO implication that a typed number or an equation result
+ * outside that span is wrong. When only `min`/`max` are declared (the common
+ * case) the two coincide, byte-identically to before this split: NumericField
+ * falls back to `min`/`max` for the drag when `scrubMin`/`scrubMax` are absent,
+ * so an existing row needs no edit. A row declares `scrubMin`/`scrubMax`
+ * INSTEAD of (not in addition to a differing) `min`/`max` only when the useful
+ * DRAG SWEEP is narrower than the value's real domain — strokeOffset is the
+ * first: -1..1 is the alignment sweep worth fine-grained dragging, but any
+ * finite offset beyond it is a meaningful (if to be typed/equation-bound rather
+ * than dragged) detached contour, so the row has no `min`/`max` at all.
  *
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
@@ -786,7 +804,14 @@ export const PROPS = {
   // particleFade need `step: 0.01` only because their integer default 1 would
   // otherwise snap them to 0/1 — the tests/default_step_test.js rule, which pins
   // those two as the ONLY number props that may declare one.
-  strokeOffset: { label: "Stroke offset", kind: "number", min: -8, max: 8, category: "strokeMaterial", help: "Which side of the edge the outline sits on: -1 draws it fully inside the shape, 0 straddles the edge, +1 draws it fully outside. Beyond ±1 the outline DETACHES into a parallel contour floating past the edge — inward beyond -1, outward beyond +1." },
+  // scrubMin/scrubMax, not min/max: -1..1 is the useful DRAG sweep (the
+  // alignment range), but any finite value is a meaningful detached contour
+  // (render_gpu/ir.js normalizeStrokeOffset refuses only non-finite) — a typed
+  // number or an equation binding must reach it uncapped. See this file's
+  // "SCRUB RANGE vs HARD BOUNDS" note. Was min:-8/max:8 (a round-18 guess at
+  // "far enough to be useless past it" that clamped typing and equations too,
+  // the wrong half of the fix once detachment made every finite value real).
+  strokeOffset: { label: "Stroke offset", kind: "number", scrubMin: -1, scrubMax: 1, category: "strokeMaterial", help: "Which side of the edge the outline sits on: -1 draws it fully inside the shape, 0 straddles the edge, +1 draws it fully outside. Beyond ±1 the outline DETACHES into a parallel contour floating past the edge — inward beyond -1, outward beyond +1. Drag is limited to -1..1; type or bind any finite value to place a detached ring." },
   cornerRadius: { label: "Corner radius", kind: "number", min: 0, category: "formatting", default: 0, help: "Rounds the widget's corners by this radius in canvas units. Zero is a sharp square corner; larger values round more." },
 
   // ── formatting: THE STROKE-TRIM framework (manifest E.12-15) ─────────────────

@@ -39,9 +39,12 @@
   message from the derivation stage's error map.
 
   Props: app, path (full state path, e.g. ["items", id, "x"] or
-  ["vars", name]), label, min/max (DraggableNumber bounds, in STORED units),
-  display (display-unit name, e.g. "degrees"; null = identity), centerAxis
-  ("x" | "y" | null — the cx/cy shortcut; see below).
+  ["vars", name]), label, min/max (the row's real domain, in STORED units —
+  typed text and equations are NEVER clamped to these; see below),
+  scrubMin/scrubMax (DraggableNumber's drag-clamp bounds, in STORED units;
+  default to min/max when absent — core/properties.js "SCRUB RANGE vs HARD
+  BOUNDS"), display (display-unit name, e.g. "degrees"; null = identity),
+  centerAxis ("x" | "y" | null — the cx/cy shortcut; see below).
   Styling lives in app.css (.numfield / .eq-*; app convention: no <style>).
 
   CENTER SHORTCUT (cx/cy, core/properties.js positioning bundle): `centerAxis`
@@ -89,8 +92,20 @@
 
   let {
     app, path, paths = null, label, min = null, max = null, display = null, scrub = null, step = null,
-    centerAxis = null,
+    centerAxis = null, scrubMin = null, scrubMax = null,
   } = $props();
+
+  // ── SCRUB RANGE vs HARD BOUNDS (core/properties.js "SCRUB RANGE vs HARD
+  // BOUNDS") ───────────────────────────────────────────────────────────────
+  // `min`/`max` are the row's real domain (what a typed number or an equation
+  // may reach); `scrubMin`/`scrubMax` are what the DRAG sweeps and clamps to,
+  // falling back to `min`/`max` when a row declares no narrower sweep — the
+  // common case, byte-identical to before this split. Only the DraggableNumber
+  // wiring (drag clamp, Home/End, the scrub-coefficient span) reads these;
+  // typed text and equation commits below use `min`/`max`-free paths already
+  // (toStored/unit.fromDisplay), so they were never bounded by either.
+  let dragMin = $derived(scrubMin ?? min);
+  let dragMax = $derived(scrubMax ?? max);
 
   /**
    * THE WRITE TARGETS. Reads stay on the singular `path` (the PRIMARY item — in a
@@ -170,12 +185,14 @@
     resolveScrub({
       step,
       scrub,
-      // Bounds AND the default are converted to DISPLAY units (rotation edits in
-      // degrees though core stores radians), because the control they calibrate
-      // works in display units. resolveScrub reads `min`/`max` as a span, so a
-      // null bound must stay null rather than becoming toDisplay(null).
-      min: min == null ? null : unit.toDisplay(min),
-      max: max == null ? null : unit.toDisplay(max),
+      // The DRAG span (dragMin/dragMax — scrubMin/scrubMax when the row
+      // declares a narrower sweep, else min/max), converted to DISPLAY units
+      // (rotation edits in degrees though core stores radians) because the
+      // control they calibrate works in display units. resolveScrub reads
+      // this as a span, so a null bound must stay null rather than becoming
+      // toDisplay(null).
+      min: dragMin == null ? null : unit.toDisplay(dragMin),
+      max: dragMax == null ? null : unit.toDisplay(dragMax),
       defaultValue: propDefault == null ? null : unit.toDisplay(propDefault),
       dragPx: RANGE_DRAG_PX,
     }),
@@ -605,8 +622,8 @@
     <DraggableNumber
       label={`${label} (reference to ${storedToDisplay(stored, app.rawState())})`}
       value={roundShown(unit.toDisplay(evaluated))}
-      min={min == null ? null : unit.toDisplay(min)}
-      max={max == null ? null : unit.toDisplay(max)}
+      min={dragMin == null ? null : unit.toDisplay(dragMin)}
+      max={dragMax == null ? null : unit.toDisplay(dragMax)}
       coefficient={dragCoefficient}
       step={scrubbing.step}
       suffix={unit.suffix}
@@ -645,8 +662,8 @@
     <DraggableNumber
       {label}
       value={roundShown(unit.toDisplay(evaluated))}
-      min={min == null ? null : unit.toDisplay(min)}
-      max={max == null ? null : unit.toDisplay(max)}
+      min={dragMin == null ? null : unit.toDisplay(dragMin)}
+      max={dragMax == null ? null : unit.toDisplay(dragMax)}
       coefficient={dragCoefficient}
       step={scrubbing.step}
       suffix={unit.suffix}
