@@ -363,25 +363,14 @@
 
   /* How far a DISABLED control fades. One value for every unavailable button,
      row and toggle, because "unavailable" must look the same everywhere or it
-     stops being a signal. Named because the Save button now has to move this
-     dimming off itself and onto its icon (its state mark must stay legible while
-     disabled — see .btn-save-mark), and two spellings of the same fade would
-     drift the moment one of them was tuned. */
+     stops being a signal. */
   --a-disabled-opacity: 0.35;
 
-  /* Save state mark — the disc ON the Save button (it used to be a standalone
-     dot beside the title; user ruling merged the two, see .btn-save-mark).
-     SMALLER now than the free-standing dot was, because it no longer has to
-     announce itself across empty toolbar space: it sits on the control whose
-     state it describes, so it reads as that control's status light rather than
-     as an independent widget. Its ring is a full device pixel, not
-     --a-hairline: the hollow "unsaved" state IS the ring, so it has to survive
-     at 1× where a 0.5px border renders faintly or not at all. */
+  /* Save-state dot — the standalone indicator beside the title. Its ring is a
+     full device pixel, not --a-hairline: the hollow "unsaved" state IS the
+     ring, so it has to survive at 1× where a 0.5px border renders faintly. */
   --a-save-dot: 7px;
   --a-save-dot-ring: 1px;
-  /* Inset from the button's bottom-left corner. BOTTOM-LEFT, opposite the
-     badge's top-right, so a button could carry both without them colliding. */
-  --a-save-mark-offset: 2px;
 
   /* Asset Explorer: thumbnail grid cell min-width (auto-fill columns) — a
      visual choice with no in-repo precedent; PENDING USER RATIFICATION. The
@@ -2600,7 +2589,7 @@ textarea {
 
 /* ONE control height everywhere — no toolbar exception (standardization rule). */
 
-/* ── THE SAVE STATE MARK (on the Save button) ────────────────────────────────
+/* ── THE SAVE INDICATOR (standalone dot beside the title) ────────────────────
    "maybe an empty circle, a filled circle or something" (user, verbatim). The
    three save states are drawn as one circle in three fills, so the shape is
    constant and only the INK changes — a reader learns one glyph, not three:
@@ -2609,19 +2598,11 @@ textarea {
      saved    solid               — the disc is "full", nothing outstanding
      saving   half-filled         — in between, literally
 
-   IT USED TO BE A FREE-STANDING DOT beside the project title, with the Save
-   button eight controls away describing the same state in a different
-   vocabulary. The user's ruling — "the unsaved-changes dot is kind of the same
-   thing as the save button — the same state" — merged them, and this selector is
-   what moved: same three glyphs, now pinned to the control they describe.
+   The dot and the Save button both read app.saveState() — one state, two
+   readouts that cannot disagree. The Save button gates and acts; this element
+   reports, and the SENTENCES (draftKeys.saveText) live in its tooltip.
 
-   NO LAYOUT SHIFT BETWEEN STATES, which is why all three are one absolutely
-   positioned box with a constant border and only the background differing. The
-   mark is out of flow entirely, so the button's icon does not move when a save
-   starts or finishes — a control that twitches every time you press it reads as
-   broken even when it is right.
-
-   COLOUR IS NOT THE SIGNAL, fill is. The mark stays --fg-dim in every state and
+   COLOUR IS NOT THE SIGNAL, fill is. The dot stays --fg-dim in every state and
    never turns red/green, for two reasons: an unsaved document is a normal
    working state, not an error (the app's red, --a-guide, means destructive), and
    a status conveyed by hue alone is invisible to a colour-blind reader. Fill
@@ -2631,55 +2612,32 @@ textarea {
    have to be either slow enough to miss or fast enough to nag, and a save is
    usually over in well under a second. A static third glyph reads at a glance
    and costs no repaint. */
-.toolbar .btn-save-mark {
-  position: absolute;
-  bottom: var(--a-save-mark-offset);
-  left: var(--a-save-mark-offset);
+.toolbar .save-indicator {
+  display: inline-block;
   width: var(--a-save-dot);
   height: var(--a-save-dot);
   border: var(--a-save-dot-ring) solid var(--fg-dim);
   border-radius: 50%;
-  box-sizing: border-box;
-  /* The mark is part of the button, not a target of its own: a pointer over it
-     must hover and click the Save button underneath, exactly as one over the
-     icon does. */
-  pointer-events: none;
+  /* Optically centred against the title's text baseline beside it. */
+  vertical-align: middle;
+  cursor: default; /* reports; it is not a control (see Toolbar.svelte) */
 }
 
 /* Filled = in storage. */
-.toolbar .btn-save-mark.saved {
+.toolbar .save-indicator.saved {
   background: var(--fg-dim);
 }
 
 /* Half = a save in flight. The gradient's hard stop at 50% fills exactly the
    left half of the disc, so it reads as "partway" next to the other two. */
-.toolbar .btn-save-mark.saving {
+.toolbar .save-indicator.saving {
   background: conic-gradient(from 180deg, var(--fg-dim) 0 50%, transparent 50% 100%);
 }
 
 /* Unsaved is the bare ring — the border alone, no background. Declared so the
    state is stated in CSS rather than being merely the absence of the other two. */
-.toolbar .btn-save-mark.unsaved {
+.toolbar .save-indicator.unsaved {
   background: transparent;
-}
-
-/* THE MARK MUST STAY LEGIBLE WHILE THE BUTTON IS DISABLED — the CLEAN state
-   disables Save, and "everything is saved" is exactly what a user hovering a
-   dead Save button wants to know. A disabled button's 0.35 opacity would take
-   the mark down with it, and a child CANNOT be lifted back out (the parent's
-   opacity composites the whole subtree, so no value above 1 on the child has any
-   effect at all — that is why this is done by MOVING the dimming, not by
-   countering it).
-
-   So for the button carrying a mark, the opacity moves off the button and onto
-   its ICON: the glyph greys out exactly as before, the mark keeps full contrast,
-   and the button still reads as unavailable. Scoped to :has(.btn-save-mark) so
-   every other disabled button in the app is untouched. */
-.toolbar .btn-icon[aria-disabled="true"]:has(.btn-save-mark) {
-  opacity: 1;
-}
-.toolbar .btn-icon[aria-disabled="true"]:has(.btn-save-mark) iconify-icon {
-  opacity: var(--a-disabled-opacity);
 }
 
 .toolbar .doc-name {

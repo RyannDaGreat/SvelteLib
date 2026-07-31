@@ -99,63 +99,34 @@
     ["reset-view", "present"],
   ];
 
-  // ── THE SAVE BUTTON CARRIES THE SAVE STATE ────────────────────────────────
+  // ── THE SAVE INDICATOR: SAME STATE, ITS OWN ELEMENT ───────────────────────
   //
-  // THE RULING (user, verbatim): "The unsaved-changes [dot] is kind of the same
-  // thing as the save button — the same state." It was: a status dot at the far
-  // left of the toolbar, and a Save button eight controls away, both derived from
-  // app.saveState() and both describing the same fact in different vocabularies.
-  // Two controls for one state is two things to learn, two places to look, and
-  // two chances to disagree. So the dot RETIRED and the button absorbed it — its
-  // enablement already said clean-vs-dirty (it is exactly the new gate), and now
-  // it says so visually too, and its tooltip carries the sentence the dot's did.
+  // The dot and the Save button both read app.saveState() — one state, two
+  // readouts (user ruling: "they share the same state, not the same element").
+  // The dot reports, with the sentence in its tooltip; the button acts, and is
+  // disabled when the working copy is clean, with the reason in its tooltip.
   //
-  // WHY THIS SATISFIES THE ANTI-AFFORDANCE RULING RATHER THAN VIOLATING IT. The
-  // dot's own markup argued it must NOT be a button: "a control that looks
-  // clickable but only reports would be a lie about its own affordance." That
-  // ruling is about a READOUT wearing a control's clothes. This is the opposite
-  // move — a REAL control, which already ran the save and already knew the state,
-  // finally showing what it knows. Nothing here reports without acting: every
-  // pixel of it is the Save command, and clicking it saves.
-  //
-  // THE VOCABULARY IS THE DOT'S, UNCHANGED, so nobody has to relearn a glyph:
   //   unsaved  ring only (hollow)  — there is work not in storage
   //   saved    solid               — the disc is full, nothing outstanding
   //   saving   half-filled         — in between, literally
-  // The sentence stays in draftKeys.saveText (pure, doctested, bare-node): it
+  // The sentence lives in draftKeys.saveText (pure, doctested, bare-node): it
   // tells apart an UNSAVED DRAFT (no stored copy at all, so no "changes") from a
-  // SAVED PROJECT WITH UNSAVED CHANGES, which the mark alone cannot — both ring.
+  // SAVED PROJECT WITH UNSAVED CHANGES, which the glyph alone cannot — both ring.
   let saveIndicator = $derived.by(() => {
     const state = app.saveState();
     return { state, text: saveText(state, app.lastSavedAt, app.isDraft(), STORAGE_NOUN) };
   });
 
-  /** Query. The save-state mark for command `id`, or null for every other button.
-   *  A lookup rather than an `id ===` test in the markup, for the same reason
-   *  badgeFor is one: the next command that needs a state mark declares it here,
-   *  beside this one, instead of editing the template. */
-  function saveMarkFor(id) {
-    return id === "save-project" ? saveIndicator.state : null;
-  }
-
   /**
    * Query. The extra tip line for command `id` — the clause the registry title
    * genuinely does not carry — or null.
    *
-   * THE ONE per-id note lookup, in the shape badgeFor and saveMarkFor already
-   * have. It absorbed the browser-storage note (previously an `#if` in the
-   * markup) when Save gained one, because two per-id notes wired two different
-   * ways is how a third one gets wired a third way.
-   *
-   * SAVE'S NOTE IS THE RETIRED DOT'S SENTENCE, verbatim from draftKeys.saveText:
-   * "Saved to server at 14:32:05", "Unsaved changes — not yet saved to the
-   * browser", and the two the mark alone cannot distinguish. It renders in EVERY
-   * state, including while the button is disabled — that is the whole point of
-   * the merge, because a clean project's Save is disabled and "everything is
-   * saved" is exactly what the user hovered to find out.
+   * THE ONE per-id note lookup, in the shape badgeFor already has. It absorbed
+   * the browser-storage note (previously an `#if` in the markup), because two
+   * per-id notes wired two different ways is how a third one gets wired a third
+   * way. Save's state sentence is the DOT's tooltip (saveIndicator above).
    */
   function tipNoteFor(id) {
-    if (id === "save-project") return saveIndicator.text;
     if (isBrowserStorageCmd(id)) return BROWSER_STORAGE_NOTE;
     return null;
   }
@@ -277,18 +248,27 @@
 {/snippet}
 
 <div class="toolbar">
-  <!-- THE SAVE INDICATOR USED TO STAND HERE — a hollow/half/solid circle beside
-       the title, asked for verbatim as "an indicator on the top left, maybe an
-       empty circle, a filled circle or something, which when I hover over it
-       tells me whether or not it's saved."
+  <!-- THE SAVE INDICATOR, verbatim: "there's no indicator on the top left on
+       whether or not it's been saved to the server. There should be an indicator
+       on the top left, maybe an empty circle, a filled circle or something,
+       which when I hover over it tells me whether or not it's saved."
 
-       IT IS NOT GONE, IT MOVED ONTO THE SAVE BUTTON (user ruling: "the
-       unsaved-changes dot is kind of the same thing as the save button — the same
-       state"). Same three glyphs, same four sentences, now on the control that
-       shares the state — see saveIndicator/saveMarkFor in the script above. The
-       original ask is still met: there is an indicator, it is still one hover
-       away, and it is now impossible for it to disagree with the button beside
-       it, because there is no longer a button beside it. -->
+       Dot and Save button both read app.saveState(), so they cannot disagree —
+       but each is its own element: this one reports, that one acts.
+
+       It is NOT a button: saving is Cmd+S / the Save command, and a control that
+       looks clickable but only reports would be a lie about its own affordance.
+       It is still focusable (tabindex) because the information is otherwise
+       pointer-only, and Tooltip anchors to the element on keyboard focus. -->
+  <Tooltip text={saveIndicator.text}>
+    <span
+      class="save-indicator {saveIndicator.state}"
+      data-state={saveIndicator.state}
+      role="status"
+      tabindex="0"
+      aria-label={saveIndicator.text}
+    ></span>
+  </Tooltip>
   <!-- The presentation TITLE. SINGLE-click (or Enter/F2 when focused) opens the
        Rename modal, which writes doc.meta.name — the one name model shared with
        Save and Open. role/tabindex/onkeydown keep the affordance keyboard-
@@ -351,13 +331,6 @@
           onclick={() => { if (!unavailable(id)) app.runCommand(id); }}
         >
           <iconify-icon icon={app.commands.get(id).icon} width="18" height="18"></iconify-icon>
-          <!-- THE SAVE STATE MARK — the retired dot's three glyphs, on the control
-               that shares the state (see saveMarkFor). Pinned to the button's
-               corner exactly as the badge is, so the icon never shifts between
-               states: all three marks are the same box, only the ink differs. -->
-          {#if saveMarkFor(id)}
-            <span class="btn-save-mark {saveMarkFor(id)}" data-state={saveMarkFor(id)}></span>
-          {/if}
           <!-- NOTIFICATION BADGE. Only the Render Center has one today, but it
                hangs off a general per-id lookup rather than an `id ===` test in
                the markup, so the next command that needs one declares it beside

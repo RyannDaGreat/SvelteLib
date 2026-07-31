@@ -146,15 +146,17 @@ const saveState = (page) => page.evaluate(async () => {
  *  which is not the defect this guards. */
 const saveButton = async (page) => {
   await page.evaluate(() => {
-    const btn = document.querySelector('.toolbar button[aria-label="Save Project"]');
-    const anchor = btn?.closest(".tt-anchor");
-    const r = btn.getBoundingClientRect();
+    // Hover the DOT: the save-state sentence is its tooltip (the button's tip
+    // carries the command title + gate reason instead).
+    const dot = document.querySelector(".toolbar .save-indicator");
+    const anchor = dot?.closest(".tt-anchor");
+    const r = dot.getBoundingClientRect();
     anchor?.dispatchEvent(new PointerEvent("pointerenter", { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: false }));
   });
   await new Promise((r) => setTimeout(r, 200));
   const read = await page.evaluate(() => {
     const btn = document.querySelector('.toolbar button[aria-label="Save Project"]');
-    const mark = btn?.querySelector(".btn-save-mark");
+    const mark = document.querySelector(".toolbar .save-indicator");
     const box = mark?.getBoundingClientRect();
     const cs = mark ? getComputedStyle(mark) : null;
     return {
@@ -252,13 +254,13 @@ try {
   assert(s1.saveAsAvailable === true, "Save As… is ALWAYS available — it is the gesture that gets you out of this state");
   assert(await cmdSTarget(page) === "save-to-server", "CMD+S on a draft dispatches to SAVE AS…, never to a silent write");
 
-  // ── 1b. THE MERGED BUTTON, STATE 1 OF 3: unsaved draft ────────────────────
-  // User ruling: "the unsaved-changes dot is kind of the same thing as the save
-  // button — the same state." The dot retired; the BUTTON carries the mark and
-  // the sentence. Asserted from the rendered DOM, because the claim is that the
-  // state reaches the pixels, not merely that app.saveState() knows it.
-  const noDot = await page.evaluate(() => document.querySelectorAll(".save-indicator").length);
-  assert(noDot === 0, `the standalone save-indicator dot is GONE from the rendered toolbar (found ${noDot}) — two controls for one state is what the merge removed`);
+  // ── 1b. THE DOT, STATE 1 OF 3: unsaved draft ──────────────────────────────
+  // User ruling: dot and Save button "share the same state, not the same
+  // element" — the standalone dot reports (glyph + sentence), the button acts.
+  // Asserted from the rendered DOM, because the claim is that the state reaches
+  // the pixels, not merely that app.saveState() knows it.
+  const dots = await page.evaluate(() => document.querySelectorAll(".save-indicator").length);
+  assert(dots === 1, `exactly one standalone save-indicator dot in the rendered toolbar (found ${dots})`);
   const b1 = await saveButton(page);
   assert(b1.present, "the Save button is in the toolbar");
   assert(b1.markState === "unsaved", `…wearing the UNSAVED mark (got ${JSON.stringify(b1.markState)})`);
@@ -324,7 +326,16 @@ try {
   assert(/saved to (browser|server)/i.test(b3.tip ?? ""), `the tip states WHERE it is saved (got ${JSON.stringify(b3.tip)})`);
   assert(/\d/.test(b3.tip ?? ""), "…and WHEN — the saved-at time, which is the fact a user hovers a dead Save button to learn");
   assert(b3.ariaDisabled === "true", "the button is disabled, because there is nothing to save (THE clean-state ruling)");
-  assert(/nothing|already matches|changes to save/i.test(b3.tip ?? ""), "…and says so, rather than repeating the draft's reason");
+  // The WHY lives on the BUTTON's own tip (the dot carries the state sentence).
+  const btnTip = await page.evaluate(async () => {
+    document.querySelector(".toolbar .save-indicator")?.closest(".tt-anchor")?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false }));
+    const btn = document.querySelector('.toolbar button[aria-label="Save Project"]');
+    const r = btn.getBoundingClientRect();
+    btn.closest(".tt-anchor")?.dispatchEvent(new PointerEvent("pointerenter", { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: false }));
+    await new Promise((res) => setTimeout(res, 250));
+    return document.querySelector(".tt-tip")?.textContent?.replace(/\s+/g, " ").trim() ?? null;
+  });
+  assert(/nothing|already matches|changes to save/i.test(btnTip ?? ""), `the dead button's own tip says WHY (got ${JSON.stringify(btnTip)})`);
   // THE MARK MUST SURVIVE THE DISABLED DIMMING. This is the state where the merge
   // is load-bearing: the button is dead, and the mark is the only thing still
   // reporting. The naive implementation fades the whole button and takes the mark

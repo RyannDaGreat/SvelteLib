@@ -230,7 +230,7 @@ test("the SAVE BUTTON reads the shared sentence, not its own copy", () => {
   assert.match(toolbar, /import \{ saveText \} from "\.\/draftKeys\.js"/, "the sentence must come from the tested rule");
   assert.match(toolbar, /saveText\(state,\s*app\.lastSavedAt,\s*app\.isDraft\(\),\s*STORAGE_NOUN\)/, "and be passed the draft state + the storage noun");
   assert.ok(!/function saveText\(/.test(toolbar), "no local redefinition may shadow it");
-  assert.match(toolbar, /if \(id === "save-project"\) return saveIndicator\.text;/, "and it must reach the SAVE BUTTON's tip — that is where the retired dot's sentence went");
+  assert.match(toolbar, /<Tooltip text=\{saveIndicator\.text\}>/, "and it must reach the standalone dot's tooltip — that is where the save-state sentence lives");
 });
 
 test("THE GUARD IS ONE SEAM: every replacing open routes through guardedOpen", () => {

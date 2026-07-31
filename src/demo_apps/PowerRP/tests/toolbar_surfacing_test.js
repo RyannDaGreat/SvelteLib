@@ -36,9 +36,9 @@ import { dirname, resolve } from "node:path";
 const powerRP = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const toolbar = readFileSync(resolve(powerRP, "web/Toolbar.svelte"), "utf8");
 const appSvelte = readFileSync(resolve(powerRP, "web/App.svelte"), "utf8");
-// The save-indicator MERGE (test 5) spans markup and stylesheet: the dot must be
-// gone from BOTH, and its successor present in both, or the toolbar renders an
-// unstyled empty span where a state light should be.
+// The save-indicator (test 5) spans markup and stylesheet: the dot must be
+// present in BOTH, or the toolbar renders an unstyled empty span where a state
+// light should be.
 const appCss = readFileSync(resolve(powerRP, "web/app.css"), "utf8");
 
 let passed = 0;
@@ -119,24 +119,15 @@ test("only the four documented buttons still name their own glyphs", () => {
 // Naming each allowance makes the exception set readable and makes adding to it a
 // deliberate edit that says which affordance and why.
 //
-// ONE allowed tip now, down from two. The save-indicator left the list because
-// THE INDICATOR ITSELF LEFT THE TOOLBAR (user ruling: "the unsaved-changes dot is
-// kind of the same thing as the save button — the same state"). Its sentence did
-// not disappear; it MOVED onto the Save button, where it renders through the
-// shared commandTip snippet like every other button's tip — which is to say the
-// exception this list existed to grant is no longer needed, because the thing it
-// covered stopped being an exception. Shrinking the list is therefore the
-// correct edit, not a loosening: the invariant ("no BUTTON words its own tip
-// instead of reading the registry") is now defended over strictly more of the
-// file than before.
-//
-//   doc-name — a single-click RENAME gesture on the title; not a command, so it
-//              has no registry entry to read a tip from.
+//   doc-name       — a single-click RENAME gesture on the title; not a command,
+//                    so it has no registry entry to read a tip from.
+//   save-indicator — the standalone save-state dot; a readout, not a command,
+//                    so its sentence (draftKeys.saveText) is its own tip.
 test("a hardcoded tooltip survives only where no command entry exists", () => {
   // Each <Tooltip text=…> paired with the class of the element it wraps.
   const wrapped = [...toolbar.matchAll(/<Tooltip text=[^>]*>\s*<(?:span|button|div)\s+[^>]*class="([^"{]*)/g)]
     .map((m) => m[1].trim().split(/\s+/)[0]);
-  const ALLOWED = ["doc-name"];
+  const ALLOWED = ["doc-name", "save-indicator"];
   assert.deepEqual(
     wrapped.slice().sort(),
     ALLOWED.slice().sort(),
@@ -184,30 +175,23 @@ test("every Toolbar-surfaced command with a `when` also declares a `requires`", 
   );
 });
 
-// ── (5) THE SAVE INDICATOR IS THE SAVE BUTTON ───────────────────────────────
-// User ruling: "The unsaved-changes [dot] is kind of the same thing as the save
-// button — the same state." A standalone readout beside a control describing the
-// same fact is two things to learn and two chances to disagree, so the dot
-// retired into the button.
+// ── (5) THE SAVE INDICATOR: SAME STATE, ITS OWN ELEMENT ─────────────────────
+// User ruling: the dot and the Save button "share the same state, not the same
+// element." Both read app.saveState(); the dot reports (sentence in its
+// tooltip), the button acts (clean-state gate, reason in its tooltip).
 //
-// PINNED IN BOTH DIRECTIONS, because either half alone would pass while the
-// feature was broken: the dot must be GONE (a re-added one would silently
-// resurrect the divergence) AND the button must actually carry the state (a
-// deletion with no replacement would lose the indicator the user asked for in
-// the first place — "an indicator … which when I hover over it tells me whether
-// or not it's saved").
-test("the save-indicator dot is retired and its state rides the Save button", () => {
-  assert.doesNotMatch(toolbar, /class="save-indicator/, "the standalone save-indicator dot is back in Toolbar.svelte — its state belongs on the Save button (the ruling), not on a second control beside it");
-  assert.doesNotMatch(appCss, /\.save-indicator\b/, "app.css still styles .save-indicator — the dot's rules moved to .btn-save-mark when the dot itself retired");
+// PINNED IN BOTH DIRECTIONS: the dot must be PRESENT (markup and stylesheet —
+// or the toolbar renders an unstyled empty span), and the button must NOT grow
+// a second copy of the state (a mark on the button would be the same state
+// drawn twice, free to disagree).
+test("the save-indicator dot stands alone and the Save button carries no mark", () => {
+  assert.match(toolbar, /class="save-indicator \{saveIndicator\.state\}"/, "the standalone save-indicator dot is missing from Toolbar.svelte");
+  assert.match(toolbar, /<Tooltip text=\{saveIndicator\.text\}>/, "the dot's tooltip no longer carries saveText's sentence — the four save states would collapse to three glyphs with no words");
+  assert.match(appCss, /\.toolbar \.save-indicator \{/, "app.css does not style .save-indicator, so the dot renders as an unstyled empty span");
 
-  // The button's half of the merge, all three parts:
-  assert.match(toolbar, /function saveMarkFor\(id\)/, "saveMarkFor is gone — nothing decides which button carries the save state mark");
-  assert.match(toolbar, /class="btn-save-mark \{saveMarkFor\(id\)\}"/, "the Save button no longer renders its state mark, so the retired dot left no successor");
-  assert.match(toolbar, /return id === "save-project" \? saveIndicator\.state : null/, "the state mark is no longer derived from app.saveState() via saveIndicator — the mark and the button's own gate could then disagree");
-  // And the SENTENCE, which is the part the mark alone cannot carry (a draft and
-  // a dirty saved project are both a ring; only the text tells them apart).
-  assert.match(toolbar, /if \(id === "save-project"\) return saveIndicator\.text;/, "the Save button's tip no longer carries saveText's sentence — the four save states would collapse to three glyphs with no words");
-  assert.match(appCss, /\.btn-save-mark\b/, "app.css does not style .btn-save-mark, so the state mark renders as an unstyled empty span");
+  assert.doesNotMatch(toolbar, /btn-save-mark|saveMarkFor/, "the Save button still renders a state mark — the same state drawn twice, free to disagree with the dot");
+  assert.doesNotMatch(toolbar, /if \(id === "save-project"\) return saveIndicator\.text;/, "the Save button's tip still duplicates the dot's sentence");
+  assert.doesNotMatch(appCss, /\.btn-save-mark\b/, "app.css still styles the retired .btn-save-mark");
 });
 
 // ── (6) A DISABLED SAVE BUTTON MUST STILL BE HOVERABLE AND FOCUSABLE ─────────
