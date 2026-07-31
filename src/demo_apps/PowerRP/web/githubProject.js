@@ -103,6 +103,8 @@
  * nothing was adjusted. The obligation lands on whoever wires the button.
  */
 
+import { isOnline, offlineMessage, reportFailure } from "./connectivity.js";
+
 /** GitHub's REST host. The ONE origin this module talks to for metadata, named
  *  once so an audit of "where can a token go" is a single grep. */
 export const GITHUB_API = "https://api.github.com";
@@ -553,12 +555,26 @@ async function githubApi(path, { token = null, target = null, method = "GET", bo
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
+  // OFFLINE IS ANSWERED BEFORE THE REQUEST. This is the ONE choke point every
+  // GitHub call goes through — loading a `?repo=`, opening owner/name@branch,
+  // and Save-to-GitHub alike — so stating it here covers all of them at once,
+  // and no call site can forget. "Check your network connection" below is a
+  // GUESS dressed as advice; when the seam already knows the network is gone,
+  // say so instead of asking the user to go and find out.
+  if (!isOnline()) throw new Error(offlineMessage(method === "GET" ? "Loading from GitHub" : "Saving to GitHub"));
+
   let res;
   try {
     res = await fetch(`${GITHUB_API}${path}`, init);
   } catch (e) {
     // A network-level failure carries no token, but it may carry a URL; redact
     // anyway rather than reasoning about which failures are safe.
+    //
+    // navigator.onLine === true is nearly meaningless (a captive portal reports
+    // it while every request fails), so a failure HERE is the suspicious
+    // evidence connectivity.js verifies on: ask, and if the internet is really
+    // gone, name that rather than GitHub.
+    if (!(await reportFailure())) throw new Error(offlineMessage(method === "GET" ? "Loading from GitHub" : "Saving to GitHub"));
     throw new Error(redacted(`Could not reach GitHub (${e?.message ?? e}). Check your network connection.`));
   }
   if (!res.ok) {

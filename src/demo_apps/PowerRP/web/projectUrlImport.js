@@ -38,6 +38,7 @@
  */
 
 import { BACKEND } from "./projectApi.js";
+import { isOnline, offlineMessage, reportFailure } from "./connectivity.js";
 
 /** The share-link query parameter. Short and self-explanatory: `?zip=<url>`.
  *  Exported so the boot path, the tests and the docs cannot drift apart. */
@@ -189,10 +190,27 @@ async function fetchBytesWithProgress(url, onProgress) {
  * @throws {ZipFetchBlockedError} when direct failed and no proxy was available.
  */
 export async function fetchZipBytes(url, onProgress, { proxy = true } = {}) {
+  // OFFLINE, STATED BEFORE THE ATTEMPT — but note WHICH axis this is. The direct
+  // fetch needs the INTERNET (an arbitrary third-party host); the proxy retry
+  // below needs only the BACKEND, which in Electron is a local process that
+  // stays alive when the wifi dies. So being offline does not rule the proxy
+  // out — it only rules out the direct hop. Refusing both here would break a
+  // case that genuinely works. (Even so the proxy will usually fail too, since
+  // IT must reach the same host; its own error says so in its own words.)
+  if (!isOnline() && !proxy) throw new Error(offlineMessage("Opening a project from a link"));
+
   try {
     return await fetchBytesWithProgress(url, onProgress);
   } catch (direct) {
-    if (!proxy) throw new ZipFetchBlockedError(url, direct);
+    if (!proxy) {
+      // No proxy to fall back on, so this failure is final and the user needs
+      // its real cause. A dead network and a CORS refusal look IDENTICAL to a
+      // page (both are an opaque TypeError), and the existing message assumes
+      // CORS — which sends an offline user hunting a server misconfiguration
+      // that does not exist. Ask the seam before choosing the sentence.
+      if (!(await reportFailure())) throw new Error(offlineMessage("Opening a project from a link"));
+      throw new ZipFetchBlockedError(url, direct);
+    }
     // The server has no same-origin policy — CORS is a browser rule about what a
     // PAGE may read, and a server-side fetch is not a page. It applies its own
     // scheme/size/SSRF rules instead (server.py _handle_fetch_zip).

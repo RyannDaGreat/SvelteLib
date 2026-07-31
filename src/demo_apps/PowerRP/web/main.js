@@ -13,6 +13,18 @@ import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
 const fontsLoaded = loadFonts();
 import { assetStore, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
 import { REPO_PARAM } from "./githubProject.js";
+import { isOnline, offlineMessage, startConnectivityWatch } from "./connectivity.js";
+
+// THE CONNECTIVITY SEAM STARTS FIRST, and unconditionally — before the storage
+// probe, before fonts, before the mount, and in EVERY mode. Two reasons it sits
+// this early rather than inside the editor's mount:
+//   · `?repo=`/`?zip=` boot loads run before the user can touch anything, and
+//     they need a truthful answer to "is the internet there" to explain a
+//     failure rather than reporting an opaque fetch error.
+//   · The user's ruling covers Electron and the static site equally ("it's the
+//     same mechanism"), and neither of those goes through anything the editor
+//     mount alone would run. It is only two event listeners.
+startConnectivityWatch();
 
 /**
  * Command (network + app mutation). `?repo=owner/name[@ref]` BOOT WIRING — reads
@@ -54,7 +66,13 @@ async function openRepoParamProject() {
     const result = await app.openProjectFromRepo(slug, ({ message }) => console.info(`PowerRP ?repo=: ${message}`));
     if (result?.cancelled) console.info(`PowerRP ?repo=${slug}: cancelled — kept the project that was already open.`);
   } catch (e) {
-    console.error(`PowerRP: could not open ?repo=${slug} — ${e?.message ?? e}`);
+    // NAME OFFLINE WHEN OFFLINE IS THE CAUSE. A boot param that fails is the
+    // least explicable failure in the app — the user clicked a link and got an
+    // editor that is not the deck they were sent — so the console line must not
+    // leave them guessing between "the link is wrong", "the repo is private"
+    // and "my wifi is off". The seam already knows which; say it.
+    const cause = isOnline() ? (e?.message ?? e) : offlineMessage("Opening a shared project");
+    console.error(`PowerRP: could not open ?repo=${slug} — ${cause}`);
     throw e;
   }
 }

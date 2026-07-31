@@ -15,6 +15,7 @@
   import Toolbar from "./Toolbar.svelte";
   import SlideNav from "./SlideNav.svelte";
   import { isStatic } from "./storageMode.js";
+  import { offlineRequirement } from "./connectivity.js";
   // The quick-Save gate and its REASON are ONE pure function (draftKeys.js) so
   // they cannot drift — see quickSaveBlocker, which answers both.
   import { quickSaveBlocker, saveCommandFor } from "./draftKeys.js";
@@ -481,6 +482,11 @@
   setInterval(pollRenderBadge, RENDER_BADGE_POLL_MS);
   app.loadAutosave();
   app.loadTheme();
+  // Mirror the connectivity seam into reactive `app.online`, so every
+  // internet-gated command's `when` re-evaluates when the network comes or goes
+  // rather than freezing on its first verdict. Seeds from the seam, so an app
+  // that boots with no route out is already saying so on its first render.
+  app.startConnectivityMirror();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)
 
   // ── DRAFTS AT BOOT: restore an unsaved working copy, or open a ?zip= link ────
@@ -1145,7 +1151,17 @@
     // enters the library until the user saves, so following someone's link costs
     // them nothing. Titled with the transport ("from URL") to sit beside the
     // other two Open verbs, which name theirs (Browser / Server).
-    { id: "open-project-url", title: "Open Project from URL…", icon: "mdi:link-variant", aliases: ["share link", "zip url", "download project", "open link", "remote", "github", "repo", "branch"], help: "Opens a project from the network as an unsaved draft — either a direct link to an exported .zip (a GitHub release, an S3 bucket, your own web server) or a GitHub repository as owner/name, with @branch for a specific branch, tag or commit. The project library is untouched until you save.", run: (a) => a.openProjectFromUrlModal() },
+    // GATED ON THE INTERNET, not on the backend. Both grammars this field takes
+    // reach a THIRD-PARTY host (an arbitrary .zip URL, or api.github.com), so
+    // neither can work with no route out — and an unreachable open is better
+    // refused with a sentence than attempted into a spinner that ends in
+    // "Failed to fetch". The gate reads the ONE connectivity seam; the palette
+    // and the toolbar render the reason through commandUnavailableReason, per
+    // the save-project precedent. It reads `a.online` — the app's REACTIVE
+    // MIRROR of the seam — not `isOnline()` directly, so the row actually
+    // re-evaluates when the network returns instead of freezing on the verdict
+    // it happened to be given when the palette first rendered.
+    { id: "open-project-url", title: "Open Project from URL…", icon: "mdi:link-variant", when: (a) => a.online, requires: offlineRequirement(), aliases: ["share link", "zip url", "download project", "open link", "remote", "github", "repo", "branch"], help: "Opens a project from the network as an unsaved draft — either a direct link to an exported .zip (a GitHub release, an S3 bucket, your own web server) or a GitHub repository as owner/name, with @branch for a specific branch, tag or commit. The project library is untouched until you save.", run: (a) => a.openProjectFromUrlModal() },
     // Gated to URL-SOURCED DRAFTS: a locally-dropped zip or a saved project has
     // no address a recipient could fetch, so there is nothing honest to copy and
     // the command must be disabled rather than hand over a link that 404s.

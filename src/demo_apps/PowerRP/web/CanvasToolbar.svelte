@@ -52,6 +52,7 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import FloatingCanvasPanel, { widgetPanelAnchor } from "./FloatingCanvasPanel.svelte";
   import { isEquationValue } from "../core/expressions.js";
+  import { onConnectivityChange } from "./connectivity.js";
 
   // app = the app store; node = the widget's derived render node; worldToScreen =
   // the PanZoom camera map (render-area frame); zoom = viewport.zoom (kept for
@@ -116,6 +117,23 @@
     }
     const timer = setTimeout(() => runSearch(q), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
+  });
+
+  // RECOVERY: a search that failed because the internet was gone must come back
+  // BY ITSELF when it returns. Without this the palette keeps showing "Offline —
+  // icon search needs the internet" over a wifi connection that is plainly
+  // working, and the only way out is to retype the query — which reads as the
+  // notice being wrong rather than merely stale.
+  //
+  // Only the ONLINE edge re-runs, and only when the last attempt actually
+  // failed: going offline needs no request to be correct (the provider refuses
+  // before it fetches), and re-running a SUCCESSFUL search on every network
+  // blip would burn requests to reproduce results already on screen.
+  $effect(() => {
+    if (!searchable) return;
+    return onConnectivityChange((up) => {
+      if (up && searchStatus) untrack(() => runSearch(query));
+    });
   });
 
   /** Command. Keydown in the search input: Enter searches NOW (skips the

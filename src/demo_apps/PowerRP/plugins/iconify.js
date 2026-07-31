@@ -114,6 +114,7 @@ import { errorAffordance, warningAffordance } from "../render_gpu/affordances.js
 import { svgToIRWithWarnings, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint, svgOverrideSlotPaint } from "../render_gpu/gpu/svg_raster.js";
 import { ensureSvgSource, getSvgSource, svgSourceStatus, svgSourceError } from "../render_gpu/gpu/svg_source_registry.js";
 import { rpFuzzyScore } from "../core/fuzzy.js";
+import { isOnline, offlineMessage, reportFailure } from "../web/connectivity.js";
 
 /** The Iconify API host — icon SVGs (`/<prefix>/<name>.svg`) and the search
  * endpoint (`/search?query=`) both live here. */
@@ -414,6 +415,18 @@ async function fetchCollectionNames(prefix) {
  */
 export async function searchIconifyCells(query) {
   const raw = (query ?? "").trim();
+  // OFFLINE IS ANSWERED BEFORE THE FIRST REQUEST, not discovered by one failing.
+  // User ruling: "for the iconify, it should give you a notice that you can't
+  // search through it because you're offline. It should know that." Throwing
+  // here is what makes the toolbar SAY it: CanvasToolbar renders a provider's
+  // thrown message as its search status, so this sentence lands in the palette
+  // instead of a blank grid that reads as "the search is broken".
+  //
+  // The EMPTY query is exempt on purpose — the curated DEFAULT_PALETTE needs no
+  // API call, and its icons come from svg_source_registry, which the service
+  // worker's runtime cache can answer offline for anything previously fetched.
+  // Refusing to open the palette at all would hide icons we can still draw.
+  if (raw && !isOnline()) throw new Error(offlineMessage("Icon search"));
   let ids;
   if (!raw) {
     ids = DEFAULT_PALETTE;
@@ -423,7 +436,22 @@ export async function searchIconifyCells(query) {
     // (so "pixel-plane" keeps hitting the name index exactly as before), or on
     // the name half when one was.
     const plainQuery = explicitSet ? nameQuery : raw;
-    const plain = plainQuery ? await fetchSearchIds(plainQuery, "", SEARCH_LIMIT) : [];
+    // The plain search is the one stream whose failure is fatal to the search
+    // (the docblock's "the search is down" path). Before re-throwing a raw fetch
+    // error, ASK WHY: navigator.onLine === true is nearly meaningless — a
+    // captive portal or a dropped uplink reports it while every request fails —
+    // so a failure here is exactly the suspicious evidence connectivity.js
+    // verifies on. If the internet is genuinely gone, the user gets the offline
+    // sentence rather than "Failed to fetch", which names the wrong problem.
+    let plain = [];
+    if (plainQuery) {
+      try {
+        plain = await fetchSearchIds(plainQuery, "", SEARCH_LIMIT);
+      } catch (e) {
+        if (!(await reportFailure())) throw new Error(offlineMessage("Icon search"));
+        throw e; // genuinely online: the API's own error is the true one
+      }
+    }
 
     // Sources 2 and 3 — the sets whose prefix/name fuzzy-matches. Without a
     // separator the whole query doubles as the set query, which is what makes a

@@ -50,6 +50,7 @@ import { assetStore, isStatic, projectStore, refuseInStatic, storageMode, storag
 // stages in the browser, in both storage modes, because the server has no folder
 // for a project the user has not decided to keep. See web/projectDraft.js.
 import { localAssetStore } from "./assetStore.js";
+import { isOnline, onConnectivityChange } from "./connectivity.js";
 import { buildProjectZip, downloadBytes } from "./projectZip.js";
 // Opening a project from a URL (the "?zip=" share link and the command that
 // shares its pipeline) — see web/projectUrlImport.js for the fetch rules.
@@ -4704,6 +4705,36 @@ export class PowerRPApp {
    *  pane) can re-list reactively — e.g. a canvas OS-file drop must show up in
    *  the pane without a manual Refresh. Monotonic, viewer-local, not undoable. */
   assetsVersion = $state(0);
+
+  /** THE REACTIVE MIRROR of the connectivity seam — read by internet-gated
+   *  command `when` clauses so their surfacings (palette rows, toolbar buttons)
+   *  actually RE-EVALUATE when the network comes or goes.
+   *
+   *  Why a mirror and not `isOnline()` inside the gate: `isOnline()` is a plain
+   *  function over a module-level variable, so Svelte has nothing to subscribe
+   *  to — a gate reading it would be correct the moment it ran and then never
+   *  run again, leaving "Unavailable — requires an internet connection" frozen
+   *  on screen over a working connection. The seam stays framework-free
+   *  (bare-node tests import it); THIS is the one place its value becomes
+   *  reactive. Kept in sync by `#connectivityStop`'s subscription below.
+   *
+   *  Viewer-local, not document state, not undoable. */
+  online = $state(true);
+
+  /** Unsubscribe for the connectivity subscription that feeds `online`. */
+  #connectivityStop = null;
+
+  /** Command. Starts mirroring the connectivity seam into `this.online`. Called
+   *  once from the app's construction path; idempotent. Seeds from the seam
+   *  first, because a page that BOOTS offline must not spend its first render
+   *  claiming otherwise. */
+  startConnectivityMirror() {
+    if (this.#connectivityStop) return;
+    this.online = isOnline();
+    this.#connectivityStop = onConnectivityChange((up) => {
+      this.online = up;
+    });
+  }
 
   // ── Optimistic upload progress (this feature) ────────────────────────────
   // Every in-flight/failed upload as a reactive tile the Asset Explorer renders
