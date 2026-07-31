@@ -16,8 +16,18 @@
  *                     statement of intent; falling back to local storage because
  *                     it happened to be down would silently open the WRONG
  *                     library and let the user edit a deck that isn't theirs.
- *   3. otherwise    → PROBE `/api/projects/`. It answers → HTTP. It does not →
- *                     LOCAL.
+ *   3. otherwise    → PROBE `/api/projects/`. It answers WITH JSON → HTTP.
+ *                     Anything else → LOCAL.
+ *
+ * "ANSWERS WITH JSON", NOT MERELY "ANSWERS" — and the distinction is the whole
+ * check. A static host with SPA fallback (GitHub Pages, and any `try_files …
+ * /index.html` deploy) serves the app's own index.html for EVERY unmatched path,
+ * including `/api/projects/`. That is a 200 with a body: a probe asking only "did
+ * something respond" concludes a healthy backend is present, and the app then
+ * boots into HTTP mode on a host that has no server at all — every project call
+ * fails, or worse, quietly parses HTML as a project list. This actually happened
+ * during static acceptance, which is why that script had to pass `?static=1` to
+ * work around it. So the content-type must say JSON before a 200 counts.
  *
  * WHY A PROBE AND NOT A BUILD FLAG: the same bundle is served by the dev server
  * (backend present) and by GitHub Pages (backend absent), and `run_server.sh`
@@ -100,19 +110,34 @@ export function forcedMode(search) {
 }
 
 /**
- * Query (network). Whether a backend answers at `base`. Any HTTP response counts
- * as PRESENT — even a 500 — because the question is "is a server there", and a
- * server that is there but unwell must be reported as a server error by the real
- * call, not silently swapped for local storage. Only a transport failure
- * (nothing listening, DNS, CORS) or the timeout counts as absent.
+ * Query (network). Whether a PROJECT BACKEND answers at `base` — which takes a
+ * 2xx **whose content-type says JSON**, not merely any HTTP response.
+ *
+ * THE STRICTER RULE IS NOT PEDANTRY, it is the only thing that distinguishes a
+ * backend from a static host: an SPA-fallback deploy answers `/api/projects/`
+ * with 200 + its own index.html, so "did anything respond" is true on a host with
+ * no server whatsoever (see the module docblock — this fooled static acceptance).
+ * A real server.py response to this route is always a JSON array.
+ *
+ * WHAT THIS COSTS, stated honestly because it reverses an earlier rule: a backend
+ * that is THERE BUT UNWELL (500, or a proxy's HTML error page) now reads as
+ * absent, and the app opens browser-local storage instead of surfacing a server
+ * error. That trade is deliberate — the failure it prevents is silent and
+ * data-shaped (HTML parsed as a project list on a host that has no library),
+ * while the failure it introduces is loud and recoverable: the boot line and the
+ * static-mode notice both say local storage was chosen. A user who KNOWS a
+ * backend exists says so with `?backend=`, which never probes at all (case 2) and
+ * therefore still turns an unwell server into a real, reported server error.
  *
  * @param {string} base - backend origin ("" = same origin, through the proxy)
  * @returns {Promise<boolean>}
  *
  * @example
- * >>> await backendAnswers("")        // dev server proxying to server.py
+ * >>> await backendAnswers("")  // dev server proxying to server.py → 200 + JSON
  * true
- * >>> await backendAnswers("")        // GitHub Pages: nothing behind /api/
+ * >>> await backendAnswers("")  // GitHub Pages: nothing behind /api/ → transport failure
+ * false
+ * >>> await backendAnswers("")  // SPA fallback: 200 + text/html — a RESPONSE, not a backend
  * false
  */
 export async function backendAnswers(base = "") {
