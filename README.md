@@ -14,11 +14,19 @@ move them).
 - **Zip** — export a project as a `.zip`; drag one onto the page to open it.
 - **`?zip=<url>`** — share a link to a zip hosted anywhere and it opens on load.
 - **GitHub repo** — Save to GitHub writes `doc.json` + `assets/` to a repo; `?repo=owner/name` opens it.
+  Add `@branch` for a specific branch, tag or commit: `?repo=owner/name@main`.
 
 A repo stays editable after you share it, which a zip does not — the files are right there.
 
+**Open Project from URL…** takes either form in one field: a link to a `.zip` anywhere on the
+web, or a repository as `owner/name` (with `@branch` if you want one). Both open as an unsaved
+draft — nothing enters your project library until you save.
+
 Worked example: [PowerRP-RobotSim-Demo](https://github.com/RyannDaGreat/PowerRP-RobotSim-Demo)
 → [open it](https://ryanndagreat.github.io/SvelteLib/?repo=RyannDaGreat/PowerRP-RobotSim-Demo)
+→ [or its `branch-fixture` branch](https://ryanndagreat.github.io/SvelteLib/?repo=RyannDaGreat/PowerRP-RobotSim-Demo@branch-fixture)
+(that branch exists as a standing test fixture — it differs from `main` by the deck's name alone,
+which is how `tests/github_live_probe.js` proves `@ref` really reaches GitHub.)
 
 ## Install
 
