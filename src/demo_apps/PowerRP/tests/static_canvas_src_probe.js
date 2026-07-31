@@ -117,10 +117,19 @@ try {
   //     would instead show a dead /asset/ path, which the assertions above forbid.
   //   • "repair: item … filled with plugin defaults" — the hand-written minimal
   //     doc omits optional properties on purpose; repair filling them is correct.
+  //   • "refusing to load the missing-asset sentinel" — THE PROBE ASKS FOR THIS.
+  //     Case 3 deliberately points a widget at an absent ref, and the assertion
+  //     directly above requires the resolver to return the missing sentinel
+  //     rather than a dead /asset/ path. ensureImage/ensureVideo then refuse the
+  //     sentinel and say so once — the loud-report-then-degrade contract working
+  //     end to end. This list already whitelisted the OTHER consequences of the
+  //     same case ("not in local storage"); the sentinel refusal is newer than
+  //     the list (it arrived with the video_registry sentinel work), so the probe
+  //     was failing itself for the log line its own fixture provokes.
   // Everything else still fails the probe.
   page.on("console", (m) => {
     const t = m.text();
-    const expected = /not in local storage|MediaError code 4|DEMUXER_ERROR|MEDIA_ELEMENT_ERROR|VideoThumbnail: video failed to load|PowerRP repair: item|Failed to load resource|\/api\/|listAssets|no WebGPU adapter|VideoV7|ECONNREFUSED|404/i;
+    const expected = /not in local storage|refusing to load the missing-asset sentinel|MediaError code 4|DEMUXER_ERROR|MEDIA_ELEMENT_ERROR|VideoThumbnail: video failed to load|PowerRP repair: item|Failed to load resource|\/api\/|listAssets|no WebGPU adapter|VideoV7|ECONNREFUSED|404/i;
     if (m.type() === "error" && !expected.test(t)) errors.push(`console: ${t}`);
   });
 
