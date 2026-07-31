@@ -104,6 +104,10 @@ export const PREFETCH_RING = 0;
  *                 requesting 404s (what every slippy map does at max zoom).
  *   attribution — RENDERED ON THE MAP. See the header: a licence term.
  *   tileSize    — px per tile edge; 256 everywhere here, read rather than assumed.
+ *   geographic  — OPTIONAL: {url, maxZoom, tileSize}, an EPSG:4326 twin of this
+ *                 same layer for the GLOBE path only (core/geo_tiles.js's
+ *                 geographic-grid functions). See "THE GEOGRAPHIC TWIN" below for
+ *                 which providers have one and why the rest do not.
  */
 export const TILE_PROVIDERS = Object.freeze({
   osm: Object.freeze({
@@ -118,6 +122,11 @@ export const TILE_PROVIDERS = Object.freeze({
     // on the map") — on by default, but the TOGGLE is still the user's to flip
     // (showAttributionHelp on the widget states the trade-off; see its docblock).
     defaultShowAttribution: true,
+    // NO `geographic` TWIN — OpenStreetMap publishes no EPSG:4326 service at all
+    // (only the Mercator "standard" tile layer this entry already points at), so
+    // there is nothing to add here. See "THE GEOGRAPHIC TWIN" below: the globe path
+    // for this provider stays on the Mercator tiles with the shaded polar caps, a
+    // DELIBERATE, DOCUMENTED asymmetry rather than an oversight.
   }),
   satellite: Object.freeze({
     id: "satellite",
@@ -149,6 +158,18 @@ export const TILE_PROVIDERS = Object.freeze({
     // DIFFERENT case even when paired with this same base — they are OSM-derived
     // and default to shown; see TILE_OVERLAYS's header.)
     defaultShowAttribution: false,
+    // THE GEOGRAPHIC TWIN — see "THE GEOGRAPHIC TWIN" below for the full
+    // verification record. Same layer, same instrument, a DIFFERENT pyramid: GIBS's
+    // "250m" EPSG:4326 TileMatrixSet, {z}/{y}/{x} within that set's own fixed name
+    // (no {s} rotation — one host, like the mercator entry above). z8 is this
+    // pyramid's OWN measured ceiling (z8 200s, z9 400s) — it does not have to equal
+    // the mercator entry's z9 because the two pyramids' zoom numbers do not mean the
+    // same angular resolution (core/geo_tiles.js geoTileZoomFor's own docblock).
+    geographic: Object.freeze({
+      url: "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/{time}/250m/{z}/{y}/{x}.jpeg",
+      maxZoom: 8,
+      tileSize: 512,
+    }),
   }),
   terrain: Object.freeze({
     id: "terrain",
@@ -161,6 +182,10 @@ export const TILE_PROVIDERS = Object.freeze({
     attribution: "© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)",
     tileSize: 256,
     defaultShowAttribution: true,
+    // NO `geographic` TWIN — OpenTopoMap is itself Mercator-only (it renders from
+    // OSM + SRTM through the same {z}/{x}/{y} pyramid as the streets entry); no
+    // EPSG:4326 relief/contour service exists to point at. Same asymmetry as OSM
+    // above, same reason, same globe-path fallback (Mercator tiles + shaded caps).
   }),
 });
 
@@ -188,6 +213,26 @@ export const DEFAULT_TILE_STYLE = "osm";
  */
 export function providerFor(id) {
   return TILE_PROVIDERS[id] ?? TILE_PROVIDERS[DEFAULT_TILE_STYLE];
+}
+
+/**
+ * Pure function. A provider-or-overlay descriptor's `geographic` (EPSG:4326) twin,
+ * or null when it does not have one — the ONE place the globe path asks "does this
+ * layer have real polar imagery". A layer's own `.geographic` field is
+ * TILE_PROVIDERS-shaped (`{url, maxZoom, tileSize}`, `tileUrl`-compatible) but
+ * carries no `attribution`/`title` of its own: it is the SAME layer under a
+ * different pyramid, so plugins/demo/globe_map.js reads those from the Mercator
+ * entry regardless of which pyramid actually served the pixels.
+ *
+ * @param {object} descriptor - a TILE_PROVIDERS or TILE_OVERLAYS entry
+ * @returns {object|null}
+ *
+ * @example geographicFor(TILE_PROVIDERS.satellite).maxZoom // 8
+ * @example geographicFor(TILE_PROVIDERS.osm) // null (OpenStreetMap has no EPSG:4326 service)
+ * @example geographicFor(TILE_OVERLAYS.labels).tileSize // 512
+ */
+export function geographicFor(descriptor) {
+  return descriptor.geographic ?? null;
 }
 
 /**
@@ -308,6 +353,21 @@ export function allAttributions() {
  * and 94% transparent pixels respectively over a NYC tile), which is the
  * precondition for compositing as an overlay at all — an opaque "overlay" would
  * simply replace the base rather than annotate it.
+ *
+ * ── THE GEOGRAPHIC TWIN (all three overlays, added 2026-07-31) ───────────────
+ * GIBS publishes ALL THREE of these same layers under EPSG:4326 too, on the
+ * IDENTICAL "250m" TileMatrixSet the satellite base's `geographic` entry uses
+ * (see TILE_PROVIDERS.satellite) — VERIFIED LIVE, not inferred: a 200 at z0 and
+ * z8, a 400 at z9, for Reference_Labels, Reference_Features and Coastlines
+ * alike. No `{time}` segment here either, for the identical reason as the
+ * Mercator entries below (a static snapshot, not a daily mosaic).
+ *
+ * The `_15m` finer variant ALSO exists on the 4326 side (TileMatrixSet
+ * "15.625m") and mirrors the Mercator finding exactly: live at z0, a 400 past
+ * it, for all three layers — so it is left unshipped here for the same "a
+ * matched trio that all work beats one with a dead sibling" reason stated
+ * above. If GIBS ever actually populates it, the fix is the same two-line
+ * change on both pyramids' entries, not a redesign.
  */
 export const TILE_OVERLAYS = Object.freeze({
   labels: Object.freeze({
@@ -319,6 +379,12 @@ export const TILE_OVERLAYS = Object.freeze({
     attribution: "Labels: © OpenStreetMap contributors",
     tileSize: 256,
     help: "City, country and ocean names, from OpenStreetMap data hosted by NASA GIBS. Pairs with any basemap — this is the Google Maps \"hybrid\" look over satellite imagery.",
+    // See "THE GEOGRAPHIC TWIN" above. Same layer, GIBS's 4326 "250m" set.
+    geographic: Object.freeze({
+      url: "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/Reference_Labels/default/250m/{z}/{y}/{x}.png",
+      maxZoom: 8,
+      tileSize: 512,
+    }),
   }),
   features: Object.freeze({
     id: "features",
@@ -329,6 +395,11 @@ export const TILE_OVERLAYS = Object.freeze({
     attribution: "Borders & roads: © OpenStreetMap contributors",
     tileSize: 256,
     help: "Political borders and major roads, from OpenStreetMap data hosted by NASA GIBS. Most useful over Satellite, which has no vector borders of its own.",
+    geographic: Object.freeze({
+      url: "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/Reference_Features/default/250m/{z}/{y}/{x}.png",
+      maxZoom: 8,
+      tileSize: 512,
+    }),
   }),
   coastlines: Object.freeze({
     id: "coastlines",
@@ -339,6 +410,11 @@ export const TILE_OVERLAYS = Object.freeze({
     attribution: "Coastlines: © OpenStreetMap contributors",
     tileSize: 256,
     help: "Coastline linework, from OpenStreetMap data hosted by NASA GIBS. Sharpens the Satellite basemap's shoreline, which MODIS's own imagery leaves soft.",
+    geographic: Object.freeze({
+      url: "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/Coastlines/default/250m/{z}/{y}/{x}.png",
+      maxZoom: 8,
+      tileSize: 512,
+    }),
   }),
 });
 

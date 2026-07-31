@@ -71,13 +71,14 @@ import { standardBBoxAnchors } from "../../core/derive.js";
 import { reportOnce } from "../../core/report.js";
 import { CUSTOM_CATEGORY, bundle, customProps, defaults, props } from "../../core/properties.js";
 import {
-  GLOBE_FLAT_CROSSOVER, MAX_MERCATOR_LAT, clampLat, discCoverageFraction, globeSubdivisionsFor,
-  globeWeight, lonLatToWorld, mapWorldWindow, parseLatLon, sphereProject, tileNorthWest, tileZoomFor,
-  tilesForWindow, worldToLonLat, wrapLon,
+  GLOBE_FLAT_CROSSOVER, MAX_MERCATOR_LAT, clampLat, discCoverageFraction, geoTileNorthWest,
+  geoTileZoomFor, geoTilesForWindow, globeSubdivisionsFor, globeWeight, lonLatToWorld, mapGeoWorldWindow,
+  mapWorldWindow, parseLatLon, sphereProject, tileNorthWest, tileZoomFor, tilesForWindow, worldToLonLat,
+  wrapLon,
 } from "../../core/geo_tiles.js";
 import {
   DEFAULT_TILE_STYLE, OVERLAY_IDS, TILE_OVERLAYS, TILE_PROVIDERS, TILE_PROVIDER_IDS,
-  overlayFor, overlayPropName, providerFor,
+  geographicFor, overlayFor, overlayPropName, providerFor,
 } from "../../web/tile_providers.js";
 import { ATMOSPHERE_FILL_PARAMS } from "../../render_gpu/skia/atmosphere_shader.js";
 import { image, materialFill, polygon, rect, text } from "../../render_gpu/ir.js";
@@ -185,7 +186,7 @@ const CUSTOM = customProps([
     help: `The slippy-map zoom: 0 is the whole world, and each unit DOUBLES the scale (about 11 degrees of longitude at 5, a city block at 17). TWEEN THIS for a fly-in — it is the one property a zoom animation should touch. The globe crossfades to the flat map around ${GLOBE_FLAT_CROSSOVER}. Tiles are fetched at whatever depth the CAMERA justifies, so zooming the canvas into the widget sharpens it further without touching this.` },
   { name: "style", kind: "select", default: DEFAULT_TILE_STYLE, options: TILE_PROVIDER_IDS,
     optionLabels: Object.fromEntries(TILE_PROVIDER_IDS.map((id) => [id, TILE_PROVIDERS[id].title])), label: "Basemap",
-    help: "Which tile provider draws the surface. Streets is OpenStreetMap (deepest zoom, good at every scale); Satellite is NASA's MODIS true-colour mosaic (beautiful on the globe, but a ~250 m/px instrument, so it stops getting sharper around zoom 9); Terrain is OpenTopoMap's relief and contours. Each provider's REQUIRED attribution is drawn on the map. NOTE ON SATELLITE: the MODIS mosaic is assembled from ONE DAY of polar orbits, so it carries BLACK WEDGES where the satellite's swaths did not overlap — most visible near the equator. Those gaps are in NASA's data, not in the rendering (verified by downloading the raw tile), and they are the honest picture of what was actually imaged. Use Streets or Terrain for a deck that needs unbroken coverage." },
+    help: "Which tile provider draws the surface. Streets is OpenStreetMap (deepest zoom, good at every scale); Satellite is NASA's MODIS true-colour mosaic (beautiful on the globe, but a ~250 m/px instrument, so it stops getting sharper around zoom 9); Terrain is OpenTopoMap's relief and contours. Each provider's REQUIRED attribution is drawn on the map. NOTE ON SATELLITE: the MODIS mosaic is assembled from ONE DAY of polar orbits, so it carries BLACK WEDGES where the satellite's swaths did not overlap — most visible near the equator. Those gaps are in NASA's data, not in the rendering (verified by downloading the raw tile), and they are the honest picture of what was actually imaged. Use Streets or Terrain for a deck that needs unbroken coverage. POLES ON THE GLOBE: Satellite samples NASA's separate geographic tile pyramid there, so its poles are REAL imagery, all the way to 90°. Streets and Terrain have no such pyramid to draw from, so their globe still shows a shaded ice cap past 85.05° — the honest gap those two providers genuinely have." },
   // ONE BOOLEAN PER OVERLAY (web/tile_providers.TILE_OVERLAYS) — transparent
   // reference layers composited ABOVE the base, the Google "hybrid" look. Each is
   // an ordinary tweenable/equation-bindable property, same as `style`, rendered
@@ -294,17 +295,51 @@ function tilePlan(s, ctx) {
   // tile reports not-ready: a camera-free consumer that has not run the pre-pass
   // draws the ocean base and the graticule, which is the honest picture of "no
   // pixels were fetched" rather than a blank rectangle.
+  //
+  // THE GEOGRAPHIC FALLBACK — same camera-free honesty, over the 4326 grid when
+  // this provider has one. Export/thumbnails/the CLI get a correct globe-side
+  // picture at the widget's own zoom even with no pre-pass, exactly as the
+  // Mercator fallback above already does for the flat map.
+  const geoWindow = mapGeoWorldWindow(s.centerLon, s.centerLat, s.zoom, s.w, s.h);
+  const providerGeo = geographicFor(provider);
+  const geo = fallbackGeoPlan(providerGeo, geoWindow, s);
+
+  // AN OVERLAY'S PYRAMID FOLLOWS THE BASE'S — see map_display.js's own note on
+  // this same rule for the live-view path. `providerGeo` gates every overlay's
+  // geo branch here too, so the camera-free fallback can never draw a
+  // geographic overlay over a Mercator base (or vice versa).
   const overlays = {};
   for (const id of OVERLAY_IDS) {
     if (!s[overlayPropName(id)]) continue;
     const layer = overlayFor(id);
     const oz = tileZoomFor(s.zoom, s.w, FALLBACK_DEVICE_PER_WORLD, layer.maxZoom);
-    overlays[id] = { z: oz, tiles: tilesForWindow(window, oz).map((t) => ({ ...t, ref: null, ready: false })) };
+    overlays[id] = {
+      z: oz, tiles: tilesForWindow(window, oz).map((t) => ({ ...t, ref: null, ready: false })),
+      geo: providerGeo ? fallbackGeoPlan(geographicFor(layer), geoWindow, s) : undefined,
+    };
   }
   return {
-    z, window, cropped: window, overlays,
+    z, window, cropped: window, overlays, geo,
     tiles: tilesForWindow(window, z).map((t) => ({ ...t, ref: null, ready: false })),
   };
+}
+
+/**
+ * Pure function. The camera-free GEOGRAPHIC tile plan for one layer, or
+ * undefined when that layer has no geographic twin — the fallback-path helper
+ * shared by tilePlan's base call and its per-overlay loop, so the same
+ * "no registry, no pre-pass, ref left null" honesty (this function's caller
+ * docblock) is written once rather than twice.
+ *
+ * @param {object|null} geo - geographicFor(provider) or geographicFor(overlay)
+ * @param {{x: number, y: number, w: number, h: number}} geoWindow - mapGeoWorldWindow's output
+ * @param {object} s - folded item state (for zoom/w)
+ * @returns {{z: number, window: object, tiles: object[]}|undefined}
+ */
+function fallbackGeoPlan(geo, geoWindow, s) {
+  if (!geo) return undefined;
+  const z = geoTileZoomFor(s.zoom, s.w, FALLBACK_DEVICE_PER_WORLD, geo.maxZoom);
+  return { z, window: geoWindow, tiles: geoTilesForWindow(geoWindow, z).map((t) => ({ ...t, ref: null, ready: false })) };
 }
 
 /**
@@ -450,24 +485,28 @@ const POLAR_CAP_COLOR = "#dfe8f2";
  * pyramid cannot reach — the region poleward of ±MAX_MERCATOR_LAT — shaded as a
  * ring stack so the cap reads as CONTINUING CURVATURE rather than a flat sticker.
  *
- * ── WHY RINGS, AND WHY NOT REAL IMAGERY (the deferred fix, named) ────────────
+ * ── ONLY CALLED FOR A PROVIDER WITH NO GEOGRAPHIC TWIN ───────────────────────
  * NASA GIBS also serves true GEOGRAPHIC (EPSG:4326) tiles that cover the poles
- * (this file's header, "POLES: MERCATOR'S CUT vs GIBS GEOGRAPHIC TILES") — the
- * technically correct fix is real polar pixels from that pyramid. That is
- * deliberately NOT done here: it needs a second tile geometry wired into
- * web/tile_providers.js, which is a concurrently-landing sibling change
- * (mapctl_) this fix must not race. What IS in scope and fixed here is the
- * PRESENTATION of the honest gap: a single flat-colour disc (the old rendering)
- * reads as a hole plugged with a sticker — visibly flat against a sphere whose
- * every other pixel is doing real orthographic shading. A single fill colour
- * cannot be a gradient here without threading the polygon op through the
- * gradient-paint machinery (parsePaint's radial branch) for a widget-specific
- * one-off, so instead the SAME shading law the atmosphere shader already applies
- * to the ground (limb darkening from the orthographic normal, nz = sqrt(1-r²))
- * is approximated by drawing the cap as CONCENTRIC RINGS, each one ring's-worth
- * darker toward the pole — the same idea as a computer-graphics ramp texture,
- * built from polygons this renderer's three backends (Skia/PDF/SVG) already
- * draw identically, so no new exporter code is needed anywhere.
+ * (this file's header, "POLES: MERCATOR'S CUT vs GIBS GEOGRAPHIC TILES") and the
+ * satellite provider now samples them on the globe path (web/tile_providers.js's
+ * `geographic` field, geoTileNorthWest in globeTileOps) — REAL pixels reach the
+ * pole there, so emit() skips this function entirely for that provider (its own
+ * call site gates on `!geographicFor(provider)`). This function still exists,
+ * unchanged, for OSM and Terrain: neither has a EPSG:4326 service (no such
+ * service exists to point at — web/tile_providers.js's own note on each), so
+ * their globe path keeps sampling Mercator tiles and genuinely has no data
+ * poleward of ±MAX_MERCATOR_LAT. What follows is that provider's honest
+ * PRESENTATION of the gap: a single flat-colour disc reads as a hole plugged
+ * with a sticker — visibly flat against a sphere whose every other pixel is
+ * doing real orthographic shading. A single fill colour cannot be a gradient
+ * here without threading the polygon op through the gradient-paint machinery
+ * (parsePaint's radial branch) for a widget-specific one-off, so instead the
+ * SAME shading law the atmosphere shader already applies to the ground (limb
+ * darkening from the orthographic normal, nz = sqrt(1-r²)) is approximated by
+ * drawing the cap as CONCENTRIC RINGS, each one ring's-worth darker toward the
+ * pole — the same idea as a computer-graphics ramp texture, built from polygons
+ * this renderer's three backends (Skia/PDF/SVG) already draw identically, so no
+ * new exporter code is needed anywhere.
  *
  * Each ring is the area between two parallels at the cut latitude and a slightly
  * higher one, projected through the same orthographic map the tiles use, so the
@@ -561,16 +600,26 @@ const POLAR_CAP_SEGMENTS = 48;
  * on-screen size, see its docblock), each carrying its own sub-rect of the tile
  * texture, back-face-culled and FEATHERED at the limb by its coverage fraction.
  *
+ * `cornerFn` is the ONE thing that differs between a Mercator tile and a
+ * geographic (EPSG:4326) one — tileNorthWest for the former, geoTileNorthWest
+ * for the latter (geoGlobeTileOps below passes it in). Everything past that
+ * corner lookup — the subdivision grid, the per-quad projection, the coverage
+ * feather, the sub-rect placement — is IDENTICAL for both pyramids: a quad is a
+ * quad once its four corners are known in lon/lat, regardless of which grid
+ * produced them. Factoring the lookup out is what keeps this the ONE emitter
+ * rather than a byte-for-byte fork with one changed line.
+ *
  * @param {object} tile - {x, y, z, ref}
  * @param {object} s - folded state
  * @param {number} opacity - the globe's crossfade weight
  * @param {number} devicePerWorld - camera device px per world unit, for adaptive subdivision
+ * @param {(x: number, y: number, z: number) => {lon: number, lat: number}} [cornerFn] - a tile corner's lon/lat; defaults to the Mercator lookup
  * @returns {object[]} image ops
  */
-function globeTileOps(tile, s, opacity, devicePerWorld) {
+function globeTileOps(tile, s, opacity, devicePerWorld, cornerFn = tileNorthWest) {
   if (!tile.ref || !tile.ready) return [];
-  const nw = tileNorthWest(tile.x, tile.y, tile.z);
-  const se = tileNorthWest(tile.x + 1, tile.y + 1, tile.z);
+  const nw = cornerFn(tile.x, tile.y, tile.z);
+  const se = cornerFn(tile.x + 1, tile.y + 1, tile.z);
   const n = globeSubdivisions(s, devicePerWorld);
   const ops = [];
   for (let iy = 0; iy < n; iy++) {
@@ -598,14 +647,25 @@ function globeTileOps(tile, s, opacity, devicePerWorld) {
 
 /**
  * Pure function. THE SURFACE OPS for ONE LAYER — base or overlay, they are the
- * same shape ({z, tiles, window}) and get IDENTICAL treatment: flat `image` ops
- * below the crossfade weight, globe quad ops above it, both near the crossover
- * so the transition dissolves rather than pops. This is what makes an overlay a
- * genuine "second basemap" rather than a special case: emit() calls this once
- * for the base and once per active overlay (see its docblock), and neither call
- * knows or cares which one it is.
+ * same shape ({z, tiles, window[, geo]}) and get IDENTICAL treatment: flat
+ * `image` ops below the crossfade weight (always from `plan.tiles`, the
+ * Mercator plan — the FLAT map is untouched by the geographic path, always),
+ * globe quad ops above it, both near the crossover so the transition dissolves
+ * rather than pops. This is what makes an overlay a genuine "second basemap"
+ * rather than a special case: emit() calls this once for the base and once per
+ * active overlay (see its docblock), and neither call knows or cares which one
+ * it is.
  *
- * @param {{z: number, tiles: object[], window: object}} plan - one layer's tile plan
+ * THE GLOBE SIDE READS `plan.geo` WHEN PRESENT (tile_providers.geographicFor):
+ * a layer with a geographic (EPSG:4326) twin draws that grid's tiles on the
+ * globe, via geoTileNorthWest instead of globeTileOps' default Mercator corner
+ * lookup — DIFFERENT PIXELS from the flat side's, reaching the true poles.
+ * A layer with no twin (`plan.geo` is `undefined` — OSM, Terrain, or an overlay
+ * with no geographic entry) falls through to the SAME Mercator tiles the flat
+ * side just drew, exactly as before this feature existed — the "no such field"
+ * shape IS the documented asymmetry, not a special case needing its own branch.
+ *
+ * @param {{z: number, tiles: object[], window: object, geo?: {z: number, tiles: object[]}}} plan - one layer's tile plan
  * @param {object} s - folded state (centerLon, centerLat, w, h)
  * @param {number} gw - the globe weight (effectiveGlobeWeight)
  * @param {number} devicePerWorld - camera device px per world unit, for adaptive subdivision
@@ -623,7 +683,20 @@ function layerSurfaceOps(plan, s, gw, devicePerWorld, opacity) {
       ops.push(image({ ref: tile.ref, x: r.x, y: r.y, w: r.w, h: r.h, opacity: (1 - gw) * opacity, sampling: "bilinear" }));
     }
   }
-  if (gw > 0) for (const tile of plan.tiles) ops.push(...globeTileOps(tile, s, gw * opacity, devicePerWorld));
+  // THE GLOBE SIDE: the layer's `geo` (EPSG:4326) plan when it has one — the
+  // corner-lookup swap globeTileOps takes a `cornerFn` for exactly this — else the
+  // SAME Mercator tiles the flat side above just drew, at globeTileOps' default
+  // cornerFn. This is precisely the "documented asymmetry" the manifest names:
+  // OSM/Terrain (no `geo` field, ever — see tile_providers.js's own note on each)
+  // fall straight through to the untouched Mercator globe path, unchanged bit for
+  // bit from before this feature existed.
+  if (gw > 0) {
+    if (plan.geo) {
+      for (const tile of plan.geo.tiles) ops.push(...globeTileOps(tile, s, gw * opacity, devicePerWorld, geoTileNorthWest));
+    } else {
+      for (const tile of plan.tiles) ops.push(...globeTileOps(tile, s, gw * opacity, devicePerWorld));
+    }
+  }
   return ops;
 }
 
@@ -834,16 +907,27 @@ export const globeMapPlugin = {
    *   2. THE SURFACE — one `image` op per tile (flat) or per sub-quad (globe),
    *      crossfaded by effectiveGlobeWeight so both are drawn near the crossover
    *      and the transition is a dissolve between two renderings OF THE SAME
-   *      TILES.
+   *      TILES on the FLAT side always, and on the GLOBE side too for a provider
+   *      with no geographic twin (OSM, Terrain). A provider WITH a twin
+   *      (satellite, and its overlays) draws DIFFERENT tiles on the globe side —
+   *      GIBS's EPSG:4326 pyramid, linear in latitude, reaching the true poles —
+   *      layerSurfaceOps' own docblock names the swap and why it is still "the
+   *      same widget", not a fork.
    *   2b. THE OVERLAYS — every active reference layer (web/tile_providers
    *      TILE_OVERLAYS: labels/borders/coastlines), composited ABOVE the surface
    *      through the identical tile mechanics as the base — same registry, same
-   *      flat/globe placement math, same crossfade weight — because an overlay
-   *      IS a basemap, just a transparent one with its own maxZoom. This is the
-   *      Google "hybrid" look: reference linework over satellite imagery.
+   *      flat/globe placement math, same crossfade weight, same geographic-twin
+   *      rule — because an overlay IS a basemap, just a transparent one with its
+   *      own maxZoom. This is the Google "hybrid" look: reference linework over
+   *      satellite imagery.
+   *   2c. THE POLAR CAPS — shaded ice discs filling the gap a MERCATOR-only globe
+   *      side genuinely has (OSM, Terrain: no EPSG:4326 service exists for
+   *      either). Skipped entirely for a provider with a geographic twin, whose
+   *      globe side already has REAL pixels at the pole — drawing the cap there
+   *      would cover real data with an invented sticker.
    *   3. THE AIR — one `materialFill` naming the "atmosphere" material, drawn
-   *      only when there is globe to put air around, and ABOVE the overlays so
-   *      limb darkening/the terminator fall across labels exactly as they do
+   *      only when there is globe to put air around, and ABOVE the overlays/caps
+   *      so limb darkening/the terminator fall across labels exactly as they do
    *      across the base surface.
    *   4. THE ATTRIBUTION — the UNION of every active layer's required credit
    *      (base + overlays), deduplicated, tiny, in the corner.
@@ -877,12 +961,20 @@ export const globeMapPlugin = {
       if (!s[overlayPropName(id)] || !layerPlan) continue;
       ops.push(...layerSurfaceOps(layerPlan, s, gw, devicePerWorld, s.opacity ?? 1));
     }
-    if (gw > 0) {
+    // THE POLAR CAPS — drawn ONLY when the base provider has NO geographic twin.
+    // Web Mercator is cut at ±MAX_MERCATOR_LAT (that cut is what makes the tile
+    // grid square), so NO MERCATOR TILE AT ANY ZOOM covers the last five degrees
+    // to either pole — the hole this shaded cap exists to fill honestly (ice
+    // colour, not sampled, because there is no data to sample; see below). A
+    // provider with a `.geographic` twin (satellite, and any of its overlays) has
+    // REAL PIXELS at the pole instead (core/geo_tiles.js's geographic grid; the
+    // globe side of layerSurfaceOps already draws them), so painting the shaded
+    // cap OVER that imagery would cover real data with an invented sticker —
+    // exactly the decoder lie this cap was built to avoid in the first place.
+    if (gw > 0 && !geographicFor(provider)) {
       // THE POLAR CAPS, and they are not decoration — they are the honest treatment
-      // of a hole the projection genuinely leaves. Web Mercator is cut at
-      // ±MAX_MERCATOR_LAT (that cut is what makes the tile grid square), so NO TILE
-      // AT ANY ZOOM covers the last five degrees to either pole. On a flat map that
-      // is invisible: the map simply ends. On a GLOBE the missing cap is a hole
+      // of a hole the projection genuinely leaves. On a flat map that hole is
+      // invisible: the map simply ends. On a GLOBE the missing cap is a hole
       // straight through the planet, and the first render showed exactly that — a
       // black ellipse at the north pole (.claude_logs/globemap).
       //

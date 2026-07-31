@@ -124,23 +124,31 @@
  * need a runtime upgrade: the closed form was always available, it just was not
  * being used at the quad-culling boundary (globeQuadRect used a hard boolean).
  *
- * ── POLES: MERCATOR'S CUT vs GIBS GEOGRAPHIC TILES, AND WHY WE DID NOT SWITCH ─
+ * ── POLES: MERCATOR'S CUT vs GIBS GEOGRAPHIC TILES, AND WHY THE GLOBE NOW USES
+ * BOTH ──────────────────────────────────────────────────────────────────────
  * NASA GIBS also serves true GEOGRAPHIC (EPSG:4326, equirectangular) tile matrix
  * sets whose "spatial coverage… matches the full extent of the projection"
  * (nasa-gibs.github.io/gibs-api-docs/access-advanced-topics) — i.e. all the way to
  * ±90°, with none of Mercator's ±MAX_MERCATOR_LAT cut. An equirectangular texture
  * is also the RIGHT bake target for a sphere shader in principle: lon/lat is
  * linear across it, so an inverse-orthographic lookup is one lerp with no
- * Gudermannian and no polar singularity. EVALUATED AND DEFERRED, not adopted, for
- * a scope reason rather than a technical one: the provider table
- * (web/tile_providers.js) and its layer/style plumbing belong to a
- * concurrently-landing sibling change (mapctl_), and wiring a second tile
- * geometry (geographic, alongside the existing Mercator pyramid) is exactly the
- * kind of provider-table edit this fix must not race. The polar caps therefore
- * stay a principled non-textured cap here (radially shaded to read as continuing
- * curvature rather than a flat sticker — see plugins/demo/globe_map.js
- * polarCapOps) with the GIBS-geographic path recorded as the correct follow-up
- * for whoever next touches tile_providers.js for real polar imagery.
+ * Gudermannian and no polar singularity. THIS WAS EVALUATED AND DEFERRED once
+ * (the provider table's layer/style plumbing was mid-flight in a concurrently-
+ * landing sibling change, mapctl_, and a second tile geometry would have raced
+ * it) — that sibling has since landed, and this file now carries the geographic
+ * grid (GEOGRAPHIC_MATRIX_DIMS, lonLatToGeoTile, geoTileNorthWest,
+ * geoTilesForWindow, geoTileZoomFor below) beside the Mercator math above,
+ * NEVER MERGED INTO IT: the two pyramids have different roots (2×1 vs 1×1),
+ * different per-level matrix dimensions (GIBS's geographic ladder is NOT a clean
+ * 2^z power — see that constant's own docblock) and a different forward map
+ * (linear in latitude here; log-tangent above), so a shared function would need
+ * a branch on every call rather than two call sites each doing one honest thing.
+ * web/tile_providers.js's `geographic: true` flag on the satellite/overlay
+ * entries selects this path; OSM and Terrain carry no 4326 entry (no such
+ * service exists) and the globe keeps sampling their Mercator tiles with the
+ * shaded polar caps below — a DELIBERATE, DOCUMENTED ASYMMETRY, not a gap: see
+ * plugins/demo/globe_map.js's polarCapOps and web/tile_providers.js's own note
+ * on which providers this covers.
  */
 
 /**
@@ -420,6 +428,270 @@ export function tilesForWindow(window, z, maxTiles = TILE_BUDGET) {
  * already wrong and truncating is the safe answer rather than the lossy one.
  */
 export const TILE_BUDGET = 256;
+
+/**
+ * ── THE GEOGRAPHIC (EPSG:4326) TILE PYRAMID ──────────────────────────────────
+ * A SECOND, INDEPENDENT tile grid — NASA GIBS's own equirectangular pyramid,
+ * used ONLY by the globe path for the providers that have one (this file's
+ * header explains the boundary). Nothing below shares code with the Mercator
+ * functions above: the forward/inverse maps are linear in latitude (no
+ * Gudermannian), the root tile is 2×1 rather than 1×1, and the per-level tile
+ * COUNT is not a clean 2^z power (GEOGRAPHIC_MATRIX_DIMS's own docblock), so a
+ * shared helper would be a branch at every call site rather than a reuse.
+ *
+ * VERIFIED LIVE (2026-07-31) against GIBS's own GetCapabilities document
+ * (epsg4326/best/wmts.cgi?REQUEST=GetCapabilities) and literal tile fetches —
+ * not inferred from the TileMatrixSet's name, which the Mercator satellite
+ * entry's own history already shows can lie (that pyramid's "Level9" turned out
+ * to mean "z0..z9", not "9 levels"; see web/tile_providers.js). The set used
+ * here is named "250m" and covers MODIS_Terra_CorrectedReflectance_TrueColor
+ * plus all three Reference overlays (Labels/Features/Coastlines) — the SAME
+ * four layers the Mercator table already ships, at the SAME z8 ceiling
+ * (confirmed: z8 tile requests 200, z9 requests 400 for all four). A finer
+ * "15.625m" set exists in the capabilities document for `_15m` overlay
+ * variants, exactly mirroring the Mercator finding — and 400s past z0 for all
+ * three, so it is left unshipped for the identical reason (web/tile_providers.js
+ * TILE_OVERLAYS docblock: a trio with one dead sibling is a worse default than
+ * a matched trio that all work).
+ */
+
+/**
+ * THE GEOGRAPHIC MATRIX DIMENSIONS: [width, height] tile counts per zoom level
+ * 0 through GEOGRAPHIC_MAX_ZOOM, read directly off GIBS's "250m" TileMatrixSet
+ * (epsg4326/best/wmts.cgi?REQUEST=GetCapabilities). A DATA TABLE rather than a
+ * formula, because the ladder is NOT a clean 2^z power throughout: the root is
+ * 2×1 (the whole 360°×180° world in two square-ish tiles, half the height of
+ * their width), and the first two doublings are irregular —
+ *
+ *     z:      0    1    2    3    4    5    6    7    8
+ *     width:  2    3    5   10   20   40   80  160  320
+ *     height: 1    2    3    5   10   20   40   80  160
+ *
+ * — width/height only lock to the clean "double every level" pattern from z3
+ * onward (z0→z1→z2 step by ×1.5 and ×1.667 rather than ×2, which is GIBS's own
+ * documented bootstrap for a 2:1-aspect geographic pyramid whose z0 has just
+ * two tiles). Encoding this as a closed-form exponent would silently produce
+ * the WRONG tile count for z ≤ 2 — measured while building this: the naive
+ * `[2·2^z, 2^z]` guess matches at z=0 and z=8 alone and is off by one tile in
+ * at least one axis at every level in between. A table this short (9 rows) is
+ * the honest fix, not a premature one.
+ *
+ * Every level past z2 IS exactly square in degrees-per-tile (360°/width ==
+ * 180°/height), which is the property that makes this pyramid a genuine fit
+ * for linear-in-latitude sampling — z0/z1/z2 are not square (2:1, 1.5:1,
+ * 1.667:1 respectively) but they cover so much of the globe per tile that the
+ * distortion is invisible at the zoom levels a globe actually uses them.
+ */
+export const GEOGRAPHIC_MATRIX_DIMS = Object.freeze([
+  Object.freeze([2, 1]), Object.freeze([3, 2]), Object.freeze([5, 3]), Object.freeze([10, 5]),
+  Object.freeze([20, 10]), Object.freeze([40, 20]), Object.freeze([80, 40]), Object.freeze([160, 80]),
+  Object.freeze([320, 160]),
+]);
+
+/** The geographic pyramid's deepest zoom — GEOGRAPHIC_MATRIX_DIMS.length − 1,
+ *  named so a caller never hardcodes 8. MEASURED, not assumed: z8 tiles return
+ *  200 and z9 tiles return 400 against the live GIBS endpoint for every layer
+ *  this pyramid serves (satellite + all three Reference overlays) — the same
+ *  ~250 m/px MODIS instrument resolution that caps the Mercator satellite
+ *  entry at its own z9, arrived at independently here because the two
+ *  pyramids' zoom numbers do not mean the same angular resolution.
+ *  @example GEOGRAPHIC_MAX_ZOOM // 8 */
+export const GEOGRAPHIC_MAX_ZOOM = GEOGRAPHIC_MATRIX_DIMS.length - 1;
+
+/** The geographic pyramid's tile size in pixels. GIBS serves 512² for this
+ *  TileMatrixSet (verified in the same GetCapabilities document), twice the
+ *  Mercator table's 256 — a provider-shape difference read from the table by
+ *  callers, never assumed equal to TILE_SIZE. */
+export const GEOGRAPHIC_TILE_SIZE = 512;
+
+/**
+ * Pure function. Longitude/latitude → normalized GEOGRAPHIC world coordinates,
+ * both in [0, 1], (0, 0) at the NW corner (−180°, +90°). Unlike lonLatToWorld,
+ * this is a PLAIN LINEAR SCALE — no log-tangent, no clamping at a Mercator
+ * limit — because the equirectangular projection is linear in latitude by
+ * construction, all the way to the true poles.
+ *
+ * @param {number} lon - longitude in degrees
+ * @param {number} lat - latitude in degrees (unclamped: ±90 is legal here)
+ * @returns {{x: number, y: number}} normalized world position in [0, 1]²
+ *
+ * @example lonLatToGeoWorld(0, 0) // {x: 0.5, y: 0.5} (null island, same centre as Mercator)
+ * @example lonLatToGeoWorld(-180, 90) // {x: 0, y: 0} (the NW corner is the true pole, not a clamp)
+ * @example lonLatToGeoWorld(180, -90) // {x: 1, y: 1} (the SE corner is the true south pole)
+ * @example lonLatToGeoWorld(0, 90) // {x: 0.5, y: 0} (the north pole itself has a real coordinate here)
+ */
+export function lonLatToGeoWorld(lon, lat) {
+  return { x: (lon + 180) / 360, y: (90 - lat) / 180 };
+}
+
+/**
+ * Pure function. The inverse of lonLatToGeoWorld: normalized geographic world
+ * coordinates → longitude/latitude in degrees. A plain linear unscale — the
+ * geographic pyramid's whole advantage over Mercator's is that this step needs
+ * no Gudermannian.
+ *
+ * @param {number} x - normalized world x in [0, 1]
+ * @param {number} y - normalized world y in [0, 1]
+ * @returns {{lon: number, lat: number}} degrees
+ *
+ * @example geoWorldToLonLat(0.5, 0.5) // {lon: 0, lat: 0}
+ * @example geoWorldToLonLat(0, 0) // {lon: -180, lat: 90} (the true pole, not Mercator's 85.05°)
+ * @example // the round trip returns the place it started at:
+ * geoWorldToLonLat(lonLatToGeoWorld(-74.006, 40.7128).x, lonLatToGeoWorld(-74.006, 40.7128).y)
+ * { lon: -74.006, lat: 40.7128 }
+ */
+export function geoWorldToLonLat(x, y) {
+  return { lon: x * 360 - 180, lat: 90 - y * 180 };
+}
+
+/**
+ * Pure function. Longitude/latitude/integer-zoom → the GEOGRAPHIC tile indices
+ * covering that point, plus the fractional position inside that tile — the
+ * 4326-pyramid twin of lonLatToTile, reading GEOGRAPHIC_MATRIX_DIMS instead of
+ * assuming a 2^z square grid.
+ *
+ * @param {number} lon - longitude in degrees
+ * @param {number} lat - latitude in degrees (unclamped)
+ * @param {number} z - integer zoom level, clamped into [0, GEOGRAPHIC_MAX_ZOOM]
+ * @returns {{x: number, y: number, z: number, fx: number, fy: number}} indices + in-tile fraction
+ *
+ * @example lonLatToGeoTile(0, 0, 0) // {x: 1, y: 0, z: 0, fx: 0, fy: 0.5} (null island sits at the seam between the z0 pair's two tiles)
+ * @example lonLatToGeoTile(-180, 90, 0) // {x: 0, y: 0, z: 0, fx: 0, fy: 0} (the NW corner is tile (0,0) at any zoom)
+ * @example lonLatToGeoTile(0, 90, 3) // {x: 5, y: 0, z: 3, fx: 0, fy: 0} (the north pole at z3: row 0 of a 10x5 grid, on the seam column)
+ * @example lonLatToGeoTile(-74.006, 40.7128, 8) // {x: 94, y: 43, z: 8, fx: 0.2168888888888887, fy: 0.8108444444444416} (New York at z8, the geographic ceiling)
+ */
+export function lonLatToGeoTile(lon, lat, z) {
+  const level = Math.max(0, Math.min(GEOGRAPHIC_MAX_ZOOM, Math.round(z)));
+  const [mw, mh] = GEOGRAPHIC_MATRIX_DIMS[level];
+  const world = lonLatToGeoWorld(lon, lat);
+  const fx = world.x * mw, fy = world.y * mh;
+  const x = Math.max(0, Math.min(mw - 1, Math.floor(fx)));
+  const y = Math.max(0, Math.min(mh - 1, Math.floor(fy)));
+  return { x, y, z: level, fx: fx - x, fy: fy - y };
+}
+
+/**
+ * Pure function. A GEOGRAPHIC tile's north-west corner in longitude/latitude —
+ * the 4326-pyramid twin of tileNorthWest, reading GEOGRAPHIC_MATRIX_DIMS
+ * instead of a 2^z grid. What globeTileOps needs to place a fetched 4326 tile's
+ * pixels on the sphere, in exactly the role tileNorthWest plays for Mercator
+ * tiles today.
+ *
+ * @param {number} x - tile x index
+ * @param {number} y - tile y index
+ * @param {number} z - integer zoom level
+ * @returns {{lon: number, lat: number}} the tile's NW corner, degrees
+ *
+ * @example geoTileNorthWest(0, 0, 0) // {lon: -180, lat: 90} (z0's western tile starts at the true NW corner of the world)
+ * @example geoTileNorthWest(1, 0, 0) // {lon: 0, lat: 90} (z0's eastern tile starts at the seam meridian)
+ * @example geoTileNorthWest(94, 43, 8) // {lon: -74.25, lat: 41.625} (the New York tile's own NW corner, z8)
+ */
+export function geoTileNorthWest(x, y, z) {
+  const level = Math.max(0, Math.min(GEOGRAPHIC_MAX_ZOOM, Math.round(z)));
+  const [mw, mh] = GEOGRAPHIC_MATRIX_DIMS[level];
+  return geoWorldToLonLat(x / mw, y / mh);
+}
+
+/**
+ * Pure function. THE GEOGRAPHIC TILE LIST a globe window needs — every 4326
+ * tile intersecting the visible window at `z`, and nothing else. The
+ * crop-economy twin of tilesForWindow, over the geographic grid: same
+ * row-major-from-NW ordering (reproducible request sequence), same X-WRAPS/
+ * Y-CLAMPS split (the world is still a cylinder in longitude; a window past a
+ * pole still has no tiles beyond row 0 or the last row), same hard cap.
+ *
+ * @param {{x: number, y: number, w: number, h: number}} window - normalized GEOGRAPHIC world window (lonLatToGeoWorld-shaped rect)
+ * @param {number} z - integer tile zoom, clamped into [0, GEOGRAPHIC_MAX_ZOOM]
+ * @param {number} [maxTiles] - a hard cap; past it the list is truncated (see TILE_BUDGET)
+ * @returns {Array<{x: number, y: number, z: number, wrapped: number}>}
+ *
+ * @example geoTilesForWindow({x: 0, y: 0, w: 1, h: 1}, 0) // [{x: 0, y: 0, z: 0, wrapped: 0}, {x: 1, y: 0, z: 0, wrapped: 0}] (the whole z0 world is its 2x1 pair)
+ * @example geoTilesForWindow({x: 0, y: 0, w: 0.1, h: 0.1}, 3).length // 1 (a small corner window ⇒ one tile — the crop economy holds here too)
+ * @example geoTilesForWindow({x: 0.95, y: 0.4, w: 0.2, h: 0.1}, 3).map((t) => t.x) // [9, 0, 1] (across the date line: the world repeats, exactly as the Mercator grid does)
+ */
+export function geoTilesForWindow(window, z, maxTiles = TILE_BUDGET) {
+  const level = Math.max(0, Math.min(GEOGRAPHIC_MAX_ZOOM, Math.round(z)));
+  const [mw, mh] = GEOGRAPHIC_MATRIX_DIMS[level];
+  const x0 = Math.floor(window.x * mw), x1 = Math.ceil((window.x + window.w) * mw) - 1;
+  const y0 = Math.max(0, Math.floor(window.y * mh));
+  const y1 = Math.min(mh - 1, Math.ceil((window.y + window.h) * mh) - 1);
+  const out = [];
+  for (let ty = y0; ty <= y1 && out.length < maxTiles; ty++)
+    for (let tx = x0; tx <= x1 && out.length < maxTiles; tx++) {
+      const wrapped = Math.floor(tx / mw);
+      out.push({ x: ((tx % mw) + mw) % mw, y: ty, z: level, wrapped });
+    }
+  return out;
+}
+
+/**
+ * Pure function. THE GEOGRAPHIC TILE ZOOM a globe render should request — the
+ * view-resolution law's 4326 twin. Composes exactly like tileZoomFor (widget
+ * zoom + camera device-px-per-world-unit, rounded and clamped to the
+ * provider's own ceiling), but against GEOGRAPHIC_TILE_SIZE (512, not 256):
+ * using the Mercator tile size here would ask for tiles a full stop too deep,
+ * since a 512-px 4326 tile already covers as much screen space as two 256-px
+ * Mercator tiles at the "same" zoom number.
+ *
+ * @param {number} zoom - the widget's own continuous zoom property
+ * @param {number} widgetPx - the widget's on-screen extent in WORLD units (its box w)
+ * @param {number} devicePerWorld - camera device px per world unit (view.zoom · view.dpr)
+ * @param {number} [maxZoom] - the provider's deepest available level (defaults to GEOGRAPHIC_MAX_ZOOM)
+ * @returns {number} an integer tile zoom in [0, maxZoom]
+ *
+ * @example geoTileZoomFor(0, 256, 1) // 0 (a 256-px box at zoom 0 needs less than one 512-px tile's worth of resolution)
+ * @example geoTileZoomFor(0, 512, 1) // 0 (twice the pixels: still under one 512-px tile of resolution)
+ * @example geoTileZoomFor(3, 256, 4, 8) // 4 (the CAMERA zoomed in 4x ⇒ two levels deeper — ONE LESS than tileZoomFor's own 5 at these same inputs, because a 512-px geo tile already covers what two 256-px Mercator tiles cover at "the same" zoom number: the numbering genuinely differs between the two pyramids, and it is a documented divergence rather than a bug)
+ * @example geoTileZoomFor(30, 256, 1, 8) // 8 (clamped at the geographic ceiling)
+ */
+export function geoTileZoomFor(zoom, widgetPx, devicePerWorld, maxZoom = GEOGRAPHIC_MAX_ZOOM) {
+  const pxPerWorld = Math.max(1e-6, widgetPx * Math.max(1e-6, devicePerWorld));
+  const z = (zoom ?? 0) + Math.log2(pxPerWorld / GEOGRAPHIC_TILE_SIZE);
+  return Math.max(0, Math.min(Math.round(maxZoom), Math.round(z)));
+}
+
+/**
+ * Pure function. The GEOGRAPHIC WINDOW a globe's crop-economy pass reads — the
+ * 4326-pyramid twin of mapWorldWindow, over the geographic lon/lat map
+ * (lonLatToGeoWorld) instead of Mercator's.
+ *
+ * SCALED BY TILE_SIZE, NOT GEOGRAPHIC_TILE_SIZE — this is NOT a copy-paste typo
+ * left uncorrected; an earlier draft of this function used
+ * GEOGRAPHIC_TILE_SIZE and it was WRONG, caught by a live crossfade screenshot
+ * that showed FAR fewer geographic tiles resolving than Mercator ones at the
+ * same view (measured: 4 geographic tiles fetched against 36 Mercator ones for
+ * an identical box/zoom — a 2x-too-narrow window, exactly (512/256)). The
+ * window a widget shows is a function of its OWN `zoom` PROPERTY and its box
+ * size ALONE: `zoom` is one shared value driving both the flat Mercator
+ * rendering and the globe's rendering of the SAME PLACE, so "how much of the
+ * world is visible" cannot depend on which pyramid happens to answer that
+ * question — only the DEPTH each pyramid fetches at may legitimately differ
+ * (geoTileZoomFor already accounts for the 512px tile size correctly, exactly
+ * once, at the zoom-selection step). Scaling the WINDOW by the tile size too
+ * would double-count that factor into a window half as wide as the Mercator
+ * one shows for the identical box — which is precisely the bug this note
+ * exists to prevent someone from reintroducing.
+ *
+ * @param {number} lon - centre longitude, degrees
+ * @param {number} lat - centre latitude, degrees (unclamped: a globe can centre on a pole)
+ * @param {number} zoom - the widget's continuous zoom
+ * @param {number} w - the widget's box width (world units)
+ * @param {number} h - the widget's box height (world units)
+ * @returns {{x: number, y: number, w: number, h: number}} the window in normalized GEOGRAPHIC world units
+ *
+ * @example mapGeoWorldWindow(0, 0, 0, 256, 256) // {x: 0, y: 0, w: 1, h: 1} (z0 in a 256-box: the whole geographic world — SAME box size as mapWorldWindow's own z0 example)
+ * @example mapGeoWorldWindow(0, 0, 1, 256, 256) // {x: 0.25, y: 0.25, w: 0.5, h: 0.5} (one level in: a quarter of the world, centred)
+ * @example mapGeoWorldWindow(0, 0, 0, 512, 256) // {x: -0.5, y: 0, w: 2, h: 1} (a wide box at z0 runs off both edges, exactly as mapWorldWindow's own example does)
+ * @example // AT IDENTICAL (lon, lat, zoom, w, h), the two windows are IDENTICAL widths:
+ * mapGeoWorldWindow(8, 24, 4.9, 600, 600).w === mapWorldWindow(8, 24, 4.9, 600, 600).w
+ * true
+ */
+export function mapGeoWorldWindow(lon, lat, zoom, w, h) {
+  const scale = TILE_SIZE * Math.pow(2, zoom ?? 0);
+  const centre = lonLatToGeoWorld(lon, lat);
+  const ww = (w || 1) / scale, wh = (h || 1) / scale;
+  return { x: centre.x - ww / 2, y: centre.y - wh / 2, w: ww, h: wh };
+}
 
 /**
  * Pure function. THE GLOBE'S INVERSE PROJECTION: a point on the unit disc →

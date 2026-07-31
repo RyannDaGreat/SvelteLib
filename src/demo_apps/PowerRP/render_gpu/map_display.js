@@ -58,9 +58,10 @@
 import { visibleSourceRect } from "../core/clip.js";
 import { rectsIntersect, rotatedBBoxAABB } from "../core/view.js";
 import {
-  TILE_BUDGET, mapWorldWindow, tileZoomFor, tilesForWindow,
+  TILE_BUDGET, geoTileZoomFor, geoTilesForWindow, globeWeight, mapGeoWorldWindow, mapWorldWindow,
+  tileZoomFor, tilesForWindow,
 } from "../core/geo_tiles.js";
-import { OVERLAY_IDS, overlayFor, overlayPropName, providerFor } from "../web/tile_providers.js";
+import { OVERLAY_IDS, geographicFor, overlayFor, overlayPropName, providerFor } from "../web/tile_providers.js";
 import { ensureTile, markTileFailed, tileRef, tileStatus, trimTileCache } from "./gpu/tile_registry.js";
 
 /** The widget `type` this pass serves. Named once so a rename cannot leave the
@@ -209,12 +210,87 @@ function layerTilePlan(provider, cropped, devicePerWorld, widgetPx, widgetZoom) 
 }
 
 /**
+ * Query (kicks fetches). The GEOGRAPHIC (EPSG:4326) tile plan for one layer's own
+ * window — the globe-only twin of layerTilePlan, over core/geo_tiles's
+ * geoTileZoomFor/geoTilesForWindow instead of the Mercator pair. Called ONLY when
+ * the layer has a `.geographic` descriptor (tile_providers.geographicFor) and the
+ * globe weight is nonzero; the flat map never calls this, and a provider with no
+ * geographic twin (OSM, Terrain) never reaches it either, because the caller
+ * checks geographicFor's null first — see describeMapNode.
+ *
+ * Uses the SAME crop FRACTION (`vis.sourceRect`) the Mercator plan does, applied
+ * to the geographic window instead: the visible-fraction-of-the-box computation
+ * is projection-agnostic (core/clip.visibleSourceRect never looks at lon/lat), so
+ * cropping is shared math and only the window/tile grid itself differs between
+ * the two calls.
+ *
+ * @param {object} geo - a `.geographic` descriptor ({url, maxZoom, tileSize})
+ * @param {{x: number, y: number, w: number, h: number}} croppedGeo - the visible geographic window
+ * @param {number} devicePerWorld - camera device px per world unit
+ * @param {number} widgetPx - the widget's box width, world units
+ * @param {number} widgetZoom - the widget's own continuous zoom property
+ * @returns {{z: number, tiles: object[]}}
+ */
+function geoLayerTilePlan(geo, croppedGeo, devicePerWorld, widgetPx, widgetZoom) {
+  const z = geoTileZoomFor(widgetZoom, widgetPx, devicePerWorld, geo.maxZoom);
+  const tiles = geoTilesForWindow(croppedGeo, z, TILE_BUDGET).map((tile) => {
+    const ref = tileRef(geo, tile);
+    ensureTile(ref);
+    const status = tileStatus(ref);
+    if (status === "error") markTileFailed(ref);
+    return { ...tile, ref, ready: status === "ready" };
+  });
+  return { z, tiles };
+}
+
+/**
+ * Pure function. The globe weight this module uses to decide WHICH pyramid is
+ * worth fetching — the pre-pass's own read of the exact same pin
+ * plugins/demo/globe_map.js's effectiveGlobeWeight applies, reproduced here
+ * rather than imported (this module may not import a plugin; the pin itself is
+ * three lines and pure, so duplicating it is cheaper and more honest than a
+ * cross-layer import for one ternary). Kept in lock-step by
+ * tests/geo4326_test.js asserting both read the SAME viewMode/zoom inputs to
+ * the SAME weight.
+ *
+ * @param {object} s - folded item state
+ * @returns {number} globe weight in [0, 1]
+ * @example prePassGlobeWeight({viewMode: "globe", zoom: 15}) // 1
+ * @example prePassGlobeWeight({viewMode: "flat", zoom: 0}) // 0
+ * @example prePassGlobeWeight({viewMode: "auto", zoom: 0}) // 1
+ */
+function prePassGlobeWeight(s) {
+  if (s.viewMode === "globe") return 1;
+  if (s.viewMode === "flat") return 0;
+  return globeWeight(s.zoom);
+}
+
+/**
  * Query (kicks fetches). One map node's descriptor, or null when it has no
- * drawable window this frame. Carries the BASE layer's tile plan at top level
- * (unchanged shape, so a consumer written before overlays existed keeps working)
- * plus `overlays: {id: {z, tiles}}` for every overlay property the widget has
- * switched on — same window, same crop, each at ITS OWN provider's zoom ceiling
- * (the three shipped overlays cap at 9, independent of the base's own ceiling).
+ * drawable window this frame. Carries the BASE layer's Mercator tile plan at top
+ * level (unchanged shape, so a consumer written before overlays existed keeps
+ * working) plus `overlays: {id: {z, tiles}}` for every overlay property the
+ * widget has switched on — same window, same crop, each at ITS OWN provider's
+ * zoom ceiling (the three shipped overlays cap at 9, independent of the base's
+ * own ceiling).
+ *
+ * `geo` (top level) and `overlays[id].geo` carry the GEOGRAPHIC (EPSG:4326) twin
+ * plan for any layer that has one (tile_providers.geographicFor) — `undefined`
+ * for OSM/Terrain and for an overlay with no geographic entry, which is exactly
+ * the "no such field" shape plugins/demo/globe_map.js already treats as "fall
+ * back to this layer's Mercator tiles on the globe".
+ *
+ * EACH PYRAMID IS ONLY FETCHED WHEN IT CAN ACTUALLY BE DRAWN THIS FRAME: a
+ * layer with a geographic twin skips the MERCATOR ensureTile calls entirely
+ * when the globe weight is fully 1 (pinned "globe", or auto at a zoom past the
+ * crossfade's far edge) — the flat side draws nothing at gw=1 and would
+ * otherwise silently keep fetching tiles no pixel ever uses. Symmetrically, the
+ * geographic fetch is skipped at gw=0 (pinned "flat", or auto below the near
+ * edge). MID-CROSSFADE (0<gw<1) still fetches BOTH, because emit() genuinely
+ * draws both there. This is a fetch-cost optimization only: describeMapNode's
+ * shape is unchanged either way, an omitted plan is `undefined` exactly like a
+ * provider with no twin at all, and emit()'s existing "no field -> Mercator
+ * fallback" branch already handles it with no new logic.
  *
  * @param {object} node - a derived render node of MAP_WIDGET_TYPE
  * @param {object} view - the live camera mapping
@@ -227,6 +303,7 @@ export function describeMapNode(node, view, viewW, viewH) {
   const provider = providerFor(s.style);
   const devicePerWorld = devicePerWorldUnit(view, node.world?.scale ?? 1);
   const window = mapWorldWindow(s.centerLon, s.centerLat, s.zoom, s.w, s.h);
+  const gw = prePassGlobeWeight(s);
 
   // THE VISIBLE CROP. The shared primitive (the PDF path's own) answers "what
   // fraction of this widget's box is on screen", which is exactly the fraction of
@@ -242,18 +319,60 @@ export function describeMapNode(node, view, viewW, viewH) {
   if (!vis.visible || !(vis.sourceRect.sw > 0) || !(vis.sourceRect.sh > 0)) return null;
   const cropped = croppedWindow(window, vis.sourceRect);
 
-  const { z, tiles } = layerTilePlan(provider, cropped, devicePerWorld, s.w, s.zoom);
+  const providerGeo = geographicFor(provider);
+  // gw===1 with a geographic twin: the flat side draws NOTHING (layerSurfaceOps'
+  // own `if (gw < 1)`), so fetching Mercator tiles here would ensureTile() bytes
+  // no paint path ever reads. z/tiles still need SOME shape for callers that
+  // never got this far into the geo branch (window/cropped below stay Mercator
+  // regardless, for interior-nav and the geo window's own crop maths).
+  const skipMercator = gw >= 1 && !!providerGeo;
+  const { z, tiles } = skipMercator ? { z: 0, tiles: [] } : layerTilePlan(provider, cropped, devicePerWorld, s.w, s.zoom);
+
+  // THE GEOGRAPHIC PLAN, same crop FRACTION applied to the geographic window
+  // (mapGeoWorldWindow) instead of the Mercator one — the fraction itself
+  // (vis.sourceRect) is projection-agnostic, computed once above and reused here.
+  // Symmetric skip: gw===0 means the globe draws nothing, so a provider's
+  // geographic twin is left unfetched exactly as the Mercator side is at gw=1.
+  const geo = providerGeo && gw > 0
+    ? geoLayerTilePlan(
+        providerGeo,
+        croppedWindow(mapGeoWorldWindow(s.centerLon, s.centerLat, s.zoom, s.w, s.h), vis.sourceRect),
+        devicePerWorld, s.w, s.zoom,
+      )
+    : undefined;
 
   // OVERLAYS — one tile plan per property the widget has switched on, same
   // window/crop as the base, each at its OWN provider's zoom ceiling. A widget
   // with no overlays on (the common case) does the same work as before this
   // feature existed: an empty object, no extra fetches, no extra tiles.
+  //
+  // AN OVERLAY'S PYRAMID FOLLOWS THE BASE'S, NOT ITS OWN CAPABILITY: an overlay
+  // drawn on the geographic grid while the base draws Mercator (or vice versa)
+  // would misalign on the globe — the two pyramids place a given lon/lat at
+  // DIFFERENT quad corners (this file's own geoLayerTilePlan vs layerTilePlan),
+  // so "labels over satellite" only lines up when both layers read the SAME
+  // grid. `providerGeo` (the base's own twin, computed above) gates every
+  // overlay's geo branch here, even though an overlay may have its own twin
+  // (all three shipped ones do) — an overlay's independent capability is
+  // irrelevant when the base it is annotating has none to match.
   const overlays = {};
   for (const id of OVERLAY_IDS) {
     if (!s[overlayPropName(id)]) continue;
     const layer = overlayFor(id);
-    overlays[id] = { ...layerTilePlan(layer, cropped, devicePerWorld, s.w, s.zoom), attribution: layer.attribution };
+    const layerGeo = providerGeo ? geographicFor(layer) : null;
+    const skipLayerMercator = gw >= 1 && !!layerGeo;
+    overlays[id] = {
+      ...(skipLayerMercator ? { z: 0, tiles: [] } : layerTilePlan(layer, cropped, devicePerWorld, s.w, s.zoom)),
+      attribution: layer.attribution,
+      geo: layerGeo && gw > 0
+        ? geoLayerTilePlan(
+            layerGeo,
+            croppedWindow(mapGeoWorldWindow(s.centerLon, s.centerLat, s.zoom, s.w, s.h), vis.sourceRect),
+            devicePerWorld, s.w, s.zoom,
+          )
+        : undefined,
+    };
   }
 
-  return { z, tiles, window, cropped, devicePerWorld, provider: provider.id, attribution: provider.attribution, overlays };
+  return { z, tiles, geo, window, cropped, devicePerWorld, provider: provider.id, attribution: provider.attribution, overlays };
 }
