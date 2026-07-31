@@ -299,17 +299,25 @@ function renderJob(reqWidth, reqHeight, buildIR) {
  *     stand-ins (paint_skia's proxy branch: no composite re-render, no full-screen
  *     blur, no SkSL), with invisible quality loss at ~100px.
  *
- * @example // renderCameraFrame(doc, {slideIndex: 0, alpha: 1, registry, width: 256, height: 144}) → Promise<canvas>
- * @example // renderCameraFrame(doc, {slideIndex: 0, registry, width: 96, height: 54, quality: "proxy"}) → cheap thumbnail
+ * `project` is the OWNING project's name/key, threaded straight to
+ * `cameraFrameIR` for asset-ref resolution — see that function's docblock for
+ * why this can't default to `doc.meta.name` for every caller. Any caller
+ * rendering the app's OWN currently-open document must pass `app.projectName()`
+ * (which answers the draft key while a draft is open); a caller rendering a
+ * DIFFERENT, already-saved project's doc (e.g. the Open Project preview grid)
+ * passes that project's own name instead.
+ *
+ * @example // renderCameraFrame(doc, {slideIndex: 0, alpha: 1, registry, width: 256, height: 144, project: "RobotSim"}) → Promise<canvas>
+ * @example // renderCameraFrame(doc, {slideIndex: 0, registry, width: 96, height: 54, quality: "proxy", project: "RobotSim"}) → cheap thumbnail
  */
-export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height, quality = "full" }) {
+export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height, quality = "full", project = "" }) {
   return renderJob(width, height, () => {
     const state = evaluatedStateAt(doc, slideIndex, alpha, registry);
     const rect = cameraRect(state, doc.meta);
     return {
       view: fitRectView(rect, width, height, 1),
       background: parseColor(rect.background),
-      ir: cameraFrameIR(state, doc.meta, registry),
+      ir: cameraFrameIR(state, doc.meta, registry, { project }),
       // PROXY skips the dither final pass entirely (dither:null ⇒ renderWithDither
       // stays on the direct 8-bit paint — no RGBA16F intermediate). FULL keeps THE
       // camera's dither settings, byte-identical to before.

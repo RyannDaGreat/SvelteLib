@@ -506,7 +506,7 @@
     // the final state — SlideNav's publish-timer pattern. Every input the render
     // needs is captured SYNCHRONOUSLY above/here; the timer body re-reads no
     // reactive state (doing so would resubscribe this effect from a stale task).
-    const doc = app.doc, slideIndex = app.slideIndex, registry = app.registry;
+    const doc = app.doc, slideIndex = app.slideIndex, registry = app.registry, project = app.projectName();
     const handle = setTimeout(() => {
       renderCameraFrame(doc, {
         slideIndex,
@@ -521,6 +521,7 @@
         // freeze on drop (the reported lens-flare drag spike). Proxy routes it
         // through the cheap material stand-ins (drawProxyMaterialFill, ~6ms).
         quality: "proxy",
+        project,
       }).then((thumb) => (minimapThumb = thumb.toDataURL("image/png")));
     }, MINIMAP_SETTLE_MS);
     return () => clearTimeout(handle);

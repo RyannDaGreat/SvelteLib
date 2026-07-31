@@ -122,10 +122,18 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  * THE OWNING PROJECT (`opts.project`) is threaded to deriveRenderTree, which is
  * where an asset ref becomes a URL a registry can actually load (core/asset_ref.js
  * states the grammar; core/derive.js's docblock states why the seam is there and
- * not at the op level). Callers that hold a DOCUMENT should pass `doc.meta.name`.
- * Omitting it is safe for an all-absolute document (every document written before
- * this grammar) and throws loudly, naming the ref, for one that actually holds a
- * relative ref.
+ * not at the op level). Omitting it falls back to `meta?.name`, which is safe
+ * ONLY for a bare-node/CLI caller that holds nothing but the document itself
+ * (an all-absolute document — every one written before this grammar — needs no
+ * project at all; a relative ref with no project throws loudly, naming the ref).
+ * A BROWSER CALLER RENDERING THE APP'S OWN OPEN DOCUMENT MUST NOT RELY ON THIS
+ * FALLBACK — it must pass `app.projectName()` explicitly. `doc.meta.name` and
+ * `projectName()` agree for an ordinary saved project but diverge for an open
+ * DRAFT, where `projectName()` answers the draft key and `meta.name` is still
+ * the human name; the assets are staged under the KEY. A caller that fell back
+ * here (gpuService.js's thumbnail/minimap/PNG-export path once did) resolved
+ * every ref against the wrong, empty keyspace and rendered the missing-asset
+ * sentinel for a reload-restored or freshly-opened draft.
  *
  * WHAT THAT NAME RESOLVES TO IS MODE-AWARE, and deliberately NOT decided here.
  * In static mode it must become a `blob:` URL from browser storage, and this

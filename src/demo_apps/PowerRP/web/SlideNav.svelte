@@ -107,7 +107,7 @@
     // Async (GPU readback) — DirtyImage awaits the promise and drops stale
     // resolutions; wPx/hPx are already device px.
     return (wPx, hPx) =>
-      renderCameraFrame(app.doc, { slideIndex: i, alpha: 1, registry: app.registry, width: wPx, height: hPx, quality: "proxy" });
+      renderCameraFrame(app.doc, { slideIndex: i, alpha: 1, registry: app.registry, width: wPx, height: hPx, quality: "proxy", project: app.projectName() });
   }
 
   /** The resolved transition INTO slide `i` (i > 0), for the slice label/icon. */

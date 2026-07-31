@@ -235,26 +235,32 @@ try {
 
   // ── 6. THE CANVAS's boot race, asserted as TRANSIENT rather than filtered ───
   //
-  // The Explorer's prime is `await`ed inside its refresh, so it lands a beat AFTER
-  // the first canvas paint. In that window the canvas resolves the deck's own image
-  // ref against an empty memo and reports a 404 — one per asset, once. Filtering
-  // that line out of EXPECTED_NOISE would hide a real defect, so it is asserted
-  // instead: it must be TRANSIENT. A forced repaint well after the prime must produce
-  // ZERO new failures, which is what proves the canvas recovers on its own rather
-  // than caching the miss.
+  // `loadAutosave()` now primes `assetStore().primeUrls(this.projectName())`
+  // itself (the architectural home this comment used to call for — see
+  // app.svelte.js), but that prime is FIRE-AND-FORGET, and a draft's SECOND,
+  // AWAITED prime happens even later inside `restoreDraft()`. Meanwhile
+  // SlideNav's thumbnails and CanvasView's minimap both fire their own timers
+  // during the same boot window and resolve the deck's asset refs independently
+  // of the main canvas paint — so a beat still exists where SOME resolver runs
+  // against an empty memo and reports a miss, once per caller. Filtering those
+  // lines out of EXPECTED_NOISE would hide a real defect, so they are asserted
+  // instead: every one must be TRANSIENT. A forced repaint well after both
+  // primes have settled must produce ZERO new failures, which is what proves
+  // every caller recovers on its own rather than caching the miss.
   //
-  // The permanent fix for the boot flash is one `primeUrls` in `loadAutosave()`
-  // (web/app.svelte.js) — the reload path that restores a deck WITHOUT opening a
-  // project, and the actual origin of this whole bug. That file is owned elsewhere in
-  // this change, so this probe pins the current, self-healing behavior; tighten this
-  // assertion to zero once the prime moves into the boot path.
-  const bootRaceErrors = errors.filter((e) => /image_registry|video_registry/.test(e));
-  const otherErrors = errors.filter((e) => !/image_registry|video_registry/.test(e));
+  // THREE LOG SHAPES REPORT THE SAME RACE: `image_registry`/`video_registry`
+  // (the media loaders, ensureImage/ensureVideo) log when a resolved URL turns
+  // out to be the missing-asset sentinel; `localAssetStore.resolveUrl:` is the
+  // lower-level miss logged by the store itself, and it is what a bare
+  // `deriveRenderTree` call (SlideNav/CanvasView's thumbnail and minimap
+  // renders) hits directly, with no image/video load in between.
+  const bootRaceErrors = errors.filter((e) => /image_registry|video_registry|localAssetStore\.resolveUrl:/.test(e));
+  const otherErrors = errors.filter((e) => !/image_registry|video_registry|localAssetStore\.resolveUrl:/.test(e));
 
   errors.length = 0;
   await page.evaluate(() => { const a = window.__powerrp_app; a.commit({ ...a.doc }); });
   await sleep(3000);
-  const afterRepaint = errors.filter((e) => /image_registry|video_registry/.test(e));
+  const afterRepaint = errors.filter((e) => /image_registry|video_registry|localAssetStore\.resolveUrl:/.test(e));
   assert(afterRepaint.length === 0,
     `the canvas's boot-time asset miss is TRANSIENT — a repaint after the prime reports none (boot: ${bootRaceErrors.length}, after: ${afterRepaint.length})`);
 
