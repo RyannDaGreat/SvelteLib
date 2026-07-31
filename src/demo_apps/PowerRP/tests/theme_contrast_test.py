@@ -249,9 +249,45 @@ def check_families(theme_bgs):
     return failures
 
 
+# ── STRUCTURAL TOKENS (user ruling 2026-07-31, verbatim: "the height of a bar
+# in the command palette should be the same thing regardless of theme. Theme
+# does not control that. It's one of the few things themes are not allowed to
+# control.") — geometry the reader navigates by is not paint: the palette
+# previews themes LIVE as you browse, so a font-metric-driven row height would
+# jitter the very list being read. A theme block redefining one of these
+# tokens fails the gate BY NAME. The list grows only by explicit user ruling.
+STRUCTURAL_TOKENS = ["--a-palette-row-h"]
+
+
+def check_structural_tokens(css):
+    """
+    Pure function. Failure strings for any :root[data-theme] block that
+    redefines a structural (theme-forbidden) token.
+
+    Args:
+        css (str): full app.css text
+
+    Returns:
+        list[str]
+
+    Examples:
+        >>> check_structural_tokens(':root[data-theme="x"] {\\n  --bg: #eee;\\n}\\n')
+        []
+        >>> check_structural_tokens(':root[data-theme="x"] {\\n  --a-palette-row-h: 40px;\\n}\\n')
+        ['x: redefines STRUCTURAL token --a-palette-row-h (themes are not allowed to control it)']
+    """
+    fails = []
+    for m in _re.finditer(r'^:root\[data-theme="([\w-]+)"\] \{(.*?)^\}', css, _re.S | _re.M):
+        for tok in STRUCTURAL_TOKENS:
+            if _re.search(tok + r"\s*:", m.group(2)):
+                fails.append(f"{m.group(1)}: redefines STRUCTURAL token {tok} (themes are not allowed to control it)")
+    return fails
+
+
 def main():
     """Command. Prints the table for every theme; exits 1 if any check fails."""
-    themes = parse_themes(open(CSS).read())
+    css_text = open(CSS).read()
+    themes = parse_themes(css_text)
     base = themes["graphite"]
     all_fails = []
     for name, decls in themes.items():
@@ -259,6 +295,7 @@ def main():
         all_fails += check(name, resolved)
     family_fails = check_families({n: {**base, **d}["--bg"] for n, d in themes.items()})
     all_fails += family_fails
+    all_fails += check_structural_tokens(css_text)
     families = _families_from_registry()
     print(f"\n{'=' * 60}")
     print(f"FAMILY STRUCTURE: {len(families)} families, {len(themes)} themes")
@@ -273,6 +310,7 @@ def main():
           f"(fg-dim >= {FG_DIM_MIN}:1, chroma >= {CHROMA_MIN}:1, vs --bg AND --a-panel-bg)")
     print(f"ALL {len(families)} FAMILIES PASS "
           f"(both poles present, each member's slot matches its measured --bg)")
+    print(f"STRUCTURAL TOKENS UNTOUCHED BY EVERY THEME ({', '.join(STRUCTURAL_TOKENS)})")
 
 
 if __name__ == "__main__":

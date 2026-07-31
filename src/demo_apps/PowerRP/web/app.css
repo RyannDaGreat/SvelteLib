@@ -51,6 +51,13 @@
   --a-sp-4: 12px;
   --a-sp-5: 16px;
 
+  /* STRUCTURAL, THEME-PROOF (user ruling): command-palette row height. Themes
+     swap fonts, font metrics change the line box, and the palette previews
+     themes LIVE as you browse — a font-driven height would jitter the very
+     list being read. No theme block may redefine this; theme_contrast_test.py
+     enforces it. See .palette-results .palette-item. */
+  --a-palette-row-h: 32px;
+
   /* Type */
   --a-font-sm: 0.72rem;
   --a-font-md: 0.85rem;
@@ -6763,6 +6770,19 @@ audio.ae-preview-media {
 
 .palette-item.highlighted {
   background: var(--a-hover-bg);
+}
+
+/* THEME-INVARIANT ROW HEIGHT — the row-level twin of the icon-slot rule below:
+   the palette's geometry may not move under the reader. Fixed height replaces
+   the font-derived one (vertical padding zeroed; flex centering does the rest),
+   so switching or PREVIEWING a theme with different font metrics (Futura) can
+   restyle every pixel of paint but never reflow the list. Scoped to
+   .palette-results: the canvas-toolbar reuses .palette-item as a two-line
+   column and keeps its natural flow. */
+.palette-results .palette-item {
+  height: var(--a-palette-row-h);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* Fixed-width icon slot: identical whether filled or blank, so titles align.
