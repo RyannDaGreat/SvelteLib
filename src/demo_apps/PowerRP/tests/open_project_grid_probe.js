@@ -37,6 +37,7 @@ import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
+import { zipSync, strToU8 } from "fflate";
 import { newDocument } from "../core/document.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -227,11 +228,65 @@ try {
   await (panel ?? page).screenshot({ path: shotPath });
   console.log("Screenshot:", shotPath);
 
+  // Close the grid before opening a draft — the draft-card check below reopens it.
+  // Modal.svelte's own close button (Escape needs the panel to hold keyboard
+  // focus, which a page.evaluate/$$eval read does not guarantee).
+  await page.click(".modal-close");
+  await new Promise((r) => setTimeout(r, 300));
+
+  // ── THE DEFECT THIS GUARDS: a draft must never appear as a project card ─────
+  // web/projectDraft.js's working-copy model says a draft is not a library
+  // entry until Save. Open one (a real archive import, the SAME path a dropped
+  // .zip takes), then reopen the grid and assert its card count is UNCHANGED —
+  // the draft-keyspace name must never surface as a card beside the real
+  // projects, however it got staged.
+  const draftDoc = { ...newDocument(), meta: { name: "Drafted Deck" } };
+  const draftZipBytes = zipSync({
+    "Drafted Deck/doc.json": strToU8(JSON.stringify(draftDoc)),
+  });
+  const draftZipB64 = Buffer.from(draftZipBytes).toString("base64");
+  const draftOpened = await page.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const { name } = await window.__powerrp_app.openDraftFromZipBytes(bytes, "Drafted Deck", "");
+    return { name, isDraft: window.__powerrp_app.isDraft() };
+  }, draftZipB64);
+  if (!draftOpened.isDraft) throw new Error("openDraftFromZipBytes did not leave the app in draft mode");
+  console.log("Opened draft:", JSON.stringify(draftOpened));
+
+  await page.evaluate(() => window.__powerrp_app.openProject());
+  await page.waitForSelector(".open-project-grid .open-project-card", { timeout: 8000 });
+  const namesWithDraftOpen = await page.$$eval(".open-project-card .open-project-card-name", (els) => els.map((e) => e.textContent));
+  console.log("Cards while a draft is open:", JSON.stringify(namesWithDraftOpen));
+  if (namesWithDraftOpen.length !== SEEDS.length) {
+    throw new Error(`grid shows ${namesWithDraftOpen.length} cards with a draft open, expected ${SEEDS.length} (unchanged) — a draft card leaked in`);
+  }
+  if (namesWithDraftOpen.some((n) => n.includes("~draft") || n.includes("Drafted Deck"))) {
+    throw new Error(`the open draft leaked into the grid as a card: ${JSON.stringify(namesWithDraftOpen)}`);
+  }
+  await page.click(".modal-close"); // same close button as above
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Reset to a clean, non-draft working copy before the pre-existing assertions
+  // below. Plain field resets, not a command: `clearDoc()` itself pushes an
+  // undo step (commit()), which would make guardedOpen's "untouched document"
+  // exemption false and raise the unsaved-work dialog again — this test is not
+  // about that gate, so it clears the fixture state directly instead of driving
+  // a second dialog no one would answer.
+  await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.draftMode = null;
+    app.everSaved = true;
+    app.savedDoc = app.doc; // saveState() must read "saved" too, or openNeedsConfirm still fires
+  });
+
   // Click a specific card → it must load THAT project (meta.name matches) and close the modal.
+  await page.evaluate(() => window.__powerrp_app.openProject());
+  await page.waitForSelector(".open-project-grid .open-project-card", { timeout: 8000 });
   const target = "Ocean Notes";
   await page.evaluate((name) => {
     const card = [...document.querySelectorAll(".open-project-card")]
       .find((c) => c.querySelector(".open-project-card-name")?.textContent === name);
+    if (!card) throw new Error(`no card found for "${name}"`);
     card.click();
   }, target);
   await new Promise((r) => setTimeout(r, 1500));

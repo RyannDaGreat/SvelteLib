@@ -43,6 +43,7 @@
 
 import * as projectApi from "./projectApi.js";
 import { ASSET_REF_PREFIX, assetKindForName, assetRef, parseAssetRef, plainDoc, quotaLine, quotaPercent, uniqueAssetName, uniqueProjectName } from "./assetRef.js";
+import { isDraftKey } from "./draftKeys.js";
 import { ASSET_STORE, DOC_STORE, assetKey, deleteByPrefix, getAllByPrefix, promisify, requestPersistence, storageBudget, withStore } from "./localDb.js";
 import { MISSING_ASSET_URL } from "../core/asset_ref.js"; // the re-export below is not a local binding
 
@@ -316,8 +317,13 @@ export const localAssetStore = {
 /** The HTTP project store — a forward to the frozen projectApi document calls. */
 export const httpProjectStore = {
   mode: "http",
-  /** Query. Saved projects, newest first: [{name, mtime, slideCount}]. */
-  list: () => projectApi.listProjects(),
+  /** Query. Saved projects, newest first: [{name, mtime, slideCount}]. A draft
+   *  is NOT a library entry (web/projectDraft.js's working-copy model) and the
+   *  server can never actually hold one — `_SAFE_NAME` (server.py) refuses any
+   *  name containing "/", which DRAFT_KEY always does — but the filter still
+   *  runs here rather than trusting that invariant, so a probe or a hand-edited
+   *  fixture pointed at this adapter cannot surface the key as a project card. */
+  list: async () => (await projectApi.listProjects()).filter((p) => !isDraftKey(p.name)),
   /** Query. {doc, assets} for one project. */
   load: (name) => projectApi.loadProject(name),
   /** Command. Write a project's document (creates the folder if new). */
@@ -360,10 +366,16 @@ export const localProjectStore = {
   mode: "local",
 
   /** Query. Saved local projects, NEWEST FIRST (the server's order, so the Open
-   *  modal's default listing does not depend on the adapter). */
+   *  modal's default listing does not depend on the adapter). Excludes the
+   *  draft keyspace: this is the ONE store DRAFT_KEY could physically end up
+   *  in — a project's document is a DOC_STORE row keyed by name, and the draft
+   *  key is a legal IndexedDB key even though `_SAFE_NAME` refuses it on the
+   *  server (web/projectDraft.js's working-copy model says a draft is never a
+   *  library entry, so a "~draft/current" row must never surface as one here,
+   *  whatever wrote it). */
   async list() {
     const recs = await withStore(DOC_STORE, "readonly", (s) => promisify(s.getAll(), "localProjectStore.list"));
-    return recs.map(localProjectEntry).sort((a, b) => b.mtime - a.mtime);
+    return recs.filter((rec) => !isDraftKey(rec.name)).map(localProjectEntry).sort((a, b) => b.mtime - a.mtime);
   },
 
   /** Query. {doc, assets} for one local project — the SAME pair the server's
