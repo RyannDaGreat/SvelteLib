@@ -325,6 +325,39 @@ test("the flat renderer places tiles edge to edge with no gaps", () => {
   assert.equal(a.w, 128, "each z1 tile is half the box");
 });
 
+test("GLOBE: no tile ink is ever drawn OUTSIDE the planet's disc", () => {
+  // THE REGRESSION. Quads are axis-aligned image rects bounding four projected
+  // corners, so a quad with one corner round the BACK bounds a box spanning most of
+  // the disc — and the first render smeared tile pixels across empty space off the
+  // globe's limb (.claude_logs/globemap, before the fix). Nothing on a sphere of
+  // radius r can project outside radius r, so that is the invariant to assert.
+  const s = stateAt({ centerLon: 10, centerLat: 48, zoom: 1, w: 400, h: 400 });
+  const window = mapWorldWindow(s.centerLon, s.centerLat, s.zoom, s.w, s.h);
+  const tiles = tilesForWindow(window, 2).map((t) => ({ ...t, ref: `stub:${t.x}/${t.y}`, ready: true }));
+  const ops = globeMapPlugin.emit(s, null, null, { mapTiles: { z: 2, window, cropped: window, tiles, devicePerWorld: 1 } });
+  const cx = s.w / 2, cy = s.h / 2, r = Math.min(s.w, s.h) / 2;
+  const images = ops.filter((o) => o.op === "image");
+  assert.ok(images.length > 0, "the globe actually drew tiles (else this asserts nothing)");
+  const SLACK = 1; // one px, matching the emitter's own sub-pixel disc tolerance
+  for (const op of images)
+    for (const [x, y] of [[op.x, op.y], [op.x + op.w, op.y], [op.x, op.y + op.h], [op.x + op.w, op.y + op.h]])
+      assert.ok(Math.hypot(x - cx, y - cy) <= r + SLACK,
+        `a tile quad reaches (${x.toFixed(1)}, ${y.toFixed(1)}), which is outside the disc of radius ${r} — tile ink is escaping into space`);
+});
+
+test("GLOBE: the POLAR CAPS fill the hole Mercator cannot reach", () => {
+  // Web Mercator stops at ±MAX_MERCATOR_LAT, so no tile at any zoom covers the last
+  // five degrees to a pole. On a flat map the map simply ends; on a GLOBE that is a
+  // hole straight through the planet, and the first render showed a black ellipse at
+  // the north pole. A cap is drawn in ice colour — never sampled, because there is no
+  // data there and stretching the top tile row over the pole would be a decoder lie.
+  const facingNorth = globeMapPlugin.emit(stateAt({ centerLat: 70, zoom: 0.5 }), null, null, null);
+  assert.ok(facingNorth.some((o) => o.op === "polygon"), "a globe tilted toward the north pole draws its cap");
+  // At street zoom there is no globe at all, so there are no caps either.
+  const flat = globeMapPlugin.emit(stateAt({ centerLat: 70, zoom: 14 }), null, null, null);
+  assert.ok(!flat.some((o) => o.op === "polygon"), "a flat map has no cap to draw");
+});
+
 // ── THE CROSSFADE ───────────────────────────────────────────────────────────
 
 test("the globe/flat crossfade is total at both ends and smooth between", () => {

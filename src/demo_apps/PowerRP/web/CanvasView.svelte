@@ -26,6 +26,12 @@
   import { selectInBox, rectFromCorners, dedupeGroupSelection } from "../core/bandselect.js";
   import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
   import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
+  // The MAP tile pre-pass, the PDF one's twin: it picks each map's tile DEPTH from
+  // this view's device-px-per-world-unit and its tile LIST from the visible crop.
+  // It must run HERE and not only in cameraFrame.js because this component
+  // hand-assembles its own IR (the standing TODO in cameraFrame.js's header) — a
+  // map would otherwise get no descriptor in the editor and fetch nothing.
+  import { prepareMapTiles } from "../render_gpu/map_display.js";
   import { rect as rectCmd } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { bootDone, bootFailed } from "./bootProgress.js";
@@ -647,7 +653,7 @@
       // resolvedBackgroundFill: a MATERIAL background must resolve here — this
       // rect never passes sceneIR (the camera-background freeze).
       rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: resolvedBackgroundFill(camRect.background, nodes) }),
-      ...sceneIR(nodes, { pdfDisplay }),
+      ...sceneIR(nodes, { pdfDisplay, mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height) }),
     ];
     // THE camera's dither settings drive the whole-frame final pass (scatters
     // 8-bit banding into grain). Read from the SAME folded state the scene came

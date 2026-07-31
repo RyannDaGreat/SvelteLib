@@ -69,7 +69,7 @@ import {
 } from "../../core/geo_tiles.js";
 import { DEFAULT_TILE_STYLE, TILE_PROVIDERS, TILE_PROVIDER_IDS, providerFor } from "../../web/tile_providers.js";
 import { ATMOSPHERE_FILL_PARAMS } from "../../render_gpu/skia/atmosphere_shader.js";
-import { image, materialFill, rect, text } from "../../render_gpu/ir.js";
+import { image, materialFill, polygon, rect, text } from "../../render_gpu/ir.js";
 
 /**
  * How many quads each tile is split into per axis when drawn on the GLOBE. 8 gives
@@ -240,11 +240,32 @@ export function flatTileRect(tile, window, w, h) {
 
 /**
  * Pure function. The GLOBE placement of one sub-quad of a tile: the local-px rect
- * bounding the quad's four projected corners, plus whether it faces the viewer.
+ * bounding the quad's four projected corners, plus whether it may be drawn.
  *
  * A quad is drawn as an axis-aligned `image` with the tile's matching sub-rect, so
  * the curvature is carried by the GRID of quads rather than by any one of them —
  * see GLOBE_SUBDIVISIONS for why 8 is enough to hide the facets.
+ *
+ * ── ALL FOUR CORNERS MUST FACE THE VIEWER, AND THAT IS A FIX ─────────────────
+ * This used to draw a quad when ANY corner faced the viewer, reasoning that
+ * dropping a limb-straddling quad would bite a chunk out of the planet's edge.
+ * The screenshot said otherwise: because the quad is drawn as an AXIS-ALIGNED
+ * rect bounding its corners, a quad with one corner round the back has a bounding
+ * box that BALLOONS — the far corner projects to the opposite side of the disc, so
+ * the box spans most of the planet and the tile's pixels were smeared across space
+ * OUTSIDE the limb. (Visible in .claude_logs/globemap as coloured blocks floating
+ * off the globe's top-right.)
+ *
+ * Requiring all four corners fixes it exactly, and costs nothing visible: the
+ * dropped quads are 1/GLOBE_SUBDIVISIONS of a tile wide — at the crossover zoom
+ * under a degree of arc — so the silhouette loses at most a sliver far narrower
+ * than the atmosphere's own rim, which is drawn over that boundary anyway.
+ *
+ * A quad is ALSO dropped when its box escapes the disc, which catches the same
+ * ballooning from the other side: near the limb the projection compresses
+ * enormously (dv/dlat → 0), so a numerically-visible quad can still bound a box
+ * wider than the planet. The disc test is the geometric truth — nothing on a
+ * sphere of radius r can project outside radius r — so it is the honest guard.
  *
  * @param {object} corners - {lon0, lat0, lon1, lat1} the quad's geographic extent
  * @param {object} s - state (centerLon, centerLat, w, h)
@@ -259,16 +280,71 @@ function globeQuadRect(corners, s) {
     sphereProject(corners.lon0, corners.lat1, s.centerLon, s.centerLat),
     sphereProject(corners.lon1, corners.lat1, s.centerLon, s.centerLat),
   ];
-  // A quad is drawn when ANY corner faces the viewer: a quad straddling the limb
-  // is partly visible, and dropping it would eat a bite out of the planet's edge.
-  const visible = pts.some((p) => p.visible);
   // Screen y is DOWN while the projection's v is NORTH-positive, so v is negated
   // here — the one place that flip happens (core/geo_tiles states the convention).
   const xs = pts.map((p) => cx + p.u * r), ys = pts.map((p) => cy - p.v * r);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
   const y0 = Math.min(...ys), y1 = Math.max(...ys);
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, visible };
+  // THE TEST IS ON THE BOX, NOT ON THE FOUR PROJECTED POINTS, and the difference is
+  // the whole bug. What gets DRAWN is the axis-aligned rect [x0,x1]x[y0,y1]; its
+  // corners are combinations like (min x, min y) that need not be any projected
+  // point at all, and near the limb one of those combinations lands outside the disc
+  // even when all four sphere points are safely inside it. Checking the points would
+  // pass while ink still escaped — measured: a quad whose corners were all on the
+  // sphere still bounded a box reaching (148, 4) on a disc of radius 200.
+  const boxInsideDisc = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]
+    .every(([x, y]) => Math.hypot(x - cx, y - cy) <= r + DISC_EPSILON_PX);
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, visible: pts.every((p) => p.visible) && boxInsideDisc };
 }
+
+/** Slack on the disc containment test, in local px. A corner ON the limb is
+ *  exactly at radius r and floating-point rounding can put it a hair outside; a
+ *  sub-pixel tolerance keeps those legitimate quads without admitting the
+ *  ballooned boxes the test exists to reject (those overshoot by many px). */
+const DISC_EPSILON_PX = 0.5;
+
+/** The polar caps' colour. Both of Earth's caps are ice, so one value is right for
+ *  both; it is slightly blue-grey rather than white so it reads as ice under the
+ *  atmosphere's tint instead of as a blown highlight. */
+const POLAR_CAP_COLOR = "#dfe8f2";
+
+/**
+ * Pure function. Filled polygons covering the two POLAR CAPS the Mercator tile
+ * pyramid cannot reach — the region poleward of ±MAX_MERCATOR_LAT.
+ *
+ * Each cap is the ring of points at exactly the cut latitude, projected through the
+ * same orthographic map the tiles use and filled as one polygon, so the cap meets
+ * the topmost tile row exactly at the seam with no gap and no overlap. A cap facing
+ * away from the viewer projects no visible points and is skipped.
+ *
+ * @param {object} s - folded state (centerLon, centerLat, w, h)
+ * @param {number} opacity - the globe's crossfade weight
+ * @returns {object[]} polygon ops (0, 1 or 2)
+ */
+function polarCapOps(s, opacity) {
+  const r = Math.min(s.w, s.h) / 2;
+  const cx = s.w / 2, cy = s.h / 2;
+  const ops = [];
+  for (const lat of [MAX_MERCATOR_LAT, -MAX_MERCATOR_LAT]) {
+    const points = [];
+    for (let i = 0; i <= POLAR_CAP_SEGMENTS; i++) {
+      const lon = -180 + (360 * i) / POLAR_CAP_SEGMENTS;
+      const p = sphereProject(lon, lat, s.centerLon, s.centerLat);
+      if (!p.visible) continue;
+      points.push([cx + p.u * r, cy - p.v * r]);
+    }
+    // Under three points there is no polygon to fill — the cap is entirely round
+    // the back, which is the ordinary case for whichever pole is facing away.
+    if (points.length < 3) continue;
+    ops.push(polygon({ points, fill: POLAR_CAP_COLOR, opacity }));
+  }
+  return ops;
+}
+
+/** How finely the cut-latitude ring is sampled when building a polar cap. 48
+ *  segments put a vertex every 7.5° of longitude, which on a 400-px globe is well
+ *  under a pixel of chord error at the cap's radius. */
+const POLAR_CAP_SEGMENTS = 48;
 
 /**
  * Pure function. The image ops for one tile drawn on the GLOBE: a
@@ -456,7 +532,23 @@ export const globeMapPlugin = {
         ops.push(image({ ref: tile.ref, x: r.x, y: r.y, w: r.w, h: r.h, opacity: (1 - gw) * (s.opacity ?? 1), sampling: "bilinear" }));
       }
     }
-    if (gw > 0) for (const tile of plan.tiles) ops.push(...globeTileOps(tile, s, gw * (s.opacity ?? 1)));
+    if (gw > 0) {
+      // THE POLAR CAPS, and they are not decoration — they are the honest treatment
+      // of a hole the projection genuinely leaves. Web Mercator is cut at
+      // ±MAX_MERCATOR_LAT (that cut is what makes the tile grid square), so NO TILE
+      // AT ANY ZOOM covers the last five degrees to either pole. On a flat map that
+      // is invisible: the map simply ends. On a GLOBE the missing cap is a hole
+      // straight through the planet, and the first render showed exactly that — a
+      // black ellipse at the north pole (.claude_logs/globemap).
+      //
+      // A cap is drawn in the ICE COLOUR rather than sampled, because there is no
+      // data to sample: inventing pixels by stretching the topmost tile row over
+      // the pole would be a decoder lie of the kind this widget refuses everywhere
+      // else. Both real caps ARE ice, so a flat polar disc is the truthful picture
+      // — and the atmosphere's limb darkening falls across it like anywhere else.
+      for (const op of polarCapOps(s, gw * (s.opacity ?? 1))) ops.push(op);
+      for (const tile of plan.tiles) ops.push(...globeTileOps(tile, s, gw * (s.opacity ?? 1)));
+    }
 
     // 3. THE AIR. Only where there is a globe — on a flat street map there is no
     //    limb to glow and no terminator to draw, and painting one would be a lie
