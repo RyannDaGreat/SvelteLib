@@ -922,17 +922,22 @@
           <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={GRADIENT_MIN_WAVELENGTH} scrub={FRACTION_SCRUB} />
         </span>
       </div>
-      <!-- PHASE — shifts where the ramp's cycle starts, in WAVELENGTH UNITS (user
-           ruling: "all gradients should have a phase option"). 0 = no shift
-           (today's behaviour, byte-identical); 1 = shifted a whole mirror period,
-           which renders IDENTICALLY to 0 under wavelength-tiling (render_gpu/ir.js
-           linearGradientRender). No min/max: unlike wavelength (which must stay
-           positive so the axis can't collapse), a phase shift is well-defined for
-           any finite number — it wraps through the mirror period either way. -->
+      <!-- PHASE — shifts where the ramp's cycle starts, STORED in WAVELENGTH-UNIT
+           CYCLES (user ruling: "all gradients should have a phase option") but
+           PRESENTED in degrees, one cycle per 360° — same kind/display/scrub
+           idiom as strokePhase (core/properties.js), display:"cycles" doing the
+           ×360 conversion (web/displayUnits.js) with storage untouched. 0 = no
+           shift (today's behaviour, byte-identical); 360° (stored 1) wraps back
+           to identity at ANY wavelength, including the default wavelength = 1
+           clamp axis (render_gpu/ir.js linearGradientRender wraps phase mod 1
+           cycle before applying it) — the user ruling this row exists to satisfy:
+           "zero degrees should mean nothing and 360 should mean full phase...
+           they should loop back around every 360 degrees". No min/max: a phase
+           shift is well-defined for any finite number, wrapping either way. -->
       <div class="paint-sub-row">
         <span class="paint-sub-label">Phase</span>
         <span class="paint-sub-control">
-          <NumericField {app} path={[...path, "linear", "phase"]} paths={writePaths.map((p) => [...p, "linear", "phase"])} label={`${label} phase`} scrub={FRACTION_SCRUB} />
+          <AngleField {app} path={[...path, "linear", "phase"]} paths={writePaths.map((p) => [...p, "linear", "phase"])} label={`${label} phase`} display="cycles" />
         </span>
       </div>
     {:else}

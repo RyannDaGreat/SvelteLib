@@ -468,7 +468,7 @@ function linearAxis(g) {
  * the untouched axis in that case). Validates loudly: a present center must be a
  * finite point, a present wavelength a positive finite number (a zero/negative axis
  * is degenerate), and a present phase any finite number (a phase shift has no sign
- * or magnitude restriction — it wraps through the mirror period).
+ * or magnitude restriction — it wraps every whole cycle, at any wavelength).
  *
  * Args:
  *   g (object): the linear sub-state — {center?, wavelength?, phase?, ...}
@@ -528,21 +528,34 @@ function linearCenterWavelength(g) {
  * Returns:
  *   {from: {x, y}, to: {x, y}, mirror: boolean}
  *
+ * PHASE WRAPS every whole cycle (user ruling: "zero degrees should mean
+ * nothing and 360 should mean full phase... they should loop back around
+ * every 360 degrees, but it doesn't do that on every object") — `phase mod 1`
+ * is taken BEFORE the shift below, on both the mirror and the clamp path, so
+ * an integer phase (1, 2, −1, …) is byte-identical to phase 0 REGARDLESS of
+ * wavelength, including the default wavelength = 1 clamp axis that has no
+ * mirror period of its own to fall back on.
+ *
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, mirror: false}  (default: untouched axis)
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, mirror: true}  (half-length ramp, mirror-tiled)
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.25, y: 0.5}, wavelength: 1}).from  // {x: -0.25, y: 0.5}  (center shifted, w=1 → clamp)
- * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5, phase: 1})  // {from: {x: 1.25, y: 0.5}, to: {x: 1.75, y: 0.5}, mirror: true}  (phase 1 = axis shifted by one whole mirror period — a DIFFERENT axis position that renders the IDENTICAL picture, since the mirror pattern repeats every period)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5, phase: 1})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, mirror: true}  (phase 1 wraps to phase 0 — one whole cycle is identity, at any wavelength)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 1, phase: 1})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, mirror: false}  (wavelength=1 clamp axis: phase 1 also wraps to identity, unlike before)
  */
 export function linearGradientRender(paint) {
   const w = paint.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH;
-  const p = paint.phase ?? GRADIENT_DEFAULT_PHASE;
+  const rawPhase = paint.phase ?? GRADIENT_DEFAULT_PHASE;
+  // Wrap to [0, 1) — a whole cycle is identity at ANY wavelength, mirrored or
+  // clamped alike. JS `%` keeps the sign of its left operand, so a negative
+  // phase (-0.25) needs the +1/%1 fixup to land at 0.75, not -0.25.
+  const p = ((rawPhase % 1) + 1) % 1;
   const c = paint.center ?? GRADIENT_DEFAULT_CENTER;
   if (w === 1 && p === 0 && c.x === GRADIENT_DEFAULT_CENTER.x && c.y === GRADIENT_DEFAULT_CENTER.y)
     return { from: paint.from, to: paint.to, mirror: false };
   const hx = (paint.to.x - paint.from.x) / 2, hy = (paint.to.y - paint.from.y) / 2;
   // The mirror period is 4·w·half (there-and-back over one wavelength each way);
-  // phase is a fraction OF THAT PERIOD, so phase=1 shifts the center by a whole
-  // period and reproduces the identical picture under mirror tiling.
+  // phase is a fraction OF THAT PERIOD, so phase=1 (wrapped to 0 above) shifts
+  // the center by zero and reproduces the identical picture at any wavelength.
   const shiftX = 4 * p * w * hx, shiftY = 4 * p * w * hy;
   const cx = c.x + shiftX, cy = c.y + shiftY;
   return {

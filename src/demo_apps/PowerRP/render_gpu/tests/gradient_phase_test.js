@@ -24,6 +24,15 @@
  * ABSENT from a fresh paint (the house default-fill pattern), so it renders
  * byte-identically to every gradient authored before this feature existed.
  *
+ * PHASE WRAPS EVERY WHOLE CYCLE AT ANY WAVELENGTH (user ruling: "zero degrees
+ * should mean nothing and 360 should mean full phase... they should loop back
+ * around every 360 degrees, but it doesn't do that on every object").
+ * linearGradientRender takes `phase mod 1` before applying the shift, on both the
+ * mirror path (wavelength ≠ 1) and the CLAMP path (the default wavelength = 1,
+ * which has no mirror period of its own — an unwrapped phase there never
+ * returned to identity, the gap this suite now closes). A negative phase wraps
+ * the same way (−0.25 ≡ 0.75).
+ *
  * ── WHAT THIS SUITE PINS ──────────────────────────────────────────────────────
  *   1. phase ABSENT / phase=0 renders BYTE-IDENTICAL pixels to a paint that omits
  *      the field entirely (the standing "byte-identical at default" regression
@@ -40,6 +49,9 @@
  *      linearGradientRender computes for Skia — the existing parity-gate pattern
  *      (render_gpu/tests/stroke_offset_test.js).
  *   5. parsePaint validates phase loudly (a non-finite/non-number phase throws).
+ *   6. phase=1/2/−1 are IDENTITY at wavelength=1 too (the clamp path), and a
+ *      negative phase wraps to the same picture as its positive equivalent
+ *      (−0.25 ≡ 0.75) at both wavelength=1 and wavelength=0.5.
  */
 import assert from "assert";
 import { createRequire } from "module";
@@ -90,11 +102,27 @@ test("phase=0 (or absent) is IDENTITY — same endpoints as before the feature",
 test("phase shifts the center by phase·(4·wavelength·half) — the mirror period", () => {
   const base = { from: { x: 0, y: 0.5 }, to: { x: 1, y: 0.5 }, center: { x: 0.5, y: 0.5 }, wavelength: 0.5 };
   const p0 = linearGradientRender(base);
-  const p1 = linearGradientRender({ ...base, phase: 1 });
+  const p03 = linearGradientRender({ ...base, phase: 0.25 }); // fractional, exact in binary float: no wrap, exercises the plain shift formula
   const period = 4 * 0.5 * 0.5; // 4·w·half, half = (to-from)/2 = 0.5
-  assert.equal(p1.from.x - p0.from.x, period);
-  assert.equal(p1.to.x - p0.to.x, period);
-  assert.equal(p1.mirror, true);
+  assert.equal(p03.from.x - p0.from.x, 0.25 * period);
+  assert.equal(p03.to.x - p0.to.x, 0.25 * period);
+  assert.equal(p03.mirror, true);
+});
+
+test("phase=1/2/-1 WRAP to phase=0's endpoints exactly — one whole cycle is identity at any wavelength", () => {
+  const base = { from: { x: 0, y: 0.5 }, to: { x: 1, y: 0.5 }, center: { x: 0.5, y: 0.5 }, wavelength: 0.5 };
+  const p0 = linearGradientRender(base);
+  for (const phase of [1, 2, -1]) {
+    const shifted = linearGradientRender({ ...base, phase });
+    assert.deepStrictEqual(shifted, p0, `phase=${phase} must wrap to identical endpoints as phase=0`);
+  }
+});
+
+test("a negative phase wraps like its positive equivalent (-0.25 ≡ 0.75)", () => {
+  const base = { from: { x: 0, y: 0.5 }, to: { x: 1, y: 0.5 }, center: { x: 0.5, y: 0.5 }, wavelength: 0.5 };
+  const neg = linearGradientRender({ ...base, phase: -0.25 });
+  const pos = linearGradientRender({ ...base, phase: 0.75 });
+  assert.deepStrictEqual(neg, pos);
 });
 
 // ── 3. THE DECISIVE MEASUREMENT: PIXELS, not just the endpoint formula ───────
@@ -164,6 +192,37 @@ test("phase wraps: phase=2 (two whole periods) also reproduces phase=0's pixels"
   assert.deepStrictEqual(p0, p2);
 });
 
+test("a negative phase renders identically to its wrapped positive equivalent (-0.25 ≡ 0.75)", () => {
+  const neg = renderPixels(makeRect({ phase: -0.25 }));
+  const pos = renderPixels(makeRect({ phase: 0.75 }));
+  assert.deepStrictEqual(neg, pos);
+});
+
+// ── wavelength=1: the CLAMP path, no mirror period of its own ────────────────
+// This is the gap the wrap closes: before it, phase never returned to identity
+// at the default wavelength because the clamp axis has no tiling to fall back
+// on. wavelength stays 1 here (unlike gradFill's 0.25) so this exercises the
+// OTHER branch of linearGradientRender's mirror/clamp fork.
+const clampFill = (extra = {}) => ({
+  type: "linearGradient",
+  linear: { stops: [{ offset: 0, color: "#000000" }, { offset: 1, color: "#ffffff" }], angle: 0, wavelength: 1, ...extra },
+});
+const makeClampRect = (extra) => rect({ ...BOX, fill: clampFill(extra) });
+
+test("wavelength=1 (the non-tiled clamp axis): phase=1/2/-1 are IDENTITY, matching phase=0's pixels", () => {
+  const p0 = renderPixels(makeClampRect({}));
+  for (const phase of [1, 2, -1]) {
+    const shifted = renderPixels(makeClampRect({ phase }));
+    assert.deepStrictEqual(shifted, p0, `wavelength=1, phase=${phase} must render identically to phase=0`);
+  }
+});
+
+test("wavelength=1: a fractional phase still visibly shifts the clamp axis (not a no-op)", () => {
+  const p0 = renderPixels(makeClampRect({}));
+  const p25 = renderPixels(makeClampRect({ phase: 0.25 }));
+  assert.notDeepStrictEqual(p0, p25, "a fractional phase must still translate the clamp ramp");
+});
+
 // ── 4. PDF/SVG PARITY for a nonzero phase (the strokeoffset-style gate) ──────
 // wavelength=1 keeps this a TRUE vector PDF shading (opHasMirrorLinearFill is only
 // true for wavelength !== 1) so the PDF Coords are directly greppable, exactly
@@ -182,6 +241,23 @@ test("SVG and Skia/ir.js agree on the phase-shifted axis endpoints", () => {
   assert.ok(svgDef.includes(`x2="${fmt(to.x)}"`), `SVG x2 must be the SAME shifted endpoint (${fmt(to.x)})`);
 });
 
+// A WRAPPED phase (>1) parity check: both exporters read the SAME
+// linearGradientRender seam the wrap lives in, so this is free — proving it,
+// not assuming it.
+const wrappedParityFill = parsePaint({
+  type: "linearGradient",
+  linear: { stops: [{ offset: 0, color: "#ff0000" }, { offset: 1, color: "#0000ff" }], angle: 0, center: { x: 0.5, y: 0.5 }, wavelength: 1, phase: 1.3 },
+});
+
+test("SVG and Skia/ir.js agree on a WRAPPED phase's axis endpoints (phase=1.3 wraps to 0.3's axis)", () => {
+  const wrapped = linearGradientRender(wrappedParityFill);
+  const unwrapped = linearGradientRender(parityFill); // phase: 0.3 — the equivalent post-wrap value
+  assert.deepStrictEqual(wrapped, unwrapped, "phase=1.3 must resolve to the SAME endpoints as phase=0.3");
+  const svgDef = gradientDefSVG(wrappedParityFill, "lg1", 1);
+  assert.ok(svgDef.includes(`x1="${fmt(wrapped.from.x)}"`), `SVG x1 must reflect the wrapped endpoint (${fmt(wrapped.from.x)})`);
+  assert.ok(svgDef.includes(`x2="${fmt(wrapped.to.x)}"`), `SVG x2 must reflect the wrapped endpoint (${fmt(wrapped.to.x)})`);
+});
+
 await (async () => {
   const cmd = rect({ ...PARITY_BOX, fill: parityFill });
   const bytes = await irToPDF([cmd], { width: 120, height: 30, view: VIEW, background: "#ffffff" });
@@ -193,6 +269,21 @@ await (async () => {
     // (objectBoundingBox 0..1 space, same as SVG/ir.js) must appear verbatim.
     assert.ok(stream.includes(`${from.x}`), `PDF stream missing shifted from.x=${from.x}`);
     assert.ok(stream.includes(`${to.x}`), `PDF stream missing shifted to.x=${to.x}`);
+    assert.ok(stream.includes("ShadingType 2"), "still a true axial (vector) shading, not the raster fallback");
+  });
+})();
+
+await (async () => {
+  // Same parity gate, at a WRAPPED phase (1.3) — both exporters read the ONE
+  // linearGradientRender seam the wrap lives in, so this is free; proving it.
+  const cmd = rect({ ...PARITY_BOX, fill: wrappedParityFill });
+  const bytes = await irToPDF([cmd], { width: 120, height: 30, view: VIEW, background: "#ffffff" });
+  const stream = Buffer.from(bytes).toString("latin1");
+  const { from, to } = linearGradientRender(wrappedParityFill);
+
+  test("PDF's axial shading Coords use the SAME wrapped-phase endpoints as SVG/Skia (phase=1.3)", () => {
+    assert.ok(stream.includes(`${from.x}`), `PDF stream missing wrapped from.x=${from.x}`);
+    assert.ok(stream.includes(`${to.x}`), `PDF stream missing wrapped to.x=${to.x}`);
     assert.ok(stream.includes("ShadingType 2"), "still a true axial (vector) shading, not the raster fallback");
   });
 })();

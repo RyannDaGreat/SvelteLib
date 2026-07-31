@@ -19,6 +19,7 @@
  */
 
 const DEG_PER_RAD = 180 / Math.PI;
+const DEG_PER_CYCLE = 360;
 
 /**
  * Pure function. The identity transform — value shown exactly as stored.
@@ -44,6 +45,13 @@ const UNITS = {
     // radians (stored) ↔ degrees (shown). 71° reads "71°", stores 1.239 rad.
     toDisplay: (rad) => rad * DEG_PER_RAD,
     fromDisplay: (deg) => deg / DEG_PER_RAD,
+    suffix: "°",
+  },
+  cycles: {
+    // wavelength-unit cycles (stored) ↔ degrees (shown). 0.5 reads "180°",
+    // stores 0.5 — one cycle is 360°, e.g. render_gpu/ir.js gradient phase.
+    toDisplay: (cyc) => cyc * DEG_PER_CYCLE,
+    fromDisplay: (deg) => deg / DEG_PER_CYCLE,
     suffix: "°",
   },
 };
