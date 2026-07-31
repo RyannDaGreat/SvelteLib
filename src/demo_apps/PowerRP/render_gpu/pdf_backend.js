@@ -48,7 +48,8 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
 // which is a console.warn for expressible-degradation notices (a gradient stroke
@@ -1048,7 +1049,7 @@ async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, 
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
-    } else if (!VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd)) {
+    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd)) {
       // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
       // no vector form for it, so it takes the same region raster-embed. A
       // MIRROR-TILED linear gradient fill — wavelength ≠ 1 — is the same story: a
@@ -1992,7 +1993,17 @@ function gradientShapeOps(pathStr, bounds, cmd, ctx, evenOdd) {
   const ops = [];
   const opacity = cmd.opacity ?? 1;
   if (cmd.fill) {
-    if (isGradientPaint(cmd.fill)) {
+    if (isGradientPaint(cmd.fill) && cmd.fill.type === "material") {
+      // A VECTOR PATTERN fill: set the /Pattern colour space, select the tile, and
+      // fill the shape's own path with it. PDF then repeats the tile's REAL
+      // GEOMETRY across the path — no clipping loop and no raster, which is why
+      // this stays a true vector export at any zoom.
+      const pt = ctx.patternName(cmd.fill);
+      const gs = ctx.gsAlphaPair(opacity, 1);
+      ops.push("q");
+      if (gs) ops.push(gs);
+      ops.push("/Pattern cs", `/${pt} scn`, pathStr, evenOdd ? "f*" : "f", "Q");
+    } else if (isGradientPaint(cmd.fill)) {
       const sh = ctx.shadingName(cmd.fill);
       const gs = ctx.gsAlphaPair(opacity, 1);
       ops.push("q");
@@ -2130,6 +2141,70 @@ class PdfAssembly {
     this._pageEmbeds = new Map(); // pdfpage ref → {name, width, height} (lossless Form XObject page-embed)
     this._videoXObjects = new Map(); // video ref → XObject name, or null (blank/undrawable frame)
     this._shadings = new Map(); // JSON(paint) → /Shading resource name (Axis-1 gradient shadings)
+    this._patterns = new Map(); // JSON(params) → /Pattern resource name (vector pattern tiles)
+  }
+
+  /**
+   * Command (registers a /Pattern resource on first use). A VECTOR PATTERN material
+   * paint → its PDF TILING PATTERN resource name — the PDF half of "it's special
+   * because it uses vector graphics".
+   *
+   * A PatternType 1 (tiling) pattern is a little content stream that PDF re-executes
+   * on a lattice, which is the exact analogue of the Skia picture shader and the SVG
+   * `<pattern>`: the tile is REAL PATH GEOMETRY, so the export stays vector and
+   * resolution-independent instead of embedding a raster the way every shader
+   * material must. XStep/YStep are the cell, so the lattice is the same fundamental
+   * domain the other two backends tile on.
+   *
+   * The pattern's own scale/offset/rotation ride the pattern MATRIX, which PDF
+   * defines relative to the default page space — the same role SVG's
+   * patternTransform and Skia's local matrix play.
+   */
+  patternName(paint) {
+    const params = paint.resolvedParams ?? paint.material?.params ?? {};
+    const key = JSON.stringify(params);
+    if (this._patterns.has(key)) return this._patterns.get(key);
+    const ctx = this.doc.context;
+    const cell = patternCellFor(params);
+    // The tile's content stream: one fill per cell shape. An OFF background emits
+    // nothing, leaving the tile transparent so the page shows through.
+    const ops = [];
+    for (const shape of cell.shapes) {
+      const rgba = shapeColor(shape, params, parseColor);
+      if (!rgba) continue;
+      // Per-shape alpha (gingham's bands, plaid's tone stack) rides an ExtGState,
+      // the same mechanism the gradient path uses for item opacity.
+      const gs = this.gsAlphaPair(rgba[3], 1);
+      ops.push("q");
+      if (gs) ops.push(gs);
+      ops.push(`${pdfNum(rgba[0])} ${pdfNum(rgba[1])} ${pdfNum(rgba[2])} rg`);
+      ops.push(svgPathToPdfOps(shape.d), shape.fillRule === "evenodd" ? "f*" : "f");
+      ops.push("Q");
+    }
+    const [a, b, c, d, e, f] = patternMatrix(params);
+    const stream = ctx.flateStream(ops.join("\n"), {
+      Type: "Pattern", PatternType: 1, PaintType: 1, TilingType: 1,
+      BBox: [0, 0, cell.w, cell.h], XStep: cell.w, YStep: cell.h,
+      // The tile's own drawing needs the ExtGStates it references, so it inherits
+      // the page's Resources rather than declaring an empty dictionary.
+      Resources: this.page.node.normalizedEntries().Resources,
+      Matrix: [a, b, c, d, e, f],
+    });
+    const ref = ctx.register(stream);
+    const name = `Pt${this._patterns.size + 1}`;
+    this._patternDict().set(PDFName.of(name), ref);
+    this._patterns.set(key, name);
+    return name;
+  }
+
+  /** Query→build. The page Resources /Pattern subdictionary, created on demand —
+   *  the exact twin of _shadingDict. */
+  _patternDict() {
+    const ctx = this.doc.context;
+    const Resources = this.page.node.normalizedEntries().Resources;
+    let Pattern = Resources.lookupMaybe(PDFName.of("Pattern"), PDFDict);
+    if (!Pattern) { Pattern = ctx.obj({}); Resources.set(PDFName.of("Pattern"), Pattern); }
+    return Pattern;
   }
 
   /**

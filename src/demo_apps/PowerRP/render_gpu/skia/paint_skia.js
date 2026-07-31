@@ -52,6 +52,7 @@ import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
 import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
+import { isPatternMaterial, patternCellFor, patternMatrix, shapeColor } from "./pattern_material.js";
 import { getShapeSdf, makeShapeSdfChild } from "./shape_sdf.js"; // the silhouette signed-distance child that makes a material fill conform to its shape
 import { getStrokeMaterial } from "./stroke_materials.js";
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
@@ -2317,6 +2318,12 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   if (isBackdropMaterial(material))
     throw new Error(`paintIR(skia): materialFill names BACKDROP material "${cmd.material}" — use materialBackdrop (foreground materials carry backdrop:false)`);
 
+  // A PATTERN material tiles VECTOR GEOMETRY through a picture shader rather than
+  // running SkSL over a raster, so it takes its own path entirely (no uniform pack,
+  // no RuntimeEffect, no region raster). Everything below this branch assumes a
+  // shader-backed material.
+  if (isPatternMaterial(material)) { drawPatternFill(CanvasKit, canvas, cmd, world, view, opacity); return; }
+
   // Device-space region geometry (a similarity transform), identical to glass/material backdrop.
   const ds = view.zoom * view.dpr;
   const sd = world.scale * ds;                 // world length → device px
@@ -2756,6 +2763,87 @@ function renderMaterialRaster(CanvasKit, ctx, material, uniforms, w, h, sdfBind)
   const img = surf.makeImageSnapshot();
   p.delete(); shader.delete(); child?.delete(); surf.dispose();
   return img;
+}
+
+/**
+ * Command (draws on `canvas`). THE VECTOR PATTERN FILL — the pattern material's
+ * whole render path, and the one material path that runs no SkSL.
+ *
+ * The cell's paths are recorded into a PICTURE (device-independent vector ops),
+ * which `picture.makeShader(Repeat, Repeat, …)` then tiles across the region under
+ * a local matrix carrying the knobs' scale / offset / rotation composed with the
+ * world→device transform. Skia re-plays the recorded VECTORS per tile, so the
+ * pattern stays crisp at any zoom — there is no cell bitmap and therefore no
+ * resolution to pick, which is the runtime half of "it's special because it uses
+ * vector graphics".
+ *
+ * VERIFIED on the bundled CanvasKit 0.41.1 including its SOFTWARE surface, which is
+ * why cli/render.js draws patterns while it cannot draw images or LaTeX.
+ *
+ * The fill is clipped to the op's own rounded-rect region, exactly as the shader
+ * path's raster blit is, so a pattern-filled star is the tiling clipped to the star.
+ */
+function drawPatternFill(CanvasKit, canvas, cmd, world, view, opacity) {
+  const params = cmd.params ?? {};
+  const cell = patternCellFor(params);
+  // (1) Record ONE cell as a picture. The recorder's cull rect is the fundamental
+  // domain, and the tile rect handed to makeShader is the same — that identity is
+  // what makes the repeat land exactly on the domain rather than on the ink's
+  // bounding box (which would gap or overlap wherever a cell's ink is inset).
+  const recorder = new CanvasKit.PictureRecorder();
+  const cellCanvas = recorder.beginRecording([0, 0, cell.w, cell.h]);
+  for (const shape of cell.shapes) {
+    const rgba = shapeColor(shape, params, parseColor);
+    if (!rgba) continue; // an OFF background: draw nothing, leaving it transparent
+    const path = CanvasKit.Path.MakeFromSVGString(shape.d);
+    if (!path) throw new Error(`paintIR(skia): pattern cell produced an unparseable path (${shape.d.slice(0, 60)}…)`);
+    if (shape.fillRule === "evenodd") path.setFillType(CanvasKit.FillType.EvenOdd);
+    const paint = new CanvasKit.Paint();
+    paint.setAntiAlias(true);
+    paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3]));
+    cellCanvas.drawPath(path, paint);
+    paint.delete(); path.delete();
+  }
+  const picture = recorder.finishRecordingAsPicture();
+
+  // (2) The local matrix: the pattern's own scale/offset/rotation, then the
+  // world→device transform. Composing them here (rather than drawing under a
+  // canvas transform) keeps the pattern anchored to the SHAPE, so panning the
+  // camera slides the shape and its pattern together instead of swimming.
+  const [a, b, c, d, e, f] = patternMatrix(params);
+  const ds = view.zoom * view.dpr;
+  const sd = world.scale * ds;
+  const centerWorld = signedApply(world, cmd.cx, cmd.cy);
+  const cxDev = centerWorld.x * ds + view.panX * view.dpr;
+  const cyDev = centerWorld.y * ds + view.panY * view.dpr;
+  const originX = cxDev - cmd.halfW * sd, originY = cyDev - cmd.halfH * sd;
+  const local = CanvasKit.Matrix.multiply(
+    CanvasKit.Matrix.translated(originX, originY),
+    CanvasKit.Matrix.scaled(sd, sd),
+    [a, c, e, b, d, f, 0, 0, 1], // the 6-tuple as Skia's row-major 3x3
+  );
+  const shader = picture.makeShader(
+    CanvasKit.TileMode.Repeat, CanvasKit.TileMode.Repeat, CanvasKit.FilterMode.Linear,
+    local, [0, 0, cell.w, cell.h],
+  );
+  if (!shader) throw new Error(`paintIR(skia): pattern material "${cmd.material}" picture.makeShader returned null`);
+
+  // (3) Fill the op's region with the tiling, clipped to its rounded rect.
+  canvas.save();
+  const paint = new CanvasKit.Paint();
+  paint.setShader(shader);
+  paint.setAlphaf(opacity);
+  paint.setAntiAlias(true);
+  const corner = cmd.cornerRadius * sd;
+  const rrect = CanvasKit.RRectXY([originX, originY, originX + 2 * cmd.halfW * sd, originY + 2 * cmd.halfH * sd], corner, corner);
+  if (world.rotation) {
+    canvas.translate(cxDev, cyDev);
+    canvas.rotate((world.rotation * 180) / Math.PI, 0, 0);
+    canvas.translate(-cxDev, -cyDev);
+  }
+  canvas.drawRRect(rrect, paint);
+  canvas.restore();
+  paint.delete(); shader.delete(); picture.delete();
 }
 
 /**

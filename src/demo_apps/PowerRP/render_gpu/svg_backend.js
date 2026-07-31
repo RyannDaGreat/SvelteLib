@@ -58,7 +58,8 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
 // paintNodeRun for the doctrine and core/paint_containment.js for why it exists.
 import { reportOnce as reportExportFailureOnce } from "../core/report.js";
@@ -251,6 +252,16 @@ export function paintRef(ctx, paint, opacity = 1) {
     const [r, g, b, a] = paint;
     return rgbaToCss([r, g, b, a * opacity]);
   }
+  // A VECTOR PATTERN material becomes a native <pattern> def — REAL vectors, not an
+  // embedded raster. This is the SVG half of "it's special because it uses vector
+  // graphics": the tile is a few hundred bytes of paths and stays crisp at any
+  // zoom, where every shader material must rasterize.
+  if (paint.type === "material") {
+    if (!ctx || !ctx.nextId) throw new Error("svg_backend: a pattern paint needs the SvgAssembly ctx (to mint a <defs> pattern) — pass it to paintAttrs/paintRef");
+    const id = ctx.nextId("pat");
+    ctx.addDef(patternDefSVG(paint, id, opacity));
+    return `url(#${id})`;
+  }
   if (!ctx || !ctx.nextId) throw new Error("svg_backend: a gradient paint needs the SvgAssembly ctx (to mint a <defs> gradient) — pass it to paintAttrs/paintRef");
   const id = ctx.nextId(paint.type === "radialGradient" ? "rg" : "lg");
   ctx.addDef(gradientDefSVG(paint, id, opacity));
@@ -284,6 +295,43 @@ export function gradientDefSVG(paint, id, opacity = 1) {
     return `<linearGradient id="${id}" x1="${fmt(from.x)}" y1="${fmt(from.y)}" x2="${fmt(to.x)}" y2="${fmt(to.y)}"${spread}>${stops}</linearGradient>`;
   }
   return `<radialGradient id="${id}" cx="${fmt(paint.center.x)}" cy="${fmt(paint.center.y)}" r="${fmt(paint.r)}">${stops}</radialGradient>`;
+}
+
+/**
+ * Pure function. A VECTOR PATTERN material paint → its SVG `<pattern>` def
+ * fragment. THE VECTOR EXPORT of the pattern material, and the thing no shader
+ * material can offer.
+ *
+ * `patternUnits="userSpaceOnUse"` with width/height equal to the CELL, so the tile
+ * repeats on exactly the fundamental domain core/vector_patterns computed — the
+ * same identity the Skia picture shader's tile rect enforces, which is why the two
+ * backends cannot disagree about where the repeat lands. The knobs' scale / offset
+ * / rotation ride on `patternTransform`, the one place SVG lets a pattern be
+ * transformed as a whole.
+ *
+ * An OFF background emits NO background rect at all, leaving the tile transparent
+ * so whatever is behind shows through — the first-class OFF state, preserved in the
+ * export rather than being flattened to white.
+ *
+ * @param {object} paint - a material paint whose resolvedParams name a pattern
+ * @param {string} id - the def id to mint
+ * @param {number} opacity - folded into every shape's alpha
+ * @returns {string} a `<pattern>…</pattern>` fragment
+ *
+ * @example patternDefSVG({type: "material", material: {id: "vector_pattern"}, resolvedParams: {generator: "stripes", period: 10, ratio: 0.5, ink: "#000", background: "#fff"}}, "pat1", 1).startsWith('<pattern id="pat1" patternUnits="userSpaceOnUse" width="10" height="10"') // true
+ */
+export function patternDefSVG(paint, id, opacity = 1) {
+  const params = paint.resolvedParams ?? paint.material?.params ?? {};
+  const cell = patternCellFor(params);
+  const shapes = cell.shapes.map((shape) => {
+    const rgba = shapeColor(shape, params, parseColor);
+    if (!rgba) return ""; // an OFF background contributes nothing — stays transparent
+    const rule = shape.fillRule === "evenodd" ? ` fill-rule="evenodd"` : "";
+    return `<path d="${shape.d}" fill="${rgbaToCss([rgba[0], rgba[1], rgba[2], 1])}" fill-opacity="${fmt(rgba[3] * opacity)}"${rule}/>`;
+  }).join("");
+  const [a, b, c, d, e, f] = patternMatrix(params);
+  const transform = ` patternTransform="matrix(${fmt(a)} ${fmt(b)} ${fmt(c)} ${fmt(d)} ${fmt(e)} ${fmt(f)})"`;
+  return `<pattern id="${id}" patternUnits="userSpaceOnUse" width="${fmt(cell.w)}" height="${fmt(cell.h)}"${transform}>${shapes}</pattern>`;
 }
 
 /**
@@ -640,7 +688,7 @@ async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, ou
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
-    } else if (!SVG_VECTOR_OPS.has(cmd.op) || opHasMaterialFill(cmd) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd)) {
+    } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd)) {
       // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.
       //  A TRIMMED / TAPER-capped stroke (opStrokeNeedsRaster) likewise rasterizes its
       //  own region rather than silently drawing the untrimmed stroke; a plain round cap

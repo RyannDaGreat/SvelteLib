@@ -59,6 +59,7 @@ import { MANDELBROT_MATERIAL } from "./mandelbrot_shader.js"; // deep-zoom Mande
 import { BRIGHTNESS_CONTRAST_MATERIAL } from "./brightness_contrast_shader.js"; // tone adjustment (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB)
 import { METAL_MATERIAL } from "./metal_shader.js"; // physically-plausible analytic metal (brass/copper/steel/…; brushing, fake-env reflection, crevice-coupled patina/rust)
 import { METAL_STAMP_MATERIAL } from "./metal_stamp_shader.js"; // backdrop engraver/embosser (relights the metal behind; crevice-coupled aging in the groove)
+import { PATTERN_MATERIAL } from "./pattern_material.js"; // tiled VECTOR patterns (stripes/checks/dots/hex/…) — the fourth kind, see below
 
 /**
  * The MAGNIFY material — magnification, expressed as a member of the material
@@ -86,7 +87,15 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //   - SAMPLER material (magnify) — `sampler: true`: NO SkSL at all; it names its
 //     own IR `op` (magnifyBackdrop) + dedicated handler (it samples/re-scales the
 //     composite rather than shading it). Discoverable, but never SkSL-compiled.
-// Absence of BOTH flags defaults to backdrop (back-compat: CRT/glass carry none).
+//   - PATTERN material (vector_pattern) — `pattern: true`: also NO SkSL. It draws
+//     by TILING VECTOR GEOMETRY (a rectangular cell of SVG paths) through a Skia
+//     PICTURE SHADER, which is why it is the one material that stays VECTOR in the
+//     PDF/SVG exporters instead of falling back to an embedded raster. It rides the
+//     `materialFill` op like any foreground material; handleMaterialFill branches on
+//     isPatternMaterial. See pattern_material.js for why this is a KIND rather than
+//     a material plugin (the plugin contract requires `sksl` + a uniform block, and
+//     a pattern has neither).
+// Absence of ALL flags defaults to backdrop (back-compat: CRT/glass carry none).
 // THREE MATERIALS ARE DELIBERATELY ABSENT from this list — glass, corkboard and
 // rainy_window have MIGRATED to plugin assets (assets/builtin/library/*.material.plugin.js).
 // They are the proof of the material-plugin contract, so they must register the way
@@ -114,7 +123,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     darkening preset stands in LIGHTER, the exact defect the hook exists to end.
 // The legacy `glassBackdrop` op (the glass WIDGET, plugins/demo/glass.js) never went
 // through this registry at all and is untouched either way.
-const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL];
+const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL, PATTERN_MATERIAL];
 
 const MATERIALS = Object.fromEntries(BUILTIN_MATERIALS.map((m) => [m.id, m]));
 
@@ -378,9 +387,10 @@ export function resolveMaterialPaint(paint, node, nodesById, report) {
  * @example isBackdropMaterial({id: "crt"}) // true (no flag => backdrop)
  * @example isBackdropMaterial({id: "corkboard", backdrop: false}) // false
  * @example isBackdropMaterial({id: "magnify", sampler: true}) // false (a sampler, not an SkSL backdrop)
+ * @example isBackdropMaterial({id: "vector_pattern", pattern: true, backdrop: false}) // false (vector tiling, no SkSL to compile)
  */
 export function isBackdropMaterial(material) {
-  return material.backdrop !== false && !material.sampler;
+  return material.backdrop !== false && !material.sampler && !material.pattern;
 }
 
 /**
@@ -454,19 +464,31 @@ export function materialSampleReach(material, u) {
 }
 
 /**
- * Pure function. Is `material` a SAMPLER material (magnify) — one that carries NO
- * SkSL and instead names its own IR `op`, sampling/re-scaling the composite rather
- * than shading it? These are registered for DISCOVERABILITY but must never reach
- * the SkSL compile path (materialEffect throws on them).
+ * Pure function. Does `material` carry NO SkSL, drawing instead through its OWN
+ * dispatch path? True for the SAMPLER kind (magnify, which names its own IR `op`
+ * and re-scales the composite) and for the PATTERN kind (vector_pattern, which
+ * tiles vector geometry through a picture shader).
  *
- * @param {{sampler?: boolean}} material - a descriptor from getMaterial()
+ * WHY THE TWO SHARE ONE PREDICATE, despite being different kinds: every caller of
+ * this function is asking the SAME question — "may I compile/raster this as an SkSL
+ * effect?" — and for both the answer is no, for the same reason (there is no shader
+ * source to compile). materialEffect throws on them; the raster-cache gate excludes
+ * them because they never produce a cached SkSL raster; the proxy sweep skips the
+ * sampler and treats the pattern as an ordinary foreground fill with a default
+ * proxy, which is correct in both cases.
+ *
+ * Use isPatternMaterial (pattern_material.js) when you need to tell the two APART —
+ * that is a question about WHICH path to dispatch, not whether SkSL applies.
+ *
+ * @param {{sampler?: boolean, pattern?: boolean}} material - a descriptor from getMaterial()
  * @returns {boolean}
  *
  * @example isSamplerMaterial({id: "magnify", sampler: true}) // true
+ * @example isSamplerMaterial({id: "vector_pattern", pattern: true}) // true (no SkSL either)
  * @example isSamplerMaterial({id: "crt"}) // false
  */
 export function isSamplerMaterial(material) {
-  return material.sampler === true;
+  return material.sampler === true || material.pattern === true;
 }
 
 // ── PROXY-quality stand-ins (thumbnail / minimap) ─────────────────────────────
@@ -659,7 +681,9 @@ export function materialEffect(CanvasKit, material) {
   // LOUD (below), so nothing renders silently wrong either way.
   if (_onCanvasKitReady) { const fn = _onCanvasKitReady; _onCanvasKitReady = null; fn(CanvasKit); }
   if (isSamplerMaterial(material))
-    throw new Error(`materials: "${material.id}" is a SAMPLER material (no SkSL) — dispatch its op "${material.op}", do not compile it as an effect`);
+    throw new Error(material.pattern
+      ? `materials: "${material.id}" is a PATTERN material (no SkSL) — it tiles vector geometry through a picture shader (paint_skia drawPatternFill), do not compile it as an effect`
+      : `materials: "${material.id}" is a SAMPLER material (no SkSL) — dispatch its op "${material.op}", do not compile it as an effect`);
   const cached = _effects.get(material.id);
   if (cached && cached.ck === CanvasKit) return cached.effect;
   let err = null;

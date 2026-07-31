@@ -1,0 +1,760 @@
+/**
+ * VECTOR PATTERNS — the tiling engine behind the `pattern` material kind.
+ *
+ * ── THE USER RULING (verbatim intent) ─────────────────────────────────────────
+ * "We should have a vector material… vector pattern material… like stripes or
+ * checkerboard or diamonds or polka dots or even random polka dots… or plaid…
+ * We'd want tons of presets, of course. Or maybe just like repeated SVG and we
+ * could have a few SVG things that are tiled either hexagonally or triangularly
+ * or most commonly grid-wise. And it's a special material because it uses vector
+ * graphics to do it… Of course, we would want to have like a scale and an offset
+ * for this too, like X and Y offset."
+ *
+ * ── ONE TILING ENGINE, NO PER-FAMILY TILING MATH ──────────────────────────────
+ * THE DESIGN DECISION worth reading before touching anything here: every pattern
+ * in this file is a RECTANGULAR fundamental domain, tiled by simple repetition in
+ * both axes. There is no hexagonal tiler, no triangular tiler, no brick tiler.
+ *
+ * A hexagonal tiling's repeat unit IS a rectangle — one containing two half-offset
+ * hexes. A brick/half-drop layout is a rectangle containing two offset rows. So the
+ * offset lives in the CELL'S CONTENT, generated once by a pure function, and the
+ * tiler stays a single `repeat in x, repeat in y`. This is what lets Skia's picture
+ * shader, SVG's `<pattern>` and the PDF stamping loop all consume the SAME cell
+ * with no backend knowing which family it came from.
+ *
+ * The alternative — a tiling `kind` each backend branches on — was rejected: it
+ * would mean three implementations of hex offsetting that must agree pixel-for-
+ * pixel across a raster backend and two vector exporters, which is precisely the
+ * shape of defect this codebase has repeatedly paid for.
+ *
+ * ── THE CELL CONTRACT ─────────────────────────────────────────────────────────
+ * A generator is a PURE function `(params) => cell`, where a cell is
+ *
+ *     {w, h, shapes: [{d, paint, fillRule?}, …]}
+ *
+ *   · `w`, `h`   — the fundamental domain in PATTERN units (before scale). The
+ *                  tile steps by exactly this, so seamlessness is a property of
+ *                  the generator: any ink crossing an edge must ALSO appear,
+ *                  identically, across the opposite edge. patternCellSeamProblem
+ *                  checks that mechanically rather than by eye.
+ *   · `shapes`   — z-ordered path records. `d` is an SVG path string (the ONE
+ *                  geometry currency this codebase already speaks — core/svg_paths
+ *                  builds it, all three backends consume it). `paint` is "ink" or
+ *                  "background", resolved to real colours by the CONSUMER, so one
+ *                  cell serves every colour scheme without regeneration.
+ *
+ * A generator NEVER draws colours and never reads the document. It is pure
+ * geometry over its own params, which is what makes the doctests meaningful and
+ * the three backends agree.
+ *
+ * ── DETERMINISM (CLAUDE.md's three kinds) ─────────────────────────────────────
+ * A pattern is PROPERTY STATE, full stop. The random-dot generators take a stored
+ * integer `seed` and hash it — there is no wall clock and no Math.random anywhere
+ * in this file, so Δt = 0 renders a byte-identical picture and a seed round-trips
+ * through a save. Scattering is a pure function of (seed, index), the same
+ * discipline core/particles.js already uses.
+ *
+ * DOM-free and bare-node loadable, like the rest of core/.
+ */
+
+import { rectPathD, ellipsePathD } from "./svg_paths.js";
+
+/** The two abstract paint slots a cell shape may name. The cell is colour-blind:
+ *  a consumer maps these to real colours (and "background" may be OFF entirely),
+ *  so recolouring a pattern never regenerates its geometry. */
+export const CELL_PAINTS = Object.freeze(["ink", "background"]);
+
+/** Decimal places cell geometry is rounded to. Patterns are authored in units of
+ *  ~1-100 and scaled at paint time, so 4 places is far below a device pixel while
+ *  keeping the emitted `d` strings (and the SVG/PDF byte streams) short. */
+const CELL_PRECISION = 4;
+
+/** Pure. A number as a compact cell-geometry string (no exponent, no -0, trailing
+ *  zeros stripped) — the same rounding all three backends see, so a seam that
+ *  matches here matches everywhere.
+ *
+ *  @example cellNum(1.5) // "1.5"
+ *  @example cellNum(0.30000000000000004) // "0.3"
+ *  @example cellNum(-0) // "0"
+ */
+export function cellNum(v) {
+  if (!Number.isFinite(v)) throw new Error(`vector_patterns: non-finite coordinate (${v}) — a cell's geometry must be finite`);
+  const r = Number(v.toFixed(CELL_PRECISION));
+  return Object.is(r, -0) ? "0" : String(r);
+}
+
+/**
+ * Pure function. A 32-bit integer hash of (seed, index, stream) → a float in
+ * [0, 1). The ONE randomness source in this file, and the reason "random polka
+ * dots" is property state rather than ephemeral state: it reads no clock and no
+ * global RNG, so the same seed always lays out the same dots.
+ *
+ * Deliberately the same shape as core/particles.js's hash — an integer avalanche
+ * (xorshift-multiply), not a linear congruential step, so consecutive indices do
+ * not produce visibly correlated positions (which would read as a grid, defeating
+ * the point of scattering).
+ *
+ * @param {number} seed - the stored document seed
+ * @param {number} index - which item in the scatter
+ * @param {number} stream - which coordinate (0 = x, 1 = y, 2 = radius, …)
+ * @returns {number} a float in [0, 1)
+ *
+ * @example hashUnit(1, 0, 0) < 1 && hashUnit(1, 0, 0) >= 0 // true
+ * @example hashUnit(7, 3, 0) === hashUnit(7, 3, 0) // true (deterministic)
+ * @example hashUnit(7, 3, 0) === hashUnit(7, 3, 1) // false (streams differ)
+ */
+export function hashUnit(seed, index, stream) {
+  let h = (Math.trunc(seed) | 0) ^ Math.imul(Math.trunc(index) | 0, 0x9e3779b1) ^ Math.imul(Math.trunc(stream) | 0, 0x85ebca6b);
+  h ^= h >>> 16; h = Math.imul(h, 0x7feb352d);
+  h ^= h >>> 15; h = Math.imul(h, 0x846ca68b);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Pure. A full-cell background rectangle — the first shape of nearly every
+ *  generator. Kept as one helper so "the background covers exactly the domain"
+ *  is stated once instead of in fifteen generators.
+ *
+ *  @example backgroundShape(4, 4) // {d: "M0 0H4V4H0Z", paint: "background"}
+ */
+function backgroundShape(w, h) {
+  return { d: rectPathD(0, 0, w, h), paint: "background" };
+}
+
+/** Pure. An axis-aligned rectangle of ink.
+ *  @example inkRect(0, 0, 2, 4) // {d: "M0 0H2V4H0Z", paint: "ink"}
+ */
+function inkRect(x, y, w, h) {
+  return { d: rectPathD(x, y, w, h), paint: "ink" };
+}
+
+/** Pure. A circle of ink.
+ *  @example inkCircle(5, 5, 2).paint // "ink"
+ */
+function inkCircle(cx, cy, r) {
+  return { d: ellipsePathD(cx, cy, r, r), paint: "ink" };
+}
+
+/** Pure. A closed polygon of ink from [x, y] pairs.
+ *  @example inkPolygon([[0, 0], [2, 0], [1, 2]]) // {d: "M0 0L2 0L1 2Z", paint: "ink"}
+ */
+function inkPolygon(points) {
+  const d = points.map(([x, y], i) => `${i === 0 ? "M" : "L"}${cellNum(x)} ${cellNum(y)}`).join("") + "Z";
+  return { d, paint: "ink" };
+}
+
+/**
+ * Pure function. Clamps a value into [lo, hi], LOUD on a non-finite input — the
+ * one guard every generator's params pass through, so a NaN from a broken equation
+ * is reported by name instead of producing an empty (silently invisible) cell.
+ *
+ * @example clampParam("width", 0.5, 0, 1) // 0.5
+ * @example clampParam("width", 2, 0, 1) // 1
+ */
+function clampParam(name, v, lo, hi) {
+  if (!Number.isFinite(v)) throw new Error(`vector_patterns: parameter "${name}" is ${v} — a pattern parameter must be a finite number`);
+  return Math.min(hi, Math.max(lo, v));
+}
+
+// ── THE GENERATORS ────────────────────────────────────────────────────────────
+// Each is a pure (params) => cell. Every one is registered in PATTERN_GENERATORS
+// below; nothing else in the codebase may hold a generator, so the roster and the
+// engine cannot drift apart.
+
+/**
+ * Pure function. STRIPES — vertical bands, `ratio` of the cell inked. The
+ * simplest fundamental domain there is: one period wide, full height.
+ *
+ * Seamless because the ink is strictly inside [0, ratio·w] and the domain steps by
+ * exactly `w`.
+ *
+ * @param {{period: number, ratio: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example stripesCell({period: 10, ratio: 0.5}).w // 10
+ * @example stripesCell({period: 10, ratio: 0.5}).shapes[1].d // "M0 0H5V10H0Z"
+ */
+export function stripesCell({ period = 10, ratio = 0.5 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const r = clampParam("ratio", ratio, 0, 1);
+  return { w, h: w, shapes: [backgroundShape(w, w), inkRect(0, 0, w * r, w)] };
+}
+
+/**
+ * Pure function. CHECKERBOARD — the 2x2 fundamental domain of a checker, i.e. two
+ * inked squares on the diagonal. A 1x1 cell cannot express a checker (it has no
+ * alternation), which is the canonical illustration of why the domain is a
+ * PARAMETER of the pattern and not always one "square".
+ *
+ * @param {{period: number}} params - one SQUARE's side; the domain is 2x that
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example checkerboardCell({period: 5}).w // 10
+ * @example checkerboardCell({period: 5}).shapes.length // 3 (background + two squares)
+ */
+export function checkerboardCell({ period = 10 } = {}) {
+  const s = clampParam("period", period, 0.01, 1e6);
+  const w = s * 2;
+  return { w, h: w, shapes: [backgroundShape(w, w), inkRect(0, 0, s, s), inkRect(s, s, s, s)] };
+}
+
+/**
+ * Pure function. GINGHAM — the two-tone woven check of the reference imagery: a
+ * half-opacity band in each axis, whose CROSSING reads as a third, darker tone.
+ * One ink colour produces three apparent tones because the bands overlap, which is
+ * what makes real gingham read as fabric rather than as a checkerboard.
+ *
+ * @param {{period: number, ratio: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example ginghamCell({period: 10, ratio: 0.5}).shapes.length // 4 (bg + band + band + crossing)
+ * @example ginghamCell({period: 10, ratio: 0.5}).w // 10
+ */
+export function ginghamCell({ period = 10, ratio = 0.5 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const b = w * clampParam("ratio", ratio, 0, 1);
+  return {
+    w, h: w,
+    shapes: [
+      backgroundShape(w, w),
+      { d: rectPathD(0, 0, b, w), paint: "ink", alpha: 0.45 },
+      { d: rectPathD(0, 0, w, b), paint: "ink", alpha: 0.45 },
+      { d: rectPathD(0, 0, b, b), paint: "ink", alpha: 0.35 },
+    ],
+  };
+}
+
+/**
+ * Pure function. DIAMONDS (harlequin) — a diamond centred in the cell PLUS the
+ * four quarter-diamonds its corners imply. The corner pieces are what make it
+ * seamless: a lone centred diamond tiles as isolated diamonds, whereas the corner
+ * quarters reassemble across the seam into the offset row a harlequin needs.
+ *
+ * @param {{period: number, ratio: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example diamondsCell({period: 10, ratio: 1}).shapes.length // 6 (bg + centre + 4 corners)
+ */
+export function diamondsCell({ period = 10, ratio = 1 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const k = clampParam("ratio", ratio, 0, 1) / 2;
+  const cx = w / 2, hw = w * k;
+  const centre = inkPolygon([[cx, cx - hw], [cx + hw, cx], [cx, cx + hw], [cx - hw, cx]]);
+  // The four corner quarters: the same diamond centred on each corner. Together
+  // with the centre one they tile without a seam.
+  const corners = [[0, 0], [w, 0], [0, w], [w, w]].map(([x, y]) =>
+    inkPolygon([[x, y - hw], [x + hw, y], [x, y + hw], [x - hw, y]]));
+  return { w, h: w, shapes: [backgroundShape(w, w), centre, ...corners] };
+}
+
+/**
+ * Pure function. POLKA DOTS on a HALF-DROP grid — a dot at the cell centre plus
+ * the four corner quarter-dots. Same seam logic as diamonds: the corner dots
+ * reassemble across the boundary, so the result is a staggered dot field rather
+ * than dots in visible columns.
+ *
+ * @param {{period: number, radius: number}} params - radius as a FRACTION of period
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example polkaDotsCell({period: 10, radius: 0.2}).shapes.length // 6
+ */
+export function polkaDotsCell({ period = 10, radius = 0.2 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const r = w * clampParam("radius", radius, 0, 0.5);
+  const corners = [[0, 0], [w, 0], [0, w], [w, w]].map(([x, y]) => inkCircle(x, y, r));
+  return { w, h: w, shapes: [backgroundShape(w, w), inkCircle(w / 2, w / 2, r), ...corners] };
+}
+
+/**
+ * Pure function. RANDOM POLKA DOTS — `count` dots scattered by a stored `seed`
+ * inside a LARGER fundamental domain (`domain` cells across), so the repeat is
+ * unobtrusive: at domain 4 the eye must scan 4 periods before a motif recurs.
+ *
+ * SEAMLESSNESS IS BY CONSTRUCTION, not by rejection sampling: every dot is emitted
+ * in all NINE positions (itself plus the eight neighbouring-domain translates), so
+ * a dot straddling an edge is drawn on both sides. Rejecting edge-crossing dots
+ * instead would thin the density near the seams, which reads as a visible grid.
+ *
+ * PROPERTY STATE: the layout is a pure function of (seed, count, domain). Two
+ * renders at the same seed are byte-identical, which pattern_seam_test pins.
+ *
+ * @param {{period: number, radius: number, count: number, seed: number, domain: number, jitterSize: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example randomDotsCell({count: 3, domain: 1, seed: 5}).shapes.length // 28 (bg + 3 dots x 9 translates)
+ * @example randomDotsCell({count: 2, seed: 5}).shapes[1].d === randomDotsCell({count: 2, seed: 5}).shapes[1].d // true
+ * @example randomDotsCell({count: 2, seed: 5}).shapes[1].d === randomDotsCell({count: 2, seed: 6}).shapes[1].d // false
+ */
+export function randomDotsCell({ period = 10, radius = 0.12, count = 8, seed = 1, domain = 3, jitterSize = 0.4 } = {}) {
+  const p = clampParam("period", period, 0.01, 1e6);
+  const n = Math.round(clampParam("domain", domain, 1, 8));
+  const w = p * n;
+  const baseR = p * clampParam("radius", radius, 0.001, 0.5);
+  const sizeJitter = clampParam("jitterSize", jitterSize, 0, 1);
+  const many = Math.round(clampParam("count", count, 1, 400));
+  const shapes = [backgroundShape(w, w)];
+  for (let i = 0; i < many; i++) {
+    const x = hashUnit(seed, i, 0) * w;
+    const y = hashUnit(seed, i, 1) * w;
+    // Size varies by up to ±jitterSize/2 around the base radius — a field of
+    // identical dots reads as mechanical even when the POSITIONS are scattered.
+    const r = baseR * (1 + (hashUnit(seed, i, 2) - 0.5) * sizeJitter);
+    for (const dx of [-w, 0, w]) for (const dy of [-w, 0, w]) shapes.push(inkCircle(x + dx, y + dy, r));
+  }
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. PLAID / TARTAN — a band SPEC (a list of {width, alpha} entries in
+ * pattern units) laid down in BOTH axes, so the crossings build the deeper tones
+ * automatically. The spec is data, which is what lets a preset describe a tartan
+ * without a new generator.
+ *
+ * @param {{bands: Array<{width: number, alpha: number}>}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example plaidCell({bands: [{width: 6, alpha: 0.5}, {width: 3, alpha: 0}]}).w // 9
+ * @example plaidCell({bands: [{width: 4, alpha: 0.6}, {width: 2, alpha: 0}]}).shapes.length // 3 (bg + one h + one v; alpha-0 bands emit nothing)
+ */
+export function plaidCell({ bands = [{ width: 8, alpha: 0.55 }, { width: 4, alpha: 0 }, { width: 2, alpha: 0.8 }, { width: 4, alpha: 0 }] } = {}) {
+  if (!Array.isArray(bands) || bands.length === 0)
+    throw new Error("vector_patterns.plaidCell: `bands` must be a non-empty array of {width, alpha}");
+  const widths = bands.map((b, i) => clampParam(`bands[${i}].width`, b.width, 0.01, 1e6));
+  const w = widths.reduce((a, b) => a + b, 0);
+  const shapes = [backgroundShape(w, w)];
+  // Horizontal then vertical, both from the same spec. Drawing both sets as
+  // translucent ink is what produces the third/fourth tones at the crossings —
+  // the same trick gingham uses, generalized to an arbitrary band list.
+  for (const axis of [0, 1]) {
+    let at = 0;
+    for (let i = 0; i < bands.length; i++) {
+      const bw = widths[i];
+      const alpha = clampParam(`bands[${i}].alpha`, bands[i].alpha ?? 0, 0, 1);
+      if (alpha > 0) shapes.push({ d: axis === 0 ? rectPathD(0, at, w, bw) : rectPathD(at, 0, bw, w), paint: "ink", alpha });
+      at += bw;
+    }
+  }
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. CHEVRON / ZIGZAG — a stroked V repeated down the cell, emitted as
+ * a FILLED band (an outlined zigzag, not a stroke) so every backend renders it
+ * identically without a stroker.
+ *
+ * The domain is one full zigzag period wide and `rows` tall; the band wraps
+ * vertically because each row is drawn at the same phase.
+ *
+ * @param {{period: number, thickness: number, rows: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example chevronCell({period: 10, thickness: 0.25, rows: 2}).w // 10
+ * @example chevronCell({period: 10, thickness: 0.25, rows: 2}).shapes.length // 3 (bg + 2 rows)
+ */
+export function chevronCell({ period = 10, thickness = 0.28, rows = 2 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const rowCount = Math.round(clampParam("rows", rows, 1, 16));
+  const rowH = w / rowCount;
+  const t = rowH * clampParam("thickness", thickness, 0.02, 0.9);
+  const shapes = [backgroundShape(w, w)];
+  for (let i = 0; i < rowCount; i++) {
+    const y0 = i * rowH;
+    // A closed band: up-stroke then back down offset by the thickness. Drawn one
+    // period wide with the apex at the midpoint, so consecutive tiles join into a
+    // continuous zigzag across the seam.
+    const mid = w / 2, top = y0 + rowH - t, bot = y0 + rowH;
+    shapes.push(inkPolygon([
+      [0, bot], [mid, y0 + t], [w, bot], [w, bot - t], [mid, y0], [0, bot - t],
+    ].map(([x, y]) => [x, y])));
+    void top;
+  }
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. HONEYCOMB — the CAD hatch sheet's hex grid, and the worked
+ * example of the engine's central claim: a hexagonal tiling is a RECTANGULAR cell
+ * whose content encodes the offset.
+ *
+ * The repeat unit of a regular hex grid is a rectangle of width 3·s and height
+ * s·√3 (s = side), containing TWO half-offset hexes. Drawing those two — plus the
+ * translates that straddle the edges — yields a seamless honeycomb through the
+ * same plain x/y repetition stripes use.
+ *
+ * @param {{side: number, thickness: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example Math.round(honeycombCell({side: 10}).w) // 30
+ * @example Math.round(honeycombCell({side: 10}).h) // 17 (10·√3)
+ */
+export function honeycombCell({ side = 10, thickness = 0.12 } = {}) {
+  const s = clampParam("side", side, 0.01, 1e6);
+  const t = s * clampParam("thickness", thickness, 0.01, 0.5);
+  const w = 3 * s, h = s * Math.sqrt(3);
+  const shapes = [backgroundShape(w, h)];
+  // A hexagon outline as a filled ring: outer hex, then the inner hex as a
+  // reversed subpath (even-odd fill punches the middle out). Two hex centres —
+  // (0, h/2) and (1.5s, 0) — are the two-per-rect repeat unit; each is emitted
+  // with its wrapping translates so the ring survives the seam.
+  const hexRing = (cx, cy) => {
+    const ring = (radius) => {
+      const pts = [];
+      for (let k = 0; k < 6; k++) {
+        const a = (Math.PI / 180) * (60 * k);
+        pts.push(`${k === 0 ? "M" : "L"}${cellNum(cx + radius * Math.cos(a))} ${cellNum(cy + radius * Math.sin(a))}`);
+      }
+      return pts.join("") + "Z";
+    };
+    return { d: ring(s) + ring(s - t), paint: "ink", fillRule: "evenodd" };
+  };
+  for (const [cx, cy] of [[0, h / 2], [1.5 * s, 0], [1.5 * s, h], [3 * s, h / 2]]) shapes.push(hexRing(cx, cy));
+  return { w, h, shapes };
+}
+
+/**
+ * Pure function. TRIANGLES — an equilateral triangle grid, the second offset-row
+ * family, again as a plain rectangle.
+ *
+ * ONLY THE UP-TRIANGLE IS INKED, and that is the whole design. The cell is exactly
+ * tiled by one up-triangle plus the two half down-triangles beside it, so inking
+ * all three would cover the domain completely and render as a SOLID BLOCK with the
+ * background never visible — which is precisely the defect the first version of
+ * this generator shipped (caught by rendering the preset roster and looking at it:
+ * the triangles swatch came out flat orange). Leaving the down-triangles as
+ * background is what makes the grid read as alternating tones.
+ *
+ * @param {{side: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example triangleCell({side: 10}).w // 10
+ * @example triangleCell({side: 10}).shapes.length // 2 (background + the up-triangle)
+ */
+export function triangleCell({ side = 10 } = {}) {
+  const s = clampParam("side", side, 0.01, 1e6);
+  const h = (s * Math.sqrt(3)) / 2;
+  return { w: s, h, shapes: [backgroundShape(s, h), inkPolygon([[s / 2, 0], [s, h], [0, h]])] };
+}
+
+/**
+ * Pure function. CROSSHATCH — the CAD sheet's diagonal hatch, in one or both
+ * diagonal directions. Each line is emitted as a filled parallelogram plus its
+ * wrapping translate, so the lines run unbroken across tile edges.
+ *
+ * @param {{period: number, thickness: number, both: boolean}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example crosshatchCell({period: 10, both: false}).shapes.length // 4 (bg + 3 wrapping translates)
+ * @example crosshatchCell({period: 10, both: true}).shapes.length // 7 (bg + 2 directions x 3)
+ */
+export function crosshatchCell({ period = 10, thickness = 0.12, both = true } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const t = w * clampParam("thickness", thickness, 0.01, 0.7);
+  const shapes = [backgroundShape(w, w)];
+  // A 45° band is the line y = x + c thickened VERTICALLY by t. THE SEAM RULE,
+  // learned from this generator failing the seam probe twice: a slope-±1 diagonal
+  // exits the cell through BOTH a side and the top/bottom, so one band per
+  // direction cannot be continuous. Bands at c ∈ {-w, 0, w} supply the pieces that
+  // re-enter, and the offset must be VERTICAL rather than horizontal — translation
+  // by (w, w) then maps each band exactly onto itself, which is precisely the
+  // condition for the tile to repeat without a cut. (An x-offset shears the band's
+  // ends and reintroduces the seam; that was the second failed attempt.)
+  for (const c of [-w, 0, w]) shapes.push(inkPolygon([[0, c], [w, c + w], [w, c + w + t], [0, c + t]]));
+  if (both) for (const c of [0, w, 2 * w]) shapes.push(inkPolygon([[0, c], [w, c - w], [w, c - w + t], [0, c + t]]));
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. HERRINGBONE — interlocking brick courses, the fabric sheet's
+ * signature weave. Bricks of `ratio`:1 aspect laid in two perpendicular runs.
+ *
+ * @param {{period: number, thickness: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example herringboneCell({period: 10}).w // 20
+ */
+export function herringboneCell({ period = 10, thickness = 0.16 } = {}) {
+  const s = clampParam("period", period, 0.01, 1e6);
+  const t = s * clampParam("thickness", thickness, 0.01, 0.5);
+  const w = s * 2;
+  const shapes = [backgroundShape(w, w)];
+  // Four L-runs: horizontal bars stepping up, vertical bars stepping across. The
+  // pattern's repeat unit is 2s square; each bar is emitted with the translate
+  // that carries it across the seam.
+  for (const [x, y, horiz] of [[0, 0, true], [s, s, true], [s, 0, false], [0, s, false]]) {
+    for (const [dx, dy] of [[0, 0], [-w, 0], [0, -w]]) {
+      const px = x + dx, py = y + dy;
+      shapes.push(horiz ? inkRect(px, py, s + t, t) : inkRect(px, py, t, s + t));
+    }
+  }
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. HOUNDSTOOTH — the classic broken check. Built as a checker plus
+ * the four "teeth" that turn each square into the pointed motif.
+ *
+ * @param {{period: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example houndstoothCell({period: 8}).w // 16
+ */
+export function houndstoothCell({ period = 8 } = {}) {
+  const s = clampParam("period", period, 0.01, 1e6);
+  const w = s * 2, q = s / 2;
+  const shapes = [backgroundShape(w, w), inkRect(0, 0, s, s), inkRect(s, s, s, s)];
+  // The teeth: triangular spurs off two corners of each solid square, which is
+  // what distinguishes houndstooth from a plain checker. Emitted with wrapping
+  // translates so the motif survives the seam.
+  const tooth = (pts) => shapes.push(inkPolygon(pts));
+  for (const [dx, dy] of [[0, 0], [w, 0], [0, w], [-w, 0], [0, -w]]) {
+    tooth([[s + dx, dy], [s + q + dx, dy], [s + dx, q + dy]]);
+    tooth([[dx, s + dy], [q + dx, s + dy], [dx, s + q + dy]]);
+    tooth([[s + dx, s + q + dy], [s + dx, s + s + dy], [s - q + dx, s + s + dy]]);
+    tooth([[s + q + dx, s + dy], [s + s + dx, s + dy], [s + s + dx, s - q + dy]]);
+  }
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. LATTICE / QUATREFOIL-ish — overlapping circle arcs forming an
+ * interlaced grid, the fabric sheet's lattice. Circles at the cell corners and
+ * centre, drawn as rings so they read as an interlace rather than as dots.
+ *
+ * @param {{period: number, thickness: number, radius: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example latticeCell({period: 10}).w // 10
+ */
+export function latticeCell({ period = 10, thickness = 0.1, radius = 0.5 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const r = w * clampParam("radius", radius, 0.05, 1.5);
+  const t = w * clampParam("thickness", thickness, 0.01, 0.5);
+  const ring = (cx, cy) => ({
+    d: ellipsePathD(cx, cy, r, r) + ellipsePathD(cx, cy, Math.max(r - t, 0.001), Math.max(r - t, 0.001)),
+    paint: "ink", fillRule: "evenodd",
+  });
+  const shapes = [backgroundShape(w, w)];
+  for (const [cx, cy] of [[0, 0], [w, 0], [0, w], [w, w], [w / 2, w / 2]]) shapes.push(ring(cx, cy));
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. A TILED SVG ASSET's cell — an already-flattened SVG (a list of
+ * {d, paint} records produced by core/svg_paths.flattenSvgTree) placed on a grid,
+ * optionally HALF-DROPPED so alternate rows offset by half a cell.
+ *
+ * This is the "or maybe just like repeated SVG" half of the ruling: any drawing in
+ * the project becomes a pattern, through the SAME rectangular-domain engine. A
+ * half-drop is expressed by making the domain 1x2 cells and drawing the motif
+ * twice — not by a special tiler — which is the engine's whole thesis restated for
+ * asset content.
+ *
+ * @param {{paths: Array<{d: string}>, motifW: number, motifH: number, gap: number, halfDrop: boolean}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example svgTileCell({paths: [{d: "M0 0H2V2H0Z"}], motifW: 2, motifH: 2, gap: 1}).w // 3
+ * @example svgTileCell({paths: [{d: "M0 0H2V2H0Z"}], motifW: 2, motifH: 2, gap: 0, halfDrop: true}).h // 4 (two rows)
+ */
+export function svgTileCell({ paths = [], motifW = 10, motifH = 10, gap = 0, halfDrop = false } = {}) {
+  if (!Array.isArray(paths)) throw new Error("vector_patterns.svgTileCell: `paths` must be an array of {d} records");
+  const mw = clampParam("motifW", motifW, 0.01, 1e6);
+  const mh = clampParam("motifH", motifH, 0.01, 1e6);
+  const g = clampParam("gap", gap, 0, 1e6);
+  const cellW = mw + g, cellH = mh + g;
+  const w = cellW, h = halfDrop ? cellH * 2 : cellH;
+  const shapes = [backgroundShape(w, h)];
+  // Placements: one motif per logical cell, plus the horizontal wrap for a
+  // half-dropped second row (whose x offset pushes half of it past the edge).
+  const placements = halfDrop
+    ? [[0, 0], [cellW / 2, cellH], [-cellW / 2, cellH]]
+    : [[0, 0]];
+  for (const [ox, oy] of placements)
+    for (const p of paths)
+      shapes.push({ d: translatePathD(p.d, ox, oy), paint: p.paint === "background" ? "background" : "ink", ...(p.fillRule ? { fillRule: p.fillRule } : {}) });
+  return { w, h, shapes };
+}
+
+/**
+ * Pure function. Translates an SVG path `d` by (dx, dy) — a pure-translation
+ * special case, so a motif can be placed without pulling in the full affine
+ * machinery (core/svg_paths.transformPathD does the general case; this stays here
+ * because it must be exact for the seam checks, and a translate never introduces
+ * the arc-to-cubic conversion the general path does).
+ *
+ * @example translatePathD("M0 0H2V2H0Z", 1, 1) // "M1 1H3V3H1Z"
+ * @example translatePathD("M0 0L2 3Z", 5, 0) // "M5 0L7 3Z"
+ */
+export function translatePathD(d, dx, dy) {
+  if (dx === 0 && dy === 0) return d;
+  // Absolute commands only (every generator and flattenSvgTree emit absolute);
+  // a relative command would translate incorrectly, so it is refused LOUDLY.
+  return d.replace(/([A-Za-z])([^A-Za-z]*)/g, (_, cmd, args) => {
+    if (cmd >= "a" && cmd <= "z" && cmd !== "z") throw new Error(`vector_patterns.translatePathD: relative command "${cmd}" is not supported — cells are authored in absolute coordinates`);
+    const nums = args.trim().length ? args.trim().split(/[\s,]+/).map(Number) : [];
+    if (cmd === "Z" || cmd === "z") return "Z";
+    if (cmd === "H") return "H" + nums.map((n) => cellNum(n + dx)).join(" ");
+    if (cmd === "V") return "V" + nums.map((n) => cellNum(n + dy)).join(" ");
+    return cmd + nums.map((n, i) => cellNum(n + (i % 2 === 0 ? dx : dy))).join(" ");
+  });
+}
+
+/**
+ * THE GENERATOR ROSTER — id → {title, generate, params}. The ONE registry a
+ * consumer reads; a preset names a generator by id and supplies its params.
+ *
+ * `params` is a customProps-shaped schema (the same row vocabulary a material's
+ * fillParams uses), so the Inspector rows for a pattern come from the same
+ * machinery every other material's knobs do, and every one is equation-bindable
+ * through the normal property path.
+ */
+export const PATTERN_GENERATORS = Object.freeze({
+  stripes: {
+    title: "Stripes", generate: stripesCell,
+    params: [
+      { name: "period", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "Stripe repeat width, in pattern units" },
+      { name: "ratio", kind: "number", default: 0.5, min: 0, max: 1, step: 0.01, help: "Fraction of each period that is inked" },
+    ],
+  },
+  checkerboard: {
+    title: "Checkerboard", generate: checkerboardCell,
+    params: [{ name: "period", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "One square's side" }],
+  },
+  gingham: {
+    title: "Gingham", generate: ginghamCell,
+    params: [
+      { name: "period", kind: "number", default: 12, min: 0.5, max: 400, step: 0.5, help: "Check repeat" },
+      { name: "ratio", kind: "number", default: 0.5, min: 0.05, max: 0.95, step: 0.01, help: "Band width as a fraction of the repeat" },
+    ],
+  },
+  diamonds: {
+    title: "Diamonds", generate: diamondsCell,
+    params: [
+      { name: "period", kind: "number", default: 14, min: 0.5, max: 400, step: 0.5, help: "Diamond repeat" },
+      { name: "ratio", kind: "number", default: 1, min: 0.05, max: 1, step: 0.01, help: "Diamond size within its cell" },
+    ],
+  },
+  polka_dots: {
+    title: "Polka Dots", generate: polkaDotsCell,
+    params: [
+      { name: "period", kind: "number", default: 14, min: 0.5, max: 400, step: 0.5, help: "Dot spacing" },
+      { name: "radius", kind: "number", default: 0.2, min: 0.01, max: 0.5, step: 0.01, help: "Dot radius, as a fraction of the spacing" },
+    ],
+  },
+  random_dots: {
+    title: "Random Dots", generate: randomDotsCell,
+    params: [
+      { name: "period", kind: "number", default: 12, min: 0.5, max: 400, step: 0.5, help: "Nominal dot spacing" },
+      { name: "radius", kind: "number", default: 0.12, min: 0.01, max: 0.5, step: 0.01, help: "Base dot radius, as a fraction of the spacing" },
+      { name: "count", kind: "number", default: 14, min: 1, max: 200, step: 1, help: "Dots per fundamental domain" },
+      { name: "seed", kind: "number", default: 1, min: 0, max: 99999, step: 1, help: "Scatter seed — the same seed always lays out the same dots" },
+      { name: "domain", kind: "number", default: 3, min: 1, max: 8, step: 1, help: "Domain size in cells — larger hides the repeat" },
+      { name: "jitterSize", kind: "number", default: 0.4, min: 0, max: 1, step: 0.01, help: "How much dot sizes vary" },
+    ],
+  },
+  plaid: {
+    title: "Plaid", generate: plaidCell,
+    params: [],
+  },
+  chevron: {
+    title: "Chevron", generate: chevronCell,
+    params: [
+      { name: "period", kind: "number", default: 16, min: 0.5, max: 400, step: 0.5, help: "Zigzag period" },
+      { name: "thickness", kind: "number", default: 0.28, min: 0.02, max: 0.9, step: 0.01, help: "Band thickness within a row" },
+      { name: "rows", kind: "number", default: 2, min: 1, max: 16, step: 1, help: "Zigzag rows per cell" },
+    ],
+  },
+  honeycomb: {
+    title: "Honeycomb", generate: honeycombCell,
+    params: [
+      { name: "side", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "Hexagon side length" },
+      { name: "thickness", kind: "number", default: 0.12, min: 0.01, max: 0.5, step: 0.01, help: "Cell wall thickness" },
+    ],
+  },
+  triangles: {
+    title: "Triangles", generate: triangleCell,
+    params: [{ name: "side", kind: "number", default: 12, min: 0.5, max: 400, step: 0.5, help: "Triangle side length" }],
+  },
+  crosshatch: {
+    title: "Crosshatch", generate: crosshatchCell,
+    params: [
+      { name: "period", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "Hatch spacing" },
+      { name: "thickness", kind: "number", default: 0.12, min: 0.01, max: 0.7, step: 0.01, help: "Line thickness" },
+      { name: "both", kind: "boolean", default: true, help: "Hatch in both diagonal directions" },
+    ],
+  },
+  herringbone: {
+    title: "Herringbone", generate: herringboneCell,
+    params: [
+      { name: "period", kind: "number", default: 12, min: 0.5, max: 400, step: 0.5, help: "Brick length" },
+      { name: "thickness", kind: "number", default: 0.16, min: 0.01, max: 0.5, step: 0.01, help: "Brick thickness" },
+    ],
+  },
+  houndstooth: {
+    title: "Houndstooth", generate: houndstoothCell,
+    params: [{ name: "period", kind: "number", default: 8, min: 0.5, max: 400, step: 0.5, help: "Motif size" }],
+  },
+  lattice: {
+    title: "Lattice", generate: latticeCell,
+    params: [
+      { name: "period", kind: "number", default: 14, min: 0.5, max: 400, step: 0.5, help: "Lattice spacing" },
+      { name: "radius", kind: "number", default: 0.5, min: 0.05, max: 1.5, step: 0.01, help: "Ring radius, as a fraction of spacing" },
+      { name: "thickness", kind: "number", default: 0.1, min: 0.01, max: 0.5, step: 0.01, help: "Ring thickness" },
+    ],
+  },
+});
+
+/** Query. Every registered generator id — the pattern picker's list and the
+ *  seam test's axis, so both grow automatically as generators are added.
+ *  @example patternGeneratorIds().includes("honeycomb") // true */
+export function patternGeneratorIds() {
+  return Object.keys(PATTERN_GENERATORS);
+}
+
+/**
+ * Query. Builds a generator's cell from its id and (possibly sparse) params,
+ * resolving each knob against the generator's own schema default. Throws LOUDLY on
+ * an unknown id — a typo must not silently render an empty pattern.
+ *
+ * @param {string} id - a PATTERN_GENERATORS key
+ * @param {object} params - sparse stored params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example buildPatternCell("stripes", {period: 4}).w // 4
+ * @example buildPatternCell("checkerboard", {}).w // 20 (schema default period 10, doubled)
+ */
+export function buildPatternCell(id, params = {}) {
+  const gen = PATTERN_GENERATORS[id];
+  if (!gen) throw new Error(`vector_patterns.buildPatternCell: unknown generator "${id}" (known: ${patternGeneratorIds().join(", ")})`);
+  const resolved = { ...Object.fromEntries(gen.params.map((r) => [r.name, r.default])), ...params };
+  const cell = gen.generate(resolved);
+  const problem = patternCellProblem(cell);
+  if (problem) throw new Error(`vector_patterns: generator "${id}" produced an invalid cell — ${problem}`);
+  return cell;
+}
+
+/**
+ * Pure function. Why is this value not a usable CELL? Returns a reason, or null.
+ * The shape gate every generator's output passes through, so a broken generator is
+ * refused by name rather than rendering an empty (invisible) pattern.
+ *
+ * @param {*} cell
+ * @returns {string|null}
+ *
+ * @example patternCellProblem({w: 4, h: 4, shapes: [{d: "M0 0Z", paint: "ink"}]}) // null
+ * @example patternCellProblem({w: 0, h: 4, shapes: []}) // 'w must be a positive finite number, got 0'
+ * @example patternCellProblem({w: 4, h: 4, shapes: [{d: "M0 0Z", paint: "purple"}]}) // 'shapes[0].paint is "purple" — must be one of ink, background'
+ */
+export function patternCellProblem(cell) {
+  if (cell === null || typeof cell !== "object" || Array.isArray(cell)) return `must be a {w, h, shapes} object, got ${JSON.stringify(cell)}`;
+  for (const dim of ["w", "h"])
+    if (!Number.isFinite(cell[dim]) || cell[dim] <= 0) return `${dim} must be a positive finite number, got ${cell[dim]}`;
+  if (!Array.isArray(cell.shapes)) return "shapes must be an array of {d, paint} records";
+  for (let i = 0; i < cell.shapes.length; i++) {
+    const s = cell.shapes[i];
+    if (s === null || typeof s !== "object") return `shapes[${i}] is not a shape record`;
+    if (typeof s.d !== "string" || !s.d) return `shapes[${i}].d must be a non-empty SVG path string`;
+    if (!CELL_PAINTS.includes(s.paint)) return `shapes[${i}].paint is ${JSON.stringify(s.paint)} — must be one of ${CELL_PAINTS.join(", ")}`;
+    if (s.alpha !== undefined && (!Number.isFinite(s.alpha) || s.alpha < 0 || s.alpha > 1)) return `shapes[${i}].alpha must be within 0..1, got ${s.alpha}`;
+  }
+  return null;
+}

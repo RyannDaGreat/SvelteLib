@@ -227,6 +227,34 @@ export function opHasMaterialFill(cmd) {
   return isMaterialPaint(cmd.fill);
 }
 
+/** The material ids whose fill has a REAL VECTOR FORM in the PDF/SVG exporters, so
+ *  a shape carrying one must NOT take the raster fallback opHasMaterialFill sends
+ *  every other material down. Today that is exactly the vector-pattern material
+ *  (render_gpu/skia/pattern_material.js), whose look is tiled path geometry rather
+ *  than a shader — the whole reason it exists as its own material kind.
+ *
+ *  Kept as a NAMED SET here, beside the predicate it qualifies, rather than as an
+ *  import from the material registry: ir.js is the device-independent display-list
+ *  layer and must not depend on the Skia registry (the two vector exporters import
+ *  this module in bare node, with no CanvasKit anywhere). */
+export const VECTOR_FILL_MATERIAL_IDS = Object.freeze(new Set(["vector_pattern"]));
+
+/**
+ * Pure function. Does this op carry a material fill that the VECTOR exporters can
+ * render as real vectors (rather than as an embedded raster)? The qualifier both
+ * pdf_backend and svg_backend consult before taking the material raster fallback.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean}
+ *
+ * @example opHasVectorMaterialFill({op: "rect", fill: {type: "material", material: {id: "vector_pattern"}}}) // true
+ * @example opHasVectorMaterialFill({op: "rect", fill: {type: "material", material: {id: "crt"}}}) // false (a shader — rasterizes)
+ * @example opHasVectorMaterialFill({op: "rect", fill: "#fff"}) // false
+ */
+export function opHasVectorMaterialFill(cmd) {
+  return isMaterialPaint(cmd.fill) && VECTOR_FILL_MATERIAL_IDS.has(cmd.fill.material?.id);
+}
+
 /**
  * Pure function. Does this op carry a MATERIAL stroke? The STROKE twin of
  * opHasMaterialFill — the stroke-material framework's routing predicate
