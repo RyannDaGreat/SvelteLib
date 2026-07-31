@@ -234,6 +234,7 @@ const TOLERATED_UNREAD = {
   comic: ["blurredBackdrop"],
   brightness_contrast: ["blurredBackdrop"],
   metalStamp: ["blurredBackdrop"], // the stamp RE-LIGHTS the sharp backdrop only; declares usesBlurredBackdrop:false (its own import-time guard cross-checks the claim)
+  god_rays: ["blurredBackdrop"], // the ray march reads SHARP taps by necessity — a pre-blurred occlusion buffer would bleed the sun across a blocker's silhouette, so light would leak through the very object meant to stop it. Declares usesBlurredBackdrop:false (its own import-time guard cross-checks the claim)
   sky: ["uScale"],
   skyClouds: ["uScale"],
   skySun: ["uScale", "uTime"],

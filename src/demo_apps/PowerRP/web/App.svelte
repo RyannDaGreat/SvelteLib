@@ -1336,6 +1336,7 @@
         // camera.*` equations; the crosshair click-places-default path does arithmetic
         // on defaults.w, which is an equation here — so it must NOT use crosshair).
         { id: "demo-insert-lens-flare", title: "Lens Flare (generative material + presets)", icon: "mdi:flare", run: (a) => a.addItem(a.registry.get("demo_lens_flare").defaults) },
+        { id: "demo-insert-god-rays", title: "God Rays (screen-space light shafts, occluded by what is beneath)", icon: "mdi:weather-sunny-alert", run: (a) => a.addItem(a.registry.get("demo_god_rays").defaults) },
         { id: "demo-insert-rainy-window", title: "Rainy Window (animated backdrop rain-on-glass shader)", icon: "mdi:weather-pouring", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_rainy_window")) },
         // The `sky*` archetype — a physically-based sky family whose members INTERACT
         // (a skySun's position/colour drives the sky's scattering + the clouds' colour,

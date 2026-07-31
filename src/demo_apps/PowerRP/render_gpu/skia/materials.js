@@ -52,6 +52,7 @@ import { SKY_SUN_MATERIAL } from "./sky_sun_shader.js";
 import { SKY_MOON_MATERIAL } from "./sky_moon_shader.js";
 import { SKY_CLOUDS_MATERIAL } from "./sky_clouds_shader.js";
 import { LENS_FLARE_MATERIAL } from "./lens_flare_shader.js";
+import { GOD_RAYS_MATERIAL } from "./god_rays_shader.js"; // screen-space volumetric light scattering (GPU Gems 3 ch.13) — the backdrop IS the occlusion buffer
 import { getStrokeMaterial, hasStrokeMaterial, strokeMaterialIds } from "./stroke_materials.js"; // the STROKE-material framework's registry (arc-length gradients, width profiles, dashes, wavy)
 import { COMIC_MATERIAL } from "./comic_shader.js"; // comic-book Ben-Day halftone (CMYK/RGB/duotone/mono dots)
 import { GLITCH_MATERIAL } from "./glitch_shader.js"; // animated sci-fi datamosh / broken-signal glitch
@@ -123,7 +124,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     darkening preset stands in LIGHTER, the exact defect the hook exists to end.
 // The legacy `glassBackdrop` op (the glass WIDGET, plugins/demo/glass.js) never went
 // through this registry at all and is untouched either way.
-const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL, PATTERN_MATERIAL];
+const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, GOD_RAYS_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL, PATTERN_MATERIAL];
 
 const MATERIALS = Object.fromEntries(BUILTIN_MATERIALS.map((m) => [m.id, m]));
 
