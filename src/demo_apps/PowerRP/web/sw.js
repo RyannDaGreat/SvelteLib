@@ -60,8 +60,43 @@
  * A new worker installs in the background and takes over on the NEXT load. No
  * `skipWaiting`, deliberately: swapping the bundle under a running editor could
  * load a new module against old in-memory state, and the user did not ask for a
- * reload in the middle of their work. Old caches are deleted on activate, so a
- * stale bundle cannot accumulate or be served after its version is gone.
+ * reload in the middle of their work.
+ *
+ * BECAUSE of that, `activate` (where the old cleanup lived) never runs while any
+ * tab from a prior deploy stays open — the new worker sits WAITING forever behind
+ * the live page. A user who keeps a tab open across N deploys therefore installs
+ * N full ~33 MB shell generations before a single one is ever collected: that is
+ * the 131.9 MB-for-33.3 MB-precache bug this file was patched to fix. The install
+ * handler below prunes DURING INSTALL instead of waiting for activate, capping the
+ * damage at two generations (the one still serving live pages, plus the one that
+ * just finished installing) no matter how many deploys accumulate behind it.
+ *
+ * The one thing install-time pruning must never do is delete the cache an OPEN
+ * TAB is being served from — that tab has no way to re-fetch bytes it already
+ * has a cache handle for, so deleting them out from under it would break offline
+ * support for a page this very deploy promised to keep working. The installing
+ * worker cannot read "which worker is currently active" directly (there is no
+ * such accessor), so `activate` writes its OWN version into a tiny durable
+ * record (`recordActiveVersion`, stored as a Response body in `META_CACHE` —
+ * reusing Cache Storage rather than adding an IndexedDB dependency for one
+ * string) every time a worker actually takes over. `install` then reads that
+ * record (`readActiveVersion`) and treats it, plus the version installing right
+ * now, as the two names `pruneShellCacheNames` must never delete. Everything
+ * else named `powerrp-shell-*` is a generation no live page can be pinned to
+ * (its worker either finished activating, in which case the record has moved
+ * past it, or it never activated at all) and is safe to delete immediately
+ * rather than waiting for this worker's own activate.
+ *
+ * `activate`'s sweep (below) still runs too, unchanged — it is what collects
+ * THIS worker's predecessor once this worker finally does take over, and it is
+ * the backstop if the meta record is ever missing (e.g. the very first install
+ * on a fresh browser, where "no record yet" correctly prunes nothing).
+ *
+ * `pruneShellCacheNames` itself lives in `swPrune.js`, not here — see that
+ * file's header for why the decision function needs to be a real ES module
+ * (bare-node testable) even though this file, its only runtime caller, cannot
+ * contain an `import` statement. `swBuildPlugin.js` inlines its source into
+ * the emitted worker at build time.
  */
 
 /** The precache manifest, substituted at build time (see swBuildPlugin.js).
@@ -82,6 +117,14 @@ const SHELL_CACHE = `powerrp-shell-${VERSION}`;
  *  release would silently un-cache the offline icon set the user built up. */
 const ICON_CACHE = "powerrp-icons";
 
+/** Tiny durable record of which version is currently ACTIVE — one Response
+ *  whose body is the version string, stored under `ACTIVE_VERSION_KEY`. Cache
+ *  Storage rather than IndexedDB: it is the one persistence API already in use
+ *  here, available synchronously alongside the caches this file already opens,
+ *  and a single string needs nothing IndexedDB adds (schemas, transactions). */
+const META_CACHE = "powerrp-meta";
+const ACTIVE_VERSION_KEY = "https://powerrp.internal/active-shell-version";
+
 /** The one third-party origin whose responses are runtime-cached. */
 const ICONIFY_ORIGIN = "https://api.iconify.design";
 
@@ -89,6 +132,25 @@ const ICONIFY_ORIGIN = "https://api.iconify.design";
  *  passes the scope-correct path, which matters under the `/SvelteLib/` base
  *  path on Pages — a hardcoded "/index.html" would miss. */
 const SHELL_URL = self.__POWERRP_SHELL ?? "index.html";
+
+/** Query (async). Reads the recorded active shell-cache name, or null if no
+ *  worker has activated yet (fresh install) or the meta cache was never
+ *  written for some other reason — both are treated as "nothing provably safe
+ *  to delete", never as license to guess. */
+async function readActiveVersion() {
+  const cache = await caches.open(META_CACHE);
+  const res = await cache.match(ACTIVE_VERSION_KEY);
+  return res ? res.text() : null;
+}
+
+/** Command. Records `SHELL_CACHE` as the active version, for the NEXT worker's
+ *  install-time prune to read. Called from `activate`, i.e. only once this
+ *  worker has actually taken over — recording earlier would claim a version is
+ *  live before any page is served from it. */
+async function recordActiveVersion() {
+  const cache = await caches.open(META_CACHE);
+  await cache.put(ACTIVE_VERSION_KEY, new Response(SHELL_CACHE));
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -105,6 +167,15 @@ self.addEventListener("install", (event) => {
       // never activates holding a partial shell. That is the behaviour we want
       // — a missing chunk offline is indistinguishable from a broken app.
       await cache.addAll(PRECACHE_URLS);
+
+      // Prune stale generations NOW rather than waiting for activate, which may
+      // never run while a prior deploy's tab stays open (see the UPDATES
+      // docblock above). Keeps at most this generation plus whichever one is
+      // currently live.
+      const activeVersion = await readActiveVersion();
+      const names = await caches.keys();
+      const stale = pruneShellCacheNames(names, SHELL_CACHE, activeVersion);
+      await Promise.all(stale.map((n) => caches.delete(n)));
     })(),
   );
 });
@@ -112,11 +183,16 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      // Drop superseded shell caches. The icon cache is deliberately spared.
+      // Drop superseded shell caches. Install already pruned everything it
+      // could prove stale; this sweep is the backstop for the one case install
+      // could not resolve on its own — no active record yet on a fresh browser
+      // — and for a generation that only becomes provably stale by THIS
+      // worker's own takeover. The icon cache is deliberately spared.
       const names = await caches.keys();
       await Promise.all(
         names.filter((n) => n.startsWith("powerrp-shell-") && n !== SHELL_CACHE).map((n) => caches.delete(n)),
       );
+      await recordActiveVersion();
       await self.clients.claim();
     })(),
   );

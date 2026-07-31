@@ -238,7 +238,13 @@ export function powerrpServiceWorker() {
         `// GENERATED PREAMBLE — powerrpServiceWorker (web/swBuildPlugin.js). Do not edit.\n` +
         `self.__POWERRP_PRECACHE = ${JSON.stringify(urls, null, 2)};\n` +
         `self.__POWERRP_SW_VERSION = ${JSON.stringify(version)};\n` +
-        `self.__POWERRP_SHELL = ${JSON.stringify(`${base}index.html`)};\n\n`;
+        `self.__POWERRP_SHELL = ${JSON.stringify(`${base}index.html`)};\n\n` +
+        // swPrune.js's `export function` cannot survive into a classic-script
+        // worker verbatim (see that file's header) — strip the one `export`
+        // keyword and inline the plain declaration. sw.js's UPDATES docblock
+        // calls this function by name, so a missing/renamed export here would
+        // fail LOUDLY as a ReferenceError the moment install runs, not silently.
+        `${readFileSync(resolve(HERE, "swPrune.js"), "utf8").replace("export function pruneShellCacheNames", "function pruneShellCacheNames")}\n`;
 
       // Emitted at the BASE ROOT, unhashed — the scope rule (see docblock).
       this.emitFile({ type: "asset", fileName: "sw.js", source: preamble + source });
