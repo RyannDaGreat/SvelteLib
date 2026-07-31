@@ -36,6 +36,16 @@ const CLIPS = (process.env.PERF_CLIPS || "/tmp/perf_test_0.mp4,/tmp/perf_test_1.
 const W = 960, H = 540;
 const WINDOW_MS = 2500; // fps sampling window per scenario
 
+// LOUD SKIP, not a failure (github_live_probe.js precedent): the clips above are
+// an EXPLICIT manual precondition (see the ffmpeg commands in this file's
+// docstring) — this probe does not generate them itself, because doing so would
+// hide a missing-ffmpeg host behind a slow in-probe encode instead of naming the
+// gap. A gate host that never ran that ffmpeg step is an environment limitation,
+// not an app defect, and must say so once rather than throw an uncaught ENOENT.
+for (const p of CLIPS) {
+  try { await readFile(p.trim()); }
+  catch { console.log(`SKIP — fixture clip missing: ${p.trim()} (regenerate with the ffmpeg commands in this file's docstring). Not a failure.`); process.exit(0); }
+}
 const SRCS = await Promise.all(CLIPS.map(async (p) => `data:video/mp4;base64,${(await readFile(p.trim())).toString("base64")}`));
 
 /** Pure function. N video-player items tiled across the camera (or shoved

@@ -69,6 +69,13 @@ try {
   await sleep(3000);
   if (errors.length) { console.error("BOOT ERRORS:\n" + errors.join("\n")); process.exit(1); }
 
+  // The Global Variables panel defaults to HIDDEN (core/panels.js
+  // `defaultVisible: false`, the `panels_` visibility feature) — open it before
+  // querying `.varspanel .row`, or the query silently finds nothing (cruft23_probe
+  // precedent, 97f5ba3).
+  await page.evaluate(() => window.__powerrp_app.runCommand("toggle-panel-globalVariables"));
+  await sleep(200);
+
   // Two variables (both NumericField rows): the NUMBER row under test, and an
   // EQUATION row that references it.
   await page.evaluate((name, baseline) => {

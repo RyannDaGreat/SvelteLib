@@ -59,7 +59,10 @@ try {
   // The minimal hand-authored deck omits some effect props on purpose; the
   // loader fills them with defaults and reports it LOUDLY (a repair message, not
   // a fade bug). Ignore ONLY that expected repair line.
-  const ignore = (t) => /PowerRP repair: item .* was missing/.test(t);
+  // VideoV7: headless SwiftShader has no WebGPU adapter, so the overlay reports
+  // its 2D-drawImage fallback on every boot (theme_probe.js/clipboard_duplicate_
+  // probe.js precedent) — orthogonal to the fade path under test here.
+  const ignore = (t) => /PowerRP repair: item .* was missing/.test(t) || /VideoV7: WebGPU init failed/.test(t);
   page.on("pageerror", (e) => { if (!ignore(e.message)) errors.push(`pageerror: ${e.message}`); });
   page.on("console", (m) => { if ((m.type() === "error" || m.type() === "warning") && !ignore(m.text())) errors.push(`console.${m.type()}: ${m.text()}`); });
   // Seed the deck via autosave (App loads it), then boot.

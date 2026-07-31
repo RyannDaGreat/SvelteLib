@@ -30,7 +30,10 @@ try {
   // Ignore the pre-existing CanvasView zero-sized-canvas paint race (a headless
   // layout-timing artifact in a file outside this task's scope) — this probe
   // validates the NAVIGATOR + selection seam, not the viewport paint loop.
-  const ignore = (t) => /zero-sized canvas/.test(t);
+  // VideoV7: headless SwiftShader has no WebGPU adapter, so the overlay reports
+  // its 2D-drawImage fallback on every boot (theme_probe.js/clipboard_duplicate_
+  // probe.js precedent) — orthogonal to the nav-transition path under test here.
+  const ignore = (t) => /zero-sized canvas/.test(t) || /VideoV7: WebGPU init failed/.test(t);
   page.on("pageerror", (e) => { if (!ignore(e.message)) errors.push(`pageerror: ${e.message}`); });
   page.on("console", (m) => { if (m.type() === "error" && !ignore(m.text())) errors.push(`console.error: ${m.text()}`); });
   await page.evaluateOnNewDocument((json) => localStorage.setItem("powerrp.autosave", json), demoJson);

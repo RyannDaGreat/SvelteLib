@@ -7,17 +7,35 @@
  * placement). Mirrors modifier_probe.js's app-driven creation + the QA's
  * swiftshader launch.
  *
- * Run (dev server up): node tests/shapeshifter_handles_probe.js [http://localhost:PORT]
+ * SELF-CONTAINED (spawns its own Vite, the house probe pattern — see
+ * crosshair_probe.js): this used to require a manually-run `run_server.sh`
+ * and scraped its URL out of `.claude_logs/devserver.log`, which the gate
+ * (tests/run_all.mjs) never writes — every gate run threw ENOENT at import
+ * time before a single check ran, "passing" only when a human happened to
+ * have a dev server up first, and PowerRP's own `.claude_logs/` besides (the
+ * hardcoded `../../../../../.claude_logs` climbed out of this repo entirely,
+ * into the SvelteLib workspace root's dump). An explicit URL argument is
+ * still honored for ad-hoc runs against a server you already have up.
+ *
+ * Run: node tests/shapeshifter_handles_probe.js [http://localhost:PORT]
  */
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createServer } from "vite";
 import { launchBrowser } from "./puppeteerLaunch.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const LOG = path.join(HERE, "..", "..", "..", "..", "..", ".claude_logs", "devserver.log");
+const webRoot = path.resolve(HERE, "../web");
 const SHOTS = path.join(HERE, "..", ".claude_vlm_checks");
-const URL = process.argv[2] || fs.readFileSync(LOG, "utf8").match(/https?:\/\/localhost:\d+/)[0];
+
+let server = null;
+let URL = process.argv[2];
+if (!URL) {
+  server = await createServer({ configFile: path.resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+  await server.listen();
+  URL = `http://127.0.0.1:${server.httpServer.address().port}/`;
+}
 
 // family type → expected on-canvas handle count (from plugins/shapeshifter.js)
 const EXPECTED = { ss_radialSweep: 3, ss_polygonStar: 2, ss_cornerRect: 4, ss_gear: 2, ss_callout: 1, ss_crossPlus: 2, ss_frame: 1 };
@@ -58,6 +76,7 @@ const results = [];
   }
 
   await browser.close();
+  if (server) await server.close();
   console.log("Handle-count checks:");
   for (const r of results) console.log(`  ${r.ok ? "ok  " : "FAIL"} ${r.type}: ${r.got} handles (want ${r.want})`);
   const danger = errors.filter((e) => e.startsWith("pageerror:") || /is not a function|cannot read|undefined is not/i.test(e));

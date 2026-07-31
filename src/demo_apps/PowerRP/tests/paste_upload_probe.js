@@ -86,12 +86,17 @@ try {
   browser = await launchBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
-  // EXPECTED headless noise: the per-widget VideoV7 overlay tries to acquire a
-  // WebGPU device and, finding no adapter in headless SwiftShader, LOUDLY reports
-  // its 2D-drawImage fallback (web/VideoV7Overlay.svelte). That is the correct
-  // reported-fallback behavior, not a defect, and is orthogonal to the clipboard
-  // path (the Skia scene + copySelection's PNG rasterize headless without WebGPU).
-  const EXPECTED_NOISE = [/VideoV7: WebGPU init failed/];
+  // EXPECTED headless noise, both LOUD reports of environment limitations, not
+  // defects (clipboard_duplicate_probe.js precedent):
+  //   1. the per-widget VideoV7 overlay tries to acquire a WebGPU device and,
+  //      finding no adapter in headless SwiftShader, reports its 2D-drawImage
+  //      fallback (web/VideoV7Overlay.svelte) — orthogonal to the clipboard path
+  //      (the Skia scene + copySelection's PNG rasterize headless without WebGPU).
+  //   2. the OS-clipboard image WRITE is denied by headless Chromium even with
+  //      permission overrides (documented headless quirk) — copySelection below
+  //      reports the denial loudly and keeps the item on the server clipboard,
+  //      which is exactly the path this probe's compose check exercises next.
+  const EXPECTED_NOISE = [/VideoV7: WebGPU init failed/, /OS-clipboard image write was denied or failed/];
   const isExpectedNoise = (t) => EXPECTED_NOISE.some((re) => re.test(t));
   page.on("pageerror", (e) => {
     if (!isExpectedNoise(e.message)) errors.push(`pageerror: ${e.message}`);
